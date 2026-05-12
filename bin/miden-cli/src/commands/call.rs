@@ -7,6 +7,7 @@ use clap::Parser;
 use miden_client::account::AccountId;
 use miden_client::assembly::CodeBuilder;
 use miden_client::keystore::Keystore;
+use miden_client::package_types::{TypedProcInfo, parse_felt_token};
 use miden_client::rpc::domain::account::AccountStorageRequirements;
 use miden_client::transaction::{
     AdviceInputs,
@@ -85,8 +86,25 @@ impl CallCmd {
         })?;
 
         let target_id = parse_account_id(&client, account_str).await?;
-        let args = parse_args(&self.args)?;
-        let call_code = self.resolve_call_code(&client, &cli_config, procedure, &args)?;
+        let call_code = self.resolve_call_code(&client, &cli_config, procedure)?;
+
+        // A procedure only sees the top MIN_STACK_DEPTH felts of the stack.
+        if call_code.args.len() > MIN_STACK_DEPTH {
+            return Err(CliError::InvalidArgument(format!(
+                "A procedure takes at most {MIN_STACK_DEPTH} input values; got {}.",
+                call_code.args.len()
+            )));
+        }
+
+        // The output stack only holds MIN_STACK_DEPTH felts.
+        if let Some(n) = call_code.result_felts
+            && n > MIN_STACK_DEPTH
+        {
+            return Err(CliError::InvalidArgument(format!(
+                "Procedure '{procedure}' returns {n} values; only up to {MIN_STACK_DEPTH} \
+                 can be read from the output stack."
+            )));
+        }
 
         let advice_entries = match &self.inputs_path {
             Some(path) => load_advice_map_from_file(path)?,
@@ -97,7 +115,7 @@ impl CallCmd {
 
         match call_target {
             CallTarget::Local(account_id) => {
-                run_local_call(&client, account_id, call_code, &args, advice_entries).await
+                run_local_call(&client, account_id, call_code, advice_entries).await
             },
             CallTarget::Remote { target_id, executor_id, foreign_account } => {
                 run_remote_call(
@@ -106,7 +124,6 @@ impl CallCmd {
                     executor_id,
                     foreign_account,
                     call_code,
-                    &args,
                     advice_entries,
                 )
                 .await
@@ -114,30 +131,51 @@ impl CallCmd {
         }
     }
 
-    /// Resolves the procedure digest and code builder either from `--package` (calling by name)
-    /// or from a hex digest when no package is given.
+    /// Resolves the procedure digest, code builder and encoded arguments either from `--package`
+    /// (calling by name) or from a hex digest when no package is given.
     fn resolve_call_code<AUTH: Keystore + Sync + 'static>(
         &self,
         client: &Client<AUTH>,
         cli_config: &CliConfig,
         procedure: &str,
-        args: &[Felt],
     ) -> Result<CallCode, CliError> {
-        // A procedure only sees the top MIN_STACK_DEPTH felts of the stack.
-        if args.len() > MIN_STACK_DEPTH {
-            return Err(CliError::InvalidArgument(format!(
-                "A procedure takes at most {MIN_STACK_DEPTH} input values; got {}.",
-                args.len()
-            )));
-        }
+        let Some(pkg_path) = &self.package else {
+            let digest = Word::try_from(procedure).map_err(|_| {
+                CliError::InvalidArgument(format!(
+                    "'{procedure}' is not a hex digest. Pass `--package <FILE>.masp` to \
+                     call a procedure by name, or give its hex digest to call without a \
+                     package."
+                ))
+            })?;
+            println!(
+                "No `--package` provided; output will be raw felts. Pass \
+                 `--package <FILE>.masp` for typed output."
+            );
+            return Ok(CallCode {
+                builder: client.code_builder(),
+                digest,
+                args: parse_args_raw(&self.args)?,
+                typed: None,
+                result_felts: None,
+            });
+        };
 
-        if let Some(pkg_path) = &self.package {
-            let package = load_packages(cli_config, slice::from_ref(pkg_path))?
-                .pop()
-                .expect("load_packages returns one package per path");
-            let digest = resolve_procedure_digest(&package, procedure)?;
+        let package = load_packages(cli_config, slice::from_ref(pkg_path))?
+            .pop()
+            .expect("load_packages returns one package per path");
+        let digest = resolve_procedure_digest(&package, procedure)?;
+
+        // Type information lets the arguments be written as values of their declared types and the
+        // result be rendered as one; without it both stay raw field elements.
+        let typed = TypedProcInfo::resolve(&package, procedure);
+
+        let (args, result_felts) = if let Some(typed) = &typed {
+            println!("Signature: {}\n", typed.format_signature());
+            (typed.encode_args(&self.args)?, typed.result_felt_count())
+        } else {
             let ProcedureSignature { param_felts, result_felts } =
                 print_manifest_signature(&package, procedure);
+            let args = parse_args_raw(&self.args)?;
 
             match param_felts {
                 Some(expected) if args.len() != expected => {
@@ -158,53 +196,44 @@ impl CallCmd {
                 _ => {},
             }
 
-            // The output stack only holds MIN_STACK_DEPTH felts.
-            if let Some(n) = result_felts
-                && n > MIN_STACK_DEPTH
-            {
-                return Err(CliError::InvalidArgument(format!(
-                    "Procedure '{procedure}' returns {n} values; only up to {MIN_STACK_DEPTH} \
-                     can be read from the output stack."
-                )));
-            }
+            (args, result_felts)
+        };
 
-            // The account's code is loaded from the client's store at VM runtime, so the library
-            // doesn't need to be embedded in the script. The assembler still needs it at compile
-            // time to resolve `call.<digest>` to a known procedure — otherwise it emits a
-            // "phantom target" warning. Dynamic linking provides that resolution without
-            // embedding the library bytes.
-            let builder = client.code_builder().with_dynamically_linked_package(&package)?;
-            Ok(CallCode { builder, digest, result_felts })
-        } else {
-            let digest = Word::try_from(procedure).map_err(|_| {
-                CliError::InvalidArgument(format!(
-                    "'{procedure}' is not a hex digest. Pass `--package <FILE>.masp` to \
-                     call a procedure by name, or give its hex digest to call without a \
-                     package."
-                ))
-            })?;
-            println!(
-                "No `--package` provided; output will be raw felts. Pass \
-                 `--package <FILE>.masp` for typed output."
-            );
-            Ok(CallCode {
-                builder: client.code_builder(),
-                digest,
-                result_felts: None,
-            })
-        }
+        // The account's code is loaded from the client's store at VM runtime, so the library
+        // doesn't need to be embedded in the script. The assembler still needs it at compile
+        // time to resolve `call.<digest>` to a known procedure — otherwise it emits a
+        // "phantom target" warning. Dynamic linking provides that resolution without
+        // embedding the library bytes.
+        let builder = client.code_builder().with_dynamically_linked_package(&package)?;
+        Ok(CallCode { builder, digest, args, typed, result_felts })
     }
 }
 
 // HELPERS
 // ================================================================================================
 
-/// Resolved call code: the linked builder, the procedure digest, and the stack width of the
+/// Resolved call code: the linked builder, the procedure digest, the encoded arguments, the type
+/// information used to render the result when the package carries it, and the stack width of the
 /// results when known.
 struct CallCode {
     builder: CodeBuilder,
     digest: Word,
+    args: Vec<Felt>,
+    typed: Option<TypedProcInfo>,
     result_felts: Option<usize>,
+}
+
+/// Prints the values the procedure returned, rendered as their declared types when the package
+/// describes them and as raw stack felts otherwise.
+fn print_call_result(
+    output_stack: &[Felt],
+    typed: Option<&TypedProcInfo>,
+    result_felts: Option<usize>,
+) {
+    match typed.and_then(|typed| typed.decode_result(output_stack)) {
+        Some(rendered) => println!("Result: {rendered}"),
+        None => print_executed_program_stack(output_stack, result_felts),
+    }
 }
 
 /// Runs a remote call via FPI. FPI cannot mutate the foreign account, so there is no state delta
@@ -215,12 +244,11 @@ async fn run_remote_call<AUTH: Keystore + Sync + 'static>(
     executor_id: AccountId,
     foreign_account: Box<ForeignAccount>,
     call_code: CallCode,
-    args: &[Felt],
     advice_entries: Vec<(Word, Vec<Felt>)>,
 ) -> Result<(), CliError> {
-    let CallCode { builder, digest, result_felts } = call_code;
+    let CallCode { builder, digest, args, typed, result_felts } = call_code;
     let tx_script =
-        build_fpi_script(builder, target_id, digest, args).map_err(|err| match err {
+        build_fpi_script(builder, target_id, digest, &args).map_err(|err| match err {
             TransactionRequestError::ForeignProcedureInputsTooLong { max, actual } => {
                 CliError::InvalidArgument(format!(
                     "A call on an account read from the network takes at most {max} input felts; \
@@ -241,7 +269,7 @@ async fn run_remote_call<AUTH: Keystore + Sync + 'static>(
         )
         .await?;
 
-    print_executed_program_stack(&output_stack, result_felts);
+    print_call_result(output_stack.as_slice(), typed.as_ref(), result_felts);
 
     println!("\nA call on an account read from the network can only read it; no state delta.");
     Ok(())
@@ -253,11 +281,10 @@ async fn run_local_call<AUTH: Keystore + Sync + 'static>(
     client: &Client<AUTH>,
     account_id: AccountId,
     call_code: CallCode,
-    args: &[Felt],
     advice_entries: Vec<(Word, Vec<Felt>)>,
 ) -> Result<(), CliError> {
-    let CallCode { builder, digest, result_felts } = call_code;
-    let tx_script = generate_tx_script(builder, &digest, args)?;
+    let CallCode { builder, digest, args, typed, result_felts } = call_code;
+    let tx_script = generate_tx_script(builder, &digest, &args)?;
 
     // 1) Read-only execution to get return values.
     let output_stack = client
@@ -268,7 +295,7 @@ async fn run_local_call<AUTH: Keystore + Sync + 'static>(
             BTreeMap::new(),
         )
         .await?;
-    print_executed_program_stack(&output_stack, result_felts);
+    print_call_result(output_stack.as_slice(), typed.as_ref(), result_felts);
 
     // 2) Transaction execution to get the state delta.
     let tx_request = TransactionRequestBuilder::new()
@@ -404,16 +431,8 @@ fn resolve_procedure_digest(package: &Package, procedure_name: &str) -> Result<W
     )))
 }
 
-fn parse_args(args: &[String]) -> Result<Vec<Felt>, CliError> {
-    args.iter()
-        .map(|arg| {
-            let n = arg.parse::<u64>().map_err(|_| {
-                CliError::InvalidArgument(format!("Invalid argument '{arg}'. Expected u64."))
-            })?;
-            Felt::try_from(n)
-                .map_err(|_| CliError::InvalidArgument(format!("Argument '{arg}' is too large.")))
-        })
-        .collect()
+fn parse_args_raw(args: &[String]) -> Result<Vec<Felt>, CliError> {
+    args.iter().map(|arg| Ok(parse_felt_token(arg)?)).collect()
 }
 
 /// How many field elements a procedure's arguments and results occupy on the stack. A multi-felt

@@ -2062,6 +2062,101 @@ fn call_rejects_wrong_arg_count() {
     );
 }
 
+/// Helper: sets up two isolated clients. The first owns a public `call-test` account deployed
+/// on-chain; the second has only a local wallet to act as the FPI executor. Returns the second
+/// client's (`caller_dir`, `account_id`, `masp_path`).
+fn setup_remote_call_test() -> (PathBuf, String, PathBuf) {
+    // Client A: owns and deploys the call-test account.
+    let target_dir = init_cli().1;
+
+    let masp_path = target_dir.join("call_test.masp");
+    build_call_test_masp(&masp_path);
+
+    let init_toml = r#"
+"miden::testing::call_test::stored_value" = "0x0000000000000000000000000000000000000000000000000000000000000000"
+"#;
+    let init_path = target_dir.join("call_test_init.toml");
+    fs::write(&init_path, init_toml).unwrap();
+
+    sync_cli(&target_dir);
+
+    // `--deploy` submits a transaction that commits the public account on-chain, which is what
+    // makes it readable from another client via FPI.
+    let mut create_cmd = cargo_bin_cmd!("miden-client");
+    create_cmd.args([
+        "new-account",
+        "-t",
+        "public",
+        "-p",
+        "auth/no-auth",
+        "-p",
+        masp_path.to_str().unwrap(),
+        "-i",
+        init_path.to_str().unwrap(),
+        "--deploy",
+    ]);
+
+    let output = create_cmd.current_dir(&target_dir).output().unwrap();
+    assert!(
+        output.status.success(),
+        "Failed to create and deploy account: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let account_id = stdout
+        .split_whitespace()
+        .skip_while(|&w| w != "-s")
+        .nth(1)
+        .expect("Could not parse account ID from new-account output")
+        .to_string();
+
+    // Wait for the deploy transaction to commit before the account can be read remotely.
+    sync_cli(&target_dir);
+
+    // Client B: only a local wallet, used as the FPI executor.
+    let caller_dir = init_cli().1;
+    new_wallet_cli(&caller_dir, AccountType::Private);
+    sync_cli(&caller_dir);
+
+    (caller_dir, account_id, masp_path)
+}
+
+/// Tests calling a procedure on a public account that is not in the caller's local store. The
+/// call is routed through FPI using the caller's local wallet as the executor.
+#[test]
+fn call_remote_account_via_fpi() {
+    let (caller_dir, account_id, masp_path) = setup_remote_call_test();
+
+    let mut cmd = cargo_bin_cmd!("miden-client");
+    cmd.args([
+        "call",
+        &format!("{account_id}:add"),
+        "3",
+        "7",
+        "--package",
+        masp_path.to_str().unwrap(),
+    ]);
+
+    let output = cmd.current_dir(&caller_dir).output().unwrap();
+    assert!(
+        output.status.success(),
+        "Remote call failed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("reading from network via FPI"),
+        "Expected FPI routing message in output:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Result: 10"),
+        "Expected `add(3, 7)` result in output:\n{stdout}"
+    );
+}
+
 // AUTH COMPONENT TESTS
 // ================================================================================================
 

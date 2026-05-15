@@ -2112,7 +2112,7 @@ fn setup_remote_call_test() -> (PathBuf, String, PathBuf) {
         .to_string();
 
     // Wait for the deploy transaction to commit before the account can be read remotely.
-    sync_cli(&target_dir);
+    sync_until_committed_transaction(&target_dir);
 
     // Client B: only a local wallet, used as the FPI executor.
     let caller_dir = init_cli().1;

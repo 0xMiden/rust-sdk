@@ -5,7 +5,7 @@ use std::error::Error;
 
 use miden_client::account::{AccountId, AddressError};
 use miden_client::keystore::KeyStoreError;
-use miden_client::package_types::PackageTypesError;
+use miden_client::package_debug_info::PackageDebugInfoError;
 use miden_client::{
     AccountError,
     AccountIdError,
@@ -105,11 +105,17 @@ pub enum CliError {
     MissingFlag(String),
     #[error("network id error")]
     NetworkIdError(#[from] NetworkIdError),
+    #[error("client has not been synced yet")]
+    #[diagnostic(
+        code(cli::not_synced),
+        help("Run `{} sync` first.", client_binary_name().display())
+    )]
+    NotSynced,
     #[error("invalid argument: {0}")]
     InvalidArgument(String),
-    #[error("package types error")]
-    #[diagnostic(code(cli::package_types_error))]
-    PackageTypes(#[from] PackageTypesError),
+    #[error("package debug info error")]
+    #[diagnostic(code(cli::package_debug_info_error))]
+    PackageDebugInfo(#[from] PackageDebugInfoError),
     #[error("parse error: {1}")]
     #[diagnostic(code(cli::parse_error), help("Check the inputs."))]
     Parse(#[source] SourceError, String),

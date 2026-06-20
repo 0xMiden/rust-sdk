@@ -82,6 +82,32 @@ tracing            = { version = "0.1" }
 tracing-subscriber = { default-features = false, version = "0.3" }
 uuid               = { version = "1.10" }
 
+# TEMPORARY (do not merge): the typed debug-info encoder/decoder used by `miden call` lives in
+# `miden-mast-package`'s `debug_info::typed` module, which is not in a published release yet. Point
+# the whole miden-vm 0.23.3 crate set at the `pr/debug_info_encoder_decoder` branch so the workspace
+# builds against it; patching `mast-package` alone would pull a second `miden-core` and break type
+# unification. Delete this entire block once miden-vm cuts the release that ships `debug_info::typed`
+# (e.g. 0.23.4) — the caret `"0.23"` requirement then picks it up from crates.io and no patch is
+# needed.
+[patch.crates-io]
+miden-ace-codegen       = { git = "https://github.com/walnuthq/miden-vm.git", branch = "pr/debug_info_encoder_decoder" }
+miden-air               = { git = "https://github.com/walnuthq/miden-vm.git", branch = "pr/debug_info_encoder_decoder" }
+miden-assembly          = { git = "https://github.com/walnuthq/miden-vm.git", branch = "pr/debug_info_encoder_decoder" }
+miden-assembly-syntax   = { git = "https://github.com/walnuthq/miden-vm.git", branch = "pr/debug_info_encoder_decoder" }
+miden-core              = { git = "https://github.com/walnuthq/miden-vm.git", branch = "pr/debug_info_encoder_decoder" }
+miden-core-lib          = { git = "https://github.com/walnuthq/miden-vm.git", branch = "pr/debug_info_encoder_decoder" }
+miden-debug-types       = { git = "https://github.com/walnuthq/miden-vm.git", branch = "pr/debug_info_encoder_decoder" }
+miden-mast-package      = { git = "https://github.com/walnuthq/miden-vm.git", branch = "pr/debug_info_encoder_decoder" }
+miden-package-registry  = { git = "https://github.com/walnuthq/miden-vm.git", branch = "pr/debug_info_encoder_decoder" }
+miden-processor         = { git = "https://github.com/walnuthq/miden-vm.git", branch = "pr/debug_info_encoder_decoder" }
+miden-project           = { git = "https://github.com/walnuthq/miden-vm.git", branch = "pr/debug_info_encoder_decoder" }
+miden-prover            = { git = "https://github.com/walnuthq/miden-vm.git", branch = "pr/debug_info_encoder_decoder" }
+miden-utils-core-derive = { git = "https://github.com/walnuthq/miden-vm.git", branch = "pr/debug_info_encoder_decoder" }
+miden-utils-diagnostics = { git = "https://github.com/walnuthq/miden-vm.git", branch = "pr/debug_info_encoder_decoder" }
+miden-utils-indexing    = { git = "https://github.com/walnuthq/miden-vm.git", branch = "pr/debug_info_encoder_decoder" }
+miden-utils-sync        = { git = "https://github.com/walnuthq/miden-vm.git", branch = "pr/debug_info_encoder_decoder" }
+miden-verifier          = { git = "https://github.com/walnuthq/miden-vm.git", branch = "pr/debug_info_encoder_decoder" }
+
 # Lints are set to warn for development, which are promoted to errors in CI.
 [workspace.lints.clippy]
 # Pedantic lints are set to a lower priority which allows lints in the group to be selectively enabled.

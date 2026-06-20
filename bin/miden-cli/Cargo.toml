@@ -22,10 +22,11 @@ default = []
 testing = ["miden-client/testing"]
 
 [dependencies]
-# Workspace dependencies
 miden-client              = { features = ["tonic"], workspace = true }
 miden-client-sqlite-store = { workspace = true }
 miden-debug               = { optional = true, workspace = true }
+miden-mast-package        = { workspace = true }
+miden-protocol            = { workspace = true }
 
 # External dependencies
 clap               = { features = ["derive"], workspace = true }

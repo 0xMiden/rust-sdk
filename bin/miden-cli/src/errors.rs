@@ -5,7 +5,6 @@ use std::error::Error;
 
 use miden_client::account::{AccountId, AddressError};
 use miden_client::keystore::KeyStoreError;
-use miden_client::package_debug_info::PackageDebugInfoError;
 use miden_client::{
     AccountError,
     AccountIdError,
@@ -15,6 +14,7 @@ use miden_client::{
     ErrorHint,
     NetworkIdError,
 };
+use miden_mast_package::debug_info::typed::TypedDebugInfoError;
 use miette::Diagnostic;
 use thiserror::Error;
 
@@ -113,9 +113,9 @@ pub enum CliError {
     NotSynced,
     #[error("invalid argument: {0}")]
     InvalidArgument(String),
-    #[error("package debug info error")]
-    #[diagnostic(code(cli::package_debug_info_error))]
-    PackageDebugInfo(#[from] PackageDebugInfoError),
+    #[error("typed debug info error")]
+    #[diagnostic(code(cli::typed_debug_info_error))]
+    TypedDebugInfo(#[from] TypedDebugInfoError),
     #[error("parse error: {1}")]
     #[diagnostic(code(cli::parse_error), help("Check the inputs."))]
     Parse(#[source] SourceError, String),

@@ -118,6 +118,10 @@ pub use batch::{BatchBuilder, BatchBuilderError};
 
 #[cfg(feature = "dap")]
 mod dap_executor;
+#[cfg(feature = "debug-output")]
+mod debug_executor;
+#[cfg(feature = "debug-output")]
+use debug_executor::RoutedDebugExecutor;
 mod prover;
 pub use prover::TransactionProver;
 
@@ -567,6 +571,77 @@ where
             .build_executor(&data_store)?
             .execute_tx_view_script(account_id, block_ref, tx_script, advice_inputs)
             .await?)
+    }
+
+    /// Like [`Client::execute_program`], but routes the executed script's MASM `debug.*` /
+    /// `trace.*` output to the writer `W` instead of stdout (which is a no-op on
+    /// `wasm32-unknown-unknown`). `W` is default-constructed per execution. Output is only
+    /// produced when the client was built in debug mode.
+    #[cfg(feature = "debug-output")]
+    pub async fn execute_program_with_debugger<W>(
+        &mut self,
+        account_id: AccountId,
+        tx_script: TransactionScript,
+        advice_inputs: AdviceInputs,
+        foreign_accounts: BTreeMap<AccountId, ForeignAccount>,
+    ) -> Result<[Felt; MIN_STACK_DEPTH], ClientError>
+    where
+        W: core::fmt::Write + Default + Send + Sync + 'static,
+    {
+        let (data_store, block_ref) =
+            self.prepare_program_execution(account_id, foreign_accounts).await?;
+
+        Ok(self
+            .build_executor(&data_store)?
+            .with_program_executor::<RoutedDebugExecutor<W>>()
+            .execute_tx_view_script(account_id, block_ref, tx_script, advice_inputs)
+            .await?)
+    }
+
+    /// Like [`Client::execute_transaction`], but routes MASM `debug.*` / `trace.*` output to the
+    /// writer `W` (see [`Client::execute_program_with_debugger`]).
+    #[cfg(feature = "debug-output")]
+    pub async fn execute_transaction_with_debugger<W>(
+        &mut self,
+        account_id: AccountId,
+        transaction_request: TransactionRequest,
+    ) -> Result<TransactionResult, ClientError>
+    where
+        W: core::fmt::Write + Default + Send + Sync + 'static,
+    {
+        let account: Account = self.get_native_account_record(account_id).await?.try_into()?;
+
+        let prep = self.prepare_transaction(&account, transaction_request).await?;
+
+        let data_store = ClientDataStore::new(self.store.clone(), self.rpc_api.clone());
+        data_store.register_note_scripts(prep.output_note_scripts());
+        for fpi_account in &prep.foreign_account_inputs {
+            data_store.mast_store().load_account_code(fpi_account.code());
+        }
+        data_store.register_foreign_account_inputs(prep.foreign_account_inputs);
+
+        data_store.mast_store().load_account_code(account.code());
+
+        let mut notes = prep.notes;
+        if prep.ignore_invalid_notes {
+            notes = self
+                .get_valid_input_notes(
+                    &account,
+                    notes,
+                    prep.tx_args.clone(),
+                    &prep.output_recipients,
+                )
+                .await?;
+        }
+
+        let executed_transaction = self
+            .build_executor(&data_store)?
+            .with_program_executor::<RoutedDebugExecutor<W>>()
+            .execute_transaction(account_id, prep.block_num, notes, prep.tx_args)
+            .await?;
+
+        validate_executed_transaction(&executed_transaction, &prep.output_recipients)?;
+        TransactionResult::new(executed_transaction, prep.future_notes)
     }
 
     /// Executes the provided transaction script with a DAP debug adapter listening for

@@ -48,7 +48,10 @@ crate-type = ["lib"]
 # `std`; the duplication in the `std` feature list is intentional so
 # each consumer can pick the smallest feature set they need.
 concurrent = ["miden-tx/concurrent"]
-dap = ["dep:miden-debug", "dep:miden-processor", "std"]
+dap        = ["dep:miden-debug", "dep:miden-processor", "std"]
+# `execute_*_with_debugger` + `RoutedDebugExecutor`: route MASM `debug.*` output to a custom writer
+# (no_std-compatible, unlike `dap`, so it works on wasm where stdout debug output is a no-op).
+debug-output = ["dep:miden-processor"]
 default = ["std"]
 std = [
   "concurrent",

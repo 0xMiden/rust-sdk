@@ -6,6 +6,10 @@
 
 * [BREAKING][param][store] `Store::insert_block_header` now takes a `nodes` argument and persists the header with its MMR authentication nodes in a single transaction; the standalone `Store::insert_partial_blockchain_nodes` is removed. Header-only inserts (e.g. genesis) pass an empty slice ([#2294](https://github.com/0xMiden/rust-sdk/pull/2294)).
 
+### Features
+
+* [FEATURE][rust] Added the `debug-output` feature: `Client::execute_program_with_debugger` / `execute_transaction_with_debugger` run a script/transaction with its MASM `debug.*` / `trace.*` output routed to a caller-supplied `fmt::Write` sink instead of stdout (a no-op on `wasm32-unknown-unknown`), letting consumers surface debug output on such targets ([#2302](https://github.com/0xMiden/rust-sdk/pull/2302)).
+
 ### Fixes
 
 * [FIX][rust] Storing an authenticated block header now persists the header and its MMR authentication nodes in a single store transaction, so an interrupted write can no longer leave a tracked block without the MMR nodes needed to rebuild the `PartialMmr` ([#2294](https://github.com/0xMiden/rust-sdk/pull/2294)).

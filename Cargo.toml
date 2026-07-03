@@ -19,7 +19,7 @@ edition      = "2024"
 license      = "MIT"
 repository   = "https://github.com/0xMiden/miden-client"
 rust-version = "1.93"
-version      = "0.15.3"
+version      = "0.15.4"
 
 [profile.dev]
 codegen-units = 16
@@ -34,17 +34,17 @@ miden-client              = { default-features = false, path = "crates/rust-clie
 miden-client-sqlite-store = { default-features = false, path = "crates/sqlite-store", version = "0.15.3" }
 
 # Miden protocol dependencies
-miden-agglayer        = { default-features = false, version = "0.15.3" }
-miden-protocol        = { default-features = false, version = "0.15.3" }
-miden-standards       = { default-features = false, version = "0.15.3" }
-miden-testing         = { default-features = false, version = "0.15.3" }
-miden-tx              = { default-features = false, version = "0.15.3" }
-miden-tx-batch-prover = { default-features = false, version = "0.15.3" }
+miden-agglayer        = { default-features = false, version = "0.15" }
+miden-protocol        = { default-features = false, version = "0.15" }
+miden-standards       = { default-features = false, version = "0.15" }
+miden-testing         = { default-features = false, version = "0.15" }
+miden-tx              = { default-features = false, version = "0.15" }
+miden-tx-batch-prover = { default-features = false, version = "0.15" }
 
 # Miden node dependencies
-miden-node-proto-build           = { default-features = false, version = "0.15.0" }
-miden-note-transport-proto-build = { default-features = false, version = "0.4.1" }
-miden-remote-prover-client       = { default-features = false, features = ["tx-prover"], version = "0.15.0" }
+miden-node-proto-build           = { default-features = false, version = "0.15" }
+miden-note-transport-proto-build = { default-features = false, version = "0.4" }
+miden-remote-prover-client       = { default-features = false, features = ["tx-prover"], version = "0.15" }
 
 # Miden debug dependency
 miden-debug     = { default-features = false, features = ["dap", "std"], version = "0.8" }

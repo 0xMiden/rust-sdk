@@ -1,6 +1,12 @@
 # Changelog
 
-## 0.15.3 (TBD)
+## 0.15.4 (TBD)
+
+### Changes
+
+* [rust] Bumped dependencies: Miden VM crates (`miden-core`, `miden-processor`, `miden-prover`, `miden-assembly`, etc.) to `0.23.5`, and `miden-node-proto-build` and `miden-remote-prover-client` to `0.15.1` ([#2301](https://github.com/0xMiden/rust-sdk/pull/2301)).
+
+## 0.15.3 (2026-07-02)
 
 ### Enhancements
 

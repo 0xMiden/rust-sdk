@@ -14,10 +14,8 @@ pub enum SqliteStoreError {
     DatabaseError(String),
     #[error("Migration error: {0}")]
     MigrationError(String),
-    #[error("No migrations table in the database")]
-    MissingMigrationsTable,
-    #[error("Migration hashes mismatch")]
-    MigrationHashMismatch,
+    #[error("Database schema does not match the schema expected for its migration version")]
+    SchemaHashMismatch,
 }
 
 impl From<RusqliteError> for SqliteStoreError {

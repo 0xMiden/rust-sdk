@@ -318,9 +318,10 @@ impl NoteUpdateTracker {
             .filter(|note| note.update_type.is_modified())
     }
 
-    /// Returns the ids of updated input notes that are now consumed, by tracking key. Consumed
-    /// states carry no metadata, so `InputNoteRecord::id` is `None`; the key (the id assigned at
-    /// commit) is used instead.
+    /// Returns the ids of updated input notes that are now consumed, by tracking key. The tracking
+    /// key (the id assigned when the record was inserted) is used rather than
+    /// `InputNoteRecord::id`, which can be `None` for a consumed record whose state carries no
+    /// metadata.
     pub fn consumed_input_note_ids(&self) -> impl Iterator<Item = NoteId> + '_ {
         self.input_notes
             .iter()

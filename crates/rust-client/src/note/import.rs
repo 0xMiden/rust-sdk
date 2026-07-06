@@ -171,8 +171,8 @@ where
     /// is passed via `previous_note` so it can be updated. The note information is fetched from
     /// the node and stored in the client's store.
     ///
-    /// The returned records are not keyed by [`NoteId`] because a note that the node reports as
-    /// already consumed becomes a metadata-less `ConsumedExternal` record with no `NoteId`.
+    /// The returned records are positional rather than keyed by [`NoteId`]; a `None` entry marks a
+    /// note that needs no update.
     ///
     /// # Errors:
     /// - If a note doesn't exist on the node.

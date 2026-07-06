@@ -158,7 +158,11 @@ fn push_field(buf: &mut Vec<u8>, field: &[u8]) {
 /// Collapses runs of whitespace to single spaces and trims a trailing semicolon so cosmetic
 /// differences in stored SQL text do not change the fingerprint.
 fn normalize_sql(sql: &str) -> String {
-    sql.trim_end().trim_end_matches(';').split_whitespace().collect::<Vec<_>>().join(" ")
+    sql.trim_end()
+        .trim_end_matches(';')
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 pub fn get_setting<T: FromSql>(conn: &mut Connection, name: &str) -> Result<Option<T>, StoreError> {
@@ -239,8 +243,11 @@ mod tests {
         // reads the live schema, not that row, so the row's presence is irrelevant.
         let mut conn = Connection::open_in_memory().unwrap();
         prepare_migrations().to_version(&mut conn, MIGRATION_SCRIPTS.len()).unwrap();
-        conn.execute("INSERT INTO migrations (name, value) VALUES ('db-migration-hash', x'00')", [])
-            .unwrap();
+        conn.execute(
+            "INSERT INTO migrations (name, value) VALUES ('db-migration-hash', x'00')",
+            [],
+        )
+        .unwrap();
 
         apply_migrations(&mut conn).unwrap();
     }
@@ -255,11 +262,12 @@ mod tests {
         .unwrap();
 
         let right = Connection::open_in_memory().unwrap();
-        right.execute_batch(
-            "CREATE TABLE b (id INTEGER PRIMARY KEY);
+        right
+            .execute_batch(
+                "CREATE TABLE b (id INTEGER PRIMARY KEY);
              CREATE TABLE a (id INTEGER PRIMARY KEY);",
-        )
-        .unwrap();
+            )
+            .unwrap();
 
         assert_eq!(schema_hash(&left).unwrap(), schema_hash(&right).unwrap());
     }

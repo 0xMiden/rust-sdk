@@ -32,6 +32,10 @@
 
 ## 0.15.4 (TBD)
 
+### Features
+
+* [FEATURE][rust] DAP transaction debugging sessions now record the advice mutations produced by the transaction host's event handlers and report the number of recorded sets when the session ends, laying the groundwork for offline event-replay debugging. The workspace temporarily resolves `miden-debug` from its `fix/record` branch until the recording support ships in a release ([#2306](https://github.com/0xMiden/rust-sdk/pull/2306)).
+
 ### Changes
 
 * [rust] Bumped dependencies: Miden VM crates (`miden-core`, `miden-processor`, `miden-prover`, `miden-assembly`, etc.) to `0.23.5`, and `miden-node-proto-build` and `miden-remote-prover-client` to `0.15.1` ([#2301](https://github.com/0xMiden/rust-sdk/pull/2301)).

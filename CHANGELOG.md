@@ -6,6 +6,10 @@
 
 * [rust] Bumped dependencies: Miden VM crates (`miden-core`, `miden-processor`, `miden-prover`, `miden-assembly`, etc.) to `0.23.5`, and `miden-node-proto-build` and `miden-remote-prover-client` to `0.15.1` ([#2301](https://github.com/0xMiden/rust-sdk/pull/2301)).
 
+### Fixes
+
+* [FIX][store] Add metadata to ConsumedExternal notes so that they can be findable by their `NoteId`. The change is store-compatible because records written by older clients (the metadata-less layout) still decode, reading back with no metadata as before ([#XXXX](https://github.com/0xMiden/miden-client/pull/XXXX)).
+
 ## 0.15.3 (2026-07-02)
 
 ### Enhancements

@@ -59,7 +59,6 @@ macro_rules! insert_sql {
 
 type Hash = Blake3Digest<32>;
 
-/// Domain separator mixed into every schema fingerprint so it cannot collide with unrelated hashes.
 const SCHEMA_HASH_DOMAIN: &[u8] = b"miden-client-sqlite-schema-v1";
 
 const MIGRATION_SCRIPTS: [&str; 1] = [include_str!("../store.sql")];
@@ -71,13 +70,6 @@ fn up(s: &'static str) -> M<'static> {
 }
 
 /// Applies the migrations to the database.
-///
-/// For an existing database, the current schema is fingerprinted and compared against the
-/// fingerprint expected for its migration version before any migration runs. This rejects a
-/// database whose schema has drifted from what the migrations produce, regardless of how the drift
-/// happened (manual DDL, a partially applied migration, or corruption): the expected fingerprint is
-/// derived from the migrations compiled into the binary, not from a value stored in the database
-/// that a tampered file could carry along.
 pub fn apply_migrations(conn: &mut Connection) -> Result<(), SqliteStoreError> {
     let version_before = MIGRATIONS.current_version(conn)?;
 
@@ -98,8 +90,7 @@ fn prepare_migrations() -> Migrations<'static> {
 }
 
 /// Computes the schema fingerprint expected after each migration by replaying the migrations on an
-/// in-memory database. Index `i` holds the fingerprint after migrations `1..=i + 1` have run, which
-/// is the fingerprint a database reports while its version is `i + 1`.
+/// in-memory database.
 fn compute_expected_schema_hashes() -> Vec<Hash> {
     let mut conn =
         Connection::open_in_memory().expect("in-memory database creation should not fail");
@@ -115,11 +106,8 @@ fn compute_expected_schema_hashes() -> Vec<Hash> {
 
 /// Fingerprints the database's current schema.
 ///
-/// The fingerprint covers every non-internal object in `sqlite_schema` (tables, indexes, views, and
-/// triggers) by hashing its type, name, table name, and whitespace-normalized SQL. Entries are
-/// ordered by type, name, and table name so the fingerprint does not depend on object creation
-/// order. SQLite-internal objects (names starting with `sqlite_`) and auto-created indexes (whose
-/// `sql` is `NULL`) are excluded.
+/// Entries are ordered by type, name, and table name so the fingerprint does not depend on object
+/// creation order.
 fn schema_hash(conn: &Connection) -> Result<Hash> {
     let mut stmt = conn.prepare(
         "SELECT type, name, tbl_name, sql FROM sqlite_schema \
@@ -149,7 +137,8 @@ fn schema_hash(conn: &Connection) -> Result<Hash> {
     Ok(Blake3_256::hash(&buf))
 }
 
-/// Appends a length-prefixed field to `buf` so that concatenating fields is unambiguous.
+/// Appends a length-prefixed field to `buf` so that concatenating different field sequences can
+/// never produce the same output.
 fn push_field(buf: &mut Vec<u8>, field: &[u8]) {
     buf.extend_from_slice(&(field.len() as u64).to_le_bytes());
     buf.extend_from_slice(field);

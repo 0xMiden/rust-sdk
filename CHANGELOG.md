@@ -4,6 +4,7 @@
 
 ### Breaking Changes
 
+* [BREAKING][behavior][store] The SQLite store now stores account IDs as serialized `BLOB` columns instead of hex `TEXT`. (#XXXX)
 * [BREAKING][param][store] `Store::insert_block_header` now takes a `nodes` argument and persists the header with its MMR authentication nodes in a single transaction; the standalone `Store::insert_partial_blockchain_nodes` is removed. Header-only inserts (e.g. genesis) pass an empty slice ([#2294](https://github.com/0xMiden/rust-sdk/pull/2294)).
 
 ### Fixes

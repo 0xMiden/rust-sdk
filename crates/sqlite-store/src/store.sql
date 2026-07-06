@@ -28,7 +28,7 @@ CREATE TABLE account_code (
 
 -- Latest account header: one row per account (current state).
 CREATE TABLE latest_account_headers (
-    id UNSIGNED BIG INT NOT NULL,            -- account ID
+    id BLOB NOT NULL,                        -- serialized account ID
     account_commitment TEXT NOT NULL UNIQUE,  -- account state commitment
     code_commitment TEXT NOT NULL,            -- commitment to the account code
     storage_commitment TEXT NOT NULL,         -- commitment to the account storage
@@ -44,7 +44,7 @@ CREATE TABLE latest_account_headers (
 -- Historical account headers: stores old headers that were replaced by newer states.
 -- Each row represents a previous account state that was superseded at replaced_at_nonce.
 CREATE TABLE historical_account_headers (
-    id UNSIGNED BIG INT NOT NULL,            -- account ID
+    id BLOB NOT NULL,                        -- serialized account ID
     account_commitment TEXT NOT NULL UNIQUE,  -- commitment of this old state
     code_commitment TEXT NOT NULL,            -- commitment to the old account code
     storage_commitment TEXT NOT NULL,         -- commitment to the old account storage
@@ -63,7 +63,7 @@ CREATE INDEX idx_historical_account_headers_id_replaced_at ON historical_account
 -- ── Account storage (latest + historical) ────────────────────────────────
 
 CREATE TABLE latest_account_storage (
-    account_id TEXT NOT NULL,     -- account ID
+    account_id BLOB NOT NULL,     -- account ID
     slot_name TEXT NOT NULL,      -- name of the storage slot
     slot_value TEXT NULL,         -- top-level value of the slot (for maps, contains the root)
     slot_type INTEGER NOT NULL,   -- type of the slot (0 = Value, 1 = Map)
@@ -73,7 +73,7 @@ CREATE TABLE latest_account_storage (
 -- Historical account storage: stores old slot values that were replaced.
 -- NULL old_slot_value means the slot didn't exist before (was created at replaced_at_nonce).
 CREATE TABLE historical_account_storage (
-    account_id TEXT NOT NULL,           -- account ID
+    account_id BLOB NOT NULL,           -- account ID
     replaced_at_nonce BIGINT NOT NULL,  -- nonce at which this old value was replaced
     slot_name TEXT NOT NULL,            -- name of the storage slot
     old_slot_value TEXT NULL,           -- old top-level value (NULL = slot was new)
@@ -84,7 +84,7 @@ CREATE TABLE historical_account_storage (
 -- ── Storage map entries (latest + historical) ────────────────────────────
 
 CREATE TABLE latest_storage_map_entries (
-    account_id TEXT NOT NULL,   -- account ID
+    account_id BLOB NOT NULL,   -- account ID
     slot_name TEXT NOT NULL,    -- name of the storage slot this entry belongs to
     key TEXT NOT NULL,          -- map entry key
     value TEXT NOT NULL,        -- map entry value
@@ -94,7 +94,7 @@ CREATE TABLE latest_storage_map_entries (
 -- Historical storage map entries: stores old map entry values that were replaced.
 -- NULL old_value means the entry didn't exist before (was created at replaced_at_nonce).
 CREATE TABLE historical_storage_map_entries (
-    account_id TEXT NOT NULL,           -- account ID
+    account_id BLOB NOT NULL,           -- account ID
     replaced_at_nonce BIGINT NOT NULL,  -- nonce at which this old entry was replaced
     slot_name TEXT NOT NULL,            -- name of the storage slot this entry belongs to
     key TEXT NOT NULL,                  -- map entry key
@@ -105,7 +105,7 @@ CREATE TABLE historical_storage_map_entries (
 -- ── Account assets (latest + historical) ─────────────────────────────────
 
 CREATE TABLE latest_account_assets (
-    account_id TEXT NOT NULL,        -- account ID
+    account_id BLOB NOT NULL,        -- account ID
     vault_key TEXT NOT NULL,         -- asset's vault key
     asset TEXT NOT NULL,             -- serialized asset value
     PRIMARY KEY (account_id, vault_key)
@@ -114,7 +114,7 @@ CREATE TABLE latest_account_assets (
 -- Historical account assets: stores old assets that were replaced.
 -- NULL old_asset means the asset didn't exist before (was created at replaced_at_nonce).
 CREATE TABLE historical_account_assets (
-    account_id TEXT NOT NULL,           -- account ID
+    account_id BLOB NOT NULL,           -- account ID
     replaced_at_nonce BIGINT NOT NULL,  -- nonce at which this old asset was replaced
     vault_key TEXT NOT NULL,            -- asset's vault key
     old_asset TEXT NULL,                -- old serialized asset value (NULL = asset was new)
@@ -124,7 +124,7 @@ CREATE TABLE historical_account_assets (
 -- ── Foreign account code ─────────────────────────────────────────────────
 
 CREATE TABLE foreign_account_code(
-    account_id TEXT NOT NULL,
+    account_id BLOB NOT NULL,
     code_commitment TEXT NOT NULL,
     PRIMARY KEY (account_id),
     FOREIGN KEY (code_commitment) REFERENCES account_code(commitment)
@@ -168,7 +168,7 @@ CREATE TABLE input_notes (
     created_at UNSIGNED BIG INT NOT NULL,                   -- timestamp of the note creation/import
     consumed_block_height INTEGER NULL,                     -- block height at which the note was consumed; NULL for non-consumed notes
     consumed_tx_order INTEGER NULL,                         -- per-account position of the consuming tx in the account's execution chain within the block; NULL for external consumption or non-consumed notes
-    consumer_account_id TEXT NULL,                          -- account ID that consumed this note; NULL for non-consumed or externally consumed notes
+    consumer_account_id BLOB NULL,                          -- serialized account ID that consumed this note; NULL for non-consumed or externally consumed notes
 
     PRIMARY KEY (details_commitment),
     FOREIGN KEY (script_root) REFERENCES notes_scripts(script_root)
@@ -245,7 +245,7 @@ CREATE TABLE partial_blockchain_nodes (
 
 CREATE TABLE addresses (
     address BLOB NOT NULL,          -- the address
-    account_id UNSIGNED BIG INT NOT NULL,   -- associated Account ID.
+    account_id BLOB NOT NULL,       -- associated serialized account ID
 
     PRIMARY KEY (address)
 ) WITHOUT ROWID;

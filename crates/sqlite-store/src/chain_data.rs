@@ -39,19 +39,6 @@ struct SerializedPartialBlockchainNodeParts {
 }
 
 impl SqliteStore {
-    pub(crate) fn insert_block_header(
-        conn: &mut Connection,
-        block_header: &BlockHeader,
-        has_client_notes: bool,
-    ) -> Result<(), StoreError> {
-        let tx = conn.transaction().into_store_error()?;
-
-        Self::insert_block_header_tx(&tx, block_header, has_client_notes)?;
-
-        tx.commit().into_store_error()?;
-        Ok(())
-    }
-
     pub(crate) fn get_block_headers(
         conn: &mut Connection,
         block_numbers: &BTreeSet<BlockNumber>,
@@ -166,12 +153,15 @@ impl SqliteStore {
         }
     }
 
-    pub fn insert_partial_blockchain_nodes(
+    pub(crate) fn insert_block_header(
         conn: &mut Connection,
+        block_header: &BlockHeader,
         nodes: &[(InOrderIndex, Word)],
+        has_client_notes: bool,
     ) -> Result<(), StoreError> {
         let tx = conn.transaction().into_store_error()?;
 
+        Self::insert_block_header_tx(&tx, block_header, has_client_notes)?;
         Self::insert_partial_blockchain_nodes_tx(&tx, nodes)?;
         tx.commit().into_store_error()?;
         Ok(())
@@ -410,7 +400,7 @@ mod test {
     use miden_client::block::BlockHeader;
     use miden_client::crypto::{Forest, InOrderIndex, MmrPeaks};
     use miden_client::note::BlockNumber;
-    use miden_client::store::Store;
+    use miden_client::store::{PartialBlockchainFilter, Store};
     use miden_client::utils::Serializable;
     use miden_protocol::crypto::merkle::mmr::Mmr;
     use miden_protocol::transaction::TransactionKernel;
@@ -472,6 +462,75 @@ mod test {
             &[mock_block_headers[1].clone(), mock_block_headers[3].clone()],
             &block_headers[..]
         );
+    }
+
+    /// Tests that `insert_block_header` persists the tracked header and its MMR
+    /// authentication nodes in the same call, so both are retrievable afterwards.
+    #[tokio::test]
+    async fn insert_block_header_stores_header_and_nodes() {
+        let store = create_test_store().await;
+        const TOTAL_BLOCKS: usize = 8;
+        let tx_kernel = TransactionKernel.to_commitment();
+
+        let headers: Vec<BlockHeader> = (0..TOTAL_BLOCKS)
+            .map(|n| BlockHeader::mock(u32::try_from(n).unwrap(), None, None, &[], tx_kernel))
+            .collect();
+        let mut mmr = Mmr::default();
+        for header in &headers {
+            mmr.add(header.commitment()).expect("valid MMR append");
+        }
+
+        let tracked: BTreeSet<usize> = [5].into();
+        let auth_nodes = collect_auth_nodes(&mmr, &headers, &tracked);
+        let header = headers[5].clone();
+
+        Store::insert_block_header(&store, &header, &auth_nodes, true).await.unwrap();
+
+        // The header is stored and marked as tracked.
+        let stored = Store::get_block_headers(&store, &[5.into()].into_iter().collect())
+            .await
+            .unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].0, header);
+
+        let tracked = Store::get_tracked_block_header_numbers(&store).await.unwrap();
+        assert_eq!(tracked, [5].into());
+
+        // Every authentication node was stored by the same call.
+        let stored_nodes =
+            Store::get_partial_blockchain_nodes(&store, PartialBlockchainFilter::All)
+                .await
+                .unwrap();
+        let expected: BTreeMap<InOrderIndex, Word> = auth_nodes.iter().copied().collect();
+        assert_eq!(stored_nodes, expected);
+    }
+
+    /// Tests that a failure inserting the MMR nodes rolls back the block header written in the
+    /// same call, proving both land in a single transaction.
+    #[tokio::test]
+    async fn insert_block_header_rolls_back_header_when_nodes_fail() {
+        let store = create_test_store().await;
+        let header = BlockHeader::mock(5, None, None, &[], TransactionKernel.to_commitment());
+        // One node so the node insert actually runs (an empty slice would be a no-op).
+        let nodes = [(InOrderIndex::from_leaf_pos(5), header.commitment())];
+
+        // Force the node insert (the second statement in the transaction) to fail.
+        store
+            .interact_with_connection(|conn| {
+                conn.execute("DROP TABLE partial_blockchain_nodes", []).unwrap();
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        let result = Store::insert_block_header(&store, &header, &nodes, true).await;
+        assert!(result.is_err(), "node insert must fail against the dropped table");
+
+        // The header must not survive: a non-atomic two-transaction insert would leave it behind.
+        let stored = Store::get_block_headers(&store, &[5.into()].into_iter().collect())
+            .await
+            .unwrap();
+        assert!(stored.is_empty(), "header must roll back when the node insert fails");
     }
 
     /// Tests that large stored MMRs are built consistently throughout multiple prunes

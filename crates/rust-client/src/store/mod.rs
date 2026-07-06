@@ -265,15 +265,6 @@ pub trait Store: Send + Sync {
         filter: PartialBlockchainFilter,
     ) -> Result<BTreeMap<InOrderIndex, Word>, StoreError>;
 
-    /// Inserts blockchain MMR authentication nodes.
-    ///
-    /// In the case where the [`InOrderIndex`] already exists on the table, the insertion is
-    /// ignored.
-    async fn insert_partial_blockchain_nodes(
-        &self,
-        nodes: &[(InOrderIndex, Word)],
-    ) -> Result<(), StoreError>;
-
     /// Returns the chain MMR peaks at the current sync height (peaks at `forest = block_num`,
     /// i.e. excluding `block_num` itself as a leaf).
     ///
@@ -284,16 +275,19 @@ pub trait Store: Send + Sync {
     /// Before the first sync, returns an empty [`MmrPeaks`].
     async fn get_current_blockchain_peaks(&self) -> Result<MmrPeaks, StoreError>;
 
-    /// Inserts a block header into the store.
+    /// Inserts a block header together with its MMR authentication nodes in a single
+    /// transaction, so the header and the nodes that rebuild its `PartialMmr` are committed
+    /// together.
     ///
-    /// Insert-if-not-exists with a one-way flag upgrade: on conflict with an existing row,
-    /// `header` is preserved and `has_client_notes` is only upgraded from `false` to `true`;
-    /// never downgraded.
-    // TODO: this method's name only tells half the story. The insert is conditional and
-    // the flag has its own upgrade rule. Revisit the name in a follow-up.
+    /// The header is inserted-if-not-exists with a one-way `has_client_notes` upgrade: on
+    /// conflict the stored `header` is preserved and the flag only moves from `false` to
+    /// `true`, never back. The MMR nodes are likewise inserted-if-not-exists: an
+    /// `InOrderIndex` already present is left untouched (auth paths of tracked blocks share
+    /// internal nodes, so re-inserting an existing index must be a no-op, not an error).
     async fn insert_block_header(
         &self,
         block_header: &BlockHeader,
+        nodes: &[(InOrderIndex, Word)],
         has_client_notes: bool,
     ) -> Result<(), StoreError>;
 

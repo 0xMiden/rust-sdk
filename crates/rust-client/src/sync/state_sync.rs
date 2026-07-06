@@ -703,19 +703,81 @@ impl StateSync {
             )
             .await?;
 
-        let mismatched_private_accounts = account_commitment_updates
-            .iter()
-            .filter(|(account_id, digest)| {
-                private_accounts
-                    .iter()
-                    .any(|header| header.id() == *account_id && &header.to_commitment() != digest)
-            })
-            .copied()
-            .collect::<Vec<_>>();
+        // If a private account commitment differs between the node and local then we verify the
+        // commitment from the node before flagging the account as mismatched.
+        let mut mismatched_private_accounts = Vec::new();
+        for header in &private_accounts {
+            let account_id = header.id();
+            let local_commitment = header.to_commitment();
+            let record_diverges = account_commitment_updates
+                .iter()
+                .any(|(id, digest)| *id == account_id && *digest != local_commitment);
+            if !record_diverges {
+                continue;
+            }
+
+            if let Some(proven_commitment) = self
+                .verify_private_account_mismatch(account_id, local_commitment, chain_tip_header)
+                .await?
+            {
+                mismatched_private_accounts.push((account_id, proven_commitment));
+            }
+        }
 
         account_updates.extend(AccountUpdates::new(Vec::new(), mismatched_private_accounts));
 
         Ok(superseded_states)
+    }
+
+    /// Verifies a private account commitment against an account witness from the node.
+    ///
+    /// Assumes `local_commitment` is a private account commitment that diverges from the
+    /// `sync_transactions` records.
+    ///
+    /// Fetches the account witness via `get_account` at `chain_tip_header`'s block and checks the
+    /// root it computes against `chain_tip_header`'s account root.
+    ///
+    /// Returns `Some(proven_commitment)` only when the proven on-chain commitment differs from
+    /// `local_commitment`.
+    async fn verify_private_account_mismatch(
+        &self,
+        account_id: AccountId,
+        local_commitment: Word,
+        chain_tip_header: &BlockHeader,
+    ) -> Result<Option<Word>, ClientError> {
+        let chain_tip = chain_tip_header.block_num();
+        let (proof_block_num, proof) = self
+            .rpc_api
+            .get_account(account_id, GetAccountRequest::new().at(AccountStateAt::Block(chain_tip)))
+            .await?;
+
+        if proof_block_num != chain_tip {
+            return Err(ClientError::ChainValidationError(format!(
+                "get_account returned a proof at block {proof_block_num}, expected chain tip {chain_tip}"
+            )));
+        }
+
+        let (witness, _) = proof.into_parts();
+        let witness_id = witness.id();
+        let proven_commitment = witness.state_commitment();
+        // Verifying the witness against the chain tip's account root ties the proven commitment to
+        // the synced block.
+        if witness.into_proof().compute_root() != chain_tip_header.account_root() {
+            return Err(ClientError::ChainValidationError(format!(
+                "account witness for {account_id} does not verify against the chain tip account root"
+            )));
+        }
+
+        // Check if the witness is for a different account at this prefix, the account is absent on
+        // chain, or the proven commitment matches local.
+        if witness_id != account_id
+            || proven_commitment == Word::empty()
+            || proven_commitment == local_commitment
+        {
+            return Ok(None);
+        }
+
+        Ok(Some(proven_commitment))
     }
 
     /// Queries the node for updated public accounts and populates `account_updates`.
@@ -1380,6 +1442,125 @@ mod tests {
         );
     }
 
+    // PRIVATE ACCOUNT LOCK VERIFICATION TESTS
+    // --------------------------------------------------------------------------------------------
+
+    /// Verifies that `sync_transactions` records outside the requested range `(current, chain_tip]`
+    /// are rejected with a `ChainValidationError`.
+    #[test]
+    fn validate_transaction_records_range_rejects_out_of_range_blocks() {
+        let account_id: AccountId = ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET.try_into().unwrap();
+        let current = BlockNumber::from(5u32);
+        let chain_tip = BlockNumber::from(10u32);
+
+        StateSync::validate_transaction_records_range(
+            &[make_tx_record(account_id, 7)],
+            current,
+            chain_tip,
+        )
+        .unwrap();
+
+        let result = StateSync::validate_transaction_records_range(
+            &[make_tx_record(account_id, 11)],
+            current,
+            chain_tip,
+        );
+        assert!(matches!(result, Err(ClientError::ChainValidationError(_))));
+
+        let result = StateSync::validate_transaction_records_range(
+            &[make_tx_record(account_id, 5)],
+            current,
+            chain_tip,
+        );
+        assert!(matches!(result, Err(ClientError::ChainValidationError(_))));
+    }
+
+    /// A forged `sync_transactions` commitment must not lock the account when the witness proves
+    /// the on-chain commitment still matches the local one.
+    #[tokio::test]
+    async fn verify_private_account_mismatch_ignores_forged_commitment() {
+        let mut builder = MockChainBuilder::new();
+        let account = builder.add_existing_mock_account(miden_testing::Auth::IncrNonce).unwrap();
+        let rpc_api = MockRpcApi::new(builder.build().unwrap());
+        let chain_tip_header = rpc_api.mock_chain.read().latest_block_header();
+        let on_chain_commitment = account.to_commitment();
+        let state_sync = StateSync::new(Arc::new(rpc_api), Arc::new(MockScreener), None);
+
+        let result = state_sync
+            .verify_private_account_mismatch(account.id(), on_chain_commitment, &chain_tip_header)
+            .await
+            .unwrap();
+
+        assert!(
+            result.is_none(),
+            "an unproven commitment must not lock an account whose on-chain state matches local"
+        );
+    }
+
+    /// When the witness proves a commitment that differs from the local one, the account is
+    /// reported as mismatched with the proven commitment.
+    #[tokio::test]
+    async fn verify_private_account_mismatch_reports_proven_divergence() {
+        let mut builder = MockChainBuilder::new();
+        let account = builder.add_existing_mock_account(miden_testing::Auth::IncrNonce).unwrap();
+        let rpc_api = MockRpcApi::new(builder.build().unwrap());
+        let chain_tip_header = rpc_api.mock_chain.read().latest_block_header();
+        let on_chain_commitment = account.to_commitment();
+        let state_sync = StateSync::new(Arc::new(rpc_api), Arc::new(MockScreener), None);
+        let stale_local_commitment = word(0xdead_beef);
+
+        let result = state_sync
+            .verify_private_account_mismatch(
+                account.id(),
+                stale_local_commitment,
+                &chain_tip_header,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result,
+            Some(on_chain_commitment),
+            "a proven divergence should return the proven commitment to lock with"
+        );
+    }
+
+    /// A witness that doesn't verify against the chain tip's account root is a misbehaving node and
+    /// must abort the sync rather than lock the account.
+    #[tokio::test]
+    async fn verify_private_account_mismatch_rejects_unverifiable_proof() {
+        let mut builder = MockChainBuilder::new();
+        let account = builder.add_existing_mock_account(miden_testing::Auth::IncrNonce).unwrap();
+        let rpc_api = MockRpcApi::new(builder.build().unwrap());
+        let real_header = rpc_api.mock_chain.read().latest_block_header();
+        let state_sync = StateSync::new(Arc::new(rpc_api), Arc::new(MockScreener), None);
+
+        // Same block number so the request resolves, but a tampered account root the witness
+        // cannot verify against.
+        let tampered_header = BlockHeader::new(
+            real_header.version(),
+            real_header.prev_block_commitment(),
+            real_header.block_num(),
+            real_header.chain_commitment(),
+            word(0xbad0_bad0),
+            real_header.nullifier_root(),
+            real_header.note_root(),
+            real_header.tx_commitment(),
+            real_header.tx_kernel_commitment(),
+            real_header.validator_key().clone(),
+            real_header.fee_parameters().clone(),
+            real_header.timestamp(),
+        );
+
+        let result = state_sync
+            .verify_private_account_mismatch(
+                account.id(),
+                account.to_commitment(),
+                &tampered_header,
+            )
+            .await;
+        assert!(matches!(result, Err(ClientError::ChainValidationError(_))));
+    }
     /// Builds an honest `get_account` response for `account_id`.
     async fn get_account_proof(
         rpc_api: &MockRpcApi,
@@ -2341,35 +2522,5 @@ mod tests {
             output_notes: vec![],
             erased_output_notes: vec![],
         }
-    }
-
-    /// Verifies that `sync_transactions` records outside the requested range `(current, chain_tip]`
-    /// are rejected with a `ChainValidationError`.
-    #[test]
-    fn validate_transaction_records_range_rejects_out_of_range_blocks() {
-        let account_id: AccountId = ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET.try_into().unwrap();
-        let current = BlockNumber::from(5u32);
-        let chain_tip = BlockNumber::from(10u32);
-
-        StateSync::validate_transaction_records_range(
-            &[make_tx_record(account_id, 7)],
-            current,
-            chain_tip,
-        )
-        .unwrap();
-
-        let result = StateSync::validate_transaction_records_range(
-            &[make_tx_record(account_id, 11)],
-            current,
-            chain_tip,
-        );
-        assert!(matches!(result, Err(ClientError::ChainValidationError(_))));
-
-        let result = StateSync::validate_transaction_records_range(
-            &[make_tx_record(account_id, 5)],
-            current,
-            chain_tip,
-        );
-        assert!(matches!(result, Err(ClientError::ChainValidationError(_))));
     }
 }

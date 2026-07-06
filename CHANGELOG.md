@@ -2,16 +2,26 @@
 
 ## Unreleased
 
+### Breaking Changes
+
+* [BREAKING][param][store] `Store::insert_block_header` now takes a `nodes` argument and persists the header with its MMR authentication nodes in a single transaction; the standalone `Store::insert_partial_blockchain_nodes` is removed. Header-only inserts (e.g. genesis) pass an empty slice ([#2294](https://github.com/0xMiden/rust-sdk/pull/2294)).
+* [BREAKING][rust] Removed `Client::fetch_all_private_notes`. The automatic per-tag backfill on sync replaces it, so callers no longer reset the cursor and re-fetch every tag after adding a tag or importing an account. ([#2258](https://github.com/0xMiden/rust-sdk/issues/2258))
+
 ### Features
 
-* [FEATURE][rust] Added `Client::send_private_note_with_block_hint`, which relays a sender-provided `after_block_num` so recipients get deterministic delivery instead of relying on receiving side lookback. ([#2262](https://github.com/0xMiden/rust-sdk/issues/2262))
 * [FEATURE][rust] Historical private notes for a newly tracked tag are now backfilled automatically on sync. `Client::sync_note_transport` diffs the tracked note tags against a persisted covered set and drains each newly tracked tag from the start, fetching only that tag's own history rather than re-scanning every tag. ([#2258](https://github.com/0xMiden/rust-sdk/issues/2258))
 
 ### Fixes
 
+* [FIX][rust] Storing an authenticated block header now persists the header and its MMR authentication nodes in a single store transaction, so an interrupted write can no longer leave a tracked block without the MMR nodes needed to rebuild the `PartialMmr` ([#2294](https://github.com/0xMiden/rust-sdk/pull/2294)).
+* [FIX][rust] RPC endpoint parsing now rejects endpoint strings that omit either the protocol or host. ([#2266](https://github.com/0xMiden/miden-client/pull/2266))
+* [FIX][rust] State sync now re-verifies a tracked private account's commitment mismatch against the witness `get_account` returns. The witness is checked against the synced block's account root before locking the account, so a node can no longer durably lock it with a forged `sync_transactions` commitment ([#2260](https://github.com/0xMiden/rust-sdk/pull/2260)).
 * [FIX][rust] State sync now range-checks `sync_transactions` records to `(current, chain_tip]`, rejecting out-of-range records that could forge transaction commit heights ([#2252](https://github.com/0xMiden/rust-sdk/pull/2252)).
 * [FIX][rust] `Endpoint` parsing now strips a trailing slash from the host of no-port endpoints such as `http://host/`, matching the cleanup already applied when a port is present ([#2268](https://github.com/0xMiden/rust-sdk/pull/2268)).
 * [FIX][rust] `NodeRpcClient::get_block_header_by_number` and `get_block_by_number` now reject responses whose block number does not match the requested one with `RpcError::InvalidResponse` ([#2270](https://github.com/0xMiden/rust-sdk/pull/2270)).
+* [FIX][rust] `NodeRpcClient::get_notes_by_id` now rejects responses containing a note whose ID was not requested with `RpcError::InvalidResponse` ([#2283](https://github.com/0xMiden/rust-sdk/pull/2283)).
+* [FIX][rust] `NodeRpcClient::sync_nullifiers` now rejects responses containing a nullifier whose prefix was not requested with `RpcError::InvalidResponse` ([#2282](https://github.com/0xMiden/rust-sdk/pull/2282)).
+* [FIX][rust] `NodeRpcClient::sync_notes` now rejects responses containing a note whose tag was not requested with `RpcError::InvalidResponse` ([#2284](https://github.com/0xMiden/rust-sdk/pull/2284)).
 * [FIX][rust] Public account sync now binds `get_account` responses to the SyncMMR target block, rejecting snapshots from a different block, account, or account root ([#2255](https://github.com/0xMiden/miden-client/pull/2255)).
 
 ## 0.15.2 (2026-06-18)
@@ -30,11 +40,6 @@
 ### Enhancements
 
 * [FEATURE][rust] Re-exported `miden-agglayer` as `miden_client::agglayer`. ([#2253](https://github.com/0xMiden/miden-client/issues/2253))
-
-### Changes
-
-* [rust] Bumped `miden-note-transport-proto-build` to `0.4.1`. Notes imported from the note transport layer now use the provided `after_block_num` when present, falling back to the 20-block lookback window otherwise. `NoteInfo` gained a `block_hint: Option<BlockNumber>` field (plus a `NoteInfo::new` constructor) and `NoteTransportClient` gained a `send_note_with_block_hint` method (defaulting to `send_note`, so existing implementors keep compiling).  ([#2262](https://github.com/0xMiden/rust-sdk/issues/2262))
-* [BREAKING][rust] Removed `Client::fetch_all_private_notes`. The automatic per-tag backfill on sync replaces it, so callers no longer reset the cursor and re-fetch every tag after adding a tag or importing an account. ([#2258](https://github.com/0xMiden/rust-sdk/issues/2258))
 
 ## 0.15.0 (2026-06-12)
 

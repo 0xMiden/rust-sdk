@@ -39,7 +39,9 @@ impl<AUTH> Client<AUTH> {
             .get_block_header_by_number(Some(BlockNumber::GENESIS), false)
             .await?;
 
-        self.store.insert_block_header(&genesis, false).await?;
+        // Genesis is untracked since there are no client notes associated with it, so we fetch no
+        // MMR proof and pass no nodes.
+        self.store.insert_block_header(&genesis, &[], false).await?;
         self.rpc_api.set_genesis_commitment(genesis.commitment()).await?;
         Ok(())
     }
@@ -143,9 +145,8 @@ impl<AUTH> Client<AUTH> {
             fetch_block_header(self.rpc_api.clone(), block_num, current_partial_mmr).await?;
         let tracked_nodes = authenticated_block_nodes(&block_header, path_nodes);
 
-        // Insert header and MMR nodes
-        self.store.insert_block_header(&block_header, true).await?;
-        self.store.insert_partial_blockchain_nodes(&tracked_nodes).await?;
+        // Insert header and MMR nodes atomically
+        self.store.insert_block_header(&block_header, &tracked_nodes, true).await?;
 
         Ok(block_header)
     }

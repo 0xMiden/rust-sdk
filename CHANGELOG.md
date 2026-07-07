@@ -2,15 +2,22 @@
 
 ## Unreleased
 
-### Changes
+### Breaking Changes
 
 * [BREAKING][rust] Migrated to `miden-protocol` 0.16. Transaction-level fees were removed, block-level `FeeParameters` are unchanged. The relative `AccountDelta` model was replaced by the absolute `AccountPatch` model for account updates: `TransactionResult::account_delta` is now `account_patch`, `AccountUpdateDetails::Public` now carries an `AccountPatch`, account reconstruction is done via `Account::try_from(&AccountPatch)` or `Account::apply_patch` instead of previous `apply_delta`. Re-exports changed accordingly: `AccountStorageDelta` for `AccountStoragePatch`, `StorageMapDelta` for `StorageMapPatch`, and so on. Standards APIs were updated: `AuthMethod` was removed (use the concrete auth components), `create_fungible_faucet` became `create_user_fungible_faucet`. ([#XXXX](https://github.com/0xMiden/rust-sdk/pull/XXXX)).
+* [BREAKING][param][store] `Store::insert_block_header` now takes a `nodes` argument and persists the header with its MMR authentication nodes in a single transaction; the standalone `Store::insert_partial_blockchain_nodes` is removed. Header-only inserts (e.g. genesis) pass an empty slice ([#2294](https://github.com/0xMiden/rust-sdk/pull/2294)).
 
 ### Fixes
 
+* [FIX][rust] Storing an authenticated block header now persists the header and its MMR authentication nodes in a single store transaction, so an interrupted write can no longer leave a tracked block without the MMR nodes needed to rebuild the `PartialMmr` ([#2294](https://github.com/0xMiden/rust-sdk/pull/2294)).
+* [FIX][rust] RPC endpoint parsing now rejects endpoint strings that omit either the protocol or host. ([#2266](https://github.com/0xMiden/miden-client/pull/2266))
+* [FIX][rust] State sync now re-verifies a tracked private account's commitment mismatch against the witness `get_account` returns. The witness is checked against the synced block's account root before locking the account, so a node can no longer durably lock it with a forged `sync_transactions` commitment ([#2260](https://github.com/0xMiden/rust-sdk/pull/2260)).
 * [FIX][rust] State sync now range-checks `sync_transactions` records to `(current, chain_tip]`, rejecting out-of-range records that could forge transaction commit heights ([#2252](https://github.com/0xMiden/rust-sdk/pull/2252)).
 * [FIX][rust] `Endpoint` parsing now strips a trailing slash from the host of no-port endpoints such as `http://host/`, matching the cleanup already applied when a port is present ([#2268](https://github.com/0xMiden/rust-sdk/pull/2268)).
 * [FIX][rust] `NodeRpcClient::get_block_header_by_number` and `get_block_by_number` now reject responses whose block number does not match the requested one with `RpcError::InvalidResponse` ([#2270](https://github.com/0xMiden/rust-sdk/pull/2270)).
+* [FIX][rust] `NodeRpcClient::get_notes_by_id` now rejects responses containing a note whose ID was not requested with `RpcError::InvalidResponse` ([#2283](https://github.com/0xMiden/rust-sdk/pull/2283)).
+* [FIX][rust] `NodeRpcClient::sync_nullifiers` now rejects responses containing a nullifier whose prefix was not requested with `RpcError::InvalidResponse` ([#2282](https://github.com/0xMiden/rust-sdk/pull/2282)).
+* [FIX][rust] `NodeRpcClient::sync_notes` now rejects responses containing a note whose tag was not requested with `RpcError::InvalidResponse` ([#2284](https://github.com/0xMiden/rust-sdk/pull/2284)).
 * [FIX][rust] Public account sync now binds `get_account` responses to the SyncMMR target block, rejecting snapshots from a different block, account, or account root ([#2255](https://github.com/0xMiden/miden-client/pull/2255)).
 
 ## 0.15.2 (2026-06-18)

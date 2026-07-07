@@ -141,6 +141,14 @@ impl TryFrom<&str> for Endpoint {
 
         let hostname = hostname.trim_end_matches('/');
 
+        if protocol.is_empty() {
+            return Err("endpoint protocol cannot be empty".to_string());
+        }
+
+        if hostname.is_empty() {
+            return Err("endpoint host cannot be empty".to_string());
+        }
+
         Ok(Endpoint::new(protocol.to_string(), hostname.to_string(), port))
     }
 }
@@ -250,6 +258,18 @@ mod test {
     #[test]
     fn endpoint_parsing_should_fail_for_invalid_port() {
         let endpoint = Endpoint::try_from("some.test.domain:8000/hello");
+        assert!(endpoint.is_err());
+    }
+
+    #[test]
+    fn endpoint_parsing_should_fail_for_empty_protocol() {
+        let endpoint = Endpoint::try_from("://some.test.domain:8000");
+        assert!(endpoint.is_err());
+    }
+
+    #[test]
+    fn endpoint_parsing_should_fail_for_empty_host() {
+        let endpoint = Endpoint::try_from("https://:8000");
         assert!(endpoint.is_err());
     }
 

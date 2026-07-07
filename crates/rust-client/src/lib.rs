@@ -124,6 +124,8 @@ pub mod keystore;
 pub mod note;
 pub mod note_transport;
 pub mod pswap;
+#[cfg(any(feature = "std", target_arch = "wasm32"))]
+pub mod remote_prover;
 pub mod rpc;
 pub mod settings;
 pub mod store;
@@ -323,8 +325,9 @@ pub use miden_protocol::{
     Word,
     ZERO,
 };
-pub use miden_remote_prover_client::RemoteTransactionProver;
 pub use miden_tx::ExecutionOptions;
+#[cfg(any(feature = "std", target_arch = "wasm32"))]
+pub use remote_prover::RemoteTransactionProver;
 
 /// Provides test utilities for working with accounts and account IDs
 /// within the Miden network. This module is only available when the `testing` feature is

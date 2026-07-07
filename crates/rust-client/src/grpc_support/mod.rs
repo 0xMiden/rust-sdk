@@ -1,5 +1,6 @@
 use alloc::string::String;
 
+#[cfg(any(feature = "std", target_arch = "wasm32"))]
 pub use crate::RemoteTransactionProver;
 
 /// Default remote prover endpoint for testnet.

@@ -42,11 +42,8 @@ miden-tx        = { branch = "next", default-features = false, git = "https://gi
 miden-tx-batch  = { branch = "next", default-features = false, git = "https://github.com/0xMiden/protocol.git" }
 
 # Miden node dependencies
-miden-node-proto-build = { branch = "jmunoz-update-miden-protocol", default-features = false, git = "https://github.com/0xMiden/miden-node.git" }
+miden-node-proto-build           = { branch = "next", default-features = false, git = "https://github.com/0xMiden/miden-node.git" }
 miden-note-transport-proto-build = { default-features = false, version = "0.4.1" }
-miden-remote-prover-client = { branch = "jmunoz-update-miden-protocol", default-features = false, features = [
-  "tx-prover",
-], git = "https://github.com/0xMiden/miden-node.git" }
 
 # Miden debug dependency
 miden-debug     = { default-features = false, features = ["dap", "std"], version = "0.8" }

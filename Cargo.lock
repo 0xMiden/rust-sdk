@@ -1101,7 +1101,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1379,10 +1379,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "300e883d756b2e4ec94e02791f39b04b522276138852cfc41d9fb7e904106099"
 dependencies = [
  "cfg-if",
- "js-sys",
  "libc",
  "r-efi 6.0.0",
- "wasm-bindgen",
 ]
 
 [[package]]
@@ -2092,7 +2090,6 @@ dependencies = [
  "miden-note-transport-proto-build",
  "miden-processor",
  "miden-protocol",
- "miden-remote-prover-client",
  "miden-standards",
  "miden-testing",
  "miden-tx",
@@ -2499,8 +2496,8 @@ dependencies = [
 
 [[package]]
 name = "miden-node-proto-build"
-version = "0.15.0"
-source = "git+https://github.com/0xMiden/miden-node.git?branch=jmunoz-update-miden-protocol#1f529567caf175b6990c1aab2e571738c5449ee6"
+version = "0.15.1"
+source = "git+https://github.com/0xMiden/miden-node.git?branch=next#ad3b1f8cdc8a8120ffb6419b42c3fcd18811475c"
 dependencies = [
  "build-rs",
  "codegen",
@@ -2615,27 +2612,6 @@ dependencies = [
  "miden-processor",
  "serde",
  "tracing",
-]
-
-[[package]]
-name = "miden-remote-prover-client"
-version = "0.15.0"
-source = "git+https://github.com/0xMiden/miden-node.git?branch=jmunoz-update-miden-protocol#1f529567caf175b6990c1aab2e571738c5449ee6"
-dependencies = [
- "build-rs",
- "fs-err",
- "getrandom 0.4.3",
- "miden-node-proto-build",
- "miden-protocol",
- "miden-tx",
- "miette",
- "prost",
- "thiserror",
- "tokio",
- "tonic",
- "tonic-prost",
- "tonic-prost-build",
- "tonic-web-wasm-client",
 ]
 
 [[package]]
@@ -4003,7 +3979,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4507,10 +4483,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5323,7 +5299,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

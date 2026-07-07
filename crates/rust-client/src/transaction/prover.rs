@@ -1,8 +1,10 @@
 use alloc::boxed::Box;
 
 use miden_protocol::transaction::{ProvenTransaction, TransactionInputs};
-use miden_remote_prover_client::RemoteTransactionProver;
 use miden_tx::{LocalTransactionProver, TransactionProverError};
+
+#[cfg(any(feature = "std", target_arch = "wasm32"))]
+use crate::remote_prover::RemoteTransactionProver;
 
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
@@ -24,6 +26,7 @@ impl TransactionProver for LocalTransactionProver {
     }
 }
 
+#[cfg(any(feature = "std", target_arch = "wasm32"))]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl TransactionProver for RemoteTransactionProver {

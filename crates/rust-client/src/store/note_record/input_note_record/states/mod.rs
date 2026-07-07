@@ -70,10 +70,6 @@ impl InputNoteState {
     pub const STATE_CONSUMED_AUTHENTICATED_LOCAL: u8 = 6;
     pub const STATE_CONSUMED_UNAUTHENTICATED_LOCAL: u8 = 7;
     pub const STATE_CONSUMED_EXTERNAL: u8 = 8;
-    /// `ConsumedExternal` layout that also stores the note metadata. Discriminant 8 is the legacy
-    /// metadata-less layout, kept read-only for stores written by older client versions.
-    //TODO: Remove this when merging next to main.
-    pub const STATE_CONSUMED_EXTERNAL_V2: u8 = 9;
 
     /// Returns the inner state handler that implements state transitions.
     fn inner(&self) -> &dyn NoteStateHandler {
@@ -105,7 +101,7 @@ impl InputNoteState {
             InputNoteState::ConsumedUnauthenticatedLocal(_) => {
                 Self::STATE_CONSUMED_UNAUTHENTICATED_LOCAL
             },
-            InputNoteState::ConsumedExternal(_) => Self::STATE_CONSUMED_EXTERNAL_V2,
+            InputNoteState::ConsumedExternal(_) => Self::STATE_CONSUMED_EXTERNAL,
         }
     }
 
@@ -246,9 +242,6 @@ impl Deserializable for InputNoteState {
                 Ok(ConsumedUnauthenticatedLocalNoteState::read_from(source)?.into())
             },
             Self::STATE_CONSUMED_EXTERNAL => {
-                Ok(ConsumedExternalNoteState::read_from_legacy(source)?.into())
-            },
-            Self::STATE_CONSUMED_EXTERNAL_V2 => {
                 Ok(ConsumedExternalNoteState::read_from(source)?.into())
             },
             _ => Err(DeserializationError::InvalidValue(format!(

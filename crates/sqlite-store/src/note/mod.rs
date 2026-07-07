@@ -229,7 +229,6 @@ impl SqliteStore {
             Value::from(InputNoteState::STATE_CONSUMED_AUTHENTICATED_LOCAL.to_string()),
             Value::from(InputNoteState::STATE_CONSUMED_UNAUTHENTICATED_LOCAL.to_string()),
             Value::from(InputNoteState::STATE_CONSUMED_EXTERNAL.to_string()),
-            Value::from(InputNoteState::STATE_CONSUMED_EXTERNAL_V2.to_string()),
         ]);
         conn.prepare(QUERY)
             .into_store_error()?

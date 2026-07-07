@@ -181,6 +181,9 @@ where
         self.store.update_note_transport_cursor(new_cursor).await?;
         imported_ids.extend(ids);
 
+        imported_ids.sort_unstable();
+        imported_ids.dedup();
+
         Ok(imported_ids)
     }
 

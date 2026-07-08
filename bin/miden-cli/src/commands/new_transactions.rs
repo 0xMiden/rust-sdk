@@ -18,8 +18,12 @@ use miden_client::note::{
 };
 use miden_client::store::NoteRecordError;
 use miden_client::transaction::{
-    PaymentNoteDescription, PswapTransactionData, RawOutputNote, SwapTransactionData,
-    TransactionRequest, TransactionRequestBuilder,
+    PaymentNoteDescription,
+    PswapTransactionData,
+    RawOutputNote,
+    SwapTransactionData,
+    TransactionRequest,
+    TransactionRequestBuilder,
 };
 use miden_client::{Client, RemoteTransactionProver};
 use tracing::info;
@@ -27,8 +31,11 @@ use tracing::info;
 use crate::config::CliConfig;
 use crate::errors::CliError;
 use crate::utils::{
-    SHARED_TOKEN_DOCUMENTATION, get_input_acc_id_by_prefix_or_default,
-    load_faucet_metadata_resolver, parse_account_id, print_executed_transaction,
+    SHARED_TOKEN_DOCUMENTATION,
+    get_input_acc_id_by_prefix_or_default,
+    load_faucet_metadata_resolver,
+    parse_account_id,
+    print_executed_transaction,
 };
 
 #[derive(Debug, Clone, Copy, ValueEnum)]

@@ -527,12 +527,21 @@ impl NoteUpdateTracker {
         consumer: AccountId,
         block_num: BlockNumber,
     ) -> Result<(), ClientError> {
-        if self.tracks_note(note.id()) {
+        let note_id = note.id();
+        if self.tracks_note(note_id) {
             return Ok(());
         }
         let nullifier = note.nullifier();
         let mut record = InputNoteRecord::from(note);
-        let order = self.get_nullifier_order(nullifier).or(Some(0));
+        // The consuming transaction is part of the same sync, so the order is expected to be
+        // present. If it isn't, keep the note unordered rather than failing the whole sync.
+        let order = self.get_nullifier_order(nullifier);
+        if order.is_none() {
+            tracing::warn!(
+                note_id = %note_id,
+                "recovered consumed note has no execution order; storing it unordered"
+            );
+        }
         record.consumed_externally(nullifier, block_num, Some(consumer))?;
         record.set_consumed_tx_order(order);
         self.insert_input_note(record, NoteUpdateType::Insert);

@@ -520,22 +520,18 @@ impl NoteUpdateTracker {
 
     /// Records `note` as consumed by `consumer`, as a
     /// [`ConsumedExternal`](crate::store::InputNoteState::ConsumedExternal) input-note record.
-    /// No-op when the note is already tracked, or when its nullifier doesn't match `nullifier`
-    /// (so a mismatched body is never attributed to the consumption).
+    /// No-op when the note is already tracked.
     pub(crate) fn insert_consumed_public_note(
         &mut self,
         note: Note,
-        nullifier: Nullifier,
         consumer: AccountId,
         block_num: BlockNumber,
     ) -> Result<(), ClientError> {
         if self.tracks_note(note.id()) {
             return Ok(());
         }
+        let nullifier = note.nullifier();
         let mut record = InputNoteRecord::from(note);
-        if record.nullifier() != Some(nullifier) {
-            return Ok(());
-        }
         let order = self.get_nullifier_order(nullifier).or(Some(0));
         record.consumed_externally(nullifier, block_num, Some(consumer))?;
         record.set_consumed_tx_order(order);

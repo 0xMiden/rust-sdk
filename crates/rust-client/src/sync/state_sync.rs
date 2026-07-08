@@ -384,9 +384,18 @@ impl StateSync {
 
         for recoverable in recoverable_consumed_notes {
             if let Some(note) = bodies.get(&recoverable.note_id) {
+                // The node returned a body for this id; make sure it actually hashes to the
+                // nullifier the transaction consumed, so a byzantine node can't attribute an
+                // unrelated note here.
+                if note.nullifier() != recoverable.nullifier {
+                    return Err(RpcError::InvalidResponse(format!(
+                        "node returned note {} whose nullifier doesn't match the consumed reference",
+                        recoverable.note_id
+                    ))
+                    .into());
+                }
                 state_sync_update.note_updates.insert_consumed_public_note(
                     note.clone(),
-                    recoverable.nullifier,
                     recoverable.consumer,
                     recoverable.block_num,
                 )?;

@@ -351,6 +351,54 @@ where
         TransactionResult::new(executed_transaction, prep.future_notes)
     }
 
+    /// Executes `transaction_request` (e.g. consuming a note) through the DAP program executor,
+    /// so a DAP client can attach and step through the whole transaction — kernel, note scripts,
+    /// and account code — instead of only a standalone transaction script.
+    ///
+    /// This is a debugging entry point: it runs the transaction interactively under the debug
+    /// adapter and does not prove, submit, or apply the result. The listen address (and optional
+    /// replay-snapshot path) are taken from the globally installed
+    /// [`DapConfig`](miden_debug::DapConfig).
+    #[cfg(feature = "dap")]
+    pub async fn execute_transaction_with_dap(
+        &mut self,
+        account_id: AccountId,
+        transaction_request: TransactionRequest,
+    ) -> Result<(), ClientError> {
+        // Mirrors the data-store setup in `execute_transaction`, but drives execution through the
+        // DAP executor and stops once the debug session ends (no proving/submission).
+        let account: Account = self.get_native_account_record(account_id).await?.try_into()?;
+
+        let prep = self.prepare_transaction(&account, transaction_request).await?;
+
+        let data_store = ClientDataStore::new(self.store.clone(), self.rpc_api.clone());
+        data_store.register_note_scripts(prep.output_note_scripts());
+        for fpi_account in &prep.foreign_account_inputs {
+            data_store.mast_store().load_account_code(fpi_account.code());
+        }
+        data_store.register_foreign_account_inputs(prep.foreign_account_inputs);
+
+        data_store.mast_store().load_account_code(account.code());
+
+        let mut notes = prep.notes;
+        if prep.ignore_invalid_notes {
+            notes = self
+                .get_valid_input_notes(
+                    &account,
+                    notes,
+                    prep.tx_args.clone(),
+                    &prep.output_recipients,
+                )
+                .await?;
+        }
+
+        self.build_dap_executor(&data_store)?
+            .execute_transaction(account_id, prep.block_num, notes, prep.tx_args)
+            .await?;
+
+        Ok(())
+    }
+
     /// Performs the data-store-independent setup shared by `execute_transaction` and
     /// `execute_transaction_for_batch`: validates the request against the supplied
     /// `account`, loads/filters input notes, builds the transaction script and args,

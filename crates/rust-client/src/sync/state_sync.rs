@@ -358,15 +358,15 @@ impl StateSync {
     ) -> Result<(), ClientError> {
         // Skip references whose note the client already tracks (e.g. discovered by tag), to avoid
         // clobbering full-detail records and fetching bodies we already hold.
-        let pending: Vec<_> = recoverable_consumed_notes
-            .into_iter()
+        let note_ids: Vec<NoteId> = recoverable_consumed_notes
+            .iter()
             .filter(|note| !state_sync_update.note_updates.tracks_note(note.note_id))
+            .map(|note| note.note_id)
             .collect();
-        if pending.is_empty() {
+        if note_ids.is_empty() {
             return Ok(());
         }
 
-        let note_ids: Vec<NoteId> = pending.iter().map(|note| note.note_id).collect();
         let mut bodies: BTreeMap<NoteId, Note> = BTreeMap::new();
         for fetched in self.rpc_api.get_notes_by_id(&note_ids).await? {
             match fetched {
@@ -382,7 +382,7 @@ impl StateSync {
             }
         }
 
-        for recoverable in pending {
+        for recoverable in recoverable_consumed_notes {
             if let Some(note) = bodies.get(&recoverable.note_id) {
                 state_sync_update.note_updates.insert_consumed_public_note(
                     note.clone(),

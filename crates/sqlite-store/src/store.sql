@@ -63,7 +63,7 @@ CREATE INDEX idx_historical_account_headers_id_replaced_at ON historical_account
 -- ── Account storage (latest + historical) ────────────────────────────────
 
 CREATE TABLE latest_account_storage (
-    account_id BLOB NOT NULL,     -- account ID
+    account_id BLOB NOT NULL,     -- serialized account ID
     slot_name TEXT NOT NULL,      -- name of the storage slot
     slot_value TEXT NULL,         -- top-level value of the slot (for maps, contains the root)
     slot_type INTEGER NOT NULL,   -- type of the slot (0 = Value, 1 = Map)
@@ -73,7 +73,7 @@ CREATE TABLE latest_account_storage (
 -- Historical account storage: stores old slot values that were replaced.
 -- NULL old_slot_value means the slot didn't exist before (was created at replaced_at_nonce).
 CREATE TABLE historical_account_storage (
-    account_id BLOB NOT NULL,           -- account ID
+    account_id BLOB NOT NULL,           -- serialized account ID
     replaced_at_nonce BIGINT NOT NULL,  -- nonce at which this old value was replaced
     slot_name TEXT NOT NULL,            -- name of the storage slot
     old_slot_value TEXT NULL,           -- old top-level value (NULL = slot was new)

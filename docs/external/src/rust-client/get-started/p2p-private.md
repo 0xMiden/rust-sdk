@@ -40,7 +40,7 @@ Remember to use the [Miden client documentation](https://docs.miden.xyz/builder/
    To do this, run:
 
    ```sh
-   miden-client send --sender <regular-account-id-A> --target <regular-account-id-B> --asset 50::<faucet-account-id> --note-type private
+   miden-client transfer --sender <regular-account-id-A> --target <regular-account-id-B> --asset 50::<faucet-account-id> --note-type private
    ```
 
    :::note

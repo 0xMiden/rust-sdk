@@ -34,9 +34,7 @@
 
 ### Features
 
-* [FEATURE][rust] DAP transaction debugging sessions now record the advice mutations produced by the transaction host's event handlers and report the number of recorded sets when the session ends, laying the groundwork for offline event-replay debugging. The workspace temporarily resolves `miden-debug` from its `fix/record` branch until the recording support ships in a release ([#2306](https://github.com/0xMiden/rust-sdk/pull/2306)).
-* [FEATURE][cli] `miden-client exec --start-debug-adapter <ADDR> --record <FILE>` now writes a self-contained replay snapshot of the debug session (program, inputs, resolved code, and event log), which can be replayed offline with `miden-debug --replay <FILE>` — no node, client, or account state required ([#2306](https://github.com/0xMiden/rust-sdk/pull/2306)).
-* [FEATURE][cli] `miden-client consume-notes` now accepts `--start-debug-adapter <ADDR>` (and `--record <FILE>`) to debug a note-consumption transaction under a DAP client — stepping through the kernel, note scripts, and account code — instead of proving and submitting it. Backed by a new `Client::execute_transaction_with_dap` ([#2306](https://github.com/0xMiden/rust-sdk/pull/2306)).
+* [FEATURE][cli] Added DAP-based transaction debugging with offline record/replay. `miden-client exec` and `consume-notes` accept `--start-debug-adapter <ADDR>` to run a transaction — script, kernel, note scripts, and account code — under a DAP client (e.g. the `miden-debug` TUI) instead of proving and submitting it (`consume-notes` is backed by a new `Client::execute_transaction_with_dap`). During the session the advice mutations produced by the transaction host's event handlers are recorded — readable via the handle from `DapConfig::record_event_mutations()`, and reported by the CLI — and `--record <FILE>` writes a self-contained replay snapshot (program, inputs, resolved code, and event log) that can be replayed offline with `miden-debug --replay <FILE>`, with no node, client, or account state. This uses the `miden-debug` 0.9 release ([#2306](https://github.com/0xMiden/rust-sdk/pull/2306)).
 
 ### Changes
 

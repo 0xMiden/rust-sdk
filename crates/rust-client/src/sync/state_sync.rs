@@ -35,7 +35,7 @@ use crate::rpc::domain::account::{
 use crate::rpc::domain::note::{CommittedNote, FetchedNote, NoteSyncBlock, SyncedNoteDetails};
 use crate::rpc::domain::sync::{ChainMmrInfo, SyncTarget};
 use crate::rpc::domain::transaction::TransactionRecord as RpcTransactionRecord;
-use crate::rpc::{AccountStateAt, NodeRpcClient};
+use crate::rpc::{AccountStateAt, NodeRpcClient, RpcError};
 use crate::store::{InputNoteRecord, OutputNoteRecord, StoreError};
 use crate::transaction::TransactionRecord;
 
@@ -369,8 +369,16 @@ impl StateSync {
         let note_ids: Vec<NoteId> = pending.iter().map(|note| note.note_id).collect();
         let mut bodies: BTreeMap<NoteId, Note> = BTreeMap::new();
         for fetched in self.rpc_api.get_notes_by_id(&note_ids).await? {
-            if let FetchedNote::Public(note, _) = fetched {
-                bodies.insert(note.id(), note);
+            match fetched {
+                FetchedNote::Public(note, _) => {
+                    bodies.insert(note.id(), note);
+                },
+                FetchedNote::Private(note_id, ..) => {
+                    return Err(RpcError::InvalidResponse(format!(
+                        "node returned private note {note_id} for a public consumed-note reference"
+                    ))
+                    .into());
+                },
             }
         }
 

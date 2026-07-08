@@ -19,6 +19,23 @@
 * [FIX][rust] `NodeRpcClient::sync_notes` now rejects responses containing a note whose tag was not requested with `RpcError::InvalidResponse` ([#2284](https://github.com/0xMiden/rust-sdk/pull/2284)).
 * [FIX][rust] Public account sync now binds `get_account` responses to the SyncMMR target block, rejecting snapshots from a different block, account, or account root ([#2255](https://github.com/0xMiden/miden-client/pull/2255)).
 
+## 0.15.4 (TBD)
+
+### Changes
+
+* [rust] Bumped dependencies: Miden VM crates (`miden-core`, `miden-processor`, `miden-prover`, `miden-assembly`, etc.) to `0.23.5`, and `miden-node-proto-build` and `miden-remote-prover-client` to `0.15.1` ([#2301](https://github.com/0xMiden/rust-sdk/pull/2301)).
+
+### Fixes
+
+* [FIX][store] Add metadata to ConsumedExternal notes so that they can be findable by their `NoteId`. The change is store-compatible because records written by older clients (the metadata-less layout) still decode, reading back with no metadata as before ([#2308](https://github.com/0xMiden/rust-sdk/pull/2308)).
+
+## 0.15.3 (2026-07-02)
+
+### Enhancements
+
+* [FEATURE][cli] `miden-cli call` now accepts advice map entries supplied via `--inputs-path/-i <FILE.toml>` in the same TOML format as `exec` ([#2244](https://github.com/0xMiden/miden-client/pull/2244)).
+* [FEATURE][rust] The gRPC client now accepts responses up to 15% above the node's 4 MiB payload budget by default, and `GrpcClient::with_max_decoding_message_size` lets callers raise the decode ceiling further. The CLI raises its own ceiling to 6 MiB to cover large `SyncTransactions` responses. This prevents syncs from failing with a "decoded message length too large" error when a node response slightly exceeds the previous hard 4 MiB limit ([#2298](https://github.com/0xMiden/miden-client/pull/2299)).
+
 ## 0.15.2 (2026-06-18)
 
 ### Features

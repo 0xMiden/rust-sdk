@@ -9,6 +9,7 @@ use miden_client::transaction::{AdviceInputs, TransactionRequestBuilder, Transac
 use miden_client::vm::{Package, PackageExport};
 use miden_client::{Client, Deserializable, Felt, Word};
 
+use crate::advice_inputs::load_advice_map_from_file;
 use crate::errors::CliError;
 use crate::utils::{parse_account_id, print_executed_program_stack, print_executed_transaction};
 
@@ -19,7 +20,13 @@ use crate::utils::{parse_account_id, print_executed_program_stack, print_execute
 #[command(about = "Call a procedure on a local account and display the result and state delta")]
 pub struct CallCmd {
     /// Account and procedure in the form `<ACCOUNT_ID>:<PROCEDURE>`.
-    #[arg(value_name = "ACCOUNT_ID:PROCEDURE")]
+    #[arg(
+        value_name = "ACCOUNT_ID:PROCEDURE",
+        long_help = "Account and procedure in the form `<ACCOUNT_ID>:<PROCEDURE>`.\n\n\
+                     The procedure name is matched against the package's exports with `_` and `-` \
+                     treated as equivalent, so it can be written in either snake_case or \
+                     kebab-case (e.g. `get_count` matches the WIT export `get-count`)."
+    )]
     target: String,
 
     /// Positional arguments to push onto the stack before calling the procedure.
@@ -29,6 +36,10 @@ pub struct CallCmd {
     /// Path to the package (.masp) file containing the procedure.
     #[arg(long, short)]
     package: PathBuf,
+
+    /// Path to a TOML file with advice map entries, in the same format as the `exec` command.
+    #[arg(long, short, long_help = crate::advice_inputs::INPUTS_PATH_LONG_HELP)]
+    inputs_path: Option<PathBuf>,
 }
 
 impl CallCmd {
@@ -60,6 +71,11 @@ impl CallCmd {
 
         let args = parse_args(&self.args)?;
 
+        let advice_entries = match &self.inputs_path {
+            Some(path) => load_advice_map_from_file(path)?,
+            None => vec![],
+        };
+
         match param_count {
             Some(expected) if args.len() != expected => {
                 return Err(CliError::InvalidArgument(format!(
@@ -90,8 +106,10 @@ impl CallCmd {
         let read_tx_script =
             generate_tx_script(linked_builder.clone(), &digest, &args, result_count)?;
 
+        let advice_inputs = AdviceInputs::default().with_map(advice_entries.clone());
+
         let output_stack = client
-            .execute_program(account_id, read_tx_script, AdviceInputs::default(), BTreeMap::new())
+            .execute_program(account_id, read_tx_script, advice_inputs, BTreeMap::new())
             .await?;
 
         print_executed_program_stack(&output_stack, result_count);
@@ -101,6 +119,7 @@ impl CallCmd {
 
         let tx_request = TransactionRequestBuilder::new()
             .custom_script(delta_tx_script)
+            .extend_advice_map(advice_entries)
             .build()
             .map_err(|err| {
                 CliError::Transaction(err.into(), "Failed to build transaction".to_string())
@@ -136,22 +155,30 @@ fn load_package(path: &Path) -> Result<Package, CliError> {
 }
 
 fn resolve_procedure_digest(package: &Package, procedure_name: &str) -> Result<Word, CliError> {
-    let library = &*package.mast;
-    for module_info in library.module_infos() {
-        if let Some(digest) = module_info.get_procedure_digest_by_name(procedure_name) {
-            return Ok(digest);
+    // The user passes a bare name (e.g. `get_count`); match it
+    // against each export's name without the module path. Export names may be kebab (Rust/WIT) or
+    // snake (hand-written MASM bare identifiers), so compare with `_` and `-` treated as equal.
+    let target = procedure_name.replace('_', "-");
+
+    let mut available = Vec::new();
+    for export in package.manifest.exports() {
+        let PackageExport::Procedure(proc) = export else {
+            continue;
+        };
+        if export.name().replace('_', "-") != target {
+            // Not the requested procedure; keep it for the "not found" error list.
+            available.push(format!("  {}", proc.path));
+            continue;
+        }
+        // The same leaf name is exported both as a `C`-ABI lowering (for `exec`) and as the
+        // `ComponentModel` export (the cross-context `call` target); pick the latter.
+        if proc.signature.as_ref().is_some_and(|sig| sig.abi.is_wasm_canonical_abi()) {
+            return Ok(proc.digest);
         }
     }
 
-    let mut available = Vec::new();
-    for module_info in library.module_infos() {
-        for (_idx, proc_info) in module_info.procedures() {
-            available.push(format!("  {}::{}", module_info.path(), proc_info.name));
-        }
-    }
     Err(CliError::InvalidArgument(format!(
-        "Procedure '{}' not found. Available:\n{}",
-        procedure_name,
+        "Procedure '{procedure_name}' not found. Available:\n{}",
         available.join("\n")
     )))
 }

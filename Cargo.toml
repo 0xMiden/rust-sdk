@@ -13,6 +13,12 @@ members = [
 
 default-members = ["bin/miden-cli", "crates/rust-client"]
 
+[workspace.metadata.inheritance-check]
+ignore = [
+  # rust-client's wasm32 target needs a sync-only tokio and can't inherit the workspace's rt-multi-thread features.
+  { dependency = "tokio", member = "crates/rust-client" },
+]
+
 [workspace.package]
 authors      = ["miden contributors"]
 edition      = "2024"

@@ -15,7 +15,8 @@ use miden_client::{Client, Felt};
 use crate::advice_inputs::load_advice_map_from_file;
 use crate::errors::CliError;
 use crate::utils::{
-    get_input_acc_id_by_prefix_or_default, print_executed_program_stack,
+    get_input_acc_id_by_prefix_or_default,
+    print_executed_program_stack,
     print_executed_program_stack_hex_words,
 };
 

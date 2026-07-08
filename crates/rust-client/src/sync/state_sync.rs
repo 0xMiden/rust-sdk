@@ -349,8 +349,8 @@ impl StateSync {
 
     /// Recovers public notes a watched account consumed, from the `consumed_note_refs` the node
     /// attaches to its transactions. Fetches the body of each not-yet-tracked note by id and hands
-    /// it to [`NoteUpdateTracker::insert_consumed_public_note`]. Private notes and notes the node
-    /// can't return are skipped.
+    /// it to [`NoteUpdateTracker::insert_consumed_public_note`]. Notes the node doesn't return are
+    /// skipped; a reference the node resolves to a private note is rejected as an invalid response.
     async fn recover_consumed_public_notes(
         &self,
         state_sync_update: &mut StateSyncUpdate,

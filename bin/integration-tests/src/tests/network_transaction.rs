@@ -540,9 +540,8 @@ pub async fn test_note_reader_finds_note_consumed_by_ntx(
         client.source_manager(),
         &mut client.rng(),
     )?;
-    // Captured before `network_note` is moved into the request below: once the network account
-    // consumes it the note is `ConsumedExternal` (no metadata), so `InputNoteRecord::id` is `None`
-    // and the note can only be matched by its stable details commitment.
+    // Captured before `network_note` is moved into the request below, so the consumed note can be
+    // matched later by its stable details commitment.
     let details_commitment = network_note.details_commitment();
 
     let tx_request =
@@ -612,9 +611,8 @@ pub async fn test_network_note_consumed_by_ntx(client_config: ClientConfig) -> R
         client.source_manager(),
         &mut client.rng(),
     )?;
-    // Captured before `network_note` is moved into the request below. Once the network account
-    // consumes it the note becomes `ConsumedExternal`, resolved here by its stable details
-    // commitment.
+    // Captured before `network_note` is moved into the request below, so the consumed note can be
+    // matched later by its stable details commitment.
     let details_commitment = network_note.details_commitment();
 
     let tx_request =

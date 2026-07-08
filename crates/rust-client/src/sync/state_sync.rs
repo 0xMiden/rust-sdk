@@ -303,7 +303,7 @@ impl StateSync {
                     .iter()
                     .map(InputNoteCommitment::nullifier)
                     .collect();
-                tx.consumed_note_refs
+                tx.consumed_note_refs()
                     .iter()
                     .filter(move |&&(nullifier, _)| consumed_nullifiers.contains(&nullifier))
                     .map(move |&(nullifier, note_id)| RecoverableConsumedNote {

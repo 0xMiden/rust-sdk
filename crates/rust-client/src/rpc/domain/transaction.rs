@@ -72,7 +72,16 @@ pub struct TransactionRecord {
     /// resolve. Lets a client recover, by id, a consumed note it never tracked. Empty for
     /// private/unresolvable inputs.
     // TODO: perhaps we might want to rename this field (see https://github.com/0xMiden/node/pull/2304#discussion_r3511308376)
-    pub consumed_note_refs: Vec<(Nullifier, NoteId)>,
+    pub(crate) consumed_note_refs: Vec<(Nullifier, NoteId)>,
+}
+
+impl TransactionRecord {
+    /// Gets references to consumed notes: their nullifier and note id.
+    /// The purpose of this is to have the ids of the consumed notes so that we can query the node
+    /// to get them.
+    pub fn consumed_note_refs(&self) -> &[(Nullifier, NoteId)] {
+        &self.consumed_note_refs
+    }
 }
 
 impl TryFrom<proto::rpc::TransactionRecord> for TransactionRecord {

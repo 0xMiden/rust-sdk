@@ -26,7 +26,7 @@ use miden_client::asset::{Asset, FungibleAsset, NonFungibleAsset, NonFungibleAss
 use miden_client::auth::{AuthSchemeId, AuthSingleSig, PublicKeyCommitment};
 use miden_client::store::{ClientAccountType, Store, StoreError};
 use miden_client::testing::common::ACCOUNT_ID_REGULAR;
-use miden_client::{EMPTY_WORD, Felt, ONE, ZERO};
+use miden_client::{EMPTY_WORD, Felt, ONE, Serializable, ZERO};
 use miden_protocol::account::{
     AccountComponentMetadata,
     StorageMapPatch,
@@ -830,7 +830,7 @@ async fn prune_account_history_removes_old_committed_states() -> anyhow::Result<
         .interact_with_connection(move |conn| {
             conn.query_row(
                 "SELECT nonce FROM historical_account_headers WHERE id = ?",
-                params![account_id.to_hex()],
+                params![account_id.to_bytes()],
                 |row| crate::column_value_as_u64(row, 0),
             )
             .into_store_error()
@@ -954,7 +954,7 @@ async fn prune_removes_orphaned_account_code() -> anyhow::Result<()> {
         .interact_with_connection(move |conn| {
             conn.query_row(
                 "SELECT code_commitment FROM historical_account_headers WHERE id = ?",
-                params![account_id.to_hex()],
+                params![account_id.to_bytes()],
                 |row| row.get(0),
             )
             .into_store_error()
@@ -972,7 +972,7 @@ async fn prune_removes_orphaned_account_code() -> anyhow::Result<()> {
             .into_store_error()?;
             conn.execute(
                 "UPDATE latest_account_headers SET code_commitment = ? WHERE id = ?",
-                params!["new_code_commitment", account_id.to_hex()],
+                params!["new_code_commitment", account_id.to_bytes()],
             )
             .into_store_error()?;
             Ok(())
@@ -1451,7 +1451,7 @@ async fn lock_account_affects_latest_and_historical() -> anyhow::Result<()> {
                 )
                 .into_store_error()?;
             let rows = stmt
-                .query_map(params![account_id.to_hex()], |row| row.get(0))
+                .query_map(params![account_id.to_bytes()], |row| row.get(0))
                 .into_store_error()?
                 .collect::<Result<Vec<bool>, _>>()
                 .into_store_error()?;
@@ -2066,7 +2066,7 @@ async fn undo_after_update_removes_genuinely_new_entries() -> anyhow::Result<()>
             conn.query_row(
                 "SELECT COUNT(*) FROM historical_storage_map_entries \
                  WHERE account_id = ? AND old_value IS NULL",
-                params![account_id.to_hex()],
+                params![account_id.to_bytes()],
                 |row| row.get(0),
             )
             .into_store_error()

@@ -988,7 +988,8 @@ pub async fn test_import_consumed_note_with_proof(client_config: ClientConfig) -
         }])
         .await?;
 
-    // A `ConsumedExternal` note has no metadata, so look it up by its details commitment.
+    // Look up the consumed note by its details commitment, which is stable across state
+    // transitions.
     let consumed_note = client_2
         .get_input_notes(NoteFilter::DetailsCommitments(vec![note.details_commitment()]))
         .await?
@@ -1056,7 +1057,8 @@ pub async fn test_import_consumed_note_with_id(client_config: ClientConfig) -> R
     // Import the consumed note
     client_2.import_notes(&[NoteFile::NoteId(note.id().unwrap())]).await.unwrap();
 
-    // A `ConsumedExternal` note has no metadata, so look it up by its details commitment.
+    // Look up the consumed note by its details commitment, which is stable across state
+    // transitions.
     let consumed_note = client_2
         .get_input_notes(NoteFilter::DetailsCommitments(vec![note.details_commitment()]))
         .await?
@@ -1224,7 +1226,7 @@ pub async fn test_discarded_transaction(client_config: ClientConfig) -> Result<(
     assert!(matches!(note_record.state(), InputNoteState::ConsumedAuthenticatedLocal(_)));
 
     // After sync the note in client 1 should be consumed externally and the transaction discarded.
-    // `ConsumedExternal` has no metadata, so look the note up by its details commitment.
+    // Look the note up by its details commitment, which is stable across state transitions.
     client_1.sync_state().await.unwrap();
     let note_record = client_1
         .get_input_notes(NoteFilter::DetailsCommitments(vec![note.details_commitment()]))

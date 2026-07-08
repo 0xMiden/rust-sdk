@@ -5,7 +5,9 @@
 ### Breaking Changes
 
 * [BREAKING][rust] Migrated to `miden-protocol` 0.16. Transaction-level fees were removed, block-level `FeeParameters` are unchanged. The relative `AccountDelta` model was replaced by the absolute `AccountPatch` model for account updates: `TransactionResult::account_delta` is now `account_patch`, `AccountUpdateDetails::Public` now carries an `AccountPatch`, account reconstruction is done via `Account::try_from(&AccountPatch)` or `Account::apply_patch` instead of previous `apply_delta`. Re-exports changed accordingly: `AccountStorageDelta` for `AccountStoragePatch`, `StorageMapDelta` for `StorageMapPatch`, and so on. Standards APIs were updated: `AuthMethod` was removed (use the concrete auth components), `create_fungible_faucet` became `create_user_fungible_faucet`. ([#XXXX](https://github.com/0xMiden/rust-sdk/pull/XXXX)).
+* [BREAKING][store] The SQLite store now stores account IDs as serialized `BLOB` columns instead of hex `TEXT` ([#2309](https://github.com/0xMiden/rust-sdk/pull/2309)).
 * [BREAKING][param][store] `Store::insert_block_header` now takes a `nodes` argument and persists the header with its MMR authentication nodes in a single transaction; the standalone `Store::insert_partial_blockchain_nodes` is removed. Header-only inserts (e.g. genesis) pass an empty slice ([#2294](https://github.com/0xMiden/rust-sdk/pull/2294)).
+* [BREAKING][behavior][store] The `ConsumedExternal` note-metadata layout added in [#2308](https://github.com/0xMiden/rust-sdk/pull/2308) is now the only supported serialized format. The backward-compatible decoding of the older metadata-less layout is removed, so existing stores are not compatible and must be recreated ([#2313](https://github.com/0xMiden/rust-sdk/pull/2313)).
 
 ### Fixes
 
@@ -19,6 +21,23 @@
 * [FIX][rust] `NodeRpcClient::sync_nullifiers` now rejects responses containing a nullifier whose prefix was not requested with `RpcError::InvalidResponse` ([#2282](https://github.com/0xMiden/rust-sdk/pull/2282)).
 * [FIX][rust] `NodeRpcClient::sync_notes` now rejects responses containing a note whose tag was not requested with `RpcError::InvalidResponse` ([#2284](https://github.com/0xMiden/rust-sdk/pull/2284)).
 * [FIX][rust] Public account sync now binds `get_account` responses to the SyncMMR target block, rejecting snapshots from a different block, account, or account root ([#2255](https://github.com/0xMiden/miden-client/pull/2255)).
+
+## 0.15.4 (TBD)
+
+### Changes
+
+* [rust] Bumped dependencies: Miden VM crates (`miden-core`, `miden-processor`, `miden-prover`, `miden-assembly`, etc.) to `0.23.5`, and `miden-node-proto-build` and `miden-remote-prover-client` to `0.15.1` ([#2301](https://github.com/0xMiden/rust-sdk/pull/2301)).
+
+### Fixes
+
+* [FIX][store] Add metadata to ConsumedExternal notes so that they can be findable by their `NoteId`. The change is store-compatible because records written by older clients (the metadata-less layout) still decode, reading back with no metadata as before ([#2308](https://github.com/0xMiden/rust-sdk/pull/2308)).
+
+## 0.15.3 (2026-07-02)
+
+### Enhancements
+
+* [FEATURE][cli] `miden-cli call` now accepts advice map entries supplied via `--inputs-path/-i <FILE.toml>` in the same TOML format as `exec` ([#2244](https://github.com/0xMiden/miden-client/pull/2244)).
+* [FEATURE][rust] The gRPC client now accepts responses up to 15% above the node's 4 MiB payload budget by default, and `GrpcClient::with_max_decoding_message_size` lets callers raise the decode ceiling further. The CLI raises its own ceiling to 6 MiB to cover large `SyncTransactions` responses. This prevents syncs from failing with a "decoded message length too large" error when a node response slightly exceeds the previous hard 4 MiB limit ([#2298](https://github.com/0xMiden/miden-client/pull/2299)).
 
 ## 0.15.2 (2026-06-18)
 

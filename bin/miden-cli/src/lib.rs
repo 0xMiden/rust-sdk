@@ -10,6 +10,7 @@ use miden_client::account::AccountHeader;
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::{FilesystemKeyStore, Keystore};
 use miden_client::note_transport::grpc::GrpcNoteTransportClient;
+use miden_client::rpc::GrpcClient;
 use miden_client::store::{NoteFilter as ClientNoteFilter, OutputNoteRecord};
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
 
@@ -138,9 +139,14 @@ impl CliClient {
             CliKeyStore::new(config.secret_keys_directory.clone()).map_err(CliError::KeyStore)?;
 
         // Build client with the provided configuration
+        let rpc_client = Arc::new(
+            GrpcClient::new(&config.rpc.endpoint.clone().into(), config.rpc.timeout_ms)
+                .with_max_decoding_message_size(CLI_MAX_RESPONSE_SIZE_BYTES),
+        );
+
         let mut builder = ClientBuilder::new()
             .sqlite_store(config.store_filepath.clone())
-            .grpc_client(&config.rpc.endpoint.clone().into(), Some(config.rpc.timeout_ms))
+            .rpc(rpc_client)
             .authenticator(Arc::new(keystore))
             .in_debug_mode(debug_mode)
             .tx_discard_delta(Some(TX_DISCARD_DELTA));
@@ -279,6 +285,7 @@ impl DerefMut for CliClient {
     }
 }
 
+mod advice_inputs;
 pub mod config;
 // These modules intentionally shadow the miden_client re-exports - CLI has its own errors/utils
 #[allow(hidden_glob_reexports)]
@@ -318,6 +325,10 @@ pub fn client_binary_name() -> OsString {
 /// Number of blocks that must elapse after a transaction’s reference block before it is marked
 /// stale and discarded.
 const TX_DISCARD_DELTA: u32 = 20;
+
+/// Maximum size (in bytes) of any decoded gRPC response the CLI accepts. Sized to fit large
+/// `SyncTransactions` responses.
+const CLI_MAX_RESPONSE_SIZE_BYTES: usize = 6 * 1024 * 1024;
 
 /// Root CLI struct.
 #[derive(Parser, Debug)]

@@ -15,7 +15,7 @@ use miden_client::account::{
     StorageSlotType,
 };
 use miden_client::store::{AccountSmtForest, StoreError};
-use miden_client::{EMPTY_WORD, Word};
+use miden_client::{EMPTY_WORD, Serializable, Word};
 use rusqlite::types::Value;
 use rusqlite::{OptionalExtension, Transaction, params};
 
@@ -50,7 +50,7 @@ impl SqliteStore {
 
         conn.prepare(QUERY)
             .into_store_error()?
-            .query_map(params![account_id.to_hex(), Rc::new(map_slot_names)], |row| {
+            .query_map(params![account_id.to_bytes(), Rc::new(map_slot_names)], |row| {
                 let name: String = row.get(0)?;
                 let value: String = row.get(1)?;
                 Ok((name, value))
@@ -89,7 +89,7 @@ impl SqliteStore {
 
         let mut latest_slot_stmt = tx.prepare_cached(LATEST_SLOT_QUERY).into_store_error()?;
         let mut latest_map_stmt = tx.prepare_cached(LATEST_MAP_ENTRY_QUERY).into_store_error()?;
-        let account_id_hex = account_id.to_hex();
+        let account_id_bytes = account_id.to_bytes();
 
         for slot in account_storage {
             let slot_name_str = slot.name().to_string();
@@ -97,14 +97,14 @@ impl SqliteStore {
             let slot_type_val = slot.slot_type() as u8;
 
             latest_slot_stmt
-                .execute(params![&account_id_hex, &slot_name_str, &slot_value_hex, slot_type_val])
+                .execute(params![&account_id_bytes, &slot_name_str, &slot_value_hex, slot_type_val])
                 .into_store_error()?;
 
             if let StorageSlotContent::Map(map) = slot.content() {
                 for (key, value) in map.entries() {
                     latest_map_stmt
                         .execute(params![
-                            &account_id_hex,
+                            &account_id_bytes,
                             &slot_name_str,
                             key.to_hex(),
                             value.to_hex(),
@@ -165,7 +165,7 @@ impl SqliteStore {
         let mut hist_slot_stmt = tx.prepare_cached(HISTORICAL_SLOT_QUERY).into_store_error()?;
         let mut latest_map_stmt = tx.prepare_cached(LATEST_MAP_ENTRY_QUERY).into_store_error()?;
         let mut hist_map_stmt = tx.prepare_cached(HISTORICAL_MAP_ENTRY_QUERY).into_store_error()?;
-        let account_id_hex = account_id.to_hex();
+        let account_id_bytes = account_id.to_bytes();
         let nonce_val = u64_to_value(nonce);
 
         // Collect the patch's changed map entries for efficient lookup
@@ -189,7 +189,7 @@ impl SqliteStore {
 
             // Read old slot value from latest (NULL if slot is new)
             let old_slot_value: Option<String> = tx
-                .query_row(READ_OLD_SLOT, params![&account_id_hex, &slot_name_str], |row| {
+                .query_row(READ_OLD_SLOT, params![&account_id_bytes, &slot_name_str], |row| {
                     row.get(0)
                 })
                 .optional()
@@ -199,7 +199,7 @@ impl SqliteStore {
             // Archive old value to historical (NULL old_slot_value = slot was new)
             hist_slot_stmt
                 .execute(params![
-                    &account_id_hex,
+                    &account_id_bytes,
                     &nonce_val,
                     &slot_name_str,
                     old_slot_value,
@@ -209,7 +209,7 @@ impl SqliteStore {
 
             // Update latest slot
             latest_slot_stmt
-                .execute(params![&account_id_hex, &slot_name_str, &slot_value_hex, slot_type_val])
+                .execute(params![&account_id_bytes, &slot_name_str, &slot_value_hex, slot_type_val])
                 .into_store_error()?;
 
             if let Some(changed_entries) = patch_map_entries.get(slot_name) {
@@ -217,7 +217,7 @@ impl SqliteStore {
                     tx,
                     &mut latest_map_stmt,
                     &mut hist_map_stmt,
-                    &account_id_hex,
+                    &account_id_bytes,
                     &nonce_val,
                     &slot_name_str,
                     changed_entries,
@@ -233,7 +233,7 @@ impl SqliteStore {
         tx: &Transaction<'_>,
         latest_map_stmt: &mut rusqlite::CachedStatement<'_>,
         hist_map_stmt: &mut rusqlite::CachedStatement<'_>,
-        account_id_hex: &str,
+        account_id_bytes: &[u8],
         nonce_val: &rusqlite::types::Value,
         slot_name_str: &str,
         changed_entries: &[(Word, Word)],
@@ -248,7 +248,7 @@ impl SqliteStore {
             let old_entry_value: Option<String> = tx
                 .query_row(
                     READ_OLD_MAP_ENTRY,
-                    params![account_id_hex, slot_name_str, &key_hex],
+                    params![account_id_bytes, slot_name_str, &key_hex],
                     |row| row.get(0),
                 )
                 .optional()
@@ -258,7 +258,7 @@ impl SqliteStore {
             // Archive old value to historical (NULL = entry was new)
             hist_map_stmt
                 .execute(params![
-                    account_id_hex,
+                    account_id_bytes,
                     nonce_val,
                     slot_name_str,
                     &key_hex,
@@ -270,12 +270,12 @@ impl SqliteStore {
             if *value == EMPTY_WORD {
                 tx.execute(
                     DELETE_LATEST_MAP_ENTRY,
-                    params![account_id_hex, slot_name_str, &key_hex],
+                    params![account_id_bytes, slot_name_str, &key_hex],
                 )
                 .into_store_error()?;
             } else {
                 latest_map_stmt
-                    .execute(params![account_id_hex, slot_name_str, &key_hex, value.to_hex(),])
+                    .execute(params![account_id_bytes, slot_name_str, &key_hex, value.to_hex(),])
                     .into_store_error()?;
             }
         }

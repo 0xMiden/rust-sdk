@@ -2,7 +2,7 @@ use std::io;
 #[cfg(feature = "dap")]
 use std::net::SocketAddr;
 #[cfg(feature = "dap")]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand, ValueEnum};
@@ -10,20 +10,12 @@ use miden_client::account::AccountId;
 use miden_client::asset::AssetAmount;
 use miden_client::keystore::Keystore;
 use miden_client::note::{
-    BlockNumber,
-    Note,
-    NoteType as MidenNoteType,
-    SwapNote,
-    get_input_note_with_id_prefix,
+    BlockNumber, Note, NoteType as MidenNoteType, SwapNote, get_input_note_with_id_prefix,
 };
 use miden_client::store::NoteRecordError;
 use miden_client::transaction::{
-    PaymentNoteDescription,
-    PswapTransactionData,
-    RawOutputNote,
-    SwapTransactionData,
-    TransactionRequest,
-    TransactionRequestBuilder,
+    PaymentNoteDescription, PswapTransactionData, RawOutputNote, SwapTransactionData,
+    TransactionRequest, TransactionRequestBuilder,
 };
 use miden_client::{Client, RemoteTransactionProver};
 use tracing::info;
@@ -31,11 +23,8 @@ use tracing::info;
 use crate::config::CliConfig;
 use crate::errors::CliError;
 use crate::utils::{
-    SHARED_TOKEN_DOCUMENTATION,
-    get_input_acc_id_by_prefix_or_default,
-    load_faucet_metadata_resolver,
-    parse_account_id,
-    print_executed_transaction,
+    SHARED_TOKEN_DOCUMENTATION, get_input_acc_id_by_prefix_or_default,
+    load_faucet_metadata_resolver, parse_account_id, print_executed_transaction,
 };
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -311,7 +300,7 @@ pub struct ConsumeNotesCmd {
     /// Write a replay snapshot of the debug session to this file once it ends, for offline replay
     /// with `miden-debug --replay <FILE>`. Only meaningful together with `--start-debug-adapter`.
     #[cfg(feature = "dap")]
-    #[arg(long = "record", value_name = "FILE")]
+    #[arg(long = "record", value_name = "FILE", requires = "start_debug_adapter")]
     record: Option<PathBuf>,
 }
 
@@ -703,20 +692,18 @@ async fn debug_transaction<AUTH: Keystore + Sync + 'static>(
     // The DAP executor is created and consumed inside the transaction executor, so recorded
     // advice mutations are read back through this shared handle once the session ends.
     let recorder = config.record_event_mutations();
-    if let Some(path) = record {
-        config.record_snapshot(path.to_path_buf());
-    }
+    let snapshot_recorder = record.map(|path| config.record_snapshot(path.to_path_buf()));
     miden_debug::DapConfig::set_global(config);
 
     println!(
         "Starting debug session on {addr}; connect a DAP client to step through the transaction..."
     );
-    client
+    let result = client
         .execute_transaction_with_dap(account_id, transaction_request)
         .await
         .map_err(|err| {
             CliError::Transaction(err.into(), "error debugging the transaction".to_string())
-        })?;
+        });
 
     let mutation_sets = recorder.take();
     if !mutation_sets.is_empty() {
@@ -725,12 +712,49 @@ async fn debug_transaction<AUTH: Keystore + Sync + 'static>(
             mutation_sets.len()
         );
     }
-    if let Some(path) = record {
-        println!(
-            "Wrote replay snapshot to {}; replay it with `miden-debug --replay {}`.",
-            path.display(),
-            path.display()
-        );
+    if let Err(err) = report_replay_snapshot_write(snapshot_recorder.as_ref(), record) {
+        if result.is_err() {
+            eprintln!("{err}");
+        } else {
+            return Err(err);
+        }
     }
-    Ok(())
+    result
+}
+
+#[cfg(feature = "dap")]
+fn report_replay_snapshot_write(
+    recorder: Option<&miden_debug::ReplaySnapshotRecorder>,
+    requested_path: Option<&Path>,
+) -> Result<(), CliError> {
+    let Some(recorder) = recorder else {
+        return Ok(());
+    };
+
+    match recorder.take() {
+        Some(Ok(write)) => {
+            println!(
+                "Wrote replay snapshot ({} event(s), {} forest(s)) to {}; replay it with \
+                 `miden-debug --replay {}`.",
+                write.event_count,
+                write.forest_count,
+                write.path.display(),
+                write.path.display()
+            );
+            Ok(())
+        },
+        Some(Err(err)) => Err(CliError::Transaction(
+            err.to_string().into(),
+            format!("failed to write replay snapshot to {}", err.path.display()),
+        )),
+        None => {
+            let path = requested_path
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "<unknown>".to_string());
+            Err(CliError::Transaction(
+                "replay snapshot was not written".to_string().into(),
+                format!("debug session ended without writing replay snapshot to {path}"),
+            ))
+        },
+    }
 }

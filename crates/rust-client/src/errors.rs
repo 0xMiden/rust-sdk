@@ -6,7 +6,13 @@ use core::fmt;
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::crypto::merkle::MerkleError;
-pub use miden_protocol::errors::{AccountError, AccountIdError, AssetError, NetworkIdError};
+pub use miden_protocol::errors::{
+    AccountDeltaError,
+    AccountError,
+    AccountIdError,
+    AssetError,
+    NetworkIdError,
+};
 use miden_protocol::errors::{
     NoteError,
     PartialBlockchainError,
@@ -78,6 +84,8 @@ pub enum ClientError {
     AccountAlreadyTracked(AccountId),
     #[error("account error")]
     AccountError(#[from] AccountError),
+    #[error("account delta error")]
+    AccountDeltaError(#[from] AccountDeltaError),
     #[error("account {0} is locked because the local state may be out of date with the network")]
     AccountLocked(AccountId),
     #[error(

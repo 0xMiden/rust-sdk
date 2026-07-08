@@ -23,6 +23,7 @@ use miden_client::Word;
 use miden_client::account::{
     Account,
     AccountCode,
+    AccountDelta,
     AccountHeader,
     AccountId,
     AccountStorage,
@@ -526,6 +527,48 @@ impl Store for SqliteStore {
 
         self.interact_with_connection(move |conn| {
             SqliteStore::get_account_map_item(conn, &smt_forest, account_id, slot_name, key)
+        })
+        .await
+    }
+
+    async fn vault_asset_witnesses_after_delta(
+        &self,
+        account_id: AccountId,
+        delta: AccountDelta,
+        vault_root: Word,
+        vault_keys: BTreeSet<AssetVaultKey>,
+    ) -> Result<Vec<AssetWitness>, StoreError> {
+        let smt_forest = self.smt_forest.clone();
+        self.interact_with_connection(move |conn| {
+            SqliteStore::vault_asset_witnesses_after_delta(
+                conn,
+                &smt_forest,
+                account_id,
+                &delta,
+                vault_root,
+                vault_keys,
+            )
+        })
+        .await
+    }
+
+    async fn storage_map_witness_after_delta(
+        &self,
+        account_id: AccountId,
+        delta: AccountDelta,
+        map_root: Word,
+        map_key: StorageMapKey,
+    ) -> Result<StorageMapWitness, StoreError> {
+        let smt_forest = self.smt_forest.clone();
+        self.interact_with_connection(move |conn| {
+            SqliteStore::storage_map_witness_after_delta(
+                conn,
+                &smt_forest,
+                account_id,
+                &delta,
+                map_root,
+                map_key,
+            )
         })
         .await
     }

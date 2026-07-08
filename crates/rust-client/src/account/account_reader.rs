@@ -6,6 +6,7 @@ use alloc::vec::Vec;
 use miden_protocol::account::{
     AccountHeader,
     AccountId,
+    PartialAccount,
     StorageMapKey,
     StorageMapWitness,
     StorageSlotName,
@@ -98,6 +99,15 @@ impl AccountReader {
             .get_account_header(self.account_id)
             .await?
             .ok_or(ClientError::AccountDataNotFound(self.account_id))
+    }
+
+    /// Retrieves the minimal partial account representation for this account.
+    pub(crate) async fn partial_account(&self) -> Result<PartialAccount, ClientError> {
+        self.store
+            .get_minimal_partial_account(self.account_id)
+            .await?
+            .ok_or(ClientError::AccountDataNotFound(self.account_id))?
+            .try_into()
     }
 
     /// Retrieves the addresses associated with this account.

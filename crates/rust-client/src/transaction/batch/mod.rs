@@ -55,12 +55,30 @@ use alloc::vec::Vec;
 
 pub(crate) use data_store::InMemoryBatchDataStore;
 pub use error::BatchBuilderError;
-use miden_protocol::MIN_PROOF_SECURITY_LEVEL;
-use miden_protocol::account::{Account, AccountId};
+use miden_protocol::account::{
+    AccountId,
+    AccountStorageHeader,
+    PartialAccount,
+    PartialStorage,
+    PartialStorageMap,
+    StorageMapDelta,
+    StorageSlotDelta,
+    StorageSlotHeader,
+    StorageSlotType,
+};
+use miden_protocol::asset::PartialVault;
 use miden_protocol::batch::ProposedBatch;
 use miden_protocol::block::{BlockHeader, BlockNumber};
+use miden_protocol::crypto::merkle::smt::PartialSmt;
 use miden_protocol::note::NoteId;
-use miden_protocol::transaction::{PartialBlockchain, ProvenTransaction, TransactionInputs};
+use miden_protocol::transaction::{
+    ExecutedTransaction,
+    PartialBlockchain,
+    ProvenTransaction,
+    TransactionInputs,
+};
+use miden_protocol::{MIN_PROOF_SECURITY_LEVEL, ZERO};
+use miden_tx::DataStoreError;
 use miden_tx::auth::TransactionAuthenticator;
 use miden_tx_batch_prover::LocalBatchProver;
 
@@ -261,8 +279,8 @@ where
     }
 }
 
-/// Executes a single transaction, that is part of the batch to be sent to the node.
-/// Transaction is ran as the provided `Account`
+/// Executes a single transaction that is part of the batch to be sent to the node.
+/// The transaction runs against the current in-batch [`PartialAccount`] state.
 async fn execute_transaction_for_batch<AUTH>(
     client: &Client<AUTH>,
     data_store: &mut InMemoryBatchDataStore,
@@ -272,23 +290,15 @@ async fn execute_transaction_for_batch<AUTH>(
 where
     AUTH: TransactionAuthenticator + Sync + 'static,
 {
-    let mut account = if let Some(account) = data_store.get_account(account_id) {
-        account.clone()
-    } else {
-        let record = client
-            .store
-            .get_account(account_id)
-            .await?
-            .ok_or(ClientError::AccountDataNotFound(account_id))?;
-        if record.is_locked() {
-            return Err(ClientError::AccountLocked(account_id));
-        }
-        let account: Account = record.try_into()?;
-        account
-    };
+    let account_reader = client.account_reader(account_id);
+    if account_reader.status().await?.is_locked() {
+        return Err(ClientError::AccountLocked(account_id));
+    }
+
+    let account = data_store.current_account(&account_reader).await?;
 
     let account_id = account.id();
-    let prep = client.prepare_transaction(&account, transaction_request).await?;
+    let prep = client.prepare_transaction_for_batch(&account, transaction_request).await?;
 
     data_store.register_note_scripts(prep.output_note_scripts());
     for fpi_account in &prep.foreign_account_inputs {
@@ -301,7 +311,12 @@ where
     let mut notes = prep.notes;
     if prep.ignore_invalid_notes {
         notes = client
-            .get_valid_input_notes(&account, notes, prep.tx_args.clone(), &prep.output_recipients)
+            .get_valid_input_notes_with_data_store(
+                data_store,
+                account_id,
+                notes,
+                prep.tx_args.clone(),
+            )
             .await?;
     }
 
@@ -310,12 +325,144 @@ where
         .execute_transaction(account_id, prep.block_num, notes, prep.tx_args)
         .await?;
 
-    // Cache new account state in memory data store
-    account
-        .apply_delta(executed_transaction.account_delta())
-        .map_err(ClientError::AccountError)?;
-    data_store.cache_account(account_id, account);
+    let current_account = partial_account_from_executed_transaction(&executed_transaction)?;
+    let tx_inputs = executed_transaction.tx_inputs().clone();
+    let account_delta = executed_transaction.account_delta().clone();
+    data_store.cache_account(current_account, tx_inputs, account_delta)?;
 
     validate_executed_transaction(&executed_transaction, &prep.output_recipients)?;
     TransactionResult::new(executed_transaction, prep.future_notes)
+}
+
+fn partial_account_from_executed_transaction(
+    executed_transaction: &ExecutedTransaction,
+) -> Result<PartialAccount, DataStoreError> {
+    let initial_account = executed_transaction.initial_account();
+    let final_account = executed_transaction.final_account();
+    let code = executed_transaction
+        .account_delta()
+        .code()
+        .unwrap_or_else(|| initial_account.code())
+        .clone();
+
+    if final_account.code_commitment() != code.commitment() {
+        return Err(DataStoreError::other(format!(
+            "account code commitment changed for account {} while preparing in-batch state",
+            final_account.id()
+        )));
+    }
+
+    let storage_header = final_storage_header_from_delta(executed_transaction)?;
+
+    let storage = PartialStorage::new(storage_header, core::iter::empty::<PartialStorageMap>())
+        .map_err(|err| {
+            DataStoreError::other_with_source(
+                "failed to rebuild final in-batch partial account storage",
+                err,
+            )
+        })?;
+    let vault = PartialVault::new(final_account.vault_root());
+    let seed = if final_account.nonce() == ZERO {
+        initial_account.seed()
+    } else {
+        None
+    };
+
+    PartialAccount::new(final_account.id(), final_account.nonce(), code, storage, vault, seed)
+        .map_err(|err| {
+            DataStoreError::other_with_source(
+                "failed to rebuild final in-batch partial account",
+                err,
+            )
+        })
+}
+
+fn final_storage_header_from_delta(
+    executed_transaction: &ExecutedTransaction,
+) -> Result<AccountStorageHeader, DataStoreError> {
+    let initial_account = executed_transaction.initial_account();
+    let final_account = executed_transaction.final_account();
+    let storage_delta = executed_transaction.account_delta().storage();
+
+    let mut slots = Vec::new();
+    for slot in initial_account.storage().header().slots() {
+        let new_slot_value = match storage_delta.get(slot.name()) {
+            None => slot.value(),
+            Some(StorageSlotDelta::Value(value)) => {
+                if slot.slot_type() != StorageSlotType::Value {
+                    return Err(DataStoreError::other(format!(
+                        "storage slot {} changed as value but initial in-batch state has type {:?}",
+                        slot.name(),
+                        slot.slot_type()
+                    )));
+                }
+                *value
+            },
+            Some(StorageSlotDelta::Map(map_delta)) => {
+                if slot.slot_type() != StorageSlotType::Map {
+                    return Err(DataStoreError::other(format!(
+                        "storage slot {} changed as map but initial in-batch state has type {:?}",
+                        slot.name(),
+                        slot.slot_type()
+                    )));
+                }
+                updated_storage_map_root(executed_transaction.tx_inputs(), slot.value(), map_delta)?
+            },
+        };
+
+        slots.push(StorageSlotHeader::new(slot.name().clone(), slot.slot_type(), new_slot_value));
+    }
+
+    let storage_header = AccountStorageHeader::new(slots).map_err(|err| {
+        DataStoreError::other_with_source(
+            "failed to rebuild final in-batch account storage header",
+            err,
+        )
+    })?;
+
+    if storage_header.to_commitment() != final_account.storage_commitment() {
+        return Err(DataStoreError::other(format!(
+            "rebuilt storage commitment does not match final account state for account {}: rebuilt = {:?}, final = {:?}",
+            final_account.id(),
+            storage_header.to_commitment(),
+            final_account.storage_commitment()
+        )));
+    }
+
+    Ok(storage_header)
+}
+
+fn updated_storage_map_root(
+    tx_inputs: &TransactionInputs,
+    initial_root: miden_protocol::Word,
+    map_delta: &StorageMapDelta,
+) -> Result<miden_protocol::Word, DataStoreError> {
+    let mut partial_smt = PartialSmt::new(initial_root);
+
+    for map_key in map_delta.entries().keys() {
+        let witness =
+            tx_inputs.read_storage_map_witness(initial_root, *map_key).map_err(|err| {
+                DataStoreError::other_with_source(
+                    "failed to read initial storage map witness while rebuilding in-batch state",
+                    err,
+                )
+            })?;
+        partial_smt.add_proof(witness.into()).map_err(|err| {
+            DataStoreError::other_with_source(
+                "failed to add storage map witness while rebuilding in-batch state",
+                err,
+            )
+        })?;
+    }
+
+    for (map_key, value) in map_delta.entries() {
+        partial_smt.insert(map_key.hash().as_word(), *value).map_err(|err| {
+            DataStoreError::other_with_source(
+                "failed to apply storage map delta while rebuilding in-batch state",
+                err,
+            )
+        })?;
+    }
+
+    Ok(partial_smt.root())
 }

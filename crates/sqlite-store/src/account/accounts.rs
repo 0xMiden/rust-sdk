@@ -297,6 +297,53 @@ impl SqliteStore {
         Ok((item, witness))
     }
 
+    /// Serves a storage map witness for `key` against the in-batch storage state obtained by
+    /// applying `delta` to the account's committed storage, *without* persisting the change.
+    ///
+    /// `map_root` is the in-batch root of the queried map slot. An unchanged slot's root is
+    /// already held by the forest and served directly; for a changed slot the slot's delta is
+    /// staged on its committed map root and the witness read at the resulting staged root.
+    pub(crate) fn storage_map_witness_after_delta(
+        conn: &mut Connection,
+        smt_forest: &Arc<RwLock<AccountSmtForest>>,
+        account_id: AccountId,
+        delta: &AccountDelta,
+        map_root: Word,
+        key: StorageMapKey,
+    ) -> Result<StorageMapWitness, StoreError> {
+        let committed_slots = query_storage_values(conn, account_id)?;
+
+        let mut smt_forest = smt_forest
+            .write()
+            .map_err(|_| StoreError::DatabaseError("smt_forest write lock poisoned".to_string()))?;
+
+        // Unchanged slot: the in-batch root equals the committed root the forest already holds,
+        // so the witness can be read directly.
+        if let Ok(witness) = smt_forest.get_storage_map_item_witness(map_root, key) {
+            return Ok(witness);
+        }
+
+        // Changed slot: find the map slot whose committed root, after applying its delta, yields
+        // the requested in-batch root, and read the witness at the staged root.
+        for (slot_name, map_delta) in delta.storage().maps() {
+            let Some((slot_type, committed_root)) = committed_slots.get(slot_name) else {
+                continue;
+            };
+            if *slot_type != StorageSlotType::Map {
+                continue;
+            }
+
+            let entries = map_delta.entries().iter().map(|(map_key, value)| (*map_key, *value));
+            let (staged_root, witness) =
+                smt_forest.staged_storage_map_witness(*committed_root, entries, key)?;
+            if staged_root == map_root {
+                return Ok(witness);
+            }
+        }
+
+        Err(StoreError::AccountStorageRootNotFound(map_root))
+    }
+
     pub(crate) fn get_account_addresses(
         conn: &mut Connection,
         account_id: AccountId,

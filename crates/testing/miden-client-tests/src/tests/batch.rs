@@ -11,7 +11,9 @@ use miden_client::rpc::NodeRpcClient;
 use miden_client::store::{StoreError, TransactionFilter};
 use miden_client::testing::common::{
     MINT_AMOUNT,
+    TRANSFER_AMOUNT,
     create_test_store_path,
+    insert_new_fungible_faucet,
     mint_and_consume,
     mint_note,
     setup_two_wallets_and_faucet,
@@ -326,6 +328,90 @@ async fn batch_builder_push_succeeds_when_balance_depends_on_prior_push() {
     })
     .await
     .expect("submit should succeed because validation uses in-batch state");
+
+    assert!(block_num.as_u32() > 0);
+}
+
+/// A later transaction in a batch may touch a vault key that an earlier transaction in the same
+/// batch never touched. That key is absent from the earlier transaction's execution advice, so the
+/// batch data store must serve its witness by staging the accumulated in-batch delta onto the
+/// store's committed Merkle forest — not fail. Regression test for the in-batch "untouched key"
+/// witness path.
+///
+/// Setup: `from` holds a balance of a "held" faucet (committed); a note from a *different*
+/// "consumed" faucet is left unconsumed.
+/// - Push 1 consumes the note → touches only the consumed faucet's vault key.
+/// - Push 2 sends the held asset to `to` → touches the held faucet's vault key, which push 1 never
+///   loaded.
+#[tokio::test]
+async fn batch_builder_serves_witness_for_untouched_vault_key() {
+    let (mut client, rpc_api, authenticator) = Box::pin(create_test_client()).await;
+
+    let (from_account, to_account, consumed_faucet) = setup_two_wallets_and_faucet(
+        &mut client,
+        AccountType::Private,
+        &authenticator,
+        RPO_FALCON_SCHEME_ID,
+    )
+    .await
+    .unwrap();
+
+    let from_id = from_account.id();
+    let to_id = to_account.id();
+    let consumed_faucet_id = consumed_faucet.id();
+
+    // A second, independent faucet whose balance `from` holds but never touches in push 1.
+    let (held_faucet, _) = insert_new_fungible_faucet(
+        &mut client,
+        AccountType::Private,
+        &authenticator,
+        RPO_FALCON_SCHEME_ID,
+    )
+    .await
+    .unwrap();
+    let held_faucet_id = held_faucet.id();
+    client.sync_state().await.unwrap();
+
+    // Give `from` a committed balance of the held faucet. It is part of the committed vault but is
+    // NOT touched by the first in-batch transaction.
+    mint_and_consume(&mut client, from_id, held_faucet_id, NoteType::Private).await;
+    rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+
+    // Mint a note from the consumed faucet for `from`, left UNCONSUMED so push 1 can claim it.
+    let (_mint_tx_id, consumed_note) =
+        mint_note(&mut client, from_id, consumed_faucet_id, NoteType::Private).await;
+    rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+
+    // Push 1 consumes the note → touches only the consumed faucet's vault key.
+    let push1 = TransactionRequestBuilder::new()
+        .build_consume_notes(vec![consumed_note])
+        .unwrap();
+
+    // Push 2 sends the held asset to `to` → touches the held faucet's vault key, absent from
+    // push 1's execution advice.
+    let held_asset = FungibleAsset::new(held_faucet_id, TRANSFER_AMOUNT).unwrap();
+    let push2 = TransactionRequestBuilder::new()
+        .build_pay_to_id(
+            PaymentNoteDescription::new(vec![Asset::Fungible(held_asset)], from_id, to_id),
+            NoteType::Private,
+            client.rng(),
+        )
+        .unwrap();
+
+    let block_num = Box::pin(async {
+        client
+            .new_transaction_batch()
+            .push(from_id, push1)
+            .await?
+            .push(from_id, push2)
+            .await?
+            .submit()
+            .await
+    })
+    .await
+    .expect("submit should succeed: the untouched G vault key is served via the store forest");
 
     assert!(block_num.as_u32() > 0);
 }

@@ -67,7 +67,7 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use miden_protocol::account::{Account, AccountCode, AccountId};
+use miden_protocol::account::{Account, AccountCode, AccountId, PartialAccount};
 use miden_protocol::asset::{Asset, NonFungibleAsset};
 use miden_protocol::block::BlockNumber;
 use miden_protocol::errors::AssetError;
@@ -348,24 +348,42 @@ where
     }
 
     /// Performs the data-store-independent setup shared by `execute_transaction` and
-    /// `execute_transaction_for_batch`: validates the request against the supplied
-    /// `account`, loads/filters input notes, builds the transaction script and args,
-    /// retrieves foreign-account inputs, and computes the reference block number.
+    /// `execute_transaction_for_batch`: validates the request when a full account is available,
+    /// loads/filters input notes, builds the transaction script and args, retrieves
+    /// foreign-account inputs, and computes the reference block number.
     ///
     /// This method does not write to the store: any state produced by the transaction is
     /// persisted only after the transaction executes successfully.
     ///
-    /// `account` is the state validation runs against — for a single transaction this is
-    /// the persisted account; inside [`crate::transaction::BatchBuilder::push`] it is the
-    /// in-batch (stacked) state, so balances reflect prior pushes.
+    /// In batch execution, request validation that needs a full account is skipped here; the
+    /// executor still runs against the in-batch [`PartialAccount`] state.
     pub(crate) async fn prepare_transaction(
         &self,
         account: &Account,
         transaction_request: TransactionRequest,
     ) -> Result<PreparedTransaction, ClientError> {
-        let account_id = account.id();
+        self.prepare_transaction_inner(account.id(), transaction_request, Some(account))
+            .await
+    }
+
+    pub(crate) async fn prepare_transaction_for_batch(
+        &self,
+        account: &PartialAccount,
+        transaction_request: TransactionRequest,
+    ) -> Result<PreparedTransaction, ClientError> {
+        self.prepare_transaction_inner(account.id(), transaction_request, None).await
+    }
+
+    async fn prepare_transaction_inner(
+        &self,
+        account_id: AccountId,
+        transaction_request: TransactionRequest,
+        account_to_validate: Option<&Account>,
+    ) -> Result<PreparedTransaction, ClientError> {
         self.validate_recency().await?;
-        validate_account_request(&transaction_request, account)?;
+        if let Some(account) = account_to_validate {
+            validate_account_request(&transaction_request, account)?;
+        }
 
         // Retrieve all input notes from the store.
         let mut stored_note_records = self
@@ -689,18 +707,29 @@ where
     pub(crate) async fn get_valid_input_notes(
         &self,
         account: &Account,
-        mut input_notes: InputNotes<InputNote>,
+        input_notes: InputNotes<InputNote>,
         tx_args: TransactionArgs,
         output_recipients: &[NoteRecipient],
     ) -> Result<InputNotes<InputNote>, ClientError> {
-        loop {
-            let data_store = ClientDataStore::new(self.store.clone(), self.rpc_api.clone());
-            data_store.register_note_scripts(output_recipients.iter().map(|r| r.script().clone()));
+        let data_store = ClientDataStore::new(self.store.clone(), self.rpc_api.clone());
+        data_store.register_note_scripts(output_recipients.iter().map(|r| r.script().clone()));
+        data_store.mast_store().load_account_code(account.code());
 
-            data_store.mast_store().load_account_code(account.code());
-            let execution = NoteConsumptionChecker::new(&self.build_executor(&data_store)?)
+        self.get_valid_input_notes_with_data_store(&data_store, account.id(), input_notes, tx_args)
+            .await
+    }
+
+    pub(crate) async fn get_valid_input_notes_with_data_store<STORE: DataStore + Sync>(
+        &self,
+        data_store: &STORE,
+        account_id: AccountId,
+        mut input_notes: InputNotes<InputNote>,
+        tx_args: TransactionArgs,
+    ) -> Result<InputNotes<InputNote>, ClientError> {
+        loop {
+            let execution = NoteConsumptionChecker::new(&self.build_executor(data_store)?)
                 .check_notes_consumability(
-                    account.id(),
+                    account_id,
                     self.store.get_sync_height().await?,
                     input_notes.iter().map(|n| n.clone().into_note()).collect(),
                     tx_args.clone(),

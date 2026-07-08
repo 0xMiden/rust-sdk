@@ -76,6 +76,64 @@ impl AccountSmtForest {
         Ok(StorageMapWitness::new(proof, [key])?)
     }
 
+    // STAGED WITNESS QUERIES
+    // --------------------------------------------------------------------------------------------
+
+    /// Serves vault asset witnesses for `query_keys` against the vault root obtained by staging
+    /// the supplied asset updates onto `committed_vault_root`, *without* persisting the staged
+    /// tree.
+    ///
+    /// The staged tree is inserted into the forest (sharing nodes with the committed tree),
+    /// queried, then dropped: popping it decrements reference counts back to their committed
+    /// values, so the committed tree's nodes are left intact. The staged root is returned
+    /// alongside the witnesses so the caller can verify it matches the expected in-batch root.
+    ///
+    /// Unlike [`Self::get_asset_and_witness`], this also returns a witness for absent keys (an
+    /// emptiness proof), which the executor needs when an asset is being added to the vault.
+    pub fn staged_vault_asset_witnesses(
+        &mut self,
+        committed_vault_root: Word,
+        new_assets: impl Iterator<Item = Asset>,
+        removed_vault_keys: impl Iterator<Item = AssetVaultKey>,
+        query_keys: impl IntoIterator<Item = AssetVaultKey>,
+    ) -> Result<(Word, Vec<AssetWitness>), StoreError> {
+        let staged_root =
+            self.update_asset_nodes(committed_vault_root, new_assets, removed_vault_keys)?;
+
+        let witnesses = query_keys
+            .into_iter()
+            .map(|key| {
+                let proof = self.forest.open(staged_root, key.into())?;
+                Ok(AssetWitness::new(proof)?)
+            })
+            .collect::<Result<Vec<_>, StoreError>>();
+
+        // `update_asset_nodes` only adds a new root when the delta actually changed the tree;
+        // popping that staged root restores the committed tree's ref counts exactly.
+        if staged_root != committed_vault_root {
+            self.safe_pop_smts([staged_root]);
+        }
+
+        witnesses.map(|witnesses| (staged_root, witnesses))
+    }
+
+    /// Serves a storage map witness for `query_key` against the map root obtained by staging the
+    /// supplied entries onto `committed_map_root`, *without* persisting the staged tree. See
+    /// [`Self::staged_vault_asset_witnesses`] for the staging / ref-count contract.
+    pub fn staged_storage_map_witness(
+        &mut self,
+        committed_map_root: Word,
+        entries: impl Iterator<Item = (StorageMapKey, Word)>,
+        query_key: StorageMapKey,
+    ) -> Result<(Word, StorageMapWitness), StoreError> {
+        let staged_root = self.update_storage_map_nodes(committed_map_root, entries)?;
+        let witness = self.get_storage_map_item_witness(staged_root, query_key);
+        if staged_root != committed_map_root {
+            self.safe_pop_smts([staged_root]);
+        }
+        witness.map(|witness| (staged_root, witness))
+    }
+
     // ROOT LIFECYCLE
     // --------------------------------------------------------------------------------------------
 

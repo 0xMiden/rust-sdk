@@ -63,6 +63,12 @@ impl ClientDataStore {
         self.cache.mast_store.clone()
     }
 
+    /// Returns the underlying [`Store`], so callers (e.g. the batch builder) can serve witnesses
+    /// against in-batch state without reconstructing accounts.
+    pub fn store(&self) -> &Arc<dyn Store> {
+        &self.store
+    }
+
     /// Stores the provided foreign account inputs so they can be served to the executor upon
     /// request.
     pub fn register_foreign_account_inputs(

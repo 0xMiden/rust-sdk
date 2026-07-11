@@ -14,15 +14,15 @@ static PRODUCTION_MIGRATIONS: LazyLock<Migrations<'static>> = LazyLock::new(|| {
 // ================================================================================================
 
 /// v1 stores assets and metadata in a single delimited column.
-const FIXTURE_MIGRATION_V1: &str = r#"
+const FIXTURE_MIGRATION_V1: &str = r"
 CREATE TABLE note_records (
     id TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
-"#;
+";
 
 /// v2 splits the delimited column into separate assets and metadata columns.
-const FIXTURE_MIGRATION_V2: &str = r#"
+const FIXTURE_MIGRATION_V2: &str = r"
 CREATE TABLE note_records_new (
     id TEXT PRIMARY KEY,
     assets TEXT NOT NULL,
@@ -38,7 +38,7 @@ FROM note_records;
 
 DROP TABLE note_records;
 ALTER TABLE note_records_new RENAME TO note_records;
-"#;
+";
 
 static FIXTURE_MIGRATIONS: LazyLock<Migrations<'static>> = LazyLock::new(|| {
     Migrations::new(vec![M::up(FIXTURE_MIGRATION_V1), M::up(FIXTURE_MIGRATION_V2)])

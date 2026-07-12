@@ -304,7 +304,7 @@ Either `Expected` or `Committed` notes may be consumed by this command, changing
 
 Transfers assets to another account. Sender Account creates a note that a target Account ID can consume. The asset is identified by the tuple `(FAUCET ID, AMOUNT)`. The note can be configured to be recallable making the sender able to consume it after a height is reached.
 
-Usage: `miden-client transfer --sender <SENDER ACCOUNT ID> --target <TARGET ACCOUNT ID> --asset <AMOUNT>::<FAUCET ID> --note-type <NOTE_TYPE> <RECALL_HEIGHT>`
+Usage: `miden-client transfer --sender <SENDER ACCOUNT ID> --target <TARGET ACCOUNT ID> --asset <AMOUNT>::<FAUCET ID> --note-type <NOTE_TYPE> [--recall-height <RECALL_HEIGHT>]`
 
 #### `swap`
 
@@ -357,13 +357,13 @@ For `transfer` and `consume-notes`, you can omit the `--sender` and `--account` 
 For every command which needs an account ID (either wallet or faucet), you can also provide a partial ID instead of the full ID for each account. So instead of
 
 ```sh
-miden-client transfer --sender 0x80519a1c5e3680fc --target 0x8fd4b86a6387f8d8 --asset 100::0xa99c5c8764d4e011
+miden-client transfer --sender 0x80519a1c5e3680fc --target 0x8fd4b86a6387f8d8 --asset 100::0xa99c5c8764d4e011 --note-type private
 ```
 
 You can do:
 
 ```sh
-miden-client transfer --sender 0x80519 --target 0x8fd4b --asset 100::0xa99c5c8764d4e011
+miden-client transfer --sender 0x80519 --target 0x8fd4b --asset 100::0xa99c5c8764d4e011 --note-type private
 ```
 
 !!! note

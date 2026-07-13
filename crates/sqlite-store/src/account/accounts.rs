@@ -36,7 +36,6 @@ use miden_client::utils::{Deserializable, Serializable};
 use miden_client::{AccountError, Felt, Word};
 use miden_protocol::account::{AccountStorageHeader, StorageMapWitness, StorageSlotHeader};
 use miden_protocol::asset::{AssetVaultKey, PartialVault};
-use miden_protocol::crypto::merkle::MerkleError;
 use rusqlite::types::Value;
 use rusqlite::{Connection, OptionalExtension, Transaction, named_params, params};
 
@@ -258,7 +257,7 @@ impl SqliteStore {
 
         match smt_forest.get_asset_and_witness(header.vault_root(), vault_key) {
             Ok((asset, witness)) => Ok(Some((asset, witness))),
-            Err(StoreError::MerkleStoreError(MerkleError::UntrackedKey(_))) => Ok(None),
+            Err(StoreError::VaultKeyNotTracked(..)) => Ok(None),
             Err(err) => Err(err),
         }
     }

@@ -24,8 +24,6 @@ use miden_protocol::{Felt, ONE, Word};
 
 use super::SyncSummary;
 use crate::note::{NoteUpdateTracker, NoteUpdateType};
-use crate::rpc::domain::account_vault::AccountVaultUpdate;
-use crate::rpc::domain::storage_map::StorageMapUpdate;
 use crate::rpc::domain::transaction::TransactionRecord as RpcTransactionRecord;
 use crate::transaction::{DiscardCause, TransactionRecord, TransactionStatus};
 
@@ -377,78 +375,54 @@ impl PublicAccountUpdate {
 
 /// Patch payload for a public account update.
 ///
-/// Carries the new account header plus the per-block updates fetched from the node's incremental
-/// endpoints (`sync_storage_maps` and `sync_account_vault`). The store turns these absolute
-/// updates into the [`AccountPatch`] to apply via [`Self::compute_account_patch`].
+/// Carries the new account header plus the merged updates fetched from the node's incremental
+/// endpoints (`sync_storage_maps` and `sync_account_vault`): the value-slot values, the absolute
+/// changed map entries per slot, and the absolute vault patch. The store turns these into the
+/// [`AccountPatch`] to apply via [`Self::compute_account_patch`].
 #[derive(Debug, Clone)]
 pub struct PublicAccountPatch {
     /// The new account header after applying these updates.
     new_header: AccountHeader,
-    /// First block of the synced range (the client's previous sync height).
-    block_from: BlockNumber,
-    /// Last block of the synced range (the block at which `new_header` is observed).
-    block_to: BlockNumber,
     /// New value-slot values from the `get_account` storage header. Value slots are always
     /// small enough to fit in the response.
     value_slot_updates: Vec<(StorageSlotName, Word)>,
-    /// Per-block storage map updates from `sync_storage_maps`.
-    storage_map_updates: Vec<StorageMapUpdate>,
-    /// Per-block vault updates from `sync_account_vault`.
-    vault_updates: Vec<AccountVaultUpdate>,
+    /// Absolute changed entries per storage map slot, merged from `sync_storage_maps`.
+    map_entries: BTreeMap<StorageSlotName, StorageMapPatchEntries>,
+    /// Absolute vault patch merged from `sync_account_vault`.
+    vault_patch: AccountVaultPatch,
 }
 
 impl PublicAccountPatch {
     /// Creates a new [`PublicAccountPatch`].
     pub fn new(
         new_header: AccountHeader,
-        block_from: BlockNumber,
-        block_to: BlockNumber,
         value_slot_updates: Vec<(StorageSlotName, Word)>,
-        storage_map_updates: Vec<StorageMapUpdate>,
-        vault_updates: Vec<AccountVaultUpdate>,
+        map_entries: BTreeMap<StorageSlotName, StorageMapPatchEntries>,
+        vault_patch: AccountVaultPatch,
     ) -> Self {
         Self {
             new_header,
-            block_from,
-            block_to,
             value_slot_updates,
-            storage_map_updates,
-            vault_updates,
+            map_entries,
+            vault_patch,
         }
     }
 
-    /// Returns the account ID this delta applies to.
+    /// Returns the account ID this patch applies to.
     pub fn id(&self) -> AccountId {
         self.new_header.id()
     }
 
-    /// Returns the new account header that this delta advances the local state to.
+    /// Returns the new account header that this patch advances the local state to.
     pub fn new_header(&self) -> &AccountHeader {
         &self.new_header
     }
 
-    /// Returns the first block of the synced range.
-    pub fn block_from(&self) -> BlockNumber {
-        self.block_from
-    }
-
-    /// Returns the names of the value slots referenced by this delta.
-    pub fn value_slot_names(&self) -> Vec<StorageSlotName> {
-        self.value_slot_updates.iter().map(|(name, _)| name.clone()).collect()
-    }
-
-    /// Returns the last block of the synced range.
-    pub fn block_to(&self) -> BlockNumber {
-        self.block_to
-    }
-
     /// Builds the absolute [`AccountPatch`] implied by this payload.
     ///
-    /// The node's incremental endpoints already report the new absolute value of each changed
-    /// storage slot, map entry, and vault asset, so the patch is assembled directly from them with
-    /// no need to load the prior account state: value slots and map entries become storage-patch
-    /// entries, present assets become vault-patch insertions, and absent assets (the node's removal
-    /// signal) become vault-patch removals.
+    /// The carried updates are already merged to the new absolute value of each changed storage
+    /// slot, map entry, and vault asset, so the patch is assembled directly from them with no need
+    /// to load the prior account state.
     ///
     /// An update of an existing account (final nonce > 1) yields a partial-state patch with no
     /// code. A newly created account (final nonce 1) cannot be represented as a partial-state
@@ -472,44 +446,26 @@ impl PublicAccountPatch {
             (slot_name.clone(), StorageSlotPatch::Value(value_patch))
         });
 
-        // Map entries are absolute per (slot, key), applying them in block order lets a later block
-        // overwrite an earlier one for the same key, yielding the final value.
-        let mut map_updates: Vec<&StorageMapUpdate> = self.storage_map_updates.iter().collect();
-        map_updates.sort_by_key(|u| u.block_num);
-        let mut map_entries_by_slot: BTreeMap<StorageSlotName, StorageMapPatchEntries> =
-            BTreeMap::new();
-        for update in map_updates {
-            map_entries_by_slot
-                .entry(update.slot_name.clone())
-                .or_default()
-                .insert(update.key, update.value);
-        }
-        let map_entries = map_entries_by_slot.into_iter().map(|(slot_name, entries)| {
+        let map_entries = self.map_entries.iter().map(|(slot_name, entries)| {
             let map_patch = if is_full_state {
-                StorageMapPatch::Create { entries }
+                StorageMapPatch::Create { entries: entries.clone() }
             } else {
-                StorageMapPatch::Update { entries }
+                StorageMapPatch::Update { entries: entries.clone() }
             };
-            (slot_name, StorageSlotPatch::Map(map_patch))
+            (slot_name.clone(), StorageSlotPatch::Map(map_patch))
         });
 
         let storage = AccountStoragePatch::from_entries(value_entries.chain(map_entries))?;
 
-        // Vault entries are absolute per key, applying them in block order yields the final value,
-        // with a `None` asset encoding a removal.
-        let mut vault = AccountVaultPatch::default();
-        let mut vault_updates: Vec<&AccountVaultUpdate> = self.vault_updates.iter().collect();
-        vault_updates.sort_by_key(|u| u.block_num);
-        for update in vault_updates {
-            match update.asset {
-                Some(asset) => vault.insert_asset(asset),
-                None => vault.remove_asset(update.vault_key),
-            }
-        }
+        let code = if is_full_state { code } else { None };
 
-        let code = if self.new_header.nonce() == ONE { code } else { None };
-
-        AccountPatch::new(account_id, storage, vault, code, Some(self.new_header.nonce()))
+        AccountPatch::new(
+            account_id,
+            storage,
+            self.vault_patch.clone(),
+            code,
+            Some(self.new_header.nonce()),
+        )
     }
 }
 
@@ -564,14 +520,11 @@ impl AccountUpdates {
 
 #[cfg(test)]
 mod tests {
+    use alloc::collections::BTreeMap;
     use alloc::vec;
 
-    use miden_protocol::account::StorageMapKey;
-    use miden_protocol::asset::{Asset, AssetVaultKey, FungibleAsset};
-    use miden_protocol::testing::account_id::{
-        ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET,
-        ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE,
-    };
+    use miden_protocol::account::{AccountCode, StorageMapKey, StorageMapPatchEntries};
+    use miden_protocol::testing::account_id::ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE;
 
     use super::*;
 
@@ -579,16 +532,8 @@ mod tests {
         ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE.try_into().unwrap()
     }
 
-    fn faucet_id() -> AccountId {
-        ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET.try_into().unwrap()
-    }
-
     fn slot_name(name: &str) -> StorageSlotName {
         StorageSlotName::new(name).unwrap()
-    }
-
-    fn map_key(n: u64) -> StorageMapKey {
-        StorageMapKey::from_raw(word(n))
     }
 
     fn word(n: u64) -> Word {
@@ -598,10 +543,6 @@ mod tests {
             Felt::new_unchecked(0),
             Felt::new_unchecked(0),
         ])
-    }
-
-    fn fungible(amount: u64) -> Asset {
-        Asset::Fungible(FungibleAsset::new(faucet_id(), amount).unwrap())
     }
 
     fn header_with_nonce(nonce: u64) -> AccountHeader {
@@ -614,61 +555,22 @@ mod tests {
         )
     }
 
-    fn empty_payload(new_header: AccountHeader) -> PublicAccountPatch {
-        PublicAccountPatch::new(
-            new_header,
-            BlockNumber::from(0u32),
-            BlockNumber::from(1u32),
-            vec![],
-            vec![],
-            vec![],
-        )
-    }
-
-    fn storage_map_update(
-        block: u32,
-        slot: &StorageSlotName,
-        key: StorageMapKey,
-        value: Word,
-    ) -> StorageMapUpdate {
-        StorageMapUpdate {
-            block_num: BlockNumber::from(block),
-            slot_name: slot.clone(),
-            key,
-            value,
-        }
-    }
-
-    fn vault_update(
-        block: u32,
-        asset: Option<Asset>,
-        vault_key: AssetVaultKey,
-    ) -> AccountVaultUpdate {
-        AccountVaultUpdate {
-            block_num: BlockNumber::from(block),
-            asset,
-            vault_key,
-        }
-    }
-
     fn payload(
         new_nonce: u64,
         value_slot_updates: Vec<(StorageSlotName, Word)>,
-        storage_map_updates: Vec<StorageMapUpdate>,
-        vault_updates: Vec<AccountVaultUpdate>,
+        map_entries: BTreeMap<StorageSlotName, StorageMapPatchEntries>,
     ) -> PublicAccountPatch {
         PublicAccountPatch::new(
             header_with_nonce(new_nonce),
-            BlockNumber::from(0u32),
-            BlockNumber::from(1u32),
             value_slot_updates,
-            storage_map_updates,
-            vault_updates,
+            map_entries,
+            AccountVaultPatch::default(),
         )
     }
 
-    // COMPUTE ACCOUNT PATCH - STORAGE
-    // --------------------------------------------------------------------------------------------
+    fn empty_payload(new_header: AccountHeader) -> PublicAccountPatch {
+        PublicAccountPatch::new(new_header, vec![], BTreeMap::new(), AccountVaultPatch::default())
+    }
 
     #[test]
     fn compute_patch_empty_payload_carries_only_nonce() {
@@ -683,7 +585,7 @@ mod tests {
     #[test]
     fn compute_patch_sets_value_slot_absolutely() {
         let value_slot = slot_name("miden::test::value");
-        let patch = payload(2, vec![(value_slot.clone(), word(2))], vec![], vec![])
+        let patch = payload(2, vec![(value_slot.clone(), word(2))], BTreeMap::new())
             .compute_account_patch(None)
             .unwrap();
 
@@ -691,89 +593,18 @@ mod tests {
     }
 
     #[test]
-    fn compute_patch_map_dedup_keeps_latest_block_per_key() {
+    fn compute_patch_wraps_merged_map_entries() {
         let map_slot = slot_name("miden::test::map");
-        let key = map_key(42);
-        let updates = vec![
-            storage_map_update(1, &map_slot, key, word(100)),
-            storage_map_update(3, &map_slot, key, word(300)),
-            storage_map_update(2, &map_slot, key, word(200)),
-        ];
+        let key = StorageMapKey::from_raw(word(42));
+        let mut entries = StorageMapPatchEntries::new();
+        entries.insert(key, word(300));
+        let map_entries = BTreeMap::from([(map_slot.clone(), entries)]);
 
-        let patch = payload(2, vec![], updates, vec![]).compute_account_patch(None).unwrap();
+        let patch = payload(2, vec![], map_entries).compute_account_patch(None).unwrap();
 
         let map = patch.storage().get_map(&map_slot).expect("patch should contain map slot");
         assert_eq!(map.entries().unwrap().as_map().len(), 1);
         assert_eq!(*map.entries().unwrap().as_map().values().next().unwrap(), word(300));
-    }
-
-    #[test]
-    fn compute_patch_map_multiple_keys_in_same_slot_all_kept() {
-        let map_slot = slot_name("miden::test::map");
-        let updates = vec![
-            storage_map_update(1, &map_slot, map_key(1), word(100)),
-            storage_map_update(2, &map_slot, map_key(2), word(200)),
-        ];
-
-        let patch = payload(2, vec![], updates, vec![]).compute_account_patch(None).unwrap();
-        let map = patch.storage().get_map(&map_slot).unwrap();
-        assert_eq!(map.entries().unwrap().as_map().len(), 2);
-    }
-
-    // COMPUTE ACCOUNT PATCH - VAULT
-    // --------------------------------------------------------------------------------------------
-
-    #[test]
-    fn compute_patch_inserts_asset_absolutely() {
-        let asset = fungible(100);
-        let updates = vec![vault_update(1, Some(asset), asset.vault_key())];
-
-        let patch = payload(2, vec![], vec![], updates).compute_account_patch(None).unwrap();
-
-        let updated_assets: Vec<_> = patch.vault().updated_assets().collect();
-        assert_eq!(updated_assets, vec![asset]);
-        assert_eq!(patch.vault().removed_asset_keys().count(), 0);
-    }
-
-    #[test]
-    fn compute_patch_removed_asset_is_a_removal() {
-        let asset = fungible(100);
-        let updates = vec![vault_update(1, None, asset.vault_key())];
-
-        let patch = payload(2, vec![], vec![], updates).compute_account_patch(None).unwrap();
-
-        let removed: Vec<_> = patch.vault().removed_asset_keys().copied().collect();
-        assert_eq!(removed, vec![asset.vault_key()]);
-        assert_eq!(patch.vault().updated_assets().count(), 0);
-    }
-
-    #[test]
-    fn compute_patch_vault_dedup_keeps_latest_block_per_key() {
-        let asset_v1 = fungible(100);
-        let asset_v3 = fungible(300);
-        let asset_v2 = fungible(200);
-        let key = asset_v1.vault_key();
-        let updates = vec![
-            vault_update(1, Some(asset_v1), key),
-            vault_update(3, Some(asset_v3), key),
-            vault_update(2, Some(asset_v2), key),
-        ];
-
-        let patch = payload(2, vec![], vec![], updates).compute_account_patch(None).unwrap();
-        let updated_assets: Vec<_> = patch.vault().updated_assets().collect();
-        assert_eq!(updated_assets, vec![asset_v3]);
-    }
-
-    #[test]
-    fn compute_patch_added_then_removed_is_a_removal() {
-        let asset = fungible(100);
-        let key = asset.vault_key();
-        let updates = vec![vault_update(1, Some(asset), key), vault_update(2, None, key)];
-
-        let patch = payload(2, vec![], vec![], updates).compute_account_patch(None).unwrap();
-        assert_eq!(patch.vault().updated_assets().count(), 0);
-        let removed: Vec<_> = patch.vault().removed_asset_keys().copied().collect();
-        assert_eq!(removed, vec![key]);
     }
 
     #[test]
@@ -787,7 +618,7 @@ mod tests {
     #[test]
     fn compute_patch_for_new_account_is_full_state() {
         let value_slot = slot_name("miden::test::value");
-        let patch = payload(1, vec![(value_slot, word(1))], vec![], vec![])
+        let patch = payload(1, vec![(value_slot, word(1))], BTreeMap::new())
             .compute_account_patch(Some(AccountCode::mock()))
             .unwrap();
 
@@ -799,7 +630,7 @@ mod tests {
     /// patch), so the missing-code case is reported rather than silently producing a wrong patch.
     #[test]
     fn compute_patch_for_new_account_without_code_errors() {
-        let result = payload(1, vec![], vec![], vec![]).compute_account_patch(None);
+        let result = payload(1, vec![], BTreeMap::new()).compute_account_patch(None);
         assert!(result.is_err());
     }
 }

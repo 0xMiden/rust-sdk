@@ -1608,8 +1608,8 @@ pub async fn test_unused_rpc_api(client_config: ClientConfig) -> Result<()> {
 
     assert_eq!(node_nullifier.nullifier, nullifier);
     assert_eq!(note.script().root(), retrieved_note_script.root());
-    assert!(!sync_storage_maps.updates.is_empty());
-    assert!(!account_vault_info.updates.is_empty());
+    assert!(!sync_storage_maps.map_entries.is_empty());
+    assert!(!account_vault_info.vault_patch.is_empty());
     assert!(!transactions.is_empty());
 
     Ok(())

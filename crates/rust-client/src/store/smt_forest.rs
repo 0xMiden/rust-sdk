@@ -11,8 +11,8 @@ use miden_protocol::account::{
     StorageSlotContent,
 };
 use miden_protocol::asset::{Asset, AssetVault, AssetVaultKey, AssetWitness};
+use miden_protocol::crypto::merkle::EmptySubtreeRoots;
 use miden_protocol::crypto::merkle::smt::{SMT_DEPTH, Smt, SmtForest};
-use miden_protocol::crypto::merkle::{EmptySubtreeRoots, MerkleError};
 use miden_protocol::{EMPTY_WORD, Word};
 
 use super::StoreError;
@@ -55,9 +55,11 @@ impl AccountSmtForest {
         let vault_key_word: Word = vault_key.into();
         let hashed_key: Word = vault_key.hash().into();
         let proof = self.forest.open(vault_root, hashed_key)?;
-        let asset_word = proof.get(&hashed_key).ok_or(MerkleError::UntrackedKey(hashed_key))?;
+        let asset_word = proof
+            .get(&hashed_key)
+            .ok_or(StoreError::VaultKeyNotTracked(vault_key, hashed_key))?;
         if asset_word == EMPTY_WORD {
-            return Err(MerkleError::UntrackedKey(hashed_key).into());
+            return Err(StoreError::VaultKeyNotTracked(vault_key, hashed_key));
         }
 
         let asset = Asset::from_key_value_words(vault_key_word, asset_word)?;

@@ -124,7 +124,7 @@ pub mod keystore;
 pub mod note;
 pub mod note_transport;
 pub mod pswap;
-#[cfg(any(feature = "std", target_arch = "wasm32"))]
+#[cfg(feature = "tonic")]
 pub mod remote_prover;
 pub mod rpc;
 pub mod settings;
@@ -326,7 +326,7 @@ pub use miden_protocol::{
     ZERO,
 };
 pub use miden_tx::ExecutionOptions;
-#[cfg(any(feature = "std", target_arch = "wasm32"))]
+#[cfg(feature = "tonic")]
 pub use remote_prover::RemoteTransactionProver;
 
 /// Provides test utilities for working with accounts and account IDs

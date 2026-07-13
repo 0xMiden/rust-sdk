@@ -3,10 +3,10 @@
 use std::rc::Rc;
 use std::vec::Vec;
 
+use miden_client::Serializable;
 use miden_client::account::{AccountHeader, AccountId, AccountVaultPatch};
 use miden_client::asset::Asset;
 use miden_client::store::{AccountSmtForest, StoreError};
-use miden_client::Serializable;
 use miden_protocol::asset::AssetVaultKey;
 use miden_protocol::crypto::merkle::MerkleError;
 use rusqlite::types::Value;

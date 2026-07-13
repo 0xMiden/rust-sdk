@@ -974,11 +974,9 @@ impl StateSync {
 
         Ok(PublicAccountUpdate::Patch(PublicAccountPatch::new(
             details.header.clone(),
-            block_from,
-            block_to,
             value_slot_updates,
-            map_info.updates,
-            vault_info.updates,
+            map_info.map_entries,
+            vault_info.vault_patch,
         )))
     }
 

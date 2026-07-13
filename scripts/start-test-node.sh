@@ -43,7 +43,7 @@ NODE_BINS=(miden-validator miden-node miden-ntx-builder miden-remote-prover)
 
 # Resolve the pinned node source from Cargo.lock: a git pin takes precedence, otherwise use the
 # crates.io version locked for `miden-node-proto-build`.
-SRC_LINE="$(grep -m1 'source = "git+https://github.com/0xMiden/miden-node' "$ROOT/Cargo.lock" || true)"
+SRC_LINE="$(grep -m1 'source = "git+https://github.com/0xMiden/node' "$ROOT/Cargo.lock" || true)"
 if [ -n "$SRC_LINE" ]; then
     NODE_SOURCE="git"
     SRC="${SRC_LINE#*\"git+}"; SRC="${SRC%\"}"

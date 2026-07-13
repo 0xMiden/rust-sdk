@@ -48,7 +48,7 @@ miden-tx        = { branch = "next", default-features = false, git = "https://gi
 miden-tx-batch  = { branch = "next", default-features = false, git = "https://github.com/0xMiden/protocol.git" }
 
 # Miden node dependencies
-miden-node-proto-build           = { branch = "next", default-features = false, git = "https://github.com/0xMiden/miden-node.git" }
+miden-node-proto-build           = { branch = "next", default-features = false, git = "https://github.com/0xMiden/node.git" }
 miden-note-transport-proto-build = { default-features = false, version = "0.4.1" }
 
 # Miden debug dependency

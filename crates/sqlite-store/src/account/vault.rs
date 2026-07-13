@@ -4,10 +4,10 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::vec::Vec;
 
-use miden_client::Word;
 use miden_client::account::{AccountDelta, AccountHeader, AccountId};
 use miden_client::asset::{Asset, FungibleAsset, NonFungibleDeltaAction};
 use miden_client::store::{AccountSmtForest, StoreError};
+use miden_client::{Serializable, Word};
 use miden_protocol::asset::AssetVaultKey;
 use miden_protocol::crypto::merkle::MerkleError;
 use rusqlite::types::Value;
@@ -39,7 +39,7 @@ impl SqliteStore {
         Ok(conn
             .prepare(QUERY)
             .into_store_error()?
-            .query_map(params![account_id.to_hex(), Rc::new(vault_keys)], |row| {
+            .query_map(params![account_id.to_bytes(), Rc::new(vault_keys)], |row| {
                 let vault_key: String = row.get(0)?;
                 let asset: String = row.get(1)?;
                 Ok((vault_key, asset))
@@ -73,14 +73,14 @@ impl SqliteStore {
             insert_sql!(latest_account_assets { account_id, vault_key, asset } | REPLACE);
 
         let mut latest_stmt = tx.prepare_cached(LATEST_QUERY).into_store_error()?;
-        let account_id_hex = account_id.to_hex();
+        let account_id_bytes = account_id.to_bytes();
 
         for asset in assets {
             let vault_key_hex = asset.vault_key().to_string();
             let asset_hex = asset.to_value_word().to_hex();
 
             latest_stmt
-                .execute(params![&account_id_hex, &vault_key_hex, &asset_hex])
+                .execute(params![&account_id_bytes, &vault_key_hex, &asset_hex])
                 .into_store_error()?;
         }
 
@@ -102,7 +102,7 @@ impl SqliteStore {
         delta: &AccountDelta,
     ) -> Result<(), StoreError> {
         let nonce = final_account_state.nonce().as_canonical_u64();
-        let account_id_hex = account_id.to_hex();
+        let account_id_bytes = account_id.to_bytes();
         let nonce_val = u64_to_value(nonce);
 
         // Apply vault delta. This map will contain all updated assets (indexed by vault key), both
@@ -157,7 +157,7 @@ impl SqliteStore {
         let updated_assets_values: Vec<Asset> = updated_assets.values().copied().collect();
         Self::persist_vault_delta(
             tx,
-            &account_id_hex,
+            &account_id_bytes,
             &nonce_val,
             &removed_vault_keys,
             &updated_assets_values,
@@ -182,7 +182,7 @@ impl SqliteStore {
     /// then updates latest (deletes removed assets, inserts/updates changed assets).
     fn persist_vault_delta(
         tx: &Transaction<'_>,
-        account_id_hex: &str,
+        account_id_bytes: &[u8],
         nonce_val: &rusqlite::types::Value,
         removed_vault_keys: &[AssetVaultKey],
         updated_assets: &[Asset],
@@ -209,7 +209,7 @@ impl SqliteStore {
 
             // Read old asset value from latest (should exist since we're removing it)
             let old_asset: Option<String> = tx
-                .query_row(READ_OLD_ASSET, params![account_id_hex, &vault_key_hex], |row| {
+                .query_row(READ_OLD_ASSET, params![account_id_bytes, &vault_key_hex], |row| {
                     row.get(0)
                 })
                 .optional()
@@ -218,7 +218,7 @@ impl SqliteStore {
 
             // Archive old value to historical
             hist_stmt
-                .execute(params![account_id_hex, nonce_val, &vault_key_hex, old_asset,])
+                .execute(params![account_id_bytes, nonce_val, &vault_key_hex, old_asset,])
                 .into_store_error()?;
         }
 
@@ -229,7 +229,7 @@ impl SqliteStore {
             tx.execute(
                 DELETE_LATEST_QUERY,
                 params![
-                    account_id_hex,
+                    account_id_bytes,
                     Rc::new(
                         removed_vault_keys
                             .iter()
@@ -248,7 +248,7 @@ impl SqliteStore {
 
             // Read old asset value from latest (NULL if asset is new)
             let old_asset: Option<String> = tx
-                .query_row(READ_OLD_ASSET, params![account_id_hex, &vault_key_hex], |row| {
+                .query_row(READ_OLD_ASSET, params![account_id_bytes, &vault_key_hex], |row| {
                     row.get(0)
                 })
                 .optional()
@@ -257,12 +257,12 @@ impl SqliteStore {
 
             // Archive old value to historical (NULL old_asset = asset was new)
             hist_stmt
-                .execute(params![account_id_hex, nonce_val, &vault_key_hex, old_asset,])
+                .execute(params![account_id_bytes, nonce_val, &vault_key_hex, old_asset,])
                 .into_store_error()?;
 
             // Insert/update in latest
             latest_stmt
-                .execute(params![account_id_hex, &vault_key_hex, &asset_hex])
+                .execute(params![account_id_bytes, &vault_key_hex, &asset_hex])
                 .into_store_error()?;
         }
 

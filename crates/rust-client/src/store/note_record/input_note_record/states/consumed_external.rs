@@ -22,8 +22,8 @@ pub struct ConsumedExternalNoteState {
     /// for the block. `None` if the order has not been determined yet.
     pub consumed_tx_order: Option<u32>,
     /// Metadata associated with the note (sender, note type, tag and other additional
-    /// information), retained through consumption so the note ID stays recoverable. `None`
-    /// when the prior state had no metadata (e.g. a note imported from bare
+    /// information), retained through consumption so the note ID stays recoverable. `None` when
+    /// the prior state had no metadata (e.g. a note imported from bare
     /// `NoteFile::NoteDetails`).
     pub metadata: Option<NoteMetadata>,
 }

@@ -1,7 +1,9 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use miden_agglayer::{AggLayerBridge, ExitRoot, UpdateGerNote};
 use miden_client::testing::common::{wait_for_blocks, wait_for_tx};
 use miden_client::transaction::TransactionRequestBuilder;
+use miden_protocol::account::StorageMapKey;
+use miden_protocol::{Hasher, ONE, Word, ZERO};
 
 use super::{AgglayerConfig, create_agglayer_clients, setup_core_accounts};
 use crate::tests::config::ClientConfig;
@@ -45,14 +47,21 @@ pub async fn test_agglayer_update_ger(client_config: ClientConfig) -> Result<()>
 
     // VERIFY GER HASH WAS STORED IN MAP
     // --------------------------------------------------------------------------------------------
-    let updated_bridge_account = ger_manager
-        .client
-        .test_rpc_api()
-        .get_account_details(bridge_id)
-        .await?
-        .with_context(|| "bridge account details not available")?;
+    let ger_elements = ger.to_elements();
+    let ger_lower: Word = ger_elements[0..4].try_into().expect("to_elements returns 8 felts");
+    let ger_upper: Word = ger_elements[4..8].try_into().expect("to_elements returns 8 felts");
+    let ger_key = Hasher::merge(&[ger_lower, ger_upper]);
 
-    let is_registered = AggLayerBridge::is_ger_registered(ger, &updated_bridge_account)?;
+    let stored_value = ger_manager
+        .client
+        .account_reader(bridge_id)
+        .get_storage_map_item(
+            AggLayerBridge::ger_map_slot_name().clone(),
+            StorageMapKey::new(ger_key),
+        )
+        .await?;
+
+    let is_registered = stored_value == Word::new([ONE, ZERO, ZERO, ZERO]);
     println!("GER registered: {is_registered}");
 
     assert!(is_registered, "GER was not registered in the bridge account");

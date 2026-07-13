@@ -22,7 +22,7 @@ This guide helps you troubleshoot common issues and understand the end-to-end li
 - CLI flag: `miden-client --debug <command> ...` (overrides `MIDEN_DEBUG`)
 - Environment variable: `MIDEN_DEBUG=true`
 
-When enabled, the transaction executor and script compiler emit debug logs that help diagnose MASM-level issues (you can also consult the Miden VM debugging instructions).
+When enabled, the transaction executor prints the output of any `debug.*` instructions in an executed script to standard output, which helps diagnose MASM-level issues. See [MASM Debug Output](../debug-output.md) for details.
 
 ### Typical CLI outputs when debugging
 

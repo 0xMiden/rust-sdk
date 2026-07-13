@@ -139,6 +139,16 @@ impl TryFrom<&str> for Endpoint {
             (None, None) => ("https", endpoint, None),
         };
 
+        let hostname = hostname.trim_end_matches('/');
+
+        if protocol.is_empty() {
+            return Err("endpoint protocol cannot be empty".to_string());
+        }
+
+        if hostname.is_empty() {
+            return Err("endpoint host cannot be empty".to_string());
+        }
+
         Ok(Endpoint::new(protocol.to_string(), hostname.to_string(), port))
     }
 }
@@ -252,12 +262,36 @@ mod test {
     }
 
     #[test]
+    fn endpoint_parsing_should_fail_for_empty_protocol() {
+        let endpoint = Endpoint::try_from("://some.test.domain:8000");
+        assert!(endpoint.is_err());
+    }
+
+    #[test]
+    fn endpoint_parsing_should_fail_for_empty_host() {
+        let endpoint = Endpoint::try_from("https://:8000");
+        assert!(endpoint.is_err());
+    }
+
+    #[test]
     fn endpoint_parsing_with_final_forward_slash() {
         let endpoint = Endpoint::try_from("https://some.test.domain:8000/").unwrap();
         let expected_endpoint = Endpoint {
             protocol: "https".to_string(),
             host: "some.test.domain".to_string(),
             port: Some(8000),
+        };
+
+        assert_eq!(endpoint, expected_endpoint);
+    }
+
+    #[test]
+    fn endpoint_parsing_with_protocol_and_final_forward_slash_no_port() {
+        let endpoint = Endpoint::try_from("http://some.test.domain/").unwrap();
+        let expected_endpoint = Endpoint {
+            protocol: "http".to_string(),
+            host: "some.test.domain".to_string(),
+            port: None,
         };
 
         assert_eq!(endpoint, expected_endpoint);

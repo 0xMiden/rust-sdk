@@ -147,6 +147,9 @@ pub use request::{
     TransactionScriptTemplate,
 };
 
+mod observer;
+pub use observer::TransactionObserver;
+
 mod result;
 // RE-EXPORTS
 // ================================================================================================
@@ -284,6 +287,17 @@ where
                 pending_update: tx_update,
                 source: Box::new(apply_err),
             });
+        }
+
+        // Fire transaction observers (mirrors `apply_transaction`). Per-observer failures are
+        // logged and never propagate — they're feature-specific side-channels, not part of the
+        // submit contract.
+        for observer in &self.transaction_observers {
+            crate::errors::log_observer_failure(
+                observer.name(),
+                "TransactionObserver::apply",
+                observer.apply(&tx_result).await,
+            );
         }
 
         Ok(tx_id)
@@ -506,7 +520,20 @@ where
     ) -> Result<(), ClientError> {
         let tx_update = self.get_transaction_store_update(tx_result, submission_height).await?;
 
-        self.apply_transaction_update(tx_update).await
+        self.apply_transaction_update(tx_update).await?;
+
+        // Fire transaction observers. Per-observer failures are logged.
+        for observer in &self.transaction_observers {
+            if let Err(err) = observer.apply(tx_result).await {
+                tracing::warn!(
+                    observer = observer.name(),
+                    error = ?err,
+                    "TransactionObserver::apply failed; continuing with remaining observers",
+                );
+            }
+        }
+
+        Ok(())
     }
 
     pub async fn apply_transaction_update(

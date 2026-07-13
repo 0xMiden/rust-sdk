@@ -74,10 +74,47 @@ impl<AUTH> Client<AUTH> {
     /// (which [`Client::sync_note_transport`] runs), so a transient transport
     /// failure does not drop the note. The receiver dedupes by note id, so a
     /// re-send after a partial success is harmless.
+    ///
+    /// Prefer [`Client::send_private_note_with_block_hint`], which also relays a block hint so the
+    /// recipient gets deterministic delivery instead of relying on its lookback heuristic.
+    #[deprecated(
+        since = "0.15.2",
+        note = "use `Client::send_private_note_with_block_hint` to relay a block hint for deterministic delivery"
+    )]
     pub async fn send_private_note(
         &mut self,
         note: Note,
+        address: &Address,
+    ) -> Result<(), ClientError> {
+        self.relay_private_note(note, address, None).await
+    }
+
+    /// Send a note through the note transport network, relaying a block hint to the recipient.
+    ///
+    /// `block_hint` is the block from which the recipient should start scanning for the note's
+    /// on-chain commitment, instead of relying on its lookback heuristic. Any block at or before
+    /// the commitment is correct, and the chain tip at send time is a safe choice. A tighter value
+    /// just means less for the recipient to scan.
+    ///
+    /// The same durability guarantees as [`Client::send_private_note`] apply: the hint is
+    /// persisted with the relay payload, so a retried send preserves it.
+    pub async fn send_private_note_with_block_hint(
+        &mut self,
+        note: Note,
+        address: &Address,
+        block_hint: BlockNumber,
+    ) -> Result<(), ClientError> {
+        self.relay_private_note(note, address, Some(block_hint)).await
+    }
+
+    /// Shared relay path for [`Client::send_private_note`] and
+    /// [`Client::send_private_note_with_block_hint`]. `block_hint` is the optional block from which
+    /// the recipient should start scanning for the note's commitment.
+    async fn relay_private_note(
+        &self,
+        note: Note,
         _address: &Address,
+        block_hint: Option<BlockNumber>,
     ) -> Result<(), ClientError> {
         let api = self.get_note_transport_api()?;
 
@@ -90,10 +127,12 @@ impl<AUTH> Client<AUTH> {
 
         // Persist the payload before the network call so a failed or
         // interrupted `send_note` leaves a recoverable record rather than
-        // losing the only copy with the call frame.
+        // losing the only copy with the call frame. The hint travels with the
+        // entry so a retried send relays the same value.
         let entry = NoteInfo {
             header,
             details_bytes: details_bytes.clone(),
+            block_hint,
         };
         let mut outbox = self.load_relay_outbox().await?;
         // Replace any existing entry for this note id so the latest payload
@@ -102,7 +141,16 @@ impl<AUTH> Client<AUTH> {
         outbox.push(entry);
         self.save_relay_outbox(outbox).await?;
 
-        api.send_note(header, details_bytes).await?;
+        // Dispatch to the hint-carrying API only when a hint is present, otherwise use the plain
+        // `send_note`. The transport exposes a separate method per scenario.
+        match block_hint {
+            Some(block_hint) => {
+                api.send_note_with_block_hint(header, details_bytes, block_hint).await?;
+            },
+            None => {
+                api.send_note(header, details_bytes).await?;
+            },
+        }
 
         // Relay succeeded — drop the entry. A failed store write here is
         // tolerable: the next flush re-sends and the receiver dedupes by note
@@ -138,7 +186,18 @@ impl<AUTH> Client<AUTH> {
         let mut last_err: Option<NoteTransportError> = None;
 
         for entry in entries {
-            match api.send_note(entry.header, entry.details_bytes.clone()).await {
+            let relayed = match entry.block_hint {
+                Some(block_hint) => {
+                    api.send_note_with_block_hint(
+                        entry.header,
+                        entry.details_bytes.clone(),
+                        block_hint,
+                    )
+                    .await
+                },
+                None => api.send_note(entry.header, entry.details_bytes.clone()).await,
+            };
+            match relayed {
                 Ok(()) => {},
                 Err(err) => {
                     tracing::warn!(?err, "relay-outbox entry retry failed; will retry next sync");
@@ -287,10 +346,11 @@ where
         cursor: NoteTransportCursor,
         tags: &[NoteTag],
     ) -> Result<(Vec<NoteId>, NoteTransportCursor), ClientError> {
-        // Number of blocks to look back from sync height when scanning for committed notes.
-        // Handles the race where a note is committed on-chain just before the NTL delivers
-        // its data — without this, check_expected_notes would scan from sync_height forward
-        // and miss the already-committed note.
+        // Fallback lookback window, in blocks, used only for notes the transport delivered
+        // without a sender-provided block hint. Scanning back from sync height handles
+        // the race where a note is committed on-chain just before the NTL delivers its data.
+        // Without it, check_expected_notes would scan from sync_height forward and miss the
+        // already-committed note. A sender-provided hint is deterministic and always preferred.
         const NOTE_LOOKBACK_BLOCKS: u32 = 20;
 
         let mut notes = Vec::new();
@@ -301,19 +361,21 @@ where
             // for key in self.store.decryption_keys() try
             // key.decrypt(details_bytes_encrypted)
             let note = rejoin_note(&note_info.header, &note_info.details_bytes)?;
-            notes.push(note);
+            notes.push((note, note_info.block_hint));
         }
 
         let sync_height = self.get_sync_height().await?;
-        let after_block_num =
+        let fallback_after_block_num =
             BlockNumber::from(sync_height.as_u32().saturating_sub(NOTE_LOOKBACK_BLOCKS));
 
         let id_by_commitment: BTreeMap<NoteDetailsCommitment, NoteId> =
-            notes.iter().map(|note| (note.details_commitment(), note.id())).collect();
+            notes.iter().map(|(note, _)| (note.details_commitment(), note.id())).collect();
 
         let mut note_requests = Vec::with_capacity(notes.len());
-        for note in notes {
+        for (note, block_hint) in notes {
             let tag = note.metadata().tag();
+            // Prefer the sender-provided hint, falling back to the lookback window when absent.
+            let after_block_num = block_hint.unwrap_or(fallback_after_block_num);
             let note_file = NoteFile::NoteDetails {
                 details: note.into(),
                 after_block_num,
@@ -377,6 +439,21 @@ pub trait NoteTransportClient: Send + Sync {
         details: Vec<u8>,
     ) -> Result<(), NoteTransportError>;
 
+    /// Send a note, relaying a block hint for the recipient's commitment scan.
+    ///
+    /// `block_hint` is the block from which the recipient should start scanning for the
+    /// note's commitment. The default implementation ignores it and delegates to
+    /// [`NoteTransportClient::send_note`], so existing implementors keep compiling. Transports
+    /// that can carry the hint (e.g. the gRPC client) override this.
+    async fn send_note_with_block_hint(
+        &self,
+        header: NoteHeader,
+        details: Vec<u8>,
+        _block_hint: BlockNumber,
+    ) -> Result<(), NoteTransportError> {
+        self.send_note(header, details).await
+    }
+
     /// Fetch notes for given tags
     ///
     /// Downloads notes for given tags.
@@ -408,6 +485,19 @@ pub struct NoteInfo {
     pub header: NoteHeader,
     /// Note details, can be encrypted
     pub details_bytes: Vec<u8>,
+    /// Sender-provided block hint: the block from which the recipient should start scanning for
+    /// the note's on-chain commitment, instead of applying its default lookback window. `None`
+    /// when the sender did not provide a hint.
+    pub block_hint: Option<BlockNumber>,
+}
+
+impl NoteInfo {
+    /// Build a [`NoteInfo`] without a block hint (`block_hint` is `None`).
+    ///
+    /// Use the [`NoteInfo::block_hint`] field directly to attach a hint.
+    pub fn new(header: NoteHeader, details_bytes: Vec<u8>) -> Self {
+        Self { header, details_bytes, block_hint: None }
+    }
 }
 
 // SERIALIZATION
@@ -417,6 +507,7 @@ impl Serializable for NoteInfo {
     fn write_into<W: ByteWriter>(&self, target: &mut W) {
         self.header.write_into(target);
         self.details_bytes.write_into(target);
+        self.block_hint.write_into(target);
     }
 }
 
@@ -424,7 +515,8 @@ impl Deserializable for NoteInfo {
     fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
         let header = NoteHeader::read_from(source)?;
         let details_bytes = Vec::<u8>::read_from(source)?;
-        Ok(NoteInfo { header, details_bytes })
+        let block_hint = Option::<BlockNumber>::read_from(source)?;
+        Ok(NoteInfo { header, details_bytes, block_hint })
     }
 }
 

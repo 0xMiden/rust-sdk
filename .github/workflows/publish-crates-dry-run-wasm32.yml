@@ -1,4 +1,4 @@
-name: Dry Run Publish Rust Crates
+name: Dry Run Publish Rust Crates (wasm32)
 
 on:
   push:
@@ -27,9 +27,13 @@ jobs:
       - name: Update Rust toolchain
         run: |
           rustup update --no-self-update
+          rustup target add wasm32-unknown-unknown
 
-      - name: Dry run - publish
+      - name: Dry run - publish (wasm32)
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
         run: |
-          cargo publish --workspace --dry-run
+          cargo publish --dry-run \
+            --target wasm32-unknown-unknown \
+            --package miden-client \
+            --no-default-features

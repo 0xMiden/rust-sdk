@@ -6,7 +6,7 @@ use miden_client::account::{Account, AccountType};
 use miden_client::address::{Address, AddressInterface, RoutingParameters};
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;
-use miden_client::note::{NoteAttachments, NoteDetails, NoteTag, NoteType};
+use miden_client::note::{Note, NoteAttachments, NoteDetails, NoteTag, NoteType};
 use miden_client::note_transport::NoteTransportClient;
 use miden_client::store::NoteFilter;
 use miden_client::testing::common::create_test_store_path;
@@ -19,6 +19,7 @@ use miden_client::testing::note_transport::{
 use miden_client::utils::RwLock;
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
 use miden_protocol::Felt;
+use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::rand::RandomCoin;
 use miden_protocol::note::NoteType as ProtocolNoteType;
 use miden_protocol::transaction::RawOutputNote;
@@ -58,7 +59,10 @@ async fn transport_basic() {
     assert_eq!(notes.len(), 0);
 
     // Send note
-    sender.send_private_note(note, &recipient_address).await.unwrap();
+    sender
+        .send_private_note_with_block_hint(note, &recipient_address, BlockNumber::from(0))
+        .await
+        .unwrap();
 
     // Sync-state / fetch notes
     // 1 note stored
@@ -107,7 +111,10 @@ async fn transport_cursor_pagination() {
     .unwrap();
 
     // Send note A, sync → recipient receives 1 note
-    sender.send_private_note(note_a.clone(), &recipient_address).await.unwrap();
+    sender
+        .send_private_note_with_block_hint(note_a.clone(), &recipient_address, BlockNumber::from(0))
+        .await
+        .unwrap();
     recipient.sync_state().await.unwrap();
     let notes = recipient.get_input_notes(NoteFilter::All).await.unwrap();
     assert_eq!(notes.len(), 1, "should have 1 note after first sync");
@@ -116,7 +123,10 @@ async fn transport_cursor_pagination() {
     assert_eq!(notes[0].details_commitment(), note_a.details_commitment());
 
     // Send note B, sync → recipient receives note B (cursor advanced past A)
-    sender.send_private_note(note_b.clone(), &recipient_address).await.unwrap();
+    sender
+        .send_private_note_with_block_hint(note_b.clone(), &recipient_address, BlockNumber::from(0))
+        .await
+        .unwrap();
     recipient.sync_state().await.unwrap();
     let notes = recipient.get_input_notes(NoteFilter::All).await.unwrap();
     assert_eq!(notes.len(), 2, "should have 2 notes total after second sync");
@@ -141,7 +151,10 @@ async fn transport_duplicate_note_handling() {
     )
     .unwrap();
 
-    sender.send_private_note(note, &recipient_address).await.unwrap();
+    sender
+        .send_private_note_with_block_hint(note, &recipient_address, BlockNumber::from(0))
+        .await
+        .unwrap();
 
     // First fetch
     recipient.sync_state().await.unwrap();
@@ -185,7 +198,10 @@ async fn fetch_all_private_notes_drains_across_batches() {
             sender.rng(),
         )
         .unwrap();
-        sender.send_private_note(note, &recipient_address).await.unwrap();
+        sender
+            .send_private_note_with_block_hint(note, &recipient_address, BlockNumber::from(0))
+            .await
+            .unwrap();
     }
 
     // With BATCH_CAP=3 and TOTAL_NOTES=10, a single-shot fetch would return
@@ -223,7 +239,10 @@ async fn transport_fetch_no_matching_tags() {
     )
     .unwrap();
 
-    sender.send_private_note(note, &recipient_address).await.unwrap();
+    sender
+        .send_private_note_with_block_hint(note, &recipient_address, BlockNumber::from(0))
+        .await
+        .unwrap();
 
     // Observer syncs — tags don't match, should get nothing
     observer.sync_state().await.unwrap();
@@ -377,7 +396,9 @@ async fn private_note_relay_recovers_after_transient_ntl_failure() {
 
     // First relay attempt — the faulty NTL rejects it. We don't assert on the
     // return value: the relay may fail here and be retried later.
-    let _ = sender.send_private_note(note, &recipient_address).await;
+    let _ = sender
+        .send_private_note_with_block_hint(note, &recipient_address, BlockNumber::from(0))
+        .await;
 
     // Drive both clients forward; the retry must deliver the note within a few
     // rounds.
@@ -436,7 +457,9 @@ async fn flush_relay_outbox_retries_failed_relay_without_full_sync() {
     let note_commitment = note.details_commitment();
 
     // First relay fails; the payload must survive in the outbox.
-    let first_attempt = sender.send_private_note(note, &recipient_address).await;
+    let first_attempt = sender
+        .send_private_note_with_block_hint(note, &recipient_address, BlockNumber::from(0))
+        .await;
     assert!(
         first_attempt.is_err(),
         "expected NTL failure on first attempt, got {first_attempt:?}"
@@ -501,7 +524,9 @@ async fn persistent_relay_failure_does_not_block_sync_state() {
     .unwrap();
 
     // The relay fails and the payload is persisted to the outbox.
-    let _ = sender.send_private_note(note, &recipient_address).await;
+    let _ = sender
+        .send_private_note_with_block_hint(note, &recipient_address, BlockNumber::from(0))
+        .await;
 
     // sync_state flushes the outbox (which fails) but must still complete: the
     // relay failure is logged, not propagated.
@@ -515,6 +540,100 @@ async fn persistent_relay_failure_does_not_block_sync_state() {
     assert!(
         direct.is_err(),
         "directly flushing an undeliverable entry should surface the error"
+    );
+}
+
+/// `send_private_note_with_block_hint` delivers a note end-to-end like `send_private_note`,
+/// exercising the floor-carrying relay path.
+#[tokio::test]
+async fn send_private_note_with_block_hint_delivers_note() {
+    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
+    let (mut sender, sender_account) = create_test_user_transport(mock_node.clone()).await;
+    let (mut recipient, recipient_account) = create_test_user_transport(mock_node.clone()).await;
+    let recipient_address = Address::new(recipient_account.id())
+        .with_routing_parameters(RoutingParameters::new(AddressInterface::BasicWallet));
+
+    let note = P2idNote::create(
+        sender_account.id(),
+        recipient_account.id(),
+        vec![],
+        NoteType::Private,
+        NoteAttachments::empty(),
+        sender.rng(),
+    )
+    .unwrap();
+
+    sender
+        .send_private_note_with_block_hint(note, &recipient_address, BlockNumber::from(0))
+        .await
+        .unwrap();
+
+    recipient.sync_state().await.unwrap();
+    let notes = recipient.get_input_notes(NoteFilter::All).await.unwrap();
+    assert_eq!(notes.len(), 1, "recipient should receive the note relayed with a block floor");
+}
+
+/// A private note committed more than the fallback lookback window before the recipient's sync
+/// height is still found when the sender relays an `after_block_num` floor: the deterministic
+/// floor reaches further back than the heuristic would.
+#[tokio::test]
+async fn fetch_private_notes_uses_sender_provided_after_block_num() {
+    // Commit the note at block 1, then advance far enough that the 20-block fallback window
+    // (sync_height - 20) starts well above block 1 and would miss it.
+    let (mut client, private_note, mock_transport_node) =
+        committed_private_note_recipient(30).await;
+
+    let sync_height = client.get_sync_height().await.unwrap();
+    assert!(
+        sync_height.as_u32() > 21,
+        "sync height must be beyond the fallback lookback window for this test to be meaningful"
+    );
+
+    // Deliver the note WITH a floor pointing at genesis, mirroring
+    // `send_private_note_with_block_hint`.
+    let details_bytes = NoteDetails::from(private_note.clone()).to_bytes();
+    mock_transport_node.write().add_note_after(
+        *private_note.header(),
+        details_bytes,
+        Some(BlockNumber::from(0)),
+    );
+
+    client.sync_state().await.unwrap();
+
+    let committed_notes = client.get_input_notes(NoteFilter::Committed).await.unwrap();
+    assert!(
+        committed_notes.iter().any(|n| n.id() == Some(private_note.id())),
+        "note should be found via the sender-provided floor even though it predates the lookback \
+         window"
+    );
+}
+
+/// The same scenario without a sender-provided floor: the fallback lookback window starts above
+/// the note's commitment block, so the imported note's commitment is not located.
+#[tokio::test]
+async fn fetch_private_notes_without_floor_falls_back_to_lookback_window() {
+    let (mut client, private_note, mock_transport_node) =
+        committed_private_note_recipient(30).await;
+
+    // Deliver the note WITHOUT a floor: the recipient must rely on the lookback heuristic.
+    let details_bytes = NoteDetails::from(private_note.clone()).to_bytes();
+    mock_transport_node.write().add_note(*private_note.header(), details_bytes);
+
+    client.sync_state().await.unwrap();
+
+    // The note is imported from the transport layer ...
+    let all_notes = client.get_input_notes(NoteFilter::All).await.unwrap();
+    assert!(
+        all_notes
+            .iter()
+            .any(|n| n.details_commitment() == private_note.details_commitment()),
+        "note should be imported from the transport layer"
+    );
+    // Its commitment is not located, since the lookback window starts after block 1.
+    let committed_notes = client.get_input_notes(NoteFilter::Committed).await.unwrap();
+    assert!(
+        !committed_notes.iter().any(|n| n.id() == Some(private_note.id())),
+        "without a floor the lookback window misses a note committed before sync_height - 20"
     );
 }
 
@@ -557,4 +676,81 @@ pub async fn create_test_user_with_transport(
     let (mut client, keystore) = Box::pin(create_test_client_with_transport(transport)).await;
     let account = insert_new_wallet(&mut client, AccountType::Private, &keystore).await.unwrap();
     (client, account)
+}
+
+/// Build a chain with a private note (tag 0) committed at block 1, advance
+/// `blocks_past_commitment` blocks beyond it, then create a recipient client synced to the tip
+/// with an (initially empty) note transport. Returns the client, the committed note, and the
+/// shared mock transport node so a test can deliver the note over the NTL afterwards.
+async fn committed_private_note_recipient(
+    blocks_past_commitment: u32,
+) -> (MockClient<FilesystemKeyStore>, Note, Arc<RwLock<MockNoteTransportNode>>) {
+    let mut mock_chain_builder = MockChainBuilder::new();
+    let mock_account = mock_chain_builder
+        .add_existing_mock_account(miden_testing::Auth::IncrNonce)
+        .unwrap();
+
+    let private_note = NoteBuilder::new(
+        mock_account.id(),
+        RandomCoin::new([1, 2, 3, 4].map(Felt::new_unchecked).into()),
+    )
+    .note_type(ProtocolNoteType::Private)
+    .tag(NoteTag::new(0).into())
+    .build()
+    .unwrap();
+
+    let spawn_note =
+        mock_chain_builder.add_spawn_note(std::slice::from_ref(&private_note)).unwrap();
+    let mut mock_chain = mock_chain_builder.build().unwrap();
+
+    // Block 1: commit the private note.
+    let tx = Box::pin(
+        mock_chain
+            .build_tx_context(TxContextInput::AccountId(mock_account.id()), &[], &[spawn_note])
+            .unwrap()
+            .extend_expected_output_notes(vec![RawOutputNote::Full(private_note.clone())])
+            .build()
+            .unwrap()
+            .execute(),
+    )
+    .await
+    .unwrap();
+    mock_chain.add_pending_executed_transaction(&tx).unwrap();
+    mock_chain.prove_next_block().unwrap();
+
+    // Advance the chain past the note's commitment block.
+    for _ in 0..blocks_past_commitment {
+        mock_chain.prove_next_block().unwrap();
+    }
+
+    let mock_transport_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
+    let rpc_api = MockRpcApi::new(mock_chain);
+    let arc_rpc_api = Arc::new(rpc_api);
+    let transport_client = MockNoteTransportApi::new(mock_transport_node.clone());
+
+    let mut rng = rand::rng();
+    let coin_seed: [u64; 4] = rng.random();
+    let rng = RandomCoin::new(coin_seed.map(|v| Felt::new_unchecked(v >> 1)).into());
+
+    let keystore_path = temp_dir();
+    let keystore = FilesystemKeyStore::new(keystore_path.clone()).unwrap();
+
+    let builder: ClientBuilder<FilesystemKeyStore> = ClientBuilder::new()
+        .rpc(arc_rpc_api)
+        .rng(Box::new(rng))
+        .sqlite_store(create_test_store_path())
+        .authenticator(Arc::new(keystore))
+        .in_debug_mode(DebugMode::Enabled)
+        .tx_discard_delta(None)
+        .note_transport(Arc::new(transport_client));
+
+    let mut client = builder.build().await.unwrap();
+    client.ensure_genesis_in_place().await.unwrap();
+
+    // Register tag 0 so chain sync sees the note's block, then sync to the tip. The NTL is empty,
+    // so no transport notes are imported yet.
+    client.add_note_tag(NoteTag::new(0)).await.unwrap();
+    client.sync_state().await.unwrap();
+
+    (client, private_note, mock_transport_node)
 }

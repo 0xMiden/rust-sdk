@@ -54,6 +54,7 @@ std = [
   "concurrent",
   "dep:tempfile",
   "dep:tokio",
+  "miden-agglayer/std",
   "miden-protocol/std",
   "miden-remote-prover-client/std",
   "miden-remote-prover-client/tx-prover",
@@ -61,11 +62,19 @@ std = [
   "tonic/tls-ring",
   "tonic/transport",
 ]
-testing = ["dep:miden-testing", "dep:uuid", "miden-protocol/testing", "miden-standards/testing", "miden-tx/testing"]
+testing = [
+  "dep:miden-testing",
+  "dep:uuid",
+  "miden-agglayer/testing",
+  "miden-protocol/testing",
+  "miden-standards/testing",
+  "miden-tx/testing",
+]
 tonic = []
 
 [dependencies]
 # Miden dependencies
+miden-agglayer             = { workspace = true }
 miden-debug                = { optional = true, workspace = true }
 miden-processor            = { optional = true, workspace = true }
 miden-protocol             = { workspace = true }

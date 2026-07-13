@@ -344,12 +344,22 @@ async fn send<AUTH: Keystore + Sync>(
     let note_record = get_input_note_with_id_prefix(client, note_id)
         .await
         .map_err(|e| CliError::Input(format!("note not found: {e}")))?;
+
+    let block_hint = note_record.inclusion_proof().map(|proof| proof.location().block_num());
     let note: Note = note_record
         .try_into()
         .map_err(|e| CliError::from(ClientError::NoteRecordConversionError(e)))?;
     let (_netid, address) = Address::decode(address).map_err(|e| CliError::Input(e.to_string()))?;
 
-    client.send_private_note(note, &address).await?;
+    match block_hint {
+        Some(block_hint) => {
+            client.send_private_note_with_block_hint(note, &address, block_hint).await?;
+        },
+        None => {
+            #[allow(deprecated)]
+            client.send_private_note(note, &address).await?;
+        },
+    }
 
     Ok(())
 }

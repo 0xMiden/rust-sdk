@@ -69,12 +69,16 @@ use miden_tx::auth::TransactionAuthenticator;
 use miden_tx::utils::serde::{Deserializable, DeserializationError, Serializable};
 use tracing::{debug, info};
 
+use crate::pswap::PswapChainObserver;
 use crate::store::{NoteFilter, TransactionFilter};
 use crate::{Client, ClientError};
 mod block_header;
 
 mod tag;
 pub use tag::{NoteTagRecord, NoteTagSource};
+
+mod note_observer;
+pub use note_observer::NoteObserver;
 
 mod state_sync;
 pub use state_sync::{NoteUpdateAction, OnNoteReceived, StateSync, StateSyncInput};
@@ -116,10 +120,11 @@ where
         self.ensure_genesis_in_place().await?;
         self.ensure_rpc_limits_in_place().await?;
 
-        // Build sync state components
+        // Each `NoteObserver` owns its own per-sync state; `with_note_observer` just attaches.
         let note_screener = self.note_screener();
         let state_sync =
-            StateSync::new(self.rpc_api.clone(), Arc::new(note_screener), self.tx_discard_delta);
+            StateSync::new(self.rpc_api.clone(), Arc::new(note_screener), self.tx_discard_delta)
+                .with_note_observer(Arc::new(PswapChainObserver::new(self.store.clone())));
         let input = self.build_sync_input().await?;
 
         let mut partial_mmr = self.get_current_partial_mmr().await?;
@@ -129,6 +134,11 @@ where
 
         let sync_summary: SyncSummary = (&state_sync_update).into();
         debug!(sync_summary = ?sync_summary, "Sync summary computed");
+
+        // Post-sync observer hooks; run before persisting. Per-observer errors are logged, not
+        // propagated.
+        state_sync.run_apply_hooks(&state_sync_update).await?;
+
         info!("Applying changes to the store.");
 
         // Apply received and computed updates to the store

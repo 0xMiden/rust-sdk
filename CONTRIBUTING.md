@@ -4,10 +4,10 @@
 
 We want to make contributing to this project as easy and transparent as possible, whether it's:
 
-- Reporting a [bug](https://github.com/0xMiden/miden-client/issues/new)
-- Taking part in [discussions](https://github.com/0xMiden/miden-client/discussions)
-- Submitting a [fix](https://github.com/0xMiden/miden-client/pulls)
-- Proposing new [features](https://github.com/0xMiden/miden-client/issues/new)
+- Reporting a [bug](https://github.com/0xMiden/rust-sdk/issues/new)
+- Taking part in [discussions](https://github.com/0xMiden/rust-sdk/discussions)
+- Submitting a [fix](https://github.com/0xMiden/rust-sdk/pulls)
+- Proposing new [features](https://github.com/0xMiden/rust-sdk/issues/new)
 
 ## Flow
 We are using [Github Flow](https://docs.github.com/en/get-started/quickstart/github-flow), so all code changes happen through pull requests from a [forked repo](https://docs.github.com/en/get-started/quickstart/fork-a-repo).

@@ -71,7 +71,7 @@ struct SerializedInputNoteData {
     pub created_at: u64,
     pub consumed_block_height: Option<u32>,
     pub consumed_tx_order: Option<u32>,
-    pub consumer_account_id: Option<String>,
+    pub consumer_account_id: Option<Vec<u8>>,
 }
 
 /// Represents an `OutputNoteRecord` serialized to be stored in the database.
@@ -116,7 +116,7 @@ struct SerializedInputNoteStateUpdate {
     pub state: Vec<u8>,
     pub consumed_block_height: Option<u32>,
     pub consumed_tx_order: Option<u32>,
-    pub consumer_account_id: Option<String>,
+    pub consumer_account_id: Option<Vec<u8>>,
 }
 
 /// Represents the fields needed to update an existing output note's state.
@@ -178,10 +178,9 @@ impl SqliteStore {
         block_end: Option<BlockNumber>,
         offset: u32,
     ) -> Result<Option<InputNoteRecord>, StoreError> {
-        let consumer_hex = consumer.to_hex();
         let (query, params) = filters::note_filter_to_query_input_note_by_offset(
             filter,
-            &consumer_hex,
+            consumer,
             block_start,
             block_end,
             offset,
@@ -226,9 +225,9 @@ impl SqliteStore {
         const QUERY: &str =
             "SELECT nullifier FROM input_notes WHERE state_discriminant NOT IN rarray(?)";
         let unspent_filters = Rc::new(vec![
-            Value::from(InputNoteState::STATE_CONSUMED_AUTHENTICATED_LOCAL.to_string()),
-            Value::from(InputNoteState::STATE_CONSUMED_UNAUTHENTICATED_LOCAL.to_string()),
-            Value::from(InputNoteState::STATE_CONSUMED_EXTERNAL.to_string()),
+            Value::from(InputNoteState::STATE_CONSUMED_AUTHENTICATED_LOCAL),
+            Value::from(InputNoteState::STATE_CONSUMED_UNAUTHENTICATED_LOCAL),
+            Value::from(InputNoteState::STATE_CONSUMED_EXTERNAL),
         ]);
         conn.prepare(QUERY)
             .into_store_error()?
@@ -433,7 +432,7 @@ fn serialize_input_note(note: &InputNoteRecord) -> SerializedInputNoteData {
 
     let consumed_block_height = note.state().consumed_block_height().map(|h| h.as_u32());
     let consumed_tx_order = note.state().consumed_tx_order();
-    let consumer_account_id = note.consumer_account().map(AccountId::to_hex);
+    let consumer_account_id = note.consumer_account().map(|id| id.to_bytes());
 
     SerializedInputNoteData {
         details_commitment,
@@ -508,7 +507,7 @@ fn parse_output_note(
 fn serialize_input_note_state(note: &InputNoteRecord) -> SerializedInputNoteStateUpdate {
     let consumed_block_height = note.state().consumed_block_height().map(|h| h.as_u32());
     let consumed_tx_order = note.state().consumed_tx_order();
-    let consumer_account_id = note.consumer_account().map(AccountId::to_hex);
+    let consumer_account_id = note.consumer_account().map(|id| id.to_bytes());
 
     SerializedInputNoteStateUpdate {
         details_commitment: note.details_commitment().to_hex(),
@@ -688,7 +687,7 @@ fn batch_insert_input_notes(
                 None => param_values.push(Value::Null),
             }
             match &note.consumer_account_id {
-                Some(id) => param_values.push(Value::Text(id.clone())),
+                Some(id) => param_values.push(Value::Blob(id.clone())),
                 None => param_values.push(Value::Null),
             }
         }

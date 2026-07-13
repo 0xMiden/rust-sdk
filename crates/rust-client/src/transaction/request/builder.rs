@@ -550,23 +550,18 @@ impl TransactionRequestBuilder {
         let note_args = PswapNote::create_args(account_fill_amount, note_fill_amount)
             .map_err(TransactionRequestError::NoteArgError)?;
 
-        // Register output notes as expected future notes (created by the script, not the account).
-        let payback_details = NoteDetails::from(&payback_note);
-        let payback_tag = payback_note.metadata().tag();
-        let payback_recipient = payback_note.recipient().clone();
-
-        let mut expected_future_notes = vec![(payback_details, payback_tag)];
-        let mut expected_recipients = vec![payback_recipient];
+        // Payback and remainder both settle to the creator, not the consumer. Declare them as
+        // expected recipients so the transaction is validated against them, but don't register
+        // them as expected future notes — that's the creator's concern, and doing so here would
+        // leave stale, un-consumable notes in the consumer's store.
+        let mut expected_recipients = vec![payback_note.recipient().clone()];
 
         if let Some(remainder) = remainder_pswap {
             let remainder_note: Note = remainder.into();
-            expected_future_notes
-                .push((NoteDetails::from(&remainder_note), remainder_note.metadata().tag()));
             expected_recipients.push(remainder_note.recipient().clone());
         }
 
         self.input_notes(vec![(pswap_note.clone(), Some(note_args))])
-            .expected_future_notes(expected_future_notes)
             .expected_output_recipients(expected_recipients)
             .build()
     }

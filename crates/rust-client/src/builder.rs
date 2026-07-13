@@ -1,5 +1,7 @@
 use alloc::boxed::Box;
 use alloc::sync::Arc;
+use alloc::vec;
+use alloc::vec::Vec;
 
 use miden_protocol::assembly::{DefaultSourceManager, SourceManagerSync};
 use miden_protocol::block::BlockNumber;
@@ -14,9 +16,10 @@ use crate::alloc::string::ToString;
 use crate::keystore::FilesystemKeyStore;
 use crate::keystore::Keystore;
 use crate::note_transport::NoteTransportClient;
+use crate::pswap::PswapTransactionObserver;
 use crate::rpc::{Endpoint, NodeRpcClient};
 use crate::store::{Store, StoreError};
-use crate::transaction::TransactionProver;
+use crate::transaction::{TransactionObserver, TransactionProver};
 use crate::{Client, ClientError, ClientRng, ClientRngBox, DebugMode, grpc_support};
 
 // CONSTANTS
@@ -518,6 +521,12 @@ where
             self.note_transport_api = Some(Arc::new(transport) as Arc<dyn NoteTransportClient>);
         }
 
+        // Built-in transaction observers fired by `apply_transaction`.
+        // Additional observers can be attached via
+        // `Client::with_transaction_observer`.
+        let transaction_observers: Vec<Arc<dyn TransactionObserver>> =
+            vec![Arc::new(PswapTransactionObserver::new(store.clone()))];
+
         // Construct and return the Client
         Ok(Client {
             store,
@@ -541,6 +550,7 @@ where
             note_transport_api: self.note_transport_api.clone(),
             cache_partial_mmr_in_memory: self.cache_partial_mmr_in_memory,
             partial_mmr: None,
+            transaction_observers,
         })
     }
 }

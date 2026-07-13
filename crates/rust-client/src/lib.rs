@@ -36,6 +36,8 @@
 //! - **Blocks:** Types for handling block headers.
 //! - **Crypto:** Cryptographic types and utilities, including random number generators.
 //! - **Utils:** Miscellaneous utilities for serialization and common operations.
+//! - **`AggLayer`:** Bridge account components, note constructors, and Ethereum-compatible helper
+//!   types from the Miden `AggLayer` protocol crate.
 //!
 //! The library is designed to work in both `no_std` and `std` environments and is
 //! configurable via Cargo features.
@@ -121,6 +123,7 @@ pub mod grpc_support;
 pub mod keystore;
 pub mod note;
 pub mod note_transport;
+pub mod pswap;
 pub mod rpc;
 pub mod settings;
 pub mod store;
@@ -142,6 +145,11 @@ pub use miden_protocol::utils::serde::{Deserializable, Serializable, SliceReader
 
 pub mod notes {
     pub use miden_protocol::note::NoteFile;
+}
+
+/// Provides `AggLayer` bridge components, note constructors, and helper types.
+pub mod agglayer {
+    pub use miden_agglayer::*;
 }
 
 /// Provides types and utilities for working with Miden Assembly.
@@ -337,6 +345,7 @@ pub mod testing {
 }
 
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 
 use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::merkle::mmr::PartialMmr;
@@ -395,6 +404,9 @@ pub struct Client<AUTH> {
     /// Cached [`PartialMmr`] for the chain's MMR. Lazily built from the store and kept in sync
     /// across sync/prune operations. `None` forces a rebuild on next access.
     partial_mmr: Option<CachedPartialMmr>,
+    /// Observers fired by `apply_transaction`. See
+    /// [`Client::with_transaction_observer`].
+    transaction_observers: Vec<Arc<dyn transaction::TransactionObserver>>,
 }
 
 /// Cached [`PartialMmr`] with a two-part freshness fingerprint:
@@ -484,6 +496,14 @@ impl<AUTH> Client<AUTH> {
     /// file path).
     pub fn store_identifier(&self) -> &str {
         self.store.identifier()
+    }
+
+    /// Registers a [`transaction::TransactionObserver`]. Per-observer failures are logged.
+    pub fn with_transaction_observer(
+        &mut self,
+        observer: Arc<dyn transaction::TransactionObserver>,
+    ) {
+        self.transaction_observers.push(observer);
     }
 
     /// Returns the network ID of the node the client is connected to.

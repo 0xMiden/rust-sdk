@@ -273,6 +273,69 @@ async fn backfill_drains_across_batches() {
     );
 }
 
+/// Test that registering more newly tracked tags than the per-sync backfill cap does not lose any
+/// tag's history: the burst is spread across syncs, backfilling at most
+/// `MAX_BACKFILL_TAGS_PER_SYNC` tags per call and picking up the remainder on the next sync.
+#[tokio::test]
+async fn backfill_spreads_tags_exceeding_per_sync_cap_across_syncs() {
+    const CAP: usize = MockClient::<FilesystemKeyStore>::MAX_BACKFILL_TAGS_PER_SYNC;
+    const LATE_TAGS: usize = CAP + 1;
+
+    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
+    let (mut recipient, recipient_account) = create_test_user_transport(mock_node.clone()).await;
+
+    // A driver tag tracked from the start pushes the global cursor forward. The late tags' notes
+    // are delivered before the driver note, so they sit below the advanced cursor and can only be
+    // recovered by the from-the-start backfill, not the steady-state fetch.
+    let driver_tag = NoteTag::new(9_999);
+    recipient.add_note_tag(driver_tag).await.unwrap();
+
+    let late_tags: Vec<NoteTag> = (0..LATE_TAGS)
+        .map(|i| NoteTag::new(3_000 + u32::try_from(i).unwrap()))
+        .collect();
+    for (i, tag) in late_tags.iter().enumerate() {
+        let note = private_note_with_tag(recipient_account.id(), *tag, 100 + i as u64);
+        mock_node.write().add_note(*note.header(), NoteDetails::from(note).to_bytes());
+    }
+
+    // Deliver the driver note last so it takes the highest cursor.
+    let driver_note = private_note_with_tag(recipient_account.id(), driver_tag, 10_000);
+    mock_node
+        .write()
+        .add_note(*driver_note.header(), NoteDetails::from(driver_note.clone()).to_bytes());
+
+    // First sync: only the driver tag is tracked, so just its note arrives and the global cursor
+    // advances past every late tag's note.
+    recipient.sync_state().await.unwrap();
+    assert_eq!(
+        recipient.get_input_notes(NoteFilter::All).await.unwrap().len(),
+        1,
+        "only the driver tag's note should arrive first"
+    );
+
+    // Track all LATE_TAGS at once, exceeding the per-sync backfill cap by one.
+    for tag in &late_tags {
+        recipient.add_note_tag(*tag).await.unwrap();
+    }
+
+    // Second sync: the backfill covers at most CAP late tags, so one late note stays uncovered.
+    // Total = driver note + capped backfill.
+    recipient.sync_state().await.unwrap();
+    assert_eq!(
+        recipient.get_input_notes(NoteFilter::All).await.unwrap().len(),
+        1 + CAP,
+        "one sync must backfill at most MAX_BACKFILL_TAGS_PER_SYNC tags"
+    );
+
+    // Third sync: the deferred late tag is backfilled, recovering the whole history.
+    recipient.sync_state().await.unwrap();
+    assert_eq!(
+        recipient.get_input_notes(NoteFilter::All).await.unwrap().len(),
+        1 + LATE_TAGS,
+        "the deferred tag must be backfilled on the following sync"
+    );
+}
+
 /// Verifies that an observer whose tracked tags don't match the note's tag receives nothing.
 #[tokio::test]
 async fn transport_fetch_no_matching_tags() {

@@ -341,7 +341,7 @@ where
     /// Per-sync cap on the number of newly tracked tags to backfill. Bounds the burst when many
     /// tags are registered at once (e.g. restoring many accounts or addresses). Deferred tags stay
     /// uncovered and are picked up on subsequent syncs.
-    const MAX_BACKFILL_TAGS_PER_SYNC: usize = 64;
+    pub const MAX_BACKFILL_TAGS_PER_SYNC: usize = 64;
 
     /// Safety cap on the per-tag backfill drain. A well-behaved server eventually returns no
     /// forward cursor progress, ending the loop; this bound only guards against a server that

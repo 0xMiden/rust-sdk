@@ -2326,3 +2326,171 @@ async fn watched_status_survives_state_replacement() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+// STORAGE MAP CREATE/REMOVE PATCH TESTS
+// ================================================================================================
+
+/// Applies a storage patch through the low-level store helpers, bypassing `Account::apply_patch`,
+/// so map create/remove semantics can be exercised directly against the store tables.
+async fn apply_storage_patch_directly(
+    store: &SqliteStore,
+    account_id: AccountId,
+    nonce: u64,
+    storage_patch: AccountStoragePatch,
+) -> anyhow::Result<()> {
+    let smt_forest = store.smt_forest.clone();
+    store
+        .interact_with_connection(move |conn| {
+            let old_map_roots =
+                SqliteStore::get_storage_map_roots_for_patch(conn, account_id, &storage_patch)?;
+            let tx = conn.transaction().into_store_error()?;
+            let mut smt_forest = smt_forest.write().expect("smt_forest write lock not poisoned");
+            let updated_slots = SqliteStore::apply_account_storage_patch(
+                &mut smt_forest,
+                &old_map_roots,
+                &storage_patch,
+            )?;
+            SqliteStore::write_storage_patch(
+                &tx,
+                account_id,
+                nonce,
+                &updated_slots,
+                &storage_patch,
+            )?;
+            tx.commit().into_store_error()?;
+            Ok(())
+        })
+        .await?;
+    Ok(())
+}
+
+/// Reads the latest map entries of a slot as a `key_hex -> value_hex` map.
+async fn read_latest_map_entries(
+    store: &SqliteStore,
+    account_id: AccountId,
+    slot_name: &StorageSlotName,
+) -> anyhow::Result<BTreeMap<String, String>> {
+    let account_id_bytes = account_id.to_bytes();
+    let slot = slot_name.to_string();
+    let entries = store
+        .interact_with_connection(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT key, value FROM latest_storage_map_entries \
+                     WHERE account_id = ? AND slot_name = ?",
+                )
+                .into_store_error()?;
+            let rows = stmt
+                .query_map(params![account_id_bytes, slot], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                })
+                .into_store_error()?;
+            let map: BTreeMap<String, String> =
+                rows.collect::<Result<_, _>>().into_store_error()?;
+            Ok(map)
+        })
+        .await?;
+    Ok(entries)
+}
+
+/// Reads the latest top-level value (the map root, for map slots) of a storage slot.
+async fn read_slot_value(
+    store: &SqliteStore,
+    account_id: AccountId,
+    slot_name: &StorageSlotName,
+) -> anyhow::Result<String> {
+    let account_id_bytes = account_id.to_bytes();
+    let slot = slot_name.to_string();
+    let value = store
+        .interact_with_connection(move |conn| {
+            conn.query_row(
+                "SELECT slot_value FROM latest_account_storage \
+                 WHERE account_id = ? AND slot_name = ?",
+                params![account_id_bytes, slot],
+                |r| r.get::<_, String>(0),
+            )
+            .into_store_error()
+        })
+        .await?;
+    Ok(value)
+}
+
+/// A `Create` patch on an already-populated map slot must discard the prior entries: the resulting
+/// root and latest entries reflect only the created entries, not a merge with the old ones.
+#[tokio::test]
+async fn create_map_patch_replaces_existing_entries() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+    let map_slot_name = StorageSlotName::new("test::create::map").expect("valid slot name");
+
+    // Account starts with 5 entries (keys 1..=5, values i*100).
+    let account = setup_account_with_map(&store, 5, &map_slot_name).await?;
+    let account_id = account.id();
+
+    // Create the map anew with a different entry set: key 1 changes value, key 6 is new,
+    // keys 2..=5 disappear.
+    let key1 = StorageMapKey::new([Felt::from(1u32), ZERO, ZERO, ZERO].into());
+    let key6 = StorageMapKey::new([Felt::from(6u32), ZERO, ZERO, ZERO].into());
+    let val1 = [Felt::from(999u32), ZERO, ZERO, ZERO].into();
+    let val6 = [Felt::from(600u32), ZERO, ZERO, ZERO].into();
+
+    let mut map_entries = StorageMapPatchEntries::new();
+    map_entries.insert(key1, val1);
+    map_entries.insert(key6, val6);
+    let storage_patch = AccountStoragePatch::from_entries([(
+        map_slot_name.clone(),
+        StorageSlotPatch::Map(StorageMapPatch::Create { entries: map_entries }),
+    )])?;
+
+    apply_storage_patch_directly(&store, account_id, 2, storage_patch).await?;
+
+    // Latest entries must be exactly the created set.
+    let latest = read_latest_map_entries(&store, account_id, &map_slot_name).await?;
+    let mut expected = StorageMap::new();
+    expected.insert(key1, val1)?;
+    expected.insert(key6, val6)?;
+    let expected_entries: BTreeMap<String, String> =
+        expected.entries().map(|(k, v)| (k.to_hex(), v.to_hex())).collect();
+    assert_eq!(latest, expected_entries);
+
+    // The stored root must match a map built from only the created entries.
+    let root_hex = read_slot_value(&store, account_id, &map_slot_name).await?;
+    assert_eq!(root_hex, expected.root().to_hex());
+
+    // Every affected key (union of old {1..5} and new {1,6}) is archived exactly once.
+    let m = get_storage_metrics(&store).await;
+    assert_eq!(m.historical_storage_map_entries, 6);
+
+    Ok(())
+}
+
+/// A `Remove` patch clears the map slot: its latest entries are dropped and its root collapses to
+/// the empty-map root.
+#[tokio::test]
+async fn remove_map_patch_clears_slot() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+    let map_slot_name = StorageSlotName::new("test::remove::map").expect("valid slot name");
+
+    let account = setup_account_with_map(&store, 5, &map_slot_name).await?;
+    let account_id = account.id();
+
+    let storage_patch = AccountStoragePatch::from_entries([(
+        map_slot_name.clone(),
+        StorageSlotPatch::Map(StorageMapPatch::Remove),
+    )])?;
+
+    apply_storage_patch_directly(&store, account_id, 2, storage_patch).await?;
+
+    // No latest entries remain for the slot.
+    let latest = read_latest_map_entries(&store, account_id, &map_slot_name).await?;
+    assert!(latest.is_empty(), "removed map slot must have no latest entries");
+
+    // The root collapses to the empty-map root.
+    let root_hex = read_slot_value(&store, account_id, &map_slot_name).await?;
+    assert_eq!(root_hex, StorageMap::new().root().to_hex());
+
+    // The 5 prior entries are archived.
+    let m = get_storage_metrics(&store).await;
+    assert_eq!(m.historical_storage_map_entries, 5);
+
+    Ok(())
+}

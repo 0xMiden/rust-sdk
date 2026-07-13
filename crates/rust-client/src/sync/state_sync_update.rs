@@ -633,4 +633,36 @@ mod tests {
         let result = payload(1, vec![], BTreeMap::new()).compute_account_patch(None);
         assert!(result.is_err());
     }
+
+    /// A newly created account (final nonce 1, full-state) emits each map slot as a `Create`, which
+    /// the store applies by starting the slot from an empty map.
+    #[test]
+    fn compute_patch_emits_map_create_for_new_account() {
+        let map_slot = slot_name("miden::test::map");
+        let mut entries = StorageMapPatchEntries::new();
+        entries.insert(StorageMapKey::from_raw(word(1)), word(100));
+        let map_entries = BTreeMap::from([(map_slot.clone(), entries)]);
+
+        let patch = payload(1, vec![], map_entries)
+            .compute_account_patch(Some(AccountCode::mock()))
+            .unwrap();
+
+        let map = patch.storage().get_map(&map_slot).expect("patch should contain map slot");
+        assert!(matches!(map, StorageMapPatch::Create { .. }));
+    }
+
+    /// An update to an existing account (final nonce > 1) emits map slots as `Update`, never
+    /// `Create`, so the sync path never asks the store to re-create a populated map.
+    #[test]
+    fn compute_patch_emits_map_update_for_existing_account() {
+        let map_slot = slot_name("miden::test::map");
+        let mut entries = StorageMapPatchEntries::new();
+        entries.insert(StorageMapKey::from_raw(word(1)), word(100));
+        let map_entries = BTreeMap::from([(map_slot.clone(), entries)]);
+
+        let patch = payload(2, vec![], map_entries).compute_account_patch(None).unwrap();
+
+        let map = patch.storage().get_map(&map_slot).expect("patch should contain map slot");
+        assert!(matches!(map, StorageMapPatch::Update { .. }));
+    }
 }

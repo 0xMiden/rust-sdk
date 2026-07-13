@@ -11,6 +11,7 @@
 
 ### Fixes
 
+* [FIX][store] The SQLite store now honors `StorageMapPatch` create/remove semantics: a `Create` patch on an existing map slot clears the prior entries before writing (so its root reflects only the created entries) and a `Remove` patch drops the slot's entries and collapses its root to the empty-map root ([#2290](https://github.com/0xMiden/rust-sdk/pull/2290)).
 * [FIX][rust] Storing an authenticated block header now persists the header and its MMR authentication nodes in a single store transaction, so an interrupted write can no longer leave a tracked block without the MMR nodes needed to rebuild the `PartialMmr` ([#2294](https://github.com/0xMiden/rust-sdk/pull/2294)).
 * [FIX][rust] RPC endpoint parsing now rejects endpoint strings that omit either the protocol or host. ([#2266](https://github.com/0xMiden/miden-client/pull/2266))
 * [FIX][rust] State sync now re-verifies a tracked private account's commitment mismatch against the witness `get_account` returns. The witness is checked against the synced block's account root before locking the account, so a node can no longer durably lock it with a forged `sync_transactions` commitment ([#2260](https://github.com/0xMiden/rust-sdk/pull/2260)).

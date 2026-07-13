@@ -178,6 +178,10 @@ fn ensure_requested_note_ids(
 // GRPC CLIENT
 // ================================================================================================
 
+/// Default maximum size (in bytes) of a decoded gRPC response the client will accept: 15% above
+/// tonic's built-in 4 MiB receive limit. See [`GrpcClient::with_max_decoding_message_size`].
+const DEFAULT_MAX_RESPONSE_SIZE_BYTES: usize = 4 * 1024 * 1024 * 115 / 100;
+
 /// Client for the Node RPC API using gRPC.
 ///
 /// If the `tonic` feature is enabled, this client will use a `tonic::transport::Channel` to
@@ -207,6 +211,9 @@ pub struct GrpcClient {
     /// gRPC call, alongside the standard `accept` header. Used when talking to an
     /// authenticating gateway in front of the node.
     bearer_token: Option<String>,
+    /// Maximum size (in bytes) of a decoded gRPC response the client will accept. Defaults to
+    /// [`DEFAULT_MAX_RESPONSE_SIZE_BYTES`].
+    max_decoding_message_size: usize,
 }
 
 impl GrpcClient {
@@ -222,6 +229,7 @@ impl GrpcClient {
             max_retries: retry::DEFAULT_MAX_RETRIES,
             retry_interval_ms: retry::DEFAULT_RETRY_INTERVAL_MS,
             bearer_token: None,
+            max_decoding_message_size: DEFAULT_MAX_RESPONSE_SIZE_BYTES,
         }
     }
 
@@ -238,6 +246,18 @@ impl GrpcClient {
     #[must_use]
     pub fn with_retry_interval_ms(mut self, retry_interval_ms: u64) -> Self {
         self.retry_interval_ms = retry_interval_ms;
+        self
+    }
+
+    /// Sets the maximum size (in bytes) of a decoded gRPC response the client will accept.
+    ///
+    /// Defaults to 15% above [tonic's built-in 4 MiB receive limit][tonic-decode], leaving headroom
+    /// for responses that land slightly over 4 MiB.
+    ///
+    /// [tonic-decode]: https://github.com/hyperium/tonic/blob/6cb6056b5a748bc5a29bd48f4602dbc4e552bb7d/tonic/src/codec/decode.rs#L192-L218
+    #[must_use]
+    pub fn with_max_decoding_message_size(mut self, max_decoding_message_size: usize) -> Self {
+        self.max_decoding_message_size = max_decoding_message_size;
         self
     }
 
@@ -290,6 +310,7 @@ impl GrpcClient {
             self.timeout_ms,
             genesis_commitment,
             self.bearer_token.clone(),
+            self.max_decoding_message_size,
         )
         .await?;
         let mut client = self.client.write();
@@ -350,6 +371,7 @@ impl GrpcClient {
             self.endpoint.clone(),
             self.timeout_ms,
             self.bearer_token.clone(),
+            self.max_decoding_message_size,
         )
         .await?;
         rpc_api
@@ -1090,6 +1112,7 @@ mod tests {
 
     use super::{
         BlockPagination,
+        DEFAULT_MAX_RESPONSE_SIZE_BYTES,
         GrpcClient,
         NullifierUpdate,
         PaginationResult,
@@ -1264,6 +1287,20 @@ mod tests {
         // Rebuilding the interceptor after a genesis update must not drop the caller token.
         assert_eq!(client.bearer_token.as_deref(), Some("token"));
         assert!(client.client.read().as_ref().is_some());
+    }
+
+    #[test]
+    fn with_max_decoding_message_size_overrides_default() {
+        let endpoint = &Endpoint::devnet();
+
+        // A fresh client uses the default decode ceiling.
+        let default_client = GrpcClient::new(endpoint, 10_000);
+        assert_eq!(default_client.max_decoding_message_size, DEFAULT_MAX_RESPONSE_SIZE_BYTES);
+
+        // The knob overrides it for callers that hit responses above the default.
+        let custom =
+            GrpcClient::new(endpoint, 10_000).with_max_decoding_message_size(8 * 1024 * 1024);
+        assert_eq!(custom.max_decoding_message_size, 8 * 1024 * 1024);
     }
 
     /// Real-network smoke test: hitting the public testnet with a caller-supplied bearer

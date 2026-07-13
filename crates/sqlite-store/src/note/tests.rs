@@ -55,6 +55,7 @@ fn create_consumed_external_input_note(
         nullifier_block_height: BlockNumber::from(block_height),
         consumer_account,
         consumed_tx_order: None,
+        metadata: None,
     };
 
     InputNoteRecord::new(details, NoteAttachments::empty(), Some(0), state.into())

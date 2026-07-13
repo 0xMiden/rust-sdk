@@ -3,8 +3,10 @@
 
 use std::rc::Rc;
 
+use miden_client::account::AccountId;
 use miden_client::note::BlockNumber;
 use miden_client::store::{InputNoteState, NoteFilter, OutputNoteState};
+use miden_client::utils::Serializable;
 use rusqlite::types::Value;
 
 type NoteQueryParams = Vec<Rc<Vec<Value>>>;
@@ -130,7 +132,7 @@ pub(super) fn note_filter_to_query_input_notes(filter: &NoteFilter) -> (String, 
 /// restricted to a consumer account and optionally to a block range.
 pub(super) fn note_filter_to_query_input_note_by_offset(
     filter: &NoteFilter,
-    consumer: &str,
+    consumer: AccountId,
     block_start: Option<BlockNumber>,
     block_end: Option<BlockNumber>,
     offset: u32,
@@ -138,7 +140,7 @@ pub(super) fn note_filter_to_query_input_note_by_offset(
     use core::fmt::Write;
     let (mut condition, mut params) = note_filter_input_notes_condition(filter);
 
-    params.push(Rc::new(vec![Value::Text(consumer.to_string())]));
+    params.push(Rc::new(vec![Value::Blob(consumer.to_bytes())]));
     condition.push_str(" AND note.consumer_account_id IN rarray(?)");
     condition.push_str(" AND note.consumed_tx_order IS NOT NULL");
 

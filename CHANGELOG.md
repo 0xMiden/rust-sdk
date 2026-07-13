@@ -1,9 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.16.0-alpha.1 (TBD)
 
 ### Breaking Changes
 
+* [BREAKING][rust][cli] Removed the client debug-mode toggle: `DebugMode`, `ClientBuilder::in_debug_mode`, `Client::in_debug_mode`, the CLI `--debug` flag, and the `MIDEN_DEBUG` environment variable are gone, along with the `debug_mode` parameter of `CliClient::new`/`CliClient::from_config`. Miden VM 0.24 replaced the flag-gated `debug.*` MASM decorators with `miden::core::debug` procedures whose output the transaction executor prints by default, so the toggle no longer had anything to gate. ([#2290](https://github.com/0xMiden/rust-sdk/pull/2290)).
 * [BREAKING][rust] Migrated to `miden-protocol` 0.16. Transaction-level fees were removed, block-level `FeeParameters` are unchanged. The relative `AccountDelta` model was replaced by the absolute `AccountPatch` model for account updates: `TransactionResult::account_delta` is now `account_patch`, `AccountUpdateDetails::Public` now carries an `AccountPatch`, account reconstruction is done via `Account::try_from(&AccountPatch)` or `Account::apply_patch` instead of previous `apply_delta`. Re-exports changed accordingly: `AccountStorageDelta` for `AccountStoragePatch`, `StorageMapDelta` for `StorageMapPatch`, and so on. Standards APIs were updated: `AuthMethod` was removed (use the concrete auth components), `create_fungible_faucet` became `create_user_fungible_faucet`. ([#2290](https://github.com/0xMiden/rust-sdk/pull/2290)).
 * [BREAKING][store] The SQLite store now stores account IDs as serialized `BLOB` columns instead of hex `TEXT` ([#2309](https://github.com/0xMiden/rust-sdk/pull/2309)).
 * [BREAKING][param][store] `Store::insert_block_header` now takes a `nodes` argument and persists the header with its MMR authentication nodes in a single transaction; the standalone `Store::insert_partial_blockchain_nodes` is removed. Header-only inserts (e.g. genesis) pass an empty slice ([#2294](https://github.com/0xMiden/rust-sdk/pull/2294)).

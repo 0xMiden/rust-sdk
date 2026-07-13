@@ -457,7 +457,7 @@ impl TransactionRequestBuilder {
         rng: &mut ClientRng,
     ) -> Result<TransactionRequest, TransactionRequestError> {
         let storage = PswapNoteStorage::builder()
-            .requested_asset(pswap_data.requested_asset())
+            .min_requested_asset(pswap_data.requested_asset())
             .creator_account_id(pswap_data.creator_account_id())
             .payback_note_type(payback_note_type)
             .build();
@@ -497,7 +497,7 @@ impl TransactionRequestBuilder {
         let pswap = PswapNote::try_from(pswap_note)
             .map_err(TransactionRequestError::NoteValidationError)?;
 
-        let requested_faucet_id = pswap.storage().requested_asset().faucet_id();
+        let requested_faucet_id = pswap.storage().min_requested_asset().faucet_id();
 
         let account_fill_asset = FungibleAsset::new(requested_faucet_id, account_fill_amount)?;
         let note_fill_asset = FungibleAsset::new(requested_faucet_id, note_fill_amount)?;

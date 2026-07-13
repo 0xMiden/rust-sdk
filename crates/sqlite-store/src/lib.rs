@@ -54,7 +54,7 @@ use miden_client::sync::{NoteTagRecord, StateSyncUpdate};
 use miden_client::transaction::{TransactionRecord, TransactionStoreUpdate};
 use miden_protocol::Felt;
 use miden_protocol::account::StorageMapWitness;
-use miden_protocol::asset::AssetVaultKey;
+use miden_protocol::asset::AssetId;
 use rusqlite::Connection;
 use rusqlite::types::Value;
 use sql_error::SqlResultExt;
@@ -496,7 +496,7 @@ impl Store for SqliteStore {
     async fn get_account_asset(
         &self,
         account_id: AccountId,
-        vault_key: AssetVaultKey,
+        vault_key: AssetId,
     ) -> Result<Option<(Asset, AssetWitness)>, StoreError> {
         let smt_forest = self.smt_forest.clone();
         self.interact_with_connection(move |conn| {

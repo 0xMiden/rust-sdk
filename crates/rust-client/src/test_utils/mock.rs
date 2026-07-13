@@ -183,12 +183,12 @@ impl MockRpcApi {
                 for asset in vault_patch.updated_assets() {
                     updates.push(VaultUpdate {
                         block_num: block_number,
-                        vault_key: asset.vault_key(),
+                        vault_key: asset.id(),
                         asset: Some(asset),
                     });
                 }
 
-                for vault_key in vault_patch.removed_asset_keys() {
+                for vault_key in vault_patch.removed_asset_ids() {
                     updates.push(VaultUpdate {
                         block_num: block_number,
                         vault_key: *vault_key,

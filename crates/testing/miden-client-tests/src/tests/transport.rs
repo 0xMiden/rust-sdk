@@ -1,7 +1,6 @@
 use std::env::temp_dir;
 use std::sync::Arc;
 
-use miden_client::DebugMode;
 use miden_client::account::{Account, AccountType};
 use miden_client::address::{Address, AddressInterface, RoutingParameters};
 use miden_client::builder::ClientBuilder;
@@ -19,7 +18,12 @@ use miden_client::testing::note_transport::{
 use miden_client::utils::RwLock;
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
 use miden_protocol::Felt;
-use miden_protocol::account::{AccountId, AccountIdVersion, AccountType as ProtocolAccountType};
+use miden_protocol::account::{
+    AccountId,
+    AccountIdVersion,
+    AccountType as ProtocolAccountType,
+    AssetCallbackFlag,
+};
 use miden_protocol::asset::{Asset, FungibleAsset};
 use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::rand::RandomCoin;
@@ -29,7 +33,7 @@ use miden_protocol::utils::serde::Serializable;
 use miden_standards::note::P2idNote;
 use miden_standards::testing::note::NoteBuilder;
 use miden_testing::{MockChainBuilder, TxContextInput};
-use rand::Rng;
+use rand::RngExt;
 
 use crate::tests::{create_test_client_builder, insert_new_wallet};
 
@@ -321,7 +325,6 @@ async fn fetch_private_notes_finds_note_committed_at_sync_height() {
         .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore))
-        .in_debug_mode(DebugMode::Enabled)
         .tx_discard_delta(None)
         .note_transport(Arc::new(transport_client));
 
@@ -645,8 +648,12 @@ async fn fetch_private_notes_without_floor_falls_back_to_lookback_window() {
 /// A dummy fungible asset for transport-layer notes. P2ID notes require at least one asset, and
 /// these notes are never consumed on-chain, so the issuing faucet only needs to be a valid ID.
 fn dummy_asset() -> Asset {
-    let faucet_id =
-        AccountId::dummy([7u8; 15], AccountIdVersion::Version1, ProtocolAccountType::Public);
+    let faucet_id = AccountId::dummy(
+        [7u8; 15],
+        AccountIdVersion::Version1,
+        ProtocolAccountType::Public,
+        AssetCallbackFlag::Disabled,
+    );
     FungibleAsset::new(faucet_id, 100).unwrap().into()
 }
 
@@ -750,7 +757,6 @@ async fn committed_private_note_recipient(
         .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore))
-        .in_debug_mode(DebugMode::Enabled)
         .tx_discard_delta(None)
         .note_transport(Arc::new(transport_client));
 

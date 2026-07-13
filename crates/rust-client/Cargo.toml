@@ -48,7 +48,7 @@ crate-type = ["lib"]
 # `std`; the duplication in the `std` feature list is intentional so
 # each consumer can pick the smallest feature set they need.
 concurrent = ["miden-tx/concurrent"]
-dap = ["dep:miden-debug", "dep:miden-processor", "std"]
+dap = ["dep:miden-processor", "std"]
 default = ["std"]
 std = [
   "concurrent",
@@ -74,7 +74,6 @@ tonic = []
 [dependencies]
 # Miden dependencies
 miden-agglayer  = { workspace = true }
-miden-debug     = { optional = true, workspace = true }
 miden-processor = { optional = true, workspace = true }
 miden-protocol  = { workspace = true }
 miden-standards = { workspace = true }

@@ -58,7 +58,6 @@
 //! ```rust,ignore
 //! use std::sync::Arc;
 //!
-//! use miden_client::DebugMode;
 //! use miden_client::builder::ClientBuilder;
 //! use miden_client::keystore::FilesystemKeyStore;
 //! use miden_client::rpc::{Endpoint, GrpcClient};
@@ -80,7 +79,6 @@
 //!     .rpc(Arc::new(GrpcClient::new(&endpoint, 10_000)))
 //!     .store(store)
 //!     .authenticator(Arc::new(keystore))
-//!     .in_debug_mode(DebugMode::Disabled)
 //!     .build()
 //!     .await?;
 //!
@@ -184,6 +182,7 @@ pub mod asset {
     };
     pub use miden_protocol::account::{
         AccountStorageHeader,
+        AssetCallbackFlag,
         StorageMapWitness,
         StorageSlotContent,
         StorageSlotHeader,
@@ -191,12 +190,10 @@ pub mod asset {
     pub use miden_protocol::asset::{
         Asset,
         AssetAmount,
-        AssetCallbackFlag,
         AssetCallbacks,
         AssetComposition,
         AssetId,
         AssetVault,
-        AssetVaultKey,
         AssetWitness,
         FungibleAsset,
         NonFungibleAsset,
@@ -346,12 +343,13 @@ pub mod testing {
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::convert::Infallible;
 
 use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::merkle::mmr::PartialMmr;
 use miden_protocol::crypto::rand::FeltRng;
 use miden_tx::auth::TransactionAuthenticator;
-use rand::RngCore;
+use rand::TryRng;
 use rpc::NodeRpcClient;
 use store::Store;
 
@@ -385,7 +383,7 @@ pub struct Client<AUTH> {
     authenticator: Option<Arc<AUTH>>,
     /// Shared source manager used to retain MASM source information for assembled programs.
     source_manager: Arc<dyn SourceManagerSync>,
-    /// Options that control the transaction executor's runtime behaviour (e.g. debug mode).
+    /// Options that control the transaction executor's runtime behaviour (e.g. cycle limits).
     exec_options: ExecutionOptions,
     /// Number of blocks after which pending transactions are considered stale and discarded.
     tx_discard_delta: Option<u32>,
@@ -455,11 +453,6 @@ impl<AUTH> Client<AUTH>
 where
     AUTH: TransactionAuthenticator,
 {
-    /// Returns true if the client is in debug mode.
-    pub fn in_debug_mode(&self) -> bool {
-        self.exec_options.enable_debugging()
-    }
-
     /// Returns an instance of the `CodeBuilder`
     pub fn code_builder(&self) -> assembly::CodeBuilder {
         assembly::CodeBuilder::with_source_manager(self.source_manager.clone())
@@ -548,7 +541,7 @@ impl<T> ClientFeltRng for T where T: FeltRng + Send + Sync {}
 /// Boxed RNG trait object used by the client.
 pub type ClientRngBox = Box<dyn ClientFeltRng>;
 
-/// A wrapper around a [`FeltRng`] that implements the [`RngCore`] trait.
+/// A wrapper around a [`FeltRng`] that implements the [`TryRng`] trait.
 /// This allows the user to pass their own generic RNG so that it's used by the client.
 pub struct ClientRng(ClientRngBox);
 
@@ -562,17 +555,20 @@ impl ClientRng {
     }
 }
 
-impl RngCore for ClientRng {
-    fn next_u32(&mut self) -> u32 {
-        self.0.next_u32()
+impl TryRng for ClientRng {
+    type Error = Infallible;
+
+    fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+        Ok(self.0.next_u32())
     }
 
-    fn next_u64(&mut self) -> u64 {
-        self.0.next_u64()
+    fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+        Ok(self.0.next_u64())
     }
 
-    fn fill_bytes(&mut self, dest: &mut [u8]) {
+    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), Self::Error> {
         self.0.fill_bytes(dest);
+        Ok(())
     }
 }
 
@@ -583,32 +579,6 @@ impl FeltRng for ClientRng {
 
     fn draw_word(&mut self) -> Word {
         self.0.draw_word()
-    }
-}
-
-/// Indicates whether the client is operating in debug mode.
-#[derive(Debug, Clone, Copy)]
-pub enum DebugMode {
-    Enabled,
-    Disabled,
-}
-
-impl From<DebugMode> for bool {
-    fn from(debug_mode: DebugMode) -> Self {
-        match debug_mode {
-            DebugMode::Enabled => true,
-            DebugMode::Disabled => false,
-        }
-    }
-}
-
-impl From<bool> for DebugMode {
-    fn from(debug_mode: bool) -> DebugMode {
-        if debug_mode {
-            DebugMode::Enabled
-        } else {
-            DebugMode::Disabled
-        }
     }
 }
 

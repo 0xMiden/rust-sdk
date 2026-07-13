@@ -1358,7 +1358,7 @@ mod tests {
             header.note_root(),
             header.tx_commitment(),
             header.tx_kernel_commitment(),
-            header.validator_key().clone(),
+            header.validator_keys().clone(),
             header.fee_parameters().clone(),
             header.timestamp(),
         )
@@ -1544,7 +1544,7 @@ mod tests {
             real_header.note_root(),
             real_header.tx_commitment(),
             real_header.tx_kernel_commitment(),
-            real_header.validator_key().clone(),
+            real_header.validator_keys().clone(),
             real_header.fee_parameters().clone(),
             real_header.timestamp(),
         );
@@ -2027,22 +2027,21 @@ mod tests {
         for i in 0..num_blocks {
             let amount = 100 + i;
             let source_manager = Arc::new(DefaultSourceManager::default());
-            // Derive the asset key/value in MASM via `create_fungible_asset` (mirroring the
-            // protocol's own faucet tests) so the callback flag matches what `mint_and_send`
-            // derives internally. `add_existing_basic_faucet` registers transfer policies, so
-            // the faucet has callbacks enabled (`push.1`). The new `mint_and_send` signature is
-            // `[ASSET_KEY, ASSET_VALUE, tag, note_type, RECIPIENT, pad(2)]`.
+            // `mint_and_send` consumes the fungible asset's ID and value words directly:
+            // `[ASSET_ID, ASSET_VALUE, tag, note_type, RECIPIENT, pad(2)]`. Both words are derived
+            // in Rust from the faucet's `AssetId`, which intrinsically carries the callback flag.
+            let mint_asset = FungibleAsset::new(faucet_account.id(), amount).unwrap();
+            let asset_id_word = mint_asset.id().to_word();
+            let asset_value_word = mint_asset.to_value_word();
             let tx_script_code = format!(
                 "
-                begin
+                @transaction_script
+                pub proc main
                     push.{recipient}
                     push.{note_type}
                     push.{tag}
-                    push.{amount}
-                    push.{faucet_id_prefix}
-                    push.{faucet_id_suffix}
-                    push.1
-                    exec.::miden::protocol::asset::create_fungible_asset
+                    push.{asset_value}
+                    push.{asset_id}
                     call.::miden::standards::faucets::fungible::mint_and_send
                     dropw dropw dropw dropw
                 end
@@ -2050,9 +2049,8 @@ mod tests {
                 recipient = recipient,
                 note_type = NoteType::Private as u8,
                 tag = u32::from(tag),
-                amount = amount,
-                faucet_id_prefix = faucet_account.id().prefix().as_felt(),
-                faucet_id_suffix = faucet_account.id().suffix(),
+                asset_value = asset_value_word,
+                asset_id = asset_id_word,
             );
             let tx_script = CodeBuilder::with_source_manager(source_manager.clone())
                 .compile_tx_script(tx_script_code)

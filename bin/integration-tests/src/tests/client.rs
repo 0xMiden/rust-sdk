@@ -65,11 +65,8 @@ pub async fn test_client_builder_initializes_client_with_endpoint(
         .grpc_client(&endpoint, Some(10_000))
         .filesystem_keystore(auth_path)?
         .sqlite_store(store_config)
-        .in_debug_mode(miden_client::DebugMode::Enabled)
         .build()
         .await?;
-
-    assert!(client.in_debug_mode());
 
     let sync_summary = client.sync_state().await?;
 

@@ -1,7 +1,7 @@
 //! Builds the agglayer genesis accounts (bridge admin, GER manager, bridge, faucet) included in
 //! the genesis configuration when agglayer support is requested.
 
-use ::rand::{Rng, random};
+use ::rand::{RngExt, random};
 use anyhow::{Context, Result};
 use miden_agglayer::{create_agglayer_faucet, create_bridge_account};
 use miden_protocol::account::auth::{AuthScheme, AuthSecretKey};

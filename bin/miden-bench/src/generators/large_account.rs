@@ -3,7 +3,7 @@
 use std::fmt::Write;
 
 use miden_client::Felt;
-use rand::Rng;
+use rand::{Rng, RngExt};
 use rand_chacha::ChaCha20Rng;
 use rand_chacha::rand_core::SeedableRng;
 

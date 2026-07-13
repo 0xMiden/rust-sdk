@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use miden_client::ClientError;
 use miden_client::account::AccountType;
 use miden_client::asset::{Asset, FungibleAsset};
 use miden_client::auth::RPO_FALCON_SCHEME_ID;
@@ -24,7 +25,6 @@ use miden_client::transaction::{
     TransactionRequestBuilder,
     TransactionStoreUpdate,
 };
-use miden_client::{ClientError, DebugMode};
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
 use miden_protocol::Felt;
 use miden_protocol::crypto::rand::RandomCoin;
@@ -167,7 +167,6 @@ async fn apply_transaction_batch_rolls_back_on_mid_batch_failure() {
         .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore))
-        .in_debug_mode(DebugMode::Enabled)
         .tx_discard_delta(None)
         .build()
         .await
@@ -443,7 +442,6 @@ async fn batch_builder_submits_txs_across_multiple_accounts() {
         .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore))
-        .in_debug_mode(DebugMode::Enabled)
         .tx_discard_delta(None)
         .build()
         .await

@@ -2,7 +2,7 @@ use alloc::string::String;
 use core::num::TryFromIntError;
 
 use miden_protocol::account::AccountId;
-use miden_protocol::asset::AssetVaultKey;
+use miden_protocol::asset::AssetId;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::merkle::MerkleError;
 use miden_protocol::crypto::merkle::mmr::MmrError;
@@ -94,8 +94,8 @@ pub enum StoreError {
     TransactionScriptError(#[from] TransactionScriptError),
     #[error("account vault data for root {0} not found")]
     VaultDataNotFound(Word),
-    #[error("vault key {0} (hashed to {1}) is not tracked in the vault")]
-    VaultKeyNotTracked(AssetVaultKey, Word),
+    #[error("vault key {0:?} (hashed to {1}) is not tracked in the vault")]
+    VaultKeyNotTracked(AssetId, Word),
     #[error("failed to parse word")]
     WordError(#[from] WordError),
 }

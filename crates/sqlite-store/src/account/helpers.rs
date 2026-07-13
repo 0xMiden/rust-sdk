@@ -216,7 +216,7 @@ pub(crate) fn query_vault_assets(
             let (vault_key_str, asset_str): (String, String) = result.into_store_error()?;
             let key_word = Word::try_from(vault_key_str)?;
             let value_word = Word::try_from(asset_str)?;
-            Ok(Asset::from_key_value_words(key_word, value_word)?)
+            Ok(Asset::from_id_and_value_words(key_word, value_word)?)
         })
         .collect::<Result<Vec<Asset>, StoreError>>()
 }

@@ -13,15 +13,21 @@ use miden_protocol::account::{
     StorageSlotContent,
     StorageSlotName,
 };
-use miden_protocol::asset::{AssetVaultKey, AssetWitness};
+use miden_protocol::asset::{AssetId, AssetWitness};
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrPeaks, PartialMmr};
 use miden_protocol::crypto::merkle::{MerkleError, MerklePath};
 use miden_protocol::note::{NoteScript, NoteScriptRoot};
 use miden_protocol::transaction::{AccountInputs, PartialBlockchain};
 use miden_protocol::vm::FutureMaybeSend;
-use miden_protocol::{MastForest, Word, ZERO};
-use miden_tx::{DataStore, DataStoreError, MastForestStore, TransactionMastStore};
+use miden_protocol::{Word, ZERO};
+use miden_tx::{
+    DataStore,
+    DataStoreError,
+    LoadedMastForest,
+    MastForestStore,
+    TransactionMastStore,
+};
 
 use super::{AccountStorageFilter, PartialBlockchainFilter, Store};
 use crate::rpc::domain::account::{
@@ -277,10 +283,10 @@ impl DataStore for ClientDataStore {
         &self,
         account_id: AccountId,
         vault_root: Word,
-        vault_keys: BTreeSet<AssetVaultKey>,
+        asset_ids: BTreeSet<AssetId>,
     ) -> Result<Vec<AssetWitness>, DataStoreError> {
         let mut asset_witnesses = vec![];
-        for vault_key in vault_keys {
+        for vault_key in asset_ids {
             match self.store.get_account_asset(account_id, vault_key).await {
                 Ok(Some((_, asset_witness))) => asset_witnesses.push(asset_witness),
                 Ok(None) | Err(StoreError::MerkleStoreError(MerkleError::RootNotInStore(_))) => {
@@ -290,14 +296,7 @@ impl DataStore for ClientDataStore {
                         return Err(DataStoreError::other("Vault root mismatch"));
                     }
 
-                    let asset_witness = AssetWitness::new(
-                        vault.open(vault_key).into(),
-                        [vault_key],
-                    )
-                    .map_err(|err| {
-                        DataStoreError::other_with_source("Failed to open vault asset tree", err)
-                    })?;
-                    asset_witnesses.push(asset_witness);
+                    asset_witnesses.push(vault.open(vault_key));
                 },
                 Err(err) => {
                     return Err(DataStoreError::other_with_source(
@@ -430,7 +429,7 @@ impl DataStore for ClientDataStore {
 // ================================================================================================
 
 impl MastForestStore for ClientDataStore {
-    fn get(&self, procedure_hash: &Word) -> Option<Arc<MastForest>> {
+    fn get(&self, procedure_hash: &Word) -> Option<LoadedMastForest> {
         self.cache.mast_store.get(procedure_hash)
     }
 }

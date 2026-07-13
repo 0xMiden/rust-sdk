@@ -8,7 +8,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use ::rand::{Rng, random};
+use ::rand::{RngExt, random};
 use anyhow::{Context, Result};
 use miden_protocol::account::auth::{AuthScheme, AuthSecretKey};
 use miden_protocol::account::{

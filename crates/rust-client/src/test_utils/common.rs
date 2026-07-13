@@ -17,7 +17,7 @@ use miden_protocol::transaction::TransactionId;
 use miden_standards::account::auth::{Approver, AuthSingleSig};
 use miden_standards::account::faucets::TokenName;
 use miden_standards::code_builder::CodeBuilder;
-use rand::RngCore;
+use rand::Rng;
 use tracing::{debug, info};
 use uuid::Uuid;
 

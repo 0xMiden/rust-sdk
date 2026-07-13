@@ -2,6 +2,7 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
+use miden_protocol::Word;
 use miden_protocol::account::{
     Account,
     AccountId,
@@ -10,13 +11,18 @@ use miden_protocol::account::{
     StorageMapWitness,
     StorageSlotContent,
 };
-use miden_protocol::asset::{AssetVaultKey, AssetWitness};
+use miden_protocol::asset::{AssetId, AssetWitness};
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::note::{NoteScript, NoteScriptRoot};
 use miden_protocol::transaction::{AccountInputs, PartialBlockchain};
 use miden_protocol::vm::FutureMaybeSend;
-use miden_protocol::{MastForest, Word};
-use miden_tx::{DataStore, DataStoreError, MastForestStore, TransactionMastStore};
+use miden_tx::{
+    DataStore,
+    DataStoreError,
+    LoadedMastForest,
+    MastForestStore,
+    TransactionMastStore,
+};
 
 use crate::store::data_store::ClientDataStore;
 
@@ -97,7 +103,7 @@ impl DataStore for InMemoryBatchDataStore {
         &self,
         account_id: AccountId,
         vault_root: Word,
-        vault_keys: BTreeSet<AssetVaultKey>,
+        asset_ids: BTreeSet<AssetId>,
     ) -> Result<Vec<AssetWitness>, DataStoreError> {
         if let Some(account) = self.current_accounts.get(&account_id) {
             let vault = account.vault();
@@ -107,10 +113,10 @@ impl DataStore for InMemoryBatchDataStore {
                     "vault root mismatch for account {account_id}: in-batch root = {in_batch_root:?}, requested root = {vault_root:?}",
                 )));
             }
-            let witnesses = vault_keys.into_iter().map(|key| vault.open(key)).collect();
+            let witnesses = asset_ids.into_iter().map(|key| vault.open(key)).collect();
             Ok(witnesses)
         } else {
-            self.inner.get_vault_asset_witnesses(account_id, vault_root, vault_keys).await
+            self.inner.get_vault_asset_witnesses(account_id, vault_root, asset_ids).await
         }
     }
 
@@ -155,7 +161,7 @@ impl DataStore for InMemoryBatchDataStore {
 // ================================================================================================
 
 impl MastForestStore for InMemoryBatchDataStore {
-    fn get(&self, procedure_hash: &Word) -> Option<Arc<MastForest>> {
+    fn get(&self, procedure_hash: &Word) -> Option<LoadedMastForest> {
         self.inner.get(procedure_hash)
     }
 }

@@ -34,9 +34,9 @@ use miden_protocol::account::{
     StorageSlotPatch,
     StorageValuePatch,
 };
-use miden_protocol::asset::AssetCallbackFlag;
 use miden_protocol::testing::account_id::{
     ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET,
+    ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_WITH_CALLBACKS,
     ACCOUNT_ID_PUBLIC_NON_FUNGIBLE_FAUCET,
 };
 use miden_protocol::testing::constants::NON_FUNGIBLE_ASSET_DATA;
@@ -51,8 +51,10 @@ use crate::transaction::with_forest_snapshot;
 #[tokio::test]
 async fn account_code_insertion_no_duplicates() -> anyhow::Result<()> {
     let store = create_test_store().await;
-    let component_code = CodeBuilder::default()
-        .compile_component_code("miden::testing::dummy_component", "pub proc dummy nop end")?;
+    let component_code = CodeBuilder::default().compile_component_code(
+        "miden::testing::dummy_component",
+        "@account_procedure\npub proc dummy nop end",
+    )?;
     let account_component = AccountComponent::new(
         component_code,
         vec![],
@@ -245,10 +247,11 @@ async fn apply_account_patch_preserves_fungible_callback_flag() -> anyhow::Resul
         .await?;
 
     // A fungible asset that carries an *enabled* callback flag (as agglayer-minted assets do).
-    let callback_asset: Asset =
-        FungibleAsset::new(AccountId::try_from(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET)?, 100)?
-            .with_callbacks(AssetCallbackFlag::Enabled)
-            .into();
+    let callback_asset: Asset = FungibleAsset::new(
+        AccountId::try_from(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_WITH_CALLBACKS)?,
+        100,
+    )?
+    .into();
 
     // The account starts with an empty vault, so the absolute value of the added asset is the
     // asset itself.
@@ -368,7 +371,7 @@ async fn apply_account_patch_removals() -> anyhow::Result<()> {
     // key is marked as removed.
     let mut vault_patch = AccountVaultPatch::default();
     for asset in &assets {
-        vault_patch.remove_asset(asset.vault_key());
+        vault_patch.remove_asset(asset.id());
     }
 
     let patch =
@@ -1574,7 +1577,7 @@ async fn undo_after_update_account_state_does_not_resurrect_removed_entries() ->
     )])?;
     // Y is removed, so its vault key is marked as removed (absolute final vault is {X}).
     let mut vault_patch_remove = AccountVaultPatch::default();
-    vault_patch_remove.remove_asset(asset_y.vault_key());
+    vault_patch_remove.remove_asset(asset_y.id());
     let patch_remove = AccountPatch::new(
         account_id,
         storage_patch_remove,

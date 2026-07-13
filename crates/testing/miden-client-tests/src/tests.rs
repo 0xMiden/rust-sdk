@@ -6,6 +6,7 @@ use std::env::temp_dir;
 use std::println;
 use std::sync::Arc;
 
+use miden_client::ClientError;
 use miden_client::account::{Address, AddressInterface};
 use miden_client::address::RoutingParameters;
 use miden_client::assembly::CodeBuilder;
@@ -60,7 +61,6 @@ use miden_client::transaction::{
     TransactionStatus,
 };
 use miden_client::utils::{Deserializable, Serializable};
-use miden_client::{ClientError, DebugMode};
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
 use miden_protocol::account::{
     Account,
@@ -72,21 +72,14 @@ use miden_protocol::account::{
     AccountId,
     AccountIdVersion,
     AccountType,
+    AssetCallbackFlag,
     StorageMap,
     StorageMapKey,
     StorageSlot,
     StorageSlotContent,
     StorageSlotName,
 };
-use miden_protocol::asset::{
-    Asset,
-    AssetAmount,
-    AssetCallbackFlag,
-    AssetVaultKey,
-    AssetWitness,
-    FungibleAsset,
-    TokenSymbol,
-};
+use miden_protocol::asset::{Asset, AssetAmount, AssetId, FungibleAsset, TokenSymbol};
 use miden_protocol::crypto::rand::{FeltRng, RandomCoin};
 use miden_protocol::note::{
     Note,
@@ -131,7 +124,7 @@ use miden_standards::testing::note::NoteBuilder;
 use miden_standards::tx_script::SendNotesTransactionScriptError;
 use miden_testing::{MockChain, MockChainBuilder, TxContextInput};
 use rand::rngs::StdRng;
-use rand::{Rng, RngCore, SeedableRng};
+use rand::{Rng, RngExt, SeedableRng};
 use rstest::rstest;
 
 mod batch;
@@ -1007,6 +1000,11 @@ async fn import_processing_note_returns_error() {
     ));
 }
 
+// TODO: fix - blocked by an upstream miden-standards bug (0.16.0-alpha.2). The
+// `send_notes_script.rs::move_asset_to_note_body` helper only emits the `pad(21)->pad(16)` stack
+// reduction inside the per-asset loop, so a zero-asset output note created from a basic wallet
+// returns at stack depth 21 and the VM rejects the transaction with `InvalidStackDepthOnReturn`.
+// Re-enable once the standards send-notes script handles zero-asset notes.
 #[tokio::test]
 async fn note_without_asset() {
     let (mut client, _rpc_api, keystore) = Box::pin(create_test_client()).await;
@@ -1092,7 +1090,8 @@ async fn execute_program() {
     let code = "
         use miden::core::sys
 
-        begin
+        @transaction_script
+        pub proc main
             push.16
             repeat.16
                 dup push.1 sub
@@ -1372,7 +1371,6 @@ async fn input_note_reader_finds_externally_consumed_notes() {
         .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore))
-        .in_debug_mode(DebugMode::Enabled)
         .tx_discard_delta(None)
         .build()
         .await
@@ -1482,7 +1480,6 @@ async fn import_by_id_already_consumed_note_is_findable_by_id() {
         .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore))
-        .in_debug_mode(DebugMode::Enabled)
         .tx_discard_delta(None)
         .build()
         .await
@@ -1583,7 +1580,6 @@ async fn setup_prunable_block_scenario(
         .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore))
-        .in_debug_mode(DebugMode::Enabled)
         .tx_discard_delta(None)
         .irrelevant_block_prune_interval(prune_interval)
         .build()
@@ -2863,7 +2859,7 @@ async fn pswap_fill_test(
     assert_eq!(
         alice_account
             .vault()
-            .get_balance(AssetVaultKey::new_fungible(eth_faucet.id(), AssetCallbackFlag::Disabled,))
+            .get_balance(AssetId::new_fungible(eth_faucet.id()))
             .unwrap()
             .as_u64(),
         MINT_AMOUNT - offered_amount,
@@ -2888,7 +2884,7 @@ async fn pswap_fill_test(
     assert_eq!(
         bob_account
             .vault()
-            .get_balance(AssetVaultKey::new_fungible(usd_faucet.id(), AssetCallbackFlag::Disabled,))
+            .get_balance(AssetId::new_fungible(usd_faucet.id()))
             .unwrap()
             .as_u64(),
         MINT_AMOUNT - account_fill_amount,
@@ -2899,7 +2895,7 @@ async fn pswap_fill_test(
     assert_eq!(
         bob_account
             .vault()
-            .get_balance(AssetVaultKey::new_fungible(eth_faucet.id(), AssetCallbackFlag::Disabled,))
+            .get_balance(AssetId::new_fungible(eth_faucet.id()))
             .unwrap()
             .as_u64(),
         expected_payout,
@@ -2926,7 +2922,7 @@ async fn pswap_fill_test(
                 "remainder offered amount should reflect the unfilled portion"
             );
             assert_eq!(
-                remainder.storage().requested_asset_amount(),
+                remainder.storage().min_requested_amount(),
                 rem_requested,
                 "remainder requested amount should reflect the unfilled portion"
             );
@@ -2984,7 +2980,7 @@ async fn pswap_cancel_test() {
     assert_eq!(
         alice_account
             .vault()
-            .get_balance(AssetVaultKey::new_fungible(eth_faucet.id(), AssetCallbackFlag::Disabled,))
+            .get_balance(AssetId::new_fungible(eth_faucet.id()))
             .unwrap()
             .as_u64(),
         MINT_AMOUNT - offered_amount,
@@ -3007,7 +3003,7 @@ async fn pswap_cancel_test() {
     assert_eq!(
         alice_account
             .vault()
-            .get_balance(AssetVaultKey::new_fungible(eth_faucet.id(), AssetCallbackFlag::Disabled,))
+            .get_balance(AssetId::new_fungible(eth_faucet.id()))
             .unwrap()
             .as_u64(),
         MINT_AMOUNT,
@@ -3035,7 +3031,6 @@ async fn create_pswap_test_client(
         .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore.clone()))
-        .in_debug_mode(DebugMode::Enabled)
         .tx_discard_delta(None)
         .build()
         .await
@@ -3222,7 +3217,7 @@ async fn pswap_chain_tracking_test(#[case] note_type: NoteType) {
     assert_eq!(
         alice_account
             .vault()
-            .get_balance(AssetVaultKey::new_fungible(eth_faucet.id(), AssetCallbackFlag::Disabled))
+            .get_balance(AssetId::new_fungible(eth_faucet.id()))
             .unwrap()
             .as_u64(),
         25,
@@ -3234,7 +3229,7 @@ async fn pswap_chain_tracking_test(#[case] note_type: NoteType) {
     assert_eq!(
         alice_account
             .vault()
-            .get_balance(AssetVaultKey::new_fungible(btc_faucet.id(), AssetCallbackFlag::Disabled))
+            .get_balance(AssetId::new_fungible(btc_faucet.id()))
             .unwrap()
             .as_u64(),
         MINT_AMOUNT - 50,
@@ -3360,7 +3355,7 @@ async fn pswap_full_fill_chain_tracking_test(#[case] note_type: NoteType) {
     assert_eq!(
         alice_account
             .vault()
-            .get_balance(AssetVaultKey::new_fungible(eth_faucet.id(), AssetCallbackFlag::Disabled))
+            .get_balance(AssetId::new_fungible(eth_faucet.id()))
             .unwrap()
             .as_u64(),
         requested_amount,
@@ -3369,7 +3364,7 @@ async fn pswap_full_fill_chain_tracking_test(#[case] note_type: NoteType) {
     assert_eq!(
         alice_account
             .vault()
-            .get_balance(AssetVaultKey::new_fungible(btc_faucet.id(), AssetCallbackFlag::Disabled))
+            .get_balance(AssetId::new_fungible(btc_faucet.id()))
             .unwrap()
             .as_u64(),
         MINT_AMOUNT - offered_amount,
@@ -3518,7 +3513,7 @@ async fn pswap_multi_round_chain_tracking_test() {
     assert_eq!(
         alice_account
             .vault()
-            .get_balance(AssetVaultKey::new_fungible(eth_faucet.id(), AssetCallbackFlag::Disabled))
+            .get_balance(AssetId::new_fungible(eth_faucet.id()))
             .unwrap()
             .as_u64(),
         35,
@@ -3528,7 +3523,7 @@ async fn pswap_multi_round_chain_tracking_test() {
     assert_eq!(
         alice_account
             .vault()
-            .get_balance(AssetVaultKey::new_fungible(btc_faucet.id(), AssetCallbackFlag::Disabled))
+            .get_balance(AssetId::new_fungible(btc_faucet.id()))
             .unwrap()
             .as_u64(),
         MINT_AMOUNT - 70,
@@ -3540,7 +3535,7 @@ async fn pswap_multi_round_chain_tracking_test() {
     assert_eq!(
         bob_account
             .vault()
-            .get_balance(AssetVaultKey::new_fungible(btc_faucet.id(), AssetCallbackFlag::Disabled))
+            .get_balance(AssetId::new_fungible(btc_faucet.id()))
             .unwrap()
             .as_u64(),
         70,
@@ -3549,7 +3544,7 @@ async fn pswap_multi_round_chain_tracking_test() {
     assert_eq!(
         bob_account
             .vault()
-            .get_balance(AssetVaultKey::new_fungible(eth_faucet.id(), AssetCallbackFlag::Disabled))
+            .get_balance(AssetId::new_fungible(eth_faucet.id()))
             .unwrap()
             .as_u64(),
         MINT_AMOUNT - 35,
@@ -3722,6 +3717,7 @@ const BUMP_MAP_CODE: &str = r#"
 
                 const MAP_SLOT = word("miden::testing::bump_map::map")
 
+                @account_procedure
                 pub proc bump_map_item
                     # map key
                     push.{map_key}
@@ -3788,7 +3784,8 @@ async fn storage_and_vault_proofs() {
         .unwrap()
         .compile_tx_script(
             "use external_contract::bump_item_contract
-            begin
+            @transaction_script
+            pub proc main
                 call.bump_item_contract::bump_map_item
             end",
         )
@@ -3854,7 +3851,7 @@ async fn storage_and_vault_proofs() {
         assert_eq!(account_vault_root, vault.root());
 
         // Check that specific asset proof matches the one in the vault
-        let vault_key = AssetVaultKey::new_fungible(faucet_account_id, AssetCallbackFlag::Disabled);
+        let vault_key = AssetId::new_fungible(faucet_account_id);
         let (asset, witness) = client
             .test_store()
             .get_account_asset(account_id, vault_key)
@@ -3862,8 +3859,7 @@ async fn storage_and_vault_proofs() {
             .unwrap()
             .unwrap();
 
-        let expected_witness =
-            AssetWitness::new(vault.open(asset.vault_key()).into(), [asset.vault_key()]).unwrap();
+        let expected_witness = vault.open(asset.id());
         assert_eq!(witness, expected_witness);
 
         // Check that specific map item proof matches the one in the storage
@@ -3997,7 +3993,6 @@ async fn import_watched_account_by_id_rejects_already_tracked_native_account() {
         .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore))
-        .in_debug_mode(DebugMode::Enabled)
         .build()
         .await
         .unwrap();
@@ -4034,6 +4029,11 @@ async fn import_watched_account_by_id_rejects_already_tracked_native_account() {
     assert!(!account_record.is_watched());
 }
 
+// TODO: fix - blocked by an upstream miden-standards bug (0.16.0-alpha.2). Creating the zero-asset
+// output note from a basic wallet hits `send_notes_script.rs::move_asset_to_note_body`, whose
+// `pad(21)->pad(16)` stack reduction only runs inside the per-asset loop; with no assets the tx
+// script returns at stack depth 21 and the VM rejects it with `InvalidStackDepthOnReturn`.
+// Re-enable once the standards send-notes script handles zero-asset notes.
 #[tokio::test]
 async fn consume_note_with_custom_script() {
     let (mut client, mock_rpc_api, keystore) = create_test_client().await;
@@ -4056,9 +4056,10 @@ async fn consume_note_with_custom_script() {
     client.sync_state().await.unwrap();
 
     let custom_note_script = "
+        use miden::core::sys
         @note_script
         pub proc main
-            nop
+            exec.sys::truncate_stack
         end
     ";
     let note_script = client.code_builder().compile_note_script(custom_note_script).unwrap();
@@ -4238,7 +4239,12 @@ async fn sync_stores_private_note_attachments() {
     // 1. Build a mock chain with a sender and a public target account (the attachment target must
     //    be public).
     let mut mock_chain_builder = MockChainBuilder::new();
-    let faucet_id = AccountId::dummy([7u8; 15], AccountIdVersion::Version1, AccountType::Public);
+    let faucet_id = AccountId::dummy(
+        [7u8; 15],
+        AccountIdVersion::Version1,
+        AccountType::Public,
+        AssetCallbackFlag::Disabled,
+    );
     let note_asset = FungibleAsset::new(faucet_id, 100).unwrap();
     let sender = mock_chain_builder
         .add_existing_mock_account_with_assets(miden_testing::Auth::IncrNonce, [note_asset.into()])
@@ -4297,7 +4303,6 @@ async fn sync_stores_private_note_attachments() {
         .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore))
-        .in_debug_mode(DebugMode::Enabled)
         .tx_discard_delta(None)
         .build()
         .await
@@ -4445,7 +4450,6 @@ async fn sync_large_public_account() {
         .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore))
-        .in_debug_mode(DebugMode::Enabled)
         .build()
         .await
         .unwrap();
@@ -4565,7 +4569,6 @@ pub async fn create_test_client_builder()
         .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore.clone()))
-        .in_debug_mode(DebugMode::Enabled)
         .tx_discard_delta(None);
 
     (builder, rpc_api, keystore)
@@ -4849,7 +4852,8 @@ async fn storage_and_vault_proofs_ecdsa() {
         .unwrap()
         .compile_tx_script(
             "use external_contract::bump_item_contract
-            begin
+            @transaction_script
+            pub proc main
                 call.bump_item_contract::bump_map_item
             end",
         )
@@ -4915,7 +4919,7 @@ async fn storage_and_vault_proofs_ecdsa() {
         assert_eq!(account_vault_root, vault.root());
 
         // Check that specific asset proof matches the one in the vault
-        let vault_key = AssetVaultKey::new_fungible(faucet_account_id, AssetCallbackFlag::Disabled);
+        let vault_key = AssetId::new_fungible(faucet_account_id);
         let (asset, witness) = client
             .test_store()
             .get_account_asset(account_id, vault_key)
@@ -4923,8 +4927,7 @@ async fn storage_and_vault_proofs_ecdsa() {
             .unwrap()
             .unwrap();
 
-        let expected_witness =
-            AssetWitness::new(vault.open(asset.vault_key()).into(), [asset.vault_key()]).unwrap();
+        let expected_witness = vault.open(asset.id());
         assert_eq!(witness, expected_witness);
 
         // Check that specific map item proof matches the one in the storage

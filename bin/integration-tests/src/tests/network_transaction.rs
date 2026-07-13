@@ -24,7 +24,7 @@ use miden_client::account::{
     StorageSlot,
     StorageSlotName,
 };
-use miden_client::assembly::{CodeBuilder, Library, Module, ModuleKind, Path, SourceManagerSync};
+use miden_client::assembly::{CodeBuilder, SourceManagerSync};
 use miden_client::asset::{AssetAmount, FungibleAsset, TokenSymbol};
 use miden_client::auth::RPO_FALCON_SCHEME_ID;
 use miden_client::crypto::FeltRng;
@@ -59,9 +59,9 @@ use miden_client::testing::common::{
     wait_for_blocks,
     wait_for_tx,
 };
-use miden_client::transaction::{TransactionKernel, TransactionRequestBuilder};
+use miden_client::transaction::TransactionRequestBuilder;
 use miden_client::{Felt, Word, ZERO};
-use rand::{Rng, RngCore};
+use rand::{Rng, RngExt};
 
 use crate::tests::config::ClientConfig;
 
@@ -366,10 +366,10 @@ fn build_non_standard_mint(
     )
     .details_commitment();
 
-    let mint_storage = MintNoteStorage::new_public(
+    let mint_storage = MintNoteStorage::new_fungible_public(
         recipient,
         expected_asset,
-        NoteTag::with_account_target(target).into(),
+        NoteTag::with_account_target(target),
     )?;
     let target_ntx = NetworkAccountTarget::new(faucet.id(), NoteExecutionHint::Always)?;
     let mint_note: Note = MintNote::builder()
@@ -692,10 +692,10 @@ pub async fn test_ntx_mint_produces_public_p2id(client_config: ClientConfig) -> 
     )
     .details_commitment();
 
-    let mint_storage = MintNoteStorage::new_public(
+    let mint_storage = MintNoteStorage::new_fungible_public(
         bob_recipient,
         expected_asset,
-        NoteTag::with_account_target(bob.id()).into(),
+        NoteTag::with_account_target(bob.id()),
     )?;
 
     let target_ntx = NetworkAccountTarget::new(faucet.id(), NoteExecutionHint::Always)?;
@@ -841,25 +841,6 @@ pub async fn test_ntx_mint_produces_public_note_with_non_standard_script(
     Ok(())
 }
 
-/// Compiles the counter contract library using the provided source manager so that all source
-/// spans are registered in the same manager used by the client's executor.
-pub(crate) fn counter_contract_library(source_manager: Arc<dyn SourceManagerSync>) -> Arc<Library> {
-    let assembler = TransactionKernel::assembler_with_source_manager(source_manager.clone());
-    let module = Module::parser(ModuleKind::Library)
-        .parse_str(
-            Path::new("external_contract::counter_contract"),
-            COUNTER_CONTRACT,
-            source_manager.clone(),
-        )
-        .map_err(|err| anyhow!(err))
-        .unwrap();
-    assembler
-        .clone()
-        .assemble_library([module])
-        .map_err(|err| anyhow!(err))
-        .unwrap()
-}
-
 /// Compiles a note script (linked against the counter contract library) and returns its script
 /// root, used to populate a network account's note-script allowlist. The root must match the note
 /// the account is expected to consume, so this compiles the script exactly as
@@ -868,8 +849,8 @@ pub(crate) fn note_script_root(
     script: &str,
     source_manager: Arc<dyn SourceManagerSync>,
 ) -> Result<NoteScriptRoot> {
-    let script = CodeBuilder::with_source_manager(source_manager.clone())
-        .with_dynamically_linked_library(counter_contract_library(source_manager))?
+    let script = CodeBuilder::with_source_manager(source_manager)
+        .with_linked_module("external_contract::counter_contract", COUNTER_CONTRACT)?
         .compile_note_script(script)?;
     Ok(script.root())
 }
@@ -902,8 +883,8 @@ pub(crate) fn get_network_note_with_script<T: Rng>(
     let partial_metadata = PartialNoteMetadata::new(sender, NoteType::Public)
         .with_tag(NoteTag::with_account_target(network_account));
 
-    let script = CodeBuilder::with_source_manager(source_manager.clone())
-        .with_dynamically_linked_library(counter_contract_library(source_manager))?
+    let script = CodeBuilder::with_source_manager(source_manager)
+        .with_linked_module("external_contract::counter_contract", COUNTER_CONTRACT)?
         .compile_note_script(script)?;
     let recipient = NoteRecipient::new(
         Word::new([

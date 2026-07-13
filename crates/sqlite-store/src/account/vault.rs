@@ -7,7 +7,7 @@ use miden_client::Serializable;
 use miden_client::account::{AccountHeader, AccountId, AccountVaultPatch};
 use miden_client::asset::Asset;
 use miden_client::store::{AccountSmtForest, StoreError};
-use miden_protocol::asset::AssetVaultKey;
+use miden_protocol::asset::AssetId;
 use miden_protocol::crypto::merkle::MerkleError;
 use rusqlite::types::Value;
 use rusqlite::{OptionalExtension, Transaction, params};
@@ -37,7 +37,7 @@ impl SqliteStore {
         let account_id_bytes = account_id.to_bytes();
 
         for asset in assets {
-            let vault_key_hex = asset.vault_key().to_string();
+            let vault_key_hex = asset.id().to_word().to_hex();
             let asset_hex = asset.to_value_word().to_hex();
 
             latest_stmt
@@ -70,8 +70,7 @@ impl SqliteStore {
         // or signed-amount arithmetic is needed, and the asset value word already encodes the
         // callback flag for both fungible and non-fungible assets.
         let updated_assets_values: Vec<Asset> = vault_patch.updated_assets().collect();
-        let removed_vault_keys: Vec<AssetVaultKey> =
-            vault_patch.removed_asset_keys().copied().collect();
+        let removed_vault_keys: Vec<AssetId> = vault_patch.removed_asset_ids().copied().collect();
 
         Self::persist_vault_delta(
             tx,
@@ -102,7 +101,7 @@ impl SqliteStore {
         tx: &Transaction<'_>,
         account_id_bytes: &[u8],
         nonce_val: &rusqlite::types::Value,
-        removed_vault_keys: &[AssetVaultKey],
+        removed_vault_keys: &[AssetId],
         updated_assets: &[Asset],
     ) -> Result<(), StoreError> {
         const READ_OLD_ASSET: &str =
@@ -123,7 +122,7 @@ impl SqliteStore {
 
         // Archive and delete removed assets
         for vault_key in removed_vault_keys {
-            let vault_key_hex = vault_key.to_string();
+            let vault_key_hex = vault_key.to_word().to_hex();
 
             // Read old asset value from latest (should exist since we're removing it)
             let old_asset: Option<String> = tx
@@ -151,7 +150,7 @@ impl SqliteStore {
                     Rc::new(
                         removed_vault_keys
                             .iter()
-                            .map(|k| Value::from(k.to_string()))
+                            .map(|k| Value::from(k.to_word().to_hex()))
                             .collect::<Vec<Value>>(),
                     ),
                 ],
@@ -161,7 +160,7 @@ impl SqliteStore {
 
         // Archive old values and insert updated assets
         for asset in updated_assets {
-            let vault_key_hex = asset.vault_key().to_string();
+            let vault_key_hex = asset.id().to_word().to_hex();
             let asset_hex = asset.to_value_word().to_hex();
 
             // Read old asset value from latest (NULL if asset is new)

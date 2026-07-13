@@ -22,7 +22,7 @@ impl TransactionProver for LocalTransactionProver {
         &self,
         witness: TransactionInputs,
     ) -> Result<ProvenTransaction, TransactionProverError> {
-        LocalTransactionProver::prove(self, witness).await
+        LocalTransactionProver::prove(self, witness)
     }
 }
 

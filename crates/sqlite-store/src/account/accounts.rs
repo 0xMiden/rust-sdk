@@ -35,7 +35,7 @@ use miden_client::store::{
 use miden_client::utils::{Deserializable, Serializable};
 use miden_client::{AccountError, Felt, Word};
 use miden_protocol::account::{AccountStorageHeader, StorageMapWitness, StorageSlotHeader};
-use miden_protocol::asset::{AssetVaultKey, PartialVault};
+use miden_protocol::asset::{AssetId, PartialVault};
 use rusqlite::types::Value;
 use rusqlite::{Connection, OptionalExtension, Transaction, named_params, params};
 
@@ -245,7 +245,7 @@ impl SqliteStore {
         conn: &mut Connection,
         smt_forest: &Arc<RwLock<AccountSmtForest>>,
         account_id: AccountId,
-        vault_key: AssetVaultKey,
+        vault_key: AssetId,
     ) -> Result<Option<(Asset, AssetWitness)>, StoreError> {
         // Acquire forest lock before getting header in order to avoid concurrent writes to it.
         let smt_forest = smt_forest

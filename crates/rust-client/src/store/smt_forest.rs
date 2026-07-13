@@ -10,7 +10,7 @@ use miden_protocol::account::{
     StorageMapWitness,
     StorageSlotContent,
 };
-use miden_protocol::asset::{Asset, AssetVault, AssetVaultKey, AssetWitness};
+use miden_protocol::asset::{Asset, AssetId, AssetVault, AssetWitness};
 use miden_protocol::crypto::merkle::EmptySubtreeRoots;
 use miden_protocol::crypto::merkle::smt::{SMT_DEPTH, Smt, SmtForest};
 use miden_protocol::{EMPTY_WORD, Word};
@@ -50,9 +50,8 @@ impl AccountSmtForest {
     pub fn get_asset_and_witness(
         &self,
         vault_root: Word,
-        vault_key: AssetVaultKey,
+        vault_key: AssetId,
     ) -> Result<(Asset, AssetWitness), StoreError> {
-        let vault_key_word: Word = vault_key.into();
         let hashed_key: Word = vault_key.hash().into();
         let proof = self.forest.open(vault_root, hashed_key)?;
         let asset_word = proof
@@ -62,7 +61,7 @@ impl AccountSmtForest {
             return Err(StoreError::VaultKeyNotTracked(vault_key, hashed_key));
         }
 
-        let asset = Asset::from_key_value_words(vault_key_word, asset_word)?;
+        let asset = Asset::from_id_and_value(vault_key, asset_word)?;
         let witness = AssetWitness::new(proof, [vault_key])?;
         Ok((asset, witness))
     }
@@ -156,11 +155,11 @@ impl AccountSmtForest {
         &mut self,
         root: Word,
         new_assets: impl Iterator<Item = Asset>,
-        removed_vault_keys: impl Iterator<Item = AssetVaultKey>,
+        removed_vault_keys: impl Iterator<Item = AssetId>,
     ) -> Result<Word, StoreError> {
         let entries: Vec<(Word, Word)> = new_assets
             .map(|asset| {
-                let key: Word = asset.vault_key().hash().into();
+                let key: Word = asset.id().hash().into();
                 let value = asset.to_value_word();
                 (key, value)
             })
@@ -198,7 +197,7 @@ impl AccountSmtForest {
     /// Inserts the asset vault SMT nodes to the SMT forest.
     pub fn insert_asset_nodes(&mut self, vault: &AssetVault) -> Result<(), StoreError> {
         let smt = Smt::with_entries(vault.assets().map(|asset| {
-            let key: Word = asset.vault_key().hash().into();
+            let key: Word = asset.id().hash().into();
             let value = asset.to_value_word();
             (key, value)
         }))

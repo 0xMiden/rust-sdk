@@ -30,7 +30,7 @@ use miden_client::keystore::Keystore;
 use miden_client::transaction::TransactionRequestBuilder;
 use miden_client::utils::Deserializable;
 use miden_client::vm::{Package, SectionId};
-use rand::RngCore;
+use rand::Rng;
 use serde::Deserialize;
 use tracing::debug;
 
@@ -340,7 +340,7 @@ fn build_fungible_faucet_component(
 /// `Package.name` field stores the component's full canonical name from `FungibleFaucet::NAME`.)
 fn drop_basic_fungible_faucet_packages(packages: &mut Vec<Package>) -> bool {
     let before = packages.len();
-    packages.retain(|pkg| pkg.name.to_string() != FungibleFaucet::NAME);
+    packages.retain(|pkg| pkg.name != FungibleFaucet::NAME);
     packages.len() != before
 }
 

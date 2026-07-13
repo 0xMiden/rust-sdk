@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use miden_client::assembly::{CodeBuilder, Module, ModuleKind, Path, SourceManagerSync};
+use miden_client::assembly::{CodeBuilder, SourceManagerSync};
 use miden_client::auth::{AuthSchemeId, AuthSecretKey, AuthSingleSig, PublicKeyCommitment};
 use miden_client::keystore::Keystore;
 use miden_client::store::AccountStorageFilter;
@@ -25,13 +25,12 @@ use miden_protocol::testing::account_id::{
     ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET,
     ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET,
 };
-use miden_protocol::transaction::TransactionKernel;
 use miden_protocol::{EMPTY_WORD, Felt, Word, ZERO};
 use miden_standards::account::AccountBuilderSchemaCommitmentExt;
 use miden_standards::account::auth::Approver;
 use miden_standards::account::wallets::BasicWallet;
 use miden_standards::testing::mock_account::MockAccountExt;
-use rand::RngCore;
+use rand::Rng;
 
 use crate::tests::{create_test_client, insert_new_fungible_faucet, insert_new_wallet};
 
@@ -269,6 +268,7 @@ const SLOTS_COMPONENT_MASM: &str = r#"
         const SLOT_A = word("test::pruning::slot_a")
         const SLOT_B = word("test::pruning::slot_b")
 
+        @account_procedure
         pub proc set_a_to_10
             push.0.0.0.10
             push.SLOT_A[0..2]
@@ -277,6 +277,7 @@ const SLOTS_COMPONENT_MASM: &str = r#"
             exec.sys::truncate_stack
         end
 
+        @account_procedure
         pub proc set_b_to_20
             push.0.0.0.20
             push.SLOT_B[0..2]
@@ -349,22 +350,13 @@ fn compile_slot_tx_script(
     proc_name: &str,
     source_manager: Arc<dyn SourceManagerSync>,
 ) -> miden_client::transaction::TransactionScript {
-    let assembler = TransactionKernel::assembler_with_source_manager(source_manager.clone());
-    let module = Module::parser(ModuleKind::Library)
-        .parse_str(
-            Path::new("external_contract::slots_contract"),
-            SLOTS_COMPONENT_MASM,
-            source_manager.clone(),
-        )
-        .unwrap();
-    let library = assembler.assemble_library([module]).unwrap();
-
     CodeBuilder::with_source_manager(source_manager)
-        .with_dynamically_linked_library(library)
+        .with_linked_module("external_contract::slots_contract", SLOTS_COMPONENT_MASM)
         .unwrap()
         .compile_tx_script(format!(
             "use external_contract::slots_contract
-            begin
+            @transaction_script
+            pub proc main
                 call.slots_contract::{proc_name}
             end"
         ))

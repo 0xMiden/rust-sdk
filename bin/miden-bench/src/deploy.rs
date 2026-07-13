@@ -19,7 +19,7 @@ use miden_client::auth::{Approver, AuthSchemeId, AuthSecretKey, AuthSingleSig};
 use miden_client::keystore::{FilesystemKeyStore, Keystore};
 use miden_client::transaction::TransactionRequestBuilder;
 use miden_client::{Client, Serializable};
-use rand::Rng;
+use rand::RngExt;
 use rand_chacha::ChaCha20Rng;
 use rand_chacha::rand_core::SeedableRng;
 

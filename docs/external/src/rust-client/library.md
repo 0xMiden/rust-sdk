@@ -58,7 +58,6 @@ let client = ClientBuilder::new()
     .filesystem_keystore("path/to/keys")?
     // Optional: custom prover via .prover(Arc::new(prover))
     // Optional: note transport via .note_transport(Arc::new(nt_client))
-    // Optional: debug mode via .in_debug_mode(DebugMode::Enabled)
     // Optional: custom source manager via .source_manager(Arc::new(sm)) — only
     //   needed when compiling scripts outside the client with an external
     //   `Assembler`; pass the same `Arc` to both so source spans align.

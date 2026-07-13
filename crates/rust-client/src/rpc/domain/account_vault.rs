@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 
 use miden_protocol::Word;
 use miden_protocol::account::AccountVaultPatch;
-use miden_protocol::asset::{Asset, AssetVaultKey};
+use miden_protocol::asset::{Asset, AssetId};
 use miden_protocol::block::BlockNumber;
 
 use crate::rpc::domain::MissingFieldHelper;
@@ -13,7 +13,7 @@ use crate::rpc::{RpcConversionError, RpcError, generated as proto};
 /// and its new asset (`None` if the asset was removed at that block).
 pub(crate) struct VaultUpdate {
     pub(crate) block_num: BlockNumber,
-    pub(crate) vault_key: AssetVaultKey,
+    pub(crate) vault_key: AssetId,
     pub(crate) asset: Option<Asset>,
 }
 
@@ -32,7 +32,7 @@ impl TryFrom<proto::primitives::Asset> for Asset {
             .value
             .ok_or(proto::primitives::Asset::missing_field(stringify!(value)))?
             .try_into()?;
-        Asset::from_key_value_words(key_word, value_word)
+        Asset::from_id_and_value_words(key_word, value_word)
             .map_err(|e| RpcConversionError::InvalidField(e.to_string()))
     }
 }
@@ -94,13 +94,13 @@ fn vault_update_from_proto(value: proto::rpc::AccountVaultUpdate) -> Result<Vaul
         .vault_key
         .ok_or(proto::rpc::SyncAccountVaultResponse::missing_field(stringify!(vault_key)))?
         .try_into()?;
-    let vault_key = AssetVaultKey::try_from(vault_key_inner)
-        .map_err(|e| RpcError::InvalidResponse(e.to_string()))?;
+    let vault_key =
+        AssetId::try_from(vault_key_inner).map_err(|e| RpcError::InvalidResponse(e.to_string()))?;
 
     let asset = value.asset.map(Asset::try_from).transpose()?;
 
     if let Some(ref asset) = asset
-        && asset.vault_key() != vault_key
+        && asset.id() != vault_key
     {
         return Err(RpcError::InvalidResponse(
             "account vault update returned mismatched asset key".to_string(),

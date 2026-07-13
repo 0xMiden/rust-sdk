@@ -37,7 +37,7 @@ use miden_client::store::{InputNoteState, TransactionFilter};
 use miden_client::testing::common::*;
 use miden_client::transaction::TransactionRequestBuilder;
 use miden_client::{Client, ClientRng, Word};
-use rand::RngCore;
+use rand::Rng;
 use tracing::info;
 
 use crate::tests::config::ClientConfig;
@@ -242,7 +242,7 @@ fn create_pass_through_note(
 ) -> Result<(Note, NoteDetails)> {
     let note_script = get_pass_through_note_script();
 
-    let asset_key: Word = asset.to_key_word();
+    let asset_key: Word = asset.to_id_word();
     let asset_value: Word = asset.to_value_word();
 
     let target_recipient = P2idNoteStorage::new(target).into_recipient(rng.draw_word());

@@ -107,7 +107,7 @@ async fn transaction_error_reports_source_line() {
 
     let failing_script = client
         .code_builder()
-        .compile_tx_script("begin push.0 push.2 assert_eq end")
+        .compile_tx_script("@transaction_script pub proc main push.0 push.2 assert_eq end")
         .unwrap();
 
     let tx_request =
@@ -180,7 +180,7 @@ async fn execute_transaction_failure_leaves_store_unchanged() {
     // succeeded.
     let failing_script = client
         .code_builder()
-        .compile_tx_script("begin push.0 push.2 assert_eq end")
+        .compile_tx_script("@transaction_script pub proc main push.0 push.2 assert_eq end")
         .unwrap();
 
     let tx_request = TransactionRequestBuilder::new()
@@ -306,6 +306,7 @@ async fn lazy_foreign_account_loading() {
             format!(
                 r#"
                 const STORAGE_MAP_SLOT = word("miden::testing::fpi::map")
+                @account_procedure
                 pub proc get_map_item
                     push.{map_key}
                     push.STORAGE_MAP_SLOT[0..2]
@@ -373,7 +374,8 @@ async fn lazy_foreign_account_loading() {
         .compile_tx_script(format!(
             "
             use miden::protocol::tx
-            begin
+            @transaction_script
+            pub proc main
                 push.{proc_root}
                 push.{prefix} push.{suffix}
                 exec.tx::execute_foreign_procedure

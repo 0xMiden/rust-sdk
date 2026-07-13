@@ -117,6 +117,10 @@ pub use account_reader::AccountReader;
 pub use miden_standards::account as standards;
 use miden_standards::account::auth::{Approver, AuthSingleSig};
 use miden_standards::account::faucets::FungibleFaucet;
+pub use miden_standards::account::inspection::{
+    AccountBuilderSchemaCommitmentExt,
+    AccountSchemaCommitment,
+};
 // RE-EXPORTS
 // ================================================================================================
 pub use miden_standards::account::interface::{
@@ -124,10 +128,6 @@ pub use miden_standards::account::interface::{
     AccountComponentInterfaceExt,
     AccountInterface,
     AccountInterfaceExt,
-};
-pub use miden_standards::account::metadata::{
-    AccountBuilderSchemaCommitmentExt,
-    AccountSchemaCommitment,
 };
 use miden_standards::account::wallets::BasicWallet;
 
@@ -652,7 +652,7 @@ pub fn build_wallet_id(
 mod schema_commitment_tests {
     use miden_protocol::EMPTY_WORD;
     use miden_protocol::account::auth::AuthSecretKey;
-    use miden_standards::account::metadata::AccountSchemaCommitment;
+    use miden_standards::account::inspection::AccountSchemaCommitment;
 
     use super::{
         AccountBuilder,

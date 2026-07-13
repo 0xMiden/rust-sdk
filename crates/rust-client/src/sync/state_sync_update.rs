@@ -589,7 +589,7 @@ mod tests {
             .compute_account_patch(None)
             .unwrap();
 
-        assert_eq!(patch.storage().get_value(&value_slot), Some(word(2)));
+        assert_eq!(patch.storage().updated_value(&value_slot), Some(word(2)));
     }
 
     #[test]
@@ -602,9 +602,10 @@ mod tests {
 
         let patch = payload(2, vec![], map_entries).compute_account_patch(None).unwrap();
 
-        let map = patch.storage().get_map(&map_slot).expect("patch should contain map slot");
-        assert_eq!(map.entries().unwrap().as_map().len(), 1);
-        assert_eq!(*map.entries().unwrap().as_map().values().next().unwrap(), word(300));
+        let entries =
+            patch.storage().updated_map(&map_slot).expect("patch should contain map slot");
+        assert_eq!(entries.as_map().len(), 1);
+        assert_eq!(*entries.as_map().values().next().unwrap(), word(300));
     }
 
     #[test]
@@ -647,8 +648,7 @@ mod tests {
             .compute_account_patch(Some(AccountCode::mock()))
             .unwrap();
 
-        let map = patch.storage().get_map(&map_slot).expect("patch should contain map slot");
-        assert!(matches!(map, StorageMapPatch::Create { .. }));
+        assert!(patch.storage().created_map(&map_slot).is_some());
     }
 
     /// An update to an existing account (final nonce > 1) emits map slots as `Update`, never
@@ -662,7 +662,6 @@ mod tests {
 
         let patch = payload(2, vec![], map_entries).compute_account_patch(None).unwrap();
 
-        let map = patch.storage().get_map(&map_slot).expect("patch should contain map slot");
-        assert!(matches!(map, StorageMapPatch::Update { .. }));
+        assert!(patch.storage().updated_map(&map_slot).is_some());
     }
 }

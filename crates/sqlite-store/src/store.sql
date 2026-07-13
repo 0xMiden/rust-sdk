@@ -187,7 +187,7 @@ CREATE TABLE output_notes (
     nullifier BLOB NULL,
     expected_height UNSIGNED INT NOT NULL,                  -- the block height after which the note is expected to be created
 -- TODO: normalize script data for output notes
---     script_commitment TEXT NULL,
+--     script_commitment BLOB NULL,
     state_discriminant UNSIGNED INT NOT NULL,               -- state discriminant of the note, used to query by state
     state BLOB NOT NULL,                                    -- serialized note state
     attachments BLOB NOT NULL,

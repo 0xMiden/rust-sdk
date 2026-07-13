@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::fs;
 #[cfg(feature = "dap")]
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -9,9 +8,9 @@ use miden_client::account::AccountId;
 use miden_client::keystore::Keystore;
 use miden_client::transaction::{ForeignAccount, TransactionScript};
 use miden_client::vm::{AdviceInputs, MIN_STACK_DEPTH};
-use miden_client::{Client, Felt, Word};
-use serde::{Deserialize, Deserializer, Serialize, de};
+use miden_client::{Client, Felt};
 
+use crate::advice_inputs::load_advice_map_from_file;
 use crate::errors::CliError;
 use crate::utils::{
     get_input_acc_id_by_prefix_or_default,
@@ -33,25 +32,9 @@ pub struct ExecCmd {
     #[arg(long, short)]
     script_path: String,
 
-    #[rustfmt::skip]
-    #[allow(clippy::doc_link_with_quotes)]
-    /// Path to the inputs file. This file will be used as inputs to the VM's advice map.
-    ///
-    /// The file should contain a TOML array of inline tables, where each table has two fields:
-    /// - `key`: a 256-bit hexadecimal string representing a word to be used as a key for the input
-    ///   entry. The hexadecimal value must be prefixed with 0x.
-    /// - `values`: an array of 64-bit unsigned integers representing field elements to be used as
-    ///   values for the input entry. Each integer must be written as a separate string, within
-    ///   double quotes.
-    ///
-    /// The input file should contain a TOML table called `inputs`, as in the following example:
-    ///    inputs = [
-    ///        { key = "0x0000000000000000000000000000000000000000000000000000001000000000", values = ["13", "9"]},
-    ///        { key = "0x0000000000000000000000000000000000000000000000000000000000000000" , values = ["1", "2"]},
-    ///    ]
-    #[arg(long, short)]
-    #[clap(verbatim_doc_comment)]
-    inputs_path: Option<String>,
+    /// Path to a TOML file with advice map entries used as inputs to the VM's advice map.
+    #[arg(long, short, long_help = crate::advice_inputs::INPUTS_PATH_LONG_HELP)]
+    inputs_path: Option<PathBuf>,
 
     /// Print the output stack grouped into words
     #[arg(long, default_value_t = false)]
@@ -81,18 +64,7 @@ impl ExecCmd {
             get_input_acc_id_by_prefix_or_default(&client, self.account_id.clone()).await?;
 
         let inputs = match &self.inputs_path {
-            Some(input_file) => {
-                let input_file = PathBuf::from(input_file);
-                if !input_file.exists() {
-                    return Err(CliError::Exec(
-                        "error with the input file".to_string().into(),
-                        format!("the input file at path {} does not exist", input_file.display()),
-                    ));
-                }
-
-                let input_data = fs::read_to_string(input_file)?;
-                deserialize_tx_inputs(&input_data)?
-            },
+            Some(input_file) => load_advice_map_from_file(input_file)?,
             None => vec![],
         };
 
@@ -215,72 +187,4 @@ mod source_reload {
             .update(source_id, source, None, version)
             .map_err(|source| reload_err(Box::new(source)))
     }
-}
-
-// INPUT FILE PROCESSING
-// ===============================================================================================
-
-/// Struct that holds a single key-values pair from the provided file inputs file. These will be
-/// aggregated in the [`CliTxInputs`] struct
-#[derive(Serialize, Deserialize)]
-struct CliTxInput {
-    key: String,
-    #[serde(deserialize_with = "string_to_u64")]
-    values: Vec<u64>,
-}
-
-/// Struct that holds every key-values pair present in the provided inputs file. This struct can be
-/// iterated on to access the different keys.
-#[derive(Serialize, Deserialize)]
-struct CliTxInputs {
-    inputs: Vec<CliTxInput>,
-}
-
-impl IntoIterator for CliTxInputs {
-    type Item = CliTxInput;
-    type IntoIter = std::vec::IntoIter<Self::Item>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.inputs.into_iter()
-    }
-}
-
-/// Since the toml crate has problems parsing u64 values (see
-/// [issue](https://github.com/toml-rs/toml/issues/705), we store the values as Strings. Then, when
-/// deserializing, we turn those Strings to u64 in order to then turn them to Felts.
-fn string_to_u64<'de, D>(deserializer: D) -> Result<Vec<u64>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    Vec::<String>::deserialize(deserializer)?
-        .into_iter()
-        .map(|a| a.parse::<u64>())
-        .collect::<Result<Vec<u64>, _>>()
-        .map_err(|_| {
-            de::Error::custom(
-                "invalid type: expected u64 in between parentheses. For example: values = [\"13\", \"9\"]",
-            )
-        })
-}
-
-fn deserialize_tx_inputs(serialized: &str) -> Result<Vec<(Word, Vec<Felt>)>, CliError> {
-    let cli_inputs: CliTxInputs = toml::from_str(serialized).map_err(|err| {
-        CliError::Exec(
-            "error deserializing transaction inputs".into(),
-            format!("failed to parse input data: {err}"),
-        )
-    })?;
-    cli_inputs
-        .into_iter()
-        .map(|input| {
-            let word = Word::try_from(input.key).map_err(|err| err.to_string())?;
-            let felts: Vec<Felt> = input
-                .values
-                .into_iter()
-                .map(|v| Felt::new(v).map_err(|err| err.to_string()))
-                .collect::<Result<_, _>>()?;
-            Ok((word, felts))
-        })
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|err| CliError::Exec("error deserializing transaction inputs".into(), err))
 }

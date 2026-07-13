@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 
 use async_trait::async_trait;
 use miden_protocol::account::{AccountCode, AccountId};
-use miden_protocol::note::{Note, NoteId};
+use miden_protocol::note::{Note, NoteAttachments, NoteId};
 use miden_standards::note::NoteConsumptionStatus;
 use miden_tx::{
     NoteCheckerError,
@@ -195,8 +195,9 @@ impl OnNoteReceived for NoteScreener {
     /// to check its relevance.
     async fn on_note_received(
         &self,
-        committed_note: CommittedNote,
-        public_note: Option<InputNoteRecord>,
+        committed_note: &CommittedNote,
+        public_note: Option<&InputNoteRecord>,
+        _attachments: Option<&NoteAttachments>,
     ) -> Result<NoteUpdateAction, ClientError> {
         let note_id = *committed_note.note_id();
 
@@ -224,7 +225,7 @@ impl OnNoteReceived for NoteScreener {
 
         if input_note_present || output_note_present {
             // The note is being tracked by the client so it is relevant
-            return Ok(NoteUpdateAction::Commit(committed_note));
+            return Ok(NoteUpdateAction::Commit(committed_note.clone()));
         }
 
         match public_note {
@@ -233,7 +234,7 @@ impl OnNoteReceived for NoteScreener {
                 if let Some(metadata) = public_note.metadata()
                     && self.store.get_unique_note_tags().await?.contains(&metadata.tag())
                 {
-                    return Ok(NoteUpdateAction::Insert(public_note));
+                    return Ok(NoteUpdateAction::Insert(public_note.clone()));
                 }
 
                 // The note is not being tracked by the client and is public so we can screen it
@@ -247,7 +248,7 @@ impl OnNoteReceived for NoteScreener {
                     .await?;
                 let is_relevant = !new_note_relevance.is_empty();
                 if is_relevant {
-                    Ok(NoteUpdateAction::Insert(public_note))
+                    Ok(NoteUpdateAction::Insert(public_note.clone()))
                 } else {
                     Ok(NoteUpdateAction::Discard)
                 }

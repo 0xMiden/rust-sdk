@@ -616,8 +616,9 @@ async fn sync_persists_auth_nodes_for_skipped_blocks() {
     impl OnNoteReceived for DiscardAllNotes {
         async fn on_note_received(
             &self,
-            _committed_note: CommittedNote,
-            _public_note: Option<InputNoteRecord>,
+            _committed_note: &CommittedNote,
+            _public_note: Option<&InputNoteRecord>,
+            _attachments: Option<&NoteAttachments>,
         ) -> Result<NoteUpdateAction, ClientError> {
             Ok(NoteUpdateAction::Discard)
         }
@@ -679,6 +680,128 @@ async fn sync_persists_auth_nodes_for_skipped_blocks() {
     );
 }
 
+/// Regression (#2279): an observer that votes `Observe` marks note-bearing blocks relevant even
+/// when the screener discards their notes. Baseline (`sync_persists_auth_nodes_for_skipped_blocks`)
+/// stores only the chain tip; adding a second observer retains blocks 1 and 4 as well.
+#[tokio::test]
+async fn sync_observe_retains_blocks_a_discarding_screener_would_skip() {
+    use miden_client::async_trait;
+    use miden_client::rpc::domain::note::CommittedNote;
+    use miden_client::store::InputNoteRecord;
+    use miden_client::sync::{NoteUpdateAction, OnNoteReceived, StateSync, StateSyncInput};
+    use miden_protocol::crypto::merkle::mmr::{Forest, MmrPeaks, PartialMmr};
+
+    // Screener discards everything; a second observer votes `Observe` on every note, which outranks
+    // `Discard` in the precedence fold, so note-bearing blocks are still marked relevant.
+    struct DiscardAllNotes;
+    #[async_trait(?Send)]
+    impl OnNoteReceived for DiscardAllNotes {
+        async fn on_note_received(
+            &self,
+            _committed_note: &CommittedNote,
+            _public_note: Option<&InputNoteRecord>,
+            _attachments: Option<&NoteAttachments>,
+        ) -> Result<NoteUpdateAction, ClientError> {
+            Ok(NoteUpdateAction::Discard)
+        }
+    }
+
+    struct ObserveAllNotes;
+    #[async_trait(?Send)]
+    impl OnNoteReceived for ObserveAllNotes {
+        async fn on_note_received(
+            &self,
+            _committed_note: &CommittedNote,
+            _public_note: Option<&InputNoteRecord>,
+            _attachments: Option<&NoteAttachments>,
+        ) -> Result<NoteUpdateAction, ClientError> {
+            Ok(NoteUpdateAction::Observe)
+        }
+    }
+
+    let (_client, rpc_api, _) = Box::pin(create_test_client()).await;
+
+    let genesis = rpc_api.get_block_header_by_number(Some(0.into()), false).await.unwrap().0;
+    let mut partial_mmr = PartialMmr::from_peaks(MmrPeaks::new(Forest::empty(), vec![]).unwrap());
+    partial_mmr.add(genesis.commitment(), true).unwrap();
+
+    let state_sync = StateSync::new(Arc::new(rpc_api.clone()), Arc::new(DiscardAllNotes), None)
+        .with_note_observer(Arc::new(ObserveAllNotes));
+
+    let state_sync_update = state_sync
+        .sync_state(
+            &mut partial_mmr,
+            StateSyncInput {
+                accounts: vec![],
+                note_tags: BTreeSet::from([NoteTag::new(0)]),
+                input_notes: vec![],
+                output_notes: vec![],
+                uncommitted_transactions: vec![],
+            },
+        )
+        .await
+        .unwrap();
+
+    let stored_blocks: Vec<usize> = state_sync_update
+        .partial_blockchain_updates
+        .block_headers()
+        .map(|(header, ..)| header.block_num().as_usize())
+        .collect();
+
+    assert!(
+        stored_blocks.contains(&1) && stored_blocks.contains(&4),
+        "Observe must retain note-bearing blocks 1 and 4 that the screener discarded; got {stored_blocks:?}"
+    );
+}
+
+/// Regression (#2279): an error returned from an observer's `on_note_received` aborts the whole
+/// sync — per-note screening errors are fatal, not silently swallowed.
+#[tokio::test]
+async fn sync_aborts_when_an_observer_errors() {
+    use miden_client::async_trait;
+    use miden_client::rpc::domain::note::CommittedNote;
+    use miden_client::store::InputNoteRecord;
+    use miden_client::sync::{NoteUpdateAction, OnNoteReceived, StateSync, StateSyncInput};
+    use miden_protocol::crypto::merkle::mmr::{Forest, MmrPeaks, PartialMmr};
+
+    struct ErroringScreener;
+    #[async_trait(?Send)]
+    impl OnNoteReceived for ErroringScreener {
+        async fn on_note_received(
+            &self,
+            _committed_note: &CommittedNote,
+            _public_note: Option<&InputNoteRecord>,
+            _attachments: Option<&NoteAttachments>,
+        ) -> Result<NoteUpdateAction, ClientError> {
+            Err(ClientError::ChainValidationError("observer failure".into()))
+        }
+    }
+
+    let (_client, rpc_api, _) = Box::pin(create_test_client()).await;
+
+    let genesis = rpc_api.get_block_header_by_number(Some(0.into()), false).await.unwrap().0;
+    let mut partial_mmr = PartialMmr::from_peaks(MmrPeaks::new(Forest::empty(), vec![]).unwrap());
+    partial_mmr.add(genesis.commitment(), true).unwrap();
+
+    let state_sync = StateSync::new(Arc::new(rpc_api.clone()), Arc::new(ErroringScreener), None);
+
+    // Block 1 carries notes (tag 0), so `on_note_received` is invoked and its error propagates.
+    let result = state_sync
+        .sync_state(
+            &mut partial_mmr,
+            StateSyncInput {
+                accounts: vec![],
+                note_tags: BTreeSet::from([NoteTag::new(0)]),
+                input_notes: vec![],
+                output_notes: vec![],
+                uncommitted_transactions: vec![],
+            },
+        )
+        .await;
+
+    assert!(result.is_err(), "an observer error in on_note_received must abort the sync");
+}
+
 /// Tests that a public account modified across multiple sync steps only triggers a single
 /// `/GetAccount` RPC call, not one per sync step.
 #[tokio::test]
@@ -695,8 +818,9 @@ async fn sync_state_no_redundant_get_account_calls() {
     impl OnNoteReceived for DiscardAllNotes {
         async fn on_note_received(
             &self,
-            _committed_note: CommittedNote,
-            _public_note: Option<InputNoteRecord>,
+            _committed_note: &CommittedNote,
+            _public_note: Option<&InputNoteRecord>,
+            _attachments: Option<&NoteAttachments>,
         ) -> Result<NoteUpdateAction, ClientError> {
             Ok(NoteUpdateAction::Discard)
         }
@@ -3381,10 +3505,12 @@ async fn pswap_full_fill_chain_tracking_test(#[case] note_type: NoteType) {
 /// 1 it instead lands in Bob's store as a Committed note via the output-note screening path, which
 /// makes it cleanly consumable in round 2. Alice's lineage must walk depth 0 → 1 → 2 and then
 /// Reclaim the final tip.
+#[rstest]
+#[case::public_pswap(NoteType::Public)]
+#[case::private_pswap(NoteType::Private)]
 #[allow(clippy::too_many_lines)]
 #[tokio::test]
-async fn pswap_multi_round_chain_tracking_test() {
-    let note_type = NoteType::Public;
+async fn pswap_multi_round_chain_tracking_test(#[case] note_type: NoteType) {
     let mock_rpc_api = MockRpcApi::new(Box::pin(create_prebuilt_mock_chain()).await);
     let (mut alice_client, alice_keystore) = create_pswap_test_client(&mock_rpc_api).await;
     let (mut bob_client, bob_keystore) = create_pswap_test_client(&mock_rpc_api).await;
@@ -3434,10 +3560,15 @@ async fn pswap_multi_round_chain_tracking_test() {
     mock_rpc_api.prove_block();
     alice_client.sync_state().await.unwrap();
 
-    // Bob discovers the public order via the asset-pair tag.
-    let pswap_tag = PswapNote::create_tag(note_type, &offered_asset, &requested_asset);
-    bob_client.add_note_tag(pswap_tag).await.unwrap();
-    bob_client.sync_state().await.unwrap();
+    // Public: Bob discovers the order via the asset-pair tag. Private: Bob is handed `pswap_note`
+    // off-chain; Alice discovers Bob's paybacks/remainders via their attachments, which the mock is
+    // taught (after each of Bob's fills) from the actual notes he mints — a real node returns
+    // these.
+    if note_type == NoteType::Public {
+        let pswap_tag = PswapNote::create_tag(note_type, &offered_asset, &requested_asset);
+        bob_client.add_note_tag(pswap_tag).await.unwrap();
+        bob_client.sync_state().await.unwrap();
+    }
 
     // ── Round 1: Bob fills 25 ETH → 50 BTC payout, leaving 50 BTC / 25 ETH. ──
     let consume_request = TransactionRequestBuilder::new()
@@ -3448,6 +3579,16 @@ async fn pswap_multi_round_chain_tracking_test() {
         .unwrap();
     mock_rpc_api.prove_block();
     bob_client.sync_state().await.unwrap();
+    if note_type == NoteType::Private {
+        for record in bob_client.get_output_notes(NoteFilter::All).await.unwrap() {
+            if let Ok(note) = Note::try_from(record)
+                && !note.attachments().is_empty()
+            {
+                mock_rpc_api
+                    .register_private_note_attachments(note.id(), note.attachments().clone());
+            }
+        }
+    }
     alice_client.sync_state().await.unwrap();
 
     let lineage = alice_client.pswap_lineage(order_id).await.unwrap().unwrap();
@@ -3479,6 +3620,16 @@ async fn pswap_multi_round_chain_tracking_test() {
         .unwrap();
     mock_rpc_api.prove_block();
     bob_client.sync_state().await.unwrap();
+    if note_type == NoteType::Private {
+        for record in bob_client.get_output_notes(NoteFilter::All).await.unwrap() {
+            if let Ok(note) = Note::try_from(record)
+                && !note.attachments().is_empty()
+            {
+                mock_rpc_api
+                    .register_private_note_attachments(note.id(), note.attachments().clone());
+            }
+        }
+    }
     alice_client.sync_state().await.unwrap();
 
     let lineage = alice_client.pswap_lineage(order_id).await.unwrap().unwrap();

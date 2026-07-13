@@ -77,9 +77,6 @@ mod block_header;
 mod tag;
 pub use tag::{NoteTagRecord, NoteTagSource};
 
-mod note_observer;
-pub use note_observer::NoteObserver;
-
 mod state_sync;
 pub use state_sync::{NoteUpdateAction, OnNoteReceived, StateSync, StateSyncInput};
 
@@ -120,7 +117,7 @@ where
         self.ensure_genesis_in_place().await?;
         self.ensure_rpc_limits_in_place().await?;
 
-        // Each `NoteObserver` owns its own per-sync state; `with_note_observer` just attaches.
+        // Each observer owns its own per-sync state; `with_note_observer` just attaches.
         let note_screener = self.note_screener();
         let state_sync =
             StateSync::new(self.rpc_api.clone(), Arc::new(note_screener), self.tx_discard_delta)

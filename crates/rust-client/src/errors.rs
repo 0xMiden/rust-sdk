@@ -209,7 +209,7 @@ pub enum ClientError {
 
 /// Logs a non-fatal observer failure without propagating it, so one observer
 /// can't abort the others or the surrounding sync/transaction step. Shared by
-/// the `NoteObserver` and `TransactionObserver` fan-out loops.
+/// the `OnNoteReceived` and `TransactionObserver` fan-out loops.
 pub(crate) fn log_observer_failure(
     observer: &'static str,
     op: &str,

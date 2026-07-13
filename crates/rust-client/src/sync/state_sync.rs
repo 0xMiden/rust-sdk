@@ -16,7 +16,6 @@ use tracing::info;
 use super::state_sync_update::TransactionUpdateTracker;
 use super::{
     AccountUpdates,
-    NoteObserver,
     PartialBlockchainUpdates,
     PublicAccountDelta,
     PublicAccountUpdate,
@@ -101,7 +100,11 @@ pub struct StateSyncInput {
 // SYNC CALLBACKS
 // ================================================================================================
 
-/// The action to be taken when a note update is received as part of the sync response.
+/// The action a note observer votes for when a note inclusion is received during sync.
+///
+/// When several observers are attached, their verdicts are folded by precedence
+/// (`Commit` > `Insert` > `Observe` > `Discard`); the first observer at the highest precedence
+/// supplies the payload.
 #[allow(clippy::large_enum_variant)]
 pub enum NoteUpdateAction {
     /// The note commit update is relevant and the specified note should be marked as committed in
@@ -109,12 +112,37 @@ pub enum NoteUpdateAction {
     Commit(CommittedNote),
     /// The public note is relevant and should be inserted into the store.
     Insert(InputNoteRecord),
+    /// The note is not stored, but its enclosing block is relevant, so its header is persisted.
+    /// Used by side-channel observers (e.g. PSWAP tracking) that need the block, not the note.
+    Observe,
     /// The note update is not relevant and should be discarded.
     Discard,
 }
 
+impl NoteUpdateAction {
+    /// Fold precedence when multiple observers vote on the same note: higher wins.
+    /// `Commit` > `Insert` > `Observe` > `Discard`.
+    fn precedence(&self) -> u8 {
+        match self {
+            NoteUpdateAction::Commit(_) => 3,
+            NoteUpdateAction::Insert(_) => 2,
+            NoteUpdateAction::Observe => 1,
+            NoteUpdateAction::Discard => 0,
+        }
+    }
+}
+
+/// A per-note sync observer. Multiple observers can be attached to [`StateSync`]; each is invoked
+/// for every note inclusion received during sync, and once more post-sync via [`Self::apply`].
 #[async_trait(?Send)]
 pub trait OnNoteReceived {
+    /// Identifier used to tag this observer in `tracing::warn!` events when its post-sync `apply`
+    /// fails. Observers with a fallible `apply` should override this; the default suits
+    /// screening-only observers whose `apply` never fails and so are never named in a log.
+    fn name(&self) -> &'static str {
+        "OnNoteReceived"
+    }
+
     /// Callback that gets executed when a new note is received as part of the sync response.
     ///
     /// It receives:
@@ -122,14 +150,23 @@ pub trait OnNoteReceived {
     /// - The committed note received from the network.
     /// - An optional note record that corresponds to the state of the note in the network (only if
     ///   the note is public).
+    /// - The note's resolved attachment content for this sync window (`None` if absent).
     ///
-    /// It returns an enum indicating the action to be taken for the received note update. Whether
-    /// the note updated should be committed, new public note inserted, or ignored.
+    /// It returns the [`NoteUpdateAction`] this observer votes for: commit the note, insert a new
+    /// public note, mark the block relevant without storing the note
+    /// ([`NoteUpdateAction::Observe`]), or discard.
     async fn on_note_received(
         &self,
-        committed_note: CommittedNote,
-        public_note: Option<InputNoteRecord>,
+        committed_note: &CommittedNote,
+        public_note: Option<&InputNoteRecord>,
+        attachments: Option<&NoteAttachments>,
     ) -> Result<NoteUpdateAction, ClientError>;
+
+    /// Post-sync hook, invoked once after the sync window closes and before the update is
+    /// persisted. Default is a no-op, so screening-only observers need not implement it.
+    async fn apply(&self, _sync_update: &StateSyncUpdate) -> Result<(), ClientError> {
+        Ok(())
+    }
 }
 // STATE SYNC
 // ================================================================================================
@@ -141,12 +178,11 @@ pub trait OnNoteReceived {
 pub struct StateSync {
     /// The RPC client used to communicate with the node.
     rpc_api: Arc<dyn NodeRpcClient>,
-    /// Responsible for checking the relevance of notes and executing the
-    /// [`OnNoteReceived`] callback when a new note inclusion is received.
-    note_screener: Arc<dyn OnNoteReceived>,
-    /// Per-note observers (see [`NoteObserver`]), invoked *before* the
-    /// screener verdict in `note_state_sync`. Empty by default.
-    note_observers: Vec<Arc<dyn NoteObserver>>,
+    /// Note observers invoked for every note inclusion in `note_state_sync` and once post-sync in
+    /// [`Self::run_apply_hooks`]. The first entry is the screener passed to [`Self::new`]; more
+    /// are appended via [`Self::with_note_observer`]. Per-note verdicts are folded by
+    /// precedence.
+    note_observers: Vec<Arc<dyn OnNoteReceived>>,
     /// Number of blocks after which pending transactions are considered stale and discarded.
     /// If `None`, there is no limit and transactions will be kept indefinitely.
     tx_discard_delta: Option<u32>,
@@ -173,18 +209,17 @@ impl StateSync {
     ) -> Self {
         Self {
             rpc_api,
-            note_screener,
-            note_observers: Vec::new(),
+            note_observers: alloc::vec![note_screener],
             tx_discard_delta,
             sync_nullifiers: true,
         }
     }
 
-    /// Attaches a [`NoteObserver`] to this sync component. Observers run
-    /// in attachment order *before* the screener verdict; failures are
-    /// logged (tagged with [`NoteObserver::name`]) and never abort sync.
+    /// Appends a note observer. Handlers run in attachment order; their per-note verdicts are
+    /// folded by precedence, and their post-sync `apply` failures are logged (tagged with
+    /// [`OnNoteReceived::name`]) and never abort sync.
     #[must_use]
-    pub fn with_note_observer(mut self, observer: Arc<dyn NoteObserver>) -> Self {
+    pub fn with_note_observer(mut self, observer: Arc<dyn OnNoteReceived>) -> Self {
         self.note_observers.push(observer);
         self
     }
@@ -206,9 +241,9 @@ impl StateSync {
     /// Runs each attached observer's `apply()` hook against `state_sync_update`.
     /// Called by the orchestrator after [`Self::sync_state`] returns but
     /// before the caller persists the sync update. Per-observer failures are
-    /// logged (tagged with the observer's [`NoteObserver::name`]) and never
-    /// abort the rest of the pass — symmetric with the per-note `observe()`
-    /// dispatcher.
+    /// logged (tagged with the observer's [`OnNoteReceived::name`]) and never
+    /// abort the rest of the pass. Screening-only observers inherit the default
+    /// no-op `apply`, so they never surface here.
     pub(crate) async fn run_apply_hooks(
         &self,
         state_sync_update: &StateSyncUpdate,
@@ -216,7 +251,7 @@ impl StateSync {
         for observer in &self.note_observers {
             crate::errors::log_observer_failure(
                 observer.name(),
-                "NoteObserver::apply",
+                "OnNoteReceived::apply",
                 observer.apply(state_sync_update).await,
             );
         }
@@ -234,7 +269,7 @@ impl StateSync {
     /// 1. Fetch sync data from the node (MMR delta, note inclusions, transactions).
     /// 2. Update account states (fetch updated public accounts, flag mismatched private ones).
     /// 3. Advance the partial MMR to the chain tip.
-    /// 4. Screen note inclusions via the configured [`OnNoteReceived`] callback and track relevant
+    /// 4. Screen note inclusions via the configured [`OnNoteReceived`] observers and track relevant
     ///    blocks in the MMR.
     /// 5. Process transaction inclusions (commit local txs, record external consumers, discard
     ///    stale/expired txs, commit output notes).
@@ -1012,42 +1047,37 @@ impl StateSync {
         for (_, committed_note) in note_inclusions {
             let public_note = (committed_note.note_type() != NoteType::Private)
                 .then(|| public_notes.get(committed_note.note_id()))
-                .flatten()
-                .cloned();
+                .flatten();
 
-            // Observers run BEFORE the screener: they are a side-effect
-            // channel independent of the Commit/Insert/Discard decision,
-            // and a failing screener must not rob them of the note. Clone
-            // is skipped when no observers are attached (the common case).
-            if !self.note_observers.is_empty() {
-                // Resolve attachment content for the note from the sync window: public note
-                // bodies carry their attachments on the cached `InputNoteRecord`; private-note
-                // attachments arrive in their own side-table. Both are keyed by note ID.
-                let note_attachments = if committed_note.note_type() == NoteType::Private {
-                    private_attachments.get(committed_note.note_id())
-                } else {
-                    public_note.as_ref().map(InputNoteRecord::attachments)
-                };
-                for obs in &self.note_observers {
-                    match obs.observe(&committed_note, note_attachments).await {
-                        Ok(true) => found_relevant_note = true,
-                        Ok(false) => {},
-                        Err(err) => {
-                            tracing::warn!(
-                                observer = obs.name(),
-                                error = ?err,
-                                "note observer failed; sync continues",
-                            );
-                        },
-                    }
+            // Resolve attachment content for the note from the sync window: public note bodies
+            // carry their attachments on the cached `InputNoteRecord`; private-note attachments
+            // arrive in their own side-table. Both are keyed by note ID.
+            let note_attachments = if committed_note.note_type() == NoteType::Private {
+                private_attachments.get(committed_note.note_id())
+            } else {
+                public_note.map(InputNoteRecord::attachments)
+            };
+
+            // Each observer votes on the note; keep the highest-precedence action
+            // (Commit > Insert > Observe > Discard). The first observer at that precedence supplies
+            // the payload. An error aborts the sync — a failed screen must not be silently treated
+            // as a discard, which could drop a relevant note.
+            let mut selected_action = NoteUpdateAction::Discard;
+            for observer in &self.note_observers {
+                let action = observer
+                    .on_note_received(&committed_note, public_note, note_attachments)
+                    .await?;
+                if action.precedence() > selected_action.precedence() {
+                    selected_action = action;
                 }
             }
 
-            match self.note_screener.on_note_received(committed_note, public_note).await? {
+            match selected_action {
                 NoteUpdateAction::Commit(committed_note) => {
                     // Only mark the downloaded block header as relevant if we are talking about
                     // an input note (output notes get marked as committed but we don't need the
-                    // block for anything there)
+                    // block for anything there). Attachments here are private-only, matching the
+                    // committed-note record.
                     let attachments = private_attachments.get(committed_note.note_id());
                     found_relevant_note |= note_updates.apply_committed_note_state_transitions(
                         &committed_note,
@@ -1059,6 +1089,9 @@ impl StateSync {
                     found_relevant_note = true;
 
                     note_updates.apply_new_public_note(public_note, block_header)?;
+                },
+                NoteUpdateAction::Observe => {
+                    found_relevant_note = true;
                 },
                 NoteUpdateAction::Discard => {},
             }
@@ -1323,11 +1356,47 @@ mod tests {
     impl OnNoteReceived for MockScreener {
         async fn on_note_received(
             &self,
-            _committed_note: CommittedNote,
-            _public_note: Option<InputNoteRecord>,
+            _committed_note: &CommittedNote,
+            _public_note: Option<&InputNoteRecord>,
+            _attachments: Option<&NoteAttachments>,
         ) -> Result<NoteUpdateAction, ClientError> {
             Ok(NoteUpdateAction::Discard)
         }
+    }
+
+    /// Observer whose post-sync `apply` always errors. `on_note_received` is a no-op discard; only
+    /// `apply` is exercised here (via `run_apply_hooks`).
+    struct ErroringApply;
+
+    #[async_trait(?Send)]
+    impl OnNoteReceived for ErroringApply {
+        async fn on_note_received(
+            &self,
+            _committed_note: &CommittedNote,
+            _public_note: Option<&InputNoteRecord>,
+            _attachments: Option<&NoteAttachments>,
+        ) -> Result<NoteUpdateAction, ClientError> {
+            Ok(NoteUpdateAction::Discard)
+        }
+
+        async fn apply(&self, _sync_update: &StateSyncUpdate) -> Result<(), ClientError> {
+            Err(ClientError::ChainValidationError("apply failure".into()))
+        }
+    }
+
+    /// Regression (#2279): an observer whose post-sync `apply` errors is swallowed by
+    /// `run_apply_hooks` (logged, not propagated), so one observer's failure cannot abort the sync.
+    /// Pins the current behavior; changing it to abort should be a deliberate, test-visible change.
+    #[tokio::test]
+    async fn apply_hook_error_is_swallowed() {
+        let mut builder = MockChainBuilder::new();
+        let _account = builder.add_existing_mock_account(miden_testing::Auth::IncrNonce).unwrap();
+        let rpc_api = MockRpcApi::new(builder.build().unwrap());
+        let state_sync = StateSync::new(Arc::new(rpc_api), Arc::new(ErroringApply), None);
+
+        let result = state_sync.run_apply_hooks(&StateSyncUpdate::default()).await;
+
+        assert!(result.is_ok(), "run_apply_hooks must swallow an observer's apply() error");
     }
 
     fn empty() -> StateSyncInput {
@@ -1842,10 +1911,11 @@ mod tests {
     impl OnNoteReceived for CommitAllScreener {
         async fn on_note_received(
             &self,
-            committed_note: CommittedNote,
-            _public_note: Option<InputNoteRecord>,
+            committed_note: &CommittedNote,
+            _public_note: Option<&InputNoteRecord>,
+            _attachments: Option<&NoteAttachments>,
         ) -> Result<NoteUpdateAction, ClientError> {
-            Ok(NoteUpdateAction::Commit(committed_note))
+            Ok(NoteUpdateAction::Commit(committed_note.clone()))
         }
     }
 

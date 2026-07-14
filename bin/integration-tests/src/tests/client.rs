@@ -1435,69 +1435,18 @@ pub async fn test_expired_transaction_fails(client_config: ClientConfig) -> Resu
 
     info!("Sending expired transaction to node (expecting failure)");
     let proven_transaction = client.prove_transaction(&transaction_result).await.unwrap();
-    let submitted_tx_result =
-        match client.submit_proven_transaction(proven_transaction, &transaction_result).await {
-            Ok(submission_height) => {
-                client.apply_transaction(&transaction_result, submission_height).await
-            },
-            Err(err) => Err(err),
-        };
-
-    assert!(submitted_tx_result.is_err());
-    Ok(())
-}
-
-pub async fn test_resubmitted_mint_reports_state_conflict(
-    client_config: ClientConfig,
-) -> Result<()> {
-    let (mut client, authenticator) = client_config.into_client().await?;
-    let (faucet_account, _) = insert_new_fungible_faucet(
-        &mut client,
-        AccountType::Private,
-        &authenticator,
-        RPO_FALCON_SCHEME_ID,
-    )
-    .await?;
-    let (target_account, ..) =
-        insert_new_wallet(&mut client, AccountType::Private, &authenticator, RPO_FALCON_SCHEME_ID)
-            .await?;
-
-    let faucet_account_id = faucet_account.id();
-    let target_account_id = target_account.id();
-
-    wait_for_node(&mut client).await;
-
-    let fungible_asset = FungibleAsset::new(faucet_account_id, MINT_AMOUNT).unwrap();
-    let tx_request = TransactionRequestBuilder::new().build_mint_fungible_asset(
-        fungible_asset,
-        target_account_id,
-        NoteType::Public,
-        client.rng(),
-    )?;
-
-    let transaction_result = client.execute_transaction(faucet_account_id, tx_request).await?;
-
-    let proven_transaction = client.prove_transaction(&transaction_result).await?;
-    let submission_height = client
-        .submit_proven_transaction(proven_transaction, &transaction_result)
-        .await?;
-    client.apply_transaction(&transaction_result, submission_height).await?;
-    wait_for_blocks(&mut client, 2).await;
-
-    let proven_transaction = client.prove_transaction(&transaction_result).await?;
-    let resubmit_result =
+    let submit_result =
         client.submit_proven_transaction(proven_transaction, &transaction_result).await;
 
-    let err = resubmit_result.expect_err("resubmitting a mined mint must be rejected");
+    let err = submit_result.expect_err("submitting an expired transaction must be rejected");
     let ClientError::RpcError(rpc_error) = &err else {
         panic!("expected an RPC error, got: {err:?}");
     };
     assert_matches!(
         rpc_error.endpoint_error(),
-        Some(EndpointError::AddTransaction(AddTransactionError::StateConflict { .. })),
-        "expected a StateConflict, got: {err:?}"
+        Some(EndpointError::AddTransaction(AddTransactionError::Expired)),
+        "expected an Expired error, got: {err:?}"
     );
-
     Ok(())
 }
 

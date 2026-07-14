@@ -101,16 +101,20 @@ impl InputNoteRecord {
     /// Creates a header-only record for a note consumed as an unauthenticated input (typically an
     /// erased note) that the client only knows via its
     /// [`NoteHeader`]. The record is placed in the
-    /// [`InputNoteState::ConsumedExternalErased`] state, which carries the authoritative note id
-    /// and metadata; the `details` field is a placeholder (see `placeholder_details`) and
-    /// [`InputNoteRecord::has_details`] returns `false`.
+    /// [`InputNoteState::ConsumedExternalErased`] state, which carries the authoritative note id,
+    /// nullifier and metadata; the `details` field is a placeholder (see `placeholder_details`) and
+    /// [`InputNoteRecord::has_details`] returns `false`. The `nullifier` is the one carried by the
+    /// consuming transaction's input commitment, since it cannot be recomputed from the placeholder
+    /// details.
     pub fn from_header(
         header: &NoteHeader,
+        nullifier: Nullifier,
         nullifier_block_height: BlockNumber,
         consumer_account: Option<AccountId>,
     ) -> InputNoteRecord {
         let state = ConsumedExternalErasedNoteState {
             note_id: header.id(),
+            nullifier,
             metadata: *header.metadata(),
             nullifier_block_height,
             consumer_account,
@@ -200,8 +204,13 @@ impl InputNoteRecord {
         self.state.metadata()
     }
 
-    /// Returns the note nullifier, if the record contains the [`NoteMetadata`].
+    /// Returns the note nullifier, if the record contains the [`NoteMetadata`]. For header-only
+    /// records (state [`InputNoteState::ConsumedExternalErased`]) this is read from the state,
+    /// since it cannot be recomputed from the placeholder details.
     pub fn nullifier(&self) -> Option<Nullifier> {
+        if let InputNoteState::ConsumedExternalErased(s) = &self.state {
+            return Some(s.nullifier);
+        }
         let metadata = self.metadata()?;
         Some(Nullifier::from_details_and_metadata(&self.details, metadata))
     }

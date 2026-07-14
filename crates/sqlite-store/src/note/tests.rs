@@ -9,6 +9,7 @@ use miden_client::note::{
     NoteStorage,
     NoteTag,
     NoteType,
+    Nullifier,
     PartialNoteMetadata,
 };
 use miden_client::store::input_note_states::{
@@ -140,9 +141,14 @@ fn create_erased_header_input_note(
         PartialNoteMetadata::new(consumer, NoteType::Public).with_tag(NoteTag::from(index));
     let metadata = NoteMetadata::new(partial_metadata, &NoteAttachments::empty());
     let header = NoteHeader::new(details.commitment(), metadata);
+    let nullifier = Nullifier::from_details_and_metadata(&details, &metadata);
 
-    let mut record =
-        InputNoteRecord::from_header(&header, BlockNumber::from(block_height), Some(consumer));
+    let mut record = InputNoteRecord::from_header(
+        &header,
+        nullifier,
+        BlockNumber::from(block_height),
+        Some(consumer),
+    );
     record.set_consumed_tx_order(Some(consumed_tx_order));
     record
 }

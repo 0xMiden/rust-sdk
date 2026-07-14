@@ -2,7 +2,7 @@ use alloc::string::ToString;
 
 use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber};
-use miden_protocol::note::{NoteId, NoteInclusionProof, NoteMetadata};
+use miden_protocol::note::{NoteId, NoteInclusionProof, NoteMetadata, Nullifier};
 use miden_protocol::transaction::TransactionId;
 
 use super::{InputNoteState, NoteStateHandler};
@@ -20,6 +20,10 @@ pub struct ConsumedExternalErasedNoteState {
     /// The note id, stored directly. Unlike full records, it cannot be derived from the record's
     /// details, which are a placeholder for this state.
     pub note_id: NoteId,
+    /// The note nullifier, stored directly for the same reason as `note_id`. It cannot be
+    /// recomputed from the placeholder details, so it is taken from the consuming
+    /// transaction's input commitment.
+    pub nullifier: Nullifier,
     /// Metadata associated with the note, including sender, note type, tag and other additional
     /// information.
     pub metadata: NoteMetadata,
@@ -92,6 +96,7 @@ impl NoteStateHandler for ConsumedExternalErasedNoteState {
 impl miden_tx::utils::serde::Serializable for ConsumedExternalErasedNoteState {
     fn write_into<W: miden_tx::utils::serde::ByteWriter>(&self, target: &mut W) {
         self.note_id.write_into(target);
+        self.nullifier.write_into(target);
         self.metadata.write_into(target);
         self.nullifier_block_height.write_into(target);
         self.consumer_account.write_into(target);
@@ -104,12 +109,14 @@ impl miden_tx::utils::serde::Deserializable for ConsumedExternalErasedNoteState 
         source: &mut R,
     ) -> Result<Self, miden_tx::utils::serde::DeserializationError> {
         let note_id = NoteId::read_from(source)?;
+        let nullifier = Nullifier::read_from(source)?;
         let metadata = NoteMetadata::read_from(source)?;
         let nullifier_block_height = BlockNumber::read_from(source)?;
         let consumer_account = Option::<AccountId>::read_from(source)?;
         let consumed_tx_order = Option::<u32>::read_from(source)?;
         Ok(ConsumedExternalErasedNoteState {
             note_id,
+            nullifier,
             metadata,
             nullifier_block_height,
             consumer_account,

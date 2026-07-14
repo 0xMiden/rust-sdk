@@ -539,7 +539,8 @@ impl NoteUpdateTracker {
         // Fall back to 0 when the block position is unknown, since `get_input_note_by_offset`
         // excludes notes without a consumption order.
         let order = self.get_nullifier_order(commitment.nullifier()).or(Some(0));
-        let mut record = InputNoteRecord::from_header(header, block_num, Some(consumer));
+        let mut record =
+            InputNoteRecord::from_header(header, commitment.nullifier(), block_num, Some(consumer));
         record.set_consumed_tx_order(order);
         self.insert_input_note(record, NoteUpdateType::Insert);
     }
@@ -848,11 +849,13 @@ mod tests {
         NoteAssets,
         NoteAttachments,
         NoteDetails,
+        NoteHeader,
         NoteId,
         NoteMetadata,
         NoteRecipient,
         NoteStorage,
         NoteType,
+        Nullifier,
         PartialNoteMetadata,
     };
     use miden_protocol::testing::account_id::ACCOUNT_ID_SENDER;
@@ -968,6 +971,31 @@ mod tests {
 
         assert_eq!(tracker.consumed_input_note_ids().count(), 0);
         assert_eq!(tracker.updated_input_notes().count(), 1);
+    }
+
+    #[test]
+    fn header_only_record_carries_the_transaction_nullifier() {
+        // A header-only erased record stores placeholder details, so its nullifier cannot be
+        // recomputed from them. It must instead carry the nullifier from the consuming
+        // transaction's input commitment, unchanged and surviving a serialization round-trip.
+        let sender: AccountId = ACCOUNT_ID_SENDER.try_into().unwrap();
+        let details = note_details(20);
+        let metadata = note_metadata(sender);
+        let header = NoteHeader::new(details.commitment(), metadata);
+        let nullifier = Nullifier::from_details_and_metadata(&details, &metadata);
+
+        let record =
+            InputNoteRecord::from_header(&header, nullifier, BlockNumber::from(7u32), Some(sender));
+
+        assert_eq!(record.nullifier(), Some(nullifier));
+        assert_ne!(
+            record.nullifier(),
+            Some(Nullifier::from_details_and_metadata(record.details(), &metadata)),
+            "the nullifier must be the stored one, not one derived from the placeholder details"
+        );
+
+        let restored = InputNoteRecord::read_from_bytes(&record.to_bytes()).unwrap();
+        assert_eq!(restored.nullifier(), Some(nullifier));
     }
 
     #[test]

@@ -531,7 +531,20 @@ impl NoteUpdateTracker {
             return;
         };
         let note_id = header.id();
-        if self.input_notes_by_id.contains_key(&note_id) || self.output_notes.contains_key(&note_id)
+        // Skip when the note is already tracked in any form, whether as a metadata-bearing input
+        // (`input_notes_by_id`), an output note, or a metadata-less expected note imported from
+        // bare details (`expected_note_matching`, which `input_notes_by_id` does not
+        // cover). In that last case a header-only placeholder would land under a different
+        // (placeholder) details commitment, leaving a duplicate row alongside the stale
+        // expected one.
+        //
+        // For that metadata-less case this only prevents the duplicate; the existing expected
+        // record is left as-is and keeps showing as unspent. Evolving it straight to a consumed
+        // state from this consumption event is a deferred follow-up, and skipping matches a
+        // client without erased-note recovery, which never recovers this note either.
+        if self.input_notes_by_id.contains_key(&note_id)
+            || self.output_notes.contains_key(&note_id)
+            || self.expected_note_matching(note_id, header.metadata()).is_some()
         {
             return;
         }
@@ -859,7 +872,7 @@ mod tests {
         PartialNoteMetadata,
     };
     use miden_protocol::testing::account_id::ACCOUNT_ID_SENDER;
-    use miden_protocol::transaction::TransactionId;
+    use miden_protocol::transaction::{InputNoteCommitment, TransactionId};
     use miden_protocol::utils::serde::{Deserializable, Serializable};
     use miden_protocol::{Felt, Word, ZERO};
     use miden_standards::note::StandardNote;
@@ -996,6 +1009,26 @@ mod tests {
 
         let restored = InputNoteRecord::read_from_bytes(&record.to_bytes()).unwrap();
         assert_eq!(restored.nullifier(), Some(nullifier));
+    }
+
+    #[test]
+    fn consumed_unauthenticated_note_skips_tracked_metadata_less_note() {
+        // A metadata-less expected note (imported from bare details) is tracked by its details
+        // commitment and absent from `input_notes_by_id`. Recording the same note as a consumed
+        // unauthenticated input must recognize it and not insert a second, header-only placeholder.
+        let sender: AccountId = ACCOUNT_ID_SENDER.try_into().unwrap();
+        let expected = expected_note(30);
+        let details_commitment = expected.details_commitment();
+        let metadata = note_metadata(sender);
+        let header = NoteHeader::new(details_commitment, metadata);
+        let nullifier = Nullifier::from_details_and_metadata(expected.details(), &metadata);
+        let commitment = InputNoteCommitment::from_parts_unchecked(nullifier, Some(header));
+
+        let mut tracker = NoteUpdateTracker::new(vec![expected], vec![]);
+        tracker.insert_consumed_unauthenticated_note(&commitment, sender, BlockNumber::from(5u32));
+
+        // The existing expected note is recognized, so no new (placeholder) row is inserted.
+        assert_eq!(tracker.updated_input_notes().count(), 0);
     }
 
     #[test]

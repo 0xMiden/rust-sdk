@@ -15,7 +15,7 @@ pub enum AddTransactionError {
     #[error("transaction conflicts with current state: {message}")]
     StateConflict { message: String },
     /// Mempool is at capacity
-    #[error("mempool at capacity")]
+    #[error("the mempool is at capacity")]
     CapacityExceeded,
     /// Error code not recognized by this client version. This can happen if the node
     /// is newer than the client and has added new error variants.

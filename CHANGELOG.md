@@ -6,10 +6,14 @@
 
 * [rust] Bumped dependencies: Miden VM crates (`miden-core`, `miden-processor`, `miden-prover`, `miden-assembly`, etc.) to `0.23.5`, and `miden-node-proto-build` and `miden-remote-prover-client` to `0.15.1` ([#2301](https://github.com/0xMiden/rust-sdk/pull/2301)).
 
+### Features
+
+* [FEATURE][rust] Added `InputNoteRecord::is_inclusion_pending` and `OutputNoteRecord::is_inclusion_pending`, returning whether a note record's on-chain inclusion is still unsettled (i.e. note sync can still advance it). ([#2323](https://github.com/0xMiden/rust-sdk/pull/2323))
+
 ### Fixes
 
 * [FIX][store] Add metadata to ConsumedExternal notes so that they can be findable by their `NoteId`. The change is store-compatible because records written by older clients (the metadata-less layout) still decode, reading back with no metadata as before ([#2308](https://github.com/0xMiden/rust-sdk/pull/2308)).
-* [FIX][rust] Output notes no longer register note tags: their commitment and inclusion proof already arrive through account-matched transaction sync, and since tag cleanup only covered input notes these tags leaked one row per created note. A store migration prunes previously leaked output-note tags (keeping tags still needed by pre-inclusion input notes), collapses duplicate rows, and adds a unique `(tag, source)` index. Sync-time cleanup now also removes tags of input notes consumed within the same sync, and migration schema versions and their integrity hashes are committed atomically.
+* [FIX][rust,store] Output notes no longer register note tags: their commitment and inclusion proof already arrive through account-matched transaction sync, and since tag cleanup only covered input notes these tags leaked one row per created note. A store migration prunes previously leaked output-note tags (keeping tags still needed by inclusion-pending input notes), collapses duplicate rows, and adds a unique `(tag, source)` index. Sync-time tag cleanup now runs whenever an input note's inclusion settles (committed, consumed during catch-up, or invalidated), and migration schema versions and their integrity hashes are committed atomically. ([#2323](https://github.com/0xMiden/rust-sdk/pull/2323))
 
 ## 0.15.3 (2026-07-02)
 

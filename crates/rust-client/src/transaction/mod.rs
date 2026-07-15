@@ -475,7 +475,9 @@ where
     ) -> Result<TransactionStoreUpdate, TransactionStoreUpdateError> {
         let note_updates = self.get_note_updates(submission_height, tx_result).await?;
 
-        let mut new_tags: Vec<NoteTagRecord> = note_updates
+        // Only expected input notes need tags; output notes are committed (with proofs)
+        // via account-matched transaction sync.
+        let new_tags: Vec<NoteTagRecord> = note_updates
             .updated_input_notes()
             .filter_map(|note| {
                 let note = note.inner();
@@ -489,11 +491,6 @@ where
                 }
             })
             .collect();
-
-        new_tags.extend(note_updates.updated_output_notes().map(|note| {
-            let note = note.inner();
-            NoteTagRecord::with_note_source(note.metadata().tag(), note.details_commitment())
-        }));
 
         Ok(TransactionStoreUpdate::new(
             tx_result.executed_transaction().clone(),

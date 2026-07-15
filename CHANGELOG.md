@@ -5,6 +5,7 @@
 ### Changes
 
 * [rust] Bumped dependencies: Miden VM crates (`miden-core`, `miden-processor`, `miden-prover`, `miden-assembly`, etc.) to `0.23.5`, and `miden-node-proto-build` and `miden-remote-prover-client` to `0.15.1` ([#2301](https://github.com/0xMiden/rust-sdk/pull/2301)).
+* [cli] Documented the `call` command in the CLI docs ([#2317](https://github.com/0xMiden/rust-sdk/pull/2317)).
 
 ### Fixes
 

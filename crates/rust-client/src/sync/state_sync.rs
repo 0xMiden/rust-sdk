@@ -10,7 +10,7 @@ use miden_protocol::account::{Account, AccountHeader, AccountId, StorageSlotType
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::merkle::mmr::{MmrDelta, PartialMmr};
 use miden_protocol::note::{NoteAttachments, NoteId, NoteTag, NoteType, Nullifier};
-use tracing::{info, warn};
+use tracing::info;
 
 use super::state_sync_update::TransactionUpdateTracker;
 use super::{
@@ -254,21 +254,6 @@ impl StateSync {
 
         let note_tags = Arc::new(note_tags);
         let account_ids: Vec<AccountId> = accounts.iter().map(AccountHeader::id).collect();
-
-        // Output-note lifecycle updates are derived from transaction sync, which only covers
-        // `accounts`. An output note whose executing account is missing cannot progress, and
-        // once the checkpoint passes its commit block the update is unrecoverable.
-        let untracked_senders = output_notes
-            .iter()
-            .filter(|note| !account_ids.contains(&note.metadata().sender()))
-            .count();
-        if untracked_senders > 0 {
-            warn!(
-                count = untracked_senders,
-                "output notes whose executing account is not part of the sync input will not \
-                 receive lifecycle updates"
-            );
-        }
 
         let mut state_sync_update = StateSyncUpdate {
             block_num,

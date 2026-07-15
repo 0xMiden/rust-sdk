@@ -1,8 +1,9 @@
 -- Prunes tags registered for output notes: they are committed via account-matched transaction
 -- sync, so the tags were dead weight and, with cleanup only covering input notes, leaked one
 -- row per note. A `Note`-sourced tag is a 0x01 byte plus the 32-byte details commitment; the
--- `details_commitment` columns store the same word as '0x…' hex. Tags still needed by a
--- pre-inclusion input note (Expected = 0, Unverified = 1) are kept.
+-- `details_commitment` columns store the same word as '0x…' hex. Tags still needed by an
+-- inclusion-pending input note (Expected = 0, Unverified = 1; the SQL mirror of
+-- `InputNoteRecord::is_inclusion_pending`) are kept.
 DELETE FROM tags
 WHERE substr(hex(source), 1, 2) = '01'
   AND EXISTS (

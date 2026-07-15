@@ -141,21 +141,20 @@ impl SqliteStore {
             // Update notes
             apply_note_updates_tx(tx, &note_updates)?;
 
-            // Remove tags of input notes whose inclusion became known in this sync: once a
-            // note is committed — or consumed, when catch-up covers both transitions at once —
-            // its tag no longer drives note sync. Metadata-less records are skipped; their tag
-            // (if any) cannot be reconstructed.
+            // Remove tags of input notes whose inclusion settled in this sync (committed,
+            // consumed during catch-up, or invalidated): their tag no longer drives note sync.
+            // Metadata-less records are skipped; their tag (if any) cannot be reconstructed.
             let tags_to_remove = note_updates
                 .updated_input_notes()
                 .filter_map(|note_update| {
                     let note = note_update.inner();
-                    if note.is_committed() || note.is_consumed() {
+                    if note.is_inclusion_pending() {
+                        None
+                    } else {
                         Some(NoteTagRecord {
                             tag: note.metadata()?.tag(),
                             source: NoteTagSource::Note(note.details_commitment()),
                         })
-                    } else {
-                        None
                     }
                 })
                 .collect::<Vec<_>>();

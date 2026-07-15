@@ -21,6 +21,7 @@ use crate::tests::config::ClientConfig;
 pub mod agglayer_bridge_in_out;
 mod agglayer_test_utils;
 pub mod ger;
+pub mod note_reader;
 
 /// `AggLayer` network ID assigned to the Miden chain (the protocol's `MIDEN_NETWORK_ID` MASM
 /// constant). Claim validation compares the leaf's `destination_network` to this value, so it

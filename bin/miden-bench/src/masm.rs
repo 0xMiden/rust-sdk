@@ -43,7 +43,9 @@ fn write_read_op_instructions(script: &mut String, op: &ReadOp) {
 fn generate_storage_read_script(read_ops: &[ReadOp]) -> String {
     let mut script = String::from(
         "use bench_reader::storage_reader
-begin
+
+@transaction_script
+pub proc main
 ",
     );
 
@@ -105,6 +107,7 @@ pub fn generate_expansion_component_code(num_slots: usize) -> String {
 # Sets an item in storage slot {i}.
 # Stack input:  [KEY, VALUE, ...]
 # Stack output: [...]
+@account_procedure
 pub proc set_item_slot_{i}
     push.MAP_SLOT_{i}[0..2]
     # Stack: [slot_suffix, slot_prefix, KEY, VALUE, ...]
@@ -125,7 +128,8 @@ end
 
 /// Generates MASM transaction script code that writes entries into a single storage map slot.
 pub fn generate_expansion_tx_script(slot_idx: usize, entries: &[([Felt; 4], [Felt; 4])]) -> String {
-    let mut script = String::from("use expander::storage_expander\n\nbegin\n");
+    let mut script =
+        String::from("use expander::storage_expander\n\n@transaction_script\npub proc main\n");
     let procedure_name = format!("set_item_slot_{slot_idx}");
 
     for (key, value) in entries {

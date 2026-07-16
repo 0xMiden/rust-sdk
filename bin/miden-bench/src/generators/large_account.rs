@@ -39,6 +39,7 @@ pub fn generate_reader_component_code(slots: &[SlotDescriptor]) -> String {
 # Reads an item from map storage slot {i}.
 # Stack input: [KEY]
 # Stack output: [VALUE]
+@account_procedure
 pub proc get_map_item_slot_{i}
     push.MAP_SLOT_{i}[0..2]
     exec.::miden::protocol::active_account::get_map_item
@@ -55,6 +56,7 @@ end
 # Reads the value from storage slot {i}.
 # Stack input: []
 # Stack output: [VALUE]
+@account_procedure
 pub proc get_value_slot_{i}
     push.SLOT_{i}[0..2]
     exec.::miden::protocol::active_account::get_item

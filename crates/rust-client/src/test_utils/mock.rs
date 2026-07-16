@@ -5,7 +5,13 @@ use alloc::vec::Vec;
 
 use miden_protocol::Word;
 use miden_protocol::account::delta::AccountUpdateDetails;
-use miden_protocol::account::{Account, AccountId, StorageSlot, StorageSlotContent, StorageSlotType};
+use miden_protocol::account::{
+    Account,
+    AccountId,
+    StorageSlot,
+    StorageSlotContent,
+    StorageSlotType,
+};
 use miden_protocol::address::NetworkId;
 use miden_protocol::batch::{ProposedBatch, ProvenBatch};
 use miden_protocol::block::{BlockHeader, BlockNumber, ProvenBlock};

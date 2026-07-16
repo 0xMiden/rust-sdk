@@ -626,9 +626,9 @@ async fn cli_export_import_note() -> Result<()> {
     // Consume the note
     consume_note_cli(&temp_dir_2, &first_basic_account_id, &[&note_to_export_id]);
 
-    // Test send command
+    // Test transfer command
     let mock_target_id: AccountId = AccountId::try_from(ACCOUNT_ID_PRIVATE_SENDER).unwrap();
-    send_cli(
+    transfer_cli(
         &temp_dir_2,
         &first_basic_account_id,
         &mock_target_id.to_hex(),
@@ -743,8 +743,8 @@ fn cli_empty_commands() {
     let mut mint_cmd = cargo_bin_cmd!("miden-client");
     assert_command_fails_but_does_not_panic(mint_cmd.args(["mint"]).current_dir(&temp_dir));
 
-    let mut send_cmd = cargo_bin_cmd!("miden-client");
-    assert_command_fails_but_does_not_panic(send_cmd.args(["send"]).current_dir(&temp_dir));
+    let mut transfer_cmd = cargo_bin_cmd!("miden-client");
+    assert_command_fails_but_does_not_panic(transfer_cmd.args(["transfer"]).current_dir(&temp_dir));
 
     let mut swam_cmd = cargo_bin_cmd!("miden-client");
     assert_command_fails_but_does_not_panic(swam_cmd.args(["swap"]).current_dir(&temp_dir));
@@ -1273,12 +1273,12 @@ fn show_note_cli(cli_path: &Path, note_id: &str, should_fail: bool) {
     }
 }
 
-/// Sends 25 units of the corresponding faucet and checks that the command runs successfully given
-/// account using the CLI given by `cli_path`.
-fn send_cli(cli_path: &Path, from_account_id: &str, to_account_id: &str, faucet_id: &str) {
-    let mut send_cmd = cargo_bin_cmd!("miden-client");
-    send_cmd.args([
-        "send",
+/// Transfers 25 units of the corresponding faucet and checks that the command runs successfully
+/// given account using the CLI given by `cli_path`.
+fn transfer_cli(cli_path: &Path, from_account_id: &str, to_account_id: &str, faucet_id: &str) {
+    let mut transfer_cmd = cargo_bin_cmd!("miden-client");
+    transfer_cmd.args([
+        "transfer",
         "--sender",
         from_account_id,
         "--target",
@@ -1289,7 +1289,7 @@ fn send_cli(cli_path: &Path, from_account_id: &str, to_account_id: &str, faucet_
         "private",
         "--force",
     ]);
-    send_cmd.current_dir(cli_path).assert().success();
+    transfer_cmd.current_dir(cli_path).assert().success();
 }
 
 /// Syncs until a tracked note gets committed.

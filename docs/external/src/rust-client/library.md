@@ -304,3 +304,42 @@ for failed_note in &consumption_info.failed {
     println!("cannot consume {}: {}", failed_note.note.id().to_hex(), failed_note.error);
 }
 ```
+
+## Reading consumed notes
+
+### When to use the note reader
+
+Use the note reader when you need to iterate over the input notes a specific account has already consumed, for example to build a consumption history or reconcile past activity.
+
+`InputNoteReader` reads lazily from the store, so creating a reader does not run a query. Since the reader queries the local store, sync the client first to see the latest consumptions. Notes are returned in on-chain consumption order, first by block number, then by the account's transaction order within each block.
+
+### Iterate over an account's consumed notes
+
+Obtain a reader from the client and call `next` until it returns `None`. Each call to `next` runs one store query.
+
+```rust
+let mut reader = client.input_note_reader(account_id);
+
+while let Some(note) = reader.next().await? {
+    // Use the consumed input note.
+}
+```
+
+### Restrict to a block range
+
+Configure the reader with `in_block_range` to return only notes consumed within an inclusive block range. `reset` returns the reader to the beginning without changing its consumer account or block range.
+
+```rust
+use miden_client::block::BlockNumber;
+
+let mut reader = client
+    .input_note_reader(account_id)
+    .in_block_range(BlockNumber::from(0u32), BlockNumber::from(100u32));
+
+while let Some(note) = reader.next().await? {
+    // Use the consumed input note.
+}
+
+// Start another pass over the same notes.
+reader.reset();
+```

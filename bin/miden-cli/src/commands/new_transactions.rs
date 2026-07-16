@@ -107,7 +107,7 @@ impl MintCmd {
 
 /// Create a pay-to-id transaction.
 #[derive(Debug, Parser, Clone)]
-pub struct SendCmd {
+pub struct TransferCmd {
     /// Sender account ID or its hex prefix. If none is provided, the default account's ID is used
     /// instead.
     #[arg(short = 's', long = "sender")]
@@ -142,7 +142,7 @@ pub struct SendCmd {
     delegate_proving: bool,
 }
 
-impl SendCmd {
+impl TransferCmd {
     pub async fn execute<AUTH: Keystore + Sync + 'static>(
         &self,
         mut client: Client<AUTH>,

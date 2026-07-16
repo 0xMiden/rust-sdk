@@ -20,7 +20,7 @@ This guide helps you troubleshoot common issues and understand the end-to-end li
 
 ```sh
 # Force non-interactive submission (e.g., CI)
-miden-client send --force ...
+miden-client transfer --force ...
 
 # Refresh local state
 miden-client sync

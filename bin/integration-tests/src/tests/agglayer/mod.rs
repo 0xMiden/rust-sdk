@@ -21,6 +21,7 @@ use crate::tests::config::ClientConfig;
 pub mod agglayer_bridge_in_out;
 mod agglayer_test_utils;
 pub mod ger;
+pub mod note_reader;
 
 // AGGLAYER CONFIG
 // ================================================================================================

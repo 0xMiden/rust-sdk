@@ -7,9 +7,15 @@
 * [rust] Bumped dependencies: Miden VM crates (`miden-core`, `miden-processor`, `miden-prover`, `miden-assembly`, etc.) to `0.23.5`, and `miden-node-proto-build` and `miden-remote-prover-client` to `0.15.1` ([#2301](https://github.com/0xMiden/rust-sdk/pull/2301)).
 * [cli] Documented the `call` command in the CLI docs ([#2317](https://github.com/0xMiden/rust-sdk/pull/2317)).
 
+### Features
+
+* [FEATURE][rust] Added `is_inclusion_pending` to `InputNoteRecord` and `OutputNoteRecord` ([#2323](https://github.com/0xMiden/rust-sdk/pull/2323)).
+
 ### Fixes
 
 * [FIX][store] Add metadata to ConsumedExternal notes so that they can be findable by their `NoteId`. The change is store-compatible because records written by older clients (the metadata-less layout) still decode, reading back with no metadata as before ([#2308](https://github.com/0xMiden/rust-sdk/pull/2308)).
+* [FIX][rust,store] Output notes no longer register note tags, which leaked one row per created note; a store migration prunes the previously leaked tags ([#2323](https://github.com/0xMiden/rust-sdk/pull/2323)).
+* [FIX][rust] Public account sync now pins `get_account` to the sync target block (backport of [#2255](https://github.com/0xMiden/miden-client/pull/2255)); an unpinned fetch could discard the client's own just-committed transaction as `Superseded`, permanently wedging the account.
 * [FIX][rpc] Align `AddTransactionError` app-level codes with the node's `MempoolSubmissionError`, so submit-transaction failures report the correct cause (e.g. an account commitment mismatch is no longer misreported as "unauthenticated notes not found") and the node's message is preserved for state conflicts ([#2320](https://github.com/0xMiden/rust-sdk/issues/2320)).
 
 ## 0.15.3 (2026-07-02)

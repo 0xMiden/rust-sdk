@@ -64,16 +64,12 @@ impl SqliteStore {
         conn: &mut Connection,
         tag: NoteTagRecord,
     ) -> Result<bool, StoreError> {
-        if Self::get_note_tags(conn)?.contains(&tag) {
-            return Ok(false);
-        }
-
         let tx = conn.transaction().into_store_error()?;
-        add_note_tag_tx(&tx, &tag)?;
+        let inserted = add_note_tag_tx(&tx, &tag)?;
 
         tx.commit().into_store_error()?;
 
-        Ok(true)
+        Ok(inserted)
     }
 
     pub(super) fn remove_note_tag(
@@ -145,21 +141,20 @@ impl SqliteStore {
             // Update notes
             apply_note_updates_tx(tx, &note_updates)?;
 
-            // Remove tags
+            // Remove tags of input notes whose inclusion settled in this sync (committed,
+            // consumed during catch-up, or invalidated): their tag no longer drives note sync.
+            // Metadata-less records are skipped; their tag (if any) cannot be reconstructed.
             let tags_to_remove = note_updates
                 .updated_input_notes()
                 .filter_map(|note_update| {
                     let note = note_update.inner();
-                    if note.is_committed() {
+                    if note.is_inclusion_pending() {
+                        None
+                    } else {
                         Some(NoteTagRecord {
-                            tag: note
-                                .metadata()
-                                .expect("Committed notes should have metadata")
-                                .tag(),
+                            tag: note.metadata()?.tag(),
                             source: NoteTagSource::Note(note.details_commitment()),
                         })
-                    } else {
-                        None
                     }
                 })
                 .collect::<Vec<_>>();
@@ -232,12 +227,18 @@ impl SqliteStore {
     }
 }
 
-pub(super) fn add_note_tag_tx(tx: &Transaction<'_>, tag: &NoteTagRecord) -> Result<(), StoreError> {
-    const QUERY: &str = insert_sql!(tags { tag, source });
-    tx.execute(QUERY, params![tag.tag.to_bytes(), tag.source.to_bytes()])
+/// Inserts the tag record, relying on the unique `(tag, source)` index for idempotency across
+/// concurrent connections. Returns whether a new row was inserted.
+pub(super) fn add_note_tag_tx(
+    tx: &Transaction<'_>,
+    tag: &NoteTagRecord,
+) -> Result<bool, StoreError> {
+    const QUERY: &str = insert_sql!(tags { tag, source } | IGNORE);
+    let inserted = tx
+        .execute(QUERY, params![tag.tag.to_bytes(), tag.source.to_bytes()])
         .into_store_error()?;
 
-    Ok(())
+    Ok(inserted > 0)
 }
 
 pub(super) fn remove_note_tag_tx(

@@ -223,6 +223,12 @@ impl InputNoteRecord {
         matches!(self.state, InputNoteState::Committed { .. })
     }
 
+    /// Returns true while the note's on-chain inclusion is still unsettled (`Expected` or
+    /// `Unverified`), i.e. while note sync is the mechanism that can advance this record.
+    pub fn is_inclusion_pending(&self) -> bool {
+        matches!(self.state, InputNoteState::Expected { .. } | InputNoteState::Unverified { .. })
+    }
+
     /// Sets the consumed transaction order on the inner note state. No-op if the note is not in
     /// a consumed state.
     pub fn set_consumed_tx_order(&mut self, order: Option<u32>) {

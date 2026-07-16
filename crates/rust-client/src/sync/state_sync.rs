@@ -1372,49 +1372,44 @@ mod tests {
         );
     }
 
-    /// The client's own transaction can commit right after a sync delta is snapshotted, moving
-    /// the chain past the sync target before the account state is fetched. An unpinned
-    /// ("latest") fetch would then return a state with the same nonce as the local one, and the
-    /// equal-nonce branch would discard the local transaction as `Superseded`, rolling the
-    /// account state back behind the chain. Pinning the fetch to the sync target block returns
-    /// the older pre-commit state instead, which is correctly ignored and leaves the local
-    /// transaction pending.
+    /// A transaction committed after the sync target must remain pending. The account fetch is
+    /// pinned to the target's pre-commit state.
     #[tokio::test]
     async fn sync_public_accounts_pins_account_fetch_to_sync_target() {
         let mut builder = MockChainBuilder::new();
         let account = builder.add_existing_mock_account(miden_testing::Auth::IncrNonce).unwrap();
         let mut chain = builder.build().unwrap();
 
-        // The sync response was built at this block; the delta carries the account's
-        // pre-commit commitment.
+        // The sync target predates this transaction.
         let sync_target_header = chain.latest_block_header();
-
-        // The chain advances one block, in which the client's own transaction commits and
-        // bumps the account nonce.
-        chain.prove_next_block().unwrap();
-        let committed_state = Account::new_unchecked(
-            account.id(),
-            account.vault().clone(),
-            account.storage().clone(),
-            account.code().clone(),
-            Felt::new(account.nonce().as_canonical_u64() + 1)
-                .expect("bumped nonce should fit into the base field"),
-            None,
-        );
+        let tx = Box::pin(
+            chain
+                .build_tx_context(TxContextInput::AccountId(account.id()), &[], &[])
+                .unwrap()
+                .build()
+                .unwrap()
+                .execute(),
+        )
+        .await
+        .unwrap();
+        let local_header = tx.final_account().clone();
+        assert_ne!(local_header.to_commitment(), account.to_commitment());
+        chain.add_pending_executed_transaction(&tx).unwrap();
 
         let rpc_api = MockRpcApi::new(chain);
-        // Pinned queries at the sync target must see the pre-commit state; queries resolved to
-        // the new chain tip see the post-commit state.
-        rpc_api.set_account_state_at(sync_target_header.block_num(), account.clone());
-        rpc_api.set_account_state_at(
-            (sync_target_header.block_num().as_u32() + 1).into(),
-            committed_state.clone(),
+        // Commit the transaction after the target.
+        rpc_api.prove_block();
+        assert_eq!(
+            rpc_api
+                .mock_chain
+                .read()
+                .committed_account(account.id())
+                .unwrap()
+                .to_commitment(),
+            local_header.to_commitment()
         );
         let state_sync = StateSync::new(Arc::new(rpc_api), Arc::new(MockScreener), None);
 
-        // Local state already includes the just-committed transaction; the stale delta
-        // commitment differs from it, so the account enters reconciliation.
-        let local_header = AccountHeader::from(&committed_state);
         let current_public_accounts = vec![&local_header];
         let commitment_updates = vec![(account.id(), account.to_commitment())];
         let mut account_updates = AccountUpdates::default();
@@ -1430,14 +1425,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(
-            superseded.is_empty(),
-            "the sync-target state is older than local: our own transaction committed after \
-             the delta snapshot and must stay pending, not be discarded as superseded"
-        );
+        assert!(superseded.is_empty(), "the transaction must not be superseded");
         assert!(
             account_updates.updated_public_accounts().is_empty(),
-            "an older sync-target state must not overwrite the local account"
+            "the target state must not overwrite the local account"
         );
     }
 

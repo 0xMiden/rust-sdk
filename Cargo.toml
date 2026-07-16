@@ -40,15 +40,15 @@ miden-client              = { default-features = false, path = "crates/rust-clie
 miden-client-sqlite-store = { default-features = false, path = "crates/sqlite-store", version = "0.16.0-alpha.1" }
 
 # Miden protocol dependencies
-miden-agglayer  = { default-features = false, git = "https://github.com/0xMiden/protocol.git", tag = "v0.16.0-alpha.3" } # TODO: replace with crates.io once protocol has proper release
-miden-protocol  = { default-features = false, git = "https://github.com/0xMiden/protocol.git", tag = "v0.16.0-alpha.3" } # TODO: replace with crates.io once protocol has proper release
-miden-standards = { default-features = false, git = "https://github.com/0xMiden/protocol.git", tag = "v0.16.0-alpha.3" } # TODO: replace with crates.io once protocol has proper release
-miden-testing   = { default-features = false, git = "https://github.com/0xMiden/protocol.git", tag = "v0.16.0-alpha.3" } # TODO: replace with crates.io once protocol has proper release
-miden-tx        = { default-features = false, git = "https://github.com/0xMiden/protocol.git", tag = "v0.16.0-alpha.3" } # TODO: replace with crates.io once protocol has proper release
-miden-tx-batch  = { default-features = false, git = "https://github.com/0xMiden/protocol.git", tag = "v0.16.0-alpha.3" } # TODO: replace with crates.io once protocol has proper release
+miden-agglayer  = { default-features = false, version = "0.16.0-alpha.3" }
+miden-protocol  = { default-features = false, version = "0.16.0-alpha.3" }
+miden-standards = { default-features = false, version = "0.16.0-alpha.3" }
+miden-testing   = { default-features = false, version = "0.16.0-alpha.2" }
+miden-tx        = { default-features = false, version = "0.16.0-alpha.3" }
+miden-tx-batch  = { default-features = false, version = "0.16.0-alpha.3" }
 
 # Miden node dependencies
-miden-node-proto-build           = { default-features = false, git = "https://github.com/0xMiden/node.git", tag = "v0.16.0-alpha.1" } # TODO: replace with crates.io once node has proper release
+miden-node-proto-build           = { default-features = false, version = "0.16.0-alpha.2" }
 miden-note-transport-proto-build = { default-features = false, version = "0.4.1" }
 
 # Miden debug dependency

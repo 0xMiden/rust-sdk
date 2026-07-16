@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 
 use miden_protocol::Word;
 use miden_protocol::account::delta::AccountUpdateDetails;
-use miden_protocol::account::{AccountId, StorageSlot, StorageSlotContent, StorageSlotType};
+use miden_protocol::account::{Account, AccountId, StorageSlot, StorageSlotContent, StorageSlotType};
 use miden_protocol::address::NetworkId;
 use miden_protocol::batch::{ProposedBatch, ProvenBatch};
 use miden_protocol::block::{BlockHeader, BlockNumber, ProvenBlock};
@@ -55,6 +55,12 @@ pub struct MockRpcApi {
     oversize_threshold: usize,
     /// Note headers to report as erased in sync transaction responses.
     erased_notes: Arc<RwLock<Vec<NoteHeader>>>,
+    /// Historical account states served by `get_account`, keyed by (block number, account id).
+    /// The [`MockChain`] only keeps the latest committed account state, so tests that need
+    /// `get_account` to answer block-pinned queries (`AccountStateAt::Block`) with a state
+    /// other than the latest one register the per-block state here. Queries for a block with
+    /// no registered entry fall back to the chain's latest committed account.
+    account_states_at: Arc<RwLock<BTreeMap<(BlockNumber, AccountId), Account>>>,
     /// Attachment content for private notes, keyed by note ID. The [`MockChain`] stores private
     /// notes without their attachment content (only metadata), so tests that need
     /// `get_notes_by_id` to return private-note attachments register them here.
@@ -79,7 +85,14 @@ impl MockRpcApi {
             oversize_threshold: 1000,
             erased_notes: Arc::new(RwLock::new(Vec::new())),
             private_note_attachments: Arc::new(RwLock::new(BTreeMap::new())),
+            account_states_at: Arc::new(RwLock::new(BTreeMap::new())),
         }
+    }
+
+    /// Registers the account state that `get_account` should serve for queries resolved to the
+    /// given block, mirroring a node that can answer historical (block-pinned) account queries.
+    pub fn set_account_state_at(&self, block_num: BlockNumber, account: Account) {
+        self.account_states_at.write().insert((block_num, account.id()), account);
     }
 
     /// Registers the attachment content for a private note so that subsequent `get_notes_by_id`
@@ -496,8 +509,17 @@ impl NodeRpcClient for MockRpcApi {
             AccountStateAt::ChainTip => mock_chain.latest_block_header().block_num(),
         };
 
+        let registered_state =
+            self.account_states_at.read().get(&(block_number, account_id)).cloned();
+
         let headers = if account_id.is_public() {
-            let account = mock_chain.committed_account(account_id).unwrap();
+            let chain_account;
+            let account: &Account = if let Some(registered) = registered_state.as_ref() {
+                registered
+            } else {
+                chain_account = mock_chain.committed_account(account_id).unwrap();
+                chain_account
+            };
 
             // `All` enumerates the account's map slots directly — the mock can introspect the
             // account, so it simulates the (not-yet-on-the-wire) "all storage maps" request.

@@ -1359,6 +1359,80 @@ mod tests {
         );
     }
 
+    /// Regression test for the 2026-07-13 testnet faucet outage: the client's own transaction
+    /// commits right after the sync delta is snapshotted, so by the time `sync_public_account`
+    /// fetches the account the chain has moved one block past the sync target. An unpinned
+    /// ("latest") fetch then returns a state with the same nonce as the local one — it IS the
+    /// local transaction's result — and the equal-nonce branch would discard that transaction
+    /// as `Superseded` and roll the local account state back behind the chain. For a
+    /// sole-writer account the on-chain state then never changes again, so it never reappears
+    /// in a sync delta and every subsequent submission fails with a commitment mismatch.
+    ///
+    /// With the fetch pinned to the sync target block, the node answers with the state as of
+    /// the target — older than local — and the update is correctly ignored, leaving the local
+    /// transaction pending until a later sync commits it.
+    #[tokio::test]
+    async fn sync_public_accounts_pins_account_fetch_to_sync_target() {
+        let mut builder = MockChainBuilder::new();
+        let account = builder.add_existing_mock_account(miden_testing::Auth::IncrNonce).unwrap();
+        let mut chain = builder.build().unwrap();
+
+        // The sync response was built at this block; the delta carries the account's
+        // pre-commit commitment.
+        let sync_target_header = chain.latest_block_header();
+
+        // The chain advances one block, in which the client's own transaction commits and
+        // bumps the account nonce.
+        chain.prove_next_block().unwrap();
+        let committed_state = Account::new_unchecked(
+            account.id(),
+            account.vault().clone(),
+            account.storage().clone(),
+            account.code().clone(),
+            Felt::new(account.nonce().as_canonical_u64() + 1)
+                .expect("bumped nonce should fit into the base field"),
+            None,
+        );
+
+        let rpc_api = MockRpcApi::new(chain);
+        // Pinned queries at the sync target must see the pre-commit state; queries resolved to
+        // the new chain tip see the post-commit state.
+        rpc_api.set_account_state_at(sync_target_header.block_num(), account.clone());
+        rpc_api.set_account_state_at(
+            (sync_target_header.block_num().as_u32() + 1).into(),
+            committed_state.clone(),
+        );
+        let state_sync = StateSync::new(Arc::new(rpc_api), Arc::new(MockScreener), None);
+
+        // Local state already includes the just-committed transaction; the stale delta
+        // commitment differs from it, so the account enters reconciliation.
+        let local_header = AccountHeader::from(&committed_state);
+        let current_public_accounts = vec![&local_header];
+        let commitment_updates = vec![(account.id(), account.to_commitment())];
+        let mut account_updates = AccountUpdates::default();
+
+        let superseded = state_sync
+            .sync_public_accounts(
+                &mut account_updates,
+                &commitment_updates,
+                &current_public_accounts,
+                BlockNumber::GENESIS,
+                &sync_target_header,
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            superseded.is_empty(),
+            "the sync-target state is older than local: our own transaction committed after \
+             the delta snapshot and must stay pending, not be discarded as superseded"
+        );
+        assert!(
+            account_updates.updated_public_accounts().is_empty(),
+            "an older sync-target state must not overwrite the local account"
+        );
+    }
+
     /// Builds an honest `get_account` response for `account_id`.
     async fn get_account_proof(
         rpc_api: &MockRpcApi,

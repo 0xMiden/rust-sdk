@@ -94,8 +94,9 @@ pub struct StateSyncInput {
     pub input_notes: Vec<InputNoteRecord>,
     /// Output notes whose lifecycle should be followed during sync.
     ///
-    /// Their updates are derived from transaction sync, so each note's executing account must
-    /// be present in `accounts` for the note to make progress.
+    /// Inclusion (committed) updates are derived from transaction sync, so the account that
+    /// created a note must be present in `accounts` for the note to transition to committed.
+    /// The consumed transition does not depend on this: nullifier sync detects it regardless.
     pub output_notes: Vec<OutputNoteRecord>,
     /// Transactions to track for commitment or discard during sync.
     pub uncommitted_transactions: Vec<TransactionRecord>,
@@ -820,6 +821,18 @@ impl StateSync {
     /// Validates that a `get_account` proof is bound to the sync target `chain_tip_header`: it must
     /// be for the requested `account_id`, at the target block, and its witness must open under the
     /// target header's account root. Returns the account details on success.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError::ChainValidationError`] if:
+    /// - the proof is for a different block than the sync target.
+    /// - the witness is for a different account than the requested one.
+    /// - the witness does not open under the sync target header's account root.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the proof carries no account details, since this is only called for public
+    /// accounts and the node always returns details for them.
     fn validate_account_proof(
         proof: AccountProof,
         proof_block_num: BlockNumber,

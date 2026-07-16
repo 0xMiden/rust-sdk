@@ -172,13 +172,13 @@ async fn show_account<AUTH>(
             let (asset_type, faucet, amount) = match asset {
                 Asset::Fungible(fungible_asset) => {
                     let faucet_id = fungible_asset.faucet_id();
-                    let amount_u64 = fungible_asset.amount().as_u64();
+                    let asset_amount = fungible_asset.amount();
                     let (faucet, amount) = match get_faucet_component(client, faucet_id).await {
                         Ok(faucet_component) => (
                             faucet_component.symbol().to_string(),
-                            base_units_to_tokens(amount_u64, faucet_component.decimals()),
+                            base_units_to_tokens(asset_amount, faucet_component.decimals()),
                         ),
-                        Err(_) => (faucet_id.prefix().to_hex(), amount_u64.to_string()),
+                        Err(_) => (faucet_id.prefix().to_hex(), asset_amount.as_u64().to_string()),
                     };
                     ("Fungible Asset", faucet, amount)
                 },

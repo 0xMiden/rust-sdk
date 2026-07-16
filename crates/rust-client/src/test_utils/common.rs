@@ -503,7 +503,7 @@ pub async fn assert_account_has_single_asset(
         .get_balance(faucet_id)
         .await
         .expect("Account should have the asset");
-    assert_eq!(balance, expected_amount);
+    assert_eq!(balance, AssetAmount::new(expected_amount).unwrap());
 }
 
 /// Tries to consume the note and asserts that the expected error is returned.

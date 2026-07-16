@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use miden_client::account::AccountType;
-use miden_client::asset::{Asset, FungibleAsset};
+use miden_client::asset::{Asset, AssetAmount, FungibleAsset};
 use miden_client::auth::RPO_FALCON_SCHEME_ID;
 use miden_client::note::standards::NoteSyncHint;
 use miden_client::note::{Note, NoteDetails, NoteFile, NoteType, SwapNote};
@@ -153,15 +153,15 @@ pub async fn test_swap_fully_onchain(client_config: ClientConfig) -> Result<()> 
     let account_a_btc = account_a_reader.get_balance(btc_faucet_account.id()).await?;
     let account_a_eth = account_a_reader.get_balance(eth_faucet_account.id()).await?;
 
-    assert_eq!(account_a_btc, 999);
-    assert_eq!(account_a_eth, 25);
+    assert_eq!(account_a_btc, AssetAmount::new(999).unwrap());
+    assert_eq!(account_a_eth, AssetAmount::new(25).unwrap());
 
     let account_b_reader = client2.account_reader(account_b.id());
     let account_b_btc = account_b_reader.get_balance(btc_faucet_account.id()).await?;
     let account_b_eth = account_b_reader.get_balance(eth_faucet_account.id()).await?;
 
-    assert_eq!(account_b_btc, 1);
-    assert_eq!(account_b_eth, 975);
+    assert_eq!(account_b_btc, AssetAmount::new(1).unwrap());
+    assert_eq!(account_b_eth, AssetAmount::new(975).unwrap());
 
     Ok(())
 }
@@ -310,15 +310,15 @@ pub async fn test_swap_private(client_config: ClientConfig) -> Result<()> {
     let account_a_btc = account_a_reader.get_balance(btc_faucet_account.id()).await?;
     let account_a_eth = account_a_reader.get_balance(eth_faucet_account.id()).await?;
 
-    assert_eq!(account_a_btc, 999);
-    assert_eq!(account_a_eth, 25);
+    assert_eq!(account_a_btc, AssetAmount::new(999).unwrap());
+    assert_eq!(account_a_eth, AssetAmount::new(25).unwrap());
 
     let account_b_reader = client2.account_reader(account_b.id());
     let account_b_btc = account_b_reader.get_balance(btc_faucet_account.id()).await?;
     let account_b_eth = account_b_reader.get_balance(eth_faucet_account.id()).await?;
 
-    assert_eq!(account_b_btc, 1);
-    assert_eq!(account_b_eth, 975);
+    assert_eq!(account_b_btc, AssetAmount::new(1).unwrap());
+    assert_eq!(account_b_eth, AssetAmount::new(975).unwrap());
 
     Ok(())
 }

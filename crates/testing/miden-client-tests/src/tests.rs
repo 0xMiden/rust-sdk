@@ -1302,14 +1302,14 @@ async fn p2id_transfer() {
         .get_balance(faucet_account_id)
         .await
         .unwrap();
-    assert_eq!(from_balance, MINT_AMOUNT - TRANSFER_AMOUNT);
+    assert_eq!(from_balance, AssetAmount::new(MINT_AMOUNT - TRANSFER_AMOUNT).unwrap());
 
     let to_balance = client
         .account_reader(to_account_id)
         .get_balance(faucet_account_id)
         .await
         .unwrap();
-    assert_eq!(to_balance, TRANSFER_AMOUNT);
+    assert_eq!(to_balance, AssetAmount::new(TRANSFER_AMOUNT).unwrap());
 
     assert_note_cannot_be_consumed_twice(
         &mut client,
@@ -1818,14 +1818,20 @@ async fn p2ide_transfer_consumed_by_target() {
         .get_balance(faucet_account_id)
         .await
         .unwrap();
-    assert_eq!(new_from_balance, from_account_balance - TRANSFER_AMOUNT);
+    assert_eq!(
+        new_from_balance,
+        (from_account_balance - AssetAmount::new(TRANSFER_AMOUNT).unwrap()).unwrap()
+    );
 
     let new_to_balance = client
         .account_reader(to_account_id)
         .get_balance(faucet_account_id)
         .await
         .unwrap();
-    assert_eq!(new_to_balance, to_account_balance + TRANSFER_AMOUNT);
+    assert_eq!(
+        new_to_balance,
+        (to_account_balance + AssetAmount::new(TRANSFER_AMOUNT).unwrap()).unwrap()
+    );
 
     assert_note_cannot_be_consumed_twice(&mut client, to_account_id, note).await;
 }
@@ -1936,7 +1942,7 @@ async fn p2ide_transfer_consumed_by_sender() {
         .get_balance(faucet_account_id)
         .await
         .unwrap();
-    assert_eq!(to_balance, 0);
+    assert_eq!(to_balance, AssetAmount::ZERO);
 
     // Check that the target can't consume the note anymore
     assert_note_cannot_be_consumed_twice(
@@ -2032,7 +2038,7 @@ async fn p2ide_timelocked() {
         .get_balance(faucet_account_id)
         .await
         .unwrap();
-    assert_eq!(target_balance, TRANSFER_AMOUNT);
+    assert_eq!(target_balance, AssetAmount::new(TRANSFER_AMOUNT).unwrap());
 }
 
 #[tokio::test]
@@ -2689,7 +2695,7 @@ async fn swap_chain_test() {
         .get_balance(account_pairs[0].1.id())
         .await
         .unwrap();
-    assert_eq!(last_wallet_balance, 1);
+    assert_eq!(last_wallet_balance, AssetAmount::new(1).unwrap());
 }
 
 /// Tests that partial output notes (created when a SWAP note is consumed) are correctly included in
@@ -2860,15 +2866,19 @@ async fn pswap_fill_test(
         alice_account
             .vault()
             .get_balance(AssetId::new_fungible(eth_faucet.id()))
-            .unwrap()
-            .as_u64(),
-        MINT_AMOUNT - offered_amount,
+            .unwrap(),
+        AssetAmount::new(MINT_AMOUNT - offered_amount).unwrap(),
         "Alice's ETH balance should decrease by the offered amount"
     );
 
     // Step 2: Bob fills the PSWAP note.
     let consume_request = TransactionRequestBuilder::new()
-        .build_pswap_consume(&pswap_note, bob_wallet.id(), account_fill_amount, 0)
+        .build_pswap_consume(
+            &pswap_note,
+            bob_wallet.id(),
+            AssetAmount::new(account_fill_amount).unwrap(),
+            AssetAmount::ZERO,
+        )
         .unwrap();
 
     Box::pin(client.submit_new_transaction(bob_wallet.id(), consume_request))
@@ -2882,23 +2892,15 @@ async fn pswap_fill_test(
     // Bob spent exactly the fill amount — proves NOTE_ARGS were honored (a wrong layout would
     // fall back to the script's full-fill default path).
     assert_eq!(
-        bob_account
-            .vault()
-            .get_balance(AssetId::new_fungible(usd_faucet.id()))
-            .unwrap()
-            .as_u64(),
-        MINT_AMOUNT - account_fill_amount,
+        bob_account.vault().get_balance(AssetId::new_fungible(usd_faucet.id())).unwrap(),
+        AssetAmount::new(MINT_AMOUNT - account_fill_amount).unwrap(),
         "Bob's USD balance should decrease by exactly the fill amount"
     );
 
     // Bob received the proportional payout.
     assert_eq!(
-        bob_account
-            .vault()
-            .get_balance(AssetId::new_fungible(eth_faucet.id()))
-            .unwrap()
-            .as_u64(),
-        expected_payout,
+        bob_account.vault().get_balance(AssetId::new_fungible(eth_faucet.id())).unwrap(),
+        AssetAmount::new(expected_payout).unwrap(),
         "Bob should have received the expected ETH payout"
     );
 
@@ -2981,9 +2983,8 @@ async fn pswap_cancel_test() {
         alice_account
             .vault()
             .get_balance(AssetId::new_fungible(eth_faucet.id()))
-            .unwrap()
-            .as_u64(),
-        MINT_AMOUNT - offered_amount,
+            .unwrap(),
+        AssetAmount::new(MINT_AMOUNT - offered_amount).unwrap(),
         "Alice's ETH balance should decrease by the offered amount"
     );
 
@@ -3004,9 +3005,8 @@ async fn pswap_cancel_test() {
         alice_account
             .vault()
             .get_balance(AssetId::new_fungible(eth_faucet.id()))
-            .unwrap()
-            .as_u64(),
-        MINT_AMOUNT,
+            .unwrap(),
+        AssetAmount::new(MINT_AMOUNT).unwrap(),
         "Alice's ETH balance should be fully restored after canceling the PSWAP note"
     );
 }
@@ -3148,7 +3148,12 @@ async fn pswap_chain_tracking_test(#[case] note_type: NoteType) {
 
     // ── Bob partial-fills: 25 ETH → 50 BTC payout, leaving 50 BTC / 25 ETH. ──
     let consume_request = TransactionRequestBuilder::new()
-        .build_pswap_consume(&pswap_note, bob_wallet.id(), 25, 0)
+        .build_pswap_consume(
+            &pswap_note,
+            bob_wallet.id(),
+            AssetAmount::new(25).unwrap(),
+            AssetAmount::ZERO,
+        )
         .unwrap();
     Box::pin(bob_client.submit_new_transaction(bob_wallet.id(), consume_request))
         .await
@@ -3218,9 +3223,8 @@ async fn pswap_chain_tracking_test(#[case] note_type: NoteType) {
         alice_account
             .vault()
             .get_balance(AssetId::new_fungible(eth_faucet.id()))
-            .unwrap()
-            .as_u64(),
-        25,
+            .unwrap(),
+        AssetAmount::new(25).unwrap(),
         "Alice should have received 25 ETH from the fill"
     );
 
@@ -3230,9 +3234,8 @@ async fn pswap_chain_tracking_test(#[case] note_type: NoteType) {
         alice_account
             .vault()
             .get_balance(AssetId::new_fungible(btc_faucet.id()))
-            .unwrap()
-            .as_u64(),
-        MINT_AMOUNT - 50,
+            .unwrap(),
+        AssetAmount::new(MINT_AMOUNT - 50).unwrap(),
         "Alice's BTC should reflect 50 paid out and 50 reclaimed"
     );
 }
@@ -3315,7 +3318,12 @@ async fn pswap_full_fill_chain_tracking_test(#[case] note_type: NoteType) {
 
     // Bob full-fills: consumes the entire 50 ETH side → only a payback note is emitted.
     let consume_request = TransactionRequestBuilder::new()
-        .build_pswap_consume(&pswap_note, bob_wallet.id(), requested_amount, 0)
+        .build_pswap_consume(
+            &pswap_note,
+            bob_wallet.id(),
+            AssetAmount::new(requested_amount).unwrap(),
+            AssetAmount::ZERO,
+        )
         .unwrap();
     Box::pin(bob_client.submit_new_transaction(bob_wallet.id(), consume_request))
         .await
@@ -3356,18 +3364,16 @@ async fn pswap_full_fill_chain_tracking_test(#[case] note_type: NoteType) {
         alice_account
             .vault()
             .get_balance(AssetId::new_fungible(eth_faucet.id()))
-            .unwrap()
-            .as_u64(),
-        requested_amount,
+            .unwrap(),
+        AssetAmount::new(requested_amount).unwrap(),
         "Alice should have received the full 50 ETH"
     );
     assert_eq!(
         alice_account
             .vault()
             .get_balance(AssetId::new_fungible(btc_faucet.id()))
-            .unwrap()
-            .as_u64(),
-        MINT_AMOUNT - offered_amount,
+            .unwrap(),
+        AssetAmount::new(MINT_AMOUNT - offered_amount).unwrap(),
         "Alice's BTC should reflect the full 100 paid out"
     );
 }
@@ -3439,7 +3445,12 @@ async fn pswap_multi_round_chain_tracking_test() {
 
     // ── Round 1: Bob fills 25 ETH → 50 BTC payout, leaving 50 BTC / 25 ETH. ──
     let consume_request = TransactionRequestBuilder::new()
-        .build_pswap_consume(&pswap_note, bob_wallet.id(), 25, 0)
+        .build_pswap_consume(
+            &pswap_note,
+            bob_wallet.id(),
+            AssetAmount::new(25).unwrap(),
+            AssetAmount::ZERO,
+        )
         .unwrap();
     Box::pin(bob_client.submit_new_transaction(bob_wallet.id(), consume_request))
         .await
@@ -3470,7 +3481,12 @@ async fn pswap_multi_round_chain_tracking_test() {
     // ── Round 2 (separate block): Bob consumes his own remainder, filling 10 ETH → 20 BTC,
     //    leaving 30 BTC / 15 ETH. ──
     let consume_request = TransactionRequestBuilder::new()
-        .build_pswap_consume(&remainder_r1, bob_wallet.id(), 10, 0)
+        .build_pswap_consume(
+            &remainder_r1,
+            bob_wallet.id(),
+            AssetAmount::new(10).unwrap(),
+            AssetAmount::ZERO,
+        )
         .unwrap();
     Box::pin(bob_client.submit_new_transaction(bob_wallet.id(), consume_request))
         .await
@@ -3514,9 +3530,8 @@ async fn pswap_multi_round_chain_tracking_test() {
         alice_account
             .vault()
             .get_balance(AssetId::new_fungible(eth_faucet.id()))
-            .unwrap()
-            .as_u64(),
-        35,
+            .unwrap(),
+        AssetAmount::new(35).unwrap(),
         "Alice should have received 25 + 10 = 35 ETH across both rounds"
     );
     // BTC: 100 locked − 70 paid out (50 + 20) + 30 reclaimed = MINT − 70.
@@ -3524,30 +3539,21 @@ async fn pswap_multi_round_chain_tracking_test() {
         alice_account
             .vault()
             .get_balance(AssetId::new_fungible(btc_faucet.id()))
-            .unwrap()
-            .as_u64(),
-        MINT_AMOUNT - 70,
+            .unwrap(),
+        AssetAmount::new(MINT_AMOUNT - 70).unwrap(),
         "Alice's BTC should reflect 70 paid out and 30 reclaimed"
     );
 
     // Bob received 50 + 20 = 70 BTC and paid 25 + 10 = 35 ETH across both fills.
     let bob_account = bob_client.get_account(bob_wallet.id()).await.unwrap().unwrap();
     assert_eq!(
-        bob_account
-            .vault()
-            .get_balance(AssetId::new_fungible(btc_faucet.id()))
-            .unwrap()
-            .as_u64(),
-        70,
+        bob_account.vault().get_balance(AssetId::new_fungible(btc_faucet.id())).unwrap(),
+        AssetAmount::new(70).unwrap(),
         "Bob should have received 70 BTC across both fills"
     );
     assert_eq!(
-        bob_account
-            .vault()
-            .get_balance(AssetId::new_fungible(eth_faucet.id()))
-            .unwrap()
-            .as_u64(),
-        MINT_AMOUNT - 35,
+        bob_account.vault().get_balance(AssetId::new_fungible(eth_faucet.id())).unwrap(),
+        AssetAmount::new(MINT_AMOUNT - 35).unwrap(),
         "Bob should have paid 35 ETH across both fills"
     );
 }

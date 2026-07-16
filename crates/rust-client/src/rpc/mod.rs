@@ -418,6 +418,7 @@ pub trait NodeRpcClient: Send + Sync {
                 continue;
             }
             // Syncing from genesis merges the full history of each slot into its absolute
+            // current entries, so the result is the complete map content.
             let entries: Vec<StorageMapEntry> = info
                 .map_entries
                 .get(&map_details.slot_name)

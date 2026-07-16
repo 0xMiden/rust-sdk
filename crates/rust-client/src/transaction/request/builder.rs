@@ -4,7 +4,7 @@ use alloc::string::ToString;
 use alloc::vec::Vec;
 
 use miden_protocol::account::AccountId;
-use miden_protocol::asset::{Asset, FungibleAsset};
+use miden_protocol::asset::{Asset, AssetAmount, FungibleAsset};
 use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::merkle::InnerNodeInfo;
 use miden_protocol::crypto::merkle::store::MerkleStore;
@@ -491,23 +491,25 @@ impl TransactionRequestBuilder {
         self,
         pswap_note: &Note,
         consumer_account_id: AccountId,
-        account_fill_amount: u64,
-        note_fill_amount: u64,
+        account_fill_amount: AssetAmount,
+        note_fill_amount: AssetAmount,
     ) -> Result<TransactionRequest, TransactionRequestError> {
         let pswap = PswapNote::try_from(pswap_note)
             .map_err(TransactionRequestError::NoteValidationError)?;
 
         let requested_faucet_id = pswap.storage().min_requested_asset().faucet_id();
 
-        let account_fill_asset = FungibleAsset::new(requested_faucet_id, account_fill_amount)?;
-        let note_fill_asset = FungibleAsset::new(requested_faucet_id, note_fill_amount)?;
+        let account_fill_asset =
+            FungibleAsset::new(requested_faucet_id, account_fill_amount.as_u64())?;
+        let note_fill_asset = FungibleAsset::new(requested_faucet_id, note_fill_amount.as_u64())?;
 
         let (payback_note, remainder_pswap) = pswap
             .execute(consumer_account_id, Some(account_fill_asset), Some(note_fill_asset))
             .map_err(TransactionRequestError::NoteExecutionError)?;
 
-        let note_args = PswapNote::create_args(account_fill_amount, note_fill_amount)
-            .map_err(TransactionRequestError::NoteArgError)?;
+        let note_args =
+            PswapNote::create_args(account_fill_amount.as_u64(), note_fill_amount.as_u64())
+                .map_err(TransactionRequestError::NoteArgError)?;
 
         // Payback and remainder both settle to the creator, not the consumer. Declare them as
         // expected recipients so the transaction is validated against them, but don't register

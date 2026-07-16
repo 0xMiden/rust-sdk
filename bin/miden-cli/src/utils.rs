@@ -383,7 +383,7 @@ impl FaucetMetadataResolver {
         asset: &FungibleAsset,
     ) -> Result<(String, String), CliError> {
         if let Some(meta) = self.resolve(client, asset.faucet_id()).await? {
-            return Ok((meta.symbol, base_units_to_tokens(asset.amount().as_u64(), meta.decimals)));
+            return Ok((meta.symbol, base_units_to_tokens(asset.amount(), meta.decimals)));
         }
         let network_id = client.network_id().await?;
         let address_str = Address::new(asset.faucet_id()).encode(network_id);
@@ -432,7 +432,7 @@ impl FaucetMetadataResolver {
             let amount = tokens_to_base_units(amount, entry.decimals).map_err(|err| {
                 CliError::Parse(err.into(), "Failed to parse tokens to base units".to_string())
             })?;
-            (entry.account_id, amount)
+            (entry.account_id, amount.as_u64())
         };
 
         FungibleAsset::new(faucet_id, amount).map_err(CliError::Asset)

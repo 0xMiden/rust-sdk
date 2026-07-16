@@ -4,6 +4,7 @@ use core::error::Error as CoreError;
 
 use thiserror::Error;
 
+mod api_client;
 mod generated;
 mod tx_prover;
 

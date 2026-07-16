@@ -9,15 +9,6 @@ use miden_protocol::block::BlockNumber;
 use crate::rpc::domain::MissingFieldHelper;
 use crate::rpc::{RpcError, generated as proto};
 
-/// A single storage-map update as reported by the node: the block it occurred in, the affected slot
-/// and key, and the new value.
-pub(crate) struct StorageMapUpdate {
-    pub(crate) block_num: BlockNumber,
-    pub(crate) slot_name: StorageSlotName,
-    pub(crate) key: StorageMapKey,
-    pub(crate) value: Word,
-}
-
 // STORAGE MAP INFO
 // ================================================================================================
 
@@ -46,16 +37,25 @@ impl TryFrom<proto::rpc::SyncAccountStorageMapsResponse> for StorageMapInfo {
             proto::rpc::SyncAccountStorageMapsResponse::missing_field(stringify!(pagination_info)),
         )?;
 
-        let updates = value
+        let mut updates = value
             .updates
             .into_iter()
             .map(storage_map_update_from_proto)
             .collect::<Result<Vec<_>, _>>()?;
 
+        // The node may report the same `(slot, key)` in more than one block, folding the updates
+        // in ascending block order lets the latest block win, with an empty value encoding a
+        // cleared entry.
+        updates.sort_by_key(|(block_num, ..)| *block_num);
+        let mut map_entries: BTreeMap<StorageSlotName, StorageMapPatchEntries> = BTreeMap::new();
+        for (_, slot_name, key, value) in updates {
+            map_entries.entry(slot_name).or_default().insert(key, value);
+        }
+
         Ok(Self {
             chain_tip: pagination_info.chain_tip.into(),
             block_number: pagination_info.block_num.into(),
-            map_entries: merge_storage_map_updates(updates),
+            map_entries,
         })
     }
 }
@@ -63,10 +63,10 @@ impl TryFrom<proto::rpc::SyncAccountStorageMapsResponse> for StorageMapInfo {
 // STORAGE MAP UPDATE
 // ================================================================================================
 
-/// Converts a single proto storage-map update into a [`StorageMapUpdate`].
+/// Converts a single proto storage-map update into its block number, slot name, key, and new value.
 fn storage_map_update_from_proto(
     value: proto::rpc::StorageMapUpdate,
-) -> Result<StorageMapUpdate, RpcError> {
+) -> Result<(BlockNumber, StorageSlotName, StorageMapKey, Word), RpcError> {
     let block_num = BlockNumber::from(value.block_num);
 
     let slot_name = StorageSlotName::new(value.slot_name)
@@ -82,26 +82,5 @@ fn storage_map_update_from_proto(
         .ok_or(proto::rpc::StorageMapUpdate::missing_field(stringify!(value)))?
         .try_into()?;
 
-    Ok(StorageMapUpdate {
-        block_num,
-        slot_name,
-        key,
-        value: map_value,
-    })
-}
-
-/// Merges per-block map updates into the absolute changed entries per slot.
-///
-/// The node may report the same `(slot, key)` in more than one block; applying the updates in
-/// ascending block order lets the latest block win, with an empty value encoding a cleared entry.
-pub(crate) fn merge_storage_map_updates(
-    mut updates: Vec<StorageMapUpdate>,
-) -> BTreeMap<StorageSlotName, StorageMapPatchEntries> {
-    updates.sort_by_key(|update| update.block_num);
-
-    let mut entries_by_slot: BTreeMap<StorageSlotName, StorageMapPatchEntries> = BTreeMap::new();
-    for StorageMapUpdate { slot_name, key, value, .. } in updates {
-        entries_by_slot.entry(slot_name).or_default().insert(key, value);
-    }
-    entries_by_slot
+    Ok((block_num, slot_name, key, map_value))
 }

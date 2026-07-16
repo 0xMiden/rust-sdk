@@ -430,7 +430,7 @@ impl SqliteStore {
         Ok(())
     }
 
-    /// Applies the account delta to the account state, updating the vault and storage maps.
+    /// Applies the account patch to the account state, updating the vault and storage maps.
     ///
     /// Archives old values from latest to historical and updates latest via INSERT OR REPLACE.
     pub(crate) fn apply_account_patch(
@@ -842,7 +842,7 @@ impl SqliteStore {
         Ok(())
     }
 
-    /// Applies an incremental delta to a public account's state during sync.
+    /// Applies an incremental patch to a public account's state during sync.
     pub(crate) fn apply_sync_account_patch(
         tx: &Transaction<'_>,
         smt_forest: &mut AccountSmtForest,

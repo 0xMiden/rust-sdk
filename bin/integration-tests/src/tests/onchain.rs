@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use anyhow::{Context, Result};
 use miden_client::account::{AccountType, build_wallet_id};
-use miden_client::asset::{Asset, FungibleAsset};
+use miden_client::asset::{Asset, AssetAmount, FungibleAsset};
 use miden_client::auth::RPO_FALCON_SCHEME_ID;
 use miden_client::keystore::Keystore;
 use miden_client::note::standards::NoteSyncHint;
@@ -339,8 +339,14 @@ pub async fn test_onchain_accounts(client_config: ClientConfig) -> Result<()> {
         .await
         .context("failed to find to account after transfer")?;
 
-    assert_eq!(new_from_account_balance, from_account_balance - TRANSFER_AMOUNT);
-    assert_eq!(new_to_account_balance, to_account_balance + TRANSFER_AMOUNT);
+    assert_eq!(
+        new_from_account_balance,
+        (from_account_balance - AssetAmount::new(TRANSFER_AMOUNT).unwrap()).unwrap()
+    );
+    assert_eq!(
+        new_to_account_balance,
+        (to_account_balance + AssetAmount::new(TRANSFER_AMOUNT).unwrap()).unwrap()
+    );
     Ok(())
 }
 

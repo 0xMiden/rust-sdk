@@ -13,12 +13,11 @@ use miden_protocol::crypto::merkle::mmr::{MmrDelta, PartialMmr};
 use miden_protocol::note::{NoteAttachments, NoteId, NoteTag, NoteType, Nullifier};
 use tracing::info;
 
-use super::state_sync_update::TransactionUpdateTracker;
+use super::state_sync_update::{TransactionUpdateTracker, build_account_patch};
 use super::{
     AccountUpdates,
     NoteObserver,
     PartialBlockchainUpdates,
-    PublicAccountPatch,
     PublicAccountUpdate,
     StateSyncUpdate,
 };
@@ -885,11 +884,11 @@ impl StateSync {
             details.storage_details.map_details.iter().any(|m| m.too_many_entries);
 
         // TODO: we can handle vault and storage-map oversize independently. Today any oversize
-        // routes the whole account through the incremental delta path, which always fetches
+        // routes the whole account through the incremental patch path, which always fetches
         // both `sync_storage_maps` and `sync_account_vault`, even if not needed.
         let public_update = if vault_oversized || any_map_oversized {
             // Some part of the account is oversized — use incremental endpoints.
-            self.build_delta_update(account_id, &details, block_from, proof_block_num)
+            self.build_patch_update(account_id, &details, block_from, proof_block_num)
                 .await?
         } else {
             // The single response carries the full vault and every map's entries.
@@ -942,9 +941,9 @@ impl StateSync {
         Ok(details.expect("node returned no details for a public account"))
     }
 
-    /// Builds a [`PublicAccountUpdate::Delta`] by fetching incremental storage map and vault
-    /// updates over the synced range.
-    async fn build_delta_update(
+    /// Builds a [`PublicAccountUpdate::Patch`] by fetching incremental storage map and vault
+    /// updates over the synced range and assembling the absolute [`AccountPatch`] from them.
+    async fn build_patch_update(
         &self,
         account_id: AccountId,
         details: &AccountDetails,
@@ -972,12 +971,19 @@ impl StateSync {
             .await
             .map_err(ClientError::RpcError)?;
 
-        Ok(PublicAccountUpdate::Patch(PublicAccountPatch::new(
-            details.header.clone(),
+        let patch = build_account_patch(
+            &details.header,
             value_slot_updates,
             map_info.map_entries,
             vault_info.vault_patch,
-        )))
+            details.code.clone(),
+        )
+        .map_err(StoreError::AccountPatchError)?;
+
+        Ok(PublicAccountUpdate::Patch {
+            new_header: details.header.clone(),
+            patch,
+        })
     }
 
     /// Applies the changes received from the sync response to the notes and transactions tracked

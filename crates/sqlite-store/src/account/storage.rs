@@ -401,7 +401,12 @@ impl SqliteStore {
             .map(|(slot_name, value_patch)| {
                 (
                     slot_name.clone(),
-                    (value_patch.value().unwrap_or_default(), StorageSlotType::Value),
+                    (
+                        value_patch
+                            .value()
+                            .expect("the protocol does not generate Remove value patches"),
+                        StorageSlotType::Value,
+                    ),
                 )
             })
             .collect();

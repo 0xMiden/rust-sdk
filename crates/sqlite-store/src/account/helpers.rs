@@ -155,7 +155,7 @@ pub(crate) fn query_historical_account_headers(
 
 // TODO: this function will probably be refactored to receive more complex where clauses and
 // return multiple mast forests
-pub(crate) fn query_account_code(
+pub(super) fn query_account_code(
     conn: &Connection,
     commitment: Word,
 ) -> Result<Option<AccountCode>, StoreError> {

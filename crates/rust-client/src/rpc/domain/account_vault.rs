@@ -9,14 +9,6 @@ use miden_protocol::block::BlockNumber;
 use crate::rpc::domain::MissingFieldHelper;
 use crate::rpc::{RpcConversionError, RpcError, generated as proto};
 
-/// A single vault update as reported by the node: the block it occurred in, the affected vault key,
-/// and its new asset (`None` if the asset was removed at that block).
-pub(crate) struct VaultUpdate {
-    pub(crate) block_num: BlockNumber,
-    pub(crate) vault_key: AssetId,
-    pub(crate) asset: Option<Asset>,
-}
-
 // ASSET CONVERSION
 // ================================================================================================
 
@@ -68,16 +60,28 @@ impl TryFrom<proto::rpc::SyncAccountVaultResponse> for AccountVaultInfo {
                     pagination_info
                 )))?;
 
-        let updates = value
+        let mut updates = value
             .updates
             .into_iter()
             .map(vault_update_from_proto)
             .collect::<Result<Vec<_>, _>>()?;
 
+        // The node may report the same asset ID in more than one block, folding the updates in
+        // ascending block order lets the latest block win, with an absent asset (`None`) encoding
+        // a removal.
+        updates.sort_by_key(|(block_num, ..)| *block_num);
+        let mut vault_patch = AccountVaultPatch::default();
+        for (_, asset_id, asset) in updates {
+            match asset {
+                Some(asset) => vault_patch.insert_asset(asset),
+                None => vault_patch.remove_asset(asset_id),
+            }
+        }
+
         Ok(Self {
             chain_tip: pagination_info.chain_tip.into(),
             block_number: pagination_info.block_num.into(),
-            vault_patch: merge_vault_updates(updates),
+            vault_patch,
         })
     }
 }
@@ -85,44 +89,29 @@ impl TryFrom<proto::rpc::SyncAccountVaultResponse> for AccountVaultInfo {
 // ACCOUNT VAULT UPDATE
 // ================================================================================================
 
-/// Converts a single proto vault update into a [`VaultUpdate`], validating that a present asset's
-/// vault key matches the reported key.
-fn vault_update_from_proto(value: proto::rpc::AccountVaultUpdate) -> Result<VaultUpdate, RpcError> {
+/// Converts a single proto vault update into its block number, asset ID, and new asset (`None` if
+/// the asset was removed at that block), validating that a present asset matches the reported key.
+fn vault_update_from_proto(
+    value: proto::rpc::AccountVaultUpdate,
+) -> Result<(BlockNumber, AssetId, Option<Asset>), RpcError> {
     let block_num = BlockNumber::from(value.block_num);
 
-    let vault_key_inner: Word = value
+    let vault_key: Word = value
         .vault_key
         .ok_or(proto::rpc::SyncAccountVaultResponse::missing_field(stringify!(vault_key)))?
         .try_into()?;
-    let vault_key =
-        AssetId::try_from(vault_key_inner).map_err(|e| RpcError::InvalidResponse(e.to_string()))?;
+    let asset_id =
+        AssetId::try_from(vault_key).map_err(|e| RpcError::InvalidResponse(e.to_string()))?;
 
     let asset = value.asset.map(Asset::try_from).transpose()?;
 
     if let Some(ref asset) = asset
-        && asset.id() != vault_key
+        && asset.id() != asset_id
     {
         return Err(RpcError::InvalidResponse(
             "account vault update returned mismatched asset key".to_string(),
         ));
     }
 
-    Ok(VaultUpdate { block_num, vault_key, asset })
-}
-
-/// Merges per-block vault updates into an absolute [`AccountVaultPatch`].
-///
-/// The node may report the same vault key in more than one block; applying the updates in ascending
-/// block order lets the latest block win, with an absent asset (`None`) encoding a removal.
-pub(crate) fn merge_vault_updates(mut updates: Vec<VaultUpdate>) -> AccountVaultPatch {
-    updates.sort_by_key(|update| update.block_num);
-
-    let mut patch = AccountVaultPatch::default();
-    for VaultUpdate { vault_key, asset, .. } in updates {
-        match asset {
-            Some(asset) => patch.insert_asset(asset),
-            None => patch.remove_asset(vault_key),
-        }
-    }
-    patch
+    Ok((block_num, asset_id, asset))
 }

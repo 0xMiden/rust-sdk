@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use miden_client::ClientError;
 use miden_client::account::AccountType;
-use miden_client::asset::{Asset, FungibleAsset};
+use miden_client::asset::{Asset, AssetAmount, FungibleAsset};
 use miden_client::auth::RPO_FALCON_SCHEME_ID;
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;
@@ -607,8 +607,12 @@ async fn batch_builder_cross_account_note_flow() {
         .get_balance(faucet_account_id)
         .await
         .unwrap();
-    assert_eq!(a_balance, 0, "A should have sent all its balance");
-    assert_eq!(b_balance, 2 * MINT_AMOUNT, "B should hold its prior MINT_AMOUNT + A's transfer");
+    assert_eq!(a_balance, AssetAmount::ZERO, "A should have sent all its balance");
+    assert_eq!(
+        b_balance,
+        AssetAmount::new(2 * MINT_AMOUNT).unwrap(),
+        "B should hold its prior MINT_AMOUNT + A's transfer"
+    );
 }
 
 /// The duplicate-input-note check is global to the batch: a note consumed by `tx_a` (account A)

@@ -17,7 +17,7 @@ use miden_client::account::{
     StorageSlotName,
 };
 use miden_client::assembly::CodeBuilder;
-use miden_client::asset::{Asset, FungibleAsset};
+use miden_client::asset::{Asset, AssetAmount, FungibleAsset};
 use miden_client::auth::{AuthSchemeId, AuthSecretKey, AuthSingleSig, RPO_FALCON_SCHEME_ID};
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;
@@ -195,7 +195,7 @@ pub async fn test_multiple_tx_on_same_block(client_config: ClientConfig) -> Resu
         .get_balance(faucet_account_id)
         .await
         .context("failed to find sender account after transactions")?;
-    assert_eq!(sender_balance, MINT_AMOUNT - (TRANSFER_AMOUNT * 2));
+    assert_eq!(sender_balance, AssetAmount::new(MINT_AMOUNT - (TRANSFER_AMOUNT * 2)).unwrap());
     Ok(())
 }
 

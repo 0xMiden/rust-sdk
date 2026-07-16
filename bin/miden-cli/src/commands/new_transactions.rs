@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use miden_client::account::AccountId;
+use miden_client::asset::AssetAmount;
 use miden_client::keystore::Keystore;
 use miden_client::note::{
     BlockNumber,
@@ -494,10 +495,13 @@ impl PswapConsumeCmd {
         let consumer_id = parse_account_id(&client, &self.account).await?;
         let note = resolve_input_note(&client, &self.note).await?;
 
+        let fill_amount = AssetAmount::new(self.fill_amount)
+            .map_err(|err| CliError::Parse(err.into(), "Invalid fill amount".to_string()))?;
+
         // The CLI does not yet support note-supplied fills (in-flight fills routed through
         // other notes), so pass 0 for `note_fill_amount`.
         let tx_request = TransactionRequestBuilder::new()
-            .build_pswap_consume(&note, consumer_id, self.fill_amount, 0)
+            .build_pswap_consume(&note, consumer_id, fill_amount, AssetAmount::ZERO)
             .map_err(|err| {
                 CliError::Transaction(
                     err.into(),

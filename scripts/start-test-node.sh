@@ -54,7 +54,7 @@ else
     NODE_SOURCE="registry"
     NODE_VERSION="$(awk -F'"' '/^name = "miden-node-proto-build"$/ { getline; print $2; exit }' "$ROOT/Cargo.lock")"
     [ -n "$NODE_VERSION" ] || {
-        echo "error: no 0xMiden/miden-node git source and no miden-node-proto-build version in Cargo.lock" >&2
+        echo "error: no 0xMiden/node git source and no miden-node-proto-build version in Cargo.lock" >&2
         exit 1
     }
     NODE_REV="v$NODE_VERSION"

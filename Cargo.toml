@@ -40,15 +40,15 @@ miden-client              = { default-features = false, path = "crates/rust-clie
 miden-client-sqlite-store = { default-features = false, path = "crates/sqlite-store", version = "0.16.0-alpha.1" }
 
 # Miden protocol dependencies
-miden-agglayer  = { default-features = false, version = "=0.16.0-alpha.2" }
-miden-protocol  = { default-features = false, version = "=0.16.0-alpha.2" }
-miden-standards = { default-features = false, version = "=0.16.0-alpha.2" }
-miden-testing   = { default-features = false, version = "=0.16.0-alpha.2" }
-miden-tx        = { default-features = false, version = "=0.16.0-alpha.2" }
-miden-tx-batch  = { default-features = false, version = "=0.16.0-alpha.2" }
+miden-agglayer  = { default-features = false, git = "https://github.com/0xMiden/protocol.git", tag = "v0.16.0-alpha.3" } # TODO: replace with crates.io once protocol has proper release
+miden-protocol  = { default-features = false, git = "https://github.com/0xMiden/protocol.git", tag = "v0.16.0-alpha.3" } # TODO: replace with crates.io once protocol has proper release
+miden-standards = { default-features = false, git = "https://github.com/0xMiden/protocol.git", tag = "v0.16.0-alpha.3" } # TODO: replace with crates.io once protocol has proper release
+miden-testing   = { default-features = false, git = "https://github.com/0xMiden/protocol.git", tag = "v0.16.0-alpha.3" } # TODO: replace with crates.io once protocol has proper release
+miden-tx        = { default-features = false, git = "https://github.com/0xMiden/protocol.git", tag = "v0.16.0-alpha.3" } # TODO: replace with crates.io once protocol has proper release
+miden-tx-batch  = { default-features = false, git = "https://github.com/0xMiden/protocol.git", tag = "v0.16.0-alpha.3" } # TODO: replace with crates.io once protocol has proper release
 
 # Miden node dependencies
-miden-node-proto-build           = { default-features = false, git = "https://github.com/0xMiden/node.git", tag = "v0.16.0-alpha.1" } # TODO: replace with crates.io on node has proper release
+miden-node-proto-build           = { default-features = false, git = "https://github.com/0xMiden/node.git", tag = "v0.16.0-alpha.1" } # TODO: replace with crates.io once node has proper release
 miden-note-transport-proto-build = { default-features = false, version = "0.4.1" }
 
 # Miden debug dependency

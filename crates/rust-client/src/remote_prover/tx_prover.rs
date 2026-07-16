@@ -8,7 +8,7 @@ use miden_protocol::vm::FutureMaybeSend;
 use miden_tx::TransactionProverError;
 use tokio::sync::Mutex;
 
-use super::generated::api_client::ApiClient;
+use super::api_client::ApiClient;
 use super::{RemoteProverClientError, generated as proto};
 
 // REMOTE TRANSACTION PROVER
@@ -23,13 +23,13 @@ use super::{RemoteProverClientError, generated as proto};
 /// The transport layer connection is established lazily when the first transaction is proven.
 #[derive(Clone)]
 pub struct RemoteTransactionProver {
-    #[cfg(target_arch = "wasm32")]
-    client: Arc<Mutex<Option<ApiClient<tonic_web_wasm_client::Client>>>>,
+    /// Lazily initialized gRPC client, populated on the first proving request.
+    client: Arc<Mutex<Option<ApiClient>>>,
 
-    #[cfg(not(target_arch = "wasm32"))]
-    client: Arc<Mutex<Option<ApiClient<tonic::transport::Channel>>>>,
-
+    /// Endpoint of the remote prover in the format `{protocol}://{hostname}:{port}`.
     endpoint: String,
+
+    /// Timeout applied to each request sent to the remote prover.
     timeout: Duration,
 }
 
@@ -60,32 +60,7 @@ impl RemoteTransactionProver {
             return Ok(());
         }
 
-        #[cfg(target_arch = "wasm32")]
-        let new_client = {
-            let fetch_options =
-                tonic_web_wasm_client::options::FetchOptions::new().timeout(self.timeout);
-            let web_client = tonic_web_wasm_client::Client::new_with_options(
-                self.endpoint.clone(),
-                fetch_options,
-            );
-            ApiClient::new(web_client)
-        };
-
-        #[cfg(not(target_arch = "wasm32"))]
-        let new_client = {
-            let endpoint = tonic::transport::Endpoint::try_from(self.endpoint.clone())
-                .map_err(|err| RemoteProverClientError::ConnectionFailed(err.into()))?
-                .timeout(self.timeout);
-            let channel = endpoint
-                .tls_config(tonic::transport::ClientTlsConfig::new().with_native_roots())
-                .map_err(|err| RemoteProverClientError::ConnectionFailed(err.into()))?
-                .connect()
-                .await
-                .map_err(|err| RemoteProverClientError::ConnectionFailed(err.into()))?;
-            ApiClient::new(channel)
-        };
-
-        *client = Some(new_client);
+        *client = Some(ApiClient::new_client(self.endpoint.clone(), self.timeout).await?);
 
         Ok(())
     }

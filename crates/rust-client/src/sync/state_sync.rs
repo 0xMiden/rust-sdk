@@ -1359,18 +1359,13 @@ mod tests {
         );
     }
 
-    /// Regression test for the 2026-07-13 testnet faucet outage: the client's own transaction
-    /// commits right after the sync delta is snapshotted, so by the time `sync_public_account`
-    /// fetches the account the chain has moved one block past the sync target. An unpinned
-    /// ("latest") fetch then returns a state with the same nonce as the local one — it IS the
-    /// local transaction's result — and the equal-nonce branch would discard that transaction
-    /// as `Superseded` and roll the local account state back behind the chain. For a
-    /// sole-writer account the on-chain state then never changes again, so it never reappears
-    /// in a sync delta and every subsequent submission fails with a commitment mismatch.
-    ///
-    /// With the fetch pinned to the sync target block, the node answers with the state as of
-    /// the target — older than local — and the update is correctly ignored, leaving the local
-    /// transaction pending until a later sync commits it.
+    /// The client's own transaction can commit right after a sync delta is snapshotted, moving
+    /// the chain past the sync target before the account state is fetched. An unpinned
+    /// ("latest") fetch would then return a state with the same nonce as the local one, and the
+    /// equal-nonce branch would discard the local transaction as `Superseded`, rolling the
+    /// account state back behind the chain. Pinning the fetch to the sync target block returns
+    /// the older pre-commit state instead, which is correctly ignored and leaves the local
+    /// transaction pending.
     #[tokio::test]
     async fn sync_public_accounts_pins_account_fetch_to_sync_target() {
         let mut builder = MockChainBuilder::new();

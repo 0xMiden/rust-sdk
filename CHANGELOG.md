@@ -4,6 +4,7 @@
 
 ### Breaking Changes
 
+* [BREAKING][rename][cli] Renamed the `send` subcommand to `transfer` (behavior and flags unchanged) ([#2311](https://github.com/0xMiden/rust-sdk/issues/2311)).
 * [BREAKING][store] The SQLite store now stores account IDs as serialized `BLOB` columns instead of hex `TEXT` ([#2309](https://github.com/0xMiden/rust-sdk/pull/2309)).
 * [BREAKING][param][store] `Store::insert_block_header` now takes a `nodes` argument and persists the header with its MMR authentication nodes in a single transaction; the standalone `Store::insert_partial_blockchain_nodes` is removed. Header-only inserts (e.g. genesis) pass an empty slice ([#2294](https://github.com/0xMiden/rust-sdk/pull/2294)).
 * [BREAKING][behavior][store] The `ConsumedExternal` note-metadata layout added in [#2308](https://github.com/0xMiden/rust-sdk/pull/2308) is now the only supported serialized format. The backward-compatible decoding of the older metadata-less layout is removed, so existing stores are not compatible and must be recreated ([#2313](https://github.com/0xMiden/rust-sdk/pull/2313)).

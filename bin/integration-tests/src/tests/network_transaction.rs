@@ -59,7 +59,7 @@ use miden_client::testing::common::{
     wait_for_blocks,
     wait_for_tx,
 };
-use miden_client::transaction::TransactionRequestBuilder;
+use miden_client::transaction::{ExpirationTransactionScript, TransactionRequestBuilder};
 use miden_client::{Felt, Word, ZERO};
 use rand::{Rng, RngExt};
 
@@ -185,7 +185,8 @@ pub(crate) async fn deploy_network_counter_contract(
     let roots = allowed_note_script_roots.iter().copied().collect::<BTreeSet<NoteScriptRoot>>();
     let auth = AuthNetworkAccount::with_allowed_notes(roots)
         .map_err(|err| anyhow::anyhow!(err))
-        .context("failed to build network account auth component")?;
+        .context("failed to build network account auth component")?
+        .with_allowed_tx_scripts(BTreeSet::from([ExpirationTransactionScript::script_root()]));
     deploy_counter_with_auth(client, auth).await
 }
 
@@ -257,7 +258,8 @@ async fn deploy_network_fungible_faucet(
     // with no tx script. The scriptless deploy transaction below is authorized by this same auth.
     let allowed_roots = [MintNote::script_root()].into_iter().collect::<BTreeSet<_>>();
     let network_auth = AuthNetworkAccount::with_allowed_notes(allowed_roots)
-        .map_err(|err| anyhow!("failed to build faucet network-account auth: {err}"))?;
+        .map_err(|err| anyhow!("failed to build faucet network-account auth: {err}"))?
+        .with_allowed_tx_scripts(BTreeSet::from([ExpirationTransactionScript::script_root()]));
 
     let mut init_seed = [0u8; 32];
     client.rng().fill_bytes(&mut init_seed);

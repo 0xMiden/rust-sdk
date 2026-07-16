@@ -12,6 +12,10 @@
 * [BREAKING][param][store] `Store::insert_block_header` now takes a `nodes` argument and persists the header with its MMR authentication nodes in a single transaction; the standalone `Store::insert_partial_blockchain_nodes` is removed. Header-only inserts (e.g. genesis) pass an empty slice ([#2294](https://github.com/0xMiden/rust-sdk/pull/2294)).
 * [BREAKING][behavior][store] The `ConsumedExternal` note-metadata layout added in [#2308](https://github.com/0xMiden/rust-sdk/pull/2308) is now the only supported serialized format. The backward-compatible decoding of the older metadata-less layout is removed, so existing stores are not compatible and must be recreated ([#2313](https://github.com/0xMiden/rust-sdk/pull/2313)).
 
+### Changes
+
+* [rust] Re-exported `ExpirationTransactionScript` from `miden_client::transaction`. Network accounts must allowlist its script root (via `AuthNetworkAccount::with_allowed_tx_scripts`) for the node's network transaction builder to execute transactions against them ([#2290](https://github.com/0xMiden/rust-sdk/pull/2290)).
+
 ### Fixes
 
 * [FIX][store] The SQLite store now honors `StorageMapPatch` create/remove semantics: a `Create` patch on an existing map slot clears the prior entries before writing (so its root reflects only the created entries) and a `Remove` patch drops the slot's entries and collapses its root to the empty-map root ([#2290](https://github.com/0xMiden/rust-sdk/pull/2290)).

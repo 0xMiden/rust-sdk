@@ -81,12 +81,14 @@ const COUNTER_CONTRACT: &str = r#"
         const COUNTER_SLOT = word("miden::testing::counter_contract::counter")
 
         # => []
+        @account_procedure
         pub proc get_count
             push.COUNTER_SLOT[0..2] exec.active_account::get_item
             exec.sys::truncate_stack
         end
 
         # => []
+        @account_procedure
         pub proc increment_count
             push.COUNTER_SLOT[0..2] exec.active_account::get_item
             # => [count]
@@ -120,7 +122,8 @@ const INCR_NOTE_SCRIPT_CODE: &str = "
 // procedure already increments the nonce, so the script itself needs
 // only to satisfy the builder's requirement that _some_ user code runs.
 const NOOP_TX_SCRIPT: &str = "
-    begin
+    @transaction_script
+    pub proc main
         push.0 drop
     end
 ";
@@ -136,7 +139,7 @@ const NON_STANDARD_CLAIM_NOTE_SCRIPT: &str = r#"
     use miden::protocol::active_account
     use miden::protocol::account_id
     use miden::protocol::active_note
-    use miden::standards::wallets::basic->basic_wallet
+    use miden::standards::wallets::basic as basic_wallet
 
     @note_script
     pub proc main
@@ -162,7 +165,7 @@ const NON_STANDARD_CLAIM_NOTE_SCRIPT: &str = r#"
         exec.active_account::get_id
         # => [account_id_suffix, account_id_prefix, target_account_id_suffix, target_account_id_prefix]
 
-        exec.account_id::is_equal assert.err="consumer is not the note's target account"
+        exec.account_id::eq assert.err="consumer is not the note's target account"
         # => []
 
         # move all of the note's assets into the consuming account's vault

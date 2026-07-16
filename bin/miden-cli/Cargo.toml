@@ -45,13 +45,14 @@ tracing-subscriber = { default-features = true, workspace = true }
 miden-client = { features = ["std"], workspace = true }
 
 [dev-dependencies]
-anyhow          = { workspace = true }
-assert_cmd      = { workspace = true }
-miden-client    = { features = ["testing"], workspace = true }
-midenc-hir-type = { version = "0.9" }
-predicates      = { workspace = true }
-regex           = { workspace = true }
-serial_test     = { features = ["file_locks"], version = "3.0" }
+anyhow             = { workspace = true }
+assert_cmd         = { workspace = true }
+miden-client       = { features = ["testing"], workspace = true }
+miden-mast-package = { version = "0.25" }
+midenc-hir-type    = { version = "0.9" }
+predicates         = { workspace = true }
+regex              = { workspace = true }
+serial_test        = { features = ["file_locks"], version = "3.0" }
 
 [lints]
 workspace = true

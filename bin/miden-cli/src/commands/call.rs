@@ -280,7 +280,7 @@ fn generate_tx_script(
         )));
     }
 
-    let mut script = String::from("begin\n");
+    let mut script = String::from("@transaction_script\npub proc main\n");
 
     // Push args in reverse so the first arg ends up on top.
     for arg in args.iter().rev() {

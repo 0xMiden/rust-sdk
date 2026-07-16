@@ -2066,6 +2066,7 @@ dependencies = [
  "miden-client",
  "miden-client-sqlite-store",
  "miden-debug",
+ "miden-mast-package",
  "midenc-hir-type",
  "miette",
  "predicates",

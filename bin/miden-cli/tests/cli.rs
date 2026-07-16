@@ -1598,10 +1598,12 @@ fn build_call_test_masp(out_path: &Path) {
 
         const STORED_VALUE = word("miden::testing::call_test::stored_value")
 
+        @account_procedure
         pub proc add
             add
         end
 
+        @account_procedure
         pub proc set_value
             push.STORED_VALUE[0..2]
             exec.native_account::set_item
@@ -1609,6 +1611,7 @@ fn build_call_test_masp(out_path: &Path) {
             exec.sys::truncate_stack
         end
 
+        @account_procedure
         pub proc read_advice
             # Look up a fixed key in the advice map and return the sum of its two values.
             push.268435456.0.0.0
@@ -1644,14 +1647,24 @@ fn build_call_test_masp(out_path: &Path) {
     let metadata = AccountComponentMetadata::new("call-test").with_storage_schema(storage_schema);
 
     let exports = call_test_exports(&library);
+    let modules = library.module_infos().map(|module_info| {
+        miden_mast_package::PackageModule::new(
+            std::sync::Arc::from(module_info.path().to_path_buf().into_boxed_path()),
+            module_info
+                .submodules()
+                .iter()
+                .map(|submodule| miden_mast_package::PackageSubmodule::new(submodule.name.clone())),
+        )
+    });
     let section = Section::new(SectionId::ACCOUNT_COMPONENT_METADATA, metadata.to_bytes());
 
-    let mut package = Package::create(
+    let mut package = Package::create_with_modules(
         metadata.name().to_string().into(),
         metadata.version().clone(),
         TargetType::AccountComponent,
         library.mast_forest().clone(),
         exports,
+        modules,
         [],
     )
     .expect("failed to create call-test package");

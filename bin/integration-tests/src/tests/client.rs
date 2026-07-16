@@ -1500,6 +1500,7 @@ pub async fn test_unused_rpc_api(client_config: ClientConfig) -> Result<()> {
 
         const MAP_SLOT = word("miden::testing::client::map")
 
+        @account_procedure
         pub proc update_map
             push.1.2.3.4
             # => [VALUE]
@@ -1539,7 +1540,9 @@ pub async fn test_unused_rpc_api(client_config: ClientConfig) -> Result<()> {
             "
         use custom_library::set_map_item_library
 
-        begin
+        @transaction_script
+
+        pub proc main
              call.set_map_item_library::update_map
         end
         ",

@@ -67,6 +67,7 @@ pub async fn test_fpi_execute_program(client_config: ClientConfig) -> Result<()>
         AccountType::Public,
         "
             use miden::protocol::active_account
+            @account_procedure
             pub proc get_fpi_map_item
                 # inputs are passed as foreign_procedure_inputs:
                 # [slot_id_prefix, slot_id_suffix, KEY, pad(10)]
@@ -82,7 +83,8 @@ pub async fn test_fpi_execute_program(client_config: ClientConfig) -> Result<()>
         use miden::protocol::tx
         use miden::core::sys
         const MAP_STORAGE_SLOT = word(\"{MAP_SLOT_NAME}\")
-        begin
+        @transaction_script
+        pub proc main
             # pad the stack for the foreign procedure inputs
             padw padw push.0.0
 
@@ -159,6 +161,7 @@ pub async fn test_nested_fpi_calls(client_config: ClientConfig) -> Result<()> {
         AccountType::Public,
         "
             use miden::protocol::active_account
+            @account_procedure
             pub proc get_fpi_map_item
                 # inputs are passed as foreign_procedure_inputs:
                 # [slot_id_prefix, slot_id_suffix, KEY, pad(10)]
@@ -179,6 +182,7 @@ pub async fn test_nested_fpi_calls(client_config: ClientConfig) -> Result<()> {
             use miden::protocol::tx
             use miden::core::sys
             const STORAGE_MAP_SLOT = word(\"{MAP_SLOT_NAME}\")
+            @account_procedure
             pub proc get_fpi_map_item
                 # The outer foreign procedure receives foreign_procedure_inputs(16) on the stack.
                 # We need to set up the inner FPI call with map key and slot as inputs.
@@ -225,7 +229,8 @@ pub async fn test_nested_fpi_calls(client_config: ClientConfig) -> Result<()> {
         "
         use miden::protocol::tx
         use miden::core::sys
-        begin
+        @transaction_script
+        pub proc main
             # pad the stack for the outer foreign procedure inputs (it doesn't use inputs directly)
             padw padw padw push.0.0.0.0
 
@@ -298,6 +303,7 @@ pub async fn test_lazy_fpi_loading(client_config: ClientConfig) -> Result<()> {
         AccountType::Public,
         format!(
             r#"
+            @account_procedure
             pub proc get_constant
                 push.{constant_value}
                 swapw dropw
@@ -312,7 +318,8 @@ pub async fn test_lazy_fpi_loading(client_config: ClientConfig) -> Result<()> {
     let tx_script = format!(
         "
         use miden::protocol::tx
-        begin
+        @transaction_script
+        pub proc main
             push.{proc_root}
             push.{account_id_prefix} push.{account_id_suffix}
             exec.tx::execute_foreign_procedure
@@ -373,6 +380,7 @@ pub async fn test_lazy_fpi_loading_with_storage_map(client_config: ClientConfig)
         format!(
             r#"
             const STORAGE_MAP_SLOT = word("{MAP_SLOT_NAME}")
+            @account_procedure
             pub proc get_fpi_map_item
                 push.{map_key}
                 push.STORAGE_MAP_SLOT[0..2]
@@ -390,7 +398,8 @@ pub async fn test_lazy_fpi_loading_with_storage_map(client_config: ClientConfig)
     let tx_script = format!(
         "
         use miden::protocol::tx
-        begin
+        @transaction_script
+        pub proc main
             push.{proc_root}
             push.{account_id_prefix} push.{account_id_suffix}
             exec.tx::execute_foreign_procedure
@@ -449,6 +458,7 @@ async fn standard_fpi(
         account_type,
         "
             use miden::protocol::active_account
+            @account_procedure
             pub proc get_fpi_map_item
                 # inputs are passed as foreign_procedure_inputs:
                 # [slot_id_prefix, slot_id_suffix, KEY, pad(10)]
@@ -468,7 +478,8 @@ async fn standard_fpi(
         use miden::protocol::tx
         use miden::core::sys
         const STORAGE_MAP_SLOT = word(\"{MAP_SLOT_NAME}\")
-        begin
+        @transaction_script
+        pub proc main
             # pad the stack for the foreign procedure inputs
             padw padw push.0.0
 

@@ -953,7 +953,7 @@ async fn prune_removes_orphaned_account_code() -> anyhow::Result<()> {
     // Simulate the nonce-2 state having a different code commitment by updating
     // the latest header's code_commitment directly. This makes the nonce-1
     // historical header the only reference to the original code.
-    let original_code_commitment: String = store
+    let original_code_commitment: Vec<u8> = store
         .interact_with_connection(move |conn| {
             conn.query_row(
                 "SELECT code_commitment FROM historical_account_headers WHERE id = ?",
@@ -968,14 +968,15 @@ async fn prune_removes_orphaned_account_code() -> anyhow::Result<()> {
     // orphaned when we prune the historical header.
     store
         .interact_with_connection(move |conn| {
+            let new_code_commitment = vec![1u8; 32];
             conn.execute(
                 "INSERT INTO account_code (commitment, code) VALUES (?, ?)",
-                params!["new_code_commitment", vec![0u8; 16]],
+                params![new_code_commitment, vec![0u8; 16]],
             )
             .into_store_error()?;
             conn.execute(
                 "UPDATE latest_account_headers SET code_commitment = ? WHERE id = ?",
-                params!["new_code_commitment", account_id.to_bytes()],
+                params![new_code_commitment, account_id.to_bytes()],
             )
             .into_store_error()?;
             Ok(())
@@ -2367,12 +2368,12 @@ async fn apply_storage_patch_directly(
     Ok(())
 }
 
-/// Reads the latest map entries of a slot as a `key_hex -> value_hex` map.
+/// Reads the latest map entries of a slot as a `key_bytes -> value_bytes` map.
 async fn read_latest_map_entries(
     store: &SqliteStore,
     account_id: AccountId,
     slot_name: &StorageSlotName,
-) -> anyhow::Result<BTreeMap<String, String>> {
+) -> anyhow::Result<BTreeMap<Vec<u8>, Vec<u8>>> {
     let account_id_bytes = account_id.to_bytes();
     let slot = slot_name.to_string();
     let entries = store
@@ -2385,10 +2386,10 @@ async fn read_latest_map_entries(
                 .into_store_error()?;
             let rows = stmt
                 .query_map(params![account_id_bytes, slot], |r| {
-                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                    Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?))
                 })
                 .into_store_error()?;
-            let map: BTreeMap<String, String> =
+            let map: BTreeMap<Vec<u8>, Vec<u8>> =
                 rows.collect::<Result<_, _>>().into_store_error()?;
             Ok(map)
         })
@@ -2401,7 +2402,7 @@ async fn read_slot_value(
     store: &SqliteStore,
     account_id: AccountId,
     slot_name: &StorageSlotName,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<Vec<u8>> {
     let account_id_bytes = account_id.to_bytes();
     let slot = slot_name.to_string();
     let value = store
@@ -2410,7 +2411,7 @@ async fn read_slot_value(
                 "SELECT slot_value FROM latest_account_storage \
                  WHERE account_id = ? AND slot_name = ?",
                 params![account_id_bytes, slot],
-                |r| r.get::<_, String>(0),
+                |r| r.get::<_, Vec<u8>>(0),
             )
             .into_store_error()
         })
@@ -2451,13 +2452,13 @@ async fn create_map_patch_replaces_existing_entries() -> anyhow::Result<()> {
     let mut expected = StorageMap::new();
     expected.insert(key1, val1)?;
     expected.insert(key6, val6)?;
-    let expected_entries: BTreeMap<String, String> =
-        expected.entries().map(|(k, v)| (k.to_hex(), v.to_hex())).collect();
+    let expected_entries: BTreeMap<Vec<u8>, Vec<u8>> =
+        expected.entries().map(|(k, v)| (k.to_bytes(), v.to_bytes())).collect();
     assert_eq!(latest, expected_entries);
 
     // The stored root must match a map built from only the created entries.
-    let root_hex = read_slot_value(&store, account_id, &map_slot_name).await?;
-    assert_eq!(root_hex, expected.root().to_hex());
+    let root_bytes = read_slot_value(&store, account_id, &map_slot_name).await?;
+    assert_eq!(root_bytes, expected.root().to_bytes());
 
     // Every affected key (union of old {1..5} and new {1,6}) is archived exactly once.
     let m = get_storage_metrics(&store).await;
@@ -2488,8 +2489,8 @@ async fn remove_map_patch_clears_slot() -> anyhow::Result<()> {
     assert!(latest.is_empty(), "removed map slot must have no latest entries");
 
     // The root collapses to the empty-map root.
-    let root_hex = read_slot_value(&store, account_id, &map_slot_name).await?;
-    assert_eq!(root_hex, StorageMap::new().root().to_hex());
+    let root_bytes = read_slot_value(&store, account_id, &map_slot_name).await?;
+    assert_eq!(root_bytes, StorageMap::new().root().to_bytes());
 
     // The 5 prior entries are archived.
     let m = get_storage_metrics(&store).await;

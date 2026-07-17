@@ -186,10 +186,10 @@ pub async fn print_executed_transaction<AUTH>(
             }
         }
 
-        for vault_key in patch.vault().removed_asset_ids() {
+        for vault_id in patch.vault().removed_asset_ids() {
             table.add_row(vec![
                 "Removed Asset",
-                &vault_key.faucet_id().prefix().to_hex(),
+                &vault_id.faucet_id().prefix().to_hex(),
                 "removed",
             ]);
         }

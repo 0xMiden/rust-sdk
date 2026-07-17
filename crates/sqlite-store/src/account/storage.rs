@@ -16,7 +16,7 @@ use miden_client::account::{
     StorageSlotType,
 };
 use miden_client::store::{AccountSmtForest, StoreError};
-use miden_client::{EMPTY_WORD, Serializable, Word};
+use miden_client::{Deserializable, EMPTY_WORD, Serializable, Word};
 use rusqlite::types::Value;
 use rusqlite::{OptionalExtension, Transaction, params};
 
@@ -53,7 +53,7 @@ impl SqliteStore {
             .into_store_error()?
             .query_map(params![account_id.to_bytes(), Rc::new(map_slot_names)], |row| {
                 let name: String = row.get(0)?;
-                let value: String = row.get(1)?;
+                let value: Vec<u8> = row.get(1)?;
                 Ok((name, value))
             })
             .into_store_error()?
@@ -61,7 +61,7 @@ impl SqliteStore {
                 let (name, value) = result.into_store_error()?;
                 let slot_name = StorageSlotName::new(name)
                     .map_err(|err| StoreError::ParsingError(err.to_string()))?;
-                Ok((slot_name, Word::try_from(value)?))
+                Ok((slot_name, Word::read_from_bytes(&value)?))
             })
             .collect()
     }
@@ -94,11 +94,16 @@ impl SqliteStore {
 
         for slot in account_storage {
             let slot_name_str = slot.name().to_string();
-            let slot_value_hex = slot.value().to_hex();
+            let slot_value_bytes = slot.value().to_bytes();
             let slot_type_val = slot.slot_type() as u8;
 
             latest_slot_stmt
-                .execute(params![&account_id_bytes, &slot_name_str, &slot_value_hex, slot_type_val])
+                .execute(params![
+                    &account_id_bytes,
+                    &slot_name_str,
+                    &slot_value_bytes,
+                    slot_type_val
+                ])
                 .into_store_error()?;
 
             if let StorageSlotContent::Map(map) = slot.content() {
@@ -107,8 +112,8 @@ impl SqliteStore {
                         .execute(params![
                             &account_id_bytes,
                             &slot_name_str,
-                            key.to_hex(),
-                            value.to_hex(),
+                            key.to_bytes(),
+                            value.to_bytes(),
                         ])
                         .into_store_error()?;
                 }
@@ -175,11 +180,11 @@ impl SqliteStore {
 
         for (slot_name, (value, slot_type)) in updated_slots {
             let slot_name_str = slot_name.to_string();
-            let slot_value_hex = value.to_hex();
+            let slot_value_bytes = value.to_bytes();
             let slot_type_val = *slot_type as u8;
 
             // Read old slot value from latest (NULL if slot is new)
-            let old_slot_value: Option<String> = tx
+            let old_slot_value: Option<Vec<u8>> = tx
                 .query_row(READ_OLD_SLOT, params![&account_id_bytes, &slot_name_str], |row| {
                     row.get(0)
                 })
@@ -200,7 +205,12 @@ impl SqliteStore {
 
             // Update latest slot
             latest_slot_stmt
-                .execute(params![&account_id_bytes, &slot_name_str, &slot_value_hex, slot_type_val])
+                .execute(params![
+                    &account_id_bytes,
+                    &slot_name_str,
+                    &slot_value_bytes,
+                    slot_type_val
+                ])
                 .into_store_error()?;
 
             if let Some(map_patch) = patch_maps.get(slot_name) {
@@ -293,37 +303,37 @@ impl SqliteStore {
         const DELETE_ALL_MAP_ENTRIES: &str =
             "DELETE FROM latest_storage_map_entries WHERE account_id = ? AND slot_name = ?";
 
-        let existing: BTreeMap<String, String> = {
+        let existing: BTreeMap<Vec<u8>, Vec<u8>> = {
             let mut read_stmt = tx.prepare_cached(READ_ALL_MAP_ENTRIES).into_store_error()?;
             let rows = read_stmt
                 .query_map(params![account_id_bytes, slot_name_str], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
                 })
                 .into_store_error()?;
             rows.collect::<Result<_, _>>().into_store_error()?
         };
 
-        let new_map: BTreeMap<String, String> = new_entries
+        let new_map: BTreeMap<Vec<u8>, Vec<u8>> = new_entries
             .iter()
             .filter(|(_, value)| *value != EMPTY_WORD)
-            .map(|(key, value)| (key.to_hex(), value.to_hex()))
+            .map(|(key, value)| (key.to_bytes(), value.to_bytes()))
             .collect();
 
         // Archive each affected key once, recording the value it held before this nonce.
-        let mut affected: BTreeSet<&String> = existing.keys().collect();
+        let mut affected: BTreeSet<&Vec<u8>> = existing.keys().collect();
         affected.extend(new_map.keys());
-        for key_hex in affected {
-            let old_value = existing.get(key_hex).cloned();
+        for key_bytes in affected {
+            let old_value = existing.get(key_bytes).cloned();
             hist_map_stmt
-                .execute(params![account_id_bytes, nonce_val, slot_name_str, key_hex, old_value])
+                .execute(params![account_id_bytes, nonce_val, slot_name_str, key_bytes, old_value])
                 .into_store_error()?;
         }
 
         tx.execute(DELETE_ALL_MAP_ENTRIES, params![account_id_bytes, slot_name_str])
             .into_store_error()?;
-        for (key_hex, value_hex) in &new_map {
+        for (key_bytes, value_bytes) in &new_map {
             latest_map_stmt
-                .execute(params![account_id_bytes, slot_name_str, key_hex, value_hex])
+                .execute(params![account_id_bytes, slot_name_str, key_bytes, value_bytes])
                 .into_store_error()?;
         }
 
@@ -344,13 +354,13 @@ impl SqliteStore {
         const DELETE_LATEST_MAP_ENTRY: &str = "DELETE FROM latest_storage_map_entries WHERE account_id = ? AND slot_name = ? AND key = ?";
 
         for (key, value) in changed_entries {
-            let key_hex = key.to_hex();
+            let key_bytes = key.to_bytes();
 
             // Read old map entry value from latest (NULL if entry is new)
-            let old_entry_value: Option<String> = tx
+            let old_entry_value: Option<Vec<u8>> = tx
                 .query_row(
                     READ_OLD_MAP_ENTRY,
-                    params![account_id_bytes, slot_name_str, &key_hex],
+                    params![account_id_bytes, slot_name_str, &key_bytes],
                     |row| row.get(0),
                 )
                 .optional()
@@ -363,7 +373,7 @@ impl SqliteStore {
                     account_id_bytes,
                     nonce_val,
                     slot_name_str,
-                    &key_hex,
+                    &key_bytes,
                     old_entry_value,
                 ])
                 .into_store_error()?;
@@ -372,12 +382,14 @@ impl SqliteStore {
             if *value == EMPTY_WORD {
                 tx.execute(
                     DELETE_LATEST_MAP_ENTRY,
-                    params![account_id_bytes, slot_name_str, &key_hex],
+                    params![account_id_bytes, slot_name_str, &key_bytes],
                 )
                 .into_store_error()?;
             } else {
                 latest_map_stmt
-                    .execute(params![account_id_bytes, slot_name_str, &key_hex, value.to_hex(),])
+                    .execute(
+                        params![account_id_bytes, slot_name_str, &key_bytes, value.to_bytes(),],
+                    )
                     .into_store_error()?;
             }
         }

@@ -50,19 +50,19 @@ impl AccountSmtForest {
     pub fn get_asset_and_witness(
         &self,
         vault_root: Word,
-        vault_key: AssetId,
+        vault_id: AssetId,
     ) -> Result<(Asset, AssetWitness), StoreError> {
-        let hashed_key: Word = vault_key.hash().into();
+        let hashed_key: Word = vault_id.hash().into();
         let proof = self.forest.open(vault_root, hashed_key)?;
         let asset_word = proof
             .get(&hashed_key)
-            .ok_or(StoreError::VaultKeyNotTracked(vault_key, hashed_key))?;
+            .ok_or(StoreError::VaultKeyNotTracked(vault_id, hashed_key))?;
         if asset_word == EMPTY_WORD {
-            return Err(StoreError::VaultKeyNotTracked(vault_key, hashed_key));
+            return Err(StoreError::VaultKeyNotTracked(vault_id, hashed_key));
         }
 
-        let asset = Asset::from_id_and_value(vault_key, asset_word)?;
-        let witness = AssetWitness::new(proof, [vault_key])?;
+        let asset = Asset::from_id_and_value(vault_id, asset_word)?;
+        let witness = AssetWitness::new(proof, [vault_id])?;
         Ok((asset, witness))
     }
 
@@ -155,7 +155,7 @@ impl AccountSmtForest {
         &mut self,
         root: Word,
         new_assets: impl Iterator<Item = Asset>,
-        removed_vault_keys: impl Iterator<Item = AssetId>,
+        removed_vault_ids: impl Iterator<Item = AssetId>,
     ) -> Result<Word, StoreError> {
         let entries: Vec<(Word, Word)> = new_assets
             .map(|asset| {
@@ -163,7 +163,7 @@ impl AccountSmtForest {
                 let value = asset.to_value_word();
                 (key, value)
             })
-            .chain(removed_vault_keys.map(|vault_key| (vault_key.hash().into(), EMPTY_WORD)))
+            .chain(removed_vault_ids.map(|vault_id| (vault_id.hash().into(), EMPTY_WORD)))
             .collect();
 
         if entries.is_empty() {

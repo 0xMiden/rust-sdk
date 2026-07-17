@@ -592,21 +592,21 @@ pub trait Store: Send + Sync {
     /// Retrieves the asset vault for a specific account.
     async fn get_account_vault(&self, account_id: AccountId) -> Result<AssetVault, StoreError>;
 
-    /// Retrieves a specific asset (by vault key) from the account's vault along with its Merkle
+    /// Retrieves a specific asset (by vault id) from the account's vault along with its Merkle
     /// witness.
     ///
     /// The default implementation of this method uses [`Store::get_account_vault`].
     async fn get_account_asset(
         &self,
         account_id: AccountId,
-        vault_key: AssetId,
+        vault_id: AssetId,
     ) -> Result<Option<(Asset, AssetWitness)>, StoreError> {
         let vault = self.get_account_vault(account_id).await?;
-        let Some(asset) = vault.assets().find(|a| a.id() == vault_key) else {
+        let Some(asset) = vault.assets().find(|a| a.id() == vault_id) else {
             return Ok(None);
         };
 
-        let witness = vault.open(vault_key);
+        let witness = vault.open(vault_id);
 
         Ok(Some((asset, witness)))
     }

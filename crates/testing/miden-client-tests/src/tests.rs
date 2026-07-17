@@ -3857,10 +3857,10 @@ async fn storage_and_vault_proofs() {
         assert_eq!(account_vault_root, vault.root());
 
         // Check that specific asset proof matches the one in the vault
-        let vault_key = AssetId::new_fungible(faucet_account_id);
+        let vault_id = AssetId::new_fungible(faucet_account_id);
         let (asset, witness) = client
             .test_store()
-            .get_account_asset(account_id, vault_key)
+            .get_account_asset(account_id, vault_id)
             .await
             .unwrap()
             .unwrap();
@@ -4925,10 +4925,10 @@ async fn storage_and_vault_proofs_ecdsa() {
         assert_eq!(account_vault_root, vault.root());
 
         // Check that specific asset proof matches the one in the vault
-        let vault_key = AssetId::new_fungible(faucet_account_id);
+        let vault_id = AssetId::new_fungible(faucet_account_id);
         let (asset, witness) = client
             .test_store()
-            .get_account_asset(account_id, vault_key)
+            .get_account_asset(account_id, vault_id)
             .await
             .unwrap()
             .unwrap();

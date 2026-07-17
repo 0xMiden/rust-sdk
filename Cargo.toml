@@ -40,16 +40,16 @@ miden-client              = { default-features = false, path = "crates/rust-clie
 miden-client-sqlite-store = { default-features = false, path = "crates/sqlite-store", version = "0.16.0-alpha.1" }
 
 # Miden protocol dependencies
-miden-agglayer  = { branch = "release/v0.16.0-alpha", default-features = false, git = "https://github.com/0xMiden/protocol.git" } # TODO: switch back to crates.io when released
-miden-protocol  = { branch = "release/v0.16.0-alpha", default-features = false, git = "https://github.com/0xMiden/protocol.git" } # TODO: switch back to crates.io when released
-miden-standards = { branch = "release/v0.16.0-alpha", default-features = false, git = "https://github.com/0xMiden/protocol.git" } # TODO: switch back to crates.io when released
-miden-testing   = { branch = "release/v0.16.0-alpha", default-features = false, git = "https://github.com/0xMiden/protocol.git" } # TODO: switch back to crates.io when released
-miden-tx        = { branch = "release/v0.16.0-alpha", default-features = false, git = "https://github.com/0xMiden/protocol.git" } # TODO: switch back to crates.io when released
-miden-tx-batch  = { branch = "release/v0.16.0-alpha", default-features = false, git = "https://github.com/0xMiden/protocol.git" } # TODO: switch back to crates.io when released
+miden-agglayer  = { default-features = false, version = "0.16.0-alpha.4" }
+miden-protocol  = { default-features = false, version = "0.16.0-alpha.4" }
+miden-standards = { default-features = false, version = "0.16.0-alpha.4" }
+miden-testing   = { default-features = false, version = "0.16.0-alpha.2" }
+miden-tx        = { default-features = false, version = "0.16.0-alpha.4" }
+miden-tx-batch  = { default-features = false, version = "0.16.0-alpha.4" }
 
 # Miden node dependencies
 miden-node-proto-build           = { default-features = false, version = "0.16.0-alpha.2" }
-miden-note-transport-proto-build = { default-features = false, version = "0.4.1" }
+miden-note-transport-proto-build = { default-features = false, version = "0.5.0-alpha.1" }
 
 # Miden debug dependency
 miden-debug     = { default-features = false, features = ["dap", "std"], version = "0.9" }

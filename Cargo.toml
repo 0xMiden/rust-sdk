@@ -40,12 +40,12 @@ miden-client              = { default-features = false, path = "crates/rust-clie
 miden-client-sqlite-store = { default-features = false, path = "crates/sqlite-store", version = "0.16.0-alpha.1" }
 
 # Miden protocol dependencies
-miden-agglayer  = { default-features = false, version = "0.16.0-alpha.3" }
-miden-protocol  = { default-features = false, version = "0.16.0-alpha.3" }
-miden-standards = { default-features = false, version = "0.16.0-alpha.3" }
-miden-testing   = { default-features = false, version = "0.16.0-alpha.2" }
-miden-tx        = { default-features = false, version = "0.16.0-alpha.3" }
-miden-tx-batch  = { default-features = false, version = "0.16.0-alpha.3" }
+miden-agglayer  = { branch = "release/v0.16.0-alpha", default-features = false, git = "https://github.com/0xMiden/protocol.git" } # TODO: switch back to crates.io when released
+miden-protocol  = { branch = "release/v0.16.0-alpha", default-features = false, git = "https://github.com/0xMiden/protocol.git" } # TODO: switch back to crates.io when released
+miden-standards = { branch = "release/v0.16.0-alpha", default-features = false, git = "https://github.com/0xMiden/protocol.git" } # TODO: switch back to crates.io when released
+miden-testing   = { branch = "release/v0.16.0-alpha", default-features = false, git = "https://github.com/0xMiden/protocol.git" } # TODO: switch back to crates.io when released
+miden-tx        = { branch = "release/v0.16.0-alpha", default-features = false, git = "https://github.com/0xMiden/protocol.git" } # TODO: switch back to crates.io when released
+miden-tx-batch  = { branch = "release/v0.16.0-alpha", default-features = false, git = "https://github.com/0xMiden/protocol.git" } # TODO: switch back to crates.io when released
 
 # Miden node dependencies
 miden-node-proto-build           = { default-features = false, version = "0.16.0-alpha.2" }

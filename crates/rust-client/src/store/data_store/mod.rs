@@ -286,8 +286,8 @@ impl DataStore for ClientDataStore {
         asset_ids: BTreeSet<AssetId>,
     ) -> Result<Vec<AssetWitness>, DataStoreError> {
         let mut asset_witnesses = vec![];
-        for vault_id in asset_ids {
-            match self.store.get_account_asset(account_id, vault_id).await {
+        for asset_id in asset_ids {
+            match self.store.get_account_asset(account_id, asset_id).await {
                 Ok(Some((_, asset_witness))) => asset_witnesses.push(asset_witness),
                 Ok(None) | Err(StoreError::MerkleStoreError(MerkleError::RootNotInStore(_))) => {
                     let vault = self.store.get_account_vault(account_id).await?;
@@ -296,7 +296,7 @@ impl DataStore for ClientDataStore {
                         return Err(DataStoreError::other("Vault root mismatch"));
                     }
 
-                    asset_witnesses.push(vault.open(vault_id));
+                    asset_witnesses.push(vault.open(asset_id));
                 },
                 Err(err) => {
                     return Err(DataStoreError::other_with_source(

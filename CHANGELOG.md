@@ -14,7 +14,7 @@
 
 ### Changes
 
-* [rust] Re-exported `ExpirationTransactionScript` from `miden_client::transaction`. Network accounts must allowlist its script root (via `AuthNetworkAccount::with_allowed_tx_scripts`) for the node's network transaction builder to execute transactions against them ([#2290](https://github.com/0xMiden/rust-sdk/pull/2290)).
+* [rust] Re-exported `ExpirationTransactionScript` from `miden_client::transaction`. ([#2290](https://github.com/0xMiden/rust-sdk/pull/2290)).
 
 ### Fixes
 

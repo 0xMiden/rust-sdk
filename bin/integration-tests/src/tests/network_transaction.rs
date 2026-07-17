@@ -11,6 +11,7 @@ use miden_client::account::component::{
     BurnPolicy,
     FungibleFaucet,
     MintPolicy,
+    NetworkAccount,
     PausableManager,
     TokenName,
     TokenPolicyManager,
@@ -257,9 +258,6 @@ async fn deploy_network_fungible_faucet(
     // the node uses to route MINT notes to it and enforces that only allowlisted notes are consumed
     // with no tx script. The scriptless deploy transaction below is authorized by this same auth.
     let allowed_roots = [MintNote::script_root()].into_iter().collect::<BTreeSet<_>>();
-    let network_auth = AuthNetworkAccount::with_allowed_notes(allowed_roots)
-        .map_err(|err| anyhow!("failed to build faucet network-account auth: {err}"))?
-        .with_allowed_tx_scripts(BTreeSet::from([ExpirationTransactionScript::script_root()]));
 
     let mut init_seed = [0u8; 32];
     client.rng().fill_bytes(&mut init_seed);
@@ -276,9 +274,7 @@ async fn deploy_network_fungible_faucet(
         .active_mint_policy(MintPolicy::owner_only())
         .active_burn_policy(BurnPolicy::allow_all())
         .build();
-    let faucet = AccountBuilder::new(init_seed)
-        .account_type(AccountType::Public)
-        .with_auth_component(network_auth)
+    let faucet = NetworkAccount::builder(init_seed, allowed_roots)?
         .with_component(faucet_component)
         .with_components(AccessControl::Ownable2Step { owner: owner_id })
         .with_components(policy_manager)

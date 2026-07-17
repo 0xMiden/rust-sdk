@@ -160,6 +160,26 @@ where
     /// The note screener runs a series of checks to determine whether the note can be executed as
     /// part of a transaction for a specific account. If the specific account ID can consume it (ie,
     /// if it's compatible with the account), it will be returned as part of the result list.
+    ///
+    /// # Performance
+    ///
+    /// This call screens every committed note tracked by the client against every account tracked
+    /// by the client, on each invocation. Verdicts are not cached across calls, so the whole set is
+    /// re-screened every time. For non-standard notes (those whose script root is not recognized as
+    /// a standard note), the screener runs one trial transaction in the VM per `(account, note)`
+    /// pair, so the cost grows with the number of tracked accounts multiplied by the number of
+    /// committed notes. Accounts that legitimately accumulate committed-unconsumed notes can make
+    /// this call very expensive, so it is not suitable for hot paths or polling loops.
+    ///
+    /// Cheaper alternatives when the full consumability verdict is not needed:
+    ///
+    /// - To answer store-level questions (for example, finding notes by script root), query and
+    ///   filter the notes directly with [`Self::get_input_notes`] and [`NoteFilter::Committed`]
+    ///   instead of screening them.
+    /// - To poll whether a specific tracked note has committed, fetch it with
+    ///   [`Self::get_input_note`] and check [`InputNoteRecord::is_committed`].
+    /// - To screen a narrower candidate set or target a single account, use the screener directly
+    ///   via [`Self::note_screener`], which can check a small set of notes against one account.
     pub async fn get_consumable_notes(
         &self,
         account_id: Option<AccountId>,

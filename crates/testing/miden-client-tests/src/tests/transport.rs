@@ -1,12 +1,11 @@
 use std::env::temp_dir;
 use std::sync::Arc;
 
-use miden_client::DebugMode;
 use miden_client::account::{Account, AccountType};
 use miden_client::address::{Address, AddressInterface, RoutingParameters};
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;
-use miden_client::note::{Note, NoteAttachments, NoteDetails, NoteTag, NoteType};
+use miden_client::note::{Note, NoteDetails, NoteTag, NoteType};
 use miden_client::note_transport::NoteTransportClient;
 use miden_client::store::NoteFilter;
 use miden_client::testing::common::create_test_store_path;
@@ -19,6 +18,13 @@ use miden_client::testing::note_transport::{
 use miden_client::utils::RwLock;
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
 use miden_protocol::Felt;
+use miden_protocol::account::{
+    AccountId,
+    AccountIdVersion,
+    AccountType as ProtocolAccountType,
+    AssetCallbackFlag,
+};
+use miden_protocol::asset::{Asset, FungibleAsset};
 use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::rand::RandomCoin;
 use miden_protocol::note::NoteType as ProtocolNoteType;
@@ -27,7 +33,7 @@ use miden_protocol::utils::serde::Serializable;
 use miden_standards::note::P2idNote;
 use miden_standards::testing::note::NoteBuilder;
 use miden_testing::{MockChainBuilder, TxContextInput};
-use rand::Rng;
+use rand::RngExt;
 
 use crate::tests::{create_test_client_builder, insert_new_wallet};
 
@@ -42,15 +48,15 @@ async fn transport_basic() {
     let (mut observer, _observer_account) = create_test_user_transport(mock_node.clone()).await;
 
     // Create note
-    let note = P2idNote::create(
-        sender_account.id(),
-        recipient_account.id(),
-        vec![],
-        NoteType::Private,
-        NoteAttachments::empty(),
-        sender.rng(),
-    )
-    .unwrap();
+    let note: Note = P2idNote::builder()
+        .sender(sender_account.id())
+        .target(recipient_account.id())
+        .asset(dummy_asset())
+        .note_type(NoteType::Private)
+        .generate_serial_number(sender.rng())
+        .build()
+        .unwrap()
+        .into();
 
     // Sync-state / fetch notes
     // No notes before sending
@@ -90,25 +96,25 @@ async fn transport_cursor_pagination() {
     let recipient_address = Address::new(recipient_account.id())
         .with_routing_parameters(RoutingParameters::new(AddressInterface::BasicWallet));
 
-    let note_a = P2idNote::create(
-        sender_account.id(),
-        recipient_account.id(),
-        vec![],
-        NoteType::Private,
-        NoteAttachments::empty(),
-        sender.rng(),
-    )
-    .unwrap();
+    let note_a: Note = P2idNote::builder()
+        .sender(sender_account.id())
+        .target(recipient_account.id())
+        .asset(dummy_asset())
+        .note_type(NoteType::Private)
+        .generate_serial_number(sender.rng())
+        .build()
+        .unwrap()
+        .into();
 
-    let note_b = P2idNote::create(
-        sender_account.id(),
-        recipient_account.id(),
-        vec![],
-        NoteType::Private,
-        NoteAttachments::empty(),
-        sender.rng(),
-    )
-    .unwrap();
+    let note_b: Note = P2idNote::builder()
+        .sender(sender_account.id())
+        .target(recipient_account.id())
+        .asset(dummy_asset())
+        .note_type(NoteType::Private)
+        .generate_serial_number(sender.rng())
+        .build()
+        .unwrap()
+        .into();
 
     // Send note A, sync → recipient receives 1 note
     sender
@@ -141,15 +147,15 @@ async fn transport_duplicate_note_handling() {
     let recipient_address = Address::new(recipient_account.id())
         .with_routing_parameters(RoutingParameters::new(AddressInterface::BasicWallet));
 
-    let note = P2idNote::create(
-        sender_account.id(),
-        recipient_account.id(),
-        vec![],
-        NoteType::Private,
-        NoteAttachments::empty(),
-        sender.rng(),
-    )
-    .unwrap();
+    let note: Note = P2idNote::builder()
+        .sender(sender_account.id())
+        .target(recipient_account.id())
+        .asset(dummy_asset())
+        .note_type(NoteType::Private)
+        .generate_serial_number(sender.rng())
+        .build()
+        .unwrap()
+        .into();
 
     sender
         .send_private_note_with_block_hint(note, &recipient_address, BlockNumber::from(0))
@@ -189,15 +195,15 @@ async fn fetch_all_private_notes_drains_across_batches() {
     // Send TOTAL_NOTES > BATCH_CAP private notes so a single-batch fetch
     // cannot drain the backlog.
     for _ in 0..TOTAL_NOTES {
-        let note = P2idNote::create(
-            sender_account.id(),
-            recipient_account.id(),
-            vec![],
-            NoteType::Private,
-            NoteAttachments::empty(),
-            sender.rng(),
-        )
-        .unwrap();
+        let note: Note = P2idNote::builder()
+            .sender(sender_account.id())
+            .target(recipient_account.id())
+            .asset(dummy_asset())
+            .note_type(NoteType::Private)
+            .generate_serial_number(sender.rng())
+            .build()
+            .unwrap()
+            .into();
         sender
             .send_private_note_with_block_hint(note, &recipient_address, BlockNumber::from(0))
             .await
@@ -229,15 +235,15 @@ async fn transport_fetch_no_matching_tags() {
         .with_routing_parameters(RoutingParameters::new(AddressInterface::BasicWallet));
     let (mut observer, _observer_account) = create_test_user_transport(mock_node.clone()).await;
 
-    let note = P2idNote::create(
-        sender_account.id(),
-        recipient_account.id(),
-        vec![],
-        NoteType::Private,
-        NoteAttachments::empty(),
-        sender.rng(),
-    )
-    .unwrap();
+    let note: Note = P2idNote::builder()
+        .sender(sender_account.id())
+        .target(recipient_account.id())
+        .asset(dummy_asset())
+        .note_type(NoteType::Private)
+        .generate_serial_number(sender.rng())
+        .build()
+        .unwrap()
+        .into();
 
     sender
         .send_private_note_with_block_hint(note, &recipient_address, BlockNumber::from(0))
@@ -319,7 +325,6 @@ async fn fetch_private_notes_finds_note_committed_at_sync_height() {
         .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore))
-        .in_debug_mode(DebugMode::Enabled)
         .tx_discard_delta(None)
         .note_transport(Arc::new(transport_client));
 
@@ -381,15 +386,15 @@ async fn private_note_relay_recovers_after_transient_ntl_failure() {
     let recipient_address = Address::new(recipient_account.id())
         .with_routing_parameters(RoutingParameters::new(AddressInterface::BasicWallet));
 
-    let note = P2idNote::create(
-        sender_account.id(),
-        recipient_account.id(),
-        vec![],
-        NoteType::Private,
-        NoteAttachments::empty(),
-        sender.rng(),
-    )
-    .unwrap();
+    let note: Note = P2idNote::builder()
+        .sender(sender_account.id())
+        .target(recipient_account.id())
+        .asset(dummy_asset())
+        .note_type(NoteType::Private)
+        .generate_serial_number(sender.rng())
+        .build()
+        .unwrap()
+        .into();
     // Transport-delivered notes carry no metadata (hence no `NoteId`); match by
     // details commitment.
     let note_commitment = note.details_commitment();
@@ -443,15 +448,15 @@ async fn flush_relay_outbox_retries_failed_relay_without_full_sync() {
     let recipient_address = Address::new(recipient_account.id())
         .with_routing_parameters(RoutingParameters::new(AddressInterface::BasicWallet));
 
-    let note = P2idNote::create(
-        sender_account.id(),
-        recipient_account.id(),
-        vec![],
-        NoteType::Private,
-        NoteAttachments::empty(),
-        sender.rng(),
-    )
-    .unwrap();
+    let note: Note = P2idNote::builder()
+        .sender(sender_account.id())
+        .target(recipient_account.id())
+        .asset(dummy_asset())
+        .note_type(NoteType::Private)
+        .generate_serial_number(sender.rng())
+        .build()
+        .unwrap()
+        .into();
     // Transport-delivered notes carry no metadata (hence no `NoteId`); match by
     // details commitment.
     let note_commitment = note.details_commitment();
@@ -513,15 +518,15 @@ async fn persistent_relay_failure_does_not_block_sync_state() {
     let recipient_address = Address::new(recipient_account.id())
         .with_routing_parameters(RoutingParameters::new(AddressInterface::BasicWallet));
 
-    let note = P2idNote::create(
-        sender_account.id(),
-        recipient_account.id(),
-        vec![],
-        NoteType::Private,
-        NoteAttachments::empty(),
-        sender.rng(),
-    )
-    .unwrap();
+    let note: Note = P2idNote::builder()
+        .sender(sender_account.id())
+        .target(recipient_account.id())
+        .asset(dummy_asset())
+        .note_type(NoteType::Private)
+        .generate_serial_number(sender.rng())
+        .build()
+        .unwrap()
+        .into();
 
     // The relay fails and the payload is persisted to the outbox.
     let _ = sender
@@ -553,15 +558,15 @@ async fn send_private_note_with_block_hint_delivers_note() {
     let recipient_address = Address::new(recipient_account.id())
         .with_routing_parameters(RoutingParameters::new(AddressInterface::BasicWallet));
 
-    let note = P2idNote::create(
-        sender_account.id(),
-        recipient_account.id(),
-        vec![],
-        NoteType::Private,
-        NoteAttachments::empty(),
-        sender.rng(),
-    )
-    .unwrap();
+    let note: Note = P2idNote::builder()
+        .sender(sender_account.id())
+        .target(recipient_account.id())
+        .asset(dummy_asset())
+        .note_type(NoteType::Private)
+        .generate_serial_number(sender.rng())
+        .build()
+        .unwrap()
+        .into();
 
     sender
         .send_private_note_with_block_hint(note, &recipient_address, BlockNumber::from(0))
@@ -639,6 +644,18 @@ async fn fetch_private_notes_without_floor_falls_back_to_lookback_window() {
 
 // HELPERS
 // ================================================================================================
+
+/// A dummy fungible asset for transport-layer notes. P2ID notes require at least one asset, and
+/// these notes are never consumed on-chain, so the issuing faucet only needs to be a valid ID.
+fn dummy_asset() -> Asset {
+    let faucet_id = AccountId::dummy(
+        [7u8; 15],
+        AccountIdVersion::Version1,
+        ProtocolAccountType::Public,
+        AssetCallbackFlag::Disabled,
+    );
+    FungibleAsset::new(faucet_id, 100).unwrap().into()
+}
 
 pub async fn create_test_client_transport(
     mock_node: Arc<RwLock<MockNoteTransportNode>>,
@@ -740,7 +757,6 @@ async fn committed_private_note_recipient(
         .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore))
-        .in_debug_mode(DebugMode::Enabled)
         .tx_discard_delta(None)
         .note_transport(Arc::new(transport_client));
 

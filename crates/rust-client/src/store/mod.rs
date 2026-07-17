@@ -39,7 +39,7 @@ use miden_protocol::account::{
     StorageSlotName,
 };
 use miden_protocol::address::Address;
-use miden_protocol::asset::{Asset, AssetVault, AssetVaultKey, AssetWitness};
+use miden_protocol::asset::{Asset, AssetId, AssetVault, AssetWitness};
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::merkle::mmr::{Forest, InOrderIndex, MmrPeaks, PartialMmr};
 use miden_protocol::errors::AccountError;
@@ -592,21 +592,21 @@ pub trait Store: Send + Sync {
     /// Retrieves the asset vault for a specific account.
     async fn get_account_vault(&self, account_id: AccountId) -> Result<AssetVault, StoreError>;
 
-    /// Retrieves a specific asset (by vault key) from the account's vault along with its Merkle
+    /// Retrieves a specific asset (by vault id) from the account's vault along with its Merkle
     /// witness.
     ///
     /// The default implementation of this method uses [`Store::get_account_vault`].
     async fn get_account_asset(
         &self,
         account_id: AccountId,
-        vault_key: AssetVaultKey,
+        vault_id: AssetId,
     ) -> Result<Option<(Asset, AssetWitness)>, StoreError> {
         let vault = self.get_account_vault(account_id).await?;
-        let Some(asset) = vault.assets().find(|a| a.vault_key() == vault_key) else {
+        let Some(asset) = vault.assets().find(|a| a.id() == vault_id) else {
             return Ok(None);
         };
 
-        let witness = AssetWitness::new(vault.open(vault_key).into())?;
+        let witness = vault.open(vault_id);
 
         Ok(Some((asset, witness)))
     }

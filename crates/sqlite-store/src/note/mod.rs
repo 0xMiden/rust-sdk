@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::rc::Rc;
-use std::string::{String, ToString};
+use std::string::ToString;
 use std::vec::Vec;
 
 use miden_client::Word;
@@ -57,15 +57,15 @@ mod tests;
 
 /// Represents an `InputNoteRecord` serialized to be stored in the database.
 struct SerializedInputNoteData {
-    pub details_commitment: String,
-    pub id: Option<String>,
+    pub details_commitment: Vec<u8>,
+    pub id: Option<Vec<u8>>,
     pub assets: Vec<u8>,
     pub attachments: Vec<u8>,
     pub serial_number: Vec<u8>,
     pub inputs: Vec<u8>,
-    pub script_root: String,
+    pub script_root: Vec<u8>,
     pub script: Vec<u8>,
-    pub nullifier: Option<String>,
+    pub nullifier: Option<Vec<u8>>,
     pub state_discriminant: u8,
     pub state: Vec<u8>,
     pub created_at: u64,
@@ -76,12 +76,12 @@ struct SerializedInputNoteData {
 
 /// Represents an `OutputNoteRecord` serialized to be stored in the database.
 struct SerializedOutputNoteData {
-    pub details_commitment: String,
-    pub id: String,
+    pub details_commitment: Vec<u8>,
+    pub id: Vec<u8>,
     pub assets: Vec<u8>,
     pub metadata: Vec<u8>,
-    pub nullifier: Option<String>,
-    pub recipient_digest: String,
+    pub nullifier: Option<Vec<u8>>,
+    pub recipient_digest: Vec<u8>,
     pub expected_height: u32,
     pub state_discriminant: u8,
     pub state: Vec<u8>,
@@ -103,7 +103,7 @@ struct SerializedInputNoteParts {
 struct SerializedOutputNoteParts {
     pub assets: Vec<u8>,
     pub metadata: Vec<u8>,
-    pub recipient_digest: String,
+    pub recipient_digest: Vec<u8>,
     pub expected_height: u32,
     pub state: Vec<u8>,
     pub attachments: Vec<u8>,
@@ -111,7 +111,7 @@ struct SerializedOutputNoteParts {
 
 /// Represents the fields needed to update an existing input note's state.
 struct SerializedInputNoteStateUpdate {
-    pub details_commitment: String,
+    pub details_commitment: Vec<u8>,
     pub state_discriminant: u8,
     pub state: Vec<u8>,
     pub consumed_block_height: Option<u32>,
@@ -121,7 +121,7 @@ struct SerializedInputNoteStateUpdate {
 
 /// Represents the fields needed to update an existing output note's state.
 struct SerializedOutputNoteStateUpdate {
-    pub details_commitment: String,
+    pub details_commitment: Vec<u8>,
     pub state_discriminant: u8,
     pub state: Vec<u8>,
 }
@@ -237,7 +237,7 @@ impl SqliteStore {
             .map(|result| {
                 result
                     .map_err(|err| StoreError::ParsingError(err.to_string()))
-                    .and_then(|v: String| Ok(Nullifier::from_hex(&v)?))
+                    .and_then(|v: Vec<u8>| Ok(Nullifier::read_from_bytes(&v)?))
             })
             .collect::<Result<Vec<Nullifier>, _>>()
     }
@@ -260,18 +260,17 @@ impl SqliteStore {
         conn: &mut Connection,
         script_root: Word,
     ) -> Result<NoteScript, StoreError> {
-        let script_root = script_root.to_hex();
         let query = "SELECT * FROM notes_scripts WHERE script_root = ?";
         let note_script = conn
             .prepare(query)
             .into_store_error()?
-            .query_map([script_root.clone()], parse_note_scripts_columns)
+            .query_map([script_root.to_bytes()], parse_note_scripts_columns)
             .expect("no binding parameters used in query")
             .map(|result| Ok(result.into_store_error()?).and_then(|s| parse_note_script(&s)))
             .collect::<Result<Vec<NoteScript>, _>>()?
             .first()
             .cloned()
-            .ok_or(StoreError::NoteScriptNotFound(script_root))?;
+            .ok_or(StoreError::NoteScriptNotFound(script_root.to_hex()))?;
 
         Ok(note_script)
     }
@@ -407,12 +406,12 @@ fn parse_input_note(
 
 /// Serialize the provided input note into database compatible types.
 fn serialize_input_note(note: &InputNoteRecord) -> SerializedInputNoteData {
-    let details_commitment = note.details_commitment().to_hex();
+    let details_commitment = note.details_commitment().to_bytes();
     // `note_id` and `nullifier` are only available when the record carries metadata (header-only
     // records supply both directly from their state). The columns are NULL-able and get populated
     // once metadata arrives (via sync / inclusion proof).
-    let id = note.id().map(|id| id.as_word().to_string());
-    let nullifier = note.nullifier().map(|nullifier| nullifier.to_hex());
+    let id = note.id().map(|id| id.as_word().to_bytes());
+    let nullifier = note.nullifier().map(|nullifier| nullifier.to_bytes());
     let created_at = note.created_at().unwrap_or(0);
 
     let details = note.details();
@@ -424,7 +423,7 @@ fn serialize_input_note(note: &InputNoteRecord) -> SerializedInputNoteData {
     let script = recipient.script().to_bytes();
     let inputs = recipient.storage().to_bytes();
 
-    let script_root = recipient.script().root().to_hex();
+    let script_root = recipient.script().root().to_bytes();
 
     let state_discriminant = note.state().discriminant();
     let state = note.state().to_bytes();
@@ -456,7 +455,7 @@ fn serialize_input_note(note: &InputNoteRecord) -> SerializedInputNoteData {
 fn parse_output_note_columns(
     row: &rusqlite::Row<'_>,
 ) -> Result<SerializedOutputNoteParts, rusqlite::Error> {
-    let recipient_digest: String = row.get(0)?;
+    let recipient_digest: Vec<u8> = row.get(0)?;
     let assets: Vec<u8> = row.get(1)?;
     let metadata: Vec<u8> = row.get(2)?;
     let expected_height: u32 = row.get(3)?;
@@ -486,7 +485,7 @@ fn parse_output_note(
         attachments,
     } = serialized_output_note_parts;
 
-    let recipient_digest = Word::try_from(recipient_digest)?;
+    let recipient_digest = Word::read_from_bytes(&recipient_digest)?;
     let assets = NoteAssets::read_from_bytes(&assets)?;
     let metadata = NoteMetadata::read_from_bytes(&metadata)?;
     let state = OutputNoteState::read_from_bytes(&state)?;
@@ -509,7 +508,7 @@ fn serialize_input_note_state(note: &InputNoteRecord) -> SerializedInputNoteStat
     let consumer_account_id = note.consumer_account().map(|id| id.to_bytes());
 
     SerializedInputNoteStateUpdate {
-        details_commitment: note.details_commitment().to_hex(),
+        details_commitment: note.details_commitment().to_bytes(),
         state_discriminant: note.state().discriminant(),
         state: note.state().to_bytes(),
         consumed_block_height,
@@ -521,7 +520,7 @@ fn serialize_input_note_state(note: &InputNoteRecord) -> SerializedInputNoteStat
 /// Serialize the provided output note state into a lightweight state-only update.
 fn serialize_output_note_state(note: &OutputNoteRecord) -> SerializedOutputNoteStateUpdate {
     SerializedOutputNoteStateUpdate {
-        details_commitment: note.details_commitment().to_hex(),
+        details_commitment: note.details_commitment().to_bytes(),
         state_discriminant: note.state().discriminant(),
         state: note.state().to_bytes(),
     }
@@ -529,13 +528,13 @@ fn serialize_output_note_state(note: &OutputNoteRecord) -> SerializedOutputNoteS
 
 /// Serialize the provided output note into database compatible types.
 fn serialize_output_note(note: &OutputNoteRecord) -> SerializedOutputNoteData {
-    let details_commitment = note.details_commitment().to_hex();
-    let id = note.id().as_word().to_string();
+    let details_commitment = note.details_commitment().to_bytes();
+    let id = note.id().as_word().to_bytes();
     let assets = note.assets().to_bytes();
-    let recipient_digest = note.recipient_digest().to_hex();
+    let recipient_digest = note.recipient_digest().to_bytes();
     let metadata = note.metadata().to_bytes();
 
-    let nullifier = note.nullifier().map(|nullifier| nullifier.to_hex());
+    let nullifier = note.nullifier().map(|nullifier| nullifier.to_bytes());
 
     let state_discriminant = note.state().discriminant();
     let state = note.state().to_bytes();
@@ -563,7 +562,7 @@ pub(crate) fn apply_note_updates_tx(
     // Split input notes into inserts and updates, collecting scripts from new notes.
     let mut input_inserts = Vec::new();
     let mut input_updates = Vec::new();
-    let mut scripts: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    let mut scripts: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
 
     for input_note in note_updates.updated_input_notes() {
         match input_note.update_type() {
@@ -614,7 +613,7 @@ pub(crate) fn apply_note_updates_tx(
 /// individual inserts.
 fn batch_upsert_scripts(
     tx: &Transaction,
-    scripts: &BTreeMap<String, Vec<u8>>,
+    scripts: &BTreeMap<Vec<u8>, Vec<u8>>,
 ) -> Result<(), StoreError> {
     if scripts.is_empty() {
         return Ok(());
@@ -629,7 +628,7 @@ fn batch_upsert_scripts(
         );
         let mut param_values: Vec<Value> = Vec::with_capacity(chunk.len() * 2);
         for (root, script) in chunk {
-            param_values.push(Value::Text((*root).clone()));
+            param_values.push(Value::Blob((*root).clone()));
             param_values.push(Value::Blob((*script).clone()));
         }
         tx.execute(&query, params_from_iter(param_values)).into_store_error()?;
@@ -659,18 +658,18 @@ fn batch_insert_input_notes(
         );
         let mut param_values: Vec<Value> = Vec::with_capacity(chunk.len() * 14);
         for note in chunk {
-            param_values.push(Value::Text(note.details_commitment.clone()));
+            param_values.push(Value::Blob(note.details_commitment.clone()));
             match &note.id {
-                Some(id) => param_values.push(Value::Text(id.clone())),
+                Some(id) => param_values.push(Value::Blob(id.clone())),
                 None => param_values.push(Value::Null),
             }
             param_values.push(Value::Blob(note.assets.clone()));
             param_values.push(Value::Blob(note.attachments.clone()));
             param_values.push(Value::Blob(note.serial_number.clone()));
             param_values.push(Value::Blob(note.inputs.clone()));
-            param_values.push(Value::Text(note.script_root.clone()));
+            param_values.push(Value::Blob(note.script_root.clone()));
             match &note.nullifier {
-                Some(n) => param_values.push(Value::Text(n.clone())),
+                Some(n) => param_values.push(Value::Blob(n.clone())),
                 None => param_values.push(Value::Null),
             }
             param_values.push(Value::Integer(i64::from(note.state_discriminant)));
@@ -747,13 +746,13 @@ fn batch_insert_output_notes(
         );
         let mut param_values: Vec<Value> = Vec::with_capacity(chunk.len() * 10);
         for note in chunk {
-            param_values.push(Value::Text(note.details_commitment.clone()));
-            param_values.push(Value::Text(note.id.clone()));
+            param_values.push(Value::Blob(note.details_commitment.clone()));
+            param_values.push(Value::Blob(note.id.clone()));
             param_values.push(Value::Blob(note.assets.clone()));
-            param_values.push(Value::Text(note.recipient_digest.clone()));
+            param_values.push(Value::Blob(note.recipient_digest.clone()));
             param_values.push(Value::Blob(note.metadata.clone()));
             match &note.nullifier {
-                Some(n) => param_values.push(Value::Text(n.clone())),
+                Some(n) => param_values.push(Value::Blob(n.clone())),
                 None => param_values.push(Value::Null),
             }
             param_values.push(Value::Integer(i64::from(note.expected_height)));
@@ -800,7 +799,7 @@ pub(super) fn upsert_note_script_tx(
         insert_sql!(notes_scripts { script_root, serialized_note_script } | REPLACE);
     tx.prepare_cached(QUERY)
         .into_store_error()?
-        .execute(params![note_script.root().to_hex(), note_script.to_bytes()])
+        .execute(params![note_script.root().to_bytes(), note_script.to_bytes()])
         .into_store_error()?;
 
     Ok(())

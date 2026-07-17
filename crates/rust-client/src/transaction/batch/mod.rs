@@ -62,7 +62,7 @@ use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::note::NoteId;
 use miden_protocol::transaction::{PartialBlockchain, ProvenTransaction, TransactionInputs};
 use miden_tx::auth::TransactionAuthenticator;
-use miden_tx_batch_prover::LocalBatchProver;
+use miden_tx_batch::{BatchExecutor, LocalBatchProver};
 
 use crate::store::data_store::build_partial_mmr_with_paths;
 use crate::transaction::{
@@ -185,11 +185,12 @@ where
             ref_block_header,
             partial_blockchain,
             unauthenticated_note_proofs,
+            MIN_PROOF_SECURITY_LEVEL,
         )?;
 
-        // 6. Prove synchronously.
-        let proven_batch =
-            LocalBatchProver::new(MIN_PROOF_SECURITY_LEVEL).prove(proposed_batch.clone())?;
+        // 6. Execute the batch kernel, then prove synchronously.
+        let executed_batch = BatchExecutor::new().execute(proposed_batch.clone())?;
+        let proven_batch = LocalBatchProver::new().prove(executed_batch)?;
 
         // 7. Submit via RPC.
         let mut updates: Vec<TransactionStoreUpdate> = Vec::with_capacity(len);
@@ -310,10 +311,14 @@ where
         .execute_transaction(account_id, prep.block_num, notes, prep.tx_args)
         .await?;
 
-    // Cache new account state in memory data store
-    account
-        .apply_delta(executed_transaction.account_delta())
-        .map_err(ClientError::AccountError)?;
+    // Cache new account state in memory data store.
+    let patch = executed_transaction.account_patch();
+    let account = if patch.is_full_state() {
+        Account::try_from(patch).map_err(ClientError::AccountError)?
+    } else {
+        account.apply_patch(patch).map_err(ClientError::AccountError)?;
+        account
+    };
     data_store.cache_account(account_id, account);
 
     validate_executed_transaction(&executed_transaction, &prep.output_recipients)?;

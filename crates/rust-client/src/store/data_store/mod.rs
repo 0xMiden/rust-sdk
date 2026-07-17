@@ -48,6 +48,10 @@ pub struct ClientDataStore {
     cache: DataStoreCache,
     /// RPC client used to lazy-load foreign account data on cache miss.
     rpc_api: Arc<dyn NodeRpcClient>,
+    /// When set, `get_transaction_inputs` and `get_vault_asset_witnesses` results are memoized for
+    /// the lifetime of this data store. Only enabled while screening notes, where the served
+    /// account state stays fixed across many dry executions.
+    cache_execution_inputs: bool,
 }
 
 impl ClientDataStore {
@@ -56,7 +60,21 @@ impl ClientDataStore {
             store,
             cache: DataStoreCache::new(),
             rpc_api,
+            cache_execution_inputs: false,
         }
+    }
+
+    /// Enables memoization of `get_transaction_inputs` and `get_vault_asset_witnesses` for the
+    /// lifetime of this data store.
+    ///
+    /// This is only correct when the account state served to the executor does not change between
+    /// executions, as is the case while the [`crate::note::NoteScreener`] runs many dry executions
+    /// against the same accounts and reference block. It must stay disabled for real transaction
+    /// execution, where account state evolves between executions.
+    #[must_use]
+    pub fn with_execution_input_cache(mut self) -> Self {
+        self.cache_execution_inputs = true;
+        self
     }
 
     pub fn mast_store(&self) -> Arc<TransactionMastStore> {
@@ -208,6 +226,19 @@ impl DataStore for ClientDataStore {
         account_id: AccountId,
         mut block_refs: BTreeSet<BlockNumber>,
     ) -> Result<(PartialAccount, BlockHeader, PartialBlockchain), DataStoreError> {
+        if self.cache_execution_inputs
+            && let Some(inputs) = self.cache.get_transaction_inputs(account_id, &block_refs)
+        {
+            // Keep the reference block in sync so lazy-loading methods can use it.
+            if let Some(&ref_block) = block_refs.last() {
+                self.cache.set_ref_block(ref_block);
+            }
+            return Ok(inputs);
+        }
+
+        // Preserve the original reference-block set as the cache key before it is consumed below.
+        let cache_key = self.cache_execution_inputs.then(|| block_refs.clone());
+
         let current_peaks = self.store.get_current_blockchain_peaks().await?;
 
         // Pop last block, used as reference (it does not need to be authenticated manually)
@@ -270,7 +301,12 @@ impl DataStore for ClientDataStore {
                     err,
                 )
             })?;
-        Ok((partial_account, block_header, partial_blockchain))
+
+        let inputs = (partial_account, block_header, partial_blockchain);
+        if let Some(cache_key) = cache_key {
+            self.cache.insert_transaction_inputs(account_id, cache_key, inputs.clone());
+        }
+        Ok(inputs)
     }
 
     async fn get_vault_asset_witnesses(
@@ -279,8 +315,15 @@ impl DataStore for ClientDataStore {
         vault_root: Word,
         vault_keys: BTreeSet<AssetVaultKey>,
     ) -> Result<Vec<AssetWitness>, DataStoreError> {
+        if self.cache_execution_inputs
+            && let Some(witnesses) =
+                self.cache.get_vault_asset_witnesses(account_id, vault_root, &vault_keys)
+        {
+            return Ok(witnesses);
+        }
+
         let mut asset_witnesses = vec![];
-        for vault_key in vault_keys {
+        for vault_key in vault_keys.iter().copied() {
             match self.store.get_account_asset(account_id, vault_key).await {
                 Ok(Some((_, asset_witness))) => asset_witnesses.push(asset_witness),
                 Ok(None) | Err(StoreError::MerkleStoreError(MerkleError::RootNotInStore(_))) => {
@@ -306,6 +349,15 @@ impl DataStore for ClientDataStore {
                     ));
                 },
             }
+        }
+
+        if self.cache_execution_inputs {
+            self.cache.insert_vault_asset_witnesses(
+                account_id,
+                vault_root,
+                vault_keys,
+                asset_witnesses.clone(),
+            );
         }
         Ok(asset_witnesses)
     }

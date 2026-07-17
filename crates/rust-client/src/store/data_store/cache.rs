@@ -1,17 +1,29 @@
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 
 use miden_protocol::Word;
-use miden_protocol::account::{AccountId, StorageMapKey, StorageMapWitness};
-use miden_protocol::block::BlockNumber;
+use miden_protocol::account::{AccountId, PartialAccount, StorageMapKey, StorageMapWitness};
+use miden_protocol::asset::{AssetVaultKey, AssetWitness};
+use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::note::NoteScript;
-use miden_protocol::transaction::AccountInputs;
+use miden_protocol::transaction::{AccountInputs, PartialBlockchain};
 use miden_tx::TransactionMastStore;
 
 use crate::utils::RwLock;
 
 // DATA STORE CACHE
 // ================================================================================================
+
+/// Transaction inputs served to the executor: the account state, reference block header, and
+/// partial blockchain.
+type CachedTransactionInputs = (PartialAccount, BlockHeader, PartialBlockchain);
+
+/// Key for the transaction-inputs cache: the target account and the requested reference blocks.
+type TransactionInputsCacheKey = (AccountId, BTreeSet<BlockNumber>);
+
+/// Key for the vault-asset-witness cache: the account, its vault root, and the requested keys.
+type VaultWitnessCacheKey = (AccountId, Word, BTreeSet<AssetVaultKey>);
 
 /// In-memory state that [`super::ClientDataStore`] serves to the executor without going through
 /// the persistent store.
@@ -32,6 +44,15 @@ pub(super) struct DataStoreCache {
     /// Storage map witnesses, keyed by (`map_root`, `map_key`). Avoids redundant RPC calls when
     /// the same map entry is accessed multiple times within a transaction.
     storage_map_witnesses: RwLock<BTreeMap<(Word, StorageMapKey), StorageMapWitness>>,
+    /// Transaction inputs cached per (account, reference blocks). Only populated while the note
+    /// screener runs, where many dry executions share the same account and reference block; see
+    /// [`super::ClientDataStore::with_execution_input_cache`]. Left empty during real transaction
+    /// execution, whose account state evolves between executions.
+    transaction_inputs: RwLock<BTreeMap<TransactionInputsCacheKey, CachedTransactionInputs>>,
+    /// Vault asset witnesses cached per (account, vault root, requested keys). The requested keys
+    /// always include the fee asset key, so this memoizes the per-execution fee witness lookup
+    /// across a screening batch. Populated under the same conditions as `transaction_inputs`.
+    vault_asset_witnesses: RwLock<BTreeMap<VaultWitnessCacheKey, Vec<AssetWitness>>>,
     /// The transaction reference block number.
     ref_block: RwLock<Option<BlockNumber>>,
 }
@@ -43,6 +64,8 @@ impl DataStoreCache {
             foreign_account_inputs: RwLock::new(BTreeMap::new()),
             note_scripts: RwLock::new(BTreeMap::new()),
             storage_map_witnesses: RwLock::new(BTreeMap::new()),
+            transaction_inputs: RwLock::new(BTreeMap::new()),
+            vault_asset_witnesses: RwLock::new(BTreeMap::new()),
             ref_block: RwLock::new(None),
         }
     }
@@ -112,6 +135,52 @@ impl DataStoreCache {
         map_key: StorageMapKey,
     ) -> Option<StorageMapWitness> {
         self.storage_map_witnesses.read().get(&(map_root, map_key)).cloned()
+    }
+
+    /// Returns the cached transaction inputs for the given account and reference blocks, if any.
+    pub(super) fn get_transaction_inputs(
+        &self,
+        account_id: AccountId,
+        ref_blocks: &BTreeSet<BlockNumber>,
+    ) -> Option<CachedTransactionInputs> {
+        self.transaction_inputs.read().get(&(account_id, ref_blocks.clone())).cloned()
+    }
+
+    /// Caches the transaction inputs for the given account and reference blocks.
+    pub(super) fn insert_transaction_inputs(
+        &self,
+        account_id: AccountId,
+        ref_blocks: BTreeSet<BlockNumber>,
+        inputs: CachedTransactionInputs,
+    ) {
+        self.transaction_inputs.write().insert((account_id, ref_blocks), inputs);
+    }
+
+    /// Returns the cached vault asset witnesses for the given account, vault root and requested
+    /// keys, if any.
+    pub(super) fn get_vault_asset_witnesses(
+        &self,
+        account_id: AccountId,
+        vault_root: Word,
+        vault_keys: &BTreeSet<AssetVaultKey>,
+    ) -> Option<Vec<AssetWitness>> {
+        self.vault_asset_witnesses
+            .read()
+            .get(&(account_id, vault_root, vault_keys.clone()))
+            .cloned()
+    }
+
+    /// Caches the vault asset witnesses for the given account, vault root and requested keys.
+    pub(super) fn insert_vault_asset_witnesses(
+        &self,
+        account_id: AccountId,
+        vault_root: Word,
+        vault_keys: BTreeSet<AssetVaultKey>,
+        witnesses: Vec<AssetWitness>,
+    ) {
+        self.vault_asset_witnesses
+            .write()
+            .insert((account_id, vault_root, vault_keys), witnesses);
     }
 
     /// Returns the cached transaction reference block, if set.

@@ -2154,6 +2154,78 @@ async fn get_consumable_notes() {
     }
 }
 
+/// Screens several non-standard (nop-script) committed notes. Their script root is not a standard
+/// note, so the screener runs a trial transaction per (account, note) pair, exercising the
+/// execution-input cache that `get_consumable_notes` enables while screening. Verifies the cached
+/// path returns exactly the inserted notes as consumable by the target account.
+#[tokio::test]
+async fn get_consumable_notes_screens_non_standard_notes() {
+    use std::collections::BTreeSet;
+
+    use miden_client::store::InputNoteRecord;
+    use miden_client::store::input_note_states::CommittedNoteState;
+    use miden_protocol::crypto::merkle::SparseMerklePath;
+    use miden_protocol::note::{NoteDetails, NoteId, NoteInclusionProof};
+
+    const NOTE_COUNT: usize = 3;
+
+    let (mut client, _mock_rpc_api, authenticator) = Box::pin(create_test_client()).await;
+
+    let (first_wallet, _second_wallet, faucet) = setup_two_wallets_and_faucet(
+        &mut client,
+        AccountType::Private,
+        &authenticator,
+        RPO_FALCON_SCHEME_ID,
+    )
+    .await
+    .unwrap();
+
+    let target = first_wallet.id();
+    let faucet_id = faucet.id();
+
+    // A nop note has no target binding, so it screens as consumable for every tracked account. An
+    // unauthenticated screening trial does not verify the inclusion proof, so a dummy proof and an
+    // empty block note root are enough to make the records committed.
+    let block_num = client.get_sync_height().await.unwrap();
+    let dummy_proof = NoteInclusionProof::new(block_num, 0, SparseMerklePath::default()).unwrap();
+
+    let mut records = Vec::with_capacity(NOTE_COUNT);
+    let mut expected_ids = BTreeSet::new();
+    for i in 0..NOTE_COUNT {
+        let note = NoteBuilder::new(
+            faucet_id,
+            RandomCoin::new([i as u64, 0, 0, 0].map(Felt::new_unchecked).into()),
+        )
+        .note_type(NoteType::Public)
+        .build()
+        .unwrap();
+        expected_ids.insert(note.id());
+
+        let metadata = *note.metadata();
+        let attachments = note.attachments().clone();
+        let details = NoteDetails::from(note);
+        let state = CommittedNoteState {
+            metadata,
+            inclusion_proof: dummy_proof.clone(),
+            block_note_root: EMPTY_WORD,
+        }
+        .into();
+        records.push(InputNoteRecord::new(details, attachments, None, state));
+    }
+    client.test_store().upsert_input_notes(&records).await.unwrap();
+
+    let consumable = Box::pin(client.get_consumable_notes(Some(target))).await.unwrap();
+
+    let consumable_ids: BTreeSet<NoteId> =
+        consumable.iter().filter_map(|(record, _)| record.id()).collect();
+    assert_eq!(consumable_ids, expected_ids);
+    assert!(
+        consumable
+            .iter()
+            .all(|(_, relevances)| relevances.iter().any(|(id, _)| *id == target))
+    );
+}
+
 #[tokio::test]
 async fn get_output_notes() {
     let (mut client, mock_rpc_api, authenticator) = Box::pin(create_test_client()).await;

@@ -28,10 +28,10 @@ When enabled, the transaction executor prints the output of any `debug.*` instru
 
 ```sh
 # Enable debug output for a command
-miden-client --debug send --sender <SENDER> --target <TARGET> --asset 100::<FAUCET_ID>
+miden-client --debug transfer --sender <SENDER> --target <TARGET> --asset 100::<FAUCET_ID> --note-type private
 
 # Force non-interactive submission (e.g., CI)
-miden-client send --force ...
+miden-client transfer --force ...
 
 # Refresh local state
 miden-client sync

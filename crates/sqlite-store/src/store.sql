@@ -116,7 +116,7 @@ CREATE TABLE latest_account_assets (
 CREATE TABLE historical_account_assets (
     account_id BLOB NOT NULL,           -- account ID
     replaced_at_nonce BIGINT NOT NULL,  -- nonce at which this old asset was replaced
-    asset_id BLOB NOT NULL,             -- asset's vault id
+    asset_id BLOB NOT NULL,             -- asset key in the vault's underlying SMT
     old_asset BLOB NULL,                -- old serialized asset value (NULL = asset was new)
     PRIMARY KEY (account_id, replaced_at_nonce, asset_id)
 ) WITHOUT ROWID;

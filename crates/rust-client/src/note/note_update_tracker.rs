@@ -531,20 +531,16 @@ impl NoteUpdateTracker {
             return;
         };
         let note_id = header.id();
-        // Skip when the note is already tracked in any form, whether as a metadata-bearing input
-        // (`input_notes_by_id`), an output note, or a metadata-less expected note imported from
-        // bare details (`expected_note_matching`, which `input_notes_by_id` does not
-        // cover). In that last case a header-only placeholder would land under a different
-        // (placeholder) details commitment, leaving a duplicate row alongside the stale
-        // expected one.
+        // Skip when the note is already tracked as an input note under the same details
+        // commitment or as an output note; inserting a header-only record here would collide
+        // with the existing record.
         //
-        // For that metadata-less case this only prevents the duplicate; the existing expected
-        // record is left as-is and keeps showing as unspent. Evolving it straight to a consumed
-        // state from this consumption event is a deferred follow-up, and skipping matches a
-        // client without erased-note recovery, which never recovers this note either.
-        if self.input_notes_by_id.contains_key(&note_id)
+        // For a metadata-less expected note this only prevents a duplicate record; it is left
+        // as-is and keeps showing as unspent. Evolving it straight to a consumed state from this
+        // consumption event is a deferred follow-up, and skipping matches a client without
+        // erased-note recovery, which never recovers this note either.
+        if self.input_notes.contains_key(&header.details_commitment())
             || self.output_notes.contains_key(&note_id)
-            || self.expected_note_matching(note_id, header.metadata()).is_some()
         {
             return;
         }
@@ -859,6 +855,7 @@ mod tests {
     use miden_protocol::account::AccountId;
     use miden_protocol::block::BlockNumber;
     use miden_protocol::note::{
+        Note,
         NoteAssets,
         NoteAttachments,
         NoteDetails,
@@ -872,7 +869,7 @@ mod tests {
         PartialNoteMetadata,
     };
     use miden_protocol::testing::account_id::ACCOUNT_ID_SENDER;
-    use miden_protocol::transaction::{InputNoteCommitment, TransactionId};
+    use miden_protocol::transaction::{InputNote, InputNoteCommitment, TransactionId};
     use miden_protocol::utils::serde::{Deserializable, Serializable};
     use miden_protocol::{Felt, Word, ZERO};
     use miden_standards::note::StandardNote;
@@ -988,9 +985,10 @@ mod tests {
 
     #[test]
     fn header_only_record_carries_the_transaction_nullifier() {
-        // A header-only erased record stores placeholder details, so its nullifier cannot be
-        // recomputed from them. It must instead carry the nullifier from the consuming
-        // transaction's input commitment, unchanged and surviving a serialization round-trip.
+        // A header-only erased record stores placeholder details, so its identity and nullifier
+        // cannot be derived from them. The details commitment and nullifier must come from the
+        // header and the consuming transaction's input commitment, unchanged and surviving a
+        // serialization round-trip.
         let sender: AccountId = ACCOUNT_ID_SENDER.try_into().unwrap();
         let details = note_details(20);
         let metadata = note_metadata(sender);
@@ -1001,6 +999,8 @@ mod tests {
             InputNoteRecord::from_header(&header, nullifier, BlockNumber::from(7u32), Some(sender));
 
         assert_eq!(record.nullifier(), Some(nullifier));
+        assert_eq!(record.details_commitment(), header.details_commitment());
+        assert_eq!(record.id(), Some(header.id()));
         assert_ne!(
             record.nullifier(),
             Some(Nullifier::from_details_and_metadata(record.details(), &metadata)),
@@ -1009,6 +1009,28 @@ mod tests {
 
         let restored = InputNoteRecord::read_from_bytes(&record.to_bytes()).unwrap();
         assert_eq!(restored.nullifier(), Some(nullifier));
+        assert_eq!(restored.details_commitment(), header.details_commitment());
+    }
+
+    #[test]
+    fn header_only_record_rejects_details_dependent_conversions() {
+        // A header-only record carries only placeholder details, so converting it into a
+        // `Note`, `InputNote` or `NoteDetails` would fabricate a note that never existed. All
+        // three conversions must fail instead.
+        let sender: AccountId = ACCOUNT_ID_SENDER.try_into().unwrap();
+        let details = note_details(21);
+        let metadata = note_metadata(sender);
+        let header = NoteHeader::new(details.commitment(), metadata);
+        let nullifier = Nullifier::from_details_and_metadata(&details, &metadata);
+
+        let record =
+            InputNoteRecord::from_header(&header, nullifier, BlockNumber::from(7u32), Some(sender));
+
+        let as_note: Result<Note, _> = record.clone().try_into();
+        assert!(as_note.is_err());
+        let as_input_note: Result<InputNote, _> = record.clone().try_into();
+        assert!(as_input_note.is_err());
+        assert!(NoteDetails::try_from(record).is_err());
     }
 
     #[test]

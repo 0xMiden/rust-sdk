@@ -285,7 +285,7 @@ pub async fn test_import_expected_notes(client_config: ClientConfig) -> Result<(
     client_2.add_note_tag(note.metadata().unwrap().tag()).await.unwrap();
     client_2
         .import_notes(&[NoteFile::NoteDetails {
-            details: note.clone().into(),
+            details: note.clone().try_into().expect("note record carries full details"),
             after_block_num: client_1.get_sync_height().await.unwrap(),
             tag: Some(note.metadata().unwrap().tag()),
         }])
@@ -362,7 +362,7 @@ pub async fn test_import_expected_note_uncommitted(client_config: ClientConfig) 
     // If the verification is requested before execution then the import should fail
     let imported_commitment = client_2
         .import_notes(&[NoteFile::NoteDetails {
-            details: note.into(),
+            details: note.try_into().expect("note record carries full details"),
             after_block_num: 0.into(),
             tag: None,
         }])
@@ -413,7 +413,7 @@ pub async fn test_import_expected_notes_from_the_past_as_committed(
     // importing the note before client_2 is synced will result in a note with `Expected` state
     let commitment = client_2
         .import_notes(&[NoteFile::NoteDetails {
-            details: note.clone().into(),
+            details: note.clone().try_into().expect("note record carries full details"),
             after_block_num: block_height_before,
             tag: Some(note.metadata().unwrap().tag()),
         }])
@@ -433,7 +433,7 @@ pub async fn test_import_expected_notes_from_the_past_as_committed(
     assert!(
         client_2
             .import_notes(&[NoteFile::NoteDetails {
-                details: note.clone().into(),
+                details: note.clone().try_into().expect("note record carries full details"),
                 after_block_num: block_height_before,
                 tag: Some(note.metadata().unwrap().tag()),
             }])

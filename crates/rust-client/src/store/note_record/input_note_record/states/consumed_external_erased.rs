@@ -2,7 +2,13 @@ use alloc::string::ToString;
 
 use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber};
-use miden_protocol::note::{NoteId, NoteInclusionProof, NoteMetadata, Nullifier};
+use miden_protocol::note::{
+    NoteDetailsCommitment,
+    NoteId,
+    NoteInclusionProof,
+    NoteMetadata,
+    Nullifier,
+};
 use miden_protocol::transaction::TransactionId;
 
 use super::{InputNoteState, NoteStateHandler};
@@ -12,17 +18,14 @@ use crate::store::NoteRecordError;
 ///
 /// A record enters this state when a tracked account consumes a note as an unauthenticated input
 /// (typically an erased note, created and consumed in the same batch) whose full details the client
-/// never held, only the note header carried in the consuming transaction. With no authoritative
-/// [`miden_protocol::note::NoteDetails`], the note id cannot be derived the usual way (from the
-/// details commitment and metadata), so it is stored in the state directly.
+/// never held, only the note header carried in the consuming transaction. The record's `details`
+/// field is a placeholder for this state, so the authoritative identity (the header's details
+/// commitment) and the nullifier are stored in the state directly.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ConsumedExternalErasedNoteState {
-    /// The note id, stored directly. Unlike full records, it cannot be derived from the record's
-    /// details, which are a placeholder for this state.
-    pub note_id: NoteId,
-    /// The note nullifier, stored directly for the same reason as `note_id`. It cannot be
-    /// recomputed from the placeholder details, so it is taken from the consuming
-    /// transaction's input commitment.
+    /// The commitment to the note's details, taken from the note header.
+    pub details_commitment: NoteDetailsCommitment,
+    /// The note nullifier, taken from the consuming transaction's input commitment.
     pub nullifier: Nullifier,
     /// Metadata associated with the note, including sender, note type, tag and other additional
     /// information.
@@ -95,7 +98,7 @@ impl NoteStateHandler for ConsumedExternalErasedNoteState {
 
 impl miden_tx::utils::serde::Serializable for ConsumedExternalErasedNoteState {
     fn write_into<W: miden_tx::utils::serde::ByteWriter>(&self, target: &mut W) {
-        self.note_id.write_into(target);
+        self.details_commitment.write_into(target);
         self.nullifier.write_into(target);
         self.metadata.write_into(target);
         self.nullifier_block_height.write_into(target);
@@ -108,14 +111,14 @@ impl miden_tx::utils::serde::Deserializable for ConsumedExternalErasedNoteState 
     fn read_from<R: miden_tx::utils::serde::ByteReader>(
         source: &mut R,
     ) -> Result<Self, miden_tx::utils::serde::DeserializationError> {
-        let note_id = NoteId::read_from(source)?;
+        let details_commitment = NoteDetailsCommitment::read_from(source)?;
         let nullifier = Nullifier::read_from(source)?;
         let metadata = NoteMetadata::read_from(source)?;
         let nullifier_block_height = BlockNumber::read_from(source)?;
         let consumer_account = Option::<AccountId>::read_from(source)?;
         let consumed_tx_order = Option::<u32>::read_from(source)?;
         Ok(ConsumedExternalErasedNoteState {
-            note_id,
+            details_commitment,
             nullifier,
             metadata,
             nullifier_block_height,

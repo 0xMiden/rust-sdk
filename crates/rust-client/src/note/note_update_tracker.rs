@@ -412,7 +412,7 @@ impl NoteUpdateTracker {
             input_note_record.inclusion_proof_received(inclusion_proof.clone(), metadata)?;
             input_note_record.block_header_received(block_header)?;
             if let Some(attachments) = attachments {
-                input_note_record.set_attachments(attachments.clone());
+                input_note_record.attachments_received(attachments.clone());
             }
 
             true

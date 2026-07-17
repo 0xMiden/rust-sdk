@@ -14,7 +14,7 @@
 
 ### Changes
 
-* [rust] Re-exported `ExpirationTransactionScript` from `miden_client::transaction`. ([#2290](https://github.com/0xMiden/rust-sdk/pull/2290)).
+* [rust] Re-exported new upstream types reachable from the public API: `ExpirationTransactionScript` and `SendNotesTransactionScriptError` from `miden_client::transaction`, `NoteSyncHint` from `miden_client::note`, `StorageValuePatch` and `StorageMapPatchEntries` from `miden_client::account`, and `FeeParameters` and `ValidatorKeys` from `miden_client::block`. ([#2290](https://github.com/0xMiden/rust-sdk/pull/2290)).
 
 ### Fixes
 

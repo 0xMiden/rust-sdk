@@ -172,7 +172,10 @@ pub use miden_protocol::transaction::{
 };
 pub use miden_protocol::vm::{AdviceInputs, AdviceMap};
 pub use miden_standards::account::interface::{AccountComponentInterface, AccountInterface};
-pub use miden_standards::tx_script::ExpirationTransactionScript;
+pub use miden_standards::tx_script::{
+    ExpirationTransactionScript,
+    SendNotesTransactionScriptError,
+};
 pub use miden_tx::auth::TransactionAuthenticator;
 pub use miden_tx::{
     DataStoreError,

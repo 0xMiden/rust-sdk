@@ -66,6 +66,7 @@ pub use miden_protocol::account::{
     StorageMapKey,
     StorageMapKeyHash,
     StorageMapPatch,
+    StorageMapPatchEntries,
     StorageMapWitness,
     StorageSlot,
     StorageSlotContent,
@@ -73,6 +74,7 @@ pub use miden_protocol::account::{
     StorageSlotName,
     StorageSlotPatch,
     StorageSlotType,
+    StorageValuePatch,
 };
 pub use miden_protocol::address::{Address, AddressInterface, AddressType, NetworkId};
 use miden_protocol::asset::AssetVault;

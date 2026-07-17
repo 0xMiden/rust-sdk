@@ -232,7 +232,7 @@ pub mod auth {
 
 /// Provides types for working with blocks within the Miden network.
 pub mod block {
-    pub use miden_protocol::block::{BlockHeader, BlockNumber};
+    pub use miden_protocol::block::{BlockHeader, BlockNumber, FeeParameters, ValidatorKeys};
 }
 
 /// Provides cryptographic types and utilities used within the Miden rollup

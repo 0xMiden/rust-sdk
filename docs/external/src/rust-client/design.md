@@ -10,6 +10,7 @@ The Miden client has the following architectural components:
 - [Transaction executor](#transaction-executor)
 - [Keystore](#keystore)
 - [Note screener](#note-screener)
+- [Note reader](#note-reader)
 - [Note transport](#note-transport)
 
 :::tip
@@ -60,6 +61,12 @@ The note screener is used to check the consumability of notes by tracked account
 It can find the tracked accounts that can consume a note, and whether the note can be consumed at the moment or in the future.
 
 Usage examples for note screening can be found in the [Note screening section](./library.md#note-screening).
+
+## Note Reader
+
+The note reader is used to iterate over the input notes a specific account has already consumed. Notes are read lazily from the store and returned in on-chain consumption order.
+
+Usage examples for the note reader can be found in the [Reading consumed notes section](./library.md#reading-consumed-notes).
 
 ## State Sync component
 

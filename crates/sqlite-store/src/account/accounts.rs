@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::rc::Rc;
-use std::string::{String, ToString};
+use std::string::ToString;
 use std::sync::{Arc, RwLock};
 use std::vec::Vec;
 
@@ -65,8 +65,8 @@ impl SqliteStore {
             .query_map([], |row| row.get(0))
             .expect("no binding parameters used in query")
             .map(|result| {
-                let id: String = result.map_err(|e| StoreError::ParsingError(e.to_string()))?;
-                Ok(AccountId::from_hex(&id).expect("account id is valid"))
+                let id: Vec<u8> = result.map_err(|e| StoreError::ParsingError(e.to_string()))?;
+                Ok(AccountId::read_from_bytes(&id).expect("account id is valid"))
             })
             .collect::<Result<Vec<AccountId>, StoreError>>()
     }
@@ -84,7 +84,7 @@ impl SqliteStore {
         conn: &Connection,
         account_id: AccountId,
     ) -> Result<Option<(AccountHeader, AccountStatus)>, StoreError> {
-        Ok(query_latest_account_headers(conn, "id = ?", params![account_id.to_hex()])?
+        Ok(query_latest_account_headers(conn, "id = ?", params![account_id.to_bytes()])?
             .pop()
             .map(|(header, status, _)| (header, status)))
     }
@@ -93,11 +93,10 @@ impl SqliteStore {
         conn: &mut Connection,
         account_commitment: Word,
     ) -> Result<Option<AccountHeader>, StoreError> {
-        let account_commitment_str: String = account_commitment.to_string();
         Ok(query_historical_account_headers(
             conn,
             "account_commitment = ?",
-            params![account_commitment_str],
+            params![account_commitment.to_bytes()],
         )?
         .pop()
         .map(|(header, _)| header))
@@ -109,7 +108,7 @@ impl SqliteStore {
         account_id: AccountId,
     ) -> Result<Option<AccountRecord>, StoreError> {
         let Some((header, status, client_account_type)) =
-            query_latest_account_headers(conn, "id = ?", params![account_id.to_hex()])?.pop()
+            query_latest_account_headers(conn, "id = ?", params![account_id.to_bytes()])?.pop()
         else {
             return Ok(None);
         };
@@ -146,7 +145,7 @@ impl SqliteStore {
         account_id: AccountId,
     ) -> Result<Option<AccountRecord>, StoreError> {
         let Some((header, status, client_account_type)) =
-            query_latest_account_headers(conn, "id = ?", params![account_id.to_hex()])?.pop()
+            query_latest_account_headers(conn, "id = ?", params![account_id.to_bytes()])?.pop()
         else {
             return Ok(None);
         };
@@ -196,7 +195,7 @@ impl SqliteStore {
         account_ids: Vec<AccountId>,
     ) -> Result<BTreeMap<AccountId, AccountCode>, StoreError> {
         let params: Vec<Value> =
-            account_ids.into_iter().map(|id| Value::from(id.to_hex())).collect();
+            account_ids.into_iter().map(|id| Value::Blob(id.to_bytes())).collect();
         const QUERY: &str = "
             SELECT account_id, code
             FROM foreign_account_code JOIN account_code ON foreign_account_code.code_commitment = account_code.commitment
@@ -208,13 +207,10 @@ impl SqliteStore {
             .expect("no binding parameters used in query")
             .map(|result| {
                 result.map_err(|err| StoreError::ParsingError(err.to_string())).and_then(
-                    |(id, code): (String, Vec<u8>)| {
+                    |(id, code): (Vec<u8>, Vec<u8>)| {
                         Ok((
-                            AccountId::from_hex(&id).map_err(|err| {
-                                StoreError::AccountError(
-                                    AccountError::FinalAccountHeaderIdParsingFailed(err),
-                                )
-                            })?,
+                            AccountId::read_from_bytes(&id)
+                                .map_err(StoreError::DataDeserializationError)?,
                             AccountCode::read_from_bytes(&code)
                                 .map_err(StoreError::DataDeserializationError)?,
                         ))
@@ -310,7 +306,7 @@ impl SqliteStore {
         account_id: AccountId,
     ) -> Result<Option<AccountCode>, StoreError> {
         let Some((header, ..)) =
-            query_latest_account_headers(conn, "id = ?", params![account_id.to_hex()])?
+            query_latest_account_headers(conn, "id = ?", params![account_id.to_bytes()])?
                 .into_iter()
                 .next()
         else {
@@ -358,16 +354,13 @@ impl SqliteStore {
         if conn
             .prepare(QUERY)
             .into_store_error()?
-            .query_map(params![new_account_state.id().to_hex()], |row| row.get(0))
+            .query_map(params![new_account_state.id().to_bytes()], |row| row.get(0))
             .into_store_error()?
             .map(|result| {
                 result.map_err(|err| StoreError::ParsingError(err.to_string())).and_then(
-                    |id: String| {
-                        AccountId::from_hex(&id).map_err(|err| {
-                            StoreError::AccountError(
-                                AccountError::FinalAccountHeaderIdParsingFailed(err),
-                            )
-                        })
+                    |id: Vec<u8>| {
+                        AccountId::read_from_bytes(&id)
+                            .map_err(StoreError::DataDeserializationError)
                     },
                 )
             })
@@ -394,7 +387,7 @@ impl SqliteStore {
         const QUERY: &str =
             insert_sql!(foreign_account_code { account_id, code_commitment } | REPLACE);
 
-        tx.execute(QUERY, params![account_id.to_hex(), code.commitment().to_string()])
+        tx.execute(QUERY, params![account_id.to_bytes(), code.commitment().to_bytes()])
             .into_store_error()?;
 
         Self::insert_account_code(&tx, code)?;
@@ -408,7 +401,7 @@ impl SqliteStore {
     ) -> Result<(), StoreError> {
         const QUERY: &str = insert_sql!(addresses { address, account_id } | REPLACE);
         let serialized_address = address.to_bytes();
-        tx.execute(QUERY, params![serialized_address, account_id.to_hex(),])
+        tx.execute(QUERY, params![serialized_address, account_id.to_bytes(),])
             .into_store_error()?;
 
         Ok(())
@@ -432,7 +425,7 @@ impl SqliteStore {
         account_code: &AccountCode,
     ) -> Result<(), StoreError> {
         const QUERY: &str = insert_sql!(account_code { commitment, code } | IGNORE);
-        tx.execute(QUERY, params![account_code.commitment().to_hex(), account_code.to_bytes()])
+        tx.execute(QUERY, params![account_code.commitment().to_bytes(), account_code.to_bytes()])
             .into_store_error()?;
         Ok(())
     }
@@ -521,13 +514,13 @@ impl SqliteStore {
         let commitment_params = Rc::new(
             discarded_states
                 .iter()
-                .map(|(_, commitment)| Value::from(commitment.to_hex()))
+                .map(|(_, commitment)| Value::Blob(commitment.to_bytes()))
                 .collect::<Vec<_>>(),
         );
 
         // Step 1: Resolve (account_id, nonce) pairs from both latest and historical headers.
         // The most recent discarded state is in latest, older ones are in historical.
-        let mut id_nonce_pairs: Vec<(String, u64)> = Vec::new();
+        let mut id_nonce_pairs: Vec<(Vec<u8>, u64)> = Vec::new();
         for query in [
             "SELECT id, nonce FROM latest_account_headers WHERE account_commitment IN rarray(?)",
             "SELECT id, nonce FROM historical_account_headers WHERE account_commitment IN rarray(?)",
@@ -536,7 +529,7 @@ impl SqliteStore {
                 tx.prepare(query)
                     .into_store_error()?
                     .query_map(params![commitment_params.clone()], |row| {
-                        let id: String = row.get(0)?;
+                        let id: Vec<u8> = row.get(0)?;
                         let nonce: u64 = column_value_as_u64(row, 1)?;
                         Ok((id, nonce))
                     })
@@ -549,7 +542,7 @@ impl SqliteStore {
         // Descending order is needed because each nonce's old value is the state before
         // that nonce — processing most recent first lets earlier nonces overwrite with
         // the correct final value.
-        let mut nonces_by_account: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+        let mut nonces_by_account: BTreeMap<Vec<u8>, Vec<u64>> = BTreeMap::new();
         for (id, nonce) in &id_nonce_pairs {
             nonces_by_account.entry(id.clone()).or_default().push(*nonce);
         }
@@ -560,8 +553,8 @@ impl SqliteStore {
         }
 
         // Steps 3-5
-        for (account_id_hex, nonces) in &nonces_by_account {
-            Self::undo_account_nonces(tx, account_id_hex, nonces)?;
+        for (account_id_bytes, nonces) in &nonces_by_account {
+            Self::undo_account_nonces(tx, account_id_bytes, nonces)?;
         }
 
         // Step 6: Discard rolled-back states from the in-memory forest
@@ -576,13 +569,13 @@ impl SqliteStore {
     /// and cleans up consumed historical entries.
     fn undo_account_nonces(
         tx: &Transaction<'_>,
-        account_id_hex: &str,
+        account_id_bytes: &[u8],
         nonces: &[u64],
     ) -> Result<(), StoreError> {
         // Step 3: Undo each nonce in descending order
         for &nonce in nonces {
             let nonce_val = u64_to_value(nonce);
-            Self::restore_old_values_for_nonce(tx, account_id_hex, &nonce_val)?;
+            Self::restore_old_values_for_nonce(tx, account_id_bytes, &nonce_val)?;
         }
 
         // Step 4: Restore old header from the earliest discarded nonce
@@ -596,7 +589,7 @@ impl SqliteStore {
             .query_row(
                 "SELECT COUNT(*) FROM historical_account_headers \
                  WHERE id = ? AND replaced_at_nonce = ?",
-                params![account_id_hex, &min_nonce_val],
+                params![account_id_bytes, &min_nonce_val],
                 |row| row.get::<_, i64>(0),
             )
             .into_store_error()?
@@ -614,7 +607,7 @@ impl SqliteStore {
                         vault_root, nonce, account_seed, locked \
                  FROM historical_account_headers \
                  WHERE id = ? AND replaced_at_nonce = ?",
-                params![account_id_hex, &min_nonce_val],
+                params![account_id_bytes, &min_nonce_val],
             )
             .into_store_error()?;
         } else {
@@ -625,7 +618,7 @@ impl SqliteStore {
                 "DELETE FROM latest_storage_map_entries WHERE account_id = ?",
                 "DELETE FROM latest_account_assets WHERE account_id = ?",
             ] {
-                tx.execute(table, params![account_id_hex]).into_store_error()?;
+                tx.execute(table, params![account_id_bytes]).into_store_error()?;
             }
         }
 
@@ -640,14 +633,14 @@ impl SqliteStore {
                 &format!(
                     "DELETE FROM {table} WHERE account_id = ? AND replaced_at_nonce IN rarray(?)"
                 ),
-                params![account_id_hex, nonce_params.clone()],
+                params![account_id_bytes, nonce_params.clone()],
             )
             .into_store_error()?;
         }
         tx.execute(
             "DELETE FROM historical_account_headers \
              WHERE id = ? AND replaced_at_nonce IN rarray(?)",
-            params![account_id_hex, nonce_params],
+            params![account_id_bytes, nonce_params],
         )
         .into_store_error()?;
 
@@ -658,7 +651,7 @@ impl SqliteStore {
     /// Non-NULL old values overwrite latest, NULL old values (new entries) are deleted.
     fn restore_old_values_for_nonce(
         tx: &Transaction<'_>,
-        account_id_hex: &str,
+        account_id_bytes: &[u8],
         nonce_val: &rusqlite::types::Value,
     ) -> Result<(), StoreError> {
         // Restore storage slots with non-NULL old values
@@ -668,7 +661,7 @@ impl SqliteStore {
              SELECT account_id, slot_name, old_slot_value, slot_type \
              FROM historical_account_storage \
              WHERE account_id = ? AND replaced_at_nonce = ? AND old_slot_value IS NOT NULL",
-            params![account_id_hex, nonce_val],
+            params![account_id_bytes, nonce_val],
         )
         .into_store_error()?;
 
@@ -679,7 +672,7 @@ impl SqliteStore {
                  SELECT slot_name FROM historical_account_storage \
                  WHERE account_id = ?1 AND replaced_at_nonce = ?2 AND old_slot_value IS NULL\
              )",
-            params![account_id_hex, nonce_val],
+            params![account_id_bytes, nonce_val],
         )
         .into_store_error()?;
 
@@ -690,7 +683,7 @@ impl SqliteStore {
              SELECT account_id, slot_name, key, old_value \
              FROM historical_storage_map_entries \
              WHERE account_id = ? AND replaced_at_nonce = ? AND old_value IS NOT NULL",
-            params![account_id_hex, nonce_val],
+            params![account_id_bytes, nonce_val],
         )
         .into_store_error()?;
 
@@ -704,7 +697,7 @@ impl SqliteStore {
                    AND h.key = latest_storage_map_entries.key \
                    AND h.replaced_at_nonce = ?2 AND h.old_value IS NULL\
              )",
-            params![account_id_hex, nonce_val],
+            params![account_id_bytes, nonce_val],
         )
         .into_store_error()?;
 
@@ -715,7 +708,7 @@ impl SqliteStore {
              SELECT account_id, vault_key, old_asset \
              FROM historical_account_assets \
              WHERE account_id = ? AND replaced_at_nonce = ? AND old_asset IS NOT NULL",
-            params![account_id_hex, nonce_val],
+            params![account_id_bytes, nonce_val],
         )
         .into_store_error()?;
 
@@ -726,7 +719,7 @@ impl SqliteStore {
                  SELECT vault_key FROM historical_account_assets \
                  WHERE account_id = ?1 AND replaced_at_nonce = ?2 AND old_asset IS NULL\
              )",
-            params![account_id_hex, nonce_val],
+            params![account_id_bytes, nonce_val],
         )
         .into_store_error()?;
 
@@ -743,11 +736,11 @@ impl SqliteStore {
         new_account_state: &Account,
     ) -> Result<(), StoreError> {
         let account_id = new_account_state.id();
-        let account_id_hex = account_id.to_hex();
+        let account_id_bytes = account_id.to_bytes();
 
         // Read old header before mutating the SMT snapshot or database rows. Sync filters stale
         // full-account snapshots; if one still reaches storage, reject it before mutating.
-        let old_header = query_latest_account_headers(tx, "id = ?", params![&account_id_hex])?
+        let old_header = query_latest_account_headers(tx, "id = ?", params![&account_id_bytes])?
             .into_iter()
             .next()
             .map(|(header, ..)| header)
@@ -777,7 +770,7 @@ impl SqliteStore {
              (account_id, replaced_at_nonce, slot_name, old_slot_value, slot_type) \
              SELECT account_id, ?, slot_name, slot_value, slot_type \
              FROM latest_account_storage WHERE account_id = ?",
-            params![&nonce_val, &account_id_hex],
+            params![&nonce_val, &account_id_bytes],
         )
         .into_store_error()?;
         tx.execute(
@@ -785,7 +778,7 @@ impl SqliteStore {
              (account_id, replaced_at_nonce, slot_name, key, old_value) \
              SELECT account_id, ?, slot_name, key, value \
              FROM latest_storage_map_entries WHERE account_id = ?",
-            params![&nonce_val, &account_id_hex],
+            params![&nonce_val, &account_id_bytes],
         )
         .into_store_error()?;
         tx.execute(
@@ -793,24 +786,24 @@ impl SqliteStore {
              (account_id, replaced_at_nonce, vault_key, old_asset) \
              SELECT account_id, ?, vault_key, asset \
              FROM latest_account_assets WHERE account_id = ?",
-            params![&nonce_val, &account_id_hex],
+            params![&nonce_val, &account_id_bytes],
         )
         .into_store_error()?;
 
         // Delete all latest entries for this account
         tx.execute(
             "DELETE FROM latest_account_storage WHERE account_id = ?",
-            params![&account_id_hex],
+            params![&account_id_bytes],
         )
         .into_store_error()?;
         tx.execute(
             "DELETE FROM latest_storage_map_entries WHERE account_id = ?",
-            params![&account_id_hex],
+            params![&account_id_bytes],
         )
         .into_store_error()?;
         tx.execute(
             "DELETE FROM latest_account_assets WHERE account_id = ?",
-            params![&account_id_hex],
+            params![&account_id_bytes],
         )
         .into_store_error()?;
 
@@ -825,7 +818,7 @@ impl SqliteStore {
              (account_id, replaced_at_nonce, slot_name, old_slot_value, slot_type) \
              SELECT account_id, ?, slot_name, NULL, slot_type \
              FROM latest_account_storage WHERE account_id = ?",
-            params![&nonce_val, &account_id_hex],
+            params![&nonce_val, &account_id_bytes],
         )
         .into_store_error()?;
         tx.execute(
@@ -833,7 +826,7 @@ impl SqliteStore {
              (account_id, replaced_at_nonce, slot_name, key, old_value) \
              SELECT account_id, ?, slot_name, key, NULL \
              FROM latest_storage_map_entries WHERE account_id = ?",
-            params![&nonce_val, &account_id_hex],
+            params![&nonce_val, &account_id_bytes],
         )
         .into_store_error()?;
         tx.execute(
@@ -841,7 +834,7 @@ impl SqliteStore {
              (account_id, replaced_at_nonce, vault_key, old_asset) \
              SELECT account_id, ?, vault_key, NULL \
              FROM latest_account_assets WHERE account_id = ?",
-            params![&nonce_val, &account_id_hex],
+            params![&nonce_val, &account_id_bytes],
         )
         .into_store_error()?;
 
@@ -861,11 +854,12 @@ impl SqliteStore {
         let account_id = new_header.id();
 
         // Read current header from the store.
-        let init_header = query_latest_account_headers(tx, "id = ?", params![account_id.to_hex()])?
-            .into_iter()
-            .next()
-            .map(|(header, ..)| header)
-            .ok_or(StoreError::AccountDataNotFound(account_id))?;
+        let init_header =
+            query_latest_account_headers(tx, "id = ?", params![account_id.to_bytes()])?
+                .into_iter()
+                .next()
+                .map(|(header, ..)| header)
+                .ok_or(StoreError::AccountDataNotFound(account_id))?;
 
         // Read the fungible assets that will be affected by the delta.
         // Transaction derefs to Connection, so we can pass it where Connection is expected.
@@ -897,11 +891,11 @@ impl SqliteStore {
         // tracked in the db and corresponds to the mismatched account, it means we
         // got a past update and shouldn't lock the account.
         const LOCK_CONDITION: &str = "WHERE id = :account_id AND NOT EXISTS (SELECT 1 FROM historical_account_headers WHERE id = :account_id AND account_commitment = :digest)";
-        let account_id_hex = account_id.to_hex();
-        let digest_str = mismatched_digest.to_string();
+        let account_id_bytes = account_id.to_bytes();
+        let digest_bytes = mismatched_digest.to_bytes();
         let params = named_params! {
-            ":account_id": account_id_hex,
-            ":digest": digest_str
+            ":account_id": account_id_bytes,
+            ":digest": digest_bytes
         };
 
         let query = format!("UPDATE latest_account_headers SET locked = true {LOCK_CONDITION}");
@@ -928,12 +922,12 @@ impl SqliteStore {
         account_seed: Option<Word>,
         watched: bool,
     ) -> Result<(), StoreError> {
-        let id = new_header.id().to_hex();
-        let code_commitment = new_header.code_commitment().to_string();
-        let storage_commitment = new_header.storage_commitment().to_string();
-        let vault_root = new_header.vault_root().to_string();
+        let id = new_header.id().to_bytes();
+        let code_commitment = new_header.code_commitment().to_bytes();
+        let storage_commitment = new_header.storage_commitment().to_bytes();
+        let vault_root = new_header.vault_root().to_bytes();
         let nonce = u64_to_value(new_header.nonce().as_canonical_u64());
-        let commitment = new_header.to_commitment().to_string();
+        let commitment = new_header.to_commitment().to_bytes();
         let account_seed = account_seed.map(|seed| seed.to_bytes());
 
         const LATEST_QUERY: &str = insert_sql!(
@@ -995,7 +989,7 @@ impl SqliteStore {
             )));
         }
 
-        let id_hex = new_header.id().to_hex();
+        let id_bytes = new_header.id().to_bytes();
 
         // `AccountHeader` doesn't carry the seed or per-account flags, so read them from the row
         // we're about to overwrite: `account_seed`/`locked` get archived into the historical row,
@@ -1003,7 +997,7 @@ impl SqliteStore {
         let (old_seed, old_locked, old_watched): (Option<Vec<u8>>, bool, bool) = tx
             .query_row(
                 "SELECT account_seed, locked, watched FROM latest_account_headers WHERE id = ?",
-                params![&id_hex],
+                params![&id_bytes],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()
@@ -1011,12 +1005,12 @@ impl SqliteStore {
             .unwrap_or((None, false, false));
 
         // Archive the old header to historical.
-        let old_id = old_header.id().to_hex();
-        let old_code_commitment = old_header.code_commitment().to_string();
-        let old_storage_commitment = old_header.storage_commitment().to_string();
-        let old_vault_root = old_header.vault_root().to_string();
+        let old_id = old_header.id().to_bytes();
+        let old_code_commitment = old_header.code_commitment().to_bytes();
+        let old_storage_commitment = old_header.storage_commitment().to_bytes();
+        let old_vault_root = old_header.vault_root().to_bytes();
         let old_nonce = u64_to_value(old_header.nonce().as_canonical_u64());
-        let old_commitment = old_header.to_commitment().to_string();
+        let old_commitment = old_header.to_commitment().to_bytes();
         let replaced_at_nonce = u64_to_value(new_header.nonce().as_canonical_u64());
 
         const HISTORICAL_QUERY: &str = insert_sql!(
@@ -1064,12 +1058,12 @@ impl SqliteStore {
         up_to_nonce: Felt,
     ) -> Result<usize, StoreError> {
         let tx = conn.transaction().into_store_error()?;
-        let account_id_hex = account_id.to_hex();
+        let account_id_bytes = account_id.to_bytes();
         let boundary_val = u64_to_value(up_to_nonce.as_canonical_u64());
         let mut total_deleted: usize = 0;
 
         // Collect code commitments from headers we are about to delete.
-        let candidate_code_commitments: Vec<String> = {
+        let candidate_code_commitments: Vec<Vec<u8>> = {
             let mut stmt = tx
                 .prepare(
                     "SELECT DISTINCT code_commitment FROM historical_account_headers \
@@ -1077,9 +1071,9 @@ impl SqliteStore {
                 )
                 .into_store_error()?;
             let rows = stmt
-                .query_map(params![&account_id_hex, &boundary_val], |row| row.get(0))
+                .query_map(params![&account_id_bytes, &boundary_val], |row| row.get(0))
                 .into_store_error()?;
-            rows.collect::<Result<Vec<String>, _>>().into_store_error()?
+            rows.collect::<Result<Vec<Vec<u8>>, _>>().into_store_error()?
         };
 
         // Delete historical entries.
@@ -1087,7 +1081,7 @@ impl SqliteStore {
             .execute(
                 "DELETE FROM historical_account_headers \
                  WHERE id = ? AND replaced_at_nonce <= ?",
-                params![&account_id_hex, &boundary_val],
+                params![&account_id_bytes, &boundary_val],
             )
             .into_store_error()?;
 
@@ -1095,7 +1089,7 @@ impl SqliteStore {
             .execute(
                 "DELETE FROM historical_account_storage \
                  WHERE account_id = ? AND replaced_at_nonce <= ?",
-                params![&account_id_hex, &boundary_val],
+                params![&account_id_bytes, &boundary_val],
             )
             .into_store_error()?;
 
@@ -1103,7 +1097,7 @@ impl SqliteStore {
             .execute(
                 "DELETE FROM historical_storage_map_entries \
                  WHERE account_id = ? AND replaced_at_nonce <= ?",
-                params![&account_id_hex, &boundary_val],
+                params![&account_id_bytes, &boundary_val],
             )
             .into_store_error()?;
 
@@ -1111,7 +1105,7 @@ impl SqliteStore {
             .execute(
                 "DELETE FROM historical_account_assets \
                  WHERE account_id = ? AND replaced_at_nonce <= ?",
-                params![&account_id_hex, &boundary_val],
+                params![&account_id_bytes, &boundary_val],
             )
             .into_store_error()?;
 

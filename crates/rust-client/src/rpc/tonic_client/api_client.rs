@@ -29,6 +29,7 @@ pub(crate) mod api_client_wrapper {
         pub(crate) client: InnerClient,
         wasm_client: WasmClient,
         bearer_token: Option<String>,
+        max_decoding_message_size: usize,
     }
 
     impl ApiClient {
@@ -43,12 +44,19 @@ pub(crate) mod api_client_wrapper {
             _timeout_ms: u64,
             genesis_commitment: Option<Word>,
             bearer_token: Option<String>,
+            max_decoding_message_size: usize,
         ) -> Result<ApiClient, RpcError> {
             let wasm_client = WasmClient::new(endpoint);
             let interceptor =
                 accept_header_interceptor(genesis_commitment, bearer_token.as_deref())?;
-            let client = ProtoClient::with_interceptor(wasm_client.clone(), interceptor);
-            Ok(ApiClient { client, wasm_client, bearer_token })
+            let client = ProtoClient::with_interceptor(wasm_client.clone(), interceptor)
+                .max_decoding_message_size(max_decoding_message_size);
+            Ok(ApiClient {
+                client,
+                wasm_client,
+                bearer_token,
+                max_decoding_message_size,
+            })
         }
 
         /// Connects to the Miden node API without injecting an Accept header.
@@ -60,12 +68,19 @@ pub(crate) mod api_client_wrapper {
             endpoint: String,
             _timeout_ms: u64,
             bearer_token: Option<String>,
+            max_decoding_message_size: usize,
         ) -> Result<ApiClient, RpcError> {
             let wasm_client = WasmClient::new(endpoint);
             let interceptor =
                 MetadataInterceptor::default().with_bearer_token(bearer_token.as_deref())?;
-            let client = ProtoClient::with_interceptor(wasm_client.clone(), interceptor);
-            Ok(ApiClient { client, wasm_client, bearer_token })
+            let client = ProtoClient::with_interceptor(wasm_client.clone(), interceptor)
+                .max_decoding_message_size(max_decoding_message_size);
+            Ok(ApiClient {
+                client,
+                wasm_client,
+                bearer_token,
+                max_decoding_message_size,
+            })
         }
 
         /// Returns a new `ApiClient` with an updated genesis commitment.
@@ -77,7 +92,8 @@ pub(crate) mod api_client_wrapper {
             let interceptor =
                 accept_header_interceptor(Some(genesis_commitment), self.bearer_token.as_deref())
                     .expect("bearer token already validated at construction time");
-            self.client = ProtoClient::with_interceptor(self.wasm_client.clone(), interceptor);
+            self.client = ProtoClient::with_interceptor(self.wasm_client.clone(), interceptor)
+                .max_decoding_message_size(self.max_decoding_message_size);
             self
         }
     }
@@ -106,6 +122,7 @@ pub(crate) mod api_client_wrapper {
         pub(crate) client: InnerClient,
         channel: Channel,
         bearer_token: Option<String>,
+        max_decoding_message_size: usize,
     }
 
     impl ApiClient {
@@ -118,6 +135,7 @@ pub(crate) mod api_client_wrapper {
             timeout_ms: u64,
             genesis_commitment: Option<Word>,
             bearer_token: Option<String>,
+            max_decoding_message_size: usize,
         ) -> Result<ApiClient, RpcError> {
             // Build the interceptor first so an invalid bearer token fails fast,
             // before we attempt the network connection.
@@ -136,8 +154,14 @@ pub(crate) mod api_client_wrapper {
                 .map_err(|err| RpcError::ConnectionError(Box::new(err)))?;
 
             // Return the connected client.
-            let client = ProtoClient::with_interceptor(channel.clone(), interceptor);
-            Ok(ApiClient { client, channel, bearer_token })
+            let client = ProtoClient::with_interceptor(channel.clone(), interceptor)
+                .max_decoding_message_size(max_decoding_message_size);
+            Ok(ApiClient {
+                client,
+                channel,
+                bearer_token,
+                max_decoding_message_size,
+            })
         }
 
         /// Connects to the Miden node API without injecting an Accept header.
@@ -147,6 +171,7 @@ pub(crate) mod api_client_wrapper {
             endpoint: String,
             timeout_ms: u64,
             bearer_token: Option<String>,
+            max_decoding_message_size: usize,
         ) -> Result<ApiClient, RpcError> {
             // Fail fast on an invalid bearer token, before opening the channel.
             let interceptor =
@@ -163,8 +188,14 @@ pub(crate) mod api_client_wrapper {
                 .await
                 .map_err(|err| RpcError::ConnectionError(Box::new(err)))?;
 
-            let client = ProtoClient::with_interceptor(channel.clone(), interceptor);
-            Ok(ApiClient { client, channel, bearer_token })
+            let client = ProtoClient::with_interceptor(channel.clone(), interceptor)
+                .max_decoding_message_size(max_decoding_message_size);
+            Ok(ApiClient {
+                client,
+                channel,
+                bearer_token,
+                max_decoding_message_size,
+            })
         }
 
         /// Returns a new `ApiClient` with an updated genesis commitment.
@@ -176,7 +207,8 @@ pub(crate) mod api_client_wrapper {
             let interceptor =
                 accept_header_interceptor(Some(genesis_commitment), self.bearer_token.as_deref())
                     .expect("bearer token already validated at construction time");
-            self.client = ProtoClient::with_interceptor(self.channel.clone(), interceptor);
+            self.client = ProtoClient::with_interceptor(self.channel.clone(), interceptor)
+                .max_decoding_message_size(self.max_decoding_message_size);
             self
         }
     }

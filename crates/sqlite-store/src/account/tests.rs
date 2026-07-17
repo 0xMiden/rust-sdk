@@ -922,7 +922,7 @@ async fn prune_removes_orphaned_account_code() -> anyhow::Result<()> {
     // Simulate the nonce-1 state having a different code commitment by updating
     // the latest header's code_commitment directly. This makes the nonce-0
     // historical header the only reference to the original code.
-    let original_code_commitment: String = store
+    let original_code_commitment: Vec<u8> = store
         .interact_with_connection(move |conn| {
             conn.query_row(
                 "SELECT code_commitment FROM historical_account_headers WHERE id = ?",
@@ -937,14 +937,15 @@ async fn prune_removes_orphaned_account_code() -> anyhow::Result<()> {
     // orphaned when we prune the historical header.
     store
         .interact_with_connection(move |conn| {
+            let new_code_commitment = vec![1u8; 32];
             conn.execute(
                 "INSERT INTO account_code (commitment, code) VALUES (?, ?)",
-                params!["new_code_commitment", vec![0u8; 16]],
+                params![new_code_commitment, vec![0u8; 16]],
             )
             .into_store_error()?;
             conn.execute(
                 "UPDATE latest_account_headers SET code_commitment = ? WHERE id = ?",
-                params!["new_code_commitment", account_id.to_bytes()],
+                params![new_code_commitment, account_id.to_bytes()],
             )
             .into_store_error()?;
             Ok(())

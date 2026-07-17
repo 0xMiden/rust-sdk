@@ -9,6 +9,10 @@
 * [BREAKING][param][store] `Store::insert_block_header` now takes a `nodes` argument and persists the header with its MMR authentication nodes in a single transaction; the standalone `Store::insert_partial_blockchain_nodes` is removed. Header-only inserts (e.g. genesis) pass an empty slice ([#2294](https://github.com/0xMiden/rust-sdk/pull/2294)).
 * [BREAKING][behavior][store] The `ConsumedExternal` note-metadata layout added in [#2308](https://github.com/0xMiden/rust-sdk/pull/2308) is now the only supported serialized format. The backward-compatible decoding of the older metadata-less layout is removed, so existing stores are not compatible and must be recreated ([#2313](https://github.com/0xMiden/rust-sdk/pull/2313)).
 
+### Features
+
+* [FEATURE][rust] Added the `debug-output` feature: `Client::execute_program_with_debugger` / `execute_transaction_with_debugger` run a script/transaction with its MASM `debug.*` / `trace.*` output routed to a caller-supplied `fmt::Write` sink instead of stdout (a no-op on `wasm32-unknown-unknown`), letting consumers surface debug output on such targets ([#2302](https://github.com/0xMiden/rust-sdk/pull/2302)).
+
 ### Fixes
 
 * [FIX][rust] Storing an authenticated block header now persists the header and its MMR authentication nodes in a single store transaction, so an interrupted write can no longer leave a tracked block without the MMR nodes needed to rebuild the `PartialMmr` ([#2294](https://github.com/0xMiden/rust-sdk/pull/2294)).

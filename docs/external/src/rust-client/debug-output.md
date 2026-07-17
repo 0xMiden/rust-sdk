@@ -53,3 +53,24 @@ Stack state in interval [0, 2] before step 2419:
 Under tests, pass `--no-capture` (`cargo nextest`, used by `make test`) or `--nocapture`
 (`cargo test`) to see the output.
 :::
+
+## Routing debug output to a custom sink
+
+Standard output is a no-op on some targets (notably `wasm32-unknown-unknown`, which has no stdout).
+Enable the `debug-output` feature and run execution through `Client::execute_program_with_debugger`
+(or `execute_transaction_with_debugger`), parameterized by your own `fmt::Write` sink `W`. `W` is
+default-constructed per execution; output is still only produced when the client is in debug mode.
+
+```rust
+// `ConsoleWriter: fmt::Write + Default` — here it forwards to the browser console.
+client
+    .execute_program_with_debugger::<ConsoleWriter>(
+        account_id,
+        tx_script,
+        AdviceInputs::default(),
+        BTreeMap::new(),
+    )
+    .await?;
+```
+
+This is what `@miden-sdk/miden-sdk` uses to surface `debug.*` output in the browser console.

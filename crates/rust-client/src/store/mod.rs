@@ -599,14 +599,14 @@ pub trait Store: Send + Sync {
     async fn get_account_asset(
         &self,
         account_id: AccountId,
-        vault_id: AssetId,
+        asset_id: AssetId,
     ) -> Result<Option<(Asset, AssetWitness)>, StoreError> {
         let vault = self.get_account_vault(account_id).await?;
-        let Some(asset) = vault.assets().find(|a| a.id() == vault_id) else {
+        let Some(asset) = vault.assets().find(|a| a.id() == asset_id) else {
             return Ok(None);
         };
 
-        let witness = vault.open(vault_id);
+        let witness = vault.open(asset_id);
 
         Ok(Some((asset, witness)))
     }

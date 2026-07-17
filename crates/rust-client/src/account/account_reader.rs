@@ -119,9 +119,9 @@ impl AccountReader {
     /// To load the entire vault, use
     /// [`Client::get_account_vault`](crate::Client::get_account_vault).
     pub async fn get_balance(&self, faucet_id: AccountId) -> Result<AssetAmount, ClientError> {
-        let vault_id = AssetId::new_fungible(faucet_id);
+        let asset_id = AssetId::new_fungible(faucet_id);
         if let Some((Asset::Fungible(fungible_asset), _)) =
-            self.store.get_account_asset(self.account_id, vault_id).await?
+            self.store.get_account_asset(self.account_id, asset_id).await?
         {
             Ok(fungible_asset.amount())
         } else {

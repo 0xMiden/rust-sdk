@@ -244,7 +244,7 @@ impl SqliteStore {
         conn: &mut Connection,
         smt_forest: &Arc<RwLock<AccountSmtForest>>,
         account_id: AccountId,
-        vault_id: AssetId,
+        asset_id: AssetId,
     ) -> Result<Option<(Asset, AssetWitness)>, StoreError> {
         // Acquire forest lock before getting header in order to avoid concurrent writes to it.
         let smt_forest = smt_forest
@@ -254,7 +254,7 @@ impl SqliteStore {
             .ok_or(StoreError::AccountDataNotFound(account_id))?
             .0;
 
-        match smt_forest.get_asset_and_witness(header.vault_root(), vault_id) {
+        match smt_forest.get_asset_and_witness(header.vault_root(), asset_id) {
             Ok((asset, witness)) => Ok(Some((asset, witness))),
             Err(StoreError::VaultKeyNotTracked(..)) => Ok(None),
             Err(err) => Err(err),
@@ -701,8 +701,8 @@ impl SqliteStore {
         // Restore assets with non-NULL old values
         tx.execute(
             "INSERT OR REPLACE INTO latest_account_assets \
-             (account_id, vault_id, asset) \
-             SELECT account_id, vault_id, old_asset \
+             (account_id, asset_id, asset) \
+             SELECT account_id, asset_id, old_asset \
              FROM historical_account_assets \
              WHERE account_id = ? AND replaced_at_nonce = ? AND old_asset IS NOT NULL",
             params![account_id_bytes, nonce_val],
@@ -712,8 +712,8 @@ impl SqliteStore {
         // Delete assets that were new (NULL old value)
         tx.execute(
             "DELETE FROM latest_account_assets \
-             WHERE account_id = ?1 AND vault_id IN (\
-                 SELECT vault_id FROM historical_account_assets \
+             WHERE account_id = ?1 AND asset_id IN (\
+             SELECT asset_id FROM historical_account_assets \
                  WHERE account_id = ?1 AND replaced_at_nonce = ?2 AND old_asset IS NULL\
              )",
             params![account_id_bytes, nonce_val],
@@ -780,8 +780,8 @@ impl SqliteStore {
         .into_store_error()?;
         tx.execute(
             "INSERT OR REPLACE INTO historical_account_assets \
-             (account_id, replaced_at_nonce, vault_id, old_asset) \
-             SELECT account_id, ?, vault_id, asset \
+             (account_id, replaced_at_nonce, asset_id, old_asset) \
+             SELECT account_id, ?, asset_id, asset \
              FROM latest_account_assets WHERE account_id = ?",
             params![&nonce_val, &account_id_bytes],
         )
@@ -828,8 +828,8 @@ impl SqliteStore {
         .into_store_error()?;
         tx.execute(
             "INSERT OR IGNORE INTO historical_account_assets \
-             (account_id, replaced_at_nonce, vault_id, old_asset) \
-             SELECT account_id, ?, vault_id, NULL \
+             (account_id, replaced_at_nonce, asset_id, old_asset) \
+             SELECT account_id, ?, asset_id, NULL \
              FROM latest_account_assets WHERE account_id = ?",
             params![&nonce_val, &account_id_bytes],
         )

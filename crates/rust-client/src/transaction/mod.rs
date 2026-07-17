@@ -367,7 +367,6 @@ where
         account: &Account,
         transaction_request: TransactionRequest,
     ) -> Result<PreparedTransaction, ClientError> {
-        let account_id = account.id();
         self.validate_recency().await?;
         validate_account_request(&transaction_request, account)?;
 
@@ -400,7 +399,6 @@ where
         let future_notes: Vec<(NoteDetails, NoteTag)> =
             transaction_request.expected_future_notes().cloned().collect();
 
-        let account = self.try_get_account(account_id).await?;
         let tx_script = transaction_request.build_transaction_script(&account.code_interface())?;
 
         let foreign_accounts = transaction_request.foreign_accounts().clone();
@@ -797,18 +795,16 @@ where
             self.get_sync_height().await?
         };
 
-        let account_record = self
+        let account_code = self
             .store
-            .get_account(account_id)
+            .get_account_code(account_id)
             .await?
             .ok_or(ClientError::AccountDataNotFound(account_id))?;
-
-        let account: Account = account_record.try_into()?;
 
         let data_store = ClientDataStore::new(self.store.clone(), self.rpc_api.clone());
 
         // Ensure code is loaded on MAST store
-        data_store.mast_store().load_account_code(account.code());
+        data_store.mast_store().load_account_code(&account_code);
 
         for fpi_account in &foreign_account_inputs {
             data_store.mast_store().load_account_code(fpi_account.code());

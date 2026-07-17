@@ -141,25 +141,20 @@ impl SqliteStore {
     /// and provides no rollback of its own, relying on the caller to discard the snapshot on
     /// error.
     ///
-    /// Pre-reads (fungible assets and storage map roots) are performed via the transaction so
-    /// that each call sees writes made by prior calls within the same outer transaction.
+    /// The storage-map-root pre-read is performed via the transaction so that each call sees
+    /// writes made by prior calls within the same outer transaction.
     pub(crate) fn apply_transaction_in_txn(
         db_tx: &mut Transaction<'_>,
         smt_forest: &mut AccountSmtForest,
         tx_update: &TransactionStoreUpdate,
     ) -> Result<(), StoreError> {
         let executed_transaction = tx_update.executed_transaction();
+        let account_patch = executed_transaction.account_patch();
 
-        let updated_fungible_assets = Self::get_account_fungible_assets_for_delta(
+        let old_map_roots = Self::get_storage_map_roots_for_patch(
             db_tx,
             executed_transaction.account_id(),
-            executed_transaction.account_delta(),
-        )?;
-
-        let old_map_roots = Self::get_storage_map_roots_for_delta(
-            db_tx,
-            executed_transaction.account_id(),
-            executed_transaction.account_delta(),
+            account_patch.storage(),
         )?;
 
         // Build transaction record
@@ -194,14 +189,13 @@ impl SqliteStore {
         upsert_transaction_record(db_tx, &transaction_record)?;
 
         // Account Data
-        Self::apply_account_delta(
+        Self::apply_account_patch(
             db_tx,
             smt_forest,
             &executed_transaction.initial_account().into(),
             executed_transaction.final_account(),
-            updated_fungible_assets,
             &old_map_roots,
-            executed_transaction.account_delta(),
+            account_patch,
         )?;
 
         // Note Updates

@@ -106,9 +106,9 @@ CREATE TABLE historical_storage_map_entries (
 
 CREATE TABLE latest_account_assets (
     account_id BLOB NOT NULL,        -- account ID
-    vault_key BLOB NOT NULL,         -- asset's vault key
+    vault_id BLOB NOT NULL,         -- asset's vault id
     asset BLOB NOT NULL,             -- serialized asset value
-    PRIMARY KEY (account_id, vault_key)
+    PRIMARY KEY (account_id, vault_id)
 ) WITHOUT ROWID;
 
 -- Historical account assets: stores old assets that were replaced.
@@ -116,9 +116,9 @@ CREATE TABLE latest_account_assets (
 CREATE TABLE historical_account_assets (
     account_id BLOB NOT NULL,           -- account ID
     replaced_at_nonce BIGINT NOT NULL,  -- nonce at which this old asset was replaced
-    vault_key BLOB NOT NULL,            -- asset's vault key
+    vault_id BLOB NOT NULL,            -- asset's vault id
     old_asset BLOB NULL,                -- old serialized asset value (NULL = asset was new)
-    PRIMARY KEY (account_id, replaced_at_nonce, vault_key)
+    PRIMARY KEY (account_id, replaced_at_nonce, vault_id)
 ) WITHOUT ROWID;
 
 -- ── Foreign account code ─────────────────────────────────────────────────

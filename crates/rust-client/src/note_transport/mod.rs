@@ -12,16 +12,9 @@ use alloc::vec::Vec;
 use futures::Stream;
 use miden_protocol::address::Address;
 use miden_protocol::block::BlockNumber;
-use miden_protocol::note::{
-    Note,
-    NoteDetails,
-    NoteDetailsCommitment,
-    NoteFile,
-    NoteHeader,
-    NoteId,
-    NoteTag,
-};
+use miden_protocol::note::{Note, NoteDetails, NoteDetailsCommitment, NoteHeader, NoteId, NoteTag};
 use miden_protocol::utils::serde::Serializable;
+use miden_standards::note::{NoteFile, NoteSyncHint};
 use miden_tx::auth::TransactionAuthenticator;
 use miden_tx::utils::serde::{
     ByteReader,
@@ -376,10 +369,9 @@ where
             let tag = note.metadata().tag();
             // Prefer the sender-provided hint, falling back to the lookback window when absent.
             let after_block_num = block_hint.unwrap_or(fallback_after_block_num);
-            let note_file = NoteFile::NoteDetails {
+            let note_file = NoteFile::ExpectedNote {
                 details: note.into(),
-                after_block_num,
-                tag: Some(tag),
+                sync_hint: NoteSyncHint::new(after_block_num, tag),
             };
             note_requests.push(note_file);
         }

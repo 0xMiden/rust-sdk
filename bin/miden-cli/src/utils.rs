@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use miden_client::account::{AccountId, FaucetMetadata};
 use miden_client::address::{Address, AddressId};
-use miden_client::asset::{FungibleAsset, NonFungibleDeltaAction};
+use miden_client::asset::{Asset, FungibleAsset};
 use miden_client::transaction::{ExecutedTransaction, InputNote};
 use miden_client::utils::{base_units_to_tokens, tokens_to_base_units};
 use miden_client::vm::MIN_STACK_DEPTH;
@@ -108,7 +108,7 @@ pub async fn print_executed_transaction<AUTH>(
 ) -> Result<(), CliError> {
     println!("The transaction will have the following effects:\n");
 
-    let delta = executed_tx.account_delta();
+    let patch = executed_tx.account_patch();
 
     // INPUT NOTES
     let input_note_ids = executed_tx.input_notes().iter().map(InputNote::id).collect::<Vec<_>>();
@@ -135,10 +135,12 @@ pub async fn print_executed_transaction<AUTH>(
     println!();
 
     // STORAGE VALUES
-    if delta.storage().values().next().is_some() {
-        let mut table = create_dynamic_table(&["Storage Slot", "Effect"]);
-        for (slot, new_value) in delta.storage().values() {
-            table.add_row(vec![slot.to_string(), format!("Updated ({})", new_value.to_hex())]);
+    if patch.storage().values().next().is_some() {
+        let mut table = create_dynamic_table(&["Storage Slot", "New Value"]);
+        for (slot, value_patch) in patch.storage().values() {
+            let new_value =
+                value_patch.value().map_or_else(|| "removed".to_string(), |v| v.to_hex());
+            table.add_row(vec![slot.to_string(), new_value]);
         }
         println!("Storage changes:");
         println!("{table}");
@@ -147,10 +149,10 @@ pub async fn print_executed_transaction<AUTH>(
     }
 
     // STORAGE MAPS
-    if delta.storage().maps().next().is_some() {
+    if patch.storage().maps().next().is_some() {
         let mut table = create_dynamic_table(&["Storage Slot", "Map Key", "New Value"]);
-        for (slot, map_delta) in delta.storage().maps() {
-            for (key, value) in map_delta.entries() {
+        for (slot, map_patch) in patch.storage().maps() {
+            for (key, value) in map_patch.entries().into_iter().flat_map(|e| e.as_map().iter()) {
                 table.add_row(vec![slot.to_string(), Word::from(*key).to_hex(), value.to_hex()]);
             }
         }
@@ -159,41 +161,37 @@ pub async fn print_executed_transaction<AUTH>(
     }
 
     // VAULT
-    if delta.vault().is_empty() {
+    // The patch carries the new absolute value of each changed asset, cleared entries are listed as
+    // removed.
+    if patch.vault().is_empty() {
         println!("Account Vault will not be changed.");
     } else {
         let resolver = load_faucet_metadata_resolver()?;
-        let mut table = create_dynamic_table(&["Asset Type", "Faucet ID", "Amount"]);
+        let mut table = create_dynamic_table(&["Asset Type", "Faucet ID", "New Amount"]);
 
-        for (vault_key, amount) in delta.vault().fungible().iter() {
-            let asset = FungibleAsset::new(vault_key.faucet_id(), amount.unsigned_abs())
-                .map_err(CliError::Asset)?;
-            let (faucet_fmt, amount_fmt) = resolver.format_fungible_asset(client, &asset).await?;
-
-            if amount.is_positive() {
-                table.add_row(vec!["Fungible Asset", &faucet_fmt, &format!("+{amount_fmt}")]);
-            } else {
-                table.add_row(vec!["Fungible Asset", &faucet_fmt, &format!("-{amount_fmt}")]);
-            }
-        }
-
-        for (asset, action) in delta.vault().non_fungible().iter() {
-            match action {
-                NonFungibleDeltaAction::Add => {
+        for asset in patch.vault().updated_assets() {
+            match asset {
+                Asset::Fungible(fungible) => {
+                    let (faucet_fmt, amount_fmt) =
+                        resolver.format_fungible_asset(client, &fungible).await?;
+                    table.add_row(vec!["Fungible Asset", &faucet_fmt, &amount_fmt]);
+                },
+                Asset::NonFungible(non_fungible) => {
                     table.add_row(vec![
                         "Non Fungible Asset",
-                        &asset.faucet_id().prefix().to_hex(),
+                        &non_fungible.faucet_id().prefix().to_hex(),
                         "1",
                     ]);
                 },
-                NonFungibleDeltaAction::Remove => {
-                    table.add_row(vec![
-                        "Non Fungible Asset",
-                        &asset.faucet_id().prefix().to_hex(),
-                        "-1",
-                    ]);
-                },
             }
+        }
+
+        for vault_id in patch.vault().removed_asset_ids() {
+            table.add_row(vec![
+                "Removed Asset",
+                &vault_id.faucet_id().prefix().to_hex(),
+                "removed",
+            ]);
         }
 
         println!("Vault changes:");
@@ -201,7 +199,10 @@ pub async fn print_executed_transaction<AUTH>(
     }
 
     // NONCE
-    println!("Nonce incremented by: {}.", delta.nonce_delta());
+    match patch.final_nonce() {
+        Some(nonce) => println!("New account nonce: {nonce}."),
+        None => println!("Account nonce will not be changed."),
+    }
 
     Ok(())
 }
@@ -382,7 +383,7 @@ impl FaucetMetadataResolver {
         asset: &FungibleAsset,
     ) -> Result<(String, String), CliError> {
         if let Some(meta) = self.resolve(client, asset.faucet_id()).await? {
-            return Ok((meta.symbol, base_units_to_tokens(asset.amount().as_u64(), meta.decimals)));
+            return Ok((meta.symbol, base_units_to_tokens(asset.amount(), meta.decimals)));
         }
         let network_id = client.network_id().await?;
         let address_str = Address::new(asset.faucet_id()).encode(network_id);
@@ -431,7 +432,7 @@ impl FaucetMetadataResolver {
             let amount = tokens_to_base_units(amount, entry.decimals).map_err(|err| {
                 CliError::Parse(err.into(), "Failed to parse tokens to base units".to_string())
             })?;
-            (entry.account_id, amount)
+            (entry.account_id, amount.as_u64())
         };
 
         FungibleAsset::new(faucet_id, amount).map_err(CliError::Asset)

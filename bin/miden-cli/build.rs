@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::{env, fs};
 
 use miden_client::account::component::{
@@ -17,7 +16,6 @@ use miden_client::utils::Serializable;
 use miden_client::vm::{
     Package,
     PackageExport,
-    PackageManifest,
     ProcedureExport,
     QualifiedProcedureName,
     Section,
@@ -30,18 +28,13 @@ const PACKAGE_DIR: &str = "packages";
 fn main() {
     // Basic wallet (no storage schema)
     let basic_wallet_metadata = BasicWallet::component_metadata();
-    build_package(
-        "basic-wallet",
-        BasicWallet::code().as_library().clone(),
-        &basic_wallet_metadata,
-        None,
-    );
+    build_package("basic-wallet", BasicWallet::code().as_library(), &basic_wallet_metadata, None);
 
     // Basic fungible faucet
     let basic_faucet_metadata = FungibleFaucet::component_metadata();
     build_package(
         "basic-fungible-faucet",
-        FungibleFaucet::code().as_library().clone(),
+        FungibleFaucet::code().as_library(),
         &basic_faucet_metadata,
         None,
     );
@@ -51,7 +44,7 @@ fn main() {
 
     build_package(
         "basic-auth",
-        AuthSingleSig::code().as_library().clone(),
+        AuthSingleSig::code().as_library(),
         &singlesig_metadata,
         Some("auth"),
     );
@@ -59,7 +52,7 @@ fn main() {
     // ECDSA auth (same component, different package name for discoverability)
     build_package(
         "ecdsa-auth",
-        AuthSingleSig::code().as_library().clone(),
+        AuthSingleSig::code().as_library(),
         &singlesig_metadata,
         Some("auth"),
     );
@@ -67,32 +60,27 @@ fn main() {
     // No authentication component. Nonce is incremented on first transaction and when the account
     // state is changed. Provides no cryptographic authentication.
     let no_auth_metadata = NoAuth::component_metadata();
-    build_package("no-auth", NoAuth::code().as_library().clone(), &no_auth_metadata, Some("auth"));
+    build_package("no-auth", NoAuth::code().as_library(), &no_auth_metadata, Some("auth"));
 
     // Multisig auth
     let multisig_metadata = AuthMultisig::component_metadata();
     build_package(
         "multisig-auth",
-        AuthMultisig::code().as_library().clone(),
+        AuthMultisig::code().as_library(),
         &multisig_metadata,
         Some("auth"),
     );
 
     // ACL auth
     let acl_metadata = AuthSingleSigAcl::component_metadata();
-    build_package(
-        "acl-auth",
-        AuthSingleSigAcl::code().as_library().clone(),
-        &acl_metadata,
-        Some("auth"),
-    );
+    build_package("acl-auth", AuthSingleSigAcl::code().as_library(), &acl_metadata, Some("auth"));
 }
 
 /// Builds a package and stores it under `{OUT_DIR}/{PACKAGE_DIR}` or
 /// `{OUT_DIR}/{PACKAGE_DIR}/{subdirectory}` if a subdirectory is provided.
 pub fn build_package(
     package_name: &str,
-    library: Library,
+    library: &Library,
     metadata: &AccountComponentMetadata,
     subdirectory: Option<&str>,
 ) {
@@ -105,6 +93,8 @@ pub fn build_package(
             let name = QualifiedProcedureName::new(module_info.path(), proc_info.name.clone());
             let export = ProcedureExport {
                 path: name.into_inner(),
+                node: None,
+                source_node: None,
                 digest: proc_info.digest,
                 signature: proc_info.signature.as_deref().cloned(),
                 attributes: proc_info.attributes.clone(),
@@ -113,22 +103,22 @@ pub fn build_package(
         }
     }
 
-    let mast = Arc::new(library);
-
-    let manifest = PackageManifest::new(exports).expect("manifest validation failed");
+    let mast = library.mast_forest().clone();
 
     let account_component_metadata_section =
         Section::new(SectionId::ACCOUNT_COMPONENT_METADATA, metadata.to_bytes());
 
-    let package = Package {
-        name: metadata.name().to_string().into(),
-        version: metadata.version().clone(),
-        description: Some(metadata.description().to_string()),
+    let mut package = Package::create(
+        metadata.name().to_string().into(),
+        metadata.version().clone(),
+        TargetType::AccountComponent,
         mast,
-        manifest,
-        sections: vec![account_component_metadata_section],
-        kind: TargetType::AccountComponent,
-    };
+        exports,
+        [],
+    )
+    .expect("package creation failed");
+    package.description = Some(metadata.description().to_string());
+    package.sections = vec![account_component_metadata_section];
 
     let out_dir = env::var("OUT_DIR").expect("OUT_DIR environment variable not set");
 

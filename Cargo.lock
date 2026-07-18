@@ -2013,6 +2013,7 @@ dependencies = [
  "gloo-timers",
  "hex",
  "miden-agglayer",
+ "miden-debug",
  "miden-node-proto-build",
  "miden-note-transport-proto-build",
  "miden-processor",

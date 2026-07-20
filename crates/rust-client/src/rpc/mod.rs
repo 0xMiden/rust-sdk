@@ -165,6 +165,13 @@ pub trait NodeRpcClient: Send + Sync {
     /// of the return tuple should always be Some(MmrProof).
     ///
     /// When `None` is provided, returns info regarding the latest block.
+    ///
+    /// When `block_num` is `Some`, implementations must verify that the returned header's block
+    /// number matches the requested one and return [`RpcError::InvalidResponse`] otherwise.
+    ///
+    /// Errors:
+    /// - [`RpcError::InvalidResponse`] if the node returns a header whose block number does not
+    ///   match the requested `block_num`.
     async fn get_block_header_by_number(
         &self,
         block_num: Option<BlockNumber>,
@@ -175,6 +182,13 @@ pub trait NodeRpcClient: Send + Sync {
     /// the `/GetBlockByNumber` RPC endpoint.
     ///
     /// If `include_proof` is set to true, the block proof will be included in the response.
+    ///
+    /// Implementations must verify that the returned block's number matches the requested
+    /// `block_num` and return [`RpcError::InvalidResponse`] otherwise.
+    ///
+    /// # Errors:
+    /// - [`RpcError::InvalidResponse`] if the node returns a block whose number does not match the
+    ///   requested `block_num`.
     async fn get_block_by_number(
         &self,
         block_num: BlockNumber,
@@ -192,6 +206,12 @@ pub trait NodeRpcClient: Send + Sync {
     ///
     /// In both cases, a [`miden_protocol::note::NoteInclusionProof`] is returned so the caller can
     /// verify that each note is part of the block's note tree.
+    ///
+    /// Implementations must verify that every returned note's ID was present in `note_ids` and
+    /// return [`RpcError::InvalidResponse`] otherwise.
+    ///
+    /// Errors:
+    /// - [`RpcError::InvalidResponse`] if the node returns a note whose ID was not requested.
     async fn get_notes_by_id(&self, note_ids: &[NoteId]) -> Result<Vec<FetchedNote>, RpcError>;
 
     /// Fetches the MMR delta for a given block range using the `/SyncChainMmr` RPC endpoint.
@@ -257,6 +277,12 @@ pub trait NodeRpcClient: Send + Sync {
     /// Notes with attachments will have header-only metadata after this call; use
     /// [`NodeRpcClient::sync_notes_with_details`] to also resolve their full metadata and
     /// fetch public note bodies in a single follow-up call.
+    ///
+    /// Implementations must verify that every returned note's tag was present in `note_tags` and
+    /// return [`RpcError::InvalidResponse`] otherwise.
+    ///
+    /// # Errors
+    /// - [`RpcError::InvalidResponse`] if the node returns a note whose tag was not requested.
     async fn sync_notes(
         &self,
         block_from: BlockNumber,
@@ -319,6 +345,13 @@ pub trait NodeRpcClient: Send + Sync {
     /// - `prefix` is a list of nullifiers prefixes to search for.
     /// - `block_from`: The starting block number for the range (inclusive).
     /// - `block_to`: The ending block number for the range (inclusive).
+    ///
+    /// Implementations must verify that every returned nullifier's prefix was present in `prefix`
+    /// and return [`RpcError::InvalidResponse`] otherwise.
+    ///
+    /// # Errors
+    /// - [`RpcError::InvalidResponse`] if the node returns a nullifier whose prefix was not
+    ///   requested.
     async fn sync_nullifiers(
         &self,
         prefix: &[u16],
@@ -335,7 +368,11 @@ pub trait NodeRpcClient: Send + Sync {
     ///
     /// For a fully oversize-resolved account, use [`NodeRpcClient::get_account_details`].
     ///
-    /// Errors if the account isn't found.
+    /// Errors if the account isn't found or the block number of the requested account doesn't match
+    /// # Errors
+    ///
+    /// - If the account isn't found in the network
+    /// - If the response block number does not match the requested one
     async fn get_account(
         &self,
         account_id: AccountId,
@@ -356,17 +393,9 @@ pub trait NodeRpcClient: Send + Sync {
         }
         let vault_info =
             self.sync_account_vault(BlockNumber::GENESIS, block_to, account_id).await?;
-        let mut updates = vault_info.updates;
-        // The node returns the full history of vault entries, so a given key may appear in more
-        // than one block. Sort by block so the BTreeMap keeps the latest value per key.
-        updates.sort_by_key(|u| u.block_num);
-        details.vault_details.assets = updates
-            .into_iter()
-            .map(|u| (u.vault_key, u.asset))
-            .collect::<BTreeMap<_, _>>()
-            .into_values()
-            .flatten()
-            .collect();
+        // Syncing from genesis merges the full vault history into an absolute patch, so its
+        // updated (non-removed) assets are the account's current vault contents.
+        details.vault_details.assets = vault_info.vault_patch.updated_assets().collect();
         details.vault_details.too_many_assets = false;
         Ok(())
     }
@@ -388,18 +417,19 @@ pub trait NodeRpcClient: Send + Sync {
             if !map_details.too_many_entries {
                 continue;
             }
-            // The node returns the full history of map entries, so a given key may appear in
-            // more than one block. Sort by block so the BTreeMap keeps the latest value per key.
-            let mut sorted: Vec<_> =
-                info.updates.iter().filter(|u| u.slot_name == map_details.slot_name).collect();
-            sorted.sort_by_key(|u| u.block_num);
-            let entries: Vec<StorageMapEntry> = sorted
-                .into_iter()
-                .map(|u| (u.key, u.value))
-                .collect::<BTreeMap<_, _>>()
-                .into_iter()
-                .map(|(key, value)| StorageMapEntry { key, value })
-                .collect();
+            // Syncing from genesis merges the full history of each slot into its absolute
+            // current entries, so the result is the complete map content.
+            let entries: Vec<StorageMapEntry> = info
+                .map_entries
+                .get(&map_details.slot_name)
+                .map(|entries| {
+                    entries
+                        .as_map()
+                        .iter()
+                        .map(|(key, value)| StorageMapEntry { key: *key, value: *value })
+                        .collect()
+                })
+                .unwrap_or_default();
             map_details.too_many_entries = false;
             map_details.entries = StorageMapEntries::AllEntries(entries);
         }

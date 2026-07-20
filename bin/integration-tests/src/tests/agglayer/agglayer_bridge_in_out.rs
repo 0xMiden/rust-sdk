@@ -36,7 +36,7 @@ use miden_agglayer::{
 };
 use miden_client::Felt;
 use miden_client::account::AccountType;
-use miden_client::asset::{Asset, AssetCallbackFlag, FungibleAsset};
+use miden_client::asset::{Asset, AssetAmount, FungibleAsset};
 use miden_client::auth::RPO_FALCON_SCHEME_ID;
 use miden_client::crypto::FeltRng;
 use miden_client::note::NoteAssets;
@@ -275,7 +275,7 @@ pub async fn test_agglayer_bridge_in_out(client_config: ClientConfig) -> Result<
             .await?;
         println!("[bridge_in_out] Round {round}: destination balance: {}", dest_balance);
         assert!(
-            dest_balance > 0,
+            dest_balance > AssetAmount::ZERO,
             "destination should have positive balance after bridge-in round {round}"
         );
     }
@@ -297,7 +297,6 @@ pub async fn test_agglayer_bridge_in_out(client_config: ClientConfig) -> Result<
     // callbacks-disabled key and fails to remove it from the vault.
     let bridge_asset: Asset = FungibleAsset::new(agglayer_faucet_id, BRIDGE_OUT_AMOUNT)
         .map_err(|e| anyhow::anyhow!("{e}"))?
-        .with_callbacks(AssetCallbackFlag::Enabled)
         .into();
     let b2agg_note = B2AggNote::create(
         L1_NETWORK_ID,

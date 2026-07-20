@@ -1,9 +1,8 @@
 use anyhow::{Context, Result};
 use miden_client::account::AccountType;
-use miden_client::asset::FungibleAsset;
+use miden_client::asset::{AssetAmount, FungibleAsset};
 use miden_client::auth::RPO_FALCON_SCHEME_ID;
-use miden_client::note::{Note, NoteDetails, NoteType, PswapNote};
-use miden_client::store::NoteFilter;
+use miden_client::note::{Note, NoteType, PswapNote};
 use miden_client::testing::common::*;
 use miden_client::transaction::{PswapTransactionData, TransactionRequestBuilder};
 use tracing::info;
@@ -106,27 +105,29 @@ pub async fn test_pswap_full_fill_onchain(client_config: ClientConfig) -> Result
     let consume_request = TransactionRequestBuilder::new().build_pswap_consume(
         &pswap_note,
         bob_account.id(),
-        REQUESTED_AMOUNT,
-        0,
+        AssetAmount::new(REQUESTED_AMOUNT).unwrap(),
+        AssetAmount::ZERO,
     )?;
-    let payback_note_details = consume_request
-        .expected_future_notes()
-        .cloned()
-        .map(|(n, _)| n)
-        .collect::<Vec<_>>();
-    assert_eq!(payback_note_details.len(), 1, "full fill should produce only the payback note");
+    // The consumer tracks neither output note: the payback settles to the creator and the
+    // remainder is the order's next tip. Both are validated as the transaction's own outputs, but
+    // neither is registered as an expected future note in the consumer's store.
+    assert!(
+        consume_request.expected_future_notes().next().is_none(),
+        "the consumer should not track any future notes"
+    );
 
     execute_tx_and_sync(&mut bob_client, bob_account.id(), consume_request).await?;
 
-    // Alice consumes her payback note.
+    // Alice discovers her payback through the creator-side note screening path after syncing, then
+    // consumes it.
     alice_client.sync_state().await?;
-    let payback_commitment = payback_note_details[0].commitment();
-    let payback_note: Note = alice_client
-        .get_input_notes(NoteFilter::DetailsCommitments(vec![payback_commitment]))
+    let (payback_record, _) = alice_client
+        .get_consumable_notes(Some(alice_account.id()))
         .await?
-        .pop()
-        .with_context(|| format!("Payback note {} not found", payback_commitment.to_hex()))?
-        .try_into()?;
+        .into_iter()
+        .next()
+        .context("Alice should have discovered the payback note after the full fill")?;
+    let payback_note: Note = payback_record.try_into()?;
     let consume_payback =
         TransactionRequestBuilder::new().build_consume_notes(vec![payback_note])?;
     execute_tx_and_sync(&mut alice_client, alice_account.id(), consume_payback).await?;
@@ -134,18 +135,21 @@ pub async fn test_pswap_full_fill_onchain(client_config: ClientConfig) -> Result
     let alice_account_reader = alice_client.account_reader(alice_account.id());
     assert_eq!(
         alice_account_reader.get_balance(btc_faucet_account.id()).await?,
-        MINT_AMOUNT - OFFERED_AMOUNT
+        AssetAmount::new(MINT_AMOUNT - OFFERED_AMOUNT).unwrap()
     );
     assert_eq!(
         alice_account_reader.get_balance(eth_faucet_account.id()).await?,
-        REQUESTED_AMOUNT
+        AssetAmount::new(REQUESTED_AMOUNT).unwrap()
     );
 
     let bob_account_reader = bob_client.account_reader(bob_account.id());
-    assert_eq!(bob_account_reader.get_balance(btc_faucet_account.id()).await?, OFFERED_AMOUNT);
+    assert_eq!(
+        bob_account_reader.get_balance(btc_faucet_account.id()).await?,
+        AssetAmount::new(OFFERED_AMOUNT).unwrap()
+    );
     assert_eq!(
         bob_account_reader.get_balance(eth_faucet_account.id()).await?,
-        MINT_AMOUNT - REQUESTED_AMOUNT
+        AssetAmount::new(MINT_AMOUNT - REQUESTED_AMOUNT).unwrap()
     );
 
     Ok(())
@@ -243,15 +247,18 @@ pub async fn test_pswap_partial_fill_onchain(client_config: ClientConfig) -> Res
     let consume_request = TransactionRequestBuilder::new().build_pswap_consume(
         &pswap_note,
         bob_account.id(),
-        ACCOUNT_FILL,
-        0,
+        AssetAmount::new(ACCOUNT_FILL).unwrap(),
+        AssetAmount::ZERO,
     )?;
 
-    // The consume request should register both the payback p2id and the remainder PSWAP as
-    // expected future notes.
-    let future_notes: Vec<NoteDetails> =
-        consume_request.expected_future_notes().cloned().map(|(n, _)| n).collect();
-    assert_eq!(future_notes.len(), 2, "partial fill should produce a payback and a remainder");
+    // The consumer tracks neither output note. The payback settles to the creator and the
+    // remainder is the order's next tip; the consumer owns neither, so neither is registered as an
+    // expected future note. Following the remainder is the creator's lineage's job (asserted
+    // below).
+    assert!(
+        consume_request.expected_future_notes().next().is_none(),
+        "the consumer should not track any future notes"
+    );
 
     execute_tx_and_sync(&mut bob_client, bob_account.id(), consume_request).await?;
 
@@ -261,32 +268,27 @@ pub async fn test_pswap_partial_fill_onchain(client_config: ClientConfig) -> Res
     let bob_account_reader = bob_client.account_reader(bob_account.id());
     assert_eq!(
         bob_account_reader.get_balance(btc_faucet_account.id()).await?,
-        EXPECTED_PAYOUT,
+        AssetAmount::new(EXPECTED_PAYOUT).unwrap(),
         "Bob should have received a proportional share, not the full offered amount"
     );
     assert_eq!(
         bob_account_reader.get_balance(eth_faucet_account.id()).await?,
-        MINT_AMOUNT - ACCOUNT_FILL,
+        AssetAmount::new(MINT_AMOUNT - ACCOUNT_FILL).unwrap(),
         "Bob should have spent only the partial fill amount"
     );
 
-    // Locate the remainder PSWAP note among Bob's tracked input notes and verify its amounts.
-    let commitments = future_notes.iter().map(|details| details.commitment()).collect();
-    let bob_input_notes =
-        bob_client.get_input_notes(NoteFilter::DetailsCommitments(commitments)).await?;
-    let mut remainder_pswap = None;
-    for record in &bob_input_notes {
-        if let Ok(note) = TryInto::<Note>::try_into(record.clone())
-            && let Ok(parsed) = PswapNote::try_from(&note)
-        {
-            remainder_pswap = Some(parsed);
-            break;
-        }
-    }
-    let remainder =
-        remainder_pswap.context("remainder PSWAP note should exist after partial fill")?;
-    assert_eq!(remainder.offered_asset().amount().as_u64(), REMAINING_OFFERED);
-    assert_eq!(remainder.storage().requested_asset_amount(), REMAINING_REQUESTED);
+    // The remainder is followed by Alice's PSWAP lineage. After Alice syncs, the tip advances to
+    // depth 1 carrying the unfilled amounts — this verifies the remainder's contents without the
+    // consumer having to track a note it does not own.
+    alice_client.sync_state().await?;
+    let order_id = PswapNote::try_from(&pswap_note)?.order_id();
+    let lineage = alice_client
+        .pswap_lineage(order_id)
+        .await?
+        .context("Alice should track a lineage for her PSWAP order")?;
+    assert_eq!(lineage.current_depth, 1, "a single partial fill advances the tip to depth 1");
+    assert_eq!(lineage.remaining_offered.as_u64(), REMAINING_OFFERED);
+    assert_eq!(lineage.remaining_requested.as_u64(), REMAINING_REQUESTED);
 
     Ok(())
 }
@@ -352,7 +354,7 @@ pub async fn test_pswap_cancel_onchain(client_config: ClientConfig) -> Result<()
     let alice_account_reader = alice_client.account_reader(alice_account.id());
     assert_eq!(
         alice_account_reader.get_balance(btc_faucet_account.id()).await?,
-        MINT_AMOUNT - OFFERED_AMOUNT,
+        AssetAmount::new(MINT_AMOUNT - OFFERED_AMOUNT).unwrap(),
         "creating the PSWAP should debit the offered asset"
     );
 
@@ -364,7 +366,7 @@ pub async fn test_pswap_cancel_onchain(client_config: ClientConfig) -> Result<()
     let alice_account_reader = alice_client.account_reader(alice_account.id());
     assert_eq!(
         alice_account_reader.get_balance(btc_faucet_account.id()).await?,
-        MINT_AMOUNT,
+        AssetAmount::new(MINT_AMOUNT).unwrap(),
         "cancelling should restore the offered asset to the creator"
     );
 

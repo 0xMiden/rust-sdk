@@ -1,8 +1,8 @@
 # Miden client
 
-[![LICENSE](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/0xMiden/miden-client/blob/main/LICENSE)
-[![test](https://github.com/0xMiden/miden-client/actions/workflows/test.yml/badge.svg)](https://github.com/0xMiden/miden-client/actions/workflows/test.yml)
-[![build](https://github.com/0xMiden/miden-client/actions/workflows/build.yml/badge.svg)](https://github.com/0xMiden/miden-client/actions/workflows/build.yml)
+[![LICENSE](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/0xMiden/rust-sdk/blob/HEAD/LICENSE)
+[![test](https://github.com/0xMiden/rust-sdk/actions/workflows/test.yml/badge.svg)](https://github.com/0xMiden/rust-sdk/actions/workflows/test.yml)
+[![build](https://github.com/0xMiden/rust-sdk/actions/workflows/build.yml/badge.svg)](https://github.com/0xMiden/rust-sdk/actions/workflows/build.yml)
 [![RUST_VERSION](https://img.shields.io/badge/rustc-1.88+-lightgray.svg)](https://www.rust-lang.org/tools/install)
 [![crates.io](https://img.shields.io/crates/v/miden-client)](https://crates.io/crates/miden-client)
 

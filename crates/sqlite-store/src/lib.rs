@@ -54,7 +54,7 @@ use miden_client::sync::{NoteTagRecord, StateSyncUpdate};
 use miden_client::transaction::{TransactionRecord, TransactionStoreUpdate};
 use miden_protocol::Felt;
 use miden_protocol::account::StorageMapWitness;
-use miden_protocol::asset::AssetVaultKey;
+use miden_protocol::asset::AssetId;
 use rusqlite::Connection;
 use rusqlite::types::Value;
 use sql_error::SqlResultExt;
@@ -278,11 +278,13 @@ impl Store for SqliteStore {
     async fn insert_block_header(
         &self,
         block_header: &BlockHeader,
+        nodes: &[(InOrderIndex, Word)],
         has_client_notes: bool,
     ) -> Result<(), StoreError> {
         let block_header = block_header.clone();
+        let nodes = nodes.to_vec();
         self.interact_with_connection(move |conn| {
-            SqliteStore::insert_block_header(conn, &block_header, has_client_notes)
+            SqliteStore::insert_block_header(conn, &block_header, &nodes, has_client_notes)
         })
         .await
     }
@@ -338,17 +340,6 @@ impl Store for SqliteStore {
     ) -> Result<BTreeMap<InOrderIndex, Word>, StoreError> {
         self.interact_with_connection(move |conn| {
             SqliteStore::get_partial_blockchain_nodes(conn, &filter)
-        })
-        .await
-    }
-
-    async fn insert_partial_blockchain_nodes(
-        &self,
-        nodes: &[(InOrderIndex, Word)],
-    ) -> Result<(), StoreError> {
-        let nodes = nodes.to_vec();
-        self.interact_with_connection(move |conn| {
-            SqliteStore::insert_partial_blockchain_nodes(conn, &nodes)
         })
         .await
     }
@@ -505,11 +496,11 @@ impl Store for SqliteStore {
     async fn get_account_asset(
         &self,
         account_id: AccountId,
-        vault_key: AssetVaultKey,
+        asset_id: AssetId,
     ) -> Result<Option<(Asset, AssetWitness)>, StoreError> {
         let smt_forest = self.smt_forest.clone();
         self.interact_with_connection(move |conn| {
-            SqliteStore::get_account_asset(conn, &smt_forest, account_id, vault_key)
+            SqliteStore::get_account_asset(conn, &smt_forest, account_id, asset_id)
         })
         .await
     }

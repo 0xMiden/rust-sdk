@@ -3,6 +3,7 @@ use miden_client::account::AccountType;
 use miden_client::address::{Address, AddressInterface, RoutingParameters};
 use miden_client::asset::FungibleAsset;
 use miden_client::auth::RPO_FALCON_SCHEME_ID;
+use miden_client::block::BlockNumber;
 use miden_client::note::NoteType;
 use miden_client::store::{InputNoteState, NoteFilter};
 use miden_client::testing::common::{
@@ -98,7 +99,7 @@ pub async fn test_transport_note_inclusion_proof_and_consumption(
 
     // Send via transport
     sender
-        .send_private_note(note.clone(), &recipient_address)
+        .send_private_note_with_block_hint(note.clone(), &recipient_address, BlockNumber::from(0))
         .await
         .context("send_private_note failed")?;
 
@@ -220,7 +221,11 @@ pub async fn test_transport_multiple_notes_different_blocks(
     // Send all 3 notes via transport
     for note in &minted_notes {
         sender
-            .send_private_note(note.clone(), &recipient_address)
+            .send_private_note_with_block_hint(
+                note.clone(),
+                &recipient_address,
+                BlockNumber::from(0),
+            )
             .await
             .context("send_private_note failed")?;
     }
@@ -361,7 +366,7 @@ pub async fn test_transport_note_not_yet_committed(client_config: ClientConfig) 
 
     // Send via transport BEFORE the note is committed on-chain
     sender
-        .send_private_note(note.clone(), &recipient_address)
+        .send_private_note_with_block_hint(note.clone(), &recipient_address, BlockNumber::from(0))
         .await
         .context("send_private_note failed")?;
 

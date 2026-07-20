@@ -9,6 +9,7 @@ use core::task::{Context, Poll};
 
 use chrono::Utc;
 use futures::Stream;
+use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{NoteHeader, NoteTag};
 use miden_tx::utils::serde::{
     ByteReader,
@@ -56,8 +57,19 @@ impl MockNoteTransportNode {
     }
 
     pub fn add_note(&mut self, header: NoteHeader, details_bytes: Vec<u8>) {
+        self.add_note_after(header, details_bytes, None);
+    }
+
+    /// Seed a note carrying a sender-provided commitment block floor, mirroring a relay sent
+    /// via [`Client::send_private_note_with_block_hint`](crate::Client::send_private_note_with_block_hint).
+    pub fn add_note_after(
+        &mut self,
+        header: NoteHeader,
+        details_bytes: Vec<u8>,
+        block_hint: Option<BlockNumber>,
+    ) {
         let tag = header.metadata().tag();
-        let info = NoteInfo { header, details_bytes };
+        let info = NoteInfo { header, details_bytes, block_hint };
         let cursor = u64::try_from(Utc::now().timestamp_micros()).unwrap();
         self.notes.entry(tag).or_default().push((info, cursor.into()));
     }
@@ -130,6 +142,15 @@ impl MockNoteTransportApi {
         self.mock_node.write().add_note(header, details_bytes);
     }
 
+    pub fn send_note_with_block_hint(
+        &self,
+        header: NoteHeader,
+        details_bytes: Vec<u8>,
+        block_hint: BlockNumber,
+    ) {
+        self.mock_node.write().add_note_after(header, details_bytes, Some(block_hint));
+    }
+
     pub fn fetch_notes(
         &self,
         tags: &[NoteTag],
@@ -158,6 +179,16 @@ impl NoteTransportClient for MockNoteTransportApi {
         details: Vec<u8>,
     ) -> Result<(), NoteTransportError> {
         self.send_note(header, details);
+        Ok(())
+    }
+
+    async fn send_note_with_block_hint(
+        &self,
+        header: NoteHeader,
+        details: Vec<u8>,
+        block_hint: BlockNumber,
+    ) -> Result<(), NoteTransportError> {
+        self.send_note_with_block_hint(header, details, block_hint);
         Ok(())
     }
 
@@ -242,6 +273,26 @@ impl NoteTransportClient for FaultyNoteTransportApi {
             ));
         }
         self.inner.send_note(header, details);
+        Ok(())
+    }
+
+    async fn send_note_with_block_hint(
+        &self,
+        header: NoteHeader,
+        details: Vec<u8>,
+        block_hint: BlockNumber,
+    ) -> Result<(), NoteTransportError> {
+        self.send_attempts.fetch_add(1, Ordering::SeqCst);
+        let should_fail = self
+            .fail_next
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok();
+        if should_fail {
+            return Err(NoteTransportError::Network(
+                "FaultyNoteTransportApi: simulated send_note failure".to_string(),
+            ));
+        }
+        self.inner.send_note_with_block_hint(header, details, block_hint);
         Ok(())
     }
 

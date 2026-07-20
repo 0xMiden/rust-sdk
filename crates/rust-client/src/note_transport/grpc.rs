@@ -10,6 +10,7 @@ use core::pin::Pin;
 use core::task::{Context, Poll};
 
 use futures::Stream;
+use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{NoteHeader, NoteTag};
 use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_tx::utils::sync::RwLock;
@@ -131,8 +132,35 @@ impl GrpcNoteTransportClient {
         header: NoteHeader,
         details: Vec<u8>,
     ) -> Result<(), NoteTransportError> {
+        self.send_note_inner(header, details, None).await
+    }
+
+    /// Pushes a note to the note transport network, relaying a block hint for the recipient.
+    ///
+    /// `block_hint` is forwarded to the server (as the `TransportNote`'s `after_block_num`) as the
+    /// block from which the recipient should start scanning for the note's commitment.
+    pub async fn send_note_with_block_hint(
+        &self,
+        header: NoteHeader,
+        details: Vec<u8>,
+        block_hint: BlockNumber,
+    ) -> Result<(), NoteTransportError> {
+        self.send_note_inner(header, details, Some(block_hint.as_u32())).await
+    }
+
+    /// Sends a note, passing the optional block hint straight through to the wire `TransportNote`.
+    async fn send_note_inner(
+        &self,
+        header: NoteHeader,
+        details: Vec<u8>,
+        after_block_num: Option<u32>,
+    ) -> Result<(), NoteTransportError> {
         let request = SendNoteRequest {
-            note: Some(TransportNote { header: header.to_bytes(), details }),
+            note: Some(TransportNote {
+                header: header.to_bytes(),
+                details,
+                after_block_num,
+            }),
         };
 
         self.api()
@@ -170,7 +198,11 @@ impl GrpcNoteTransportClient {
         for pnote in response.notes {
             let header = NoteHeader::read_from_bytes(&pnote.header)?;
 
-            notes.push(NoteInfo { header, details_bytes: pnote.details });
+            notes.push(NoteInfo {
+                header,
+                details_bytes: pnote.details,
+                block_hint: pnote.after_block_num.map(BlockNumber::from),
+            });
         }
 
         Ok((notes, response.cursor.into()))
@@ -238,6 +270,15 @@ impl super::NoteTransportClient for GrpcNoteTransportClient {
         self.send_note(header, details).await
     }
 
+    async fn send_note_with_block_hint(
+        &self,
+        header: NoteHeader,
+        details: Vec<u8>,
+        block_hint: BlockNumber,
+    ) -> Result<(), NoteTransportError> {
+        self.send_note_with_block_hint(header, details, block_hint).await
+    }
+
     async fn fetch_notes(
         &self,
         tags: &[NoteTag],
@@ -279,7 +320,11 @@ impl Stream for NoteStreamAdapter {
                 for pnote in update.notes {
                     let header = NoteHeader::read_from_bytes(&pnote.header)?;
 
-                    notes.push(NoteInfo { header, details_bytes: pnote.details });
+                    notes.push(NoteInfo {
+                        header,
+                        details_bytes: pnote.details,
+                        block_hint: pnote.after_block_num.map(BlockNumber::from),
+                    });
                 }
                 Poll::Ready(Some(Ok(notes)))
             },

@@ -13,13 +13,19 @@ members = [
 
 default-members = ["bin/miden-cli", "crates/rust-client"]
 
+[workspace.metadata.inheritance-check]
+ignore = [
+  # rust-client's wasm32 target needs a sync-only tokio and can't inherit the workspace's rt-multi-thread features.
+  { dependency = "tokio", member = "crates/rust-client" },
+]
+
 [workspace.package]
 authors      = ["miden contributors"]
 edition      = "2024"
 license      = "MIT"
-repository   = "https://github.com/0xMiden/miden-client"
-rust-version = "1.93"
-version      = "0.15.0"
+repository   = "https://github.com/0xMiden/rust-sdk"
+rust-version = "1.96"
+version      = "0.16.0-alpha.1"
 
 [profile.dev]
 codegen-units = 16
@@ -30,25 +36,24 @@ opt-level = 1
 
 [workspace.dependencies]
 # Workspace crates
-miden-client              = { default-features = false, path = "crates/rust-client", version = "0.15.0" }
-miden-client-sqlite-store = { default-features = false, path = "crates/sqlite-store", version = "0.15.0" }
+miden-client              = { default-features = false, path = "crates/rust-client", version = "0.16.0-alpha.1" }
+miden-client-sqlite-store = { default-features = false, path = "crates/sqlite-store", version = "0.16.0-alpha.1" }
 
 # Miden protocol dependencies
-miden-agglayer        = { default-features = false, version = "0.15.3" }
-miden-protocol        = { default-features = false, version = "0.15.3" }
-miden-standards       = { default-features = false, version = "0.15.3" }
-miden-testing         = { default-features = false, version = "0.15.3" }
-miden-tx              = { default-features = false, version = "0.15.3" }
-miden-tx-batch-prover = { default-features = false, version = "0.15.3" }
+miden-agglayer  = { default-features = false, version = "0.16.0-alpha.4" }
+miden-protocol  = { default-features = false, version = "0.16.0-alpha.4" }
+miden-standards = { default-features = false, version = "0.16.0-alpha.4" }
+miden-testing   = { default-features = false, version = "0.16.0-alpha.2" }
+miden-tx        = { default-features = false, version = "0.16.0-alpha.4" }
+miden-tx-batch  = { default-features = false, version = "0.16.0-alpha.4" }
 
 # Miden node dependencies
-miden-node-proto-build           = { default-features = false, version = "0.15.0" }
-miden-note-transport-proto-build = { default-features = false, version = "0.4" }
-miden-remote-prover-client       = { default-features = false, features = ["tx-prover"], version = "0.15.0" }
+miden-node-proto-build           = { default-features = false, version = "0.16.0-alpha.2" }
+miden-note-transport-proto-build = { default-features = false, version = "0.5.0-alpha.1" }
 
 # Miden debug dependency
-miden-debug     = { default-features = false, features = ["dap", "std"], version = "0.8" }
-miden-processor = { default-features = false, version = "0.23" }
+miden-debug     = { default-features = false, features = ["dap", "std"], version = "0.9" }
+miden-processor = { default-features = false, version = "0.25" }
 
 # External dependencies
 anyhow             = { default-features = false, version = "1.0" }
@@ -61,8 +66,8 @@ hex                = { version = "0.4" }
 miette             = { features = ["fancy"], version = "7.6" }
 predicates         = { version = "3.0" }
 prost              = { default-features = false, version = "0.14" }
-rand               = { version = "0.9" }
-rand_chacha        = { version = "0.9" }
+rand               = { version = "0.10" }
+rand_chacha        = { version = "0.10" }
 regex              = { version = "1.0" }
 rstest             = { version = "0.25" }
 serde              = { features = ["derive"], version = "1.0" }

@@ -2,20 +2,26 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
+use miden_protocol::Word;
 use miden_protocol::account::{
-    AccountDelta,
     AccountId,
+    AccountPatch,
     PartialAccount,
     StorageMapKey,
     StorageMapWitness,
 };
-use miden_protocol::asset::{AssetVaultKey, AssetWitness};
+use miden_protocol::asset::{AssetId, AssetWitness};
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::note::{NoteScript, NoteScriptRoot};
 use miden_protocol::transaction::{AccountInputs, PartialBlockchain, TransactionInputs};
 use miden_protocol::vm::FutureMaybeSend;
-use miden_protocol::{MastForest, Word};
-use miden_tx::{DataStore, DataStoreError, MastForestStore, TransactionMastStore};
+use miden_tx::{
+    DataStore,
+    DataStoreError,
+    LoadedMastForest,
+    MastForestStore,
+    TransactionMastStore,
+};
 
 use crate::ClientError;
 use crate::account::AccountReader;
@@ -42,9 +48,10 @@ pub(crate) struct InMemoryBatchDataStore {
 struct CachedAccountState {
     account: PartialAccount,
     tx_inputs: TransactionInputs,
-    /// Accumulated delta from the account's committed state to the current in-batch state. Used
-    /// to serve witnesses for keys not present in `tx_inputs`' execution advice.
-    accumulated_delta: AccountDelta,
+    /// Accumulated patch from the account's committed state to the current in-batch state. Its
+    /// absolute values are staged onto the committed Merkle forest to serve witnesses for keys
+    /// not present in `tx_inputs`' execution advice.
+    accumulated_patch: AccountPatch,
 }
 
 impl InMemoryBatchDataStore {
@@ -54,17 +61,17 @@ impl InMemoryBatchDataStore {
     }
 
     /// Caches the post-transaction partial account and the transaction inputs carrying the
-    /// execution advice for the just-executed transaction, and folds `delta` into the account's
-    /// accumulated in-batch delta so later transactions can resolve witnesses for any key.
+    /// execution advice for the just-executed transaction, and folds `patch` into the account's
+    /// accumulated in-batch patch so later transactions can resolve witnesses for any key.
     pub(crate) fn cache_account(
         &mut self,
         account: PartialAccount,
         tx_inputs: TransactionInputs,
-        delta: AccountDelta,
+        patch: AccountPatch,
     ) -> Result<(), ClientError> {
         match self.current_accounts.get_mut(&account.id()) {
             Some(state) => {
-                state.accumulated_delta.merge(delta)?;
+                state.accumulated_patch.merge(patch)?;
                 state.account = account;
                 state.tx_inputs = tx_inputs;
             },
@@ -74,7 +81,7 @@ impl InMemoryBatchDataStore {
                     CachedAccountState {
                         account,
                         tx_inputs,
-                        accumulated_delta: delta,
+                        accumulated_patch: patch,
                     },
                 );
             },
@@ -139,10 +146,10 @@ impl DataStore for InMemoryBatchDataStore {
         &self,
         account_id: AccountId,
         vault_root: Word,
-        vault_keys: BTreeSet<AssetVaultKey>,
+        asset_ids: BTreeSet<AssetId>,
     ) -> Result<Vec<AssetWitness>, DataStoreError> {
         let Some(state) = self.current_accounts.get(&account_id) else {
-            return self.inner.get_vault_asset_witnesses(account_id, vault_root, vault_keys).await;
+            return self.inner.get_vault_asset_witnesses(account_id, vault_root, asset_ids).await;
         };
 
         let in_batch_root = state.account.vault().root();
@@ -154,21 +161,21 @@ impl DataStore for InMemoryBatchDataStore {
 
         // Fast path: keys the prior in-batch transaction touched are in its execution advice.
         if let Ok(witnesses) =
-            state.tx_inputs.read_vault_asset_witnesses(vault_root, vault_keys.clone())
+            state.tx_inputs.read_vault_asset_witnesses(vault_root, asset_ids.clone())
         {
             return Ok(witnesses);
         }
 
         // Miss: a key no prior in-batch transaction touched. Serve it from the store by staging
-        // the accumulated in-batch delta onto the committed vault, without reconstructing the
+        // the accumulated in-batch patch onto the committed vault, without reconstructing the
         // account.
         self.inner
             .store()
-            .vault_asset_witnesses_after_delta(
+            .vault_asset_witnesses_after_patch(
                 account_id,
-                state.accumulated_delta.clone(),
+                state.accumulated_patch.clone(),
                 vault_root,
-                vault_keys,
+                asset_ids,
             )
             .await
             .map_err(DataStoreError::from)
@@ -196,13 +203,13 @@ impl DataStore for InMemoryBatchDataStore {
         }
 
         // Miss: a key no prior in-batch transaction touched. Serve it from the store by staging
-        // the accumulated in-batch delta onto the committed map, without reconstructing the
+        // the accumulated in-batch patch onto the committed map, without reconstructing the
         // account.
         self.inner
             .store()
-            .storage_map_witness_after_delta(
+            .storage_map_witness_after_patch(
                 account_id,
-                state.accumulated_delta.clone(),
+                state.accumulated_patch.clone(),
                 map_root,
                 map_key,
             )
@@ -230,7 +237,7 @@ impl DataStore for InMemoryBatchDataStore {
 // ================================================================================================
 
 impl MastForestStore for InMemoryBatchDataStore {
-    fn get(&self, procedure_hash: &Word) -> Option<Arc<MastForest>> {
+    fn get(&self, procedure_hash: &Word) -> Option<LoadedMastForest> {
         self.inner.get(procedure_hash)
     }
 }

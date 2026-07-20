@@ -1,12 +1,14 @@
 use alloc::boxed::Box;
 use alloc::sync::Arc;
+use alloc::vec;
+use alloc::vec::Vec;
 
 use miden_protocol::assembly::{DefaultSourceManager, SourceManagerSync};
 use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::rand::RandomCoin;
 use miden_protocol::{Felt, MAX_TX_EXECUTION_CYCLES, MIN_TX_EXECUTION_CYCLES};
 use miden_tx::{ExecutionOptions, LocalTransactionProver};
-use rand::Rng;
+use rand::RngExt;
 
 #[cfg(any(feature = "tonic", feature = "std"))]
 use crate::alloc::string::ToString;
@@ -14,10 +16,11 @@ use crate::alloc::string::ToString;
 use crate::keystore::FilesystemKeyStore;
 use crate::keystore::Keystore;
 use crate::note_transport::NoteTransportClient;
+use crate::pswap::PswapTransactionObserver;
 use crate::rpc::{Endpoint, NodeRpcClient};
 use crate::store::{Store, StoreError};
-use crate::transaction::TransactionProver;
-use crate::{Client, ClientError, ClientRng, ClientRngBox, DebugMode, grpc_support};
+use crate::transaction::{TransactionObserver, TransactionProver};
+use crate::{Client, ClientError, ClientRng, ClientRngBox, grpc_support};
 
 // CONSTANTS
 // ================================================================================================
@@ -95,9 +98,6 @@ pub trait StoreFactory {
 ///   through the Miden note transport network. Configure via
 ///   [`note_transport()`](Self::note_transport).
 ///
-/// - **Debug mode**: Enables debug mode for transaction execution. Configure via
-///   [`in_debug_mode()`](Self::in_debug_mode).
-///
 /// - **Transaction discard delta**: Number of blocks after which pending transactions are
 ///   considered stale and discarded. Configure via [`tx_discard_delta()`](Self::tx_discard_delta).
 ///
@@ -117,8 +117,6 @@ pub struct ClientBuilder<AUTH> {
     rng: Option<ClientRngBox>,
     /// The authenticator provided by the user.
     authenticator: Option<Arc<AUTH>>,
-    /// A flag to enable debug mode.
-    in_debug_mode: DebugMode,
     /// Number of blocks after which pending transactions are considered stale and discarded.
     /// If `None`, there is no limit and transactions will be kept indefinitely.
     tx_discard_delta: Option<u32>,
@@ -150,7 +148,6 @@ impl<AUTH> Default for ClientBuilder<AUTH> {
             store: None,
             rng: None,
             authenticator: None,
-            in_debug_mode: DebugMode::Disabled,
             tx_discard_delta: Some(TX_DISCARD_DELTA),
             irrelevant_block_prune_interval: Some(IRRELEVANT_BLOCK_PRUNE_INTERVAL),
             cache_partial_mmr_in_memory: CACHE_PARTIAL_MMR_IN_MEMORY,
@@ -307,13 +304,6 @@ where
     #[must_use]
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Enable or disable debug mode.
-    #[must_use]
-    pub fn in_debug_mode(mut self, debug: DebugMode) -> Self {
-        self.in_debug_mode = debug;
-        self
     }
 
     /// Sets a custom RPC client directly.
@@ -518,6 +508,12 @@ where
             self.note_transport_api = Some(Arc::new(transport) as Arc<dyn NoteTransportClient>);
         }
 
+        // Built-in transaction observers fired by `apply_transaction`.
+        // Additional observers can be attached via
+        // `Client::with_transaction_observer`.
+        let transaction_observers: Vec<Arc<dyn TransactionObserver>> =
+            vec![Arc::new(PswapTransactionObserver::new(store.clone()))];
+
         // Construct and return the Client
         Ok(Client {
             store,
@@ -530,8 +526,6 @@ where
                 Some(MAX_TX_EXECUTION_CYCLES),
                 MIN_TX_EXECUTION_CYCLES,
                 ExecutionOptions::DEFAULT_CORE_TRACE_FRAGMENT_SIZE,
-                false,
-                self.in_debug_mode.into(),
             )
             .expect("Default executor's options should always be valid"),
             tx_discard_delta: self.tx_discard_delta,
@@ -541,6 +535,7 @@ where
             note_transport_api: self.note_transport_api.clone(),
             cache_partial_mmr_in_memory: self.cache_partial_mmr_in_memory,
             partial_mmr: None,
+            transaction_observers,
         })
     }
 }

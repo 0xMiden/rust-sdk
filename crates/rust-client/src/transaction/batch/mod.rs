@@ -61,9 +61,10 @@ use miden_protocol::account::{
     PartialAccount,
     PartialStorage,
     PartialStorageMap,
-    StorageMapDelta,
-    StorageSlotDelta,
+    StorageMap,
+    StorageMapPatch,
     StorageSlotHeader,
+    StorageSlotPatch,
     StorageSlotType,
 };
 use miden_protocol::asset::PartialVault;
@@ -80,7 +81,7 @@ use miden_protocol::transaction::{
 use miden_protocol::{MIN_PROOF_SECURITY_LEVEL, ZERO};
 use miden_tx::DataStoreError;
 use miden_tx::auth::TransactionAuthenticator;
-use miden_tx_batch_prover::LocalBatchProver;
+use miden_tx_batch::{BatchExecutor, LocalBatchProver};
 
 use crate::store::data_store::build_partial_mmr_with_paths;
 use crate::transaction::{
@@ -203,11 +204,12 @@ where
             ref_block_header,
             partial_blockchain,
             unauthenticated_note_proofs,
+            MIN_PROOF_SECURITY_LEVEL,
         )?;
 
-        // 6. Prove synchronously.
-        let proven_batch =
-            LocalBatchProver::new(MIN_PROOF_SECURITY_LEVEL).prove(proposed_batch.clone())?;
+        // 6. Execute the batch kernel, then prove synchronously.
+        let executed_batch = BatchExecutor::new().execute(proposed_batch.clone())?;
+        let proven_batch = LocalBatchProver::new().prove(executed_batch)?;
 
         // 7. Submit via RPC.
         let mut updates: Vec<TransactionStoreUpdate> = Vec::with_capacity(len);
@@ -325,10 +327,13 @@ where
         .execute_transaction(account_id, prep.block_num, notes, prep.tx_args)
         .await?;
 
+    // Cache the post-transaction in-batch state: the rebuilt partial account (headers only), the
+    // execution advice for the fast-path witness lookups, and the account patch whose absolute
+    // values are staged onto the committed forest to serve witnesses for untouched keys.
     let current_account = partial_account_from_executed_transaction(&executed_transaction)?;
     let tx_inputs = executed_transaction.tx_inputs().clone();
-    let account_delta = executed_transaction.account_delta().clone();
-    data_store.cache_account(current_account, tx_inputs, account_delta)?;
+    let patch = executed_transaction.account_patch().clone();
+    data_store.cache_account(current_account, tx_inputs, patch)?;
 
     validate_executed_transaction(&executed_transaction, &prep.output_recipients)?;
     TransactionResult::new(executed_transaction, prep.future_notes)
@@ -339,11 +344,8 @@ fn partial_account_from_executed_transaction(
 ) -> Result<PartialAccount, DataStoreError> {
     let initial_account = executed_transaction.initial_account();
     let final_account = executed_transaction.final_account();
-    let code = executed_transaction
-        .account_delta()
-        .code()
-        .unwrap_or_else(|| initial_account.code())
-        .clone();
+    let patch = executed_transaction.account_patch();
+    let code = patch.code().unwrap_or_else(|| initial_account.code()).clone();
 
     if final_account.code_commitment() != code.commitment() {
         return Err(DataStoreError::other(format!(
@@ -352,7 +354,7 @@ fn partial_account_from_executed_transaction(
         )));
     }
 
-    let storage_header = final_storage_header_from_delta(executed_transaction)?;
+    let storage_header = final_storage_header_from_patch(executed_transaction)?;
 
     let storage = PartialStorage::new(storage_header, core::iter::empty::<PartialStorageMap>())
         .map_err(|err| {
@@ -377,18 +379,18 @@ fn partial_account_from_executed_transaction(
         })
 }
 
-fn final_storage_header_from_delta(
+fn final_storage_header_from_patch(
     executed_transaction: &ExecutedTransaction,
 ) -> Result<AccountStorageHeader, DataStoreError> {
     let initial_account = executed_transaction.initial_account();
     let final_account = executed_transaction.final_account();
-    let storage_delta = executed_transaction.account_delta().storage();
+    let storage_patch = executed_transaction.account_patch().storage();
 
     let mut slots = Vec::new();
     for slot in initial_account.storage().header().slots() {
-        let new_slot_value = match storage_delta.get(slot.name()) {
+        let new_slot_value = match storage_patch.get(slot.name()) {
             None => slot.value(),
-            Some(StorageSlotDelta::Value(value)) => {
+            Some(StorageSlotPatch::Value(value_patch)) => {
                 if slot.slot_type() != StorageSlotType::Value {
                     return Err(DataStoreError::other(format!(
                         "storage slot {} changed as value but initial in-batch state has type {:?}",
@@ -396,9 +398,10 @@ fn final_storage_header_from_delta(
                         slot.slot_type()
                     )));
                 }
-                *value
+                // A removed value slot commits to the empty word.
+                value_patch.value().unwrap_or_default()
             },
-            Some(StorageSlotDelta::Map(map_delta)) => {
+            Some(StorageSlotPatch::Map(map_patch)) => {
                 if slot.slot_type() != StorageSlotType::Map {
                     return Err(DataStoreError::other(format!(
                         "storage slot {} changed as map but initial in-batch state has type {:?}",
@@ -406,7 +409,7 @@ fn final_storage_header_from_delta(
                         slot.slot_type()
                     )));
                 }
-                updated_storage_map_root(executed_transaction.tx_inputs(), slot.value(), map_delta)?
+                updated_storage_map_root(executed_transaction.tx_inputs(), slot.value(), map_patch)?
             },
         };
 
@@ -435,11 +438,19 @@ fn final_storage_header_from_delta(
 fn updated_storage_map_root(
     tx_inputs: &TransactionInputs,
     initial_root: miden_protocol::Word,
-    map_delta: &StorageMapDelta,
+    map_patch: &StorageMapPatch,
 ) -> Result<miden_protocol::Word, DataStoreError> {
+    // A removed map slot reduces to the empty map root.
+    let Some(entries) = map_patch.entries() else {
+        return Ok(StorageMap::default().root());
+    };
+    let entries = entries.as_map();
+
+    // The patch carries absolute new values, so each changed key is inserted verbatim onto a
+    // partial SMT seeded with the initial map witnesses from this transaction's execution advice.
     let mut partial_smt = PartialSmt::new(initial_root);
 
-    for map_key in map_delta.entries().keys() {
+    for map_key in entries.keys() {
         let witness =
             tx_inputs.read_storage_map_witness(initial_root, *map_key).map_err(|err| {
                 DataStoreError::other_with_source(
@@ -455,10 +466,10 @@ fn updated_storage_map_root(
         })?;
     }
 
-    for (map_key, value) in map_delta.entries() {
+    for (map_key, value) in entries {
         partial_smt.insert(map_key.hash().as_word(), *value).map_err(|err| {
             DataStoreError::other_with_source(
-                "failed to apply storage map delta while rebuilding in-batch state",
+                "failed to apply storage map patch while rebuilding in-batch state",
                 err,
             )
         })?;

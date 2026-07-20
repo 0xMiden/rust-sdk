@@ -10,9 +10,9 @@ use miden_protocol::account::{
     StorageMapWitness,
     StorageSlotContent,
 };
-use miden_protocol::asset::{Asset, AssetVault, AssetVaultKey, AssetWitness};
+use miden_protocol::asset::{Asset, AssetId, AssetVault, AssetWitness};
+use miden_protocol::crypto::merkle::EmptySubtreeRoots;
 use miden_protocol::crypto::merkle::smt::{SMT_DEPTH, Smt, SmtForest};
-use miden_protocol::crypto::merkle::{EmptySubtreeRoots, MerkleError};
 use miden_protocol::{EMPTY_WORD, Word};
 
 use super::StoreError;
@@ -50,18 +50,19 @@ impl AccountSmtForest {
     pub fn get_asset_and_witness(
         &self,
         vault_root: Word,
-        vault_key: AssetVaultKey,
+        vault_id: AssetId,
     ) -> Result<(Asset, AssetWitness), StoreError> {
-        let vault_key_word = vault_key.into();
-        let proof = self.forest.open(vault_root, vault_key_word)?;
-        let asset_word =
-            proof.get(&vault_key_word).ok_or(MerkleError::UntrackedKey(vault_key_word))?;
+        let hashed_key: Word = vault_id.hash().into();
+        let proof = self.forest.open(vault_root, hashed_key)?;
+        let asset_word = proof
+            .get(&hashed_key)
+            .ok_or(StoreError::VaultKeyNotTracked(vault_id, hashed_key))?;
         if asset_word == EMPTY_WORD {
-            return Err(MerkleError::UntrackedKey(vault_key_word).into());
+            return Err(StoreError::VaultKeyNotTracked(vault_id, hashed_key));
         }
 
-        let asset = Asset::from_key_value_words(vault_key_word, asset_word)?;
-        let witness = AssetWitness::new(proof)?;
+        let asset = Asset::from_id_and_value(vault_id, asset_word)?;
+        let witness = AssetWitness::new(proof, [vault_id])?;
         Ok((asset, witness))
     }
 
@@ -94,17 +95,17 @@ impl AccountSmtForest {
         &mut self,
         committed_vault_root: Word,
         new_assets: impl Iterator<Item = Asset>,
-        removed_vault_keys: impl Iterator<Item = AssetVaultKey>,
-        query_keys: impl IntoIterator<Item = AssetVaultKey>,
+        removed_vault_keys: impl Iterator<Item = AssetId>,
+        query_keys: impl IntoIterator<Item = AssetId>,
     ) -> Result<(Word, Vec<AssetWitness>), StoreError> {
         let staged_root =
             self.update_asset_nodes(committed_vault_root, new_assets, removed_vault_keys)?;
 
         let witnesses = query_keys
             .into_iter()
-            .map(|key| {
-                let proof = self.forest.open(staged_root, key.into())?;
-                Ok(AssetWitness::new(proof)?)
+            .map(|asset_id| {
+                let proof = self.forest.open(staged_root, asset_id.hash().into())?;
+                Ok(AssetWitness::new(proof, [asset_id])?)
             })
             .collect::<Result<Vec<_>, StoreError>>();
 
@@ -212,15 +213,15 @@ impl AccountSmtForest {
         &mut self,
         root: Word,
         new_assets: impl Iterator<Item = Asset>,
-        removed_vault_keys: impl Iterator<Item = AssetVaultKey>,
+        removed_vault_ids: impl Iterator<Item = AssetId>,
     ) -> Result<Word, StoreError> {
         let entries: Vec<(Word, Word)> = new_assets
             .map(|asset| {
-                let key: Word = asset.vault_key().into();
+                let key: Word = asset.id().hash().into();
                 let value = asset.to_value_word();
                 (key, value)
             })
-            .chain(removed_vault_keys.map(|vault_key| (vault_key.into(), EMPTY_WORD)))
+            .chain(removed_vault_ids.map(|vault_id| (vault_id.hash().into(), EMPTY_WORD)))
             .collect();
 
         if entries.is_empty() {
@@ -254,7 +255,7 @@ impl AccountSmtForest {
     /// Inserts the asset vault SMT nodes to the SMT forest.
     pub fn insert_asset_nodes(&mut self, vault: &AssetVault) -> Result<(), StoreError> {
         let smt = Smt::with_entries(vault.assets().map(|asset| {
-            let key: Word = asset.vault_key().into();
+            let key: Word = asset.id().hash().into();
             let value = asset.to_value_word();
             (key, value)
         }))

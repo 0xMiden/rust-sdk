@@ -23,9 +23,9 @@ use miden_client::Word;
 use miden_client::account::{
     Account,
     AccountCode,
-    AccountDelta,
     AccountHeader,
     AccountId,
+    AccountPatch,
     AccountStorage,
     Address,
     StorageMapKey,
@@ -55,7 +55,7 @@ use miden_client::sync::{NoteTagRecord, StateSyncUpdate};
 use miden_client::transaction::{TransactionRecord, TransactionStoreUpdate};
 use miden_protocol::Felt;
 use miden_protocol::account::StorageMapWitness;
-use miden_protocol::asset::AssetVaultKey;
+use miden_protocol::asset::AssetId;
 use rusqlite::Connection;
 use rusqlite::types::Value;
 use sql_error::SqlResultExt;
@@ -279,11 +279,13 @@ impl Store for SqliteStore {
     async fn insert_block_header(
         &self,
         block_header: &BlockHeader,
+        nodes: &[(InOrderIndex, Word)],
         has_client_notes: bool,
     ) -> Result<(), StoreError> {
         let block_header = block_header.clone();
+        let nodes = nodes.to_vec();
         self.interact_with_connection(move |conn| {
-            SqliteStore::insert_block_header(conn, &block_header, has_client_notes)
+            SqliteStore::insert_block_header(conn, &block_header, &nodes, has_client_notes)
         })
         .await
     }
@@ -339,17 +341,6 @@ impl Store for SqliteStore {
     ) -> Result<BTreeMap<InOrderIndex, Word>, StoreError> {
         self.interact_with_connection(move |conn| {
             SqliteStore::get_partial_blockchain_nodes(conn, &filter)
-        })
-        .await
-    }
-
-    async fn insert_partial_blockchain_nodes(
-        &self,
-        nodes: &[(InOrderIndex, Word)],
-    ) -> Result<(), StoreError> {
-        let nodes = nodes.to_vec();
-        self.interact_with_connection(move |conn| {
-            SqliteStore::insert_partial_blockchain_nodes(conn, &nodes)
         })
         .await
     }
@@ -506,11 +497,11 @@ impl Store for SqliteStore {
     async fn get_account_asset(
         &self,
         account_id: AccountId,
-        vault_key: AssetVaultKey,
+        vault_id: AssetId,
     ) -> Result<Option<(Asset, AssetWitness)>, StoreError> {
         let smt_forest = self.smt_forest.clone();
         self.interact_with_connection(move |conn| {
-            SqliteStore::get_account_asset(conn, &smt_forest, account_id, vault_key)
+            SqliteStore::get_account_asset(conn, &smt_forest, account_id, vault_id)
         })
         .await
     }
@@ -540,41 +531,41 @@ impl Store for SqliteStore {
         .await
     }
 
-    async fn vault_asset_witnesses_after_delta(
+    async fn vault_asset_witnesses_after_patch(
         &self,
         account_id: AccountId,
-        delta: AccountDelta,
+        patch: AccountPatch,
         vault_root: Word,
-        vault_keys: BTreeSet<AssetVaultKey>,
+        asset_ids: BTreeSet<AssetId>,
     ) -> Result<Vec<AssetWitness>, StoreError> {
         let smt_forest = self.smt_forest.clone();
         self.interact_with_connection(move |conn| {
-            SqliteStore::vault_asset_witnesses_after_delta(
+            SqliteStore::vault_asset_witnesses_after_patch(
                 conn,
                 &smt_forest,
                 account_id,
-                &delta,
+                &patch,
                 vault_root,
-                vault_keys,
+                asset_ids,
             )
         })
         .await
     }
 
-    async fn storage_map_witness_after_delta(
+    async fn storage_map_witness_after_patch(
         &self,
         account_id: AccountId,
-        delta: AccountDelta,
+        patch: AccountPatch,
         map_root: Word,
         map_key: StorageMapKey,
     ) -> Result<StorageMapWitness, StoreError> {
         let smt_forest = self.smt_forest.clone();
         self.interact_with_connection(move |conn| {
-            SqliteStore::storage_map_witness_after_delta(
+            SqliteStore::storage_map_witness_after_patch(
                 conn,
                 &smt_forest,
                 account_id,
-                &delta,
+                &patch,
                 map_root,
                 map_key,
             )

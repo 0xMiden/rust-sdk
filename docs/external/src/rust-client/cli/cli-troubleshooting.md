@@ -14,24 +14,13 @@ This guide helps you troubleshoot common issues and understand the end-to-end li
 - Ensure you have a proper configuration setup: either a global config at `~/.miden/miden-client.toml` or a local config at `./.miden/miden-client.toml`. Local config takes priority if both exist.
 - If you need a clean local state, delete the SQLite store file referenced by `store_filepath` (default: `.miden/store.sqlite3`). It will be recreated automatically on the next command.
 - Verify your node RPC endpoint is reachable and correct in your configuration file (local `.miden/miden-client.toml` or global `~/.miden/miden-client.toml`).
-- Run with debug output when troubleshooting: add `--debug` or set `MIDEN_DEBUG=true`.
 - Run `miden-client sync` to refresh local state after errors involving missing data or outdated heights.
 
-### Enable debug output
-
-- CLI flag: `miden-client --debug <command> ...` (overrides `MIDEN_DEBUG`)
-- Environment variable: `MIDEN_DEBUG=true`
-
-When enabled, the transaction executor and script compiler emit debug logs that help diagnose MASM-level issues (you can also consult the Miden VM debugging instructions).
-
-### Typical CLI outputs when debugging
+### Typical CLI outputs
 
 ```sh
-# Enable debug output for a command
-miden-client --debug send --sender <SENDER> --target <TARGET> --asset 100::<FAUCET_ID>
-
 # Force non-interactive submission (e.g., CI)
-miden-client send --force ...
+miden-client transfer --force ...
 
 # Refresh local state
 miden-client sync
@@ -81,7 +70,7 @@ Below are representative errors you may encounter, their likely causes, and sugg
 
 #### `ClientError.TransactionInputError` / `TransactionScriptError`
 - Cause: Invalid transaction inputs, script logic errors, or failing constraints.
-- Fix: Run with `--debug` to collect execution logs. Validate input notes, foreign accounts, and script assumptions.
+- Fix: Validate input notes, foreign accounts, and script assumptions.
 
 #### `ClientError.TransactionProvingError`
 - Cause: Local proving failed or remote prover returned an error.
@@ -132,16 +121,14 @@ Key states the CLI surfaces:
 
 ### Recovery flow
 
-1. Re-run with `--debug` or `MIDEN_DEBUG=true` for richer logs.
-2. Verify `rpc.endpoint` connectivity and timeouts.
-3. Run `miden-client sync` to refresh local headers/notes.
-4. If local DB is inconsistent for development purposes, delete the store file (`.miden/store.sqlite3` in local config or `~/.miden/store.sqlite3` in global config) and retry.
+1. Verify `rpc.endpoint` connectivity and timeouts.
+2. Run `miden-client sync` to refresh local headers/notes.
+3. If local DB is inconsistent for development purposes, delete the store file (`.miden/store.sqlite3` in local config or `~/.miden/store.sqlite3` in global config) and retry.
 5. For configuration issues, use `miden-client clear-config` to reset config and `miden-client init` to recreate.
 6. Adjust `max_block_number_delta` if strict recency checks block validation.
 7. If proving errors persist with a remote prover, confirm `remote_prover_endpoint` and consider running locally to isolate the issue.
 
 ### References
 
-- CLI debug flag and environment variable are documented in `CLI` and `Config` docs.
 - Common error enums originate from the client and RPC layers.
 - Protocol lifecycle: [Miden book — Transaction lifecycle](https://docs.miden.xyz/builder/smart-contracts/transactions/introduction#transaction-lifecycle)

@@ -10,7 +10,13 @@ use miden_protocol::vm::FutureMaybeSend;
 
 type RpcFuture<T> = Pin<Box<dyn FutureMaybeSend<T>>>;
 
-use miden_protocol::account::{AccountCode, AccountId};
+use miden_protocol::account::{
+    AccountCode,
+    AccountId,
+    AccountVaultPatch,
+    StorageMapPatchEntries,
+    StorageSlotName,
+};
 use miden_protocol::address::NetworkId;
 use miden_protocol::batch::{ProposedBatch, ProvenBatch};
 use miden_protocol::block::account_tree::AccountWitness;
@@ -32,15 +38,15 @@ use super::domain::account::{
     GetAccountRequest,
     StorageMapFetch,
 };
-use super::domain::note::{FetchedNote, NoteSyncBlock};
+use super::domain::note::{CommittedNote, FetchedNote, NoteSyncBlock};
 use super::domain::nullifier::NullifierUpdate;
 use super::generated::rpc::AccountRequest;
 use super::generated::rpc::account_request::AccountDetailRequest;
 use super::{Endpoint, NodeRpcClient, RpcEndpoint, RpcError, RpcStatusInfo};
-use crate::rpc::domain::account_vault::{AccountVaultInfo, AccountVaultUpdate};
+use crate::rpc::domain::account_vault::AccountVaultInfo;
 use crate::rpc::domain::limits::RpcLimits;
 use crate::rpc::domain::status::NetworkNoteStatusInfo;
-use crate::rpc::domain::storage_map::{StorageMapInfo, StorageMapUpdate};
+use crate::rpc::domain::storage_map::StorageMapInfo;
 use crate::rpc::domain::sync::{ChainMmrInfo, SyncTarget};
 use crate::rpc::domain::transaction::TransactionRecord;
 use crate::rpc::errors::node::parse_node_error;
@@ -121,8 +127,66 @@ impl BlockPagination {
     }
 }
 
+/// Returns [`RpcError::InvalidResponse`] if any update in the `sync_nullifiers` batch carries a
+/// nullifier whose prefix was not requested.
+fn ensure_requested_nullifiers(
+    requested_prefixes: &BTreeSet<u16>,
+    batch: &[NullifierUpdate],
+) -> Result<(), RpcError> {
+    for update in batch {
+        let prefix = update.nullifier.prefix();
+        if !requested_prefixes.contains(&prefix) {
+            let requested = requested_prefixes
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(RpcError::InvalidResponse(format!(
+                "node returned nullifier with prefix {prefix} but [{requested}] were requested"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Returns an error if any note in a `sync_notes` response carries a tag that was not requested.
+fn ensure_requested_tags(
+    requested: &BTreeSet<NoteTag>,
+    returned: impl IntoIterator<Item = NoteTag>,
+) -> Result<(), RpcError> {
+    for tag in returned {
+        if !requested.contains(&tag) {
+            let list = requested.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ");
+            return Err(RpcError::InvalidResponse(format!(
+                "node returned note with tag {tag} but [{list}] were requested"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Returns an error if any note in a `GetNotesById` response has an ID that was not requested.
+fn ensure_requested_note_ids(
+    requested: &BTreeSet<NoteId>,
+    returned: impl IntoIterator<Item = NoteId>,
+) -> Result<(), RpcError> {
+    for id in returned {
+        if !requested.contains(&id) {
+            let list = requested.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ");
+            return Err(RpcError::InvalidResponse(format!(
+                "node returned note {id} but [{list}] were requested"
+            )));
+        }
+    }
+    Ok(())
+}
+
 // GRPC CLIENT
 // ================================================================================================
+
+/// Default maximum size (in bytes) of a decoded gRPC response the client will accept: 15% above
+/// tonic's built-in 4 MiB receive limit. See [`GrpcClient::with_max_decoding_message_size`].
+const DEFAULT_MAX_RESPONSE_SIZE_BYTES: usize = 4 * 1024 * 1024 * 115 / 100;
 
 /// Client for the Node RPC API using gRPC.
 ///
@@ -153,6 +217,9 @@ pub struct GrpcClient {
     /// gRPC call, alongside the standard `accept` header. Used when talking to an
     /// authenticating gateway in front of the node.
     bearer_token: Option<String>,
+    /// Maximum size (in bytes) of a decoded gRPC response the client will accept. Defaults to
+    /// [`DEFAULT_MAX_RESPONSE_SIZE_BYTES`].
+    max_decoding_message_size: usize,
 }
 
 impl GrpcClient {
@@ -168,6 +235,7 @@ impl GrpcClient {
             max_retries: retry::DEFAULT_MAX_RETRIES,
             retry_interval_ms: retry::DEFAULT_RETRY_INTERVAL_MS,
             bearer_token: None,
+            max_decoding_message_size: DEFAULT_MAX_RESPONSE_SIZE_BYTES,
         }
     }
 
@@ -184,6 +252,18 @@ impl GrpcClient {
     #[must_use]
     pub fn with_retry_interval_ms(mut self, retry_interval_ms: u64) -> Self {
         self.retry_interval_ms = retry_interval_ms;
+        self
+    }
+
+    /// Sets the maximum size (in bytes) of a decoded gRPC response the client will accept.
+    ///
+    /// Defaults to 15% above [tonic's built-in 4 MiB receive limit][tonic-decode], leaving headroom
+    /// for responses that land slightly over 4 MiB.
+    ///
+    /// [tonic-decode]: https://github.com/hyperium/tonic/blob/6cb6056b5a748bc5a29bd48f4602dbc4e552bb7d/tonic/src/codec/decode.rs#L192-L218
+    #[must_use]
+    pub fn with_max_decoding_message_size(mut self, max_decoding_message_size: usize) -> Self {
+        self.max_decoding_message_size = max_decoding_message_size;
         self
     }
 
@@ -236,6 +316,7 @@ impl GrpcClient {
             self.timeout_ms,
             genesis_commitment,
             self.bearer_token.clone(),
+            self.max_decoding_message_size,
         )
         .await?;
         let mut client = self.client.write();
@@ -296,6 +377,7 @@ impl GrpcClient {
             self.endpoint.clone(),
             self.timeout_ms,
             self.bearer_token.clone(),
+            self.max_decoding_message_size,
         )
         .await?;
         rpc_api
@@ -405,6 +487,15 @@ impl NodeRpcClient for GrpcClient {
             .ok_or(RpcError::ExpectedDataMissing("BlockHeader".into()))?
             .try_into()?;
 
+        if let Some(requested) = block_num
+            && block_header.block_num() != requested
+        {
+            return Err(RpcError::InvalidResponse(format!(
+                "node returned header for block {} but block {requested} was requested",
+                block_header.block_num(),
+            )));
+        }
+
         let mmr_proof = if include_mmr_proof {
             let forest = response
                 .chain_length
@@ -431,6 +522,7 @@ impl NodeRpcClient for GrpcClient {
 
     async fn get_notes_by_id(&self, note_ids: &[NoteId]) -> Result<Vec<FetchedNote>, RpcError> {
         let limits = self.get_rpc_limits().await?;
+        let requested_ids: BTreeSet<NoteId> = note_ids.iter().copied().collect();
         let mut notes = Vec::with_capacity(note_ids.len());
         for chunk in note_ids.chunks(limits.note_ids_limit as usize) {
             let request = proto::note::NoteIdList {
@@ -450,6 +542,8 @@ impl NodeRpcClient for GrpcClient {
                 .into_iter()
                 .map(FetchedNote::try_from)
                 .collect::<Result<Vec<FetchedNote>, RpcConversionError>>()?;
+
+            ensure_requested_note_ids(&requested_ids, response_notes.iter().map(FetchedNote::id))?;
 
             notes.extend(response_notes);
         }
@@ -485,6 +579,7 @@ impl NodeRpcClient for GrpcClient {
     /// This function will return an error if:
     ///
     /// - The requested Account isn't returned by the node.
+    /// - The block number of the requested Account doesn't match the response block number.
     /// - There was an error sending the request to the node.
     /// - The answer had a `None` for one of the expected fields.
     /// - There is an error during storage deserialization.
@@ -543,11 +638,21 @@ impl NodeRpcClient for GrpcClient {
             .ok_or(RpcError::ExpectedDataMissing("AccountWitness".to_string()))?
             .try_into()?;
 
-        let block_num: BlockNumber = response
+        let response_block_num: BlockNumber = response
             .block_num
             .ok_or(RpcError::ExpectedDataMissing("response block num".to_string()))?
             .block_num
             .into();
+
+        if let Some(requested) = block_num
+            && requested.block_num != response_block_num.as_u32()
+        {
+            return Err(RpcError::InvalidResponse(format!(
+                "node returned header for block {} but block {} was requested",
+                response_block_num.as_u32(),
+                requested.block_num
+            )));
+        }
 
         // For accounts with public state, details should be present when requested
         let headers = if account_witness.id().is_public() {
@@ -564,7 +669,7 @@ impl NodeRpcClient for GrpcClient {
         let proof = AccountProof::new(account_witness, headers)
             .map_err(|err| RpcError::InvalidResponse(err.to_string()))?;
 
-        Ok((block_num, proof))
+        Ok((response_block_num, proof))
     }
 
     /// Sends one or more `SyncNoteRequest`s to the node and merges the responses into a list of
@@ -591,6 +696,7 @@ impl NodeRpcClient for GrpcClient {
 
         for chunk in tags.chunks(limits.note_tags_limit as usize) {
             let proto_tags: Vec<u32> = chunk.iter().map(|&t| t.into()).collect();
+            let requested_tags: BTreeSet<NoteTag> = chunk.iter().copied().collect();
             let mut pagination = BlockPagination::new(block_from, block_to);
 
             loop {
@@ -618,6 +724,10 @@ impl NodeRpcClient for GrpcClient {
 
                 for proto_block in response.blocks {
                     let block: NoteSyncBlock = proto_block.try_into()?;
+                    ensure_requested_tags(
+                        &requested_tags,
+                        block.notes.values().map(CommittedNote::tag),
+                    )?;
                     let bn = block.block_header.block_num();
                     if let Some(existing) = merged_blocks.get_mut(&bn) {
                         for (id, note) in block.notes {
@@ -651,6 +761,7 @@ impl NodeRpcClient for GrpcClient {
         // violating the RPC limit.
         for chunk in prefixes.chunks(limits.nullifiers_limit as usize) {
             let proto_prefixes: Vec<u32> = chunk.iter().map(|&x| u32::from(x)).collect();
+            let requested_prefixes: BTreeSet<u16> = chunk.iter().copied().collect();
             let mut pagination = BlockPagination::new(block_from, block_to);
 
             loop {
@@ -678,6 +789,7 @@ impl NodeRpcClient for GrpcClient {
                     .collect::<Result<Vec<NullifierUpdate>, _>>()
                     .map_err(|err| RpcError::InvalidResponse(err.to_string()))?;
 
+                ensure_requested_nullifiers(&requested_prefixes, &batch_nullifiers)?;
                 all_nullifiers.extend(batch_nullifiers);
 
                 let page = response.pagination_info.ok_or(RpcError::ExpectedDataMissing(
@@ -715,6 +827,13 @@ impl NodeRpcClient for GrpcClient {
                 "GetBlockByNumberResponse.block".to_string(),
             ))?)?;
 
+        if block.header().block_num() != block_num {
+            return Err(RpcError::InvalidResponse(format!(
+                "node returned header for block {} but block {block_num} was requested",
+                block.header().block_num(),
+            )));
+        }
+
         Ok(block)
     }
 
@@ -750,7 +869,7 @@ impl NodeRpcClient for GrpcClient {
         account_id: AccountId,
     ) -> Result<StorageMapInfo, RpcError> {
         let mut pagination = BlockPagination::new(block_from, block_to);
-        let mut updates = Vec::new();
+        let mut map_entries: BTreeMap<StorageSlotName, StorageMapPatchEntries> = BTreeMap::new();
 
         let (chain_tip, block_number) = loop {
             let request = proto::rpc::SyncAccountStorageMapsRequest {
@@ -766,20 +885,17 @@ impl NodeRpcClient for GrpcClient {
                     Box::pin(async move { rpc_api.sync_account_storage_maps(request).await })
                 })
                 .await?;
-            let response = response.into_inner();
-            let page = response
-                .pagination_info
-                .ok_or(RpcError::ExpectedDataMissing("pagination_info".to_owned()))?;
-            let page_block_num = BlockNumber::from(page.block_num);
-            let page_chain_tip = BlockNumber::from(page.chain_tip);
-            let batch = response
-                .updates
-                .into_iter()
-                .map(TryInto::try_into)
-                .collect::<Result<Vec<StorageMapUpdate>, _>>()?;
-            updates.extend(batch);
+            let page = StorageMapInfo::try_from(response.into_inner())?;
 
-            match pagination.advance(page_block_num, page_chain_tip)? {
+            for (slot_name, entries) in page.map_entries {
+                map_entries
+                    .entry(slot_name)
+                    .or_default()
+                    .as_map_mut()
+                    .extend(entries.into_map());
+            }
+
+            match pagination.advance(page.block_number, page.chain_tip)? {
                 PaginationResult::Continue => {},
                 PaginationResult::Done {
                     chain_tip: final_chain_tip,
@@ -788,7 +904,7 @@ impl NodeRpcClient for GrpcClient {
             }
         };
 
-        Ok(StorageMapInfo { chain_tip, block_number, updates })
+        Ok(StorageMapInfo { chain_tip, block_number, map_entries })
     }
 
     async fn sync_account_vault(
@@ -798,7 +914,7 @@ impl NodeRpcClient for GrpcClient {
         account_id: AccountId,
     ) -> Result<AccountVaultInfo, RpcError> {
         let mut pagination = BlockPagination::new(block_from, block_to);
-        let mut updates = Vec::new();
+        let mut vault_patch = AccountVaultPatch::default();
 
         let (chain_tip, block_number) = loop {
             let request = proto::rpc::SyncAccountVaultRequest {
@@ -814,20 +930,11 @@ impl NodeRpcClient for GrpcClient {
                     Box::pin(async move { rpc_api.sync_account_vault(request).await })
                 })
                 .await?;
-            let response = response.into_inner();
-            let page = response
-                .pagination_info
-                .ok_or(RpcError::ExpectedDataMissing("pagination_info".to_owned()))?;
-            let page_block_num = BlockNumber::from(page.block_num);
-            let page_chain_tip = BlockNumber::from(page.chain_tip);
-            let batch = response
-                .updates
-                .iter()
-                .map(|u| (*u).try_into())
-                .collect::<Result<Vec<AccountVaultUpdate>, _>>()?;
-            updates.extend(batch);
+            let page = AccountVaultInfo::try_from(response.into_inner())?;
 
-            match pagination.advance(page_block_num, page_chain_tip)? {
+            vault_patch.merge(page.vault_patch);
+
+            match pagination.advance(page.block_number, page.chain_tip)? {
                 PaginationResult::Continue => {},
                 PaginationResult::Done {
                     chain_tip: final_chain_tip,
@@ -836,7 +943,7 @@ impl NodeRpcClient for GrpcClient {
             }
         };
 
-        Ok(AccountVaultInfo { chain_tip, block_number, updates })
+        Ok(AccountVaultInfo { chain_tip, block_number, vault_patch })
     }
 
     /// Sends one or more `SyncTransactions` requests to the node and concatenates the responses
@@ -989,12 +1096,24 @@ impl From<&Status> for GrpcError {
 
 #[cfg(test)]
 mod tests {
+    use core::slice;
     use std::boxed::Box;
+    use std::collections::BTreeSet;
 
-    use miden_protocol::Word;
     use miden_protocol::block::BlockNumber;
+    use miden_protocol::note::{NoteId, NoteTag, Nullifier};
+    use miden_protocol::{Felt, Word};
 
-    use super::{BlockPagination, GrpcClient, PaginationResult};
+    use super::{
+        BlockPagination,
+        DEFAULT_MAX_RESPONSE_SIZE_BYTES,
+        GrpcClient,
+        NullifierUpdate,
+        PaginationResult,
+        ensure_requested_note_ids,
+        ensure_requested_nullifiers,
+        ensure_requested_tags,
+    };
     use crate::alloc::string::ToString;
     use crate::rpc::{Endpoint, NodeRpcClient, RpcError};
 
@@ -1164,6 +1283,20 @@ mod tests {
         assert!(client.client.read().as_ref().is_some());
     }
 
+    #[test]
+    fn with_max_decoding_message_size_overrides_default() {
+        let endpoint = &Endpoint::devnet();
+
+        // A fresh client uses the default decode ceiling.
+        let default_client = GrpcClient::new(endpoint, 10_000);
+        assert_eq!(default_client.max_decoding_message_size, DEFAULT_MAX_RESPONSE_SIZE_BYTES);
+
+        // The knob overrides it for callers that hit responses above the default.
+        let custom =
+            GrpcClient::new(endpoint, 10_000).with_max_decoding_message_size(8 * 1024 * 1024);
+        assert_eq!(custom.max_decoding_message_size, 8 * 1024 * 1024);
+    }
+
     /// Real-network smoke test: hitting the public testnet with a caller-supplied bearer
     /// token must return a real [`RpcStatusInfo`], proving the header is a valid
     /// [`AsciiMetadataValue`](tonic::metadata::AsciiMetadataValue) on the wire and that an
@@ -1186,5 +1319,66 @@ mod tests {
             .await
             .expect("testnet status with caller auth header must succeed");
         assert!(!status.version.is_empty(), "status must include a server version");
+    }
+
+    fn nullifier_with_prefix(prefix: u16) -> Nullifier {
+        Nullifier::from_raw(Word::new([
+            Felt::ZERO,
+            Felt::ZERO,
+            Felt::ZERO,
+            Felt::new_unchecked(u64::from(prefix) << 48),
+        ]))
+    }
+
+    #[test]
+    fn verify_requested_nullifiers_rejects_unrequested_prefix() {
+        let requested = NullifierUpdate {
+            nullifier: nullifier_with_prefix(0x1234),
+            block_num: 1u32.into(),
+        };
+        let unrequested = NullifierUpdate {
+            nullifier: nullifier_with_prefix(0xabcd),
+            block_num: 2u32.into(),
+        };
+
+        let requested_prefixes: BTreeSet<u16> = BTreeSet::from([0x1234]);
+
+        ensure_requested_nullifiers(&requested_prefixes, slice::from_ref(&requested))
+            .expect("requested prefix must be accepted");
+
+        let err = ensure_requested_nullifiers(&requested_prefixes, &[requested, unrequested])
+            .expect_err("unrequested prefix must be rejected");
+        assert!(matches!(err, RpcError::InvalidResponse(_)));
+    }
+
+    #[test]
+    fn ensure_requested_tags_rejects_unrequested() {
+        let requested = NoteTag::new(1);
+        let other = NoteTag::new(2);
+        let requested_set = BTreeSet::from([requested]);
+
+        ensure_requested_tags(&requested_set, [requested]).expect("requested tag must be accepted");
+
+        let err = ensure_requested_tags(&requested_set, [other])
+            .expect_err("unrequested tag must be rejected");
+        assert!(matches!(err, RpcError::InvalidResponse(_)));
+    }
+
+    fn note_id(n: u32) -> NoteId {
+        NoteId::from_raw(Word::from([n, 0, 0, 0]))
+    }
+
+    #[test]
+    fn ensure_requested_note_ids_rejects_unrequested() {
+        let requested = note_id(1);
+        let other = note_id(2);
+        let requested_set = BTreeSet::from([requested]);
+
+        ensure_requested_note_ids(&requested_set, [requested])
+            .expect("requested note id must be accepted");
+
+        let err = ensure_requested_note_ids(&requested_set, [other])
+            .expect_err("unrequested note id must be rejected");
+        assert!(matches!(err, RpcError::InvalidResponse(_)));
     }
 }

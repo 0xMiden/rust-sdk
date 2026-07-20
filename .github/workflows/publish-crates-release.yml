@@ -4,8 +4,22 @@ on:
   release:
     types: [published]
 
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag to publish (E.G. v0.10.0-rc.1, v0.10.0). Corresponding GitHub release must already exist."
+        required: true
+        type: string
+
 permissions:
   contents: read
+
+concurrency:
+  group: "${{ github.workflow }} @ ${{ inputs.version || github.event.release.tag_name }}"
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ inputs.version || github.event.release.tag_name }}
 
 jobs:
   publish:
@@ -17,19 +31,37 @@ jobs:
       # (which happen from `target/package/...`) don't create nested `target/` dirs.
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
+      - name: Validate release tag
+        run: |
+          set -euo pipefail
+
+          if [[ ! "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+            echo "::error::Release tags must look like v1.2.3 or v1.2.3-rc.1"
+            exit 1
+          fi
+
       - name: Check out code
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ env.RELEASE_TAG }}
           persist-credentials: false
 
       - name: Cleanup large tools for build space
         uses: ./.github/actions/cleanup-runner
 
-      - name: Log release info
+      - name: Verify GitHub release exists
         env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if ! gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null; then
+            echo "::error::GitHub release ${RELEASE_TAG} does not exist. Refusing to publish crates."
+            exit 1
+          fi
+
+      - name: Log release info
         run: |
           echo "Publishing release $RELEASE_TAG"
           echo "Commit: $(git rev-parse HEAD)"
@@ -50,16 +82,47 @@ jobs:
         run: |
           rm -rf "$CARGO_TARGET_DIR/package" || true
 
-      - name: Publish crates
+      - name: Publish unpublished crates
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
         run: |
-          cargo publish --workspace
+          set -euo pipefail
+
+          version="${RELEASE_TAG#v}"
+          metadata="$(cargo metadata --no-deps --format-version 1)"
+
+          mapfile -t publishable_crates < <(
+            jq -r '[.packages[] | select(.publish != []) | .name] | sort | .[]' <<< "${metadata}"
+          )
+
+          exclude_args=()
+          remaining_crates=()
+
+          for crate in "${publishable_crates[@]}"; do
+            if cargo info --quiet --registry crates-io "${crate}@${version}" >/dev/null 2>&1; then
+              echo "${crate} ${version} already exists on crates.io; excluding it."
+              exclude_args+=(--exclude "${crate}")
+            else
+              remaining_crates+=("${crate}")
+            fi
+          done
+
+          if [[ "${#remaining_crates[@]}" -eq 0 ]]; then
+            echo "All publishable crates already exist on crates.io for ${version}."
+            exit 0
+          fi
+
+          echo "Publishing crates that are not yet on crates.io:"
+          printf '  %s\n' "${remaining_crates[@]}"
+
+          cargo publish --workspace --no-verify --locked "${exclude_args[@]}"
+
 
   # Upload the miden-client CLI as an artifact on the Github release.
   # This is used by midenup to speed installs up.
   upload-artifacts:
     name: upload pre-built miden-client executable artifacts
+    if: ${{ github.event_name == 'release' }}
     permissions:
       contents: write
       id-token: write

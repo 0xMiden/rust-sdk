@@ -2,6 +2,7 @@ use alloc::string::String;
 use core::num::TryFromIntError;
 
 use miden_protocol::account::AccountId;
+use miden_protocol::asset::AssetId;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::merkle::MerkleError;
 use miden_protocol::crypto::merkle::mmr::MmrError;
@@ -10,6 +11,7 @@ use miden_protocol::errors::{
     AccountDeltaError,
     AccountError,
     AccountIdError,
+    AccountPatchError,
     AddressError,
     AssetError,
     AssetVaultError,
@@ -42,6 +44,8 @@ pub enum StoreError {
     AccountDataNotFound(AccountId),
     #[error("account delta error")]
     AccountDeltaError(#[from] AccountDeltaError),
+    #[error("account patch error")]
+    AccountPatchError(#[from] AccountPatchError),
     #[error("account error")]
     AccountError(#[from] AccountError),
     #[error("address error")]
@@ -90,6 +94,8 @@ pub enum StoreError {
     TransactionScriptError(#[from] TransactionScriptError),
     #[error("account vault data for root {0} not found")]
     VaultDataNotFound(Word),
+    #[error("vault key {0:?} (hashed to {1}) is not tracked in the vault")]
+    VaultKeyNotTracked(AssetId, Word),
     #[error("failed to parse word")]
     WordError(#[from] WordError),
     #[error("operation `{0}` is not supported by this store backend")]

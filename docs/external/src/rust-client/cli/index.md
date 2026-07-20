@@ -16,14 +16,6 @@ Call a command on the `miden-client` like this:
 miden-client <command> <flags> <arguments>
 ```
 
-Optionally, you can include the `--debug` flag to run the command with debug mode, which enables debug output logs from scripts that were compiled in this mode:
-
-```sh
-miden-client --debug <flags> <arguments>
-```
-
-Note that the debug flag overrides the `MIDEN_DEBUG` environment variable.
-
 ## Commands
 
 ### `init`
@@ -65,7 +57,7 @@ miden-client init --remote-prover-endpoint <PROVER_URL>
 miden-client init --note-transport-endpoint <MIDEN_NOTE_TRANSPORT_URL>
 ```
 
-More information on the configuration file can be found in the [configuration section](https://github.com/0xMiden/miden-client/docs/typedoc/rust-client/cli-config.md).
+More information on the configuration file can be found in the [configuration section](cli-config.md).
 
 ### `account`
 
@@ -300,11 +292,11 @@ Additionally, you can optionally not specify note IDs, in which case any note th
 
 Either `Expected` or `Committed` notes may be consumed by this command, changing their state to `Processing`. It's state will be updated to `Consumed` after the next sync.
 
-#### `send`
+#### `transfer`
 
-Sends assets to another account. Sender Account creates a note that a target Account ID can consume. The asset is identified by the tuple `(FAUCET ID, AMOUNT)`. The note can be configured to be recallable making the sender able to consume it after a height is reached.
+Transfers assets to another account. Sender Account creates a note that a target Account ID can consume. The asset is identified by the tuple `(FAUCET ID, AMOUNT)`. The note can be configured to be recallable making the sender able to consume it after a height is reached.
 
-Usage: `miden-client send --sender <SENDER ACCOUNT ID> --target <TARGET ACCOUNT ID> --asset <AMOUNT>::<FAUCET ID> --note-type <NOTE_TYPE> <RECALL_HEIGHT>`
+Usage: `miden-client transfer --sender <SENDER ACCOUNT ID> --target <TARGET ACCOUNT ID> --asset <AMOUNT>::<FAUCET ID> --note-type <NOTE_TYPE> [--recall-height <RECALL_HEIGHT>]`
 
 #### `swap`
 
@@ -352,18 +344,18 @@ miden-client address remove 0x17f13f4f83a8e8100c19d2961dfda2 mlcl1qple0ejnutx8zy
 
 #### Tips
 
-For `send` and `consume-notes`, you can omit the `--sender` and `--account` flags to use the default account defined in the [config](https://github.com/0xMiden/miden-client/docs/typedoc/rust-client/cli-config.md). If you omit the flag but have no default account defined in the config, you'll get an error instead.
+For `transfer` and `consume-notes`, you can omit the `--sender` and `--account` flags to use the default account defined in the [config](cli-config.md). If you omit the flag but have no default account defined in the config, you'll get an error instead.
 
 For every command which needs an account ID (either wallet or faucet), you can also provide a partial ID instead of the full ID for each account. So instead of
 
 ```sh
-miden-client send --sender 0x80519a1c5e3680fc --target 0x8fd4b86a6387f8d8 --asset 100::0xa99c5c8764d4e011
+miden-client transfer --sender 0x80519a1c5e3680fc --target 0x8fd4b86a6387f8d8 --asset 100::0xa99c5c8764d4e011 --note-type private
 ```
 
 You can do:
 
 ```sh
-miden-client send --sender 0x80519 --target 0x8fd4b --asset 100::0xa99c5c8764d4e011
+miden-client transfer --sender 0x80519 --target 0x8fd4b --asset 100::0xa99c5c8764d4e011 --note-type private
 ```
 
 !!! note
@@ -383,7 +375,7 @@ TX Summary:
 Continue with proving and submission? Changes will be irreversible once the proof is finalized on the network (y/N)
 ```
 
-This confirmation can be skipped in non-interactive environments by providing the `--force` flag (`miden-client send --force ...`).
+This confirmation can be skipped in non-interactive environments by providing the `--force` flag (`miden-client transfer --force ...`).
 
 #### Delegated proving
 

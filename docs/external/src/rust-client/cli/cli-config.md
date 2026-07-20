@@ -180,8 +180,6 @@ miden-client init --block-delta 256
 
   Note that this only affects the **global** directory. If a local `./.miden` directory exists, it still takes precedence over the global one (whether default or overridden).
 
-- `MIDEN_DEBUG`: When set to `true`, enables debug mode on the transaction executor and the script compiler. For any script that has been compiled and executed in this mode, debug logs will be output in order to facilitate MASM debugging ([these instructions](https://docs.miden.xyz/builder/tutorials/helpers/debugging) can be used to do so). This variable can be overridden by the `--debug` CLI flag.
-
 ### Note Transport
 
 A `note-transport` section is used to configure the connection to the Miden Note Transport node used in the exchange of private notes. It contains the following fields:

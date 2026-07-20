@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.16.0-alpha.2 (TBD)
+
+### Breaking Changes
+
+* [BREAKING][behavior][rust] `TransactionRequest` now defaults to `NoteScriptTrustPolicy::StandardScriptsOnly` for input-note scripts. Transactions consuming notes with non-standard scripts must explicitly opt in via `TransactionRequestBuilder::trusted_input_note_script_roots(...)` or `::allow_unlisted_note_scripts()`. Previously, missing non-standard input-note scripts could be silently fetched from the node and executed. ([#2136](https://github.com/0xMiden/rust-sdk/pull/2136))
+* [BREAKING][behavior][rust] `TransactionRequest` binary serialization format changed: a new `note_script_trust_policy` field is appended. Persisted/cached requests from previous versions will fail to deserialize. ([#2136](https://github.com/0xMiden/rust-sdk/pull/2136))
+
+### Features
+
+* [FEATURE][cli] Added `--allow-unlisted-note-scripts` flag to `consume-notes` to consume notes whose scripts are not recognized standards ([#2136](https://github.com/0xMiden/rust-sdk/pull/2136)).
+
 ## 0.16.0-alpha.1 (2026-07-17)
 
 ### Breaking Changes
@@ -85,8 +96,6 @@
 * [BREAKING][param][rust] `NodeRpcClient::get_block_by_number()` now takes an `include_proof: bool` parameter to control whether the block proof is included in the response. ([#1991](https://github.com/0xMiden/rust-sdk/pull/1991))
 * [BREAKING][param][rust] `NodeRpcClient::sync_chain_mmr()` replaced `block_to: Option<BlockNumber>` with `upper_bound: SyncTarget` to match the RPC definition. Use `SyncTarget::CommittedChainTip` for previous default behavior (`None`), or `SyncTarget::BlockNumber(num)` for a specific block number. ([#1991](https://github.com/0xMiden/rust-sdk/pull/1991))
 * [BREAKING][rust] Added `submit_proven_batch` to `NodeRpcClient` trait. ([#2075](https://github.com/0xMiden/rust-sdk/pull/2075))
-* [BREAKING][rust] `TransactionRequest` now defaults to `NoteScriptTrustPolicy::StandardScriptsOnly` for input-note scripts. Transactions consuming notes with non-standard scripts must explicitly opt in via `TransactionRequestBuilder::trusted_input_note_script_roots(...)` or `::allow_unlisted_note_scripts()`. Previously, missing non-standard input-note scripts could be silently fetched from the node and executed. ([#2136](https://github.com/0xMiden/rust-sdk/pull/2136))
-* [BREAKING][rust] `TransactionRequest` binary serialization format changed: a new `note_script_trust_policy` field is appended. Persisted/cached requests from previous versions will fail to deserialize. ([#2136](https://github.com/0xMiden/rust-sdk/pull/2136))
 * [BREAKING][param][cli] `address add` now takes `<ACCOUNT_ID> <BECH32_ADDRESS>` instead of `<ACCOUNT_ID> <INTERFACE> [TAG_LEN]`. Use the new `address encode` subcommand to build a bech32 string from `<ACCOUNT_ID> <INTERFACE> [TAG_LEN]`. ([#2115](https://github.com/0xMiden/rust-sdk/pull/2115))
 * [BREAKING][rust] `StateSync` no longer takes an `Option<Arc<dyn Store>>`. `StateSyncInput::accounts` is now a `Vec<AccountSyncHint>` (header + `AccountStorageHeader`); when hints cover the account's map slots `StateSync` issues a single `get_account_proof` for non-oversized accounts, and when new map slots appear on-chain it only fetches the missing ones. The `Store` trait method `get_account_map_slot_names` was replaced with `get_account_storage_header`. ([#2132](https://github.com/0xMiden/rust-sdk/pull/2132))
 * [BREAKING] `NodeRpcClient::get_account_details` now fetches a public account's storage maps in a single `/GetAccount` request and returns `Option<Account>`. No longer returns data for private accounts; instead use `NodeRpcClient::get_account` to fetch private account's commitment. ([#2215](https://github.com/0xMiden/rust-sdk/pull/2215)).
@@ -137,7 +146,6 @@
 * [FEATURE][web] Added `StorageView` JS wrapper over WASM `AccountStorage`. `account.storage()` now returns a `StorageView` that makes `getItem()` work intuitively for both Value and StorageMap slots. WASM primitives are unchanged; the raw `AccountStorage` is accessible via `.raw` ([#1955](https://github.com/0xMiden/rust-sdk/pull/1955)).
 * [FEATURE][web] Added `wordToBigInt()` utility export for losslessly converting a `Word`'s first felt to a `BigInt`. `StorageResult.toString()` is BigInt-backed, and `valueOf()` returns a JS number for values fitting in `Number.MAX_SAFE_INTEGER` and throws `RangeError` for larger u64 values — use `.toBigInt()` for exact access ([#1955](https://github.com/0xMiden/rust-sdk/pull/1955)).
 * [FEATURE][rust,cli] Added partial swap (PSWAP) support: `TransactionRequestBuilder::build_pswap_create` / `build_pswap_consume` / `build_pswap_cancel` and a `miden-client pswap` CLI command (`create`, `consume`, `cancel`) for partially-fillable fungible swaps ([#2162](https://github.com/0xMiden/rust-sdk/pull/2162)).
-* [FEATURE][cli] Added `--allow-unlisted-note-scripts` flag to `consume-notes` to consume notes whose scripts are not recognized standards ([#2136](https://github.com/0xMiden/rust-sdk/pull/2136)).
 * Added verification of MMR responses during state sync: validated the returned block range matches the requested range and checked that post-delta MMR peaks match the block header's chain commitment ([#1887](https://github.com/0xMiden/rust-sdk/pull/1887)).
 
 ## 0.14.9 (2026-05-19)

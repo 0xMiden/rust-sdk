@@ -2,16 +2,16 @@
 
 use std::collections::BTreeMap;
 use std::rc::Rc;
-use std::string::{String, ToString};
+use std::string::ToString;
 use std::sync::{Arc, RwLock};
 use std::vec::Vec;
 
 use miden_client::account::{
     Account,
     AccountCode,
-    AccountDelta,
     AccountHeader,
     AccountId,
+    AccountPatch,
     AccountStorage,
     Address,
     PartialAccount,
@@ -22,7 +22,7 @@ use miden_client::account::{
     StorageSlotName,
     StorageSlotType,
 };
-use miden_client::asset::{Asset, AssetVault, AssetWitness, FungibleAsset};
+use miden_client::asset::{Asset, AssetVault, AssetWitness};
 use miden_client::store::{
     AccountRecord,
     AccountRecordData,
@@ -35,8 +35,7 @@ use miden_client::store::{
 use miden_client::utils::{Deserializable, Serializable};
 use miden_client::{AccountError, Felt, Word};
 use miden_protocol::account::{AccountStorageHeader, StorageMapWitness, StorageSlotHeader};
-use miden_protocol::asset::{AssetVaultKey, PartialVault};
-use miden_protocol::crypto::merkle::MerkleError;
+use miden_protocol::asset::{AssetId, PartialVault};
 use rusqlite::types::Value;
 use rusqlite::{Connection, OptionalExtension, Transaction, named_params, params};
 
@@ -93,11 +92,10 @@ impl SqliteStore {
         conn: &mut Connection,
         account_commitment: Word,
     ) -> Result<Option<AccountHeader>, StoreError> {
-        let account_commitment_str: String = account_commitment.to_string();
         Ok(query_historical_account_headers(
             conn,
             "account_commitment = ?",
-            params![account_commitment_str],
+            params![account_commitment.to_bytes()],
         )?
         .pop()
         .map(|(header, _)| header))
@@ -246,7 +244,7 @@ impl SqliteStore {
         conn: &mut Connection,
         smt_forest: &Arc<RwLock<AccountSmtForest>>,
         account_id: AccountId,
-        vault_key: AssetVaultKey,
+        asset_id: AssetId,
     ) -> Result<Option<(Asset, AssetWitness)>, StoreError> {
         // Acquire forest lock before getting header in order to avoid concurrent writes to it.
         let smt_forest = smt_forest
@@ -256,9 +254,9 @@ impl SqliteStore {
             .ok_or(StoreError::AccountDataNotFound(account_id))?
             .0;
 
-        match smt_forest.get_asset_and_witness(header.vault_root(), vault_key) {
+        match smt_forest.get_asset_and_witness(header.vault_root(), asset_id) {
             Ok((asset, witness)) => Ok(Some((asset, witness))),
-            Err(StoreError::MerkleStoreError(MerkleError::UntrackedKey(_))) => Ok(None),
+            Err(StoreError::VaultKeyNotTracked(..)) => Ok(None),
             Err(err) => Err(err),
         }
     }
@@ -388,7 +386,7 @@ impl SqliteStore {
         const QUERY: &str =
             insert_sql!(foreign_account_code { account_id, code_commitment } | REPLACE);
 
-        tx.execute(QUERY, params![account_id.to_bytes(), code.commitment().to_string()])
+        tx.execute(QUERY, params![account_id.to_bytes(), code.commitment().to_bytes()])
             .into_store_error()?;
 
         Self::insert_account_code(&tx, code)?;
@@ -426,41 +424,39 @@ impl SqliteStore {
         account_code: &AccountCode,
     ) -> Result<(), StoreError> {
         const QUERY: &str = insert_sql!(account_code { commitment, code } | IGNORE);
-        tx.execute(QUERY, params![account_code.commitment().to_hex(), account_code.to_bytes()])
+        tx.execute(QUERY, params![account_code.commitment().to_bytes(), account_code.to_bytes()])
             .into_store_error()?;
         Ok(())
     }
 
-    /// Applies the account delta to the account state, updating the vault and storage maps.
+    /// Applies the account patch to the account state, updating the vault and storage maps.
     ///
     /// Archives old values from latest to historical and updates latest via INSERT OR REPLACE.
-    pub(crate) fn apply_account_delta(
+    pub(crate) fn apply_account_patch(
         tx: &Transaction<'_>,
         smt_forest: &mut AccountSmtForest,
         init_account_state: &AccountHeader,
         final_account_state: &AccountHeader,
-        updated_fungible_assets: BTreeMap<AssetVaultKey, FungibleAsset>,
         old_map_roots: &BTreeMap<StorageSlotName, Word>,
-        delta: &AccountDelta,
+        patch: &AccountPatch,
     ) -> Result<(), StoreError> {
         let account_id = final_account_state.id();
 
         // Archive old header and insert the new one
         Self::replace_account_header(tx, final_account_state, init_account_state)?;
 
-        Self::apply_account_vault_delta(
+        Self::apply_account_vault_patch(
             tx,
             smt_forest,
             account_id,
             init_account_state,
             final_account_state,
-            updated_fungible_assets,
-            delta,
+            patch.vault(),
         )?;
 
         // Build the final roots from the init state's registered roots:
         // - Replace vault root with the final one
-        // - Replace changed map roots with their new values (done by apply_account_storage_delta)
+        // - Replace changed map roots with their new values (done by apply_account_storage_patch)
         // - Unchanged map roots continue as they were
         let mut final_roots = smt_forest
             .get_roots(&init_account_state.id())
@@ -474,9 +470,9 @@ impl SqliteStore {
 
         let default_map_root = StorageMap::default().root();
         let updated_storage_slots =
-            Self::apply_account_storage_delta(smt_forest, old_map_roots, delta)?;
+            Self::apply_account_storage_patch(smt_forest, old_map_roots, patch.storage())?;
 
-        // Update map roots in final_roots with new values from the delta
+        // Update map roots in final_roots with new values from the patch
         for (slot_name, (new_root, slot_type)) in &updated_storage_slots {
             if *slot_type == StorageSlotType::Map {
                 let old_root = old_map_roots.get(slot_name).copied().unwrap_or(default_map_root);
@@ -489,12 +485,12 @@ impl SqliteStore {
             }
         }
 
-        Self::write_storage_delta(
+        Self::write_storage_patch(
             tx,
             account_id,
             final_account_state.nonce().as_canonical_u64(),
             &updated_storage_slots,
-            delta,
+            patch.storage(),
         )?;
 
         smt_forest.stage_roots(final_account_state.id(), final_roots);
@@ -515,7 +511,7 @@ impl SqliteStore {
         let commitment_params = Rc::new(
             discarded_states
                 .iter()
-                .map(|(_, commitment)| Value::from(commitment.to_hex()))
+                .map(|(_, commitment)| Value::Blob(commitment.to_bytes()))
                 .collect::<Vec<_>>(),
         );
 
@@ -705,8 +701,8 @@ impl SqliteStore {
         // Restore assets with non-NULL old values
         tx.execute(
             "INSERT OR REPLACE INTO latest_account_assets \
-             (account_id, vault_key, asset) \
-             SELECT account_id, vault_key, old_asset \
+             (account_id, asset_id, asset) \
+             SELECT account_id, asset_id, old_asset \
              FROM historical_account_assets \
              WHERE account_id = ? AND replaced_at_nonce = ? AND old_asset IS NOT NULL",
             params![account_id_bytes, nonce_val],
@@ -716,8 +712,8 @@ impl SqliteStore {
         // Delete assets that were new (NULL old value)
         tx.execute(
             "DELETE FROM latest_account_assets \
-             WHERE account_id = ?1 AND vault_key IN (\
-                 SELECT vault_key FROM historical_account_assets \
+             WHERE account_id = ?1 AND asset_id IN (\
+             SELECT asset_id FROM historical_account_assets \
                  WHERE account_id = ?1 AND replaced_at_nonce = ?2 AND old_asset IS NULL\
              )",
             params![account_id_bytes, nonce_val],
@@ -784,8 +780,8 @@ impl SqliteStore {
         .into_store_error()?;
         tx.execute(
             "INSERT OR REPLACE INTO historical_account_assets \
-             (account_id, replaced_at_nonce, vault_key, old_asset) \
-             SELECT account_id, ?, vault_key, asset \
+             (account_id, replaced_at_nonce, asset_id, old_asset) \
+             SELECT account_id, ?, asset_id, asset \
              FROM latest_account_assets WHERE account_id = ?",
             params![&nonce_val, &account_id_bytes],
         )
@@ -832,8 +828,8 @@ impl SqliteStore {
         .into_store_error()?;
         tx.execute(
             "INSERT OR IGNORE INTO historical_account_assets \
-             (account_id, replaced_at_nonce, vault_key, old_asset) \
-             SELECT account_id, ?, vault_key, NULL \
+             (account_id, replaced_at_nonce, asset_id, old_asset) \
+             SELECT account_id, ?, asset_id, NULL \
              FROM latest_account_assets WHERE account_id = ?",
             params![&nonce_val, &account_id_bytes],
         )
@@ -845,12 +841,12 @@ impl SqliteStore {
         Ok(())
     }
 
-    /// Applies an incremental delta to a public account's state during sync.
-    pub(crate) fn apply_sync_account_delta(
+    /// Applies an incremental patch to a public account's state during sync.
+    pub(crate) fn apply_sync_account_patch(
         tx: &Transaction<'_>,
         smt_forest: &mut AccountSmtForest,
         new_header: &AccountHeader,
-        delta: &AccountDelta,
+        patch: &AccountPatch,
     ) -> Result<(), StoreError> {
         let account_id = new_header.id();
 
@@ -862,23 +858,19 @@ impl SqliteStore {
                 .map(|(header, ..)| header)
                 .ok_or(StoreError::AccountDataNotFound(account_id))?;
 
-        // Read the fungible assets that will be affected by the delta.
+        if new_header.nonce().as_canonical_u64() <= init_header.nonce().as_canonical_u64() {
+            return Err(StoreError::DatabaseError(format!(
+                "apply_sync_account_patch: new nonce {} is not greater than local nonce {} for account {}",
+                new_header.nonce().as_canonical_u64(),
+                init_header.nonce().as_canonical_u64(),
+                account_id,
+            )));
+        }
+
         // Transaction derefs to Connection, so we can pass it where Connection is expected.
-        let updated_fungible_assets =
-            Self::get_account_fungible_assets_for_delta(tx, account_id, delta)?;
+        let old_map_roots = Self::get_storage_map_roots_for_patch(tx, account_id, patch.storage())?;
 
-        // Read the old map roots for slots affected by the delta.
-        let old_map_roots = Self::get_storage_map_roots_for_delta(tx, account_id, delta)?;
-
-        Self::apply_account_delta(
-            tx,
-            smt_forest,
-            &init_header,
-            new_header,
-            updated_fungible_assets,
-            &old_map_roots,
-            delta,
-        )
+        Self::apply_account_patch(tx, smt_forest, &init_header, new_header, &old_map_roots, patch)
     }
 
     /// Locks the account if the mismatched digest doesn't belong to a previous account state (stale
@@ -893,10 +885,10 @@ impl SqliteStore {
         // got a past update and shouldn't lock the account.
         const LOCK_CONDITION: &str = "WHERE id = :account_id AND NOT EXISTS (SELECT 1 FROM historical_account_headers WHERE id = :account_id AND account_commitment = :digest)";
         let account_id_bytes = account_id.to_bytes();
-        let digest_str = mismatched_digest.to_string();
+        let digest_bytes = mismatched_digest.to_bytes();
         let params = named_params! {
             ":account_id": account_id_bytes,
-            ":digest": digest_str
+            ":digest": digest_bytes
         };
 
         let query = format!("UPDATE latest_account_headers SET locked = true {LOCK_CONDITION}");
@@ -924,11 +916,11 @@ impl SqliteStore {
         watched: bool,
     ) -> Result<(), StoreError> {
         let id = new_header.id().to_bytes();
-        let code_commitment = new_header.code_commitment().to_string();
-        let storage_commitment = new_header.storage_commitment().to_string();
-        let vault_root = new_header.vault_root().to_string();
+        let code_commitment = new_header.code_commitment().to_bytes();
+        let storage_commitment = new_header.storage_commitment().to_bytes();
+        let vault_root = new_header.vault_root().to_bytes();
         let nonce = u64_to_value(new_header.nonce().as_canonical_u64());
-        let commitment = new_header.to_commitment().to_string();
+        let commitment = new_header.to_commitment().to_bytes();
         let account_seed = account_seed.map(|seed| seed.to_bytes());
 
         const LATEST_QUERY: &str = insert_sql!(
@@ -1007,11 +999,11 @@ impl SqliteStore {
 
         // Archive the old header to historical.
         let old_id = old_header.id().to_bytes();
-        let old_code_commitment = old_header.code_commitment().to_string();
-        let old_storage_commitment = old_header.storage_commitment().to_string();
-        let old_vault_root = old_header.vault_root().to_string();
+        let old_code_commitment = old_header.code_commitment().to_bytes();
+        let old_storage_commitment = old_header.storage_commitment().to_bytes();
+        let old_vault_root = old_header.vault_root().to_bytes();
         let old_nonce = u64_to_value(old_header.nonce().as_canonical_u64());
-        let old_commitment = old_header.to_commitment().to_string();
+        let old_commitment = old_header.to_commitment().to_bytes();
         let replaced_at_nonce = u64_to_value(new_header.nonce().as_canonical_u64());
 
         const HISTORICAL_QUERY: &str = insert_sql!(
@@ -1064,7 +1056,7 @@ impl SqliteStore {
         let mut total_deleted: usize = 0;
 
         // Collect code commitments from headers we are about to delete.
-        let candidate_code_commitments: Vec<String> = {
+        let candidate_code_commitments: Vec<Vec<u8>> = {
             let mut stmt = tx
                 .prepare(
                     "SELECT DISTINCT code_commitment FROM historical_account_headers \
@@ -1074,7 +1066,7 @@ impl SqliteStore {
             let rows = stmt
                 .query_map(params![&account_id_bytes, &boundary_val], |row| row.get(0))
                 .into_store_error()?;
-            rows.collect::<Result<Vec<String>, _>>().into_store_error()?
+            rows.collect::<Result<Vec<Vec<u8>>, _>>().into_store_error()?
         };
 
         // Delete historical entries.

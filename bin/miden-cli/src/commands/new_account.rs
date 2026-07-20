@@ -9,12 +9,11 @@ use miden_client::Client;
 use miden_client::account::component::{
     AccountComponent,
     AccountComponentMetadata,
-    BurnPolicyConfig,
+    BurnPolicy,
     FungibleFaucet,
     InitStorageData,
     MIDEN_PACKAGE_EXTENSION,
-    MintPolicyConfig,
-    PolicyRegistration,
+    MintPolicy,
     StorageSlotSchema,
     TokenName,
     TokenPolicyManager,
@@ -26,12 +25,12 @@ use miden_client::account::{
     AccountType,
 };
 use miden_client::asset::{AssetAmount, TokenSymbol};
-use miden_client::auth::{AuthSchemeId, AuthSecretKey, AuthSingleSig};
+use miden_client::auth::{Approver, AuthSchemeId, AuthSecretKey, AuthSingleSig};
 use miden_client::keystore::Keystore;
 use miden_client::transaction::TransactionRequestBuilder;
 use miden_client::utils::Deserializable;
 use miden_client::vm::{Package, SectionId};
-use rand::RngCore;
+use rand::Rng;
 use serde::Deserialize;
 use tracing::debug;
 
@@ -341,7 +340,7 @@ fn build_fungible_faucet_component(
 /// `Package.name` field stores the component's full canonical name from `FungibleFaucet::NAME`.)
 fn drop_basic_fungible_faucet_packages(packages: &mut Vec<Package>) -> bool {
     let before = packages.len();
-    packages.retain(|pkg| pkg.name.to_string() != FungibleFaucet::NAME);
+    packages.retain(|pkg| pkg.name != FungibleFaucet::NAME);
     packages.len() != before
 }
 
@@ -529,15 +528,10 @@ async fn create_client_account<AUTH: Keystore + Sync + 'static>(
     // default `allow_all` policy manager implicitly.
     if should_add_implicit_token_policy_manager(&regular_components) {
         debug!("Adding implicit TokenPolicyManager component for fungible faucet");
-        let policy_manager = TokenPolicyManager::new()
-            .with_mint_policy(MintPolicyConfig::AllowAll, PolicyRegistration::Active)
-            .map_err(|err| {
-                CliError::Faucet(err.into(), "Failed to register mint policy".to_string())
-            })?
-            .with_burn_policy(BurnPolicyConfig::AllowAll, PolicyRegistration::Active)
-            .map_err(|err| {
-                CliError::Faucet(err.into(), "Failed to register burn policy".to_string())
-            })?;
+        let policy_manager = TokenPolicyManager::builder()
+            .active_mint_policy(MintPolicy::allow_all())
+            .active_burn_policy(BurnPolicy::allow_all())
+            .build();
         regular_components.extend(policy_manager);
     }
     // Add the auth component (either from packages or default Falcon)
@@ -548,10 +542,10 @@ async fn create_client_account<AUTH: Keystore + Sync + 'static>(
     } else {
         debug!("Adding default Falcon auth component");
         let kp = AuthSecretKey::new_falcon512_poseidon2_with_rng(client.rng());
-        builder = builder.with_auth_component(AuthSingleSig::new(
+        builder = builder.with_auth_component(AuthSingleSig::new(Approver::new(
             kp.public_key().to_commitment(),
             AuthSchemeId::Falcon512Poseidon2,
-        ));
+        )));
         Some(kp)
     };
 
@@ -717,11 +711,10 @@ mod tests {
     #[test]
     fn implicit_token_policy_manager_is_skipped_when_component_already_present() {
         let mut regular_components: Vec<AccountComponent> = vec![test_fungible_faucet_component()];
-        let policy_manager = TokenPolicyManager::new()
-            .with_mint_policy(MintPolicyConfig::AllowAll, PolicyRegistration::Active)
-            .unwrap()
-            .with_burn_policy(BurnPolicyConfig::AllowAll, PolicyRegistration::Active)
-            .unwrap();
+        let policy_manager = TokenPolicyManager::builder()
+            .active_mint_policy(MintPolicy::allow_all())
+            .active_burn_policy(BurnPolicy::allow_all())
+            .build();
         regular_components.extend(policy_manager);
 
         assert!(!should_add_implicit_token_policy_manager(&regular_components));

@@ -271,12 +271,22 @@ pub async fn test_swap_public_payback(client_config: ClientConfig) -> Result<()>
     let payback_commitment = expected_payback_note_details[0].commitment();
     info!(note = %payback_commitment.to_hex(), account_id = %account_a.id(), "Consuming public payback note on client 1");
 
-    let note: Note = client1
+    let payback_record = client1
         .get_input_notes(NoteFilter::DetailsCommitments(vec![payback_commitment]))
         .await?
         .pop()
-        .with_context(|| format!("Payback note {} not found", payback_commitment.to_hex()))?
-        .try_into()?;
+        .with_context(|| format!("Payback note {} not found", payback_commitment.to_hex()))?;
+
+    // The node must have committed the payback as a public note.
+    assert_eq!(
+        payback_record
+            .metadata()
+            .context("payback note should have metadata")?
+            .note_type(),
+        NoteType::Public
+    );
+
+    let note: Note = payback_record.try_into()?;
     let tx_request = TransactionRequestBuilder::new().build_consume_notes(vec![note])?;
     execute_tx_and_sync(&mut client1, account_a.id(), tx_request).await?;
 

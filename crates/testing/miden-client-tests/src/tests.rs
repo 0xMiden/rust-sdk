@@ -2733,6 +2733,7 @@ async fn swap_public_payback_test() {
         .unwrap();
 
     let swap_note = tx_request.expected_output_own_notes()[0].clone();
+    let payback_commitment = tx_request.expected_future_notes().next().unwrap().0.commitment();
     Box::pin(client.submit_new_transaction(wallet_a.id(), tx_request))
         .await
         .unwrap();
@@ -2747,6 +2748,15 @@ async fn swap_public_payback_test() {
         .unwrap();
     mock_rpc_api.prove_block();
     client.sync_state().await.unwrap();
+
+    // The payback note's committed metadata must show it was emitted as a public note.
+    let payback_record = client
+        .get_input_notes(NoteFilter::DetailsCommitments(vec![payback_commitment]))
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(payback_record.metadata().unwrap().note_type(), NoteType::Public);
 
     // wallet_b ended up with asset_a, wallet_a will receive asset_b via the public payback note.
     let wallet_b_balance =

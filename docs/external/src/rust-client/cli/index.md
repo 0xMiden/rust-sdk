@@ -302,7 +302,9 @@ Usage: `miden-client transfer --sender <SENDER ACCOUNT ID> --target <TARGET ACCO
 
 The source account creates a `SWAP` note that offers some asset in exchange for some other asset. When another account consumes that note, it will receive the offered asset amount and the requested asset will removed from its vault (and put into a new note which the first account can then consume). Consuming the note will fail if the account doesn't have enough of the requested asset.
 
-Usage: `miden-client swap --source <SOURCE ACCOUNT ID> --offered-asset <OFFERED AMOUNT>::<OFFERED FAUCET ID> --requested-asset <REQUESTED AMOUNT>::<REQUESTED FAUCET ID> --note-type <NOTE_TYPE>`
+Usage: `miden-client swap --source <SOURCE ACCOUNT ID> --offered-asset <OFFERED AMOUNT>::<OFFERED FAUCET ID> --requested-asset <REQUESTED AMOUNT>::<REQUESTED FAUCET ID> --note-type <NOTE_TYPE> [--payback-note-type <NOTE_TYPE>]`
+
+The `--payback-note-type` option controls the visibility of the payback note created when the swap is consumed. It defaults to `private`.
 
 ### `address`
 

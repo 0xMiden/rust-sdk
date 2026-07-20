@@ -60,6 +60,8 @@ pub type MockClient<AUTH> = Client<AUTH>;
 pub struct MockRpcApi {
     account_commitment_updates: Arc<RwLock<BTreeMap<BlockNumber, BTreeMap<AccountId, Word>>>>,
     pub mock_chain: Arc<RwLock<MockChain>>,
+    /// Chain snapshots used to answer block-pinned account queries.
+    historical_chains: Arc<RwLock<BTreeMap<BlockNumber, Arc<MockChain>>>>,
     oversize_threshold: usize,
     /// Note headers to report as erased in sync transaction responses.
     erased_notes: Arc<RwLock<Vec<NoteHeader>>>,
@@ -84,6 +86,7 @@ impl MockRpcApi {
         Self {
             account_commitment_updates: Arc::new(RwLock::new(build_account_updates(&mock_chain))),
             mock_chain: Arc::new(RwLock::new(mock_chain)),
+            historical_chains: Arc::new(RwLock::new(BTreeMap::new())),
             oversize_threshold: 1000,
             erased_notes: Arc::new(RwLock::new(Vec::new())),
             private_note_attachments: Arc::new(RwLock::new(BTreeMap::new())),
@@ -123,9 +126,16 @@ impl MockRpcApi {
     /// Advances the mock chain by proving the next block, committing all pending objects to the
     /// chain in the process.
     pub fn prove_block(&self) {
-        let proven_block = self.mock_chain.write().prove_next_block().unwrap();
-        let mut account_commitment_updates = self.account_commitment_updates.write();
+        let proven_block = {
+            let mut mock_chain = self.mock_chain.write();
+            let historical_block_num = mock_chain.latest_block_header().block_num();
+            let snapshot = Arc::new(mock_chain.clone());
+            let proven_block = mock_chain.prove_next_block().unwrap();
+            self.historical_chains.write().insert(historical_block_num, snapshot);
+            proven_block
+        };
         let block_num = proven_block.header().block_num();
+        let mut account_commitment_updates = self.account_commitment_updates.write();
         let updates: BTreeMap<AccountId, Word> = proven_block
             .body()
             .updated_accounts()
@@ -293,9 +303,11 @@ impl MockRpcApi {
     }
 
     pub fn advance_blocks(&self, num_blocks: u32) {
-        let current_height = self.get_chain_tip_block_num();
         let mut mock_chain = self.mock_chain.write();
-        mock_chain.prove_until_block(current_height + num_blocks).unwrap();
+        let block_num = mock_chain.latest_block_header().block_num();
+        let snapshot = Arc::new(mock_chain.clone());
+        mock_chain.prove_until_block(block_num + num_blocks).unwrap();
+        self.historical_chains.write().insert(block_num, snapshot);
     }
 }
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
@@ -470,20 +482,30 @@ impl NodeRpcClient for MockRpcApi {
     }
 
     /// Returns the account proof for the specified account. The `known_code` and `vault` fields
-    /// of the request are ignored in the mock implementation: the latest account code and full
-    /// asset list are always returned, and the truncation flags are set when the data exceeds
+    /// are ignored: full account data is returned, with truncation flags set when it exceeds
     /// `oversize_threshold`.
     async fn get_account(
         &self,
         account_id: AccountId,
         request: GetAccountRequest,
     ) -> Result<(BlockNumber, AccountProof), RpcError> {
-        let mock_chain = self.mock_chain.read();
-
+        let current_chain = self.mock_chain.read();
+        let current_block_number = current_chain.latest_block_header().block_num();
         let block_number = match request.at {
             AccountStateAt::Block(number) => number,
-            AccountStateAt::ChainTip => mock_chain.latest_block_header().block_num(),
+            AccountStateAt::ChainTip => current_block_number,
         };
+        let historical_chain = match request.at {
+            AccountStateAt::Block(_) if block_number != current_block_number => Some(
+                self.historical_chains.read().get(&block_number).cloned().ok_or_else(|| {
+                    RpcError::InvalidResponse(alloc::format!(
+                        "no mock chain snapshot at block {block_number}"
+                    ))
+                })?,
+            ),
+            AccountStateAt::ChainTip | AccountStateAt::Block(_) => None,
+        };
+        let mock_chain = historical_chain.as_deref().unwrap_or(&*current_chain);
 
         let headers = if account_id.is_public() {
             let account = mock_chain.committed_account(account_id).unwrap();

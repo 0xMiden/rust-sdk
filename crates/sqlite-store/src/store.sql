@@ -217,6 +217,9 @@ CREATE TABLE tags (
     tag BLOB NOT NULL,     -- the serialized tag
     source BLOB NOT NULL   -- the serialized tag source
 );
+-- Enforces tag idempotency: `add_note_tag` uses `INSERT OR IGNORE` against this index so a
+-- repeated (tag, source) pair is a no-op instead of a duplicated row.
+CREATE UNIQUE INDEX idx_tags_tag_source ON tags(tag, source);
 
 -- insert initial row into blockchain_checkpoint table
 INSERT OR IGNORE INTO blockchain_checkpoint (block_num, partial_blockchain_peaks)

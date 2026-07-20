@@ -139,6 +139,15 @@ impl OutputNoteRecord {
         )
     }
 
+    /// Returns true while the note's on-chain inclusion is still unsettled (either expected
+    /// state), i.e. before the note is known to be committed or consumed.
+    pub fn is_inclusion_pending(&self) -> bool {
+        matches!(
+            self.state,
+            OutputNoteState::ExpectedPartial | OutputNoteState::ExpectedFull { .. }
+        )
+    }
+
     // TRANSITIONS
     // --------------------------------------------------------------------------------------------
 

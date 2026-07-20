@@ -92,6 +92,10 @@ pub struct StateSyncInput {
     /// Input notes whose lifecycle should be followed during sync.
     pub input_notes: Vec<InputNoteRecord>,
     /// Output notes whose lifecycle should be followed during sync.
+    ///
+    /// Inclusion (committed) updates are derived from transaction sync, so the account that
+    /// created a note must be present in `accounts` for the note to transition to committed.
+    /// The consumed transition does not depend on this: nullifier sync detects it regardless.
     pub output_notes: Vec<OutputNoteRecord>,
     /// Transactions to track for commitment or discard during sync.
     pub uncommitted_transactions: Vec<TransactionRecord>,
@@ -902,6 +906,18 @@ impl StateSync {
     /// Validates that a `get_account` proof is bound to the sync target `chain_tip_header`: it must
     /// be for the requested `account_id`, at the target block, and its witness must open under the
     /// target header's account root. Returns the account details on success.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError::ChainValidationError`] if:
+    /// - the proof is for a different block than the sync target.
+    /// - the witness is for a different account than the requested one.
+    /// - the witness does not open under the sync target header's account root.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the proof carries no account details, since this is only called for public
+    /// accounts and the node always returns details for them.
     fn validate_account_proof(
         proof: AccountProof,
         proof_block_num: BlockNumber,
@@ -1564,6 +1580,67 @@ mod tests {
             .await;
         assert!(matches!(result, Err(ClientError::ChainValidationError(_))));
     }
+
+    /// A transaction committed after the sync target must remain pending. The account fetch is
+    /// pinned to the target's pre-commit state.
+    #[tokio::test]
+    async fn sync_public_accounts_pins_account_fetch_to_sync_target() {
+        let mut builder = MockChainBuilder::new();
+        let account = builder.add_existing_mock_account(miden_testing::Auth::IncrNonce).unwrap();
+        let mut chain = builder.build().unwrap();
+
+        // The sync target predates this transaction.
+        let sync_target_header = chain.latest_block_header();
+        let tx = Box::pin(
+            chain
+                .build_tx_context(TxContextInput::AccountId(account.id()), &[], &[])
+                .unwrap()
+                .build()
+                .unwrap()
+                .execute(),
+        )
+        .await
+        .unwrap();
+        let local_header = tx.final_account().clone();
+        assert_ne!(local_header.to_commitment(), account.to_commitment());
+        chain.add_pending_executed_transaction(&tx).unwrap();
+
+        let rpc_api = MockRpcApi::new(chain);
+        // Commit the transaction after the target.
+        rpc_api.prove_block();
+        assert_eq!(
+            rpc_api
+                .mock_chain
+                .read()
+                .committed_account(account.id())
+                .unwrap()
+                .to_commitment(),
+            local_header.to_commitment()
+        );
+        let state_sync = StateSync::new(Arc::new(rpc_api), Arc::new(MockScreener), None);
+
+        let current_public_accounts = vec![&local_header];
+        let commitment_updates = vec![(account.id(), account.to_commitment())];
+        let mut account_updates = AccountUpdates::default();
+
+        let superseded = state_sync
+            .sync_public_accounts(
+                &mut account_updates,
+                &commitment_updates,
+                &current_public_accounts,
+                BlockNumber::GENESIS,
+                &sync_target_header,
+            )
+            .await
+            .unwrap();
+
+        assert!(superseded.is_empty(), "the transaction must not be superseded");
+        assert!(
+            account_updates.updated_public_accounts().is_empty(),
+            "the target state must not overwrite the local account"
+        );
+    }
+
     /// Builds an honest `get_account` response for `account_id`.
     async fn get_account_proof(
         rpc_api: &MockRpcApi,

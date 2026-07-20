@@ -427,6 +427,60 @@ The input file should contain a TOML table called `inputs`, as in the following 
 inputs = [ { key = "0x0000000000000000000000000000000000000000000000000000001000000000", values = ["13", "9"]}, { key = "0x0000000000000000000000000000000000000000000000000000000000000000" , values = ["1", "2"]}, ]
 ```
 
+#### `call`
+
+Call a procedure on an account tracked by the client and show what it returns, along with the state changes the call would produce.
+
+Usage: `miden-client call <ACCOUNT_ID>:<PROCEDURE> [ARGS]... --package <PACKAGE>`
+
+| Flag                          | Description                                                   | Aliases |
+| ----------------------------- | ------------------------------------------------------------- | ------- |
+| `--package <PACKAGE>`         | Path to the `.masp` package that exports the procedure.       | `-p`    |
+| `--inputs-path <INPUTS_PATH>` | Path to a TOML file with advice map entries.                  | `-i`    |
+
+The target is a single argument of the form `<ACCOUNT_ID>:<PROCEDURE>`. The account ID may be given as a partial ID. The procedure name is matched against the package's exports with `_` and `-` treated as equivalent, so it can be written in either snake_case or kebab-case (`get_count` matches the export `get-count`).
+
+Arguments are passed positionally after the target. Each one is a `u64` field element, and they are pushed onto the stack so that the first argument ends up on top. Their number is checked against the procedure's signature in the package manifest. If the package does not record a signature, the check is skipped and a warning is printed, in which case passing the wrong number of arguments may fail or produce a wrong result.
+
+`--inputs-path` takes the same TOML format as [`exec`](#exec). The entries are loaded into the VM's advice map and are visible to the called procedure.
+
+##### Example
+
+Calling `increment-count` on a counter contract:
+
+```sh
+miden-client call 0x4614b8bf575eab71455e97bd394e90:increment-count --package target/miden/dev/counter-contract.masp
+```
+
+The command first prints the procedure's signature and its return values, then the effects the call has on the account:
+
+```sh
+Raw Signature: increment-count() -> (Felt)
+
+Result: 1
+The transaction will have the following effects:
+
+No notes will be consumed.
+
+No notes will be created as a result of this transaction.
+
+Account Storage will not be changed.
+Storage map changes:
+┌──────────────────────────────────┬──────────────────────────────────┬─────────────────────────────────┐
+│ Storage Slot                     ┆ Map Key                          ┆ New Value                       │
+╞══════════════════════════════════╪══════════════════════════════════╪═════════════════════════════════╡
+│ counter_contract::counter_contra ┆ 0x000000000000000000000000000000 ┆ 0x01000000000000000000000000000 │
+│ ct::count_map                    ┆ 00000000000000000001000000000000 ┆ 0000000000000000000000000000000 │
+│                                  ┆ 00                               ┆ 0000                            │
+└──────────────────────────────────┴──────────────────────────────────┴─────────────────────────────────┘
+Account Vault will not be changed.
+Nonce incremented by: 1.
+```
+
+:::note
+The call is executed locally. No proof is generated, nothing is submitted to the network, and the account's stored state is left unchanged.
+:::
+
 ### `note-transport`
 
 Send and fetch private notes using the transport layer.

@@ -3,7 +3,6 @@ use alloc::string::ToString;
 use alloc::vec::Vec;
 
 use miden_protocol::Word;
-use miden_protocol::asset::Asset;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{NoteHeader, NoteId, NoteInclusionProof, Nullifier};
 use miden_protocol::transaction::{
@@ -15,10 +14,6 @@ use miden_protocol::transaction::{
 
 use super::note::CommittedNote;
 use crate::rpc::{RpcConversionError, RpcError, generated as proto};
-
-/// A native asset faucet ID for use in testing scenarios.
-#[cfg(test)]
-pub const ACCOUNT_ID_NATIVE_ASSET_FAUCET: u128 = 0xab00_0000_0000_cd21_0000_ac00_0000_de00_u128;
 
 // INTO TRANSACTION ID
 // ================================================================================================
@@ -180,30 +175,12 @@ fn convert_transaction_header(
         }
     }
 
-    let fee_asset: Asset = value
-        .fee
-        .ok_or(RpcConversionError::MissingFieldInProtobufRepresentation {
-            entity: "TransactionHeader",
-            field_name: "fee",
-        })?
-        .try_into()?;
-
-    let fee = match fee_asset {
-        Asset::Fungible(fungible) => fungible,
-        Asset::NonFungible(_) => {
-            return Err(RpcError::InvalidResponse(
-                "expected fungible asset for transaction fee".into(),
-            ));
-        },
-    };
-
     let transaction_header = TransactionHeader::new(
         account_id.try_into()?,
         initial_state_commitment.try_into()?,
         final_state_commitment.try_into()?,
         input_notes,
         output_note_headers,
-        fee,
     );
     Ok((transaction_header, committed_output_notes, erased_output_notes))
 }

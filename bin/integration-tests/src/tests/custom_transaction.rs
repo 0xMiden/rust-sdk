@@ -85,7 +85,8 @@ pub async fn test_transaction_request(client_config: ClientConfig) -> Result<()>
     advice_map.insert(note_args_commitment, NOTE_ARGS.to_vec());
 
     let code = "
-        begin
+        @transaction_script
+        pub proc main
             # We use the script argument to store the expected value to be compared
             push.1.2.3.4
             # => [[1,2,3,4], TX_SCRIPT_ARG]
@@ -198,7 +199,8 @@ pub async fn test_merkle_store(client_config: ClientConfig) -> Result<()> {
 
     let mut code = format!(
         "
-         begin
+         @transaction_script
+         pub proc main
              # leaf count -> mem[4000][0]
              push.{num_leaves} push.4000 mem_store
 

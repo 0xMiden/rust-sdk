@@ -8,11 +8,11 @@ use miden_client::account::component::{
     AccountComponent,
     AccountComponentMetadata,
     AuthNetworkAccount,
-    BurnPolicyConfig,
+    BurnPolicy,
     FungibleFaucet,
-    MintPolicyConfig,
+    MintPolicy,
+    NetworkAccount,
     PausableManager,
-    PolicyRegistration,
     TokenName,
     TokenPolicyManager,
 };
@@ -25,7 +25,7 @@ use miden_client::account::{
     StorageSlot,
     StorageSlotName,
 };
-use miden_client::assembly::{CodeBuilder, Library, Module, ModuleKind, Path, SourceManagerSync};
+use miden_client::assembly::{CodeBuilder, SourceManagerSync};
 use miden_client::asset::{AssetAmount, FungibleAsset, TokenSymbol};
 use miden_client::auth::RPO_FALCON_SCHEME_ID;
 use miden_client::crypto::FeltRng;
@@ -59,9 +59,9 @@ use miden_client::testing::common::{
     wait_for_blocks,
     wait_for_tx,
 };
-use miden_client::transaction::{TransactionKernel, TransactionRequestBuilder};
+use miden_client::transaction::{ExpirationTransactionScript, TransactionRequestBuilder};
 use miden_client::{Felt, Word, ZERO};
-use rand::{Rng, RngCore};
+use rand::{Rng, RngExt};
 
 use crate::tests::config::ClientConfig;
 
@@ -81,12 +81,14 @@ const COUNTER_CONTRACT: &str = r#"
         const COUNTER_SLOT = word("miden::testing::counter_contract::counter")
 
         # => []
+        @account_procedure
         pub proc get_count
             push.COUNTER_SLOT[0..2] exec.active_account::get_item
             exec.sys::truncate_stack
         end
 
         # => []
+        @account_procedure
         pub proc increment_count
             push.COUNTER_SLOT[0..2] exec.active_account::get_item
             # => [count]
@@ -120,7 +122,8 @@ const INCR_NOTE_SCRIPT_CODE: &str = "
 // procedure already increments the nonce, so the script itself needs
 // only to satisfy the builder's requirement that _some_ user code runs.
 const NOOP_TX_SCRIPT: &str = "
-    begin
+    @transaction_script
+    pub proc main
         push.0 drop
     end
 ";
@@ -136,7 +139,7 @@ const NON_STANDARD_CLAIM_NOTE_SCRIPT: &str = r#"
     use miden::protocol::active_account
     use miden::protocol::account_id
     use miden::protocol::active_note
-    use miden::standards::wallets::basic->basic_wallet
+    use miden::standards::wallets::basic as basic_wallet
 
     @note_script
     pub proc main
@@ -162,7 +165,7 @@ const NON_STANDARD_CLAIM_NOTE_SCRIPT: &str = r#"
         exec.active_account::get_id
         # => [account_id_suffix, account_id_prefix, target_account_id_suffix, target_account_id_prefix]
 
-        exec.account_id::is_equal assert.err="consumer is not the note's target account"
+        exec.account_id::eq assert.err="consumer is not the note's target account"
         # => []
 
         # move all of the note's assets into the consuming account's vault
@@ -182,7 +185,8 @@ pub(crate) async fn deploy_network_counter_contract(
     let roots = allowed_note_script_roots.iter().copied().collect::<BTreeSet<NoteScriptRoot>>();
     let auth = AuthNetworkAccount::with_allowed_notes(roots)
         .map_err(|err| anyhow::anyhow!(err))
-        .context("failed to build network account auth component")?;
+        .context("failed to build network account auth component")?
+        .with_allowed_tx_scripts(BTreeSet::from([ExpirationTransactionScript::script_root()]));
     deploy_counter_with_auth(client, auth).await
 }
 
@@ -253,8 +257,6 @@ async fn deploy_network_fungible_faucet(
     // the node uses to route MINT notes to it and enforces that only allowlisted notes are consumed
     // with no tx script. The scriptless deploy transaction below is authorized by this same auth.
     let allowed_roots = [MintNote::script_root()].into_iter().collect::<BTreeSet<_>>();
-    let network_auth = AuthNetworkAccount::with_allowed_notes(allowed_roots)
-        .map_err(|err| anyhow!("failed to build faucet network-account auth: {err}"))?;
 
     let mut init_seed = [0u8; 32];
     client.rng().fill_bytes(&mut init_seed);
@@ -267,12 +269,11 @@ async fn deploy_network_fungible_faucet(
         .max_supply(AssetAmount::new(9_999_999)?)
         .build()
         .map_err(|e| anyhow!("failed to build fungible faucet component: {e}"))?;
-    let policy_manager = TokenPolicyManager::new()
-        .with_mint_policy(MintPolicyConfig::OwnerOnly, PolicyRegistration::Active)?
-        .with_burn_policy(BurnPolicyConfig::AllowAll, PolicyRegistration::Active)?;
-    let faucet = AccountBuilder::new(init_seed)
-        .account_type(AccountType::Public)
-        .with_auth_component(network_auth)
+    let policy_manager = TokenPolicyManager::builder()
+        .active_mint_policy(MintPolicy::owner_only())
+        .active_burn_policy(BurnPolicy::allow_all())
+        .build();
+    let faucet = NetworkAccount::builder(init_seed, allowed_roots)?
         .with_component(faucet_component)
         .with_components(AccessControl::Ownable2Step { owner: owner_id })
         .with_components(policy_manager)
@@ -365,20 +366,19 @@ fn build_non_standard_mint(
     )
     .details_commitment();
 
-    let mint_storage = MintNoteStorage::new_public(
+    let mint_storage = MintNoteStorage::new_fungible_public(
         recipient,
         expected_asset,
-        NoteTag::with_account_target(target).into(),
+        NoteTag::with_account_target(target),
     )?;
     let target_ntx = NetworkAccountTarget::new(faucet.id(), NoteExecutionHint::Always)?;
-    let attachments = NoteAttachments::new(vec![target_ntx.into()])?;
-    let mint_note = MintNote::create(
-        faucet.id(),
-        faucet_owner, // must equal the faucet owner, checked by mint_and_send
-        mint_storage,
-        attachments,
-        client.rng(),
-    )?;
+    let mint_note: Note = MintNote::builder()
+        .sender(faucet_owner) // must equal the faucet owner, checked by mint_and_send
+        .mint_storage(mint_storage)
+        .attachment(target_ntx)
+        .generate_serial_number(client.rng())
+        .build()?
+        .into();
 
     Ok((custom_script, mint_note, expected_output_commitment))
 }
@@ -693,16 +693,20 @@ pub async fn test_ntx_mint_produces_public_p2id(client_config: ClientConfig) -> 
     )
     .details_commitment();
 
-    let mint_storage = MintNoteStorage::new_public(
+    let mint_storage = MintNoteStorage::new_fungible_public(
         bob_recipient,
         expected_asset,
-        NoteTag::with_account_target(bob.id()).into(),
+        NoteTag::with_account_target(bob.id()),
     )?;
 
     let target_ntx = NetworkAccountTarget::new(faucet.id(), NoteExecutionHint::Always)?;
-    let attachments = NoteAttachments::new(vec![target_ntx.into()])?;
-    let mint_note =
-        MintNote::create(faucet.id(), alice.id(), mint_storage, attachments, client.rng())?;
+    let mint_note: Note = MintNote::builder()
+        .sender(alice.id())
+        .mint_storage(mint_storage)
+        .attachment(target_ntx)
+        .generate_serial_number(client.rng())
+        .build()?
+        .into();
 
     let mint_tx = TransactionRequestBuilder::new().own_output_notes(vec![mint_note]).build()?;
     execute_tx_and_sync(&mut client, alice.id(), mint_tx).await?;
@@ -843,25 +847,6 @@ pub async fn test_ntx_mint_produces_public_note_with_non_standard_script(
     Ok(())
 }
 
-/// Compiles the counter contract library using the provided source manager so that all source
-/// spans are registered in the same manager used by the client's executor.
-pub(crate) fn counter_contract_library(source_manager: Arc<dyn SourceManagerSync>) -> Arc<Library> {
-    let assembler = TransactionKernel::assembler_with_source_manager(source_manager.clone());
-    let module = Module::parser(ModuleKind::Library)
-        .parse_str(
-            Path::new("external_contract::counter_contract"),
-            COUNTER_CONTRACT,
-            source_manager.clone(),
-        )
-        .map_err(|err| anyhow!(err))
-        .unwrap();
-    assembler
-        .clone()
-        .assemble_library([module])
-        .map_err(|err| anyhow!(err))
-        .unwrap()
-}
-
 /// Compiles a note script (linked against the counter contract library) and returns its script
 /// root, used to populate a network account's note-script allowlist. The root must match the note
 /// the account is expected to consume, so this compiles the script exactly as
@@ -870,8 +855,8 @@ pub(crate) fn note_script_root(
     script: &str,
     source_manager: Arc<dyn SourceManagerSync>,
 ) -> Result<NoteScriptRoot> {
-    let script = CodeBuilder::with_source_manager(source_manager.clone())
-        .with_dynamically_linked_library(counter_contract_library(source_manager))?
+    let script = CodeBuilder::with_source_manager(source_manager)
+        .with_linked_module("external_contract::counter_contract", COUNTER_CONTRACT)?
         .compile_note_script(script)?;
     Ok(script.root())
 }
@@ -904,8 +889,8 @@ pub(crate) fn get_network_note_with_script<T: Rng>(
     let partial_metadata = PartialNoteMetadata::new(sender, NoteType::Public)
         .with_tag(NoteTag::with_account_target(network_account));
 
-    let script = CodeBuilder::with_source_manager(source_manager.clone())
-        .with_dynamically_linked_library(counter_contract_library(source_manager))?
+    let script = CodeBuilder::with_source_manager(source_manager)
+        .with_linked_module("external_contract::counter_contract", COUNTER_CONTRACT)?
         .compile_note_script(script)?;
     let recipient = NoteRecipient::new(
         Word::new([

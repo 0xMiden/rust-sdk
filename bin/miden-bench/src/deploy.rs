@@ -15,11 +15,11 @@ use miden_client::account::{
     StorageSlotName,
 };
 use miden_client::assembly::CodeBuilder;
-use miden_client::auth::{AuthSchemeId, AuthSecretKey, AuthSingleSig};
+use miden_client::auth::{Approver, AuthSchemeId, AuthSecretKey, AuthSingleSig};
 use miden_client::keystore::{FilesystemKeyStore, Keystore};
 use miden_client::transaction::TransactionRequestBuilder;
 use miden_client::{Client, Serializable};
-use rand::Rng;
+use rand::RngExt;
 use rand_chacha::ChaCha20Rng;
 use rand_chacha::rand_core::SeedableRng;
 
@@ -103,10 +103,10 @@ fn create_account_with_empty_maps(
     .expect("basic wallet component should satisfy account component requirements");
 
     let account = AccountBuilder::new(seed)
-        .with_auth_component(AuthSingleSig::new(
+        .with_auth_component(AuthSingleSig::new(Approver::new(
             sk.public_key().to_commitment(),
             AuthSchemeId::Falcon512Poseidon2,
-        ))
+        )))
         .account_type(AccountType::Public)
         .with_component(wallet_component)
         .with_component(expansion_component)

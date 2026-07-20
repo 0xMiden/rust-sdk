@@ -18,12 +18,12 @@ use miden_protocol::note::{
     NoteAttachments,
     NoteDetails,
     NoteDetailsCommitment,
-    NoteFile,
     NoteId,
     NoteInclusionProof,
     NoteMetadata,
     NoteTag,
 };
+use miden_standards::note::NoteFile;
 use miden_tx::auth::TransactionAuthenticator;
 
 use crate::rpc::RpcError;
@@ -46,14 +46,14 @@ where
     /// with the new information. The tags specified by the `NoteFile`s will start being
     /// tracked. Returns the details commitments of notes that were successfully imported or
     /// updated. The details commitment is used (rather than the note ID) because notes imported
-    /// without metadata — e.g. from [`NoteFile::NoteDetails`] in an `Expected` state — have no
+    /// without metadata — e.g. from [`NoteFile::ExpectedNote`] in an `Expected` state — have no
     /// note ID yet, whereas the details commitment is always available.
     ///
     /// - If the note files are [`NoteFile::NoteId`], the notes are fetched from the node and stored
     ///   in the client's store. If the note is private or doesn't exist, an error is returned.
-    /// - If the note files are [`NoteFile::NoteDetails`], new notes are created with the provided
+    /// - If the note files are [`NoteFile::ExpectedNote`], new notes are created with the provided
     ///   details and tags.
-    /// - If the note files are [`NoteFile::NoteWithProof`], the notes are stored with the provided
+    /// - If the note files are [`NoteFile::Committed`], the notes are stored with the provided
     ///   inclusion proof and metadata. The block header data is only fetched from the node if the
     ///   note is committed in the past relative to the client.
     ///
@@ -69,7 +69,7 @@ where
     ) -> Result<Vec<NoteDetailsCommitment>, ClientError> {
         // Deduplicate the incoming files, keeping note IDs and details commitments in separate
         // collections. `NoteFile::NoteId` entries are keyed by their note ID; detail-carrying
-        // entries (`NoteDetails`/`NoteWithProof`) are keyed by their details commitment, since
+        // entries (`ExpectedNote`/`Committed`) are keyed by their details commitment, since
         // they may have no note ID of their own.
         let mut ids = BTreeSet::new();
         let mut files_by_commitment = BTreeMap::new();
@@ -78,10 +78,10 @@ where
                 NoteFile::NoteId(id) => {
                     ids.insert(*id);
                 },
-                NoteFile::NoteDetails { details, .. } => {
+                NoteFile::ExpectedNote { details, .. } => {
                     files_by_commitment.insert(details.commitment(), note_file.clone());
                 },
-                NoteFile::NoteWithProof(note, _) => {
+                NoteFile::Committed { note, .. } => {
                     files_by_commitment.insert(note.details_commitment(), note_file.clone());
                 },
             }
@@ -120,11 +120,16 @@ where
             let previous_note = previous_by_commitment.get(&commitment).cloned();
             ensure_not_processing(previous_note.as_ref())?;
             match note_file {
-                NoteFile::NoteDetails { details, after_block_num, tag } => {
-                    requests_by_details.push((previous_note, details, after_block_num, tag));
+                NoteFile::ExpectedNote { details, sync_hint } => {
+                    requests_by_details.push((
+                        previous_note,
+                        details,
+                        sync_hint.after_block_num(),
+                        Some(sync_hint.tag()),
+                    ));
                 },
-                NoteFile::NoteWithProof(note, inclusion_proof) => {
-                    requests_by_proof.push((previous_note, note, inclusion_proof));
+                NoteFile::Committed { note, proof } => {
+                    requests_by_proof.push((previous_note, note, proof));
                 },
                 NoteFile::NoteId(_) => {
                     unreachable!("files_by_commitment only holds detail-carrying note files")

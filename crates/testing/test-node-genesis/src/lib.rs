@@ -8,7 +8,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use ::rand::{Rng, random};
+use ::rand::{RngExt, random};
 use anyhow::{Context, Result};
 use miden_protocol::account::auth::{AuthScheme, AuthSecretKey};
 use miden_protocol::account::{
@@ -23,17 +23,15 @@ use miden_protocol::account::{
 };
 use miden_protocol::asset::{Asset, AssetAmount, FungibleAsset, TokenSymbol};
 use miden_protocol::{ONE, Word};
-use miden_standards::AuthMethod;
-use miden_standards::account::access::AccessControl;
-use miden_standards::account::auth::AuthSingleSig;
-use miden_standards::account::faucets::{FungibleFaucet, TokenName, create_fungible_faucet};
-use miden_standards::account::policies::{
-    BurnPolicyConfig,
-    MintPolicyConfig,
-    PolicyRegistration,
-    TokenPolicyManager,
+use miden_standards::account::auth::{Approver, AuthSingleSig};
+use miden_standards::account::faucets::{
+    FungibleFaucet,
+    TokenName,
+    create_singlesig_user_fungible_faucet,
 };
+use miden_standards::account::policies::{BurnPolicy, MintPolicy, TokenPolicyManager};
 use miden_standards::account::wallets::BasicWallet;
+use miden_standards::testing::faucet::user_faucet_single_sig_acl;
 use rand_chacha::ChaCha20Rng;
 use rand_chacha::rand_core::SeedableRng;
 
@@ -125,9 +123,10 @@ fn generate_genesis_account() -> anyhow::Result<AccountFile> {
     let mut rng = ChaCha20Rng::from_seed(random());
     let secret = AuthSecretKey::new_falcon512_poseidon2_with_rng(&mut rng);
 
-    let auth_method = AuthMethod::SingleSig {
-        approver: (secret.public_key().to_commitment(), AuthScheme::Falcon512Poseidon2),
-    };
+    let auth_component = user_faucet_single_sig_acl(
+        secret.public_key().to_commitment(),
+        AuthScheme::Falcon512Poseidon2,
+    );
 
     let symbol = TokenSymbol::try_from("TST").expect("TST should be a valid token symbol");
     let name = TokenName::new(&symbol.to_string()).expect("token symbol is a valid token name");
@@ -137,13 +136,12 @@ fn generate_genesis_account() -> anyhow::Result<AccountFile> {
         .decimals(12)
         .max_supply(AssetAmount::new(1_000_000_000_000).unwrap())
         .build()?;
-    let account = create_fungible_faucet(
+    let account = create_singlesig_user_fungible_faucet(
         rng.random(),
         faucet,
-        AccountType::Public,
-        auth_method,
-        AccessControl::AuthControlled,
+        auth_component,
         allow_all_policy_manager(),
+        AccountType::Public,
     )?;
 
     // Force the account nonce to 1.
@@ -217,9 +215,10 @@ fn create_single_test_faucet(index: u128, secret: &AuthSecretKey) -> anyhow::Res
         .try_into()
         .expect("concatenating two 16-byte arrays yields exactly 32 bytes");
 
-    let auth_scheme = AuthMethod::SingleSig {
-        approver: (secret.public_key().to_commitment(), AuthScheme::Falcon512Poseidon2),
-    };
+    let auth_component = user_faucet_single_sig_acl(
+        secret.public_key().to_commitment(),
+        AuthScheme::Falcon512Poseidon2,
+    );
 
     let symbol = TokenSymbol::new("TKN")?;
     let name = TokenName::new(&symbol.to_string()).expect("token symbol is a valid token name");
@@ -229,13 +228,12 @@ fn create_single_test_faucet(index: u128, secret: &AuthSecretKey) -> anyhow::Res
         .decimals(FAUCET_DECIMALS)
         .max_supply(AssetAmount::new(u64::from(FAUCET_MAX_SUPPLY)).unwrap())
         .build()?;
-    let faucet = create_fungible_faucet(
+    let faucet = create_singlesig_user_fungible_faucet(
         init_seed,
         faucet_component,
-        AccountType::Public,
-        auth_scheme,
-        AccessControl::AuthControlled,
+        auth_component,
         allow_all_policy_manager(),
+        AccountType::Public,
     )?;
 
     // Set nonce to ONE to indicate the account is deployed (see generate_genesis_account)
@@ -266,10 +264,10 @@ fn create_test_account_with_many_assets(faucets: &[Account]) -> anyhow::Result<A
     });
 
     let account = AccountBuilder::new(TEST_ACCOUNT_SEED)
-        .with_auth_component(AuthSingleSig::new(
+        .with_auth_component(AuthSingleSig::new(Approver::new(
             sk.public_key().to_commitment(),
             AuthScheme::Falcon512Poseidon2,
-        ))
+        )))
         .account_type(AccountType::Public)
         .with_component(acc_component)
         .with_assets(assets)
@@ -284,11 +282,10 @@ fn allow_all_policy_manager() -> TokenPolicyManager {
     // assets via `FungibleAsset::new`, which defaults to `Disabled`, so adding transfer
     // policies makes `mint_and_send` reject the mint with
     // `ERR_FUNGIBLE_MINT_NOTE_ASSET_NOT_FROM_THIS_FAUCET`.
-    TokenPolicyManager::new()
-        .with_mint_policy(MintPolicyConfig::AllowAll, PolicyRegistration::Active)
-        .expect("allow-all mint policy should register")
-        .with_burn_policy(BurnPolicyConfig::AllowAll, PolicyRegistration::Active)
-        .expect("allow-all burn policy should register")
+    TokenPolicyManager::builder()
+        .active_mint_policy(MintPolicy::allow_all())
+        .active_burn_policy(BurnPolicy::allow_all())
+        .build()
 }
 
 /// Creates a storage map with many entries for stress-testing storage handling.

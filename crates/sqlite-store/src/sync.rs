@@ -7,14 +7,8 @@ use std::vec::Vec;
 use miden_client::Word;
 use miden_client::account::AccountId;
 use miden_client::note::{BlockNumber, NoteTag};
-use miden_client::store::{AccountSmtForest, AccountStorageFilter, StoreError};
-use miden_client::sync::{
-    NoteTagRecord,
-    NoteTagSource,
-    PublicAccountDelta,
-    PublicAccountUpdate,
-    StateSyncUpdate,
-};
+use miden_client::store::{AccountSmtForest, StoreError};
+use miden_client::sync::{NoteTagRecord, NoteTagSource, PublicAccountUpdate, StateSyncUpdate};
 use miden_client::utils::{Deserializable, Serializable};
 use rusqlite::{Connection, Transaction, params};
 
@@ -194,8 +188,8 @@ impl SqliteStore {
                     PublicAccountUpdate::Full(account) => {
                         Self::update_account_state(tx, smt_forest, account)?;
                     },
-                    PublicAccountUpdate::Delta(delta) => {
-                        Self::apply_public_account_delta(tx, smt_forest, delta)?;
+                    PublicAccountUpdate::Patch { new_header, patch } => {
+                        Self::apply_sync_account_patch(tx, smt_forest, new_header, patch)?;
                     },
                 }
             }
@@ -206,29 +200,6 @@ impl SqliteStore {
 
             Ok(())
         })
-    }
-
-    /// Reads the local account state, derives the [`AccountDelta`] from `delta`'s incremental
-    /// payload, and applies it.
-    fn apply_public_account_delta(
-        tx: &Transaction<'_>,
-        smt_forest: &mut AccountSmtForest,
-        delta: &PublicAccountDelta,
-    ) -> Result<(), StoreError> {
-        let account_id = delta.id();
-        let local_header = Self::get_account_header(tx, account_id)?
-            .map(|(header, _)| header)
-            .ok_or(StoreError::AccountDataNotFound(account_id))?;
-        let local_storage = Self::get_account_storage(
-            tx,
-            account_id,
-            &AccountStorageFilter::SlotNames(delta.value_slot_names()),
-        )?;
-        let local_vault = Self::get_account_vault(tx, account_id)?;
-
-        let account_delta =
-            delta.compute_account_delta(&local_header, &local_storage, &local_vault)?;
-        Self::apply_sync_account_delta(tx, smt_forest, delta.new_header(), &account_delta)
     }
 }
 

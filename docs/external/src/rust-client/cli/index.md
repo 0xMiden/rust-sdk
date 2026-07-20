@@ -16,14 +16,6 @@ Call a command on the `miden-client` like this:
 miden-client <command> <flags> <arguments>
 ```
 
-Optionally, you can include the `--debug` flag to run the command with debug mode, which enables debug output logs from scripts that were compiled in this mode:
-
-```sh
-miden-client --debug <flags> <arguments>
-```
-
-Note that the debug flag overrides the `MIDEN_DEBUG` environment variable.
-
 ## Commands
 
 ### `init`

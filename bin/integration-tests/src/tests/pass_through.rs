@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use anyhow::Result;
 use miden_client::account::component::BasicWallet;
 use miden_client::account::{
@@ -10,13 +12,14 @@ use miden_client::account::{
 use miden_client::assembly::CodeBuilder;
 use miden_client::asset::{Asset, FungibleAsset};
 use miden_client::auth::{
+    Approver,
     AuthSchemeId,
+    AuthSecretKey,
     AuthSingleSigAcl,
     AuthSingleSigAclConfig,
     TransactionAuthenticator,
 };
 use miden_client::crypto::FeltRng;
-use miden_client::crypto::rpo_falcon512::SecretKey;
 use miden_client::note::{
     Note,
     NoteAssets,
@@ -34,7 +37,7 @@ use miden_client::store::{InputNoteState, TransactionFilter};
 use miden_client::testing::common::*;
 use miden_client::transaction::TransactionRequestBuilder;
 use miden_client::{Client, ClientRng, Word};
-use rand::RngCore;
+use rand::Rng;
 use tracing::info;
 
 use crate::tests::config::ClientConfig;
@@ -79,7 +82,7 @@ pub async fn test_pass_through(client_config: ClientConfig) -> Result<()> {
     )
     .await?;
 
-    let pass_through_account = create_pass_through_account(&mut client).await?;
+    let pass_through_account = create_pass_through_account(&mut client, &authenticator_1).await?;
 
     // Create client with faucets BTC faucet
     let (btc_faucet_account, ..) = insert_new_fungible_faucet(
@@ -200,21 +203,25 @@ pub async fn test_pass_through(client_config: ClientConfig) -> Result<()> {
 
 async fn create_pass_through_account<AUTH: TransactionAuthenticator>(
     client: &mut Client<AUTH>,
+    keystore: &FilesystemKeyStore,
 ) -> Result<Account> {
     let mut init_seed = [0u8; 32];
     client.rng().fill_bytes(&mut init_seed);
 
-    let key_pair = SecretKey::with_rng(client.rng());
+    let key_pair = AuthSecretKey::new_falcon512_poseidon2();
     let pub_key = key_pair.public_key().to_commitment();
 
-    let acl_config = AuthSingleSigAclConfig::new()
-        .with_allow_unauthorized_input_notes(true)
-        .with_allow_unauthorized_output_notes(true);
+    // The pass-through consumption must not change the account commitment, so the wallet
+    // procedures invoked by the PASS_THROUGH note script are exempt from signature checks.
+    let exempt_procedures = BTreeSet::from([
+        BasicWallet::receive_asset_root(),
+        BasicWallet::move_asset_to_note_root(),
+        BasicWallet::create_note_root(),
+    ]);
+    let acl_config = AuthSingleSigAclConfig::new(exempt_procedures).unwrap();
 
     let auth_component =
-        AuthSingleSigAcl::new(pub_key.into(), AuthSchemeId::Falcon512Poseidon2, acl_config)
-            .unwrap();
-
+        AuthSingleSigAcl::new(Approver::new(pub_key, AuthSchemeId::Falcon512Poseidon2), acl_config);
     let account = AccountBuilder::new(init_seed)
         .account_type(AccountType::Private)
         .with_auth_component(auth_component)
@@ -222,6 +229,7 @@ async fn create_pass_through_account<AUTH: TransactionAuthenticator>(
         .build_with_schema_commitment()
         .unwrap();
 
+    keystore.add_key(&key_pair, account.id()).await?;
     client.add_account(&account, false).await?;
     Ok(account)
 }
@@ -243,7 +251,7 @@ fn create_pass_through_note(
 ) -> Result<(Note, NoteDetails)> {
     let note_script = get_pass_through_note_script();
 
-    let asset_key: Word = asset.to_key_word();
+    let asset_key: Word = asset.to_id_word();
     let asset_value: Word = asset.to_value_word();
 
     let target_recipient = P2idNoteStorage::new(target).into_recipient(rng.draw_word());

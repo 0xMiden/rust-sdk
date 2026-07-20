@@ -15,9 +15,9 @@ use miden_client::note_transport::{
 };
 use miden_client::rpc::{Endpoint, GrpcClient};
 use miden_client::testing::common::{FilesystemKeyStore, TestClient, create_test_store_path};
-use miden_client::{DebugMode, Felt, RemoteTransactionProver};
+use miden_client::{Felt, RemoteTransactionProver};
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
-use rand::Rng;
+use rand::RngExt;
 use uuid::Uuid;
 
 const NETWORK_DEVNET: &str = "devnet";
@@ -150,7 +150,6 @@ impl ClientConfig {
             .rng(Box::new(rng))
             .sqlite_store(store_config)
             .authenticator(Arc::new(keystore.clone()))
-            .in_debug_mode(DebugMode::Disabled)
             .tx_discard_delta(None);
 
         if let Some(prover_url) = &self.prover_endpoint {

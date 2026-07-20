@@ -4,8 +4,16 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use miden_protocol::Word;
-use miden_protocol::account::delta::AccountUpdateDetails;
-use miden_protocol::account::{AccountId, StorageSlot, StorageSlotContent, StorageSlotType};
+use miden_protocol::account::{
+    AccountId,
+    AccountUpdateDetails,
+    AccountVaultPatch,
+    StorageMapPatchEntries,
+    StorageSlot,
+    StorageSlotContent,
+    StorageSlotName,
+    StorageSlotType,
+};
 use miden_protocol::address::NetworkId;
 use miden_protocol::batch::{ProposedBatch, ProvenBatch};
 use miden_protocol::block::{BlockHeader, BlockNumber, ProvenBlock};
@@ -27,11 +35,11 @@ use crate::rpc::domain::account::{
     StorageMapEntry,
     StorageMapFetch,
 };
-use crate::rpc::domain::account_vault::{AccountVaultInfo, AccountVaultUpdate};
+use crate::rpc::domain::account_vault::AccountVaultInfo;
 use crate::rpc::domain::note::{CommittedNote, FetchedNote, NoteSyncBlock};
 use crate::rpc::domain::nullifier::NullifierUpdate;
 use crate::rpc::domain::status::NetworkNoteStatusInfo;
-use crate::rpc::domain::storage_map::{StorageMapInfo, StorageMapUpdate};
+use crate::rpc::domain::storage_map::StorageMapInfo;
 use crate::rpc::domain::sync::{ChainMmrInfo, SyncTarget};
 use crate::rpc::domain::transaction::TransactionRecord;
 use crate::rpc::{AccountStateAt, NodeRpcClient, RpcError, RpcStatusInfo};
@@ -143,7 +151,7 @@ impl MockRpcApi {
         block_from: BlockNumber,
         block_to: BlockNumber,
         account_id: AccountId,
-    ) -> AccountVaultInfo {
+    ) -> (BlockNumber, BlockNumber, AccountVaultPatch) {
         let chain_tip = self.get_chain_tip_block_num();
         let target_block = block_to.min(chain_tip);
 
@@ -151,7 +159,8 @@ impl MockRpcApi {
             .min(target_block.as_u32())
             .into();
 
-        let mut updates = vec![];
+        // Blocks are iterated in ascending order, so later blocks win per asset ID.
+        let mut vault_patch = AccountVaultPatch::default();
         for block in self.mock_chain.read().proven_blocks() {
             let block_number = block.header().block_num();
             // Only include blocks in range [block_from, page_end_block]
@@ -165,28 +174,15 @@ impl MockRpcApi {
                 .iter()
                 .filter(|block_acc_update| block_acc_update.account_id() == account_id)
             {
-                let AccountUpdateDetails::Delta(account_delta) = update.details().clone() else {
+                let AccountUpdateDetails::Public(patch) = update.details().clone() else {
                     continue;
                 };
 
-                let vault_delta = account_delta.vault();
-
-                for asset in vault_delta.added_assets() {
-                    let account_vault_update = AccountVaultUpdate {
-                        block_num: block_number,
-                        asset: Some(asset),
-                        vault_key: asset.vault_key(),
-                    };
-                    updates.push(account_vault_update);
-                }
+                vault_patch.merge(patch.vault().clone());
             }
         }
 
-        AccountVaultInfo {
-            chain_tip,
-            block_number: page_end_block,
-            updates,
-        }
+        (chain_tip, page_end_block, vault_patch)
     }
 
     /// Retrieves transactions in a given block range that match the provided account IDs
@@ -230,7 +226,7 @@ impl MockRpcApi {
         block_from: BlockNumber,
         block_to: BlockNumber,
         account_id: AccountId,
-    ) -> StorageMapInfo {
+    ) -> (BlockNumber, BlockNumber, BTreeMap<StorageSlotName, StorageMapPatchEntries>) {
         let chain_tip = self.get_chain_tip_block_num();
         let target_block = block_to.min(chain_tip);
 
@@ -238,7 +234,8 @@ impl MockRpcApi {
             .min(target_block.as_u32())
             .into();
 
-        let mut updates = vec![];
+        // Blocks are iterated in ascending order, so later blocks win per `(slot, key)`.
+        let mut map_entries: BTreeMap<StorageSlotName, StorageMapPatchEntries> = BTreeMap::new();
         for block in self.mock_chain.read().proven_blocks() {
             let block_number = block.header().block_num();
             // Only include blocks in range [block_from, page_end_block]
@@ -252,31 +249,23 @@ impl MockRpcApi {
                 .iter()
                 .filter(|block_acc_update| block_acc_update.account_id() == account_id)
             {
-                let AccountUpdateDetails::Delta(account_delta) = update.details().clone() else {
+                let AccountUpdateDetails::Public(patch) = update.details().clone() else {
                     continue;
                 };
 
-                let storage_delta = account_delta.storage();
-
-                for (slot_name, map_delta) in storage_delta.maps() {
-                    for (key, value) in map_delta.entries() {
-                        let storage_map_info = StorageMapUpdate {
-                            block_num: block_number,
-                            slot_name: slot_name.clone(),
-                            key: *key,
-                            value: *value,
-                        };
-                        updates.push(storage_map_info);
+                for (slot_name, map_patch) in patch.storage().maps() {
+                    if let Some(entries) = map_patch.entries() {
+                        map_entries
+                            .entry(slot_name.clone())
+                            .or_default()
+                            .as_map_mut()
+                            .extend(entries.as_map().clone());
                     }
                 }
             }
         }
 
-        StorageMapInfo {
-            chain_tip,
-            block_number: page_end_block,
-            updates,
-        }
+        (chain_tip, page_end_block, map_entries)
     }
 
     pub fn get_available_notes(&self) -> Vec<MockChainNote> {
@@ -298,7 +287,7 @@ impl MockRpcApi {
             .read()
             .committed_notes()
             .values()
-            .filter(|n| matches!(n, MockChainNote::Private(_, _, _)))
+            .filter(|n| matches!(n, MockChainNote::Private(_, _, _, _)))
             .cloned()
             .collect()
     }
@@ -419,7 +408,7 @@ impl NodeRpcClient for MockRpcApi {
         let mut return_notes = vec![];
         for note in hit_notes {
             let fetched_note = match note {
-                MockChainNote::Private(note_id, note_metadata, note_inclusion_proof) => {
+                MockChainNote::Private(note_id, note_metadata, _, note_inclusion_proof) => {
                     let attachments = self
                         .private_note_attachments
                         .read()
@@ -630,25 +619,31 @@ impl NodeRpcClient for MockRpcApi {
         block_to: BlockNumber,
         account_id: AccountId,
     ) -> Result<StorageMapInfo, RpcError> {
-        let mut all_updates = Vec::new();
+        let mut map_entries: BTreeMap<StorageSlotName, StorageMapPatchEntries> = BTreeMap::new();
         let mut current_block_from = block_from;
         let chain_tip = self.get_chain_tip_block_num();
         let target_block = block_to.min(chain_tip);
 
         loop {
-            let response =
+            let (page_chain_tip, page_block_number, page_entries) =
                 self.get_sync_storage_maps_request(current_block_from, block_to, account_id);
-            all_updates.extend(response.updates);
+            for (slot_name, entries) in page_entries {
+                map_entries
+                    .entry(slot_name)
+                    .or_default()
+                    .as_map_mut()
+                    .extend(entries.into_map());
+            }
 
-            if response.block_number >= target_block {
+            if page_block_number >= target_block {
                 return Ok(StorageMapInfo {
-                    chain_tip: response.chain_tip,
-                    block_number: response.block_number,
-                    updates: all_updates,
+                    chain_tip: page_chain_tip,
+                    block_number: page_block_number,
+                    map_entries,
                 });
             }
 
-            current_block_from = (response.block_number.as_u32() + 1).into();
+            current_block_from = (page_block_number.as_u32() + 1).into();
         }
     }
 
@@ -658,25 +653,25 @@ impl NodeRpcClient for MockRpcApi {
         block_to: BlockNumber,
         account_id: AccountId,
     ) -> Result<AccountVaultInfo, RpcError> {
-        let mut all_updates = Vec::new();
+        let mut vault_patch = AccountVaultPatch::default();
         let mut current_block_from = block_from;
         let chain_tip = self.get_chain_tip_block_num();
         let target_block = block_to.min(chain_tip);
 
         loop {
-            let response =
+            let (page_chain_tip, page_block_number, page_patch) =
                 self.get_sync_account_vault_request(current_block_from, block_to, account_id);
-            all_updates.extend(response.updates);
+            vault_patch.merge(page_patch);
 
-            if response.block_number >= target_block {
+            if page_block_number >= target_block {
                 return Ok(AccountVaultInfo {
-                    chain_tip: response.chain_tip,
-                    block_number: response.block_number,
-                    updates: all_updates,
+                    chain_tip: page_chain_tip,
+                    block_number: page_block_number,
+                    vault_patch,
                 });
             }
 
-            current_block_from = (response.block_number.as_u32() + 1).into();
+            current_block_from = (page_block_number.as_u32() + 1).into();
         }
     }
 

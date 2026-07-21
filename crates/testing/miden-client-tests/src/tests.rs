@@ -2154,16 +2154,56 @@ async fn get_consumable_notes() {
     }
 }
 
-/// Screens several non-standard (nop-script) committed notes. Their script root is not a standard
-/// note, so the screener runs a trial transaction per (account, note) pair, exercising the
-/// execution-input cache that `get_consumable_notes` enables while screening. Verifies the cached
-/// path returns exactly the inserted notes as consumable by the target account.
+/// A note script that only the account whose ID is in the note's storage can consume. It is not a
+/// standard note script and its consumability cannot be determined statically, so the screener
+/// falls back to a trial transaction per (account, note) pair, which is the path the
+/// execution-input cache serves. Being account-bound, its verdict differs per tracked account, so
+/// serving one account's execution inputs for another changes the screening result.
+const TARGET_BOUND_NOTE_SCRIPT: &str = r#"
+    use miden::protocol::active_account
+    use miden::protocol::account_id
+    use miden::protocol::active_note
+
+    @note_script
+    pub proc main
+        # drop the note arguments
+        dropw
+
+        # write the note storage to memory starting at address 0
+        push.0 exec.active_note::get_storage
+        # => [num_storage_items]
+
+        # this script expects exactly the 2 storage items of an account id (suffix, prefix)
+        eq.2 assert.err="target-bound note expects exactly 2 storage items"
+        # => []
+
+        # address 0 holds the suffix and address 1 the prefix, so load the prefix first to leave
+        # [suffix, prefix] on the stack
+        mem_load.1 mem_load.0
+        # => [target_account_id_suffix, target_account_id_prefix]
+
+        exec.active_account::get_id
+        # => [account_id_suffix, account_id_prefix, target_suffix, target_prefix]
+
+        exec.account_id::is_equal assert.err="consumer is not the note's target account"
+        # => []
+    end
+"#;
+
+/// Screens committed notes that only one of the three tracked accounts can consume, so the
+/// screening result depends on which account's state each trial execution runs against.
+///
+/// Checks that memoizing the execution inputs across the pass produces the same verdicts as
+/// resolving them from the store on every trial, and that only the target account is reported as
+/// able to consume the notes.
 #[tokio::test]
-async fn get_consumable_notes_screens_non_standard_notes() {
+async fn note_screening_with_cached_execution_inputs_matches_uncached() {
     use std::collections::BTreeSet;
 
+    use miden_client::note::Note;
     use miden_client::store::InputNoteRecord;
     use miden_client::store::input_note_states::CommittedNoteState;
+    use miden_protocol::account::AccountId;
     use miden_protocol::crypto::merkle::SparseMerklePath;
     use miden_protocol::note::{NoteDetails, NoteId, NoteInclusionProof};
 
@@ -2183,9 +2223,10 @@ async fn get_consumable_notes_screens_non_standard_notes() {
     let target = first_wallet.id();
     let faucet_id = faucet.id();
 
-    // The nop script has no target binding, so the notes screen as consumable for every tracked
-    // account. Screening an unauthenticated note does not verify the inclusion proof, so a dummy
-    // proof and an empty block note root are enough to make the records committed.
+    let script = client.code_builder().compile_note_script(TARGET_BOUND_NOTE_SCRIPT).unwrap();
+
+    // Screening an unauthenticated note does not verify the inclusion proof, so a dummy proof and
+    // an empty block note root are enough to make the records committed.
     let block_num = client.get_sync_height().await.unwrap();
     let dummy_proof = NoteInclusionProof::new(block_num, 0, SparseMerklePath::default()).unwrap();
 
@@ -2196,7 +2237,9 @@ async fn get_consumable_notes_screens_non_standard_notes() {
             faucet_id,
             RandomCoin::new([i as u64, 0, 0, 0].map(Felt::new_unchecked).into()),
         )
-        .note_type(NoteType::Public)
+        .script(script.clone())
+        .note_storage([target.suffix(), target.prefix().as_felt()])
+        .unwrap()
         .build()
         .unwrap();
         expected_ids.insert(note.id());
@@ -2214,16 +2257,40 @@ async fn get_consumable_notes_screens_non_standard_notes() {
     }
     client.test_store().upsert_input_notes(&records).await.unwrap();
 
-    let consumable = Box::pin(client.get_consumable_notes(Some(target))).await.unwrap();
+    let notes = records
+        .into_iter()
+        .map(TryInto::try_into)
+        .collect::<Result<Vec<Note>, _>>()
+        .unwrap();
 
-    let consumable_ids: BTreeSet<NoteId> =
-        consumable.iter().filter_map(|(record, _)| record.id()).collect();
-    assert_eq!(consumable_ids, expected_ids);
-    assert!(
-        consumable
-            .iter()
-            .all(|(_, relevances)| relevances.iter().any(|(id, _)| *id == target))
-    );
+    // `NoteConsumptionStatus` is not comparable, so verdicts are compared through their debug
+    // representation, which distinguishes every variant.
+    let screen = async |screener: miden_client::note::NoteScreener| {
+        screener
+            .can_consume_batch(&notes)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(note_id, relevances)| {
+                let relevances: Vec<(AccountId, String)> = relevances
+                    .into_iter()
+                    .map(|(account_id, status)| (account_id, format!("{status:?}")))
+                    .collect();
+                (note_id, relevances)
+            })
+            .collect::<BTreeMap<NoteId, Vec<(AccountId, String)>>>()
+    };
+
+    let cached = Box::pin(screen(client.note_screener())).await;
+    let uncached = Box::pin(screen(client.note_screener().without_execution_input_cache())).await;
+
+    assert_eq!(cached, uncached);
+
+    assert_eq!(cached.keys().copied().collect::<BTreeSet<NoteId>>(), expected_ids);
+    for relevances in cached.values() {
+        let accounts: Vec<AccountId> = relevances.iter().map(|(id, _)| *id).collect();
+        assert_eq!(accounts, vec![target]);
+    }
 }
 
 #[tokio::test]

@@ -153,7 +153,7 @@ impl DataStoreCache {
 
     /// Returns the cached transaction inputs for the given account and reference blocks, if any.
     ///
-    /// Always returns `None` while the execution-input cache is disabled.
+    /// Returns `None` if the execution-input cache is disabled.
     pub(super) fn get_transaction_inputs(
         &self,
         account_id: AccountId,
@@ -169,7 +169,7 @@ impl DataStoreCache {
 
     /// Caches the transaction inputs for the given account and reference blocks.
     ///
-    /// Does nothing while the execution-input cache is disabled.
+    /// Does nothing if the execution-input cache is disabled.
     pub(super) fn insert_transaction_inputs(
         &self,
         account_id: AccountId,
@@ -190,7 +190,7 @@ impl DataStoreCache {
     /// Returns the cached vault asset witnesses for the given account, vault root and requested
     /// keys, if any.
     ///
-    /// Always returns `None` while the execution-input cache is disabled.
+    /// Returns `None` if the execution-input cache is disabled.
     pub(super) fn get_vault_asset_witnesses(
         &self,
         account_id: AccountId,
@@ -207,7 +207,7 @@ impl DataStoreCache {
 
     /// Caches the vault asset witnesses for the given account, vault root and requested keys.
     ///
-    /// Does nothing while the execution-input cache is disabled.
+    /// Does nothing if the execution-input cache is disabled.
     pub(super) fn insert_vault_asset_witnesses(
         &self,
         account_id: AccountId,

@@ -143,10 +143,9 @@ async fn batch_builder_submits_two_txs_on_one_account() {
     );
 }
 
-/// Verifies that `Store::apply_transaction_batch` is atomic across the SQL store AND the
-/// in-memory `AccountSmtForest`: if any per-tx update in the batch fails, no earlier update
-/// is persisted, and a follow-up `Store::update_account` on the affected account still
-/// works.
+/// Verifies that `Store::apply_transaction_batch` is atomic across the account tables AND the
+/// SMT forest tables. If any per-tx update in the batch fails, no earlier update is persisted,
+/// and a follow-up `Store::update_account` on the affected account still works.
 #[tokio::test]
 async fn apply_transaction_batch_rolls_back_on_mid_batch_failure() {
     // Build a fresh mock chain with two existing accounts.
@@ -173,8 +172,8 @@ async fn apply_transaction_batch_rolls_back_on_mid_batch_failure() {
         .unwrap();
     client.ensure_genesis_in_place().await.unwrap();
 
-    // Register ONLY account A. Account B stays unknown to the client store, so
-    // `smt_forest.get_roots(B)` will return None during `apply_account_delta`.
+    // Register ONLY account A. Account B stays unknown to the client store, so applying its
+    // patch fails with `AccountDataNotFound` and poisons the batch.
     client.add_account(&account_a, false).await.unwrap();
 
     // Execute a trivial transaction against A and another against B, both via the mock chain.
@@ -244,10 +243,9 @@ async fn apply_transaction_batch_rolls_back_on_mid_batch_failure() {
         "account A state must be unchanged after atomic rollback"
     );
 
-    // Forest rollback check. `update_account_state` calls `replace_roots`, which asserts
-    // that the forest has no staged-but-uncommitted roots for the account. Without the
-    // forest rollback, the failed batch above would have left A's previous roots sitting
-    // in `pending_old_roots`, and this call would trip the assertion.
+    // Forest rollback check. The failed batch's transaction was rolled back, so the forest
+    // tables must still match A's stored state; a full-state update reconciles against them
+    // and would fail on leftover partial writes.
     store
         .update_account(&account_a)
         .await

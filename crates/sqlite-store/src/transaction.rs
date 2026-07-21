@@ -1,13 +1,11 @@
 #![allow(clippy::items_after_statements)]
 
 use std::rc::Rc;
-use std::string::ToString;
-use std::sync::{Arc, RwLock};
 use std::vec::Vec;
 
 use miden_client::Word;
 use miden_client::note::ToInputNoteCommitments;
-use miden_client::store::{AccountSmtForest, StoreError, TransactionFilter};
+use miden_client::store::{StoreError, TransactionFilter};
 use miden_client::transaction::{
     TransactionDetails,
     TransactionId,
@@ -18,11 +16,12 @@ use miden_client::transaction::{
 };
 use miden_client::utils::{Deserializable as _, Serializable as _};
 use rusqlite::types::Value;
-use rusqlite::{Connection, Transaction, params};
+use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 
 use super::SqliteStore;
 use super::note::apply_note_updates_tx;
 use super::sync::add_note_tag_tx;
+use crate::forest::{ScopedAccountForest, SqliteForestBackend};
 use crate::sql_error::SqlResultExt;
 use crate::{insert_sql, subst};
 
@@ -103,49 +102,49 @@ impl SqliteStore {
 
     /// Inserts a transaction and updates the current state based on the `tx_result` changes.
     ///
-    /// SQL writes and `AccountSmtForest` mutations are committed atomically: on any error
-    /// (including commit failure) the rusqlite transaction is rolled back and the in-memory
-    /// forest is left unchanged.
+    /// SQL writes and forest mutations go through the same rusqlite transaction, so they commit
+    /// or roll back atomically.
     pub fn apply_transaction(
         conn: &mut Connection,
-        smt_forest: &Arc<RwLock<AccountSmtForest>>,
         tx_update: &TransactionStoreUpdate,
     ) -> Result<(), StoreError> {
-        with_forest_snapshot(conn, smt_forest, |db_tx, forest| {
-            Self::apply_transaction_in_txn(db_tx, forest, tx_update)
-        })
+        let db_tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .into_store_error()?;
+        {
+            let mut forest = ScopedAccountForest::new(SqliteForestBackend::new(&db_tx))?;
+            Self::apply_transaction_in_txn(&db_tx, &mut forest, tx_update)?;
+        }
+        db_tx.commit().into_store_error()
     }
 
     /// Applies a batch of [`TransactionStoreUpdate`]s atomically. Either every update in the
     /// slice is persisted or none are. Executes in order inside a single
-    /// [`rusqlite::Transaction`]; on any error the transaction is rolled back automatically
-    /// and the in-memory `AccountSmtForest` is left unchanged.
+    /// [`rusqlite::Transaction`].
     pub fn apply_transaction_batch(
         conn: &mut Connection,
-        smt_forest: &Arc<RwLock<AccountSmtForest>>,
         tx_updates: &[TransactionStoreUpdate],
     ) -> Result<(), StoreError> {
-        with_forest_snapshot(conn, smt_forest, |db_tx, forest| {
+        let db_tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .into_store_error()?;
+        {
+            let mut forest = ScopedAccountForest::new(SqliteForestBackend::new(&db_tx))?;
             for update in tx_updates {
-                Self::apply_transaction_in_txn(db_tx, forest, update)?;
+                Self::apply_transaction_in_txn(&db_tx, &mut forest, update)?;
             }
-            Ok(())
-        })
+        }
+        db_tx.commit().into_store_error()
     }
 
     /// Applies a transaction's store update within the provided rusqlite transaction.
     /// Does NOT commit — caller is responsible for commit/rollback.
     ///
-    /// `smt_forest` must be a working snapshot (such as the clone handed out by
-    /// [`with_forest_snapshot`]), never the live forest: this stages root mutations into it
-    /// and provides no rollback of its own, relying on the caller to discard the snapshot on
-    /// error.
-    ///
     /// The storage-map-root pre-read is performed via the transaction so that each call sees
     /// writes made by prior calls within the same outer transaction.
     pub(crate) fn apply_transaction_in_txn(
-        db_tx: &mut Transaction<'_>,
-        smt_forest: &mut AccountSmtForest,
+        db_tx: &Transaction<'_>,
+        smt_forest: &mut ScopedAccountForest<'_, '_>,
         tx_update: &TransactionStoreUpdate,
     ) -> Result<(), StoreError> {
         let executed_transaction = tx_update.executed_transaction();
@@ -208,35 +207,6 @@ impl SqliteStore {
 
         Ok(())
     }
-}
-
-/// Runs `f` inside a SQL transaction with the forest write lock held, mutating a working
-/// clone and swapping it into the live `RwLock` only after the SQL commit succeeds. This
-/// keeps the `AccountSmtForest` and the `SQLite` store atomic: on any error (`?` from `f`
-/// or commit failure) the live forest is untouched, since all mutations target the clone.
-///
-/// Cost: `AccountSmtForest::clone()` deep-clones the whole `SmtForest` (every tracked SMT
-/// plus root refcounts), so this is O(forest size) per call. Acceptable now; revisit (e.g.
-/// an inverse-op journal) if the forest grows large.
-pub(crate) fn with_forest_snapshot<F, T>(
-    conn: &mut Connection,
-    smt_forest: &Arc<RwLock<AccountSmtForest>>,
-    f: F,
-) -> Result<T, StoreError>
-where
-    F: FnOnce(&mut Transaction<'_>, &mut AccountSmtForest) -> Result<T, StoreError>,
-{
-    let mut db_tx = conn.transaction().into_store_error()?;
-    let mut forest = smt_forest
-        .write()
-        .map_err(|_| StoreError::DatabaseError("smt_forest write lock poisoned".to_string()))?;
-    let mut working_forest = forest.clone();
-
-    let value = f(&mut db_tx, &mut working_forest)?;
-    db_tx.commit().into_store_error()?;
-
-    *forest = working_forest;
-    Ok(value)
 }
 
 /// Updates the transaction record in the database, inserting it if it doesn't exist.

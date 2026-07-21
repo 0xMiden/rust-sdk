@@ -48,10 +48,6 @@ pub struct ClientDataStore {
     cache: DataStoreCache,
     /// RPC client used to lazy-load foreign account data on cache miss.
     rpc_api: Arc<dyn NodeRpcClient>,
-    /// When set, `get_transaction_inputs` and `get_vault_asset_witnesses` results are memoized for
-    /// the lifetime of this data store. Only enabled while screening notes, where the served
-    /// account state stays fixed across trial executions.
-    cache_execution_inputs: bool,
 }
 
 impl ClientDataStore {
@@ -60,7 +56,6 @@ impl ClientDataStore {
             store,
             cache: DataStoreCache::new(),
             rpc_api,
-            cache_execution_inputs: false,
         }
     }
 
@@ -73,7 +68,7 @@ impl ClientDataStore {
     /// execution, where account state evolves between executions.
     #[must_use]
     pub fn with_execution_input_cache(mut self) -> Self {
-        self.cache_execution_inputs = true;
+        self.cache.enable_execution_input_cache();
         self
     }
 
@@ -226,26 +221,22 @@ impl DataStore for ClientDataStore {
         account_id: AccountId,
         mut block_refs: BTreeSet<BlockNumber>,
     ) -> Result<(PartialAccount, BlockHeader, PartialBlockchain), DataStoreError> {
-        if self.cache_execution_inputs
-            && let Some(inputs) = self.cache.get_transaction_inputs(account_id, &block_refs)
-        {
-            // Keep the reference block in sync so lazy-loading methods can use it.
-            if let Some(&ref_block) = block_refs.last() {
-                self.cache.set_ref_block(ref_block);
-            }
-            return Ok(inputs);
-        }
-
-        // Preserve the original reference-block set as the cache key before it is consumed below.
-        let cache_key = self.cache_execution_inputs.then(|| block_refs.clone());
-
-        let current_peaks = self.store.get_current_blockchain_peaks().await?;
-
-        // Pop last block, used as reference (it does not need to be authenticated manually)
-        let ref_block = block_refs.pop_last().ok_or(DataStoreError::other("block set is empty"))?;
+        // Last block is used as reference (it does not need to be authenticated manually)
+        let ref_block = *block_refs.last().ok_or(DataStoreError::other("block set is empty"))?;
 
         // Cache the reference block so lazy-loading methods can use it
         self.cache.set_ref_block(ref_block);
+
+        if let Some(inputs) = self.cache.get_transaction_inputs(account_id, &block_refs) {
+            return Ok(inputs);
+        }
+
+        // The full set identifies the served inputs, so keep it as the cache key before the
+        // reference block is removed from it below.
+        let cache_key = block_refs.clone();
+        block_refs.remove(&ref_block);
+
+        let current_peaks = self.store.get_current_blockchain_peaks().await?;
 
         let partial_account_record = self
             .store
@@ -303,9 +294,7 @@ impl DataStore for ClientDataStore {
             })?;
 
         let inputs = (partial_account, block_header, partial_blockchain);
-        if let Some(cache_key) = cache_key {
-            self.cache.insert_transaction_inputs(account_id, cache_key, inputs.clone());
-        }
+        self.cache.insert_transaction_inputs(account_id, cache_key, &inputs);
         Ok(inputs)
     }
 
@@ -315,9 +304,8 @@ impl DataStore for ClientDataStore {
         vault_root: Word,
         vault_keys: BTreeSet<AssetVaultKey>,
     ) -> Result<Vec<AssetWitness>, DataStoreError> {
-        if self.cache_execution_inputs
-            && let Some(witnesses) =
-                self.cache.get_vault_asset_witnesses(account_id, vault_root, &vault_keys)
+        if let Some(witnesses) =
+            self.cache.get_vault_asset_witnesses(account_id, vault_root, &vault_keys)
         {
             return Ok(witnesses);
         }
@@ -351,14 +339,12 @@ impl DataStore for ClientDataStore {
             }
         }
 
-        if self.cache_execution_inputs {
-            self.cache.insert_vault_asset_witnesses(
-                account_id,
-                vault_root,
-                vault_keys,
-                asset_witnesses.clone(),
-            );
-        }
+        self.cache.insert_vault_asset_witnesses(
+            account_id,
+            vault_root,
+            vault_keys,
+            &asset_witnesses,
+        );
         Ok(asset_witnesses)
     }
 

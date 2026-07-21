@@ -19,11 +19,16 @@ use crate::utils::RwLock;
 /// partial blockchain.
 type CachedTransactionInputs = (PartialAccount, BlockHeader, PartialBlockchain);
 
-/// Key for the transaction-inputs cache: the target account and the requested reference blocks.
-type TransactionInputsCacheKey = (AccountId, BTreeSet<BlockNumber>);
+/// Transaction inputs keyed by target account, then by the requested reference blocks. The
+/// reference blocks are the inner key so that a lookup can borrow the requested set instead of
+/// cloning it to build a composite key.
+type TransactionInputsCache =
+    BTreeMap<AccountId, BTreeMap<BTreeSet<BlockNumber>, CachedTransactionInputs>>;
 
-/// Key for the vault-asset-witness cache: the account, its vault root, and the requested keys.
-type VaultWitnessCacheKey = (AccountId, Word, BTreeSet<AssetVaultKey>);
+/// Vault asset witnesses keyed by (account, vault root), then by the requested vault keys. Nested
+/// for the same reason as [`TransactionInputsCache`].
+type VaultWitnessCache =
+    BTreeMap<(AccountId, Word), BTreeMap<BTreeSet<AssetVaultKey>, Vec<AssetWitness>>>;
 
 /// In-memory state that [`super::ClientDataStore`] serves to the executor without going through
 /// the persistent store.
@@ -44,15 +49,18 @@ pub(super) struct DataStoreCache {
     /// Storage map witnesses, keyed by (`map_root`, `map_key`). Avoids redundant RPC calls when
     /// the same map entry is accessed multiple times within a transaction.
     storage_map_witnesses: RwLock<BTreeMap<(Word, StorageMapKey), StorageMapWitness>>,
-    /// Transaction inputs cached per (account, reference blocks). Only populated while the note
-    /// screener runs, where trial executions share the same account and reference block; see
+    /// Transaction inputs served to the executor. Only populated while the note screener runs,
+    /// where trial executions share the same account and reference block; see
     /// [`super::ClientDataStore::with_execution_input_cache`]. Left empty during real transaction
     /// execution, whose account state evolves between executions.
-    transaction_inputs: RwLock<BTreeMap<TransactionInputsCacheKey, CachedTransactionInputs>>,
-    /// Vault asset witnesses cached per (account, vault root, requested keys). The requested keys
-    /// always include the fee asset key, so this memoizes the per-execution fee witness lookup
-    /// across a screening batch. Populated under the same conditions as `transaction_inputs`.
-    vault_asset_witnesses: RwLock<BTreeMap<VaultWitnessCacheKey, Vec<AssetWitness>>>,
+    transaction_inputs: RwLock<TransactionInputsCache>,
+    /// Vault asset witnesses served to the executor. The requested keys always include the fee
+    /// asset key, so this memoizes the per-execution fee witness lookup across a screening batch.
+    /// Populated under the same conditions as `transaction_inputs`.
+    vault_asset_witnesses: RwLock<VaultWitnessCache>,
+    /// Whether `transaction_inputs` and `vault_asset_witnesses` are used at all. When unset, their
+    /// getters miss and their setters do nothing, so both maps stay empty.
+    cache_execution_inputs: bool,
     /// The transaction reference block number.
     ref_block: RwLock<Option<BlockNumber>>,
 }
@@ -66,8 +74,14 @@ impl DataStoreCache {
             storage_map_witnesses: RwLock::new(BTreeMap::new()),
             transaction_inputs: RwLock::new(BTreeMap::new()),
             vault_asset_witnesses: RwLock::new(BTreeMap::new()),
+            cache_execution_inputs: false,
             ref_block: RwLock::new(None),
         }
+    }
+
+    /// Enables the transaction-input and vault-asset-witness caches.
+    pub(super) fn enable_execution_input_cache(&mut self) {
+        self.cache_execution_inputs = true;
     }
 
     /// Replaces the cached foreign account inputs with the provided ones.
@@ -138,49 +152,78 @@ impl DataStoreCache {
     }
 
     /// Returns the cached transaction inputs for the given account and reference blocks, if any.
+    ///
+    /// Always returns `None` while the execution-input cache is disabled.
     pub(super) fn get_transaction_inputs(
         &self,
         account_id: AccountId,
         ref_blocks: &BTreeSet<BlockNumber>,
     ) -> Option<CachedTransactionInputs> {
-        self.transaction_inputs.read().get(&(account_id, ref_blocks.clone())).cloned()
+        if !self.cache_execution_inputs {
+            return None;
+        }
+
+        let cache = self.transaction_inputs.read();
+        cache.get(&account_id)?.get(ref_blocks).cloned()
     }
 
     /// Caches the transaction inputs for the given account and reference blocks.
+    ///
+    /// Does nothing while the execution-input cache is disabled.
     pub(super) fn insert_transaction_inputs(
         &self,
         account_id: AccountId,
         ref_blocks: BTreeSet<BlockNumber>,
-        inputs: CachedTransactionInputs,
+        inputs: &CachedTransactionInputs,
     ) {
-        self.transaction_inputs.write().insert((account_id, ref_blocks), inputs);
+        if !self.cache_execution_inputs {
+            return;
+        }
+
+        self.transaction_inputs
+            .write()
+            .entry(account_id)
+            .or_default()
+            .insert(ref_blocks, inputs.clone());
     }
 
     /// Returns the cached vault asset witnesses for the given account, vault root and requested
     /// keys, if any.
+    ///
+    /// Always returns `None` while the execution-input cache is disabled.
     pub(super) fn get_vault_asset_witnesses(
         &self,
         account_id: AccountId,
         vault_root: Word,
         vault_keys: &BTreeSet<AssetVaultKey>,
     ) -> Option<Vec<AssetWitness>> {
-        self.vault_asset_witnesses
-            .read()
-            .get(&(account_id, vault_root, vault_keys.clone()))
-            .cloned()
+        if !self.cache_execution_inputs {
+            return None;
+        }
+
+        let cache = self.vault_asset_witnesses.read();
+        cache.get(&(account_id, vault_root))?.get(vault_keys).cloned()
     }
 
     /// Caches the vault asset witnesses for the given account, vault root and requested keys.
+    ///
+    /// Does nothing while the execution-input cache is disabled.
     pub(super) fn insert_vault_asset_witnesses(
         &self,
         account_id: AccountId,
         vault_root: Word,
         vault_keys: BTreeSet<AssetVaultKey>,
-        witnesses: Vec<AssetWitness>,
+        witnesses: &[AssetWitness],
     ) {
+        if !self.cache_execution_inputs {
+            return;
+        }
+
         self.vault_asset_witnesses
             .write()
-            .insert((account_id, vault_root, vault_keys), witnesses);
+            .entry((account_id, vault_root))
+            .or_default()
+            .insert(vault_keys, witnesses.to_vec());
     }
 
     /// Returns the cached transaction reference block, if set.

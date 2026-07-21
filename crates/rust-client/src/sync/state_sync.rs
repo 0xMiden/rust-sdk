@@ -39,6 +39,7 @@ use crate::rpc::domain::note::{
 use crate::rpc::domain::sync::{ChainMmrInfo, SyncTarget};
 use crate::rpc::domain::transaction::TransactionRecord as RpcTransactionRecord;
 use crate::rpc::{AccountStateAt, NodeRpcClient, NoteContentFetch};
+use crate::store::input_note_states::UnverifiedNoteState;
 use crate::store::{InputNoteRecord, OutputNoteRecord, StoreError};
 use crate::transaction::TransactionRecord;
 
@@ -1033,7 +1034,7 @@ impl StateSync {
             // For a public note, pair its fetched body with the inclusion proof and metadata from
             // `committed` (the single source of truth) to build the candidate record.
             let public_note = details.map(|details| {
-                let state = crate::store::input_note_states::UnverifiedNoteState {
+                let state = UnverifiedNoteState {
                     metadata: *committed.metadata(),
                     inclusion_proof: committed.inclusion_proof().clone(),
                 }

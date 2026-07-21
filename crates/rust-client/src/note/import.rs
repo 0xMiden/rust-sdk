@@ -157,7 +157,7 @@ where
         }
 
         let mut imported_commitments = Vec::with_capacity(imported_notes.len());
-        for note in imported_notes.into_iter().flatten() {
+        for note in imported_notes {
             let details_commitment = note.details_commitment();
             if let InputNoteState::Expected(ExpectedNoteState { tag: Some(tag), .. }) = note.state()
             {
@@ -179,8 +179,7 @@ where
     /// is passed via `previous_note` so it can be updated. The note information is fetched from
     /// the node and stored in the client's store.
     ///
-    /// The returned records are positional rather than keyed by [`NoteId`]; a `None` entry marks a
-    /// note that needs no update.
+    /// Only records that changed as a result of the import are returned.
     ///
     /// # Errors:
     /// - If a note doesn't exist on the node.
@@ -188,7 +187,7 @@ where
     async fn import_note_records_by_id(
         &mut self,
         notes: BTreeMap<NoteId, Option<InputNoteRecord>>,
-    ) -> Result<Vec<Option<InputNoteRecord>>, ClientError> {
+    ) -> Result<Vec<InputNoteRecord>, ClientError> {
         let note_ids = notes.keys().copied().collect::<Vec<_>>();
 
         let fetched_notes =
@@ -217,9 +216,7 @@ where
                 {
                     self.store.remove_note_tag((&previous_note).try_into()?).await?;
 
-                    note_records.push(Some(previous_note));
-                } else {
-                    note_records.push(None);
+                    note_records.push(previous_note);
                 }
             } else {
                 let fetched_note = match fetched_note {
@@ -250,10 +247,12 @@ where
     ///
     /// If the note isn't consumed and it was committed in the past relative to the client, then
     /// the MMR for the relevant block is fetched from the node and stored.
+    ///
+    /// Only records that changed as a result of the import are returned.
     pub(crate) async fn import_note_records_by_proof(
         &mut self,
         requested_notes: Vec<(Option<InputNoteRecord>, Note, NoteInclusionProof)>,
-    ) -> Result<Vec<Option<InputNoteRecord>>, ClientError> {
+    ) -> Result<Vec<InputNoteRecord>, ClientError> {
         // TODO: iterating twice over requested notes
         let mut note_records = vec![];
 
@@ -297,10 +296,8 @@ where
                 && let Some(Some(block_height)) = nullifier_commit_heights.get(&nullifier)
             {
                 if note_record.consumed_externally(nullifier, *block_height, None)? {
-                    note_records.push(Some(note_record));
+                    note_records.push(note_record);
                 }
-
-                note_records.push(None);
             } else {
                 let block_height = inclusion_proof.location().block_num();
                 let current_block_num = self.get_sync_height().await?;
@@ -328,9 +325,7 @@ where
                 }
 
                 if note_changed {
-                    note_records.push(Some(note_record));
-                } else {
-                    note_records.push(None);
+                    note_records.push(note_record);
                 }
             }
         }
@@ -341,10 +336,14 @@ where
 
     /// Builds a note record list from note details. If a note with the same ID was already stored
     /// it is passed via `previous_note` so it can be updated.
+    ///
+    /// Only records that need to be stored are returned: notes the node has not reported as
+    /// committed keep (or get) their expected record, while committed notes are returned only if
+    /// the new information changed them.
     async fn import_note_records_by_details(
         &mut self,
         requested_notes: Vec<(Option<InputNoteRecord>, NoteDetails, BlockNumber, Option<NoteTag>)>,
-    ) -> Result<Vec<Option<InputNoteRecord>>, ClientError> {
+    ) -> Result<Vec<InputNoteRecord>, ClientError> {
         let mut lowest_request_block: BlockNumber = u32::MAX.into();
         let mut note_requests = vec![];
         for (_, details, after_block_num, tag) in &requested_notes {
@@ -373,7 +372,7 @@ where
             let Some(SyncedNote { committed: committed_note, content }) =
                 committed_notes_data.remove(&note_record.details_commitment())
             else {
-                note_records.push(Some(note_record));
+                note_records.push(note_record);
                 continue;
             };
 
@@ -406,7 +405,9 @@ where
                     .await?;
             }
 
-            note_records.push(note_changed.then_some(note_record));
+            if note_changed {
+                note_records.push(note_record);
+            }
         }
         self.cache_partial_mmr(partial_mmr).await?;
 

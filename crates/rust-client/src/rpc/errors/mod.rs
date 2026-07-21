@@ -14,7 +14,7 @@ use thiserror::Error;
 use super::RpcEndpoint;
 
 pub mod node;
-pub use node::EndpointError;
+pub use node::{AddTransactionError, EndpointError};
 
 // RPC ERROR
 // ================================================================================================

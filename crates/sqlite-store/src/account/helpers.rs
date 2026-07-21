@@ -155,7 +155,7 @@ pub(crate) fn query_historical_account_headers(
 
 // TODO: this function will probably be refactored to receive more complex where clauses and
 // return multiple mast forests
-pub(crate) fn query_account_code(
+pub(super) fn query_account_code(
     conn: &Connection,
     commitment: Word,
 ) -> Result<Option<AccountCode>, StoreError> {
@@ -202,21 +202,21 @@ pub(crate) fn query_vault_assets(
     account_id: AccountId,
 ) -> Result<Vec<Asset>, StoreError> {
     const VAULT_QUERY: &str =
-        "SELECT vault_key, asset FROM latest_account_assets WHERE account_id = ?";
+        "SELECT asset_id, asset FROM latest_account_assets WHERE account_id = ?";
 
     conn.prepare(VAULT_QUERY)
         .into_store_error()?
         .query_map(params![account_id.to_bytes()], |row| {
-            let vault_key: Vec<u8> = row.get(0)?;
+            let asset_id: Vec<u8> = row.get(0)?;
             let asset: Vec<u8> = row.get(1)?;
-            Ok((vault_key, asset))
+            Ok((asset_id, asset))
         })
         .into_store_error()?
         .map(|result| {
-            let (vault_key_bytes, asset_bytes): (Vec<u8>, Vec<u8>) = result.into_store_error()?;
-            let key_word = Word::read_from_bytes(&vault_key_bytes)?;
+            let (asset_id_bytes, asset_bytes): (Vec<u8>, Vec<u8>) = result.into_store_error()?;
+            let key_word = Word::read_from_bytes(&asset_id_bytes)?;
             let value_word = Word::read_from_bytes(&asset_bytes)?;
-            Ok(Asset::from_key_value_words(key_word, value_word)?)
+            Ok(Asset::from_id_and_value_words(key_word, value_word)?)
         })
         .collect::<Result<Vec<Asset>, StoreError>>()
 }

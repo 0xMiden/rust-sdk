@@ -4,7 +4,7 @@ use alloc::string::ToString;
 use alloc::vec::Vec;
 
 use miden_protocol::account::AccountId;
-use miden_protocol::asset::{Asset, FungibleAsset};
+use miden_protocol::asset::{Asset, AssetAmount, FungibleAsset};
 use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::merkle::InnerNodeInfo;
 use miden_protocol::crypto::merkle::store::MerkleStore;
@@ -29,14 +29,7 @@ use miden_protocol::note::{
 use miden_protocol::transaction::TransactionScript;
 use miden_protocol::vm::AdviceMap;
 use miden_protocol::{Felt, Word};
-use miden_standards::note::{
-    P2idNote,
-    P2ideNote,
-    P2ideNoteStorage,
-    PswapNote,
-    PswapNoteStorage,
-    SwapNote,
-};
+use miden_standards::note::{P2idNote, P2ideNote, PswapNote, PswapNoteStorage, SwapNote};
 
 use super::{
     ForeignAccount,
@@ -328,14 +321,14 @@ impl TransactionRequestBuilder {
         note_type: NoteType,
         rng: &mut ClientRng,
     ) -> Result<TransactionRequest, TransactionRequestError> {
-        let created_note = P2idNote::create(
-            asset.faucet_id(),
-            target_id,
-            vec![asset.into()],
-            note_type,
-            NoteAttachments::empty(),
-            rng,
-        )?;
+        let created_note = P2idNote::builder()
+            .sender(asset.faucet_id())
+            .target(target_id)
+            .asset(asset)
+            .note_type(note_type)
+            .generate_serial_number(rng)
+            .build()?
+            .into();
 
         self.own_output_notes(vec![created_note]).build()
     }
@@ -464,7 +457,7 @@ impl TransactionRequestBuilder {
         rng: &mut ClientRng,
     ) -> Result<TransactionRequest, TransactionRequestError> {
         let storage = PswapNoteStorage::builder()
-            .requested_asset(pswap_data.requested_asset())
+            .min_requested_asset(pswap_data.requested_asset())
             .creator_account_id(pswap_data.creator_account_id())
             .payback_note_type(payback_note_type)
             .build();
@@ -498,23 +491,25 @@ impl TransactionRequestBuilder {
         self,
         pswap_note: &Note,
         consumer_account_id: AccountId,
-        account_fill_amount: u64,
-        note_fill_amount: u64,
+        account_fill_amount: AssetAmount,
+        note_fill_amount: AssetAmount,
     ) -> Result<TransactionRequest, TransactionRequestError> {
         let pswap = PswapNote::try_from(pswap_note)
             .map_err(TransactionRequestError::NoteValidationError)?;
 
-        let requested_faucet_id = pswap.storage().requested_asset().faucet_id();
+        let requested_faucet_id = pswap.storage().min_requested_asset().faucet_id();
 
-        let account_fill_asset = FungibleAsset::new(requested_faucet_id, account_fill_amount)?;
-        let note_fill_asset = FungibleAsset::new(requested_faucet_id, note_fill_amount)?;
+        let account_fill_asset =
+            FungibleAsset::new(requested_faucet_id, account_fill_amount.as_u64())?;
+        let note_fill_asset = FungibleAsset::new(requested_faucet_id, note_fill_amount.as_u64())?;
 
         let (payback_note, remainder_pswap) = pswap
             .execute(consumer_account_id, Some(account_fill_asset), Some(note_fill_asset))
             .map_err(TransactionRequestError::NoteExecutionError)?;
 
-        let note_args = PswapNote::create_args(account_fill_amount, note_fill_amount)
-            .map_err(TransactionRequestError::NoteArgError)?;
+        let note_args =
+            PswapNote::create_args(account_fill_amount.as_u64(), note_fill_amount.as_u64())
+                .map_err(TransactionRequestError::NoteArgError)?;
 
         // Payback and remainder both settle to the creator, not the consumer. Declare them as
         // expected recipients so the transaction is validated against them, but don't register
@@ -574,6 +569,10 @@ impl TransactionRequestBuilder {
             if !seen_input_notes.insert(note_id) {
                 return Err(TransactionRequestError::DuplicateInputNote(*note_id));
             }
+        }
+
+        if self.expiration_delta == Some(0) {
+            return Err(TransactionRequestError::ZeroExpirationDelta);
         }
 
         let script_template = match (self.custom_script, self.own_output_notes.is_empty()) {
@@ -709,28 +708,26 @@ impl PaymentNoteDescription {
     ) -> Result<Note, NoteError> {
         if self.reclaim_height.is_none() && self.timelock_height.is_none() {
             // Create a P2ID note
-            P2idNote::create(
-                self.sender_account_id,
-                self.target_account_id,
-                self.assets,
-                note_type,
-                NoteAttachments::empty(),
-                rng,
-            )
+            Ok(P2idNote::builder()
+                .sender(self.sender_account_id)
+                .target(self.target_account_id)
+                .assets(self.assets)
+                .note_type(note_type)
+                .generate_serial_number(rng)
+                .build()?
+                .into())
         } else {
             // Create a P2IDE note
-            P2ideNote::create(
-                self.sender_account_id,
-                P2ideNoteStorage::new(
-                    self.target_account_id,
-                    self.reclaim_height,
-                    self.timelock_height,
-                ),
-                self.assets,
-                note_type,
-                NoteAttachments::empty(),
-                rng,
-            )
+            Ok(P2ideNote::builder()
+                .sender(self.sender_account_id)
+                .target(self.target_account_id)
+                .assets(self.assets)
+                .note_type(note_type)
+                .maybe_reclaim_height(self.reclaim_height)
+                .maybe_timelock_height(self.timelock_height)
+                .generate_serial_number(rng)
+                .build()?
+                .into())
         }
     }
 }

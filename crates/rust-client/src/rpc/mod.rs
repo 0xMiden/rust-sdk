@@ -419,17 +419,9 @@ pub trait NodeRpcClient: Send + Sync {
         }
         let vault_info =
             self.sync_account_vault(BlockNumber::GENESIS, block_to, account_id).await?;
-        let mut updates = vault_info.updates;
-        // The node returns the full history of vault entries, so a given key may appear in more
-        // than one block. Sort by block so the BTreeMap keeps the latest value per key.
-        updates.sort_by_key(|u| u.block_num);
-        details.vault_details.assets = updates
-            .into_iter()
-            .map(|u| (u.vault_key, u.asset))
-            .collect::<BTreeMap<_, _>>()
-            .into_values()
-            .flatten()
-            .collect();
+        // Syncing from genesis merges the full vault history into an absolute patch, so its
+        // updated (non-removed) assets are the account's current vault contents.
+        details.vault_details.assets = vault_info.vault_patch.updated_assets().collect();
         details.vault_details.too_many_assets = false;
         Ok(())
     }
@@ -451,18 +443,19 @@ pub trait NodeRpcClient: Send + Sync {
             if !map_details.too_many_entries {
                 continue;
             }
-            // The node returns the full history of map entries, so a given key may appear in
-            // more than one block. Sort by block so the BTreeMap keeps the latest value per key.
-            let mut sorted: Vec<_> =
-                info.updates.iter().filter(|u| u.slot_name == map_details.slot_name).collect();
-            sorted.sort_by_key(|u| u.block_num);
-            let entries: Vec<StorageMapEntry> = sorted
-                .into_iter()
-                .map(|u| (u.key, u.value))
-                .collect::<BTreeMap<_, _>>()
-                .into_iter()
-                .map(|(key, value)| StorageMapEntry { key, value })
-                .collect();
+            // Syncing from genesis merges the full history of each slot into its absolute
+            // current entries, so the result is the complete map content.
+            let entries: Vec<StorageMapEntry> = info
+                .map_entries
+                .get(&map_details.slot_name)
+                .map(|entries| {
+                    entries
+                        .as_map()
+                        .iter()
+                        .map(|(key, value)| StorageMapEntry { key: *key, value: *value })
+                        .collect()
+                })
+                .unwrap_or_default();
             map_details.too_many_entries = false;
             map_details.entries = StorageMapEntries::AllEntries(entries);
         }

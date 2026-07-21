@@ -9,7 +9,6 @@ use miden_protocol::note::{
     NoteAttachments,
     NoteDetails,
     NoteDetailsCommitment,
-    NoteFile,
     NoteId,
     NoteInclusionProof,
     NoteMetadata,
@@ -18,6 +17,7 @@ use miden_protocol::note::{
     PartialNote,
 };
 use miden_protocol::transaction::RawOutputNote;
+use miden_standards::note::{NoteFile, NoteSyncHint};
 use miden_tx::utils::serde::{
     ByteReader,
     ByteWriter,
@@ -136,6 +136,15 @@ impl OutputNoteRecord {
         matches!(
             self.state,
             OutputNoteState::CommittedFull { .. } | OutputNoteState::CommittedPartial { .. }
+        )
+    }
+
+    /// Returns true while the note's on-chain inclusion is still unsettled (either expected
+    /// state), i.e. before the note is known to be committed or consumed.
+    pub fn is_inclusion_pending(&self) -> bool {
+        matches!(
+            self.state,
+            OutputNoteState::ExpectedPartial | OutputNoteState::ExpectedFull { .. }
         )
     }
 
@@ -279,12 +288,11 @@ impl OutputNoteRecord {
             NoteExportType::NoteId => Ok(NoteFile::NoteId(self.id())),
             NoteExportType::NoteDetails => {
                 let after_block_num = self.expected_height();
-                let tag = Some(self.metadata().tag());
+                let tag = self.metadata().tag();
 
-                Ok(NoteFile::NoteDetails {
+                Ok(NoteFile::ExpectedNote {
                     details: self.try_into()?,
-                    after_block_num,
-                    tag,
+                    sync_hint: NoteSyncHint::new(after_block_num, tag),
                 })
             },
             NoteExportType::NoteWithProof => {
@@ -295,7 +303,7 @@ impl OutputNoteRecord {
                     ))?
                     .clone();
 
-                Ok(NoteFile::NoteWithProof(self.try_into()?, proof))
+                Ok(NoteFile::Committed { note: self.try_into()?, proof })
             },
         }
     }

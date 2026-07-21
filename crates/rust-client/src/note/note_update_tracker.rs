@@ -486,8 +486,7 @@ impl NoteUpdateTracker {
         let note_id = note_header.id();
 
         if let Some(output_note) = self.get_output_note_by_id(note_id)
-            && !output_note.is_consumed()
-            && !output_note.is_committed()
+            && output_note.is_inclusion_pending()
             && let Some(nullifier) = output_note.nullifier()
         {
             output_note.nullifier_received(nullifier, block_num)?;

@@ -1,8 +1,9 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use miden_client::ClientError;
 use miden_client::account::AccountType;
-use miden_client::asset::{Asset, FungibleAsset};
+use miden_client::asset::{Asset, AssetAmount, FungibleAsset};
 use miden_client::auth::RPO_FALCON_SCHEME_ID;
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;
@@ -24,7 +25,6 @@ use miden_client::transaction::{
     TransactionRequestBuilder,
     TransactionStoreUpdate,
 };
-use miden_client::{ClientError, DebugMode};
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
 use miden_protocol::Felt;
 use miden_protocol::crypto::rand::RandomCoin;
@@ -167,7 +167,6 @@ async fn apply_transaction_batch_rolls_back_on_mid_batch_failure() {
         .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore))
-        .in_debug_mode(DebugMode::Enabled)
         .tx_discard_delta(None)
         .build()
         .await
@@ -443,7 +442,6 @@ async fn batch_builder_submits_txs_across_multiple_accounts() {
         .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore))
-        .in_debug_mode(DebugMode::Enabled)
         .tx_discard_delta(None)
         .build()
         .await
@@ -609,8 +607,12 @@ async fn batch_builder_cross_account_note_flow() {
         .get_balance(faucet_account_id)
         .await
         .unwrap();
-    assert_eq!(a_balance, 0, "A should have sent all its balance");
-    assert_eq!(b_balance, 2 * MINT_AMOUNT, "B should hold its prior MINT_AMOUNT + A's transfer");
+    assert_eq!(a_balance, AssetAmount::ZERO, "A should have sent all its balance");
+    assert_eq!(
+        b_balance,
+        AssetAmount::new(2 * MINT_AMOUNT).unwrap(),
+        "B should hold its prior MINT_AMOUNT + A's transfer"
+    );
 }
 
 /// The duplicate-input-note check is global to the batch: a note consumed by `tx_a` (account A)

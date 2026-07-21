@@ -106,9 +106,9 @@ CREATE TABLE historical_storage_map_entries (
 
 CREATE TABLE latest_account_assets (
     account_id BLOB NOT NULL,        -- account ID
-    vault_key BLOB NOT NULL,         -- asset's vault key
+    asset_id BLOB NOT NULL,          -- asset's asset id
     asset BLOB NOT NULL,             -- serialized asset value
-    PRIMARY KEY (account_id, vault_key)
+    PRIMARY KEY (account_id, asset_id)
 ) WITHOUT ROWID;
 
 -- Historical account assets: stores old assets that were replaced.
@@ -116,9 +116,9 @@ CREATE TABLE latest_account_assets (
 CREATE TABLE historical_account_assets (
     account_id BLOB NOT NULL,           -- account ID
     replaced_at_nonce BIGINT NOT NULL,  -- nonce at which this old asset was replaced
-    vault_key BLOB NOT NULL,            -- asset's vault key
+    asset_id BLOB NOT NULL,             -- asset key in the vault's underlying SMT
     old_asset BLOB NULL,                -- old serialized asset value (NULL = asset was new)
-    PRIMARY KEY (account_id, replaced_at_nonce, vault_key)
+    PRIMARY KEY (account_id, replaced_at_nonce, asset_id)
 ) WITHOUT ROWID;
 
 -- ── Foreign account code ─────────────────────────────────────────────────
@@ -217,6 +217,9 @@ CREATE TABLE tags (
     tag BLOB NOT NULL,     -- the serialized tag
     source BLOB NOT NULL   -- the serialized tag source
 );
+-- Enforces tag idempotency: `add_note_tag` uses `INSERT OR IGNORE` against this index so a
+-- repeated (tag, source) pair is a no-op instead of a duplicated row.
+CREATE UNIQUE INDEX idx_tags_tag_source ON tags(tag, source);
 
 -- insert initial row into blockchain_checkpoint table
 INSERT OR IGNORE INTO blockchain_checkpoint (block_num, partial_blockchain_peaks)

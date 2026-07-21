@@ -13,12 +13,11 @@ use miden_protocol::crypto::merkle::mmr::{MmrDelta, PartialMmr};
 use miden_protocol::note::{NoteAttachments, NoteId, NoteTag, Nullifier};
 use tracing::info;
 
-use super::state_sync_update::TransactionUpdateTracker;
+use super::state_sync_update::{TransactionUpdateTracker, build_account_patch};
 use super::{
     AccountUpdates,
     NoteObserver,
     PartialBlockchainUpdates,
-    PublicAccountDelta,
     PublicAccountUpdate,
     StateSyncUpdate,
 };
@@ -96,6 +95,10 @@ pub struct StateSyncInput {
     /// Input notes whose lifecycle should be followed during sync.
     pub input_notes: Vec<InputNoteRecord>,
     /// Output notes whose lifecycle should be followed during sync.
+    ///
+    /// Inclusion (committed) updates are derived from transaction sync, so the account that
+    /// created a note must be present in `accounts` for the note to transition to committed.
+    /// The consumed transition does not depend on this: nullifier sync detects it regardless.
     pub output_notes: Vec<OutputNoteRecord>,
     /// Transactions to track for commitment or discard during sync.
     pub uncommitted_transactions: Vec<TransactionRecord>,
@@ -876,11 +879,11 @@ impl StateSync {
             details.storage_details.map_details.iter().any(|m| m.too_many_entries);
 
         // TODO: we can handle vault and storage-map oversize independently. Today any oversize
-        // routes the whole account through the incremental delta path, which always fetches
+        // routes the whole account through the incremental patch path, which always fetches
         // both `sync_storage_maps` and `sync_account_vault`, even if not needed.
         let public_update = if vault_oversized || any_map_oversized {
             // Some part of the account is oversized — use incremental endpoints.
-            self.build_delta_update(account_id, &details, block_from, proof_block_num)
+            self.build_patch_update(account_id, &details, block_from, proof_block_num)
                 .await?
         } else {
             // The single response carries the full vault and every map's entries.
@@ -894,6 +897,18 @@ impl StateSync {
     /// Validates that a `get_account` proof is bound to the sync target `chain_tip_header`: it must
     /// be for the requested `account_id`, at the target block, and its witness must open under the
     /// target header's account root. Returns the account details on success.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError::ChainValidationError`] if:
+    /// - the proof is for a different block than the sync target.
+    /// - the witness is for a different account than the requested one.
+    /// - the witness does not open under the sync target header's account root.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the proof carries no account details, since this is only called for public
+    /// accounts and the node always returns details for them.
     fn validate_account_proof(
         proof: AccountProof,
         proof_block_num: BlockNumber,
@@ -933,9 +948,9 @@ impl StateSync {
         Ok(details.expect("node returned no details for a public account"))
     }
 
-    /// Builds a [`PublicAccountUpdate::Delta`] by fetching incremental storage map and vault
-    /// updates over the synced range.
-    async fn build_delta_update(
+    /// Builds a [`PublicAccountUpdate::Patch`] by fetching incremental storage map and vault
+    /// updates over the synced range and assembling the absolute [`AccountPatch`] from them.
+    async fn build_patch_update(
         &self,
         account_id: AccountId,
         details: &AccountDetails,
@@ -963,14 +978,19 @@ impl StateSync {
             .await
             .map_err(ClientError::RpcError)?;
 
-        Ok(PublicAccountUpdate::Delta(PublicAccountDelta::new(
-            details.header.clone(),
-            block_from,
-            block_to,
+        let patch = build_account_patch(
+            &details.header,
             value_slot_updates,
-            map_info.updates,
-            vault_info.updates,
-        )))
+            map_info.map_entries,
+            vault_info.vault_patch,
+            details.code.clone(),
+        )
+        .map_err(StoreError::AccountPatchError)?;
+
+        Ok(PublicAccountUpdate::Patch {
+            new_header: details.header.clone(),
+            patch,
+        })
     }
 
     /// Applies the changes received from the sync response to the notes and transactions tracked
@@ -1282,7 +1302,6 @@ mod tests {
     use miden_testing::{MockChainBuilder, TxContextInput};
 
     use super::*;
-    use crate::rpc::domain::transaction::ACCOUNT_ID_NATIVE_ASSET_FAUCET;
     use crate::store::{OutputNoteRecord, OutputNoteState};
     use crate::test_utils::mock::MockRpcApi;
 
@@ -1331,7 +1350,7 @@ mod tests {
             header.note_root(),
             header.tx_commitment(),
             header.tx_kernel_commitment(),
-            header.validator_key().clone(),
+            header.validator_keys().clone(),
             header.fee_parameters().clone(),
             header.timestamp(),
         )
@@ -1517,7 +1536,7 @@ mod tests {
             real_header.note_root(),
             real_header.tx_commitment(),
             real_header.tx_kernel_commitment(),
-            real_header.validator_key().clone(),
+            real_header.validator_keys().clone(),
             real_header.fee_parameters().clone(),
             real_header.timestamp(),
         );
@@ -1531,6 +1550,67 @@ mod tests {
             .await;
         assert!(matches!(result, Err(ClientError::ChainValidationError(_))));
     }
+
+    /// A transaction committed after the sync target must remain pending. The account fetch is
+    /// pinned to the target's pre-commit state.
+    #[tokio::test]
+    async fn sync_public_accounts_pins_account_fetch_to_sync_target() {
+        let mut builder = MockChainBuilder::new();
+        let account = builder.add_existing_mock_account(miden_testing::Auth::IncrNonce).unwrap();
+        let mut chain = builder.build().unwrap();
+
+        // The sync target predates this transaction.
+        let sync_target_header = chain.latest_block_header();
+        let tx = Box::pin(
+            chain
+                .build_tx_context(TxContextInput::AccountId(account.id()), &[], &[])
+                .unwrap()
+                .build()
+                .unwrap()
+                .execute(),
+        )
+        .await
+        .unwrap();
+        let local_header = tx.final_account().clone();
+        assert_ne!(local_header.to_commitment(), account.to_commitment());
+        chain.add_pending_executed_transaction(&tx).unwrap();
+
+        let rpc_api = MockRpcApi::new(chain);
+        // Commit the transaction after the target.
+        rpc_api.prove_block();
+        assert_eq!(
+            rpc_api
+                .mock_chain
+                .read()
+                .committed_account(account.id())
+                .unwrap()
+                .to_commitment(),
+            local_header.to_commitment()
+        );
+        let state_sync = StateSync::new(Arc::new(rpc_api), Arc::new(MockScreener), None);
+
+        let current_public_accounts = vec![&local_header];
+        let commitment_updates = vec![(account.id(), account.to_commitment())];
+        let mut account_updates = AccountUpdates::default();
+
+        let superseded = state_sync
+            .sync_public_accounts(
+                &mut account_updates,
+                &commitment_updates,
+                &current_public_accounts,
+                BlockNumber::GENESIS,
+                &sync_target_header,
+            )
+            .await
+            .unwrap();
+
+        assert!(superseded.is_empty(), "the transaction must not be superseded");
+        assert!(
+            account_updates.updated_public_accounts().is_empty(),
+            "the target state must not overwrite the local account"
+        );
+    }
+
     /// Builds an honest `get_account` response for `account_id`.
     async fn get_account_proof(
         rpc_api: &MockRpcApi,
@@ -1611,16 +1691,12 @@ mod tests {
     mod compute_nullifiers_tests {
         use alloc::vec;
 
-        use miden_protocol::asset::FungibleAsset;
         use miden_protocol::block::BlockNumber;
         use miden_protocol::note::Nullifier;
         use miden_protocol::transaction::{InputNoteCommitment, InputNotes, TransactionHeader};
 
         use super::word;
-        use crate::rpc::domain::transaction::{
-            ACCOUNT_ID_NATIVE_ASSET_FAUCET,
-            TransactionRecord as RpcTransactionRecord,
-        };
+        use crate::rpc::domain::transaction::TransactionRecord as RpcTransactionRecord;
 
         fn make_rpc_tx(
             init_state: u64,
@@ -1640,10 +1716,6 @@ mod tests {
                     .collect(),
             );
 
-            let fee =
-                FungibleAsset::new(ACCOUNT_ID_NATIVE_ASSET_FAUCET.try_into().expect("valid"), 0u64)
-                    .unwrap();
-
             RpcTransactionRecord {
                 block_num: BlockNumber::from(block_number),
                 transaction_header: TransactionHeader::new(
@@ -1652,7 +1724,6 @@ mod tests {
                     word(final_state),
                     input_notes,
                     vec![],
-                    fee,
                 ),
                 output_notes: vec![],
                 erased_output_notes: vec![],
@@ -1689,10 +1760,6 @@ mod tests {
             )
             .unwrap();
 
-            let fee =
-                FungibleAsset::new(ACCOUNT_ID_NATIVE_ASSET_FAUCET.try_into().expect("valid"), 0u64)
-                    .unwrap();
-
             let tx_b1 = RpcTransactionRecord {
                 block_num: BlockNumber::from(5u32),
                 transaction_header: TransactionHeader::new(
@@ -1703,7 +1770,6 @@ mod tests {
                         Nullifier::from_raw(word(40)),
                     )]),
                     vec![],
-                    fee,
                 ),
                 output_notes: vec![],
                 erased_output_notes: vec![],
@@ -1756,9 +1822,6 @@ mod tests {
     /// - Account B, block 6: single tx 10 - 20 (final state = 20).
     #[test]
     fn derive_account_commitments_walks_chains_per_account() {
-        let fee =
-            FungibleAsset::new(ACCOUNT_ID_NATIVE_ASSET_FAUCET.try_into().expect("valid"), 0u64)
-                .unwrap();
         let make_tx = |account: AccountId, init_state: u64, final_state: u64, block_num: u32| {
             RpcTransactionRecord {
                 block_num: BlockNumber::from(block_num),
@@ -1768,7 +1831,6 @@ mod tests {
                     word(final_state),
                     InputNotes::new_unchecked(vec![]),
                     vec![],
-                    fee,
                 ),
                 output_notes: vec![],
                 erased_output_notes: vec![],
@@ -1862,7 +1924,7 @@ mod tests {
             )
             .await
             .unwrap();
-            current_account.apply_delta(tx.account_delta()).unwrap();
+            current_account.apply_patch(tx.account_patch()).unwrap();
             chain.add_pending_executed_transaction(&tx).unwrap();
         }
 
@@ -2018,22 +2080,21 @@ mod tests {
         for i in 0..num_blocks {
             let amount = 100 + i;
             let source_manager = Arc::new(DefaultSourceManager::default());
-            // Derive the asset key/value in MASM via `create_fungible_asset` (mirroring the
-            // protocol's own faucet tests) so the callback flag matches what `mint_and_send`
-            // derives internally. `add_existing_basic_faucet` registers transfer policies, so
-            // the faucet has callbacks enabled (`push.1`). The new `mint_and_send` signature is
-            // `[ASSET_KEY, ASSET_VALUE, tag, note_type, RECIPIENT, pad(2)]`.
+            // `mint_and_send` consumes the fungible asset's ID and value words directly:
+            // `[ASSET_ID, ASSET_VALUE, tag, note_type, RECIPIENT, pad(2)]`. Both words are derived
+            // in Rust from the faucet's `AssetId`, which intrinsically carries the callback flag.
+            let mint_asset = FungibleAsset::new(faucet_account.id(), amount).unwrap();
+            let asset_id_word = mint_asset.id().to_word();
+            let asset_value_word = mint_asset.to_value_word();
             let tx_script_code = format!(
                 "
-                begin
+                @transaction_script
+                pub proc main
                     push.{recipient}
                     push.{note_type}
                     push.{tag}
-                    push.{amount}
-                    push.{faucet_id_prefix}
-                    push.{faucet_id_suffix}
-                    push.1
-                    exec.::miden::protocol::asset::create_fungible_asset
+                    push.{asset_value}
+                    push.{asset_id}
                     call.::miden::standards::faucets::fungible::mint_and_send
                     dropw dropw dropw dropw
                 end
@@ -2041,9 +2102,8 @@ mod tests {
                 recipient = recipient,
                 note_type = NoteType::Private as u8,
                 tag = u32::from(tag),
-                amount = amount,
-                faucet_id_prefix = faucet_account.id().prefix().as_felt(),
-                faucet_id_suffix = faucet_account.id().suffix(),
+                asset_value = asset_value_word,
+                asset_id = asset_id_word,
             );
             let tx_script = CodeBuilder::with_source_manager(source_manager.clone())
                 .compile_tx_script(tx_script_code)
@@ -2070,7 +2130,7 @@ mod tests {
                 note_tags.insert(output_note.metadata().tag());
             }
 
-            faucet_account.apply_delta(tx.account_delta()).unwrap();
+            faucet_account.apply_patch(tx.account_patch()).unwrap();
             chain.add_pending_executed_transaction(&tx).unwrap();
             chain.prove_next_block().unwrap();
         }
@@ -2481,9 +2541,6 @@ mod tests {
 
     /// Builds a minimal RPC transaction record at `block_num`, for range-validation tests.
     fn make_tx_record(account_id: AccountId, block_num: u32) -> RpcTransactionRecord {
-        let fee =
-            FungibleAsset::new(ACCOUNT_ID_NATIVE_ASSET_FAUCET.try_into().expect("valid"), 0u64)
-                .unwrap();
         RpcTransactionRecord {
             block_num: BlockNumber::from(block_num),
             transaction_header: TransactionHeader::new(
@@ -2492,7 +2549,6 @@ mod tests {
                 word(2),
                 InputNotes::new_unchecked(vec![]),
                 vec![],
-                fee,
             ),
             output_notes: vec![],
             erased_output_notes: vec![],

@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+* [FEATURE][rust] A client that only watches a public account now recovers notes the account consumed authenticated, even when it never tracked them by tag. During sync it reads the note references the node attaches to the account's transactions, fetches each note body by id, and surfaces it through `InputNoteReader`. Requires node `0.15.1` ([#2300](https://github.com/0xMiden/miden-client/pull/2300)).
+
+### Breaking Changes
+
+* [BREAKING][type][rust] `rpc::domain::transaction::TransactionRecord` gained a non-public field, so it can no longer be constructed with a struct literal outside the crate ([#2300](https://github.com/0xMiden/miden-client/pull/2300)).
+
 ## 0.16.0-alpha.1 (2026-07-17)
 
 ### Breaking Changes

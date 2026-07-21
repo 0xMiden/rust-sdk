@@ -84,8 +84,9 @@ impl InputNoteRecord {
 
     /// Returns the input note ID, computed by combining the details commitment with the
     /// note metadata. Returns `None` when the current state has no metadata (e.g. an
-    /// expected note imported from bare `NoteFile::NoteDetails`). Use
-    /// [`Self::details_commitment`] when a stable identifier is needed in those cases.
+    /// expected note imported from bare `NoteFile::NoteDetails`, or a `ConsumedExternal`
+    /// note whose prior state carried no metadata). Use [`Self::details_commitment`] when a
+    /// stable identifier is needed in those cases.
     pub fn id(&self) -> Option<NoteId> {
         let metadata = self.metadata()?;
         Some(NoteId::new(self.details.commitment(), metadata))

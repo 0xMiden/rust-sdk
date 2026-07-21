@@ -2183,9 +2183,9 @@ async fn get_consumable_notes_screens_non_standard_notes() {
     let target = first_wallet.id();
     let faucet_id = faucet.id();
 
-    // A nop note has no target binding, so it screens as consumable for every tracked account. An
-    // unauthenticated screening trial does not verify the inclusion proof, so a dummy proof and an
-    // empty block note root are enough to make the records committed.
+    // The nop script has no target binding, so the notes screen as consumable for every tracked
+    // account. Screening an unauthenticated note does not verify the inclusion proof, so a dummy
+    // proof and an empty block note root are enough to make the records committed.
     let block_num = client.get_sync_height().await.unwrap();
     let dummy_proof = NoteInclusionProof::new(block_num, 0, SparseMerklePath::default()).unwrap();
 

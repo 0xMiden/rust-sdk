@@ -16,14 +16,6 @@ Call a command on the `miden-client` like this:
 miden-client <command> <flags> <arguments>
 ```
 
-Optionally, you can include the `--debug` flag to run the command with debug mode, which enables debug output logs from scripts that were compiled in this mode:
-
-```sh
-miden-client --debug <flags> <arguments>
-```
-
-Note that the debug flag overrides the `MIDEN_DEBUG` environment variable.
-
 ## Commands
 
 ### `init`
@@ -300,11 +292,11 @@ Additionally, you can optionally not specify note IDs, in which case any note th
 
 Either `Expected` or `Committed` notes may be consumed by this command, changing their state to `Processing`. It's state will be updated to `Consumed` after the next sync.
 
-#### `send`
+#### `transfer`
 
-Sends assets to another account. Sender Account creates a note that a target Account ID can consume. The asset is identified by the tuple `(FAUCET ID, AMOUNT)`. The note can be configured to be recallable making the sender able to consume it after a height is reached.
+Transfers assets to another account. Sender Account creates a note that a target Account ID can consume. The asset is identified by the tuple `(FAUCET ID, AMOUNT)`. The note can be configured to be recallable making the sender able to consume it after a height is reached.
 
-Usage: `miden-client send --sender <SENDER ACCOUNT ID> --target <TARGET ACCOUNT ID> --asset <AMOUNT>::<FAUCET ID> --note-type <NOTE_TYPE> <RECALL_HEIGHT>`
+Usage: `miden-client transfer --sender <SENDER ACCOUNT ID> --target <TARGET ACCOUNT ID> --asset <AMOUNT>::<FAUCET ID> --note-type <NOTE_TYPE> [--recall-height <RECALL_HEIGHT>]`
 
 #### `swap`
 
@@ -352,18 +344,18 @@ miden-client address remove 0x17f13f4f83a8e8100c19d2961dfda2 mlcl1qple0ejnutx8zy
 
 #### Tips
 
-For `send` and `consume-notes`, you can omit the `--sender` and `--account` flags to use the default account defined in the [config](cli-config.md). If you omit the flag but have no default account defined in the config, you'll get an error instead.
+For `transfer` and `consume-notes`, you can omit the `--sender` and `--account` flags to use the default account defined in the [config](cli-config.md). If you omit the flag but have no default account defined in the config, you'll get an error instead.
 
 For every command which needs an account ID (either wallet or faucet), you can also provide a partial ID instead of the full ID for each account. So instead of
 
 ```sh
-miden-client send --sender 0x80519a1c5e3680fc --target 0x8fd4b86a6387f8d8 --asset 100::0xa99c5c8764d4e011
+miden-client transfer --sender 0x80519a1c5e3680fc --target 0x8fd4b86a6387f8d8 --asset 100::0xa99c5c8764d4e011 --note-type private
 ```
 
 You can do:
 
 ```sh
-miden-client send --sender 0x80519 --target 0x8fd4b --asset 100::0xa99c5c8764d4e011
+miden-client transfer --sender 0x80519 --target 0x8fd4b --asset 100::0xa99c5c8764d4e011 --note-type private
 ```
 
 !!! note
@@ -383,7 +375,7 @@ TX Summary:
 Continue with proving and submission? Changes will be irreversible once the proof is finalized on the network (y/N)
 ```
 
-This confirmation can be skipped in non-interactive environments by providing the `--force` flag (`miden-client send --force ...`).
+This confirmation can be skipped in non-interactive environments by providing the `--force` flag (`miden-client transfer --force ...`).
 
 #### Delegated proving
 
@@ -434,6 +426,60 @@ The input file should contain a TOML table called `inputs`, as in the following 
 ```toml
 inputs = [ { key = "0x0000000000000000000000000000000000000000000000000000001000000000", values = ["13", "9"]}, { key = "0x0000000000000000000000000000000000000000000000000000000000000000" , values = ["1", "2"]}, ]
 ```
+
+#### `call`
+
+Call a procedure on an account tracked by the client and show what it returns, along with the state changes the call would produce.
+
+Usage: `miden-client call <ACCOUNT_ID>:<PROCEDURE> [ARGS]... --package <PACKAGE>`
+
+| Flag                          | Description                                                   | Aliases |
+| ----------------------------- | ------------------------------------------------------------- | ------- |
+| `--package <PACKAGE>`         | Path to the `.masp` package that exports the procedure.       | `-p`    |
+| `--inputs-path <INPUTS_PATH>` | Path to a TOML file with advice map entries.                  | `-i`    |
+
+The target is a single argument of the form `<ACCOUNT_ID>:<PROCEDURE>`. The account ID may be given as a partial ID. The procedure name is matched against the package's exports with `_` and `-` treated as equivalent, so it can be written in either snake_case or kebab-case (`get_count` matches the export `get-count`).
+
+Arguments are passed positionally after the target. Each one is a `u64` field element, and they are pushed onto the stack so that the first argument ends up on top. Their number is checked against the procedure's signature in the package manifest. If the package does not record a signature, the check is skipped and a warning is printed, in which case passing the wrong number of arguments may fail or produce a wrong result.
+
+`--inputs-path` takes the same TOML format as [`exec`](#exec). The entries are loaded into the VM's advice map and are visible to the called procedure.
+
+##### Example
+
+Calling `increment-count` on a counter contract:
+
+```sh
+miden-client call 0x4614b8bf575eab71455e97bd394e90:increment-count --package target/miden/dev/counter-contract.masp
+```
+
+The command first prints the procedure's signature and its return values, then the effects the call has on the account:
+
+```sh
+Raw Signature: increment-count() -> (Felt)
+
+Result: 1
+The transaction will have the following effects:
+
+No notes will be consumed.
+
+No notes will be created as a result of this transaction.
+
+Account Storage will not be changed.
+Storage map changes:
+┌──────────────────────────────────┬──────────────────────────────────┬─────────────────────────────────┐
+│ Storage Slot                     ┆ Map Key                          ┆ New Value                       │
+╞══════════════════════════════════╪══════════════════════════════════╪═════════════════════════════════╡
+│ counter_contract::counter_contra ┆ 0x000000000000000000000000000000 ┆ 0x01000000000000000000000000000 │
+│ ct::count_map                    ┆ 00000000000000000001000000000000 ┆ 0000000000000000000000000000000 │
+│                                  ┆ 00                               ┆ 0000                            │
+└──────────────────────────────────┴──────────────────────────────────┴─────────────────────────────────┘
+Account Vault will not be changed.
+Nonce incremented by: 1.
+```
+
+:::note
+The call is executed locally. No proof is generated, nothing is submitted to the network, and the account's stored state is left unchanged.
+:::
 
 ### `note-transport`
 

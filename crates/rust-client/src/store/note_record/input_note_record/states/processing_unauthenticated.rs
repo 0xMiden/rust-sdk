@@ -45,6 +45,7 @@ impl NoteStateHandler for ProcessingUnauthenticatedNoteState {
                 nullifier_block_height,
                 consumer_account,
                 consumed_tx_order: None,
+                metadata: Some(self.metadata),
             }
             .into(),
         ))

@@ -1,5 +1,6 @@
 use alloc::string::String;
 
+#[cfg(feature = "tonic")]
 pub use crate::RemoteTransactionProver;
 
 /// Default remote prover endpoint for testnet.

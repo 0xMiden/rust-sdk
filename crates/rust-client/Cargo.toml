@@ -48,7 +48,7 @@ crate-type = ["lib"]
 # `std`; the duplication in the `std` feature list is intentional so
 # each consumer can pick the smallest feature set they need.
 concurrent = ["miden-tx/concurrent"]
-dap = ["dep:miden-debug", "dep:miden-processor", "std"]
+dap = ["dep:miden-processor", "std"]
 default = ["std"]
 std = [
   "concurrent",
@@ -56,8 +56,7 @@ std = [
   "dep:tokio",
   "miden-agglayer/std",
   "miden-protocol/std",
-  "miden-remote-prover-client/std",
-  "miden-remote-prover-client/tx-prover",
+  "miden-tx/std",
   "tonic/tls-native-roots",
   "tonic/tls-ring",
   "tonic/transport",
@@ -74,15 +73,13 @@ tonic = []
 
 [dependencies]
 # Miden dependencies
-miden-agglayer             = { workspace = true }
-miden-debug                = { optional = true, workspace = true }
-miden-processor            = { optional = true, workspace = true }
-miden-protocol             = { workspace = true }
-miden-remote-prover-client = { default-features = false, features = ["tx-prover"], workspace = true }
-miden-standards            = { workspace = true }
-miden-testing              = { optional = true, workspace = true }
-miden-tx                   = { workspace = true }
-miden-tx-batch-prover      = { workspace = true }
+miden-agglayer  = { workspace = true }
+miden-processor = { optional = true, workspace = true }
+miden-protocol  = { workspace = true }
+miden-standards = { workspace = true }
+miden-testing   = { optional = true, workspace = true }
+miden-tx        = { workspace = true }
+miden-tx-batch  = { workspace = true }
 
 # External dependencies
 anyhow       = { workspace = true }
@@ -97,7 +94,7 @@ serde        = { workspace = true }
 serde_json   = { workspace = true }
 tempfile     = { optional = true, workspace = true }
 thiserror    = { workspace = true }
-tokio        = { features = ["time"], optional = true, workspace = true }
+tokio        = { features = ["sync", "time"], optional = true, workspace = true }
 tonic        = { features = ["codegen"], workspace = true }
 tonic-health = { version = "0.14" }
 tonic-prost  = { version = "0.14" }
@@ -107,6 +104,7 @@ uuid         = { features = ["js", "serde", "v4"], optional = true, workspace = 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom             = { features = ["wasm_js"], version = "0.3" }
 gloo-timers           = { features = ["futures"], version = "0.3" }
+tokio                 = { default-features = false, features = ["sync"], version = "1.48" }
 tonic-web-wasm-client = { default-features = false, version = "0.9" }
 
 [build-dependencies]

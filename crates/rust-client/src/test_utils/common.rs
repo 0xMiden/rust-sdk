@@ -14,27 +14,26 @@ use miden_protocol::asset::{AssetAmount, FungibleAsset, TokenSymbol};
 use miden_protocol::note::NoteType;
 use miden_protocol::testing::account_id::ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE;
 use miden_protocol::transaction::TransactionId;
-use miden_standards::account::auth::AuthSingleSig;
+use miden_standards::account::auth::{Approver, AuthSingleSig};
 use miden_standards::account::faucets::TokenName;
 use miden_standards::code_builder::CodeBuilder;
-use rand::RngCore;
+use rand::Rng;
 use tracing::{debug, info};
 use uuid::Uuid;
 
 use crate::account::component::{
     AccountComponent,
     BasicWallet,
-    BurnPolicyConfig,
+    BurnPolicy,
     FungibleFaucet,
-    MintPolicyConfig,
-    PolicyRegistration,
+    MintPolicy,
     TokenPolicyManager,
 };
 use crate::account::{AccountBuilder, AccountBuilderSchemaCommitmentExt, AccountType, StorageSlot};
 use crate::auth::AuthSchemeId;
 use crate::crypto::FeltRng;
 pub use crate::keystore::{FilesystemKeyStore, Keystore};
-use crate::note::{Note, NoteAttachments, NoteConsumability, P2idNote};
+use crate::note::{Note, NoteConsumability, P2idNote};
 use crate::rpc::RpcError;
 use crate::store::{InputNoteRecord, NoteFilter, TransactionFilter};
 use crate::sync::SyncSummary;
@@ -89,7 +88,8 @@ pub async fn insert_new_wallet_with_seed(
         AuthSchemeId::EcdsaK256Keccak => AuthSecretKey::new_ecdsa_k256_keccak(),
         other => panic!("unsupported auth scheme: {}", other.as_u8()),
     };
-    let auth_component = AuthSingleSig::new(key_pair.public_key().to_commitment(), auth_scheme);
+    let auth_component =
+        AuthSingleSig::new(Approver::new(key_pair.public_key().to_commitment(), auth_scheme));
 
     let account = AccountBuilder::new(init_seed)
         .account_type(visibility)
@@ -119,7 +119,8 @@ pub async fn insert_new_fungible_faucet(
         AuthSchemeId::EcdsaK256Keccak => AuthSecretKey::new_ecdsa_k256_keccak(),
         other => panic!("unsupported auth scheme: {}", other.as_u8()),
     };
-    let auth_component = AuthSingleSig::new(key_pair.public_key().to_commitment(), auth_scheme);
+    let auth_component =
+        AuthSingleSig::new(Approver::new(key_pair.public_key().to_commitment(), auth_scheme));
 
     // we need to use an initial seed to create the faucet account
     let mut init_seed = [0u8; 32];
@@ -141,11 +142,10 @@ pub async fn insert_new_fungible_faucet(
     // `AssetCallbackFlag::Enabled`. Tests construct assets via `FungibleAsset::new`, which
     // defaults to `Disabled`, so adding transfer policies makes `mint_and_send` reject the
     // mint with `ERR_FUNGIBLE_MINT_NOTE_ASSET_NOT_FROM_THIS_FAUCET`.
-    let policy_manager = TokenPolicyManager::new()
-        .with_mint_policy(MintPolicyConfig::AllowAll, PolicyRegistration::Active)
-        .unwrap()
-        .with_burn_policy(BurnPolicyConfig::AllowAll, PolicyRegistration::Active)
-        .unwrap();
+    let policy_manager = TokenPolicyManager::builder()
+        .active_mint_policy(MintPolicy::allow_all())
+        .active_burn_policy(BurnPolicy::allow_all())
+        .build();
     let account = AccountBuilder::new(init_seed)
         .account_type(visibility)
         .with_auth_component(auth_component)
@@ -503,7 +503,7 @@ pub async fn assert_account_has_single_asset(
         .get_balance(faucet_id)
         .await
         .expect("Account should have the asset");
-    assert_eq!(balance, expected_amount);
+    assert_eq!(balance, AssetAmount::new(expected_amount).unwrap());
 }
 
 /// Tries to consume the note and asserts that the expected error is returned.
@@ -539,15 +539,15 @@ pub fn mint_multiple_fungible_asset(
     let notes = target_id
         .iter()
         .map(|account_id| {
-            P2idNote::create(
-                asset.faucet_id(),
-                *account_id,
-                vec![asset.into()],
-                note_type,
-                NoteAttachments::empty(),
-                rng,
-            )
-            .unwrap()
+            P2idNote::builder()
+                .sender(asset.faucet_id())
+                .target(*account_id)
+                .asset(asset)
+                .note_type(note_type)
+                .generate_serial_number(rng)
+                .build()
+                .expect("note creation failed")
+                .into()
         })
         .collect::<Vec<Note>>();
 
@@ -634,10 +634,10 @@ pub async fn insert_account_with_custom_component(
 
     let account = AccountBuilder::new(init_seed)
         .account_type(visibility)
-        .with_auth_component(AuthSingleSig::new(
+        .with_auth_component(AuthSingleSig::new(Approver::new(
             pub_key.to_commitment(),
             AuthSchemeId::Falcon512Poseidon2,
-        ))
+        )))
         .with_component(BasicWallet)
         .with_component(custom_component)
         .build_with_schema_commitment()

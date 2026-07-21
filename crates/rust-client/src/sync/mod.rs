@@ -88,7 +88,6 @@ use state_sync_update::untrack_blocks;
 pub use state_sync_update::{
     AccountUpdates,
     PartialBlockchainUpdates,
-    PublicAccountDelta,
     PublicAccountUpdate,
     StateSyncUpdate,
     TransactionUpdateTracker,

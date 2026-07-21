@@ -1,4 +1,3 @@
-use std::env;
 use std::ffi::OsString;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
@@ -10,6 +9,7 @@ use miden_client::account::AccountHeader;
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::{FilesystemKeyStore, Keystore};
 use miden_client::note_transport::grpc::GrpcNoteTransportClient;
+use miden_client::rpc::GrpcClient;
 use miden_client::store::{NoteFilter as ClientNoteFilter, OutputNoteRecord};
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
 
@@ -24,7 +24,7 @@ use commands::info::InfoCmd;
 use commands::init::InitCmd;
 use commands::network_note_status::NetworkNoteStatusCmd;
 use commands::new_account::{NewAccountCmd, NewWalletCmd};
-use commands::new_transactions::{ConsumeNotesCmd, MintCmd, PswapCmd, SendCmd, SwapCmd};
+use commands::new_transactions::{ConsumeNotesCmd, MintCmd, PswapCmd, SwapCmd, TransferCmd};
 use commands::notes::NotesCmd;
 use commands::sync::SyncCmd;
 use commands::tags::TagsCmd;
@@ -44,12 +44,12 @@ pub type CliKeyStore = FilesystemKeyStore;
 /// # Examples
 ///
 /// ```no_run
+/// use miden_client_cli::CliClient;
 /// use miden_client_cli::transaction::TransactionRequestBuilder;
-/// use miden_client_cli::{CliClient, DebugMode};
 ///
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// // Create a CLI-configured client
-/// let mut client = CliClient::new(DebugMode::Disabled).await?;
+/// let mut client = CliClient::new().await?;
 ///
 /// // All Client methods work automatically via Deref
 /// client.sync_state().await?;
@@ -89,7 +89,7 @@ impl CliClient {
     ///
     /// For standard client initialization that matches CLI behavior, use:
     /// ```ignore
-    /// CliClient::new(debug_mode).await?
+    /// CliClient::new().await?
     /// ```
     ///
     /// This method **does not** follow the CLI's configuration priority logic (local → global).
@@ -98,7 +98,6 @@ impl CliClient {
     /// # Arguments
     ///
     /// * `config` - The CLI configuration to use (bypasses standard config discovery)
-    /// * `debug_mode` - The debug mode setting ([`DebugMode::Enabled`] or [`DebugMode::Disabled`])
     ///
     /// # Returns
     ///
@@ -116,33 +115,34 @@ impl CliClient {
     /// ```no_run
     /// use std::path::PathBuf;
     ///
-    /// use miden_client_cli::{CliClient, CliConfig, DebugMode};
+    /// use miden_client_cli::{CliClient, CliConfig};
     ///
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// // BEWARE: This bypasses standard config discovery!
     /// // Only use if you know what you're doing.
     /// let config = CliConfig::from_dir(&PathBuf::from("/path/to/.miden"))?;
-    /// let client = CliClient::from_config(config, DebugMode::Disabled).await?;
+    /// let client = CliClient::from_config(config).await?;
     ///
     /// // Prefer this for standard CLI-like behavior:
-    /// let client = CliClient::new(DebugMode::Disabled).await?;
+    /// let client = CliClient::new().await?;
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn from_config(
-        config: CliConfig,
-        debug_mode: miden_client::DebugMode,
-    ) -> Result<Self, CliError> {
+    pub async fn from_config(config: CliConfig) -> Result<Self, CliError> {
         // Create keystore
         let keystore =
             CliKeyStore::new(config.secret_keys_directory.clone()).map_err(CliError::KeyStore)?;
 
         // Build client with the provided configuration
+        let rpc_client = Arc::new(
+            GrpcClient::new(&config.rpc.endpoint.clone().into(), config.rpc.timeout_ms)
+                .with_max_decoding_message_size(CLI_MAX_RESPONSE_SIZE_BYTES),
+        );
+
         let mut builder = ClientBuilder::new()
             .sqlite_store(config.store_filepath.clone())
-            .grpc_client(&config.rpc.endpoint.clone().into(), Some(config.rpc.timeout_ms))
+            .rpc(rpc_client)
             .authenticator(Arc::new(keystore))
-            .in_debug_mode(debug_mode)
             .tx_discard_delta(Some(TX_DISCARD_DELTA));
 
         // Add optional max_block_number_delta
@@ -185,10 +185,6 @@ impl CliClient {
     /// - Transaction graceful blocks delta
     /// - Optional max block number delta
     ///
-    /// # Arguments
-    ///
-    /// * `debug_mode` - The debug mode setting ([`DebugMode::Enabled`] or [`DebugMode::Disabled`]).
-    ///
     /// # Returns
     ///
     /// A configured [`CliClient`] instance.
@@ -205,15 +201,15 @@ impl CliClient {
     /// # Examples
     ///
     /// ```no_run
+    /// use miden_client_cli::CliClient;
     /// use miden_client_cli::transaction::TransactionRequestBuilder;
-    /// use miden_client_cli::{CliClient, DebugMode};
     ///
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// // Create a client with default settings (debug disabled)
-    /// let mut client = CliClient::new(DebugMode::Disabled).await?;
+    /// let mut client = CliClient::new().await?;
     ///
     /// // Or with debug mode enabled
-    /// let mut client = CliClient::new(DebugMode::Enabled).await?;
+    /// let mut client = CliClient::new().await?;
     ///
     /// // Use it like a regular Client
     /// client.sync_state().await?;
@@ -227,7 +223,7 @@ impl CliClient {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn new(debug_mode: miden_client::DebugMode) -> Result<Self, CliError> {
+    pub async fn new() -> Result<Self, CliError> {
         // Check if client is not yet initialized => silently initialize the client
         if !config_file_exists()? {
             let init_cmd = InitCmd::default();
@@ -238,7 +234,7 @@ impl CliClient {
         let config = CliConfig::load()?;
 
         // Create client using the loaded configuration
-        Self::from_config(config, debug_mode).await
+        Self::from_config(config).await
     }
 
     /// Unwraps the `CliClient` to get the inner `Client<CliKeyStore>`.
@@ -248,10 +244,10 @@ impl CliClient {
     /// # Examples
     ///
     /// ```no_run
-    /// use miden_client_cli::{CliClient, DebugMode};
+    /// use miden_client_cli::CliClient;
     ///
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// let cli_client = CliClient::new(DebugMode::Disabled).await?;
+    /// let cli_client = CliClient::new().await?;
     /// let inner_client = cli_client.into_inner();
     /// # Ok(())
     /// # }
@@ -279,6 +275,7 @@ impl DerefMut for CliClient {
     }
 }
 
+mod advice_inputs;
 pub mod config;
 // These modules intentionally shadow the miden_client re-exports - CLI has its own errors/utils
 #[allow(hidden_glob_reexports)]
@@ -318,6 +315,10 @@ pub fn client_binary_name() -> OsString {
 /// Number of blocks that must elapse after a transaction’s reference block before it is marked
 /// stale and discarded.
 const TX_DISCARD_DELTA: u32 = 20;
+
+/// Maximum size (in bytes) of any decoded gRPC response the CLI accepts. Sized to fit large
+/// `SyncTransactions` responses.
+const CLI_MAX_RESPONSE_SIZE_BYTES: usize = 6 * 1024 * 1024;
 
 /// Root CLI struct.
 #[derive(Parser, Debug)]
@@ -363,11 +364,6 @@ enum Behavior {
 #[derive(Parser, Debug)]
 #[command(name = "miden-client")]
 pub struct Cli {
-    /// Activates the executor's debug mode, which enables debug output for scripts
-    /// that were compiled and executed with this mode.
-    #[arg(short, long, default_value_t = false)]
-    debug: bool,
-
     #[command(subcommand)]
     action: Command,
 
@@ -398,7 +394,7 @@ pub enum Command {
     #[command(name = "tx")]
     Transaction(TransactionCmd),
     Mint(MintCmd),
-    Send(SendCmd),
+    Transfer(TransferCmd),
     Pswap(PswapCmd),
     Swap(SwapCmd),
     ConsumeNotes(ConsumeNotesCmd),
@@ -432,13 +428,6 @@ impl Cli {
             init_cmd.execute()?;
         }
 
-        // Define whether we want to use the executor's debug mode based on the env var and
-        // the flag override
-        let in_debug_mode = match env::var("MIDEN_DEBUG") {
-            Ok(value) if value.to_lowercase() == "true" => miden_client::DebugMode::Enabled,
-            _ => miden_client::DebugMode::Disabled,
-        };
-
         // Load configuration
         let cli_config = CliConfig::load()?;
 
@@ -447,7 +436,7 @@ impl Cli {
             .map_err(CliError::KeyStore)?;
 
         // Create the client
-        let cli_client = CliClient::from_config(cli_config, in_debug_mode).await?;
+        let cli_client = CliClient::from_config(cli_config).await?;
 
         // Extract the inner client for command execution
         let client = cli_client.into_inner();
@@ -471,7 +460,7 @@ impl Cli {
             Command::Call(call) => Box::pin(call.execute(client)).await,
             Command::Export(cmd) => cmd.execute(client, keystore).await,
             Command::Mint(mint) => Box::pin(mint.execute(client)).await,
-            Command::Send(send) => Box::pin(send.execute(client)).await,
+            Command::Transfer(transfer) => Box::pin(transfer.execute(client)).await,
             Command::Pswap(pswap) => Box::pin(pswap.execute(client)).await,
             Command::Swap(swap) => Box::pin(swap.execute(client)).await,
             Command::ConsumeNotes(consume_notes) => Box::pin(consume_notes.execute(client)).await,

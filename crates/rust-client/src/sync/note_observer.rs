@@ -1,8 +1,10 @@
 //! Side-effect-only observer trait for per-note arrivals during sync.
 
 use alloc::boxed::Box;
+use alloc::collections::BTreeSet;
 
 use async_trait::async_trait;
+use miden_protocol::block::BlockNumber;
 use miden_protocol::note::NoteAttachments;
 
 use crate::ClientError;
@@ -32,5 +34,14 @@ pub trait NoteObserver {
     /// Default impl is a no-op for observers that only need `observe()`.
     async fn apply(&self, _sync_update: &StateSyncUpdate) -> Result<(), ClientError> {
         Ok(())
+    }
+
+    /// Blocks whose data must survive end-of-sync minimization, typically the blocks of the
+    /// notes flagged in [`Self::observe`]. An observer that inserts notes into the store in
+    /// [`Self::apply`] must report their blocks here: those notes reach the store only after
+    /// the sync pass, so nothing else keeps their blocks tracked. Default is empty for
+    /// observers that don't insert notes.
+    fn live_blocks(&self) -> BTreeSet<BlockNumber> {
+        BTreeSet::new()
     }
 }

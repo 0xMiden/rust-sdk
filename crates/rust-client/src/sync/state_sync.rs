@@ -302,15 +302,14 @@ impl StateSync {
         }
 
         // Apply local changes: update the MMR, screen notes, and apply state transitions.
-        let observer_live_blocks = self
-            .apply_sync_result(
-                sync_data,
-                &mut partial_blockchain_updates,
-                &mut note_updates,
-                &mut transaction_updates,
-                current_partial_mmr,
-            )
-            .await?;
+        self.apply_sync_result(
+            sync_data,
+            &mut partial_blockchain_updates,
+            &mut note_updates,
+            &mut transaction_updates,
+            current_partial_mmr,
+        )
+        .await?;
 
         if self.sync_nullifiers {
             self.nullifiers_state_sync(
@@ -324,12 +323,11 @@ impl StateSync {
 
         // Drop newly-synced block data that no unspent input note needs: blocks whose notes were
         // all consumed within this same sync don't have to be tracked or persisted. Blocks
-        // flagged by note observers stay live: observers insert notes referencing them into the
-        // store only after this pass (see `NoteObserver::apply`), so the tracker can't see those
-        // notes yet.
+        // reported live by note observers are kept: they insert notes referencing them into the
+        // store only after this pass (see `NoteObserver::live_blocks`).
         let live_blocks: BTreeSet<BlockNumber> = note_updates
             .unspent_input_note_block_numbers()
-            .chain(observer_live_blocks)
+            .chain(self.note_observers.iter().flat_map(|observer| observer.live_blocks()))
             .collect();
         partial_blockchain_updates
             .untrack_irrelevant_note_blocks(&live_blocks, current_partial_mmr);
@@ -439,9 +437,6 @@ impl StateSync {
     /// 1. Advances the partial MMR (delta + chain tip leaf).
     /// 2. Screens note blocks and tracks relevant ones in the MMR.
     /// 3. Applies transaction and nullifier updates.
-    ///
-    /// Returns the numbers of blocks flagged relevant by note observers (see
-    /// [`Self::screen_note_blocks`]).
     async fn apply_sync_result(
         &self,
         sync_data: FetchedSyncData,
@@ -449,7 +444,7 @@ impl StateSync {
         note_updates: &mut NoteUpdateTracker,
         transaction_updates: &mut TransactionUpdateTracker,
         current_partial_mmr: &mut PartialMmr,
-    ) -> Result<BTreeSet<BlockNumber>, ClientError> {
+    ) -> Result<(), ClientError> {
         let FetchedSyncData {
             mmr_delta,
             chain_tip_header,
@@ -468,14 +463,13 @@ impl StateSync {
             partial_blockchain_updates,
         )?;
 
-        let observer_live_blocks = self
-            .screen_note_blocks(
-                note_blocks,
-                note_updates,
-                partial_blockchain_updates,
-                &mut working_mmr,
-            )
-            .await?;
+        self.screen_note_blocks(
+            note_blocks,
+            note_updates,
+            partial_blockchain_updates,
+            &mut working_mmr,
+        )
+        .await?;
 
         self.apply_transactions_and_nullifiers(
             &chain_tip_header,
@@ -487,7 +481,7 @@ impl StateSync {
         // Commit the working MMR back to the caller once all checks pass.
         *current_partial_mmr = working_mmr;
 
-        Ok(observer_live_blocks)
+        Ok(())
     }
 
     /// Validates that a `sync_chain_mmr` response covers the requested range.
@@ -605,28 +599,16 @@ impl StateSync {
     /// Screens each note block for relevance and, for blocks containing client-relevant notes,
     /// tracks them in the partial MMR using the authentication path from the `sync_notes`
     /// response.
-    ///
-    /// Returns the numbers of blocks flagged relevant by note observers. These blocks must
-    /// survive end-of-sync untracking: observers insert notes referencing them into the store
-    /// only after the sync pass (see [`NoteObserver::apply`]), so no tracked note points at them
-    /// yet.
     async fn screen_note_blocks(
         &self,
         note_blocks: Vec<ResolvedSyncNotesBlock>,
         note_updates: &mut NoteUpdateTracker,
         partial_blockchain_updates: &mut PartialBlockchainUpdates,
         current_partial_mmr: &mut PartialMmr,
-    ) -> Result<BTreeSet<BlockNumber>, ClientError> {
-        let mut observer_live_blocks = BTreeSet::new();
+    ) -> Result<(), ClientError> {
         for block in note_blocks {
-            let found_relevant_note = self
-                .note_state_sync(
-                    note_updates,
-                    block.notes,
-                    &block.block_header,
-                    &mut observer_live_blocks,
-                )
-                .await?;
+            let found_relevant_note =
+                self.note_state_sync(note_updates, block.notes, &block.block_header).await?;
 
             if found_relevant_note {
                 let block_pos = block.block_header.block_num().as_usize();
@@ -654,7 +636,7 @@ impl StateSync {
             }
         }
 
-        Ok(observer_live_blocks)
+        Ok(())
     }
 
     /// Extends the note tracker with newly-observed nullifiers, applies transaction
@@ -1056,7 +1038,6 @@ impl StateSync {
         note_updates: &mut NoteUpdateTracker,
         notes: BTreeMap<NoteId, SyncedNote>,
         block_header: &BlockHeader,
-        observer_live_blocks: &mut BTreeSet<BlockNumber>,
     ) -> Result<bool, ClientError> {
         // `found_relevant_note` tracks whether we want to persist the block header in the end
         let mut found_relevant_note = false;
@@ -1095,13 +1076,7 @@ impl StateSync {
             if !self.note_observers.is_empty() {
                 for obs in &self.note_observers {
                     match obs.observe(&committed, attachments.as_ref()).await {
-                        Ok(true) => {
-                            // Observers insert notes referencing this block into the store only
-                            // after the sync pass (see `NoteObserver::apply`), so the block must
-                            // stay tracked even though no tracked note points at it yet.
-                            found_relevant_note = true;
-                            observer_live_blocks.insert(block_header.block_num());
-                        },
+                        Ok(true) => found_relevant_note = true,
                         Ok(false) => {},
                         Err(err) => {
                             tracing::warn!(

@@ -2,11 +2,13 @@
 //! during sync. Lineage-scope filtering happens later, in `discovery`.
 
 use alloc::boxed::Box;
+use alloc::collections::BTreeSet;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use async_trait::async_trait;
 use miden_protocol::asset::AssetAmount;
+use miden_protocol::block::BlockNumber;
 use miden_protocol::note::NoteAttachments;
 use miden_standards::note::{PswapNote, PswapNoteAttachment};
 use tracing::warn;
@@ -105,6 +107,12 @@ impl NoteObserver for PswapChainObserver {
             }
         }
         Ok(())
+    }
+
+    /// `apply()` inserts reconstructed notes with inclusion proofs into these blocks, so their
+    /// data must be persisted by the sync.
+    fn live_blocks(&self) -> BTreeSet<BlockNumber> {
+        self.chain_note_updates.read().iter().map(|note| note.block_num).collect()
     }
 }
 

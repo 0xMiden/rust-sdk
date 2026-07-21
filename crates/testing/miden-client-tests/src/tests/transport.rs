@@ -166,6 +166,30 @@ async fn transport_recovers_attachments() {
     );
 }
 
+/// A committed note that advertises attachments the node cannot serve must not fail syncing or
+/// NTL fetching: the note is skipped per-note, and an NTL-delivered record stays expected (never
+/// committed without its attachment content) so a later re-import can retry the fetch.
+#[tokio::test]
+async fn unavailable_attachments_do_not_fail_sync() {
+    // The helper tracks the note's tag and syncs to the tip, so it already exercises the sync
+    // path: the note advertises attachment content the node cannot serve, and the sync succeeds
+    // by skipping the note.
+    let (mut client, private_note, mock_transport_node) =
+        committed_private_note_recipient(0, true).await;
+    assert!(client.get_input_notes(NoteFilter::All).await.unwrap().is_empty());
+
+    // Receiving the same note over the NTL imports it, but it stays expected rather than being
+    // committed without its attachment content.
+    mock_transport_node
+        .write()
+        .add_note(*private_note.header(), NoteDetails::from(private_note.clone()).to_bytes());
+    client.fetch_private_notes().await.unwrap();
+
+    let notes = client.get_input_notes(NoteFilter::Expected).await.unwrap();
+    assert_eq!(notes.len(), 1);
+    assert!(notes[0].attachments().is_empty());
+}
+
 /// Verifies that cursor-based pagination works: a second sync only receives newly sent notes.
 #[tokio::test]
 async fn transport_cursor_pagination() {
@@ -665,7 +689,7 @@ async fn fetch_private_notes_uses_sender_provided_after_block_num() {
     // Commit the note at block 1, then advance far enough that the 20-block fallback window
     // (sync_height - 20) starts well above block 1 and would miss it.
     let (mut client, private_note, mock_transport_node) =
-        committed_private_note_recipient(30).await;
+        committed_private_note_recipient(30, false).await;
 
     let sync_height = client.get_sync_height().await.unwrap();
     assert!(
@@ -697,7 +721,7 @@ async fn fetch_private_notes_uses_sender_provided_after_block_num() {
 #[tokio::test]
 async fn fetch_private_notes_without_floor_falls_back_to_lookback_window() {
     let (mut client, private_note, mock_transport_node) =
-        committed_private_note_recipient(30).await;
+        committed_private_note_recipient(30, false).await;
 
     // Deliver the note WITHOUT a floor: the recipient must rely on the lookback heuristic.
     let details_bytes = NoteDetails::from(private_note.clone()).to_bytes();
@@ -778,22 +802,30 @@ pub async fn create_test_user_with_transport(
 /// `blocks_past_commitment` blocks beyond it, then create a recipient client synced to the tip
 /// with an (initially empty) note transport. Returns the client, the committed note, and the
 /// shared mock transport node so a test can deliver the note over the NTL afterwards.
+///
+/// With `with_unserved_attachment` the note's metadata advertises an attachment whose content is
+/// never registered with the mock node, so any content fetch for the note comes back empty.
 async fn committed_private_note_recipient(
     blocks_past_commitment: u32,
+    with_unserved_attachment: bool,
 ) -> (MockClient<FilesystemKeyStore>, Note, Arc<RwLock<MockNoteTransportNode>>) {
     let mut mock_chain_builder = MockChainBuilder::new();
     let mock_account = mock_chain_builder
         .add_existing_mock_account(miden_testing::Auth::IncrNonce)
         .unwrap();
 
-    let private_note = NoteBuilder::new(
+    let mut note_builder = NoteBuilder::new(
         mock_account.id(),
         RandomCoin::new([1, 2, 3, 4].map(Felt::new_unchecked).into()),
     )
     .note_type(ProtocolNoteType::Private)
-    .tag(NoteTag::new(0).into())
-    .build()
-    .unwrap();
+    .tag(NoteTag::new(0).into());
+    if with_unserved_attachment {
+        let ntx_target =
+            NetworkAccountTarget::new(mock_account.id(), NoteExecutionHint::Always).unwrap();
+        note_builder = note_builder.attachment(ntx_target);
+    }
+    let private_note = note_builder.build().unwrap();
 
     let spawn_note =
         mock_chain_builder.add_spawn_note(std::slice::from_ref(&private_note)).unwrap();

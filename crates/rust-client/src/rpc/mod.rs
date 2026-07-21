@@ -299,6 +299,14 @@ pub trait NodeRpcClient: Send + Sync {
     ///
     /// Returns one [`ResolvedSyncNotesBlock`] per matching block, each note carrying its inclusion
     /// data alongside the fetched content.
+    ///
+    /// A note whose fetched content is inconsistent with its sync record — mismatched note type,
+    /// attachment content that does not hash to the metadata's attachments commitment, or
+    /// advertised attachments the node did not return — is dropped from the response with a
+    /// warning instead of failing the call. Content availability is attacker-influenced (anyone
+    /// can commit a note that advertises attachment content without providing it to the network),
+    /// so a per-note hard error would let a single such note permanently wedge every sync that
+    /// scans its block range.
     async fn sync_notes_with_content(
         &self,
         block_from: BlockNumber,
@@ -347,13 +355,22 @@ pub trait NodeRpcClient: Send + Sync {
         // Fold the resolved content into each note, keeping the per-block grouping so the
         // inclusion data (header + MMR path) is carried once per block. `SyncedNote::new` rejects
         // content that is inconsistent with its sync record (mismatched or missing attachment
-        // content).
+        // content); such notes are dropped rather than failing the sync, since a tracked record
+        // is never stored incomplete this way (it stays expected and can be retried by
+        // re-importing), while a hard error would wedge every sync scanning this block range.
         let mut synced_blocks = Vec::with_capacity(blocks.len());
         for block in blocks {
             let mut notes = BTreeMap::new();
             for (note_id, committed) in block.notes {
                 let content = resolved_content.remove(&note_id);
-                notes.insert(note_id, SyncedNote::new(committed, content)?);
+                match SyncedNote::new(committed, content) {
+                    Ok(synced_note) => {
+                        notes.insert(note_id, synced_note);
+                    },
+                    Err(err) => {
+                        tracing::warn!(%note_id, %err, "skipping synced note with unusable content");
+                    },
+                }
             }
             synced_blocks.push(ResolvedSyncNotesBlock {
                 block_header: block.block_header,

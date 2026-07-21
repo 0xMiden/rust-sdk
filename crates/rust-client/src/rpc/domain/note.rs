@@ -281,6 +281,11 @@ impl SyncedNote {
     /// - A note whose metadata advertises attachments must have resolved content: storing such a
     ///   note without its attachment content would leave it unconsumable with no retry path once
     ///   its expected-note tag is dropped.
+    ///
+    /// A rejection concerns a single note, not the response as a whole:
+    /// [`NodeRpcClient::sync_notes_with_content`](crate::rpc::NodeRpcClient::sync_notes_with_content)
+    /// skips the offending note with a warning instead of failing the sync, since content
+    /// availability can be influenced by the note's creator.
     pub fn new(
         committed: CommittedNote,
         content: Option<ResolvedNoteContent>,

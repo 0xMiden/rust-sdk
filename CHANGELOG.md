@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Breaking Changes
+
+* [BREAKING][arch][store] The account SMT forest now persists in SQLite (new `forest_trees`, `forest_entries` and `forest_revision` tables) through a `LargeSmtForest` backend scoped to the store's own transaction, so forest mutations commit or roll back atomically with the account tables and opening the store no longer rebuilds the forest from account data. Existing stores are not compatible and must be recreated ([#2333](https://github.com/0xMiden/rust-sdk/pull/2333)).
+* [BREAKING][removal][rust] `AccountSmtForest` is now generic over the forest storage `Backend` and is constructed per store operation. The in-memory root-staging API (`stage_roots`, `commit_roots`, `discard_roots`, `replace_roots`, `get_roots`) and the node-insertion helpers were removed; witness reads and `apply_updates` are the remaining surface ([#2333](https://github.com/0xMiden/rust-sdk/pull/2333)).
+
 ## 0.16.0-alpha.1 (2026-07-17)
 
 ### Breaking Changes

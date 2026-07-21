@@ -217,3 +217,127 @@ pub fn add_storage_map_ops(
 pub fn forest_error(err: LargeSmtForestError) -> StoreError {
     StoreError::DatabaseError(format!("smt forest error: {err}"))
 }
+
+// TESTS
+// ================================================================================================
+
+#[cfg(test)]
+mod tests {
+    use miden_protocol::account::StorageMapKey;
+    use miden_protocol::asset::FungibleAsset;
+    use miden_protocol::crypto::merkle::smt::ForestInMemoryBackend;
+    use miden_protocol::testing::account_id::{
+        ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET,
+        ACCOUNT_ID_PUBLIC_NON_FUNGIBLE_FAUCET,
+    };
+    use miden_protocol::{ONE, ZERO};
+
+    use super::*;
+
+    fn account_a() -> AccountId {
+        AccountId::try_from(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET).unwrap()
+    }
+
+    fn account_b() -> AccountId {
+        AccountId::try_from(ACCOUNT_ID_PUBLIC_NON_FUNGIBLE_FAUCET).unwrap()
+    }
+
+    fn slot(name: &str) -> StorageSlotName {
+        StorageSlotName::new(name).unwrap()
+    }
+
+    #[test]
+    fn lineage_ids_are_deterministic_and_distinct() {
+        // Deterministic
+        assert_eq!(vault_lineage_id(account_a()), vault_lineage_id(account_a()));
+        assert_eq!(
+            storage_map_lineage_id(account_a(), &slot("miden::test::map")),
+            storage_map_lineage_id(account_a(), &slot("miden::test::map")),
+        );
+
+        // Distinct across accounts, slots, and domains
+        assert_ne!(vault_lineage_id(account_a()), vault_lineage_id(account_b()));
+        assert_ne!(
+            storage_map_lineage_id(account_a(), &slot("miden::test::map_one")),
+            storage_map_lineage_id(account_a(), &slot("miden::test::map_two")),
+        );
+        assert_ne!(
+            storage_map_lineage_id(account_a(), &slot("miden::test::map")),
+            storage_map_lineage_id(account_b(), &slot("miden::test::map")),
+        );
+        assert_ne!(
+            vault_lineage_id(account_a()),
+            storage_map_lineage_id(account_a(), &slot("miden::test::map")),
+        );
+    }
+
+    #[test]
+    fn apply_updates_and_read_witnesses() {
+        let mut forest = AccountSmtForest::new(ForestInMemoryBackend::new()).unwrap();
+        let id = account_a();
+
+        let asset: Asset = FungibleAsset::new(account_a(), 100).unwrap().into();
+        let map_slot = slot("miden::test::map");
+        let map_key = StorageMapKey::new([ONE, ZERO, ZERO, ZERO].into());
+        let map_value: Word = [ONE, ONE, ONE, ONE].into();
+
+        let mut batch = SmtForestUpdateBatch::empty();
+        add_vault_ops(&mut batch, id, [asset].into_iter(), core::iter::empty());
+        add_storage_map_ops(&mut batch, id, &map_slot, [(map_key, map_value)].into_iter());
+        forest.apply_updates(1, batch).unwrap();
+
+        let vault_root = forest.latest_root(vault_lineage_id(id)).unwrap();
+        let map_root = forest.latest_root(storage_map_lineage_id(id, &map_slot)).unwrap();
+
+        // Witness reads against the recorded roots succeed.
+        let (read_asset, _witness) =
+            forest.get_asset_and_witness(id, vault_root, asset.id()).unwrap();
+        assert_eq!(read_asset, asset);
+
+        let witness =
+            forest.get_storage_map_item_witness(id, &map_slot, map_root, map_key).unwrap();
+        assert_eq!(witness.get(map_key), Some(map_value));
+    }
+
+    #[test]
+    fn witness_reads_reject_mismatched_roots() {
+        let mut forest = AccountSmtForest::new(ForestInMemoryBackend::new()).unwrap();
+        let id = account_a();
+
+        let asset: Asset = FungibleAsset::new(account_a(), 100).unwrap().into();
+        let mut batch = SmtForestUpdateBatch::empty();
+        add_vault_ops(&mut batch, id, [asset].into_iter(), core::iter::empty());
+        forest.apply_updates(1, batch).unwrap();
+
+        // A stale expected root (the empty word here) must be rejected.
+        let result = forest.get_asset_and_witness(id, EMPTY_WORD, asset.id());
+        assert!(matches!(
+            result,
+            Err(StoreError::MerkleStoreError(MerkleError::ConflictingRoots { .. }))
+        ));
+    }
+
+    #[test]
+    fn removals_are_applied() {
+        let mut forest = AccountSmtForest::new(ForestInMemoryBackend::new()).unwrap();
+        let id = account_a();
+
+        let map_slot = slot("miden::test::map");
+        let map_key = StorageMapKey::new([ONE, ZERO, ZERO, ZERO].into());
+        let map_value: Word = [ONE, ONE, ONE, ONE].into();
+
+        let mut batch = SmtForestUpdateBatch::empty();
+        add_storage_map_ops(&mut batch, id, &map_slot, [(map_key, map_value)].into_iter());
+        forest.apply_updates(1, batch).unwrap();
+        let root_with_entry = forest.latest_root(storage_map_lineage_id(id, &map_slot)).unwrap();
+
+        // An empty-word value removes the entry, collapsing the tree back to the empty root.
+        let mut batch = SmtForestUpdateBatch::empty();
+        add_storage_map_ops(&mut batch, id, &map_slot, [(map_key, EMPTY_WORD)].into_iter());
+        forest.apply_updates(2, batch).unwrap();
+        let root_after_removal = forest.latest_root(storage_map_lineage_id(id, &map_slot)).unwrap();
+
+        assert_ne!(root_with_entry, root_after_removal);
+        assert_eq!(root_after_removal, miden_protocol::account::StorageMap::default().root());
+    }
+}

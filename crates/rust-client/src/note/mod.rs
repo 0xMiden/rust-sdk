@@ -172,7 +172,7 @@ where
     /// All tracked accounts are screened regardless.
     ///
     /// Consider cheaper alternatives when calling this function for accounts that accumulate
-    /// committed-unconsumed notes:
+    /// committed-unconsumed notes, especially when used in polling loops:
     ///
     /// - Query and filter the notes directly with [`Self::get_input_notes`] and
     ///   [`NoteFilter::Committed`] if note consumability verdict is not needed.

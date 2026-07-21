@@ -50,7 +50,7 @@ pub struct ClientDataStore {
     rpc_api: Arc<dyn NodeRpcClient>,
     /// When set, `get_transaction_inputs` and `get_vault_asset_witnesses` results are memoized for
     /// the lifetime of this data store. Only enabled while screening notes, where the served
-    /// account state stays fixed across many dry executions.
+    /// account state stays fixed across trial executions.
     cache_execution_inputs: bool,
 }
 
@@ -68,7 +68,7 @@ impl ClientDataStore {
     /// lifetime of this data store.
     ///
     /// This is only correct when the account state served to the executor does not change between
-    /// executions, as is the case while the [`crate::note::NoteScreener`] runs many dry executions
+    /// executions, as is the case while the [`crate::note::NoteScreener`] runs trial executions
     /// against the same accounts and reference block. It must stay disabled for real transaction
     /// execution, where account state evolves between executions.
     #[must_use]

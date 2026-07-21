@@ -45,7 +45,7 @@ pub(super) struct DataStoreCache {
     /// the same map entry is accessed multiple times within a transaction.
     storage_map_witnesses: RwLock<BTreeMap<(Word, StorageMapKey), StorageMapWitness>>,
     /// Transaction inputs cached per (account, reference blocks). Only populated while the note
-    /// screener runs, where many dry executions share the same account and reference block; see
+    /// screener runs, where trial executions share the same account and reference block; see
     /// [`super::ClientDataStore::with_execution_input_cache`]. Left empty during real transaction
     /// execution, whose account state evolves between executions.
     transaction_inputs: RwLock<BTreeMap<TransactionInputsCacheKey, CachedTransactionInputs>>,

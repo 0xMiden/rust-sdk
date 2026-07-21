@@ -53,19 +53,11 @@ pub struct NoteScreener {
     tx_args: Option<TransactionArgs>,
     /// RPC client used for lazy-loading foreign account data during note screening.
     rpc_api: Arc<dyn NodeRpcClient>,
-    /// Whether the data store serving the trial executions memoizes transaction inputs and vault
-    /// asset witnesses across a screening pass.
-    cache_execution_inputs: bool,
 }
 
 impl NoteScreener {
     pub fn new(store: Arc<dyn Store>, rpc_api: Arc<dyn NodeRpcClient>) -> Self {
-        Self {
-            store,
-            tx_args: None,
-            rpc_api,
-            cache_execution_inputs: true,
-        }
+        Self { store, tx_args: None, rpc_api }
     }
 
     /// Sets the transaction arguments to use when checking note consumability.
@@ -76,32 +68,10 @@ impl NoteScreener {
         self
     }
 
-    /// Makes every trial execution re-read its transaction inputs and vault asset witnesses from
-    /// the store, instead of reusing the ones memoized for the screening pass.
-    ///
-    /// Exposed so that tests can check the memoized screening results against the ones produced by
-    /// reading every input from the store.
-    #[cfg(feature = "testing")]
-    #[must_use]
-    pub fn without_execution_input_cache(mut self) -> Self {
-        self.cache_execution_inputs = false;
-        self
-    }
-
     fn tx_args(&self) -> TransactionArgs {
         self.tx_args
             .clone()
             .unwrap_or_else(|| TransactionArgs::new(AdviceMap::default()))
-    }
-
-    /// Builds the data store that serves the trial executions of a screening pass.
-    fn data_store(&self) -> ClientDataStore {
-        let data_store = ClientDataStore::new(self.store.clone(), self.rpc_api.clone());
-        if self.cache_execution_inputs {
-            data_store.with_execution_input_cache()
-        } else {
-            data_store
-        }
     }
 
     /// Checks whether the provided note could be consumed by any of the accounts tracked by
@@ -137,7 +107,8 @@ impl NoteScreener {
         let mut relevant_notes: BTreeMap<NoteId, Vec<NoteConsumability>> = BTreeMap::new();
         let tx_args = self.tx_args();
 
-        let data_store = self.data_store();
+        let data_store = ClientDataStore::new(self.store.clone(), self.rpc_api.clone())
+            .with_execution_input_cache();
         // Don't attach the real authenticator for consumability checks. The
         // NoteConsumptionChecker gracefully handles a missing authenticator by
         // returning `ConsumableWithAuthorization` instead of calling
@@ -189,7 +160,8 @@ impl NoteScreener {
         let tx_args = self.tx_args();
         let account_code = self.get_account_code(account_id).await?;
 
-        let data_store = self.data_store();
+        let data_store = ClientDataStore::new(self.store.clone(), self.rpc_api.clone())
+            .with_execution_input_cache();
         let transaction_executor: TransactionExecutor<'_, '_, _, ()> =
             TransactionExecutor::new(&data_store);
 

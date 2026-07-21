@@ -2191,13 +2191,11 @@ const TARGET_BOUND_NOTE_SCRIPT: &str = r#"
 "#;
 
 /// Screens committed notes that only one of the three tracked accounts can consume, so the
-/// screening result depends on which account's state each trial execution runs against.
-///
-/// Checks that memoizing the execution inputs across the pass produces the same verdicts as
-/// resolving them from the store on every trial, and that only the target account is reported as
-/// able to consume the notes.
+/// screening result depends on which account's state each trial execution runs against. The
+/// execution inputs memoized across the pass must therefore stay separated per account: serving
+/// one account's inputs for another changes which accounts are reported as able to consume.
 #[tokio::test]
-async fn note_screening_with_cached_execution_inputs_matches_uncached() {
+async fn note_screening_reports_only_the_account_bound_by_the_note() {
     use std::collections::BTreeSet;
 
     use miden_client::note::Note;
@@ -2263,34 +2261,55 @@ async fn note_screening_with_cached_execution_inputs_matches_uncached() {
         .collect::<Result<Vec<Note>, _>>()
         .unwrap();
 
-    // `NoteConsumptionStatus` is not comparable, so verdicts are compared through their debug
-    // representation, which distinguishes every variant.
-    let screen = async |screener: miden_client::note::NoteScreener| {
-        screener
-            .can_consume_batch(&notes)
-            .await
-            .unwrap()
-            .into_iter()
-            .map(|(note_id, relevances)| {
-                let relevances: Vec<(AccountId, String)> = relevances
-                    .into_iter()
-                    .map(|(account_id, status)| (account_id, format!("{status:?}")))
-                    .collect();
-                (note_id, relevances)
-            })
-            .collect::<BTreeMap<NoteId, Vec<(AccountId, String)>>>()
-    };
+    let screened = Box::pin(client.note_screener().can_consume_batch(&notes)).await.unwrap();
 
-    let cached = Box::pin(screen(client.note_screener())).await;
-    let uncached = Box::pin(screen(client.note_screener().without_execution_input_cache())).await;
-
-    assert_eq!(cached, uncached);
-
-    assert_eq!(cached.keys().copied().collect::<BTreeSet<NoteId>>(), expected_ids);
-    for relevances in cached.values() {
+    assert_eq!(screened.keys().copied().collect::<BTreeSet<NoteId>>(), expected_ids);
+    for relevances in screened.values() {
         let accounts: Vec<AccountId> = relevances.iter().map(|(id, _)| *id).collect();
         assert_eq!(accounts, vec![target]);
     }
+}
+
+/// Reads transaction inputs straight from the data store the screener runs its trial executions
+/// against, without going through a screening pass.
+///
+/// Checks the two properties the memoization depends on: a cache hit serves what a plain store
+/// read would have returned, and entries stay separated per account so one account never receives
+/// another's state.
+#[tokio::test]
+async fn execution_input_cache_matches_uncached_reads() {
+    use miden_client::testing::{ClientDataStore, DataStore};
+
+    let (mut client, _mock_rpc_api, authenticator) = Box::pin(create_test_client()).await;
+
+    let (first_wallet, second_wallet, _faucet) = setup_two_wallets_and_faucet(
+        &mut client,
+        AccountType::Private,
+        &authenticator,
+        RPO_FALCON_SCHEME_ID,
+    )
+    .await
+    .unwrap();
+
+    let first = first_wallet.id();
+    let second = second_wallet.id();
+
+    let blocks = BTreeSet::from([client.get_sync_height().await.unwrap()]);
+    let store = client.test_store().clone();
+    let rpc_api = client.test_rpc_api().clone();
+
+    let cached = ClientDataStore::new(store.clone(), rpc_api.clone()).with_execution_input_cache();
+    let uncached = ClientDataStore::new(store, rpc_api);
+
+    let miss = cached.get_transaction_inputs(first, blocks.clone()).await.unwrap();
+    let hit = cached.get_transaction_inputs(first, blocks.clone()).await.unwrap();
+    let fresh = uncached.get_transaction_inputs(first, blocks.clone()).await.unwrap();
+
+    assert_eq!(miss, fresh);
+    assert_eq!(hit, fresh);
+
+    let other = cached.get_transaction_inputs(second, blocks).await.unwrap();
+    assert_eq!(other.0.id(), second);
 }
 
 #[tokio::test]

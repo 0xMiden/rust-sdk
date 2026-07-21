@@ -118,13 +118,17 @@ impl InputNoteRecord {
         &self.attachments
     }
 
-    /// Sets the note's attachments.
+    /// Sets the note's attachments, returning `true` if the record changed.
     ///
     /// Attachments are a top-level field of the record, independent of the [`InputNoteState`]
-    /// machine, so this is a plain field assignment. They are populated during sync once fetched
-    /// from the node, since they are required to reconstruct the note's ID for consumption.
-    pub(crate) fn set_attachments(&mut self, attachments: NoteAttachments) {
+    /// machine. They are populated during sync once fetched from the node, since they are
+    /// required to reconstruct the note's ID for consumption.
+    pub(crate) fn attachments_received(&mut self, attachments: NoteAttachments) -> bool {
+        if self.attachments == attachments {
+            return false;
+        }
         self.attachments = attachments;
+        true
     }
 
     /// Returns the timestamp in which the note record was created, if available.

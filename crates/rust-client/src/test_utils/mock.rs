@@ -19,7 +19,7 @@ use miden_protocol::batch::{ProposedBatch, ProvenBatch};
 use miden_protocol::block::{BlockHeader, BlockNumber, ProvenBlock};
 use miden_protocol::crypto::merkle::mmr::{Forest, Mmr, MmrProof};
 use miden_protocol::note::{NoteAttachments, NoteHeader, NoteId, NoteScript, NoteTag};
-use miden_protocol::transaction::{ProvenTransaction, TransactionInputs};
+use miden_protocol::transaction::{OutputNote, ProvenTransaction, TransactionInputs};
 use miden_testing::{MockChain, MockChainNote};
 use miden_tx::utils::sync::RwLock;
 
@@ -36,7 +36,7 @@ use crate::rpc::domain::account::{
     StorageMapFetch,
 };
 use crate::rpc::domain::account_vault::AccountVaultInfo;
-use crate::rpc::domain::note::{CommittedNote, FetchedNote, NoteSyncBlock};
+use crate::rpc::domain::note::{CommittedNote, FetchedNote, SyncNotesBlock};
 use crate::rpc::domain::nullifier::NullifierUpdate;
 use crate::rpc::domain::status::NetworkNoteStatusInfo;
 use crate::rpc::domain::storage_map::StorageMapInfo;
@@ -329,7 +329,7 @@ impl NodeRpcClient for MockRpcApi {
         block_from: BlockNumber,
         block_to: BlockNumber,
         note_tags: &BTreeSet<NoteTag>,
-    ) -> Result<Vec<NoteSyncBlock>, RpcError> {
+    ) -> Result<Vec<SyncNotesBlock>, RpcError> {
         let mut blocks_with_notes: BTreeMap<BlockNumber, BTreeMap<NoteId, CommittedNote>> =
             BTreeMap::new();
         for note in self.mock_chain.read().committed_notes().values() {
@@ -349,7 +349,7 @@ impl NodeRpcClient for MockRpcApi {
             .map(|(bn, notes)| {
                 let block_header = self.get_block_by_num(bn);
                 let mmr_path = self.get_mmr().open(bn.as_usize()).unwrap().merkle_path().clone();
-                NoteSyncBlock { block_header, mmr_path, notes }
+                SyncNotesBlock { block_header, mmr_path, notes }
             })
             .collect())
     }
@@ -451,6 +451,19 @@ impl NodeRpcClient for MockRpcApi {
         _tx_inputs: TransactionInputs, // Unnecessary for testing client itself.
     ) -> Result<BlockNumber, RpcError> {
         // TODO: add some basic validations to test error cases
+
+        // Record private-note attachment content the way a real node does: attachments are
+        // stored on-chain even for private notes, so `get_notes_by_id` must be able to serve
+        // them. The mock chain itself only keeps private note headers.
+        for note in proven_transaction.output_notes().iter() {
+            if let OutputNote::Private(private_note) = note
+                && !private_note.attachments().is_empty()
+            {
+                self.private_note_attachments
+                    .write()
+                    .insert(private_note.id(), private_note.attachments().clone());
+            }
+        }
 
         {
             let mut mock_chain = self.mock_chain.write();

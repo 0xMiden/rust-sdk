@@ -1,5 +1,5 @@
-//! Per-note observer that collects every PSWAP-attachment note seen
-//! during sync. Lineage-scope filtering happens later, in `discovery`.
+//! Per-note [`OnNoteReceived`](crate::sync::OnNoteReceived) observer that collects every
+//! PSWAP-attachment note seen during sync. Lineage-scope filtering happens later, in `discovery`.
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
@@ -15,8 +15,8 @@ use crate::ClientError;
 use crate::pswap::discovery::discover_pswap_rounds;
 use crate::pswap::lineage::ObservedPswapNote;
 use crate::rpc::domain::note::CommittedNote;
-use crate::store::Store;
-use crate::sync::NoteObserver;
+use crate::store::{InputNoteRecord, Store};
+use crate::sync::{NoteUpdateAction, OnNoteReceived};
 use crate::utils::RwLock;
 
 // PSWAP CHAIN OBSERVER
@@ -24,15 +24,15 @@ use crate::utils::RwLock;
 
 /// Per-sync collector of PSWAP-attachment notes seen this sync.
 ///
-/// - `observe()` runs per-note during sync: reads the PSWAP attachment word straight off the note's
-///   resolved attachments (carried inline on the sync window) and records a `ObservedPswapNote`. No
-///   RPC round trip, no DB write.
+/// - `on_note_received()` runs per-note during sync: reads the PSWAP attachment word straight off
+///   the note's resolved attachments (carried inline on the sync window), records an
+///   `ObservedPswapNote`, and votes [`NoteUpdateAction::Observe`] so the block is retained.
 /// - `apply()` runs once post-sync: drains the collector, runs the correlator, applies round
 ///   updates.
 pub struct PswapChainObserver {
     store: Arc<dyn Store>,
-    /// `observe()` writes, `apply()` drains; never concurrent. The observer is
-    /// shared via the outer `Arc<dyn NoteObserver>` and only ever touched
+    /// `on_note_received()` writes, `apply()` drains; never concurrent. The observer is
+    /// shared via the outer `Arc<dyn OnNoteReceived>` and only ever touched
     /// through `&self`, so the `RwLock` alone provides the needed interior
     /// mutability — no inner `Arc`.
     chain_note_updates: RwLock<Vec<ObservedPswapNote>>,
@@ -48,23 +48,24 @@ impl PswapChainObserver {
 }
 
 #[async_trait(?Send)]
-impl NoteObserver for PswapChainObserver {
+impl OnNoteReceived for PswapChainObserver {
     fn name(&self) -> &'static str {
         "PswapChainObserver"
     }
 
-    async fn observe(
+    async fn on_note_received(
         &self,
         committed_note: &CommittedNote,
+        _public_note: Option<&InputNoteRecord>,
         attachments: Option<&NoteAttachments>,
-    ) -> Result<bool, ClientError> {
+    ) -> Result<NoteUpdateAction, ClientError> {
         // Notes without a PSWAP attachment are the common case; `extract_pswap_attachment`
         // fast-rejects them. Foreign-order filtering happens later in `discovery`.
         let Some(attachments) = attachments else {
-            return Ok(false);
+            return Ok(NoteUpdateAction::Discard);
         };
         let Some(attachment) = extract_pswap_attachment(attachments) else {
-            return Ok(false);
+            return Ok(NoteUpdateAction::Discard);
         };
 
         let inclusion_proof = committed_note.inclusion_proof().clone();
@@ -76,7 +77,7 @@ impl NoteObserver for PswapChainObserver {
             block_num: inclusion_proof.location().block_num(),
             inclusion_proof,
         });
-        Ok(true)
+        Ok(NoteUpdateAction::Observe)
     }
 
     /// Drains the collector, runs the correlator, applies round updates.

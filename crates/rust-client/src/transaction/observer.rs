@@ -1,6 +1,6 @@
 //! Side-effect-only observer trait for committed transactions.
 //!
-//! Analogous to [`crate::sync::NoteObserver`] but scoped to
+//! Analogous to [`crate::sync::OnNoteReceived`] but scoped to
 //! `Client::apply_transaction`. Lets feature subsystems (e.g. PSWAP
 //! chain tracking) hook into the post-apply pipeline without
 //! `apply_transaction` knowing about them by name.

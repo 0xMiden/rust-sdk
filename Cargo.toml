@@ -92,3 +92,15 @@ module_name_repetitions     = "allow" # Many triggers, and is a stylistic choice
 must_use_candidate          = "allow" # This marks many fn's which isn't helpful.
 should_panic_without_expect = "allow" # We don't care about the specific panic message.
 # End of pedantic lints.
+
+# TEMPORARY (issue #2315): replaces the crates.io miden-crypto 0.28.0 (and its workspace
+# siblings) with the branch that opens the LargeSmtForest Backend API for external
+# implementations. Remove once that change is released as miden-crypto 0.28.x.
+[patch.crates-io]
+miden-crypto           = { git = "https://github.com/JereSalo/miden-vm", branch = "open-forest-backend-api-for-external-impls" }
+miden-crypto-derive    = { git = "https://github.com/JereSalo/miden-vm", branch = "open-forest-backend-api-for-external-impls" }
+miden-field            = { git = "https://github.com/JereSalo/miden-vm", branch = "open-forest-backend-api-for-external-impls" }
+miden-lifted-air       = { git = "https://github.com/JereSalo/miden-vm", branch = "open-forest-backend-api-for-external-impls" }
+miden-lifted-stark     = { git = "https://github.com/JereSalo/miden-vm", branch = "open-forest-backend-api-for-external-impls" }
+miden-serde-utils      = { git = "https://github.com/JereSalo/miden-vm", branch = "open-forest-backend-api-for-external-impls" }
+miden-stark-transcript = { git = "https://github.com/JereSalo/miden-vm", branch = "open-forest-backend-api-for-external-impls" }

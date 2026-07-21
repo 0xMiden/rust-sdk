@@ -251,3 +251,36 @@ CREATE TABLE addresses (
 ) WITHOUT ROWID;
 
 CREATE INDEX idx_addresses_account_id ON addresses(account_id);
+
+-- ── Account SMT forest ───────────────────────────────────────────────────
+
+-- Latest tree metadata per lineage (one lineage per account vault and per storage map slot).
+CREATE TABLE forest_trees (
+    lineage     BLOB NOT NULL,     -- 32-byte lineage identifier
+    version     INTEGER NOT NULL,  -- latest tree version (forest revision that produced it)
+    root        BLOB NOT NULL,     -- serialized root word of the latest tree
+    entry_count INTEGER NOT NULL,  -- number of key-value entries in the latest tree
+
+    PRIMARY KEY (lineage)
+) WITHOUT ROWID;
+
+-- Key-value entries of the latest tree of each lineage.
+CREATE TABLE forest_entries (
+    lineage BLOB NOT NULL,  -- lineage the entry belongs to
+    key     BLOB NOT NULL,  -- serialized SMT key word
+    value   BLOB NOT NULL,  -- serialized SMT value word
+
+    PRIMARY KEY (lineage, key)
+) WITHOUT ROWID;
+
+-- Global counter for forest version numbers. It has a single row (id = 0); every forest
+-- mutation atomically takes the next value, so committed versions always increase and are
+-- never reused.
+CREATE TABLE forest_revision (
+    id           INTEGER NOT NULL CHECK (id = 0),
+    next_version INTEGER NOT NULL,
+
+    PRIMARY KEY (id)
+);
+
+INSERT INTO forest_revision (id, next_version) VALUES (0, 1);

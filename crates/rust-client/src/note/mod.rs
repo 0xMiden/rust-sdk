@@ -164,9 +164,11 @@ where
     /// # Performance
     ///
     /// This call screens every committed note tracked by the client against every account tracked
-    /// by the client, on each invocation. For non-standard notes, the screener runs one trial
-    /// transaction in the VM per `(account, note)` pair, so the cost grows with the number of
-    /// tracked accounts multiplied by the number of committed notes.
+    /// by the client, on each invocation. For notes whose consumability cannot be determined
+    /// statically, the screener runs one trial transaction in the VM per `(account, note)` pair, so
+    /// the cost grows with the number of tracked accounts multiplied by the number of committed
+    /// notes. Verdicts are not retained between calls: every call re-screens every committed note
+    /// from scratch.
     ///
     /// Passing `account_id` filters results after screening. It does not reduce screening cost.
     /// All tracked accounts are screened regardless.
@@ -176,8 +178,11 @@ where
     ///
     /// - Query and filter the notes directly with [`Self::get_input_notes`] and
     ///   [`NoteFilter::Committed`] if note consumability verdict is not needed.
-    /// - Use the screener directly via [`Self::note_screener`] to narrow the candidate set used for
-    ///   screening.
+    /// - Wait for a specific note to commit with [`Self::get_input_note`] and
+    ///   [`InputNoteRecord::is_committed`], instead of polling for it in the screened results.
+    /// - Screen a narrower set of notes with [`NoteScreener::can_consume_batch`], reached through
+    ///   [`Self::note_screener`]. Only the notes can be narrowed this way: the screener always
+    ///   checks them against every account tracked by the client.
     pub async fn get_consumable_notes(
         &self,
         account_id: Option<AccountId>,

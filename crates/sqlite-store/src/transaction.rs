@@ -1,7 +1,7 @@
 #![allow(clippy::items_after_statements)]
 
 use std::rc::Rc;
-use std::string::{String, ToString};
+use std::string::ToString;
 use std::sync::{Arc, RwLock};
 use std::vec::Vec;
 
@@ -45,7 +45,7 @@ pub(crate) const INSERT_TRANSACTION_SCRIPT_QUERY: &str =
 
 struct SerializedTransactionData {
     /// Transaction ID
-    id: String,
+    id: Vec<u8>,
     /// Script root
     script_root: Option<Vec<u8>>,
     /// Transaction script
@@ -62,7 +62,7 @@ struct SerializedTransactionData {
 
 struct SerializedTransactionParts {
     /// Transaction ID
-    id: String,
+    id: Vec<u8>,
     /// Transaction script
     tx_script: Option<Vec<u8>>,
     /// Transaction details
@@ -79,14 +79,12 @@ impl SqliteStore {
     ) -> Result<Vec<TransactionRecord>, StoreError> {
         match filter {
             TransactionFilter::Ids(ids) => {
-                // Convert transaction IDs to strings for the array parameter
-                let id_strings =
-                    ids.iter().map(|id| Value::Text(id.to_string())).collect::<Vec<_>>();
+                let id_blobs = ids.iter().map(|id| Value::Blob(id.to_bytes())).collect::<Vec<_>>();
 
                 // Create a prepared statement and bind the array parameter
                 conn.prepare(filter.to_query().as_ref())
                     .into_store_error()?
-                    .query_map(params![Rc::new(id_strings)], parse_transaction_columns)
+                    .query_map(params![Rc::new(id_blobs)], parse_transaction_columns)
                     .into_store_error()?
                     .map(|result| Ok(result.into_store_error()?).and_then(parse_transaction))
                     .collect::<Result<Vec<TransactionRecord>, _>>()
@@ -143,25 +141,20 @@ impl SqliteStore {
     /// and provides no rollback of its own, relying on the caller to discard the snapshot on
     /// error.
     ///
-    /// Pre-reads (fungible assets and storage map roots) are performed via the transaction so
-    /// that each call sees writes made by prior calls within the same outer transaction.
+    /// The storage-map-root pre-read is performed via the transaction so that each call sees
+    /// writes made by prior calls within the same outer transaction.
     pub(crate) fn apply_transaction_in_txn(
         db_tx: &mut Transaction<'_>,
         smt_forest: &mut AccountSmtForest,
         tx_update: &TransactionStoreUpdate,
     ) -> Result<(), StoreError> {
         let executed_transaction = tx_update.executed_transaction();
+        let account_patch = executed_transaction.account_patch();
 
-        let updated_fungible_assets = Self::get_account_fungible_assets_for_delta(
+        let old_map_roots = Self::get_storage_map_roots_for_patch(
             db_tx,
             executed_transaction.account_id(),
-            executed_transaction.account_delta(),
-        )?;
-
-        let old_map_roots = Self::get_storage_map_roots_for_delta(
-            db_tx,
-            executed_transaction.account_id(),
-            executed_transaction.account_delta(),
+            account_patch.storage(),
         )?;
 
         // Build transaction record
@@ -196,14 +189,13 @@ impl SqliteStore {
         upsert_transaction_record(db_tx, &transaction_record)?;
 
         // Account Data
-        Self::apply_account_delta(
+        Self::apply_account_patch(
             db_tx,
             smt_forest,
             &executed_transaction.initial_account().into(),
             executed_transaction.final_account(),
-            updated_fungible_assets,
             &old_map_roots,
-            executed_transaction.account_delta(),
+            account_patch,
         )?;
 
         // Note Updates
@@ -278,7 +270,7 @@ pub(crate) fn upsert_transaction_record(
 
 /// Serializes the transaction record into a format suitable for storage in the database.
 fn serialize_transaction_data(transaction_record: &TransactionRecord) -> SerializedTransactionData {
-    let transaction_id: String = transaction_record.id.to_hex();
+    let transaction_id = transaction_record.id.to_bytes();
 
     let script_root = transaction_record.script.as_ref().map(|script| script.root().to_bytes());
     let tx_script = transaction_record.script.as_ref().map(TransactionScript::to_bytes);
@@ -297,7 +289,7 @@ fn serialize_transaction_data(transaction_record: &TransactionRecord) -> Seriali
 fn parse_transaction_columns(
     row: &rusqlite::Row<'_>,
 ) -> Result<SerializedTransactionParts, rusqlite::Error> {
-    let id: String = row.get(0)?;
+    let id: Vec<u8> = row.get(0)?;
     let tx_script: Option<Vec<u8>> = row.get(1)?;
     let details: Vec<u8> = row.get(2)?;
     let status: Vec<u8> = row.get(3)?;
@@ -311,14 +303,14 @@ fn parse_transaction(
 ) -> Result<TransactionRecord, StoreError> {
     let SerializedTransactionParts { id, tx_script, details, status } = serialized_transaction;
 
-    let id: Word = id.as_str().try_into()?;
+    let id = TransactionId::read_from_bytes(&id)?;
 
     let script: Option<TransactionScript> = tx_script
         .map(|script| TransactionScript::read_from_bytes(&script))
         .transpose()?;
 
     Ok(TransactionRecord {
-        id: TransactionId::from_raw(id),
+        id,
         details: TransactionDetails::read_from_bytes(&details)?,
         script,
         status: TransactionStatus::read_from_bytes(&status)?,

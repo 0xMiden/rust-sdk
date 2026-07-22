@@ -3,7 +3,8 @@
 # This script should succeed.
 
 
-begin
+@transaction_script
+pub proc main
     # push the key for the advice map onto the stack ("0x0000000000000000000000000000000000000000000000000000001000000000")
     push.268435456.0.0.0
 

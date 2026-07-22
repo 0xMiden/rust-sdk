@@ -1,4 +1,7 @@
-use miden_protocol::block::{BlockHeader, BlockNumber, FeeParameters};
+use alloc::string::ToString;
+use alloc::vec::Vec;
+
+use miden_protocol::block::{BlockHeader, BlockNumber, FeeParameters, ValidatorKeys};
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak;
 use miden_protocol::utils::serde::{Deserializable, Serializable};
 
@@ -20,9 +23,12 @@ impl From<&BlockHeader> for proto::blockchain::BlockHeader {
             nullifier_root: Some(header.nullifier_root().into()),
             note_root: Some(header.note_root().into()),
             tx_commitment: Some(header.tx_commitment().into()),
-            validator_key: Some(proto::blockchain::ValidatorPublicKey {
-                validator_key: header.validator_key().to_bytes(),
-            }),
+            validator_keys: header
+                .validator_keys()
+                .as_keys()
+                .iter()
+                .map(|key| proto::blockchain::ValidatorPublicKey { validator_key: key.to_bytes() })
+                .collect(),
             tx_kernel_commitment: Some(header.tx_kernel_commitment().into()),
             fee_parameters: Some(header.fee_parameters().into()),
             timestamp: header.timestamp(),
@@ -55,11 +61,13 @@ impl TryFrom<proto::blockchain::BlockHeader> for BlockHeader {
     type Error = RpcConversionError;
 
     fn try_from(value: proto::blockchain::BlockHeader) -> Result<Self, Self::Error> {
-        let validator_key_bytes = value
-            .validator_key
-            .ok_or(proto::blockchain::BlockHeader::missing_field(stringify!(validator_key)))?
-            .validator_key;
-        let validator_key = ecdsa_k256_keccak::PublicKey::read_from_bytes(&validator_key_bytes)?;
+        let validator_keys = value
+            .validator_keys
+            .into_iter()
+            .map(|key| ecdsa_k256_keccak::PublicKey::read_from_bytes(&key.validator_key))
+            .collect::<Result<Vec<_>, _>>()?;
+        let validator_keys = ValidatorKeys::new(validator_keys)
+            .map_err(|err| RpcConversionError::InvalidField(err.to_string()))?;
 
         Ok(BlockHeader::new(
             value.version,
@@ -96,7 +104,7 @@ impl TryFrom<proto::blockchain::BlockHeader> for BlockHeader {
                     tx_kernel_commitment
                 )))?
                 .try_into()?,
-            validator_key,
+            validator_keys,
             value
                 .fee_parameters
                 .ok_or(proto::blockchain::BlockHeader::missing_field(stringify!(fee_parameters)))?

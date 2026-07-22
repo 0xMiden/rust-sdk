@@ -1,14 +1,26 @@
 # Changelog
 
-## Unreleased
+## 0.16.0-alpha.1 (2026-07-17)
 
 ### Breaking Changes
 
+* [BREAKING][rust][cli] Removed the client debug-mode toggle: `DebugMode`, `ClientBuilder::in_debug_mode`, `Client::in_debug_mode`, the CLI `--debug` flag, and the `MIDEN_DEBUG` environment variable are gone, along with the `debug_mode` parameter of `CliClient::new`/`CliClient::from_config`. Miden VM 0.24 replaced the flag-gated `debug.*` MASM decorators with `miden::core::debug` procedures whose output the transaction executor prints by default, so the toggle no longer had anything to gate. ([#2290](https://github.com/0xMiden/rust-sdk/pull/2290)).
+* [BREAKING][rust] Migrated to `miden-protocol` 0.16. Transaction-level fees were removed, block-level `FeeParameters` are unchanged. The relative `AccountDelta` model was replaced by the absolute `AccountPatch` model for account updates: `TransactionResult::account_delta` is now `account_patch`, `AccountUpdateDetails::Public` now carries an `AccountPatch`, account reconstruction is done via `Account::try_from(&AccountPatch)` or `Account::apply_patch` instead of previous `apply_delta`. Re-exports changed accordingly: `AccountStorageDelta` for `AccountStoragePatch`, `StorageMapDelta` for `StorageMapPatch`, and so on. Standards APIs were updated: `AuthMethod` was removed (use the concrete auth components), `create_fungible_faucet` was replaced by auth-specific variants such as `create_singlesig_user_fungible_faucet`. ([#2290](https://github.com/0xMiden/rust-sdk/pull/2290)).
+* [BREAKING][rust][cli] Fungible amounts in the public API now use `AssetAmount` instead of raw `u64`: `AccountReader::get_balance` returns `AssetAmount`, `TransactionRequestBuilder::build_pswap_consume` takes `AssetAmount` fill amounts, and `tokens_to_base_units`/`base_units_to_tokens` parse to and display from `AssetAmount` (amounts above `AssetAmount::MAX` are now rejected at parse time with `TokenParseError::InvalidAmount`) ([#2290](https://github.com/0xMiden/rust-sdk/pull/2290)).
+* [BREAKING][rename][cli] Renamed the `send` subcommand to `transfer` (behavior and flags unchanged) ([#2311](https://github.com/0xMiden/rust-sdk/issues/2311)).
+* [BREAKING][store] The SQLite store now stores account IDs as serialized `BLOB` columns instead of hex `TEXT` ([#2309](https://github.com/0xMiden/rust-sdk/pull/2309)).
 * [BREAKING][param][store] `Store::insert_block_header` now takes a `nodes` argument and persists the header with its MMR authentication nodes in a single transaction; the standalone `Store::insert_partial_blockchain_nodes` is removed. Header-only inserts (e.g. genesis) pass an empty slice ([#2294](https://github.com/0xMiden/rust-sdk/pull/2294)).
+* [BREAKING][behavior][store] The `ConsumedExternal` note-metadata layout added in [#2308](https://github.com/0xMiden/rust-sdk/pull/2308) is now the only supported serialized format. The backward-compatible decoding of the older metadata-less layout is removed, so existing stores are not compatible and must be recreated ([#2313](https://github.com/0xMiden/rust-sdk/pull/2313)).
+
+### Changes
+
+* [rust] Re-exported new upstream types reachable from the public API: `ExpirationTransactionScript` and `SendNotesTransactionScriptError` from `miden_client::transaction`, `NoteSyncHint` from `miden_client::note`, `StorageValuePatch` and `StorageMapPatchEntries` from `miden_client::account`, and `FeeParameters` and `ValidatorKeys` from `miden_client::block`. ([#2290](https://github.com/0xMiden/rust-sdk/pull/2290)).
 
 ### Fixes
 
 * [FIX][store] Opening a `SQLite` store now fingerprints the live database schema and compares it against the schema its migrations produce, rejecting a database whose schema has drifted (manual DDL, a partially applied migration, or corruption) instead of trusting a hash stored inside the database file ([#2304](https://github.com/0xMiden/rust-sdk/pull/2304)).
+* [FIX][rust] Notes received over the note transport layer now fetch attachments from the node via `get_notes_by_id`. Fetched attachment content is verified against the note metadata's attachments commitment; a note whose advertised attachment content the node cannot serve (or serves incorrectly) is skipped with a warning instead of failing the sync, and a note record is never stored with incomplete attachment content ([#2295](https://github.com/0xMiden/rust-sdk/pull/2295)).
+* [FIX][store] The SQLite store now honors `StorageMapPatch` create/remove semantics: a `Create` patch on an existing map slot clears the prior entries before writing (so its root reflects only the created entries) and a `Remove` patch drops the slot's entries and collapses its root to the empty-map root ([#2290](https://github.com/0xMiden/rust-sdk/pull/2290)).
 * [FIX][rust] Storing an authenticated block header now persists the header and its MMR authentication nodes in a single store transaction, so an interrupted write can no longer leave a tracked block without the MMR nodes needed to rebuild the `PartialMmr` ([#2294](https://github.com/0xMiden/rust-sdk/pull/2294)).
 * [FIX][rust] RPC endpoint parsing now rejects endpoint strings that omit either the protocol or host. ([#2266](https://github.com/0xMiden/miden-client/pull/2266))
 * [FIX][rust] State sync now re-verifies a tracked private account's commitment mismatch against the witness `get_account` returns. The witness is checked against the synced block's account root before locking the account, so a node can no longer durably lock it with a forged `sync_transactions` commitment ([#2260](https://github.com/0xMiden/rust-sdk/pull/2260)).
@@ -19,6 +31,31 @@
 * [FIX][rust] `NodeRpcClient::sync_nullifiers` now rejects responses containing a nullifier whose prefix was not requested with `RpcError::InvalidResponse` ([#2282](https://github.com/0xMiden/rust-sdk/pull/2282)).
 * [FIX][rust] `NodeRpcClient::sync_notes` now rejects responses containing a note whose tag was not requested with `RpcError::InvalidResponse` ([#2284](https://github.com/0xMiden/rust-sdk/pull/2284)).
 * [FIX][rust] Public account sync now binds `get_account` responses to the SyncMMR target block, rejecting snapshots from a different block, account, or account root ([#2255](https://github.com/0xMiden/miden-client/pull/2255)).
+
+## 0.15.4 (2026-07-16)
+
+### Changes
+
+* [rust] Bumped dependencies: Miden VM crates (`miden-core`, `miden-processor`, `miden-prover`, `miden-assembly`, etc.) to `0.23.5`, and `miden-node-proto-build` and `miden-remote-prover-client` to `0.15.1` ([#2301](https://github.com/0xMiden/rust-sdk/pull/2301)).
+* [cli] Documented the `call` command in the CLI docs ([#2317](https://github.com/0xMiden/rust-sdk/pull/2317)).
+
+### Features
+
+* [FEATURE][rust] Added `is_inclusion_pending` to `InputNoteRecord` and `OutputNoteRecord` ([#2323](https://github.com/0xMiden/rust-sdk/pull/2323)).
+
+### Fixes
+
+* [FIX][store] Add metadata to ConsumedExternal notes so that they can be findable by their `NoteId`. The change is store-compatible because records written by older clients (the metadata-less layout) still decode, reading back with no metadata as before ([#2308](https://github.com/0xMiden/rust-sdk/pull/2308)).
+* [FIX][rust,store] Output notes no longer register note tags, which leaked one row per created note; a store migration prunes the previously leaked tags ([#2323](https://github.com/0xMiden/rust-sdk/pull/2323)).
+* [FIX][rust] Public account sync now pins `get_account` to the sync target block (backport of [#2255](https://github.com/0xMiden/miden-client/pull/2255)); an unpinned fetch could discard the client's own just-committed transaction as `Superseded`, permanently wedging the account.
+* [FIX][rpc] Align `AddTransactionError` app-level codes with the node's `MempoolSubmissionError`, so submit-transaction failures report the correct cause (e.g. an account commitment mismatch is no longer misreported as "unauthenticated notes not found") and the node's message is preserved for state conflicts ([#2320](https://github.com/0xMiden/rust-sdk/issues/2320)).
+
+## 0.15.3 (2026-07-02)
+
+### Enhancements
+
+* [FEATURE][cli] `miden-cli call` now accepts advice map entries supplied via `--inputs-path/-i <FILE.toml>` in the same TOML format as `exec` ([#2244](https://github.com/0xMiden/miden-client/pull/2244)).
+* [FEATURE][rust] The gRPC client now accepts responses up to 15% above the node's 4 MiB payload budget by default, and `GrpcClient::with_max_decoding_message_size` lets callers raise the decode ceiling further. The CLI raises its own ceiling to 6 MiB to cover large `SyncTransactions` responses. This prevents syncs from failing with a "decoded message length too large" error when a node response slightly exceeds the previous hard 4 MiB limit ([#2298](https://github.com/0xMiden/miden-client/pull/2299)).
 
 ## 0.15.2 (2026-06-18)
 

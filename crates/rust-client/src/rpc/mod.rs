@@ -56,7 +56,13 @@ use domain::account::{
     StorageMapFetch,
     VaultFetch,
 };
-use domain::note::{FetchedNote, NoteSyncBlock, SyncedNoteDetails};
+use domain::note::{
+    FetchedNote,
+    ResolvedNoteContent,
+    ResolvedSyncNotesBlock,
+    SyncNotesBlock,
+    SyncedNote,
+};
 use domain::nullifier::NullifierUpdate;
 use domain::sync::{ChainMmrInfo, SyncTarget};
 use miden_protocol::Word;
@@ -65,7 +71,7 @@ use miden_protocol::address::NetworkId;
 use miden_protocol::batch::{ProposedBatch, ProvenBatch};
 use miden_protocol::block::{BlockHeader, BlockNumber, ProvenBlock};
 use miden_protocol::crypto::merkle::mmr::MmrProof;
-use miden_protocol::note::{NoteId, NoteMetadata, NoteScript, NoteTag, NoteType, Nullifier};
+use miden_protocol::note::{NoteDetails, NoteId, NoteScript, NoteTag, NoteType, Nullifier};
 use miden_protocol::transaction::{ProvenTransaction, TransactionInputs};
 
 use crate::rpc::domain::storage_map::StorageMapInfo;
@@ -106,14 +112,6 @@ pub enum AccountStateAt {
     ChainTip,
     /// Gets the state at a specific block number
     Block(BlockNumber),
-}
-
-/// Returns `true` if the note's metadata advertises at least one attachment.
-///
-/// Sync records carry attachment scheme markers (not the attachment content), so a present scheme
-/// in any header slot indicates the note has attachments whose content must be fetched separately.
-fn metadata_has_attachments(metadata: &NoteMetadata) -> bool {
-    metadata.attachment_headers().iter().any(|header| header.scheme().is_some())
 }
 
 // NODE RPC CLIENT TRAIT
@@ -275,7 +273,7 @@ pub trait NodeRpcClient: Send + Sync {
     /// - `note_tags` is the set of tags used to filter the notes the client is interested in.
     ///
     /// Notes with attachments will have header-only metadata after this call; use
-    /// [`NodeRpcClient::sync_notes_with_details`] to also resolve their full metadata and
+    /// [`NodeRpcClient::sync_notes_with_content`] to also resolve their full metadata and
     /// fetch public note bodies in a single follow-up call.
     ///
     /// Implementations must verify that every returned note's tag was present in `note_tags` and
@@ -288,55 +286,100 @@ pub trait NodeRpcClient: Send + Sync {
         block_from: BlockNumber,
         block_to: BlockNumber,
         note_tags: &BTreeSet<NoteTag>,
-    ) -> Result<Vec<NoteSyncBlock>, RpcError>;
+    ) -> Result<Vec<SyncNotesBlock>, RpcError>;
 
     /// Calls [`NodeRpcClient::sync_notes`] for the requested range, then makes a single
-    /// [`NodeRpcClient::get_notes_by_id`] call to fetch full note bodies (scripts, assets,
-    /// recipient) for public notes and attachment content for private notes that carry
-    /// attachments.
+    /// [`NodeRpcClient::get_notes_by_id`] call to resolve note content according to `fetch`,
+    /// folding it into each note.
     ///
-    /// All public notes in the range are fetched (not just the ones the client tracks) to
-    /// avoid revealing which specific notes the client is interested in. Private notes are only
-    /// fetched when their synced metadata indicates non-empty attachments, since the sync record
-    /// carries attachment scheme markers but not the attachment content, which is needed to
-    /// reconstruct the note's ID.
+    /// Notes whose metadata advertises attachments always have their attachment content fetched.
+    /// With [`NoteContentFetch::PublicDetailsAndAttachments`], all public notes in the range are
+    /// additionally fetched (regardless of which ones the client tracks) so the request does not
+    /// reveal the client's interest set.
     ///
-    /// Returns the resolved note blocks paired with a map of the fetched content (public note
-    /// bodies and private-note attachments), keyed by note ID.
-    async fn sync_notes_with_details(
+    /// Returns one [`ResolvedSyncNotesBlock`] per matching block, each note carrying its inclusion
+    /// data alongside the fetched content.
+    ///
+    /// A note whose fetched content is inconsistent with its sync record — mismatched note type,
+    /// attachment content that does not hash to the metadata's attachments commitment, or
+    /// advertised attachments the node did not return — is dropped from the response with a
+    /// warning instead of failing the call. Content availability is attacker-influenced (anyone
+    /// can commit a note that advertises attachment content without providing it to the network),
+    /// so a per-note hard error would let a single such note permanently wedge every sync that
+    /// scans its block range.
+    async fn sync_notes_with_content(
         &self,
         block_from: BlockNumber,
         block_to: BlockNumber,
         note_tags: &BTreeSet<NoteTag>,
-    ) -> Result<(Vec<NoteSyncBlock>, BTreeMap<NoteId, SyncedNoteDetails>), RpcError> {
+        fetch: NoteContentFetch,
+    ) -> Result<Vec<ResolvedSyncNotesBlock>, RpcError> {
         let blocks = self.sync_notes(block_from, block_to, note_tags).await?;
-
         let note_ids: Vec<NoteId> = blocks
             .iter()
-            .flat_map(|b| b.notes.values())
-            .filter(|n| n.note_type() == NoteType::Public || metadata_has_attachments(n.metadata()))
-            .map(|n| *n.note_id())
+            .flat_map(|block| block.notes.values())
+            .filter(|note| match fetch {
+                NoteContentFetch::PublicDetailsAndAttachments => {
+                    note.note_type() == NoteType::Public || note.has_attachments()
+                },
+                NoteContentFetch::AttachmentsOnly => note.has_attachments(),
+            })
+            .map(|note| *note.note_id())
             .collect();
 
-        let mut synced_notes: BTreeMap<NoteId, SyncedNoteDetails> = BTreeMap::new();
-
+        let mut resolved_content: BTreeMap<NoteId, ResolvedNoteContent> = BTreeMap::new();
         if !note_ids.is_empty() {
-            let fetched = self.get_notes_by_id(&note_ids).await?;
-
-            for fetched_note in fetched {
+            for fetched_note in self.get_notes_by_id(&note_ids).await? {
                 match fetched_note {
                     FetchedNote::Public(note, _) => {
-                        synced_notes.insert(note.id(), SyncedNoteDetails::Public(note));
+                        let note_id = note.id();
+                        let (assets, _, recipient, attachments) = note.into_parts();
+                        resolved_content.insert(
+                            note_id,
+                            ResolvedNoteContent::Public {
+                                details: NoteDetails::new(assets, recipient),
+                                attachments,
+                            },
+                        );
                     },
                     FetchedNote::Private(note_id, _, attachments, _) => {
-                        let attachments = (!attachments.is_empty()).then_some(attachments);
-                        synced_notes.insert(note_id, SyncedNoteDetails::Private(attachments));
+                        if !attachments.is_empty() {
+                            resolved_content
+                                .insert(note_id, ResolvedNoteContent::Private { attachments });
+                        }
                     },
                 }
             }
         }
 
-        Ok((blocks, synced_notes))
+        // Fold the resolved content into each note, keeping the per-block grouping so the
+        // inclusion data (header + MMR path) is carried once per block. `SyncedNote::new` rejects
+        // content that is inconsistent with its sync record (mismatched or missing attachment
+        // content); such notes are dropped rather than failing the sync, since a tracked record
+        // is never stored incomplete this way (it stays expected and can be retried by
+        // re-importing), while a hard error would wedge every sync scanning this block range.
+        let mut synced_blocks = Vec::with_capacity(blocks.len());
+        for block in blocks {
+            let mut notes = BTreeMap::new();
+            for (note_id, committed) in block.notes {
+                let content = resolved_content.remove(&note_id);
+                match SyncedNote::new(committed, content) {
+                    Ok(synced_note) => {
+                        notes.insert(note_id, synced_note);
+                    },
+                    Err(err) => {
+                        tracing::warn!(%note_id, %err, "skipping synced note with unusable content");
+                    },
+                }
+            }
+            synced_blocks.push(ResolvedSyncNotesBlock {
+                block_header: block.block_header,
+                mmr_path: block.mmr_path,
+                notes,
+            });
+        }
+
+        Ok(synced_blocks)
     }
 
     /// Fetches the nullifiers corresponding to a list of prefixes using the
@@ -393,17 +436,9 @@ pub trait NodeRpcClient: Send + Sync {
         }
         let vault_info =
             self.sync_account_vault(BlockNumber::GENESIS, block_to, account_id).await?;
-        let mut updates = vault_info.updates;
-        // The node returns the full history of vault entries, so a given key may appear in more
-        // than one block. Sort by block so the BTreeMap keeps the latest value per key.
-        updates.sort_by_key(|u| u.block_num);
-        details.vault_details.assets = updates
-            .into_iter()
-            .map(|u| (u.vault_key, u.asset))
-            .collect::<BTreeMap<_, _>>()
-            .into_values()
-            .flatten()
-            .collect();
+        // Syncing from genesis merges the full vault history into an absolute patch, so its
+        // updated (non-removed) assets are the account's current vault contents.
+        details.vault_details.assets = vault_info.vault_patch.updated_assets().collect();
         details.vault_details.too_many_assets = false;
         Ok(())
     }
@@ -425,18 +460,19 @@ pub trait NodeRpcClient: Send + Sync {
             if !map_details.too_many_entries {
                 continue;
             }
-            // The node returns the full history of map entries, so a given key may appear in
-            // more than one block. Sort by block so the BTreeMap keeps the latest value per key.
-            let mut sorted: Vec<_> =
-                info.updates.iter().filter(|u| u.slot_name == map_details.slot_name).collect();
-            sorted.sort_by_key(|u| u.block_num);
-            let entries: Vec<StorageMapEntry> = sorted
-                .into_iter()
-                .map(|u| (u.key, u.value))
-                .collect::<BTreeMap<_, _>>()
-                .into_iter()
-                .map(|(key, value)| StorageMapEntry { key, value })
-                .collect();
+            // Syncing from genesis merges the full history of each slot into its absolute
+            // current entries, so the result is the complete map content.
+            let entries: Vec<StorageMapEntry> = info
+                .map_entries
+                .get(&map_details.slot_name)
+                .map(|entries| {
+                    entries
+                        .as_map()
+                        .iter()
+                        .map(|(key, value)| StorageMapEntry { key: *key, value: *value })
+                        .collect()
+                })
+                .unwrap_or_default();
             map_details.too_many_entries = false;
             map_details.entries = StorageMapEntries::AllEntries(entries);
         }
@@ -614,6 +650,24 @@ pub trait NodeRpcClient: Send + Sync {
         &self,
         note_id: NoteId,
     ) -> Result<NetworkNoteStatusInfo, RpcError>;
+}
+
+/// Selects which note content [`NodeRpcClient::sync_notes_with_content`] resolves via
+/// `GetNotesById` after syncing note inclusions.
+///
+/// This enables the possibility of optimizing the call by not requesting more data than needed.
+/// For example, when a public note's details are already known (but not the attachments),
+/// `AttachmentsOnly` can be used. One example of this is when importing notes through
+/// `NoteDetails`.
+///
+/// Attachment content is always fetched for notes whose metadata advertises attachments,
+/// regardless of the selected policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoteContentFetch {
+    /// Fetch the full body of every public note in the range, plus attachment content.
+    PublicDetailsAndAttachments,
+    /// Fetch only attachment content.
+    AttachmentsOnly,
 }
 
 // RPC API ENDPOINT

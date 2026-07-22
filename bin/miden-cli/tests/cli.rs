@@ -1,6 +1,6 @@
 use std::env::{self, temp_dir};
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -10,21 +10,11 @@ use assert_cmd::cargo::cargo_bin_cmd;
 use miden_client::account::component::FungibleFaucet;
 use miden_client::account::{AccountId, AccountType, FaucetMetadata};
 use miden_client::address::{Address, NetworkId};
-use miden_client::auth::{RPO_FALCON_SCHEME_ID, TransactionAuthenticator};
+use miden_client::auth::TransactionAuthenticator;
 use miden_client::builder::ClientBuilder;
-use miden_client::crypto::{FeltRng, RandomCoin};
+use miden_client::crypto::RandomCoin;
 use miden_client::keystore::Keystore;
-use miden_client::note::{
-    Note,
-    NoteAssets,
-    NoteFile,
-    NoteId,
-    NoteRecipient,
-    NoteStorage,
-    NoteTag,
-    NoteType,
-    PartialNoteMetadata,
-};
+use miden_client::note::NoteId;
 use miden_client::note_transport::NOTE_TRANSPORT_TESTNET_ENDPOINT;
 use miden_client::rpc::Endpoint;
 use miden_client::testing::account_id::ACCOUNT_ID_PRIVATE_SENDER;
@@ -32,17 +22,14 @@ use miden_client::testing::common::{
     ACCOUNT_ID_REGULAR,
     FilesystemKeyStore,
     create_test_store_path,
-    execute_tx_and_sync,
-    insert_new_wallet,
 };
-use miden_client::transaction::TransactionRequestBuilder;
 use miden_client::utils::Serializable;
-use miden_client::{self, Client, DebugMode, Felt};
+use miden_client::{self, Client, Felt};
 use miden_client_cli::MIDEN_DIR;
 use miden_client_cli::config::Network;
 use miden_client_sqlite_store::SqliteStore;
 use predicates::str::contains;
-use rand::Rng;
+use rand::RngExt;
 
 // CLI TESTS
 // ================================================================================================
@@ -639,9 +626,9 @@ async fn cli_export_import_note() -> Result<()> {
     // Consume the note
     consume_note_cli(&temp_dir_2, &first_basic_account_id, &[&note_to_export_id]);
 
-    // Test send command
+    // Test transfer command
     let mock_target_id: AccountId = AccountId::try_from(ACCOUNT_ID_PRIVATE_SENDER).unwrap();
-    send_cli(
+    transfer_cli(
         &temp_dir_2,
         &first_basic_account_id,
         &mock_target_id.to_hex(),
@@ -756,8 +743,8 @@ fn cli_empty_commands() {
     let mut mint_cmd = cargo_bin_cmd!("miden-client");
     assert_command_fails_but_does_not_panic(mint_cmd.args(["mint"]).current_dir(&temp_dir));
 
-    let mut send_cmd = cargo_bin_cmd!("miden-client");
-    assert_command_fails_but_does_not_panic(send_cmd.args(["send"]).current_dir(&temp_dir));
+    let mut transfer_cmd = cargo_bin_cmd!("miden-client");
+    assert_command_fails_but_does_not_panic(transfer_cmd.args(["transfer"]).current_dir(&temp_dir));
 
     let mut swam_cmd = cargo_bin_cmd!("miden-client");
     assert_command_fails_but_does_not_panic(swam_cmd.args(["swap"]).current_dir(&temp_dir));
@@ -940,94 +927,6 @@ async fn init_with_testnet() -> Result<()> {
     config_file.read_to_string(&mut config_file_str).unwrap();
 
     assert!(config_file_str.contains(&Endpoint::testnet().to_string()));
-    Ok(())
-}
-
-#[tokio::test]
-#[serial_test::file_serial]
-async fn debug_mode_outputs_logs() -> Result<()> {
-    // This test tries to execute a transaction with debug mode enabled and checks that the stack
-    // state is printed. We need to use the CLI for this because the debug logs are always printed
-    // to stdout and we can't capture them in a [`Client`] only test.
-    // We use the [`Client`] to create a custom note that will print the stack state and consume it
-    // using the CLI to check the stdout.
-    const NOTE_FILENAME: &str = "test_note.mno";
-    unsafe {
-        env::set_var("MIDEN_DEBUG", "true");
-    }
-
-    // Create a Client and a custom note
-    let (store_path, _, endpoint) = init_cli();
-    let (mut client, authenticator) =
-        create_rust_client_with_store_path(&store_path, endpoint).await?;
-    let (account, ..) =
-        insert_new_wallet(&mut client, AccountType::Private, &authenticator, RPO_FALCON_SCHEME_ID)
-            .await?;
-
-    // Create the custom note with a script that will print the stack state
-    let note_script = "
-            @note_script
-            pub proc main
-                debug.stack
-                assert_eq
-            end
-            ";
-    let note_script = client.code_builder().compile_note_script(note_script).unwrap();
-    let inputs = NoteStorage::new(vec![]).unwrap();
-    let serial_num = client.rng().draw_word();
-    let note_metadata = PartialNoteMetadata::new(account.id(), NoteType::Private)
-        .with_tag(NoteTag::with_account_target(account.id()));
-    let note_assets = NoteAssets::new(vec![]).unwrap();
-    let note_recipient = NoteRecipient::new(serial_num, note_script, inputs);
-    let note = Note::new(note_assets, note_metadata, note_recipient);
-
-    // Send transaction and wait for it to be committed
-    client.sync_state().await?;
-    let transaction_request =
-        TransactionRequestBuilder::new().own_output_notes(vec![note.clone()]).build()?;
-    execute_tx_and_sync(&mut client, account.id(), transaction_request).await?;
-
-    // Export the note
-    let note_file: NoteFile = NoteFile::NoteDetails {
-        details: note.clone().into(),
-        after_block_num: 0.into(),
-        tag: Some(note.metadata().tag()),
-    };
-
-    // Import the note into the CLI
-    let (_, temp_dir, _) = init_cli();
-
-    // Serialize the note
-    let note_path = temp_dir.join(NOTE_FILENAME);
-    let mut file = File::create(note_path.clone()).unwrap();
-    file.write_all(&note_file.to_bytes()).unwrap();
-
-    // Import the note
-    let mut import_cmd = cargo_bin_cmd!("miden-client");
-    import_cmd.args(["import", note_path.to_str().unwrap()]);
-    import_cmd.current_dir(&temp_dir).assert().success();
-
-    sync_cli(&temp_dir);
-
-    // Create wallet account
-    let wallet_account_id = new_wallet_cli(&temp_dir, AccountType::Private);
-
-    // Consume the note and check the output
-    let mut consume_note_cmd = cargo_bin_cmd!("miden-client");
-    let note_id = note.id().to_hex();
-    let mut cli_args = vec!["consume-notes", "--account", &wallet_account_id, "--force"];
-    cli_args.extend_from_slice(vec![note_id.as_str()].as_slice());
-    consume_note_cmd.args(&cli_args);
-    consume_note_cmd
-        .current_dir(&temp_dir)
-        .assert()
-        .success()
-        .stdout(contains("Stack state"));
-
-    unsafe {
-        env::remove_var("MIDEN_DEBUG");
-    }
-
     Ok(())
 }
 
@@ -1333,7 +1232,6 @@ fn sync_cli(cli_path: &Path) -> SyncResult {
 /// successfully given account using the CLI given by `cli_path`.
 fn mint_cli(cli_path: &Path, target_account_id: &str, faucet_id: &str) -> String {
     let mut mint_cmd = cargo_bin_cmd!("miden-client");
-    mint_cmd.env("MIDEN_DEBUG", "true");
     mint_cmd.args([
         "mint",
         "--target",
@@ -1375,12 +1273,12 @@ fn show_note_cli(cli_path: &Path, note_id: &str, should_fail: bool) {
     }
 }
 
-/// Sends 25 units of the corresponding faucet and checks that the command runs successfully given
-/// account using the CLI given by `cli_path`.
-fn send_cli(cli_path: &Path, from_account_id: &str, to_account_id: &str, faucet_id: &str) {
-    let mut send_cmd = cargo_bin_cmd!("miden-client");
-    send_cmd.args([
-        "send",
+/// Transfers 25 units of the corresponding faucet and checks that the command runs successfully
+/// given account using the CLI given by `cli_path`.
+fn transfer_cli(cli_path: &Path, from_account_id: &str, to_account_id: &str, faucet_id: &str) {
+    let mut transfer_cmd = cargo_bin_cmd!("miden-client");
+    transfer_cmd.args([
+        "transfer",
         "--sender",
         from_account_id,
         "--target",
@@ -1391,7 +1289,7 @@ fn send_cli(cli_path: &Path, from_account_id: &str, to_account_id: &str, faucet_
         "private",
         "--force",
     ]);
-    send_cmd.current_dir(cli_path).assert().success();
+    transfer_cmd.current_dir(cli_path).assert().success();
 }
 
 /// Syncs until a tracked note gets committed.
@@ -1526,7 +1424,6 @@ async fn create_rust_client_with_store_path(
         .rng(rng)
         .store(store)
         .authenticator(Arc::new(keystore.clone()))
-        .in_debug_mode(DebugMode::Enabled)
         .build()
         .await?;
 
@@ -1638,6 +1535,49 @@ fn call_nonexistent_procedure() {
 
 /// Helper: builds the `call-test` package (arithmetic + storage procedures) at runtime and
 /// writes the serialized `.masp` to `out_path`.
+fn call_test_exports(
+    library: &miden_client::assembly::Library,
+) -> Vec<miden_client::vm::PackageExport> {
+    use miden_client::vm::{PackageExport, ProcedureExport, QualifiedProcedureName};
+    use midenc_hir_type::{CallConv, FunctionType, Type};
+
+    let signature_overrides: [(&str, FunctionType); 3] = [
+        (
+            "add",
+            FunctionType::new(CallConv::ComponentModel, [Type::Felt, Type::Felt], [Type::Felt]),
+        ),
+        (
+            "set_value",
+            FunctionType::new(
+                CallConv::ComponentModel,
+                [Type::Felt, Type::Felt, Type::Felt, Type::Felt],
+                [],
+            ),
+        ),
+        ("read_advice", FunctionType::new(CallConv::ComponentModel, [], [Type::Felt])),
+    ];
+
+    let mut exports = Vec::new();
+    for module_info in library.module_infos() {
+        for (_, proc_info) in module_info.procedures() {
+            let name = QualifiedProcedureName::new(module_info.path(), proc_info.name.clone());
+            let override_sig = signature_overrides
+                .iter()
+                .find(|(n, _)| *n == proc_info.name.as_str())
+                .map(|(_, sig)| sig.clone());
+            exports.push(PackageExport::Procedure(ProcedureExport {
+                path: name.into_inner(),
+                node: None,
+                source_node: None,
+                digest: proc_info.digest,
+                signature: override_sig.or_else(|| proc_info.signature.as_deref().cloned()),
+                attributes: proc_info.attributes.clone(),
+            }));
+        }
+    }
+    exports
+}
+
 fn build_call_test_masp(out_path: &Path) {
     use miden_client::account::StorageSlotName;
     use miden_client::account::component::{
@@ -1649,17 +1589,7 @@ fn build_call_test_masp(out_path: &Path) {
         WordSchema,
     };
     use miden_client::assembly::{CodeBuilder, Library};
-    use miden_client::vm::{
-        Package,
-        PackageExport,
-        PackageManifest,
-        ProcedureExport,
-        QualifiedProcedureName,
-        Section,
-        SectionId,
-        TargetType,
-    };
-    use midenc_hir_type::{CallConv, FunctionType, Type};
+    use miden_client::vm::{Package, Section, SectionId, TargetType};
 
     let call_test_code = r#"
         use miden::protocol::native_account
@@ -1668,14 +1598,27 @@ fn build_call_test_masp(out_path: &Path) {
 
         const STORED_VALUE = word("miden::testing::call_test::stored_value")
 
+        @account_procedure
         pub proc add
             add
         end
 
+        @account_procedure
         pub proc set_value
             push.STORED_VALUE[0..2]
             exec.native_account::set_item
             dropw
+            exec.sys::truncate_stack
+        end
+
+        @account_procedure
+        pub proc read_advice
+            # Look up a fixed key in the advice map and return the sum of its two values.
+            push.268435456.0.0.0
+            adv.push_mapval
+            dropw
+            adv_push adv_push
+            add
             exec.sys::truncate_stack
         end
     "#;
@@ -1703,44 +1646,30 @@ fn build_call_test_masp(out_path: &Path) {
 
     let metadata = AccountComponentMetadata::new("call-test").with_storage_schema(storage_schema);
 
-    let signature_overrides: [(&str, FunctionType); 2] = [
-        ("add", FunctionType::new(CallConv::Fast, [Type::Felt, Type::Felt], [Type::Felt])),
-        (
-            "set_value",
-            FunctionType::new(CallConv::Fast, [Type::Felt, Type::Felt, Type::Felt, Type::Felt], []),
-        ),
-    ];
-
-    let mut exports: Vec<PackageExport> = Vec::new();
-    for module_info in library.module_infos() {
-        for (_, proc_info) in module_info.procedures() {
-            let name = QualifiedProcedureName::new(module_info.path(), proc_info.name.clone());
-            let override_sig = signature_overrides
+    let exports = call_test_exports(&library);
+    let modules = library.module_infos().map(|module_info| {
+        miden_mast_package::PackageModule::new(
+            std::sync::Arc::from(module_info.path().to_path_buf().into_boxed_path()),
+            module_info
+                .submodules()
                 .iter()
-                .find(|(n, _)| *n == proc_info.name.as_str())
-                .map(|(_, sig)| sig.clone());
-            let export = ProcedureExport {
-                path: name.into_inner(),
-                digest: proc_info.digest,
-                signature: override_sig.or_else(|| proc_info.signature.as_deref().cloned()),
-                attributes: proc_info.attributes.clone(),
-            };
-            exports.push(PackageExport::Procedure(export));
-        }
-    }
-
-    let manifest = PackageManifest::new(exports).expect("manifest validation failed");
+                .map(|submodule| miden_mast_package::PackageSubmodule::new(submodule.name.clone())),
+        )
+    });
     let section = Section::new(SectionId::ACCOUNT_COMPONENT_METADATA, metadata.to_bytes());
 
-    let package = Package {
-        name: metadata.name().to_string().into(),
-        version: metadata.version().clone(),
-        description: Some(metadata.description().to_string()),
-        mast: Arc::new(library),
-        manifest,
-        sections: vec![section],
-        kind: TargetType::AccountComponent,
-    };
+    let mut package = Package::create_with_modules(
+        metadata.name().to_string().into(),
+        metadata.version().clone(),
+        TargetType::AccountComponent,
+        library.mast_forest().clone(),
+        exports,
+        modules,
+        [],
+    )
+    .expect("failed to create call-test package");
+    package.description = Some(metadata.description().to_string());
+    package.sections = vec![section];
 
     fs::write(out_path, package.to_bytes()).expect("failed to write call-test .masp");
 }
@@ -1838,8 +1767,8 @@ fn call_shows_nonce_delta() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("Nonce incremented by:"),
-        "Expected nonce delta in output:\n{stdout}"
+        stdout.contains("New account nonce:"),
+        "Expected the new account nonce in output:\n{stdout}"
     );
 }
 
@@ -1870,6 +1799,40 @@ fn call_set_value_shows_storage_delta() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Storage Slot"), "Expected storage delta in output:\n{stdout}");
+}
+
+/// Tests that advice map entries supplied via `--inputs-path` reach the called procedure.
+/// `read_advice` looks up a fixed key in the advice map and returns the sum of the two mapped
+/// values (13 + 9 = 22).
+#[test]
+fn call_with_advice_inputs() {
+    let (temp_dir, account_id, masp_path) = setup_call_test_account();
+
+    let advice_path = fs::canonicalize("tests/files/test_cli_advice_inputs_input.toml").unwrap();
+
+    let mut cmd = cargo_bin_cmd!("miden-client");
+    cmd.args([
+        "call",
+        &format!("{account_id}:read_advice"),
+        "--package",
+        masp_path.to_str().unwrap(),
+        "-i",
+        advice_path.to_str().unwrap(),
+    ]);
+
+    let output = cmd.current_dir(&temp_dir).output().unwrap();
+    assert!(
+        output.status.success(),
+        "Call with advice inputs failed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Result: 22"),
+        "Expected advice-derived result in output:\n{stdout}"
+    );
 }
 
 /// Tests that calling a `add` with the wrong number of arguments fails
@@ -2066,7 +2029,7 @@ async fn test_new_with_local_config() -> Result<()> {
     env::set_current_dir(&temp_dir)?;
 
     // Create a client using new - should pick up local config
-    let client_result = miden_client_cli::CliClient::new(DebugMode::Disabled).await;
+    let client_result = miden_client_cli::CliClient::new().await;
 
     // Restore original directory
     env::set_current_dir(original_dir)?;
@@ -2109,7 +2072,7 @@ async fn test_new_silent_init() -> Result<()> {
     env::set_current_dir(&temp_dir)?;
 
     // Create a client - should succeed via silent initialization
-    let client_result = miden_client_cli::CliClient::new(DebugMode::Disabled).await;
+    let client_result = miden_client_cli::CliClient::new().await;
 
     // Restore original directory
     env::set_current_dir(original_dir)?;
@@ -2165,7 +2128,7 @@ async fn test_load_local_priority() -> Result<()> {
     let config = miden_client_cli::CliConfig::from_dir(&local_miden_dir)?;
 
     // Create client with local config
-    let client = miden_client_cli::CliClient::from_config(config, DebugMode::Disabled).await;
+    let client = miden_client_cli::CliClient::from_config(config).await;
 
     // Assert client was created with local config
     assert!(client.is_ok(), "Failed to create client with local config: {:?}", client.err());

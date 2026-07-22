@@ -2179,7 +2179,7 @@ dependencies = [
 [[package]]
 name = "miden-crypto"
 version = "0.28.1"
-source = "git+https://github.com/JereSalo/miden-vm?branch=open-forest-backend-api-for-external-impls#d67727fbe6a210c947099e704e8d2e54e828daf1"
+source = "git+https://github.com/JereSalo/miden-vm?branch=open-forest-backend-api-for-external-impls#c11e2fefbe5013768856765d6b8f5f1eb74d413c"
 dependencies = [
  "blake3",
  "cc",
@@ -2220,7 +2220,7 @@ dependencies = [
 [[package]]
 name = "miden-crypto-derive"
 version = "0.28.1"
-source = "git+https://github.com/JereSalo/miden-vm?branch=open-forest-backend-api-for-external-impls#d67727fbe6a210c947099e704e8d2e54e828daf1"
+source = "git+https://github.com/JereSalo/miden-vm?branch=open-forest-backend-api-for-external-impls#c11e2fefbe5013768856765d6b8f5f1eb74d413c"
 dependencies = [
  "quote",
  "syn 2.0.118",
@@ -2314,7 +2314,7 @@ dependencies = [
 [[package]]
 name = "miden-field"
 version = "0.28.1"
-source = "git+https://github.com/JereSalo/miden-vm?branch=open-forest-backend-api-for-external-impls#d67727fbe6a210c947099e704e8d2e54e828daf1"
+source = "git+https://github.com/JereSalo/miden-vm?branch=open-forest-backend-api-for-external-impls#c11e2fefbe5013768856765d6b8f5f1eb74d413c"
 dependencies = [
  "miden-serde-utils",
  "num-bigint",
@@ -2341,7 +2341,7 @@ dependencies = [
 [[package]]
 name = "miden-lifted-air"
 version = "0.28.1"
-source = "git+https://github.com/JereSalo/miden-vm?branch=open-forest-backend-api-for-external-impls#d67727fbe6a210c947099e704e8d2e54e828daf1"
+source = "git+https://github.com/JereSalo/miden-vm?branch=open-forest-backend-api-for-external-impls#c11e2fefbe5013768856765d6b8f5f1eb74d413c"
 dependencies = [
  "p3-air",
  "p3-challenger",
@@ -2354,7 +2354,7 @@ dependencies = [
 [[package]]
 name = "miden-lifted-stark"
 version = "0.28.1"
-source = "git+https://github.com/JereSalo/miden-vm?branch=open-forest-backend-api-for-external-impls#d67727fbe6a210c947099e704e8d2e54e828daf1"
+source = "git+https://github.com/JereSalo/miden-vm?branch=open-forest-backend-api-for-external-impls#c11e2fefbe5013768856765d6b8f5f1eb74d413c"
 dependencies = [
  "miden-lifted-air",
  "miden-stark-transcript",
@@ -2561,7 +2561,7 @@ dependencies = [
 [[package]]
 name = "miden-serde-utils"
 version = "0.28.1"
-source = "git+https://github.com/JereSalo/miden-vm?branch=open-forest-backend-api-for-external-impls#d67727fbe6a210c947099e704e8d2e54e828daf1"
+source = "git+https://github.com/JereSalo/miden-vm?branch=open-forest-backend-api-for-external-impls#c11e2fefbe5013768856765d6b8f5f1eb74d413c"
 dependencies = [
  "p3-field",
  "p3-goldilocks",
@@ -2590,7 +2590,7 @@ dependencies = [
 [[package]]
 name = "miden-stark-transcript"
 version = "0.28.1"
-source = "git+https://github.com/JereSalo/miden-vm?branch=open-forest-backend-api-for-external-impls#d67727fbe6a210c947099e704e8d2e54e828daf1"
+source = "git+https://github.com/JereSalo/miden-vm?branch=open-forest-backend-api-for-external-impls#c11e2fefbe5013768856765d6b8f5f1eb74d413c"
 dependencies = [
  "p3-challenger",
  "p3-field",
@@ -2601,7 +2601,7 @@ dependencies = [
 [[package]]
 name = "miden-stateful-hasher"
 version = "0.28.1"
-source = "git+https://github.com/JereSalo/miden-vm?branch=open-forest-backend-api-for-external-impls#d67727fbe6a210c947099e704e8d2e54e828daf1"
+source = "git+https://github.com/JereSalo/miden-vm?branch=open-forest-backend-api-for-external-impls#c11e2fefbe5013768856765d6b8f5f1eb74d413c"
 dependencies = [
  "p3-field",
  "p3-symmetric",

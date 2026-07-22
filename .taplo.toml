@@ -1,6 +1,6 @@
 exclude = [
   "**/node_modules/**/*.toml",
-  "bin/integration-tests/foundry-vectors/lib/**/*.toml", # git submodules, do not reformat
+  "bin/integration-tests/foundry-vectors/lib/**/*.toml", # git submodules
   "bin/miden-cli/templates/*.toml",                      # allcomponent templates
 ]
 

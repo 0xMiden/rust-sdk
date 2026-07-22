@@ -162,7 +162,7 @@ You may also customize the transaction request with the other `TransactionReques
 
 You can use note screening when you need to decide whether a note is relevant to the accounts tracked by the client. Screening checks whether each tracked account can consume the note now or at a future block.
 
-Screening may run trial transaction executions, so it is not free. Use it when you need consumability information for planning, filtering, or building a consume transaction.
+Screening cost depends on each screened note's script. A few well-known scripts, such as P2ID, can be checked statically. Every other note is trial-executed against every tracked account, so cost grows with the number of tracked accounts multiplied by the number of notes screened. Use screening when you need consumability information for planning, filtering, or building a consume transaction.
 
 ### Use the Client helpers first
 
@@ -183,6 +183,8 @@ for (note, accounts) in consumable_notes {
     }
 }
 ```
+
+Passing an account ID to `get_consumable_notes` filters the results after screening. It does not reduce screening cost, all tracked accounts are screened regardless. If you only need the committed notes without consumability verdicts, `get_input_notes` with `NoteFilter::Committed` is much cheaper.
 
 ### Obtain a screener
 

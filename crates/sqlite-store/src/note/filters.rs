@@ -5,14 +5,16 @@ use std::rc::Rc;
 
 use miden_client::account::AccountId;
 use miden_client::note::BlockNumber;
-use miden_client::store::{InputNoteState, NoteFilter, OutputNoteState};
+use miden_client::store::{InputNoteState, NoteFilter, OutputNoteState, StoreError};
 use miden_client::utils::Serializable;
 use rusqlite::types::Value;
 
 type NoteQueryParams = Vec<Rc<Vec<Value>>>;
 
 /// Returns the output notes query for a specific `NoteFilter`
-pub(super) fn note_filter_to_query_output_notes(filter: &NoteFilter) -> (String, NoteQueryParams) {
+pub(super) fn note_filter_to_query_output_notes(
+    filter: &NoteFilter,
+) -> Result<(String, NoteQueryParams), StoreError> {
     let base = "SELECT
                     note.recipient_digest,
                     note.assets,
@@ -22,14 +24,16 @@ pub(super) fn note_filter_to_query_output_notes(filter: &NoteFilter) -> (String,
                     note.attachments
                     from output_notes AS note";
 
-    let (condition, params) = note_filter_output_notes_condition(filter);
+    let (condition, params) = note_filter_output_notes_condition(filter)?;
     let query = format!("{base} WHERE {condition}");
 
-    (query, params)
+    Ok((query, params))
 }
 
 /// Returns the WHERE clause  for a specific `NoteFilter`.
-pub(super) fn note_filter_output_notes_condition(filter: &NoteFilter) -> (String, NoteQueryParams) {
+pub(super) fn note_filter_output_notes_condition(
+    filter: &NoteFilter,
+) -> Result<(String, NoteQueryParams), StoreError> {
     let mut params = Vec::new();
     let condition = match filter {
         NoteFilter::All => "1 = 1".to_string(),
@@ -50,7 +54,9 @@ pub(super) fn note_filter_output_notes_condition(filter: &NoteFilter) -> (String
                 OutputNoteState::STATE_EXPECTED_FULL
             )
         },
-        NoteFilter::Processing | NoteFilter::Unverified => "1 = 0".to_string(),
+        NoteFilter::Processing | NoteFilter::ScriptRoots(_) | NoteFilter::Unverified => {
+            "1 = 0".to_string()
+        },
         NoteFilter::Unique(note_id) => {
             let note_ids_list = vec![Value::Blob(note_id.as_word().to_bytes())];
             params.push(Rc::new(note_ids_list));
@@ -92,9 +98,12 @@ pub(super) fn note_filter_output_notes_condition(filter: &NoteFilter) -> (String
                 OutputNoteState::STATE_COMMITTED_FULL,
             )
         },
+        filter => {
+            return Err(StoreError::QueryError(format!("unsupported note filter: {filter:?}")));
+        },
     };
 
-    (condition, params)
+    Ok((condition, params))
 }
 
 // NOTE FILTER (INPUT NOTES)
@@ -112,8 +121,10 @@ const INPUT_NOTES_BASE_QUERY: &str = "SELECT
                 LEFT OUTER JOIN notes_scripts AS script
                     ON note.script_root = script.script_root";
 
-pub(super) fn note_filter_to_query_input_notes(filter: &NoteFilter) -> (String, NoteQueryParams) {
-    let (condition, params) = note_filter_input_notes_condition(filter);
+pub(super) fn note_filter_to_query_input_notes(
+    filter: &NoteFilter,
+) -> Result<(String, NoteQueryParams), StoreError> {
+    let (condition, params) = note_filter_input_notes_condition(filter)?;
     let query = if matches!(filter, NoteFilter::Consumed) {
         format!(
             "{INPUT_NOTES_BASE_QUERY} WHERE {condition} \
@@ -125,7 +136,7 @@ pub(super) fn note_filter_to_query_input_notes(filter: &NoteFilter) -> (String, 
         format!("{INPUT_NOTES_BASE_QUERY} WHERE {condition}")
     };
 
-    (query, params)
+    Ok((query, params))
 }
 
 /// Returns a query that fetches a single input note at the given offset from the filtered set,
@@ -136,9 +147,9 @@ pub(super) fn note_filter_to_query_input_note_by_offset(
     block_start: Option<BlockNumber>,
     block_end: Option<BlockNumber>,
     offset: u32,
-) -> (String, NoteQueryParams) {
+) -> Result<(String, NoteQueryParams), StoreError> {
     use core::fmt::Write;
-    let (mut condition, mut params) = note_filter_input_notes_condition(filter);
+    let (mut condition, mut params) = note_filter_input_notes_condition(filter)?;
 
     params.push(Rc::new(vec![Value::Blob(consumer.to_bytes())]));
     condition.push_str(" AND note.consumer_account_id IN rarray(?)");
@@ -157,11 +168,13 @@ pub(super) fn note_filter_to_query_input_note_by_offset(
          LIMIT 1 OFFSET {offset}"
     );
 
-    (query, params)
+    Ok((query, params))
 }
 
 /// Returns the WHERE clause for the input [`NoteFilter`]
-pub(super) fn note_filter_input_notes_condition(filter: &NoteFilter) -> (String, NoteQueryParams) {
+pub(super) fn note_filter_input_notes_condition(
+    filter: &NoteFilter,
+) -> Result<(String, NoteQueryParams), StoreError> {
     let mut params = Vec::new();
     let condition = match filter {
         NoteFilter::All => "(1 = 1)".to_string(),
@@ -218,6 +231,15 @@ pub(super) fn note_filter_input_notes_condition(filter: &NoteFilter) -> (String,
             params.push(Rc::new(nullifiers_list));
             "(note.nullifier IN rarray(?))".to_string()
         },
+        NoteFilter::ScriptRoots(script_roots) => {
+            let script_roots_list = script_roots
+                .iter()
+                .map(|script_root| Value::Blob(script_root.to_bytes()))
+                .collect::<Vec<Value>>();
+
+            params.push(Rc::new(script_roots_list));
+            "(note.script_root IN rarray(?))".to_string()
+        },
         NoteFilter::Unverified => {
             format!("(state_discriminant = {})", InputNoteState::STATE_UNVERIFIED)
         },
@@ -231,7 +253,10 @@ pub(super) fn note_filter_input_notes_condition(filter: &NoteFilter) -> (String,
                 InputNoteState::STATE_COMMITTED
             )
         },
+        filter => {
+            return Err(StoreError::QueryError(format!("unsupported note filter: {filter:?}")));
+        },
     };
 
-    (condition, params)
+    Ok((condition, params))
 }

@@ -139,7 +139,7 @@ impl SqliteStore {
         conn: &mut Connection,
         filter: &NoteFilter,
     ) -> Result<Vec<InputNoteRecord>, StoreError> {
-        let (query, params) = note_filter_to_query_input_notes(filter);
+        let (query, params) = note_filter_to_query_input_notes(filter)?;
         let notes = conn
             .prepare(query.as_str())
             .into_store_error()?
@@ -156,7 +156,7 @@ impl SqliteStore {
         conn: &mut Connection,
         filter: &NoteFilter,
     ) -> Result<Vec<OutputNoteRecord>, StoreError> {
-        let (query, params) = note_filter_to_query_output_notes(filter);
+        let (query, params) = note_filter_to_query_output_notes(filter)?;
         let notes = conn
             .prepare(&query)
             .into_store_error()?
@@ -184,7 +184,7 @@ impl SqliteStore {
             block_start,
             block_end,
             offset,
-        );
+        )?;
         let note = conn
             .prepare(&query)
             .into_store_error()?

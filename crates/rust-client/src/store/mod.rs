@@ -43,7 +43,14 @@ use miden_protocol::asset::{Asset, AssetId, AssetVault, AssetWitness};
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::merkle::mmr::{Forest, InOrderIndex, MmrPeaks, PartialMmr};
 use miden_protocol::errors::AccountError;
-use miden_protocol::note::{NoteDetailsCommitment, NoteId, NoteScript, NoteTag, Nullifier};
+use miden_protocol::note::{
+    NoteDetailsCommitment,
+    NoteId,
+    NoteScript,
+    NoteScriptRoot,
+    NoteTag,
+    Nullifier,
+};
 use miden_protocol::transaction::TransactionId;
 use miden_protocol::{Felt, Word};
 use miden_tx::utils::serde::{Deserializable, Serializable};
@@ -750,6 +757,7 @@ impl TransactionFilter {
 
 /// Filters for narrowing the set of notes returned by the client's store.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum NoteFilter {
     /// Return a list of all notes ([`InputNoteRecord`] or [`OutputNoteRecord`]).
     All,
@@ -774,6 +782,9 @@ pub enum NoteFilter {
     /// Return a list of notes that are currently being processed. This filter doesn't apply to
     /// output notes.
     Processing,
+    /// Return a list containing any notes whose script root matches one of the provided
+    /// [`NoteScriptRoot`]s. This filter doesn't apply to output notes.
+    ScriptRoots(Vec<NoteScriptRoot>),
     /// Return a list containing the note that matches with the provided [`NoteId`]. The query will
     /// return an error if the note isn't found.
     Unique(NoteId),

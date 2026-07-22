@@ -2278,9 +2278,10 @@ async fn note_screening_reports_only_the_account_bound_by_the_note() {
 /// Reads transaction inputs straight from the data store the screener runs its trial executions
 /// against, without going through a screening pass.
 ///
-/// Checks the two properties the memoization depends on: a cache hit serves what a plain store
-/// read would have returned, and entries stay separated per account so one account never receives
-/// another's state.
+/// Checks the properties the memoization depends on: a cache miss serves what a plain store read
+/// would have returned, a repeated read is served from the cache rather than from the store
+/// (observable as a stale read after the account state changes in the store), and entries stay
+/// separated per account so one account never receives another's state.
 #[tokio::test]
 async fn execution_input_cache_matches_uncached_reads() {
     use miden_client::testing::{ClientDataStore, DataStore};
@@ -2304,14 +2305,20 @@ async fn execution_input_cache_matches_uncached_reads() {
     let rpc_api = client.test_rpc_api().clone();
 
     let cached = ClientDataStore::new(store.clone(), rpc_api.clone()).with_execution_input_cache();
-    let uncached = ClientDataStore::new(store, rpc_api);
+    let uncached = ClientDataStore::new(store.clone(), rpc_api);
 
     let miss = cached.get_transaction_inputs(first, blocks.clone()).await.unwrap();
-    let hit = cached.get_transaction_inputs(first, blocks.clone()).await.unwrap();
     let fresh = uncached.get_transaction_inputs(first, blocks.clone()).await.unwrap();
-
     assert_eq!(miss, fresh);
-    assert_eq!(hit, fresh);
+
+    let mut account = client.get_account(first).await.unwrap().unwrap();
+    account.increment_nonce(ONE).unwrap();
+    store.update_account(&account).await.unwrap();
+
+    let hit = cached.get_transaction_inputs(first, blocks.clone()).await.unwrap();
+    let updated = uncached.get_transaction_inputs(first, blocks.clone()).await.unwrap();
+    assert_ne!(updated, miss);
+    assert_eq!(hit, miss);
 
     let other = cached.get_transaction_inputs(second, blocks).await.unwrap();
     assert_eq!(other.0.id(), second);

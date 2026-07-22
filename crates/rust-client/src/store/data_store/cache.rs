@@ -49,10 +49,12 @@ pub(super) struct DataStoreCache {
     /// Storage map witnesses, keyed by (`map_root`, `map_key`). Avoids redundant RPC calls when
     /// the same map entry is accessed multiple times within a transaction.
     storage_map_witnesses: RwLock<BTreeMap<(Word, StorageMapKey), StorageMapWitness>>,
-    /// Transaction inputs served to the executor. Only populated while the note screener runs,
-    /// where trial executions share the same account and reference block; see
-    /// [`super::ClientDataStore::with_execution_input_cache`]. Left empty during real transaction
-    /// execution, whose account state evolves between executions.
+    /// Transaction inputs served to the executor. Entries are only inserted when the
+    /// execution-input cache is enabled via
+    /// [`super::ClientDataStore::with_execution_input_cache`], which the note screener does for
+    /// its trial executions, where they share the same account and reference block. Otherwise
+    /// this map stays empty, as during real transaction execution, whose account state evolves
+    /// between executions.
     transaction_inputs: RwLock<TransactionInputsCache>,
     /// Vault asset witnesses served to the executor. The requested keys always include the fee
     /// asset key, so this memoizes the per-execution fee witness lookup across a screening batch.

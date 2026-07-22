@@ -234,14 +234,6 @@ impl<AUTH> Client<AUTH> {
         match Vec::<NoteInfo>::read_from_bytes(&bytes) {
             Ok(entries) => Ok(entries),
             Err(err) => {
-                // TODO: remove once #2265 is ported to `next`. Recover a pre-`block_hint`
-                // outbox blob via the legacy (no-hint) layout so a pending relay survives upgrade.
-                if let Ok(legacy) = Vec::<LegacyNoteInfo>::read_from_bytes(&bytes) {
-                    return Ok(legacy
-                        .into_iter()
-                        .map(|note| NoteInfo::new(note.header, note.details_bytes))
-                        .collect());
-                }
                 tracing::warn!(?err, "dropping unreadable relay outbox; resetting to empty");
                 self.store
                     .remove_setting(String::from(NOTE_TRANSPORT_OUTBOX_KEY))
@@ -299,8 +291,8 @@ impl<AUTH> Client<AUTH> {
         let Some(bytes) = bytes else {
             return Ok(BTreeSet::new());
         };
-        match Vec::<NoteTag>::read_from_bytes(&bytes) {
-            Ok(tags) => Ok(tags.into_iter().collect()),
+        match BTreeSet::<NoteTag>::read_from_bytes(&bytes) {
+            Ok(tags) => Ok(tags),
             Err(err) => {
                 tracing::warn!(?err, "dropping unreadable covered-tags set; resetting to empty");
                 self.store
@@ -319,9 +311,8 @@ impl<AUTH> Client<AUTH> {
         if tags.is_empty() {
             return self.store.remove_setting(key).await.map_err(ClientError::StoreError);
         }
-        let serialized: Vec<NoteTag> = tags.iter().copied().collect();
         self.store
-            .set_setting(key, serialized.to_bytes())
+            .set_setting(key, tags.to_bytes())
             .await
             .map_err(ClientError::StoreError)
     }
@@ -615,22 +606,6 @@ impl Deserializable for NoteInfo {
         let details_bytes = Vec::<u8>::read_from(source)?;
         let block_hint = Option::<BlockNumber>::read_from(source)?;
         Ok(NoteInfo { header, details_bytes, block_hint })
-    }
-}
-
-// TODO: remove once #2265 is ported to `next`. Pre-`block_hint` on-disk layout of [`NoteInfo`]
-// (header + details only); used only by `load_relay_outbox` to recover blobs written by a
-// pre-0.15.2 client.
-struct LegacyNoteInfo {
-    header: NoteHeader,
-    details_bytes: Vec<u8>,
-}
-
-impl Deserializable for LegacyNoteInfo {
-    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
-        let header = NoteHeader::read_from(source)?;
-        let details_bytes = Vec::<u8>::read_from(source)?;
-        Ok(LegacyNoteInfo { header, details_bytes })
     }
 }
 

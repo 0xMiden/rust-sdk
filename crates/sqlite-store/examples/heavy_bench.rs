@@ -7,6 +7,8 @@
 //!   run <path> <accounts> <entries>       - open the store 3 times (timed, RSS sampled around
 //!                                           the first), update one map entry on one account,
 //!                                           read one witness twice, sample RSS after.
+//!   memopen <path> <accounts> <entries>   - open the store once and sample RSS before/after,
+//!                                           allocating nothing else, so the delta is clean.
 //!
 //! Every account's map has distinct values so trees cannot be deduplicated by root.
 
@@ -163,6 +165,19 @@ async fn run(path: PathBuf, accounts: u64, entries: u64) -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn memopen(path: PathBuf, accounts: u64, entries: u64) -> anyhow::Result<()> {
+    let rss_before = rss_kb();
+    let store = SqliteStore::new(path).await?;
+    let rss_open = rss_kb();
+    drop(store);
+    println!(
+        "PHASE=memopen ACCTS={accounts} E={entries} BEFORE_KB={rss_before} OPEN_KB={rss_open} \
+         OPEN_DELTA_KB={}",
+        rss_open.saturating_sub(rss_before),
+    );
+    Ok(())
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -173,6 +188,7 @@ async fn main() -> anyhow::Result<()> {
     match mode {
         "populate" => populate(path, accounts, entries).await,
         "run" => run(path, accounts, entries).await,
+        "memopen" => memopen(path, accounts, entries).await,
         other => anyhow::bail!("unknown mode {other}"),
     }
 }

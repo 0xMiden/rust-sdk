@@ -12,16 +12,9 @@ use alloc::vec::Vec;
 use futures::Stream;
 use miden_protocol::address::Address;
 use miden_protocol::block::BlockNumber;
-use miden_protocol::note::{
-    Note,
-    NoteDetails,
-    NoteDetailsCommitment,
-    NoteFile,
-    NoteHeader,
-    NoteId,
-    NoteTag,
-};
+use miden_protocol::note::{Note, NoteDetails, NoteDetailsCommitment, NoteHeader, NoteId, NoteTag};
 use miden_protocol::utils::serde::Serializable;
+use miden_standards::note::{NoteFile, NoteSyncHint};
 use miden_tx::auth::TransactionAuthenticator;
 use miden_tx::utils::serde::{
     ByteReader,
@@ -354,6 +347,10 @@ where
         const NOTE_LOOKBACK_BLOCKS: u32 = 20;
 
         let mut notes = Vec::new();
+        // TODO: perhaps we should not need to map received IDs with details commitments, and
+        // instead we may allow `InputNoteRecord` to optionally keep NoteIds. Then within
+        // `import_note` we could match everything by ID and remove this map check
+        let mut id_by_commitment: BTreeMap<NoteDetailsCommitment, NoteId> = BTreeMap::new();
         let (note_infos, rcursor) =
             self.get_note_transport_api()?.fetch_notes(tags, cursor).await?;
         for note_info in &note_infos {
@@ -361,6 +358,10 @@ where
             // for key in self.store.decryption_keys() try
             // key.decrypt(details_bytes_encrypted)
             let note = rejoin_note(&note_info.header, &note_info.details_bytes)?;
+
+            // The header carries the attachment-aware (on-chain) note id; the rejoined note has
+            // empty attachments and would hash to a different id, so key off the header.
+            id_by_commitment.insert(note.details_commitment(), note_info.header.id());
             notes.push((note, note_info.block_hint));
         }
 
@@ -368,18 +369,14 @@ where
         let fallback_after_block_num =
             BlockNumber::from(sync_height.as_u32().saturating_sub(NOTE_LOOKBACK_BLOCKS));
 
-        let id_by_commitment: BTreeMap<NoteDetailsCommitment, NoteId> =
-            notes.iter().map(|(note, _)| (note.details_commitment(), note.id())).collect();
-
         let mut note_requests = Vec::with_capacity(notes.len());
         for (note, block_hint) in notes {
             let tag = note.metadata().tag();
             // Prefer the sender-provided hint, falling back to the lookback window when absent.
             let after_block_num = block_hint.unwrap_or(fallback_after_block_num);
-            let note_file = NoteFile::NoteDetails {
+            let note_file = NoteFile::ExpectedNote {
                 details: note.into(),
-                after_block_num,
-                tag: Some(tag),
+                sync_hint: NoteSyncHint::new(after_block_num, tag),
             };
             note_requests.push(note_file);
         }

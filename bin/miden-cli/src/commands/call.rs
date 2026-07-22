@@ -98,8 +98,7 @@ impl CallCmd {
         // it at compile time to resolve `call.<digest>` to a known procedure — otherwise it
         // emits a "phantom target" warning. Dynamic linking provides that resolution without
         // embedding the library bytes in the script.
-        let linked_builder =
-            client.code_builder().with_dynamically_linked_library(package.mast.as_ref())?;
+        let linked_builder = client.code_builder().with_dynamically_linked_library(&package)?;
 
         // 1) Read-only execution to get return values. If `result_count` is unknown we skip
         // the drop sequence and let `print_output_stack` auto-detect results from the stack.
@@ -281,7 +280,7 @@ fn generate_tx_script(
         )));
     }
 
-    let mut script = String::from("begin\n");
+    let mut script = String::from("@transaction_script\npub proc main\n");
 
     // Push args in reverse so the first arg ends up on top.
     for arg in args.iter().rev() {

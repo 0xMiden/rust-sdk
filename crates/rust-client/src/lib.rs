@@ -58,7 +58,6 @@
 //! ```rust,ignore
 //! use std::sync::Arc;
 //!
-//! use miden_client::DebugMode;
 //! use miden_client::builder::ClientBuilder;
 //! use miden_client::keystore::FilesystemKeyStore;
 //! use miden_client::rpc::{Endpoint, GrpcClient};
@@ -80,7 +79,6 @@
 //!     .rpc(Arc::new(GrpcClient::new(&endpoint, 10_000)))
 //!     .store(store)
 //!     .authenticator(Arc::new(keystore))
-//!     .in_debug_mode(DebugMode::Disabled)
 //!     .build()
 //!     .await?;
 //!
@@ -124,6 +122,8 @@ pub mod keystore;
 pub mod note;
 pub mod note_transport;
 pub mod pswap;
+#[cfg(feature = "tonic")]
+pub mod remote_prover;
 pub mod rpc;
 pub mod settings;
 pub mod store;
@@ -144,7 +144,7 @@ pub use miden_protocol::utils::serde::{Deserializable, Serializable, SliceReader
 // ================================================================================================
 
 pub mod notes {
-    pub use miden_protocol::note::NoteFile;
+    pub use miden_standards::note::NoteFile;
 }
 
 /// Provides `AggLayer` bridge components, note constructors, and helper types.
@@ -175,16 +175,14 @@ pub mod assembly {
 /// Provides types and utilities for working with assets within the Miden network.
 pub mod asset {
     pub use miden_protocol::account::delta::{
-        AccountStorageDelta,
         AccountVaultDelta,
         FungibleAssetDelta,
         NonFungibleAssetDelta,
         NonFungibleDeltaAction,
-        StorageMapDelta,
-        StorageSlotDelta,
     };
     pub use miden_protocol::account::{
         AccountStorageHeader,
+        AssetCallbackFlag,
         StorageMapWitness,
         StorageSlotContent,
         StorageSlotHeader,
@@ -192,12 +190,10 @@ pub mod asset {
     pub use miden_protocol::asset::{
         Asset,
         AssetAmount,
-        AssetCallbackFlag,
         AssetCallbacks,
         AssetComposition,
         AssetId,
         AssetVault,
-        AssetVaultKey,
         AssetWitness,
         FungibleAsset,
         NonFungibleAsset,
@@ -217,8 +213,8 @@ pub mod auth {
         PublicKeyCommitment,
         Signature,
     };
-    pub use miden_standards::AuthMethod;
     pub use miden_standards::account::auth::{
+        Approver,
         AuthMultisig,
         AuthMultisigConfig,
         AuthSingleSig,
@@ -236,7 +232,7 @@ pub mod auth {
 
 /// Provides types for working with blocks within the Miden network.
 pub mod block {
-    pub use miden_protocol::block::{BlockHeader, BlockNumber};
+    pub use miden_protocol::block::{BlockHeader, BlockNumber, FeeParameters, ValidatorKeys};
 }
 
 /// Provides cryptographic types and utilities used within the Miden rollup
@@ -326,8 +322,9 @@ pub use miden_protocol::{
     Word,
     ZERO,
 };
-pub use miden_remote_prover_client::RemoteTransactionProver;
 pub use miden_tx::ExecutionOptions;
+#[cfg(feature = "tonic")]
+pub use remote_prover::RemoteTransactionProver;
 
 /// Provides test utilities for working with accounts and account IDs
 /// within the Miden network. This module is only available when the `testing` feature is
@@ -351,12 +348,13 @@ pub mod testing {
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::convert::Infallible;
 
 use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::merkle::mmr::PartialMmr;
 use miden_protocol::crypto::rand::FeltRng;
 use miden_tx::auth::TransactionAuthenticator;
-use rand::RngCore;
+use rand::TryRng;
 use rpc::NodeRpcClient;
 use store::Store;
 
@@ -390,7 +388,7 @@ pub struct Client<AUTH> {
     authenticator: Option<Arc<AUTH>>,
     /// Shared source manager used to retain MASM source information for assembled programs.
     source_manager: Arc<dyn SourceManagerSync>,
-    /// Options that control the transaction executor's runtime behaviour (e.g. debug mode).
+    /// Options that control the transaction executor's runtime behaviour (e.g. cycle limits).
     exec_options: ExecutionOptions,
     /// Number of blocks after which pending transactions are considered stale and discarded.
     tx_discard_delta: Option<u32>,
@@ -460,11 +458,6 @@ impl<AUTH> Client<AUTH>
 where
     AUTH: TransactionAuthenticator,
 {
-    /// Returns true if the client is in debug mode.
-    pub fn in_debug_mode(&self) -> bool {
-        self.exec_options.enable_debugging()
-    }
-
     /// Returns an instance of the `CodeBuilder`
     pub fn code_builder(&self) -> assembly::CodeBuilder {
         assembly::CodeBuilder::with_source_manager(self.source_manager.clone())
@@ -553,7 +546,7 @@ impl<T> ClientFeltRng for T where T: FeltRng + Send + Sync {}
 /// Boxed RNG trait object used by the client.
 pub type ClientRngBox = Box<dyn ClientFeltRng>;
 
-/// A wrapper around a [`FeltRng`] that implements the [`RngCore`] trait.
+/// A wrapper around a [`FeltRng`] that implements the [`TryRng`] trait.
 /// This allows the user to pass their own generic RNG so that it's used by the client.
 pub struct ClientRng(ClientRngBox);
 
@@ -567,17 +560,20 @@ impl ClientRng {
     }
 }
 
-impl RngCore for ClientRng {
-    fn next_u32(&mut self) -> u32 {
-        self.0.next_u32()
+impl TryRng for ClientRng {
+    type Error = Infallible;
+
+    fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+        Ok(self.0.next_u32())
     }
 
-    fn next_u64(&mut self) -> u64 {
-        self.0.next_u64()
+    fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+        Ok(self.0.next_u64())
     }
 
-    fn fill_bytes(&mut self, dest: &mut [u8]) {
+    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), Self::Error> {
         self.0.fill_bytes(dest);
+        Ok(())
     }
 }
 
@@ -588,32 +584,6 @@ impl FeltRng for ClientRng {
 
     fn draw_word(&mut self) -> Word {
         self.0.draw_word()
-    }
-}
-
-/// Indicates whether the client is operating in debug mode.
-#[derive(Debug, Clone, Copy)]
-pub enum DebugMode {
-    Enabled,
-    Disabled,
-}
-
-impl From<DebugMode> for bool {
-    fn from(debug_mode: DebugMode) -> Self {
-        match debug_mode {
-            DebugMode::Enabled => true,
-            DebugMode::Disabled => false,
-        }
-    }
-}
-
-impl From<bool> for DebugMode {
-    fn from(debug_mode: bool) -> DebugMode {
-        if debug_mode {
-            DebugMode::Enabled
-        } else {
-            DebugMode::Disabled
-        }
     }
 }
 

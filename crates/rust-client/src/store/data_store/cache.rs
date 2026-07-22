@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 
 use miden_protocol::Word;
 use miden_protocol::account::{AccountId, PartialAccount, StorageMapKey, StorageMapWitness};
-use miden_protocol::asset::{AssetVaultKey, AssetWitness};
+use miden_protocol::asset::{AssetId, AssetWitness};
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::note::NoteScript;
 use miden_protocol::transaction::{AccountInputs, PartialBlockchain};
@@ -25,10 +25,10 @@ type CachedTransactionInputs = (PartialAccount, BlockHeader, PartialBlockchain);
 type TransactionInputsCache =
     BTreeMap<AccountId, BTreeMap<BTreeSet<BlockNumber>, CachedTransactionInputs>>;
 
-/// Vault asset witnesses keyed by (account, vault root), then by the requested vault keys. Nested
+/// Vault asset witnesses keyed by (account, vault root), then by the requested asset IDs. Nested
 /// for the same reason as [`TransactionInputsCache`].
 type VaultWitnessCache =
-    BTreeMap<(AccountId, Word), BTreeMap<BTreeSet<AssetVaultKey>, Vec<AssetWitness>>>;
+    BTreeMap<(AccountId, Word), BTreeMap<BTreeSet<AssetId>, Vec<AssetWitness>>>;
 
 /// In-memory state that [`super::ClientDataStore`] serves to the executor without going through
 /// the persistent store.
@@ -190,31 +190,31 @@ impl DataStoreCache {
     }
 
     /// Returns the cached vault asset witnesses for the given account, vault root and requested
-    /// keys, if any.
+    /// asset IDs, if any.
     ///
     /// Returns `None` if the execution-input cache is disabled.
     pub(super) fn get_vault_asset_witnesses(
         &self,
         account_id: AccountId,
         vault_root: Word,
-        vault_keys: &BTreeSet<AssetVaultKey>,
+        asset_ids: &BTreeSet<AssetId>,
     ) -> Option<Vec<AssetWitness>> {
         if !self.cache_execution_inputs {
             return None;
         }
 
         let cache = self.vault_asset_witnesses.read();
-        cache.get(&(account_id, vault_root))?.get(vault_keys).cloned()
+        cache.get(&(account_id, vault_root))?.get(asset_ids).cloned()
     }
 
-    /// Caches the vault asset witnesses for the given account, vault root and requested keys.
+    /// Caches the vault asset witnesses for the given account, vault root and requested asset IDs.
     ///
     /// Does nothing if the execution-input cache is disabled.
     pub(super) fn insert_vault_asset_witnesses(
         &self,
         account_id: AccountId,
         vault_root: Word,
-        vault_keys: BTreeSet<AssetVaultKey>,
+        asset_ids: BTreeSet<AssetId>,
         witnesses: &[AssetWitness],
     ) {
         if !self.cache_execution_inputs {
@@ -225,7 +225,7 @@ impl DataStoreCache {
             .write()
             .entry((account_id, vault_root))
             .or_default()
-            .insert(vault_keys, witnesses.to_vec());
+            .insert(asset_ids, witnesses.to_vec());
     }
 
     /// Returns the cached transaction reference block, if set.

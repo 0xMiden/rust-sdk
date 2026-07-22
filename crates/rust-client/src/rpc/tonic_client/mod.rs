@@ -10,7 +10,13 @@ use miden_protocol::vm::FutureMaybeSend;
 
 type RpcFuture<T> = Pin<Box<dyn FutureMaybeSend<T>>>;
 
-use miden_protocol::account::{AccountCode, AccountId};
+use miden_protocol::account::{
+    AccountCode,
+    AccountId,
+    AccountVaultPatch,
+    StorageMapPatchEntries,
+    StorageSlotName,
+};
 use miden_protocol::address::NetworkId;
 use miden_protocol::batch::{ProposedBatch, ProvenBatch};
 use miden_protocol::block::account_tree::AccountWitness;
@@ -32,15 +38,15 @@ use super::domain::account::{
     GetAccountRequest,
     StorageMapFetch,
 };
-use super::domain::note::{CommittedNote, FetchedNote, NoteSyncBlock};
+use super::domain::note::{CommittedNote, FetchedNote, SyncNotesBlock};
 use super::domain::nullifier::NullifierUpdate;
 use super::generated::rpc::AccountRequest;
 use super::generated::rpc::account_request::AccountDetailRequest;
 use super::{Endpoint, NodeRpcClient, RpcEndpoint, RpcError, RpcStatusInfo};
-use crate::rpc::domain::account_vault::{AccountVaultInfo, AccountVaultUpdate};
+use crate::rpc::domain::account_vault::AccountVaultInfo;
 use crate::rpc::domain::limits::RpcLimits;
 use crate::rpc::domain::status::NetworkNoteStatusInfo;
-use crate::rpc::domain::storage_map::{StorageMapInfo, StorageMapUpdate};
+use crate::rpc::domain::storage_map::StorageMapInfo;
 use crate::rpc::domain::sync::{ChainMmrInfo, SyncTarget};
 use crate::rpc::domain::transaction::TransactionRecord;
 use crate::rpc::errors::node::parse_node_error;
@@ -667,7 +673,7 @@ impl NodeRpcClient for GrpcClient {
     }
 
     /// Sends one or more `SyncNoteRequest`s to the node and merges the responses into a list of
-    /// [`NoteSyncBlock`]s.
+    /// [`SyncNotesBlock`]s.
     ///
     /// Chunks `note_tags` by [`RpcLimits::note_tags_limit`] and paginates each chunk across the
     /// requested block range.
@@ -676,7 +682,7 @@ impl NodeRpcClient for GrpcClient {
         block_from: BlockNumber,
         block_to: BlockNumber,
         note_tags: &BTreeSet<NoteTag>,
-    ) -> Result<Vec<NoteSyncBlock>, RpcError> {
+    ) -> Result<Vec<SyncNotesBlock>, RpcError> {
         if note_tags.is_empty() {
             return Ok(Vec::new());
         }
@@ -686,7 +692,7 @@ impl NodeRpcClient for GrpcClient {
 
         // Merge blocks across tag-chunks: a single block can hold notes whose tags fall into
         // different chunks, so the same block can appear in multiple chunks' responses.
-        let mut merged_blocks: BTreeMap<BlockNumber, NoteSyncBlock> = BTreeMap::new();
+        let mut merged_blocks: BTreeMap<BlockNumber, SyncNotesBlock> = BTreeMap::new();
 
         for chunk in tags.chunks(limits.note_tags_limit as usize) {
             let proto_tags: Vec<u32> = chunk.iter().map(|&t| t.into()).collect();
@@ -717,7 +723,7 @@ impl NodeRpcClient for GrpcClient {
                 let page_block_to = BlockNumber::from(page.block_num);
 
                 for proto_block in response.blocks {
-                    let block: NoteSyncBlock = proto_block.try_into()?;
+                    let block: SyncNotesBlock = proto_block.try_into()?;
                     ensure_requested_tags(
                         &requested_tags,
                         block.notes.values().map(CommittedNote::tag),
@@ -863,7 +869,7 @@ impl NodeRpcClient for GrpcClient {
         account_id: AccountId,
     ) -> Result<StorageMapInfo, RpcError> {
         let mut pagination = BlockPagination::new(block_from, block_to);
-        let mut updates = Vec::new();
+        let mut map_entries: BTreeMap<StorageSlotName, StorageMapPatchEntries> = BTreeMap::new();
 
         let (chain_tip, block_number) = loop {
             let request = proto::rpc::SyncAccountStorageMapsRequest {
@@ -879,20 +885,17 @@ impl NodeRpcClient for GrpcClient {
                     Box::pin(async move { rpc_api.sync_account_storage_maps(request).await })
                 })
                 .await?;
-            let response = response.into_inner();
-            let page = response
-                .pagination_info
-                .ok_or(RpcError::ExpectedDataMissing("pagination_info".to_owned()))?;
-            let page_block_num = BlockNumber::from(page.block_num);
-            let page_chain_tip = BlockNumber::from(page.chain_tip);
-            let batch = response
-                .updates
-                .into_iter()
-                .map(TryInto::try_into)
-                .collect::<Result<Vec<StorageMapUpdate>, _>>()?;
-            updates.extend(batch);
+            let page = StorageMapInfo::try_from(response.into_inner())?;
 
-            match pagination.advance(page_block_num, page_chain_tip)? {
+            for (slot_name, entries) in page.map_entries {
+                map_entries
+                    .entry(slot_name)
+                    .or_default()
+                    .as_map_mut()
+                    .extend(entries.into_map());
+            }
+
+            match pagination.advance(page.block_number, page.chain_tip)? {
                 PaginationResult::Continue => {},
                 PaginationResult::Done {
                     chain_tip: final_chain_tip,
@@ -901,7 +904,7 @@ impl NodeRpcClient for GrpcClient {
             }
         };
 
-        Ok(StorageMapInfo { chain_tip, block_number, updates })
+        Ok(StorageMapInfo { chain_tip, block_number, map_entries })
     }
 
     async fn sync_account_vault(
@@ -911,7 +914,7 @@ impl NodeRpcClient for GrpcClient {
         account_id: AccountId,
     ) -> Result<AccountVaultInfo, RpcError> {
         let mut pagination = BlockPagination::new(block_from, block_to);
-        let mut updates = Vec::new();
+        let mut vault_patch = AccountVaultPatch::default();
 
         let (chain_tip, block_number) = loop {
             let request = proto::rpc::SyncAccountVaultRequest {
@@ -927,20 +930,11 @@ impl NodeRpcClient for GrpcClient {
                     Box::pin(async move { rpc_api.sync_account_vault(request).await })
                 })
                 .await?;
-            let response = response.into_inner();
-            let page = response
-                .pagination_info
-                .ok_or(RpcError::ExpectedDataMissing("pagination_info".to_owned()))?;
-            let page_block_num = BlockNumber::from(page.block_num);
-            let page_chain_tip = BlockNumber::from(page.chain_tip);
-            let batch = response
-                .updates
-                .iter()
-                .map(|u| (*u).try_into())
-                .collect::<Result<Vec<AccountVaultUpdate>, _>>()?;
-            updates.extend(batch);
+            let page = AccountVaultInfo::try_from(response.into_inner())?;
 
-            match pagination.advance(page_block_num, page_chain_tip)? {
+            vault_patch.merge(page.vault_patch);
+
+            match pagination.advance(page.block_number, page.chain_tip)? {
                 PaginationResult::Continue => {},
                 PaginationResult::Done {
                     chain_tip: final_chain_tip,
@@ -949,7 +943,7 @@ impl NodeRpcClient for GrpcClient {
             }
         };
 
-        Ok(AccountVaultInfo { chain_tip, block_number, updates })
+        Ok(AccountVaultInfo { chain_tip, block_number, vault_patch })
     }
 
     /// Sends one or more `SyncTransactions` requests to the node and concatenates the responses

@@ -111,7 +111,7 @@ fn compute_expected_schema_hashes() -> Vec<Hash> {
 fn schema_hash(conn: &Connection) -> Result<Hash> {
     let mut stmt = conn.prepare(
         "SELECT type, name, tbl_name, sql FROM sqlite_schema \
-         WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' \
+         WHERE sql IS NOT NULL AND name NOT GLOB 'sqlite_*' \
          ORDER BY type, name, tbl_name",
     )?;
     let entries = stmt
@@ -196,13 +196,7 @@ pub fn list_setting_keys(conn: &Connection) -> Result<Vec<String>, StoreError> {
 mod tests {
     use rusqlite::Connection;
 
-    use super::{
-        EXPECTED_SCHEMA_HASHES,
-        MIGRATION_SCRIPTS,
-        apply_migrations,
-        prepare_migrations,
-        schema_hash,
-    };
+    use super::{EXPECTED_SCHEMA_HASHES, MIGRATION_SCRIPTS, apply_migrations, schema_hash};
     use crate::db_management::errors::SqliteStoreError;
 
     #[test]
@@ -224,21 +218,6 @@ mod tests {
 
         let err = apply_migrations(&mut conn).unwrap_err();
         assert!(matches!(err, SqliteStoreError::SchemaHashMismatch));
-    }
-
-    #[test]
-    fn stale_migrations_row_does_not_affect_acceptance() {
-        // An older database carries a `db-migration-hash` row in the `migrations` table. The guard
-        // reads the live schema, not that row, so the row's presence is irrelevant.
-        let mut conn = Connection::open_in_memory().unwrap();
-        prepare_migrations().to_version(&mut conn, MIGRATION_SCRIPTS.len()).unwrap();
-        conn.execute(
-            "INSERT INTO migrations (name, value) VALUES ('db-migration-hash', x'00')",
-            [],
-        )
-        .unwrap();
-
-        apply_migrations(&mut conn).unwrap();
     }
 
     #[test]

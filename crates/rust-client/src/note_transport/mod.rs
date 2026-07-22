@@ -4,7 +4,7 @@ pub mod generated;
 pub mod grpc;
 
 use alloc::boxed::Box;
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -25,11 +25,19 @@ use miden_tx::utils::serde::{
 };
 
 pub use self::errors::NoteTransportError;
+use crate::sync::NoteTagSource;
 use crate::{Client, ClientError};
 
 pub const NOTE_TRANSPORT_TESTNET_ENDPOINT: &str = "https://transport.miden.io";
 pub const NOTE_TRANSPORT_DEVNET_ENDPOINT: &str = "https://transport.devnet.miden.io";
 pub const NOTE_TRANSPORT_CURSOR_STORE_SETTING: &str = "note_transport_cursor";
+
+/// Settings key for the note-transport backfill bookkeeping: a serialized `Vec<NoteTag>` of the
+/// `User`- and `Account`-source tags whose full history has already been fetched up to the global
+/// cursor. [`Client::sync_note_transport`] diffs the currently tracked tags against this set to
+/// find tags added after the cursor advanced, and backfills only those. Reusing the settings k/v
+/// avoids a Store-trait schema change while surviving process restarts.
+pub const NOTE_TRANSPORT_COVERED_TAGS_KEY: &str = "note_transport_covered_tags";
 
 /// Settings key for the durable relay outbox: a serialized `Vec<NoteInfo>` of
 /// private notes whose transport delivery has not yet succeeded.
@@ -246,12 +254,85 @@ impl<AUTH> Client<AUTH> {
         let bytes = entries.to_bytes();
         self.store.set_setting(key, bytes).await.map_err(ClientError::StoreError)
     }
+
+    /// The set of tracked tags eligible for history backfill.
+    ///
+    /// Only `User`- and `Account`-source tags qualify: those are the tags a consumer explicitly
+    /// started tracking (via [`Client::add_note_tag`], account import, or address creation) and may
+    /// therefore have historical private notes sitting below the global cursor. `Note`-source tags
+    /// are created by transport delivery and note import, so backfilling them would re-fetch tags
+    /// the fetch path itself just registered; `Subscription` tags are excluded for the same reason.
+    async fn backfill_candidate_tags(&self) -> Result<BTreeSet<NoteTag>, ClientError> {
+        let tags = self
+            .store
+            .get_note_tags()
+            .await?
+            .into_iter()
+            .filter(|record| {
+                matches!(record.source, NoteTagSource::User | NoteTagSource::Account(_))
+            })
+            .map(|record| record.tag)
+            .collect();
+        Ok(tags)
+    }
+
+    /// Load the set of tags whose history has already been fetched up to the global cursor.
+    ///
+    /// Returns an empty set when the key is absent (e.g. a store that predates the feature). On a
+    /// deserialization failure the entry is dropped and an empty set is returned: re-treating every
+    /// tracked tag as new only triggers a one-off backfill, which dedupes, whereas leaving
+    /// unreadable bytes in place would fail every subsequent sync.
+    async fn load_covered_tags(&self) -> Result<BTreeSet<NoteTag>, ClientError> {
+        let bytes = self
+            .store
+            .get_setting(String::from(NOTE_TRANSPORT_COVERED_TAGS_KEY))
+            .await
+            .map_err(ClientError::StoreError)?;
+        let Some(bytes) = bytes else {
+            return Ok(BTreeSet::new());
+        };
+        match BTreeSet::<NoteTag>::read_from_bytes(&bytes) {
+            Ok(tags) => Ok(tags),
+            Err(err) => {
+                tracing::warn!(?err, "dropping unreadable covered-tags set; resetting to empty");
+                self.store
+                    .remove_setting(String::from(NOTE_TRANSPORT_COVERED_TAGS_KEY))
+                    .await
+                    .map_err(ClientError::StoreError)?;
+                Ok(BTreeSet::new())
+            },
+        }
+    }
+
+    /// Persist the covered-tags set, removing the key entirely when empty so the settings table
+    /// doesn't accumulate empty-vec blobs.
+    async fn save_covered_tags(&self, tags: &BTreeSet<NoteTag>) -> Result<(), ClientError> {
+        let key = String::from(NOTE_TRANSPORT_COVERED_TAGS_KEY);
+        if tags.is_empty() {
+            return self.store.remove_setting(key).await.map_err(ClientError::StoreError);
+        }
+        self.store
+            .set_setting(key, tags.to_bytes())
+            .await
+            .map_err(ClientError::StoreError)
+    }
 }
 
 impl<AUTH> Client<AUTH>
 where
     AUTH: TransactionAuthenticator + Sync + 'static,
 {
+    /// Per-sync cap on the number of newly tracked tags to backfill. Bounds the burst when many
+    /// tags are registered at once (e.g. restoring many accounts or addresses). Deferred tags stay
+    /// uncovered and are picked up on subsequent syncs.
+    pub const MAX_BACKFILL_TAGS_PER_SYNC: usize = 64;
+
+    /// Safety cap on the per-tag backfill drain. A well-behaved server eventually returns no
+    /// forward cursor progress, ending the loop; this bound only guards against a server that
+    /// advances the cursor indefinitely without ever returning an empty batch. It is far above any
+    /// honest per-tag backlog, so reaching it signals a server bug rather than real history.
+    const MAX_BACKFILL_ITERATIONS: usize = 1_000;
+
     /// Fetch notes for tracked note tags.
     ///
     /// The client will query the configured note transport node for all tracked note tags.
@@ -261,9 +342,9 @@ where
     /// end-to-end encryption (unimplemented).
     /// Fetched notes will be stored into the client's store.
     ///
-    /// An internal pagination mechanism is employed to reduce the number of downloaded notes.
-    /// To fetch the full history of private notes for the tracked tags, use
-    /// [`Client::fetch_all_private_notes`].
+    /// An internal pagination mechanism is employed to reduce the number of downloaded notes: this
+    /// fetches only notes past the stored cursor. Historical notes for a newly tracked tag are
+    /// recovered automatically by [`Client::sync_note_transport`], which backfills each new tag.
     pub async fn fetch_private_notes(&mut self) -> Result<(), ClientError> {
         let note_tags: Vec<NoteTag> =
             self.store.get_unique_note_tags().await?.into_iter().collect();
@@ -275,50 +356,66 @@ where
         Ok(())
     }
 
-    /// Fetches all notes for tracked note tags, draining the server's paginated
-    /// response by looping until the cursor stops advancing.
+    /// Backfill historical private notes for tags added after the global cursor advanced.
     ///
-    /// Similar to [`Client::fetch_private_notes`] but ignores the stored
-    /// pagination cursor and re-scans from the beginning. The server-side
-    /// transport caps each response at a fixed batch size; this method issues
-    /// repeated fetch calls until one returns the same cursor it was given
-    /// (i.e. no new notes), so the documented "fetches all notes" semantics
-    /// hold regardless of how large the backlog is. Prefer
-    /// [`Client::fetch_private_notes`] for steady-state syncing to avoid
-    /// re-downloading already-seen notes.
-    pub async fn fetch_all_private_notes(&mut self) -> Result<(), ClientError> {
-        // Safety cap on a misbehaving server. At 500 notes per batch, 1000
-        // iterations covers 500k notes — well beyond any plausible retention
-        // window — and bounds the worst-case wall-clock at ~50s at 50ms/req.
-        // Hitting this signals a server bug, not an honest backlog.
-        const MAX_ITERATIONS: usize = 1_000;
+    /// The global transport cursor is shared across all tracked tags and only moves forward, so a
+    /// tag that starts being tracked late never sees its notes that already sit below the cursor.
+    /// This diffs the tracked `User`/`Account` tags (see [`Self::backfill_candidate_tags`]) against
+    /// the persisted covered set (see [`NOTE_TRANSPORT_COVERED_TAGS_KEY`]) and drains each newly
+    /// tracked tag from the start, fetching only that tag's own history rather than re-scanning
+    /// everything. Tags no longer tracked are dropped from the covered set so a later re-add
+    /// backfills again instead of resuming from a stale mark. Imports dedupe, so the overlap with
+    /// the steady-state stream is harmless.
+    ///
+    /// At most [`Self::MAX_BACKFILL_TAGS_PER_SYNC`] tags are backfilled per call; any remainder
+    /// stays uncovered and is picked up on the next sync. Returns the ids of notes imported here.
+    pub(crate) async fn backfill_new_tags(&mut self) -> Result<Vec<NoteId>, ClientError> {
+        let candidates = self.backfill_candidate_tags().await?;
+        let loaded = self.load_covered_tags().await?;
 
-        let note_tags: Vec<NoteTag> =
-            self.store.get_unique_note_tags().await?.into_iter().collect();
-        // Snapshot the stored cursor up front so we can advance (never regress)
-        // it after the drain. Without this guard, starting the drain at
-        // `init()` and persisting per-batch would clobber a previously
-        // advanced cursor with the small `rcursor` of the first batch.
-        let stored_cursor = self.store.get_note_transport_cursor().await?;
+        // Drop tags no longer tracked. Keeping a removed tag marked covered would make a later
+        // re-add skip its backlog, silently missing notes that arrived while it was untracked.
+        let mut covered: BTreeSet<NoteTag> = loaded.intersection(&candidates).copied().collect();
+        if covered.len() != loaded.len() {
+            self.save_covered_tags(&covered).await?;
+        }
 
+        let new_tags: Vec<NoteTag> = candidates.difference(&covered).copied().collect();
+
+        let mut imported_ids = Vec::new();
+        for tag in new_tags.into_iter().take(Self::MAX_BACKFILL_TAGS_PER_SYNC) {
+            imported_ids.extend(self.backfill_tag(tag).await?);
+            covered.insert(tag);
+            // Persist after each tag so a crash mid-backfill keeps completed tags covered. A redo
+            // is harmless because imports dedupe; the dangerous direction (marking covered before
+            // the import lands) never happens.
+            self.save_covered_tags(&covered).await?;
+        }
+
+        Ok(imported_ids)
+    }
+
+    /// Drain a single tag's full history from the transport, paging until the cursor stops
+    /// advancing. Uses a local cursor and never touches the global one, so it cannot regress
+    /// steady-state progress. Returns the ids of the notes it imported.
+    async fn backfill_tag(&mut self, tag: NoteTag) -> Result<Vec<NoteId>, ClientError> {
+        let mut imported_ids = Vec::new();
         let mut cursor = NoteTransportCursor::init();
-        for _ in 0..MAX_ITERATIONS {
-            let (_, new_cursor) = self.fetch_transport_notes(cursor, &note_tags).await?;
-            // Terminate on any lack of forward progress. A well-behaved server
-            // returns `new_cursor == cursor` when there are no new notes (since
-            // `rcursor = max(cursor, max_seq_returned)`); using `<=` here also
-            // handles implementations that return an `init()` cursor on empty
-            // batches (see the in-tree mock transport).
+        for _ in 0..Self::MAX_BACKFILL_ITERATIONS {
+            let (ids, new_cursor) = self.fetch_transport_notes(cursor, &[tag]).await?;
+            imported_ids.extend(ids);
+            // Terminate on any lack of forward progress. A well-behaved server returns
+            // `new_cursor == cursor` when there are no new notes for this tag (since
+            // `rcursor = max(cursor, max_seq_returned)`); using `<=` also handles implementations
+            // that return an `init()` cursor on empty batches (see the in-tree mock transport).
             if new_cursor <= cursor {
-                let final_cursor = core::cmp::max(cursor, stored_cursor);
-                self.store.update_note_transport_cursor(final_cursor).await?;
-                return Ok(());
+                return Ok(imported_ids);
             }
             cursor = new_cursor;
         }
 
         Err(ClientError::NoteTransportError(NoteTransportError::PaginationDidNotTerminate(
-            MAX_ITERATIONS,
+            Self::MAX_BACKFILL_ITERATIONS,
         )))
     }
 
@@ -326,10 +423,10 @@ where
     ///
     /// The server paginates; this method issues one RPC and returns the imported details
     /// commitments together with the new cursor. The returned cursor equals the input cursor when
-    /// the batch was empty (i.e. no new notes). Callers that want to drain the full backlog should
-    /// loop until `new_cursor == cursor` (see [`Client::fetch_all_private_notes`]). Callers that do
-    /// steady-state polling (see [`Client::sync_state`] / [`Client::fetch_private_notes`]) should
-    /// call this once per tick with the stored cursor.
+    /// the batch was empty (i.e. no new notes). Callers that want to drain a tag's full backlog
+    /// should loop until `new_cursor == cursor` (see [`Client::backfill_new_tags`]). Callers that
+    /// do steady-state polling (see [`Client::sync_state`] / [`Client::fetch_private_notes`])
+    /// should call this once per tick with the stored cursor.
     ///
     /// Downloaded notes are imported into the local store. Persistence of the returned cursor is
     /// left to the caller so that drain loops can guard against regression of an already-advanced

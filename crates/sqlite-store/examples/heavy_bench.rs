@@ -1,3 +1,4 @@
+#![allow(clippy::similar_names)]
 //! Untracked benchmark for the few-heavy-accounts shape: a handful of accounts, each with a
 //! large storage map. Complements the many-light-accounts harnesses.
 //!

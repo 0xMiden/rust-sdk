@@ -177,6 +177,7 @@ CREATE INDEX idx_input_notes_state ON input_notes(state_discriminant);
 CREATE INDEX idx_input_notes_nullifier ON input_notes(nullifier);
 CREATE INDEX idx_input_notes_note_id ON input_notes(note_id);
 CREATE INDEX idx_input_notes_consumption ON input_notes(consumed_block_height, consumed_tx_order);
+CREATE INDEX idx_input_notes_script_root ON input_notes(script_root);
 
 CREATE TABLE output_notes (
     details_commitment BLOB NOT NULL,                       -- commitment to the note details (recipient + assets); primary key

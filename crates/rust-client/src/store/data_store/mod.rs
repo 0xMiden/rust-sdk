@@ -233,75 +233,86 @@ impl DataStore for ClientDataStore {
         // Cache the reference block so lazy-loading methods can use it
         self.cache.set_ref_block(ref_block);
 
-        if let Some(inputs) = self.cache.get_transaction_inputs(account_id, &block_refs) {
-            return Ok(inputs);
-        }
+        let partial_account =
+            if let Some(partial_account) = self.cache.get_partial_account(account_id) {
+                partial_account
+            } else {
+                let partial_account_record = self
+                    .store
+                    .get_minimal_partial_account(account_id)
+                    .await?
+                    .ok_or(DataStoreError::AccountNotFound(account_id))?;
 
-        // The full set identifies the served inputs, so keep it as the cache key before the
-        // reference block is removed from it below.
-        let cache_key = block_refs.clone();
-        block_refs.remove(&ref_block);
+                // New accounts (nonce == 0) need full storage maps as advice inputs for the
+                // kernel to validate during account creation. For these, fetch the full account
+                // and convert to PartialAccount (which includes full storage for new accounts).
+                // Existing accounts use the minimal partial record directly.
+                let partial_account: PartialAccount = if partial_account_record.nonce() == ZERO {
+                    let full_record = self
+                        .store
+                        .get_account(account_id)
+                        .await?
+                        .ok_or(DataStoreError::AccountNotFound(account_id))?;
+                    let account: Account = full_record
+                        .try_into()
+                        .map_err(|_| DataStoreError::AccountNotFound(account_id))?;
+                    PartialAccount::from(&account)
+                } else {
+                    partial_account_record
+                        .try_into()
+                        .map_err(|_| DataStoreError::AccountNotFound(account_id))?
+                };
 
-        let current_peaks = self.store.get_current_blockchain_peaks().await?;
+                self.cache.insert_partial_account(&partial_account);
+                partial_account
+            };
 
-        let partial_account_record = self
-            .store
-            .get_minimal_partial_account(account_id)
-            .await?
-            .ok_or(DataStoreError::AccountNotFound(account_id))?;
-
-        // New accounts (nonce == 0) need full storage maps as advice inputs for the
-        // kernel to validate during account creation. For these, fetch the full account
-        // and convert to PartialAccount (which includes full storage for new accounts).
-        // Existing accounts use the minimal partial record directly.
-        let partial_account: PartialAccount = if partial_account_record.nonce() == ZERO {
-            let full_record = self
-                .store
-                .get_account(account_id)
-                .await?
-                .ok_or(DataStoreError::AccountNotFound(account_id))?;
-            let account: Account = full_record
-                .try_into()
-                .map_err(|_| DataStoreError::AccountNotFound(account_id))?;
-            PartialAccount::from(&account)
+        let (block_header, partial_blockchain) = if let Some((block_header, partial_blockchain)) =
+            self.cache.get_blockchain(&block_refs)
+        {
+            (block_header, partial_blockchain)
         } else {
-            partial_account_record
-                .try_into()
-                .map_err(|_| DataStoreError::AccountNotFound(account_id))?
+            // The full set identifies the served blockchain, so keep it as the cache key before
+            // the reference block is removed from it below.
+            let cache_key = block_refs.clone();
+            block_refs.remove(&ref_block);
+
+            let current_peaks = self.store.get_current_blockchain_peaks().await?;
+
+            // Get header data
+            let (block_header, _had_notes) = self
+                .store
+                .get_block_header_by_num(ref_block)
+                .await?
+                .ok_or(DataStoreError::BlockNotFound(ref_block))?;
+
+            let block_headers: Vec<BlockHeader> = self
+                .store
+                .get_block_headers(&block_refs)
+                .await?
+                .into_iter()
+                .map(|(header, _has_notes)| header)
+                .collect();
+
+            // TODO: the client stores only the peaks of the MMR at the current sync height, so we
+            // are not actually following the block_ref here. If the block_ref !=
+            // current_sync_height, this would return an invalid partial blockchain.
+            let partial_mmr =
+                build_partial_mmr_with_paths(&self.store, current_peaks, &block_headers).await?;
+
+            let partial_blockchain =
+                PartialBlockchain::new(partial_mmr, block_headers).map_err(|err| {
+                    DataStoreError::other_with_source(
+                        "error creating PartialBlockchain from internal data",
+                        err,
+                    )
+                })?;
+
+            self.cache.insert_blockchain(cache_key, &block_header, &partial_blockchain);
+            (block_header, partial_blockchain)
         };
 
-        // Get header data
-        let (block_header, _had_notes) = self
-            .store
-            .get_block_header_by_num(ref_block)
-            .await?
-            .ok_or(DataStoreError::BlockNotFound(ref_block))?;
-
-        let block_headers: Vec<BlockHeader> = self
-            .store
-            .get_block_headers(&block_refs)
-            .await?
-            .into_iter()
-            .map(|(header, _has_notes)| header)
-            .collect();
-
-        // TODO: the client stores only the peaks of the MMR at the current sync height, so we are
-        // not actually following the block_ref here. If the block_ref != current_sync_height, this
-        // would return an invalid partial blockchain.
-        let partial_mmr =
-            build_partial_mmr_with_paths(&self.store, current_peaks, &block_headers).await?;
-
-        let partial_blockchain =
-            PartialBlockchain::new(partial_mmr, block_headers).map_err(|err| {
-                DataStoreError::other_with_source(
-                    "error creating PartialBlockchain from internal data",
-                    err,
-                )
-            })?;
-
-        let inputs = (partial_account, block_header, partial_blockchain);
-        self.cache.insert_transaction_inputs(account_id, cache_key, &inputs);
-        Ok(inputs)
+        Ok((partial_account, block_header, partial_blockchain))
     }
 
     async fn get_vault_asset_witnesses(
@@ -310,9 +321,7 @@ impl DataStore for ClientDataStore {
         vault_root: Word,
         asset_ids: BTreeSet<AssetId>,
     ) -> Result<Vec<AssetWitness>, DataStoreError> {
-        if let Some(witnesses) =
-            self.cache.get_vault_asset_witnesses(account_id, vault_root, &asset_ids)
-        {
+        if let Some(witnesses) = self.cache.get_vault_asset_witnesses(vault_root, &asset_ids) {
             return Ok(witnesses);
         }
 
@@ -338,12 +347,8 @@ impl DataStore for ClientDataStore {
             }
         }
 
-        self.cache.insert_vault_asset_witnesses(
-            account_id,
-            vault_root,
-            asset_ids,
-            &asset_witnesses,
-        );
+        self.cache
+            .insert_vault_asset_witnesses(vault_root, &asset_ids, &asset_witnesses);
         Ok(asset_witnesses)
     }
 

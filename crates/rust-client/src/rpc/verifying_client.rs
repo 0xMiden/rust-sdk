@@ -111,12 +111,8 @@ fn verify_note_script_root(requested: Word, script: &NoteScript) -> Result<(), R
 // VERIFYING RPC CLIENT
 // ================================================================================================
 
-/// A [`NodeRpcClient`] wrapper that verifies node responses against the request before returning
-/// them.
-///
-/// Transport implementations return whatever the node sent. This wrapper layers echo checks on top
-/// of any transport, rejecting responses that do not correspond to the request with
-/// [`RpcError::InvalidResponse`]:
+/// A [`NodeRpcClient`] wrapper that verifies that responses correspond to the method's arguments,
+/// rejecting mismatches with [`RpcError::InvalidResponse`]:
 ///
 /// - [`get_block_header_by_number`](NodeRpcClient::get_block_header_by_number) and
 ///   [`get_block_by_number`](NodeRpcClient::get_block_by_number): the returned block's number must

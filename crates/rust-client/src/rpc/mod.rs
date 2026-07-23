@@ -125,9 +125,8 @@ pub enum AccountStateAt {
 ///
 /// The implementers are responsible for connecting to the Miden node, handling endpoint
 /// requests/responses, and translating responses into domain objects relevant for each of the
-/// endpoints. Implementations are raw transports: they return responses as the node sent them,
-/// without checking that they correspond to the request. Wrap a client in
-/// [`VerifyingRpcClient`] to reject mismatched responses.
+/// endpoints. Implementations do not check that responses correspond to the method's arguments.
+/// Wrap a client in [`VerifyingRpcClient`] to reject mismatched responses.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 pub trait NodeRpcClient: Send + Sync {

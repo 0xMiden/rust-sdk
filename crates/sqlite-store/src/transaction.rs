@@ -21,7 +21,7 @@ use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 use super::SqliteStore;
 use super::note::apply_note_updates_tx;
 use super::sync::add_note_tag_tx;
-use crate::forest::{ScopedAccountForest, SqliteForestBackend};
+use crate::forest::{ScopedAccountForest, forest_backend};
 use crate::sql_error::SqlResultExt;
 use crate::{insert_sql, subst};
 
@@ -112,7 +112,7 @@ impl SqliteStore {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .into_store_error()?;
         {
-            let mut forest = ScopedAccountForest::new(SqliteForestBackend::new(&db_tx))?;
+            let mut forest = ScopedAccountForest::new(forest_backend(&db_tx))?;
             Self::apply_transaction_in_txn(&db_tx, &mut forest, tx_update)?;
         }
         db_tx.commit().into_store_error()
@@ -129,7 +129,7 @@ impl SqliteStore {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .into_store_error()?;
         {
-            let mut forest = ScopedAccountForest::new(SqliteForestBackend::new(&db_tx))?;
+            let mut forest = ScopedAccountForest::new(forest_backend(&db_tx))?;
             for update in tx_updates {
                 Self::apply_transaction_in_txn(&db_tx, &mut forest, update)?;
             }

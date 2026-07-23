@@ -60,8 +60,8 @@ use crate::account::helpers::{
 };
 use crate::forest::{
     ScopedAccountForest,
-    SqliteForestBackend,
     allocate_forest_revision,
+    forest_backend,
     forest_entry_keys,
 };
 use crate::sql_error::SqlResultExt;
@@ -265,7 +265,7 @@ impl SqliteStore {
         let header = Self::get_account_header(&db_tx, account_id)?
             .ok_or(StoreError::AccountDataNotFound(account_id))?
             .0;
-        let smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&db_tx))?;
+        let smt_forest = ScopedAccountForest::new(forest_backend(&db_tx))?;
 
         match smt_forest.get_asset_and_witness(account_id, header.vault_root(), asset_id) {
             Ok((asset, witness)) => Ok(Some((asset, witness))),
@@ -296,7 +296,7 @@ impl SqliteStore {
             return Err(StoreError::AccountError(AccountError::StorageSlotNotMap(slot_name)));
         }
 
-        let smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&db_tx))?;
+        let smt_forest = ScopedAccountForest::new(forest_backend(&db_tx))?;
 
         let witness =
             smt_forest.get_storage_map_item_witness(account_id, &slot_name, map_root, key)?;
@@ -341,7 +341,7 @@ impl SqliteStore {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .into_store_error()?;
         {
-            let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&db_tx))?;
+            let mut smt_forest = ScopedAccountForest::new(forest_backend(&db_tx))?;
             Self::insert_account_code(&db_tx, account.code())?;
 
             let account_id = account.id();
@@ -390,7 +390,7 @@ impl SqliteStore {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .into_store_error()?;
         {
-            let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&db_tx))?;
+            let mut smt_forest = ScopedAccountForest::new(forest_backend(&db_tx))?;
             Self::update_account_state(&db_tx, &mut smt_forest, new_account_state)?;
         }
         db_tx.commit().into_store_error()

@@ -1,58 +1,50 @@
-//! `SQLite` storage backend for [`LargeSmtForest`], scoped to a rusqlite [`Transaction`].
+//! `SQLite` row storage for the account SMT forest, scoped to a rusqlite [`Transaction`].
 //!
-//! The backend borrows the store's transaction, so every forest write commits or rolls back
-//! together with the account-table writes performed in the same transaction. A
-//! `LargeSmtForest<SqliteForestBackend>` is constructed per store operation (forest construction
-//! only reads tree metadata) and dropped before the transaction is committed. Rolling back the
-//! transaction discards all forest changes; there is no separate in-memory state to reconcile.
+//! [`SqliteForestRows`] implements [`ForestRowStore`], so the shared
+//! [`RowForestBackend`] provides the actual [`LargeSmtForest`] backend logic; this module only
+//! translates row reads and writes to SQL. The store borrows the store operation's transaction,
+//! so every forest write commits or rolls back together with the account-table writes performed
+//! in the same transaction. A `LargeSmtForest<SqliteForestBackend>` is constructed per store
+//! operation (forest construction only reads tree metadata) and dropped before the transaction
+//! is committed. Rolling back the transaction discards all forest changes; there is no separate
+//! in-memory state to reconcile.
 //!
-//! Trees are stored per lineage as their full set of key-value entries, their inner nodes packed
-//! as 8-level subtree blobs (the same layout as miden-crypto's persistent forest backend), and a
-//! metadata row (latest version, root, and entry count). Witness reads load one leaf plus the
-//! eight subtree blobs on its path, so their cost is independent of the tree size. Mutations load
-//! the affected lineage's SMT on demand, so memory usage is bounded by the trees touched by an
-//! operation rather than by the total account state.
+//! [`LargeSmtForest`]: miden_protocol::crypto::merkle::smt::LargeSmtForest
 
 use std::fmt;
 
 use miden_client::store::StoreError;
-use miden_client::utils::{Deserializable, Serializable};
-use miden_protocol::crypto::merkle::smt::{
-    AppliedLineageMutation,
-    Backend,
-    BackendError,
-    BackendReader,
-    InnerNode,
-    LeafIndex,
-    LineageId,
-    LineageMutation,
-    LineageMutationKind,
-    MAX_LEAF_ENTRIES,
-    MutationSet,
-    NodeMutation,
-    SMT_DEPTH,
-    Smt,
-    SmtForestUpdateBatch,
-    SmtLeaf,
-    SmtProof,
-    Subtree,
-    TreeEntry,
-    TreeWithRoot,
-    VersionId,
+use miden_client::store::forest_backend::{
+    ForestEntryRow,
+    ForestRowStore,
+    ForestTreeMeta,
+    RowForestBackend,
 };
-use miden_protocol::crypto::merkle::{EmptySubtreeRoots, MerkleError, NodeIndex, SparseMerklePath};
-use miden_protocol::{EMPTY_WORD, Word};
+use miden_client::utils::{Deserializable, Serializable};
+use miden_protocol::Word;
+use miden_protocol::crypto::merkle::smt::{BackendError, LineageId, TreeWithRoot, VersionId};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use crate::sql_error::SqlResultExt;
 use crate::{column_value_as_u64, u64_to_value};
 
 type Result<T> = core::result::Result<T, BackendError>;
-type SmtMutationSet = MutationSet<SMT_DEPTH, Word, Word>;
+
+/// A [`LargeSmtForest`] backend over SQL rows in a rusqlite transaction.
+///
+/// [`LargeSmtForest`]: miden_protocol::crypto::merkle::smt::LargeSmtForest
+pub(crate) type SqliteForestBackend<'a, 'conn> = RowForestBackend<SqliteForestRows<'a, 'conn>>;
 
 /// An account SMT forest scoped to a rusqlite transaction.
 pub(crate) type ScopedAccountForest<'a, 'conn> =
     miden_client::store::AccountSmtForest<SqliteForestBackend<'a, 'conn>>;
+
+/// Creates a forest backend over the provided transaction.
+pub(crate) fn forest_backend<'a, 'conn>(
+    tx: &'a Transaction<'conn>,
+) -> SqliteForestBackend<'a, 'conn> {
+    RowForestBackend::new(SqliteForestRows::new(tx))
+}
 
 // FOREST REVISION
 // ================================================================================================
@@ -73,65 +65,25 @@ pub(crate) fn allocate_forest_revision(tx: &Transaction<'_>) -> rusqlite::Result
     )
 }
 
-// BACKEND
+// ROW STORE
 // ================================================================================================
 
-/// A [`LargeSmtForest`] backend that reads and writes through a borrowed rusqlite transaction.
-///
-/// [`LargeSmtForest`]: miden_protocol::crypto::merkle::smt::LargeSmtForest
+/// Row storage for the forest tables, borrowing a rusqlite transaction.
 #[derive(Clone, Copy)]
-pub(crate) struct SqliteForestBackend<'a, 'conn> {
+pub(crate) struct SqliteForestRows<'a, 'conn> {
     tx: &'a Transaction<'conn>,
 }
 
-impl<'a, 'conn> SqliteForestBackend<'a, 'conn> {
+impl<'a, 'conn> SqliteForestRows<'a, 'conn> {
     pub(crate) fn new(tx: &'a Transaction<'conn>) -> Self {
         Self { tx }
     }
 }
 
-impl fmt::Debug for SqliteForestBackend<'_, '_> {
+impl fmt::Debug for SqliteForestRows<'_, '_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SqliteForestBackend").finish_non_exhaustive()
+        f.debug_struct("SqliteForestRows").finish_non_exhaustive()
     }
-}
-
-/// Read-only view over the same transaction.
-///
-/// A separate type because the [`Backend::Reader`] contract requires a view that implements
-/// [`BackendReader`] but not [`Backend`]; every method delegates to the wrapped backend. The
-/// view observes the transaction's current (uncommitted) state, intentionally, so that later
-/// forest queries within a store operation see earlier writes of the same transaction. This
-/// deviates from the upstream contract's point-in-time snapshot wording (like the no-IO
-/// wording on `entry_count`); both deviations are safe for this crate-private backend, whose
-/// forests live only inside a single store operation, and are raised in the upstream API
-/// discussion.
-#[derive(Clone, Copy)]
-pub(crate) struct SqliteForestBackendReader<'a, 'conn>(SqliteForestBackend<'a, 'conn>);
-
-impl fmt::Debug for SqliteForestBackendReader<'_, '_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SqliteForestBackendReader").finish_non_exhaustive()
-    }
-}
-
-/// Backend-prepared data for two-phase mutations: one forward SMT mutation set per touched
-/// lineage.
-pub(crate) struct SqlitePreparedMutations {
-    entries: Vec<PreparedLineage>,
-}
-
-struct PreparedLineage {
-    lineage: LineageId,
-    old_version: Option<VersionId>,
-    new_version: VersionId,
-    kind: LineageMutationKind,
-    forward: SmtMutationSet,
-    /// Precomputed reverse of `forward` (empty for [`LineageMutationKind::AddLineage`], whose
-    /// applied mutation carries an empty reverse set).
-    reverse: SmtMutationSet,
-    /// Net change in the lineage's key count when `forward` is applied.
-    entry_count_delta: i64,
 }
 
 // SQL HELPERS
@@ -168,416 +120,8 @@ fn tree_meta(conn: &Connection, lineage: LineageId) -> Result<Option<(VersionId,
     .transpose()
 }
 
-fn require_tree_meta(conn: &Connection, lineage: LineageId) -> Result<(VersionId, Word, usize)> {
-    tree_meta(conn, lineage)?.ok_or(BackendError::UnknownLineage(lineage))
-}
-
-fn load_entries(conn: &Connection, lineage: LineageId) -> Result<Vec<(Word, Word)>> {
-    let mut stmt = conn
-        .prepare_cached("SELECT key, value FROM forest_entries WHERE lineage = ?1")
-        .map_err(internal)?;
-    let rows = stmt
-        .query_map(params![lineage.as_bytes().as_slice()], |row| {
-            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
-        })
-        .map_err(internal)?;
-
-    let mut entries = Vec::new();
-    for row in rows {
-        let (key_blob, value_blob) = row.map_err(internal)?;
-        let (key, value) = (word_from_blob(&key_blob)?, word_from_blob(&value_blob)?);
-        require_non_empty_value(lineage, key, value)?;
-        entries.push((key, value));
-    }
-    Ok(entries)
-}
-
-/// Rejects stored empty values as corruption; the write path deletes them instead of storing
-/// them.
-fn require_non_empty_value(lineage: LineageId, key: Word, value: Word) -> Result<()> {
-    if value == EMPTY_WORD {
-        return Err(BackendError::CorruptedData(format!(
-            "empty value stored for key {key} of lineage {lineage}"
-        )));
-    }
-    Ok(())
-}
-
-/// Rejects rows whose stored `leaf_position` does not match the position derived from the key;
-/// position-based lookups would otherwise silently miss the entry.
-fn require_consistent_position(lineage: LineageId, key: Word, position: u64) -> Result<()> {
-    let derived = LeafIndex::<SMT_DEPTH>::from(key).position();
-    if derived != position {
-        return Err(BackendError::CorruptedData(format!(
-            "entry {key} of lineage {lineage} is stored at leaf position {position}, but its \
-             key derives position {derived}"
-        )));
-    }
-    Ok(())
-}
-
-/// Loads the sorted key-value entries of the SMT leaf at `position`.
-///
-/// Entries are sorted by key because a multi-entry leaf's hash is order-sensitive and `SQLite`
-/// row order is unspecified; sorting by [`Word`] matches the canonical order the SMT maintains
-/// inside its leaves.
-fn load_leaf_entries(
-    conn: &Connection,
-    lineage: LineageId,
-    position: u64,
-) -> Result<Vec<(Word, Word)>> {
-    let mut stmt = conn
-        .prepare_cached(
-            "SELECT key, value FROM forest_entries WHERE lineage = ?1 AND leaf_position = ?2",
-        )
-        .map_err(internal)?;
-    let rows = stmt
-        .query_map(params![lineage.as_bytes().as_slice(), u64_to_value(position)], |row| {
-            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
-        })
-        .map_err(internal)?;
-
-    let mut entries = Vec::new();
-    for row in rows {
-        let (key_blob, value_blob) = row.map_err(internal)?;
-        let (key, value) = (word_from_blob(&key_blob)?, word_from_blob(&value_blob)?);
-        require_non_empty_value(lineage, key, value)?;
-        require_consistent_position(lineage, key, position)?;
-        entries.push((key, value));
-    }
-    entries.sort_by_key(|(key, _)| *key);
-    Ok(entries)
-}
-
-/// Builds the [`SmtLeaf`] at `leaf_index` from a leaf's entries.
-fn leaf_from_entries(
-    lineage: LineageId,
-    leaf_index: LeafIndex<SMT_DEPTH>,
-    entries: Vec<(Word, Word)>,
-) -> Result<SmtLeaf> {
-    SmtLeaf::new(entries, leaf_index).map_err(|e| {
-        BackendError::CorruptedData(format!(
-            "stored entries of leaf {} of lineage {lineage} are invalid: {e}",
-            leaf_index.position()
-        ))
-    })
-}
-
-/// Loads the SMT leaf at `leaf_index` from the stored entries of a lineage.
-fn load_leaf(
-    conn: &Connection,
-    lineage: LineageId,
-    leaf_index: LeafIndex<SMT_DEPTH>,
-) -> Result<SmtLeaf> {
-    let entries = load_leaf_entries(conn, lineage, leaf_index.position())?;
-    leaf_from_entries(lineage, leaf_index, entries)
-}
-
-/// Loads the subtree blob rooted at `root_index`, or an empty subtree if none is stored.
-fn load_subtree(conn: &Connection, lineage: LineageId, root_index: NodeIndex) -> Result<Subtree> {
-    let mut stmt = conn
-        .prepare_cached(
-            "SELECT data FROM forest_subtrees \
-             WHERE lineage = ?1 AND depth = ?2 AND position = ?3",
-        )
-        .map_err(internal)?;
-    let blob = stmt
-        .query_row(
-            params![
-                lineage.as_bytes().as_slice(),
-                root_index.depth(),
-                u64_to_value(root_index.position())
-            ],
-            |row| row.get::<_, Vec<u8>>(0),
-        )
-        .optional()
-        .map_err(internal)?;
-
-    match blob {
-        Some(blob) => Subtree::from_vec(root_index, &blob).map_err(|e| {
-            BackendError::CorruptedData(format!(
-                "stored subtree at depth {} position {} of lineage {lineage} is malformed: {e}",
-                root_index.depth(),
-                root_index.position()
-            ))
-        }),
-        None => Ok(Subtree::new(root_index)),
-    }
-}
-
-/// Computes the Merkle path for `leaf_index` from the stored subtree blobs on its path.
-///
-/// One subtree per 8-level band is loaded (roots at depths 56, 48, ..., 0); siblings of nodes
-/// that are not present in a blob are empty subtree roots.
-fn compute_merkle_path(
-    conn: &Connection,
-    lineage: LineageId,
-    leaf_index: NodeIndex,
-) -> Result<SparseMerklePath> {
-    let mut path = Vec::with_capacity(SMT_DEPTH as usize);
-    let mut node_index = leaf_index;
-    let mut subtree: Option<Subtree> = None;
-
-    while node_index.depth() > 0 {
-        let is_right = node_index.is_position_odd();
-        node_index = node_index.parent();
-
-        let root_index = Subtree::find_subtree_root(node_index);
-        if subtree.as_ref().map(Subtree::root_index) != Some(root_index) {
-            subtree = Some(load_subtree(conn, lineage, root_index)?);
-        }
-        let subtree = subtree.as_ref().expect("subtree loaded above");
-
-        let InnerNode { left, right } = subtree
-            .get_inner_node(node_index)
-            .unwrap_or_else(|| empty_inner_node(node_index.depth()));
-
-        path.push(if is_right { left } else { right });
-    }
-
-    SparseMerklePath::from_sized_iter(path)
-        .map_err(|e| BackendError::CorruptedData(format!("invalid Merkle path: {e}")))
-}
-
-/// Returns the inner node of an empty subtree at `node_depth` (both children are the empty
-/// subtree root one level below).
-fn empty_inner_node(node_depth: u8) -> InnerNode {
-    let child = *EmptySubtreeRoots::entry(SMT_DEPTH, node_depth + 1);
-    InnerNode { left: child, right: child }
-}
-
-// PATH-LOCAL MUTATION COMPUTATION
+// STORE-SIDE HELPERS
 // ================================================================================================
-
-/// Forward and reverse mutation sets for one lineage update, plus the entry-count change.
-struct ComputedLineageMutations {
-    forward: SmtMutationSet,
-    reverse: SmtMutationSet,
-    entry_count_delta: i64,
-}
-
-/// Computes the forward and reverse mutation sets for `kv_ops` on an existing lineage by reading
-/// only the affected leaves and the subtree blobs on their paths.
-///
-/// This mirrors `SparseMerkleTree::compute_mutations_sequential` (and the reverse-set
-/// construction of `apply_mutations_with_reversion`) over persisted state, so its cost scales
-/// with the change set instead of the tree size. Because the new root is derived from stored
-/// subtree data, every touched leaf's stored path is first authenticated against `old_root`
-/// (both node halves per level); a missing or diverged blob is reported as corruption instead
-/// of silently producing a wrong root. Corruption on untouched paths is not detectable without
-/// a full scan and remains covered by the read-time root check. The stored `entry_count` is
-/// trusted within representable range (deltas are applied to it, not recounted), and the
-/// bulk-load heuristic keys off raw op count, not distinct leaf positions.
-#[allow(clippy::too_many_lines)]
-fn compute_update_mutations(
-    conn: &Connection,
-    lineage: LineageId,
-    old_root: Word,
-    entry_count: usize,
-    kv_ops: impl Iterator<Item = (Word, Word)>,
-) -> Result<ComputedLineageMutations> {
-    use std::collections::{HashMap, HashSet};
-
-    let kv_ops: Vec<(Word, Word)> = kv_ops.collect();
-
-    // Stored subtrees on touched paths; never mutated during compute, so lookups through this
-    // cache always observe the pre-update state.
-    let mut subtrees: HashMap<NodeIndex, Subtree> = HashMap::new();
-    // Effective (batch-mutated) sorted entries of each touched leaf. Small batches load each
-    // touched leaf with a point query; batches comparable to the tree size (full-state
-    // presentations) load every leaf in one scan instead, which is far cheaper than one point
-    // query per op. When bulk-loaded, a position absent from the map is a stored-empty leaf.
-    let mut leaves: HashMap<u64, Vec<(Word, Word)>> = HashMap::new();
-    let bulk_loaded = kv_ops.len() > 64 && kv_ops.len() * 4 >= entry_count;
-    if bulk_loaded {
-        let mut stmt = conn
-            .prepare_cached(
-                "SELECT key, value, leaf_position FROM forest_entries WHERE lineage = ?1",
-            )
-            .map_err(internal)?;
-        let rows = stmt
-            .query_map(params![lineage.as_bytes().as_slice()], |row| {
-                Ok((
-                    row.get::<_, Vec<u8>>(0)?,
-                    row.get::<_, Vec<u8>>(1)?,
-                    column_value_as_u64(row, 2)?,
-                ))
-            })
-            .map_err(internal)?;
-        for row in rows {
-            let (key_blob, value_blob, position) = row.map_err(internal)?;
-            let (key, value) = (word_from_blob(&key_blob)?, word_from_blob(&value_blob)?);
-            require_non_empty_value(lineage, key, value)?;
-            require_consistent_position(lineage, key, position)?;
-            leaves.entry(position).or_default().push((key, value));
-        }
-        for entries in leaves.values_mut() {
-            entries.sort_by_key(|(key, _)| *key);
-        }
-    }
-    let mut forward_nodes: HashMap<NodeIndex, NodeMutation> = HashMap::new();
-    // The stored node at each mutated index, captured once before any overlay, for the reverse
-    // set.
-    let mut original_nodes: HashMap<NodeIndex, Option<InnerNode>> = HashMap::new();
-    let mut forward_pairs: Vec<(Word, Word)> = Vec::new();
-    let mut reverse_pairs: Vec<(Word, Word)> = Vec::new();
-    let mut seen_keys: HashSet<Word> = HashSet::new();
-    // Leaves whose stored path has been authenticated against `old_root`.
-    let mut verified_leaves: HashSet<u64> = HashSet::new();
-    let mut new_root = old_root;
-    let mut entry_count_delta: i64 = 0;
-
-    let stored_inner_node = |subtrees: &mut HashMap<NodeIndex, Subtree>,
-                             index: NodeIndex|
-     -> Result<Option<InnerNode>> {
-        let root_index = Subtree::find_subtree_root(index);
-        let subtree = match subtrees.entry(root_index) {
-            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                entry.insert(load_subtree(conn, lineage, root_index)?)
-            },
-        };
-        Ok(subtree.get_inner_node(index))
-    };
-
-    for (key, value) in kv_ops {
-        if !seen_keys.insert(key) {
-            return Err(BackendError::Merkle(MerkleError::DuplicateValuesForIndex(
-                LeafIndex::<SMT_DEPTH>::from(key).position(),
-            )));
-        }
-
-        let leaf_index = LeafIndex::<SMT_DEPTH>::from(key);
-        let position = leaf_index.position();
-
-        if let std::collections::hash_map::Entry::Vacant(entry) = leaves.entry(position) {
-            let entries = if bulk_loaded {
-                Vec::new()
-            } else {
-                load_leaf_entries(conn, lineage, position)?
-            };
-            entry.insert(entries);
-        }
-        let entries = leaves.get_mut(&position).expect("leaf loaded above");
-
-        let old_value = entries.iter().find(|(k, _)| *k == key).map_or(EMPTY_WORD, |(_, v)| *v);
-        if value == old_value {
-            continue;
-        }
-
-        // First mutation of a leaf: authenticate its stored entries and stored path against the
-        // pre-update root, so a missing or diverged blob is reported as corruption instead of
-        // silently producing a wrong new root. The cached entries are still the stored state
-        // here (no earlier op mutated this leaf), and the subtree cache always is. Deferring
-        // this to the first actual mutation keeps no-op ops at one point query.
-        if !verified_leaves.contains(&position) {
-            let leaf = leaf_from_entries(lineage, leaf_index, entries.clone())?;
-            let mut hash = leaf.hash();
-            let mut node_index = NodeIndex::from(leaf_index);
-            while node_index.depth() > 0 {
-                let is_right = node_index.is_position_odd();
-                node_index = node_index.parent();
-                let node = stored_inner_node(&mut subtrees, node_index)?
-                    .unwrap_or_else(|| empty_inner_node(node_index.depth()));
-                // Both halves are checked: the on-path child must match the hash derived so far
-                // (a diverged on-path node would otherwise be silently healed forward while its
-                // corrupt value leaks into the reverse set), and the sibling feeds the next hash.
-                let on_path_child = if is_right { node.right } else { node.left };
-                if on_path_child != hash {
-                    return Err(BackendError::CorruptedData(format!(
-                        "stored node at depth {} on the path of leaf {position} of lineage \
-                         {lineage} diverges from its subtree",
-                        node_index.depth()
-                    )));
-                }
-                hash = node.hash();
-            }
-            if hash != old_root {
-                return Err(BackendError::CorruptedData(format!(
-                    "stored path of leaf {position} of lineage {lineage} yields root {hash}, \
-                     but the tree root is {old_root}"
-                )));
-            }
-            verified_leaves.insert(position);
-        }
-        reverse_pairs.push((key, old_value));
-
-        if value == EMPTY_WORD {
-            entries.retain(|(k, _)| *k != key);
-            entry_count_delta -= 1;
-        } else if let Some(entry) = entries.iter_mut().find(|(k, _)| *k == key) {
-            entry.1 = value;
-        } else {
-            let insert_at = entries.partition_point(|(k, _)| *k < key);
-            entries.insert(insert_at, (key, value));
-            entry_count_delta += 1;
-        }
-
-        // Overfull leaves are a caller-derived Merkle failure, matching compute_mutations.
-        if entries.len() > MAX_LEAF_ENTRIES {
-            return Err(BackendError::Merkle(MerkleError::TooManyLeafEntries {
-                actual: entries.len(),
-            }));
-        }
-        let leaf = leaf_from_entries(lineage, leaf_index, entries.clone())?;
-        let mut child_hash = leaf.hash();
-        let mut node_index = NodeIndex::from(leaf_index);
-
-        while node_index.depth() > 0 {
-            let is_right = node_index.is_position_odd();
-            node_index = node_index.parent();
-
-            let old_node = match forward_nodes.get(&node_index) {
-                Some(NodeMutation::Addition(node)) => node.clone(),
-                Some(NodeMutation::Removal) => empty_inner_node(node_index.depth()),
-                None => {
-                    let stored = stored_inner_node(&mut subtrees, node_index)?;
-                    original_nodes.entry(node_index).or_insert_with(|| stored.clone());
-                    stored.unwrap_or_else(|| empty_inner_node(node_index.depth()))
-                },
-            };
-
-            let new_node = if is_right {
-                InnerNode { left: old_node.left, right: child_hash }
-            } else {
-                InnerNode { left: child_hash, right: old_node.right }
-            };
-            child_hash = new_node.hash();
-
-            let is_removal = child_hash == *EmptySubtreeRoots::entry(SMT_DEPTH, node_index.depth());
-            let mutation = if is_removal {
-                NodeMutation::Removal
-            } else {
-                NodeMutation::Addition(new_node)
-            };
-            forward_nodes.insert(node_index, mutation);
-        }
-
-        new_root = child_hash;
-        forward_pairs.push((key, value));
-    }
-
-    // Reverse node mutations, mirroring apply_mutations_with_reversion: restore the stored node
-    // where one existed, remove nodes the forward set created, and skip removals of nodes that
-    // never existed.
-    let mut reverse_nodes: HashMap<NodeIndex, NodeMutation> = HashMap::new();
-    for (index, original) in &original_nodes {
-        match original {
-            Some(node) => {
-                reverse_nodes.insert(*index, NodeMutation::Addition(node.clone()));
-            },
-            None => {
-                if matches!(forward_nodes.get(index), Some(NodeMutation::Addition(_))) {
-                    reverse_nodes.insert(*index, NodeMutation::Removal);
-                }
-            },
-        }
-    }
-
-    let forward = SmtMutationSet::from_parts(old_root, forward_nodes, forward_pairs, new_root);
-    let reverse = SmtMutationSet::from_parts(new_root, reverse_nodes, reverse_pairs, old_root);
-    Ok(ComputedLineageMutations { forward, reverse, entry_count_delta })
-}
 
 /// Returns the latest stored root of a lineage, or `None` if the lineage is unknown.
 ///
@@ -615,191 +159,19 @@ pub(crate) fn forest_entry_keys(
     Ok(keys)
 }
 
-/// Writes the changed key-value pairs of a forward mutation set to the entries table. Values
-/// equal to the empty word are deletions.
-fn write_pairs(conn: &Connection, lineage: LineageId, forward: &SmtMutationSet) -> Result<()> {
-    let mut upsert = conn
-        .prepare_cached(
-            "INSERT INTO forest_entries (lineage, key, value, leaf_position)
-             VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(lineage, key) DO UPDATE SET value = excluded.value",
-        )
-        .map_err(internal)?;
-    let mut delete = conn
-        .prepare_cached("DELETE FROM forest_entries WHERE lineage = ?1 AND key = ?2")
-        .map_err(internal)?;
-
-    for (key, value) in forward.new_pairs() {
-        if *value == EMPTY_WORD {
-            delete
-                .execute(params![lineage.as_bytes().as_slice(), key.to_bytes()])
-                .map_err(internal)?;
-        } else {
-            let leaf_position = LeafIndex::<SMT_DEPTH>::from(*key).position();
-            upsert
-                .execute(params![
-                    lineage.as_bytes().as_slice(),
-                    key.to_bytes(),
-                    value.to_bytes(),
-                    u64_to_value(leaf_position)
-                ])
-                .map_err(internal)?;
-        }
-    }
-    Ok(())
-}
-
-/// Applies the inner-node mutations of a forward mutation set to the stored subtree blobs.
-///
-/// Mutations are grouped by containing subtree so each affected blob is loaded, patched with one
-/// batch call, and written back (or deleted once empty) exactly once. A removal that targets a
-/// node absent from its blob means the stored subtrees have diverged from the stored entries,
-/// which is corruption of backend data.
-fn write_subtrees(conn: &Connection, lineage: LineageId, forward: &SmtMutationSet) -> Result<()> {
-    let mut groups: std::collections::BTreeMap<(u8, u64), Vec<(&NodeIndex, &NodeMutation)>> =
-        std::collections::BTreeMap::new();
-    for (index, mutation) in forward.node_mutations() {
-        let root_index = Subtree::find_subtree_root(*index);
-        groups
-            .entry((root_index.depth(), root_index.position()))
-            .or_default()
-            .push((index, mutation));
-    }
-
-    let mut upsert = conn
-        .prepare_cached(
-            "INSERT INTO forest_subtrees (lineage, depth, position, data)
-             VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(lineage, depth, position) DO UPDATE SET data = excluded.data",
-        )
-        .map_err(internal)?;
-    let mut delete = conn
-        .prepare_cached(
-            "DELETE FROM forest_subtrees WHERE lineage = ?1 AND depth = ?2 AND position = ?3",
-        )
-        .map_err(internal)?;
-
-    for ((depth, position), mutations) in groups {
-        let root_index =
-            NodeIndex::new(depth, position).expect("subtree root computed from a valid node index");
-        let mut subtree = load_subtree(conn, lineage, root_index)?;
-
-        for (index, mutation) in &mutations {
-            if matches!(mutation, NodeMutation::Removal)
-                && subtree.get_inner_node(**index).is_none()
-            {
-                return Err(BackendError::CorruptedData(format!(
-                    "removal of absent inner node at depth {} position {} of lineage {lineage}",
-                    index.depth(),
-                    index.position()
-                )));
-            }
-        }
-        subtree.apply_mutations(mutations.iter().map(|(index, mutation)| (*index, *mutation)));
-
-        if subtree.is_empty() {
-            delete
-                .execute(params![lineage.as_bytes().as_slice(), depth, u64_to_value(position)])
-                .map_err(internal)?;
-        } else {
-            upsert
-                .execute(params![
-                    lineage.as_bytes().as_slice(),
-                    depth,
-                    u64_to_value(position),
-                    subtree.to_vec()
-                ])
-                .map_err(internal)?;
-        }
-    }
-    Ok(())
-}
-
-fn upsert_tree_meta(
-    conn: &Connection,
-    lineage: LineageId,
-    version: VersionId,
-    root: &Word,
-    entry_count: usize,
-) -> Result<()> {
-    conn.execute(
-        "INSERT INTO forest_trees (lineage, version, root, entry_count) VALUES (?1, ?2, ?3, ?4)
-         ON CONFLICT(lineage) DO UPDATE SET
-             version = excluded.version,
-             root = excluded.root,
-             entry_count = excluded.entry_count",
-        params![
-            lineage.as_bytes().as_slice(),
-            u64_to_value(version),
-            root.to_bytes(),
-            u64_to_value(entry_count as u64)
-        ],
-    )
-    .map_err(internal)?;
-    Ok(())
-}
-
-// BACKEND READER
+// ROW STORE IMPLEMENTATION
 // ================================================================================================
 
-impl BackendReader for SqliteForestBackend<'_, '_> {
-    fn open(&self, lineage: LineageId, key: Word) -> Result<SmtProof> {
-        let (_version, stored_root, _count) = require_tree_meta(self.tx, lineage)?;
-
-        let leaf_index = LeafIndex::<SMT_DEPTH>::from(key);
-        let leaf = load_leaf(self.tx, lineage, leaf_index)?;
-        let path = compute_merkle_path(self.tx, lineage, leaf_index.into())?;
-
-        let proof = SmtProof::new(path, leaf).map_err(|e| {
-            BackendError::CorruptedData(format!(
-                "stored data of lineage {lineage} yields an invalid proof: {e}"
-            ))
-        })?;
-
-        // The proof is assembled from two redundant representations (entry rows and subtree
-        // blobs), so verify it against the stored root to catch any divergence between them.
-        let computed_root = proof.compute_root();
-        if computed_root != stored_root {
-            return Err(BackendError::CorruptedData(format!(
-                "proof for key {key} of lineage {lineage} yields root {computed_root}, but the \
-                 stored root is {stored_root}"
-            )));
-        }
-        Ok(proof)
+impl ForestRowStore for SqliteForestRows<'_, '_> {
+    fn tree_meta(&self, lineage: LineageId) -> Result<Option<ForestTreeMeta>> {
+        Ok(tree_meta(self.tx, lineage)?.map(|(version, root, entry_count)| ForestTreeMeta {
+            version,
+            root,
+            entry_count,
+        }))
     }
 
-    fn get_leaf(&self, lineage: LineageId, leaf_index: LeafIndex<SMT_DEPTH>) -> Result<SmtLeaf> {
-        require_tree_meta(self.tx, lineage)?;
-        load_leaf(self.tx, lineage, leaf_index)
-    }
-
-    fn get(&self, lineage: LineageId, key: Word) -> Result<Option<Word>> {
-        require_tree_meta(self.tx, lineage)?;
-        self.tx
-            .query_row(
-                "SELECT value FROM forest_entries WHERE lineage = ?1 AND key = ?2",
-                params![lineage.as_bytes().as_slice(), key.to_bytes()],
-                |row| row.get::<_, Vec<u8>>(0),
-            )
-            .optional()
-            .map_err(internal)?
-            .map(|blob| {
-                let value = word_from_blob(&blob)?;
-                require_non_empty_value(lineage, key, value)?;
-                Ok(value)
-            })
-            .transpose()
-    }
-
-    fn version(&self, lineage: LineageId) -> Result<VersionId> {
-        Ok(require_tree_meta(self.tx, lineage)?.0)
-    }
-
-    fn lineages(&self) -> Result<impl Iterator<Item = LineageId>> {
-        Ok(self.trees()?.map(|t| t.lineage()))
-    }
-
-    fn trees(&self) -> Result<impl Iterator<Item = TreeWithRoot>> {
+    fn trees(&self) -> Result<Vec<TreeWithRoot>> {
         let mut stmt = self
             .tx
             .prepare_cached("SELECT lineage, version, root FROM forest_trees")
@@ -826,153 +198,188 @@ impl BackendReader for SqliteForestBackend<'_, '_> {
                 word_from_blob(&root_blob)?,
             ));
         }
-        Ok(trees.into_iter())
+        Ok(trees)
     }
 
-    fn entry_count(&self, lineage: LineageId) -> Result<usize> {
-        Ok(require_tree_meta(self.tx, lineage)?.2)
+    fn entry_value(&self, lineage: LineageId, key: Word) -> Result<Option<Word>> {
+        self.tx
+            .query_row(
+                "SELECT value FROM forest_entries WHERE lineage = ?1 AND key = ?2",
+                params![lineage.as_bytes().as_slice(), key.to_bytes()],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .optional()
+            .map_err(internal)?
+            .map(|blob| word_from_blob(&blob))
+            .transpose()
     }
 
-    fn entries(&self, lineage: LineageId) -> Result<impl Iterator<Item = Result<TreeEntry>>> {
-        require_tree_meta(self.tx, lineage)?;
-        let entries = load_entries(self.tx, lineage)?;
-        Ok(entries.into_iter().map(|(key, value)| Ok(TreeEntry { key, value })))
-    }
-}
+    fn leaf_entries(&self, lineage: LineageId, position: u64) -> Result<Vec<(Word, Word)>> {
+        let mut stmt = self
+            .tx
+            .prepare_cached(
+                "SELECT key, value FROM forest_entries WHERE lineage = ?1 AND leaf_position = ?2",
+            )
+            .map_err(internal)?;
+        let rows = stmt
+            .query_map(params![lineage.as_bytes().as_slice(), u64_to_value(position)], |row| {
+                Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+            })
+            .map_err(internal)?;
 
-impl BackendReader for SqliteForestBackendReader<'_, '_> {
-    fn open(&self, lineage: LineageId, key: Word) -> Result<SmtProof> {
-        self.0.open(lineage, key)
-    }
-
-    fn get_leaf(&self, lineage: LineageId, leaf_index: LeafIndex<SMT_DEPTH>) -> Result<SmtLeaf> {
-        self.0.get_leaf(lineage, leaf_index)
-    }
-
-    fn get(&self, lineage: LineageId, key: Word) -> Result<Option<Word>> {
-        self.0.get(lineage, key)
-    }
-
-    fn version(&self, lineage: LineageId) -> Result<VersionId> {
-        self.0.version(lineage)
+        let mut entries = Vec::new();
+        for row in rows {
+            let (key_blob, value_blob) = row.map_err(internal)?;
+            entries.push((word_from_blob(&key_blob)?, word_from_blob(&value_blob)?));
+        }
+        Ok(entries)
     }
 
-    fn lineages(&self) -> Result<impl Iterator<Item = LineageId>> {
-        self.0.lineages()
-    }
-
-    fn trees(&self) -> Result<impl Iterator<Item = TreeWithRoot>> {
-        self.0.trees()
-    }
-
-    fn entry_count(&self, lineage: LineageId) -> Result<usize> {
-        self.0.entry_count(lineage)
-    }
-
-    fn entries(&self, lineage: LineageId) -> Result<impl Iterator<Item = Result<TreeEntry>>> {
-        self.0.entries(lineage)
-    }
-}
-
-// BACKEND
-// ================================================================================================
-
-impl<'a, 'conn> Backend for SqliteForestBackend<'a, 'conn> {
-    type Reader = SqliteForestBackendReader<'a, 'conn>;
-    type PreparedMutations = SqlitePreparedMutations;
-
-    fn reader(&self) -> Result<Self::Reader> {
-        Ok(SqliteForestBackendReader(*self))
-    }
-
-    fn compute_mutations(
+    fn for_each_entry(
         &self,
-        new_version: VersionId,
-        updates: SmtForestUpdateBatch,
-    ) -> Result<(Vec<LineageMutation>, Self::PreparedMutations)> {
-        let mut mutations = Vec::new();
-        let mut prepared = Vec::new();
+        lineage: LineageId,
+        f: &mut dyn FnMut(ForestEntryRow) -> Result<()>,
+    ) -> Result<()> {
+        let mut stmt = self
+            .tx
+            .prepare_cached(
+                "SELECT key, value, leaf_position FROM forest_entries WHERE lineage = ?1",
+            )
+            .map_err(internal)?;
+        let rows = stmt
+            .query_map(params![lineage.as_bytes().as_slice()], |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    column_value_as_u64(row, 2)?,
+                ))
+            })
+            .map_err(internal)?;
 
-        for (lineage, ops) in updates {
-            let kv_ops = ops.into_iter().map(Into::into);
-            let (old_version, kind, computed) =
-                if let Some((version, root, count)) = tree_meta(self.tx, lineage)? {
-                    // Path-local computation: reads only the affected leaves and the subtree
-                    // blobs on their paths, so cost scales with the change set.
-                    let computed = compute_update_mutations(self.tx, lineage, root, count, kv_ops)?;
-                    (Some(version), LineageMutationKind::UpdateTree, computed)
-                } else {
-                    // A new lineage starts from the empty tree, so there is no stored state to
-                    // read and the in-memory computation is already proportional to the batch.
-                    let forward = Smt::new().compute_mutations(kv_ops)?;
-                    let computed = ComputedLineageMutations {
-                        forward,
-                        reverse: SmtMutationSet::default(),
-                        entry_count_delta: 0,
-                    };
-                    (None, LineageMutationKind::AddLineage, computed)
-                };
-
-            mutations.push(LineageMutation::new(
-                lineage,
-                old_version,
-                new_version,
-                computed.forward.old_root(),
-                computed.forward.root(),
-                kind,
-            ));
-            prepared.push(PreparedLineage {
-                lineage,
-                old_version,
-                new_version,
-                kind,
-                forward: computed.forward,
-                reverse: computed.reverse,
-                entry_count_delta: computed.entry_count_delta,
-            });
+        for row in rows {
+            let (key_blob, value_blob, leaf_position) = row.map_err(internal)?;
+            f(ForestEntryRow {
+                key: word_from_blob(&key_blob)?,
+                value: word_from_blob(&value_blob)?,
+                leaf_position,
+            })?;
         }
-
-        Ok((mutations, SqlitePreparedMutations { entries: prepared }))
+        Ok(())
     }
 
-    fn apply_mutations(
-        &mut self,
-        mutations: Self::PreparedMutations,
-    ) -> Result<Vec<AppliedLineageMutation>> {
-        // Validate everything against the current state before writing anything, so user-derived
-        // errors leave the backend consistent.
-        for p in &mutations.entries {
-            match p.kind {
-                LineageMutationKind::AddLineage => {
-                    if tree_meta(self.tx, p.lineage)?.is_some() {
-                        return Err(BackendError::DuplicateLineage(p.lineage));
-                    }
-                },
-                LineageMutationKind::UpdateTree => {
-                    let (version, root, _count) = require_tree_meta(self.tx, p.lineage)?;
-                    if Some(version) != p.old_version {
-                        return Err(BackendError::BadVersion {
-                            provided: p.old_version.unwrap_or_default(),
-                            latest: version,
-                        });
-                    }
-                    if root != p.forward.old_root() {
-                        // Stale prepared mutations are a user-derived error, matching the
-                        // in-memory backend's classification.
-                        return Err(BackendError::Merkle(MerkleError::ConflictingRoots {
-                            expected_root: p.forward.old_root(),
-                            actual_root: root,
-                        }));
-                    }
-                },
-            }
-        }
+    fn subtree_blob(
+        &self,
+        lineage: LineageId,
+        depth: u8,
+        position: u64,
+    ) -> Result<Option<Vec<u8>>> {
+        let mut stmt = self
+            .tx
+            .prepare_cached(
+                "SELECT data FROM forest_subtrees \
+                 WHERE lineage = ?1 AND depth = ?2 AND position = ?3",
+            )
+            .map_err(internal)?;
+        stmt.query_row(
+            params![lineage.as_bytes().as_slice(), depth, u64_to_value(position)],
+            |row| row.get::<_, Vec<u8>>(0),
+        )
+        .optional()
+        .map_err(internal)
+    }
 
-        // The writes below span several tables and lineages, and write_subtrees can fail on
-        // corrupted blobs partway through. The savepoint makes the whole application atomic even
-        // for callers that catch the error and keep using the transaction.
+    fn upsert_entry(
+        &mut self,
+        lineage: LineageId,
+        key: Word,
+        value: Word,
+        leaf_position: u64,
+    ) -> Result<()> {
+        let mut stmt = self
+            .tx
+            .prepare_cached(
+                "INSERT INTO forest_entries (lineage, key, value, leaf_position)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(lineage, key) DO UPDATE SET value = excluded.value",
+            )
+            .map_err(internal)?;
+        stmt.execute(params![
+            lineage.as_bytes().as_slice(),
+            key.to_bytes(),
+            value.to_bytes(),
+            u64_to_value(leaf_position)
+        ])
+        .map_err(internal)?;
+        Ok(())
+    }
+
+    fn delete_entry(&mut self, lineage: LineageId, key: Word) -> Result<()> {
+        let mut stmt = self
+            .tx
+            .prepare_cached("DELETE FROM forest_entries WHERE lineage = ?1 AND key = ?2")
+            .map_err(internal)?;
+        stmt.execute(params![lineage.as_bytes().as_slice(), key.to_bytes()])
+            .map_err(internal)?;
+        Ok(())
+    }
+
+    fn upsert_subtree(
+        &mut self,
+        lineage: LineageId,
+        depth: u8,
+        position: u64,
+        blob: Vec<u8>,
+    ) -> Result<()> {
+        let mut stmt = self
+            .tx
+            .prepare_cached(
+                "INSERT INTO forest_subtrees (lineage, depth, position, data)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(lineage, depth, position) DO UPDATE SET data = excluded.data",
+            )
+            .map_err(internal)?;
+        stmt.execute(params![lineage.as_bytes().as_slice(), depth, u64_to_value(position), blob])
+            .map_err(internal)?;
+        Ok(())
+    }
+
+    fn delete_subtree(&mut self, lineage: LineageId, depth: u8, position: u64) -> Result<()> {
+        let mut stmt = self
+            .tx
+            .prepare_cached(
+                "DELETE FROM forest_subtrees WHERE lineage = ?1 AND depth = ?2 AND position = ?3",
+            )
+            .map_err(internal)?;
+        stmt.execute(params![lineage.as_bytes().as_slice(), depth, u64_to_value(position)])
+            .map_err(internal)?;
+        Ok(())
+    }
+
+    fn upsert_tree_meta(&mut self, lineage: LineageId, meta: ForestTreeMeta) -> Result<()> {
+        self.tx
+            .execute(
+                "INSERT INTO forest_trees (lineage, version, root, entry_count) \
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(lineage) DO UPDATE SET
+                     version = excluded.version,
+                     root = excluded.root,
+                     entry_count = excluded.entry_count",
+                params![
+                    lineage.as_bytes().as_slice(),
+                    u64_to_value(meta.version),
+                    meta.root.to_bytes(),
+                    u64_to_value(meta.entry_count as u64)
+                ],
+            )
+            .map_err(internal)?;
+        Ok(())
+    }
+
+    /// Runs the writes inside a SQL savepoint, so a mid-application error does not leave partial
+    /// writes visible even to callers that catch the error and keep using the transaction.
+    fn write_atomically<T>(&mut self, writes: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
         self.tx.execute_batch("SAVEPOINT forest_apply").map_err(internal)?;
-        let result = self.apply_validated_mutations(mutations);
+        let result = writes(self);
         match &result {
             Ok(_) => {
                 self.tx.execute_batch("RELEASE forest_apply").map_err(internal)?;
@@ -986,96 +393,23 @@ impl<'a, 'conn> Backend for SqliteForestBackend<'a, 'conn> {
         result
     }
 }
-
-impl SqliteForestBackend<'_, '_> {
-    /// Applies already-validated prepared mutations. Must run inside the `forest_apply`
-    /// savepoint so a mid-application error does not leave partial writes visible.
-    fn apply_validated_mutations(
-        &mut self,
-        mutations: SqlitePreparedMutations,
-    ) -> Result<Vec<AppliedLineageMutation>> {
-        let mut applied = Vec::with_capacity(mutations.entries.len());
-        for p in mutations.entries {
-            let old_root = p.forward.old_root();
-            let new_root = p.forward.root();
-
-            match p.kind {
-                LineageMutationKind::AddLineage => {
-                    write_pairs(self.tx, p.lineage, &p.forward)?;
-                    write_subtrees(self.tx, p.lineage, &p.forward)?;
-                    let entry_count =
-                        p.forward.new_pairs().values().filter(|v| **v != EMPTY_WORD).count();
-                    upsert_tree_meta(self.tx, p.lineage, p.new_version, &new_root, entry_count)?;
-
-                    applied.push(AppliedLineageMutation::new(
-                        p.lineage,
-                        p.old_version,
-                        p.new_version,
-                        old_root,
-                        new_root,
-                        0,
-                        SmtMutationSet::default(),
-                        p.kind,
-                    ));
-                },
-                LineageMutationKind::UpdateTree => {
-                    if p.forward.is_empty() {
-                        // No-op update: no new tree version is allocated.
-                        let (_, _, old_count) = require_tree_meta(self.tx, p.lineage)?;
-                        applied.push(AppliedLineageMutation::new(
-                            p.lineage,
-                            p.old_version,
-                            p.new_version,
-                            old_root,
-                            new_root,
-                            old_count,
-                            p.forward,
-                            p.kind,
-                        ));
-                        continue;
-                    }
-
-                    let (_, _, old_count) = require_tree_meta(self.tx, p.lineage)?;
-                    let new_count = i64::try_from(old_count)
-                        .ok()
-                        .and_then(|count| count.checked_add(p.entry_count_delta))
-                        .and_then(|count| usize::try_from(count).ok())
-                        .ok_or_else(|| {
-                            BackendError::CorruptedData(format!(
-                                "entry count of lineage {} out of range",
-                                p.lineage
-                            ))
-                        })?;
-
-                    write_pairs(self.tx, p.lineage, &p.forward)?;
-                    write_subtrees(self.tx, p.lineage, &p.forward)?;
-                    upsert_tree_meta(self.tx, p.lineage, p.new_version, &new_root, new_count)?;
-
-                    applied.push(AppliedLineageMutation::new(
-                        p.lineage,
-                        p.old_version,
-                        p.new_version,
-                        old_root,
-                        new_root,
-                        old_count,
-                        p.reverse,
-                        p.kind,
-                    ));
-                },
-            }
-        }
-
-        Ok(applied)
-    }
-}
-
 // TESTS
 // ================================================================================================
 
 #[cfg(test)]
 mod tests {
-    use miden_protocol::crypto::merkle::smt::{LargeSmtForest, TreeId};
-    use miden_protocol::{Felt, ONE, ZERO};
+    use miden_protocol::crypto::merkle::smt::{
+        BackendReader,
+        InnerNode,
+        LargeSmtForest,
+        SMT_DEPTH,
+        Smt,
+        SmtForestUpdateBatch,
+        Subtree,
+        TreeId,
+    };
+    use miden_protocol::crypto::merkle::{EmptySubtreeRoots, NodeIndex};
+    use miden_protocol::{EMPTY_WORD, Felt, ONE, ZERO};
 
     use super::*;
     use crate::db_management::utils::apply_migrations;
@@ -1124,7 +458,7 @@ mod tests {
 
         let expected_root = {
             let tx = conn.transaction().unwrap();
-            let mut forest = LargeSmtForest::new(SqliteForestBackend::new(&tx)).unwrap();
+            let mut forest = LargeSmtForest::new(forest_backend(&tx)).unwrap();
             let roots = forest
                 .add_lineages(1, batch(lid(1), &[(w(10), w(100)), (w(20), w(200))]))
                 .unwrap();
@@ -1138,7 +472,7 @@ mod tests {
         assert_eq!(expected_root, reference.root());
 
         let tx = conn.transaction().unwrap();
-        let forest = LargeSmtForest::new(SqliteForestBackend::new(&tx)).unwrap();
+        let forest = LargeSmtForest::new(forest_backend(&tx)).unwrap();
         let proof = forest.open(TreeId::new(lid(1), 1), w(10)).unwrap();
         assert_eq!(proof.get(&w(10)), Some(w(100)));
         assert!(proof.verify_presence(&w(10), &w(100), &expected_root).is_ok());
@@ -1148,7 +482,7 @@ mod tests {
     fn two_phase_and_dependent_updates_in_one_txn() {
         let mut conn = setup_conn();
         let tx = conn.transaction().unwrap();
-        let mut forest = LargeSmtForest::new(SqliteForestBackend::new(&tx)).unwrap();
+        let mut forest = LargeSmtForest::new(forest_backend(&tx)).unwrap();
 
         forest.add_lineages(1, batch(lid(1), &[(w(10), w(100))])).unwrap();
 
@@ -1158,9 +492,9 @@ mod tests {
         assert_eq!(mutations.lineage_mutations()[0].new_version(), 2);
 
         // Nothing changes until apply.
-        assert_eq!(SqliteForestBackend::new(&tx).version(lid(1)).unwrap(), 1);
+        assert_eq!(forest_backend(&tx).version(lid(1)).unwrap(), 1);
         forest.apply_mutations(mutations).unwrap();
-        assert_eq!(SqliteForestBackend::new(&tx).version(lid(1)).unwrap(), 2);
+        assert_eq!(forest_backend(&tx).version(lid(1)).unwrap(), 2);
 
         // A dependent update in the same transaction sees the uncommitted state.
         forest.update_forest(3, batch(lid(1), &[(w(30), w(300))])).unwrap();
@@ -1180,7 +514,7 @@ mod tests {
 
         {
             let tx = conn.transaction().unwrap();
-            let mut forest = LargeSmtForest::new(SqliteForestBackend::new(&tx)).unwrap();
+            let mut forest = LargeSmtForest::new(forest_backend(&tx)).unwrap();
             forest.add_lineages(1, batch(lid(1), &[(w(10), w(100))])).unwrap();
             drop(forest);
             tx.commit().unwrap();
@@ -1188,7 +522,7 @@ mod tests {
 
         {
             let tx = conn.transaction().unwrap();
-            let mut forest = LargeSmtForest::new(SqliteForestBackend::new(&tx)).unwrap();
+            let mut forest = LargeSmtForest::new(forest_backend(&tx)).unwrap();
             forest
                 .update_forest(2, batch(lid(1), &[(w(10), w(999)), (w(20), w(200))]))
                 .unwrap();
@@ -1198,8 +532,8 @@ mod tests {
         }
 
         let tx = conn.transaction().unwrap();
-        let forest = LargeSmtForest::new(SqliteForestBackend::new(&tx)).unwrap();
-        assert_eq!(SqliteForestBackend::new(&tx).version(lid(1)).unwrap(), 1);
+        let forest = LargeSmtForest::new(forest_backend(&tx)).unwrap();
+        assert_eq!(forest_backend(&tx).version(lid(1)).unwrap(), 1);
         let proof = forest.open(TreeId::new(lid(1), 1), w(10)).unwrap();
         assert_eq!(proof.get(&w(10)), Some(w(100)));
         assert!(forest.open(TreeId::new(lid(2), 2), w(1)).is_err());
@@ -1209,14 +543,14 @@ mod tests {
     fn compute_without_apply_changes_nothing() {
         let mut conn = setup_conn();
         let tx = conn.transaction().unwrap();
-        let mut forest = LargeSmtForest::new(SqliteForestBackend::new(&tx)).unwrap();
+        let mut forest = LargeSmtForest::new(forest_backend(&tx)).unwrap();
         forest.add_lineages(1, batch(lid(1), &[(w(10), w(100))])).unwrap();
 
         let mutations =
             forest.compute_forest_mutations(2, batch(lid(1), &[(w(10), w(999))])).unwrap();
         drop(mutations);
 
-        assert_eq!(SqliteForestBackend::new(&tx).version(lid(1)).unwrap(), 1);
+        assert_eq!(forest_backend(&tx).version(lid(1)).unwrap(), 1);
         let proof = forest.open(TreeId::new(lid(1), 1), w(10)).unwrap();
         assert_eq!(proof.get(&w(10)), Some(w(100)));
     }
@@ -1225,7 +559,7 @@ mod tests {
     fn stale_mutations_rejected() {
         let mut conn = setup_conn();
         let tx = conn.transaction().unwrap();
-        let mut forest = LargeSmtForest::new(SqliteForestBackend::new(&tx)).unwrap();
+        let mut forest = LargeSmtForest::new(forest_backend(&tx)).unwrap();
         forest.add_lineages(1, batch(lid(1), &[(w(10), w(100))])).unwrap();
 
         let stale = forest.compute_forest_mutations(2, batch(lid(1), &[(w(20), w(200))])).unwrap();
@@ -1261,7 +595,7 @@ mod tests {
         entries: &[(Word, Word)],
     ) {
         let reference = Smt::with_entries(entries.iter().copied()).unwrap();
-        let proof = SqliteForestBackend::new(tx).open(lineage, key).unwrap();
+        let proof = forest_backend(tx).open(lineage, key).unwrap();
         assert_eq!(proof.compute_root(), reference.root(), "proof root mismatch for key {key}");
         let expected = entries.iter().find(|(k, _)| *k == key).map(|(_, v)| *v);
         // `SmtProof::get` reports absent keys of a non-empty leaf as the empty word.
@@ -1273,7 +607,7 @@ mod tests {
     fn collision_leaf_transitions() {
         let mut conn = setup_conn();
         let tx = conn.transaction().unwrap();
-        let mut forest = LargeSmtForest::new(SqliteForestBackend::new(&tx)).unwrap();
+        let mut forest = LargeSmtForest::new(forest_backend(&tx)).unwrap();
 
         // Two keys in the same leaf (same most significant felt) plus one in another leaf.
         let (ka, kb, kc) = (wp(7, 1), wp(7, 2), wp(9, 3));
@@ -1309,7 +643,7 @@ mod tests {
     fn random_operations_match_reference_smt() {
         let mut conn = setup_conn();
         let tx = conn.transaction().unwrap();
-        let mut forest = LargeSmtForest::new(SqliteForestBackend::new(&tx)).unwrap();
+        let mut forest = LargeSmtForest::new(forest_backend(&tx)).unwrap();
         forest.add_lineages(1, batch(lid(1), &[(wp(1, 1), w(1))])).unwrap();
 
         // Deterministic LCG so the test is reproducible without a rand dependency.
@@ -1372,7 +706,7 @@ mod tests {
     fn missing_subtree_blob_is_corruption() {
         let mut conn = setup_conn();
         let tx = conn.transaction().unwrap();
-        let mut forest = LargeSmtForest::new(SqliteForestBackend::new(&tx)).unwrap();
+        let mut forest = LargeSmtForest::new(forest_backend(&tx)).unwrap();
         // Two leaves whose paths diverge at depth 1, so the depth-0 subtree holds a non-empty
         // sibling of the queried path (a missing blob whose siblings were all empty would leave
         // the proof unchanged and is undetectable by design).
@@ -1386,7 +720,7 @@ mod tests {
         )
         .unwrap();
 
-        let err = SqliteForestBackend::new(&tx).open(lid(1), wp(1, 1)).unwrap_err();
+        let err = forest_backend(&tx).open(lid(1), wp(1, 1)).unwrap_err();
         assert!(matches!(err, BackendError::CorruptedData(_)), "unexpected error: {err}");
     }
 
@@ -1394,7 +728,7 @@ mod tests {
     fn malformed_subtree_blob_is_corruption() {
         let mut conn = setup_conn();
         let tx = conn.transaction().unwrap();
-        let mut forest = LargeSmtForest::new(SqliteForestBackend::new(&tx)).unwrap();
+        let mut forest = LargeSmtForest::new(forest_backend(&tx)).unwrap();
         forest.add_lineages(1, batch(lid(1), &[(w(10), w(100))])).unwrap();
 
         tx.execute(
@@ -1403,7 +737,7 @@ mod tests {
         )
         .unwrap();
 
-        let err = SqliteForestBackend::new(&tx).open(lid(1), w(10)).unwrap_err();
+        let err = forest_backend(&tx).open(lid(1), w(10)).unwrap_err();
         assert!(matches!(err, BackendError::CorruptedData(_)), "unexpected error: {err}");
     }
 
@@ -1411,7 +745,7 @@ mod tests {
     fn empty_stored_value_is_corruption() {
         let mut conn = setup_conn();
         let tx = conn.transaction().unwrap();
-        let mut forest = LargeSmtForest::new(SqliteForestBackend::new(&tx)).unwrap();
+        let mut forest = LargeSmtForest::new(forest_backend(&tx)).unwrap();
         forest.add_lineages(1, batch(lid(1), &[(w(10), w(100))])).unwrap();
 
         tx.execute(
@@ -1420,7 +754,7 @@ mod tests {
         )
         .unwrap();
 
-        let backend = SqliteForestBackend::new(&tx);
+        let backend = forest_backend(&tx);
         let open_err = backend.open(lid(1), w(10)).unwrap_err();
         assert!(matches!(open_err, BackendError::CorruptedData(_)), "open: {open_err}");
         let get_err = backend.get(lid(1), w(10)).unwrap_err();
@@ -1433,7 +767,7 @@ mod tests {
     fn failed_application_rolls_back_to_savepoint() {
         let mut conn = setup_conn();
         let tx = conn.transaction().unwrap();
-        let mut forest = LargeSmtForest::new(SqliteForestBackend::new(&tx)).unwrap();
+        let mut forest = LargeSmtForest::new(forest_backend(&tx)).unwrap();
         forest.add_lineages(1, batch(lid(1), &[(w(10), w(100))])).unwrap();
 
         // Compute valid prepared mutations first, then corrupt a blob, so the failure happens
@@ -1449,12 +783,12 @@ mod tests {
         assert!(err.to_string().contains("malformed"), "unexpected error: {err}");
 
         // The savepoint must have undone the partial writes: entry value and version unchanged.
-        let backend = SqliteForestBackend::new(&tx);
+        let backend = forest_backend(&tx);
         assert_eq!(backend.get(lid(1), w(10)).unwrap(), Some(w(100)));
         assert_eq!(backend.version(lid(1)).unwrap(), 1);
 
         // The outer transaction stays usable: unrelated lineages can still be written and read.
-        let mut forest = LargeSmtForest::new(SqliteForestBackend::new(&tx)).unwrap();
+        let mut forest = LargeSmtForest::new(forest_backend(&tx)).unwrap();
         forest.add_lineages(2, batch(lid(2), &[(w(20), w(200))])).unwrap();
         assert_open_matches_reference(&tx, lid(2), w(20), &[(w(20), w(200))]);
     }
@@ -1463,7 +797,7 @@ mod tests {
     fn corrupted_path_rejected_at_compute_time() {
         let mut conn = setup_conn();
         let tx = conn.transaction().unwrap();
-        let mut forest = LargeSmtForest::new(SqliteForestBackend::new(&tx)).unwrap();
+        let mut forest = LargeSmtForest::new(forest_backend(&tx)).unwrap();
         forest.add_lineages(1, batch(lid(1), &[(w(10), w(100))])).unwrap();
 
         // A well-formed but diverged blob must be caught by the pre-mutation path
@@ -1489,14 +823,14 @@ mod tests {
         // on-path consistency check fires before the final root comparison; either rejection is
         // the corruption being caught at compute time.
         assert!(err.to_string().contains("corruption"), "unexpected error: {err}");
-        assert_eq!(SqliteForestBackend::new(&tx).version(lid(1)).unwrap(), 1);
+        assert_eq!(forest_backend(&tx).version(lid(1)).unwrap(), 1);
     }
 
     #[test]
     fn on_path_divergence_rejected_at_compute_time() {
         let mut conn = setup_conn();
         let tx = conn.transaction().unwrap();
-        let mut forest = LargeSmtForest::new(SqliteForestBackend::new(&tx)).unwrap();
+        let mut forest = LargeSmtForest::new(forest_backend(&tx)).unwrap();
         forest.add_lineages(1, batch(lid(1), &[(w(10), w(100))])).unwrap();
 
         // Corrupt the ON-PATH half of the root node (the stored key lives on the left half).
@@ -1517,14 +851,14 @@ mod tests {
 
         let err = forest.update_forest(2, batch(lid(1), &[(w(10), w(999))])).unwrap_err();
         assert!(err.to_string().contains("diverges"), "unexpected error: {err}");
-        assert_eq!(SqliteForestBackend::new(&tx).version(lid(1)).unwrap(), 1);
+        assert_eq!(forest_backend(&tx).version(lid(1)).unwrap(), 1);
     }
 
     #[test]
     fn historical_open_after_fast_update() {
         let mut conn = setup_conn();
         let tx = conn.transaction().unwrap();
-        let mut forest = LargeSmtForest::new(SqliteForestBackend::new(&tx)).unwrap();
+        let mut forest = LargeSmtForest::new(forest_backend(&tx)).unwrap();
         let initial = [(wp(7, 1), w(100)), (wp(7, 2), w(200)), (wp(9, 3), w(300))];
         forest.add_lineages(1, batch(lid(1), &initial)).unwrap();
         let reference_v1 = Smt::with_entries(initial).unwrap();
@@ -1547,164 +881,10 @@ mod tests {
     }
 
     #[test]
-    fn computed_mutations_match_reference_smt_exactly() {
-        let mut conn = setup_conn();
-        let tx = conn.transaction().unwrap();
-        let mut forest = LargeSmtForest::new(SqliteForestBackend::new(&tx)).unwrap();
-
-        let initial = [
-            (wp(7, 1), w(100)),
-            (wp(7, 2), w(200)),
-            (wp(9, 3), w(300)),
-            (wp(1 << 40, 4), w(400)),
-        ];
-        forest.add_lineages(1, batch(lid(1), &initial)).unwrap();
-        let mut reference = Smt::with_entries(initial).unwrap();
-
-        // Mixed rounds: updates, removals, inserts into fresh and colliding leaves, and no-ops.
-        let rounds: [Vec<(Word, Word)>; 3] = [
-            vec![(wp(7, 1), w(111)), (wp(2, 5), w(500)), (wp(9, 3), EMPTY_WORD)],
-            vec![(wp(7, 2), EMPTY_WORD), (wp(7, 6), w(600)), (wp(1 << 40, 4), w(400))],
-            vec![(wp(2, 5), EMPTY_WORD), (wp(7, 1), w(112))],
-        ];
-        for (round, ops) in rounds.into_iter().enumerate() {
-            let (_, _, old_count) = require_tree_meta(&tx, lid(1)).unwrap();
-
-            let computed = compute_update_mutations(
-                &tx,
-                lid(1),
-                reference.root(),
-                old_count,
-                ops.iter().copied(),
-            )
-            .unwrap();
-            let forward_ref = reference.compute_mutations(ops.iter().copied()).unwrap();
-            let reverse_ref =
-                reference.apply_mutations_with_reversion(forward_ref.clone()).unwrap();
-
-            assert_eq!(computed.forward, forward_ref, "forward mismatch in round {round}");
-            assert_eq!(computed.reverse, reverse_ref, "reverse mismatch in round {round}");
-
-            // Persist through the regular path and check the stored count tracks the delta.
-            let mut b = SmtForestUpdateBatch::empty();
-            for (key, value) in &ops {
-                if *value == EMPTY_WORD {
-                    b.operations(lid(1)).add_remove(*key);
-                } else {
-                    b.operations(lid(1)).add_insert(*key, *value);
-                }
-            }
-            forest.update_forest(round as u64 + 2, b).unwrap();
-            let (_, root, count) = require_tree_meta(&tx, lid(1)).unwrap();
-            assert_eq!(root, reference.root());
-            assert_eq!(count, reference.num_entries());
-            assert_eq!(
-                i64::try_from(count).unwrap() - i64::try_from(old_count).unwrap(),
-                computed.entry_count_delta
-            );
-        }
-    }
-
-    #[test]
-    fn reverse_pairs_restore_previous_root() {
-        let mut conn = setup_conn();
-        let tx = conn.transaction().unwrap();
-        let mut forest = LargeSmtForest::new(SqliteForestBackend::new(&tx)).unwrap();
-        let initial = [(wp(7, 1), w(100)), (wp(7, 2), w(200)), (wp(9, 3), w(300))];
-        forest.add_lineages(1, batch(lid(1), &initial)).unwrap();
-        let root_before = require_tree_meta(&tx, lid(1)).unwrap().1;
-
-        let ops = [(wp(7, 1), w(111)), (wp(9, 3), EMPTY_WORD), (wp(5, 4), w(400))];
-        let computed =
-            compute_update_mutations(&tx, lid(1), root_before, 3, ops.iter().copied()).unwrap();
-
-        let mut b = SmtForestUpdateBatch::empty();
-        b.operations(lid(1)).add_insert(wp(7, 1), w(111));
-        b.operations(lid(1)).add_remove(wp(9, 3));
-        b.operations(lid(1)).add_insert(wp(5, 4), w(400));
-        forest.update_forest(2, b).unwrap();
-        assert_eq!(require_tree_meta(&tx, lid(1)).unwrap().1, computed.forward.root());
-
-        // Applying the reverse set's pairs as regular operations must restore the previous root.
-        let mut b = SmtForestUpdateBatch::empty();
-        for (key, value) in computed.reverse.new_pairs() {
-            if *value == EMPTY_WORD {
-                b.operations(lid(1)).add_remove(*key);
-            } else {
-                b.operations(lid(1)).add_insert(*key, *value);
-            }
-        }
-        forest.update_forest(3, b).unwrap();
-        assert_eq!(require_tree_meta(&tx, lid(1)).unwrap().1, root_before);
-        for (key, value) in initial {
-            assert_open_matches_reference(&tx, lid(1), key, &initial);
-            assert_eq!(SqliteForestBackend::new(&tx).get(lid(1), key).unwrap(), Some(value));
-        }
-    }
-
-    #[test]
-    fn bulk_loaded_snapshot_matches_reference_smt() {
-        let mut conn = setup_conn();
-        let tx = conn.transaction().unwrap();
-        let mut forest = LargeSmtForest::new(SqliteForestBackend::new(&tx)).unwrap();
-
-        // More than 64 entries so a snapshot-sized batch takes the bulk-load strategy.
-        let initial: Vec<(Word, Word)> = (1..=100u64).map(|i| (wp(i % 10, i), w(i * 10))).collect();
-        forest.add_lineages(1, batch(lid(1), &initial)).unwrap();
-        let mut reference = Smt::with_entries(initial.iter().copied()).unwrap();
-
-        // Snapshot-shaped batch: everything unchanged except one update, one removal, one insert.
-        let mut ops: Vec<(Word, Word)> = initial.clone();
-        ops[7].1 = w(7777);
-        ops[42].1 = EMPTY_WORD;
-        ops.push((wp(11, 200), w(2000)));
-
-        let computed =
-            compute_update_mutations(&tx, lid(1), reference.root(), 100, ops.iter().copied())
-                .unwrap();
-        let forward_ref = reference.compute_mutations(ops.iter().copied()).unwrap();
-        let reverse_ref = reference.apply_mutations_with_reversion(forward_ref.clone()).unwrap();
-        assert_eq!(computed.forward, forward_ref);
-        assert_eq!(computed.reverse, reverse_ref);
-        assert_eq!(computed.forward.new_pairs().len(), 3);
-        assert_eq!(computed.entry_count_delta, 0);
-    }
-
-    #[test]
-    fn full_snapshot_noop_batch_is_noop() {
-        let mut conn = setup_conn();
-        let tx = conn.transaction().unwrap();
-        let mut forest = LargeSmtForest::new(SqliteForestBackend::new(&tx)).unwrap();
-        let initial = [(wp(7, 1), w(100)), (wp(9, 2), w(200)), (wp(11, 3), w(300))];
-        forest.add_lineages(1, batch(lid(1), &initial)).unwrap();
-        let root_before = require_tree_meta(&tx, lid(1)).unwrap().1;
-
-        // A snapshot-shaped batch: every stored pair resubmitted unchanged, plus one change.
-        let computed = compute_update_mutations(
-            &tx,
-            lid(1),
-            root_before,
-            3,
-            initial.iter().copied().chain([(wp(13, 4), w(400))]),
-        )
-        .unwrap();
-        assert_eq!(computed.forward.new_pairs().len(), 1);
-        assert_eq!(computed.entry_count_delta, 1);
-
-        // An entirely unchanged snapshot produces an empty (no-op) mutation set.
-        let computed =
-            compute_update_mutations(&tx, lid(1), root_before, 3, initial.iter().copied()).unwrap();
-        assert!(computed.forward.is_empty());
-        assert_eq!(computed.forward.root(), root_before);
-        forest.update_forest(2, batch(lid(1), &initial)).unwrap();
-        assert_eq!(require_tree_meta(&tx, lid(1)).unwrap().1, root_before);
-    }
-
-    #[test]
     fn removal_updates_entries_and_count() {
         let mut conn = setup_conn();
         let tx = conn.transaction().unwrap();
-        let mut forest = LargeSmtForest::new(SqliteForestBackend::new(&tx)).unwrap();
+        let mut forest = LargeSmtForest::new(forest_backend(&tx)).unwrap();
         forest
             .add_lineages(1, batch(lid(1), &[(w(10), w(100)), (w(20), w(200))]))
             .unwrap();
@@ -1713,7 +893,7 @@ mod tests {
         b.operations(lid(1)).add_remove(w(10));
         forest.update_forest(2, b).unwrap();
 
-        let backend = SqliteForestBackend::new(&tx);
+        let backend = forest_backend(&tx);
         assert_eq!(backend.get(lid(1), w(10)).unwrap(), None);
         assert_eq!(backend.get(lid(1), w(20)).unwrap(), Some(w(200)));
         assert_eq!(backend.entry_count(lid(1)).unwrap(), 1);

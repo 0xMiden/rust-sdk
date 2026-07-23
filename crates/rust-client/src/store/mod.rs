@@ -64,6 +64,8 @@ pub(crate) mod data_store;
 mod errors;
 pub use errors::*;
 
+pub mod forest_backend;
+
 mod smt_forest;
 pub use smt_forest::{
     AccountSmtForest,

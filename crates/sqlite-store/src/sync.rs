@@ -12,7 +12,7 @@ use miden_client::utils::{Deserializable, Serializable};
 use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 
 use super::SqliteStore;
-use crate::forest::{ScopedAccountForest, SqliteForestBackend};
+use crate::forest::{ScopedAccountForest, forest_backend};
 use crate::note::apply_note_updates_tx;
 use crate::sql_error::SqlResultExt;
 use crate::transaction::upsert_transaction_record;
@@ -113,7 +113,7 @@ impl SqliteStore {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .into_store_error()?;
         {
-            let mut scoped_forest = ScopedAccountForest::new(SqliteForestBackend::new(&db_tx))?;
+            let mut scoped_forest = ScopedAccountForest::new(forest_backend(&db_tx))?;
             let smt_forest = &mut scoped_forest;
             let tx = &db_tx;
             // Update blockchain checkpoint (block number and peaks) only if moving forward.

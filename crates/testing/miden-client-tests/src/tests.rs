@@ -2117,8 +2117,6 @@ async fn get_consumable_notes() {
     let consumable_notes = Box::pin(client.get_consumable_notes(None)).await.unwrap();
     let relevant_accounts = &consumable_notes.first().unwrap().1;
     assert_eq!(relevant_accounts.len(), 2);
-    // Screening for a single account returns only that account's relevance, even though the note
-    // is consumable by both tracked accounts.
     let from_consumable =
         Box::pin(client.get_consumable_notes(Some(from_account_id))).await.unwrap();
     assert!(!from_consumable.is_empty());

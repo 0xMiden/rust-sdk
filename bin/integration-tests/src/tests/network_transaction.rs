@@ -54,7 +54,6 @@ use miden_client::sync::NoteTagSource;
 use miden_client::testing::common::{
     TestClient,
     assert_account_has_single_asset,
-    consume_notes,
     execute_tx_and_sync,
     insert_new_wallet,
     wait_for_blocks,
@@ -482,6 +481,7 @@ pub async fn test_recall_note_before_ntx_consumes_it(client_config: ClientConfig
     client.apply_transaction(&bump_result, current_height).await?;
 
     let tx_request = TransactionRequestBuilder::new()
+        .trusted_input_note_script_roots([Word::from(network_note.script().root())])
         .input_notes(vec![(network_note, None)])
         .build()?;
 
@@ -803,14 +803,19 @@ pub async fn test_ntx_mint_produces_public_note_with_non_standard_script(
         "timed out waiting for committed public note {registered_output_commitment:?} with a non-standard script"
     );
 
-    // Bob consumes the public note; the custom script moves the minted asset into his vault.
+    // Bob consumes the public note; the custom script moves the minted asset into his vault. The
+    // script is non-standard, so the request must explicitly trust its root to pass the trust
+    // policy gate.
     let note: Note = client_2
         .get_input_notes(NoteFilter::DetailsCommitments(vec![registered_output_commitment]))
         .await?
         .pop()
         .context("expected the committed public note to be present on Bob's client")?
         .try_into()?;
-    let consume_tx_id = consume_notes(&mut client_2, bob.id(), &[note]).await;
+    let consume_tx = TransactionRequestBuilder::new()
+        .trusted_input_note_script_roots([Word::from(note.script().root())])
+        .build_consume_notes(vec![note])?;
+    let consume_tx_id = Box::pin(client_2.submit_new_transaction(bob.id(), consume_tx)).await?;
     wait_for_tx(&mut client_2, consume_tx_id).await?;
 
     assert_account_has_single_asset(&client_2, bob.id(), faucet.id(), amount.as_canonical_u64())

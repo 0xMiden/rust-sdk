@@ -34,6 +34,7 @@ use miden_standards::note::{P2idNote, P2ideNote, PswapNote, PswapNoteStorage, Sw
 use super::{
     ForeignAccount,
     NoteArgs,
+    NoteScriptTrustPolicy,
     TransactionRequest,
     TransactionRequestError,
     TransactionScriptTemplate,
@@ -94,6 +95,8 @@ pub struct TransactionRequestBuilder {
     ///
     /// See [`TransactionRequestBuilder::expected_ntx_scripts`] for details.
     expected_ntx_scripts: Vec<NoteScript>,
+    /// Trust policy for input-note scripts during transaction execution.
+    note_script_trust_policy: NoteScriptTrustPolicy,
 }
 
 impl TransactionRequestBuilder {
@@ -117,6 +120,7 @@ impl TransactionRequestBuilder {
             script_arg: None,
             auth_arg: None,
             expected_ntx_scripts: vec![],
+            note_script_trust_policy: NoteScriptTrustPolicy::default(),
         }
     }
 
@@ -286,6 +290,36 @@ impl TransactionRequestBuilder {
     #[must_use]
     pub fn expected_ntx_scripts(mut self, scripts: Vec<NoteScript>) -> Self {
         self.expected_ntx_scripts = scripts;
+        self
+    }
+
+    /// Trusts the listed input-note script roots in addition to standard scripts.
+    ///
+    /// By default, a request rejects any non-standard input-note script. Use this to opt in
+    /// scripts the caller has independently verified.
+    ///
+    /// This replaces any previously configured note-script trust policy. Repeated calls do not
+    /// append roots; pass the full set of trusted roots in a single call.
+    #[must_use]
+    pub fn trusted_input_note_script_roots(
+        mut self,
+        roots: impl IntoIterator<Item = Word>,
+    ) -> Self {
+        self.note_script_trust_policy =
+            NoteScriptTrustPolicy::TrustedScriptRoots(roots.into_iter().collect());
+        self
+    }
+
+    /// Allows this request to execute input-note scripts that are not recognized standards or
+    /// listed as trusted roots.
+    ///
+    /// Use this only after the caller has approved the unlisted scripts through their own flow.
+    ///
+    /// This replaces any previously configured note-script trust policy, including trusted root
+    /// allowlists set with [`Self::trusted_input_note_script_roots`].
+    #[must_use]
+    pub fn allow_unlisted_note_scripts(mut self) -> Self {
+        self.note_script_trust_policy = NoteScriptTrustPolicy::AllowUnlistedAfterApproval;
         self
     }
 
@@ -613,6 +647,7 @@ impl TransactionRequestBuilder {
             script_arg: self.script_arg,
             auth_arg: self.auth_arg,
             expected_ntx_scripts: self.expected_ntx_scripts,
+            note_script_trust_policy: self.note_script_trust_policy,
         })
     }
 }

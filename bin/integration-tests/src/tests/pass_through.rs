@@ -131,6 +131,7 @@ pub async fn test_pass_through(client_config: ClientConfig) -> Result<()> {
     assert!(matches!(input_note_record.state(), InputNoteState::Committed { .. }));
 
     let tx_request = TransactionRequestBuilder::new()
+        .trusted_input_note_script_roots([Word::from(pass_through_note_1.script().root())])
         .expected_output_recipients(vec![pass_through_note_details_1.recipient().clone()])
         .build_consume_notes(vec![pass_through_note_1])
         .unwrap();
@@ -161,6 +162,7 @@ pub async fn test_pass_through(client_config: ClientConfig) -> Result<()> {
 
     // now try another transaction against the pass-through account
     let tx_request = TransactionRequestBuilder::new()
+        .trusted_input_note_script_roots([Word::from(pass_through_note_2.script().root())])
         .expected_output_recipients(vec![pass_through_note_details_2.recipient().clone()])
         .build_consume_notes(vec![pass_through_note_2])
         .unwrap();

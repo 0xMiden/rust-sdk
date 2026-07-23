@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Breaking Changes
+
+* [BREAKING][behavior][rust] `TransactionRequest` now defaults to `NoteScriptTrustPolicy::StandardScriptsOnly` for input-note scripts. Transactions consuming notes with non-standard scripts must explicitly opt in via `TransactionRequestBuilder::trusted_input_note_script_roots(...)` or `::allow_unlisted_note_scripts()`. Previously, missing non-standard input-note scripts could be silently fetched from the node and executed. ([#2136](https://github.com/0xMiden/rust-sdk/pull/2136))
+* [BREAKING][behavior][rust] `TransactionRequest` binary serialization format changed: a new `note_script_trust_policy` field is appended. Persisted/cached requests from previous versions will fail to deserialize. ([#2136](https://github.com/0xMiden/rust-sdk/pull/2136))
+
+### Features
+
+* [FEATURE][cli] Added `--allow-unlisted-note-scripts` flag to `consume-notes` to consume notes whose scripts are not recognized standards ([#2136](https://github.com/0xMiden/rust-sdk/pull/2136)).
+
 ## 0.16.0-alpha.1 (2026-07-17)
 
 ### Breaking Changes

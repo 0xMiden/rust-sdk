@@ -86,6 +86,7 @@ use miden_protocol::note::{
     NoteAssets,
     NoteAttachments,
     NoteRecipient,
+    NoteScript,
     NoteStorage,
     NoteTag,
     NoteType,
@@ -4094,8 +4095,9 @@ async fn consume_note_with_custom_script() {
         client.test_store().get_note_script(note_script.root().into()).await.unwrap();
     assert_eq!(stored_script.root().to_hex(), note_script.root().to_hex());
 
-    // Consume note
+    // Consume note, trusting root of custom script.
     let transaction_request = TransactionRequestBuilder::new()
+        .trusted_input_note_script_roots([Word::from(note_script.root())])
         .build_consume_notes(vec![custom_note.clone()])
         .unwrap();
 
@@ -4106,6 +4108,155 @@ async fn consume_note_with_custom_script() {
 
     mock_rpc_api.prove_block();
     client.sync_state().await.unwrap();
+}
+
+/// A custom note script that is already in the local store must still be rejected when the active
+/// trust policy does not allow it. Importing a script locally must NOT bypass the per-request
+/// trust check.
+#[tokio::test]
+async fn consume_note_with_custom_script_default_policy_rejects_local_hit() {
+    let (mut client, mock_rpc_api, keystore) = create_test_client().await;
+
+    let (sender_account, receiver_account, faucet_account) = setup_two_wallets_and_faucet(
+        &mut client,
+        AccountType::Private,
+        &keystore,
+        RPO_FALCON_SCHEME_ID,
+    )
+    .await
+    .unwrap();
+
+    let sender_id = sender_account.id();
+    let receiver_id = receiver_account.id();
+    let faucet_id = faucet_account.id();
+
+    mint_and_consume(&mut client, sender_id, faucet_id, NoteType::Private).await;
+    mock_rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+
+    let custom_note_script = "
+        @note_script
+        pub proc main
+            nop
+        end
+    ";
+    let note_script = client.code_builder().compile_note_script(custom_note_script).unwrap();
+
+    let note_storage = NoteStorage::new(vec![]).unwrap();
+    let serial_num = client.rng().draw_word();
+    let note_metadata = PartialNoteMetadata::new(sender_id, NoteType::Private)
+        .with_tag(NoteTag::with_account_target(receiver_id));
+    let note_assets = NoteAssets::new(vec![]).unwrap();
+    let note_recipient = NoteRecipient::new(serial_num, note_script.clone(), note_storage);
+    let custom_note = Note::new(note_assets, note_metadata, note_recipient);
+
+    let create_request = TransactionRequestBuilder::new()
+        .own_output_notes(vec![custom_note.clone()])
+        .build()
+        .unwrap();
+    let _ = Box::pin(client.submit_new_transaction(sender_id, create_request))
+        .await
+        .unwrap();
+    mock_rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+
+    // The script is now in the local store.
+    let stored_script =
+        client.test_store().get_note_script(note_script.root().into()).await.unwrap();
+    assert_eq!(stored_script.root(), note_script.root());
+
+    // Consume without trusting the root: must fail with `UntrustedNoteScript`, even though the
+    // script is locally available.
+    let consume_request = TransactionRequestBuilder::new()
+        .build_consume_notes(vec![custom_note.clone()])
+        .unwrap();
+
+    match Box::pin(client.submit_new_transaction(receiver_id, consume_request)).await {
+        Err(ClientError::UntrustedNoteScript { script_roots, .. }) => {
+            assert_eq!(script_roots, BTreeSet::from([Word::from(note_script.root())]));
+        },
+        other => panic!("expected UntrustedNoteScript, got {other:?}"),
+    }
+}
+
+/// When more than one input note carries an untrusted script, the preflight check must surface all
+/// rejected script roots, not just the first one encountered.
+#[tokio::test]
+async fn consume_notes_with_custom_scripts_reports_all_rejected_roots() {
+    let (mut client, mock_rpc_api, keystore) = create_test_client().await;
+
+    let (sender_account, receiver_account, faucet_account) = setup_two_wallets_and_faucet(
+        &mut client,
+        AccountType::Private,
+        &keystore,
+        RPO_FALCON_SCHEME_ID,
+    )
+    .await
+    .unwrap();
+
+    let sender_id = sender_account.id();
+    let receiver_id = receiver_account.id();
+    let faucet_id = faucet_account.id();
+
+    mint_and_consume(&mut client, sender_id, faucet_id, NoteType::Private).await;
+    mock_rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+
+    let custom_note_script_a = "
+        @note_script
+        pub proc main
+            push.0
+            drop
+        end
+    ";
+    let custom_note_script_b = "
+        @note_script
+        pub proc main
+            push.1
+            drop
+        end
+    ";
+    let note_script_a = client.code_builder().compile_note_script(custom_note_script_a).unwrap();
+    let note_script_b = client.code_builder().compile_note_script(custom_note_script_b).unwrap();
+    assert_ne!(note_script_a.root(), note_script_b.root());
+
+    let mut build_note = |script: NoteScript| {
+        let serial_num = client.rng().draw_word();
+        let metadata = PartialNoteMetadata::new(sender_id, NoteType::Private)
+            .with_tag(NoteTag::with_account_target(receiver_id));
+        let assets = NoteAssets::new(vec![]).unwrap();
+        let recipient = NoteRecipient::new(serial_num, script, NoteStorage::new(vec![]).unwrap());
+        Note::new(assets, metadata, recipient)
+    };
+    let custom_note_a = build_note(note_script_a.clone());
+    let custom_note_b = build_note(note_script_b.clone());
+
+    let create_request = TransactionRequestBuilder::new()
+        .own_output_notes(vec![custom_note_a.clone(), custom_note_b.clone()])
+        .build()
+        .unwrap();
+    let _ = Box::pin(client.submit_new_transaction(sender_id, create_request))
+        .await
+        .unwrap();
+    mock_rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+
+    let consume_request = TransactionRequestBuilder::new()
+        .build_consume_notes(vec![custom_note_a.clone(), custom_note_b.clone()])
+        .unwrap();
+
+    match Box::pin(client.submit_new_transaction(receiver_id, consume_request)).await {
+        Err(ClientError::UntrustedNoteScript { script_roots, .. }) => {
+            assert_eq!(
+                script_roots,
+                BTreeSet::from([
+                    Word::from(note_script_a.root()),
+                    Word::from(note_script_b.root()),
+                ])
+            );
+        },
+        other => panic!("expected UntrustedNoteScript, got {other:?}"),
+    }
 }
 
 // PAGINATION TESTS

@@ -14,6 +14,7 @@ use miden_client::note::{
 };
 use miden_client::store::NoteRecordError;
 use miden_client::transaction::{
+    NoteArgs,
     PaymentNoteDescription,
     PswapTransactionData,
     RawOutputNote,
@@ -296,6 +297,12 @@ pub struct ConsumeNotesCmd {
     /// Flag to delegate proving to the remote prover specified in the config file.
     #[arg(long, default_value_t = false)]
     delegate_proving: bool,
+
+    /// Trust the script roots of the input notes that are not recognized standard scripts. By
+    /// default, the client only executes notes whose scripts match a known standard. Pass this
+    /// flag after independently verifying the note scripts you are about to run.
+    #[arg(long, default_value_t = false)]
+    allow_unlisted_note_scripts: bool,
 }
 
 impl ConsumeNotesCmd {
@@ -305,7 +312,7 @@ impl ConsumeNotesCmd {
     ) -> Result<(), CliError> {
         let force = self.force;
 
-        let mut input_notes = Vec::new();
+        let mut input_notes: Vec<(Note, Option<NoteArgs>)> = Vec::new();
 
         for note_id in &self.list_of_notes {
             input_notes.push((resolve_input_note(&client, note_id).await?, None));
@@ -335,15 +342,16 @@ impl ConsumeNotesCmd {
             return Ok(());
         }
 
-        let transaction_request = TransactionRequestBuilder::new()
-            .input_notes(input_notes)
-            .build()
-            .map_err(|err| {
-                CliError::Transaction(
-                    err.into(),
-                    "Failed to build consume notes transaction".to_string(),
-                )
-            })?;
+        let mut builder = TransactionRequestBuilder::new();
+        if self.allow_unlisted_note_scripts {
+            builder = builder.allow_unlisted_note_scripts();
+        }
+        let transaction_request = builder.input_notes(input_notes).build().map_err(|err| {
+            CliError::Transaction(
+                err.into(),
+                "Failed to build consume notes transaction".to_string(),
+            )
+        })?;
 
         execute_transaction(
             &mut client,

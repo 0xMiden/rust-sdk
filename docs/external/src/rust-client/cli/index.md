@@ -292,6 +292,8 @@ Additionally, you can optionally not specify note IDs, in which case any note th
 
 Either `Expected` or `Committed` notes may be consumed by this command, changing their state to `Processing`. It's state will be updated to `Consumed` after the next sync.
 
+By default, `consume-notes` only accepts notes whose scripts match a recognized standard (P2ID, P2IDE, SWAP, MINT, BURN). To consume notes with custom scripts, pass `--allow-unlisted-note-scripts`, which acknowledges that the unlisted scripts have been reviewed and trusted.
+
 #### `transfer`
 
 Transfers assets to another account. Sender Account creates a note that a target Account ID can consume. The asset is identified by the tuple `(FAUCET ID, AMOUNT)`. The note can be configured to be recallable making the sender able to consume it after a height is reached.

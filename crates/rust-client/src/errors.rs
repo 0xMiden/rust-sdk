@@ -1,4 +1,5 @@
 use alloc::boxed::Box;
+use alloc::collections::BTreeSet;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::fmt;
@@ -35,7 +36,12 @@ use crate::note::NoteScreenerError;
 use crate::note_transport::NoteTransportError;
 use crate::rpc::RpcError;
 use crate::store::{NoteRecordError, StoreError};
-use crate::transaction::{BatchBuilderError, TransactionRequestError, TransactionStoreUpdateError};
+use crate::transaction::{
+    BatchBuilderError,
+    NoteScriptTrustPolicy,
+    TransactionRequestError,
+    TransactionStoreUpdateError,
+};
 
 // ACTIONABLE HINTS
 // ================================================================================================
@@ -183,6 +189,14 @@ pub enum ClientError {
         source: RpcError,
     },
     #[error(
+        "note script {} not allowed under the {policy} trust policy",
+        DisplayScriptRoots(script_roots)
+    )]
+    UntrustedNoteScript {
+        script_roots: BTreeSet<Word>,
+        policy: NoteScriptTrustPolicy,
+    },
+    #[error(
         "transaction {} was accepted into the node's mempool at block {} but the local store \
          update failed. The pending store update is attached and can be re-applied later via \
          `apply_transaction_update`. Resubmitting the same transaction will be rejected if the \
@@ -220,6 +234,28 @@ pub(crate) fn log_observer_failure(
     }
 }
 
+/// Renders a set of script roots with singular/plural agreement for inclusion in error messages.
+struct DisplayScriptRoots<'a>(&'a BTreeSet<Word>);
+
+impl fmt::Display for DisplayScriptRoots<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut iter = self.0.iter();
+        match (iter.next(), iter.next()) {
+            (Some(only), None) => write!(f, "root {only} is"),
+            (Some(first), Some(second)) => {
+                f.write_str("roots {")?;
+                write!(f, "{first}")?;
+                write!(f, ", {second}")?;
+                for root in iter {
+                    write!(f, ", {root}")?;
+                }
+                f.write_str("} are")
+            },
+            _ => f.write_str("roots {} are"),
+        }
+    }
+}
+
 // CONVERSIONS
 // ================================================================================================
 
@@ -246,6 +282,15 @@ impl From<&ClientError> for Option<ErrorHint> {
                 Some(missing_recipient_hint(recipients))
             },
             ClientError::TransactionRequestError(inner) => inner.into(),
+            ClientError::UntrustedNoteScript { .. } => Some(ErrorHint {
+                message: "The transaction includes input notes with scripts outside this \
+                          request's trusted set. If you have verified those scripts, use \
+                          `TransactionRequestBuilder::trusted_input_note_script_roots(...)` to \
+                          allow specific roots or \
+                          `TransactionRequestBuilder::allow_unlisted_note_scripts()` to allow any \
+                          unlisted script for that request.".to_string(),
+                docs_url: Some(TROUBLESHOOTING_DOC),
+            }),
             ClientError::TransactionExecutorError(inner) => transaction_executor_hint(inner),
             ClientError::NoteNotFoundOnChain(note_id) => Some(ErrorHint {
                 message: format!(

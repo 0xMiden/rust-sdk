@@ -156,6 +156,15 @@ client.submit_transaction(transaction_execution_result).await?
 You can decide whether you want the note details to be public or private through the `note_type` parameter.
 You may also customize the transaction request with the other `TransactionRequestBuilder` methods. This allows you to run custom code, with custom note arguments and additional output/input notes as well.
 
+### Input note script trust policy
+
+When the transaction consumes input notes, by default the client only executes notes whose scripts match one of the protocol's [standard note types](https://docs.rs/miden-standards/latest/miden_standards/note/enum.StandardNote.html) (P2ID, P2IDE, SWAP, MINT, or BURN). Notes carrying any other script are rejected before execution. To consume notes with custom scripts, opt in on the request builder:
+
+- `TransactionRequestBuilder::trusted_input_note_script_roots(roots)` to allow specific script roots.
+- `TransactionRequestBuilder::allow_unlisted_note_scripts()` to allow any script root, intended for clients that surface unknown scripts to the user behind their own approval flow.
+
+See `NoteScriptTrustPolicy` for the full set of variants.
+
 ## Note screening
 
 ### When to use note screening

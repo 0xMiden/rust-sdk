@@ -55,6 +55,9 @@ mod foreign;
 pub use foreign::ForeignAccount;
 pub(crate) use foreign::account_proof_into_inputs;
 
+mod note_script_policy;
+pub use note_script_policy::NoteScriptTrustPolicy;
+
 use crate::store::InputNoteRecord;
 
 // TRANSACTION REQUEST
@@ -127,6 +130,8 @@ pub struct TransactionRequest {
     ///
     /// See [`TransactionRequestBuilder::expected_ntx_scripts`] for details.
     expected_ntx_scripts: Vec<NoteScript>,
+    /// Trust policy for input-note scripts. See [`NoteScriptTrustPolicy`].
+    note_script_trust_policy: NoteScriptTrustPolicy,
 }
 
 impl TransactionRequest {
@@ -235,6 +240,11 @@ impl TransactionRequest {
     /// Returns the expected NTX scripts that the node's NTX builder will need in its registry.
     pub fn expected_ntx_scripts(&self) -> &[NoteScript] {
         &self.expected_ntx_scripts
+    }
+
+    /// Returns the trust policy that gates which input-note scripts may be executed.
+    pub fn note_script_trust_policy(&self) -> &NoteScriptTrustPolicy {
+        &self.note_script_trust_policy
     }
 
     /// Builds the [`InputNotes`] needed for the transaction execution.
@@ -389,6 +399,7 @@ impl Serializable for TransactionRequest {
         self.script_arg.write_into(target);
         self.auth_arg.write_into(target);
         self.expected_ntx_scripts.write_into(target);
+        self.note_script_trust_policy.write_into(target);
     }
 }
 
@@ -429,6 +440,7 @@ impl Deserializable for TransactionRequest {
         let script_arg = Option::<Word>::read_from(source)?;
         let auth_arg = Option::<Word>::read_from(source)?;
         let expected_ntx_scripts = Vec::<NoteScript>::read_from(source)?;
+        let note_script_trust_policy = NoteScriptTrustPolicy::read_from(source)?;
 
         Ok(TransactionRequest {
             input_notes,
@@ -444,6 +456,7 @@ impl Deserializable for TransactionRequest {
             script_arg,
             auth_arg,
             expected_ntx_scripts,
+            note_script_trust_policy,
         })
     }
 }
@@ -588,7 +601,7 @@ mod tests {
     use miden_standards::testing::account_component::MockAccountComponent;
     use miden_tx::utils::serde::{Deserializable, Serializable};
 
-    use super::{TransactionRequest, TransactionRequestBuilder};
+    use super::{NoteScriptTrustPolicy, TransactionRequest, TransactionRequestBuilder};
     use crate::rpc::domain::account::AccountStorageRequirements;
     use crate::transaction::ForeignAccount;
 
@@ -681,5 +694,11 @@ mod tests {
 
         let deserialized_tx_request = TransactionRequest::read_from_bytes(&buffer).unwrap();
         assert_eq!(tx_request, deserialized_tx_request);
+    }
+
+    #[test]
+    fn builder_default_policy_is_standard_scripts_only() {
+        let request = TransactionRequestBuilder::new().build().unwrap();
+        assert_eq!(request.note_script_trust_policy(), &NoteScriptTrustPolicy::StandardScriptsOnly);
     }
 }

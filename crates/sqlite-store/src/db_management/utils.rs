@@ -5,7 +5,7 @@ use std::vec::Vec;
 use miden_client::store::StoreError;
 use miden_protocol::crypto::hash::blake::{Blake3_256, Blake3Digest};
 use rusqlite::types::FromSql;
-use rusqlite::{Connection, OptionalExtension, Result, ToSql, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Result, ToSql, params};
 use rusqlite_migration::{M, Migrations, SchemaVersion};
 
 use super::errors::SqliteStoreError;
@@ -59,48 +59,31 @@ macro_rules! insert_sql {
 
 type Hash = Blake3Digest<32>;
 
+const SCHEMA_HASH_DOMAIN: &[u8] = b"miden-client-sqlite-schema-v1";
+
 const MIGRATION_SCRIPTS: [&str; 2] = [
     include_str!("../store.sql"),
     include_str!("../migrations/0002_input_notes_script_root_index.sql"),
 ];
-static MIGRATION_HASHES: LazyLock<Vec<Hash>> = LazyLock::new(compute_migration_hashes);
 static MIGRATIONS: LazyLock<Migrations> = LazyLock::new(prepare_migrations);
+static EXPECTED_SCHEMA_HASHES: LazyLock<Vec<Hash>> = LazyLock::new(compute_expected_schema_hashes);
 
 fn up(s: &'static str) -> M<'static> {
     M::up(s).foreign_key_check()
 }
-
-const DB_MIGRATION_HASH_FIELD: &str = "db-migration-hash";
 
 /// Applies the migrations to the database.
 pub fn apply_migrations(conn: &mut Connection) -> Result<(), SqliteStoreError> {
     let version_before = MIGRATIONS.current_version(conn)?;
 
     if let SchemaVersion::Inside(ver) = version_before {
-        if !table_exists(&conn.transaction()?, "migrations")? {
-            return Err(SqliteStoreError::MissingMigrationsTable);
-        }
-
-        let expected_hash = &*MIGRATION_HASHES[ver.get() - 1];
-
-        let Ok(Some(actual_hash)) = get_migrations_value::<Vec<u8>>(conn, DB_MIGRATION_HASH_FIELD)
-        else {
-            return Err(SqliteStoreError::DatabaseError("Migration hash not found".to_owned()));
-        };
-
-        if &actual_hash[..] != expected_hash {
-            return Err(SqliteStoreError::MigrationHashMismatch);
+        let actual_hash = schema_hash(conn)?;
+        if actual_hash != EXPECTED_SCHEMA_HASHES[ver.get() - 1] {
+            return Err(SqliteStoreError::SchemaHashMismatch);
         }
     }
 
     MIGRATIONS.to_latest(conn)?;
-
-    let version_after = MIGRATIONS.current_version(conn)?;
-
-    if version_before != version_after {
-        let new_hash = &*MIGRATION_HASHES[MIGRATION_HASHES.len() - 1];
-        set_migrations_value(conn, DB_MIGRATION_HASH_FIELD, &new_hash)?;
-    }
 
     Ok(())
 }
@@ -109,41 +92,69 @@ fn prepare_migrations() -> Migrations<'static> {
     Migrations::new(MIGRATION_SCRIPTS.map(up).to_vec())
 }
 
-fn compute_migration_hashes() -> Vec<Hash> {
-    let mut accumulator = Hash::default();
-    MIGRATION_SCRIPTS
-        .iter()
-        .map(|sql| {
-            let script_hash = Blake3_256::hash(preprocess_sql(sql).as_bytes());
-            accumulator = Blake3_256::merge(&[accumulator, script_hash]);
-            accumulator
+/// Computes the schema fingerprint expected after each migration by replaying the migrations on an
+/// in-memory database.
+fn compute_expected_schema_hashes() -> Vec<Hash> {
+    let mut conn =
+        Connection::open_in_memory().expect("in-memory database creation should not fail");
+    (1..=MIGRATION_SCRIPTS.len())
+        .map(|version| {
+            MIGRATIONS
+                .to_version(&mut conn, version)
+                .expect("replaying a migration on the reference database should not fail");
+            schema_hash(&conn).expect("hashing the reference schema should not fail")
         })
         .collect()
 }
 
-fn preprocess_sql(sql: &str) -> String {
-    // TODO: We can also remove all comments here (need to analyze the SQL script in order to remove
-    //       comments in string literals).
-    remove_spaces(sql)
+/// Fingerprints the database's current schema.
+///
+/// Entries are ordered by type, name, and table name so the fingerprint does not depend on object
+/// creation order.
+fn schema_hash(conn: &Connection) -> Result<Hash> {
+    let mut stmt = conn.prepare(
+        "SELECT type, name, tbl_name, sql FROM sqlite_schema \
+         WHERE sql IS NOT NULL AND name NOT GLOB 'sqlite_*' \
+         ORDER BY type, name, tbl_name",
+    )?;
+    let entries = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                normalize_sql(&row.get::<_, String>(3)?),
+            ))
+        })?
+        .collect::<Result<Vec<_>>>()?;
+
+    let mut buf = Vec::new();
+    push_field(&mut buf, SCHEMA_HASH_DOMAIN);
+    for (object_type, name, table_name, sql) in entries {
+        push_field(&mut buf, object_type.as_bytes());
+        push_field(&mut buf, name.as_bytes());
+        push_field(&mut buf, table_name.as_bytes());
+        push_field(&mut buf, sql.as_bytes());
+    }
+
+    Ok(Blake3_256::hash(&buf))
 }
 
-fn remove_spaces(str: &str) -> String {
-    str.chars().filter(|chr| !chr.is_whitespace()).collect()
+/// Appends a length-prefixed field to `buf` so that concatenating different field sequences can
+/// never produce the same output.
+fn push_field(buf: &mut Vec<u8>, field: &[u8]) {
+    buf.extend_from_slice(&(field.len() as u64).to_le_bytes());
+    buf.extend_from_slice(field);
 }
 
-pub fn get_migrations_value<T: FromSql>(conn: &mut Connection, name: &str) -> Result<Option<T>> {
-    conn.transaction()?
-        .query_row("SELECT value FROM migrations WHERE name = $1", params![name], |row| row.get(0))
-        .optional()
-}
-
-pub fn set_migrations_value<T: ToSql>(conn: &Connection, name: &str, value: &T) -> Result<()> {
-    let count =
-        conn.execute(insert_sql!(migrations { name, value } | REPLACE), params![name, value])?;
-
-    debug_assert_eq!(count, 1);
-
-    Ok(())
+/// Collapses runs of whitespace to single spaces and trims a trailing semicolon so cosmetic
+/// differences in stored SQL text do not change the fingerprint.
+fn normalize_sql(sql: &str) -> String {
+    sql.trim_end()
+        .trim_end_matches(';')
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 pub fn get_setting<T: FromSql>(conn: &mut Connection, name: &str) -> Result<Option<T>, StoreError> {
@@ -181,18 +192,6 @@ pub fn list_setting_keys(conn: &Connection) -> Result<Vec<String>, StoreError> {
         .into_store_error()
 }
 
-/// Checks if a table exists in the database.
-pub fn table_exists(transaction: &Transaction, table_name: &str) -> rusqlite::Result<bool> {
-    Ok(transaction
-        .query_row(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = $1",
-            params![table_name],
-            |_| Ok(()),
-        )
-        .optional()?
-        .is_some())
-}
-
 // TESTS
 // ================================================================================================
 
@@ -200,14 +199,59 @@ pub fn table_exists(transaction: &Transaction, table_name: &str) -> rusqlite::Re
 mod tests {
     use rusqlite::{Connection, OptionalExtension};
 
-    use super::apply_migrations;
+    use super::{EXPECTED_SCHEMA_HASHES, MIGRATION_SCRIPTS, apply_migrations, schema_hash};
+    use crate::db_management::errors::SqliteStoreError;
 
-    /// Applying the migrations creates the input notes script root index, and reopening a
-    /// database already at the latest version is accepted rather than rejected.
+    #[test]
+    fn honest_database_reopens_without_error() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply_migrations(&mut conn).unwrap();
+        // Reopening a database already at the latest version fingerprints its schema and must
+        // accept it.
+        apply_migrations(&mut conn).unwrap();
+    }
+
+    #[test]
+    fn schema_drift_is_rejected() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply_migrations(&mut conn).unwrap();
+
+        // A change made outside the migrations, e.g. a manual `ALTER TABLE` run against the file.
+        conn.execute("ALTER TABLE input_notes ADD COLUMN injected TEXT", []).unwrap();
+
+        let err = apply_migrations(&mut conn).unwrap_err();
+        assert!(matches!(err, SqliteStoreError::SchemaHashMismatch));
+    }
+
+    #[test]
+    fn schema_hash_ignores_object_creation_order() {
+        let left = Connection::open_in_memory().unwrap();
+        left.execute_batch(
+            "CREATE TABLE a (id INTEGER PRIMARY KEY);
+             CREATE TABLE b (id INTEGER PRIMARY KEY);",
+        )
+        .unwrap();
+
+        let right = Connection::open_in_memory().unwrap();
+        right
+            .execute_batch(
+                "CREATE TABLE b (id INTEGER PRIMARY KEY);
+             CREATE TABLE a (id INTEGER PRIMARY KEY);",
+            )
+            .unwrap();
+
+        assert_eq!(schema_hash(&left).unwrap(), schema_hash(&right).unwrap());
+    }
+
+    #[test]
+    fn expected_schema_hash_per_migration() {
+        assert_eq!(EXPECTED_SCHEMA_HASHES.len(), MIGRATION_SCRIPTS.len());
+    }
+
+    /// Applying the migrations creates the index backing input note lookups by script root.
     #[test]
     fn migrations_create_script_root_index() {
         let mut conn = Connection::open_in_memory().unwrap();
-        apply_migrations(&mut conn).unwrap();
         apply_migrations(&mut conn).unwrap();
 
         let index_exists = conn

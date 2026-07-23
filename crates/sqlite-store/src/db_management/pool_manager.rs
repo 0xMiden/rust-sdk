@@ -60,6 +60,10 @@ impl SqlitePoolManager {
         // Enable foreign key checks.
         conn.pragma_update(None, "foreign_keys", "ON")?;
 
+        // Concurrent writers race to upgrade their transactions to write locks; wait for the
+        // other writer instead of failing immediately with SQLITE_BUSY.
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+
         Ok(conn)
     }
 }

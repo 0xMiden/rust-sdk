@@ -1,59 +1,96 @@
-use alloc::collections::BTreeMap;
+use alloc::format;
 use alloc::vec::Vec;
 
-use miden_protocol::account::{
-    AccountId,
-    AccountStorage,
-    StorageMap,
-    StorageMapKey,
-    StorageMapKeyHash,
-    StorageMapWitness,
-    StorageSlotContent,
+use miden_protocol::account::{AccountId, StorageMapKey, StorageMapWitness, StorageSlotName};
+use miden_protocol::asset::{Asset, AssetId, AssetWitness};
+use miden_protocol::crypto::merkle::MerkleError;
+use miden_protocol::crypto::merkle::smt::{
+    Backend,
+    LargeSmtForest,
+    LargeSmtForestError,
+    LineageId,
+    SmtForestUpdateBatch,
+    TreeId,
+    TreeWithRoot,
+    VersionId,
 };
-use miden_protocol::asset::{Asset, AssetId, AssetVault, AssetWitness};
-use miden_protocol::crypto::merkle::EmptySubtreeRoots;
-use miden_protocol::crypto::merkle::smt::{SMT_DEPTH, Smt, SmtForest};
-use miden_protocol::{EMPTY_WORD, Word};
+use miden_protocol::utils::serde::Serializable;
+use miden_protocol::{EMPTY_WORD, Hasher, Word};
 
 use super::StoreError;
 
-/// Thin wrapper around `SmtForest` for account vault/storage proofs and updates.
-///
-/// Tracks current SMT roots per account with reference counting to safely pop
-/// roots from the underlying forest when no account references them anymore.
-/// Supports staged updates for transaction rollback via a pending roots stack.
-#[derive(Debug, Default, Clone, Eq, PartialEq)]
-pub struct AccountSmtForest {
-    forest: SmtForest,
-    /// Current roots per account (vault root + storage map roots).
-    account_roots: BTreeMap<AccountId, Vec<Word>>,
-    /// Stack of old roots saved during staging, awaiting commit or undo.
-    pending_old_roots: BTreeMap<AccountId, Vec<Vec<Word>>>,
-    /// Reference count for each SMT root across all accounts.
-    root_refcounts: BTreeMap<Word, usize>,
+// LINEAGE DERIVATION
+// ================================================================================================
+
+/// Returns the lineage identifier for an account's asset vault SMT.
+pub fn vault_lineage_id(account_id: AccountId) -> LineageId {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"miden-client:vault");
+    bytes.extend_from_slice(&account_id.to_bytes());
+    LineageId::new(Hasher::hash(&bytes).as_bytes())
 }
 
-impl AccountSmtForest {
-    pub fn new() -> Self {
-        Self::default()
+/// Returns the lineage identifier for an account's storage map SMT in the given slot.
+pub fn storage_map_lineage_id(account_id: AccountId, slot_name: &StorageSlotName) -> LineageId {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"miden-client:storage-map");
+    bytes.extend_from_slice(&account_id.to_bytes());
+    // Length-prefix the variable-sized slot name so distinct (id, name) pairs cannot produce
+    // the same preimage. The fixed-width u64 keeps the identifier platform-independent.
+    bytes.extend_from_slice(&(slot_name.as_str().len() as u64).to_le_bytes());
+    bytes.extend_from_slice(slot_name.as_str().as_bytes());
+    LineageId::new(Hasher::hash(&bytes).as_bytes())
+}
+
+// ACCOUNT SMT FOREST
+// ================================================================================================
+
+/// Account-oriented wrapper around [`LargeSmtForest`].
+///
+/// Account SMTs are tracked as lineages, one per account vault and one per storage map slot,
+/// with identifiers derived deterministically from the account ID (and slot name). Each lineage
+/// evolves through strictly increasing versions supplied by the caller.
+///
+/// The wrapper is generic over the forest storage [`Backend`], so persistence is decided by the
+/// store that owns it. Construction only loads tree metadata from the backend, which makes
+/// short-lived (per store operation) instances cheap.
+pub struct AccountSmtForest<B: Backend> {
+    forest: LargeSmtForest<B>,
+}
+
+impl<B: Backend> AccountSmtForest<B> {
+    /// Creates a forest over the provided backend, loading tree metadata from it.
+    pub fn new(backend: B) -> Result<Self, StoreError> {
+        Ok(Self {
+            forest: LargeSmtForest::new(backend).map_err(forest_error)?,
+        })
     }
 
     // READERS
     // --------------------------------------------------------------------------------------------
 
-    /// Returns the current roots for an account.
-    pub fn get_roots(&self, account_id: &AccountId) -> Option<&Vec<Word>> {
-        self.account_roots.get(account_id)
+    /// Returns the latest root of the given lineage, or `None` if the lineage is unknown.
+    pub fn latest_root(&self, lineage: LineageId) -> Option<Word> {
+        self.forest.latest_root(lineage)
     }
 
     /// Retrieves the vault asset and its witness for a specific vault key.
+    ///
+    /// The proof is opened against the latest tree of the account's vault lineage, after
+    /// verifying that its root matches `expected_vault_root` (the root recorded in the account
+    /// tables). A mismatch means forest and account state are out of sync and is reported as a
+    /// conflicting-roots error.
     pub fn get_asset_and_witness(
         &self,
-        vault_root: Word,
+        account_id: AccountId,
+        expected_vault_root: Word,
         asset_id: AssetId,
     ) -> Result<(Asset, AssetWitness), StoreError> {
+        let lineage = vault_lineage_id(account_id);
+        let tree = self.verified_latest_tree(lineage, expected_vault_root)?;
+
         let hashed_key: Word = asset_id.hash().into();
-        let proof = self.forest.open(vault_root, hashed_key)?;
+        let proof = self.forest.open(tree, hashed_key).map_err(forest_error)?;
         let asset_word = proof
             .get(&hashed_key)
             .ok_or(StoreError::VaultKeyNotTracked(asset_id, hashed_key))?;
@@ -67,265 +104,128 @@ impl AccountSmtForest {
     }
 
     /// Retrieves the storage map witness for a specific map item.
+    ///
+    /// The proof is opened against the latest tree of the map's lineage, after verifying that
+    /// its root matches `expected_map_root` (the root recorded in the account tables).
     pub fn get_storage_map_item_witness(
         &self,
-        map_root: Word,
+        account_id: AccountId,
+        slot_name: &StorageSlotName,
+        expected_map_root: Word,
         key: StorageMapKey,
     ) -> Result<StorageMapWitness, StoreError> {
+        let lineage = storage_map_lineage_id(account_id, slot_name);
+        let tree = self.verified_latest_tree(lineage, expected_map_root)?;
+
         let hashed_key = key.hash();
-        let proof = self.forest.open(map_root, Word::from(hashed_key)).map_err(StoreError::from)?;
+        let proof = self.forest.open(tree, Word::from(hashed_key)).map_err(forest_error)?;
         Ok(StorageMapWitness::new(proof, [key])?)
     }
 
-    // ROOT LIFECYCLE
+    // MUTATIONS
     // --------------------------------------------------------------------------------------------
 
-    /// Stages new roots for an account, saving old roots for potential rollback.
+    /// Applies a batch of updates at the given version, returning the new tree roots.
     ///
-    /// The old roots are pushed onto a pending stack and their refcounts are preserved.
-    /// Call [`Self::commit_roots`] to release old roots or [`Self::discard_roots`] to
-    /// restore them.
-    pub fn stage_roots(&mut self, account_id: AccountId, new_roots: Vec<Word>) {
-        increment_refcounts(&mut self.root_refcounts, &new_roots);
-        if let Some(old_roots) = self.account_roots.insert(account_id, new_roots) {
-            self.pending_old_roots.entry(account_id).or_default().push(old_roots);
-        }
-    }
-
-    /// Commits staged changes: releases all pending old roots for the account.
-    pub fn commit_roots(&mut self, account_id: AccountId) {
-        if let Some(old_roots_stack) = self.pending_old_roots.remove(&account_id) {
-            for old_roots in old_roots_stack {
-                let to_pop = decrement_refcounts(&mut self.root_refcounts, &old_roots);
-                self.safe_pop_smts(to_pop);
-            }
-        }
-    }
-
-    /// Discards the most recent staged change: restores old roots and releases new roots.
-    ///
-    /// If there are old roots to restore, the current roots are replaced with them.
-    /// If there are no old roots (i.e., the account was first staged without prior state),
-    /// the current roots are simply removed.
-    pub fn discard_roots(&mut self, account_id: AccountId) {
-        let old_roots = self.pending_old_roots.get_mut(&account_id).and_then(Vec::pop);
-
-        // Release the current (staged) roots and restore old ones if available
-        let new_roots = match old_roots {
-            Some(old_roots) => self.account_roots.insert(account_id, old_roots),
-            None => self.account_roots.remove(&account_id),
-        };
-
-        if let Some(new_roots) = new_roots {
-            let to_pop = decrement_refcounts(&mut self.root_refcounts, &new_roots);
-            self.safe_pop_smts(to_pop);
-        }
-
-        // Clean up empty stack
-        if self.pending_old_roots.get(&account_id).is_some_and(Vec::is_empty) {
-            self.pending_old_roots.remove(&account_id);
-        }
-    }
-
-    /// Replaces roots atomically: sets new roots and immediately releases old roots.
-    ///
-    /// Use this when no rollback is needed (e.g., initial insert, network updates).
-    ///
-    /// # Panics
-    ///
-    /// Panics if there are pending staged changes for the account. Use
-    /// [`Self::commit_roots`] or [`Self::discard_roots`] first.
-    pub fn replace_roots(&mut self, account_id: AccountId, new_roots: Vec<Word>) {
-        assert!(
-            !self.pending_old_roots.contains_key(&account_id),
-            "cannot replace roots while staged changes are pending for account {account_id}"
-        );
-        increment_refcounts(&mut self.root_refcounts, &new_roots);
-        if let Some(old_roots) = self.account_roots.insert(account_id, new_roots) {
-            let to_pop = decrement_refcounts(&mut self.root_refcounts, &old_roots);
-            self.safe_pop_smts(to_pop);
-        }
-    }
-
-    // TREE MUTATORS
-    // --------------------------------------------------------------------------------------------
-
-    /// Updates the SMT forest with the new asset values.
-    pub fn update_asset_nodes(
+    /// Lineages unknown to the forest are created from the empty tree; known lineages are
+    /// updated from their latest tree. `new_version` must be strictly greater than the latest
+    /// version of every updated lineage.
+    pub fn apply_updates(
         &mut self,
-        root: Word,
-        new_assets: impl Iterator<Item = Asset>,
-        removed_asset_ids: impl Iterator<Item = AssetId>,
-    ) -> Result<Word, StoreError> {
-        let entries: Vec<(Word, Word)> = new_assets
-            .map(|asset| {
-                let key: Word = asset.id().hash().into();
-                let value = asset.to_value_word();
-                (key, value)
-            })
-            .chain(removed_asset_ids.map(|asset_id| (asset_id.hash().into(), EMPTY_WORD)))
-            .collect();
-
-        if entries.is_empty() {
-            return Ok(root);
-        }
-
-        let new_root = self.forest.batch_insert(root, entries).map_err(StoreError::from)?;
-        Ok(new_root)
-    }
-
-    /// Updates the SMT forest with the new storage map values.
-    pub fn update_storage_map_nodes(
-        &mut self,
-        root: Word,
-        entries: impl Iterator<Item = (StorageMapKey, Word)>,
-    ) -> Result<Word, StoreError> {
-        let entries: Vec<(StorageMapKeyHash, Word)> =
-            entries.map(|(key, value)| (key.hash(), value)).collect();
-
-        if entries.is_empty() {
-            return Ok(root);
-        }
-
-        let new_root = self
+        new_version: VersionId,
+        updates: SmtForestUpdateBatch,
+    ) -> Result<Vec<TreeWithRoot>, StoreError> {
+        let mutations = self
             .forest
-            .batch_insert(root, entries.into_iter().map(|(key, value)| (Word::from(key), value)))
-            .map_err(StoreError::from)?;
-        Ok(new_root)
-    }
-
-    /// Inserts the asset vault SMT nodes to the SMT forest.
-    pub fn insert_asset_nodes(&mut self, vault: &AssetVault) -> Result<(), StoreError> {
-        let smt = Smt::with_entries(vault.assets().map(|asset| {
-            let key: Word = asset.id().hash().into();
-            let value = asset.to_value_word();
-            (key, value)
-        }))
-        .map_err(StoreError::from)?;
-
-        let empty_root = *EmptySubtreeRoots::entry(SMT_DEPTH, 0);
-        let entries: Vec<(Word, Word)> = smt.entries().map(|(k, v)| (*k, *v)).collect();
-        if entries.is_empty() {
-            return Ok(());
-        }
-        let new_root = self.forest.batch_insert(empty_root, entries).map_err(StoreError::from)?;
-        debug_assert_eq!(new_root, smt.root());
-        Ok(())
-    }
-
-    /// Inserts all storage map SMT nodes to the SMT forest.
-    pub fn insert_storage_map_nodes(&mut self, storage: &AccountStorage) -> Result<(), StoreError> {
-        let maps = storage.slots().iter().filter_map(|slot| match slot.content() {
-            StorageSlotContent::Map(map) => Some(map),
-            StorageSlotContent::Value(_) => None,
-        });
-
-        for map in maps {
-            self.insert_storage_map_nodes_for_map(map)?;
-        }
-        Ok(())
-    }
-
-    /// Inserts the SMT nodes for an account's vault and storage maps into the
-    /// forest, without tracking roots for the account.
-    pub fn insert_account_state(
-        &mut self,
-        vault: &AssetVault,
-        storage: &AccountStorage,
-    ) -> Result<(), StoreError> {
-        self.insert_storage_map_nodes(storage)?;
-        self.insert_asset_nodes(vault)?;
-        Ok(())
-    }
-
-    /// Inserts all SMT nodes for an account's vault and storage, then stages
-    /// the account's roots for later commit or discard.
-    pub fn insert_and_stage_account_state(
-        &mut self,
-        account_id: AccountId,
-        vault: &AssetVault,
-        storage: &AccountStorage,
-    ) -> Result<(), StoreError> {
-        self.insert_account_state(vault, storage)?;
-        let roots = Self::collect_account_roots(vault, storage);
-        self.stage_roots(account_id, roots);
-        Ok(())
-    }
-
-    /// Inserts all SMT nodes for an account's vault and storage, then replaces
-    /// the account's tracked roots atomically.
-    pub fn insert_and_register_account_state(
-        &mut self,
-        account_id: AccountId,
-        vault: &AssetVault,
-        storage: &AccountStorage,
-    ) -> Result<(), StoreError> {
-        self.insert_account_state(vault, storage)?;
-        let roots = Self::collect_account_roots(vault, storage);
-        self.replace_roots(account_id, roots);
-        Ok(())
-    }
-
-    /// Inserts storage map SMT nodes for a specific storage map.
-    pub fn insert_storage_map_nodes_for_map(&mut self, map: &StorageMap) -> Result<(), StoreError> {
-        let empty_root = *EmptySubtreeRoots::entry(SMT_DEPTH, 0);
-        let entries: Vec<(StorageMapKeyHash, Word)> =
-            map.entries().map(|(key, value)| (key.hash(), *value)).collect();
-        if entries.is_empty() {
-            return Ok(());
-        }
-        self.forest
-            .batch_insert(
-                empty_root,
-                entries.into_iter().map(|(key, value)| (Word::from(key), value)),
-            )
-            .map_err(StoreError::from)?;
-        Ok(())
+            .compute_forest_mutations(new_version, updates)
+            .map_err(forest_error)?;
+        self.forest.apply_mutations(mutations).map_err(forest_error)
     }
 
     // HELPERS
     // --------------------------------------------------------------------------------------------
 
-    /// Collects all SMT roots (vault root + storage map roots) for an account's state.
-    fn collect_account_roots(vault: &AssetVault, storage: &AccountStorage) -> Vec<Word> {
-        let mut roots = vec![vault.root()];
-        for slot in storage.slots() {
-            if let StorageSlotContent::Map(map) = slot.content() {
-                roots.push(map.root());
-            }
+    /// Resolves the latest tree of a lineage and verifies its root against the expected value.
+    fn verified_latest_tree(
+        &self,
+        lineage: LineageId,
+        expected_root: Word,
+    ) -> Result<TreeId, StoreError> {
+        let version = self
+            .forest
+            .latest_version(lineage)
+            .ok_or_else(|| StoreError::DatabaseError(format!("unknown lineage {lineage}")))?;
+        let root = self.forest.latest_root(lineage).expect("lineage has a latest version");
+        if root != expected_root {
+            return Err(StoreError::MerkleStoreError(MerkleError::ConflictingRoots {
+                expected_root,
+                actual_root: root,
+            }));
         }
-        roots
-    }
-
-    /// Pops SMT roots from the forest that are no longer referenced by any account.
-    fn safe_pop_smts(&mut self, roots: impl IntoIterator<Item = Word>) {
-        self.forest.pop_smts(roots);
+        Ok(TreeId::new(lineage, version))
     }
 }
 
-fn increment_refcounts(refcounts: &mut BTreeMap<Word, usize>, roots: &[Word]) {
-    for root in roots {
-        *refcounts.entry(*root).or_insert(0) += 1;
+// BATCH BUILDING
+// ================================================================================================
+
+/// Adds vault asset changes for an account to an update batch.
+pub fn add_vault_ops(
+    batch: &mut SmtForestUpdateBatch,
+    account_id: AccountId,
+    updated_assets: impl Iterator<Item = Asset>,
+    removed_asset_ids: impl Iterator<Item = AssetId>,
+) {
+    let lineage = vault_lineage_id(account_id);
+    let ops = batch.operations(lineage);
+    for asset in updated_assets {
+        ops.add_insert(asset.id().hash().into(), asset.to_value_word());
+    }
+    for asset_id in removed_asset_ids {
+        ops.add_remove(asset_id.hash().into());
     }
 }
 
-/// Decrements refcounts for the given roots, returning those that reached zero.
-fn decrement_refcounts(refcounts: &mut BTreeMap<Word, usize>, roots: &[Word]) -> Vec<Word> {
-    let mut to_pop = Vec::new();
-    for root in roots {
-        if let Some(count) = refcounts.get_mut(root) {
-            *count -= 1;
-            if *count == 0 {
-                refcounts.remove(root);
-                to_pop.push(*root);
-            }
+/// Adds storage map entry changes for one of an account's map slots to an update batch.
+///
+/// Entries with an empty-word value are removals.
+pub fn add_storage_map_ops(
+    batch: &mut SmtForestUpdateBatch,
+    account_id: AccountId,
+    slot_name: &StorageSlotName,
+    entries: impl Iterator<Item = (StorageMapKey, Word)>,
+) {
+    let lineage = storage_map_lineage_id(account_id, slot_name);
+    let ops = batch.operations(lineage);
+    for (key, value) in entries {
+        let key_word = Word::from(key.hash());
+        if value == EMPTY_WORD {
+            ops.add_remove(key_word);
+        } else {
+            ops.add_insert(key_word, value);
         }
     }
-    to_pop
 }
+
+// ERROR MAPPING
+// ================================================================================================
+
+/// Maps forest-level errors onto [`StoreError`].
+///
+/// Takes the error by value so it can be used directly with `map_err`.
+#[allow(clippy::needless_pass_by_value)]
+pub fn forest_error(err: LargeSmtForestError) -> StoreError {
+    StoreError::DatabaseError(format!("smt forest error: {err}"))
+}
+
+// TESTS
+// ================================================================================================
 
 #[cfg(test)]
 mod tests {
+    use miden_protocol::account::StorageMapKey;
+    use miden_protocol::asset::FungibleAsset;
+    use miden_protocol::crypto::merkle::smt::ForestInMemoryBackend;
     use miden_protocol::testing::account_id::{
         ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET,
         ACCOUNT_ID_PUBLIC_NON_FUNGIBLE_FAUCET,
@@ -342,188 +242,102 @@ mod tests {
         AccountId::try_from(ACCOUNT_ID_PUBLIC_NON_FUNGIBLE_FAUCET).unwrap()
     }
 
-    /// Creates a `StorageMap` with a single entry and inserts its nodes into the forest.
-    /// Returns the map's root.
-    fn insert_map(forest: &mut AccountSmtForest, key: Word, value: Word) -> Word {
-        let mut map = StorageMap::new();
-        map.insert(StorageMapKey::new(key), value).unwrap();
-        forest.insert_storage_map_nodes_for_map(&map).unwrap();
-        map.root()
-    }
-
-    /// Returns true if the forest can still serve a proof for the given root.
-    fn root_is_live(forest: &AccountSmtForest, root: Word, key: Word) -> bool {
-        forest.get_storage_map_item_witness(root, StorageMapKey::new(key)).is_ok()
+    fn slot(name: &str) -> StorageSlotName {
+        StorageSlotName::new(name).unwrap()
     }
 
     #[test]
-    fn stage_then_commit_releases_old_roots() {
-        let mut forest = AccountSmtForest::new();
+    fn lineage_ids_are_deterministic_and_distinct() {
+        // Deterministic
+        assert_eq!(vault_lineage_id(account_a()), vault_lineage_id(account_a()));
+        assert_eq!(
+            storage_map_lineage_id(account_a(), &slot("miden::test::map")),
+            storage_map_lineage_id(account_a(), &slot("miden::test::map")),
+        );
+
+        // Distinct across accounts, slots, and domains
+        assert_ne!(vault_lineage_id(account_a()), vault_lineage_id(account_b()));
+        assert_ne!(
+            storage_map_lineage_id(account_a(), &slot("miden::test::map_one")),
+            storage_map_lineage_id(account_a(), &slot("miden::test::map_two")),
+        );
+        assert_ne!(
+            storage_map_lineage_id(account_a(), &slot("miden::test::map")),
+            storage_map_lineage_id(account_b(), &slot("miden::test::map")),
+        );
+        assert_ne!(
+            vault_lineage_id(account_a()),
+            storage_map_lineage_id(account_a(), &slot("miden::test::map")),
+        );
+    }
+
+    #[test]
+    fn apply_updates_and_read_witnesses() {
+        let mut forest = AccountSmtForest::new(ForestInMemoryBackend::new()).unwrap();
         let id = account_a();
 
-        let key1: Word = [ONE, ZERO, ZERO, ZERO].into();
-        let key2: Word = [ZERO, ONE, ZERO, ZERO].into();
-        let val: Word = [ONE, ONE, ONE, ONE].into();
+        let asset: Asset = FungibleAsset::new(account_a(), 100).unwrap().into();
+        let map_slot = slot("miden::test::map");
+        let map_key = StorageMapKey::new([ONE, ZERO, ZERO, ZERO].into());
+        let map_value: Word = [ONE, ONE, ONE, ONE].into();
 
-        let root1 = insert_map(&mut forest, key1, val);
-        let root2 = insert_map(&mut forest, key2, val);
+        let mut batch = SmtForestUpdateBatch::empty();
+        add_vault_ops(&mut batch, id, [asset].into_iter(), core::iter::empty());
+        add_storage_map_ops(&mut batch, id, &map_slot, [(map_key, map_value)].into_iter());
+        forest.apply_updates(1, batch).unwrap();
 
-        // Initial state
-        forest.replace_roots(id, vec![root1]);
-        assert_eq!(forest.get_roots(&id), Some(&vec![root1]));
+        let vault_root = forest.latest_root(vault_lineage_id(id)).unwrap();
+        let map_root = forest.latest_root(storage_map_lineage_id(id, &map_slot)).unwrap();
 
-        // Stage new roots (apply_delta)
-        forest.stage_roots(id, vec![root2]);
-        assert_eq!(forest.get_roots(&id), Some(&vec![root2]));
+        // Witness reads against the recorded roots succeed.
+        let (read_asset, _witness) =
+            forest.get_asset_and_witness(id, vault_root, asset.id()).unwrap();
+        assert_eq!(read_asset, asset);
 
-        // Both roots alive during staging (old preserved for rollback)
-        assert!(root_is_live(&forest, root1, key1));
-        assert!(root_is_live(&forest, root2, key2));
-
-        // Commit — old roots released
-        forest.commit_roots(id);
-        assert_eq!(forest.get_roots(&id), Some(&vec![root2]));
-        assert!(!root_is_live(&forest, root1, key1));
-        assert!(root_is_live(&forest, root2, key2));
+        let witness =
+            forest.get_storage_map_item_witness(id, &map_slot, map_root, map_key).unwrap();
+        assert_eq!(witness.get(map_key), Some(map_value));
     }
 
     #[test]
-    fn stage_then_discard_restores_old_roots() {
-        let mut forest = AccountSmtForest::new();
+    fn witness_reads_reject_mismatched_roots() {
+        let mut forest = AccountSmtForest::new(ForestInMemoryBackend::new()).unwrap();
         let id = account_a();
 
-        let key1: Word = [ONE, ZERO, ZERO, ZERO].into();
-        let key2: Word = [ZERO, ONE, ZERO, ZERO].into();
-        let val: Word = [ONE, ONE, ONE, ONE].into();
+        let asset: Asset = FungibleAsset::new(account_a(), 100).unwrap().into();
+        let mut batch = SmtForestUpdateBatch::empty();
+        add_vault_ops(&mut batch, id, [asset].into_iter(), core::iter::empty());
+        forest.apply_updates(1, batch).unwrap();
 
-        let root1 = insert_map(&mut forest, key1, val);
-        let root2 = insert_map(&mut forest, key2, val);
-
-        forest.replace_roots(id, vec![root1]);
-
-        // Stage and discard (rollback)
-        forest.stage_roots(id, vec![root2]);
-        forest.discard_roots(id);
-
-        assert_eq!(forest.get_roots(&id), Some(&vec![root1]));
-        assert!(root_is_live(&forest, root1, key1));
-        assert!(!root_is_live(&forest, root2, key2));
+        // A stale expected root (the empty word here) must be rejected.
+        let result = forest.get_asset_and_witness(id, EMPTY_WORD, asset.id());
+        assert!(matches!(
+            result,
+            Err(StoreError::MerkleStoreError(MerkleError::ConflictingRoots { .. }))
+        ));
     }
 
     #[test]
-    fn shared_root_survives_single_account_replacement() {
-        let mut forest = AccountSmtForest::new();
-        let id1 = account_a();
-        let id2 = account_b();
-
-        let key: Word = [ONE, ZERO, ZERO, ZERO].into();
-        let val: Word = [ONE, ONE, ONE, ONE].into();
-        let shared_root = insert_map(&mut forest, key, val);
-
-        // Both accounts reference the same root
-        forest.replace_roots(id1, vec![shared_root]);
-        forest.replace_roots(id2, vec![shared_root]);
-
-        // Replace id1 with a different root
-        let key2: Word = [ZERO, ONE, ZERO, ZERO].into();
-        let other_root = insert_map(&mut forest, key2, val);
-        forest.replace_roots(id1, vec![other_root]);
-
-        // Shared root still alive (id2 still references it)
-        assert!(root_is_live(&forest, shared_root, key));
-
-        // Replace id2 too — now shared root should be popped
-        forest.replace_roots(id2, vec![other_root]);
-        assert!(!root_is_live(&forest, shared_root, key));
-    }
-
-    #[test]
-    fn multiple_stages_discard_one_at_a_time() {
-        let mut forest = AccountSmtForest::new();
+    fn removals_are_applied() {
+        let mut forest = AccountSmtForest::new(ForestInMemoryBackend::new()).unwrap();
         let id = account_a();
 
-        let key_a: Word = [ONE, ZERO, ZERO, ZERO].into();
-        let key_b: Word = [ZERO, ONE, ZERO, ZERO].into();
-        let key_c: Word = [ZERO, ZERO, ONE, ZERO].into();
-        let val: Word = [ONE, ONE, ONE, ONE].into();
+        let map_slot = slot("miden::test::map");
+        let map_key = StorageMapKey::new([ONE, ZERO, ZERO, ZERO].into());
+        let map_value: Word = [ONE, ONE, ONE, ONE].into();
 
-        let root_a = insert_map(&mut forest, key_a, val);
-        let root_b = insert_map(&mut forest, key_b, val);
-        let root_c = insert_map(&mut forest, key_c, val);
+        let mut batch = SmtForestUpdateBatch::empty();
+        add_storage_map_ops(&mut batch, id, &map_slot, [(map_key, map_value)].into_iter());
+        forest.apply_updates(1, batch).unwrap();
+        let root_with_entry = forest.latest_root(storage_map_lineage_id(id, &map_slot)).unwrap();
 
-        // A -> B -> C
-        forest.replace_roots(id, vec![root_a]);
-        forest.stage_roots(id, vec![root_b]);
-        forest.stage_roots(id, vec![root_c]);
-        assert_eq!(forest.get_roots(&id), Some(&vec![root_c]));
+        // An empty-word value removes the entry, collapsing the tree back to the empty root.
+        let mut batch = SmtForestUpdateBatch::empty();
+        add_storage_map_ops(&mut batch, id, &map_slot, [(map_key, EMPTY_WORD)].into_iter());
+        forest.apply_updates(2, batch).unwrap();
+        let root_after_removal = forest.latest_root(storage_map_lineage_id(id, &map_slot)).unwrap();
 
-        // Discard C -> back to B
-        forest.discard_roots(id);
-        assert_eq!(forest.get_roots(&id), Some(&vec![root_b]));
-        assert!(!root_is_live(&forest, root_c, key_c));
-        assert!(root_is_live(&forest, root_b, key_b));
-        assert!(root_is_live(&forest, root_a, key_a));
-
-        // Discard B -> back to A
-        forest.discard_roots(id);
-        assert_eq!(forest.get_roots(&id), Some(&vec![root_a]));
-        assert!(!root_is_live(&forest, root_b, key_b));
-        assert!(root_is_live(&forest, root_a, key_a));
-    }
-
-    #[test]
-    fn multiple_stages_commit_releases_all_old() {
-        let mut forest = AccountSmtForest::new();
-        let id = account_a();
-
-        let key_a: Word = [ONE, ZERO, ZERO, ZERO].into();
-        let key_b: Word = [ZERO, ONE, ZERO, ZERO].into();
-        let key_c: Word = [ZERO, ZERO, ONE, ZERO].into();
-        let val: Word = [ONE, ONE, ONE, ONE].into();
-
-        let root_a = insert_map(&mut forest, key_a, val);
-        let root_b = insert_map(&mut forest, key_b, val);
-        let root_c = insert_map(&mut forest, key_c, val);
-
-        // A -> B -> C, then commit
-        forest.replace_roots(id, vec![root_a]);
-        forest.stage_roots(id, vec![root_b]);
-        forest.stage_roots(id, vec![root_c]);
-        forest.commit_roots(id);
-
-        // Only C survives
-        assert_eq!(forest.get_roots(&id), Some(&vec![root_c]));
-        assert!(!root_is_live(&forest, root_a, key_a));
-        assert!(!root_is_live(&forest, root_b, key_b));
-        assert!(root_is_live(&forest, root_c, key_c));
-    }
-
-    #[test]
-    fn unchanged_root_survives_stage_commit() {
-        let mut forest = AccountSmtForest::new();
-        let id = account_a();
-
-        let key1: Word = [ONE, ZERO, ZERO, ZERO].into();
-        let key2: Word = [ZERO, ONE, ZERO, ZERO].into();
-        let val: Word = [ONE, ONE, ONE, ONE].into();
-
-        let shared_root = insert_map(&mut forest, key1, val);
-        let changing_root = insert_map(&mut forest, key2, val);
-
-        // Initial: [shared, changing]
-        forest.replace_roots(id, vec![shared_root, changing_root]);
-
-        // Delta only changes the second root; shared_root stays
-        let key3: Word = [ZERO, ZERO, ONE, ZERO].into();
-        let new_root = insert_map(&mut forest, key3, val);
-        forest.stage_roots(id, vec![shared_root, new_root]);
-        forest.commit_roots(id);
-
-        // shared_root must survive (it's in both old and new)
-        assert!(root_is_live(&forest, shared_root, key1));
-        // changing_root should be popped
-        assert!(!root_is_live(&forest, changing_root, key2));
-        // new_root should be alive
-        assert!(root_is_live(&forest, new_root, key3));
+        assert_ne!(root_with_entry, root_after_removal);
+        assert_eq!(root_after_removal, miden_protocol::account::StorageMap::default().root());
     }
 }

@@ -244,3 +244,55 @@ CREATE TABLE addresses (
 ) WITHOUT ROWID;
 
 CREATE INDEX idx_addresses_account_id ON addresses(account_id);
+
+-- ── Account SMT forest ───────────────────────────────────────────────────
+
+-- Latest tree metadata per lineage (one lineage per account vault and per storage map slot).
+CREATE TABLE forest_trees (
+    lineage     BLOB NOT NULL,     -- 32-byte lineage identifier
+    version     INTEGER NOT NULL,  -- latest tree version (forest revision that produced it)
+    root        BLOB NOT NULL,     -- serialized root word of the latest tree
+    entry_count INTEGER NOT NULL,  -- number of key-value entries in the latest tree
+
+    PRIMARY KEY (lineage)
+) WITHOUT ROWID;
+
+-- Key-value entries of the latest tree of each lineage.
+CREATE TABLE forest_entries (
+    lineage       BLOB NOT NULL,     -- lineage the entry belongs to
+    key           BLOB NOT NULL,     -- serialized SMT key word
+    value         BLOB NOT NULL,     -- serialized SMT value word
+    leaf_position INTEGER NOT NULL,  -- SMT leaf index of the key (bit-preserved u64)
+
+    PRIMARY KEY (lineage, key)
+) WITHOUT ROWID;
+
+-- Groups the entries of one SMT leaf so witness reads can load a single leaf without scanning
+-- the lineage. Covering (it includes key and value) so the query planner picks it over the
+-- primary key even without collected statistics.
+CREATE INDEX idx_forest_entries_leaf ON forest_entries(lineage, leaf_position, key, value);
+
+-- Inner nodes of the latest tree of each lineage, packed as 8-level subtree blobs (the same
+-- layout as miden-crypto's persistent forest backend). A subtree rooted at depth D stores the
+-- inner nodes at depths D..D+7; valid root depths are 0, 8, ..., 56. Only non-empty subtrees
+-- are stored.
+CREATE TABLE forest_subtrees (
+    lineage  BLOB NOT NULL,     -- lineage the subtree belongs to
+    depth    INTEGER NOT NULL,  -- depth of the subtree root
+    position INTEGER NOT NULL,  -- position of the subtree root at that depth (bit-preserved u64)
+    data     BLOB NOT NULL,     -- serialized subtree (bitmap plus non-empty child hashes)
+
+    PRIMARY KEY (lineage, depth, position)
+) WITHOUT ROWID;
+
+-- Global counter for forest version numbers. It has a single row (id = 0); every forest
+-- mutation atomically takes the next value, so committed versions always increase and are
+-- never reused.
+CREATE TABLE forest_revision (
+    id           INTEGER NOT NULL CHECK (id = 0),
+    next_version INTEGER NOT NULL,
+
+    PRIMARY KEY (id)
+);
+
+INSERT INTO forest_revision (id, next_version) VALUES (0, 1);

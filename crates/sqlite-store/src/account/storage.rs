@@ -15,11 +15,14 @@ use miden_client::account::{
     StorageSlotName,
     StorageSlotType,
 };
-use miden_client::store::{AccountSmtForest, StoreError};
+use miden_client::store::{StoreError, add_storage_map_ops, storage_map_lineage_id};
 use miden_client::{Deserializable, EMPTY_WORD, Serializable, Word};
+use miden_protocol::crypto::merkle::MerkleError;
+use miden_protocol::crypto::merkle::smt::SmtForestUpdateBatch;
 use rusqlite::types::Value;
 use rusqlite::{OptionalExtension, Transaction, params};
 
+use crate::forest::{forest_entry_keys, forest_lineage_root};
 use crate::sql_error::SqlResultExt;
 use crate::{SqliteStore, insert_sql, subst, u64_to_value};
 
@@ -397,55 +400,58 @@ impl SqliteStore {
         Ok(())
     }
 
-    /// Applies storage delta changes to the account state, computing new roots via the SMT forest.
+    /// Adds forest update operations for every map-slot patch, returning the touched slot names.
     ///
-    /// Value-type slot updates are taken directly from the delta. For map-type slots, the old
-    /// root is used to update the SMT forest with the delta entries, producing the new root.
-    /// Full storage maps are never loaded into memory — the `AccountSmtForest` handles all
-    /// Merkle tree operations.
-    pub(crate) fn apply_account_storage_patch(
-        smt_forest: &mut AccountSmtForest,
+    /// `Update` layers its entries onto the lineage's latest tree, after verifying that the
+    /// tree's root matches the old root recorded in the account tables (a mismatch means the
+    /// forest and the account state diverged). `Create` and `Remove` reset the lineage first,
+    /// removing every currently stored key, so the resulting tree reflects only the patch's own
+    /// entries, or collapses to the empty root for `Remove`.
+    pub(crate) fn add_storage_map_patch_ops(
+        tx: &Transaction<'_>,
+        account_id: AccountId,
+        batch: &mut SmtForestUpdateBatch,
         old_map_roots: &BTreeMap<StorageSlotName, Word>,
         storage_patch: &AccountStoragePatch,
-    ) -> Result<BTreeMap<StorageSlotName, (Word, StorageSlotType)>, StoreError> {
-        let mut updated_slots: BTreeMap<StorageSlotName, (Word, StorageSlotType)> = storage_patch
-            .values()
-            .map(|(slot_name, value_patch)| {
-                (
-                    slot_name.clone(),
-                    (
-                        value_patch
-                            .value()
-                            .expect("the protocol does not generate Remove value patches"),
-                        StorageSlotType::Value,
-                    ),
-                )
-            })
-            .collect();
-
+    ) -> Result<Vec<StorageSlotName>, StoreError> {
         let default_map_root = StorageMap::default().root();
+        let mut touched = Vec::new();
 
         for (slot_name, map_patch) in storage_patch.maps() {
-            // Update layers its entries onto the existing map. Create and Remove start from an
-            // empty map, so Create reflects only its own entries and Remove collapses
-            // to the empty root.
-            let base_root = match map_patch {
+            touched.push(slot_name.clone());
+            let lineage = storage_map_lineage_id(account_id, slot_name);
+
+            match map_patch {
                 StorageMapPatch::Update { .. } => {
-                    old_map_roots.get(slot_name).copied().unwrap_or(default_map_root)
+                    // A lineage the forest does not know yet starts from the empty tree, which
+                    // is consistent with an absent old root.
+                    let forest_root = forest_lineage_root(tx, lineage)?.unwrap_or(default_map_root);
+                    let expected_root =
+                        old_map_roots.get(slot_name).copied().unwrap_or(default_map_root);
+                    if forest_root != expected_root {
+                        return Err(StoreError::MerkleStoreError(MerkleError::ConflictingRoots {
+                            expected_root,
+                            actual_root: forest_root,
+                        }));
+                    }
                 },
-                StorageMapPatch::Create { .. } | StorageMapPatch::Remove => default_map_root,
-            };
-            let entries: Vec<_> = map_patch
+                StorageMapPatch::Create { .. } | StorageMapPatch::Remove => {
+                    // Keys re-inserted by the patch below win over these removals (the batch
+                    // keeps the last operation per key).
+                    for key in forest_entry_keys(tx, lineage)? {
+                        batch.operations(lineage).add_remove(key);
+                    }
+                },
+            }
+
+            let entries = map_patch
                 .entries()
                 .into_iter()
                 .flat_map(|e| e.as_map().iter())
-                .map(|(key, value)| (*key, *value))
-                .collect();
-
-            let new_root = smt_forest.update_storage_map_nodes(base_root, entries.into_iter())?;
-            updated_slots.insert(slot_name.clone(), (new_root, StorageSlotType::Map));
+                .map(|(key, value)| (*key, *value));
+            add_storage_map_ops(batch, account_id, slot_name, entries);
         }
 
-        Ok(updated_slots)
+        Ok(touched)
     }
 }

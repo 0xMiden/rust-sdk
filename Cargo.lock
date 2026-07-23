@@ -2178,9 +2178,8 @@ dependencies = [
 
 [[package]]
 name = "miden-crypto"
-version = "0.28.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "afd70d37ade91ce0f37a0ad7b9f1709391657243857d5d209ec62a100e358d4d"
+version = "0.28.1"
+source = "git+https://github.com/JereSalo/miden-vm?branch=client-pin-from-parts-0.28#d5700f0a6cf9dcf841daa99d1584a5dad18f5f74"
 dependencies = [
  "blake3",
  "cc",
@@ -2220,9 +2219,8 @@ dependencies = [
 
 [[package]]
 name = "miden-crypto-derive"
-version = "0.28.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9197f2837af387b5a9b60ef3c30670cf34a453c3a8e81f9cf68df84ca3122253"
+version = "0.28.1"
+source = "git+https://github.com/JereSalo/miden-vm?branch=client-pin-from-parts-0.28#d5700f0a6cf9dcf841daa99d1584a5dad18f5f74"
 dependencies = [
  "quote",
  "syn 2.0.118",
@@ -2315,9 +2313,8 @@ dependencies = [
 
 [[package]]
 name = "miden-field"
-version = "0.28.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "45929f2e6b18f6535cfa25a55f5dac8be556410a4fc5c7e003a147b678af9e18"
+version = "0.28.1"
+source = "git+https://github.com/JereSalo/miden-vm?branch=client-pin-from-parts-0.28#d5700f0a6cf9dcf841daa99d1584a5dad18f5f74"
 dependencies = [
  "miden-serde-utils",
  "num-bigint",
@@ -2343,9 +2340,8 @@ dependencies = [
 
 [[package]]
 name = "miden-lifted-air"
-version = "0.28.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "320d7e0f1ac4a668682146cce69585ddc8dfe1fdf6ba5dac1986233e3e48d4df"
+version = "0.28.1"
+source = "git+https://github.com/JereSalo/miden-vm?branch=client-pin-from-parts-0.28#d5700f0a6cf9dcf841daa99d1584a5dad18f5f74"
 dependencies = [
  "p3-air",
  "p3-challenger",
@@ -2357,9 +2353,8 @@ dependencies = [
 
 [[package]]
 name = "miden-lifted-stark"
-version = "0.28.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8075f037bb02eb763223bc2f762a55c793f3795677f88fc06e58641091fd69e0"
+version = "0.28.1"
+source = "git+https://github.com/JereSalo/miden-vm?branch=client-pin-from-parts-0.28#d5700f0a6cf9dcf841daa99d1584a5dad18f5f74"
 dependencies = [
  "miden-lifted-air",
  "miden-stark-transcript",
@@ -2565,9 +2560,8 @@ dependencies = [
 
 [[package]]
 name = "miden-serde-utils"
-version = "0.28.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6bf6872ac0f2de384ac65968e9bdc24656b31c487ea3bb1665871095c10f11ee"
+version = "0.28.1"
+source = "git+https://github.com/JereSalo/miden-vm?branch=client-pin-from-parts-0.28#d5700f0a6cf9dcf841daa99d1584a5dad18f5f74"
 dependencies = [
  "p3-field",
  "p3-goldilocks",
@@ -2595,9 +2589,8 @@ dependencies = [
 
 [[package]]
 name = "miden-stark-transcript"
-version = "0.28.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "13f2f5cc37a6b24ef2ab4c8d4dfb874a8f55add5147bfad47fde901f03165a51"
+version = "0.28.1"
+source = "git+https://github.com/JereSalo/miden-vm?branch=client-pin-from-parts-0.28#d5700f0a6cf9dcf841daa99d1584a5dad18f5f74"
 dependencies = [
  "p3-challenger",
  "p3-field",
@@ -2607,9 +2600,8 @@ dependencies = [
 
 [[package]]
 name = "miden-stateful-hasher"
-version = "0.28.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "93a95d46e93b94d82e0fcc6cec67ea362a548c1b6209bfdd1211433537314b83"
+version = "0.28.1"
+source = "git+https://github.com/JereSalo/miden-vm?branch=client-pin-from-parts-0.28#d5700f0a6cf9dcf841daa99d1584a5dad18f5f74"
 dependencies = [
  "p3-field",
  "p3-symmetric",

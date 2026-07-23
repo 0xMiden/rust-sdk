@@ -1,21 +1,21 @@
 #![allow(clippy::items_after_statements)]
 
 use std::collections::BTreeSet;
-use std::sync::{Arc, RwLock};
 use std::vec::Vec;
 
 use miden_client::Word;
 use miden_client::account::AccountId;
 use miden_client::note::{BlockNumber, NoteTag};
-use miden_client::store::{AccountSmtForest, StoreError};
+use miden_client::store::StoreError;
 use miden_client::sync::{NoteTagRecord, NoteTagSource, PublicAccountUpdate, StateSyncUpdate};
 use miden_client::utils::{Deserializable, Serializable};
-use rusqlite::{Connection, Transaction, params};
+use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 
 use super::SqliteStore;
+use crate::forest::{ScopedAccountForest, SqliteForestBackend};
 use crate::note::apply_note_updates_tx;
 use crate::sql_error::SqlResultExt;
-use crate::transaction::{upsert_transaction_record, with_forest_snapshot};
+use crate::transaction::upsert_transaction_record;
 use crate::{insert_sql, subst};
 
 impl SqliteStore {
@@ -95,7 +95,6 @@ impl SqliteStore {
 
     pub(super) fn apply_state_sync(
         conn: &mut Connection,
-        smt_forest: &Arc<RwLock<AccountSmtForest>>,
         state_sync_update: StateSyncUpdate,
     ) -> Result<(), StoreError> {
         let StateSyncUpdate {
@@ -106,7 +105,13 @@ impl SqliteStore {
             account_updates,
         } = state_sync_update;
 
-        with_forest_snapshot(conn, smt_forest, |tx, smt_forest| {
+        let db_tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .into_store_error()?;
+        {
+            let mut scoped_forest = ScopedAccountForest::new(SqliteForestBackend::new(&db_tx))?;
+            let smt_forest = &mut scoped_forest;
+            let tx = &db_tx;
             // Update blockchain checkpoint (block number and peaks) only if moving forward.
             let new_peaks_bytes = partial_blockchain_updates.new_peaks.peaks().to_vec().to_bytes();
             const BLOCKCHAIN_CHECKPOINT_QUERY: &str = "UPDATE blockchain_checkpoint SET block_num = ?, partial_blockchain_peaks = ? WHERE block_num < ?";
@@ -172,11 +177,6 @@ impl SqliteStore {
 
             Self::undo_account_state(tx, smt_forest, &discarded_states)?;
 
-            // For committed transactions, release the old staged roots.
-            for committed_tx in transaction_updates.committed_transactions() {
-                smt_forest.commit_roots(committed_tx.details.account_id);
-            }
-
             // Update public accounts on the db that have been updated onchain
             for update in account_updates.updated_public_accounts() {
                 match update {
@@ -192,9 +192,8 @@ impl SqliteStore {
             for (account_id, digest) in account_updates.mismatched_private_accounts() {
                 Self::lock_account_on_unexpected_commitment(tx, account_id, digest)?;
             }
-
-            Ok(())
-        })
+        }
+        db_tx.commit().into_store_error()
     }
 }
 

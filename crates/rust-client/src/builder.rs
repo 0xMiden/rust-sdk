@@ -18,6 +18,8 @@ use crate::keystore::Keystore;
 use crate::note_transport::NoteTransportClient;
 use crate::pswap::PswapTransactionObserver;
 use crate::rpc::{Endpoint, NodeRpcClient};
+#[cfg(feature = "tonic")]
+use crate::rpc::{GrpcClient, VerifyingRpcClient};
 use crate::store::{Store, StoreError};
 use crate::transaction::{TransactionObserver, TransactionProver};
 use crate::{Client, ClientError, ClientRng, ClientRngBox, grpc_support};
@@ -198,9 +200,10 @@ where
     pub fn for_testnet() -> Self {
         let endpoint = Endpoint::testnet();
         Self {
-            rpc_api: Some(Arc::new(crate::rpc::VerifyingRpcClient::new(
-                crate::rpc::GrpcClient::new(&endpoint, DEFAULT_GRPC_TIMEOUT_MS),
-            ))),
+            rpc_api: Some(Arc::new(VerifyingRpcClient::new(GrpcClient::new(
+                &endpoint,
+                DEFAULT_GRPC_TIMEOUT_MS,
+            )))),
             tx_prover: Some(Arc::new(RemoteTransactionProver::new(
                 TESTNET_PROVER_ENDPOINT.to_string(),
             ))),
@@ -241,9 +244,10 @@ where
     pub fn for_devnet() -> Self {
         let endpoint = Endpoint::devnet();
         Self {
-            rpc_api: Some(Arc::new(crate::rpc::VerifyingRpcClient::new(
-                crate::rpc::GrpcClient::new(&endpoint, DEFAULT_GRPC_TIMEOUT_MS),
-            ))),
+            rpc_api: Some(Arc::new(VerifyingRpcClient::new(GrpcClient::new(
+                &endpoint,
+                DEFAULT_GRPC_TIMEOUT_MS,
+            )))),
             tx_prover: Some(Arc::new(RemoteTransactionProver::new(
                 DEVNET_PROVER_ENDPOINT.to_string(),
             ))),
@@ -284,9 +288,10 @@ where
     pub fn for_localhost() -> Self {
         let endpoint = Endpoint::localhost();
         Self {
-            rpc_api: Some(Arc::new(crate::rpc::VerifyingRpcClient::new(
-                crate::rpc::GrpcClient::new(&endpoint, DEFAULT_GRPC_TIMEOUT_MS),
-            ))),
+            rpc_api: Some(Arc::new(VerifyingRpcClient::new(GrpcClient::new(
+                &endpoint,
+                DEFAULT_GRPC_TIMEOUT_MS,
+            )))),
             endpoint: Some(endpoint),
             ..Self::default()
         }
@@ -315,14 +320,14 @@ where
     }
 
     /// Sets a gRPC client from the endpoint and optional timeout, wrapped in a
-    /// [`VerifyingRpcClient`](crate::rpc::VerifyingRpcClient) so node responses are verified
-    /// against the requests.
+    /// [`VerifyingRpcClient`] so node responses are verified against the requests.
     #[must_use]
     #[cfg(feature = "tonic")]
-    pub fn grpc_client(mut self, endpoint: &crate::rpc::Endpoint, timeout_ms: Option<u64>) -> Self {
-        self.rpc_api = Some(Arc::new(crate::rpc::VerifyingRpcClient::new(
-            crate::rpc::GrpcClient::new(endpoint, timeout_ms.unwrap_or(DEFAULT_GRPC_TIMEOUT_MS)),
-        )));
+    pub fn grpc_client(mut self, endpoint: &Endpoint, timeout_ms: Option<u64>) -> Self {
+        self.rpc_api = Some(Arc::new(VerifyingRpcClient::new(GrpcClient::new(
+            endpoint,
+            timeout_ms.unwrap_or(DEFAULT_GRPC_TIMEOUT_MS),
+        ))));
         self
     }
 

@@ -59,7 +59,10 @@ macro_rules! insert_sql {
 
 type Hash = Blake3Digest<32>;
 
-const MIGRATION_SCRIPTS: [&str; 1] = [include_str!("../store.sql")];
+const MIGRATION_SCRIPTS: [&str; 2] = [
+    include_str!("../store.sql"),
+    include_str!("../migrations/0002_input_notes_script_root_index.sql"),
+];
 static MIGRATION_HASHES: LazyLock<Vec<Hash>> = LazyLock::new(compute_migration_hashes);
 static MIGRATIONS: LazyLock<Migrations> = LazyLock::new(prepare_migrations);
 
@@ -188,4 +191,35 @@ pub fn table_exists(transaction: &Transaction, table_name: &str) -> rusqlite::Re
         )
         .optional()?
         .is_some())
+}
+
+// TESTS
+// ================================================================================================
+
+#[cfg(test)]
+mod tests {
+    use rusqlite::{Connection, OptionalExtension};
+
+    use super::apply_migrations;
+
+    /// Applying the migrations creates the input notes script root index, and reopening a
+    /// database already at the latest version is accepted rather than rejected.
+    #[test]
+    fn migrations_create_script_root_index() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply_migrations(&mut conn).unwrap();
+        apply_migrations(&mut conn).unwrap();
+
+        let index_exists = conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = $1",
+                ["idx_input_notes_script_root"],
+                |_| Ok(()),
+            )
+            .optional()
+            .unwrap()
+            .is_some();
+
+        assert!(index_exists);
+    }
 }

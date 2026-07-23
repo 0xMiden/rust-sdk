@@ -241,90 +241,207 @@ async fn transport_cursor_pagination() {
     assert_eq!(notes.len(), 2, "should have 2 notes total after second sync");
 }
 
-/// Verifies that `fetch_all_private_notes` (cursor reset) does not duplicate notes in the store.
+/// A tag added after the global cursor has advanced past its notes still receives its history:
+/// `sync_note_transport` backfills the newly tracked tag from the start, scoped to that tag alone.
+///
+/// This is the core regression test for the late-added-tag gap that motivated removing
+/// `fetch_all_private_notes`: the steady-state fetch only sees notes past the shared, forward-only
+/// cursor, so a tag started late would otherwise never see its older notes.
 #[tokio::test]
-async fn transport_duplicate_note_handling() {
+async fn backfill_imports_history_for_late_added_tag() {
     let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
-    let (mut sender, sender_account) = create_test_user_transport(mock_node.clone()).await;
     let (mut recipient, recipient_account) = create_test_user_transport(mock_node.clone()).await;
-    let recipient_address = Address::new(recipient_account.id())
-        .with_routing_parameters(RoutingParameters::new(AddressInterface::BasicWallet));
 
-    let note: Note = P2idNote::builder()
-        .sender(sender_account.id())
-        .target(recipient_account.id())
-        .asset(dummy_asset())
-        .note_type(NoteType::Private)
-        .generate_serial_number(sender.rng())
-        .build()
-        .unwrap()
-        .into();
+    let tag_tracked = NoteTag::new(1001);
+    let tag_late = NoteTag::new(1002);
+    recipient.add_note_tag(tag_tracked).await.unwrap();
 
-    sender
-        .send_private_note_with_block_hint(note, &recipient_address, BlockNumber::from(0))
-        .await
-        .unwrap();
+    let note_late = private_note_with_tag(recipient_account.id(), tag_late, 10);
+    let note_tracked = private_note_with_tag(recipient_account.id(), tag_tracked, 20);
 
-    // First fetch
+    // Deliver the late tag's note FIRST so it gets the lower cursor, then the tracked tag's note.
+    // Syncing the tracked tag advances the global cursor to (or past) the late note's cursor.
+    mock_node
+        .write()
+        .add_note(*note_late.header(), NoteDetails::from(note_late.clone()).to_bytes());
+    mock_node
+        .write()
+        .add_note(*note_tracked.header(), NoteDetails::from(note_tracked.clone()).to_bytes());
+
+    // Sync: only the tracked tag's note is fetched; the late tag isn't tracked yet.
     recipient.sync_state().await.unwrap();
     let notes = recipient.get_input_notes(NoteFilter::All).await.unwrap();
-    assert_eq!(notes.len(), 1);
+    assert_eq!(notes.len(), 1, "only the tracked tag's note should arrive first");
+    assert!(
+        notes
+            .iter()
+            .any(|n| n.details_commitment() == note_tracked.details_commitment())
+    );
 
-    // Reset cursor and re-fetch everything
-    recipient.fetch_all_private_notes().await.unwrap();
+    // Track the late tag.
+    recipient.add_note_tag(tag_late).await.unwrap();
+
+    // Sync: the backfill must deliver the late tag's note even though its cursor is below the
+    // global cursor. The backfill is scoped to the newly tracked tag (it fetches `&[tag_late]`),
+    // so it recovers that tag's own history without re-scanning every tag from the start.
+    recipient.sync_state().await.unwrap();
     let notes = recipient.get_input_notes(NoteFilter::All).await.unwrap();
-    assert_eq!(notes.len(), 1, "should still have 1 note, not duplicated");
+    assert_eq!(notes.len(), 2, "the late tag's historical note must be backfilled");
+    assert!(notes.iter().any(|n| n.details_commitment() == note_late.details_commitment()));
 }
 
-/// Verifies that `fetch_all_private_notes` drains notes across multiple
-/// server-paginated batches.
-///
-/// Regression test for the interaction between the transport server's
-/// response-size `LIMIT` and the client's previously-single-shot
-/// `fetch_all_private_notes`. Before the drain loop, a server cap of N per
-/// response meant `fetch_all_private_notes` silently returned only the first
-/// N notes and the rest were invisible until the next paginated sync tick.
+/// Removing a tag drops it from the covered set, so re-adding it backfills again. A note that
+/// arrives while the tag is untracked, and that another tag then pushes the global cursor past,
+/// can only be recovered by a from-the-start backfill. Re-adding the tag must recover it, which
+/// proves the covered set is cleared on removal (otherwise the re-added tag would be treated as
+/// already covered and the note would be lost).
 #[tokio::test]
-async fn fetch_all_private_notes_drains_across_batches() {
+async fn backfill_recovers_notes_that_arrived_while_untracked() {
+    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
+    let (mut recipient, recipient_account) = create_test_user_transport(mock_node.clone()).await;
+
+    let tag_x = NoteTag::new(5005);
+    let tag_driver = NoteTag::new(5006);
+    recipient.add_note_tag(tag_driver).await.unwrap();
+    recipient.add_note_tag(tag_x).await.unwrap();
+
+    // Track and cover tag_x while it has no notes yet (so it leaves no `Note`-source tag behind),
+    // then stop tracking it.
+    recipient.sync_state().await.unwrap();
+    recipient.remove_note_tag(tag_x).await.unwrap();
+
+    // While tag_x is untracked, a note arrives for it, followed by a driver-tag note with a higher
+    // cursor. Syncing fetches the driver note and advances the global cursor past note_x, so the
+    // steady-state fetch can no longer see note_x.
+    let note_x = private_note_with_tag(recipient_account.id(), tag_x, 60);
+    let note_driver = private_note_with_tag(recipient_account.id(), tag_driver, 70);
+    mock_node
+        .write()
+        .add_note(*note_x.header(), NoteDetails::from(note_x.clone()).to_bytes());
+    mock_node
+        .write()
+        .add_note(*note_driver.header(), NoteDetails::from(note_driver.clone()).to_bytes());
+    recipient.sync_state().await.unwrap();
+
+    // note_x is not imported: tag_x was untracked, and it now sits below the global cursor.
+    let before = recipient.get_input_notes(NoteFilter::All).await.unwrap();
+    assert!(
+        !before.iter().any(|n| n.details_commitment() == note_x.details_commitment()),
+        "note_x must not be imported while tag_x is untracked"
+    );
+
+    // Re-add tag_x: the backfill drains it from the start and recovers note_x.
+    recipient.add_note_tag(tag_x).await.unwrap();
+    recipient.sync_state().await.unwrap();
+    let after = recipient.get_input_notes(NoteFilter::All).await.unwrap();
+    assert!(
+        after.iter().any(|n| n.details_commitment() == note_x.details_commitment()),
+        "re-adding a removed tag must backfill notes that arrived while it was untracked"
+    );
+}
+
+/// The tag backfill drains a tag's history across multiple server-paginated batches.
+///
+/// Regression test for the interaction between the transport server's response-size cap and the
+/// backfill drain loop: a cap of N per response must not leave the backfill returning only the
+/// first N notes. With `BATCH_CAP` < the backlog, one sync still pulls the whole history for the
+/// newly tracked tag.
+#[tokio::test]
+async fn backfill_drains_across_batches() {
     const BATCH_CAP: usize = 3;
     const TOTAL_NOTES: usize = 10;
 
     let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::with_max_batch(BATCH_CAP)));
-    let (mut sender, sender_account) = create_test_user_transport(mock_node.clone()).await;
     let (mut recipient, recipient_account) = create_test_user_transport(mock_node.clone()).await;
-    let recipient_address = Address::new(recipient_account.id())
-        .with_routing_parameters(RoutingParameters::new(AddressInterface::BasicWallet));
 
-    // Send TOTAL_NOTES > BATCH_CAP private notes so a single-batch fetch
-    // cannot drain the backlog.
-    for _ in 0..TOTAL_NOTES {
-        let note: Note = P2idNote::builder()
-            .sender(sender_account.id())
-            .target(recipient_account.id())
-            .asset(dummy_asset())
-            .note_type(NoteType::Private)
-            .generate_serial_number(sender.rng())
-            .build()
-            .unwrap()
-            .into();
-        sender
-            .send_private_note_with_block_hint(note, &recipient_address, BlockNumber::from(0))
-            .await
-            .unwrap();
+    let tag_late = NoteTag::new(2002);
+
+    // Seed TOTAL_NOTES > BATCH_CAP notes for the late tag before it is tracked, so a single-batch
+    // fetch cannot drain the backlog. Building each note before adding it spaces the mock's
+    // timestamp cursors so they stay distinct.
+    for i in 0..TOTAL_NOTES {
+        let note = private_note_with_tag(recipient_account.id(), tag_late, 100 + i as u64);
+        mock_node.write().add_note(*note.header(), NoteDetails::from(note).to_bytes());
     }
 
-    // With BATCH_CAP=3 and TOTAL_NOTES=10, a single-shot fetch would return
-    // only 3. The drain loop should issue successive calls until all 10 are
-    // pulled.
-    recipient.fetch_all_private_notes().await.unwrap();
+    // First sync: the late tag isn't tracked, so none of its notes are fetched.
+    recipient.sync_state().await.unwrap();
+    assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 0);
+
+    // Track the late tag; one sync must drain all TOTAL_NOTES across BATCH_CAP-sized batches.
+    recipient.add_note_tag(tag_late).await.unwrap();
+    recipient.sync_state().await.unwrap();
 
     let notes = recipient.get_input_notes(NoteFilter::All).await.unwrap();
     assert_eq!(
         notes.len(),
         TOTAL_NOTES,
-        "fetch_all_private_notes must drain across batches; got {} of {}",
+        "backfill must drain the late tag's full history across batches; got {} of {}",
         notes.len(),
         TOTAL_NOTES
+    );
+}
+
+/// Test that registering more newly tracked tags than the per-sync backfill cap does not lose any
+/// tag's history: the burst is spread across syncs, backfilling at most
+/// `MAX_BACKFILL_TAGS_PER_SYNC` tags per call and picking up the remainder on the next sync.
+#[tokio::test]
+async fn backfill_spreads_tags_exceeding_per_sync_cap_across_syncs() {
+    const CAP: usize = MockClient::<FilesystemKeyStore>::MAX_BACKFILL_TAGS_PER_SYNC;
+    const LATE_TAGS: usize = CAP + 1;
+
+    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
+    let (mut recipient, recipient_account) = create_test_user_transport(mock_node.clone()).await;
+
+    // A driver tag tracked from the start pushes the global cursor forward. The late tags' notes
+    // are delivered before the driver note, so they sit below the advanced cursor and can only be
+    // recovered by the from-the-start backfill, not the steady-state fetch.
+    let driver_tag = NoteTag::new(9_999);
+    recipient.add_note_tag(driver_tag).await.unwrap();
+
+    let late_tags: Vec<NoteTag> = (0..LATE_TAGS)
+        .map(|i| NoteTag::new(3_000 + u32::try_from(i).unwrap()))
+        .collect();
+    for (i, tag) in late_tags.iter().enumerate() {
+        let note = private_note_with_tag(recipient_account.id(), *tag, 100 + i as u64);
+        mock_node.write().add_note(*note.header(), NoteDetails::from(note).to_bytes());
+    }
+
+    // Deliver the driver note last so it takes the highest cursor.
+    let driver_note = private_note_with_tag(recipient_account.id(), driver_tag, 10_000);
+    mock_node
+        .write()
+        .add_note(*driver_note.header(), NoteDetails::from(driver_note.clone()).to_bytes());
+
+    // First sync: only the driver tag is tracked, so just its note arrives and the global cursor
+    // advances past every late tag's note.
+    recipient.sync_state().await.unwrap();
+    assert_eq!(
+        recipient.get_input_notes(NoteFilter::All).await.unwrap().len(),
+        1,
+        "only the driver tag's note should arrive first"
+    );
+
+    // Track all LATE_TAGS at once, exceeding the per-sync backfill cap by one.
+    for tag in &late_tags {
+        recipient.add_note_tag(*tag).await.unwrap();
+    }
+
+    // Second sync: the backfill covers at most CAP late tags, so one late note stays uncovered.
+    // Total = driver note + capped backfill.
+    recipient.sync_state().await.unwrap();
+    assert_eq!(
+        recipient.get_input_notes(NoteFilter::All).await.unwrap().len(),
+        1 + CAP,
+        "one sync must backfill at most MAX_BACKFILL_TAGS_PER_SYNC tags"
+    );
+
+    // Third sync: the deferred late tag is backfilled, recovering the whole history.
+    recipient.sync_state().await.unwrap();
+    assert_eq!(
+        recipient.get_input_notes(NoteFilter::All).await.unwrap().len(),
+        1 + LATE_TAGS,
+        "the deferred tag must be backfilled on the following sync"
     );
 }
 
@@ -796,6 +913,20 @@ pub async fn create_test_user_with_transport(
     let (mut client, keystore) = Box::pin(create_test_client_with_transport(transport)).await;
     let account = insert_new_wallet(&mut client, AccountType::Private, &keystore).await.unwrap();
     (client, account)
+}
+
+/// Build a private note carrying `tag`, seeded deterministically by `seed` so distinct seeds yield
+/// distinct notes. Lets a test seed the mock transport with notes whose tag and relative ordering
+/// it controls, independent of any recipient's auto-registered account tag.
+fn private_note_with_tag(account: AccountId, tag: NoteTag, seed: u64) -> Note {
+    NoteBuilder::new(
+        account,
+        RandomCoin::new([seed, seed + 1, seed + 2, seed + 3].map(Felt::new_unchecked).into()),
+    )
+    .note_type(ProtocolNoteType::Private)
+    .tag(tag.into())
+    .build()
+    .unwrap()
 }
 
 /// Build a chain with a private note (tag 0) committed at block 1, advance

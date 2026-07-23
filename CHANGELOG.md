@@ -10,11 +10,16 @@
 * [BREAKING][rename][cli] Renamed the `send` subcommand to `transfer` (behavior and flags unchanged) ([#2311](https://github.com/0xMiden/rust-sdk/issues/2311)).
 * [BREAKING][store] The SQLite store now stores account IDs as serialized `BLOB` columns instead of hex `TEXT` ([#2309](https://github.com/0xMiden/rust-sdk/pull/2309)).
 * [BREAKING][param][store] `Store::insert_block_header` now takes a `nodes` argument and persists the header with its MMR authentication nodes in a single transaction; the standalone `Store::insert_partial_blockchain_nodes` is removed. Header-only inserts (e.g. genesis) pass an empty slice ([#2294](https://github.com/0xMiden/rust-sdk/pull/2294)).
+* [BREAKING][rust] Removed `Client::fetch_all_private_notes`. The automatic per-tag backfill on sync replaces it, so callers no longer reset the cursor and re-fetch every tag after adding a tag or importing an account. ([#2258](https://github.com/0xMiden/rust-sdk/issues/2258))
 * [BREAKING][behavior][store] The `ConsumedExternal` note-metadata layout added in [#2308](https://github.com/0xMiden/rust-sdk/pull/2308) is now the only supported serialized format. The backward-compatible decoding of the older metadata-less layout is removed, so existing stores are not compatible and must be recreated ([#2313](https://github.com/0xMiden/rust-sdk/pull/2313)).
 
 ### Enhancements
 
 * [FEATURE][rust] Note screening (`Client::get_consumable_notes`, `Client::note_screener`) now memoizes transaction-input and vault (fee) witness lookups for the duration of a single screening pass. This only affects notes whose consumability cannot be determined statically, which are the ones screened by running a trial transaction: they no longer re-read the same account and reference-block data from the store for every note. Verdicts are still not retained between calls. The `get_consumable_notes` docs now also describe its cost and point to cheaper store-query alternatives ([#2326](https://github.com/0xMiden/rust-sdk/pull/2326)).
+
+### Features
+
+* [FEATURE][rust] Historical private notes for a newly tracked tag are now backfilled automatically on sync. `Client::sync_note_transport` diffs the tracked note tags against a persisted covered set and drains each newly tracked tag from the start, fetching only that tag's own history rather than re-scanning every tag. ([#2258](https://github.com/0xMiden/rust-sdk/issues/2258))
 
 ### Changes
 

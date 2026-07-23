@@ -400,6 +400,10 @@ impl NodeRpcClient for GrpcClient {
         *self.genesis_commitment.read()
     }
 
+    fn endpoint(&self) -> Option<&str> {
+        Some(&self.endpoint)
+    }
+
     async fn set_genesis_commitment(&self, commitment: Word) -> Result<(), RpcError> {
         // Check if already set before doing anything else
         if self.genesis_commitment.read().is_some() {
@@ -1192,6 +1196,13 @@ mod tests {
         let client = GrpcClient::new(endpoint, 10000);
         let client: Box<GrpcClient> = client.into();
         tokio::task::spawn(async move { dyn_trait_send_fut(client).await });
+    }
+
+    #[test]
+    fn endpoint_returns_the_configured_url() {
+        let endpoint = Endpoint::devnet();
+        let client = GrpcClient::new(&endpoint, 10000);
+        assert_eq!(client.endpoint(), Some(endpoint.to_string().as_str()));
     }
 
     #[tokio::test]

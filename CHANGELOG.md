@@ -21,6 +21,10 @@
 
 * [rust] Re-exported new upstream types reachable from the public API: `ExpirationTransactionScript` and `SendNotesTransactionScriptError` from `miden_client::transaction`, `NoteSyncHint` from `miden_client::note`, `StorageValuePatch` and `StorageMapPatchEntries` from `miden_client::account`, and `FeeParameters` and `ValidatorKeys` from `miden_client::block`. ([#2290](https://github.com/0xMiden/rust-sdk/pull/2290)).
 
+### Features
+
+* [FEATURE][rust] Added `NodeRpcClient::endpoint` and `Client::rpc_endpoint`, exposing the configured node endpoint URL without a network round-trip. ([#2291](https://github.com/0xMiden/miden-client/pull/2291))
+
 ### Fixes
 
 * [FIX][store] Opening a `SQLite` store now fingerprints the live database schema and compares it against the schema its migrations produce, rejecting a database whose schema has drifted (manual DDL, a partially applied migration, or corruption) instead of trusting a hash stored inside the database file ([#2304](https://github.com/0xMiden/rust-sdk/pull/2304)).

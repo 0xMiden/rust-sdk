@@ -491,6 +491,12 @@ impl<AUTH> Client<AUTH> {
         self.store.identifier()
     }
 
+    /// Returns the node endpoint URL the client's RPC transport is configured to talk to, if the
+    /// transport tracks one.
+    pub fn rpc_endpoint(&self) -> Option<&str> {
+        self.rpc_api.endpoint()
+    }
+
     /// Registers a [`transaction::TransactionObserver`]. Per-observer failures are logged.
     pub fn with_transaction_observer(
         &mut self,

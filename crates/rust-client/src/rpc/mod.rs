@@ -133,6 +133,14 @@ pub trait NodeRpcClient: Send + Sync {
     /// Returns the genesis commitment if it has been set, without fetching from the node.
     fn has_genesis_commitment(&self) -> Option<Word>;
 
+    /// Returns the node endpoint URL this client is configured to talk to, if it tracks one.
+    ///
+    /// Defaults to `None` for implementations that don't track an endpoint (e.g. test mocks); real
+    /// transports return their configured URL.
+    fn endpoint(&self) -> Option<&str> {
+        None
+    }
+
     /// Given a Proven Transaction, send it to the node for it to be included in a future block
     /// using the `/SubmitProvenTransaction` RPC endpoint.
     ///

@@ -97,10 +97,10 @@ should_panic_without_expect = "allow" # We don't care about the specific panic m
 # siblings) with the branch that opens the LargeSmtForest Backend API for external
 # implementations. Remove once that change is released as miden-crypto 0.28.x.
 [patch.crates-io]
-miden-crypto           = { branch = "open-forest-backend-api-for-external-impls", git = "https://github.com/JereSalo/miden-vm" }
-miden-crypto-derive    = { branch = "open-forest-backend-api-for-external-impls", git = "https://github.com/JereSalo/miden-vm" }
-miden-field            = { branch = "open-forest-backend-api-for-external-impls", git = "https://github.com/JereSalo/miden-vm" }
-miden-lifted-air       = { branch = "open-forest-backend-api-for-external-impls", git = "https://github.com/JereSalo/miden-vm" }
-miden-lifted-stark     = { branch = "open-forest-backend-api-for-external-impls", git = "https://github.com/JereSalo/miden-vm" }
-miden-serde-utils      = { branch = "open-forest-backend-api-for-external-impls", git = "https://github.com/JereSalo/miden-vm" }
-miden-stark-transcript = { branch = "open-forest-backend-api-for-external-impls", git = "https://github.com/JereSalo/miden-vm" }
+miden-crypto           = { branch = "client-pin-from-parts-0.28", git = "https://github.com/JereSalo/miden-vm" }
+miden-crypto-derive    = { branch = "client-pin-from-parts-0.28", git = "https://github.com/JereSalo/miden-vm" }
+miden-field            = { branch = "client-pin-from-parts-0.28", git = "https://github.com/JereSalo/miden-vm" }
+miden-lifted-air       = { branch = "client-pin-from-parts-0.28", git = "https://github.com/JereSalo/miden-vm" }
+miden-lifted-stark     = { branch = "client-pin-from-parts-0.28", git = "https://github.com/JereSalo/miden-vm" }
+miden-serde-utils      = { branch = "client-pin-from-parts-0.28", git = "https://github.com/JereSalo/miden-vm" }
+miden-stark-transcript = { branch = "client-pin-from-parts-0.28", git = "https://github.com/JereSalo/miden-vm" }

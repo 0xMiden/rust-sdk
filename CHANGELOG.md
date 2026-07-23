@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Breaking Changes
+
+* [BREAKING][type][rust] `NoteFilter` is now `#[non_exhaustive]`, so matches on it outside `miden-client` must add a wildcard arm. This allows introducing new filters without breaking `Store` implementations, which should report unsupported filters through an error such as `StoreError::QueryError`, as `SqliteStore` does (#TBD).
+
+### Features
+
+* [FEATURE][rust,store] Added `NoteFilter::ScriptRoots` to query input notes by their note script root directly at the store level, without loading and screening unrelated notes. The filter doesn't apply to output notes: querying output notes with it returns an empty list (#TBD).
+
 ## 0.16.0-alpha.1 (2026-07-17)
 
 ### Breaking Changes

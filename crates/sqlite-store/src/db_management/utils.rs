@@ -61,7 +61,10 @@ type Hash = Blake3Digest<32>;
 
 const SCHEMA_HASH_DOMAIN: &[u8] = b"miden-client-sqlite-schema-v1";
 
-const MIGRATION_SCRIPTS: [&str; 1] = [include_str!("../store.sql")];
+const MIGRATION_SCRIPTS: [&str; 2] = [
+    include_str!("../store.sql"),
+    include_str!("../migrations/0002_input_notes_script_root_index.sql"),
+];
 static MIGRATIONS: LazyLock<Migrations> = LazyLock::new(prepare_migrations);
 static EXPECTED_SCHEMA_HASHES: LazyLock<Vec<Hash>> = LazyLock::new(compute_expected_schema_hashes);
 
@@ -194,9 +197,15 @@ pub fn list_setting_keys(conn: &Connection) -> Result<Vec<String>, StoreError> {
 
 #[cfg(test)]
 mod tests {
-    use rusqlite::Connection;
+    use rusqlite::{Connection, OptionalExtension};
 
-    use super::{EXPECTED_SCHEMA_HASHES, MIGRATION_SCRIPTS, apply_migrations, schema_hash};
+    use super::{
+        EXPECTED_SCHEMA_HASHES,
+        MIGRATION_SCRIPTS,
+        MIGRATIONS,
+        apply_migrations,
+        schema_hash,
+    };
     use crate::db_management::errors::SqliteStoreError;
 
     #[test]
@@ -243,5 +252,37 @@ mod tests {
     #[test]
     fn expected_schema_hash_per_migration() {
         assert_eq!(EXPECTED_SCHEMA_HASHES.len(), MIGRATION_SCRIPTS.len());
+    }
+
+    /// A database left at an earlier migration version is migrated forward instead of being
+    /// rejected as drift, so existing databases survive a schema addition.
+    #[test]
+    fn database_at_earlier_version_migrates_forward() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        MIGRATIONS.to_version(&mut conn, 1).unwrap();
+
+        apply_migrations(&mut conn).unwrap();
+
+        assert!(script_root_index_exists(&conn));
+    }
+
+    /// Applying the migrations creates the index backing input note lookups by script root.
+    #[test]
+    fn migrations_create_script_root_index() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply_migrations(&mut conn).unwrap();
+
+        assert!(script_root_index_exists(&conn));
+    }
+
+    fn script_root_index_exists(conn: &Connection) -> bool {
+        conn.query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = $1",
+            ["idx_input_notes_script_root"],
+            |_| Ok(()),
+        )
+        .optional()
+        .unwrap()
+        .is_some()
     }
 }

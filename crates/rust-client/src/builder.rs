@@ -311,8 +311,7 @@ where
     /// Sets a custom RPC client directly.
     ///
     /// The client is used as provided: wrap it in
-    /// [`VerifyingRpcClient`](crate::rpc::VerifyingRpcClient) to have node responses verified
-    /// against the requests.
+    /// [`VerifyingRpcClient`] to have node responses verified against the requests.
     #[must_use]
     pub fn rpc(mut self, client: Arc<dyn NodeRpcClient>) -> Self {
         self.rpc_api = Some(client);

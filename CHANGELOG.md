@@ -23,6 +23,7 @@
 
 ### Fixes
 
+* [FIX][store] Opening a `SQLite` store now fingerprints the live database schema and compares it against the schema its migrations produce, rejecting a database whose schema has drifted (manual DDL, a partially applied migration, or corruption) instead of trusting a hash stored inside the database file ([#2304](https://github.com/0xMiden/rust-sdk/pull/2304)).
 * [FIX][rust] Notes received over the note transport layer now fetch attachments from the node via `get_notes_by_id`. Fetched attachment content is verified against the note metadata's attachments commitment; a note whose advertised attachment content the node cannot serve (or serves incorrectly) is skipped with a warning instead of failing the sync, and a note record is never stored with incomplete attachment content ([#2295](https://github.com/0xMiden/rust-sdk/pull/2295)).
 * [FIX][store] The SQLite store now honors `StorageMapPatch` create/remove semantics: a `Create` patch on an existing map slot clears the prior entries before writing (so its root reflects only the created entries) and a `Remove` patch drops the slot's entries and collapses its root to the empty-map root ([#2290](https://github.com/0xMiden/rust-sdk/pull/2290)).
 * [FIX][rust] Storing an authenticated block header now persists the header and its MMR authentication nodes in a single store transaction, so an interrupted write can no longer leave a tracked block without the MMR nodes needed to rebuild the `PartialMmr` ([#2294](https://github.com/0xMiden/rust-sdk/pull/2294)).

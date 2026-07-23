@@ -368,6 +368,7 @@ struct ComputedLineageMutations {
 /// a full scan and remains covered by the read-time root check. The stored `entry_count` is
 /// trusted within representable range (deltas are applied to it, not recounted), and the
 /// bulk-load heuristic keys off raw op count, not distinct leaf positions.
+#[allow(clippy::too_many_lines)]
 fn compute_update_mutations(
     conn: &Connection,
     lineage: LineageId,
@@ -449,18 +450,17 @@ fn compute_update_mutations(
         let leaf_index = LeafIndex::<SMT_DEPTH>::from(key);
         let position = leaf_index.position();
 
-        if !leaves.contains_key(&position) {
+        if let std::collections::hash_map::Entry::Vacant(entry) = leaves.entry(position) {
             let entries = if bulk_loaded {
                 Vec::new()
             } else {
                 load_leaf_entries(conn, lineage, position)?
             };
-            leaves.insert(position, entries);
+            entry.insert(entries);
         }
         let entries = leaves.get_mut(&position).expect("leaf loaded above");
 
-        let old_value =
-            entries.iter().find(|(k, _)| *k == key).map(|(_, v)| *v).unwrap_or(EMPTY_WORD);
+        let old_value = entries.iter().find(|(k, _)| *k == key).map_or(EMPTY_WORD, |(_, v)| *v);
         if value == old_value {
             continue;
         }
@@ -895,14 +895,13 @@ impl<'a, 'conn> Backend for SqliteForestBackend<'a, 'conn> {
 
         for (lineage, ops) in updates {
             let kv_ops = ops.into_iter().map(Into::into);
-            let (old_version, kind, computed) = match tree_meta(self.tx, lineage)? {
-                Some((version, root, count)) => {
+            let (old_version, kind, computed) =
+                if let Some((version, root, count)) = tree_meta(self.tx, lineage)? {
                     // Path-local computation: reads only the affected leaves and the subtree
                     // blobs on their paths, so cost scales with the change set.
                     let computed = compute_update_mutations(self.tx, lineage, root, count, kv_ops)?;
                     (Some(version), LineageMutationKind::UpdateTree, computed)
-                },
-                None => {
+                } else {
                     // A new lineage starts from the empty tree, so there is no stored state to
                     // read and the in-memory computation is already proportional to the batch.
                     let forward = Smt::new().compute_mutations(kv_ops)?;
@@ -912,8 +911,7 @@ impl<'a, 'conn> Backend for SqliteForestBackend<'a, 'conn> {
                         entry_count_delta: 0,
                     };
                     (None, LineageMutationKind::AddLineage, computed)
-                },
-            };
+                };
 
             mutations.push(LineageMutation::new(
                 lineage,

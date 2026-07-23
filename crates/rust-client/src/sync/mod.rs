@@ -87,7 +87,6 @@ mod state_sync_update;
 pub use state_sync_update::{
     AccountUpdates,
     PartialBlockchainUpdates,
-    PublicAccountDelta,
     PublicAccountUpdate,
     StateSyncUpdate,
     TransactionUpdateTracker,
@@ -171,11 +170,20 @@ where
             tracing::warn!(?err, "relay outbox flush failed during sync; entries retained");
         }
 
+        // Recover historical private notes for any tag added after the global cursor advanced.
+        // This drains each newly tracked tag from the start, fetching only that tag's own history.
+        let mut imported_ids = self.backfill_new_tags().await?;
+
         let cursor = self.store.get_note_transport_cursor().await?;
         let note_tags: Vec<_> = self.store.get_unique_note_tags().await?.into_iter().collect();
         let (ids, new_cursor) = self.fetch_transport_notes(cursor, &note_tags).await?;
         self.store.update_note_transport_cursor(new_cursor).await?;
-        Ok(ids)
+        imported_ids.extend(ids);
+
+        imported_ids.sort_unstable();
+        imported_ids.dedup();
+
+        Ok(imported_ids)
     }
 
     /// Runs the full client sync.

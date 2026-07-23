@@ -1,8 +1,9 @@
 use alloc::collections::BTreeMap;
+use alloc::format;
 use alloc::vec::Vec;
 
 use miden_protocol::account::AccountId;
-use miden_protocol::block::BlockHeader;
+use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::note::{
     Note,
@@ -200,7 +201,7 @@ impl TryFrom<proto::note::NoteInclusionInBlockProof> for NoteInclusionProof {
 
 /// Represents a single block's worth of note sync data from the `SyncNotesResponse`.
 #[derive(Debug, Clone)]
-pub struct NoteSyncBlock {
+pub struct SyncNotesBlock {
     /// Block header containing the matching notes.
     pub block_header: BlockHeader,
     /// MMR path for verifying the block's inclusion in the MMR at `block_to`.
@@ -209,19 +210,7 @@ pub struct NoteSyncBlock {
     pub notes: BTreeMap<NoteId, CommittedNote>,
 }
 
-/// Content resolved for a single note during
-/// [`NodeRpcClient::sync_notes_with_details`](crate::rpc::NodeRpcClient::sync_notes_with_details)
-/// as response from `GetNotesById`.
-#[allow(clippy::large_enum_variant)]
-pub enum SyncedNoteDetails {
-    /// A public note's full body.
-    Public(Note),
-    /// A private note's attachment content, if it carries any. Private notes expose no on-chain
-    /// body; only their attachments are resolved.
-    Private(Option<NoteAttachments>),
-}
-
-impl TryFrom<proto::rpc::sync_notes_response::NoteSyncBlock> for NoteSyncBlock {
+impl TryFrom<proto::rpc::sync_notes_response::NoteSyncBlock> for SyncNotesBlock {
     type Error = RpcError;
 
     fn try_from(
@@ -246,7 +235,130 @@ impl TryFrom<proto::rpc::sync_notes_response::NoteSyncBlock> for NoteSyncBlock {
             })
             .collect::<Result<_, RpcConversionError>>()?;
 
-        Ok(NoteSyncBlock { block_header, mmr_path, notes })
+        Ok(SyncNotesBlock { block_header, mmr_path, notes })
+    }
+}
+
+// SYNCED NOTE
+// ================================================================================================
+
+/// A block's worth of notes resolved by
+/// [`NodeRpcClient::sync_notes_with_content`](crate::rpc::NodeRpcClient::sync_notes_with_content).
+///
+/// Unlike [`SyncNotesBlock`] (the raw `SyncNotes` response), each note here also carries the body
+/// and attachment content fetched via `GetNotesById`, so a consumer never has to re-join two
+/// parallel collections by note ID.
+#[derive(Debug, Clone)]
+pub struct ResolvedSyncNotesBlock {
+    /// Block header containing the matching notes.
+    pub block_header: BlockHeader,
+    /// MMR path for verifying the block's inclusion in the MMR at `block_to`.
+    pub mmr_path: MerklePath,
+    /// Notes matching the requested tags in this block, keyed by note ID.
+    pub notes: BTreeMap<NoteId, SyncedNote>,
+}
+
+/// Everything resolved about a single note during a notes sync: its identity, metadata, and
+/// inclusion proof (always present, from `SyncNotes`), plus any body or attachment content
+/// fetched via `GetNotesById`.
+#[derive(Debug, Clone)]
+pub struct SyncedNote {
+    /// Note identity, metadata, and inclusion proof, as reported by `SyncNotes`.
+    pub committed: CommittedNote,
+    /// Body and/or attachment content resolved via `GetNotesById`; `None` if none was fetched
+    /// (plain private notes, or public notes when bodies were not requested).
+    pub content: Option<ResolvedNoteContent>,
+}
+
+impl SyncedNote {
+    /// Pairs a sync record with the content resolved for it, checking that the content is
+    /// consistent with the record's metadata:
+    ///
+    /// - The content variant must match the record's note type.
+    /// - Resolved attachments must hash to the metadata's attachments commitment — the metadata is
+    ///   what inclusion-proof verification later authenticates, so this binds the fetched bytes to
+    ///   the on-chain note.
+    /// - A note whose metadata advertises attachments must have resolved content: storing such a
+    ///   note without its attachment content would leave it unconsumable with no retry path once
+    ///   its expected-note tag is dropped.
+    ///
+    /// A rejection concerns a single note, not the response as a whole:
+    /// [`NodeRpcClient::sync_notes_with_content`](crate::rpc::NodeRpcClient::sync_notes_with_content)
+    /// skips the offending note with a warning instead of failing the sync, since content
+    /// availability can be influenced by the note's creator.
+    pub fn new(
+        committed: CommittedNote,
+        content: Option<ResolvedNoteContent>,
+    ) -> Result<Self, RpcError> {
+        match &content {
+            Some(resolved) => {
+                let expected_note_type = match resolved {
+                    ResolvedNoteContent::Public { .. } => NoteType::Public,
+                    ResolvedNoteContent::Private { .. } => NoteType::Private,
+                };
+                if committed.note_type() != expected_note_type {
+                    return Err(RpcError::InvalidResponse(format!(
+                        "content returned for note {} does not match the note's type",
+                        committed.note_id()
+                    )));
+                }
+
+                if resolved.attachments().to_commitment()
+                    != committed.metadata().attachments_commitment()
+                {
+                    return Err(RpcError::InvalidResponse(format!(
+                        "attachment content returned for note {} does not match the note's \
+                         attachments commitment",
+                        committed.note_id()
+                    )));
+                }
+            },
+            None => {
+                if committed.has_attachments() {
+                    return Err(RpcError::InvalidResponse(format!(
+                        "note {} advertises attachments but the node did not return their content",
+                        committed.note_id()
+                    )));
+                }
+            },
+        }
+
+        Ok(Self { committed, content })
+    }
+}
+
+/// Body and attachment content fetched for a note via `GetNotesById`.
+#[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
+pub enum ResolvedNoteContent {
+    /// Content fetched for a public note.
+    Public {
+        /// The public note body (recipient and assets, without metadata).
+        details: NoteDetails,
+        /// The note's attachment content. May be empty for a public note that carries none.
+        attachments: NoteAttachments,
+    },
+    /// Content fetched for a private note. Private notes expose no on-chain body, so only their
+    /// attachment content is resolved.
+    Private {
+        /// The note's attachment content.
+        attachments: NoteAttachments,
+    },
+}
+
+impl ResolvedNoteContent {
+    /// Returns the attachment content fetched for the note.
+    pub fn attachments(&self) -> &NoteAttachments {
+        match self {
+            Self::Public { attachments, .. } | Self::Private { attachments } => attachments,
+        }
+    }
+
+    /// Consumes the content and returns the attachment content fetched for the note.
+    pub fn into_attachments(self) -> NoteAttachments {
+        match self {
+            Self::Public { attachments, .. } | Self::Private { attachments } => attachments,
+        }
     }
 }
 
@@ -296,8 +408,25 @@ impl CommittedNote {
         &self.metadata
     }
 
+    /// Returns `true` if the note's metadata advertises at least one attachment.
+    ///
+    /// Sync records carry attachment scheme markers (not the attachment content), so a present
+    /// scheme in any header slot indicates the note has attachments whose content must be fetched
+    /// separately via `GetNotesById`.
+    pub fn has_attachments(&self) -> bool {
+        self.metadata
+            .attachment_headers()
+            .iter()
+            .any(|header| header.scheme().is_some())
+    }
+
     pub fn inclusion_proof(&self) -> &NoteInclusionProof {
         &self.inclusion_proof
+    }
+
+    /// Returns the number of the block in which the note was committed.
+    pub fn block_num(&self) -> BlockNumber {
+        self.inclusion_proof.location().block_num()
     }
 }
 

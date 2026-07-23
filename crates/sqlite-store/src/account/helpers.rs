@@ -25,9 +25,9 @@ use crate::sql_error::SqlResultExt;
 pub(crate) struct SerializedHeaderData {
     pub id: Vec<u8>,
     pub nonce: u64,
-    pub vault_root: String,
-    pub storage_commitment: String,
-    pub code_commitment: String,
+    pub vault_root: Vec<u8>,
+    pub storage_commitment: Vec<u8>,
+    pub code_commitment: Vec<u8>,
     pub account_seed: Option<Vec<u8>>,
     pub locked: bool,
 }
@@ -59,9 +59,9 @@ pub(crate) fn parse_accounts(
             AccountId::read_from_bytes(&id)
                 .expect("Conversion from stored AccountID should not panic"),
             nonce,
-            Word::try_from(&vault_root)?,
-            Word::try_from(&storage_commitment)?,
-            Word::try_from(&code_commitment)?,
+            Word::read_from_bytes(&vault_root)?,
+            Word::read_from_bytes(&storage_commitment)?,
+            Word::read_from_bytes(&code_commitment)?,
         ),
         status,
     ))
@@ -84,9 +84,9 @@ pub(crate) fn query_latest_account_headers(
         .query_map(params, |row| {
             let id: Vec<u8> = row.get(0)?;
             let nonce: u64 = column_value_as_u64(row, 1)?;
-            let vault_root: String = row.get(2)?;
-            let storage_commitment: String = row.get(3)?;
-            let code_commitment: String = row.get(4)?;
+            let vault_root: Vec<u8> = row.get(2)?;
+            let storage_commitment: Vec<u8> = row.get(3)?;
+            let code_commitment: Vec<u8> = row.get(4)?;
             let account_seed: Option<Vec<u8>> = row.get(5)?;
             let locked: bool = row.get(6)?;
             let watched: bool = row.get(7)?;
@@ -132,9 +132,9 @@ pub(crate) fn query_historical_account_headers(
         .query_map(params, |row| {
             let id: Vec<u8> = row.get(0)?;
             let nonce: u64 = column_value_as_u64(row, 1)?;
-            let vault_root: String = row.get(2)?;
-            let storage_commitment: String = row.get(3)?;
-            let code_commitment: String = row.get(4)?;
+            let vault_root: Vec<u8> = row.get(2)?;
+            let storage_commitment: Vec<u8> = row.get(3)?;
+            let code_commitment: Vec<u8> = row.get(4)?;
             let account_seed: Option<Vec<u8>> = row.get(5)?;
             let locked: bool = row.get(6)?;
 
@@ -155,7 +155,7 @@ pub(crate) fn query_historical_account_headers(
 
 // TODO: this function will probably be refactored to receive more complex where clauses and
 // return multiple mast forests
-pub(crate) fn query_account_code(
+pub(super) fn query_account_code(
     conn: &Connection,
     commitment: Word,
 ) -> Result<Option<AccountCode>, StoreError> {
@@ -163,7 +163,7 @@ pub(crate) fn query_account_code(
 
     conn.prepare_cached(CODE_QUERY)
         .into_store_error()?
-        .query_map(params![commitment.to_hex()], |row| {
+        .query_map(params![commitment.to_bytes()], |row| {
             let code: Vec<u8> = row.get(0)?;
             Ok(code)
         })
@@ -202,21 +202,21 @@ pub(crate) fn query_vault_assets(
     account_id: AccountId,
 ) -> Result<Vec<Asset>, StoreError> {
     const VAULT_QUERY: &str =
-        "SELECT vault_key, asset FROM latest_account_assets WHERE account_id = ?";
+        "SELECT asset_id, asset FROM latest_account_assets WHERE account_id = ?";
 
     conn.prepare(VAULT_QUERY)
         .into_store_error()?
         .query_map(params![account_id.to_bytes()], |row| {
-            let vault_key: String = row.get(0)?;
-            let asset: String = row.get(1)?;
-            Ok((vault_key, asset))
+            let asset_id: Vec<u8> = row.get(0)?;
+            let asset: Vec<u8> = row.get(1)?;
+            Ok((asset_id, asset))
         })
         .into_store_error()?
         .map(|result| {
-            let (vault_key_str, asset_str): (String, String) = result.into_store_error()?;
-            let key_word = Word::try_from(vault_key_str)?;
-            let value_word = Word::try_from(asset_str)?;
-            Ok(Asset::from_key_value_words(key_word, value_word)?)
+            let (asset_id_bytes, asset_bytes): (Vec<u8>, Vec<u8>) = result.into_store_error()?;
+            let key_word = Word::read_from_bytes(&asset_id_bytes)?;
+            let value_word = Word::read_from_bytes(&asset_bytes)?;
+            Ok(Asset::from_id_and_value_words(key_word, value_word)?)
         })
         .collect::<Result<Vec<Asset>, StoreError>>()
 }
@@ -248,7 +248,7 @@ pub(crate) fn query_storage_slots(
             format!("{base_query} AND slot_name IN ({placeholders})")
         },
         AccountStorageFilter::Root(root) => {
-            values_params.push(Value::Text(root.to_hex()));
+            values_params.push(Value::Blob(root.to_bytes()));
             format!("{base_query} AND slot_value = ?2")
         },
     };
@@ -257,7 +257,7 @@ pub(crate) fn query_storage_slots(
     let storage_values = stmt
         .query_map(params_from_iter(values_params.iter()), |row| {
             let slot_name: String = row.get(0)?;
-            let value: String = row.get(1)?;
+            let value: Vec<u8> = row.get(1)?;
             let slot_type: u8 = row.get(2)?;
             Ok((slot_name, value, slot_type))
         })
@@ -268,7 +268,7 @@ pub(crate) fn query_storage_slots(
                 .map_err(|err| StoreError::ParsingError(err.to_string()))?;
             let slot_type = StorageSlotType::try_from(slot_type)
                 .map_err(|e| StoreError::ParsingError(e.to_string()))?;
-            Ok((slot_name, Word::try_from(value)?, slot_type))
+            Ok((slot_name, Word::read_from_bytes(&value)?, slot_type))
         })
         .collect::<Result<Vec<(StorageSlotName, Word, StorageSlotType)>, StoreError>>()?;
 
@@ -332,8 +332,8 @@ pub(crate) fn query_storage_maps(
     let map_entries = stmt
         .query_map(params_from_iter(map_params.iter()), |row| {
             let slot_name: String = row.get(0)?;
-            let key: String = row.get(1)?;
-            let value: String = row.get(2)?;
+            let key: Vec<u8> = row.get(1)?;
+            let value: Vec<u8> = row.get(2)?;
 
             Ok((slot_name, key, value))
         })
@@ -342,7 +342,11 @@ pub(crate) fn query_storage_maps(
             let (slot_name, key, value) = result.into_store_error()?;
             let slot_name = StorageSlotName::new(slot_name)
                 .map_err(|err| StoreError::ParsingError(err.to_string()))?;
-            Ok((slot_name, StorageMapKey::new(Word::try_from(key)?), Word::try_from(value)?))
+            Ok((
+                slot_name,
+                StorageMapKey::new(Word::read_from_bytes(&key)?),
+                Word::read_from_bytes(&value)?,
+            ))
         })
         .collect::<Result<Vec<(StorageSlotName, StorageMapKey, Word)>, StoreError>>()?;
 
@@ -366,7 +370,7 @@ pub(crate) fn query_storage_values(
         .into_store_error()?
         .query_map(params![account_id.to_bytes()], |row| {
             let slot_name: String = row.get(0)?;
-            let value: String = row.get(1)?;
+            let value: Vec<u8> = row.get(1)?;
             let slot_type: u8 = row.get(2)?;
             Ok((slot_name, value, slot_type))
         })
@@ -377,7 +381,7 @@ pub(crate) fn query_storage_values(
                 .map_err(|err| StoreError::ParsingError(err.to_string()))?;
             let slot_type = StorageSlotType::try_from(slot_type)
                 .map_err(|e| StoreError::ParsingError(e.to_string()))?;
-            Ok((slot_name, (slot_type, Word::try_from(value)?)))
+            Ok((slot_name, (slot_type, Word::read_from_bytes(&value)?)))
         })
         .collect()
 }

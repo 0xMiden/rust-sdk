@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use miden_client::account::AccountId;
+use miden_client::asset::AssetAmount;
 use miden_client::keystore::Keystore;
 use miden_client::note::{
     BlockNumber,
@@ -106,7 +107,7 @@ impl MintCmd {
 
 /// Create a pay-to-id transaction.
 #[derive(Debug, Parser, Clone)]
-pub struct SendCmd {
+pub struct TransferCmd {
     /// Sender account ID or its hex prefix. If none is provided, the default account's ID is used
     /// instead.
     #[arg(short = 's', long = "sender")]
@@ -141,7 +142,7 @@ pub struct SendCmd {
     delegate_proving: bool,
 }
 
-impl SendCmd {
+impl TransferCmd {
     pub async fn execute<AUTH: Keystore + Sync + 'static>(
         &self,
         mut client: Client<AUTH>,
@@ -494,10 +495,13 @@ impl PswapConsumeCmd {
         let consumer_id = parse_account_id(&client, &self.account).await?;
         let note = resolve_input_note(&client, &self.note).await?;
 
+        let fill_amount = AssetAmount::new(self.fill_amount)
+            .map_err(|err| CliError::Parse(err.into(), "Invalid fill amount".to_string()))?;
+
         // The CLI does not yet support note-supplied fills (in-flight fills routed through
         // other notes), so pass 0 for `note_fill_amount`.
         let tx_request = TransactionRequestBuilder::new()
-            .build_pswap_consume(&note, consumer_id, self.fill_amount, 0)
+            .build_pswap_consume(&note, consumer_id, fill_amount, AssetAmount::ZERO)
             .map_err(|err| {
                 CliError::Transaction(
                     err.into(),

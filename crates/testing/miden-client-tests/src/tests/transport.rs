@@ -1,12 +1,18 @@
 use std::env::temp_dir;
 use std::sync::Arc;
 
-use miden_client::DebugMode;
 use miden_client::account::{Account, AccountType};
 use miden_client::address::{Address, AddressInterface, RoutingParameters};
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;
-use miden_client::note::{Note, NoteAttachments, NoteDetails, NoteTag, NoteType};
+use miden_client::note::{
+    NetworkAccountTarget,
+    Note,
+    NoteDetails,
+    NoteExecutionHint,
+    NoteTag,
+    NoteType,
+};
 use miden_client::note_transport::NoteTransportClient;
 use miden_client::store::NoteFilter;
 use miden_client::testing::common::create_test_store_path;
@@ -19,6 +25,13 @@ use miden_client::testing::note_transport::{
 use miden_client::utils::RwLock;
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
 use miden_protocol::Felt;
+use miden_protocol::account::{
+    AccountId,
+    AccountIdVersion,
+    AccountType as ProtocolAccountType,
+    AssetCallbackFlag,
+};
+use miden_protocol::asset::{Asset, FungibleAsset};
 use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::rand::RandomCoin;
 use miden_protocol::note::NoteType as ProtocolNoteType;
@@ -26,8 +39,8 @@ use miden_protocol::transaction::RawOutputNote;
 use miden_protocol::utils::serde::Serializable;
 use miden_standards::note::P2idNote;
 use miden_standards::testing::note::NoteBuilder;
-use miden_testing::{MockChainBuilder, TxContextInput};
-use rand::Rng;
+use miden_testing::{Auth, MockChainBuilder, TxContextInput};
+use rand::RngExt;
 
 use crate::tests::{create_test_client_builder, insert_new_wallet};
 
@@ -42,15 +55,15 @@ async fn transport_basic() {
     let (mut observer, _observer_account) = create_test_user_transport(mock_node.clone()).await;
 
     // Create note
-    let note = P2idNote::create(
-        sender_account.id(),
-        recipient_account.id(),
-        vec![],
-        NoteType::Private,
-        NoteAttachments::empty(),
-        sender.rng(),
-    )
-    .unwrap();
+    let note: Note = P2idNote::builder()
+        .sender(sender_account.id())
+        .target(recipient_account.id())
+        .asset(dummy_asset())
+        .note_type(NoteType::Private)
+        .generate_serial_number(sender.rng())
+        .build()
+        .unwrap()
+        .into();
 
     // Sync-state / fetch notes
     // No notes before sending
@@ -81,6 +94,102 @@ async fn transport_basic() {
     assert_eq!(notes.len(), 0);
 }
 
+/// Recovers attachments from the node for notes received over NTL.
+#[tokio::test]
+async fn transport_recovers_attachments() {
+    let mut mock_chain_builder = MockChainBuilder::new();
+    let sender = mock_chain_builder.add_existing_mock_account(Auth::IncrNonce).unwrap();
+    let target = mock_chain_builder.add_existing_wallet(Auth::IncrNonce).unwrap();
+
+    let ntx_target = NetworkAccountTarget::new(target.id(), NoteExecutionHint::Always).unwrap();
+    let private_note = NoteBuilder::new(
+        sender.id(),
+        RandomCoin::new([1, 2, 3, 4].map(Felt::new_unchecked).into()),
+    )
+    .note_type(ProtocolNoteType::Private)
+    .tag(NoteTag::new(0).into())
+    .attachment(ntx_target)
+    .build()
+    .unwrap();
+    let attachments = private_note.attachments().clone();
+
+    let spawn_note =
+        mock_chain_builder.add_spawn_note(std::slice::from_ref(&private_note)).unwrap();
+    let mut mock_chain = mock_chain_builder.build().unwrap();
+    let tx = Box::pin(
+        mock_chain
+            .build_tx_context(TxContextInput::AccountId(sender.id()), &[], &[spawn_note])
+            .unwrap()
+            .extend_expected_output_notes(vec![RawOutputNote::Full(private_note.clone())])
+            .build()
+            .unwrap()
+            .execute(),
+    )
+    .await
+    .unwrap();
+    mock_chain.add_pending_executed_transaction(&tx).unwrap();
+    mock_chain.prove_next_block().unwrap();
+
+    let rpc_api = Arc::new(MockRpcApi::new(mock_chain));
+    rpc_api.register_private_note_attachments(private_note.id(), attachments.clone());
+
+    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
+    let keystore = FilesystemKeyStore::new(temp_dir()).unwrap();
+    let rng =
+        RandomCoin::new(rand::random::<[u64; 4]>().map(|v| Felt::new_unchecked(v >> 1)).into());
+    let mut client = ClientBuilder::new()
+        .rpc(rpc_api.clone())
+        .rng(Box::new(rng))
+        .sqlite_store(create_test_store_path())
+        .authenticator(Arc::new(keystore))
+        .note_transport(Arc::new(MockNoteTransportApi::new(mock_node.clone())))
+        .tx_discard_delta(None)
+        .build()
+        .await
+        .unwrap();
+    client.ensure_genesis_in_place().await.unwrap();
+    client.sync_state().await.unwrap();
+
+    client.add_note_tag(private_note.metadata().tag()).await.unwrap();
+    mock_node
+        .write()
+        .add_note(*private_note.header(), NoteDetails::from(private_note.clone()).to_bytes());
+
+    client.fetch_private_notes().await.unwrap();
+
+    let notes = client.get_input_notes(NoteFilter::All).await.unwrap();
+    assert_eq!(notes.len(), 1);
+    assert_eq!(
+        notes[0].attachments(),
+        &attachments,
+        "note transport recipient should recover attachments via get_notes_by_id",
+    );
+}
+
+/// A committed note that advertises attachments the node cannot serve must not fail syncing or
+/// NTL fetching: the note is skipped per-note, and an NTL-delivered record stays expected (never
+/// committed without its attachment content) so a later re-import can retry the fetch.
+#[tokio::test]
+async fn unavailable_attachments_do_not_fail_sync() {
+    // The helper tracks the note's tag and syncs to the tip, so it already exercises the sync
+    // path: the note advertises attachment content the node cannot serve, and the sync succeeds
+    // by skipping the note.
+    let (mut client, private_note, mock_transport_node) =
+        committed_private_note_recipient(0, true).await;
+    assert!(client.get_input_notes(NoteFilter::All).await.unwrap().is_empty());
+
+    // Receiving the same note over the NTL imports it, but it stays expected rather than being
+    // committed without its attachment content.
+    mock_transport_node
+        .write()
+        .add_note(*private_note.header(), NoteDetails::from(private_note.clone()).to_bytes());
+    client.fetch_private_notes().await.unwrap();
+
+    let notes = client.get_input_notes(NoteFilter::Expected).await.unwrap();
+    assert_eq!(notes.len(), 1);
+    assert!(notes[0].attachments().is_empty());
+}
+
 /// Verifies that cursor-based pagination works: a second sync only receives newly sent notes.
 #[tokio::test]
 async fn transport_cursor_pagination() {
@@ -90,25 +199,25 @@ async fn transport_cursor_pagination() {
     let recipient_address = Address::new(recipient_account.id())
         .with_routing_parameters(RoutingParameters::new(AddressInterface::BasicWallet));
 
-    let note_a = P2idNote::create(
-        sender_account.id(),
-        recipient_account.id(),
-        vec![],
-        NoteType::Private,
-        NoteAttachments::empty(),
-        sender.rng(),
-    )
-    .unwrap();
+    let note_a: Note = P2idNote::builder()
+        .sender(sender_account.id())
+        .target(recipient_account.id())
+        .asset(dummy_asset())
+        .note_type(NoteType::Private)
+        .generate_serial_number(sender.rng())
+        .build()
+        .unwrap()
+        .into();
 
-    let note_b = P2idNote::create(
-        sender_account.id(),
-        recipient_account.id(),
-        vec![],
-        NoteType::Private,
-        NoteAttachments::empty(),
-        sender.rng(),
-    )
-    .unwrap();
+    let note_b: Note = P2idNote::builder()
+        .sender(sender_account.id())
+        .target(recipient_account.id())
+        .asset(dummy_asset())
+        .note_type(NoteType::Private)
+        .generate_serial_number(sender.rng())
+        .build()
+        .unwrap()
+        .into();
 
     // Send note A, sync → recipient receives 1 note
     sender
@@ -132,90 +241,207 @@ async fn transport_cursor_pagination() {
     assert_eq!(notes.len(), 2, "should have 2 notes total after second sync");
 }
 
-/// Verifies that `fetch_all_private_notes` (cursor reset) does not duplicate notes in the store.
+/// A tag added after the global cursor has advanced past its notes still receives its history:
+/// `sync_note_transport` backfills the newly tracked tag from the start, scoped to that tag alone.
+///
+/// This is the core regression test for the late-added-tag gap that motivated removing
+/// `fetch_all_private_notes`: the steady-state fetch only sees notes past the shared, forward-only
+/// cursor, so a tag started late would otherwise never see its older notes.
 #[tokio::test]
-async fn transport_duplicate_note_handling() {
+async fn backfill_imports_history_for_late_added_tag() {
     let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
-    let (mut sender, sender_account) = create_test_user_transport(mock_node.clone()).await;
     let (mut recipient, recipient_account) = create_test_user_transport(mock_node.clone()).await;
-    let recipient_address = Address::new(recipient_account.id())
-        .with_routing_parameters(RoutingParameters::new(AddressInterface::BasicWallet));
 
-    let note = P2idNote::create(
-        sender_account.id(),
-        recipient_account.id(),
-        vec![],
-        NoteType::Private,
-        NoteAttachments::empty(),
-        sender.rng(),
-    )
-    .unwrap();
+    let tag_tracked = NoteTag::new(1001);
+    let tag_late = NoteTag::new(1002);
+    recipient.add_note_tag(tag_tracked).await.unwrap();
 
-    sender
-        .send_private_note_with_block_hint(note, &recipient_address, BlockNumber::from(0))
-        .await
-        .unwrap();
+    let note_late = private_note_with_tag(recipient_account.id(), tag_late, 10);
+    let note_tracked = private_note_with_tag(recipient_account.id(), tag_tracked, 20);
 
-    // First fetch
+    // Deliver the late tag's note FIRST so it gets the lower cursor, then the tracked tag's note.
+    // Syncing the tracked tag advances the global cursor to (or past) the late note's cursor.
+    mock_node
+        .write()
+        .add_note(*note_late.header(), NoteDetails::from(note_late.clone()).to_bytes());
+    mock_node
+        .write()
+        .add_note(*note_tracked.header(), NoteDetails::from(note_tracked.clone()).to_bytes());
+
+    // Sync: only the tracked tag's note is fetched; the late tag isn't tracked yet.
     recipient.sync_state().await.unwrap();
     let notes = recipient.get_input_notes(NoteFilter::All).await.unwrap();
-    assert_eq!(notes.len(), 1);
+    assert_eq!(notes.len(), 1, "only the tracked tag's note should arrive first");
+    assert!(
+        notes
+            .iter()
+            .any(|n| n.details_commitment() == note_tracked.details_commitment())
+    );
 
-    // Reset cursor and re-fetch everything
-    recipient.fetch_all_private_notes().await.unwrap();
+    // Track the late tag.
+    recipient.add_note_tag(tag_late).await.unwrap();
+
+    // Sync: the backfill must deliver the late tag's note even though its cursor is below the
+    // global cursor. The backfill is scoped to the newly tracked tag (it fetches `&[tag_late]`),
+    // so it recovers that tag's own history without re-scanning every tag from the start.
+    recipient.sync_state().await.unwrap();
     let notes = recipient.get_input_notes(NoteFilter::All).await.unwrap();
-    assert_eq!(notes.len(), 1, "should still have 1 note, not duplicated");
+    assert_eq!(notes.len(), 2, "the late tag's historical note must be backfilled");
+    assert!(notes.iter().any(|n| n.details_commitment() == note_late.details_commitment()));
 }
 
-/// Verifies that `fetch_all_private_notes` drains notes across multiple
-/// server-paginated batches.
-///
-/// Regression test for the interaction between the transport server's
-/// response-size `LIMIT` and the client's previously-single-shot
-/// `fetch_all_private_notes`. Before the drain loop, a server cap of N per
-/// response meant `fetch_all_private_notes` silently returned only the first
-/// N notes and the rest were invisible until the next paginated sync tick.
+/// Removing a tag drops it from the covered set, so re-adding it backfills again. A note that
+/// arrives while the tag is untracked, and that another tag then pushes the global cursor past,
+/// can only be recovered by a from-the-start backfill. Re-adding the tag must recover it, which
+/// proves the covered set is cleared on removal (otherwise the re-added tag would be treated as
+/// already covered and the note would be lost).
 #[tokio::test]
-async fn fetch_all_private_notes_drains_across_batches() {
+async fn backfill_recovers_notes_that_arrived_while_untracked() {
+    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
+    let (mut recipient, recipient_account) = create_test_user_transport(mock_node.clone()).await;
+
+    let tag_x = NoteTag::new(5005);
+    let tag_driver = NoteTag::new(5006);
+    recipient.add_note_tag(tag_driver).await.unwrap();
+    recipient.add_note_tag(tag_x).await.unwrap();
+
+    // Track and cover tag_x while it has no notes yet (so it leaves no `Note`-source tag behind),
+    // then stop tracking it.
+    recipient.sync_state().await.unwrap();
+    recipient.remove_note_tag(tag_x).await.unwrap();
+
+    // While tag_x is untracked, a note arrives for it, followed by a driver-tag note with a higher
+    // cursor. Syncing fetches the driver note and advances the global cursor past note_x, so the
+    // steady-state fetch can no longer see note_x.
+    let note_x = private_note_with_tag(recipient_account.id(), tag_x, 60);
+    let note_driver = private_note_with_tag(recipient_account.id(), tag_driver, 70);
+    mock_node
+        .write()
+        .add_note(*note_x.header(), NoteDetails::from(note_x.clone()).to_bytes());
+    mock_node
+        .write()
+        .add_note(*note_driver.header(), NoteDetails::from(note_driver.clone()).to_bytes());
+    recipient.sync_state().await.unwrap();
+
+    // note_x is not imported: tag_x was untracked, and it now sits below the global cursor.
+    let before = recipient.get_input_notes(NoteFilter::All).await.unwrap();
+    assert!(
+        !before.iter().any(|n| n.details_commitment() == note_x.details_commitment()),
+        "note_x must not be imported while tag_x is untracked"
+    );
+
+    // Re-add tag_x: the backfill drains it from the start and recovers note_x.
+    recipient.add_note_tag(tag_x).await.unwrap();
+    recipient.sync_state().await.unwrap();
+    let after = recipient.get_input_notes(NoteFilter::All).await.unwrap();
+    assert!(
+        after.iter().any(|n| n.details_commitment() == note_x.details_commitment()),
+        "re-adding a removed tag must backfill notes that arrived while it was untracked"
+    );
+}
+
+/// The tag backfill drains a tag's history across multiple server-paginated batches.
+///
+/// Regression test for the interaction between the transport server's response-size cap and the
+/// backfill drain loop: a cap of N per response must not leave the backfill returning only the
+/// first N notes. With `BATCH_CAP` < the backlog, one sync still pulls the whole history for the
+/// newly tracked tag.
+#[tokio::test]
+async fn backfill_drains_across_batches() {
     const BATCH_CAP: usize = 3;
     const TOTAL_NOTES: usize = 10;
 
     let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::with_max_batch(BATCH_CAP)));
-    let (mut sender, sender_account) = create_test_user_transport(mock_node.clone()).await;
     let (mut recipient, recipient_account) = create_test_user_transport(mock_node.clone()).await;
-    let recipient_address = Address::new(recipient_account.id())
-        .with_routing_parameters(RoutingParameters::new(AddressInterface::BasicWallet));
 
-    // Send TOTAL_NOTES > BATCH_CAP private notes so a single-batch fetch
-    // cannot drain the backlog.
-    for _ in 0..TOTAL_NOTES {
-        let note = P2idNote::create(
-            sender_account.id(),
-            recipient_account.id(),
-            vec![],
-            NoteType::Private,
-            NoteAttachments::empty(),
-            sender.rng(),
-        )
-        .unwrap();
-        sender
-            .send_private_note_with_block_hint(note, &recipient_address, BlockNumber::from(0))
-            .await
-            .unwrap();
+    let tag_late = NoteTag::new(2002);
+
+    // Seed TOTAL_NOTES > BATCH_CAP notes for the late tag before it is tracked, so a single-batch
+    // fetch cannot drain the backlog. Building each note before adding it spaces the mock's
+    // timestamp cursors so they stay distinct.
+    for i in 0..TOTAL_NOTES {
+        let note = private_note_with_tag(recipient_account.id(), tag_late, 100 + i as u64);
+        mock_node.write().add_note(*note.header(), NoteDetails::from(note).to_bytes());
     }
 
-    // With BATCH_CAP=3 and TOTAL_NOTES=10, a single-shot fetch would return
-    // only 3. The drain loop should issue successive calls until all 10 are
-    // pulled.
-    recipient.fetch_all_private_notes().await.unwrap();
+    // First sync: the late tag isn't tracked, so none of its notes are fetched.
+    recipient.sync_state().await.unwrap();
+    assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 0);
+
+    // Track the late tag; one sync must drain all TOTAL_NOTES across BATCH_CAP-sized batches.
+    recipient.add_note_tag(tag_late).await.unwrap();
+    recipient.sync_state().await.unwrap();
 
     let notes = recipient.get_input_notes(NoteFilter::All).await.unwrap();
     assert_eq!(
         notes.len(),
         TOTAL_NOTES,
-        "fetch_all_private_notes must drain across batches; got {} of {}",
+        "backfill must drain the late tag's full history across batches; got {} of {}",
         notes.len(),
         TOTAL_NOTES
+    );
+}
+
+/// Test that registering more newly tracked tags than the per-sync backfill cap does not lose any
+/// tag's history: the burst is spread across syncs, backfilling at most
+/// `MAX_BACKFILL_TAGS_PER_SYNC` tags per call and picking up the remainder on the next sync.
+#[tokio::test]
+async fn backfill_spreads_tags_exceeding_per_sync_cap_across_syncs() {
+    const CAP: usize = MockClient::<FilesystemKeyStore>::MAX_BACKFILL_TAGS_PER_SYNC;
+    const LATE_TAGS: usize = CAP + 1;
+
+    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
+    let (mut recipient, recipient_account) = create_test_user_transport(mock_node.clone()).await;
+
+    // A driver tag tracked from the start pushes the global cursor forward. The late tags' notes
+    // are delivered before the driver note, so they sit below the advanced cursor and can only be
+    // recovered by the from-the-start backfill, not the steady-state fetch.
+    let driver_tag = NoteTag::new(9_999);
+    recipient.add_note_tag(driver_tag).await.unwrap();
+
+    let late_tags: Vec<NoteTag> = (0..LATE_TAGS)
+        .map(|i| NoteTag::new(3_000 + u32::try_from(i).unwrap()))
+        .collect();
+    for (i, tag) in late_tags.iter().enumerate() {
+        let note = private_note_with_tag(recipient_account.id(), *tag, 100 + i as u64);
+        mock_node.write().add_note(*note.header(), NoteDetails::from(note).to_bytes());
+    }
+
+    // Deliver the driver note last so it takes the highest cursor.
+    let driver_note = private_note_with_tag(recipient_account.id(), driver_tag, 10_000);
+    mock_node
+        .write()
+        .add_note(*driver_note.header(), NoteDetails::from(driver_note.clone()).to_bytes());
+
+    // First sync: only the driver tag is tracked, so just its note arrives and the global cursor
+    // advances past every late tag's note.
+    recipient.sync_state().await.unwrap();
+    assert_eq!(
+        recipient.get_input_notes(NoteFilter::All).await.unwrap().len(),
+        1,
+        "only the driver tag's note should arrive first"
+    );
+
+    // Track all LATE_TAGS at once, exceeding the per-sync backfill cap by one.
+    for tag in &late_tags {
+        recipient.add_note_tag(*tag).await.unwrap();
+    }
+
+    // Second sync: the backfill covers at most CAP late tags, so one late note stays uncovered.
+    // Total = driver note + capped backfill.
+    recipient.sync_state().await.unwrap();
+    assert_eq!(
+        recipient.get_input_notes(NoteFilter::All).await.unwrap().len(),
+        1 + CAP,
+        "one sync must backfill at most MAX_BACKFILL_TAGS_PER_SYNC tags"
+    );
+
+    // Third sync: the deferred late tag is backfilled, recovering the whole history.
+    recipient.sync_state().await.unwrap();
+    assert_eq!(
+        recipient.get_input_notes(NoteFilter::All).await.unwrap().len(),
+        1 + LATE_TAGS,
+        "the deferred tag must be backfilled on the following sync"
     );
 }
 
@@ -229,15 +455,15 @@ async fn transport_fetch_no_matching_tags() {
         .with_routing_parameters(RoutingParameters::new(AddressInterface::BasicWallet));
     let (mut observer, _observer_account) = create_test_user_transport(mock_node.clone()).await;
 
-    let note = P2idNote::create(
-        sender_account.id(),
-        recipient_account.id(),
-        vec![],
-        NoteType::Private,
-        NoteAttachments::empty(),
-        sender.rng(),
-    )
-    .unwrap();
+    let note: Note = P2idNote::builder()
+        .sender(sender_account.id())
+        .target(recipient_account.id())
+        .asset(dummy_asset())
+        .note_type(NoteType::Private)
+        .generate_serial_number(sender.rng())
+        .build()
+        .unwrap()
+        .into();
 
     sender
         .send_private_note_with_block_hint(note, &recipient_address, BlockNumber::from(0))
@@ -319,7 +545,6 @@ async fn fetch_private_notes_finds_note_committed_at_sync_height() {
         .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore))
-        .in_debug_mode(DebugMode::Enabled)
         .tx_discard_delta(None)
         .note_transport(Arc::new(transport_client));
 
@@ -381,15 +606,15 @@ async fn private_note_relay_recovers_after_transient_ntl_failure() {
     let recipient_address = Address::new(recipient_account.id())
         .with_routing_parameters(RoutingParameters::new(AddressInterface::BasicWallet));
 
-    let note = P2idNote::create(
-        sender_account.id(),
-        recipient_account.id(),
-        vec![],
-        NoteType::Private,
-        NoteAttachments::empty(),
-        sender.rng(),
-    )
-    .unwrap();
+    let note: Note = P2idNote::builder()
+        .sender(sender_account.id())
+        .target(recipient_account.id())
+        .asset(dummy_asset())
+        .note_type(NoteType::Private)
+        .generate_serial_number(sender.rng())
+        .build()
+        .unwrap()
+        .into();
     // Transport-delivered notes carry no metadata (hence no `NoteId`); match by
     // details commitment.
     let note_commitment = note.details_commitment();
@@ -443,15 +668,15 @@ async fn flush_relay_outbox_retries_failed_relay_without_full_sync() {
     let recipient_address = Address::new(recipient_account.id())
         .with_routing_parameters(RoutingParameters::new(AddressInterface::BasicWallet));
 
-    let note = P2idNote::create(
-        sender_account.id(),
-        recipient_account.id(),
-        vec![],
-        NoteType::Private,
-        NoteAttachments::empty(),
-        sender.rng(),
-    )
-    .unwrap();
+    let note: Note = P2idNote::builder()
+        .sender(sender_account.id())
+        .target(recipient_account.id())
+        .asset(dummy_asset())
+        .note_type(NoteType::Private)
+        .generate_serial_number(sender.rng())
+        .build()
+        .unwrap()
+        .into();
     // Transport-delivered notes carry no metadata (hence no `NoteId`); match by
     // details commitment.
     let note_commitment = note.details_commitment();
@@ -513,15 +738,15 @@ async fn persistent_relay_failure_does_not_block_sync_state() {
     let recipient_address = Address::new(recipient_account.id())
         .with_routing_parameters(RoutingParameters::new(AddressInterface::BasicWallet));
 
-    let note = P2idNote::create(
-        sender_account.id(),
-        recipient_account.id(),
-        vec![],
-        NoteType::Private,
-        NoteAttachments::empty(),
-        sender.rng(),
-    )
-    .unwrap();
+    let note: Note = P2idNote::builder()
+        .sender(sender_account.id())
+        .target(recipient_account.id())
+        .asset(dummy_asset())
+        .note_type(NoteType::Private)
+        .generate_serial_number(sender.rng())
+        .build()
+        .unwrap()
+        .into();
 
     // The relay fails and the payload is persisted to the outbox.
     let _ = sender
@@ -553,15 +778,15 @@ async fn send_private_note_with_block_hint_delivers_note() {
     let recipient_address = Address::new(recipient_account.id())
         .with_routing_parameters(RoutingParameters::new(AddressInterface::BasicWallet));
 
-    let note = P2idNote::create(
-        sender_account.id(),
-        recipient_account.id(),
-        vec![],
-        NoteType::Private,
-        NoteAttachments::empty(),
-        sender.rng(),
-    )
-    .unwrap();
+    let note: Note = P2idNote::builder()
+        .sender(sender_account.id())
+        .target(recipient_account.id())
+        .asset(dummy_asset())
+        .note_type(NoteType::Private)
+        .generate_serial_number(sender.rng())
+        .build()
+        .unwrap()
+        .into();
 
     sender
         .send_private_note_with_block_hint(note, &recipient_address, BlockNumber::from(0))
@@ -581,7 +806,7 @@ async fn fetch_private_notes_uses_sender_provided_after_block_num() {
     // Commit the note at block 1, then advance far enough that the 20-block fallback window
     // (sync_height - 20) starts well above block 1 and would miss it.
     let (mut client, private_note, mock_transport_node) =
-        committed_private_note_recipient(30).await;
+        committed_private_note_recipient(30, false).await;
 
     let sync_height = client.get_sync_height().await.unwrap();
     assert!(
@@ -613,7 +838,7 @@ async fn fetch_private_notes_uses_sender_provided_after_block_num() {
 #[tokio::test]
 async fn fetch_private_notes_without_floor_falls_back_to_lookback_window() {
     let (mut client, private_note, mock_transport_node) =
-        committed_private_note_recipient(30).await;
+        committed_private_note_recipient(30, false).await;
 
     // Deliver the note WITHOUT a floor: the recipient must rely on the lookback heuristic.
     let details_bytes = NoteDetails::from(private_note.clone()).to_bytes();
@@ -639,6 +864,18 @@ async fn fetch_private_notes_without_floor_falls_back_to_lookback_window() {
 
 // HELPERS
 // ================================================================================================
+
+/// A dummy fungible asset for transport-layer notes. P2ID notes require at least one asset, and
+/// these notes are never consumed on-chain, so the issuing faucet only needs to be a valid ID.
+fn dummy_asset() -> Asset {
+    let faucet_id = AccountId::dummy(
+        [7u8; 15],
+        AccountIdVersion::Version1,
+        ProtocolAccountType::Public,
+        AssetCallbackFlag::Disabled,
+    );
+    FungibleAsset::new(faucet_id, 100).unwrap().into()
+}
 
 pub async fn create_test_client_transport(
     mock_node: Arc<RwLock<MockNoteTransportNode>>,
@@ -678,26 +915,48 @@ pub async fn create_test_user_with_transport(
     (client, account)
 }
 
+/// Build a private note carrying `tag`, seeded deterministically by `seed` so distinct seeds yield
+/// distinct notes. Lets a test seed the mock transport with notes whose tag and relative ordering
+/// it controls, independent of any recipient's auto-registered account tag.
+fn private_note_with_tag(account: AccountId, tag: NoteTag, seed: u64) -> Note {
+    NoteBuilder::new(
+        account,
+        RandomCoin::new([seed, seed + 1, seed + 2, seed + 3].map(Felt::new_unchecked).into()),
+    )
+    .note_type(ProtocolNoteType::Private)
+    .tag(tag.into())
+    .build()
+    .unwrap()
+}
+
 /// Build a chain with a private note (tag 0) committed at block 1, advance
 /// `blocks_past_commitment` blocks beyond it, then create a recipient client synced to the tip
 /// with an (initially empty) note transport. Returns the client, the committed note, and the
 /// shared mock transport node so a test can deliver the note over the NTL afterwards.
+///
+/// With `with_unserved_attachment` the note's metadata advertises an attachment whose content is
+/// never registered with the mock node, so any content fetch for the note comes back empty.
 async fn committed_private_note_recipient(
     blocks_past_commitment: u32,
+    with_unserved_attachment: bool,
 ) -> (MockClient<FilesystemKeyStore>, Note, Arc<RwLock<MockNoteTransportNode>>) {
     let mut mock_chain_builder = MockChainBuilder::new();
     let mock_account = mock_chain_builder
         .add_existing_mock_account(miden_testing::Auth::IncrNonce)
         .unwrap();
 
-    let private_note = NoteBuilder::new(
+    let mut note_builder = NoteBuilder::new(
         mock_account.id(),
         RandomCoin::new([1, 2, 3, 4].map(Felt::new_unchecked).into()),
     )
     .note_type(ProtocolNoteType::Private)
-    .tag(NoteTag::new(0).into())
-    .build()
-    .unwrap();
+    .tag(NoteTag::new(0).into());
+    if with_unserved_attachment {
+        let ntx_target =
+            NetworkAccountTarget::new(mock_account.id(), NoteExecutionHint::Always).unwrap();
+        note_builder = note_builder.attachment(ntx_target);
+    }
+    let private_note = note_builder.build().unwrap();
 
     let spawn_note =
         mock_chain_builder.add_spawn_note(std::slice::from_ref(&private_note)).unwrap();
@@ -740,7 +999,6 @@ async fn committed_private_note_recipient(
         .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore))
-        .in_debug_mode(DebugMode::Enabled)
         .tx_discard_delta(None)
         .note_transport(Arc::new(transport_client));
 

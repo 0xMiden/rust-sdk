@@ -412,7 +412,7 @@ impl NoteUpdateTracker {
             input_note_record.inclusion_proof_received(inclusion_proof.clone(), metadata)?;
             input_note_record.block_header_received(block_header)?;
             if let Some(attachments) = attachments {
-                input_note_record.set_attachments(attachments.clone());
+                input_note_record.attachments_received(attachments.clone());
             }
 
             true
@@ -428,7 +428,7 @@ impl NoteUpdateTracker {
                 record.inclusion_proof_received(inclusion_proof.clone(), metadata)?;
                 record.block_header_received(block_header)?;
                 if let Some(attachments) = attachments {
-                    record.set_attachments(attachments.clone());
+                    record.attachments_received(attachments.clone());
                 }
 
                 // `InsertCommitted` so the now-known `note_id`/`nullifier` columns are persisted
@@ -486,8 +486,7 @@ impl NoteUpdateTracker {
         let note_id = note_header.id();
 
         if let Some(output_note) = self.get_output_note_by_id(note_id)
-            && !output_note.is_consumed()
-            && !output_note.is_committed()
+            && output_note.is_inclusion_pending()
             && let Some(nullifier) = output_note.nullifier()
         {
             output_note.nullifier_received(nullifier, block_num)?;

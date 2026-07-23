@@ -42,6 +42,7 @@ pub async fn test_network_fpi(client_config: ClientConfig) -> Result<()> {
 
             #! Inputs:  [pad(16)]
             #! Outputs: [VALUE, pad(12)]
+            @account_procedure
             pub proc get_fpi_map_item
                 # map key
                 push.{map_key}

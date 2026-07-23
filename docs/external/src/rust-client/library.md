@@ -184,7 +184,7 @@ for (note, accounts) in consumable_notes {
 }
 ```
 
-Passing an account ID to `get_consumable_notes` filters the results after screening. It does not reduce screening cost, all tracked accounts are screened regardless. If you only need the committed notes without consumability verdicts, `get_input_notes` with `NoteFilter::Committed` is much cheaper.
+Passing an account ID to `get_consumable_notes` screens only that account, so its cost does not grow with the number of tracked accounts. It still screens every committed note. If you only need the committed notes without consumability verdicts, `get_input_notes` with `NoteFilter::Committed` is much cheaper.
 
 ### Obtain a screener
 

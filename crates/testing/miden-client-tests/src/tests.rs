@@ -2117,18 +2117,22 @@ async fn get_consumable_notes() {
     let consumable_notes = Box::pin(client.get_consumable_notes(None)).await.unwrap();
     let relevant_accounts = &consumable_notes.first().unwrap().1;
     assert_eq!(relevant_accounts.len(), 2);
-    assert!(
-        !Box::pin(client.get_consumable_notes(Some(from_account_id)))
-            .await
-            .unwrap()
-            .is_empty()
-    );
-    assert!(
-        !Box::pin(client.get_consumable_notes(Some(to_account_id)))
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    // Screening for a single account returns only that account's relevance, even though the note
+    // is consumable by both tracked accounts.
+    let from_consumable =
+        Box::pin(client.get_consumable_notes(Some(from_account_id))).await.unwrap();
+    assert!(!from_consumable.is_empty());
+    for (_, relevances) in &from_consumable {
+        let accounts: Vec<_> = relevances.iter().map(|(id, _)| *id).collect();
+        assert_eq!(accounts, vec![from_account_id]);
+    }
+
+    let to_consumable = Box::pin(client.get_consumable_notes(Some(to_account_id))).await.unwrap();
+    assert!(!to_consumable.is_empty());
+    for (_, relevances) in &to_consumable {
+        let accounts: Vec<_> = relevances.iter().map(|(id, _)| *id).collect();
+        assert_eq!(accounts, vec![to_account_id]);
+    }
 
     // Check that the note is only consumable after block 100 for the account that sent the
     // transaction

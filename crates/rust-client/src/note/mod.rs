@@ -164,15 +164,12 @@ where
     ///
     /// # Performance
     ///
-    /// This call screens every committed note tracked by the client against every account tracked
-    /// by the client, on each invocation. For notes whose consumability cannot be determined
-    /// statically, the screener runs one trial transaction in the VM per `(account, note)` pair, so
-    /// the cost grows with the number of tracked accounts multiplied by the number of committed
-    /// notes. Verdicts are not retained between calls: every call re-screens every committed note
-    /// from scratch.
-    ///
-    /// Passing `account_id` filters results after screening. It does not reduce screening cost.
-    /// All tracked accounts are screened regardless.
+    /// This call screens every committed note tracked by the client on each invocation, without
+    /// retaining verdicts between calls. When `account_id` is `None` the notes are screened against
+    /// every account tracked by the client; when it is `Some`, only against that account. For notes
+    /// whose consumability cannot be determined statically, the screener runs one trial transaction
+    /// in the VM per `(account, note)` pair, so the cost grows with the number of screened accounts
+    /// multiplied by the number of committed notes.
     ///
     /// Consider cheaper alternatives when calling this function for accounts that accumulate
     /// committed-unconsumed notes, especially when used in polling loops:
@@ -181,9 +178,8 @@ where
     ///   [`NoteFilter::Committed`] if note consumability verdict is not needed.
     /// - Wait for a specific note to commit with [`Self::get_input_note`] and
     ///   [`InputNoteRecord::is_committed`], instead of polling for it in the screened results.
-    /// - Screen a narrower set of notes with [`NoteScreener::can_consume_batch`], reached through
-    ///   [`Self::note_screener`]. Only the notes can be narrowed this way: the screener always
-    ///   checks them against every account tracked by the client.
+    /// - Screen a narrower set of notes with [`NoteScreener::can_consume_batch`] or
+    ///   [`NoteScreener::can_consume_batch_for_account`], reached through [`Self::note_screener`].
     pub async fn get_consumable_notes(
         &self,
         account_id: Option<AccountId>,
@@ -196,23 +192,22 @@ where
             .collect::<Result<Vec<Note>, _>>()?;
 
         let note_screener = self.note_screener();
-        let mut note_relevances = note_screener.can_consume_batch(&notes).await?;
+        let mut note_relevances = match account_id {
+            Some(account_id) => {
+                note_screener.can_consume_batch_for_account(account_id, &notes).await?
+            },
+            None => note_screener.can_consume_batch(&notes).await?,
+        };
 
         let mut relevant_notes = Vec::new();
         for input_note in committed_notes {
             // Committed notes always have metadata, so id() is `Some`.
             let Some(note_id) = input_note.id() else { continue };
-            let Some(mut account_relevance) = note_relevances.remove(&note_id) else {
+            // A note is in the map only when at least one screened account can consume it, so its
+            // relevance list is never empty.
+            let Some(account_relevance) = note_relevances.remove(&note_id) else {
                 continue;
             };
-
-            if let Some(account_id) = account_id {
-                account_relevance.retain(|(id, _)| *id == account_id);
-            }
-
-            if account_relevance.is_empty() {
-                continue;
-            }
 
             relevant_notes.push((input_note, account_relevance));
         }

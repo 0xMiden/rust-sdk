@@ -99,6 +99,31 @@ impl NoteScreener {
         notes: &[Note],
     ) -> Result<BTreeMap<NoteId, Vec<NoteConsumability>>, NoteScreenerError> {
         let account_ids = self.store.get_account_ids().await?;
+        self.screen_notes(notes, account_ids).await
+    }
+
+    /// Checks whether the provided notes could be consumed by `account_id`, by executing a
+    /// transaction for each note. Unlike [`Self::can_consume_batch`], only `account_id` is screened
+    /// instead of every account tracked by this screener.
+    ///
+    /// Returns a map from [`NoteId`] to a single-element list holding `account_id` and its
+    /// [`NoteConsumptionStatus`]. Notes that `account_id` cannot consume are not included in the
+    /// result.
+    pub async fn can_consume_batch_for_account(
+        &self,
+        account_id: AccountId,
+        notes: &[Note],
+    ) -> Result<BTreeMap<NoteId, Vec<NoteConsumability>>, NoteScreenerError> {
+        self.screen_notes(notes, vec![account_id]).await
+    }
+
+    /// Screens `notes` against `account_ids`, executing a transaction for each note-account pair
+    /// and collecting the accounts that could consume each note.
+    async fn screen_notes(
+        &self,
+        notes: &[Note],
+        account_ids: Vec<AccountId>,
+    ) -> Result<BTreeMap<NoteId, Vec<NoteConsumability>>, NoteScreenerError> {
         if notes.is_empty() || account_ids.is_empty() {
             return Ok(BTreeMap::new());
         }

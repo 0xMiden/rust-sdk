@@ -9,7 +9,7 @@ use miden_client::account::AccountHeader;
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::{FilesystemKeyStore, Keystore};
 use miden_client::note_transport::grpc::GrpcNoteTransportClient;
-use miden_client::rpc::GrpcClient;
+use miden_client::rpc::{GrpcClient, VerifyingRpcClient};
 use miden_client::store::{NoteFilter as ClientNoteFilter, OutputNoteRecord};
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
 
@@ -134,10 +134,10 @@ impl CliClient {
             CliKeyStore::new(config.secret_keys_directory.clone()).map_err(CliError::KeyStore)?;
 
         // Build client with the provided configuration
-        let rpc_client = Arc::new(
+        let rpc_client = Arc::new(VerifyingRpcClient::new(
             GrpcClient::new(&config.rpc.endpoint.clone().into(), config.rpc.timeout_ms)
                 .with_max_decoding_message_size(CLI_MAX_RESPONSE_SIZE_BYTES),
-        );
+        ));
 
         let mut builder = ClientBuilder::new()
             .sqlite_store(config.store_filepath.clone())

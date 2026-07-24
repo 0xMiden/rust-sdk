@@ -51,10 +51,7 @@ pub struct StateSyncUpdate {
 impl StateSyncUpdate {
     /// Assembles an update from its constituent parts, mirroring [`Self::into_parts`].
     ///
-    /// The parts are stored as given: no validation or minimization is applied. In particular,
-    /// blockchain updates for blocks whose notes are all spent are kept as-is —
-    /// [`StateSync::sync_state`](super::StateSync::sync_state) strips those before assembling
-    /// the update it returns.
+    /// The parts are stored as given: no validation or minimization is applied.
     pub fn from_parts(
         block_num: BlockNumber,
         partial_blockchain_updates: PartialBlockchainUpdates,
@@ -188,6 +185,8 @@ impl From<&StateSyncUpdate> for SyncSummary {
 
 /// Contains all the partial blockchain information that needs to be added in the client's store
 /// after a sync: block headers, authentication nodes and the MMR peaks at the new sync height.
+///
+/// Insert-only: entries are staged once known to be worth keeping, never revised or removed.
 #[derive(Debug, Clone, Default)]
 pub struct PartialBlockchainUpdates {
     /// New block headers to be stored, keyed by block number. The value contains the block
@@ -201,24 +200,29 @@ pub struct PartialBlockchainUpdates {
 }
 
 impl PartialBlockchainUpdates {
-    /// Adds or updates a block header in this [`PartialBlockchainUpdates`].
+    /// Adds a block header to this [`PartialBlockchainUpdates`].
     ///
-    /// If the block header already exists (same block number), the `has_client_notes` flag is
-    /// OR-ed. Otherwise a new entry is added.
-    pub fn insert(
-        &mut self,
-        block_header: BlockHeader,
-        has_client_notes: bool,
-        new_authentication_nodes: Vec<(InOrderIndex, Word)>,
-    ) {
+    /// On a repeated block number the `has_client_notes` flag is OR-ed — the chain tip block may
+    /// itself contain client notes — so it only ever moves from `false` to `true`, matching
+    /// [`Store::insert_block_header`](crate::store::Store::insert_block_header)'s one-way upgrade.
+    pub fn insert(&mut self, block_header: BlockHeader, has_client_notes: bool) {
         self.block_headers
             .entry(block_header.block_num())
             .and_modify(|(_, existing_has_notes)| {
                 *existing_has_notes |= has_client_notes;
             })
             .or_insert((block_header, has_client_notes));
+    }
 
-        self.new_authentication_nodes.extend(new_authentication_nodes);
+    /// Stages authentication nodes for storage.
+    ///
+    /// Kept as one flat set rather than per-header, since tracked blocks' paths share internal
+    /// nodes.
+    pub fn extend_authentication_nodes(
+        &mut self,
+        nodes: impl IntoIterator<Item = (InOrderIndex, Word)>,
+    ) {
+        self.new_authentication_nodes.extend(nodes);
     }
 
     /// Returns the new block headers to be stored, along with a flag indicating whether the block
@@ -243,35 +247,6 @@ impl PartialBlockchainUpdates {
     /// block headers.
     pub fn new_authentication_nodes(&self) -> &[(InOrderIndex, Word)] {
         &self.new_authentication_nodes
-    }
-
-    /// Untracks note blocks that are not in `live_blocks`: clears their `has_client_notes` flag,
-    /// untracks their leaves from `partial_mmr`, and drops the authentication nodes that no
-    /// remaining tracked leaf needs.
-    pub(super) fn untrack_irrelevant_note_blocks(
-        &mut self,
-        live_blocks: &BTreeSet<BlockNumber>,
-        partial_mmr: &mut PartialMmr,
-    ) {
-        let blocks_to_untrack: Vec<BlockNumber> = self
-            .block_headers
-            .iter_mut()
-            .filter_map(|(block_num, (_, has_client_notes))| {
-                if *has_client_notes && !live_blocks.contains(block_num) {
-                    *has_client_notes = false;
-                    Some(*block_num)
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        let removed_nodes: BTreeSet<InOrderIndex> =
-            untrack_blocks(partial_mmr, blocks_to_untrack.into_iter().map(|b| b.as_usize()))
-                .into_iter()
-                .collect();
-        self.new_authentication_nodes
-            .retain(|(index, _)| !removed_nodes.contains(index));
     }
 }
 

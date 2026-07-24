@@ -9,7 +9,8 @@ use miden_protocol::Word;
 use miden_protocol::account::{Account, AccountHeader, AccountId, StorageSlotType};
 use miden_protocol::block::account_tree::AccountIdKey;
 use miden_protocol::block::{BlockHeader, BlockNumber};
-use miden_protocol::crypto::merkle::mmr::{MmrDelta, PartialMmr};
+use miden_protocol::crypto::merkle::MerklePath;
+use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrDelta, PartialMmr};
 use miden_protocol::note::{NoteAttachments, NoteId, NoteTag, Nullifier};
 use tracing::info;
 
@@ -241,12 +242,12 @@ impl StateSync {
     /// 1. Fetch sync data from the node (MMR delta, note inclusions, transactions).
     /// 2. Update account states (fetch updated public accounts, flag mismatched private ones).
     /// 3. Advance the partial MMR to the chain tip.
-    /// 4. Screen note inclusions via the configured [`OnNoteReceived`] callback and track relevant
-    ///    blocks in the MMR.
+    /// 4. Screen note inclusions via the configured [`OnNoteReceived`] callback.
     /// 5. Process transaction inclusions (commit local txs, record external consumers, discard
     ///    stale/expired txs, commit output notes).
     /// 6. Detect consumed notes via nullifier sync (optional, see
     ///    [`Self::disable_nullifier_sync`]).
+    /// 7. Track in the MMR the screened blocks that still hold an unspent note.
     pub async fn sync_state(
         &self,
         current_partial_mmr: &mut PartialMmr,
@@ -301,15 +302,19 @@ impl StateSync {
             transaction_updates.apply_superseded_account_state(superseded_state);
         }
 
+        // Work on a clone so any validation failure leaves `current_partial_mmr` untouched.
+        let mut working_mmr = current_partial_mmr.clone();
+
         // Apply local changes: update the MMR, screen notes, and apply state transitions.
-        self.apply_sync_result(
-            sync_data,
-            &mut partial_blockchain_updates,
-            &mut note_updates,
-            &mut transaction_updates,
-            current_partial_mmr,
-        )
-        .await?;
+        let relevant_note_blocks = self
+            .apply_sync_result(
+                sync_data,
+                &mut partial_blockchain_updates,
+                &mut note_updates,
+                &mut transaction_updates,
+                &mut working_mmr,
+            )
+            .await?;
 
         if self.sync_nullifiers {
             self.nullifiers_state_sync(
@@ -321,16 +326,21 @@ impl StateSync {
             .await?;
         }
 
-        // Drop newly-synced block data that no unspent input note needs: blocks whose notes were
-        // all consumed within this same sync don't have to be tracked or persisted. Blocks
-        // reported live by note observers are kept: they insert notes referencing them into the
-        // store only after this pass (see `NoteObserver::live_blocks`).
+        // Observers are asked too: they insert notes referencing their blocks only after this pass
+        // (see `NoteObserver::live_blocks`).
         let live_blocks: BTreeSet<BlockNumber> = note_updates
             .unspent_input_note_block_numbers()
             .chain(self.note_observers.iter().flat_map(|observer| observer.live_blocks()))
             .collect();
-        partial_blockchain_updates
-            .untrack_irrelevant_note_blocks(&live_blocks, current_partial_mmr);
+
+        Self::track_live_note_blocks(
+            relevant_note_blocks,
+            &live_blocks,
+            &mut working_mmr,
+            &mut partial_blockchain_updates,
+        )?;
+
+        *current_partial_mmr = working_mmr;
 
         Ok(StateSyncUpdate::from_parts(
             chain_tip,
@@ -435,16 +445,19 @@ impl StateSync {
     ///
     /// Applies fetched sync data to the local state:
     /// 1. Advances the partial MMR (delta + chain tip leaf).
-    /// 2. Screens note blocks and tracks relevant ones in the MMR.
+    /// 2. Screens note blocks for relevance.
     /// 3. Applies transaction and nullifier updates.
+    ///
+    /// Returns the relevant note blocks, which the caller tracks once it knows which still hold an
+    /// unspent note.
     async fn apply_sync_result(
         &self,
         sync_data: FetchedSyncData,
         partial_blockchain_updates: &mut PartialBlockchainUpdates,
         note_updates: &mut NoteUpdateTracker,
         transaction_updates: &mut TransactionUpdateTracker,
-        current_partial_mmr: &mut PartialMmr,
-    ) -> Result<(), ClientError> {
+        working_mmr: &mut PartialMmr,
+    ) -> Result<Vec<(BlockHeader, MerklePath)>, ClientError> {
         let FetchedSyncData {
             mmr_delta,
             chain_tip_header,
@@ -452,24 +465,9 @@ impl StateSync {
             transactions,
         } = sync_data;
 
-        // Operate on a clone so any validation failure leaves `current_partial_mmr` untouched.
-        // The clone is committed back at the end of the function once all checks pass.
-        let mut working_mmr = current_partial_mmr.clone();
+        Self::advance_mmr(mmr_delta, &chain_tip_header, working_mmr, partial_blockchain_updates)?;
 
-        Self::advance_mmr(
-            mmr_delta,
-            &chain_tip_header,
-            &mut working_mmr,
-            partial_blockchain_updates,
-        )?;
-
-        self.screen_note_blocks(
-            note_blocks,
-            note_updates,
-            partial_blockchain_updates,
-            &mut working_mmr,
-        )
-        .await?;
+        let relevant_note_blocks = self.screen_note_blocks(note_blocks, note_updates).await?;
 
         self.apply_transactions_and_nullifiers(
             &chain_tip_header,
@@ -478,10 +476,7 @@ impl StateSync {
             transaction_updates,
         )?;
 
-        // Commit the working MMR back to the caller once all checks pass.
-        *current_partial_mmr = working_mmr;
-
-        Ok(())
+        Ok(relevant_note_blocks)
     }
 
     /// Validates that a `sync_chain_mmr` response covers the requested range.
@@ -587,54 +582,73 @@ impl StateSync {
                 .map_err(StoreError::MmrError)?,
         );
 
-        partial_blockchain_updates.insert(
-            chain_tip_header.clone(),
-            false,
-            new_authentication_nodes,
-        );
+        partial_blockchain_updates.insert(chain_tip_header.clone(), false);
+        partial_blockchain_updates.extend_authentication_nodes(new_authentication_nodes);
 
         Ok(())
     }
 
-    /// Screens each note block for relevance and, for blocks containing client-relevant notes,
-    /// tracks them in the partial MMR using the authentication path from the `sync_notes`
-    /// response.
+    /// Screens each note block for relevance, returning those with client-relevant notes and their
+    /// authentication path from the `sync_notes` response.
+    ///
+    /// These are candidates only — whether a note of theirs survives unspent isn't known until
+    /// nullifiers are processed, so tracking is deferred to [`Self::track_live_note_blocks`].
     async fn screen_note_blocks(
         &self,
         note_blocks: Vec<ResolvedSyncNotesBlock>,
         note_updates: &mut NoteUpdateTracker,
-        partial_blockchain_updates: &mut PartialBlockchainUpdates,
-        current_partial_mmr: &mut PartialMmr,
-    ) -> Result<(), ClientError> {
+    ) -> Result<Vec<(BlockHeader, MerklePath)>, ClientError> {
+        let mut relevant_blocks = Vec::new();
+
         for block in note_blocks {
             let found_relevant_note =
                 self.note_state_sync(note_updates, block.notes, &block.block_header).await?;
 
             if found_relevant_note {
-                let block_pos = block.block_header.block_num().as_usize();
-
-                let nodes_before: BTreeMap<_, _> =
-                    current_partial_mmr.nodes().map(|(k, v)| (*k, *v)).collect();
-
-                if !current_partial_mmr.is_tracked(block_pos) {
-                    current_partial_mmr
-                        .track(block_pos, block.block_header.commitment(), &block.mmr_path)
-                        .map_err(StoreError::MmrError)?;
-                }
-
-                // Always collect new authentication nodes — even when the block was
-                // already tracked from the MMR delta, the delta's nodes may not include
-                // the full authentication path needed to reconstruct the PartialMmr
-                // from storage later.
-                let track_auth_nodes: Vec<_> = current_partial_mmr
-                    .nodes()
-                    .filter(|(k, _)| !nodes_before.contains_key(k))
-                    .map(|(k, v)| (*k, *v))
-                    .collect();
-
-                partial_blockchain_updates.insert(block.block_header, true, track_auth_nodes);
+                relevant_blocks.push((block.block_header, block.mmr_path));
             }
         }
+
+        Ok(relevant_blocks)
+    }
+
+    /// Tracks the note blocks holding an unspent note, staging their headers and authentication
+    /// nodes for storage. Blocks absent from `live_blocks` are dropped: their notes' inclusion will
+    /// never need proving.
+    ///
+    /// Requires `partial_mmr` to be at the chain tip forest that `relevant_blocks`' paths are
+    /// relative to, which [`Self::advance_mmr`] establishes and nothing else in the pass changes.
+    fn track_live_note_blocks(
+        relevant_blocks: Vec<(BlockHeader, MerklePath)>,
+        live_blocks: &BTreeSet<BlockNumber>,
+        partial_mmr: &mut PartialMmr,
+        partial_blockchain_updates: &mut PartialBlockchainUpdates,
+    ) -> Result<(), ClientError> {
+        let nodes_before: BTreeSet<InOrderIndex> = partial_mmr.nodes().map(|(k, _)| *k).collect();
+
+        for (block_header, mmr_path) in relevant_blocks {
+            if !live_blocks.contains(&block_header.block_num()) {
+                continue;
+            }
+
+            let block_pos = block_header.block_num().as_usize();
+            if !partial_mmr.is_tracked(block_pos) {
+                partial_mmr
+                    .track(block_pos, block_header.commitment(), &mmr_path)
+                    .map_err(StoreError::MmrError)?;
+            }
+
+            partial_blockchain_updates.insert(block_header, true);
+        }
+
+        // Diffed once for the whole batch, since tracked paths share internal nodes.
+        partial_blockchain_updates.extend_authentication_nodes(
+            partial_mmr
+                .nodes()
+                .filter(|(index, _)| !nodes_before.contains(index))
+                .map(|(index, value)| (*index, *value))
+                .collect::<Vec<_>>(),
+        );
 
         Ok(())
     }

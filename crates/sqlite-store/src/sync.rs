@@ -98,13 +98,13 @@ impl SqliteStore {
         smt_forest: &Arc<RwLock<AccountSmtForest>>,
         state_sync_update: StateSyncUpdate,
     ) -> Result<(), StoreError> {
-        let StateSyncUpdate {
+        let (
             block_num,
             partial_blockchain_updates,
             note_updates,
             transaction_updates,
             account_updates,
-        } = state_sync_update;
+        ) = state_sync_update.into_parts();
 
         with_forest_snapshot(conn, smt_forest, |tx, smt_forest| {
             // Update blockchain checkpoint (block number and peaks) only if moving forward.
@@ -121,7 +121,7 @@ impl SqliteStore {
             .into_store_error()?;
 
             for (block_header, block_has_relevant_notes) in
-                partial_blockchain_updates.block_headers()
+                partial_blockchain_updates.block_headers_to_store(block_num)
             {
                 Self::insert_block_header_tx(tx, block_header, *block_has_relevant_notes)?;
             }

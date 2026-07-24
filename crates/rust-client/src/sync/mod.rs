@@ -84,6 +84,7 @@ mod state_sync;
 pub use state_sync::{NoteUpdateAction, OnNoteReceived, StateSync, StateSyncInput};
 
 mod state_sync_update;
+use state_sync_update::untrack_blocks;
 pub use state_sync_update::{
     AccountUpdates,
     PartialBlockchainUpdates,
@@ -297,10 +298,7 @@ where
             // Rebuild the PartialMmr and untrack each block to collect the authentication node
             // indices that are no longer needed by any remaining tracked leaf.
             let mut partial_mmr = self.get_current_partial_mmr().await?;
-            for &block_pos in &to_untrack {
-                nodes_to_remove
-                    .extend(partial_mmr.untrack(block_pos).into_iter().map(|(idx, _)| idx));
-            }
+            nodes_to_remove = untrack_blocks(&mut partial_mmr, to_untrack.iter().copied());
 
             blocks_to_untrack = to_untrack
                 .iter()

@@ -266,26 +266,29 @@ impl StateSync {
         let note_tags = Arc::new(note_tags);
         let account_ids: Vec<AccountId> = accounts.iter().map(AccountHeader::id).collect();
 
-        let mut state_sync_update = StateSyncUpdate {
-            block_num,
-            note_updates: NoteUpdateTracker::new(input_notes, output_notes),
-            transaction_updates: TransactionUpdateTracker::new(uncommitted_transactions),
-            ..Default::default()
-        };
-        let Some(sync_data) = self
-            .fetch_sync_data(state_sync_update.block_num, &account_ids, &note_tags)
-            .await?
+        let mut note_updates = NoteUpdateTracker::new(input_notes, output_notes);
+        let mut transaction_updates = TransactionUpdateTracker::new(uncommitted_transactions);
+        let mut partial_blockchain_updates = PartialBlockchainUpdates::default();
+        let mut account_updates = AccountUpdates::default();
+
+        let Some(sync_data) = self.fetch_sync_data(block_num, &account_ids, &note_tags).await?
         else {
             // No progress — already at the tip.
-            return Ok(state_sync_update);
+            return Ok(StateSyncUpdate::from_parts(
+                block_num,
+                partial_blockchain_updates,
+                note_updates,
+                transaction_updates,
+                account_updates,
+            ));
         };
 
-        state_sync_update.block_num = sync_data.chain_tip_header.block_num();
+        let chain_tip = sync_data.chain_tip_header.block_num();
 
         let new_commitments = derive_account_commitments(&sync_data.transactions);
         let superseded_states = self
             .account_state_sync(
-                &mut state_sync_update.account_updates,
+                &mut account_updates,
                 &accounts,
                 &new_commitments,
                 block_num,
@@ -295,20 +298,47 @@ impl StateSync {
 
         // Discard the local transactions whose result lost a same-nonce race against the network.
         for superseded_state in superseded_states {
-            state_sync_update
-                .transaction_updates
-                .apply_superseded_account_state(superseded_state);
+            transaction_updates.apply_superseded_account_state(superseded_state);
         }
 
         // Apply local changes: update the MMR, screen notes, and apply state transitions.
-        self.apply_sync_result(sync_data, &mut state_sync_update, current_partial_mmr)
-            .await?;
+        self.apply_sync_result(
+            sync_data,
+            &mut partial_blockchain_updates,
+            &mut note_updates,
+            &mut transaction_updates,
+            current_partial_mmr,
+        )
+        .await?;
 
         if self.sync_nullifiers {
-            self.nullifiers_state_sync(&mut state_sync_update, block_num).await?;
+            self.nullifiers_state_sync(
+                &mut note_updates,
+                &mut transaction_updates,
+                chain_tip,
+                block_num,
+            )
+            .await?;
         }
 
-        Ok(state_sync_update)
+        // Drop newly-synced block data that no unspent input note needs: blocks whose notes were
+        // all consumed within this same sync don't have to be tracked or persisted. Blocks
+        // reported live by note observers are kept: they insert notes referencing them into the
+        // store only after this pass (see `NoteObserver::live_blocks`).
+        let live_blocks: BTreeSet<BlockNumber> = note_updates
+            .unspent_input_note_block_numbers()
+            .chain(self.note_observers.iter().flat_map(|observer| observer.live_blocks()))
+            .collect();
+        partial_blockchain_updates
+            .untrack_irrelevant_note_blocks(&live_blocks, current_partial_mmr);
+
+        Ok(StateSyncUpdate::from_parts(
+            chain_tip,
+            partial_blockchain_updates,
+            note_updates,
+            transaction_updates,
+            account_updates,
+        ))
     }
 
     /// Fetches the sync data from the node by calling the following endpoints:
@@ -410,7 +440,9 @@ impl StateSync {
     async fn apply_sync_result(
         &self,
         sync_data: FetchedSyncData,
-        state_sync_update: &mut StateSyncUpdate,
+        partial_blockchain_updates: &mut PartialBlockchainUpdates,
+        note_updates: &mut NoteUpdateTracker,
+        transaction_updates: &mut TransactionUpdateTracker,
         current_partial_mmr: &mut PartialMmr,
     ) -> Result<(), ClientError> {
         let FetchedSyncData {
@@ -428,16 +460,22 @@ impl StateSync {
             mmr_delta,
             &chain_tip_header,
             &mut working_mmr,
-            &mut state_sync_update.partial_blockchain_updates,
+            partial_blockchain_updates,
         )?;
 
-        self.screen_note_blocks(note_blocks, state_sync_update, &mut working_mmr)
-            .await?;
+        self.screen_note_blocks(
+            note_blocks,
+            note_updates,
+            partial_blockchain_updates,
+            &mut working_mmr,
+        )
+        .await?;
 
         self.apply_transactions_and_nullifiers(
             &chain_tip_header,
             &transactions,
-            state_sync_update,
+            note_updates,
+            transaction_updates,
         )?;
 
         // Commit the working MMR back to the caller once all checks pass.
@@ -564,17 +602,13 @@ impl StateSync {
     async fn screen_note_blocks(
         &self,
         note_blocks: Vec<ResolvedSyncNotesBlock>,
-        state_sync_update: &mut StateSyncUpdate,
+        note_updates: &mut NoteUpdateTracker,
+        partial_blockchain_updates: &mut PartialBlockchainUpdates,
         current_partial_mmr: &mut PartialMmr,
     ) -> Result<(), ClientError> {
         for block in note_blocks {
-            let found_relevant_note = self
-                .note_state_sync(
-                    &mut state_sync_update.note_updates,
-                    block.notes,
-                    &block.block_header,
-                )
-                .await?;
+            let found_relevant_note =
+                self.note_state_sync(note_updates, block.notes, &block.block_header).await?;
 
             if found_relevant_note {
                 let block_pos = block.block_header.block_num().as_usize();
@@ -598,11 +632,7 @@ impl StateSync {
                     .map(|(k, v)| (*k, *v))
                     .collect();
 
-                state_sync_update.partial_blockchain_updates.insert(
-                    block.block_header,
-                    true,
-                    track_auth_nodes,
-                );
+                partial_blockchain_updates.insert(block.block_header, true, track_auth_nodes);
             }
         }
 
@@ -616,31 +646,26 @@ impl StateSync {
         &self,
         chain_tip_header: &BlockHeader,
         transactions: &[RpcTransactionRecord],
-        state_sync_update: &mut StateSyncUpdate,
+        note_updates: &mut NoteUpdateTracker,
+        transaction_updates: &mut TransactionUpdateTracker,
     ) -> Result<(), ClientError> {
-        state_sync_update
-            .note_updates
-            .extend_nullifiers(compute_ordered_nullifiers(transactions));
+        note_updates.extend_nullifiers(compute_ordered_nullifiers(transactions));
 
         for record in transactions {
-            state_sync_update
-                .transaction_updates
+            transaction_updates
                 .apply_transaction_inclusion(record, u64::from(chain_tip_header.timestamp())); //TODO: Change timestamps from u64 to u32
         }
-        state_sync_update
-            .transaction_updates
+        transaction_updates
             .apply_sync_height_update(chain_tip_header.block_num(), self.tx_discard_delta);
 
         for transaction in transactions {
             // Transition tracked output notes to Committed using inclusion proofs from the
             // transaction sync response. This covers output notes regardless of whether their
             // tags were tracked in the note sync.
-            state_sync_update
-                .note_updates
-                .apply_output_note_inclusion_proofs(&transaction.output_notes)?;
+            note_updates.apply_output_note_inclusion_proofs(&transaction.output_notes)?;
 
             // Detect output notes erased by same-batch note erasure.
-            Self::mark_erased_notes_as_consumed(state_sync_update, transaction);
+            Self::mark_erased_notes_as_consumed(note_updates, transaction);
         }
 
         Ok(())
@@ -652,14 +677,12 @@ impl StateSync {
     /// the block body. The node reports these as erased output notes in the transaction
     /// record (note ID only, no inclusion proof). We mark them as consumed.
     fn mark_erased_notes_as_consumed(
-        state_sync_update: &mut StateSyncUpdate,
+        note_updates: &mut NoteUpdateTracker,
         transaction: &RpcTransactionRecord,
     ) {
         for note_header in &transaction.erased_output_notes {
             // Best-effort: ignore errors for notes not tracked by this client.
-            let _ = state_sync_update
-                .note_updates
-                .mark_erased_note_as_consumed(note_header, transaction.block_num);
+            let _ = note_updates.mark_erased_note_as_consumed(note_header, transaction.block_num);
         }
     }
 
@@ -1093,38 +1116,37 @@ impl StateSync {
     /// the `sync_nullifiers` endpoint to check if there are new nullifiers for these
     /// notes. It then processes the nullifiers to apply the state transitions on the note updates.
     ///
-    /// The `state_sync_update` parameter will be updated to track the new discarded transactions.
+    /// The `transaction_updates` parameter will be updated to track the new discarded
+    /// transactions.
     async fn nullifiers_state_sync(
         &self,
-        state_sync_update: &mut StateSyncUpdate,
+        note_updates: &mut NoteUpdateTracker,
+        transaction_updates: &mut TransactionUpdateTracker,
+        chain_tip: BlockNumber,
         current_block_num: BlockNumber,
     ) -> Result<(), ClientError> {
         // To receive information about added nullifiers, we reduce them to the higher 16 bits
         // Note that besides filtering by nullifier prefixes, the node also filters by block number
-        // (it only returns nullifiers from current_block_num + 1 until state_sync_update.block_num)
+        // (it only returns nullifiers from current_block_num + 1 until chain_tip)
 
         // Check for new nullifiers for input notes that were updated
-        let nullifiers_tags: Vec<u16> = state_sync_update
-            .note_updates
-            .unspent_nullifiers()
-            .map(|nullifier| nullifier.prefix())
-            .collect();
+        let nullifiers_tags: Vec<u16> =
+            note_updates.unspent_nullifiers().map(|nullifier| nullifier.prefix()).collect();
 
         let mut new_nullifiers = self
             .rpc_api
-            .sync_nullifiers(&nullifiers_tags, current_block_num + 1, state_sync_update.block_num)
+            .sync_nullifiers(&nullifiers_tags, current_block_num + 1, chain_tip)
             .await?;
 
         // Discard nullifiers that are newer than the current block (this might happen if the block
         // changes between the sync_state and the check_nullifier calls)
-        new_nullifiers.retain(|update| update.block_num <= state_sync_update.block_num);
+        new_nullifiers.retain(|update| update.block_num <= chain_tip);
 
         // Match each nullifier update with the externally-tracked consumer account.
         let consumptions: Vec<NoteConsumption> = new_nullifiers
             .into_iter()
             .map(|update| NoteConsumption {
-                external_consumer: state_sync_update
-                    .transaction_updates
+                external_consumer: transaction_updates
                     .external_nullifier_account(&update.nullifier),
                 nullifier: update.nullifier,
                 block_num: update.block_num,
@@ -1132,17 +1154,15 @@ impl StateSync {
             .collect();
 
         for consumption in consumptions {
-            state_sync_update.note_updates.apply_note_consumption(
+            note_updates.apply_note_consumption(
                 &consumption,
-                state_sync_update.transaction_updates.committed_transactions(),
+                transaction_updates.committed_transactions(),
             )?;
 
             // Process nullifiers and track the updates of local tracked transactions that were
             // discarded because the notes that they were processing were nullified by an
             // another transaction.
-            state_sync_update
-                .transaction_updates
-                .apply_input_note_nullified(consumption.nullifier);
+            transaction_updates.apply_input_note_nullified(consumption.nullifier);
         }
 
         Ok(())
@@ -1968,7 +1988,7 @@ mod tests {
 
         let update = state_sync.sync_state(&mut partial_mmr, sync_input).await.unwrap();
 
-        let updated_notes: Vec<_> = update.note_updates.updated_input_notes().collect();
+        let updated_notes: Vec<_> = update.note_updates().updated_input_notes().collect();
 
         let find_order = |details_commitment| -> Option<u32> {
             updated_notes
@@ -2012,7 +2032,7 @@ mod tests {
         // First sync
         let update = state_sync.sync_state(&mut partial_mmr, empty()).await.unwrap();
 
-        assert_eq!(update.block_num, chain_tip_1);
+        assert_eq!(update.block_num(), chain_tip_1);
         let forest_1 = partial_mmr.forest();
         // The MMR should contain one leaf per block (genesis + the new blocks).
         assert_eq!(forest_1.num_leaves(), chain_tip_1.as_u32() as usize + 1);
@@ -2023,7 +2043,7 @@ mod tests {
 
         let update = state_sync.sync_state(&mut partial_mmr, empty()).await.unwrap();
 
-        assert_eq!(update.block_num, chain_tip_2);
+        assert_eq!(update.block_num(), chain_tip_2);
         let forest_2 = partial_mmr.forest();
         assert!(forest_2 > forest_1);
         assert_eq!(forest_2.num_leaves(), chain_tip_2.as_u32() as usize + 1);
@@ -2031,7 +2051,7 @@ mod tests {
         // Third sync (no new blocks)
         let update = state_sync.sync_state(&mut partial_mmr, empty()).await.unwrap();
 
-        assert_eq!(update.block_num, chain_tip_2);
+        assert_eq!(update.block_num(), chain_tip_2);
         assert_eq!(partial_mmr.forest(), forest_2);
     }
 
@@ -2406,7 +2426,7 @@ mod tests {
 
         // The output note record should transition to consumed.
         let updated_output = update
-            .note_updates
+            .note_updates()
             .updated_output_notes()
             .find(|n| n.id() == erased_note_id)
             .expect("output note should be in the update");
@@ -2418,7 +2438,7 @@ mod tests {
 
         // A new input note record should be created with the network account as consumer.
         let input_note_update = update
-            .note_updates
+            .note_updates()
             .updated_input_notes()
             .find(|n| n.id() == Some(erased_note_id))
             .expect("input note should be created from the erased output note");

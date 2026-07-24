@@ -16,7 +16,7 @@ use miden_protocol::account::{
     StorageValuePatch,
 };
 use miden_protocol::block::{BlockHeader, BlockNumber};
-use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrPeaks};
+use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrPeaks, PartialMmr};
 use miden_protocol::errors::AccountPatchError;
 use miden_protocol::note::{NoteId, Nullifier};
 use miden_protocol::transaction::TransactionId;
@@ -31,18 +31,89 @@ use crate::transaction::{DiscardCause, TransactionRecord, TransactionStatus};
 // ================================================================================================
 
 /// Contains all information needed to apply the update in the store after syncing with the node.
-#[derive(Default)]
+///
+/// Immutable once built: [`StateSync::sync_state`](super::StateSync::sync_state) assembles the
+/// individual trackers and seals them into this type at the end of the sync pass. Use
+/// [`Self::from_parts`] to build one directly.
 pub struct StateSyncUpdate {
     /// The block number of the last block that was synced.
-    pub block_num: BlockNumber,
+    block_num: BlockNumber,
     /// New blocks, authentication nodes and MMR peaks.
-    pub partial_blockchain_updates: PartialBlockchainUpdates,
+    partial_blockchain_updates: PartialBlockchainUpdates,
     /// New and updated notes to be upserted in the store.
-    pub note_updates: NoteUpdateTracker,
+    note_updates: NoteUpdateTracker,
     /// Committed and discarded transactions after the sync.
-    pub transaction_updates: TransactionUpdateTracker,
+    transaction_updates: TransactionUpdateTracker,
     /// Public account updates and mismatched private accounts after the sync.
-    pub account_updates: AccountUpdates,
+    account_updates: AccountUpdates,
+}
+
+impl StateSyncUpdate {
+    /// Assembles an update from its constituent parts, mirroring [`Self::into_parts`].
+    ///
+    /// The parts are stored as given: no validation or minimization is applied. In particular,
+    /// blockchain updates for blocks whose notes are all spent are kept as-is —
+    /// [`StateSync::sync_state`](super::StateSync::sync_state) strips those before assembling
+    /// the update it returns.
+    pub fn from_parts(
+        block_num: BlockNumber,
+        partial_blockchain_updates: PartialBlockchainUpdates,
+        note_updates: NoteUpdateTracker,
+        transaction_updates: TransactionUpdateTracker,
+        account_updates: AccountUpdates,
+    ) -> Self {
+        Self {
+            block_num,
+            partial_blockchain_updates,
+            note_updates,
+            transaction_updates,
+            account_updates,
+        }
+    }
+
+    /// Returns the block number of the last synced block.
+    pub fn block_num(&self) -> BlockNumber {
+        self.block_num
+    }
+
+    /// Returns the partial blockchain updates.
+    pub fn partial_blockchain_updates(&self) -> &PartialBlockchainUpdates {
+        &self.partial_blockchain_updates
+    }
+
+    /// Returns the note updates.
+    pub fn note_updates(&self) -> &NoteUpdateTracker {
+        &self.note_updates
+    }
+
+    /// Returns the transaction updates.
+    pub fn transaction_updates(&self) -> &TransactionUpdateTracker {
+        &self.transaction_updates
+    }
+
+    /// Returns the account updates.
+    pub fn account_updates(&self) -> &AccountUpdates {
+        &self.account_updates
+    }
+
+    /// Decomposes this update into its constituent parts.
+    pub fn into_parts(
+        self,
+    ) -> (
+        BlockNumber,
+        PartialBlockchainUpdates,
+        NoteUpdateTracker,
+        TransactionUpdateTracker,
+        AccountUpdates,
+    ) {
+        (
+            self.block_num,
+            self.partial_blockchain_updates,
+            self.note_updates,
+            self.transaction_updates,
+            self.account_updates,
+        )
+    }
 }
 
 impl From<&StateSyncUpdate> for SyncSummary {
@@ -156,11 +227,68 @@ impl PartialBlockchainUpdates {
         self.block_headers.values()
     }
 
+    /// Returns block headers that need to be persisted for this update.
+    pub fn block_headers_to_store(
+        &self,
+        sync_height: BlockNumber,
+    ) -> impl Iterator<Item = &(BlockHeader, bool)> {
+        self.block_headers.values().filter(move |(header, has_client_notes)| {
+            *has_client_notes
+                || header.block_num() == BlockNumber::GENESIS
+                || header.block_num() == sync_height
+        })
+    }
+
     /// Returns the new authentication nodes that are meant to be stored in order to authenticate
     /// block headers.
     pub fn new_authentication_nodes(&self) -> &[(InOrderIndex, Word)] {
         &self.new_authentication_nodes
     }
+
+    /// Untracks note blocks that are not in `live_blocks`: clears their `has_client_notes` flag,
+    /// untracks their leaves from `partial_mmr`, and drops the authentication nodes that no
+    /// remaining tracked leaf needs.
+    pub(super) fn untrack_irrelevant_note_blocks(
+        &mut self,
+        live_blocks: &BTreeSet<BlockNumber>,
+        partial_mmr: &mut PartialMmr,
+    ) {
+        let blocks_to_untrack: Vec<BlockNumber> = self
+            .block_headers
+            .iter_mut()
+            .filter_map(|(block_num, (_, has_client_notes))| {
+                if *has_client_notes && !live_blocks.contains(block_num) {
+                    *has_client_notes = false;
+                    Some(*block_num)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let removed_nodes: BTreeSet<InOrderIndex> =
+            untrack_blocks(partial_mmr, blocks_to_untrack.into_iter().map(|b| b.as_usize()))
+                .into_iter()
+                .collect();
+        self.new_authentication_nodes
+            .retain(|(index, _)| !removed_nodes.contains(index));
+    }
+}
+
+/// Untracks the given block leaves from `partial_mmr`, returning the authentication-node indices
+/// that are no longer needed by any remaining tracked leaf.
+///
+/// Untracking a leaf frees an inner node only once no other tracked leaf still needs it, so the
+/// returned indices are exactly the nodes that became removable.
+pub(crate) fn untrack_blocks(
+    partial_mmr: &mut PartialMmr,
+    block_positions: impl IntoIterator<Item = usize>,
+) -> Vec<InOrderIndex> {
+    block_positions
+        .into_iter()
+        .flat_map(|block_pos| partial_mmr.untrack(block_pos))
+        .map(|(index, _)| index)
+        .collect()
 }
 
 /// Contains transaction changes to apply to the store.

@@ -365,6 +365,18 @@ impl NoteUpdateTracker {
         input_note_unspent_nullifiers.chain(output_note_unspent_nullifiers)
     }
 
+    /// Returns the block numbers containing input notes that remain unspent after this update.
+    pub(crate) fn unspent_input_note_block_numbers(
+        &self,
+    ) -> impl Iterator<Item = BlockNumber> + '_ {
+        self.input_notes
+            .values()
+            .filter(|update| !update.inner().is_consumed())
+            .filter_map(|update| {
+                update.inner().inclusion_proof().map(|proof| proof.location().block_num())
+            })
+    }
+
     /// Appends nullifiers to the per-account ordered nullifier list.
     ///
     /// Nullifiers from the same account must be in execution order; ordering across different

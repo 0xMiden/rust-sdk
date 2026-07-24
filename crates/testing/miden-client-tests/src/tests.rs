@@ -2159,6 +2159,171 @@ async fn get_consumable_notes() {
     }
 }
 
+/// A note script that only the account whose ID is in the note's storage can consume. It is not a
+/// standard note script and its consumability cannot be determined statically, so the screener
+/// falls back to a trial transaction per (account, note) pair, which is the path the
+/// execution-input cache serves. Being account-bound, its verdict differs per tracked account, so
+/// serving one account's execution inputs for another changes the screening result.
+const TARGET_BOUND_NOTE_SCRIPT: &str = r#"
+    use miden::protocol::active_account
+    use miden::protocol::account_id
+    use miden::protocol::active_note
+
+    @note_script
+    pub proc main
+        # drop the note arguments
+        dropw
+
+        # write the note storage to memory starting at address 0
+        push.0 exec.active_note::get_storage
+        # => [num_storage_items]
+
+        # this script expects exactly the 2 storage items of an account id (suffix, prefix)
+        eq.2 assert.err="target-bound note expects exactly 2 storage items"
+        # => []
+
+        # address 0 holds the suffix and address 1 the prefix, so load the prefix first to leave
+        # [suffix, prefix] on the stack
+        mem_load.1 mem_load.0
+        # => [target_account_id_suffix, target_account_id_prefix]
+
+        exec.active_account::get_id
+        # => [account_id_suffix, account_id_prefix, target_suffix, target_prefix]
+
+        exec.account_id::eq assert.err="consumer is not the note's target account"
+        # => []
+    end
+"#;
+
+/// Screens committed notes that only one of the three tracked accounts can consume, so the
+/// screening result depends on which account's state each trial execution runs against. The
+/// execution inputs memoized across the pass must therefore stay separated per account: serving
+/// one account's inputs for another changes which accounts are reported as able to consume.
+#[tokio::test]
+async fn note_screening_reports_only_the_account_bound_by_the_note() {
+    use std::collections::BTreeSet;
+
+    use miden_client::note::Note;
+    use miden_client::store::InputNoteRecord;
+    use miden_client::store::input_note_states::CommittedNoteState;
+    use miden_protocol::account::AccountId;
+    use miden_protocol::crypto::merkle::SparseMerklePath;
+    use miden_protocol::note::{NoteDetails, NoteId, NoteInclusionProof};
+
+    const NOTE_COUNT: usize = 3;
+
+    let (mut client, _mock_rpc_api, authenticator) = Box::pin(create_test_client()).await;
+
+    let (first_wallet, _second_wallet, faucet) = setup_two_wallets_and_faucet(
+        &mut client,
+        AccountType::Private,
+        &authenticator,
+        RPO_FALCON_SCHEME_ID,
+    )
+    .await
+    .unwrap();
+
+    let target = first_wallet.id();
+    let faucet_id = faucet.id();
+
+    let script = client.code_builder().compile_note_script(TARGET_BOUND_NOTE_SCRIPT).unwrap();
+
+    // Screening an unauthenticated note does not verify the inclusion proof, so a dummy proof and
+    // an empty block note root are enough to make the records committed.
+    let block_num = client.get_sync_height().await.unwrap();
+    let dummy_proof = NoteInclusionProof::new(block_num, 0, SparseMerklePath::default()).unwrap();
+
+    let mut records = Vec::with_capacity(NOTE_COUNT);
+    let mut expected_ids = BTreeSet::new();
+    for i in 0..NOTE_COUNT {
+        let note = NoteBuilder::new(
+            faucet_id,
+            RandomCoin::new([i as u64, 0, 0, 0].map(Felt::new_unchecked).into()),
+        )
+        .script(script.clone())
+        .note_storage([target.suffix(), target.prefix().as_felt()])
+        .unwrap()
+        .build()
+        .unwrap();
+        expected_ids.insert(note.id());
+
+        let metadata = *note.metadata();
+        let attachments = note.attachments().clone();
+        let details = NoteDetails::from(note);
+        let state = CommittedNoteState {
+            metadata,
+            inclusion_proof: dummy_proof.clone(),
+            block_note_root: EMPTY_WORD,
+        }
+        .into();
+        records.push(InputNoteRecord::new(details, attachments, None, state));
+    }
+    client.test_store().upsert_input_notes(&records).await.unwrap();
+
+    let notes = records
+        .into_iter()
+        .map(TryInto::try_into)
+        .collect::<Result<Vec<Note>, _>>()
+        .unwrap();
+
+    let screened = Box::pin(client.note_screener().can_consume_batch(&notes)).await.unwrap();
+
+    assert_eq!(screened.keys().copied().collect::<BTreeSet<NoteId>>(), expected_ids);
+    for relevances in screened.values() {
+        let accounts: Vec<AccountId> = relevances.iter().map(|(id, _)| *id).collect();
+        assert_eq!(accounts, vec![target]);
+    }
+}
+
+/// Reads transaction inputs straight from the data store the screener runs its trial executions
+/// against, without going through a screening pass.
+///
+/// Checks the properties the memoization depends on: a cache miss serves what a plain store read
+/// would have returned, a repeated read is served from the cache rather than from the store
+/// (observable as a stale read after the account state changes in the store), and entries stay
+/// separated per account so one account never receives another's state.
+#[tokio::test]
+async fn execution_input_cache_matches_uncached_reads() {
+    use miden_client::testing::{ClientDataStore, DataStore};
+
+    let (mut client, _mock_rpc_api, authenticator) = Box::pin(create_test_client()).await;
+
+    let (first_wallet, second_wallet, _faucet) = setup_two_wallets_and_faucet(
+        &mut client,
+        AccountType::Private,
+        &authenticator,
+        RPO_FALCON_SCHEME_ID,
+    )
+    .await
+    .unwrap();
+
+    let first = first_wallet.id();
+    let second = second_wallet.id();
+
+    let blocks = BTreeSet::from([client.get_sync_height().await.unwrap()]);
+    let store = client.test_store().clone();
+    let rpc_api = client.test_rpc_api().clone();
+
+    let cached = ClientDataStore::new(store.clone(), rpc_api.clone()).with_execution_input_cache();
+    let uncached = ClientDataStore::new(store.clone(), rpc_api);
+
+    let miss = cached.get_transaction_inputs(first, blocks.clone()).await.unwrap();
+    let fresh = uncached.get_transaction_inputs(first, blocks.clone()).await.unwrap();
+    assert_eq!(miss, fresh);
+
+    let mut account = client.get_account(first).await.unwrap().unwrap();
+    account.increment_nonce(ONE).unwrap();
+    store.update_account(&account).await.unwrap();
+
+    let hit = cached.get_transaction_inputs(first, blocks.clone()).await.unwrap();
+    let updated = uncached.get_transaction_inputs(first, blocks.clone()).await.unwrap();
+    assert_ne!(updated, miss);
+    assert_eq!(hit, miss);
+
+    let other = cached.get_transaction_inputs(second, blocks).await.unwrap();
+    assert_eq!(other.0.id(), second);
+}
+
 #[tokio::test]
 async fn get_output_notes() {
     let (mut client, mock_rpc_api, authenticator) = Box::pin(create_test_client()).await;

@@ -18,6 +18,11 @@
 * [BREAKING][param][store] `Store::insert_block_header` now takes a `nodes` argument and persists the header with its MMR authentication nodes in a single transaction; the standalone `Store::insert_partial_blockchain_nodes` is removed. Header-only inserts (e.g. genesis) pass an empty slice ([#2294](https://github.com/0xMiden/rust-sdk/pull/2294)).
 * [BREAKING][rust] Removed `Client::fetch_all_private_notes`. The automatic per-tag backfill on sync replaces it, so callers no longer reset the cursor and re-fetch every tag after adding a tag or importing an account. ([#2258](https://github.com/0xMiden/rust-sdk/issues/2258))
 * [BREAKING][behavior][store] The `ConsumedExternal` note-metadata layout added in [#2308](https://github.com/0xMiden/rust-sdk/pull/2308) is now the only supported serialized format. The backward-compatible decoding of the older metadata-less layout is removed, so existing stores are not compatible and must be recreated ([#2313](https://github.com/0xMiden/rust-sdk/pull/2313)).
+* [BREAKING][rust] `From<InputNoteRecord> for NoteDetails` is now `TryFrom`, since the header-only records introduced by the new `ConsumedExternalErased` state carry no note details ([#2293](https://github.com/0xMiden/rust-sdk/pull/2293)).
+
+### Features
+
+* [FEATURE][rust] `InputNoteReader` now returns the erased notes a followed account consumed, surfaced as header-only records in the new `InputNoteState::ConsumedExternalErased` state ([#2293](https://github.com/0xMiden/miden-client/pull/2293)).
 
 ### Features
 

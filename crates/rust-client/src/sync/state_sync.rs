@@ -640,7 +640,12 @@ impl StateSync {
                 .apply_output_note_inclusion_proofs(&transaction.output_notes)?;
 
             // Detect output notes erased by same-batch note erasure.
-            Self::mark_erased_notes_as_consumed(state_sync_update, transaction);
+            Self::mark_erased_output_notes_as_consumed(state_sync_update, transaction);
+
+            // Record notes consumed by this tracked account that the client only learns about from
+            // the consuming transaction's unauthenticated input commitments (typically erased notes
+            // it never created or discovered).
+            Self::record_consumed_unauthenticated_input_notes(state_sync_update, transaction);
         }
 
         Ok(())
@@ -651,7 +656,7 @@ impl StateSync {
     /// When a note is created and consumed in the same batch, note erasure removes it from
     /// the block body. The node reports these as erased output notes in the transaction
     /// record (note ID only, no inclusion proof). We mark them as consumed.
-    fn mark_erased_notes_as_consumed(
+    fn mark_erased_output_notes_as_consumed(
         state_sync_update: &mut StateSyncUpdate,
         transaction: &RpcTransactionRecord,
     ) {
@@ -660,6 +665,25 @@ impl StateSync {
             let _ = state_sync_update
                 .note_updates
                 .mark_erased_note_as_consumed(note_header, transaction.block_num);
+        }
+    }
+
+    /// Records header-bearing input commitments from a tracked account's transaction.
+    ///
+    /// Header-bearing commitments are unauthenticated inputs; the transaction's account is their
+    /// consumer. The note's header travels with the commitment, so the consumption can be recorded
+    /// even when the client never held the note's details.
+    fn record_consumed_unauthenticated_input_notes(
+        state_sync_update: &mut StateSyncUpdate,
+        transaction: &RpcTransactionRecord,
+    ) {
+        let consumer = transaction.transaction_header.account_id();
+        for commitment in transaction.transaction_header.input_notes().iter() {
+            state_sync_update.note_updates.insert_consumed_unauthenticated_note(
+                commitment,
+                consumer,
+                transaction.block_num,
+            );
         }
     }
 

@@ -199,7 +199,7 @@ async fn get_input_note() {
     let note: InputNoteRecord = original_note.clone().into();
     client
         .import_notes(&[NoteFile::ExpectedNote {
-            details: note.clone().into(),
+            details: note.clone().try_into().expect("note record carries full details"),
             sync_hint: NoteSyncHint::new(0.into(), note.metadata().unwrap().tag()),
         }])
         .await

@@ -17,6 +17,7 @@ pub use miden_tx::utils::serde::{
 mod committed;
 mod consumed_authenticated_local;
 mod consumed_external;
+mod consumed_external_erased;
 mod consumed_unauthenticated_local;
 mod expected;
 mod invalid;
@@ -27,6 +28,7 @@ mod unverified;
 pub use committed::CommittedNoteState;
 pub use consumed_authenticated_local::ConsumedAuthenticatedLocalNoteState;
 pub use consumed_external::ConsumedExternalNoteState;
+pub use consumed_external_erased::ConsumedExternalErasedNoteState;
 pub use consumed_unauthenticated_local::ConsumedUnauthenticatedLocalNoteState;
 pub use expected::ExpectedNoteState;
 pub use invalid::InvalidNoteState;
@@ -58,6 +60,9 @@ pub enum InputNoteState {
     ConsumedUnauthenticatedLocal(ConsumedUnauthenticatedLocalNoteState),
     /// Note consumed by a transaction not submitted by this client and confirmed by the network.
     ConsumedExternal(ConsumedExternalNoteState),
+    /// Note consumed by a transaction not submitted by this client, known only by the header
+    /// carried on the consuming transaction (typically an erased note).
+    ConsumedExternalErased(ConsumedExternalErasedNoteState),
 }
 
 impl InputNoteState {
@@ -70,6 +75,7 @@ impl InputNoteState {
     pub const STATE_CONSUMED_AUTHENTICATED_LOCAL: u8 = 6;
     pub const STATE_CONSUMED_UNAUTHENTICATED_LOCAL: u8 = 7;
     pub const STATE_CONSUMED_EXTERNAL: u8 = 8;
+    pub const STATE_CONSUMED_EXTERNAL_ERASED: u8 = 9;
 
     /// Returns the inner state handler that implements state transitions.
     fn inner(&self) -> &dyn NoteStateHandler {
@@ -83,6 +89,7 @@ impl InputNoteState {
             InputNoteState::ConsumedAuthenticatedLocal(inner) => inner,
             InputNoteState::ConsumedUnauthenticatedLocal(inner) => inner,
             InputNoteState::ConsumedExternal(inner) => inner,
+            InputNoteState::ConsumedExternalErased(inner) => inner,
         }
     }
 
@@ -102,6 +109,7 @@ impl InputNoteState {
                 Self::STATE_CONSUMED_UNAUTHENTICATED_LOCAL
             },
             InputNoteState::ConsumedExternal(_) => Self::STATE_CONSUMED_EXTERNAL,
+            InputNoteState::ConsumedExternalErased(_) => Self::STATE_CONSUMED_EXTERNAL_ERASED,
         }
     }
 
@@ -123,6 +131,7 @@ impl InputNoteState {
             InputNoteState::ConsumedAuthenticatedLocal(s) => Some(s.nullifier_block_height),
             InputNoteState::ConsumedUnauthenticatedLocal(s) => Some(s.nullifier_block_height),
             InputNoteState::ConsumedExternal(s) => Some(s.nullifier_block_height),
+            InputNoteState::ConsumedExternalErased(s) => Some(s.nullifier_block_height),
             _ => None,
         }
     }
@@ -134,6 +143,7 @@ impl InputNoteState {
             InputNoteState::ConsumedAuthenticatedLocal(s) => s.consumed_tx_order,
             InputNoteState::ConsumedUnauthenticatedLocal(s) => s.consumed_tx_order,
             InputNoteState::ConsumedExternal(s) => s.consumed_tx_order,
+            InputNoteState::ConsumedExternalErased(s) => s.consumed_tx_order,
             _ => None,
         }
     }
@@ -145,6 +155,7 @@ impl InputNoteState {
             InputNoteState::ConsumedAuthenticatedLocal(s) => s.consumed_tx_order = order,
             InputNoteState::ConsumedUnauthenticatedLocal(s) => s.consumed_tx_order = order,
             InputNoteState::ConsumedExternal(s) => s.consumed_tx_order = order,
+            InputNoteState::ConsumedExternalErased(s) => s.consumed_tx_order = order,
             _ => {},
         }
     }
@@ -217,6 +228,7 @@ impl Serializable for InputNoteState {
             InputNoteState::ConsumedAuthenticatedLocal(inner) => inner.write_into(target),
             InputNoteState::ConsumedUnauthenticatedLocal(inner) => inner.write_into(target),
             InputNoteState::ConsumedExternal(inner) => inner.write_into(target),
+            InputNoteState::ConsumedExternalErased(inner) => inner.write_into(target),
         }
     }
 }
@@ -243,6 +255,9 @@ impl Deserializable for InputNoteState {
             },
             Self::STATE_CONSUMED_EXTERNAL => {
                 Ok(ConsumedExternalNoteState::read_from(source)?.into())
+            },
+            Self::STATE_CONSUMED_EXTERNAL_ERASED => {
+                Ok(ConsumedExternalErasedNoteState::read_from(source)?.into())
             },
             _ => Err(DeserializationError::InvalidValue(format!(
                 "Invalid NoteState discriminant: {discriminant}"
@@ -330,6 +345,17 @@ impl Display for InputNoteState {
                     )
                 } else {
                     write!(f, "Consumed (at block {})", state.nullifier_block_height)
+                }
+            },
+            InputNoteState::ConsumedExternalErased(state) => {
+                if let Some(account) = state.consumer_account {
+                    write!(
+                        f,
+                        "Consumed (header only, at block {} by tracked account {})",
+                        state.nullifier_block_height, account
+                    )
+                } else {
+                    write!(f, "Consumed (header only, at block {})", state.nullifier_block_height)
                 }
             },
         }

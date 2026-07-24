@@ -2698,6 +2698,72 @@ async fn swap_chain_test() {
     assert_eq!(last_wallet_balance, AssetAmount::new(1).unwrap());
 }
 
+#[tokio::test]
+async fn swap_public_payback_test() {
+    let (mut client, mock_rpc_api, keystore) = create_test_client().await;
+
+    let (wallet_a, faucet_a) =
+        setup_wallet_and_faucet(&mut client, AccountType::Private, &keystore, RPO_FALCON_SCHEME_ID)
+            .await
+            .unwrap();
+    mint_and_consume(&mut client, wallet_a.id(), faucet_a.id(), NoteType::Private).await;
+    mock_rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+
+    let (wallet_b, faucet_b) =
+        setup_wallet_and_faucet(&mut client, AccountType::Private, &keystore, RPO_FALCON_SCHEME_ID)
+            .await
+            .unwrap();
+    mint_and_consume(&mut client, wallet_b.id(), faucet_b.id(), NoteType::Private).await;
+    mock_rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+
+    // wallet_a offers asset_a and requests asset_b, with PUBLIC payback.
+    let tx_request = TransactionRequestBuilder::new()
+        .build_swap(
+            &SwapTransactionData::new(
+                wallet_a.id(),
+                Asset::Fungible(FungibleAsset::new(faucet_a.id(), 1).unwrap()),
+                Asset::Fungible(FungibleAsset::new(faucet_b.id(), 1).unwrap()),
+            ),
+            NoteType::Private,
+            NoteType::Public,
+            client.rng(),
+        )
+        .unwrap();
+
+    let swap_note = tx_request.expected_output_own_notes()[0].clone();
+    let payback_commitment = tx_request.expected_future_notes().next().unwrap().0.commitment();
+    Box::pin(client.submit_new_transaction(wallet_a.id(), tx_request))
+        .await
+        .unwrap();
+    mock_rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+
+    // wallet_b consumes the swap, producing a public P2ID payback to wallet_a with no off-band
+    // data.
+    let tx_request = TransactionRequestBuilder::new().build_consume_notes(vec![swap_note]).unwrap();
+    Box::pin(client.submit_new_transaction(wallet_b.id(), tx_request))
+        .await
+        .unwrap();
+    mock_rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+
+    // The payback note's committed metadata must show it was emitted as a public note.
+    let payback_record = client
+        .get_input_notes(NoteFilter::DetailsCommitments(vec![payback_commitment]))
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(payback_record.metadata().unwrap().note_type(), NoteType::Public);
+
+    // wallet_b ended up with asset_a, wallet_a will receive asset_b via the public payback note.
+    let wallet_b_balance =
+        client.account_reader(wallet_b.id()).get_balance(faucet_a.id()).await.unwrap();
+    assert_eq!(wallet_b_balance, AssetAmount::new(1).unwrap());
+}
+
 /// Tests that partial output notes (created when a SWAP note is consumed) are correctly included in
 /// `NoteFilter::Unspent` and receive inclusion proofs during sync, transitioning from
 /// `ExpectedPartial` to `CommittedPartial` state.
@@ -2751,9 +2817,10 @@ async fn partial_output_note_receives_inclusion_proof_after_sync() {
     mock_rpc_api.prove_block();
     client.sync_state().await.unwrap();
 
-    // Wallet B consumes the SWAP note. The SWAP script creates a payback note for wallet A using
-    // only the recipient digest committed inside the SWAP note. From the VM's perspective this
-    // payback note is an OutputNote::Partial, which gets stored as ExpectedPartial.
+    // Wallet B consumes the SWAP note. The SWAP script derives the payback recipient at consume
+    // time (P2ID to the creator with serial = SWAP_serial with element 0 + 1) and emits the
+    // payback note. From the VM's perspective this payback note is an OutputNote::Partial, which
+    // gets stored as ExpectedPartial.
     let consume_tx_request =
         TransactionRequestBuilder::new().build_consume_notes(vec![swap_note]).unwrap();
 

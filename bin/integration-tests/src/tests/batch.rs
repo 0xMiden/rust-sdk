@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use miden_client::Felt;
 use miden_client::account::AccountType;
-use miden_client::asset::{Asset, FungibleAsset};
+use miden_client::asset::{Asset, AssetAmount, FungibleAsset};
 use miden_client::auth::RPO_FALCON_SCHEME_ID;
 use miden_client::note::NoteType;
 use miden_client::store::TransactionFilter;
@@ -146,7 +146,7 @@ pub async fn test_batch_builder_submits_two_p2id_on_one_account(
 
     assert_eq!(
         sender_balance,
-        MINT_AMOUNT - (TRANSFER_AMOUNT * 2),
+        AssetAmount::new(MINT_AMOUNT - (TRANSFER_AMOUNT * 2)).unwrap(),
         "sender balance should have decreased by exactly 2 * TRANSFER_AMOUNT — this proves \
          BatchBuilder stacked account state correctly between pushes"
     );
@@ -287,12 +287,12 @@ pub async fn test_batch_builder_multiple_accounts(client_config: ClientConfig) -
 
     assert_eq!(
         a_balance,
-        MINT_AMOUNT - TRANSFER_AMOUNT,
+        AssetAmount::new(MINT_AMOUNT - TRANSFER_AMOUNT).unwrap(),
         "A's balance should be MINT_AMOUNT - TRANSFER_AMOUNT after sending"
     );
     assert_eq!(
         b_balance,
-        MINT_AMOUNT + TRANSFER_AMOUNT,
+        AssetAmount::new(MINT_AMOUNT + TRANSFER_AMOUNT).unwrap(),
         "B's balance should be MINT_AMOUNT + TRANSFER_AMOUNT after consuming the in-batch note"
     );
 
@@ -432,12 +432,12 @@ pub async fn test_batch_builder_interleaved_pushes(client_config: ClientConfig) 
 
     assert_eq!(
         a_balance,
-        MINT_AMOUNT - (TRANSFER_AMOUNT * 2),
+        AssetAmount::new(MINT_AMOUNT - (TRANSFER_AMOUNT * 2)).unwrap(),
         "A's balance should reflect two outbound P2ID notes"
     );
     assert_eq!(
         b_balance,
-        MINT_AMOUNT - TRANSFER_AMOUNT,
+        AssetAmount::new(MINT_AMOUNT - TRANSFER_AMOUNT).unwrap(),
         "B's balance should reflect one outbound P2ID note"
     );
 

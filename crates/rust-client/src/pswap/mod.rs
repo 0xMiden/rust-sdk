@@ -106,7 +106,7 @@ impl TransactionObserver for PswapTransactionObserver {
                     tag: PswapNote::create_tag(
                         pswap.note_type(),
                         pswap.offered_asset(),
-                        pswap.storage().requested_asset(),
+                        pswap.storage().min_requested_asset(),
                     ),
                     source: NoteTagSource::Subscription(record.original_note_id.as_word()),
                 })

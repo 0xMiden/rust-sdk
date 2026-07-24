@@ -4,9 +4,10 @@ use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use core::num::NonZeroU16;
 
 use miden_protocol::Word;
-use miden_protocol::account::AccountId;
+use miden_protocol::account::{AccountCodeInterface, AccountId};
 use miden_protocol::asset::{Asset, NonFungibleAsset};
 use miden_protocol::crypto::merkle::MerkleError;
 use miden_protocol::crypto::merkle::store::MerkleStore;
@@ -31,8 +32,8 @@ use miden_protocol::note::{
 };
 use miden_protocol::transaction::{InputNote, InputNotes, TransactionArgs, TransactionScript};
 use miden_protocol::vm::AdviceMap;
-use miden_standards::account::interface::{AccountInterface, AccountInterfaceError};
 use miden_standards::errors::CodeBuilderError;
+use miden_standards::tx_script::{SendNotesTransactionScript, SendNotesTransactionScriptError};
 use miden_tx::utils::serde::{
     ByteReader,
     ByteWriter,
@@ -339,14 +340,20 @@ impl TransactionRequest {
     /// [`Client::code_builder`](crate::Client::code_builder)).
     pub(crate) fn build_transaction_script(
         &self,
-        account_interface: &AccountInterface,
+        code_interface: &AccountCodeInterface,
     ) -> Result<Option<TransactionScript>, TransactionRequestError> {
         match &self.script_template {
             Some(TransactionScriptTemplate::CustomScript(script)) => Ok(Some(script.clone())),
             Some(TransactionScriptTemplate::SendNotes(notes)) => {
-                // TODO: We could pass `SourceManager` to this call, but it needs to be supported
-                // in the protocol struct (however, this should also not fail to build often)
-                Ok(Some(account_interface.build_send_notes_script(notes, self.expiration_delta)?))
+                let script = match self.expiration_delta.and_then(NonZeroU16::new) {
+                    Some(delta) => SendNotesTransactionScript::with_expiration_delta(
+                        code_interface,
+                        notes,
+                        delta,
+                    )?,
+                    None => SendNotesTransactionScript::new(code_interface, notes)?,
+                };
+                Ok(Some(script.into()))
             },
             None => Ok(None),
         }
@@ -481,14 +488,16 @@ impl Default for TransactionRequestBuilder {
 // Errors related to a [TransactionRequest]
 #[derive(Debug, Error)]
 pub enum TransactionRequestError {
-    #[error("account interface error")]
-    AccountInterfaceError(#[from] AccountInterfaceError),
+    #[error("failed to build the send-notes transaction script")]
+    SendNotesTransactionScriptError(#[from] SendNotesTransactionScriptError),
     #[error("account error")]
     AccountError(#[from] AccountError),
     #[error("asset error")]
     AssetError(#[from] AssetError),
     #[error("duplicate input note: note {0} was added more than once to the transaction")]
     DuplicateInputNote(NoteId),
+    #[error("transaction expiration delta must be greater than zero")]
+    ZeroExpirationDelta,
     #[error(
         "the account proof does not contain the required foreign account data; re-fetch the proof and retry"
     )]
@@ -567,14 +576,14 @@ mod tests {
     };
     use miden_protocol::asset::FungibleAsset;
     use miden_protocol::crypto::rand::{FeltRng, RandomCoin};
-    use miden_protocol::note::{NoteAttachments, NoteTag, NoteType};
+    use miden_protocol::note::{NoteTag, NoteType};
     use miden_protocol::testing::account_id::{
         ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET,
         ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE,
         ACCOUNT_ID_SENDER,
     };
     use miden_protocol::{EMPTY_WORD, Felt, Word};
-    use miden_standards::account::auth::AuthSingleSig;
+    use miden_standards::account::auth::{Approver, AuthSingleSig};
     use miden_standards::note::P2idNote;
     use miden_standards::testing::account_component::MockAccountComponent;
     use miden_tx::utils::serde::{Deserializable, Serializable};
@@ -586,10 +595,10 @@ mod tests {
     #[test]
     fn transaction_request_serialization() {
         assert_transaction_request_serialization_with(|| {
-            AuthSingleSig::new(
+            AuthSingleSig::new(Approver::new(
                 PublicKeyCommitment::from(EMPTY_WORD),
                 AuthScheme::Falcon512Poseidon2,
-            )
+            ))
             .into()
         });
     }
@@ -597,8 +606,11 @@ mod tests {
     #[test]
     fn transaction_request_serialization_ecdsa() {
         assert_transaction_request_serialization_with(|| {
-            AuthSingleSig::new(PublicKeyCommitment::from(EMPTY_WORD), AuthScheme::EcdsaK256Keccak)
-                .into()
+            AuthSingleSig::new(Approver::new(
+                PublicKeyCommitment::from(EMPTY_WORD),
+                AuthScheme::EcdsaK256Keccak,
+            ))
+            .into()
         });
     }
 
@@ -614,16 +626,15 @@ mod tests {
 
         let mut notes = vec![];
         for i in 0..6 {
-            let note = P2idNote::create(
-                sender_id,
-                target_id,
-                vec![FungibleAsset::new(faucet_id, 100 + i).unwrap().into()],
-                NoteType::Private,
-                NoteAttachments::empty(),
-                &mut rng,
-            )
-            .unwrap();
-            notes.push(note);
+            let note = P2idNote::builder()
+                .sender(sender_id)
+                .target(target_id)
+                .assets(vec![FungibleAsset::new(faucet_id, 100 + i).unwrap()])
+                .note_type(NoteType::Private)
+                .generate_serial_number(&mut rng)
+                .build()
+                .expect("note creation failed");
+            notes.push(note.into());
         }
 
         let mut advice_vec: Vec<(Word, Vec<Felt>)> = vec![];

@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use miden_node_proto_build::rpc_api_descriptor;
+use miden_node_proto_build::{remote_prover_api_descriptor, rpc_api_descriptor};
 use miden_note_transport_proto_build::mnt_api_descriptor;
 use miette::IntoDiagnostic;
 
@@ -9,11 +9,15 @@ const RPC_STD_DIR: &str = "rpc/std";
 const RPC_NOSTD_DIR: &str = "rpc/nostd";
 const NOTE_TRANSPORT_STD_DIR: &str = "note_transport/std";
 const NOTE_TRANSPORT_NOSTD_DIR: &str = "note_transport/nostd";
+const REMOTE_PROVER_STD_DIR: &str = "remote_prover/std";
+const REMOTE_PROVER_NOSTD_DIR: &str = "remote_prover/nostd";
 
 const RPC_STD_WRAPPER: &str = "rpc_std.rs";
 const RPC_NOSTD_WRAPPER: &str = "rpc_nostd.rs";
 const NOTE_TRANSPORT_STD_WRAPPER: &str = "note_transport_std.rs";
 const NOTE_TRANSPORT_NOSTD_WRAPPER: &str = "note_transport_nostd.rs";
+const REMOTE_PROVER_STD_WRAPPER: &str = "remote_prover_std.rs";
+const REMOTE_PROVER_NOSTD_WRAPPER: &str = "remote_prover_nostd.rs";
 
 fn main() -> miette::Result<()> {
     // Proto definitions come from build-dependency crates. Cargo automatically re-runs this
@@ -26,14 +30,48 @@ fn main() -> miette::Result<()> {
 
     compile_tonic_client_proto(&out_dir)?;
     compile_tonic_note_transport_proto(&out_dir)?;
+    compile_tonic_remote_prover_proto(&out_dir)?;
 
     replace_no_std_types_in_dir(&out_dir.join(RPC_NOSTD_DIR))?;
     replace_no_std_types_in_dir(&out_dir.join(NOTE_TRANSPORT_NOSTD_DIR))?;
+    replace_no_std_types_in_dir(&out_dir.join(REMOTE_PROVER_NOSTD_DIR))?;
 
     generate_wrapper(&out_dir, RPC_STD_DIR, RPC_STD_WRAPPER)?;
     generate_wrapper(&out_dir, RPC_NOSTD_DIR, RPC_NOSTD_WRAPPER)?;
     generate_wrapper(&out_dir, NOTE_TRANSPORT_STD_DIR, NOTE_TRANSPORT_STD_WRAPPER)?;
     generate_wrapper(&out_dir, NOTE_TRANSPORT_NOSTD_DIR, NOTE_TRANSPORT_NOSTD_WRAPPER)?;
+    generate_wrapper(&out_dir, REMOTE_PROVER_STD_DIR, REMOTE_PROVER_STD_WRAPPER)?;
+    generate_wrapper(&out_dir, REMOTE_PROVER_NOSTD_DIR, REMOTE_PROVER_NOSTD_WRAPPER)?;
+
+    Ok(())
+}
+
+// REMOTE PROVER CLIENT PROTO CODEGEN
+// ===============================================================================================
+
+/// Generates the Rust protobuf bindings for the remote prover client.
+fn compile_tonic_remote_prover_proto(out_dir: &Path) -> miette::Result<()> {
+    let file_descriptors = remote_prover_api_descriptor();
+
+    let std_out = out_dir.join(REMOTE_PROVER_STD_DIR);
+    let nostd_out = out_dir.join(REMOTE_PROVER_NOSTD_DIR);
+    fs::create_dir_all(&std_out).into_diagnostic()?;
+    fs::create_dir_all(&nostd_out).into_diagnostic()?;
+
+    // The `nostd` bindings target `wasm32`, where the transport is provided by
+    // `tonic-web-wasm-client`, so tonic's own transport codegen must be disabled.
+    tonic_prost_build::configure()
+        .build_transport(false)
+        .build_server(false)
+        .out_dir(&nostd_out)
+        .compile_fds_with_config(file_descriptors.clone(), tonic_prost_build::Config::new())
+        .into_diagnostic()?;
+
+    tonic_prost_build::configure()
+        .build_server(false)
+        .out_dir(&std_out)
+        .compile_fds_with_config(file_descriptors, tonic_prost_build::Config::new())
+        .into_diagnostic()?;
 
     Ok(())
 }
@@ -171,7 +209,8 @@ fn replace_no_std_types_in_dir(dir: &Path) -> miette::Result<()> {
             let content = fs::read_to_string(&path).into_diagnostic()?;
             let replaced = content
                 .replace("std::result", "core::result")
-                .replace("std::marker", "core::marker");
+                .replace("std::marker", "core::marker")
+                .replace("format!", "alloc::format!");
             fs::write(&path, replaced).into_diagnostic()?;
         }
     }

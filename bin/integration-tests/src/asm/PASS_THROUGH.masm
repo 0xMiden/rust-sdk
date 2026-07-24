@@ -1,5 +1,6 @@
 use miden::protocol::active_note
-use miden::protocol::output_note
+use miden::standards::wallets::basic as basic_wallet
+use miden::standards::note::note_creator
 
 # ERRORS
 # =================================================================================================
@@ -9,6 +10,10 @@ const ERR_PASS_THROUGH_WRONG_NUMBER_OF_STORAGE_ITEMS="wrong number of storage it
 
 #! PASS_THROUGH script:
 #! Creates a note consumable by pass-through, containing the same asset.
+#!
+#! Requires that the account exposes:
+#! - miden::standards::note::note_creator::create_note procedure.
+#! - miden::standards::wallets::basic::move_asset_to_note procedure.
 #!
 #! Inputs:  []
 #! Outputs: []
@@ -30,37 +35,43 @@ pub proc main
     # make sure the number of storage items is 14
     eq.14 assert.err=ERR_PASS_THROUGH_WRONG_NUMBER_OF_STORAGE_ITEMS
     # => [storage_ptr]
-
-    # Load in reverse order so after output_note::create we get [note_idx, ASSET_KEY, ASSET_VALUE]
-    # load ASSET_VALUE (deepest on stack)
     drop
-    padw mem_loadw_le.4
-    # => [ASSET_VALUE]
+    # => []
 
-    # load ASSET_KEY on top
-    padw mem_loadw_le.0
-    # => [ASSET_KEY, ASSET_VALUE]
+    # move the incoming note's assets into the account vault so they can be
+    # moved into the output note from the account context
+    exec.basic_wallet::add_assets_to_account
+    # => []
 
-    # load RECIPIENT on top
+    # pad the stack for the create_note call
+    padw padw push.0.0
+    # => [pad(10)]
+
+    # load RECIPIENT
     padw mem_loadw_le.8
-    # => [RECIPIENT, ASSET_KEY, ASSET_VALUE]
+    # => [RECIPIENT, pad(10)]
 
     # load note_type and tag from memory
     mem_load.12 mem_load.13
-    # => [tag, note_type, RECIPIENT, ASSET_KEY, ASSET_VALUE]
+    # => [tag, note_type, RECIPIENT, pad(10)]
 
-    # create a note using storage
-    # Inputs: [tag, note_type, RECIPIENT]
-    exec.output_note::create
-    # => [note_idx, ASSET_KEY, ASSET_VALUE]
+    # create a note using storage (note creation must originate from the account context)
+    call.note_creator::create_note
+    # => [note_idx, pad(15)]
 
-    # rearrange stack for add_asset which expects [ASSET_KEY, ASSET_VALUE, note_idx]
-    movdn.8
-    # => [ASSET_KEY, ASSET_VALUE, note_idx]
+    # keep note_idx, drop 8 pad elements above it
+    movdn.8 dropw dropw
+    # => [note_idx, pad(7)]
 
-    # add asset to the note
-    exec.output_note::add_asset
-    # => [...]
+    # load ASSET_VALUE and ASSET_KEY
+    padw mem_loadw_le.4
+    # => [ASSET_VALUE, note_idx, pad(7)]
+    padw mem_loadw_le.0
+    # => [ASSET_KEY, ASSET_VALUE, note_idx, pad(7)]
+
+    # move the asset from the account vault into the created note
+    call.basic_wallet::move_asset_to_note
+    # => [pad(16)]
 
     # clean stack
     dropw dropw dropw dropw

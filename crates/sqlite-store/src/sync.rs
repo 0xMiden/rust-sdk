@@ -7,14 +7,8 @@ use std::vec::Vec;
 use miden_client::Word;
 use miden_client::account::AccountId;
 use miden_client::note::{BlockNumber, NoteTag};
-use miden_client::store::{AccountSmtForest, AccountStorageFilter, StoreError};
-use miden_client::sync::{
-    NoteTagRecord,
-    NoteTagSource,
-    PublicAccountDelta,
-    PublicAccountUpdate,
-    StateSyncUpdate,
-};
+use miden_client::store::{AccountSmtForest, StoreError};
+use miden_client::sync::{NoteTagRecord, NoteTagSource, PublicAccountUpdate, StateSyncUpdate};
 use miden_client::utils::{Deserializable, Serializable};
 use rusqlite::{Connection, Transaction, params};
 
@@ -64,16 +58,12 @@ impl SqliteStore {
         conn: &mut Connection,
         tag: NoteTagRecord,
     ) -> Result<bool, StoreError> {
-        if Self::get_note_tags(conn)?.contains(&tag) {
-            return Ok(false);
-        }
-
         let tx = conn.transaction().into_store_error()?;
-        add_note_tag_tx(&tx, &tag)?;
+        let inserted = add_note_tag_tx(&tx, &tag)?;
 
         tx.commit().into_store_error()?;
 
-        Ok(true)
+        Ok(inserted)
     }
 
     pub(super) fn remove_note_tag(
@@ -145,21 +135,20 @@ impl SqliteStore {
             // Update notes
             apply_note_updates_tx(tx, &note_updates)?;
 
-            // Remove tags
+            // Remove tags of input notes whose inclusion settled in this sync (committed,
+            // consumed during catch-up, or invalidated): their tag no longer drives note sync.
+            // Metadata-less records are skipped; their tag (if any) cannot be reconstructed.
             let tags_to_remove = note_updates
                 .updated_input_notes()
                 .filter_map(|note_update| {
                     let note = note_update.inner();
-                    if note.is_committed() {
+                    if note.is_inclusion_pending() {
+                        None
+                    } else {
                         Some(NoteTagRecord {
-                            tag: note
-                                .metadata()
-                                .expect("Committed notes should have metadata")
-                                .tag(),
+                            tag: note.metadata()?.tag(),
                             source: NoteTagSource::Note(note.details_commitment()),
                         })
-                    } else {
-                        None
                     }
                 })
                 .collect::<Vec<_>>();
@@ -194,8 +183,8 @@ impl SqliteStore {
                     PublicAccountUpdate::Full(account) => {
                         Self::update_account_state(tx, smt_forest, account)?;
                     },
-                    PublicAccountUpdate::Delta(delta) => {
-                        Self::apply_public_account_delta(tx, smt_forest, delta)?;
+                    PublicAccountUpdate::Patch { new_header, patch } => {
+                        Self::apply_sync_account_patch(tx, smt_forest, new_header, patch)?;
                     },
                 }
             }
@@ -207,37 +196,20 @@ impl SqliteStore {
             Ok(())
         })
     }
-
-    /// Reads the local account state, derives the [`AccountDelta`] from `delta`'s incremental
-    /// payload, and applies it.
-    fn apply_public_account_delta(
-        tx: &Transaction<'_>,
-        smt_forest: &mut AccountSmtForest,
-        delta: &PublicAccountDelta,
-    ) -> Result<(), StoreError> {
-        let account_id = delta.id();
-        let local_header = Self::get_account_header(tx, account_id)?
-            .map(|(header, _)| header)
-            .ok_or(StoreError::AccountDataNotFound(account_id))?;
-        let local_storage = Self::get_account_storage(
-            tx,
-            account_id,
-            &AccountStorageFilter::SlotNames(delta.value_slot_names()),
-        )?;
-        let local_vault = Self::get_account_vault(tx, account_id)?;
-
-        let account_delta =
-            delta.compute_account_delta(&local_header, &local_storage, &local_vault)?;
-        Self::apply_sync_account_delta(tx, smt_forest, delta.new_header(), &account_delta)
-    }
 }
 
-pub(super) fn add_note_tag_tx(tx: &Transaction<'_>, tag: &NoteTagRecord) -> Result<(), StoreError> {
-    const QUERY: &str = insert_sql!(tags { tag, source });
-    tx.execute(QUERY, params![tag.tag.to_bytes(), tag.source.to_bytes()])
+/// Inserts the tag record, relying on the unique `(tag, source)` index for idempotency across
+/// concurrent connections. Returns whether a new row was inserted.
+pub(super) fn add_note_tag_tx(
+    tx: &Transaction<'_>,
+    tag: &NoteTagRecord,
+) -> Result<bool, StoreError> {
+    const QUERY: &str = insert_sql!(tags { tag, source } | IGNORE);
+    let inserted = tx
+        .execute(QUERY, params![tag.tag.to_bytes(), tag.source.to_bytes()])
         .into_store_error()?;
 
-    Ok(())
+    Ok(inserted > 0)
 }
 
 pub(super) fn remove_note_tag_tx(

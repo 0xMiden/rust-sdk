@@ -247,7 +247,7 @@ pub(crate) async fn apply_round(
                 tag: PswapNote::create_tag(
                     pswap.note_type(),
                     pswap.offered_asset(),
-                    pswap.storage().requested_asset(),
+                    pswap.storage().min_requested_asset(),
                 ),
                 source: NoteTagSource::Subscription(new_record.original_note_id.as_word()),
             })

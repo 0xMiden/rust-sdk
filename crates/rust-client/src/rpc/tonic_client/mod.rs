@@ -10,7 +10,13 @@ use miden_protocol::vm::FutureMaybeSend;
 
 type RpcFuture<T> = Pin<Box<dyn FutureMaybeSend<T>>>;
 
-use miden_protocol::account::{AccountCode, AccountId};
+use miden_protocol::account::{
+    AccountCode,
+    AccountId,
+    AccountVaultPatch,
+    StorageMapPatchEntries,
+    StorageSlotName,
+};
 use miden_protocol::address::NetworkId;
 use miden_protocol::batch::{ProposedBatch, ProvenBatch};
 use miden_protocol::block::account_tree::AccountWitness;
@@ -32,15 +38,15 @@ use super::domain::account::{
     GetAccountRequest,
     StorageMapFetch,
 };
-use super::domain::note::{CommittedNote, FetchedNote, NoteSyncBlock};
+use super::domain::note::{CommittedNote, FetchedNote, SyncNotesBlock};
 use super::domain::nullifier::NullifierUpdate;
 use super::generated::rpc::AccountRequest;
 use super::generated::rpc::account_request::AccountDetailRequest;
 use super::{Endpoint, NodeRpcClient, RpcEndpoint, RpcError, RpcStatusInfo};
-use crate::rpc::domain::account_vault::{AccountVaultInfo, AccountVaultUpdate};
+use crate::rpc::domain::account_vault::AccountVaultInfo;
 use crate::rpc::domain::limits::RpcLimits;
 use crate::rpc::domain::status::NetworkNoteStatusInfo;
-use crate::rpc::domain::storage_map::{StorageMapInfo, StorageMapUpdate};
+use crate::rpc::domain::storage_map::StorageMapInfo;
 use crate::rpc::domain::sync::{ChainMmrInfo, SyncTarget};
 use crate::rpc::domain::transaction::TransactionRecord;
 use crate::rpc::errors::node::parse_node_error;
@@ -178,6 +184,10 @@ fn ensure_requested_note_ids(
 // GRPC CLIENT
 // ================================================================================================
 
+/// Default maximum size (in bytes) of a decoded gRPC response the client will accept: 15% above
+/// tonic's built-in 4 MiB receive limit. See [`GrpcClient::with_max_decoding_message_size`].
+const DEFAULT_MAX_RESPONSE_SIZE_BYTES: usize = 4 * 1024 * 1024 * 115 / 100;
+
 /// Client for the Node RPC API using gRPC.
 ///
 /// If the `tonic` feature is enabled, this client will use a `tonic::transport::Channel` to
@@ -207,6 +217,9 @@ pub struct GrpcClient {
     /// gRPC call, alongside the standard `accept` header. Used when talking to an
     /// authenticating gateway in front of the node.
     bearer_token: Option<String>,
+    /// Maximum size (in bytes) of a decoded gRPC response the client will accept. Defaults to
+    /// [`DEFAULT_MAX_RESPONSE_SIZE_BYTES`].
+    max_decoding_message_size: usize,
 }
 
 impl GrpcClient {
@@ -222,6 +235,7 @@ impl GrpcClient {
             max_retries: retry::DEFAULT_MAX_RETRIES,
             retry_interval_ms: retry::DEFAULT_RETRY_INTERVAL_MS,
             bearer_token: None,
+            max_decoding_message_size: DEFAULT_MAX_RESPONSE_SIZE_BYTES,
         }
     }
 
@@ -238,6 +252,18 @@ impl GrpcClient {
     #[must_use]
     pub fn with_retry_interval_ms(mut self, retry_interval_ms: u64) -> Self {
         self.retry_interval_ms = retry_interval_ms;
+        self
+    }
+
+    /// Sets the maximum size (in bytes) of a decoded gRPC response the client will accept.
+    ///
+    /// Defaults to 15% above [tonic's built-in 4 MiB receive limit][tonic-decode], leaving headroom
+    /// for responses that land slightly over 4 MiB.
+    ///
+    /// [tonic-decode]: https://github.com/hyperium/tonic/blob/6cb6056b5a748bc5a29bd48f4602dbc4e552bb7d/tonic/src/codec/decode.rs#L192-L218
+    #[must_use]
+    pub fn with_max_decoding_message_size(mut self, max_decoding_message_size: usize) -> Self {
+        self.max_decoding_message_size = max_decoding_message_size;
         self
     }
 
@@ -290,6 +316,7 @@ impl GrpcClient {
             self.timeout_ms,
             genesis_commitment,
             self.bearer_token.clone(),
+            self.max_decoding_message_size,
         )
         .await?;
         let mut client = self.client.write();
@@ -350,6 +377,7 @@ impl GrpcClient {
             self.endpoint.clone(),
             self.timeout_ms,
             self.bearer_token.clone(),
+            self.max_decoding_message_size,
         )
         .await?;
         rpc_api
@@ -645,7 +673,7 @@ impl NodeRpcClient for GrpcClient {
     }
 
     /// Sends one or more `SyncNoteRequest`s to the node and merges the responses into a list of
-    /// [`NoteSyncBlock`]s.
+    /// [`SyncNotesBlock`]s.
     ///
     /// Chunks `note_tags` by [`RpcLimits::note_tags_limit`] and paginates each chunk across the
     /// requested block range.
@@ -654,7 +682,7 @@ impl NodeRpcClient for GrpcClient {
         block_from: BlockNumber,
         block_to: BlockNumber,
         note_tags: &BTreeSet<NoteTag>,
-    ) -> Result<Vec<NoteSyncBlock>, RpcError> {
+    ) -> Result<Vec<SyncNotesBlock>, RpcError> {
         if note_tags.is_empty() {
             return Ok(Vec::new());
         }
@@ -664,7 +692,7 @@ impl NodeRpcClient for GrpcClient {
 
         // Merge blocks across tag-chunks: a single block can hold notes whose tags fall into
         // different chunks, so the same block can appear in multiple chunks' responses.
-        let mut merged_blocks: BTreeMap<BlockNumber, NoteSyncBlock> = BTreeMap::new();
+        let mut merged_blocks: BTreeMap<BlockNumber, SyncNotesBlock> = BTreeMap::new();
 
         for chunk in tags.chunks(limits.note_tags_limit as usize) {
             let proto_tags: Vec<u32> = chunk.iter().map(|&t| t.into()).collect();
@@ -695,7 +723,7 @@ impl NodeRpcClient for GrpcClient {
                 let page_block_to = BlockNumber::from(page.block_num);
 
                 for proto_block in response.blocks {
-                    let block: NoteSyncBlock = proto_block.try_into()?;
+                    let block: SyncNotesBlock = proto_block.try_into()?;
                     ensure_requested_tags(
                         &requested_tags,
                         block.notes.values().map(CommittedNote::tag),
@@ -841,7 +869,7 @@ impl NodeRpcClient for GrpcClient {
         account_id: AccountId,
     ) -> Result<StorageMapInfo, RpcError> {
         let mut pagination = BlockPagination::new(block_from, block_to);
-        let mut updates = Vec::new();
+        let mut map_entries: BTreeMap<StorageSlotName, StorageMapPatchEntries> = BTreeMap::new();
 
         let (chain_tip, block_number) = loop {
             let request = proto::rpc::SyncAccountStorageMapsRequest {
@@ -857,20 +885,17 @@ impl NodeRpcClient for GrpcClient {
                     Box::pin(async move { rpc_api.sync_account_storage_maps(request).await })
                 })
                 .await?;
-            let response = response.into_inner();
-            let page = response
-                .pagination_info
-                .ok_or(RpcError::ExpectedDataMissing("pagination_info".to_owned()))?;
-            let page_block_num = BlockNumber::from(page.block_num);
-            let page_chain_tip = BlockNumber::from(page.chain_tip);
-            let batch = response
-                .updates
-                .into_iter()
-                .map(TryInto::try_into)
-                .collect::<Result<Vec<StorageMapUpdate>, _>>()?;
-            updates.extend(batch);
+            let page = StorageMapInfo::try_from(response.into_inner())?;
 
-            match pagination.advance(page_block_num, page_chain_tip)? {
+            for (slot_name, entries) in page.map_entries {
+                map_entries
+                    .entry(slot_name)
+                    .or_default()
+                    .as_map_mut()
+                    .extend(entries.into_map());
+            }
+
+            match pagination.advance(page.block_number, page.chain_tip)? {
                 PaginationResult::Continue => {},
                 PaginationResult::Done {
                     chain_tip: final_chain_tip,
@@ -879,7 +904,7 @@ impl NodeRpcClient for GrpcClient {
             }
         };
 
-        Ok(StorageMapInfo { chain_tip, block_number, updates })
+        Ok(StorageMapInfo { chain_tip, block_number, map_entries })
     }
 
     async fn sync_account_vault(
@@ -889,7 +914,7 @@ impl NodeRpcClient for GrpcClient {
         account_id: AccountId,
     ) -> Result<AccountVaultInfo, RpcError> {
         let mut pagination = BlockPagination::new(block_from, block_to);
-        let mut updates = Vec::new();
+        let mut vault_patch = AccountVaultPatch::default();
 
         let (chain_tip, block_number) = loop {
             let request = proto::rpc::SyncAccountVaultRequest {
@@ -905,20 +930,11 @@ impl NodeRpcClient for GrpcClient {
                     Box::pin(async move { rpc_api.sync_account_vault(request).await })
                 })
                 .await?;
-            let response = response.into_inner();
-            let page = response
-                .pagination_info
-                .ok_or(RpcError::ExpectedDataMissing("pagination_info".to_owned()))?;
-            let page_block_num = BlockNumber::from(page.block_num);
-            let page_chain_tip = BlockNumber::from(page.chain_tip);
-            let batch = response
-                .updates
-                .iter()
-                .map(|u| (*u).try_into())
-                .collect::<Result<Vec<AccountVaultUpdate>, _>>()?;
-            updates.extend(batch);
+            let page = AccountVaultInfo::try_from(response.into_inner())?;
 
-            match pagination.advance(page_block_num, page_chain_tip)? {
+            vault_patch.merge(page.vault_patch);
+
+            match pagination.advance(page.block_number, page.chain_tip)? {
                 PaginationResult::Continue => {},
                 PaginationResult::Done {
                     chain_tip: final_chain_tip,
@@ -927,7 +943,7 @@ impl NodeRpcClient for GrpcClient {
             }
         };
 
-        Ok(AccountVaultInfo { chain_tip, block_number, updates })
+        Ok(AccountVaultInfo { chain_tip, block_number, vault_patch })
     }
 
     /// Sends one or more `SyncTransactions` requests to the node and concatenates the responses
@@ -1090,6 +1106,7 @@ mod tests {
 
     use super::{
         BlockPagination,
+        DEFAULT_MAX_RESPONSE_SIZE_BYTES,
         GrpcClient,
         NullifierUpdate,
         PaginationResult,
@@ -1264,6 +1281,20 @@ mod tests {
         // Rebuilding the interceptor after a genesis update must not drop the caller token.
         assert_eq!(client.bearer_token.as_deref(), Some("token"));
         assert!(client.client.read().as_ref().is_some());
+    }
+
+    #[test]
+    fn with_max_decoding_message_size_overrides_default() {
+        let endpoint = &Endpoint::devnet();
+
+        // A fresh client uses the default decode ceiling.
+        let default_client = GrpcClient::new(endpoint, 10_000);
+        assert_eq!(default_client.max_decoding_message_size, DEFAULT_MAX_RESPONSE_SIZE_BYTES);
+
+        // The knob overrides it for callers that hit responses above the default.
+        let custom =
+            GrpcClient::new(endpoint, 10_000).with_max_decoding_message_size(8 * 1024 * 1024);
+        assert_eq!(custom.max_decoding_message_size, 8 * 1024 * 1024);
     }
 
     /// Real-network smoke test: hitting the public testnet with a caller-supplied bearer

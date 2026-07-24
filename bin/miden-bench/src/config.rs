@@ -5,9 +5,9 @@ use miden_client::builder::ClientBuilder;
 use miden_client::crypto::RandomCoin;
 use miden_client::keystore::FilesystemKeyStore;
 use miden_client::rpc::{Endpoint, GrpcClient};
-use miden_client::{Client, DebugMode, Felt};
+use miden_client::{Client, Felt};
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
-use rand::Rng;
+use rand::RngExt;
 
 /// Default store directory name, created in the current working directory.
 pub const DEFAULT_STORE_DIR: &str = "miden-bench-store";
@@ -52,7 +52,6 @@ pub async fn create_client(
         .rng(Box::new(rng_coin))
         .sqlite_store(sqlite_path)
         .filesystem_keystore(keystore_path.to_str().expect("keystore path should be valid UTF-8"))?
-        .in_debug_mode(DebugMode::Disabled)
         .tx_discard_delta(None)
         .build()
         .await?;

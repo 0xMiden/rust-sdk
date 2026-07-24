@@ -7,6 +7,16 @@ sidebar_position: 7
 
 The Miden client supports interactive debugging via the [Debug Adapter Protocol (DAP)](https://microsoft.github.io/debug-adapter-protocol/). You can debug both raw Miden Assembly scripts and Rust programs compiled to Miden via `midenc`. This lets you step through execution, set breakpoints, and inspect stack/memory state using any DAP-compatible client (e.g. VS Code, the `miden-debug` TUI).
 
+:::warning
+Interactive DAP debugging is **temporarily unavailable in this release.** The `miden-debug` 0.9
+executor drives execution from a compiled package, but the VM's `ProgramExecutor` interface the
+client integrates against provides only a bare program, and there is no lossless conversion between
+the two. Starting a DAP session (`--start-debug-adapter`) therefore fails at execution time with an
+explicit "DAP debugging is not supported with the current miden-debug backend" error. The `dap`
+feature and CLI flag remain so the surface is preserved; support will return once the upstream
+executor accepts a program directly.
+:::
+
 ## Feature flags
 
 Two feature flags control debugging support:

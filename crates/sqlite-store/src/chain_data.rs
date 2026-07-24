@@ -31,11 +31,11 @@ struct SerializedBlockHeaderParts {
 
 struct SerializedPartialBlockchainNodeData {
     id: i64,
-    node: String,
+    node: Vec<u8>,
 }
 struct SerializedPartialBlockchainNodeParts {
     id: u64,
-    node: String,
+    node: Vec<u8>,
 }
 
 impl SqliteStore {
@@ -351,7 +351,7 @@ fn serialize_partial_blockchain_node(
     node: Word,
 ) -> SerializedPartialBlockchainNodeData {
     let id = i64::try_from(id.inner()).expect("id is a valid i64");
-    let node = node.to_hex();
+    let node = node.to_bytes();
     SerializedPartialBlockchainNodeData { id, node }
 }
 
@@ -373,7 +373,7 @@ fn parse_partial_blockchain_nodes(
         )
         .unwrap(),
     );
-    let node: Word = Word::try_from(&serialized_partial_blockchain_node_parts.node)?;
+    let node: Word = Word::read_from_bytes(&serialized_partial_blockchain_node_parts.node)?;
     Ok((id, node))
 }
 

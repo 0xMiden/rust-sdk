@@ -16,10 +16,10 @@ use miden_protocol::errors::{
     TransactionScriptError,
 };
 use miden_protocol::note::NoteId;
-use miden_standards::account::interface::AccountInterfaceError;
 // RE-EXPORTS
 // ================================================================================================
 pub use miden_standards::errors::CodeBuilderError;
+use miden_standards::tx_script::SendNotesTransactionScriptError;
 pub use miden_tx::AuthenticationError;
 use miden_tx::utils::HexParseError;
 use miden_tx::utils::serde::DeserializationError;
@@ -166,8 +166,8 @@ pub enum ClientError {
     TransactionProvingError(#[from] TransactionProverError),
     #[error("invalid transaction request")]
     TransactionRequestError(#[from] TransactionRequestError),
-    #[error("failed to build transaction script from account interface")]
-    AccountInterfaceError(#[from] AccountInterfaceError),
+    #[error("failed to build the send-notes transaction script")]
+    SendNotesTransactionScriptError(#[from] SendNotesTransactionScriptError),
     #[error("transaction script error")]
     TransactionScriptError(#[source] TransactionScriptError),
     #[error("client initialization error: {0}")]

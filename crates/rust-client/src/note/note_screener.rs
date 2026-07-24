@@ -107,7 +107,8 @@ impl NoteScreener {
         let mut relevant_notes: BTreeMap<NoteId, Vec<NoteConsumability>> = BTreeMap::new();
         let tx_args = self.tx_args();
 
-        let data_store = ClientDataStore::new(self.store.clone(), self.rpc_api.clone());
+        let data_store = ClientDataStore::new(self.store.clone(), self.rpc_api.clone())
+            .with_execution_input_cache();
         // Don't attach the real authenticator for consumability checks. The
         // NoteConsumptionChecker gracefully handles a missing authenticator by
         // returning `ConsumableWithAuthorization` instead of calling
@@ -159,7 +160,8 @@ impl NoteScreener {
         let tx_args = self.tx_args();
         let account_code = self.get_account_code(account_id).await?;
 
-        let data_store = ClientDataStore::new(self.store.clone(), self.rpc_api.clone());
+        let data_store = ClientDataStore::new(self.store.clone(), self.rpc_api.clone())
+            .with_execution_input_cache();
         let transaction_executor: TransactionExecutor<'_, '_, _, ()> =
             TransactionExecutor::new(&data_store);
 

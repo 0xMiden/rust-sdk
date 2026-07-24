@@ -21,12 +21,7 @@ use crate::tests::config::ClientConfig;
 pub mod agglayer_bridge_in_out;
 mod agglayer_test_utils;
 pub mod ger;
-
-/// `AggLayer` network ID assigned to the Miden chain (the protocol's `MIDEN_NETWORK_ID` MASM
-/// constant). Claim validation compares the leaf's `destination_network` to this value, so it
-/// must match the `MIDEN_NETWORK_ID` constant in the foundry vectors
-/// (`foundry-vectors/test/ClaimAssetTestVectorsLocalTx.t.sol`).
-pub const MIDEN_AGGLAYER_NETWORK_ID: u32 = 77;
+pub mod note_reader;
 
 // AGGLAYER CONFIG
 // ================================================================================================
@@ -227,7 +222,7 @@ pub async fn setup_core_accounts(
         bridge_seed,
         bridge_admin_account.id(),
         ger_manager_account.id(),
-        MIDEN_AGGLAYER_NETWORK_ID,
+        ger_manager_account.id(),
     );
     println!("[setup]   bridge admin:  {}", bridge_admin_account.id());
     println!("[setup]   GER manager:   {}", ger_manager_account.id());

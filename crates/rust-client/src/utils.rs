@@ -5,6 +5,8 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::num::ParseIntError;
 
+use miden_protocol::asset::AssetAmount;
+use miden_protocol::errors::AssetError;
 use miden_standards::account::faucets::FungibleFaucet;
 pub use miden_tx::utils::serde::{
     ByteReader,
@@ -21,8 +23,8 @@ use crate::alloc::borrow::ToOwned;
 /// Converts an amount in the faucet base units to the token's decimals.
 ///
 /// This is meant for display purposes only.
-pub fn base_units_to_tokens(units: u64, decimals: u8) -> String {
-    let units_str = units.to_string();
+pub fn base_units_to_tokens(units: AssetAmount, decimals: u8) -> String {
+    let units_str = units.as_u64().to_string();
     let len = units_str.len();
 
     if decimals == 0 {
@@ -52,11 +54,16 @@ pub enum TokenParseError {
     ParseU64(#[source] ParseIntError),
     #[error("Amount has more than {0} decimal places")]
     TooManyDecimals(u8),
+    #[error("Amount is not a valid asset amount")]
+    InvalidAmount(#[source] AssetError),
 }
 
 /// Converts a decimal number, represented as a string, into an integer by shifting
 /// the decimal point to the right by a specified number of decimal places.
-pub fn tokens_to_base_units(decimal_str: &str, n_decimals: u8) -> Result<u64, TokenParseError> {
+pub fn tokens_to_base_units(
+    decimal_str: &str,
+    n_decimals: u8,
+) -> Result<AssetAmount, TokenParseError> {
     if n_decimals > FungibleFaucet::MAX_DECIMALS {
         return Err(TokenParseError::MaxDecimals(n_decimals));
     }
@@ -97,7 +104,9 @@ pub fn tokens_to_base_units(decimal_str: &str, n_decimals: u8) -> Result<u64, To
     let combined = format!("{}{}", integer_part, &fractional_part[0..n_decimals.into()]);
 
     // Convert the combined string to an integer
-    combined.parse::<u64>().map_err(TokenParseError::ParseU64)
+    let units = combined.parse::<u64>().map_err(TokenParseError::ParseU64)?;
+
+    AssetAmount::new(units).map_err(TokenParseError::InvalidAmount)
 }
 
 // TESTS
@@ -105,18 +114,22 @@ pub fn tokens_to_base_units(decimal_str: &str, n_decimals: u8) -> Result<u64, To
 
 #[cfg(test)]
 mod tests {
+    use miden_protocol::asset::AssetAmount;
+
     use crate::utils::{TokenParseError, base_units_to_tokens, tokens_to_base_units};
+
+    fn amount(units: u64) -> AssetAmount {
+        AssetAmount::new(units).unwrap()
+    }
 
     #[test]
     fn convert_tokens_to_base_units() {
-        assert_eq!(tokens_to_base_units("18446744.073709551615", 12).unwrap(), u64::MAX);
-        assert_eq!(tokens_to_base_units("7531.2468", 8).unwrap(), 753_124_680_000);
-        assert_eq!(tokens_to_base_units("7531.2468", 4).unwrap(), 75_312_468);
-        assert_eq!(tokens_to_base_units("0", 3).unwrap(), 0);
-        assert_eq!(tokens_to_base_units("0", 3).unwrap(), 0);
-        assert_eq!(tokens_to_base_units("0", 3).unwrap(), 0);
-        assert_eq!(tokens_to_base_units("1234", 8).unwrap(), 123_400_000_000);
-        assert_eq!(tokens_to_base_units("1", 0).unwrap(), 1);
+        assert_eq!(tokens_to_base_units("9223372.034707292160", 12).unwrap(), AssetAmount::MAX);
+        assert_eq!(tokens_to_base_units("7531.2468", 8).unwrap(), amount(753_124_680_000));
+        assert_eq!(tokens_to_base_units("7531.2468", 4).unwrap(), amount(75_312_468));
+        assert_eq!(tokens_to_base_units("0", 3).unwrap(), AssetAmount::ZERO);
+        assert_eq!(tokens_to_base_units("1234", 8).unwrap(), amount(123_400_000_000));
+        assert_eq!(tokens_to_base_units("1", 0).unwrap(), amount(1));
         assert!(matches!(
             tokens_to_base_units("1.1", 0),
             Err(TokenParseError::TooManyDecimals(0))
@@ -127,15 +140,20 @@ mod tests {
         ),);
         assert!(matches!(tokens_to_base_units("123u3.23", 4), Err(TokenParseError::ParseU64(_))),);
         assert!(matches!(tokens_to_base_units("2.k3", 4), Err(TokenParseError::ParseU64(_))),);
-        assert_eq!(tokens_to_base_units("12.345000", 4).unwrap(), 123_450);
+        assert_eq!(tokens_to_base_units("12.345000", 4).unwrap(), amount(123_450));
         assert!(tokens_to_base_units("0.0001.00000001", 12).is_err());
+        // Parses as a u64 but exceeds the maximum representable asset amount.
+        assert!(matches!(
+            tokens_to_base_units("18446744.073709551615", 12),
+            Err(TokenParseError::InvalidAmount(_))
+        ),);
     }
 
     #[test]
     fn convert_base_units_to_tokens() {
-        assert_eq!(base_units_to_tokens(u64::MAX, 12), "18446744.073709551615");
-        assert_eq!(base_units_to_tokens(753_124_680_000, 8), "7531.24680000");
-        assert_eq!(base_units_to_tokens(75_312_468, 4), "7531.2468");
-        assert_eq!(base_units_to_tokens(75_312_468, 0), "75312468");
+        assert_eq!(base_units_to_tokens(AssetAmount::MAX, 12), "9223372.034707292160");
+        assert_eq!(base_units_to_tokens(amount(753_124_680_000), 8), "7531.24680000");
+        assert_eq!(base_units_to_tokens(amount(75_312_468), 4), "7531.2468");
+        assert_eq!(base_units_to_tokens(amount(75_312_468), 0), "75312468");
     }
 }

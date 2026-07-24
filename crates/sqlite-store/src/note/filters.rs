@@ -3,8 +3,10 @@
 
 use std::rc::Rc;
 
+use miden_client::account::AccountId;
 use miden_client::note::BlockNumber;
 use miden_client::store::{InputNoteState, NoteFilter, OutputNoteState};
+use miden_client::utils::Serializable;
 use rusqlite::types::Value;
 
 type NoteQueryParams = Vec<Rc<Vec<Value>>>;
@@ -50,14 +52,14 @@ pub(super) fn note_filter_output_notes_condition(filter: &NoteFilter) -> (String
         },
         NoteFilter::Processing | NoteFilter::Unverified => "1 = 0".to_string(),
         NoteFilter::Unique(note_id) => {
-            let note_ids_list = vec![Value::Text(note_id.as_word().to_string())];
+            let note_ids_list = vec![Value::Blob(note_id.as_word().to_bytes())];
             params.push(Rc::new(note_ids_list));
             "note.note_id IN rarray(?)".to_string()
         },
         NoteFilter::List(note_ids) => {
             let note_ids_list = note_ids
                 .iter()
-                .map(|note_id| Value::Text(note_id.as_word().to_string()))
+                .map(|note_id| Value::Blob(note_id.as_word().to_bytes()))
                 .collect::<Vec<Value>>();
 
             params.push(Rc::new(note_ids_list));
@@ -66,7 +68,7 @@ pub(super) fn note_filter_output_notes_condition(filter: &NoteFilter) -> (String
         NoteFilter::DetailsCommitments(commitments) => {
             let commitments_list = commitments
                 .iter()
-                .map(|commitment| Value::Text(commitment.to_hex()))
+                .map(|commitment| Value::Blob(commitment.to_bytes()))
                 .collect::<Vec<Value>>();
 
             params.push(Rc::new(commitments_list));
@@ -75,7 +77,7 @@ pub(super) fn note_filter_output_notes_condition(filter: &NoteFilter) -> (String
         NoteFilter::Nullifiers(nullifiers) => {
             let nullifiers_list = nullifiers
                 .iter()
-                .map(|nullifier| Value::Text(nullifier.to_string()))
+                .map(|nullifier| Value::Blob(nullifier.to_bytes()))
                 .collect::<Vec<Value>>();
 
             params.push(Rc::new(nullifiers_list));
@@ -130,7 +132,7 @@ pub(super) fn note_filter_to_query_input_notes(filter: &NoteFilter) -> (String, 
 /// restricted to a consumer account and optionally to a block range.
 pub(super) fn note_filter_to_query_input_note_by_offset(
     filter: &NoteFilter,
-    consumer: &str,
+    consumer: AccountId,
     block_start: Option<BlockNumber>,
     block_end: Option<BlockNumber>,
     offset: u32,
@@ -138,7 +140,7 @@ pub(super) fn note_filter_to_query_input_note_by_offset(
     use core::fmt::Write;
     let (mut condition, mut params) = note_filter_input_notes_condition(filter);
 
-    params.push(Rc::new(vec![Value::Text(consumer.to_string())]));
+    params.push(Rc::new(vec![Value::Blob(consumer.to_bytes())]));
     condition.push_str(" AND note.consumer_account_id IN rarray(?)");
     condition.push_str(" AND note.consumed_tx_order IS NOT NULL");
 
@@ -185,14 +187,14 @@ pub(super) fn note_filter_input_notes_condition(filter: &NoteFilter) -> (String,
             )
         },
         NoteFilter::Unique(note_id) => {
-            let note_ids_list = vec![Value::Text(note_id.as_word().to_string())];
+            let note_ids_list = vec![Value::Blob(note_id.as_word().to_bytes())];
             params.push(Rc::new(note_ids_list));
             "(note.note_id IN rarray(?))".to_string()
         },
         NoteFilter::List(note_ids) => {
             let note_ids_list = note_ids
                 .iter()
-                .map(|note_id| Value::Text(note_id.as_word().to_string()))
+                .map(|note_id| Value::Blob(note_id.as_word().to_bytes()))
                 .collect::<Vec<Value>>();
 
             params.push(Rc::new(note_ids_list));
@@ -201,7 +203,7 @@ pub(super) fn note_filter_input_notes_condition(filter: &NoteFilter) -> (String,
         NoteFilter::DetailsCommitments(commitments) => {
             let commitments_list = commitments
                 .iter()
-                .map(|commitment| Value::Text(commitment.to_hex()))
+                .map(|commitment| Value::Blob(commitment.to_bytes()))
                 .collect::<Vec<Value>>();
 
             params.push(Rc::new(commitments_list));
@@ -210,7 +212,7 @@ pub(super) fn note_filter_input_notes_condition(filter: &NoteFilter) -> (String,
         NoteFilter::Nullifiers(nullifiers) => {
             let nullifiers_list = nullifiers
                 .iter()
-                .map(|nullifier| Value::Text(nullifier.to_string()))
+                .map(|nullifier| Value::Blob(nullifier.to_bytes()))
                 .collect::<Vec<Value>>();
 
             params.push(Rc::new(nullifiers_list));

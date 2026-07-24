@@ -13,15 +13,21 @@ use miden_protocol::account::{
     StorageSlotContent,
     StorageSlotName,
 };
-use miden_protocol::asset::{AssetVaultKey, AssetWitness};
+use miden_protocol::asset::{AssetId, AssetWitness};
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrPeaks, PartialMmr};
 use miden_protocol::crypto::merkle::{MerkleError, MerklePath};
 use miden_protocol::note::{NoteScript, NoteScriptRoot};
 use miden_protocol::transaction::{AccountInputs, PartialBlockchain};
 use miden_protocol::vm::FutureMaybeSend;
-use miden_protocol::{MastForest, Word, ZERO};
-use miden_tx::{DataStore, DataStoreError, MastForestStore, TransactionMastStore};
+use miden_protocol::{Word, ZERO};
+use miden_tx::{
+    DataStore,
+    DataStoreError,
+    LoadedMastForest,
+    MastForestStore,
+    TransactionMastStore,
+};
 
 use super::{AccountStorageFilter, PartialBlockchainFilter, Store};
 use crate::rpc::domain::account::{
@@ -57,6 +63,19 @@ impl ClientDataStore {
             cache: DataStoreCache::new(),
             rpc_api,
         }
+    }
+
+    /// Enables memoization of `get_transaction_inputs` and `get_vault_asset_witnesses` for the
+    /// lifetime of this data store.
+    ///
+    /// This is only correct when the account state served to the executor does not change between
+    /// executions, as is the case while the [`crate::note::NoteScreener`] runs trial executions
+    /// against the same accounts and reference block. It must stay disabled for real transaction
+    /// execution, where account state evolves between executions.
+    #[must_use]
+    pub fn with_execution_input_cache(mut self) -> Self {
+        self.cache.enable_execution_input_cache();
+        self
     }
 
     pub fn mast_store(&self) -> Arc<TransactionMastStore> {
@@ -208,68 +227,91 @@ impl DataStore for ClientDataStore {
         account_id: AccountId,
         mut block_refs: BTreeSet<BlockNumber>,
     ) -> Result<(PartialAccount, BlockHeader, PartialBlockchain), DataStoreError> {
-        let current_peaks = self.store.get_current_blockchain_peaks().await?;
-
-        // Pop last block, used as reference (it does not need to be authenticated manually)
-        let ref_block = block_refs.pop_last().ok_or(DataStoreError::other("block set is empty"))?;
+        // Last block is used as reference (it does not need to be authenticated manually)
+        let ref_block = *block_refs.last().ok_or(DataStoreError::other("block set is empty"))?;
 
         // Cache the reference block so lazy-loading methods can use it
         self.cache.set_ref_block(ref_block);
 
-        let partial_account_record = self
-            .store
-            .get_minimal_partial_account(account_id)
-            .await?
-            .ok_or(DataStoreError::AccountNotFound(account_id))?;
+        let partial_account =
+            if let Some(partial_account) = self.cache.get_partial_account(account_id) {
+                partial_account
+            } else {
+                let partial_account_record = self
+                    .store
+                    .get_minimal_partial_account(account_id)
+                    .await?
+                    .ok_or(DataStoreError::AccountNotFound(account_id))?;
 
-        // New accounts (nonce == 0) need full storage maps as advice inputs for the
-        // kernel to validate during account creation. For these, fetch the full account
-        // and convert to PartialAccount (which includes full storage for new accounts).
-        // Existing accounts use the minimal partial record directly.
-        let partial_account: PartialAccount = if partial_account_record.nonce() == ZERO {
-            let full_record = self
-                .store
-                .get_account(account_id)
-                .await?
-                .ok_or(DataStoreError::AccountNotFound(account_id))?;
-            let account: Account = full_record
-                .try_into()
-                .map_err(|_| DataStoreError::AccountNotFound(account_id))?;
-            PartialAccount::from(&account)
+                // New accounts (nonce == 0) need full storage maps as advice inputs for the
+                // kernel to validate during account creation. For these, fetch the full account
+                // and convert to PartialAccount (which includes full storage for new accounts).
+                // Existing accounts use the minimal partial record directly.
+                let partial_account: PartialAccount = if partial_account_record.nonce() == ZERO {
+                    let full_record = self
+                        .store
+                        .get_account(account_id)
+                        .await?
+                        .ok_or(DataStoreError::AccountNotFound(account_id))?;
+                    let account: Account = full_record
+                        .try_into()
+                        .map_err(|_| DataStoreError::AccountNotFound(account_id))?;
+                    PartialAccount::from(&account)
+                } else {
+                    partial_account_record
+                        .try_into()
+                        .map_err(|_| DataStoreError::AccountNotFound(account_id))?
+                };
+
+                self.cache.insert_partial_account(&partial_account);
+                partial_account
+            };
+
+        let (block_header, partial_blockchain) = if let Some((block_header, partial_blockchain)) =
+            self.cache.get_blockchain(&block_refs)
+        {
+            (block_header, partial_blockchain)
         } else {
-            partial_account_record
-                .try_into()
-                .map_err(|_| DataStoreError::AccountNotFound(account_id))?
+            // The full set identifies the served blockchain, so keep it as the cache key before
+            // the reference block is removed from it below.
+            let cache_key = block_refs.clone();
+            block_refs.remove(&ref_block);
+
+            let current_peaks = self.store.get_current_blockchain_peaks().await?;
+
+            // Get header data
+            let (block_header, _had_notes) = self
+                .store
+                .get_block_header_by_num(ref_block)
+                .await?
+                .ok_or(DataStoreError::BlockNotFound(ref_block))?;
+
+            let block_headers: Vec<BlockHeader> = self
+                .store
+                .get_block_headers(&block_refs)
+                .await?
+                .into_iter()
+                .map(|(header, _has_notes)| header)
+                .collect();
+
+            // TODO: the client stores only the peaks of the MMR at the current sync height, so we
+            // are not actually following the block_ref here. If the block_ref !=
+            // current_sync_height, this would return an invalid partial blockchain.
+            let partial_mmr =
+                build_partial_mmr_with_paths(&self.store, current_peaks, &block_headers).await?;
+
+            let partial_blockchain =
+                PartialBlockchain::new(partial_mmr, block_headers).map_err(|err| {
+                    DataStoreError::other_with_source(
+                        "error creating PartialBlockchain from internal data",
+                        err,
+                    )
+                })?;
+
+            self.cache.insert_blockchain(cache_key, &block_header, &partial_blockchain);
+            (block_header, partial_blockchain)
         };
 
-        // Get header data
-        let (block_header, _had_notes) = self
-            .store
-            .get_block_header_by_num(ref_block)
-            .await?
-            .ok_or(DataStoreError::BlockNotFound(ref_block))?;
-
-        let block_headers: Vec<BlockHeader> = self
-            .store
-            .get_block_headers(&block_refs)
-            .await?
-            .into_iter()
-            .map(|(header, _has_notes)| header)
-            .collect();
-
-        // TODO: the client stores only the peaks of the MMR at the current sync height, so we are
-        // not actually following the block_ref here. If the block_ref != current_sync_height, this
-        // would return an invalid partial blockchain.
-        let partial_mmr =
-            build_partial_mmr_with_paths(&self.store, current_peaks, &block_headers).await?;
-
-        let partial_blockchain =
-            PartialBlockchain::new(partial_mmr, block_headers).map_err(|err| {
-                DataStoreError::other_with_source(
-                    "error creating PartialBlockchain from internal data",
-                    err,
-                )
-            })?;
         Ok((partial_account, block_header, partial_blockchain))
     }
 
@@ -277,11 +319,15 @@ impl DataStore for ClientDataStore {
         &self,
         account_id: AccountId,
         vault_root: Word,
-        vault_keys: BTreeSet<AssetVaultKey>,
+        asset_ids: BTreeSet<AssetId>,
     ) -> Result<Vec<AssetWitness>, DataStoreError> {
+        if let Some(witnesses) = self.cache.get_vault_asset_witnesses(vault_root, &asset_ids) {
+            return Ok(witnesses);
+        }
+
         let mut asset_witnesses = vec![];
-        for vault_key in vault_keys {
-            match self.store.get_account_asset(account_id, vault_key).await {
+        for asset_id in asset_ids.iter().copied() {
+            match self.store.get_account_asset(account_id, asset_id).await {
                 Ok(Some((_, asset_witness))) => asset_witnesses.push(asset_witness),
                 Ok(None) | Err(StoreError::MerkleStoreError(MerkleError::RootNotInStore(_))) => {
                     let vault = self.store.get_account_vault(account_id).await?;
@@ -290,14 +336,7 @@ impl DataStore for ClientDataStore {
                         return Err(DataStoreError::other("Vault root mismatch"));
                     }
 
-                    let asset_witness =
-                        AssetWitness::new(vault.open(vault_key).into()).map_err(|err| {
-                            DataStoreError::other_with_source(
-                                "Failed to open vault asset tree",
-                                err,
-                            )
-                        })?;
-                    asset_witnesses.push(asset_witness);
+                    asset_witnesses.push(vault.open(asset_id));
                 },
                 Err(err) => {
                     return Err(DataStoreError::other_with_source(
@@ -307,6 +346,9 @@ impl DataStore for ClientDataStore {
                 },
             }
         }
+
+        self.cache
+            .insert_vault_asset_witnesses(vault_root, &asset_ids, &asset_witnesses);
         Ok(asset_witnesses)
     }
 
@@ -430,7 +472,7 @@ impl DataStore for ClientDataStore {
 // ================================================================================================
 
 impl MastForestStore for ClientDataStore {
-    fn get(&self, procedure_hash: &Word) -> Option<Arc<MastForest>> {
+    fn get(&self, procedure_hash: &Word) -> Option<LoadedMastForest> {
         self.cache.mast_store.get(procedure_hash)
     }
 }

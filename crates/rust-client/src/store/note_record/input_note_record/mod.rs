@@ -84,9 +84,8 @@ impl InputNoteRecord {
 
     /// Returns the input note ID, computed by combining the details commitment with the
     /// note metadata. Returns `None` when the current state has no metadata (e.g. an
-    /// expected note imported from bare `NoteFile::NoteDetails`, or a note in the
-    /// `ConsumedExternal` state). Use [`Self::details_commitment`] when a stable identifier
-    /// is needed in those cases.
+    /// expected note imported from bare `NoteFile::NoteDetails`). Use
+    /// [`Self::details_commitment`] when a stable identifier is needed in those cases.
     pub fn id(&self) -> Option<NoteId> {
         let metadata = self.metadata()?;
         Some(NoteId::new(self.details.commitment(), metadata))
@@ -119,13 +118,17 @@ impl InputNoteRecord {
         &self.attachments
     }
 
-    /// Sets the note's attachments.
+    /// Sets the note's attachments, returning `true` if the record changed.
     ///
     /// Attachments are a top-level field of the record, independent of the [`InputNoteState`]
-    /// machine, so this is a plain field assignment. They are populated during sync once fetched
-    /// from the node, since they are required to reconstruct the note's ID for consumption.
-    pub(crate) fn set_attachments(&mut self, attachments: NoteAttachments) {
+    /// machine. They are populated during sync once fetched from the node, since they are
+    /// required to reconstruct the note's ID for consumption.
+    pub(crate) fn attachments_received(&mut self, attachments: NoteAttachments) -> bool {
+        if self.attachments == attachments {
+            return false;
+        }
         self.attachments = attachments;
+        true
     }
 
     /// Returns the timestamp in which the note record was created, if available.
@@ -222,6 +225,12 @@ impl InputNoteRecord {
     /// isn't consumed or being processed).
     pub fn is_committed(&self) -> bool {
         matches!(self.state, InputNoteState::Committed { .. })
+    }
+
+    /// Returns true while the note's on-chain inclusion is still unsettled (`Expected` or
+    /// `Unverified`), i.e. while note sync is the mechanism that can advance this record.
+    pub fn is_inclusion_pending(&self) -> bool {
+        matches!(self.state, InputNoteState::Expected { .. } | InputNoteState::Unverified { .. })
     }
 
     /// Sets the consumed transaction order on the inner note state. No-op if the note is not in

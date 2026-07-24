@@ -270,6 +270,8 @@ for (note_id, account_statuses) in notes_by_id {
 }
 ```
 
+Prefer a single `can_consume_batch` call over calling `can_consume` in a loop. A batch reuses each account's execution inputs (account state, reference block, and vault witnesses) across every note in the same pass, while separate calls re-read them each time. This reuse lasts only for the duration of the call, so it does not carry across separate screening calls.
+
 ### Check consumability for one account
 
 If you already know which account will consume the notes, use `check_notes_consumability`. This is useful when planning a multi-note consume transaction for a known account.

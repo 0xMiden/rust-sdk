@@ -1,13 +1,3 @@
--- Table for storing database migrations data.
--- Note: we can store values of different types in the same `value` field.
-CREATE TABLE migrations (
-    name  TEXT NOT NULL,
-    value ANY,
-
-    PRIMARY KEY (name),
-    CONSTRAINT migration_name_is_not_empty CHECK (length(name) > 0)
-) STRICT, WITHOUT ROWID;
-
 -- Table for storing different settings in run-time, which need to persist over runs.
 CREATE TABLE settings (
     name  TEXT NOT NULL,

@@ -1058,7 +1058,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2013,6 +2013,7 @@ dependencies = [
  "gloo-timers",
  "hex",
  "miden-agglayer",
+ "miden-debug",
  "miden-node-proto-build",
  "miden-note-transport-proto-build",
  "miden-processor",
@@ -2230,9 +2231,9 @@ dependencies = [
 
 [[package]]
 name = "miden-debug"
-version = "0.9.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d3f9a821ae2e7f30b007ac13a747b0713fe0d5b5c23c7fc81320de827fa25b10"
+checksum = "ba51b7af4363875c141ab5a56ecd00ab2158739d9b0db7e6d0927bb1a99764a9"
 dependencies = [
  "clap",
  "compact_str",
@@ -2266,9 +2267,9 @@ dependencies = [
 
 [[package]]
 name = "miden-debug-engine"
-version = "0.9.0"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "27c7cdb32831b608fa8f23a37d935e18ff84dee10d54c6e0d0f162f7fba8eb5a"
+checksum = "658d40a5dd5c281928ab3258cb14de344126ed483edd3c9999f422262da374dc"
 dependencies = [
  "clap",
  "glob",
@@ -3919,7 +3920,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4442,7 +4443,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5246,7 +5247,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

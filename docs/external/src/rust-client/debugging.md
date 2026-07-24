@@ -107,3 +107,56 @@ When `--start-debug-adapter` is passed:
    inspection.
 4. If the DAP client requests a restart, the client refreshes the cached source file, recompiles the
    script from disk, and starts a new debug session.
+
+## Extracting recorded advice mutations
+
+During a DAP session the advice mutations produced by the transaction host's event handlers are
+recorded, one entry per `on_event` invocation. This log is what an event-replay debug session
+needs to re-execute the same transaction without the live transaction host.
+
+The DAP program executor is created and consumed inside the transaction executor, so the log is
+read through a shared handle obtained from the `DapConfig` before execution:
+
+```rust,ignore
+let mut config = miden_debug::DapConfig::new("127.0.0.1:4711");
+let recorder = config.record_event_mutations();
+miden_debug::DapConfig::set_global(config);
+
+client
+    .execute_program_with_dap(account_id, tx_script, advice_inputs, foreign_accounts)
+    .await?;
+
+// One `Vec<AdviceMutation>` per event handler invocation, in execution order,
+// describing the final run of the session (restarts reset the log).
+let recorded = recorder.take();
+```
+
+The CLI does this automatically and reports the number of recorded mutation sets when the
+session ends.
+
+## Recording a session for offline replay
+
+Pass `--record <FILE>` alongside `--start-debug-adapter` to write a self-contained *replay
+snapshot* of the session once it ends:
+
+```bash
+miden-client exec \
+  --script-path test_debug.masm \
+  --start-debug-adapter 127.0.0.1:4711 \
+  --record session.mdsnap
+```
+
+The snapshot captures the program, its stack and advice inputs, the MAST forests the transaction
+host resolved (account code, note scripts, ...), and the recorded event log — everything needed to
+re-run the execution without the live transaction host. It always describes the final run of the
+session; restarting from the debugger resets it.
+
+Replay it later, offline, in the `miden-debug` TUI — no node, client, or account state required:
+
+```bash
+miden-debug --replay session.mdsnap
+```
+
+The recorded events are fed back through the debugger's event-replay host, so you can step through
+the same execution, set breakpoints, and inspect the stack and memory exactly as during the live
+session. The snapshot carries no source files, so the debugger shows disassembly.

@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 #[cfg(feature = "dap")]
 use std::net::SocketAddr;
+#[cfg(feature = "dap")]
+use std::path::Path;
 use std::path::PathBuf;
 
 use clap::Parser;
@@ -45,6 +47,16 @@ pub struct ExecCmd {
     #[cfg(feature = "dap")]
     #[arg(long = "start-debug-adapter")]
     start_debug_adapter: Option<SocketAddr>,
+
+    /// Write a replay snapshot of the debug session to this file once it ends.
+    ///
+    /// The snapshot captures the program, its inputs, the resolved code, and the advice mutations
+    /// produced by the transaction host's event handlers, so the same execution can be replayed
+    /// offline with `miden-debug --replay <FILE>`. Only meaningful together with
+    /// `--start-debug-adapter`.
+    #[cfg(feature = "dap")]
+    #[arg(long = "record", value_name = "FILE", requires = "start_debug_adapter")]
+    record: Option<PathBuf>,
 }
 
 impl ExecCmd {
@@ -99,7 +111,16 @@ impl ExecCmd {
 
         #[cfg(feature = "dap")]
         if let Some(addr) = self.start_debug_adapter.as_ref() {
-            let config = miden_debug::DapConfig::new(addr.to_string());
+            let mut config = miden_debug::DapConfig::new(addr.to_string());
+            // The DAP executor is created and consumed inside the transaction executor, so the
+            // advice mutations recorded during the session are read through this shared handle
+            // once execution returns.
+            let recorder = config.record_event_mutations();
+            // When requested, the executor also writes a self-contained replay snapshot of the
+            // session (program, inputs, resolved code, and event log) to the given path, so the
+            // transaction can be replayed offline with `miden-debug --replay <FILE>`.
+            let snapshot_recorder =
+                self.record.as_ref().map(|path| config.record_snapshot(path.clone()));
             let config_handle = config.clone();
             miden_debug::DapConfig::set_global(config);
 
@@ -126,6 +147,26 @@ impl ExecCmd {
                     continue;
                 }
 
+                // The recording describes the final run of the session and is what an
+                // event-replay debug session needs to re-execute this transaction without the
+                // live transaction host.
+                let mutation_sets = recorder.take();
+                if !mutation_sets.is_empty() {
+                    println!(
+                        "Recorded {} advice mutation set(s) from event handlers during the \
+                         debug session.",
+                        mutation_sets.len()
+                    );
+                }
+                if let Err(err) =
+                    report_replay_snapshot_write(snapshot_recorder.as_ref(), self.record.as_deref())
+                {
+                    if result.is_err() {
+                        eprintln!("{err}");
+                    } else {
+                        return Err(err);
+                    }
+                }
                 return result.map_err(|err| {
                     CliError::Exec(err.into(), "error executing the program".to_string())
                 });
@@ -136,6 +177,43 @@ impl ExecCmd {
             .execute_program(account_id, tx_script, advice_inputs, foreign_accounts)
             .await
             .map_err(|err| CliError::Exec(err.into(), "error executing the program".to_string()))
+    }
+}
+
+#[cfg(feature = "dap")]
+fn report_replay_snapshot_write(
+    recorder: Option<&miden_debug::ReplaySnapshotRecorder>,
+    requested_path: Option<&Path>,
+) -> Result<(), CliError> {
+    let Some(recorder) = recorder else {
+        return Ok(());
+    };
+
+    match recorder.take() {
+        Some(Ok(write)) => {
+            println!(
+                "Wrote replay snapshot ({} event(s), {} forest(s)) to {}; replay it with \
+                 `miden-debug --replay {}`.",
+                write.event_count,
+                write.forest_count,
+                write.path.display(),
+                write.path.display()
+            );
+            Ok(())
+        },
+        Some(Err(err)) => Err(CliError::Exec(
+            err.to_string().into(),
+            format!("failed to write replay snapshot to {}", err.path.display()),
+        )),
+        None => {
+            let path = requested_path
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "<unknown>".to_string());
+            Err(CliError::Exec(
+                "replay snapshot was not written".to_string().into(),
+                format!("debug session ended without writing replay snapshot to {path}"),
+            ))
+        },
     }
 }
 

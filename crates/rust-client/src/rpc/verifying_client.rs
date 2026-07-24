@@ -403,11 +403,11 @@ mod tests {
     #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
     impl NodeRpcClient for FixedNullifiersTransport {
         async fn set_genesis_commitment(&self, _commitment: Word) -> Result<(), RpcError> {
-            unimplemented!()
+            unimplemented!("not used in these tests")
         }
 
         fn has_genesis_commitment(&self) -> Option<Word> {
-            unimplemented!()
+            unimplemented!("not used in these tests")
         }
 
         async fn submit_proven_transaction(
@@ -415,7 +415,7 @@ mod tests {
             _proven_transaction: ProvenTransaction,
             _transaction_inputs: TransactionInputs,
         ) -> Result<BlockNumber, RpcError> {
-            unimplemented!()
+            unimplemented!("not used in these tests")
         }
 
         async fn submit_proven_batch(
@@ -424,7 +424,7 @@ mod tests {
             _proposed_batch: ProposedBatch,
             _transaction_inputs: Vec<TransactionInputs>,
         ) -> Result<BlockNumber, RpcError> {
-            unimplemented!()
+            unimplemented!("not used in these tests")
         }
 
         async fn get_block_header_by_number(
@@ -432,7 +432,7 @@ mod tests {
             _block_num: Option<BlockNumber>,
             _include_mmr_proof: bool,
         ) -> Result<(BlockHeader, Option<MmrProof>), RpcError> {
-            unimplemented!()
+            unimplemented!("not used in these tests")
         }
 
         async fn get_block_by_number(
@@ -440,14 +440,14 @@ mod tests {
             _block_num: BlockNumber,
             _include_proof: bool,
         ) -> Result<ProvenBlock, RpcError> {
-            unimplemented!()
+            unimplemented!("not used in these tests")
         }
 
         async fn get_notes_by_id(
             &self,
             _note_ids: &[NoteId],
         ) -> Result<Vec<FetchedNote>, RpcError> {
-            unimplemented!()
+            unimplemented!("not used in these tests")
         }
 
         async fn sync_chain_mmr(
@@ -455,7 +455,7 @@ mod tests {
             _current_block_height: BlockNumber,
             _upper_bound: SyncTarget,
         ) -> Result<ChainMmrInfo, RpcError> {
-            unimplemented!()
+            unimplemented!("not used in these tests")
         }
 
         async fn sync_notes(
@@ -464,7 +464,7 @@ mod tests {
             _block_to: BlockNumber,
             _note_tags: &BTreeSet<NoteTag>,
         ) -> Result<Vec<SyncNotesBlock>, RpcError> {
-            unimplemented!()
+            unimplemented!("not used in these tests")
         }
 
         async fn sync_nullifiers(
@@ -481,14 +481,14 @@ mod tests {
             _account_id: AccountId,
             _request: GetAccountRequest,
         ) -> Result<(BlockNumber, AccountProof), RpcError> {
-            unimplemented!()
+            unimplemented!("not used in these tests")
         }
 
         async fn get_note_script_by_root(
             &self,
             _root: Word,
         ) -> Result<Option<NoteScript>, RpcError> {
-            unimplemented!()
+            unimplemented!("not used in these tests")
         }
 
         async fn sync_storage_maps(
@@ -497,7 +497,7 @@ mod tests {
             _block_to: BlockNumber,
             _account_id: AccountId,
         ) -> Result<StorageMapInfo, RpcError> {
-            unimplemented!()
+            unimplemented!("not used in these tests")
         }
 
         async fn sync_account_vault(
@@ -506,7 +506,7 @@ mod tests {
             _block_to: BlockNumber,
             _account_id: AccountId,
         ) -> Result<AccountVaultInfo, RpcError> {
-            unimplemented!()
+            unimplemented!("not used in these tests")
         }
 
         async fn sync_transactions(
@@ -515,34 +515,34 @@ mod tests {
             _block_to: BlockNumber,
             _account_ids: Vec<AccountId>,
         ) -> Result<Vec<TransactionRecord>, RpcError> {
-            unimplemented!()
+            unimplemented!("not used in these tests")
         }
 
         async fn get_network_id(&self) -> Result<NetworkId, RpcError> {
-            unimplemented!()
+            unimplemented!("not used in these tests")
         }
 
         async fn get_rpc_limits(&self) -> Result<RpcLimits, RpcError> {
-            unimplemented!()
+            unimplemented!("not used in these tests")
         }
 
         fn has_rpc_limits(&self) -> Option<RpcLimits> {
-            unimplemented!()
+            unimplemented!("not used in these tests")
         }
 
         async fn set_rpc_limits(&self, _limits: RpcLimits) {
-            unimplemented!()
+            unimplemented!("not used in these tests")
         }
 
         async fn get_status_unversioned(&self) -> Result<RpcStatusInfo, RpcError> {
-            unimplemented!()
+            unimplemented!("not used in these tests")
         }
 
         async fn get_network_note_status(
             &self,
             _note_id: NoteId,
         ) -> Result<NetworkNoteStatusInfo, RpcError> {
-            unimplemented!()
+            unimplemented!("not used in these tests")
         }
     }
 

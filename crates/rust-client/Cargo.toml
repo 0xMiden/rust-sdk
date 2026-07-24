@@ -48,7 +48,10 @@ crate-type = ["lib"]
 # `std`; the duplication in the `std` feature list is intentional so
 # each consumer can pick the smallest feature set they need.
 concurrent = ["miden-tx/concurrent"]
-dap = ["dep:miden-processor", "std"]
+dap        = ["dep:miden-processor", "std"]
+# `execute_*_with_debugger` + `RoutedDebugExecutor`: route the `miden::core::debug` print events to
+# a custom writer (no_std-compatible, unlike `dap`, so it works on wasm where stdout is a no-op).
+debug-output = ["dep:miden-core-lib", "dep:miden-processor"]
 default = ["std"]
 std = [
   "concurrent",
@@ -74,6 +77,7 @@ tonic = []
 [dependencies]
 # Miden dependencies
 miden-agglayer  = { workspace = true }
+miden-core-lib  = { optional = true, workspace = true }
 miden-processor = { optional = true, workspace = true }
 miden-protocol  = { workspace = true }
 miden-standards = { workspace = true }

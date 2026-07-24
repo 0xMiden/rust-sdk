@@ -13,7 +13,7 @@ ifneq ($(BUILD_TARGET),)
 TARGET_FLAG = --target $(BUILD_TARGET)
 endif
 
-FEATURES_CLIENT=--features "std dap"
+FEATURES_CLIENT=--features "std dap debug-output"
 WARNINGS=RUSTDOCFLAGS="-D warnings"
 
 TEST_MIDEN_NOTE_TRANSPORT_URL?=http://127.0.0.1:57292

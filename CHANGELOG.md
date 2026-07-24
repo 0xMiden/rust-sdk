@@ -5,6 +5,7 @@
 ### Enhancements
 
 * [FEATURE][cli] Added a `--payback-note-type` option to `swap` so the payback note can be created as public or private (defaults to private). Public payback works without any off-band advice now that SWAP derives the payback recipient deterministically ([#2190](https://github.com/0xMiden/rust-sdk/pull/2190)).
+* [FEATURE][rust] Added the `debug-output` feature: `Client::execute_program_with_debugger` / `execute_transaction_with_debugger` run a script/transaction with its MASM debug output (the `miden::core::debug::print_*` procedures) routed to a caller-supplied `fmt::Write` sink instead of stdout, which is a no-op on `wasm32-unknown-unknown`. This lets consumers such as `@miden-sdk/miden-sdk` surface debug output on such targets. The routed sink also receives the advice-stack and advice-map printers that the default host omits, so use it only where that witness data is already the caller's own ([#2302](https://github.com/0xMiden/rust-sdk/pull/2302)).
 
 ## 0.16.0-alpha.1 (2026-07-17)
 

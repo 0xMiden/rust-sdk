@@ -1,20 +1,25 @@
-//! CLI-side WIT scalar codecs for typed `call` rendering.
+//! Protocol-aware WIT scalar codecs.
 //!
-//! The generic typed encode/decode engine and the [`WitScalarCodec`] trait live in
-//! `miden-mast-package`. The protocol-aware codecs — which need `miden-protocol` types such as
-//! `AccountId` and `Asset` to parse and render their friendly token form — live here, and are
-//! registered onto a [`TypedProcInfo`] in one place via [`with_cli_codecs`]. Commands call that
-//! helper instead of knowing about individual types.
+//! The encode/decode engine and the [`WitScalarCodec`] trait live in `miden-mast-package`, which
+//! does not depend on `miden-protocol` and should not: the VM does not depend on the protocol. So
+//! it ships the two codecs it can write itself, `word` and `felt`, and leaves the trait for the
+//! rest.
 //!
-//! [`WitScalarCodec`]: miden_mast_package::debug_info::typed::WitScalarCodec
-//! [`TypedProcInfo`]: miden_mast_package::debug_info::typed::TypedProcInfo
+//! `account-id` and `asset` are the rest. `AccountId::from_hex` says what a valid id is, and
+//! `Asset` says what a valid asset is, so both codecs live on this side.
+//!
+//! [`with_cli_codecs`] registers them in one place, so the commands that render typed signatures
+//! do not know the individual types.
+//!
+//! [`WitScalarCodec`]: miden_mast_package::typed::WitScalarCodec
+//! [`TypedProcInfo`]: miden_mast_package::typed::TypedProcInfo
 
 mod account_id;
 mod asset;
 
 pub use account_id::AccountIdCodec;
 pub use asset::AssetCodec;
-use miden_mast_package::debug_info::typed::{TypedDebugInfoError, TypedProcInfo};
+use miden_mast_package::typed::{TypedError, TypedProcInfo};
 
 /// Builds the `InvalidScalar` error a codec returns when it can't parse `token`. Shared so every
 /// codec reports the same error shape from one place.
@@ -22,8 +27,8 @@ pub(crate) fn invalid_scalar(
     wit_name: &str,
     token: &str,
     reason: &(impl ToString + ?Sized),
-) -> TypedDebugInfoError {
-    TypedDebugInfoError::InvalidScalar {
+) -> TypedError {
+    TypedError::InvalidScalar {
         wit_name: wit_name.to_string(),
         token: token.to_string(),
         reason: reason.to_string(),

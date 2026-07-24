@@ -14,7 +14,7 @@ use miden_client::{
     ErrorHint,
     NetworkIdError,
 };
-use miden_mast_package::debug_info::typed::TypedDebugInfoError;
+use miden_mast_package::typed::TypedError;
 use miette::Diagnostic;
 use thiserror::Error;
 
@@ -113,9 +113,12 @@ pub enum CliError {
     NotSynced,
     #[error("invalid argument: {0}")]
     InvalidArgument(String),
-    #[error("typed debug info error")]
-    #[diagnostic(code(cli::typed_debug_info_error))]
-    TypedDebugInfo(#[from] TypedDebugInfoError),
+    // Covers both directions of the typed path: encoding arguments and decoding results. The
+    // inner error already states the whole problem, so it is shown in place of a wrapper message
+    // rather than under one, where it would be printed twice.
+    #[error(transparent)]
+    #[diagnostic(code(cli::typed_error))]
+    Typed(#[from] TypedError),
     #[error("parse error: {1}")]
     #[diagnostic(code(cli::parse_error), help("Check the inputs."))]
     Parse(#[source] SourceError, String),

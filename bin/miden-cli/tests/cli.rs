@@ -46,7 +46,7 @@ use miden_client::{self, Client, Deserializable, Felt};
 use miden_client_cli::MIDEN_DIR;
 use miden_client_cli::config::Network;
 use miden_client_sqlite_store::SqliteStore;
-use midenc_hir_type::{CallConv, FunctionType, Type};
+use midenc_hir_type::{CallConv, FunctionType, StructType, Type};
 use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
 use rand::RngExt;
@@ -1741,7 +1741,17 @@ fn call_nonexistent_procedure() {
 /// Helper: builds the `call-test` package (arithmetic + storage procedures) at runtime and
 /// writes the serialized `.masp` to `out_path`.
 fn call_test_exports(package: &Package) -> Vec<PackageExport> {
-    let signature_overrides: [(&str, FunctionType); 4] = [
+    // The `account-id` core type as the compiler records it: a named record of two field
+    // elements. Its name is what the CLI's `account-id` codec matches against.
+    let account_id = Type::Struct(Arc::new(StructType::named(
+        Arc::from("miden:base/core-types@1.0.0/account-id"),
+        [
+            (Arc::<str>::from("prefix"), Type::Felt),
+            (Arc::<str>::from("suffix"), Type::Felt),
+        ],
+    )));
+
+    let signature_overrides: [(&str, FunctionType); 6] = [
         (
             "add",
             FunctionType::new(CallConv::ComponentModel, [Type::Felt, Type::Felt], [Type::Felt]),
@@ -1759,6 +1769,14 @@ fn call_test_exports(package: &Package) -> Vec<PackageExport> {
         (
             "wide_result",
             FunctionType::new(CallConv::ComponentModel, [], vec![Type::Felt; 17]),
+        ),
+        (
+            "take_account_id",
+            FunctionType::new(CallConv::ComponentModel, [account_id.clone()], [account_id.clone()]),
+        ),
+        (
+            "account_id_suffix",
+            FunctionType::new(CallConv::ComponentModel, [account_id.clone()], [Type::Felt]),
         ),
     ];
 
@@ -1819,6 +1837,20 @@ fn build_call_test_masp(out_path: &Path) {
             adv_push adv_push
             add
             exec.sys::truncate_stack
+        end
+
+        @account_procedure
+        pub proc take_account_id
+            # Identity over the two felts of an account id, so the typed decoder can be checked
+            # against the value that was encoded.
+            nop
+        end
+
+        @account_procedure
+        pub proc account_id_suffix
+            # Drops the prefix and returns the suffix, so a swapped field order cannot pass
+            # unnoticed the way it does through the identity above.
+            drop
         end
     "#;
 
@@ -2096,10 +2128,86 @@ fn call_with_advice_inputs() {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output_line(&stdout, "Result:"), "Result: 22felt");
+}
+
+/// Returns the single line of `stdout` that starts with `prefix`, so a test can compare the whole
+/// line. A fragment match would also accept a longer value that starts the same way.
+fn output_line<'a>(stdout: &'a str, prefix: &str) -> &'a str {
+    let mut matching = stdout.lines().filter(|line| line.starts_with(prefix));
+    let line = matching
+        .next()
+        .unwrap_or_else(|| panic!("no line starts with `{prefix}`:\n{stdout}"));
     assert!(
-        stdout.contains("Result: 22"),
-        "Expected advice-derived result in output:\n{stdout}"
+        matching.next().is_none(),
+        "more than one line starts with `{prefix}`:\n{stdout}"
     );
+    line
+}
+
+/// Tests the typed encode/decode path: an `account-id` hex token is expanded to two felts on
+/// the way in and rendered back as `account-id(0x..)` on the way out.
+#[test]
+fn call_typed_account_id_roundtrip() {
+    let (temp_dir, account_id, masp_path) = setup_call_test_account();
+
+    let acct_hex = "0xaa0000000000bb110000cc000000dd";
+    let mut cmd = cargo_bin_cmd!("miden-client");
+    cmd.args([
+        "call",
+        &format!("{account_id}:take_account_id"),
+        acct_hex,
+        "--package",
+        masp_path.to_str().unwrap(),
+    ]);
+
+    let output = cmd.current_dir(&temp_dir).output().unwrap();
+    assert!(
+        output.status.success(),
+        "Call failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        output_line(&stdout, "Signature:"),
+        "Signature: take_account_id(account-id) -> account-id"
+    );
+    assert_eq!(output_line(&stdout, "Result:"), format!("Result: account-id({acct_hex})"));
+}
+
+/// Tests that the two felts of an `account-id` argument reach the procedure in signature order.
+/// The identity round-trip above cannot show this: encoding and decoding would agree even if both
+/// had the fields the wrong way around.
+#[test]
+fn call_typed_account_id_field_order() {
+    let (temp_dir, account_id, masp_path) = setup_call_test_account();
+
+    let acct_hex = "0xaa0000000000bb110000cc000000dd";
+    let [_prefix, suffix]: [Felt; 2] = AccountId::from_hex(acct_hex).unwrap().into();
+
+    let mut cmd = cargo_bin_cmd!("miden-client");
+    cmd.args([
+        "call",
+        &format!("{account_id}:account_id_suffix"),
+        acct_hex,
+        "--package",
+        masp_path.to_str().unwrap(),
+    ]);
+
+    let output = cmd.current_dir(&temp_dir).output().unwrap();
+    assert!(
+        output.status.success(),
+        "Call failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        output_line(&stdout, "Signature:"),
+        "Signature: account_id_suffix(account-id) -> felt"
+    );
+    assert_eq!(output_line(&stdout, "Result:"), format!("Result: {suffix}felt"));
 }
 
 /// Tests that calling a `add` with the wrong number of arguments fails

@@ -2025,6 +2025,7 @@ dependencies = [
  "prost",
  "prost-types",
  "rand 0.10.1",
+ "rand_chacha 0.10.0",
  "serde",
  "serde_json",
  "tempfile",

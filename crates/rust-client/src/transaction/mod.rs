@@ -96,6 +96,7 @@ use crate::rpc::domain::account::{
     StorageMapFetch,
     VaultFetch,
 };
+use crate::rpc::encryption::{TransactionEncryptionKey, seal_transaction_inputs};
 use crate::rpc::{AccountStateAt, NodeRpcClient};
 use crate::store::data_store::ClientDataStore;
 use crate::store::input_note_states::ExpectedNoteState;
@@ -459,13 +460,28 @@ where
         transaction_inputs: impl Into<TransactionInputs>,
     ) -> Result<BlockNumber, ClientError> {
         info!("Submitting transaction to the network...");
+        let key = self.transaction_encryption_key().await?;
+        let sealed_inputs =
+            seal_transaction_inputs(&mut self.rng, &key, &transaction_inputs.into())?;
         let block_num = self
             .rpc_api
-            .submit_proven_transaction(proven_transaction, transaction_inputs.into())
+            .submit_proven_transaction(proven_transaction, sealed_inputs)
             .await?;
         info!("Transaction submitted.");
 
         Ok(block_num)
+    }
+
+    /// Returns the validator set's transaction encryption key as cached in the store.
+    ///
+    /// The key is public data shared by the whole validator set, so the cached copy is reused
+    /// across submissions and restarts. It must be provisioned by the caller via
+    /// [`crate::store::Store::set_transaction_encryption_key`]; this client does not fetch it.
+    async fn transaction_encryption_key(&self) -> Result<TransactionEncryptionKey, ClientError> {
+        self.store
+            .get_transaction_encryption_key()
+            .await?
+            .ok_or(ClientError::MissingTransactionEncryptionKey)
     }
 
     /// Builds a [`TransactionStoreUpdate`] for the provided transaction result at the specified

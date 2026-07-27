@@ -40,6 +40,7 @@ use super::domain::account::{
 };
 use super::domain::note::{CommittedNote, FetchedNote, SyncNotesBlock};
 use super::domain::nullifier::NullifierUpdate;
+use super::encryption::SealedTransactionInputs;
 use super::generated::rpc::AccountRequest;
 use super::generated::rpc::account_request::AccountDetailRequest;
 use super::{Endpoint, NodeRpcClient, RpcEndpoint, RpcError, RpcStatusInfo};
@@ -423,11 +424,11 @@ impl NodeRpcClient for GrpcClient {
     async fn submit_proven_transaction(
         &self,
         proven_transaction: ProvenTransaction,
-        transaction_inputs: TransactionInputs,
+        transaction_inputs: SealedTransactionInputs,
     ) -> Result<BlockNumber, RpcError> {
         let request = proto::transaction::ProvenTransaction {
             transaction: proven_transaction.to_bytes(),
-            transaction_inputs: Some(transaction_inputs.to_bytes()),
+            transaction_inputs: Some(transaction_inputs.into_bytes()),
         };
 
         let api_response = self

@@ -65,6 +65,7 @@ use domain::note::{
 };
 use domain::nullifier::NullifierUpdate;
 use domain::sync::{ChainMmrInfo, SyncTarget};
+use encryption::SealedTransactionInputs;
 use miden_protocol::Word;
 use miden_protocol::account::{Account, AccountId};
 use miden_protocol::address::NetworkId;
@@ -79,6 +80,7 @@ use crate::rpc::domain::storage_map::StorageMapInfo;
 /// Contains domain types related to RPC requests and responses, as well as utility functions
 /// for dealing with them.
 pub mod domain;
+pub mod encryption;
 
 mod errors;
 pub use errors::*;
@@ -136,11 +138,14 @@ pub trait NodeRpcClient: Send + Sync {
     /// Given a Proven Transaction, send it to the node for it to be included in a future block
     /// using the `/SubmitProvenTransaction` RPC endpoint.
     ///
+    /// The transaction inputs are passed already sealed, since sealing needs the client's RNG
+    /// for the scheme's ephemeral key material. See [`encryption`] for how they are produced.
+    ///
     /// Returns the node's chain tip at submission (not the block the transaction is committed in).
     async fn submit_proven_transaction(
         &self,
         proven_transaction: ProvenTransaction,
-        transaction_inputs: TransactionInputs,
+        transaction_inputs: SealedTransactionInputs,
     ) -> Result<BlockNumber, RpcError>;
 
     /// Given a Proven Batch together with the corresponding [`ProposedBatch`] and the list of

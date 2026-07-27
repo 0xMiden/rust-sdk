@@ -42,6 +42,7 @@ use crate::rpc::domain::status::NetworkNoteStatusInfo;
 use crate::rpc::domain::storage_map::StorageMapInfo;
 use crate::rpc::domain::sync::{ChainMmrInfo, SyncTarget};
 use crate::rpc::domain::transaction::TransactionRecord;
+use crate::rpc::encryption::SealedTransactionInputs;
 use crate::rpc::{AccountStateAt, NodeRpcClient, RpcError, RpcStatusInfo};
 
 pub type MockClient<AUTH> = Client<AUTH>;
@@ -448,7 +449,7 @@ impl NodeRpcClient for MockRpcApi {
     async fn submit_proven_transaction(
         &self,
         proven_transaction: ProvenTransaction,
-        _tx_inputs: TransactionInputs, // Unnecessary for testing client itself.
+        _tx_inputs: SealedTransactionInputs, // Unnecessary for testing client itself.
     ) -> Result<BlockNumber, RpcError> {
         // TODO: add some basic validations to test error cases
 

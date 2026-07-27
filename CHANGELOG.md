@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Breaking Changes
+
+* [BREAKING][rust] `StateSyncUpdate` is now immutable once built: its `block_num`, `partial_blockchain_updates`, `note_updates`, `transaction_updates` and `account_updates` fields are private and it no longer implements `Default`. Build one with `StateSyncUpdate::from_parts`, read it through the same-named accessors, and take ownership of the contents with `into_parts` ([#2297](https://github.com/0xMiden/rust-sdk/pull/2297)).
+* [BREAKING][param][rust] `PartialBlockchainUpdates::insert` no longer takes the block's MMR authentication nodes; stage them separately with the new `extend_authentication_nodes` ([#2297](https://github.com/0xMiden/rust-sdk/pull/2297)).
+
+### Changes
+
+* [rust] Added `PartialBlockchainUpdates::block_headers_to_store`, which narrows the staged headers to the ones a sync must persist: those carrying client notes, genesis, and the block at the sync height. `block_headers` still yields all of them ([#2297](https://github.com/0xMiden/rust-sdk/pull/2297)).
+* [rust] `NoteObserver` gained a defaulted `live_blocks` method. An observer that inserts notes into the store from `apply` must report those notes' blocks there, otherwise end-of-sync minimization can untrack a block the observer still needs. Observers that only use `observe` need no change ([#2297](https://github.com/0xMiden/rust-sdk/pull/2297)).
+
 ## 0.16.0-alpha.1 (2026-07-17)
 
 ### Breaking Changes

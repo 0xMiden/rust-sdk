@@ -131,8 +131,18 @@ where
         // Get the sync update from the network
         let state_sync_update = state_sync.sync_state(&mut partial_mmr, input).await?;
 
-        let sync_summary: SyncSummary = (&state_sync_update).into();
-        debug!(sync_summary = ?sync_summary, "Sync summary computed");
+        let mut sync_summary: SyncSummary = (&state_sync_update).into();
+
+        // Accounts whose network commitment diverges from the local state. The store locks such an
+        // account only when the diverging commitment is absent from local history, so which of
+        // these actually get locked is only observable by reading their status back afterwards.
+        let lock_candidates: Vec<AccountId> = state_sync_update
+            .account_updates
+            .mismatched_private_accounts()
+            .iter()
+            .map(|(id, _)| *id)
+            .collect();
+        let already_locked = self.locked_accounts_among(&lock_candidates).await?;
 
         // Post-sync observer hooks; run before persisting. Per-observer errors are logged, not
         // propagated.
@@ -145,6 +155,15 @@ where
             .apply_state_sync(state_sync_update)
             .await
             .map_err(ClientError::StoreError)?;
+
+        sync_summary.locked_accounts = self
+            .locked_accounts_among(&lock_candidates)
+            .await?
+            .into_iter()
+            .filter(|account_id| !already_locked.contains(account_id))
+            .collect();
+
+        debug!(sync_summary = ?sync_summary, "Sync summary computed");
 
         // Cache MMR so pruning can reuse in-memory MMR.
         self.cache_partial_mmr(partial_mmr).await?;
@@ -200,6 +219,24 @@ where
         let mut summary = self.sync_chain().await?;
         summary.new_private_notes = new_private_notes;
         Ok(summary)
+    }
+
+    /// Returns which of the given accounts are currently locked.
+    ///
+    /// Accounts missing from the store are treated as not locked.
+    async fn locked_accounts_among(
+        &self,
+        account_ids: &[AccountId],
+    ) -> Result<BTreeSet<AccountId>, ClientError> {
+        let mut locked = BTreeSet::new();
+        for account_id in account_ids {
+            let header = self.store.get_account_header(*account_id).await?;
+            if header.is_some_and(|(_, status)| status.is_locked()) {
+                locked.insert(*account_id);
+            }
+        }
+
+        Ok(locked)
     }
 
     /// Builds a default [`StateSyncInput`] from the current client state.
@@ -357,7 +394,12 @@ pub struct SyncSummary {
     pub consumed_notes: Vec<NoteId>,
     /// IDs of on-chain accounts that have been updated.
     pub updated_accounts: Vec<AccountId>,
-    /// IDs of private accounts that have been locked.
+    /// IDs of private accounts that this sync locked because their on-chain commitment diverged
+    /// from the local state.
+    ///
+    /// A divergence that resolves to a commitment already present in local history is stale
+    /// network data rather than a real conflict; it leaves the account usable and is not reported
+    /// here. Accounts already locked before this sync are also excluded.
     pub locked_accounts: Vec<AccountId>,
     /// IDs of committed transactions.
     pub committed_transactions: Vec<TransactionId>,

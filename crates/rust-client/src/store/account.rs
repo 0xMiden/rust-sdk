@@ -1,13 +1,11 @@
 // ACCOUNT RECORD
 // ================================================================================================
-use alloc::vec::Vec;
 use core::fmt::Display;
 
-use miden_protocol::account::{Account, AccountId, PartialAccount};
+use miden_protocol::account::{Account, PartialAccount};
 use miden_protocol::{Felt, Word};
 
 use crate::ClientError;
-use crate::sync::PublicAccountUpdate;
 
 // ACCOUNT RECORD DATA
 // ================================================================================================
@@ -173,40 +171,5 @@ impl Display for AccountStatus {
             AccountStatus::Tracked => write!(f, "Tracked"),
             AccountStatus::Locked { .. } => write!(f, "Locked"),
         }
-    }
-}
-
-// ACCOUNT UPDATES
-// ================================================================================================
-
-/// Contains account changes to apply to the store.
-pub struct AccountUpdates {
-    /// Updated public accounts, either as full state replacements or incremental deltas.
-    updated_public_accounts: Vec<PublicAccountUpdate>,
-    /// Network account commitments that don't match the current tracked state for private
-    /// accounts.
-    mismatched_private_accounts: Vec<(AccountId, Word)>,
-}
-
-impl AccountUpdates {
-    /// Creates a new instance of `AccountUpdates`.
-    pub fn new(
-        updated_public_accounts: Vec<PublicAccountUpdate>,
-        mismatched_private_accounts: Vec<(AccountId, Word)>,
-    ) -> Self {
-        Self {
-            updated_public_accounts,
-            mismatched_private_accounts,
-        }
-    }
-
-    /// Returns the updated public accounts.
-    pub fn updated_public_accounts(&self) -> &[PublicAccountUpdate] {
-        &self.updated_public_accounts
-    }
-
-    /// Returns the mismatched private accounts.
-    pub fn mismatched_private_accounts(&self) -> &[(AccountId, Word)] {
-        &self.mismatched_private_accounts
     }
 }

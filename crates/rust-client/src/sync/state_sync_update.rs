@@ -45,6 +45,19 @@ pub struct StateSyncUpdate {
     pub account_updates: AccountUpdates,
 }
 
+impl StateSyncUpdate {
+    /// Discards the local transactions whose resulting account state was superseded by a
+    /// same-nonce network transaction.
+    ///
+    /// Such a transaction can never commit, so leaving it pending would keep it pending forever.
+    /// Repeated calls are harmless: only pending transactions are discarded.
+    pub(crate) fn discard_superseded_transactions(&mut self) {
+        for superseded_state in &self.account_updates.superseded_local_states {
+            self.transaction_updates.apply_superseded_account_state(*superseded_state);
+        }
+    }
+}
+
 impl From<&StateSyncUpdate> for SyncSummary {
     fn from(value: &StateSyncUpdate) -> Self {
         let new_public_note_ids = value
@@ -104,12 +117,11 @@ impl From<&StateSyncUpdate> for SyncSummary {
                 .iter()
                 .map(PublicAccountUpdate::id)
                 .collect(),
-            value
-                .account_updates
-                .mismatched_private_accounts()
-                .iter()
-                .map(|(id, _)| *id)
-                .collect(),
+            // A mismatched private account is only a *candidate* for locking: the store leaves it
+            // usable when the diverging commitment is already in local history. The verdict is
+            // knowable only once the update has been applied, so `Client::sync_chain` fills this
+            // in afterwards.
+            Vec::new(),
             value.transaction_updates.committed_transactions().map(|t| t.id).collect(),
         )
     }
@@ -440,6 +452,11 @@ pub struct AccountUpdates {
     /// hasn't been committed). If this is not the case, the account may be locked until the state
     /// is restored manually.
     mismatched_private_accounts: Vec<(AccountId, Word)>,
+    /// Local account states that lost a same-nonce race against a network transaction.
+    ///
+    /// The transactions that produced these states can never commit, so they are discarded by
+    /// [`StateSyncUpdate::discard_superseded_transactions`].
+    superseded_local_states: Vec<Word>,
 }
 
 impl AccountUpdates {
@@ -451,6 +468,7 @@ impl AccountUpdates {
         Self {
             updated_public_accounts,
             mismatched_private_accounts,
+            superseded_local_states: Vec::new(),
         }
     }
 
@@ -464,9 +482,34 @@ impl AccountUpdates {
         &self.mismatched_private_accounts
     }
 
+    /// Returns the local account states that were superseded by a same-nonce network transaction.
+    pub fn superseded_local_states(&self) -> &[Word] {
+        &self.superseded_local_states
+    }
+
     pub fn extend(&mut self, other: AccountUpdates) {
         self.updated_public_accounts.extend(other.updated_public_accounts);
         self.mismatched_private_accounts.extend(other.mismatched_private_accounts);
+        self.superseded_local_states.extend(other.superseded_local_states);
+    }
+
+    /// Records an updated public account.
+    pub(crate) fn push_public_update(&mut self, update: PublicAccountUpdate) {
+        self.updated_public_accounts.push(update);
+    }
+
+    /// Records a private account whose network commitment diverges from the local state.
+    pub(crate) fn push_mismatched_private_account(
+        &mut self,
+        account_id: AccountId,
+        proven_commitment: Word,
+    ) {
+        self.mismatched_private_accounts.push((account_id, proven_commitment));
+    }
+
+    /// Records a local account state that lost a same-nonce race against a network transaction.
+    pub(crate) fn push_superseded_local_state(&mut self, superseded_state: Word) {
+        self.superseded_local_states.push(superseded_state);
     }
 }
 

@@ -1468,6 +1468,94 @@ async fn lock_account_affects_latest_and_historical() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Verifies that a mismatched commitment already present in local history leaves the account
+/// unlocked: the divergence is stale network data reporting a state the client already knows, not
+/// a real conflict.
+///
+/// `Client::sync_chain` reads the lock status back after applying a sync to decide which accounts
+/// it actually locked, so this negative branch is what keeps `SyncSummary::locked_accounts` from
+/// reporting a lock that never happened.
+#[tokio::test]
+async fn lock_account_ignores_commitment_present_in_history() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+    let map_slot_name = StorageSlotName::new("test::lock::stale").expect("valid slot name");
+
+    // Insert account (nonce 1) and record the commitment of that state.
+    let mut account = setup_account_with_map(&store, 3, &map_slot_name).await?;
+    let account_id = account.id();
+    let historical_commitment = account.to_commitment();
+
+    // Advance the account to nonce 2, which archives the nonce-1 header into the historical table.
+    let mut map_entries = StorageMapPatchEntries::new();
+    map_entries.insert(
+        StorageMapKey::new([Felt::from(1u32), ZERO, ZERO, ZERO].into()),
+        [Felt::from(2000u32), ZERO, ZERO, ZERO].into(),
+    );
+    let storage_patch = AccountStoragePatch::from_entries([(
+        map_slot_name.clone(),
+        StorageSlotPatch::Map(StorageMapPatch::Update { entries: map_entries }),
+    )])?;
+    let patch = AccountPatch::new(
+        account.id(),
+        storage_patch,
+        AccountVaultPatch::default(),
+        None,
+        Some(Felt::from(2u32)),
+    )?;
+    let prev_header: AccountHeader = (&account).into();
+    account.apply_patch(&patch)?;
+    let final_header: AccountHeader = (&account).into();
+
+    let smt_forest = store.smt_forest.clone();
+    let patch_clone = patch.clone();
+    store
+        .interact_with_connection(move |conn| {
+            let old_map_roots = SqliteStore::get_storage_map_roots_for_patch(
+                conn,
+                account_id,
+                patch_clone.storage(),
+            )?;
+            let tx = conn.transaction().into_store_error()?;
+            let mut smt_forest = smt_forest.write().expect("smt_forest write lock not poisoned");
+            SqliteStore::apply_account_patch(
+                &tx,
+                &mut smt_forest,
+                &prev_header,
+                &final_header,
+                &old_map_roots,
+                &patch,
+            )?;
+            tx.commit().into_store_error()?;
+            Ok(())
+        })
+        .await?;
+
+    // The node reports the nonce-1 commitment, which the client already has in history.
+    store
+        .interact_with_connection(move |conn| {
+            let tx = conn.transaction().into_store_error()?;
+            SqliteStore::lock_account_on_unexpected_commitment(
+                &tx,
+                &account_id,
+                &historical_commitment,
+            )?;
+            tx.commit().into_store_error()?;
+            Ok(())
+        })
+        .await?;
+
+    let (_header, status) = store
+        .interact_with_connection(move |conn| SqliteStore::get_account_header(conn, account_id))
+        .await?
+        .expect("account should exist");
+    assert!(
+        !status.is_locked(),
+        "a commitment already in local history must not lock the account"
+    );
+
+    Ok(())
+}
+
 /// Verifies that undoing a patch after `update_account_state` does not resurrect entries that
 /// were removed by the update. This exercises the archival logic in `update_account_state`.
 ///

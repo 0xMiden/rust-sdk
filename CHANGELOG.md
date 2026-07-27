@@ -6,6 +6,14 @@
 
 * [FEATURE][cli] Added a `--payback-note-type` option to `swap` so the payback note can be created as public or private (defaults to private). Public payback works without any off-band advice now that SWAP derives the payback recipient deterministically ([#2190](https://github.com/0xMiden/rust-sdk/pull/2190)).
 
+### Changes
+
+* [rust] `AccountUpdates` records the local account states superseded by a same-nonce network transaction alongside the public and mismatched-private account updates, exposed via `AccountUpdates::superseded_local_states`. State sync discards the affected transactions as part of account sync rather than relying on its caller to forward a separate return value. `miden_client::store::AccountUpdates` and `miden_client::sync::AccountUpdates` now name the same type.
+
+### Fixes
+
+* [FIX][rust] `SyncSummary::locked_accounts` now reports only the private accounts a sync actually locked. A mismatched commitment that is already present in local history is stale network data and leaves the account usable, but every mismatch was previously reported as a lock — so `miden-client-cli sync` could print a non-zero "Locked accounts" count for accounts that remained usable. The count also no longer re-reports accounts that were already locked before the sync.
+
 ## 0.16.0-alpha.1 (2026-07-17)
 
 ### Breaking Changes

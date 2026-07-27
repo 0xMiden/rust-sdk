@@ -284,16 +284,22 @@ impl StateSync {
             ));
         };
 
-        let chain_tip = sync_data.chain_tip_header.block_num();
+        let FetchedSyncData {
+            mmr_delta,
+            chain_tip_header,
+            note_blocks,
+            transactions,
+        } = sync_data;
+        let chain_tip = chain_tip_header.block_num();
 
-        let new_commitments = derive_account_commitments(&sync_data.transactions);
+        let new_commitments = derive_account_commitments(&transactions);
         let superseded_states = self
             .account_state_sync(
                 &mut account_updates,
                 &accounts,
                 &new_commitments,
                 block_num,
-                &sync_data.chain_tip_header,
+                &chain_tip_header,
             )
             .await?;
 
@@ -305,16 +311,19 @@ impl StateSync {
         // Work on a clone so any validation failure leaves `current_partial_mmr` untouched.
         let mut working_mmr = current_partial_mmr.clone();
 
-        // Apply local changes: update the MMR, screen notes, and apply state transitions.
-        let relevant_note_blocks = self
-            .apply_sync_result(
-                sync_data,
-                &mut partial_blockchain_updates,
-                &mut note_updates,
-                &mut transaction_updates,
-                &mut working_mmr,
-            )
-            .await?;
+        Self::advance_mmr(
+            mmr_delta,
+            &chain_tip_header,
+            &mut working_mmr,
+            &mut partial_blockchain_updates,
+        )?;
+        let relevant_note_blocks = self.screen_note_blocks(note_blocks, &mut note_updates).await?;
+        self.apply_transactions_and_nullifiers(
+            &chain_tip_header,
+            &transactions,
+            &mut note_updates,
+            &mut transaction_updates,
+        )?;
 
         if self.sync_nullifiers {
             self.nullifiers_state_sync(
@@ -440,44 +449,6 @@ impl StateSync {
 
     // HELPERS
     // --------------------------------------------------------------------------------------------
-
-    /// Applies sync results to the local state update.
-    ///
-    /// Applies fetched sync data to the local state:
-    /// 1. Advances the partial MMR (delta + chain tip leaf).
-    /// 2. Screens note blocks for relevance.
-    /// 3. Applies transaction and nullifier updates.
-    ///
-    /// Returns the relevant note blocks, which the caller tracks once it knows which still hold an
-    /// unspent note.
-    async fn apply_sync_result(
-        &self,
-        sync_data: FetchedSyncData,
-        partial_blockchain_updates: &mut PartialBlockchainUpdates,
-        note_updates: &mut NoteUpdateTracker,
-        transaction_updates: &mut TransactionUpdateTracker,
-        working_mmr: &mut PartialMmr,
-    ) -> Result<Vec<(BlockHeader, MerklePath)>, ClientError> {
-        let FetchedSyncData {
-            mmr_delta,
-            chain_tip_header,
-            note_blocks,
-            transactions,
-        } = sync_data;
-
-        Self::advance_mmr(mmr_delta, &chain_tip_header, working_mmr, partial_blockchain_updates)?;
-
-        let relevant_note_blocks = self.screen_note_blocks(note_blocks, note_updates).await?;
-
-        self.apply_transactions_and_nullifiers(
-            &chain_tip_header,
-            &transactions,
-            note_updates,
-            transaction_updates,
-        )?;
-
-        Ok(relevant_note_blocks)
-    }
 
     /// Validates that a `sync_chain_mmr` response covers the requested range.
     fn validate_chain_mmr_response(

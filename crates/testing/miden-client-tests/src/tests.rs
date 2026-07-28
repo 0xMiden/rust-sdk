@@ -2268,7 +2268,7 @@ async fn note_screening_reports_only_the_account_bound_by_the_note() {
         .collect::<Result<Vec<Note>, _>>()
         .unwrap();
 
-    let screened = Box::pin(client.note_screener().can_consume_batch(&notes)).await.unwrap();
+    let screened = Box::pin(client.note_screener().get_batch_consumability(&notes)).await.unwrap();
 
     assert_eq!(screened.keys().copied().collect::<BTreeSet<NoteId>>(), expected_ids);
     for relevances in screened.values() {

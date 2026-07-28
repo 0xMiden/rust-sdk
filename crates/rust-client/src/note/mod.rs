@@ -178,8 +178,9 @@ where
     ///   [`NoteFilter::Committed`] if note consumability verdict is not needed.
     /// - Wait for a specific note to commit with [`Self::get_input_note`] and
     ///   [`InputNoteRecord::is_committed`], instead of polling for it in the screened results.
-    /// - Screen a narrower set of notes with [`NoteScreener::can_consume_batch`] or
-    ///   [`NoteScreener::can_consume_batch_for_account`], reached through [`Self::note_screener`].
+    /// - Screen a narrower set of notes with [`NoteScreener::get_batch_consumability`] or
+    ///   [`NoteScreener::get_batch_consumability_for_account`], reached through
+    ///   [`Self::note_screener`].
     pub async fn get_consumable_notes(
         &self,
         account_id: Option<AccountId>,
@@ -194,9 +195,9 @@ where
         let note_screener = self.note_screener();
         let mut note_relevances = match account_id {
             Some(account_id) => {
-                note_screener.can_consume_batch_for_account(account_id, &notes).await?
+                note_screener.get_batch_consumability_for_account(account_id, &notes).await?
             },
-            None => note_screener.can_consume_batch(&notes).await?,
+            None => note_screener.get_batch_consumability(&notes).await?,
         };
 
         let mut relevant_notes = Vec::new();
@@ -224,7 +225,10 @@ where
         &self,
         note: InputNoteRecord,
     ) -> Result<Vec<NoteConsumability>, ClientError> {
-        self.note_screener().can_consume(&note.try_into()?).await.map_err(Into::into)
+        self.note_screener()
+            .get_consumability(&note.try_into()?)
+            .await
+            .map_err(Into::into)
     }
 
     /// Retrieves the input note given a [`NoteId`]. Returns `None` if the note is not found.

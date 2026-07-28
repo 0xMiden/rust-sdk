@@ -884,7 +884,7 @@ where
         let output_notes: Vec<Note> =
             notes_from_output(executed_tx.output_notes()).cloned().collect();
         let note_screener = self.note_screener().clone();
-        let output_note_relevances = note_screener.can_consume_batch(&output_notes).await?;
+        let output_note_relevances = note_screener.get_batch_consumability(&output_notes).await?;
 
         for note in output_notes {
             if output_note_relevances.contains_key(&note.id()) {

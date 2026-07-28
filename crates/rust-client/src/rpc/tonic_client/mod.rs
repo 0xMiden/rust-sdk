@@ -48,6 +48,7 @@ use super::encryption::{
     AttestedTransactionEncryptionKey,
     NextTransactionEncryptionKey,
     SealedTransactionInputs,
+    ValidatorAttestation,
 };
 use super::generated::rpc::AccountRequest;
 use super::generated::rpc::account_request::AccountDetailRequest;
@@ -393,7 +394,7 @@ impl NodeRpcClient for GrpcClient {
                     ValidatorPublicKey::read_from_bytes(&attestation.validator_public_key)?;
                 let signature = ValidatorSignature::read_from_bytes(&attestation.signature)?;
 
-                Ok((validator_key, signature))
+                Ok(ValidatorAttestation { validator_key, signature })
             })
             .collect::<Result<Vec<_>, RpcError>>()?;
 
@@ -401,7 +402,7 @@ impl NodeRpcClient for GrpcClient {
             scheme: next.scheme.unsigned_abs(),
             key_id: next.key_id,
             public_key: next.public_key,
-            rotation_block_num: next.rotation_block_num,
+            rotation_block_num: next.rotation_block_num.into(),
         });
 
         Ok(AttestedTransactionEncryptionKey {

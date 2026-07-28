@@ -31,7 +31,7 @@
 use alloc::string::ToString;
 use alloc::vec::Vec;
 
-use miden_protocol::block::ValidatorKeys;
+use miden_protocol::block::{BlockNumber, ValidatorKeys};
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
     PublicKey as ValidatorPublicKey,
     Signature as ValidatorSignature,
@@ -150,7 +150,20 @@ pub struct NextTransactionEncryptionKey {
     /// Raw public key bytes of the next key.
     pub public_key: Vec<u8>,
     /// Block number at which the next key takes effect.
-    pub rotation_block_num: u32,
+    pub rotation_block_num: BlockNumber,
+}
+
+/// A single validator's endorsement of a served encryption key.
+///
+/// The signature covers [`attestation_commitment`] recomputed from the served fields, and counts
+/// only if `validator_key` is present in a validator set committed in a block header this client
+/// trusts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ValidatorAttestation {
+    /// Signing key of the attesting validator.
+    pub validator_key: ValidatorPublicKey,
+    /// The validator's signature over [`attestation_commitment`].
+    pub signature: ValidatorSignature,
 }
 
 /// A transaction encryption key exactly as the node served it, before it is trusted.
@@ -169,8 +182,8 @@ pub struct AttestedTransactionEncryptionKey {
     pub key_id: Vec<u8>,
     /// Raw public key bytes.
     pub public_key: Vec<u8>,
-    /// Validator attestations over [`attestation_commitment`], as `(validator key, signature)`.
-    pub attestations: Vec<(ValidatorPublicKey, ValidatorSignature)>,
+    /// Validator attestations over [`attestation_commitment`].
+    pub attestations: Vec<ValidatorAttestation>,
     /// The next key, when a rotation is scheduled.
     pub next_key: Option<NextTransactionEncryptionKey>,
 }
@@ -207,8 +220,9 @@ impl AttestedTransactionEncryptionKey {
         );
 
         let recognized = validator_keys.as_keys();
-        let attested = self.attestations.iter().any(|(validator_key, signature)| {
-            recognized.contains(validator_key) && validator_key.verify(commitment, signature)
+        let attested = self.attestations.iter().any(|attestation| {
+            recognized.contains(&attestation.validator_key)
+                && attestation.validator_key.verify(commitment, &attestation.signature)
         });
         if !attested {
             return Err(RpcError::TransactionEncryptionKeyRejected(
@@ -252,7 +266,7 @@ pub fn attestation_commitment(
         payload.extend_from_slice(&next.scheme.to_le_bytes());
         extend_with_length_prefixed(&mut payload, &next.key_id);
         extend_with_length_prefixed(&mut payload, &next.public_key);
-        payload.extend_from_slice(&next.rotation_block_num.to_le_bytes());
+        payload.extend_from_slice(&next.rotation_block_num.as_u32().to_le_bytes());
     }
 
     Hasher::hash(&payload)
@@ -412,7 +426,10 @@ mod tests {
             scheme: SUPPORTED_SCHEME,
             key_id: key.key_id().to_vec(),
             public_key,
-            attestations: vec![(signer.public_key(), signer.sign(commitment))],
+            attestations: vec![ValidatorAttestation {
+                validator_key: signer.public_key(),
+                signature: signer.sign(commitment),
+            }],
             next_key: None,
         }
     }
@@ -508,7 +525,7 @@ mod tests {
             scheme: 2,
             key_id: b"next-key-id".to_vec(),
             public_key: b"next-public-key".to_vec(),
-            rotation_block_num: 7,
+            rotation_block_num: BlockNumber::from(7u32),
         };
         let with_rotation =
             attestation_commitment(1, b"golden-key-id", genesis, b"golden-public-key", Some(&next));

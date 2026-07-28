@@ -169,10 +169,9 @@ pub trait NodeRpcClient: Send + Sync {
     /// RPC endpoint. All transactions in the batch must build on the current mempool state
     /// following normal transaction submission rules.
     ///
-    /// Unlike [`Self::submit_proven_transaction`], the transaction inputs travel unencrypted:
-    /// the node's batch endpoint specifies plaintext [`TransactionInputs`] on the wire and does
-    /// not unseal on the batch path, so the inputs are readable by the RPC operator until node
-    /// support for sealed batch inputs lands.
+    /// Each transaction's inputs are sealed independently against its own transaction ID, because
+    /// the node fans the batch out into one validator submission per transaction. See
+    /// [`encryption`] for how the sealed inputs are produced.
     ///
     /// Returns the node's chain tip at submission (not the block the batch is committed in).
     async fn submit_proven_batch(

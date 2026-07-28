@@ -410,15 +410,27 @@ impl NodeRpcClient for GrpcClient {
             })
             .collect::<Vec<_>>();
 
-        let next_key = response.next_key.map(|next| NextTransactionEncryptionKey {
-            scheme: next.scheme.unsigned_abs(),
-            key_id: next.key_id,
-            public_key: next.public_key,
-            rotation_block_num: next.rotation_block_num.into(),
-        });
+        // A negative scheme is a malformed response, not a scheme this client happens to not
+        // support, so it is rejected here rather than aliased onto a valid identifier.
+        let wire_scheme = |scheme: i32| {
+            u32::try_from(scheme)
+                .map_err(|_| RpcError::InvalidResponse(format!("negative IES scheme '{scheme}'")))
+        };
+
+        let next_key = response
+            .next_key
+            .map(|next| {
+                Ok::<_, RpcError>(NextTransactionEncryptionKey {
+                    scheme: wire_scheme(next.scheme)?,
+                    key_id: next.key_id,
+                    public_key: next.public_key,
+                    rotation_block_num: next.rotation_block_num.into(),
+                })
+            })
+            .transpose()?;
 
         Ok(AttestedTransactionEncryptionKey {
-            scheme: response.scheme.unsigned_abs(),
+            scheme: wire_scheme(response.scheme)?,
             key_id: response.key_id,
             public_key: response.public_key,
             attestations,

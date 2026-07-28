@@ -21,6 +21,10 @@ use miden_protocol::address::NetworkId;
 use miden_protocol::batch::{ProposedBatch, ProvenBatch};
 use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::block::{BlockHeader, BlockNumber, ProvenBlock};
+use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
+    PublicKey as ValidatorPublicKey,
+    Signature as ValidatorSignature,
+};
 use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::crypto::merkle::mmr::{Forest, MmrPath, MmrProof};
 use miden_protocol::note::{NoteId, NoteScript, NoteTag};
@@ -40,7 +44,11 @@ use super::domain::account::{
 };
 use super::domain::note::{CommittedNote, FetchedNote, SyncNotesBlock};
 use super::domain::nullifier::NullifierUpdate;
-use super::encryption::SealedTransactionInputs;
+use super::encryption::{
+    AttestedTransactionEncryptionKey,
+    NextTransactionEncryptionKey,
+    SealedTransactionInputs,
+};
 use super::generated::rpc::AccountRequest;
 use super::generated::rpc::account_request::AccountDetailRequest;
 use super::{Endpoint, NodeRpcClient, RpcEndpoint, RpcError, RpcStatusInfo};
@@ -419,6 +427,44 @@ impl NodeRpcClient for GrpcClient {
         }
 
         Ok(())
+    }
+
+    async fn get_transaction_encryption_key(
+        &self,
+    ) -> Result<AttestedTransactionEncryptionKey, RpcError> {
+        let api_response = self
+            .call_with_retry(RpcEndpoint::GetTransactionEncryptionKey, |mut rpc_api| {
+                Box::pin(async move { rpc_api.get_transaction_encryption_key(()).await })
+            })
+            .await?;
+        let response = api_response.into_inner();
+
+        let attestations = response
+            .attestations
+            .into_iter()
+            .map(|attestation| {
+                let validator_key =
+                    ValidatorPublicKey::read_from_bytes(&attestation.validator_public_key)?;
+                let signature = ValidatorSignature::read_from_bytes(&attestation.signature)?;
+
+                Ok((validator_key, signature))
+            })
+            .collect::<Result<Vec<_>, RpcError>>()?;
+
+        let next_key = response.next_key.map(|next| NextTransactionEncryptionKey {
+            scheme: next.scheme.unsigned_abs(),
+            key_id: next.key_id,
+            public_key: next.public_key,
+            rotation_block_num: next.rotation_block_num,
+        });
+
+        Ok(AttestedTransactionEncryptionKey {
+            scheme: response.scheme.unsigned_abs(),
+            key_id: response.key_id,
+            public_key: response.public_key,
+            attestations,
+            next_key,
+        })
     }
 
     async fn submit_proven_transaction(

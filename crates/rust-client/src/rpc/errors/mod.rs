@@ -50,6 +50,8 @@ pub enum RpcError {
     NoteNotFound(NoteId),
     #[error("failed to seal transaction inputs for submission: {0}")]
     TransactionInputsSealingFailed(String),
+    #[error("the transaction encryption key served by the node was rejected: {0}")]
+    TransactionEncryptionKeyRejected(String),
     #[error("invalid Miden node endpoint '{0}'; expected format: https://host:port")]
     InvalidNodeEndpoint(String),
 }

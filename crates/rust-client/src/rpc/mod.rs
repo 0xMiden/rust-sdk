@@ -65,7 +65,7 @@ use domain::note::{
 };
 use domain::nullifier::NullifierUpdate;
 use domain::sync::{ChainMmrInfo, SyncTarget};
-use encryption::SealedTransactionInputs;
+use encryption::{AttestedTransactionEncryptionKey, SealedTransactionInputs};
 use miden_protocol::Word;
 use miden_protocol::account::{Account, AccountId};
 use miden_protocol::address::NetworkId;
@@ -134,6 +134,16 @@ pub trait NodeRpcClient: Send + Sync {
 
     /// Returns the genesis commitment if it has been set, without fetching from the node.
     fn has_genesis_commitment(&self) -> Option<Word>;
+
+    /// Fetches the validator set's transaction encryption key using the
+    /// `/GetTransactionEncryptionKey` endpoint.
+    ///
+    /// The key arrives attested but untrusted: this endpoint is served by the RPC operator, so the
+    /// response must be passed through [`AttestedTransactionEncryptionKey::verify`] before it is
+    /// used to seal anything.
+    async fn get_transaction_encryption_key(
+        &self,
+    ) -> Result<AttestedTransactionEncryptionKey, RpcError>;
 
     /// Given a Proven Transaction, send it to the node for it to be included in a future block
     /// using the `/SubmitProvenTransaction` RPC endpoint.
@@ -697,6 +707,7 @@ pub enum RpcEndpoint {
     SyncTransactions,
     GetLimits,
     GetNetworkNoteStatus,
+    GetTransactionEncryptionKey,
 }
 
 impl RpcEndpoint {
@@ -710,6 +721,7 @@ impl RpcEndpoint {
             RpcEndpoint::GetBlockHeaderByNumber => "GetBlockHeaderByNumber",
             RpcEndpoint::GetNotesById => "GetNotesById",
             RpcEndpoint::SyncChainMmr => "SyncChainMmr",
+            RpcEndpoint::GetTransactionEncryptionKey => "GetTransactionEncryptionKey",
             RpcEndpoint::SubmitProvenTx => "SubmitProvenTransaction",
             RpcEndpoint::SubmitProvenBatch => "SubmitProvenBatch",
             RpcEndpoint::SyncNotes => "SyncNotes",
@@ -737,6 +749,9 @@ impl fmt::Display for RpcEndpoint {
             },
             RpcEndpoint::GetNotesById => write!(f, "get_notes_by_id"),
             RpcEndpoint::SyncChainMmr => write!(f, "sync_chain_mmr"),
+            RpcEndpoint::GetTransactionEncryptionKey => {
+                write!(f, "get_transaction_encryption_key")
+            },
             RpcEndpoint::SubmitProvenTx => write!(f, "submit_proven_transaction"),
             RpcEndpoint::SubmitProvenBatch => write!(f, "submit_proven_batch"),
             RpcEndpoint::SyncNotes => write!(f, "sync_notes"),

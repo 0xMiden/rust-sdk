@@ -2119,6 +2119,8 @@ dependencies = [
  "miden-client",
  "miden-protocol",
  "miden-standards",
+ "rand 0.10.1",
+ "rand_chacha 0.10.0",
  "rusqlite",
  "rusqlite_migration",
  "thiserror",
@@ -2432,8 +2434,7 @@ dependencies = [
 [[package]]
 name = "miden-node-proto-build"
 version = "0.16.0-alpha.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0f1027cbad81e3f7a59b50be02cd27c22766573388fce96a807615f2bec0d5fc"
+source = "git+https://github.com/0xMiden/node.git?rev=4210d689f7acaeb3c74bd8bc52436281e56b9945#4210d689f7acaeb3c74bd8bc52436281e56b9945"
 dependencies = [
  "build-rs",
  "codegen",

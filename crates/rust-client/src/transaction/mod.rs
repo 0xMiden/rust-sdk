@@ -69,7 +69,7 @@ use alloc::vec::Vec;
 
 use miden_protocol::account::{Account, AccountCode, AccountId};
 use miden_protocol::asset::{Asset, NonFungibleAsset};
-use miden_protocol::block::BlockNumber;
+use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::errors::AssetError;
 use miden_protocol::note::{
     Note,
@@ -472,16 +472,51 @@ where
         Ok(block_num)
     }
 
-    /// Returns the validator set's transaction encryption key as cached in the store.
+    /// Returns the validator set's transaction encryption key, fetching and caching it on first
+    /// use.
     ///
     /// The key is public data shared by the whole validator set, so the cached copy is reused
-    /// across submissions and restarts. It must be provisioned by the caller via
-    /// [`crate::store::Store::set_transaction_encryption_key`]; this client does not fetch it.
+    /// across submissions and restarts. A freshly fetched key is verified against the validator
+    /// set committed in the chain tip before it is cached or used: the endpoint is served by
+    /// the RPC operator, which is the party the encryption keeps out.
     async fn transaction_encryption_key(&self) -> Result<TransactionEncryptionKey, ClientError> {
-        self.store
-            .get_transaction_encryption_key()
-            .await?
-            .ok_or(ClientError::MissingTransactionEncryptionKey)
+        if let Some(key) = self.store.get_transaction_encryption_key().await? {
+            return Ok(key);
+        }
+
+        let attested = self.rpc_api.get_transaction_encryption_key().await?;
+
+        // The genesis commitment scopes the attestation to this chain, and the chain tip carries
+        // the validator set currently entitled to attest. Both come from the local store, so a
+        // response cannot supply its own trust anchor.
+        let genesis_commitment =
+            self.trusted_block_header(BlockNumber::GENESIS).await?.commitment();
+        let chain_tip = self.store.get_sync_height().await?;
+        let validator_keys = self.trusted_block_header(chain_tip).await?.validator_keys().clone();
+
+        let key = attested.verify(genesis_commitment, &validator_keys)?;
+        self.store.set_transaction_encryption_key(&key).await?;
+
+        Ok(key)
+    }
+
+    /// Returns a locally stored block header, which the client has already authenticated during
+    /// sync.
+    ///
+    /// # Errors
+    /// Returns an error if the header is not stored locally, which means the client has not synced
+    /// far enough to have a trust anchor.
+    async fn trusted_block_header(
+        &self,
+        block_num: BlockNumber,
+    ) -> Result<BlockHeader, ClientError> {
+        self.store.get_block_header_by_num(block_num).await?.map(|(header, _)| header).ok_or_else(
+            || {
+                ClientError::ChainValidationError(alloc::format!(
+                    "block header {block_num} is not tracked locally; sync the client before it can verify data against the chain"
+                ))
+            },
+        )
     }
 
     /// Builds a [`TransactionStoreUpdate`] for the provided transaction result at the specified

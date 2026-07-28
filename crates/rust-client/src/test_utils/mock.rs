@@ -42,7 +42,7 @@ use crate::rpc::domain::status::NetworkNoteStatusInfo;
 use crate::rpc::domain::storage_map::StorageMapInfo;
 use crate::rpc::domain::sync::{ChainMmrInfo, SyncTarget};
 use crate::rpc::domain::transaction::TransactionRecord;
-use crate::rpc::encryption::SealedTransactionInputs;
+use crate::rpc::encryption::{AttestedTransactionEncryptionKey, SealedTransactionInputs};
 use crate::rpc::{AccountStateAt, NodeRpcClient, RpcError, RpcStatusInfo};
 
 pub type MockClient<AUTH> = Client<AUTH>;
@@ -442,6 +442,17 @@ impl NodeRpcClient for MockRpcApi {
             return_notes.push(fetched_note);
         }
         Ok(return_notes)
+    }
+
+    /// The mock does not serve the encryption key. Verifying an attestation needs a validator
+    /// signature the mock chain cannot produce, so tests that submit transactions provision the key
+    /// directly through `Store::set_transaction_encryption_key` instead.
+    async fn get_transaction_encryption_key(
+        &self,
+    ) -> Result<AttestedTransactionEncryptionKey, RpcError> {
+        Err(RpcError::TransactionEncryptionKeyRejected(
+            "the mock RPC client does not serve a transaction encryption key".into(),
+        ))
     }
 
     /// Simulates the submission of a proven transaction to the node. This will create a new block

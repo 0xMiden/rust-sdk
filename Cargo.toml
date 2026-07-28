@@ -94,13 +94,14 @@ should_panic_without_expect = "allow" # We don't care about the specific panic m
 # End of pedantic lints.
 
 # TEMPORARY (issue #2315): replaces the crates.io miden-crypto 0.28.0 (and its workspace
-# siblings) with the branch that opens the LargeSmtForest Backend API for external
-# implementations. Remove once that change is released as miden-crypto 0.28.x.
+# siblings) with the upstream commit that opened the LargeSmtForest Backend API for external
+# implementations (0xMiden/miden-vm#3413, versioned 0.28.1 in-tree). Remove once miden-crypto
+# 0.28.1 is published to crates.io.
 [patch.crates-io]
-miden-crypto           = { branch = "client-pin-from-parts-0.28", git = "https://github.com/JereSalo/miden-vm" }
-miden-crypto-derive    = { branch = "client-pin-from-parts-0.28", git = "https://github.com/JereSalo/miden-vm" }
-miden-field            = { branch = "client-pin-from-parts-0.28", git = "https://github.com/JereSalo/miden-vm" }
-miden-lifted-air       = { branch = "client-pin-from-parts-0.28", git = "https://github.com/JereSalo/miden-vm" }
-miden-lifted-stark     = { branch = "client-pin-from-parts-0.28", git = "https://github.com/JereSalo/miden-vm" }
-miden-serde-utils      = { branch = "client-pin-from-parts-0.28", git = "https://github.com/JereSalo/miden-vm" }
-miden-stark-transcript = { branch = "client-pin-from-parts-0.28", git = "https://github.com/JereSalo/miden-vm" }
+miden-crypto           = { git = "https://github.com/0xMiden/miden-vm", rev = "db4fd2f6e06c6b4ff7036d4ef4b31d8a89bbb50c" }
+miden-crypto-derive    = { git = "https://github.com/0xMiden/miden-vm", rev = "db4fd2f6e06c6b4ff7036d4ef4b31d8a89bbb50c" }
+miden-field            = { git = "https://github.com/0xMiden/miden-vm", rev = "db4fd2f6e06c6b4ff7036d4ef4b31d8a89bbb50c" }
+miden-lifted-air       = { git = "https://github.com/0xMiden/miden-vm", rev = "db4fd2f6e06c6b4ff7036d4ef4b31d8a89bbb50c" }
+miden-lifted-stark     = { git = "https://github.com/0xMiden/miden-vm", rev = "db4fd2f6e06c6b4ff7036d4ef4b31d8a89bbb50c" }
+miden-serde-utils      = { git = "https://github.com/0xMiden/miden-vm", rev = "db4fd2f6e06c6b4ff7036d4ef4b31d8a89bbb50c" }
+miden-stark-transcript = { git = "https://github.com/0xMiden/miden-vm", rev = "db4fd2f6e06c6b4ff7036d4ef4b31d8a89bbb50c" }

@@ -109,14 +109,15 @@ impl TransactionEncryptionKey {
         &self.public_key
     }
 
-    /// Returns the wire identifier of this key's IES scheme.
-    fn scheme(&self) -> u32 {
-        self.scheme
-    }
-
-    /// Returns the genesis commitment of the network this key was attested for.
-    fn genesis_commitment(&self) -> Word {
-        self.genesis_commitment
+    /// Builds the associated data authenticating the inputs of the transaction identified by
+    /// `tx_id` when sealed against this key.
+    fn transaction_inputs_associated_data(&self, tx_id: TransactionId) -> Vec<u8> {
+        transaction_inputs_associated_data(
+            self.scheme,
+            &self.key_id,
+            self.genesis_commitment,
+            tx_id,
+        )
     }
 
     /// Builds the sealing key used to encrypt transaction inputs against this key.
@@ -347,7 +348,7 @@ fn extend_with_length_prefixed(payload: &mut Vec<u8>, field: &[u8]) {
 /// output-note decorators stripped before forwarding a submission, so binding those bytes would
 /// reject every relayed transaction. The transaction id is invariant under that rebuild, which is
 /// why it is bound instead.
-pub fn transaction_inputs_associated_data(
+fn transaction_inputs_associated_data(
     scheme: u32,
     key_id: &[u8],
     genesis_commitment: Word,
@@ -420,12 +421,7 @@ pub fn seal_transaction_inputs<R: CryptoRng>(
     tx_id: TransactionId,
     transaction_inputs: &TransactionInputs,
 ) -> Result<SealedTransactionInputs, RpcError> {
-    let associated_data = transaction_inputs_associated_data(
-        key.scheme(),
-        key.key_id(),
-        key.genesis_commitment(),
-        tx_id,
-    );
+    let associated_data = key.transaction_inputs_associated_data(tx_id);
     let sealed = key
         .sealing_key()
         .seal_bytes_with_associated_data(rng, &transaction_inputs.to_bytes(), &associated_data)
@@ -491,12 +487,7 @@ mod tests {
         key: &TransactionEncryptionKey,
         tx_id: TransactionId,
     ) -> Result<Vec<u8>, ()> {
-        let associated_data = transaction_inputs_associated_data(
-            key.scheme(),
-            key.key_id(),
-            key.genesis_commitment(),
-            tx_id,
-        );
+        let associated_data = key.transaction_inputs_associated_data(tx_id);
 
         unsealing_key
             .unseal_bytes_with_associated_data(
@@ -507,12 +498,7 @@ mod tests {
     }
 
     fn seal(key: &TransactionEncryptionKey, tx_id: TransactionId) -> SealedTransactionInputs {
-        let associated_data = transaction_inputs_associated_data(
-            key.scheme(),
-            key.key_id(),
-            key.genesis_commitment(),
-            tx_id,
-        );
+        let associated_data = key.transaction_inputs_associated_data(tx_id);
         let sealed = key
             .sealing_key()
             .seal_bytes_with_associated_data(&mut rng(), b"transaction inputs", &associated_data)
@@ -591,12 +577,7 @@ mod tests {
     #[test]
     fn sealing_the_same_inputs_twice_yields_different_ciphertexts() {
         let (key, unsealing_key) = key_pair();
-        let associated_data = transaction_inputs_associated_data(
-            key.scheme(),
-            key.key_id(),
-            key.genesis_commitment(),
-            tx_id(10),
-        );
+        let associated_data = key.transaction_inputs_associated_data(tx_id(10));
         let mut rng = rng();
         let mut seal_once = || {
             key.sealing_key()

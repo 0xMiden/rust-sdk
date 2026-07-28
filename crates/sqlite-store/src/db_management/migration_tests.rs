@@ -1,14 +1,16 @@
 use std::sync::LazyLock;
 
 use rusqlite::{Connection, params};
-use rusqlite_migration::{M, Migrations};
+use rusqlite_migration::{M, Migrations, SchemaVersion};
 
-// PRODUCTION MIGRATIONS
-// ================================================================================================
-
-static PRODUCTION_MIGRATIONS: LazyLock<Migrations<'static>> = LazyLock::new(|| {
-    Migrations::new(vec![M::up(include_str!("../store.sql")).foreign_key_check()])
-});
+use crate::db_management::errors::SqliteStoreError;
+use crate::db_management::utils::{
+    EXPECTED_SCHEMA_HASHES,
+    apply_migrations,
+    apply_migrations_with,
+    compute_expected_schema_hashes_for,
+    schema_hash,
+};
 
 // FIXTURE MIGRATIONS
 // ================================================================================================
@@ -44,11 +46,27 @@ static FIXTURE_MIGRATIONS: LazyLock<Migrations<'static>> = LazyLock::new(|| {
     Migrations::new(vec![M::up(FIXTURE_MIGRATION_V1), M::up(FIXTURE_MIGRATION_V2)])
 });
 
+const FIXTURE_MIGRATION_COUNT: usize = 2;
+
+static FIXTURE_EXPECTED_SCHEMA_HASHES: LazyLock<
+    Vec<miden_protocol::crypto::hash::blake::Blake3Digest<32>>,
+> = LazyLock::new(|| {
+    compute_expected_schema_hashes_for(&FIXTURE_MIGRATIONS, FIXTURE_MIGRATION_COUNT)
+});
+
 // HELPERS
 // ================================================================================================
 
 fn open_memory_db() -> Connection {
     Connection::open_in_memory().expect("in-memory database should open")
+}
+
+fn open_db_at_fixture_version(version: usize) -> Connection {
+    let mut conn = open_memory_db();
+    FIXTURE_MIGRATIONS
+        .to_version(&mut conn, version)
+        .expect("fixture migration should apply");
+    conn
 }
 
 fn seed_fixture_v1(conn: &Connection) {
@@ -59,7 +77,7 @@ fn seed_fixture_v1(conn: &Connection) {
     .expect("fixture rows should insert");
 }
 
-fn read_fixture_rows(conn: &Connection) -> Vec<(String, String, String)> {
+fn read_transformed_fixture_rows(conn: &Connection) -> Vec<(String, String, String)> {
     let mut stmt = conn
         .prepare("SELECT id, assets, metadata FROM note_records ORDER BY id")
         .expect("note_records should exist after migration");
@@ -70,49 +88,103 @@ fn read_fixture_rows(conn: &Connection) -> Vec<(String, String, String)> {
         .expect("rows should decode")
 }
 
+fn apply_fixture_migrations(conn: &mut Connection) -> Result<(), SqliteStoreError> {
+    apply_migrations_with(conn, &FIXTURE_MIGRATIONS, &FIXTURE_EXPECTED_SCHEMA_HASHES)
+}
+
+fn expected_transformed_rows() -> Vec<(String, String, String)> {
+    vec![
+        ("note-a".to_owned(), "asset-a".to_owned(), "meta-a".to_owned()),
+        ("note-b".to_owned(), "asset-b".to_owned(), "meta-b".to_owned()),
+    ]
+}
+
 // TESTS
 // ================================================================================================
 
 #[test]
-fn production_migrations_validate() {
-    PRODUCTION_MIGRATIONS
-        .validate()
-        .expect("store.sql should apply cleanly on a fresh database");
+fn schema_present_at_version_zero_fails() {
+    let mut conn = open_memory_db();
+    conn.execute_batch(FIXTURE_MIGRATION_V1)
+        .expect("v1 schema should be created manually");
+
+    assert!(matches!(
+        FIXTURE_MIGRATIONS.current_version(&conn).expect("version should be readable"),
+        SchemaVersion::NoneSet
+    ));
+
+    let err = apply_fixture_migrations(&mut conn).unwrap_err();
+    assert!(matches!(err, SqliteStoreError::MigrationError(_)));
 }
 
 #[test]
-fn migration_transforms_existing_rows() {
-    let mut conn = open_memory_db();
+fn user_version_beyond_migrations_fails() {
+    let mut conn = open_db_at_fixture_version(FIXTURE_MIGRATION_COUNT);
+    conn.pragma_update(None, "user_version", FIXTURE_MIGRATION_COUNT + 1)
+        .expect("user_version should update");
 
-    FIXTURE_MIGRATIONS.to_version(&mut conn, 1).expect("v1 migration should apply");
-    seed_fixture_v1(&conn);
-
-    FIXTURE_MIGRATIONS.to_latest(&mut conn).expect("v2 migration should apply");
-
-    let rows = read_fixture_rows(&conn);
-    assert_eq!(
-        rows,
-        vec![
-            ("note-a".to_owned(), "asset-a".to_owned(), "meta-a".to_owned()),
-            ("note-b".to_owned(), "asset-b".to_owned(), "meta-b".to_owned()),
-        ]
-    );
+    let err = apply_fixture_migrations(&mut conn).unwrap_err();
+    assert!(matches!(err, SqliteStoreError::MigrationError(_)));
 }
 
 #[test]
-fn migration_is_idempotent_on_reopen() {
-    let mut conn = open_memory_db();
-
-    FIXTURE_MIGRATIONS.to_version(&mut conn, 1).expect("v1 migration should apply");
+fn partial_migration_reopens_without_error() {
+    let mut conn = open_db_at_fixture_version(1);
     seed_fixture_v1(&conn);
-    FIXTURE_MIGRATIONS.to_latest(&mut conn).expect("v2 migration should apply");
 
-    let rows_before = read_fixture_rows(&conn);
+    apply_fixture_migrations(&mut conn).expect("partial database should upgrade");
+    apply_fixture_migrations(&mut conn).expect("latest database should reopen");
+}
 
-    FIXTURE_MIGRATIONS
-        .to_latest(&mut conn)
-        .expect("re-applying latest migration should succeed");
+#[test]
+fn partial_migration_schema_drift_is_rejected() {
+    let mut conn = open_db_at_fixture_version(1);
+    conn.execute("ALTER TABLE note_records ADD COLUMN injected TEXT", [])
+        .expect("manual schema change should apply");
 
-    let rows_after = read_fixture_rows(&conn);
-    assert_eq!(rows_before, rows_after);
+    let err = apply_fixture_migrations(&mut conn).unwrap_err();
+    assert!(matches!(err, SqliteStoreError::SchemaHashMismatch));
+}
+
+#[test]
+fn user_data_does_not_change_schema_hash() {
+    let mut conn = open_memory_db();
+    apply_migrations(&mut conn).expect("production schema should apply");
+
+    let hash_before = schema_hash(&conn).expect("schema hash should compute");
+    assert_eq!(hash_before, EXPECTED_SCHEMA_HASHES[0]);
+
+    conn.execute(
+        "INSERT INTO settings (name, value) VALUES (?1, ?2)",
+        params!["test-setting", b"value"],
+    )
+    .expect("user data should insert");
+
+    let hash_after_data = schema_hash(&conn).expect("schema hash should compute");
+    assert_eq!(hash_before, hash_after_data);
+
+    apply_migrations(&mut conn).expect("database with user data should reopen");
+    assert_eq!(hash_before, schema_hash(&conn).expect("schema hash should compute"));
+}
+
+#[test]
+fn partial_migration_transforms_user_data() {
+    let mut conn = open_db_at_fixture_version(1);
+    seed_fixture_v1(&conn);
+
+    apply_fixture_migrations(&mut conn).expect("partial database should upgrade");
+
+    assert_eq!(read_transformed_fixture_rows(&conn), expected_transformed_rows());
+}
+
+#[test]
+fn partial_migration_reapply_is_idempotent() {
+    let mut conn = open_db_at_fixture_version(1);
+    seed_fixture_v1(&conn);
+    apply_fixture_migrations(&mut conn).expect("partial database should upgrade");
+
+    let rows_before = read_transformed_fixture_rows(&conn);
+    apply_fixture_migrations(&mut conn).expect("latest database should reopen");
+
+    assert_eq!(read_transformed_fixture_rows(&conn), rows_before);
 }

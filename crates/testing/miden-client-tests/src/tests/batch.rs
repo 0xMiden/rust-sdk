@@ -30,7 +30,7 @@ use miden_protocol::Felt;
 use miden_protocol::crypto::rand::RandomCoin;
 use miden_testing::{Auth, MockChainBuilder, TxContextInput};
 
-use crate::tests::create_test_client;
+use crate::tests::{create_test_client, seed_mock_transaction_encryption_key};
 
 /// Exercises the mock `submit_proven_batch` path end-to-end: build a real
 /// `ProvenBatch` from a proven transaction produced against a `MockChain`, submit it via
@@ -172,6 +172,7 @@ async fn apply_transaction_batch_rolls_back_on_mid_batch_failure() {
         .await
         .unwrap();
     client.ensure_genesis_in_place().await.unwrap();
+    seed_mock_transaction_encryption_key(&mut client).await;
 
     // Register ONLY account A. Account B stays unknown to the client store, so
     // `smt_forest.get_roots(B)` will return None during `apply_account_delta`.
@@ -332,7 +333,7 @@ async fn batch_builder_push_succeeds_when_balance_depends_on_prior_push() {
 /// Verify that submitting an empty batch (no pushes) returns `BatchBuilderError::Empty`.
 #[tokio::test]
 async fn batch_builder_empty_submit_returns_empty_error() {
-    let (client, rpc_api, _keystore) = Box::pin(create_test_client()).await;
+    let (mut client, rpc_api, _keystore) = Box::pin(create_test_client()).await;
 
     // Pick the first tracked account in the mock chain.
     let _account_id = rpc_api
@@ -447,6 +448,7 @@ async fn batch_builder_submits_txs_across_multiple_accounts() {
         .await
         .unwrap();
     client.ensure_genesis_in_place().await.unwrap();
+    seed_mock_transaction_encryption_key(&mut client).await;
 
     // Register both accounts with the client.
     client.add_account(&account_a, false).await.unwrap();
@@ -492,7 +494,7 @@ async fn batch_builder_submits_txs_across_multiple_accounts() {
 /// fails with `ClientError::AccountDataNotFound`.
 #[tokio::test]
 async fn batch_builder_push_for_unknown_account_returns_error() {
-    let (client, rpc_api, _keystore) = Box::pin(create_test_client()).await;
+    let (mut client, rpc_api, _keystore) = Box::pin(create_test_client()).await;
 
     // Pick an account that EXISTS on the mock chain but is NOT registered with the client
     // store (we never call `client.add_account` for it).

@@ -10,7 +10,7 @@ use miden_protocol::batch::{ProposedBatch, ProvenBatch};
 use miden_protocol::block::{BlockHeader, BlockNumber, ProvenBlock};
 use miden_protocol::crypto::merkle::mmr::MmrProof;
 use miden_protocol::note::{NoteId, NoteScript, NoteTag};
-use miden_protocol::transaction::{ProvenTransaction, TransactionInputs};
+use miden_protocol::transaction::ProvenTransaction;
 
 use super::domain::account::{AccountProof, GetAccountRequest};
 use super::domain::account_vault::AccountVaultInfo;
@@ -172,7 +172,7 @@ impl<T: NodeRpcClient> NodeRpcClient for VerifyingRpcClient<T> {
         &self,
         proven_batch: ProvenBatch,
         proposed_batch: ProposedBatch,
-        transaction_inputs: Vec<TransactionInputs>,
+        transaction_inputs: Vec<SealedTransactionInputs>,
     ) -> Result<BlockNumber, RpcError> {
         self.0
             .submit_proven_batch(proven_batch, proposed_batch, transaction_inputs)

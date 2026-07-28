@@ -22,6 +22,7 @@ use miden_client::keystore::{FilesystemKeyStore, Keystore};
 use miden_client::note::{BlockNumber, NetworkAccountTarget, NoteExecutionHint};
 use miden_client::pswap::PswapLineageState;
 use miden_client::rpc::NodeRpcClient;
+use miden_client::rpc::encryption::TransactionEncryptionKey;
 use miden_client::store::input_note_states::ConsumedAuthenticatedLocalNoteState;
 use miden_client::store::{
     AccountStorageFilter,
@@ -80,6 +81,7 @@ use miden_protocol::account::{
     StorageSlotName,
 };
 use miden_protocol::asset::{Asset, AssetAmount, AssetId, FungibleAsset, TokenSymbol};
+use miden_protocol::crypto::dsa::eddsa_25519_sha512::KeyExchangeKey;
 use miden_protocol::crypto::rand::{FeltRng, RandomCoin};
 use miden_protocol::note::{
     Note,
@@ -506,6 +508,7 @@ async fn sync_state_mmr_with_in_memory_cache() {
     let (builder, rpc_api, keystore) = Box::pin(create_test_client_builder()).await;
     let mut client = builder.cache_partial_mmr_in_memory(true).build().await.unwrap();
     client.ensure_genesis_in_place().await.unwrap();
+    seed_mock_transaction_encryption_key(&mut client).await;
 
     insert_new_wallet(&mut client, AccountType::Private, &keystore).await.unwrap();
 
@@ -533,6 +536,7 @@ async fn stale_cached_partial_mmr_is_rebuilt_from_store() {
     let (builder, rpc_api, keystore) = Box::pin(create_test_client_builder()).await;
     let mut client = builder.cache_partial_mmr_in_memory(true).build().await.unwrap();
     client.ensure_genesis_in_place().await.unwrap();
+    seed_mock_transaction_encryption_key(&mut client).await;
     insert_new_wallet(&mut client, AccountType::Private, &keystore).await.unwrap();
 
     // Import the mock chain's public notes so a block becomes tracked after sync.
@@ -1376,6 +1380,7 @@ async fn input_note_reader_finds_externally_consumed_notes() {
         .await
         .unwrap();
     client.ensure_genesis_in_place().await.unwrap();
+    seed_mock_transaction_encryption_key(&mut client).await;
 
     // Register the consumer account so sync_transactions returns its transactions.
     client.add_account(&consumer, false).await.unwrap();
@@ -1485,6 +1490,7 @@ async fn import_by_id_already_consumed_note_is_findable_by_id() {
         .await
         .unwrap();
     client.ensure_genesis_in_place().await.unwrap();
+    seed_mock_transaction_encryption_key(&mut client).await;
 
     // Import the already-consumed public note by id.
     let returned = client.import_notes(&[NoteFile::NoteId(note_id)]).await.unwrap();
@@ -1586,6 +1592,7 @@ async fn setup_prunable_block_scenario(
         .await
         .unwrap();
     client.ensure_genesis_in_place().await.unwrap();
+    seed_mock_transaction_encryption_key(&mut client).await;
     client.add_note_tag(NoteTag::new(0)).await.unwrap();
 
     client.sync_state().await.unwrap();
@@ -2403,6 +2410,7 @@ async fn account_rollback() {
     let mut client = builder.tx_discard_delta(Some(TX_DISCARD_DELTA)).build().await.unwrap();
 
     client.sync_state().await.unwrap();
+    seed_mock_transaction_encryption_key(&mut client).await;
 
     let (regular_account, faucet_account_header) = setup_wallet_and_faucet(
         &mut client,
@@ -3270,6 +3278,7 @@ async fn create_pswap_test_client(
         .await
         .unwrap();
     client.ensure_genesis_in_place().await.unwrap();
+    seed_mock_transaction_encryption_key(&mut client).await;
 
     (client, keystore)
 }
@@ -4237,6 +4246,7 @@ async fn import_watched_account_by_id_rejects_already_tracked_native_account() {
         .await
         .unwrap();
     client.ensure_genesis_in_place().await.unwrap();
+    seed_mock_transaction_encryption_key(&mut client).await;
 
     client.add_account(&account, false).await.unwrap();
 
@@ -4548,6 +4558,7 @@ async fn sync_stores_private_note_attachments() {
         .await
         .unwrap();
     client.ensure_genesis_in_place().await.unwrap();
+    seed_mock_transaction_encryption_key(&mut client).await;
 
     // 5. Track the note as an expected input note (no metadata, empty attachments) and register its
     //    tag so the chain sync sees the note's block. The client has not synced past block 1, so
@@ -4694,6 +4705,7 @@ async fn sync_large_public_account() {
         .await
         .unwrap();
     client.ensure_genesis_in_place().await.unwrap();
+    seed_mock_transaction_encryption_key(&mut client).await;
     client.add_account(&original_account, false).await.unwrap();
 
     // 5. Sync — the client detects a commitment mismatch, fetches full account state.
@@ -4787,8 +4799,29 @@ pub async fn create_test_client() -> (MockClient<FilesystemKeyStore>, MockRpcApi
     let (builder, rpc_api, keystore) = Box::pin(create_test_client_builder()).await;
     let mut client = builder.build().await.unwrap();
     client.ensure_genesis_in_place().await.unwrap();
+    seed_mock_transaction_encryption_key(&mut client).await;
 
     (client, rpc_api, keystore)
+}
+
+/// Gives a mock-backed client the transaction encryption key that submission seals against.
+pub async fn seed_mock_transaction_encryption_key(client: &mut MockClient<FilesystemKeyStore>) {
+    let genesis_commitment = client
+        .get_block_header_by_num(BlockNumber::GENESIS)
+        .await
+        .unwrap()
+        .expect("genesis must be in place before the encryption key is seeded")
+        .0
+        .commitment();
+
+    client
+        .seed_transaction_encryption_key(TransactionEncryptionKey::new_unattested(
+            b"mock-key-id".to_vec(),
+            KeyExchangeKey::with_rng(&mut StdRng::seed_from_u64(0xface)).public_key(),
+            genesis_commitment,
+        ))
+        .await
+        .expect("seeding the encryption key in the store should succeed");
 }
 
 pub async fn create_test_client_builder()

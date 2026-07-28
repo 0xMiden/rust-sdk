@@ -28,13 +28,13 @@ use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
 use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::crypto::merkle::mmr::{Forest, MmrPath, MmrProof};
 use miden_protocol::note::{NoteId, NoteScript, NoteTag};
-use miden_protocol::transaction::{ProvenTransaction, TransactionInputs};
+use miden_protocol::transaction::ProvenTransaction;
 use miden_protocol::utils::serde::Deserializable;
 use miden_protocol::{EMPTY_WORD, Word};
 use miden_tx::utils::serde::Serializable;
 use miden_tx::utils::sync::RwLock;
 use tonic::Status;
-use tracing::info;
+use tracing::{info, warn};
 
 use super::domain::account::{
     AccountProof,
@@ -386,27 +386,51 @@ impl NodeRpcClient for GrpcClient {
             .await?;
         let response = api_response.into_inner();
 
+        // An undecodable attestation is skipped rather than failing the whole response, so that one
+        // junk entry served by the relaying operator cannot hide a valid attestation behind it.
+        // Verification requires one that both decodes and verifies, so dropping the rest is safe.
         let attestations = response
             .attestations
             .into_iter()
-            .map(|attestation| {
-                let validator_key =
-                    ValidatorPublicKey::read_from_bytes(&attestation.validator_public_key)?;
-                let signature = ValidatorSignature::read_from_bytes(&attestation.signature)?;
-
-                Ok(ValidatorAttestation { validator_key, signature })
+            .filter_map(|attestation| {
+                let decoded =
+                    ValidatorPublicKey::read_from_bytes(&attestation.validator_public_key)
+                        .ok()
+                        .zip(ValidatorSignature::read_from_bytes(&attestation.signature).ok())
+                        .map(|(validator_key, signature)| ValidatorAttestation {
+                            validator_key,
+                            signature,
+                        });
+                if decoded.is_none() {
+                    warn!(
+                        "skipping a transaction encryption key attestation that failed to decode"
+                    );
+                }
+                decoded
             })
-            .collect::<Result<Vec<_>, RpcError>>()?;
+            .collect::<Vec<_>>();
 
-        let next_key = response.next_key.map(|next| NextTransactionEncryptionKey {
-            scheme: next.scheme.unsigned_abs(),
-            key_id: next.key_id,
-            public_key: next.public_key,
-            rotation_block_num: next.rotation_block_num.into(),
-        });
+        // A negative scheme is a malformed response, not a scheme this client happens to not
+        // support, so it is rejected here rather than aliased onto a valid identifier.
+        let wire_scheme = |scheme: i32| {
+            u32::try_from(scheme)
+                .map_err(|_| RpcError::InvalidResponse(format!("negative IES scheme '{scheme}'")))
+        };
+
+        let next_key = response
+            .next_key
+            .map(|next| {
+                Ok::<_, RpcError>(NextTransactionEncryptionKey {
+                    scheme: wire_scheme(next.scheme)?,
+                    key_id: next.key_id,
+                    public_key: next.public_key,
+                    rotation_block_num: next.rotation_block_num.into(),
+                })
+            })
+            .transpose()?;
 
         Ok(AttestedTransactionEncryptionKey {
-            scheme: response.scheme.unsigned_abs(),
+            scheme: wire_scheme(response.scheme)?,
             key_id: response.key_id,
             public_key: response.public_key,
             attestations,
@@ -417,11 +441,11 @@ impl NodeRpcClient for GrpcClient {
     async fn submit_proven_transaction(
         &self,
         proven_transaction: ProvenTransaction,
-        sealed_transaction_inputs: SealedTransactionInputs,
+        sealed_tx_inputs: SealedTransactionInputs,
     ) -> Result<BlockNumber, RpcError> {
         let request = proto::transaction::ProvenTransaction {
             transaction: proven_transaction.to_bytes(),
-            transaction_inputs: Some(sealed_transaction_inputs.into_bytes()),
+            sealed_transaction_inputs: Some(sealed_tx_inputs.into()),
         };
 
         let api_response = self
@@ -438,12 +462,12 @@ impl NodeRpcClient for GrpcClient {
         &self,
         proven_batch: ProvenBatch,
         proposed_batch: ProposedBatch,
-        transaction_inputs: Vec<TransactionInputs>,
+        transaction_inputs: Vec<SealedTransactionInputs>,
     ) -> Result<BlockNumber, RpcError> {
         let request = proto::transaction::TransactionBatch {
             batch_proof: proven_batch.to_bytes(),
             proposed_batch: Some(proposed_batch.to_bytes()),
-            transaction_inputs: transaction_inputs.iter().map(Serializable::to_bytes).collect(),
+            sealed_transaction_inputs: transaction_inputs.into_iter().map(Into::into).collect(),
         };
 
         let api_response = self

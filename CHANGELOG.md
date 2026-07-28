@@ -4,12 +4,16 @@
 
 ### Breaking Changes
 
+* [BREAKING][rust] Transaction inputs are now sealed before submission. The client fetches the validator set's shared encryption key on first submission and verifies its validator attestations against the validator set committed in the chain tip before using it. A client must be synced far enough to have a genesis header and a chain-tip header locally before it can submit. `NodeRpcClient::submit_proven_transaction` and `NodeRpcClient::submit_proven_batch` now take `SealedTransactionInputs` instead of `TransactionInputs`.
 * [BREAKING][rename][rust] `NoteScreener::can_consume` → `NoteScreener::get_consumability` and `NoteScreener::can_consume_batch` → `NoteScreener::get_batch_consumability`. The new names reflect that both return a `NoteConsumptionStatus` per account rather than a boolean ([#2338](https://github.com/0xMiden/rust-sdk/pull/2338)).
+* [BREAKING][behavior][rust] Transaction inputs are now encrypted on submission, so the RPC operator relaying them cannot read them. `Client::submit_proven_transaction` seals the inputs against the validator set's shared transaction encryption key: on first use it fetches the key from the node, verifies a validator attestation for it against the validator set committed in a trusted block header (binding the genesis commitment, so an attestation cannot be replayed from another network), and caches the verified key in the store's settings table, evicting it when the node rejects a submission sealed against a retired key so the next submission re-fetches. Requires a node that unseals submitted inputs; such nodes reject plaintext submissions ([#2341](https://github.com/0xMiden/rust-sdk/pull/2341)).
+* [BREAKING][param][rust] `NodeRpcClient` models encrypted submissions: `submit_proven_transaction` now takes `SealedTransactionInputs` instead of `TransactionInputs`, `submit_proven_batch` now takes `Vec<SealedTransactionInputs>` (one per transaction, each sealed against its own transaction ID), and implementations must provide the new `get_transaction_encryption_key` method ([#2341](https://github.com/0xMiden/rust-sdk/pull/2341)).
 
 ### Enhancements
 
 * [FEATURE][cli] Added a `--payback-note-type` option to `swap` so the payback note can be created as public or private (defaults to private). Public payback works without any off-band advice now that SWAP derives the payback recipient deterministically ([#2190](https://github.com/0xMiden/rust-sdk/pull/2190)).
 * [FEATURE][rust] `Client::get_consumable_notes(Some(account_id))` now screens only that account instead of screening every tracked account and discarding the rest, so its cost no longer grows with the number of tracked accounts. Added `NoteScreener::get_batch_consumability_for_account` to screen notes against a single account ([#2338](https://github.com/0xMiden/rust-sdk/pull/2338)).
+* [FEATURE][rust] Added the `miden_client::rpc::encryption` module backing encrypted submissions: `TransactionEncryptionKey`, `AttestedTransactionEncryptionKey` (whose `verify` is the only path to a usable key), `ValidatorAttestation`, `NextTransactionEncryptionKey`, `SealedTransactionInputs` and `seal_transaction_inputs`, along with re-exports of the validator DSA key types reachable from this API ([#2341](https://github.com/0xMiden/rust-sdk/pull/2341)).
 
 ## 0.16.0-alpha.1 (2026-07-17)
 

@@ -37,5 +37,3 @@ workspace = true
 # Enable client testing utilities only for tests
 miden-client    = { features = ["testing"], workspace = true }
 miden-standards = { features = ["testing"], workspace = true }
-rand            = { workspace = true }
-rand_chacha     = { workspace = true }

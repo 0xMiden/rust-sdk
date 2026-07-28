@@ -3,7 +3,8 @@
 //! Transaction inputs are submitted as an IES-sealed blob rather than in the clear, so that the
 //! RPC operator cannot read them and only holders of the validator set's shared encryption secret
 //! can. Sealing uses the `X25519XChaCha20Poly1305` scheme; the sealed blob on the wire is a
-//! serialized [`SealedMessage`](miden_protocol::crypto::ies::SealedMessage).
+//! serialized [`SealedMessage`](miden_protocol::crypto::ies::SealedMessage). The node rejects a
+//! submission whose inputs are not sealed.
 //!
 //! # Trusting the key
 //!
@@ -20,13 +21,14 @@
 //! another network sharing a validator key.
 //!
 //! Once verified, the key is public data shared by the whole validator set, so it is cached in the
-//! store rather than re-fetched per submission.
+//! store rather than re-fetched per submission. A submission rejected for having been sealed
+//! against a key the validator no longer holds evicts the cached key, so the next submission
+//! fetches and verifies a fresh one.
 //!
-//! # Provisional associated data
+//! # Matching the validator's transcripts
 //!
-//! The associated-data preimage is not yet specified upstream, so
-//! [`TRANSACTION_INPUTS_ASSOCIATED_DATA`] is a placeholder that must match the node exactly or the
-//! validator rejects the submission while unsealing.
+//! The canonical definitions live in the node's `miden_node_proto::domain::encryption`. This module
+//! is a hand-maintained mirror of them, because that is a node crate and this client is `no_std`.
 
 use alloc::string::ToString;
 use alloc::vec::Vec;
@@ -38,7 +40,7 @@ use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
 };
 use miden_protocol::crypto::dsa::eddsa_25519_sha512::PublicKey;
 use miden_protocol::crypto::ies::SealingKey;
-use miden_protocol::transaction::TransactionInputs;
+use miden_protocol::transaction::{TransactionId, TransactionInputs};
 use miden_protocol::{Hasher, Word};
 use miden_tx::utils::serde::{
     ByteReader,
@@ -49,7 +51,7 @@ use miden_tx::utils::serde::{
 };
 use rand::CryptoRng;
 
-use super::RpcError;
+use super::{RpcError, generated as proto};
 
 // CONSTANTS
 // ================================================================================================
@@ -57,11 +59,12 @@ use super::RpcError;
 /// Key used to store the transaction encryption key in the settings table.
 pub(crate) const TRANSACTION_ENCRYPTION_KEY_STORE_SETTING: &str = "transaction_encryption_key";
 
-/// Associated data bound into the AEAD tag of sealed transaction inputs.
+/// Domain tag prefixed to the associated data of sealed transaction inputs.
 ///
-/// Authenticated but not encrypted, and verified by the validator while unsealing: a mismatch
-/// fails decryption rather than yielding wrong plaintext.
-pub const TRANSACTION_INPUTS_ASSOCIATED_DATA: &[u8] = b"MIDEN_TX_INPUTS_ENCRYPTION_V0";
+/// Separates this transcript from every other use of the same key material, in particular from the
+/// key attestation signed with the validator's signing key. Must match the validator's
+/// `TX_INPUT_SEAL_DOMAIN`.
+const TX_INPUT_SEAL_DOMAIN: &[u8] = b"MIDEN_TX_INPUT_SEAL_V1";
 
 /// Domain tag prefixed to the attestation payload, separating key attestations from block header
 /// signatures made with the same validator signing key.
@@ -76,31 +79,27 @@ const SUPPORTED_SCHEME: u32 = 1;
 // TRANSACTION ENCRYPTION KEY
 // ================================================================================================
 
-/// The validator set's public transaction encryption key.
+/// The validator set's public transaction encryption key, with its attestation already verified.
 ///
 /// Holds public key material only, and is shared by every validator in the set; the matching
 /// secret never leaves the validators.
 ///
-/// The IES scheme is not carried: the node serves exactly one, and a new scheme would change the
-/// public key encoding along with it, so the scheme is checked where a key enters the client rather
-/// than stored alongside it.
+/// Only [`AttestedTransactionEncryptionKey::verify`] constructs one, so a key that reaches the seal
+/// path has necessarily been vouched for by a chain-recognized validator.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TransactionEncryptionKey {
+    scheme: u32,
     key_id: Vec<u8>,
     public_key: PublicKey,
+    genesis_commitment: Word,
 }
 
 impl TransactionEncryptionKey {
-    /// Constructs a key from the node's opaque identifier for it and its public key.
+    /// Returns the node's opaque identifier for this key.
     ///
     /// The identifier changes when the key rotates, which is what lets a cached key be recognized
     /// as stale. It is treated as opaque bytes: the node derives it from the public key commitment
     /// but documents the encoding as an implementation detail.
-    pub fn new(key_id: Vec<u8>, public_key: PublicKey) -> Self {
-        Self { key_id, public_key }
-    }
-
-    /// Returns the node's opaque identifier for this key.
     pub fn key_id(&self) -> &[u8] {
         &self.key_id
     }
@@ -110,27 +109,65 @@ impl TransactionEncryptionKey {
         &self.public_key
     }
 
+    /// Builds the associated data authenticating the inputs of the transaction identified by
+    /// `tx_id` when sealed against this key.
+    fn transaction_inputs_associated_data(&self, tx_id: TransactionId) -> Vec<u8> {
+        transaction_inputs_associated_data(
+            self.scheme,
+            &self.key_id,
+            self.genesis_commitment,
+            tx_id,
+        )
+    }
+
     /// Builds the sealing key used to encrypt transaction inputs against this key.
     pub fn sealing_key(&self) -> SealingKey {
         SealingKey::X25519XChaCha20Poly1305(self.public_key.clone())
+    }
+
+    /// Builds a key without an attestation, for tests.
+    ///
+    /// Sealing against the returned key still runs the real transcript and wire path, only
+    /// the attestation is skipped, and that is covered by this module's own tests.
+    #[cfg(feature = "testing")]
+    pub fn new_unattested(
+        key_id: Vec<u8>,
+        public_key: PublicKey,
+        genesis_commitment: Word,
+    ) -> Self {
+        Self {
+            scheme: SUPPORTED_SCHEME,
+            key_id,
+            public_key,
+            genesis_commitment,
+        }
     }
 }
 
 impl Serializable for TransactionEncryptionKey {
     fn write_into<W: ByteWriter>(&self, target: &mut W) {
+        target.write_u32(self.scheme);
         target.write_usize(self.key_id.len());
         target.write_bytes(&self.key_id);
         self.public_key.write_into(target);
+        self.genesis_commitment.write_into(target);
     }
 }
 
 impl Deserializable for TransactionEncryptionKey {
     fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
+        let scheme = source.read_u32()?;
         let key_id_len = source.read_usize()?;
         let key_id = source.read_vec(key_id_len)?;
         let public_key = PublicKey::read_from(source)?;
+        let genesis_commitment = Word::read_from(source)?;
 
-        Ok(Self::new(key_id, public_key))
+        Ok(Self {
+            scheme,
+            key_id,
+            public_key,
+            genesis_commitment,
+        })
     }
 }
 
@@ -235,7 +272,12 @@ impl AttestedTransactionEncryptionKey {
         let public_key = PublicKey::read_from_bytes(&self.public_key)
             .map_err(|err| RpcError::TransactionEncryptionKeyRejected(err.to_string()))?;
 
-        Ok(TransactionEncryptionKey::new(self.key_id, public_key))
+        Ok(TransactionEncryptionKey {
+            scheme: self.scheme,
+            key_id: self.key_id,
+            public_key,
+            genesis_commitment,
+        })
     }
 }
 
@@ -282,49 +324,113 @@ fn extend_with_length_prefixed(payload: &mut Vec<u8>, field: &[u8]) {
     payload.extend_from_slice(field);
 }
 
+// ASSOCIATED DATA
+// ================================================================================================
+
+/// Builds the associated data authenticating a sealed set of transaction inputs.
+///
+/// Mirrors the validator's `transaction_inputs_associated_data`. The layout is
+/// `TX_INPUT_SEAL_DOMAIN || scheme || len(key_id) || key_id || genesis_commitment ||
+/// transaction_id`, where the scheme and the length prefix are 4 bytes little-endian. The domain
+/// tag and the scheme are fixed-width, `key_id` is length-prefixed, and the two trailing fields are
+/// a fixed 32 bytes each, so no two distinct inputs produce the same transcript.
+///
+/// Each binding serves a purpose:
+/// - `scheme` and `key_id` tie the blob to one key, so inputs sealed against a retired key fail to
+///   authenticate rather than silently decrypting.
+/// - `genesis_commitment` ties the blob to one network. This matters in practice because every
+///   development stack shares the same insecure default key, so without it a blob captured on one
+///   network would replay onto another.
+/// - `transaction_id` ties the blob to one transaction, so a captured blob cannot be replayed onto
+///   a different transaction.
+///
+/// Deliberately absent is the serialized transaction. The RPC rebuilds the proven transaction with
+/// output-note decorators stripped before forwarding a submission, so binding those bytes would
+/// reject every relayed transaction. The transaction id is invariant under that rebuild, which is
+/// why it is bound instead.
+fn transaction_inputs_associated_data(
+    scheme: u32,
+    key_id: &[u8],
+    genesis_commitment: Word,
+    tx_id: TransactionId,
+) -> Vec<u8> {
+    let genesis_commitment = genesis_commitment.to_bytes();
+    let tx_id = tx_id.as_word().to_bytes();
+    let mut transcript = Vec::with_capacity(
+        TX_INPUT_SEAL_DOMAIN.len()
+            + 2 * size_of::<u32>()
+            + key_id.len()
+            + genesis_commitment.len()
+            + tx_id.len(),
+    );
+    transcript.extend_from_slice(TX_INPUT_SEAL_DOMAIN);
+    transcript.extend_from_slice(&scheme.to_le_bytes());
+    extend_with_length_prefixed(&mut transcript, key_id);
+    transcript.extend_from_slice(&genesis_commitment);
+    transcript.extend_from_slice(&tx_id);
+
+    transcript
+}
+
 // SEALED TRANSACTION INPUTS
 // ================================================================================================
 
 /// The sealed, wire-ready form of a transaction's [`TransactionInputs`].
 ///
 /// Wraps the serialized bytes of a [`SealedMessage`](miden_protocol::crypto::ies::SealedMessage)
-/// so that a plaintext blob cannot be passed to submission by mistake.
+/// so that a plaintext blob cannot be passed to submission by mistake, alongside the identifier of
+/// the key they were sealed against.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SealedTransactionInputs(Vec<u8>);
+pub struct SealedTransactionInputs {
+    key_id: Vec<u8>,
+    ciphertext: Vec<u8>,
+}
 
 impl SealedTransactionInputs {
-    /// Returns the sealed bytes.
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.0
+    /// Returns the identifier of the key these inputs were sealed against.
+    pub fn key_id(&self) -> &[u8] {
+        &self.key_id
     }
 
-    /// Consumes the wrapper and returns the sealed bytes.
-    pub fn into_bytes(self) -> Vec<u8> {
-        self.0
+    /// Returns the sealed bytes.
+    pub fn ciphertext(&self) -> &[u8] {
+        &self.ciphertext
+    }
+}
+
+impl From<SealedTransactionInputs> for proto::transaction::SealedTransactionInputs {
+    fn from(sealed: SealedTransactionInputs) -> Self {
+        Self {
+            key_id: sealed.key_id,
+            ciphertext: sealed.ciphertext,
+        }
     }
 }
 
 // SEALING
 // ================================================================================================
 
-/// Seals `transaction_inputs` against `key`, ready to be submitted.
+/// Seals the inputs of the transaction identified by `tx_id` against `key`, ready to be submitted.
 ///
-/// `rng` supplies the scheme's ephemeral key material, so it must be cryptographically secure.
+/// `rng` supplies the scheme's ephemeral key material, so it must be cryptographically secure. Each
+/// call draws a fresh ephemeral key, so sealing the same inputs twice is safe and yields different
+/// ciphertexts.
 pub fn seal_transaction_inputs<R: CryptoRng>(
     rng: &mut R,
     key: &TransactionEncryptionKey,
+    tx_id: TransactionId,
     transaction_inputs: &TransactionInputs,
 ) -> Result<SealedTransactionInputs, RpcError> {
+    let associated_data = key.transaction_inputs_associated_data(tx_id);
     let sealed = key
         .sealing_key()
-        .seal_bytes_with_associated_data(
-            rng,
-            &transaction_inputs.to_bytes(),
-            TRANSACTION_INPUTS_ASSOCIATED_DATA,
-        )
+        .seal_bytes_with_associated_data(rng, &transaction_inputs.to_bytes(), &associated_data)
         .map_err(|err| RpcError::TransactionInputsSealingFailed(err.to_string()))?;
 
-    Ok(SealedTransactionInputs(sealed.to_bytes()))
+    Ok(SealedTransactionInputs {
+        key_id: key.key_id().to_vec(),
+        ciphertext: sealed.to_bytes(),
+    })
 }
 
 // TESTS
@@ -332,6 +438,7 @@ pub fn seal_transaction_inputs<R: CryptoRng>(
 
 #[cfg(test)]
 mod tests {
+    use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey as ValidatorSigningKey;
     use miden_protocol::crypto::dsa::eddsa_25519_sha512::KeyExchangeKey;
     use miden_protocol::crypto::ies::{SealedMessage, UnsealingKey};
     use rand::SeedableRng;
@@ -339,73 +446,164 @@ mod tests {
 
     use super::*;
 
+    const TEST_KEY_ID: [u8; 4] = [0xde, 0xad, 0xbe, 0xef];
+
     fn rng() -> ChaCha20Rng {
         ChaCha20Rng::seed_from_u64(0xface)
+    }
+
+    fn genesis() -> Word {
+        Word::from([1u32, 2, 3, 4])
+    }
+
+    fn tx_id(seed: u32) -> TransactionId {
+        TransactionId::new(
+            Word::from([seed, 0, 0, 0]),
+            Word::from([0, seed, 0, 0]),
+            Word::from([0, 0, seed, 0]),
+            Word::from([0, 0, 0, seed]),
+        )
     }
 
     /// Generates a keypair standing in for the validator set's shared key: the public half becomes
     /// the client's [`TransactionEncryptionKey`], the secret half plays the validator unsealing it.
     fn key_pair() -> (TransactionEncryptionKey, UnsealingKey) {
         let secret_key = KeyExchangeKey::with_rng(&mut rng());
-        let key = TransactionEncryptionKey::new(b"key-id".to_vec(), secret_key.public_key());
+        let key = TransactionEncryptionKey {
+            scheme: SUPPORTED_SCHEME,
+            key_id: TEST_KEY_ID.to_vec(),
+            public_key: secret_key.public_key(),
+            genesis_commitment: genesis(),
+        };
 
         (key, UnsealingKey::X25519XChaCha20Poly1305(secret_key))
     }
 
-    fn seal(key: &TransactionEncryptionKey, associated_data: &[u8]) -> Vec<u8> {
-        key.sealing_key()
-            .seal_bytes_with_associated_data(&mut rng(), b"transaction inputs", associated_data)
-            .unwrap()
-            .to_bytes()
-    }
-
+    /// Unseals the way the validator does: rebuilding the associated data from its own view of the
+    /// key and of the transaction rather than from anything the blob carries.
     fn unseal(
         unsealing_key: &UnsealingKey,
-        sealed: &[u8],
-        associated_data: &[u8],
+        sealed: &SealedTransactionInputs,
+        key: &TransactionEncryptionKey,
+        tx_id: TransactionId,
     ) -> Result<Vec<u8>, ()> {
+        let associated_data = key.transaction_inputs_associated_data(tx_id);
+
         unsealing_key
             .unseal_bytes_with_associated_data(
-                SealedMessage::read_from_bytes(sealed).unwrap(),
-                associated_data,
+                SealedMessage::read_from_bytes(sealed.ciphertext()).unwrap(),
+                &associated_data,
             )
             .map_err(|_| ())
     }
 
+    fn seal(key: &TransactionEncryptionKey, tx_id: TransactionId) -> SealedTransactionInputs {
+        let associated_data = key.transaction_inputs_associated_data(tx_id);
+        let sealed = key
+            .sealing_key()
+            .seal_bytes_with_associated_data(&mut rng(), b"transaction inputs", &associated_data)
+            .unwrap();
+
+        SealedTransactionInputs {
+            key_id: key.key_id().to_vec(),
+            ciphertext: sealed.to_bytes(),
+        }
+    }
+
+    // ASSOCIATED DATA
+    // --------------------------------------------------------------------------------------------
+
+    /// Pins the transcript byte-for-byte, which also pins *which* fields it binds.
+    ///
+    /// Both sides derive the transcript through their own copy of this function, so a change to it
+    /// would pass every other test in the workspace and surface only as every submission on the
+    /// network failing to authenticate. This vector is the only thing that catches that, so it is
+    /// spelled out here rather than derived from the constants it is checking.
+    #[test]
+    fn associated_data_matches_the_validator_transcript() {
+        let associated_data =
+            transaction_inputs_associated_data(1, &TEST_KEY_ID, genesis(), tx_id(10));
+
+        let mut expected = Vec::new();
+        expected.extend_from_slice(b"MIDEN_TX_INPUT_SEAL_V1");
+        expected.extend_from_slice(&1u32.to_le_bytes());
+        expected.extend_from_slice(&4u32.to_le_bytes());
+        expected.extend_from_slice(&TEST_KEY_ID);
+        expected.extend_from_slice(&genesis().to_bytes());
+        expected.extend_from_slice(&tx_id(10).as_word().to_bytes());
+
+        assert_eq!(associated_data, expected);
+        // 22-byte tag + 4 scheme + 4 length + 4 key id + 32 genesis + 32 transaction id.
+        assert_eq!(associated_data.len(), 98);
+    }
+
+    // SEALING
+    // --------------------------------------------------------------------------------------------
+
     #[test]
     fn sealed_inputs_round_trip() {
         let (key, unsealing_key) = key_pair();
-        let sealed = seal(&key, TRANSACTION_INPUTS_ASSOCIATED_DATA);
+        let sealed = seal(&key, tx_id(10));
 
-        let opened = unseal(&unsealing_key, &sealed, TRANSACTION_INPUTS_ASSOCIATED_DATA).unwrap();
+        assert_eq!(sealed.key_id(), key.key_id());
+        let opened = unseal(&unsealing_key, &sealed, &key, tx_id(10)).unwrap();
         assert_eq!(opened, b"transaction inputs");
     }
 
+    /// The transaction id binding: a blob captured from one submission must not authenticate when
+    /// replayed onto a different transaction.
     #[test]
-    fn unsealing_rejects_mismatched_associated_data() {
+    fn unsealing_rejects_a_different_transaction() {
         let (key, unsealing_key) = key_pair();
-        let sealed = seal(&key, TRANSACTION_INPUTS_ASSOCIATED_DATA);
+        let sealed = seal(&key, tx_id(10));
 
-        assert!(unseal(&unsealing_key, &sealed, b"other associated data").is_err());
+        assert!(unseal(&unsealing_key, &sealed, &key, tx_id(11)).is_err());
     }
 
-    /// A key that survived serialization must still seal for the same secret, since it is cached in
-    /// the settings table in this form.
+    /// The key id binding: inputs sealed against a retired key fail to authenticate rather than
+    /// silently decrypting under the current one.
     #[test]
-    fn key_rebuilt_from_persisted_parts_still_seals() {
+    fn unsealing_rejects_a_different_key_id() {
         let (key, unsealing_key) = key_pair();
-        let restored = TransactionEncryptionKey::read_from_bytes(&key.to_bytes()).unwrap();
-        assert_eq!(restored, key);
+        let sealed = seal(&key, tx_id(10));
 
-        let sealed = seal(&restored, TRANSACTION_INPUTS_ASSOCIATED_DATA);
-        assert!(unseal(&unsealing_key, &sealed, TRANSACTION_INPUTS_ASSOCIATED_DATA).is_ok());
+        let rotated = TransactionEncryptionKey { key_id: b"other".to_vec(), ..key };
+        assert!(unseal(&unsealing_key, &sealed, &rotated, tx_id(10)).is_err());
+    }
+
+    /// Each seal draws a fresh ephemeral key, so resealing the same inputs for the same transaction
+    /// must not produce a linkable blob. Both seals draw from one RNG, as consecutive submissions
+    /// from a single client do.
+    #[test]
+    fn sealing_the_same_inputs_twice_yields_different_ciphertexts() {
+        let (key, unsealing_key) = key_pair();
+        let associated_data = key.transaction_inputs_associated_data(tx_id(10));
+        let mut rng = rng();
+        let mut seal_once = || {
+            key.sealing_key()
+                .seal_bytes_with_associated_data(&mut rng, b"transaction inputs", &associated_data)
+                .unwrap()
+                .to_bytes()
+        };
+
+        let first = seal_once();
+        let second = seal_once();
+
+        assert_ne!(first, second);
+        for ciphertext in [first, second] {
+            let sealed = SealedTransactionInputs {
+                key_id: key.key_id().to_vec(),
+                ciphertext,
+            };
+            assert_eq!(
+                unseal(&unsealing_key, &sealed, &key, tx_id(10)).unwrap(),
+                b"transaction inputs"
+            );
+        }
     }
 
     // ATTESTATION VERIFICATION
     // --------------------------------------------------------------------------------------------
-
-    use miden_protocol::block::ValidatorKeys;
-    use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey as ValidatorSigningKey;
 
     /// Builds a response attested by `signer`, the way a validator serves one.
     fn attested(
@@ -413,13 +611,24 @@ mod tests {
         signer: &ValidatorSigningKey,
         genesis_commitment: Word,
     ) -> AttestedTransactionEncryptionKey {
+        attested_with_next(key, signer, genesis_commitment, None)
+    }
+
+    /// Builds a response whose signature also covers `next_key`, so that tests exercising a
+    /// scheduled rotation fail for the reason they name rather than for an invalid signature.
+    fn attested_with_next(
+        key: &TransactionEncryptionKey,
+        signer: &ValidatorSigningKey,
+        genesis_commitment: Word,
+        next_key: Option<NextTransactionEncryptionKey>,
+    ) -> AttestedTransactionEncryptionKey {
         let public_key = key.public_key().to_bytes();
         let commitment = attestation_commitment(
             SUPPORTED_SCHEME,
             key.key_id(),
             genesis_commitment,
             &public_key,
-            None,
+            next_key.as_ref(),
         );
 
         AttestedTransactionEncryptionKey {
@@ -430,7 +639,7 @@ mod tests {
                 validator_key: signer.public_key(),
                 signature: signer.sign(commitment),
             }],
-            next_key: None,
+            next_key,
         }
     }
 
@@ -440,9 +649,8 @@ mod tests {
         let signer = ValidatorSigningKey::with_rng(&mut rng());
         let validator_keys = ValidatorKeys::new(vec![signer.public_key()]).unwrap();
 
-        let verified = attested(&key, &signer, Word::empty())
-            .verify(Word::empty(), &validator_keys)
-            .unwrap();
+        let verified =
+            attested(&key, &signer, genesis()).verify(genesis(), &validator_keys).unwrap();
 
         assert_eq!(verified, key);
     }
@@ -454,11 +662,7 @@ mod tests {
         let committed = ValidatorSigningKey::with_rng(&mut ChaCha20Rng::seed_from_u64(7));
         let validator_keys = ValidatorKeys::new(vec![committed.public_key()]).unwrap();
 
-        assert!(
-            attested(&key, &impostor, Word::empty())
-                .verify(Word::empty(), &validator_keys)
-                .is_err()
-        );
+        assert!(attested(&key, &impostor, genesis()).verify(genesis(), &validator_keys).is_err());
     }
 
     /// The whole point of the attestation: a substituted public key must not verify, even though
@@ -470,10 +674,10 @@ mod tests {
         let validator_keys = ValidatorKeys::new(vec![signer.public_key()]).unwrap();
 
         let substitute = KeyExchangeKey::with_rng(&mut ChaCha20Rng::seed_from_u64(99));
-        let mut response = attested(&key, &signer, Word::empty());
+        let mut response = attested(&key, &signer, genesis());
         response.public_key = substitute.public_key().to_bytes();
 
-        assert!(response.verify(Word::empty(), &validator_keys).is_err());
+        assert!(response.verify(genesis(), &validator_keys).is_err());
     }
 
     /// The genesis commitment scopes an attestation to one chain, so the same signed response must
@@ -484,9 +688,30 @@ mod tests {
         let signer = ValidatorSigningKey::with_rng(&mut rng());
         let validator_keys = ValidatorKeys::new(vec![signer.public_key()]).unwrap();
 
-        let response = attested(&key, &signer, Word::empty());
+        let response = attested(&key, &signer, genesis());
 
-        assert!(response.verify(Word::from([1u32, 2, 3, 4]), &validator_keys).is_err());
+        assert!(response.verify(Word::from([9u32, 9, 9, 9]), &validator_keys).is_err());
+    }
+
+    /// A scheduled rotation is covered by the signature, so it cannot be injected or altered by the
+    /// operator relaying the response.
+    #[test]
+    fn verify_rejects_an_injected_next_key() {
+        let (key, _) = key_pair();
+        let signer = ValidatorSigningKey::with_rng(&mut rng());
+        let validator_keys = ValidatorKeys::new(vec![signer.public_key()]).unwrap();
+
+        let mut response = attested(&key, &signer, genesis());
+        response.next_key = Some(NextTransactionEncryptionKey {
+            scheme: SUPPORTED_SCHEME,
+            key_id: vec![1, 2, 3, 4],
+            public_key: KeyExchangeKey::with_rng(&mut ChaCha20Rng::seed_from_u64(11))
+                .public_key()
+                .to_bytes(),
+            rotation_block_num: 100.into(),
+        });
+
+        assert!(response.verify(genesis(), &validator_keys).is_err());
     }
 
     #[test]
@@ -495,10 +720,10 @@ mod tests {
         let signer = ValidatorSigningKey::with_rng(&mut rng());
         let validator_keys = ValidatorKeys::new(vec![signer.public_key()]).unwrap();
 
-        let mut response = attested(&key, &signer, Word::empty());
+        let mut response = attested(&key, &signer, genesis());
         response.scheme = SUPPORTED_SCHEME + 1;
 
-        assert!(response.verify(Word::empty(), &validator_keys).is_err());
+        assert!(response.verify(genesis(), &validator_keys).is_err());
     }
 
     // VALIDATOR PARITY

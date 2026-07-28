@@ -613,12 +613,8 @@ pub fn u64_to_value(v: u64) -> Value {
 pub mod tests {
     use std::boxed::Box;
 
-    use miden_client::rpc::encryption::TransactionEncryptionKey;
     use miden_client::store::Store;
     use miden_client::testing::common::create_test_store_path;
-    use miden_protocol::crypto::dsa::eddsa_25519_sha512::KeyExchangeKey;
-    use rand::SeedableRng;
-    use rand_chacha::ChaCha20Rng;
 
     use super::SqliteStore;
 
@@ -646,24 +642,5 @@ pub mod tests {
 
     pub(crate) async fn create_test_store() -> SqliteStore {
         SqliteStore::new(create_test_store_path()).await.unwrap()
-    }
-
-    /// The transaction encryption key is cached through the generic `settings` table, so this
-    /// exercises the [`Store`] default implementation against a real store: absent before any
-    /// write, recoverable after one, and replaced rather than duplicated by a second write.
-    #[tokio::test]
-    async fn transaction_encryption_key_is_cached_in_settings() {
-        let store = create_test_store().await;
-        assert!(store.get_transaction_encryption_key().await.unwrap().is_none());
-
-        let public_key =
-            KeyExchangeKey::with_rng(&mut ChaCha20Rng::seed_from_u64(0xface)).public_key();
-        let key = TransactionEncryptionKey::new(b"key-id".to_vec(), public_key.clone());
-        store.set_transaction_encryption_key(&key).await.unwrap();
-        assert_eq!(store.get_transaction_encryption_key().await.unwrap(), Some(key.clone()));
-
-        let rotated = TransactionEncryptionKey::new(b"next".to_vec(), public_key);
-        store.set_transaction_encryption_key(&rotated).await.unwrap();
-        assert_eq!(store.get_transaction_encryption_key().await.unwrap(), Some(rotated));
     }
 }

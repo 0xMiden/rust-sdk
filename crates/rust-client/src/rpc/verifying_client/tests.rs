@@ -32,7 +32,6 @@ use miden_protocol::testing::account_id::ACCOUNT_ID_SENDER;
 use miden_protocol::transaction::{
     OrderedTransactionHeaders,
     ProvenTransaction,
-    TransactionInputs,
     TransactionKernel,
 };
 use miden_protocol::{Felt, Word};
@@ -230,7 +229,7 @@ impl NodeRpcClient for CannedTransport {
         &self,
         _proven_batch: ProvenBatch,
         _proposed_batch: ProposedBatch,
-        _transaction_inputs: Vec<TransactionInputs>,
+        _transaction_inputs: Vec<SealedTransactionInputs>,
     ) -> Result<BlockNumber, RpcError> {
         unimplemented!("not used in these tests")
     }

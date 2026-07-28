@@ -566,6 +566,12 @@ pub trait Store: Send + Sync {
             .await
     }
 
+    /// Removes the cached transaction encryption key, so the next submission fetches and verifies
+    /// a fresh one. Used when the node rejects a submission sealed against a retired key.
+    async fn remove_transaction_encryption_key(&self) -> Result<(), StoreError> {
+        self.remove_setting(TRANSACTION_ENCRYPTION_KEY_STORE_SETTING.into()).await
+    }
+
     // PARTIAL MMR
     // --------------------------------------------------------------------------------------------
 

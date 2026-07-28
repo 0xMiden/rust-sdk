@@ -19,7 +19,7 @@ use miden_protocol::batch::{ProposedBatch, ProvenBatch};
 use miden_protocol::block::{BlockHeader, BlockNumber, ProvenBlock};
 use miden_protocol::crypto::merkle::mmr::{Forest, Mmr, MmrProof};
 use miden_protocol::note::{NoteAttachments, NoteHeader, NoteId, NoteScript, NoteTag};
-use miden_protocol::transaction::{OutputNote, ProvenTransaction, TransactionInputs};
+use miden_protocol::transaction::{OutputNote, ProvenTransaction};
 use miden_testing::{MockChain, MockChainNote};
 use miden_tx::utils::sync::RwLock;
 
@@ -445,8 +445,8 @@ impl NodeRpcClient for MockRpcApi {
     }
 
     /// The mock does not serve the encryption key. Verifying an attestation needs a validator
-    /// signature the mock chain cannot produce, so tests that submit transactions provision the key
-    /// directly through `Store::set_transaction_encryption_key` instead.
+    /// signature the mock chain cannot produce, so tests that submit transactions seed the key
+    /// directly through `Client::seed_transaction_encryption_key` instead.
     async fn get_transaction_encryption_key(
         &self,
     ) -> Result<AttestedTransactionEncryptionKey, RpcError> {
@@ -495,7 +495,7 @@ impl NodeRpcClient for MockRpcApi {
         &self,
         proven_batch: ProvenBatch,
         _proposed_batch: ProposedBatch,
-        _transaction_inputs: Vec<TransactionInputs>,
+        _transaction_inputs: Vec<SealedTransactionInputs>,
     ) -> Result<BlockNumber, RpcError> {
         let mut mock_chain = self.mock_chain.write();
         mock_chain.add_pending_batch(proven_batch);

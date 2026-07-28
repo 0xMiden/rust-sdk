@@ -74,7 +74,7 @@ use miden_protocol::batch::{ProposedBatch, ProvenBatch};
 use miden_protocol::block::{BlockHeader, BlockNumber, ProvenBlock};
 use miden_protocol::crypto::merkle::mmr::MmrProof;
 use miden_protocol::note::{NoteDetails, NoteId, NoteScript, NoteTag, NoteType, Nullifier};
-use miden_protocol::transaction::{ProvenTransaction, TransactionInputs};
+use miden_protocol::transaction::ProvenTransaction;
 
 use crate::rpc::domain::storage_map::StorageMapInfo;
 
@@ -164,22 +164,21 @@ pub trait NodeRpcClient: Send + Sync {
     ) -> Result<BlockNumber, RpcError>;
 
     /// Given a Proven Batch together with the corresponding [`ProposedBatch`] and the list of
-    /// [`TransactionInputs`] (one per transaction, matching the ordering of the batch), sends
+    /// [`SealedTransactionInputs`] (one per transaction, matching the ordering of the batch), sends
     /// the batch to the node for inclusion in a future block using the `/SubmitProvenBatch`
     /// RPC endpoint. All transactions in the batch must build on the current mempool state
     /// following normal transaction submission rules.
     ///
-    /// Unlike [`Self::submit_proven_transaction`], the transaction inputs travel unencrypted:
-    /// the node's batch endpoint specifies plaintext [`TransactionInputs`] on the wire and does
-    /// not unseal on the batch path, so the inputs are readable by the RPC operator until node
-    /// support for sealed batch inputs lands.
+    /// Each transaction's inputs are sealed independently against its own transaction ID, because
+    /// the node fans the batch out into one validator submission per transaction. See
+    /// [`encryption`] for how the sealed inputs are produced.
     ///
     /// Returns the node's chain tip at submission (not the block the batch is committed in).
     async fn submit_proven_batch(
         &self,
         proven_batch: ProvenBatch,
         proposed_batch: ProposedBatch,
-        transaction_inputs: Vec<TransactionInputs>,
+        transaction_inputs: Vec<SealedTransactionInputs>,
     ) -> Result<BlockNumber, RpcError>;
 
     /// Given a block number, fetches the block header corresponding to that height from the node

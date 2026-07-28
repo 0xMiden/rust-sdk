@@ -64,6 +64,19 @@ impl RpcError {
             _ => None,
         }
     }
+
+    /// Returns whether this is a submission rejected because the transaction inputs were sealed
+    /// against an encryption key the validator does not hold.
+    pub fn is_stale_transaction_encryption_key(&self) -> bool {
+        matches!(
+            self,
+            Self::RequestError {
+                endpoint: RpcEndpoint::SubmitProvenTx | RpcEndpoint::SubmitProvenBatch,
+                error_kind: GrpcError::FailedPrecondition,
+                ..
+            }
+        )
+    }
 }
 
 impl From<DeserializationError> for RpcError {

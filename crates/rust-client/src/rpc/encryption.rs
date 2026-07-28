@@ -28,7 +28,7 @@
 use alloc::string::ToString;
 use alloc::vec::Vec;
 
-use miden_protocol::block::ValidatorKeys;
+use miden_protocol::block::{BlockNumber, ValidatorKeys};
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
     PublicKey as ValidatorPublicKey,
     Signature as ValidatorSignature,
@@ -152,7 +152,20 @@ pub struct NextTransactionEncryptionKey {
     /// Raw public key bytes of the next key.
     pub public_key: Vec<u8>,
     /// Block number at which the next key takes effect.
-    pub rotation_block_num: u32,
+    pub rotation_block_num: BlockNumber,
+}
+
+/// A single validator's endorsement of a served encryption key.
+///
+/// The signature covers [`attestation_commitment`] recomputed from the served fields, and counts
+/// only if `validator_key` is present in a validator set committed in a block header this client
+/// trusts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ValidatorAttestation {
+    /// Signing key of the attesting validator.
+    pub validator_key: ValidatorPublicKey,
+    /// The validator's signature over [`attestation_commitment`].
+    pub signature: ValidatorSignature,
 }
 
 /// A transaction encryption key exactly as the node served it, before it is trusted.
@@ -171,8 +184,8 @@ pub struct AttestedTransactionEncryptionKey {
     pub key_id: Vec<u8>,
     /// Raw public key bytes.
     pub public_key: Vec<u8>,
-    /// Validator attestations over [`attestation_commitment`], as `(validator key, signature)`.
-    pub attestations: Vec<(ValidatorPublicKey, ValidatorSignature)>,
+    /// Validator attestations over [`attestation_commitment`].
+    pub attestations: Vec<ValidatorAttestation>,
     /// The next key, when a rotation is scheduled.
     pub next_key: Option<NextTransactionEncryptionKey>,
 }
@@ -217,8 +230,9 @@ impl AttestedTransactionEncryptionKey {
         );
 
         let recognized = validator_keys.as_keys();
-        let attested = self.attestations.iter().any(|(validator_key, signature)| {
-            recognized.contains(validator_key) && validator_key.verify(commitment, signature)
+        let attested = self.attestations.iter().any(|attestation| {
+            recognized.contains(&attestation.validator_key)
+                && attestation.validator_key.verify(commitment, &attestation.signature)
         });
         if !attested {
             return Err(RpcError::TransactionEncryptionKeyRejected(
@@ -267,12 +281,14 @@ fn validate_key_id(key_id: &[u8], field: &str) -> Result<(), RpcError> {
 
 /// Computes the commitment a validator signs to attest an encryption key.
 ///
-/// Mirrors the validator's `attestation_commitment`: the Poseidon2 hash of `ATTESTATION_DOMAIN ||
-/// scheme || len(key_id) || key_id || genesis_commitment || len(public_key) || public_key ||
-/// next_key_transcript`, where the scheme, rotation block number and length prefixes are 4 bytes
-/// little-endian. The length prefixes keep the payload injective, and the genesis commitment ties
-/// the attestation to one chain. Any divergence from the validator's layout makes every signature
-/// fail to verify.
+/// Mirrors the validator's `attestation_commitment` (`signers::attestation_commitment` in the
+/// `miden-validator` crate of `0xMiden/node`) so the layout is duplicated here and pinned against
+/// the validator's output by the golden-vector tests below: the Poseidon2 hash of
+/// `ATTESTATION_DOMAIN || scheme || len(key_id) || key_id || genesis_commitment || len(public_key)
+/// || public_key || next_key_transcript`, where the scheme, rotation block number and length
+/// prefixes are 4 bytes little-endian. The length prefixes keep the payload injective, and the
+/// genesis commitment ties the attestation to one chain. Any divergence from the validator's layout
+/// makes every signature fail to verify.
 pub fn attestation_commitment(
     scheme: u32,
     key_id: &[u8],
@@ -290,7 +306,7 @@ pub fn attestation_commitment(
         payload.extend_from_slice(&next.scheme.to_le_bytes());
         extend_with_length_prefixed(&mut payload, &next.key_id);
         extend_with_length_prefixed(&mut payload, &next.public_key);
-        payload.extend_from_slice(&next.rotation_block_num.to_le_bytes());
+        payload.extend_from_slice(&next.rotation_block_num.as_u32().to_le_bytes());
     }
 
     Hasher::hash(&payload)
@@ -633,7 +649,10 @@ mod tests {
             scheme: SUPPORTED_SCHEME,
             key_id: key.key_id().to_vec(),
             public_key,
-            attestations: vec![(signer.public_key(), signer.sign(commitment))],
+            attestations: vec![ValidatorAttestation {
+                validator_key: signer.public_key(),
+                signature: signer.sign(commitment),
+            }],
             next_key,
         }
     }
@@ -703,7 +722,7 @@ mod tests {
             public_key: KeyExchangeKey::with_rng(&mut ChaCha20Rng::seed_from_u64(11))
                 .public_key()
                 .to_bytes(),
-            rotation_block_num: 100,
+            rotation_block_num: 100.into(),
         });
 
         assert!(response.verify(genesis(), &validator_keys).is_err());
@@ -742,7 +761,7 @@ mod tests {
             scheme: SUPPORTED_SCHEME,
             key_id,
             public_key,
-            rotation_block_num: 100,
+            rotation_block_num: 100.into(),
         };
         let valid_next_public_key = KeyExchangeKey::with_rng(&mut ChaCha20Rng::seed_from_u64(11))
             .public_key()
@@ -781,5 +800,39 @@ mod tests {
             Some(scheduled(vec![1, 2, 3, 4], valid_next_public_key)),
         );
         assert!(well_formed.verify(genesis(), &validator_keys).is_ok());
+    }
+
+    // VALIDATOR PARITY
+    // --------------------------------------------------------------------------------------------
+
+    /// Expected values produced by the validator's own implementation over these exact inputs
+    /// (`miden_validator::attestation_commitment`, `0xMiden/node` rev `5066b383`, identical on
+    /// `next` at `da261511`). The commitment layout is duplicated on both sides, so these vectors
+    /// are what ties them together: if either side changes its layout, this test fails rather
+    /// than every attestation quietly failing to verify. Regenerate by feeding the same inputs to
+    /// the node's function.
+    #[test]
+    fn attestation_commitment_matches_the_validator_implementation() {
+        let genesis = Word::from([101u32, 102, 103, 104]);
+
+        let no_rotation =
+            attestation_commitment(1, b"golden-key-id", genesis, b"golden-public-key", None);
+        assert_eq!(
+            no_rotation.to_hex(),
+            "0x245d1f2d45d4a60d9edd4576691244d6b9ee16fe67635425dc685cd54918a970"
+        );
+
+        let next = NextTransactionEncryptionKey {
+            scheme: 2,
+            key_id: b"next-key-id".to_vec(),
+            public_key: b"next-public-key".to_vec(),
+            rotation_block_num: BlockNumber::from(7u32),
+        };
+        let with_rotation =
+            attestation_commitment(1, b"golden-key-id", genesis, b"golden-public-key", Some(&next));
+        assert_eq!(
+            with_rotation.to_hex(),
+            "0xddfd7907b6a1ea6f294809ff0ed775f270b649ca15b21f88127c8335945e4752"
+        );
     }
 }

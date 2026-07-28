@@ -60,7 +60,7 @@
 //!
 //! use miden_client::builder::ClientBuilder;
 //! use miden_client::keystore::FilesystemKeyStore;
-//! use miden_client::rpc::{Endpoint, GrpcClient};
+//! use miden_client::rpc::{Endpoint, GrpcClient, VerifyingRpcClient};
 //! use miden_client_sqlite_store::SqliteStore;
 //!
 //! # pub async fn create_test_client() -> Result<(), Box<dyn std::error::Error>> {
@@ -76,7 +76,7 @@
 //!
 //! // Instantiate the client using the builder.
 //! let client = ClientBuilder::new()
-//!     .rpc(Arc::new(GrpcClient::new(&endpoint, 10_000)))
+//!     .rpc(Arc::new(VerifyingRpcClient::new(GrpcClient::new(&endpoint, 10_000))))
 //!     .store(store)
 //!     .authenticator(Arc::new(keystore))
 //!     .build()

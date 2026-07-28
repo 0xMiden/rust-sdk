@@ -17,13 +17,14 @@
 //! ## Example
 //!
 //! ```no_run
-//! # use miden_client::rpc::{Endpoint, NodeRpcClient, GrpcClient};
+//! # use miden_client::rpc::{Endpoint, NodeRpcClient, GrpcClient, VerifyingRpcClient};
 //! # use miden_protocol::block::BlockNumber;
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! // Create a gRPC client instance (assumes default endpoint configuration).
+//! // Create a gRPC client instance (assumes default endpoint configuration), wrapped so that
+//! // node responses are verified against the requests.
 //! let endpoint = Endpoint::new("https".into(), "localhost".into(), Some(57291));
-//! let mut rpc_client = GrpcClient::new(&endpoint, 1000);
+//! let rpc_client = VerifyingRpcClient::new(GrpcClient::new(&endpoint, 1000));
 //!
 //! // Fetch the latest block header (by passing None).
 //! let (block_header, mmr_proof) = rpc_client.get_block_header_by_number(None, true).await?;
@@ -101,6 +102,9 @@ mod tonic_client;
 #[cfg(feature = "tonic")]
 pub use tonic_client::GrpcClient;
 
+mod verifying_client;
+pub use verifying_client::VerifyingRpcClient;
+
 use crate::rpc::domain::account_vault::AccountVaultInfo;
 use crate::rpc::domain::transaction::TransactionRecord;
 use crate::store::InputNoteRecord;
@@ -123,7 +127,8 @@ pub enum AccountStateAt {
 ///
 /// The implementers are responsible for connecting to the Miden node, handling endpoint
 /// requests/responses, and translating responses into domain objects relevant for each of the
-/// endpoints.
+/// endpoints. Implementations do not check that responses correspond to the method's arguments.
+/// Wrap a client in [`VerifyingRpcClient`] to reject mismatched responses.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 pub trait NodeRpcClient: Send + Sync {
@@ -155,7 +160,7 @@ pub trait NodeRpcClient: Send + Sync {
     async fn submit_proven_transaction(
         &self,
         proven_transaction: ProvenTransaction,
-        transaction_inputs: SealedTransactionInputs,
+        sealed_transaction_inputs: SealedTransactionInputs,
     ) -> Result<BlockNumber, RpcError>;
 
     /// Given a Proven Batch together with the corresponding [`ProposedBatch`] and the list of
@@ -163,6 +168,11 @@ pub trait NodeRpcClient: Send + Sync {
     /// the batch to the node for inclusion in a future block using the `/SubmitProvenBatch`
     /// RPC endpoint. All transactions in the batch must build on the current mempool state
     /// following normal transaction submission rules.
+    ///
+    /// Unlike [`Self::submit_proven_transaction`], the transaction inputs travel unencrypted:
+    /// the node's batch endpoint specifies plaintext [`TransactionInputs`] on the wire and does
+    /// not unseal on the batch path, so the inputs are readable by the RPC operator until node
+    /// support for sealed batch inputs lands.
     ///
     /// Returns the node's chain tip at submission (not the block the batch is committed in).
     async fn submit_proven_batch(
@@ -179,12 +189,8 @@ pub trait NodeRpcClient: Send + Sync {
     ///
     /// When `None` is provided, returns info regarding the latest block.
     ///
-    /// When `block_num` is `Some`, implementations must verify that the returned header's block
-    /// number matches the requested one and return [`RpcError::InvalidResponse`] otherwise.
-    ///
-    /// Errors:
-    /// - [`RpcError::InvalidResponse`] if the node returns a header whose block number does not
-    ///   match the requested `block_num`.
+    /// The returned header is not verified against the requested `block_num`;
+    /// [`VerifyingRpcClient`] performs that check.
     async fn get_block_header_by_number(
         &self,
         block_num: Option<BlockNumber>,
@@ -196,12 +202,8 @@ pub trait NodeRpcClient: Send + Sync {
     ///
     /// If `include_proof` is set to true, the block proof will be included in the response.
     ///
-    /// Implementations must verify that the returned block's number matches the requested
-    /// `block_num` and return [`RpcError::InvalidResponse`] otherwise.
-    ///
-    /// # Errors:
-    /// - [`RpcError::InvalidResponse`] if the node returns a block whose number does not match the
-    ///   requested `block_num`.
+    /// The returned block is not verified against the requested `block_num`;
+    /// [`VerifyingRpcClient`] performs that check.
     async fn get_block_by_number(
         &self,
         block_num: BlockNumber,
@@ -220,11 +222,8 @@ pub trait NodeRpcClient: Send + Sync {
     /// In both cases, a [`miden_protocol::note::NoteInclusionProof`] is returned so the caller can
     /// verify that each note is part of the block's note tree.
     ///
-    /// Implementations must verify that every returned note's ID was present in `note_ids` and
-    /// return [`RpcError::InvalidResponse`] otherwise.
-    ///
-    /// Errors:
-    /// - [`RpcError::InvalidResponse`] if the node returns a note whose ID was not requested.
+    /// Returned notes are not verified to be among the requested `note_ids`;
+    /// [`VerifyingRpcClient`] performs that check.
     async fn get_notes_by_id(&self, note_ids: &[NoteId]) -> Result<Vec<FetchedNote>, RpcError>;
 
     /// Fetches the MMR delta for a given block range using the `/SyncChainMmr` RPC endpoint.
@@ -291,11 +290,8 @@ pub trait NodeRpcClient: Send + Sync {
     /// [`NodeRpcClient::sync_notes_with_content`] to also resolve their full metadata and
     /// fetch public note bodies in a single follow-up call.
     ///
-    /// Implementations must verify that every returned note's tag was present in `note_tags` and
-    /// return [`RpcError::InvalidResponse`] otherwise.
-    ///
-    /// # Errors
-    /// - [`RpcError::InvalidResponse`] if the node returns a note whose tag was not requested.
+    /// Returned notes are not verified to carry one of the requested `note_tags`;
+    /// [`VerifyingRpcClient`] performs that check.
     async fn sync_notes(
         &self,
         block_from: BlockNumber,
@@ -404,12 +400,8 @@ pub trait NodeRpcClient: Send + Sync {
     /// - `block_from`: The starting block number for the range (inclusive).
     /// - `block_to`: The ending block number for the range (inclusive).
     ///
-    /// Implementations must verify that every returned nullifier's prefix was present in `prefix`
-    /// and return [`RpcError::InvalidResponse`] otherwise.
-    ///
-    /// # Errors
-    /// - [`RpcError::InvalidResponse`] if the node returns a nullifier whose prefix was not
-    ///   requested.
+    /// Returned nullifiers are not verified to carry one of the requested prefixes;
+    /// [`VerifyingRpcClient`] performs that check.
     async fn sync_nullifiers(
         &self,
         prefix: &[u16],
@@ -426,11 +418,12 @@ pub trait NodeRpcClient: Send + Sync {
     ///
     /// For a fully oversize-resolved account, use [`NodeRpcClient::get_account_details`].
     ///
-    /// Errors if the account isn't found or the block number of the requested account doesn't match
+    /// The response block number is not verified against the requested one;
+    /// [`VerifyingRpcClient`] performs that check.
+    ///
     /// # Errors
     ///
     /// - If the account isn't found in the network
-    /// - If the response block number does not match the requested one
     async fn get_account(
         &self,
         account_id: AccountId,
@@ -587,12 +580,8 @@ pub trait NodeRpcClient: Send + Sync {
     /// Fetches the note script with the specified root, returning `None` if the node has no script
     /// registered for that root.
     ///
-    /// Implementations must verify that a returned script's root matches the requested `root` and
-    /// return [`RpcError::InvalidResponse`] otherwise; callers may rely on this invariant.
-    ///
-    /// Errors:
-    /// - [`RpcError::InvalidResponse`] if the node returns a script whose root does not match the
-    ///   requested `root`.
+    /// A returned script's root is not verified to match the requested `root`;
+    /// [`VerifyingRpcClient`] performs that check.
     async fn get_note_script_by_root(&self, root: Word) -> Result<Option<NoteScript>, RpcError>;
 
     /// Fetches storage map updates for specified account and storage slots within a block range,

@@ -227,12 +227,14 @@ impl AttestedTransactionEncryptionKey {
 
 /// Computes the commitment a validator signs to attest an encryption key.
 ///
-/// Mirrors the validator's `attestation_commitment`: the Poseidon2 hash of `ATTESTATION_DOMAIN ||
-/// scheme || len(key_id) || key_id || genesis_commitment || len(public_key) || public_key ||
-/// next_key_transcript`, where the scheme, rotation block number and length prefixes are 4 bytes
-/// little-endian. The length prefixes keep the payload injective, and the genesis commitment ties
-/// the attestation to one chain. Any divergence from the validator's layout makes every signature
-/// fail to verify.
+/// Mirrors the validator's `attestation_commitment` (`signers::attestation_commitment` in the
+/// `miden-validator` crate of `0xMiden/node`) so the layout is duplicated here and pinned against
+/// the validator's output by the golden-vector tests below: the Poseidon2 hash of
+/// `ATTESTATION_DOMAIN || scheme || len(key_id) || key_id || genesis_commitment || len(public_key)
+/// || public_key || next_key_transcript`, where the scheme, rotation block number and length
+/// prefixes are 4 bytes little-endian. The length prefixes keep the payload injective, and the
+/// genesis commitment ties the attestation to one chain. Any divergence from the validator's layout
+/// makes every signature fail to verify.
 pub fn attestation_commitment(
     scheme: u32,
     key_id: &[u8],
@@ -480,5 +482,39 @@ mod tests {
         response.scheme = SUPPORTED_SCHEME + 1;
 
         assert!(response.verify(Word::empty(), &validator_keys).is_err());
+    }
+
+    // VALIDATOR PARITY
+    // --------------------------------------------------------------------------------------------
+
+    /// Expected values produced by the validator's own implementation over these exact inputs
+    /// (`miden_validator::attestation_commitment`, `0xMiden/node` rev `5066b383`, identical on
+    /// `next` at `da261511`). The commitment layout is duplicated on both sides, so these vectors
+    /// are what ties them together: if either side changes its layout, this test fails rather
+    /// than every attestation quietly failing to verify. Regenerate by feeding the same inputs to
+    /// the node's function.
+    #[test]
+    fn attestation_commitment_matches_the_validator_implementation() {
+        let genesis = Word::from([101u32, 102, 103, 104]);
+
+        let no_rotation =
+            attestation_commitment(1, b"golden-key-id", genesis, b"golden-public-key", None);
+        assert_eq!(
+            no_rotation.to_hex(),
+            "0x245d1f2d45d4a60d9edd4576691244d6b9ee16fe67635425dc685cd54918a970"
+        );
+
+        let next = NextTransactionEncryptionKey {
+            scheme: 2,
+            key_id: b"next-key-id".to_vec(),
+            public_key: b"next-public-key".to_vec(),
+            rotation_block_num: 7,
+        };
+        let with_rotation =
+            attestation_commitment(1, b"golden-key-id", genesis, b"golden-public-key", Some(&next));
+        assert_eq!(
+            with_rotation.to_hex(),
+            "0xddfd7907b6a1ea6f294809ff0ed775f270b649ca15b21f88127c8335945e4752"
+        );
     }
 }

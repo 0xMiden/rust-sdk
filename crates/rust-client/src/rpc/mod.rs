@@ -155,7 +155,7 @@ pub trait NodeRpcClient: Send + Sync {
     async fn submit_proven_transaction(
         &self,
         proven_transaction: ProvenTransaction,
-        transaction_inputs: SealedTransactionInputs,
+        sealed_transaction_inputs: SealedTransactionInputs,
     ) -> Result<BlockNumber, RpcError>;
 
     /// Given a Proven Batch together with the corresponding [`ProposedBatch`] and the list of
@@ -163,6 +163,11 @@ pub trait NodeRpcClient: Send + Sync {
     /// the batch to the node for inclusion in a future block using the `/SubmitProvenBatch`
     /// RPC endpoint. All transactions in the batch must build on the current mempool state
     /// following normal transaction submission rules.
+    ///
+    /// Unlike [`Self::submit_proven_transaction`], the transaction inputs travel unencrypted:
+    /// the node's batch endpoint specifies plaintext [`TransactionInputs`] on the wire and does
+    /// not unseal on the batch path, so the inputs are readable by the RPC operator until node
+    /// support for sealed batch inputs lands.
     ///
     /// Returns the node's chain tip at submission (not the block the batch is committed in).
     async fn submit_proven_batch(

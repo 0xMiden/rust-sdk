@@ -470,11 +470,11 @@ impl NodeRpcClient for GrpcClient {
     async fn submit_proven_transaction(
         &self,
         proven_transaction: ProvenTransaction,
-        transaction_inputs: SealedTransactionInputs,
+        sealed_transaction_inputs: SealedTransactionInputs,
     ) -> Result<BlockNumber, RpcError> {
         let request = proto::transaction::ProvenTransaction {
             transaction: proven_transaction.to_bytes(),
-            transaction_inputs: Some(transaction_inputs.into_bytes()),
+            transaction_inputs: Some(sealed_transaction_inputs.into_bytes()),
         };
 
         let api_response = self

@@ -60,7 +60,7 @@
 //!
 //! use miden_client::builder::ClientBuilder;
 //! use miden_client::keystore::FilesystemKeyStore;
-//! use miden_client::rpc::{Endpoint, GrpcClient};
+//! use miden_client::rpc::{Endpoint, GrpcClient, VerifyingRpcClient};
 //! use miden_client_sqlite_store::SqliteStore;
 //!
 //! # pub async fn create_test_client() -> Result<(), Box<dyn std::error::Error>> {
@@ -76,7 +76,7 @@
 //!
 //! // Instantiate the client using the builder.
 //! let client = ClientBuilder::new()
-//!     .rpc(Arc::new(GrpcClient::new(&endpoint, 10_000)))
+//!     .rpc(Arc::new(VerifyingRpcClient::new(GrpcClient::new(&endpoint, 10_000))))
 //!     .store(store)
 //!     .authenticator(Arc::new(keystore))
 //!     .build()
@@ -337,7 +337,12 @@ pub mod testing {
     pub use miden_standards::testing as standards;
     pub use miden_standards::testing::note::NoteBuilder;
     pub use miden_testing::*;
+    /// The data store the executor reads from, along with the trait whose methods it serves.
+    /// Exposed here so that tests can exercise it on its own, without going through a
+    /// transaction or a note screening pass.
+    pub use miden_tx::DataStore;
 
+    pub use crate::store::data_store::ClientDataStore;
     pub use crate::test_utils::*;
 }
 

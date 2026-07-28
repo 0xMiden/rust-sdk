@@ -1,13 +1,3 @@
--- Table for storing database migrations data.
--- Note: we can store values of different types in the same `value` field.
-CREATE TABLE migrations (
-    name  TEXT NOT NULL,
-    value ANY,
-
-    PRIMARY KEY (name),
-    CONSTRAINT migration_name_is_not_empty CHECK (length(name) > 0)
-) STRICT, WITHOUT ROWID;
-
 -- Table for storing different settings in run-time, which need to persist over runs.
 CREATE TABLE settings (
     name  TEXT NOT NULL,
@@ -217,6 +207,9 @@ CREATE TABLE tags (
     tag BLOB NOT NULL,     -- the serialized tag
     source BLOB NOT NULL   -- the serialized tag source
 );
+-- Enforces tag idempotency: `add_note_tag` uses `INSERT OR IGNORE` against this index so a
+-- repeated (tag, source) pair is a no-op instead of a duplicated row.
+CREATE UNIQUE INDEX idx_tags_tag_source ON tags(tag, source);
 
 -- insert initial row into blockchain_checkpoint table
 INSERT OR IGNORE INTO blockchain_checkpoint (block_num, partial_blockchain_peaks)

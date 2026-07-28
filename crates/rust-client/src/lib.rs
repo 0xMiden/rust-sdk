@@ -239,6 +239,12 @@ pub mod block {
 /// network. It re-exports commonly used types and random number generators like `FeltRng` from
 /// the `miden_standards` crate.
 pub mod crypto {
+    pub mod ecdsa_k256_keccak {
+        pub use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{PublicKey, Signature};
+    }
+    pub mod eddsa_25519_sha512 {
+        pub use miden_protocol::crypto::dsa::eddsa_25519_sha512::{KeyExchangeKey, PublicKey};
+    }
     pub mod rpo_falcon512 {
         pub use miden_protocol::crypto::dsa::falcon512_poseidon2::{
             PublicKey,

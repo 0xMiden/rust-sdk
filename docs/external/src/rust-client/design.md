@@ -56,9 +56,11 @@ These private keys are used by the executor to sign and authenticate transaction
 
 ## Note Screener
 
-The note screener is used to check the consumability of notes by tracked accounts. It performs fast static checks (e.g. checking the inputs for well known notes) and also dry runs of consumption transactions.
+The note screener is used to check the consumability of notes by tracked accounts. It can find the tracked accounts that can consume a note, and whether the note can be consumed at the moment or in the future.
 
-It can find the tracked accounts that can consume a note, and whether the note can be consumed at the moment or in the future.
+For each candidate note the screener first runs a static input check. It resolves P2ID and P2IDE notes this way, without running the VM. Every other note is screened by trial-executing a consumption transaction against the account at a single reference block, the client's current sync height. Screening a set of notes therefore runs one trial execution per (account, note) pair that the static check does not resolve.
+
+Within a single screening call, the transaction inputs that stay constant across the pass are read from the store once instead of once per trial execution: each account's state, the reference block header and its partial blockchain, and the vault asset witnesses (including the fee asset). This is sound because screening commits no state, so those inputs do not change between executions, and it is not applied to real transaction execution, where account state evolves. Screening a batch therefore amortizes each account's input fetch across every note checked against it, and the larger an account's vault, the more a batch saves over screening notes one at a time.
 
 Usage examples for note screening can be found in the [Note screening section](./library.md#note-screening).
 

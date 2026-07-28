@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Breaking Changes
+
+* [BREAKING][rust] Transaction inputs are now sealed before submission. The client fetches the validator set's shared encryption key on first submission and verifies its validator attestations against the validator set committed in the chain tip before using it. A client must be synced far enough to have a genesis header and a chain-tip header locally before it can submit. `NodeRpcClient::submit_proven_transaction` and `NodeRpcClient::submit_proven_batch` now take `SealedTransactionInputs` instead of `TransactionInputs`.
+
 ### Enhancements
 
 * [FEATURE][cli] Added a `--payback-note-type` option to `swap` so the payback note can be created as public or private (defaults to private). Public payback works without any off-band advice now that SWAP derives the payback recipient deterministically ([#2190](https://github.com/0xMiden/rust-sdk/pull/2190)).

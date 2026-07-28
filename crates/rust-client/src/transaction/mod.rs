@@ -97,7 +97,7 @@ use crate::rpc::domain::account::{
     VaultFetch,
 };
 use crate::rpc::encryption::{TransactionEncryptionKey, seal_transaction_inputs};
-use crate::rpc::{AccountStateAt, NodeRpcClient};
+use crate::rpc::{AccountStateAt, NodeRpcClient, RpcError};
 use crate::store::data_store::ClientDataStore;
 use crate::store::input_note_states::ExpectedNoteState;
 use crate::store::{
@@ -210,7 +210,7 @@ where
     /// accounts.
     ///
     /// See [`crate::transaction::batch`] for usage and constraints.
-    pub fn new_transaction_batch(&self) -> BatchBuilder<'_, AUTH> {
+    pub fn new_transaction_batch(&mut self) -> BatchBuilder<'_, AUTH> {
         let inner_data_store = ClientDataStore::new(self.store.clone(), self.rpc_api.clone());
         BatchBuilder {
             client: self,
@@ -460,28 +460,33 @@ where
         transaction_inputs: impl Into<TransactionInputs>,
     ) -> Result<BlockNumber, ClientError> {
         info!("Submitting transaction to the network...");
+        let tx_id = proven_transaction.id();
         let key = self.transaction_encryption_key().await?;
         let sealed_inputs =
-            seal_transaction_inputs(&mut self.rng, &key, &transaction_inputs.into())?;
-        let block_num = self
-            .rpc_api
-            .submit_proven_transaction(proven_transaction, sealed_inputs)
-            .await?;
+            seal_transaction_inputs(&mut self.rng, &key, tx_id, &transaction_inputs.into())?;
+        let result =
+            self.rpc_api.submit_proven_transaction(proven_transaction, sealed_inputs).await;
+        if let Err(err) = &result {
+            self.forget_stale_transaction_encryption_key(err);
+        }
+        let block_num = result?;
         info!("Transaction submitted.");
 
         Ok(block_num)
     }
 
-    /// Returns the validator set's transaction encryption key, fetching and caching it on first
+    /// Returns the validator set's transaction encryption key, fetching and verifying it on first
     /// use.
     ///
-    /// The key is public data shared by the whole validator set, so the cached copy is reused
-    /// across submissions and restarts. A freshly fetched key is verified against the validator
-    /// set committed in the chain tip before it is cached or used: the endpoint is served by
-    /// the RPC operator, which is the party the encryption keeps out.
-    async fn transaction_encryption_key(&self) -> Result<TransactionEncryptionKey, ClientError> {
-        if let Some(key) = self.store.get_transaction_encryption_key().await? {
-            return Ok(key);
+    /// The key is public data shared by the whole validator set, so it is reused across submissions
+    /// for as long as this client lives. A freshly fetched key is verified against the validator
+    /// set committed in the chain tip before it is used: the endpoint is served by the RPC
+    /// operator, which is the party the encryption keeps out.
+    pub(crate) async fn transaction_encryption_key(
+        &mut self,
+    ) -> Result<TransactionEncryptionKey, ClientError> {
+        if let Some(key) = &self.transaction_encryption_key {
+            return Ok(key.clone());
         }
 
         let attested = self.rpc_api.get_transaction_encryption_key().await?;
@@ -495,9 +500,24 @@ where
         let validator_keys = self.trusted_block_header(chain_tip).await?.validator_keys().clone();
 
         let key = attested.verify(genesis_commitment, &validator_keys)?;
-        self.store.set_transaction_encryption_key(&key).await?;
+        self.transaction_encryption_key = Some(key.clone());
 
         Ok(key)
+    }
+
+    /// Installs the transaction encryption key that submission seals against, skipping the fetch
+    /// and its attestation check.
+    #[cfg(feature = "testing")]
+    pub fn seed_transaction_encryption_key(&mut self, key: TransactionEncryptionKey) {
+        self.transaction_encryption_key = Some(key);
+    }
+
+    /// Discards the held encryption key when a submission was rejected for having been sealed
+    /// against a key the validator does not hold.
+    pub(crate) fn forget_stale_transaction_encryption_key(&mut self, err: &RpcError) {
+        if err.is_stale_transaction_encryption_key() {
+            self.transaction_encryption_key = None;
+        }
     }
 
     /// Returns a locally stored block header, which the client has already authenticated during

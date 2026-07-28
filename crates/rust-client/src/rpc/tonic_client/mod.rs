@@ -28,7 +28,7 @@ use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
 use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::crypto::merkle::mmr::{Forest, MmrPath, MmrProof};
 use miden_protocol::note::{NoteId, NoteScript, NoteTag};
-use miden_protocol::transaction::{ProvenTransaction, TransactionInputs};
+use miden_protocol::transaction::ProvenTransaction;
 use miden_protocol::utils::serde::Deserializable;
 use miden_protocol::{EMPTY_WORD, Word};
 use miden_tx::utils::serde::Serializable;
@@ -439,17 +439,20 @@ impl NodeRpcClient for GrpcClient {
             .await?;
         let response = api_response.into_inner();
 
+        // An undecodable attestation is skipped rather than failing the whole response, so that one
+        // junk entry served by the relaying operator cannot hide a valid attestation behind it.
+        // Verification requires one that both decodes and verifies, so dropping the rest is safe.
         let attestations = response
             .attestations
             .into_iter()
-            .map(|attestation| {
+            .filter_map(|attestation| {
                 let validator_key =
-                    ValidatorPublicKey::read_from_bytes(&attestation.validator_public_key)?;
-                let signature = ValidatorSignature::read_from_bytes(&attestation.signature)?;
+                    ValidatorPublicKey::read_from_bytes(&attestation.validator_public_key).ok()?;
+                let signature = ValidatorSignature::read_from_bytes(&attestation.signature).ok()?;
 
-                Ok((validator_key, signature))
+                Some((validator_key, signature))
             })
-            .collect::<Result<Vec<_>, RpcError>>()?;
+            .collect::<Vec<_>>();
 
         let next_key = response.next_key.map(|next| NextTransactionEncryptionKey {
             scheme: next.scheme.unsigned_abs(),
@@ -474,7 +477,7 @@ impl NodeRpcClient for GrpcClient {
     ) -> Result<BlockNumber, RpcError> {
         let request = proto::transaction::ProvenTransaction {
             transaction: proven_transaction.to_bytes(),
-            transaction_inputs: Some(transaction_inputs.into_bytes()),
+            sealed_transaction_inputs: Some(sealed_transaction_inputs(transaction_inputs)),
         };
 
         let api_response = self
@@ -491,12 +494,15 @@ impl NodeRpcClient for GrpcClient {
         &self,
         proven_batch: ProvenBatch,
         proposed_batch: ProposedBatch,
-        transaction_inputs: Vec<TransactionInputs>,
+        transaction_inputs: Vec<SealedTransactionInputs>,
     ) -> Result<BlockNumber, RpcError> {
         let request = proto::transaction::TransactionBatch {
             batch_proof: proven_batch.to_bytes(),
             proposed_batch: Some(proposed_batch.to_bytes()),
-            transaction_inputs: transaction_inputs.iter().map(Serializable::to_bytes).collect(),
+            sealed_transaction_inputs: transaction_inputs
+                .into_iter()
+                .map(sealed_transaction_inputs)
+                .collect(),
         };
 
         let api_response = self
@@ -1103,6 +1109,18 @@ impl NodeRpcClient for GrpcClient {
 
         response.into_inner().try_into()
     }
+}
+
+// TRANSACTION INPUT SEALING
+// ================================================================================================
+
+/// Converts sealed inputs into their wire form.
+fn sealed_transaction_inputs(
+    sealed: SealedTransactionInputs,
+) -> proto::transaction::SealedTransactionInputs {
+    let (key_id, ciphertext) = sealed.into_parts();
+
+    proto::transaction::SealedTransactionInputs { key_id, ciphertext }
 }
 
 // ERRORS

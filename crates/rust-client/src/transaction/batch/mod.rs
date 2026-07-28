@@ -218,7 +218,7 @@ where
             .submit_proven_batch(proven_batch, proposed_batch, sealed_inputs)
             .await;
         if let Err(err) = &result {
-            self.client.forget_stale_transaction_encryption_key(err);
+            self.client.forget_stale_transaction_encryption_key(err).await;
         }
         let block_num = result?;
 

@@ -4814,11 +4814,14 @@ pub async fn seed_mock_transaction_encryption_key(client: &mut MockClient<Filesy
         .0
         .commitment();
 
-    client.seed_transaction_encryption_key(TransactionEncryptionKey::new_unattested(
-        b"mock-key-id".to_vec(),
-        KeyExchangeKey::with_rng(&mut StdRng::seed_from_u64(0xface)).public_key(),
-        genesis_commitment,
-    ));
+    client
+        .seed_transaction_encryption_key(TransactionEncryptionKey::new_unattested(
+            b"mock-key-id".to_vec(),
+            KeyExchangeKey::with_rng(&mut StdRng::seed_from_u64(0xface)).public_key(),
+            genesis_commitment,
+        ))
+        .await
+        .expect("seeding the encryption key in the store should succeed");
 }
 
 pub async fn create_test_client_builder()

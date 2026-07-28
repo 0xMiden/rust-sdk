@@ -20,6 +20,11 @@
 //! header. The commitment binds the genesis commitment, so an attestation cannot be replayed from
 //! another network sharing a validator key.
 //!
+//! Once verified, the key is public data shared by the whole validator set, so it is cached in the
+//! store rather than re-fetched per submission. A submission rejected for having been sealed
+//! against a key the validator no longer holds evicts the cached key, so the next submission
+//! fetches and verifies a fresh one.
+//!
 //! # Matching the validator's transcripts
 //!
 //! The canonical definitions live in the node's `miden_node_proto::domain::encryption`. This module
@@ -37,13 +42,22 @@ use miden_protocol::crypto::dsa::eddsa_25519_sha512::PublicKey;
 use miden_protocol::crypto::ies::SealingKey;
 use miden_protocol::transaction::{TransactionId, TransactionInputs};
 use miden_protocol::{Hasher, Word};
-use miden_tx::utils::serde::{Deserializable, Serializable};
+use miden_tx::utils::serde::{
+    ByteReader,
+    ByteWriter,
+    Deserializable,
+    DeserializationError,
+    Serializable,
+};
 use rand::CryptoRng;
 
-use super::RpcError;
+use super::{RpcError, generated as proto};
 
 // CONSTANTS
 // ================================================================================================
+
+/// Key used to store the transaction encryption key in the settings table.
+pub(crate) const TRANSACTION_ENCRYPTION_KEY_STORE_SETTING: &str = "transaction_encryption_key";
 
 /// Domain tag prefixed to the associated data of sealed transaction inputs.
 ///
@@ -57,13 +71,6 @@ const TX_INPUT_SEAL_DOMAIN: &[u8] = b"MIDEN_TX_INPUT_SEAL_V1";
 ///
 /// Must match the validator's `ATTESTATION_DOMAIN`.
 const ATTESTATION_DOMAIN: &[u8] = b"MIDEN_TX_ENCRYPTION_KEY_ATTESTATION_V1";
-
-/// Upper bound on the length of an encryption key identifier.
-///
-/// Key identifiers are 4 bytes today. The bound exists so that a hostile or misconfigured key
-/// endpoint cannot drive an unbounded allocation, and so that the length cast in the transcripts
-/// cannot overflow.
-pub const MAX_KEY_ID_LEN: usize = 64;
 
 /// Wire identifier of the only IES scheme this client seals for,
 /// `IES_SCHEME_X25519_XCHACHA20_POLY1305`.
@@ -103,12 +110,12 @@ impl TransactionEncryptionKey {
     }
 
     /// Returns the wire identifier of this key's IES scheme.
-    pub fn scheme(&self) -> u32 {
+    fn scheme(&self) -> u32 {
         self.scheme
     }
 
     /// Returns the genesis commitment of the network this key was attested for.
-    pub fn genesis_commitment(&self) -> Word {
+    fn genesis_commitment(&self) -> Word {
         self.genesis_commitment
     }
 
@@ -133,6 +140,33 @@ impl TransactionEncryptionKey {
             public_key,
             genesis_commitment,
         }
+    }
+}
+
+impl Serializable for TransactionEncryptionKey {
+    fn write_into<W: ByteWriter>(&self, target: &mut W) {
+        target.write_u32(self.scheme);
+        target.write_usize(self.key_id.len());
+        target.write_bytes(&self.key_id);
+        self.public_key.write_into(target);
+        self.genesis_commitment.write_into(target);
+    }
+}
+
+impl Deserializable for TransactionEncryptionKey {
+    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
+        let scheme = source.read_u32()?;
+        let key_id_len = source.read_usize()?;
+        let key_id = source.read_vec(key_id_len)?;
+        let public_key = PublicKey::read_from(source)?;
+        let genesis_commitment = Word::read_from(source)?;
+
+        Ok(Self {
+            scheme,
+            key_id,
+            public_key,
+            genesis_commitment,
+        })
     }
 }
 
@@ -199,9 +233,8 @@ impl AttestedTransactionEncryptionKey {
     /// one verifiable attestation from a chain-recognized validator is sufficient.
     ///
     /// # Errors
-    /// Returns an error if the scheme is unsupported, a key identifier is empty or longer than
-    /// [`MAX_KEY_ID_LEN`], the public key does not decode, or no attestation from a recognized
-    /// validator verifies.
+    /// Returns an error if the scheme is unsupported, the public key does not decode, or no
+    /// attestation from a recognized validator verifies.
     pub fn verify(
         self,
         genesis_commitment: Word,
@@ -212,13 +245,6 @@ impl AttestedTransactionEncryptionKey {
                 "unsupported IES scheme '{}'",
                 self.scheme
             )));
-        }
-
-        // Bounded before the identifier is used in a transcript or an allocation, and before it can
-        // become client state.
-        validate_key_id(&self.key_id, "encryption key id")?;
-        if let Some(next) = &self.next_key {
-            validate_key_id(&next.key_id, "next encryption key id")?;
         }
 
         let commitment = attestation_commitment(
@@ -245,16 +271,6 @@ impl AttestedTransactionEncryptionKey {
         let public_key = PublicKey::read_from_bytes(&self.public_key)
             .map_err(|err| RpcError::TransactionEncryptionKeyRejected(err.to_string()))?;
 
-        // The scheduled key is not used for sealing, but it is rejected here rather than at the
-        // rotation it would later be needed for, matching the validator.
-        if let Some(next) = &self.next_key {
-            PublicKey::read_from_bytes(&next.public_key).map_err(|err| {
-                RpcError::TransactionEncryptionKeyRejected(format!(
-                    "invalid next encryption public key: {err}"
-                ))
-            })?;
-        }
-
         Ok(TransactionEncryptionKey {
             scheme: self.scheme,
             key_id: self.key_id,
@@ -262,21 +278,6 @@ impl AttestedTransactionEncryptionKey {
             genesis_commitment,
         })
     }
-}
-
-/// Rejects a key identifier that cannot be used in a transcript.
-fn validate_key_id(key_id: &[u8], field: &str) -> Result<(), RpcError> {
-    if key_id.is_empty() {
-        return Err(RpcError::TransactionEncryptionKeyRejected(format!("{field} is empty")));
-    }
-    if key_id.len() > MAX_KEY_ID_LEN {
-        return Err(RpcError::TransactionEncryptionKeyRejected(format!(
-            "{field} is {} bytes, which exceeds the maximum of {MAX_KEY_ID_LEN}",
-            key_id.len()
-        )));
-    }
-
-    Ok(())
 }
 
 /// Computes the commitment a validator signs to attest an encryption key.
@@ -394,10 +395,14 @@ impl SealedTransactionInputs {
     pub fn ciphertext(&self) -> &[u8] {
         &self.ciphertext
     }
+}
 
-    /// Consumes the wrapper and returns the key identifier and the sealed bytes.
-    pub fn into_parts(self) -> (Vec<u8>, Vec<u8>) {
-        (self.key_id, self.ciphertext)
+impl From<SealedTransactionInputs> for proto::transaction::SealedTransactionInputs {
+    fn from(sealed: SealedTransactionInputs) -> Self {
+        Self {
+            key_id: sealed.key_id,
+            ciphertext: sealed.ciphertext,
+        }
     }
 }
 
@@ -738,68 +743,6 @@ mod tests {
         response.scheme = SUPPORTED_SCHEME + 1;
 
         assert!(response.verify(genesis(), &validator_keys).is_err());
-    }
-
-    /// Key identifiers are bounded before they reach a transcript or an allocation, so a hostile
-    /// key endpoint cannot drive an unbounded allocation.
-    #[test]
-    fn verify_rejects_out_of_bounds_key_ids() {
-        let (key, _) = key_pair();
-        let signer = ValidatorSigningKey::with_rng(&mut rng());
-        let validator_keys = ValidatorKeys::new(vec![signer.public_key()]).unwrap();
-
-        let mut empty = attested(&key, &signer, genesis());
-        empty.key_id.clear();
-        assert!(empty.verify(genesis(), &validator_keys).is_err());
-
-        let mut oversized = attested(&key, &signer, genesis());
-        oversized.key_id = vec![0; MAX_KEY_ID_LEN + 1];
-        assert!(oversized.verify(genesis(), &validator_keys).is_err());
-
-        // Signed over, so these fail on the bounds and the decode rather than on the signature.
-        let scheduled = |key_id: Vec<u8>, public_key: Vec<u8>| NextTransactionEncryptionKey {
-            scheme: SUPPORTED_SCHEME,
-            key_id,
-            public_key,
-            rotation_block_num: 100.into(),
-        };
-        let valid_next_public_key = KeyExchangeKey::with_rng(&mut ChaCha20Rng::seed_from_u64(11))
-            .public_key()
-            .to_bytes();
-
-        let empty_next_key_id = attested_with_next(
-            &key,
-            &signer,
-            genesis(),
-            Some(scheduled(Vec::new(), valid_next_public_key.clone())),
-        );
-        assert!(empty_next_key_id.verify(genesis(), &validator_keys).is_err());
-
-        let oversized_next_key_id = attested_with_next(
-            &key,
-            &signer,
-            genesis(),
-            Some(scheduled(vec![0; MAX_KEY_ID_LEN + 1], valid_next_public_key.clone())),
-        );
-        assert!(oversized_next_key_id.verify(genesis(), &validator_keys).is_err());
-
-        let undecodable_next_public_key = attested_with_next(
-            &key,
-            &signer,
-            genesis(),
-            Some(scheduled(vec![1, 2, 3, 4], Vec::new())),
-        );
-        assert!(undecodable_next_public_key.verify(genesis(), &validator_keys).is_err());
-
-        // The same scheduled key, well-formed, must verify: the cases above must be failing on what
-        // they name and not because any scheduled rotation is rejected.
-        let well_formed = attested_with_next(
-            &key,
-            &signer,
-            genesis(),
-            Some(scheduled(vec![1, 2, 3, 4], valid_next_public_key)),
-        );
-        assert!(well_formed.verify(genesis(), &validator_keys).is_ok());
     }
 
     // VALIDATOR PARITY

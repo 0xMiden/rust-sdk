@@ -541,7 +541,6 @@ where
             note_transport_api: self.note_transport_api.clone(),
             cache_partial_mmr_in_memory: self.cache_partial_mmr_in_memory,
             partial_mmr: None,
-            transaction_encryption_key: None,
             transaction_observers,
         })
     }

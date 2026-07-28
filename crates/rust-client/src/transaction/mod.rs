@@ -467,7 +467,7 @@ where
         let result =
             self.rpc_api.submit_proven_transaction(proven_transaction, sealed_inputs).await;
         if let Err(err) = &result {
-            self.forget_stale_transaction_encryption_key(err);
+            self.forget_stale_transaction_encryption_key(err).await;
         }
         let block_num = result?;
         info!("Transaction submitted.");
@@ -478,15 +478,15 @@ where
     /// Returns the validator set's transaction encryption key, fetching and verifying it on first
     /// use.
     ///
-    /// The key is public data shared by the whole validator set, so it is reused across submissions
-    /// for as long as this client lives. A freshly fetched key is verified against the validator
-    /// set committed in the chain tip before it is used: the endpoint is served by the RPC
-    /// operator, which is the party the encryption keeps out.
+    /// The key is public data shared by the whole validator set, so it is cached in the store and
+    /// reused across submissions and restarts. A freshly fetched key is verified against the
+    /// validator set committed in the chain tip before it is cached or used: the endpoint is served
+    /// by the RPC operator, which is the party the encryption keeps out.
     pub(crate) async fn transaction_encryption_key(
-        &mut self,
+        &self,
     ) -> Result<TransactionEncryptionKey, ClientError> {
-        if let Some(key) = &self.transaction_encryption_key {
-            return Ok(key.clone());
+        if let Some(key) = self.store.get_transaction_encryption_key().await? {
+            return Ok(key);
         }
 
         let attested = self.rpc_api.get_transaction_encryption_key().await?;
@@ -500,7 +500,7 @@ where
         let validator_keys = self.trusted_block_header(chain_tip).await?.validator_keys().clone();
 
         let key = attested.verify(genesis_commitment, &validator_keys)?;
-        self.transaction_encryption_key = Some(key.clone());
+        self.store.set_transaction_encryption_key(&key).await?;
 
         Ok(key)
     }
@@ -508,15 +508,23 @@ where
     /// Installs the transaction encryption key that submission seals against, skipping the fetch
     /// and its attestation check.
     #[cfg(feature = "testing")]
-    pub fn seed_transaction_encryption_key(&mut self, key: TransactionEncryptionKey) {
-        self.transaction_encryption_key = Some(key);
+    pub async fn seed_transaction_encryption_key(
+        &self,
+        key: TransactionEncryptionKey,
+    ) -> Result<(), ClientError> {
+        Ok(self.store.set_transaction_encryption_key(&key).await?)
     }
 
-    /// Discards the held encryption key when a submission was rejected for having been sealed
-    /// against a key the validator does not hold.
-    pub(crate) fn forget_stale_transaction_encryption_key(&mut self, err: &RpcError) {
-        if err.is_stale_transaction_encryption_key() {
-            self.transaction_encryption_key = None;
+    /// Evicts the cached encryption key when a submission was rejected for having been sealed
+    /// against a key the validator does not hold, so the next submission fetches a fresh one.
+    ///
+    /// An eviction failure is logged rather than returned: the caller is already reporting the
+    /// submission error, which the store error must not mask.
+    pub(crate) async fn forget_stale_transaction_encryption_key(&self, err: &RpcError) {
+        if err.is_stale_transaction_encryption_key()
+            && let Err(err) = self.store.remove_transaction_encryption_key().await
+        {
+            tracing::warn!("failed to evict the stale transaction encryption key: {err}");
         }
     }
 

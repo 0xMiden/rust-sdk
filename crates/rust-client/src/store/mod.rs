@@ -49,6 +49,7 @@ use miden_protocol::{Felt, Word};
 use miden_tx::utils::serde::{Deserializable, Serializable};
 
 use crate::note_transport::{NOTE_TRANSPORT_CURSOR_STORE_SETTING, NoteTransportCursor};
+use crate::rpc::encryption::{TRANSACTION_ENCRYPTION_KEY_STORE_SETTING, TransactionEncryptionKey};
 use crate::rpc::{RPC_LIMITS_STORE_SETTING, RpcLimits};
 use crate::sync::{NoteTagRecord, StateSyncUpdate};
 use crate::transaction::{TransactionRecord, TransactionStatusVariant, TransactionStoreUpdate};
@@ -536,6 +537,39 @@ pub trait Store: Send + Sync {
     /// Persists RPC limits to the store.
     async fn set_rpc_limits(&self, limits: RpcLimits) -> Result<(), StoreError> {
         self.set_setting(RPC_LIMITS_STORE_SETTING.into(), limits.to_bytes()).await
+    }
+
+    // TRANSACTION ENCRYPTION KEY
+    // --------------------------------------------------------------------------------------------
+
+    /// Gets the cached transaction encryption key. Returns `None` if not stored.
+    ///
+    /// The key is public data shared by the whole validator set, so it is cached rather than
+    /// treated as a secret.
+    async fn get_transaction_encryption_key(
+        &self,
+    ) -> Result<Option<TransactionEncryptionKey>, StoreError> {
+        let Some(bytes) = self.get_setting(TRANSACTION_ENCRYPTION_KEY_STORE_SETTING.into()).await?
+        else {
+            return Ok(None);
+        };
+        let key = TransactionEncryptionKey::read_from_bytes(&bytes)?;
+        Ok(Some(key))
+    }
+
+    /// Caches the transaction encryption key, replacing any previously cached key.
+    async fn set_transaction_encryption_key(
+        &self,
+        key: &TransactionEncryptionKey,
+    ) -> Result<(), StoreError> {
+        self.set_setting(TRANSACTION_ENCRYPTION_KEY_STORE_SETTING.into(), key.to_bytes())
+            .await
+    }
+
+    /// Removes the cached transaction encryption key, so the next submission fetches and verifies
+    /// a fresh one. Used when the node rejects a submission sealed against a retired key.
+    async fn remove_transaction_encryption_key(&self) -> Result<(), StoreError> {
+        self.remove_setting(TRANSACTION_ENCRYPTION_KEY_STORE_SETTING.into()).await
     }
 
     // PARTIAL MMR

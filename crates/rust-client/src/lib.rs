@@ -413,8 +413,6 @@ pub struct Client<AUTH> {
     /// Cached [`PartialMmr`] for the chain's MMR. Lazily built from the store and kept in sync
     /// across sync/prune operations. `None` forces a rebuild on next access.
     partial_mmr: Option<CachedPartialMmr>,
-    /// The validator set's transaction encryption key, fetched and verified on first submission.
-    transaction_encryption_key: Option<rpc::encryption::TransactionEncryptionKey>,
     /// Observers fired by `apply_transaction`. See
     /// [`Client::with_transaction_observer`].
     transaction_observers: Vec<Arc<dyn transaction::TransactionObserver>>,

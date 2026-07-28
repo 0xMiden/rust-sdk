@@ -34,7 +34,7 @@ use miden_protocol::{EMPTY_WORD, Word};
 use miden_tx::utils::serde::Serializable;
 use miden_tx::utils::sync::RwLock;
 use tonic::Status;
-use tracing::info;
+use tracing::{info, warn};
 
 use super::domain::account::{
     AccountProof,
@@ -393,11 +393,20 @@ impl NodeRpcClient for GrpcClient {
             .attestations
             .into_iter()
             .filter_map(|attestation| {
-                let validator_key =
-                    ValidatorPublicKey::read_from_bytes(&attestation.validator_public_key).ok()?;
-                let signature = ValidatorSignature::read_from_bytes(&attestation.signature).ok()?;
-
-                Some(ValidatorAttestation { validator_key, signature })
+                let decoded =
+                    ValidatorPublicKey::read_from_bytes(&attestation.validator_public_key)
+                        .ok()
+                        .zip(ValidatorSignature::read_from_bytes(&attestation.signature).ok())
+                        .map(|(validator_key, signature)| ValidatorAttestation {
+                            validator_key,
+                            signature,
+                        });
+                if decoded.is_none() {
+                    warn!(
+                        "skipping a transaction encryption key attestation that failed to decode"
+                    );
+                }
+                decoded
             })
             .collect::<Vec<_>>();
 
@@ -420,11 +429,11 @@ impl NodeRpcClient for GrpcClient {
     async fn submit_proven_transaction(
         &self,
         proven_transaction: ProvenTransaction,
-        sealed_inputs: SealedTransactionInputs,
+        sealed_tx_inputs: SealedTransactionInputs,
     ) -> Result<BlockNumber, RpcError> {
         let request = proto::transaction::ProvenTransaction {
             transaction: proven_transaction.to_bytes(),
-            sealed_transaction_inputs: Some(sealed_transaction_inputs(sealed_inputs)),
+            sealed_transaction_inputs: Some(sealed_tx_inputs.into()),
         };
 
         let api_response = self
@@ -446,10 +455,7 @@ impl NodeRpcClient for GrpcClient {
         let request = proto::transaction::TransactionBatch {
             batch_proof: proven_batch.to_bytes(),
             proposed_batch: Some(proposed_batch.to_bytes()),
-            sealed_transaction_inputs: transaction_inputs
-                .into_iter()
-                .map(sealed_transaction_inputs)
-                .collect(),
+            sealed_transaction_inputs: transaction_inputs.into_iter().map(Into::into).collect(),
         };
 
         let api_response = self
@@ -1012,18 +1018,6 @@ impl NodeRpcClient for GrpcClient {
 
         response.into_inner().try_into()
     }
-}
-
-// TRANSACTION INPUT SEALING
-// ================================================================================================
-
-/// Converts sealed inputs into their wire form.
-fn sealed_transaction_inputs(
-    sealed: SealedTransactionInputs,
-) -> proto::transaction::SealedTransactionInputs {
-    let (key_id, ciphertext) = sealed.into_parts();
-
-    proto::transaction::SealedTransactionInputs { key_id, ciphertext }
 }
 
 // ERRORS

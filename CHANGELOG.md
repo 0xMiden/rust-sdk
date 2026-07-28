@@ -5,6 +5,7 @@
 ### Enhancements
 
 * [FEATURE][cli] Added a `--payback-note-type` option to `swap` so the payback note can be created as public or private (defaults to private). Public payback works without any off-band advice now that SWAP derives the payback recipient deterministically ([#2190](https://github.com/0xMiden/rust-sdk/pull/2190)).
+* [FEATURE][rust] `Client::get_consumable_notes(Some(account_id))` now screens only that account instead of screening every tracked account and discarding the rest, so its cost no longer grows with the number of tracked accounts. Added `NoteScreener::get_batch_consumability_for_account` to screen notes against a single account ([#2338](https://github.com/0xMiden/rust-sdk/pull/2338)).
 
 ## 0.16.0-alpha.1 (2026-07-17)
 
@@ -22,7 +23,6 @@
 ### Enhancements
 
 * [FEATURE][rust] Note screening (`Client::get_consumable_notes`, `Client::note_screener`) now memoizes transaction-input and vault (fee) witness lookups for the duration of a single screening pass. This only affects notes whose consumability cannot be determined statically, which are the ones screened by running a trial transaction: they no longer re-read the same account and reference-block data from the store for every note. Verdicts are still not retained between calls. The `get_consumable_notes` docs now also describe its cost and point to cheaper store-query alternatives ([#2326](https://github.com/0xMiden/rust-sdk/pull/2326)).
-* [FEATURE][rust] `Client::get_consumable_notes(Some(account_id))` now screens only that account instead of screening every tracked account and discarding the rest, so its cost no longer grows with the number of tracked accounts. Added `NoteScreener::can_consume_batch_for_account` to screen notes against a single account ([#2338](https://github.com/0xMiden/rust-sdk/pull/2338)).
 
 ### Features
 

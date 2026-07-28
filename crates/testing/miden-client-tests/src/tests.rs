@@ -2117,18 +2117,20 @@ async fn get_consumable_notes() {
     let consumable_notes = Box::pin(client.get_consumable_notes(None)).await.unwrap();
     let relevant_accounts = &consumable_notes.first().unwrap().1;
     assert_eq!(relevant_accounts.len(), 2);
-    assert!(
-        !Box::pin(client.get_consumable_notes(Some(from_account_id)))
-            .await
-            .unwrap()
-            .is_empty()
-    );
-    assert!(
-        !Box::pin(client.get_consumable_notes(Some(to_account_id)))
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    let from_consumable =
+        Box::pin(client.get_consumable_notes(Some(from_account_id))).await.unwrap();
+    assert!(!from_consumable.is_empty());
+    for (_, relevances) in &from_consumable {
+        let accounts: Vec<_> = relevances.iter().map(|(id, _)| *id).collect();
+        assert_eq!(accounts, vec![from_account_id]);
+    }
+
+    let to_consumable = Box::pin(client.get_consumable_notes(Some(to_account_id))).await.unwrap();
+    assert!(!to_consumable.is_empty());
+    for (_, relevances) in &to_consumable {
+        let accounts: Vec<_> = relevances.iter().map(|(id, _)| *id).collect();
+        assert_eq!(accounts, vec![to_account_id]);
+    }
 
     // Check that the note is only consumable after block 100 for the account that sent the
     // transaction
@@ -2266,7 +2268,7 @@ async fn note_screening_reports_only_the_account_bound_by_the_note() {
         .collect::<Result<Vec<Note>, _>>()
         .unwrap();
 
-    let screened = Box::pin(client.note_screener().can_consume_batch(&notes)).await.unwrap();
+    let screened = Box::pin(client.note_screener().get_batch_consumability(&notes)).await.unwrap();
 
     assert_eq!(screened.keys().copied().collect::<BTreeSet<NoteId>>(), expected_ids);
     for relevances in screened.values() {

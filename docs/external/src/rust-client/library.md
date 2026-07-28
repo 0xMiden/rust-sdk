@@ -184,7 +184,7 @@ for (note, accounts) in consumable_notes {
 }
 ```
 
-Passing an account ID to `get_consumable_notes` filters the results after screening. It does not reduce screening cost, all tracked accounts are screened regardless. If you only need the committed notes without consumability verdicts, `get_input_notes` with `NoteFilter::Committed` is much cheaper.
+Passing an account ID to `get_consumable_notes` screens only that account, so its cost scales with the number of committed notes alone. If you only need the committed notes without consumability verdicts, `get_input_notes` with `NoteFilter::Committed` is much cheaper.
 
 ### Obtain a screener
 
@@ -213,7 +213,7 @@ let screener_with_args = client.note_screener().with_transaction_args(tx_args);
 
 ### Check one note
 
-To check one note, call `can_consume`.
+To check one note, call `get_consumability`.
 
 ```rust
 use miden_client::note::{Note, NoteConsumptionStatus};
@@ -222,7 +222,7 @@ use miden_client::note::{Note, NoteConsumptionStatus};
 let input_note_record = client.get_input_note(note_id).await?.unwrap();
 let note: Note = input_note_record.try_into()?;
 
-let account_statuses = screener.can_consume(&note).await?;
+let account_statuses = screener.get_consumability(&note).await?;
 
 for (account_id, status) in account_statuses {
     match status {
@@ -244,7 +244,7 @@ for (account_id, status) in account_statuses {
 
 ### Check many notes
 
-When you have several notes, use `can_consume_batch` to check them all in one pass.
+When you have several notes, use `get_batch_consumability` to check them all in one pass.
 
 ```rust
 use std::collections::BTreeMap;
@@ -263,14 +263,14 @@ let notes: Vec<Note> = input_note_records
 
 // Check all notes with one executor setup.
 let notes_by_id: BTreeMap<NoteId, Vec<NoteConsumability>> =
-    screener.can_consume_batch(&notes).await?;
+    screener.get_batch_consumability(&notes).await?;
 
 for (note_id, account_statuses) in notes_by_id {
     println!("{} has {} possible consumers", note_id.to_hex(), account_statuses.len());
 }
 ```
 
-Prefer a single `can_consume_batch` call over calling `can_consume` in a loop. A batch reuses each account's execution inputs (account state, reference block, and vault witnesses) across every note in the same pass, while separate calls re-read them each time. This reuse lasts only for the duration of the call, so it does not carry across separate screening calls.
+Prefer a single `get_batch_consumability` call over calling `get_consumability` in a loop. A batch reuses each account's execution inputs (account state, reference block, and vault witnesses) across every note in the same pass, while separate calls re-read them each time. This reuse lasts only for the duration of the call, so it does not carry across separate screening calls.
 
 ### Check consumability for one account
 

@@ -10,7 +10,7 @@ use miden_client::account::{
 };
 use miden_client::address::{Address, AddressInterface, NetworkId, RoutingParameters};
 use miden_client::asset::Asset;
-use miden_client::rpc::{GrpcClient, NodeRpcClient};
+use miden_client::rpc::{GrpcClient, NodeRpcClient, VerifyingRpcClient};
 use miden_client::transaction::{AccountComponentInterface, AccountInterface};
 use miden_client::utils::base_units_to_tokens;
 use miden_client::{Client, PrettyPrint, ZERO};
@@ -144,8 +144,10 @@ async fn show_account<AUTH>(
     } else {
         println!("Account {account_id} is not tracked by the client. Fetching from the network...");
 
-        let rpc_client =
-            GrpcClient::new(&rpc_config.endpoint.clone().into(), rpc_config.timeout_ms);
+        let rpc_client = VerifyingRpcClient::new(GrpcClient::new(
+            &rpc_config.endpoint.clone().into(),
+            rpc_config.timeout_ms,
+        ));
 
         let fetched_account = rpc_client.get_account_details(account_id).await.map_err(|err| {
             CliError::Input(format!("Unable to fetch account {account_id} from the network: {err}"))

@@ -10,7 +10,7 @@
 ### Changes
 
 * [rust] Added `PartialBlockchainUpdates::block_headers_to_store`, which narrows the staged headers to the ones a sync must persist: those carrying client notes, genesis, and the block at the sync height. `block_headers` still yields all of them ([#2297](https://github.com/0xMiden/rust-sdk/pull/2297)).
-* [rust] `NoteObserver` gained a defaulted `live_blocks` method. An observer that inserts notes into the store from `apply` must report those notes' blocks there, otherwise end-of-sync minimization can untrack a block the observer still needs. Observers that only use `observe` need no change ([#2297](https://github.com/0xMiden/rust-sdk/pull/2297)).
+* [rust] State sync now authenticates every relevant note block but only persists block headers and MMR authentication nodes for blocks containing notes that remain unspent or that a `NoteObserver` explicitly marks as relevant ([#2297](https://github.com/0xMiden/rust-sdk/pull/2297)).
 
 ## 0.16.0-alpha.1 (2026-07-17)
 

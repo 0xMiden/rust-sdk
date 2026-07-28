@@ -30,6 +30,7 @@ use miden_client::store::{
     InputNoteState,
     NoteFilter,
     OutputNoteState,
+    StoreError,
     TransactionFilter,
 };
 use miden_client::sync::{NoteTagRecord, NoteTagSource};
@@ -80,6 +81,7 @@ use miden_protocol::account::{
     StorageSlotName,
 };
 use miden_protocol::asset::{Asset, AssetAmount, AssetId, FungibleAsset, TokenSymbol};
+use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::crypto::rand::{FeltRng, RandomCoin};
 use miden_protocol::note::{
     Note,
@@ -513,6 +515,42 @@ async fn sync_state_mmr() {
             .await
             .unwrap()
             .is_empty()
+    );
+}
+
+/// A block that becomes irrelevant because all of its notes are consumed during the same sync must
+/// still have its header and MMR path authenticated before it is omitted from storage.
+#[tokio::test]
+async fn sync_state_rejects_tampered_path_for_same_sync_consumed_note() {
+    let (builder, rpc_api, keystore) = Box::pin(create_test_client_builder()).await;
+    let mut client = builder.irrelevant_block_prune_interval(None).build().await.unwrap();
+    client.ensure_genesis_in_place().await.unwrap();
+    insert_new_wallet(&mut client, AccountType::Private, &keystore).await.unwrap();
+
+    let notes = rpc_api
+        .get_public_available_notes()
+        .into_iter()
+        .filter_map(|note| note.note().cloned())
+        .collect::<Vec<Note>>();
+
+    for note in &notes {
+        client
+            .import_notes(&[NoteFile::ExpectedNote {
+                details: note.clone().into(),
+                sync_hint: NoteSyncHint::new(0.into(), note.metadata().tag()),
+            }])
+            .await
+            .unwrap();
+    }
+
+    // The prebuilt chain commits the second note in block 4 and consumes it in block 5.
+    assert_eq!(rpc_api.get_chain_tip_block_num(), BlockNumber::from(5u32));
+    rpc_api.set_sync_notes_mmr_path(BlockNumber::from(4u32), MerklePath::default());
+
+    let result = client.sync_state().await;
+    assert!(
+        matches!(result, Err(ClientError::StoreError(StoreError::MmrError(_)))),
+        "the invalid MMR path must be rejected, got {result:?}"
     );
 }
 

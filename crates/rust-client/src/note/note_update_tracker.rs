@@ -12,6 +12,7 @@ use miden_protocol::note::{
     NoteMetadata,
     Nullifier,
 };
+use miden_protocol::transaction::InputNoteCommitment;
 use miden_standards::note::NetworkAccountTarget;
 use miden_tx::utils::serde::{
     ByteReader,
@@ -512,6 +513,46 @@ impl NoteUpdateTracker {
         Ok(())
     }
 
+    /// Inserts a header-only consumed input note for a tracked account's transaction.
+    ///
+    /// Header-bearing input commitments are unauthenticated inputs (typically erased notes). When
+    /// the client tracks neither an input nor an
+    /// output record for the note, this stores its header under the consuming account so the
+    /// consumed-note queries can return it. No-op for authenticated commitments (which carry no
+    /// header) and for notes already tracked.
+    pub(crate) fn insert_consumed_unauthenticated_note(
+        &mut self,
+        commitment: &InputNoteCommitment,
+        consumer: AccountId,
+        block_num: BlockNumber,
+    ) {
+        let Some(header) = commitment.header() else {
+            return;
+        };
+        let note_id = header.id();
+        // Skip when the note is already tracked as an input note under the same details
+        // commitment or as an output note; inserting a header-only record here would collide
+        // with the existing record.
+        //
+        // For a metadata-less expected note this only prevents a duplicate record; it is left
+        // as-is and keeps showing as unspent. Evolving it straight to a consumed state from this
+        // consumption event is a deferred follow-up, and skipping matches a client without
+        // erased-note recovery, which never recovers this note either.
+        if self.input_notes.contains_key(&header.details_commitment())
+            || self.output_notes.contains_key(&note_id)
+        {
+            return;
+        }
+
+        // Fall back to 0 when the block position is unknown, since `get_input_note_by_offset`
+        // excludes notes without a consumption order.
+        let order = self.get_nullifier_order(commitment.nullifier()).or(Some(0));
+        let mut record =
+            InputNoteRecord::from_header(header, commitment.nullifier(), block_num, Some(consumer));
+        record.set_consumed_tx_order(order);
+        self.insert_input_note(record, NoteUpdateType::Insert);
+    }
+
     /// Builds a consumed input note record from a tracked output note and inserts it.
     ///
     /// Used when an output note is consumed externally and the client should also surface
@@ -813,18 +854,21 @@ mod tests {
     use miden_protocol::account::AccountId;
     use miden_protocol::block::BlockNumber;
     use miden_protocol::note::{
+        Note,
         NoteAssets,
         NoteAttachments,
         NoteDetails,
+        NoteHeader,
         NoteId,
         NoteMetadata,
         NoteRecipient,
         NoteStorage,
         NoteType,
+        Nullifier,
         PartialNoteMetadata,
     };
     use miden_protocol::testing::account_id::ACCOUNT_ID_SENDER;
-    use miden_protocol::transaction::TransactionId;
+    use miden_protocol::transaction::{InputNote, InputNoteCommitment, TransactionId};
     use miden_protocol::utils::serde::{Deserializable, Serializable};
     use miden_protocol::{Felt, Word, ZERO};
     use miden_standards::note::StandardNote;
@@ -936,6 +980,76 @@ mod tests {
 
         assert_eq!(tracker.consumed_input_note_ids().count(), 0);
         assert_eq!(tracker.updated_input_notes().count(), 1);
+    }
+
+    #[test]
+    fn header_only_record_carries_the_transaction_nullifier() {
+        // A header-only erased record stores placeholder details, so its identity and nullifier
+        // cannot be derived from them. The details commitment and nullifier must come from the
+        // header and the consuming transaction's input commitment, unchanged and surviving a
+        // serialization round-trip.
+        let sender: AccountId = ACCOUNT_ID_SENDER.try_into().unwrap();
+        let details = note_details(20);
+        let metadata = note_metadata(sender);
+        let header = NoteHeader::new(details.commitment(), metadata);
+        let nullifier = Nullifier::from_details_and_metadata(&details, &metadata);
+
+        let record =
+            InputNoteRecord::from_header(&header, nullifier, BlockNumber::from(7u32), Some(sender));
+
+        assert_eq!(record.nullifier(), Some(nullifier));
+        assert_eq!(record.details_commitment(), header.details_commitment());
+        assert_eq!(record.id(), Some(header.id()));
+        assert_ne!(
+            record.nullifier(),
+            Some(Nullifier::from_details_and_metadata(record.details(), &metadata)),
+            "the nullifier must be the stored one, not one derived from the placeholder details"
+        );
+
+        let restored = InputNoteRecord::read_from_bytes(&record.to_bytes()).unwrap();
+        assert_eq!(restored.nullifier(), Some(nullifier));
+        assert_eq!(restored.details_commitment(), header.details_commitment());
+    }
+
+    #[test]
+    fn header_only_record_rejects_details_dependent_conversions() {
+        // A header-only record carries only placeholder details, so converting it into a
+        // `Note`, `InputNote` or `NoteDetails` would fabricate a note that never existed. All
+        // three conversions must fail instead.
+        let sender: AccountId = ACCOUNT_ID_SENDER.try_into().unwrap();
+        let details = note_details(21);
+        let metadata = note_metadata(sender);
+        let header = NoteHeader::new(details.commitment(), metadata);
+        let nullifier = Nullifier::from_details_and_metadata(&details, &metadata);
+
+        let record =
+            InputNoteRecord::from_header(&header, nullifier, BlockNumber::from(7u32), Some(sender));
+
+        let as_note: Result<Note, _> = record.clone().try_into();
+        assert!(as_note.is_err());
+        let as_input_note: Result<InputNote, _> = record.clone().try_into();
+        assert!(as_input_note.is_err());
+        assert!(NoteDetails::try_from(record).is_err());
+    }
+
+    #[test]
+    fn consumed_unauthenticated_note_skips_tracked_metadata_less_note() {
+        // A metadata-less expected note (imported from bare details) is tracked by its details
+        // commitment and absent from `input_notes_by_id`. Recording the same note as a consumed
+        // unauthenticated input must recognize it and not insert a second, header-only placeholder.
+        let sender: AccountId = ACCOUNT_ID_SENDER.try_into().unwrap();
+        let expected = expected_note(30);
+        let details_commitment = expected.details_commitment();
+        let metadata = note_metadata(sender);
+        let header = NoteHeader::new(details_commitment, metadata);
+        let nullifier = Nullifier::from_details_and_metadata(expected.details(), &metadata);
+        let commitment = InputNoteCommitment::from_parts_unchecked(nullifier, Some(header));
+
+        let mut tracker = NoteUpdateTracker::new(vec![expected], vec![]);
+        tracker.insert_consumed_unauthenticated_note(&commitment, sender, BlockNumber::from(5u32));
+
+        // The existing expected note is recognized, so no new (placeholder) row is inserted.
+        assert_eq!(tracker.updated_input_notes().count(), 0);
     }
 
     #[test]

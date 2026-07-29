@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use anyhow::{Context, Result};
-use miden_client::account::{AccountType, build_wallet_id};
+use miden_client::account::{AccountId, AccountType, build_wallet_id};
 use miden_client::asset::{Asset, AssetAmount, FungibleAsset};
 use miden_client::auth::RPO_FALCON_SCHEME_ID;
 use miden_client::keystore::Keystore;
@@ -13,6 +13,7 @@ use miden_client::note::{
     NoteAttachmentScheme,
     NoteAttachments,
     NoteFile,
+    NoteId,
     NoteType,
     P2idNote,
 };
@@ -722,6 +723,142 @@ pub async fn test_consumed_note_ordering(client_config: ClientConfig) -> Result<
     );
 
     Ok(())
+}
+
+/// Two-client proof that a pure importer (follower) of an account reads BOTH erased and committed
+/// notes the account consumed, intercalated in consumption order.
+///
+/// Client A owns the faucet and the consumer and drives all activity; client B only
+/// `import_account_by_id`s the consumer. Across increasing blocks the consumer consumes an erased
+/// note (minted and consumed in the same batch, so it never lands in a block), then a committed
+/// note, then another erased note. B syncs and its `InputNoteReader` returns all three in order,
+/// with the erased ones surfacing as header-only records (their headers ride the consumer's
+/// transaction as unauthenticated input commitments) and the committed one in full. This exercises
+/// the consumer-side header path end to end, and confirms the node populates the header for
+/// unauthenticated inputs.
+pub async fn test_importer_note_reader_finds_erased_and_committed_interleaved(
+    client_config: ClientConfig,
+) -> Result<()> {
+    let (mut client_a, keystore_a) = client_config.clone().into_client().await?;
+    let (mut client_b, _keystore_b) = ClientConfig::default()
+        .with_rpc_endpoint(client_config.rpc_endpoint())
+        .into_client()
+        .await?;
+    wait_for_node(&mut client_a).await;
+
+    let (faucet, _) = insert_new_fungible_faucet(
+        &mut client_a,
+        AccountType::Public,
+        &keystore_a,
+        RPO_FALCON_SCHEME_ID,
+    )
+    .await?;
+    let (consumer, ..) =
+        insert_new_wallet(&mut client_a, AccountType::Public, &keystore_a, RPO_FALCON_SCHEME_ID)
+            .await?;
+    let consumer_id = consumer.id();
+    let faucet_id = faucet.id();
+    client_a.sync_state().await?;
+
+    // Put the consumer on-chain and let client B import it (registering its note tag).
+    let bootstrap_tx =
+        mint_and_consume(&mut client_a, consumer_id, faucet_id, NoteType::Public).await;
+    wait_for_tx(&mut client_a, bootstrap_tx).await?;
+    client_a.sync_state().await?;
+    client_b.import_account_by_id(consumer_id).await?;
+    client_b.sync_state().await?;
+
+    // Consumption order is recorded here as each note is consumed in its own (increasing) block.
+    let mut expected_ids = Vec::new();
+
+    // (1) ERASED: minted to and consumed by the consumer in the same batch.
+    expected_ids.push(mint_and_consume_erased_note(&mut client_a, faucet_id, consumer_id).await?);
+
+    // (2) COMMITTED: minted to the consumer and committed; B must see it while still unspent to
+    // capture its full details, then the consumer consumes it.
+    let (mint_tx, committed_note) =
+        mint_note(&mut client_a, consumer_id, faucet_id, NoteType::Public).await;
+    wait_for_tx(&mut client_a, mint_tx).await?;
+    let committed_commitment = committed_note.details_commitment();
+    for _ in 0..10 {
+        client_b.sync_state().await?;
+        let tracked = client_b.get_input_notes(NoteFilter::All).await?;
+        if tracked.iter().any(|n| n.details_commitment() == committed_commitment) {
+            break;
+        }
+        wait_for_blocks(&mut client_b, 1).await;
+    }
+    let consume_tx =
+        consume_notes(&mut client_a, consumer_id, std::slice::from_ref(&committed_note)).await;
+    wait_for_tx(&mut client_a, consume_tx).await?;
+    expected_ids.push(committed_note.id());
+
+    // (3) ERASED again.
+    expected_ids.push(mint_and_consume_erased_note(&mut client_a, faucet_id, consumer_id).await?);
+
+    // B syncs until its reader surfaces all three of our notes, then we check their order.
+    let mut ordered = Vec::new();
+    for _ in 0..20 {
+        client_b.sync_state().await?;
+        let mut reader = client_b.input_note_reader(consumer_id);
+        ordered.clear();
+        while let Some(note) = reader.next().await? {
+            if note.id().is_some_and(|id| expected_ids.contains(&id)) {
+                ordered.push(note);
+            }
+        }
+        if ordered.len() == expected_ids.len() {
+            break;
+        }
+        wait_for_blocks(&mut client_b, 1).await;
+    }
+
+    let ordered_ids: Vec<_> = ordered.iter().filter_map(|n| n.id()).collect();
+    assert_eq!(
+        ordered_ids, expected_ids,
+        "follower's reader should return erased and committed notes intercalated in consumption order",
+    );
+
+    // The erased notes are header-only; the committed note carries full details.
+    assert!(!ordered[0].has_details(), "first note (erased) should be header-only");
+    assert!(ordered[1].has_details(), "second note (committed) should carry full details");
+    assert!(!ordered[2].has_details(), "third note (erased) should be header-only");
+    for note in &ordered {
+        assert_eq!(note.consumer_account(), Some(consumer_id));
+    }
+
+    Ok(())
+}
+
+/// Mints a note to `consumer_id` and consumes it unauthenticated in the same batch, so the note is
+/// erased (never committed to a block). Returns the erased note's id. Waits for the batch to land
+/// in a block so callers can sequence consumptions into distinct, increasing blocks.
+async fn mint_and_consume_erased_note(
+    client: &mut TestClient,
+    faucet_id: AccountId,
+    consumer_id: AccountId,
+) -> Result<NoteId> {
+    let mint_request = TransactionRequestBuilder::new().build_mint_fungible_asset(
+        FungibleAsset::new(faucet_id, 100).unwrap(),
+        consumer_id,
+        NoteType::Public,
+        client.rng(),
+    )?;
+    let erased_note = mint_request
+        .expected_output_own_notes()
+        .pop()
+        .context("mint request should produce exactly one output note")?;
+    let note_id = erased_note.id();
+    let consume_request =
+        TransactionRequestBuilder::new().build_consume_notes(vec![erased_note])?;
+
+    let mut batch = client.new_transaction_batch();
+    batch = batch.push(faucet_id, mint_request).await?;
+    batch = batch.push(consumer_id, consume_request).await?;
+    batch.submit().await?;
+    wait_for_blocks(client, 2).await;
+
+    Ok(note_id)
 }
 
 /// Verifies syncing and consuming notes with attachments, for both a public and a private note.

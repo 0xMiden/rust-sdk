@@ -130,7 +130,15 @@ fn convert_transaction_header(
                 .ok_or(RpcError::ExpectedDataMissing("nullifier".into()))?
                 .try_into()
                 .map_err(|e: RpcConversionError| RpcError::InvalidResponse(e.to_string()))?;
-            Ok(InputNoteCommitment::from(Nullifier::from_raw(word)))
+            // Unauthenticated input notes (typically erased notes) carry their full header here;
+            // preserve it so the consuming account's sync can record the note even when the client
+            // never held its details.
+            let header = d
+                .header
+                .map(NoteHeader::try_from)
+                .transpose()
+                .map_err(|e: RpcConversionError| RpcError::InvalidResponse(e.to_string()))?;
+            Ok(InputNoteCommitment::from_parts_unchecked(Nullifier::from_raw(word), header))
         })
         .collect::<Result<Vec<_>, RpcError>>()?;
     let input_notes = InputNotes::new_unchecked(note_commitments);

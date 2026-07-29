@@ -9,6 +9,7 @@ use miden_client::note::{
     NoteStorage,
     NoteTag,
     NoteType,
+    Nullifier,
     PartialNoteMetadata,
 };
 use miden_client::store::input_note_states::{
@@ -22,7 +23,7 @@ use miden_client::{Felt, ZERO};
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
-use miden_protocol::note::NoteDetails;
+use miden_protocol::note::{NoteDetails, NoteHeader};
 use miden_protocol::testing::account_id::{
     ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET,
     ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE,
@@ -117,8 +118,102 @@ fn create_consumed_input_note_with_consumer(
     InputNoteRecord::new(details, NoteAttachments::empty(), Some(0), state.into())
 }
 
+/// Helper to create a header-only erased input note (state `ConsumedExternalErased`), i.e. a note
+/// the client only knows via its [`NoteHeader`] because it was created and consumed in the same
+/// batch. Built through [`InputNoteRecord::from_header`], so it carries no authoritative details.
+fn create_erased_header_input_note(
+    consumer: AccountId,
+    index: u32,
+    block_height: u32,
+    consumed_tx_order: u32,
+) -> InputNoteRecord {
+    let serial_number: Word =
+        [Felt::new_unchecked(u64::from(index) + 7000), ZERO, ZERO, ZERO].into();
+    let assets = NoteAssets::new(vec![]).unwrap();
+    let recipient = NoteRecipient::new(
+        serial_number,
+        StandardNote::SWAP.script(),
+        NoteStorage::new(vec![]).unwrap(),
+    );
+    let details = NoteDetails::new(assets, recipient);
+
+    let partial_metadata =
+        PartialNoteMetadata::new(consumer, NoteType::Public).with_tag(NoteTag::from(index));
+    let metadata = NoteMetadata::new(partial_metadata, &NoteAttachments::empty());
+    let header = NoteHeader::new(details.commitment(), metadata);
+    let nullifier = Nullifier::from_details_and_metadata(&details, &metadata);
+
+    let mut record = InputNoteRecord::from_header(
+        &header,
+        nullifier,
+        BlockNumber::from(block_height),
+        Some(consumer),
+    );
+    record.set_consumed_tx_order(Some(consumed_tx_order));
+    record
+}
+
 // INPUT NOTE READER TESTS
 // ================================================================================================
+
+/// The reader must return a single consumer's consumed notes in consumption order regardless of
+/// whether each note carries full details (e.g. notes the client created or discovered) or is a
+/// header-only erased note (state `ConsumedExternalErased`, no payload). This is the core proof
+/// that an indexer can read an account's consumed notes, with erased and non-erased entries
+/// intercalated in the right order. It exercises the reader + the new state's storage,
+/// serialization, filtering and ordering; how header-only records get created during sync is a
+/// separate, node-dependent concern.
+#[tokio::test]
+async fn input_note_reader_interleaves_erased_and_full_notes() {
+    let store = create_test_store().await;
+    let consumer = AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE).unwrap();
+
+    // The consumer consumes full, erased, full, erased across increasing blocks.
+    let full_b1 = create_consumed_input_note_with_consumer(consumer, 0, 1, 0);
+    let erased_b2 = create_erased_header_input_note(consumer, 1, 2, 0);
+    let full_b3 = create_consumed_input_note_with_consumer(consumer, 2, 3, 0);
+    let erased_b4 = create_erased_header_input_note(consumer, 3, 4, 0);
+
+    let expected_ids = vec![full_b1.id(), erased_b2.id(), full_b3.id(), erased_b4.id()];
+
+    store
+        .upsert_input_notes(&[full_b1, erased_b2, full_b3, erased_b4])
+        .await
+        .unwrap();
+
+    let store: Arc<dyn Store> = Arc::new(store);
+    let mut reader = InputNoteReader::new(store, consumer);
+
+    let mut collected = Vec::new();
+    while let Some(note) = reader.next().await.unwrap() {
+        collected.push(note);
+    }
+
+    // All four consumed notes are returned, interleaved, in consumption order.
+    assert_eq!(collected.len(), 4, "reader should return all four consumed notes");
+    let collected_ids: Vec<_> = collected.iter().map(InputNoteRecord::id).collect();
+    assert_eq!(
+        collected_ids, expected_ids,
+        "reader should return erased and full notes intercalated in consumption order",
+    );
+
+    // The erased entries are header-only; the full entries carry authoritative details.
+    assert!(
+        !collected[1].has_details(),
+        "block-2 note should be a header-only erased record"
+    );
+    assert!(
+        !collected[3].has_details(),
+        "block-4 note should be a header-only erased record"
+    );
+    assert!(collected[0].has_details(), "block-1 note should carry full details");
+    assert!(collected[2].has_details(), "block-3 note should carry full details");
+
+    // Every entry is attributed to the consumer.
+    for note in &collected {
+        assert_eq!(note.consumer_account(), Some(consumer));
+    }
+}
 
 #[tokio::test]
 async fn input_note_reader_returns_none_on_empty_store() {

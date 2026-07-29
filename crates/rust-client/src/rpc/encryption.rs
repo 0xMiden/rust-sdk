@@ -51,6 +51,7 @@ use miden_tx::utils::serde::{
 };
 use rand::CryptoRng;
 
+use super::generated::transaction::IesScheme;
 use super::{RpcError, generated as proto};
 
 // CONSTANTS
@@ -72,9 +73,8 @@ const TX_INPUT_SEAL_DOMAIN: &[u8] = b"MIDEN_TX_INPUT_SEAL_V1";
 /// Must match the validator's `ATTESTATION_DOMAIN`.
 const ATTESTATION_DOMAIN: &[u8] = b"MIDEN_TX_ENCRYPTION_KEY_ATTESTATION_V1";
 
-/// Wire identifier of the only IES scheme this client seals for,
-/// `IES_SCHEME_X25519_XCHACHA20_POLY1305`.
-const SUPPORTED_SCHEME: u32 = 1;
+/// Wire identifier of the only IES scheme this client seals for.
+const SUPPORTED_SCHEME: u32 = IesScheme::X25519Xchacha20Poly1305 as u32;
 
 // TRANSACTION ENCRYPTION KEY
 // ================================================================================================

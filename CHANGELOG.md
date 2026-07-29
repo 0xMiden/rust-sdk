@@ -11,15 +11,12 @@
 * [BREAKING][type][rust] Added the `NoteFilter::ScriptRoots` variant, so exhaustive matches on `NoteFilter` in `Store` implementations must handle it ([#2335](https://github.com/0xMiden/rust-sdk/pull/2335)).
 * [BREAKING][behavior][store] The SQLite base schema now declares an index on `input_notes(script_root)`. This changes the schema fingerprint, so opening a database created before this change fails with `SchemaHashMismatch` and existing stores must be recreated ([#2335](https://github.com/0xMiden/rust-sdk/pull/2335)).
 
-### Features
-
-* [FEATURE][rust,store] Added `NoteFilter::ScriptRoots` to query input notes by their note script root directly at the store level, without loading and screening unrelated notes. The filter doesn't apply to output notes: querying output notes with it returns an empty list ([#2335](https://github.com/0xMiden/rust-sdk/pull/2335)).
-
 ### Enhancements
 
 * [FEATURE][cli] Added a `--payback-note-type` option to `swap` so the payback note can be created as public or private (defaults to private). Public payback works without any off-band advice now that SWAP derives the payback recipient deterministically ([#2190](https://github.com/0xMiden/rust-sdk/pull/2190)).
 * [FEATURE][rust] `Client::get_consumable_notes(Some(account_id))` now screens only that account instead of screening every tracked account and discarding the rest, so its cost no longer grows with the number of tracked accounts. Added `NoteScreener::get_batch_consumability_for_account` to screen notes against a single account ([#2338](https://github.com/0xMiden/rust-sdk/pull/2338)).
 * [FEATURE][rust] Added the `miden_client::rpc::encryption` module backing encrypted submissions: `TransactionEncryptionKey`, `AttestedTransactionEncryptionKey` (whose `verify` is the only path to a usable key), `ValidatorAttestation`, `NextTransactionEncryptionKey`, `SealedTransactionInputs` and `seal_transaction_inputs`, along with re-exports of the validator DSA key types reachable from this API ([#2341](https://github.com/0xMiden/rust-sdk/pull/2341)).
+* [FEATURE][rust,store] Added `NoteFilter::ScriptRoots` to query input notes by their note script root directly at the store level, without loading and screening unrelated notes. The filter doesn't apply to output notes: querying output notes with it returns an empty list ([#2335](https://github.com/0xMiden/rust-sdk/pull/2335)).
 
 ## 0.16.0-alpha.1 (2026-07-17)
 

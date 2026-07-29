@@ -172,10 +172,10 @@ impl<T: NodeRpcClient> NodeRpcClient for VerifyingRpcClient<T> {
         &self,
         proven_batch: ProvenBatch,
         proposed_batch: ProposedBatch,
-        transaction_inputs: Vec<SealedTransactionInputs>,
+        sealed_transaction_inputs: Vec<SealedTransactionInputs>,
     ) -> Result<BlockNumber, RpcError> {
         self.0
-            .submit_proven_batch(proven_batch, proposed_batch, transaction_inputs)
+            .submit_proven_batch(proven_batch, proposed_batch, sealed_transaction_inputs)
             .await
     }
 

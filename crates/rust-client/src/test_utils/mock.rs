@@ -460,7 +460,8 @@ impl NodeRpcClient for MockRpcApi {
     async fn submit_proven_transaction(
         &self,
         proven_transaction: ProvenTransaction,
-        _sealed_tx_inputs: SealedTransactionInputs, // Unnecessary for testing client itself.
+        _sealed_transaction_inputs: SealedTransactionInputs, /* Unnecessary for testing client
+                                                              * itself. */
     ) -> Result<BlockNumber, RpcError> {
         // TODO: add some basic validations to test error cases
 
@@ -488,14 +489,14 @@ impl NodeRpcClient for MockRpcApi {
     }
 
     /// Simulates the submission of a proven batch to the node by adding it to the mock chain's
-    /// pending batches. The `proposed_batch` and `transaction_inputs` arguments are accepted to
-    /// match the trait signature but are unused — the mock relies on the `ProvenBatch` alone,
-    /// matching how `submit_proven_transaction` ignores its `transaction_inputs`.
+    /// pending batches. The `proposed_batch` and `sealed_transaction_inputs` arguments are accepted
+    /// to match the trait signature but are unused — the mock relies on the `ProvenBatch`
+    /// alone, matching how `submit_proven_transaction` ignores its `sealed_transaction_inputs`.
     async fn submit_proven_batch(
         &self,
         proven_batch: ProvenBatch,
         _proposed_batch: ProposedBatch,
-        _transaction_inputs: Vec<SealedTransactionInputs>,
+        _sealed_transaction_inputs: Vec<SealedTransactionInputs>,
     ) -> Result<BlockNumber, RpcError> {
         let mut mock_chain = self.mock_chain.write();
         mock_chain.add_pending_batch(proven_batch);

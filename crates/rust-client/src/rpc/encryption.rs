@@ -51,6 +51,7 @@ use miden_tx::utils::serde::{
 };
 use rand::CryptoRng;
 
+use super::generated::transaction::IesScheme;
 use super::{RpcError, generated as proto};
 
 // CONSTANTS
@@ -72,9 +73,13 @@ const TX_INPUT_SEAL_DOMAIN: &[u8] = b"MIDEN_TX_INPUT_SEAL_V1";
 /// Must match the validator's `ATTESTATION_DOMAIN`.
 const ATTESTATION_DOMAIN: &[u8] = b"MIDEN_TX_ENCRYPTION_KEY_ATTESTATION_V1";
 
-/// Wire identifier of the only IES scheme this client seals for,
-/// `IES_SCHEME_X25519_XCHACHA20_POLY1305`.
-const SUPPORTED_SCHEME: u32 = 1;
+/// Wire identifier of the only IES scheme this client seals for.
+const SUPPORTED_SCHEME: u32 = IesScheme::X25519Xchacha20Poly1305 as u32;
+
+/// Longest key identifier accepted from the RPC, in bytes.
+///
+/// Must match the validator's `MAX_KEY_ID_LEN`.
+const MAX_KEY_ID_LEN: usize = 64;
 
 // TRANSACTION ENCRYPTION KEY
 // ================================================================================================
@@ -248,6 +253,11 @@ impl AttestedTransactionEncryptionKey {
             )));
         }
 
+        validate_key_id(&self.key_id, "encryption key id")?;
+        if let Some(next) = &self.next_key {
+            validate_key_id(&next.key_id, "next encryption key id")?;
+        }
+
         let commitment = attestation_commitment(
             self.scheme,
             &self.key_id,
@@ -279,6 +289,23 @@ impl AttestedTransactionEncryptionKey {
             genesis_commitment,
         })
     }
+}
+
+/// Rejects a served key identifier that is empty or longer than [`MAX_KEY_ID_LEN`].
+///
+/// Mirrors the validator's `validate_key_id` so the client refuses a key the node itself
+/// would never serve.
+fn validate_key_id(key_id: &[u8], field: &str) -> Result<(), RpcError> {
+    if key_id.is_empty() {
+        return Err(RpcError::TransactionEncryptionKeyRejected(format!("{field} is empty")));
+    }
+    if key_id.len() > MAX_KEY_ID_LEN {
+        return Err(RpcError::TransactionEncryptionKeyRejected(format!(
+            "{field} is {} bytes, which exceeds the maximum of {MAX_KEY_ID_LEN}",
+            key_id.len()
+        )));
+    }
+    Ok(())
 }
 
 /// Computes the commitment a validator signs to attest an encryption key.

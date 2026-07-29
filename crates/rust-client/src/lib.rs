@@ -240,7 +240,11 @@ pub mod block {
 /// the `miden_standards` crate.
 pub mod crypto {
     pub mod ecdsa_k256_keccak {
-        pub use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{PublicKey, Signature};
+        pub use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
+            PublicKey,
+            Signature,
+            SigningKey,
+        };
     }
     pub mod eddsa_25519_sha512 {
         pub use miden_protocol::crypto::dsa::eddsa_25519_sha512::{KeyExchangeKey, PublicKey};

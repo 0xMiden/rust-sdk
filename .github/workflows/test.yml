@@ -137,8 +137,9 @@ jobs:
         with:
           path: target/test-node/install
           key: ${{ runner.os }}-test-node-${{ steps.node-rev.outputs.rev }}
-      # Persistent build dir so a rev bump recompiles only the crates that changed. The restore-key
-      # prefix falls back to the previous rev's build dir to seed the incremental build.
+      # Build dir cached per node rev, with no cross-rev fallback: cargo reuses stale build-script
+      # outputs when one target dir serves the same crate versions from two git revs, which breaks
+      # the compile with phantom type errors. A rev bump therefore compiles from scratch.
       - name: Restore test node build cache
         if: steps.cache-test-node.outputs.cache-hit != 'true'
         id: cache-test-node-build
@@ -146,8 +147,6 @@ jobs:
         with:
           path: target/test-node/build
           key: ${{ runner.os }}-test-node-build-${{ steps.node-rev.outputs.rev }}
-          restore-keys: |
-            ${{ runner.os }}-test-node-build-
       - name: Install Rust
         if: steps.cache-test-node.outputs.cache-hit != 'true'
         run: rustup update --no-self-update

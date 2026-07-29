@@ -131,11 +131,15 @@ for mac in bridge_admin.mac ger_manager.mac bridge.mac agglayer_faucet.mac; do
 done
 
 {
+    # Genesis generation is separate from bootstrap: `genesis` builds the block once, then every
+    # component seeds its database from the resulting file.
+    "$BIN/miden-validator" genesis --genesis-block-directory "$DATA/genesis" \
+        --accounts-directory "$DATA/accounts" --config "$DATA/genesis-config/genesis.toml"
     "$BIN/miden-validator" bootstrap --data-directory "$DATA/validator" \
-        --genesis-block-directory "$DATA/genesis" --accounts-directory "$DATA/accounts" \
-        --genesis-config-file "$DATA/genesis-config/genesis.toml"
-    "$BIN/miden-node" bootstrap --data-directory "$DATA/node" --file "$DATA/genesis/genesis.dat"
-    "$BIN/miden-ntx-builder" bootstrap --data-directory "$DATA/ntx-builder" --file "$DATA/genesis/genesis.dat"
+        --genesis "$DATA/genesis/genesis.dat"
+    "$BIN/miden-node" bootstrap --data-directory "$DATA/node" --genesis "$DATA/genesis/genesis.dat"
+    "$BIN/miden-ntx-builder" bootstrap --data-directory "$DATA/ntx-builder" \
+        --genesis "$DATA/genesis/genesis.dat"
 } >"$LOG_DIR/bootstrap.log" 2>&1
 
 echo "==> starting components"

@@ -67,7 +67,7 @@ impl ProgramExecutor for DapProgramExecutor {
         program: &Program,
         host: &mut H,
     ) -> impl FutureMaybeSend<Result<ExecutionOutput, ExecutionError>> {
-        let package = build_debug_package(program, &PackageDebugInfo::default(), None);
+        let package = build_dap_package(program, &PackageDebugInfo::default(), None);
         self.execute_package(package, host)
     }
 
@@ -78,20 +78,34 @@ impl ProgramExecutor for DapProgramExecutor {
         entrypoint_source_node: Option<DebugSourceNodeId>,
         host: &mut H,
     ) -> impl FutureMaybeSend<Result<ExecutionOutput, ExecutionError>> {
-        let package = build_debug_package(program, package_debug_info, entrypoint_source_node);
+        let package = build_dap_package(program, package_debug_info, entrypoint_source_node);
         self.execute_package(package, host)
     }
 }
 
-fn build_debug_package(
+/// Wraps the transaction executor's program and its separately-owned debug information in the
+/// executable package expected by [`miden_debug::DapExecutor`].
+///
+/// This conversion lives at the DAP adapter boundary because [`ProgramExecutor`] supplies a
+/// [`Program`], while the debugger consumes a [`Package`], and the package API has no constructor
+/// for rebuilding that package directly from a program. It should disappear once those upstream
+/// executor interfaces agree on a common input type.
+fn build_dap_package(
     program: &Program,
     package_debug_info: &PackageDebugInfo,
     entrypoint_source_node: Option<DebugSourceNodeId>,
 ) -> Result<Arc<Package>, String> {
+    // A transaction program is an executable whose root is exported as `$exec::$main`. Reusing
+    // the program's MAST forest, entrypoint node, and digest makes `Package::try_into_program`
+    // reconstruct the exact program that the transaction executor supplied.
     let entrypoint: Arc<Path> = Path::exec_path().join(ProcedureName::MAIN_PROC_NAME).into();
     let export =
         ProcedureExport::new(entrypoint.clone(), Some(program.entrypoint()), program.hash(), None)
             .with_source_node(entrypoint_source_node);
+
+    // The transaction kernel is an external dependency of transaction programs. The package
+    // manifest identifies that dependency, while the embedded kernel section gives the debugger
+    // the code required to resolve and execute it offline.
     let kernel = TransactionKernel::package();
     let mut package = Package::create(
         "miden-client-debug".into(),
@@ -102,6 +116,9 @@ fn build_debug_package(
         [kernel.to_dependency()],
     )
     .map_err(|error| error.to_string())?;
+
+    // `Package::create` installs the export, but executable packages also require the manifest's
+    // entrypoint field and the serialized kernel payload.
     package.manifest = package
         .manifest
         .clone()
@@ -109,6 +126,9 @@ fn build_debug_package(
         .map_err(|error| error.to_string())?;
     package.sections.push(Section::new(SectionId::KERNEL, kernel.to_bytes()));
 
+    // Debug information is owned beside `Program` at the transaction-executor boundary. Copy each
+    // optional table into its well-known package section so the DAP executor can recover source
+    // locations, functions, variables, and the source graph.
     push_debug_section(&mut package, SectionId::DEBUG_TYPES, package_debug_info.types());
     push_debug_section(&mut package, SectionId::DEBUG_SOURCES, package_debug_info.sources());
     push_debug_section(&mut package, SectionId::DEBUG_FUNCTIONS, package_debug_info.functions());
@@ -123,6 +143,9 @@ fn build_debug_package(
         SectionId::DEBUG_ERROR_MESSAGES,
         package_debug_info.error_messages(),
     );
+
+    // Decode once here to reject incomplete or internally inconsistent debug tables before the
+    // package reaches the asynchronous DAP session.
     package.debug_info().map_err(|error| error.to_string())?;
 
     Ok(Arc::new(package))
@@ -154,7 +177,7 @@ mod tests {
         ];
 
         for (program, debug_info, entrypoint_source_node) in programs {
-            let package = build_debug_package(&program, &debug_info, entrypoint_source_node)
+            let package = build_dap_package(&program, &debug_info, entrypoint_source_node)
                 .expect("failed to construct debug package");
 
             assert_eq!(package.try_into_program().unwrap(), program);

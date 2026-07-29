@@ -2,7 +2,7 @@ use std::io;
 #[cfg(feature = "dap")]
 use std::net::SocketAddr;
 #[cfg(feature = "dap")]
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand, ValueEnum};
@@ -723,7 +723,11 @@ async fn debug_transaction<AUTH: Keystore + Sync + 'static>(
             mutation_sets.len()
         );
     }
-    if let Err(err) = report_replay_snapshot_write(snapshot_recorder.as_ref(), record) {
+    if let Err(err) = super::report_replay_snapshot_write(
+        snapshot_recorder.as_ref(),
+        record,
+        |source, message| CliError::Transaction(source.into(), message),
+    ) {
         if result.is_err() {
             eprintln!("{err}");
         } else {
@@ -731,41 +735,4 @@ async fn debug_transaction<AUTH: Keystore + Sync + 'static>(
         }
     }
     result
-}
-
-#[cfg(feature = "dap")]
-fn report_replay_snapshot_write(
-    recorder: Option<&miden_debug::ReplaySnapshotRecorder>,
-    requested_path: Option<&Path>,
-) -> Result<(), CliError> {
-    let Some(recorder) = recorder else {
-        return Ok(());
-    };
-
-    match recorder.take() {
-        Some(Ok(write)) => {
-            println!(
-                "Wrote replay snapshot ({} event(s), {} forest(s)) to {}; replay it with \
-                 `miden-debug --replay {}`.",
-                write.event_count,
-                write.forest_count,
-                write.path.display(),
-                write.path.display()
-            );
-            Ok(())
-        },
-        Some(Err(err)) => Err(CliError::Transaction(
-            err.to_string().into(),
-            format!("failed to write replay snapshot to {}", err.path.display()),
-        )),
-        None => {
-            let path = requested_path
-                .map(|path| path.display().to_string())
-                .unwrap_or_else(|| "<unknown>".to_string());
-            Err(CliError::Transaction(
-                "replay snapshot was not written".to_string().into(),
-                format!("debug session ended without writing replay snapshot to {path}"),
-            ))
-        },
-    }
 }

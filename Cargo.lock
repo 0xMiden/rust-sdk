@@ -2132,11 +2132,13 @@ version = "0.16.0-alpha.1"
 dependencies = [
  "miden-client",
  "miden-client-sqlite-store",
+ "miden-debug",
  "miden-protocol",
  "miden-standards",
  "miden-testing",
  "rand 0.10.1",
  "rstest",
+ "tempfile",
  "tokio",
 ]
 

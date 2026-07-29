@@ -435,17 +435,18 @@ async fn input_notes_filtered_by_script_root() {
         .await
         .unwrap();
     assert_eq!(notes.len(), 1);
-    assert_eq!(notes[0].id(), p2id_note.id());
+    assert_eq!(notes[0].details_commitment(), p2id_note.details_commitment());
 
     let notes = store
         .get_input_notes(NoteFilter::ScriptRoots(vec![StandardNote::SWAP.script().root()]))
         .await
         .unwrap();
-    let mut note_ids: Vec<_> = notes.iter().map(InputNoteRecord::id).collect();
-    note_ids.sort();
-    let mut expected_ids = vec![swap_note_a.id(), swap_note_b.id()];
-    expected_ids.sort();
-    assert_eq!(note_ids, expected_ids);
+    let mut commitments: Vec<_> = notes.iter().map(InputNoteRecord::details_commitment).collect();
+    commitments.sort();
+    let mut expected_commitments =
+        vec![swap_note_a.details_commitment(), swap_note_b.details_commitment()];
+    expected_commitments.sort();
+    assert_eq!(commitments, expected_commitments);
 
     let notes = store
         .get_input_notes(NoteFilter::ScriptRoots(vec![

@@ -9,6 +9,7 @@ use miden_client::note::{
     NoteStorage,
     NoteTag,
     NoteType,
+    NoteUpdateTracker,
     PartialNoteMetadata,
 };
 use miden_client::store::input_note_states::{
@@ -17,7 +18,8 @@ use miden_client::store::input_note_states::{
     ExpectedNoteState,
     NoteSubmissionData,
 };
-use miden_client::store::{InputNoteRecord, NoteFilter, Store};
+use miden_client::store::{InputNoteRecord, NoteFilter, OutputNoteRecord, OutputNoteState, Store};
+use miden_client::sync::StateSyncUpdate;
 use miden_client::{Felt, ZERO};
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
@@ -81,6 +83,27 @@ fn create_expected_input_note_with_script(index: u32, script: NoteScript) -> Inp
     };
 
     InputNoteRecord::new(details, NoteAttachments::empty(), Some(0), state.into())
+}
+
+/// Helper to create an expected output note with a specific script.
+fn create_expected_output_note_with_script(index: u32, script: NoteScript) -> OutputNoteRecord {
+    let serial_number: Word =
+        [Felt::new_unchecked(u64::from(index) + 7000), ZERO, ZERO, ZERO].into();
+    let recipient = NoteRecipient::new(serial_number, script, NoteStorage::new(vec![]).unwrap());
+    let sender = AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE).unwrap();
+
+    let partial_metadata =
+        PartialNoteMetadata::new(sender, NoteType::Public).with_tag(NoteTag::from(index));
+    let metadata = NoteMetadata::new(partial_metadata, &NoteAttachments::empty());
+
+    OutputNoteRecord::new(
+        recipient.digest(),
+        NoteAssets::new(vec![]).unwrap(),
+        metadata,
+        OutputNoteState::ExpectedFull { recipient },
+        BlockNumber::from(0u32),
+        NoteAttachments::empty(),
+    )
 }
 
 /// Helper to create a consumed-unauthenticated-local input note with a specific consumer.
@@ -459,6 +482,30 @@ async fn input_notes_filtered_by_script_root() {
 
     let notes = store
         .get_input_notes(NoteFilter::ScriptRoots(vec![StandardNote::MINT.script().root()]))
+        .await
+        .unwrap();
+    assert!(notes.is_empty());
+}
+
+#[tokio::test]
+async fn output_notes_never_match_script_root_filter() {
+    let store = create_test_store().await;
+
+    let swap_note = create_expected_output_note_with_script(0, StandardNote::SWAP.script());
+
+    let state_sync_update = StateSyncUpdate {
+        note_updates: NoteUpdateTracker::for_transaction_updates([], [], [swap_note.clone()]),
+        ..Default::default()
+    };
+    store.apply_state_sync(state_sync_update).await.unwrap();
+
+    let notes = store.get_output_notes(NoteFilter::All).await.unwrap();
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0].id(), swap_note.id());
+
+    // The `output_notes` table has no script root column, so the filter can never match.
+    let notes = store
+        .get_output_notes(NoteFilter::ScriptRoots(vec![StandardNote::SWAP.script().root()]))
         .await
         .unwrap();
     assert!(notes.is_empty());

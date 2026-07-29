@@ -414,7 +414,7 @@ async fn consumed_input_notes_null_tx_order_sort_last_within_block() {
     assert_eq!(notes[1].id(), note_without_order.id());
 }
 
-// NOTE FILTER TESTS
+// SCRIPT ROOT FILTER TESTS
 // ================================================================================================
 
 #[tokio::test]

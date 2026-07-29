@@ -161,7 +161,15 @@ cleanup() {
 # Best-effort teardown for SIGTERM and for interrupts the components' own SIGINT death doesn't
 # cover (e.g. `kill <script>`); Ctrl+C teardown does not depend on this trap firing.
 trap 'echo; cleanup; exit 0' INT TERM
-start validator   "$BIN/miden-validator" start --listen "$VALIDATOR" --data-directory "$DATA/validator"
+# The storage-key files are the node repo's checked-in insecure development fixtures
+# (scripts/testdata/insecure-golden-storage-key), vendored here because the validator requires
+# threshold storage-key material to start and ships no generator for it.
+STORAGE_KEY_DIR="$ROOT/scripts/testdata/insecure-golden-storage-key"
+start validator   "$BIN/miden-validator" start --listen "$VALIDATOR" --data-directory "$DATA/validator" \
+    --storage-key.epoch "0909090909090909090909090909090909090909090909090909090909090909" \
+    --storage-key.setup-context "$STORAGE_KEY_DIR/setup-context.wire" \
+    --storage-key.public-key-set "$STORAGE_KEY_DIR/public-key-set.wire" \
+    --storage-key.secret-share "$STORAGE_KEY_DIR/secret-share.wire"
 # Let the validator bind before the sequencer starts producing blocks against it.
 sleep 2
 start sequencer   "$BIN/miden-node" sequencer --rpc.listen "$RPC" --data-directory "$DATA/node" \

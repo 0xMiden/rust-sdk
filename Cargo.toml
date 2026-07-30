@@ -84,34 +84,29 @@ uuid               = { version = "1.10" }
 # TEMPORARY (do not merge): `miden call` needs two things that are not in a published miden-vm
 # release yet — the `miden_mast_package::types` re-export it names manifest signature types
 # through, and the fix for procedure names in package manifest exports, without which linking a
-# compiler-built package panics. Point the whole miden-vm crate set at the revision carrying both;
+# compiler-built package panics. Point the whole miden-vm crate set at the branch carrying both;
 # patching `mast-package` alone would pull a second `miden-core` and break type unification. Delete
 # this entire block once both land in a release — the caret `"0.25"` requirement then picks them up
 # from crates.io.
 [patch.crates-io]
-miden-ace-codegen       = { git = "https://github.com/walnuthq/miden-vm", rev = "d6230b541f83dbdbb552d173f8253f8d560fa664" }
-miden-air               = { git = "https://github.com/walnuthq/miden-vm", rev = "d6230b541f83dbdbb552d173f8253f8d560fa664" }
-miden-assembly          = { git = "https://github.com/walnuthq/miden-vm", rev = "d6230b541f83dbdbb552d173f8253f8d560fa664" }
-miden-assembly-syntax   = { git = "https://github.com/walnuthq/miden-vm", rev = "d6230b541f83dbdbb552d173f8253f8d560fa664" }
-miden-core              = { git = "https://github.com/walnuthq/miden-vm", rev = "d6230b541f83dbdbb552d173f8253f8d560fa664" }
-miden-core-lib          = { git = "https://github.com/walnuthq/miden-vm", rev = "d6230b541f83dbdbb552d173f8253f8d560fa664" }
-# The published `miden-debug` crates are built against the old `miden-core` debug-info API, so they
-# fail to compile against the patched `miden-core`; use the local checkout that tracks it.
-miden-debug             = { path = "../miden-debug" }
-miden-debug-dap         = { path = "../miden-debug/crates/dap" }
-miden-debug-engine      = { path = "../miden-debug/crates/engine" }
-miden-debug-types       = { git = "https://github.com/walnuthq/miden-vm", rev = "d6230b541f83dbdbb552d173f8253f8d560fa664" }
-miden-mast-package      = { git = "https://github.com/walnuthq/miden-vm", rev = "d6230b541f83dbdbb552d173f8253f8d560fa664" }
-miden-package-registry  = { git = "https://github.com/walnuthq/miden-vm", rev = "d6230b541f83dbdbb552d173f8253f8d560fa664" }
-miden-processor         = { git = "https://github.com/walnuthq/miden-vm", rev = "d6230b541f83dbdbb552d173f8253f8d560fa664" }
-miden-project           = { git = "https://github.com/walnuthq/miden-vm", rev = "d6230b541f83dbdbb552d173f8253f8d560fa664" }
-miden-prover            = { git = "https://github.com/walnuthq/miden-vm", rev = "d6230b541f83dbdbb552d173f8253f8d560fa664" }
-miden-utils-core-derive = { git = "https://github.com/walnuthq/miden-vm", rev = "d6230b541f83dbdbb552d173f8253f8d560fa664" }
-miden-utils-diagnostics = { git = "https://github.com/walnuthq/miden-vm", rev = "d6230b541f83dbdbb552d173f8253f8d560fa664" }
-miden-utils-indexing    = { git = "https://github.com/walnuthq/miden-vm", rev = "d6230b541f83dbdbb552d173f8253f8d560fa664" }
-miden-utils-sync        = { git = "https://github.com/walnuthq/miden-vm", rev = "d6230b541f83dbdbb552d173f8253f8d560fa664" }
-miden-verifier          = { git = "https://github.com/walnuthq/miden-vm", rev = "d6230b541f83dbdbb552d173f8253f8d560fa664" }
-midenc-hir-type         = { git = "https://github.com/walnuthq/miden-vm", rev = "d6230b541f83dbdbb552d173f8253f8d560fa664" }
+miden-ace-codegen       = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
+miden-air               = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
+miden-assembly          = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
+miden-assembly-syntax   = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
+miden-core              = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
+miden-core-lib          = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
+miden-debug-types       = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
+miden-mast-package      = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
+miden-package-registry  = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
+miden-processor         = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
+miden-project           = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
+miden-prover            = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
+miden-utils-core-derive = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
+miden-utils-diagnostics = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
+miden-utils-indexing    = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
+miden-utils-sync        = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
+miden-verifier          = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
+midenc-hir-type         = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
 
 # Lints are set to warn for development, which are promoted to errors in CI.
 [workspace.lints.clippy]

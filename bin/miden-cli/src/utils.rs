@@ -463,3 +463,57 @@ fn parse_id_string(id: &str) -> Result<AccountId, String> {
     }
     Err(format!("address `{id}` does not encode an account ID"))
 }
+
+// SIGNATURE FORMATTING
+// ================================================================================================
+
+/// Renders a procedure signature into a compact `fn(<params>) -> <result>` form, lowered to field
+/// elements.
+///
+/// Each parameter and result is given as the number of field elements its type occupies: a single
+/// felt as `felt`, and an `n`-felt type as `[felt; n]`. This is the raw lowered view — typed
+/// signature formatting (naming the concrete component-model types) is handled upstream. `params`
+/// and `results` are the per-argument felt widths, in order.
+pub(crate) fn format_signature(params: &[usize], results: &[usize]) -> String {
+    // One field element is a `felt`, more are `[felt; n]`.
+    let render = |widths: &[usize]| -> String {
+        let types: Vec<String> = widths
+            .iter()
+            .map(|&n| {
+                if n == 1 {
+                    "felt".to_string()
+                } else {
+                    format!("[felt; {n}]")
+                }
+            })
+            .collect();
+        types.join(", ")
+    };
+
+    let params = render(params);
+    let ret = match results.len() {
+        0 => String::new(),
+        1 => format!(" -> {}", render(results)),
+        _ => format!(" -> ({})", render(results)),
+    };
+
+    format!("fn({params}){ret}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_signature;
+
+    #[test]
+    fn format_signature_lowers_to_felts() {
+        // Two single-felt params, one single-felt result.
+        assert_eq!(format_signature(&[1, 1], &[1]), "fn(felt, felt) -> felt");
+        // No result renders without an arrow.
+        assert_eq!(format_signature(&[1], &[]), "fn(felt)");
+        // Multi-felt types render as `[felt; n]`, multiple results as a tuple.
+        assert_eq!(
+            format_signature(&[2, 8], &[2, 1]),
+            "fn([felt; 2], [felt; 8]) -> ([felt; 2], felt)"
+        );
+    }
+}

@@ -4,8 +4,8 @@
 
 ### Fixes
 
-* [FIX][rust] An NTL delivery colliding with a note that a local transaction is consuming no longer wedges `sync_state()`: such deliveries are skipped (the store already holds their details) and the transport cursor advances past them ([#2345](https://github.com/0xMiden/rust-sdk/issues/2345)).
-* [FIX][rust] Transport deliveries are now validated on receipt — entries whose details don't match the header's details commitment or whose tag was never requested are dropped, with the cursor advancing past them ([#2345](https://github.com/0xMiden/rust-sdk/issues/2345)).
+* [FIX][rust] An NTL delivery colliding with a note that a local transaction is consuming no longer wedges `sync_state()`: such deliveries are skipped (the store already holds their details) and the transport cursor advances past them ([#2353](https://github.com/0xMiden/rust-sdk/pull/2353)).
+* [FIX][rust] Transport deliveries are now validated on receipt — entries whose details don't match the header's details commitment or whose tag was never requested are dropped, with the cursor advancing past them ([#2353](https://github.com/0xMiden/rust-sdk/pull/2353)).
 
 ## 0.15.4 (2026-07-16)
 

@@ -67,7 +67,7 @@ use miden_protocol::note::NoteId;
 use miden_protocol::transaction::TransactionId;
 use miden_tx::auth::TransactionAuthenticator;
 use miden_tx::utils::serde::{Deserializable, DeserializationError, Serializable};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::pswap::PswapChainObserver;
 use crate::store::{NoteFilter, TransactionFilter};
@@ -185,10 +185,24 @@ where
     /// node (see [`Client::sync_chain`]). If note transport is disabled, this is equivalent to
     /// [`Client::sync_chain`].
     ///
-    /// Fails fast on the first error. Private notes delivered via NTL are imported before the
-    /// chain sync reads its input set, so their nullifiers are checked in the same call.
+    /// A note-transport failure does not abort the sync: the error is logged, the chain sync
+    /// still runs, and the un-advanced transport cursor means the fetch is retried on the next
+    /// call. This mirrors how [`Client::sync_note_transport`] treats relay-outbox failures. The
+    /// chain sync is what observes a local consume committing — the transition that releases a
+    /// note from its processing state — so failing fast on the transport half could permanently
+    /// starve the chain half (#2345). Callers that need to inspect transport failures can call
+    /// [`Client::sync_note_transport`] directly.
+    ///
+    /// Private notes delivered via NTL are imported before the chain sync reads its input set,
+    /// so their nullifiers are checked in the same call.
     pub async fn sync_state(&mut self) -> Result<SyncSummary, ClientError> {
-        let new_private_notes = self.sync_note_transport().await?;
+        let new_private_notes = match self.sync_note_transport().await {
+            Ok(note_ids) => note_ids,
+            Err(err) => {
+                warn!(?err, "note transport sync failed; continuing with chain sync");
+                Vec::new()
+            },
+        };
         let mut summary = self.sync_chain().await?;
         summary.new_private_notes = new_private_notes;
         Ok(summary)

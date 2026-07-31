@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.15.5 (TBD)
+
+### Fixes
+
+* [FIX][rust] An NTL delivery colliding with a note that a local transaction is consuming no longer wedges `sync_state()` permanently. Transport deliveries whose note is currently being processed are skipped as redundant (consuming requires the full note details, so the store already holds them) and the transport cursor advances past them; a transport fetch/import failure is now logged instead of aborting the sync, so the chain sync — the only way to observe the consume committing — always runs, mirroring the existing relay-outbox handling ([#2345](https://github.com/0xMiden/rust-sdk/issues/2345)).
+
 ## 0.15.4 (2026-07-16)
 
 ### Changes

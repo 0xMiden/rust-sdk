@@ -4,7 +4,7 @@ pub mod generated;
 pub mod grpc;
 
 use alloc::boxed::Box;
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -32,6 +32,7 @@ use miden_tx::utils::serde::{
 };
 
 pub use self::errors::NoteTransportError;
+use crate::store::NoteFilter;
 use crate::{Client, ClientError};
 
 pub const NOTE_TRANSPORT_TESTNET_ENDPOINT: &str = "https://transport.miden.io";
@@ -370,6 +371,36 @@ where
             // key.decrypt(details_bytes_encrypted)
             let note = rejoin_note(&note_info.header, &note_info.details_bytes)?;
             notes.push((note, note_info.block_hint));
+        }
+
+        // A delivery that collides with a note a local transaction is currently consuming is
+        // redundant: consuming requires the full note details, so the store already holds
+        // everything the delivery carries. Importing it would hit the
+        // can't-overwrite-a-processing-note guard and fail the whole batch — and with it the
+        // cursor, re-fetching the same delivery and failing identically on every subsequent
+        // sync until the consume commits, which only a successful chain sync can observe
+        // (#2345). Skip such notes and let the cursor advance past them.
+        if !notes.is_empty() {
+            let commitments: Vec<NoteDetailsCommitment> =
+                notes.iter().map(|(note, _)| note.details_commitment()).collect();
+            let processing: BTreeSet<NoteDetailsCommitment> = self
+                .get_input_notes(NoteFilter::DetailsCommitments(commitments))
+                .await?
+                .into_iter()
+                .filter(|record| record.is_processing())
+                .map(|record| record.details_commitment())
+                .collect();
+            notes.retain(|(note, _)| {
+                let is_processing_locally = processing.contains(&note.details_commitment());
+                if is_processing_locally {
+                    tracing::warn!(
+                        details_commitment = %note.details_commitment().to_hex(),
+                        "skipping redundant transport delivery of a note currently being \
+                         consumed by a local transaction"
+                    );
+                }
+                !is_processing_locally
+            });
         }
 
         let sync_height = self.get_sync_height().await?;

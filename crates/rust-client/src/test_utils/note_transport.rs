@@ -223,12 +223,15 @@ impl NoteTransportClient for MockNoteTransportApi {
 ///
 /// The decorator counts attempts (`send_attempts`) and lets a test specify how
 /// many of the next `send_note` calls should fail (`fail_next`); successful
-/// calls delegate to an inner [`MockNoteTransportApi`]. `fetch_notes` and
-/// `stream_notes` always delegate to the inner mock.
+/// calls delegate to an inner [`MockNoteTransportApi`]. `fetch_notes` failures
+/// can be injected separately via [`FaultyNoteTransportApi::fail_next_n_fetches`];
+/// `stream_notes` always delegates to the inner mock.
 pub struct FaultyNoteTransportApi {
     inner: MockNoteTransportApi,
     fail_next: AtomicUsize,
     send_attempts: AtomicUsize,
+    fail_next_fetches: AtomicUsize,
+    fetch_attempts: AtomicUsize,
 }
 
 impl FaultyNoteTransportApi {
@@ -239,6 +242,8 @@ impl FaultyNoteTransportApi {
             inner: MockNoteTransportApi::new(mock_node),
             fail_next: AtomicUsize::new(fail_next),
             send_attempts: AtomicUsize::new(0),
+            fail_next_fetches: AtomicUsize::new(0),
+            fetch_attempts: AtomicUsize::new(0),
         }
     }
 
@@ -251,6 +256,17 @@ impl FaultyNoteTransportApi {
     /// Total `send_note` calls observed (success + failure).
     pub fn send_attempts(&self) -> usize {
         self.send_attempts.load(Ordering::SeqCst)
+    }
+
+    /// Fail the next `n` `fetch_notes` calls before delegating to the inner
+    /// mock again.
+    pub fn fail_next_n_fetches(&self, n: usize) {
+        self.fail_next_fetches.store(n, Ordering::SeqCst);
+    }
+
+    /// Total `fetch_notes` calls observed (success + failure).
+    pub fn fetch_attempts(&self) -> usize {
+        self.fetch_attempts.load(Ordering::SeqCst)
     }
 }
 
@@ -301,6 +317,16 @@ impl NoteTransportClient for FaultyNoteTransportApi {
         tags: &[NoteTag],
         cursor: NoteTransportCursor,
     ) -> Result<(Vec<NoteInfo>, NoteTransportCursor), NoteTransportError> {
+        self.fetch_attempts.fetch_add(1, Ordering::SeqCst);
+        let should_fail = self
+            .fail_next_fetches
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok();
+        if should_fail {
+            return Err(NoteTransportError::Network(
+                "FaultyNoteTransportApi: simulated fetch_notes failure".to_string(),
+            ));
+        }
         Ok(self.inner.fetch_notes(tags, cursor))
     }
 

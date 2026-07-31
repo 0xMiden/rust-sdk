@@ -16,9 +16,11 @@ use miden_client::testing::note_transport::{
     MockNoteTransportApi,
     MockNoteTransportNode,
 };
+use miden_client::transaction::TransactionRequestBuilder;
 use miden_client::utils::RwLock;
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
 use miden_protocol::Felt;
+use miden_protocol::asset::FungibleAsset;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::rand::RandomCoin;
 use miden_protocol::note::NoteType as ProtocolNoteType;
@@ -29,7 +31,7 @@ use miden_standards::testing::note::NoteBuilder;
 use miden_testing::{MockChainBuilder, TxContextInput};
 use rand::Rng;
 
-use crate::tests::{create_test_client_builder, insert_new_wallet};
+use crate::tests::{create_test_client_builder, insert_new_fungible_faucet, insert_new_wallet};
 
 #[tokio::test]
 async fn transport_basic() {
@@ -635,6 +637,118 @@ async fn fetch_private_notes_without_floor_falls_back_to_lookback_window() {
         !committed_notes.iter().any(|n| n.id() == Some(private_note.id())),
         "without a floor the lookback window misses a note committed before sync_height - 20"
     );
+}
+
+/// Reproduces 0xMiden/rust-sdk#2345: an NTL delivery of a note that a local transaction is
+/// currently consuming must not wedge `sync_state()`.
+///
+/// A note observed on-chain is being consumed (its input-note record is `Processing*`) when the
+/// same note's transport delivery arrives late. The transport import used to hit the
+/// can't-overwrite-a-processing-note guard, failing the whole sync — and since the transport
+/// cursor only advances on success, every subsequent `sync_state()` refetched the same delivery
+/// and failed identically, permanently, because only a successful chain sync can observe the
+/// consume committing. The delivery is redundant (consuming requires the full note details, so
+/// the store already holds them): it must be skipped and the cursor must advance past it.
+#[tokio::test]
+async fn transport_delivery_of_processing_note_does_not_wedge_sync_state() {
+    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
+    let (mut client, keystore) = Box::pin(create_test_client_transport(mock_node.clone())).await;
+    client.sync_state().await.unwrap();
+
+    let account = insert_new_wallet(&mut client, AccountType::Private, &keystore).await.unwrap();
+    let faucet = insert_new_fungible_faucet(&mut client, AccountType::Private, &keystore)
+        .await
+        .unwrap();
+
+    // Mint a note to the wallet and start consuming it, leaving its record in a processing state.
+    let mint_request = TransactionRequestBuilder::new()
+        .build_mint_fungible_asset(
+            FungibleAsset::new(faucet.id(), 5u64).unwrap(),
+            account.id(),
+            ProtocolNoteType::Public,
+            client.rng(),
+        )
+        .unwrap();
+    Box::pin(client.submit_new_transaction(faucet.id(), mint_request.clone()))
+        .await
+        .unwrap();
+
+    let minted_note = mint_request.expected_output_own_notes().pop().unwrap();
+    let note_record = client.get_input_note(minted_note.id()).await.unwrap().unwrap();
+    let consume_request = TransactionRequestBuilder::new()
+        .input_notes([(note_record.try_into().unwrap(), None)])
+        .build()
+        .unwrap();
+    Box::pin(client.submit_new_transaction(account.id(), consume_request))
+        .await
+        .unwrap();
+    assert!(
+        !client.get_input_notes(NoteFilter::Processing).await.unwrap().is_empty(),
+        "the consumed note should be in a processing state"
+    );
+
+    // The transport delivery of the very same note arrives while the consume is in flight.
+    let cursor_before = client.test_store().get_note_transport_cursor().await.unwrap();
+    mock_node
+        .write()
+        .add_note(*minted_note.header(), NoteDetails::from(minted_note.clone()).to_bytes());
+
+    // The delivery collides with the processing record; sync must skip it, not fail.
+    let summary = client.sync_state().await.unwrap();
+    assert!(
+        summary.new_private_notes.is_empty(),
+        "the redundant delivery must not be re-imported"
+    );
+
+    // The cursor advanced past the skipped delivery, so the next sync doesn't refetch it.
+    let cursor_after = client.test_store().get_note_transport_cursor().await.unwrap();
+    assert!(cursor_after > cursor_before, "cursor must advance past the skipped delivery");
+    client.sync_state().await.unwrap();
+
+    // The store still holds exactly one record for the note, untouched by the delivery.
+    let records = client.get_input_notes(NoteFilter::All).await.unwrap();
+    let matching = records
+        .iter()
+        .filter(|record| record.details_commitment() == minted_note.details_commitment())
+        .count();
+    assert_eq!(matching, 1, "the skipped delivery must not create or overwrite a record");
+}
+
+/// A transport fetch failure must not abort `sync_state()`: the chain sync still runs (it is the
+/// only way to observe a local consume committing), and the un-advanced cursor means the fetch is
+/// simply retried — notes seeded while the transport was down are delivered once it heals.
+#[tokio::test]
+async fn transport_fetch_failure_does_not_block_chain_sync() {
+    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
+    let faulty = Arc::new(FaultyNoteTransportApi::new(mock_node.clone(), 0));
+    let (mut recipient, recipient_account) =
+        Box::pin(create_test_user_with_transport(faulty.clone())).await;
+
+    // The NTL is unreachable: sync_state must still complete the chain sync.
+    faulty.fail_next_n_fetches(2);
+    let summary = recipient.sync_state().await.unwrap();
+    assert!(summary.new_private_notes.is_empty());
+    recipient.sync_state().await.unwrap();
+    assert_eq!(faulty.fetch_attempts(), 2);
+
+    // A note is relayed while the transport is down for fetches...
+    let note = P2idNote::create(
+        recipient_account.id(),
+        recipient_account.id(),
+        vec![],
+        NoteType::Private,
+        NoteAttachments::empty(),
+        recipient.rng(),
+    )
+    .unwrap();
+    mock_node
+        .write()
+        .add_note(*note.header(), NoteDetails::from(note.clone()).to_bytes());
+
+    // ...and is delivered on the first sync after it heals: the failed fetches never advanced
+    // the cursor.
+    let summary = recipient.sync_state().await.unwrap();
+    assert_eq!(summary.new_private_notes.len(), 1, "note seeded during the outage must arrive");
 }
 
 // HELPERS

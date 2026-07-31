@@ -264,7 +264,7 @@ impl TransactionRequest {
 
             if authenticated_note_record.is_consumed() {
                 return Err(TransactionRequestError::InputNoteAlreadyConsumed(
-                    authenticated_note_id,
+                    authenticated_note_record.details_commitment(),
                 ));
             }
 
@@ -501,8 +501,8 @@ pub enum TransactionRequestError {
         "note {0} cannot be used as an authenticated input: it does not have a valid inclusion proof"
     )]
     InputNoteNotAuthenticated(NoteId),
-    #[error("note {0} has already been consumed")]
-    InputNoteAlreadyConsumed(NoteId),
+    #[error("note with details commitment {} has already been consumed", .0.to_hex())]
+    InputNoteAlreadyConsumed(NoteDetailsCommitment),
     #[error(
         "output note declares sender {actual} but the transaction is executed by account {expected}"
     )]

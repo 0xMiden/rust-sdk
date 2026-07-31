@@ -2,10 +2,15 @@
 
 ## 0.15.5 (TBD)
 
+### Breaking Changes
+
+* [BREAKING][type][rust] `TransactionRequestError::InputNoteAlreadyConsumed` now carries a `NoteDetailsCommitment` instead of a `NoteId`, since a note record that was consumed externally may lack the metadata needed to derive its ID ([#2344](https://github.com/0xMiden/rust-sdk/issues/2344)).
+
 ### Fixes
 
 * [FIX][rust] An NTL delivery colliding with a note that a local transaction is consuming no longer wedges `sync_state()`: such deliveries are skipped (the store already holds their details) and the transport cursor advances past them ([#2353](https://github.com/0xMiden/rust-sdk/pull/2353)).
 * [FIX][rust] Transport deliveries are now validated on receipt — entries whose details don't match the header's details commitment or whose tag was never requested are dropped, with the cursor advancing past them ([#2353](https://github.com/0xMiden/rust-sdk/pull/2353)).
+* [FIX][rust] `Client::prepare_transaction` no longer panics when an input note is already consumed and its record carries no metadata; it returns `InputNoteAlreadyConsumed` instead ([#2344](https://github.com/0xMiden/rust-sdk/issues/2344)).
 
 ## 0.15.4 (2026-07-16)
 

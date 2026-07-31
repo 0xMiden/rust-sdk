@@ -751,6 +751,89 @@ async fn transport_fetch_failure_does_not_block_chain_sync() {
     assert_eq!(summary.new_private_notes.len(), 1, "note seeded during the outage must arrive");
 }
 
+/// A delivery whose details don't match the header's details commitment is forged or corrupt;
+/// it must be dropped (with the cursor advancing past it) rather than failing the batch, so a
+/// single poison entry can't block the transport inbox forever.
+#[tokio::test]
+async fn transport_delivery_with_mismatched_details_is_dropped() {
+    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
+    let (mut sender, sender_account) = create_test_user_transport(mock_node.clone()).await;
+    let (mut recipient, recipient_account) = create_test_user_transport(mock_node.clone()).await;
+
+    let note_a = P2idNote::create(
+        sender_account.id(),
+        recipient_account.id(),
+        vec![],
+        NoteType::Private,
+        NoteAttachments::empty(),
+        sender.rng(),
+    )
+    .unwrap();
+    let note_b = P2idNote::create(
+        sender_account.id(),
+        recipient_account.id(),
+        vec![],
+        NoteType::Private,
+        NoteAttachments::empty(),
+        sender.rng(),
+    )
+    .unwrap();
+
+    // Forged delivery: note B's header paired with note A's details.
+    let cursor_before = recipient.test_store().get_note_transport_cursor().await.unwrap();
+    mock_node
+        .write()
+        .add_note(*note_b.header(), NoteDetails::from(note_a.clone()).to_bytes());
+
+    let summary = recipient.sync_state().await.unwrap();
+    assert!(summary.new_private_notes.is_empty(), "forged delivery must not import");
+    assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 0);
+    let cursor_after = recipient.test_store().get_note_transport_cursor().await.unwrap();
+    assert!(cursor_after > cursor_before, "cursor must advance past the forged delivery");
+
+    // A legitimate delivery of note B still arrives on the next sync.
+    mock_node
+        .write()
+        .add_note(*note_b.header(), NoteDetails::from(note_b.clone()).to_bytes());
+    let summary = recipient.sync_state().await.unwrap();
+    assert_eq!(summary.new_private_notes.len(), 1);
+    let notes = recipient.get_input_notes(NoteFilter::All).await.unwrap();
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0].details_commitment(), note_b.details_commitment());
+}
+
+/// A delivery returned for a tag the client never requested (a misbehaving or malicious
+/// server) must be dropped instead of creating a phantom record and tracking a foreign tag.
+#[tokio::test]
+async fn transport_delivery_for_unrequested_tag_is_dropped() {
+    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
+    let (mut sender, sender_account) = create_test_user_transport(mock_node.clone()).await;
+    let (mut recipient, _recipient_account) = create_test_user_transport(mock_node.clone()).await;
+
+    // The recipient explicitly tracks one tag; the server returns, under that tag key, a note
+    // whose own tag is a different one (it targets the sender's account, not the recipient's).
+    let tracked_tag = NoteTag::new(777);
+    recipient.add_note_tag(tracked_tag).await.unwrap();
+    let foreign_note = P2idNote::create(
+        sender_account.id(),
+        sender_account.id(),
+        vec![],
+        NoteType::Private,
+        NoteAttachments::empty(),
+        sender.rng(),
+    )
+    .unwrap();
+    mock_node.write().add_note_with_tag_key(
+        tracked_tag,
+        *foreign_note.header(),
+        NoteDetails::from(foreign_note).to_bytes(),
+    );
+
+    let summary = recipient.sync_state().await.unwrap();
+    assert!(summary.new_private_notes.is_empty(), "foreign-tag delivery must not import");
+    assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 0);
+}
+
 // HELPERS
 // ================================================================================================
 

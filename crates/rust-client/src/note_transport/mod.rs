@@ -32,7 +32,7 @@ use miden_tx::utils::serde::{
 };
 
 pub use self::errors::NoteTransportError;
-use crate::store::NoteFilter;
+use crate::store::{InputNoteRecord, NoteFilter};
 use crate::{Client, ClientError};
 
 pub const NOTE_TRANSPORT_TESTNET_ENDPOINT: &str = "https://transport.miden.io";
@@ -369,39 +369,27 @@ where
             // e2ee impl hint:
             // for key in self.store.decryption_keys() try
             // key.decrypt(details_bytes_encrypted)
-            let note = rejoin_note(&note_info.header, &note_info.details_bytes)?;
+            //
+            // Invalid entries are dropped (the cursor advances past them) rather than errored,
+            // since failing the batch would re-fetch the same poison entry on every sync.
+            let note = match rejoin_note(&note_info.header, &note_info.details_bytes) {
+                Ok(note) => note,
+                Err(err) => {
+                    tracing::warn!(?err, "dropping malformed transport delivery");
+                    continue;
+                },
+            };
+            if !tags.contains(&note.metadata().tag()) {
+                tracing::warn!(
+                    tag = ?note.metadata().tag(),
+                    "dropping transport delivery for a tag that was not requested"
+                );
+                continue;
+            }
             notes.push((note, note_info.block_hint));
         }
 
-        // A delivery that collides with a note a local transaction is currently consuming is
-        // redundant: consuming requires the full note details, so the store already holds
-        // everything the delivery carries. Importing it would hit the
-        // can't-overwrite-a-processing-note guard and fail the whole batch — and with it the
-        // cursor, re-fetching the same delivery and failing identically on every subsequent
-        // sync until the consume commits, which only a successful chain sync can observe
-        // (#2345). Skip such notes and let the cursor advance past them.
-        if !notes.is_empty() {
-            let commitments: Vec<NoteDetailsCommitment> =
-                notes.iter().map(|(note, _)| note.details_commitment()).collect();
-            let processing: BTreeSet<NoteDetailsCommitment> = self
-                .get_input_notes(NoteFilter::DetailsCommitments(commitments))
-                .await?
-                .into_iter()
-                .filter(|record| record.is_processing())
-                .map(|record| record.details_commitment())
-                .collect();
-            notes.retain(|(note, _)| {
-                let is_processing_locally = processing.contains(&note.details_commitment());
-                if is_processing_locally {
-                    tracing::warn!(
-                        details_commitment = %note.details_commitment().to_hex(),
-                        "skipping redundant transport delivery of a note currently being \
-                         consumed by a local transaction"
-                    );
-                }
-                !is_processing_locally
-            });
-        }
+        self.drop_notes_processed_locally(&mut notes).await?;
 
         let sync_height = self.get_sync_height().await?;
         let fallback_after_block_num =
@@ -429,6 +417,34 @@ where
             .collect();
 
         Ok((imported_ids, rcursor))
+    }
+
+    /// Drops deliveries of notes that a local transaction is currently consuming: the store
+    /// already holds their full details, and importing them would fail the batch on the
+    /// no-overwrite-while-processing guard — pinning the cursor to the same entry on every
+    /// sync until the consume commits (#2345).
+    async fn drop_notes_processed_locally(
+        &self,
+        notes: &mut Vec<(Note, Option<BlockNumber>)>,
+    ) -> Result<(), ClientError> {
+        if notes.is_empty() {
+            return Ok(());
+        }
+
+        let commitments = notes.iter().map(|(note, _)| note.details_commitment()).collect();
+        let processing: BTreeSet<NoteDetailsCommitment> = self
+            .get_input_notes(NoteFilter::DetailsCommitments(commitments))
+            .await?
+            .into_iter()
+            .filter(InputNoteRecord::is_processing)
+            .map(|record| record.details_commitment())
+            .collect();
+
+        if !processing.is_empty() {
+            tracing::warn!(?processing, "skipping deliveries of notes being consumed locally");
+            notes.retain(|(note, _)| !processing.contains(&note.details_commitment()));
+        }
+        Ok(())
     }
 }
 
@@ -591,6 +607,15 @@ impl Deserializable for NoteTransportCursor {
 fn rejoin_note(header: &NoteHeader, details_bytes: &[u8]) -> Result<Note, DeserializationError> {
     let mut reader = SliceReader::new(details_bytes);
     let details = NoteDetails::read_from(&mut reader)?;
+    // The delivered details must be the ones the header commits to (and thus the ones its
+    // note ID is derived from); a mismatch means a malformed or forged delivery.
+    if details.commitment() != header.details_commitment() {
+        return Err(DeserializationError::InvalidValue(format!(
+            "delivered note details (commitment {}) do not match the header's details commitment {}",
+            details.commitment().to_hex(),
+            header.details_commitment().to_hex(),
+        )));
+    }
     // The transport wire format only carries `NoteHeader` + serialized `NoteDetails`, not the
     // attachments collection. We rejoin with empty attachments; this matches the original note
     // only when it had no attachments in the first place.

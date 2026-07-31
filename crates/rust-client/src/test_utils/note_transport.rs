@@ -74,6 +74,19 @@ impl MockNoteTransportNode {
         self.notes.entry(tag).or_default().push((info, cursor.into()));
     }
 
+    /// Seed a note under an arbitrary transport tag key, regardless of the note's own tag —
+    /// simulates a misbehaving server returning entries for tags the client did not request.
+    pub fn add_note_with_tag_key(
+        &mut self,
+        tag: NoteTag,
+        header: NoteHeader,
+        details_bytes: Vec<u8>,
+    ) {
+        let info = NoteInfo { header, details_bytes, block_hint: None };
+        let cursor = u64::try_from(Utc::now().timestamp_micros()).unwrap();
+        self.notes.entry(tag).or_default().push((info, cursor.into()));
+    }
+
     pub fn get_notes(
         &self,
         tags: &[NoteTag],

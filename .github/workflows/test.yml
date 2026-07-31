@@ -83,7 +83,8 @@ jobs:
         uses: ./.github/actions/cleanup-runner
       - name: Resolve note-transport revision
         id: note-transport-rev
-        run: echo "rev=$(git ls-remote https://github.com/0xMiden/miden-note-transport HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+        # v0.4.1; bump deliberately together with the toolchain (newer revs require rustc >= 1.96).
+        run: echo "rev=91ca4de34a8b88435e452dda0ed185b90f0bcda0" >> "$GITHUB_OUTPUT"
       - name: Restore note-transport binary
         id: cache-note-transport
         uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4

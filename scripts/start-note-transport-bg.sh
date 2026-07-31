@@ -1,18 +1,14 @@
 #!/bin/bash
 
-# Starts the Note Transport service in the background.
-# Installs it via cargo install if not already available.
+# Starts the Note Transport service in the background, installing the pinned release first if it is
+# not already available.
 
 set -euo pipefail
 
-REPO_URL=${REPO_URL:-https://github.com/0xMiden/miden-note-transport}
 BINARY_NAME=miden-note-transport-node-bin
 PID_FILE=.note-transport.pid
 
-if ! command -v "$BINARY_NAME" &>/dev/null; then
-  echo "Installing note transport service..."
-  cargo install --git "$REPO_URL" --locked
-fi
+"$(dirname "${BASH_SOURCE[0]}")/install-note-transport.sh"
 
 echo "Starting note transport service in background..."
 RUST_LOG=info "$BINARY_NAME" & echo $! > "$PID_FILE"

@@ -370,8 +370,7 @@ where
             // for key in self.store.decryption_keys() try
             // key.decrypt(details_bytes_encrypted)
             //
-            // Invalid entries are dropped (the cursor advances past them) rather than errored,
-            // since failing the batch would re-fetch the same poison entry on every sync.
+            // Drop invalid entries so the cursor can advance past them.
             let note = match rejoin_note(&note_info.header, &note_info.details_bytes) {
                 Ok(note) => note,
                 Err(err) => {
@@ -419,10 +418,8 @@ where
         Ok((imported_ids, rcursor))
     }
 
-    /// Drops deliveries of notes that a local transaction is currently consuming: the store
-    /// already holds their full details, and importing them would fail the batch on the
-    /// no-overwrite-while-processing guard — pinning the cursor to the same entry on every
-    /// sync until the consume commits (#2345).
+    /// Drops deliveries of notes a local transaction is consuming; importing them would fail
+    /// on the no-overwrite-while-processing guard.
     async fn drop_notes_processed_locally(
         &self,
         notes: &mut Vec<(Note, Option<BlockNumber>)>,
@@ -607,8 +604,7 @@ impl Deserializable for NoteTransportCursor {
 fn rejoin_note(header: &NoteHeader, details_bytes: &[u8]) -> Result<Note, DeserializationError> {
     let mut reader = SliceReader::new(details_bytes);
     let details = NoteDetails::read_from(&mut reader)?;
-    // The delivered details must be the ones the header commits to (and thus the ones its
-    // note ID is derived from); a mismatch means a malformed or forged delivery.
+    // The header must commit to the delivered details.
     if details.commitment() != header.details_commitment() {
         return Err(DeserializationError::InvalidValue(format!(
             "delivered note details (commitment {}) do not match the header's details commitment {}",

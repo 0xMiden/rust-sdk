@@ -639,16 +639,7 @@ async fn fetch_private_notes_without_floor_falls_back_to_lookback_window() {
     );
 }
 
-/// Reproduces 0xMiden/rust-sdk#2345: an NTL delivery of a note that a local transaction is
-/// currently consuming must not wedge `sync_state()`.
-///
-/// A note observed on-chain is being consumed (its input-note record is `Processing*`) when the
-/// same note's transport delivery arrives late. The transport import used to hit the
-/// can't-overwrite-a-processing-note guard, failing the whole sync — and since the transport
-/// cursor only advances on success, every subsequent `sync_state()` refetched the same delivery
-/// and failed identically, permanently, because only a successful chain sync can observe the
-/// consume committing. The delivery is redundant (consuming requires the full note details, so
-/// the store already holds them): it must be skipped and the cursor must advance past it.
+/// A delivery of a note being consumed locally is skipped and the cursor advances (#2345).
 #[tokio::test]
 async fn transport_delivery_of_processing_note_does_not_wedge_sync_state() {
     let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
@@ -660,7 +651,6 @@ async fn transport_delivery_of_processing_note_does_not_wedge_sync_state() {
         .await
         .unwrap();
 
-    // Mint a note to the wallet and start consuming it, leaving its record in a processing state.
     let mint_request = TransactionRequestBuilder::new()
         .build_mint_fungible_asset(
             FungibleAsset::new(faucet.id(), 5u64).unwrap(),
@@ -687,25 +677,22 @@ async fn transport_delivery_of_processing_note_does_not_wedge_sync_state() {
         "the consumed note should be in a processing state"
     );
 
-    // The transport delivery of the very same note arrives while the consume is in flight.
     let cursor_before = client.test_store().get_note_transport_cursor().await.unwrap();
+    // The same note arrives via transport while the consume is in flight.
     mock_node
         .write()
         .add_note(*minted_note.header(), NoteDetails::from(minted_note.clone()).to_bytes());
 
-    // The delivery collides with the processing record; sync must skip it, not fail.
     let summary = client.sync_state().await.unwrap();
     assert!(
         summary.new_private_notes.is_empty(),
         "the redundant delivery must not be re-imported"
     );
 
-    // The cursor advanced past the skipped delivery, so the next sync doesn't refetch it.
     let cursor_after = client.test_store().get_note_transport_cursor().await.unwrap();
     assert!(cursor_after > cursor_before, "cursor must advance past the skipped delivery");
     client.sync_state().await.unwrap();
 
-    // The store still holds exactly one record for the note, untouched by the delivery.
     let records = client.get_input_notes(NoteFilter::All).await.unwrap();
     let matching = records
         .iter()
@@ -714,24 +701,14 @@ async fn transport_delivery_of_processing_note_does_not_wedge_sync_state() {
     assert_eq!(matching, 1, "the skipped delivery must not create or overwrite a record");
 }
 
-/// A transport fetch failure must not abort `sync_state()`: the chain sync still runs (it is the
-/// only way to observe a local consume committing), and the un-advanced cursor means the fetch is
-/// simply retried — notes seeded while the transport was down are delivered once it heals.
+/// A failed fetch propagates and leaves the cursor unchanged for retry.
 #[tokio::test]
-async fn transport_fetch_failure_does_not_block_chain_sync() {
+async fn transport_fetch_failure_leaves_cursor_for_retry() {
     let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
     let faulty = Arc::new(FaultyNoteTransportApi::new(mock_node.clone(), 0));
     let (mut recipient, recipient_account) =
         Box::pin(create_test_user_with_transport(faulty.clone())).await;
 
-    // The NTL is unreachable: sync_state must still complete the chain sync.
-    faulty.fail_next_n_fetches(2);
-    let summary = recipient.sync_state().await.unwrap();
-    assert!(summary.new_private_notes.is_empty());
-    recipient.sync_state().await.unwrap();
-    assert_eq!(faulty.fetch_attempts(), 2);
-
-    // A note is relayed while the transport is down for fetches...
     let note = P2idNote::create(
         recipient_account.id(),
         recipient_account.id(),
@@ -745,15 +722,17 @@ async fn transport_fetch_failure_does_not_block_chain_sync() {
         .write()
         .add_note(*note.header(), NoteDetails::from(note.clone()).to_bytes());
 
-    // ...and is delivered on the first sync after it heals: the failed fetches never advanced
-    // the cursor.
+    faulty.fail_next_n_fetches(2);
+    recipient.sync_state().await.unwrap_err();
+    recipient.sync_state().await.unwrap_err();
+    assert_eq!(faulty.fetch_attempts(), 2);
+    assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 0);
+
     let summary = recipient.sync_state().await.unwrap();
     assert_eq!(summary.new_private_notes.len(), 1, "note seeded during the outage must arrive");
 }
 
-/// A delivery whose details don't match the header's details commitment is forged or corrupt;
-/// it must be dropped (with the cursor advancing past it) rather than failing the batch, so a
-/// single poison entry can't block the transport inbox forever.
+/// A delivery whose details don't match the header's commitment is dropped.
 #[tokio::test]
 async fn transport_delivery_with_mismatched_details_is_dropped() {
     let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
@@ -779,8 +758,8 @@ async fn transport_delivery_with_mismatched_details_is_dropped() {
     )
     .unwrap();
 
-    // Forged delivery: note B's header paired with note A's details.
     let cursor_before = recipient.test_store().get_note_transport_cursor().await.unwrap();
+    // Note B's header paired with note A's details.
     mock_node
         .write()
         .add_note(*note_b.header(), NoteDetails::from(note_a.clone()).to_bytes());
@@ -791,7 +770,6 @@ async fn transport_delivery_with_mismatched_details_is_dropped() {
     let cursor_after = recipient.test_store().get_note_transport_cursor().await.unwrap();
     assert!(cursor_after > cursor_before, "cursor must advance past the forged delivery");
 
-    // A legitimate delivery of note B still arrives on the next sync.
     mock_node
         .write()
         .add_note(*note_b.header(), NoteDetails::from(note_b.clone()).to_bytes());
@@ -802,16 +780,13 @@ async fn transport_delivery_with_mismatched_details_is_dropped() {
     assert_eq!(notes[0].details_commitment(), note_b.details_commitment());
 }
 
-/// A delivery returned for a tag the client never requested (a misbehaving or malicious
-/// server) must be dropped instead of creating a phantom record and tracking a foreign tag.
+/// A delivery for a tag that wasn't requested is dropped.
 #[tokio::test]
 async fn transport_delivery_for_unrequested_tag_is_dropped() {
     let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
     let (mut sender, sender_account) = create_test_user_transport(mock_node.clone()).await;
     let (mut recipient, _recipient_account) = create_test_user_transport(mock_node.clone()).await;
 
-    // The recipient explicitly tracks one tag; the server returns, under that tag key, a note
-    // whose own tag is a different one (it targets the sender's account, not the recipient's).
     let tracked_tag = NoteTag::new(777);
     recipient.add_note_tag(tracked_tag).await.unwrap();
     let foreign_note = P2idNote::create(
@@ -823,6 +798,7 @@ async fn transport_delivery_for_unrequested_tag_is_dropped() {
         sender.rng(),
     )
     .unwrap();
+    // A note tagged for the sender, served under the recipient's tracked tag.
     mock_node.write().add_note_with_tag_key(
         tracked_tag,
         *foreign_note.header(),

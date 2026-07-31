@@ -16,7 +16,7 @@ use miden_protocol::account::{
     StorageValuePatch,
 };
 use miden_protocol::block::{BlockHeader, BlockNumber};
-use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrPeaks, PartialMmr};
+use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrPeaks};
 use miden_protocol::errors::AccountPatchError;
 use miden_protocol::note::{NoteId, Nullifier};
 use miden_protocol::transaction::TransactionId;
@@ -190,7 +190,7 @@ impl From<&StateSyncUpdate> for SyncSummary {
 #[derive(Debug, Clone, Default)]
 pub struct PartialBlockchainUpdates {
     /// New block headers to be stored, keyed by block number. The value contains the block
-    /// header and a flag indicating whether the block contains notes relevant to the client.
+    /// header and a flag indicating whether the block is relevant and should remain tracked.
     block_headers: BTreeMap<BlockNumber, (BlockHeader, bool)>,
     /// New authentication nodes that are meant to be stored in order to authenticate block
     /// headers.
@@ -202,16 +202,16 @@ pub struct PartialBlockchainUpdates {
 impl PartialBlockchainUpdates {
     /// Adds a block header to this [`PartialBlockchainUpdates`].
     ///
-    /// On a repeated block number the `has_client_notes` flag is OR-ed — the chain tip block may
-    /// itself contain client notes — so it only ever moves from `false` to `true`, matching
+    /// On a repeated block number the `is_relevant` flag is OR-ed — the chain tip block may itself
+    /// be relevant — so it only ever moves from `false` to `true`, matching
     /// [`Store::insert_block_header`](crate::store::Store::insert_block_header)'s one-way upgrade.
-    pub fn insert(&mut self, block_header: BlockHeader, has_client_notes: bool) {
+    pub fn insert(&mut self, block_header: BlockHeader, is_relevant: bool) {
         self.block_headers
             .entry(block_header.block_num())
-            .and_modify(|(_, existing_has_notes)| {
-                *existing_has_notes |= has_client_notes;
+            .and_modify(|(_, existing_is_relevant)| {
+                *existing_is_relevant |= is_relevant;
             })
-            .or_insert((block_header, has_client_notes));
+            .or_insert((block_header, is_relevant));
     }
 
     /// Stages authentication nodes for storage.
@@ -225,8 +225,8 @@ impl PartialBlockchainUpdates {
         self.new_authentication_nodes.extend(nodes);
     }
 
-    /// Returns the new block headers to be stored, along with a flag indicating whether the block
-    /// contains notes that are relevant to the client.
+    /// Returns the new block headers to be stored, along with a flag indicating whether each block
+    /// is relevant and should remain tracked.
     pub fn block_headers(&self) -> impl Iterator<Item = &(BlockHeader, bool)> {
         self.block_headers.values()
     }
@@ -236,8 +236,8 @@ impl PartialBlockchainUpdates {
         &self,
         sync_height: BlockNumber,
     ) -> impl Iterator<Item = &(BlockHeader, bool)> {
-        self.block_headers.values().filter(move |(header, has_client_notes)| {
-            *has_client_notes
+        self.block_headers.values().filter(move |(header, is_relevant)| {
+            *is_relevant
                 || header.block_num() == BlockNumber::GENESIS
                 || header.block_num() == sync_height
         })
@@ -248,22 +248,6 @@ impl PartialBlockchainUpdates {
     pub fn new_authentication_nodes(&self) -> &[(InOrderIndex, Word)] {
         &self.new_authentication_nodes
     }
-}
-
-/// Untracks the given block leaves from `partial_mmr`, returning the authentication-node indices
-/// that are no longer needed by any remaining tracked leaf.
-///
-/// Untracking a leaf frees an inner node only once no other tracked leaf still needs it, so the
-/// returned indices are exactly the nodes that became removable.
-pub(crate) fn untrack_blocks(
-    partial_mmr: &mut PartialMmr,
-    block_positions: impl IntoIterator<Item = usize>,
-) -> Vec<InOrderIndex> {
-    block_positions
-        .into_iter()
-        .flat_map(|block_pos| partial_mmr.untrack(block_pos))
-        .map(|(index, _)| index)
-        .collect()
 }
 
 /// Contains transaction changes to apply to the store.

@@ -102,8 +102,23 @@ pub fn write_genesis_config(output_dir: &Path, include_agglayer: bool) -> Result
         .try_into()
         .expect("timestamp should fit into u32");
 
+    // The genesis config must list its validator set explicitly. The test node's validator signs
+    // with the node's predefined insecure development key (32 bytes of 0x01), so genesis must
+    // commit that key's public key or every block signature fails verification.
+    let validator_public_key_hex = {
+        use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey;
+        use miden_protocol::utils::serde::{Deserializable, Serializable};
+        let signing_key = SigningKey::read_from_bytes(&[0x01; 32])
+            .expect("the insecure development signing key bytes are a valid signing key");
+        signing_key.public_key().to_bytes().iter().fold(String::new(), |mut hex, byte| {
+            write!(hex, "{byte:02x}").expect("writing to a String cannot fail");
+            hex
+        })
+    };
+
     let mut toml = format!(
-        "version = 1\ntimestamp = {timestamp}\n\n[fee_parameters]\nverification_base_fee = 0\n"
+        "version = 1\ntimestamp = {timestamp}\nvalidators = [\"{validator_public_key_hex}\"]\n\n\
+         [fee_parameters]\nverification_base_fee = 0\n"
     );
     for file_name in &account_files {
         write!(toml, "\n[[account]]\npath = \"{file_name}\"\n")

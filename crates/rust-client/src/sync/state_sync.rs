@@ -654,8 +654,7 @@ impl StateSync {
             partial_mmr
                 .nodes()
                 .filter(|(index, _)| !nodes_before.contains(index))
-                .map(|(index, value)| (*index, *value))
-                .collect::<Vec<_>>(),
+                .map(|(index, value)| (*index, *value)),
         );
 
         Ok(())
@@ -2221,11 +2220,11 @@ mod tests {
 
         assert!(
             update.partial_blockchain_updates().block_headers_to_store(chain_tip).any(
-                |(header, has_client_notes)| {
-                    header.block_num() == observed_non_tip_block && *has_client_notes
+                |(header, is_relevant)| {
+                    header.block_num() == observed_non_tip_block && *is_relevant
                 }
             ),
-            "an observer-relevant block must be staged as containing client notes"
+            "an observer-relevant block must be staged as relevant"
         );
         assert!(
             partial_mmr.is_tracked(observed_non_tip_block.as_usize()),

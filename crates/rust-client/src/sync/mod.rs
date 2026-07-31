@@ -63,6 +63,7 @@ use core::cmp::max;
 
 use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
+use miden_protocol::crypto::merkle::mmr::{InOrderIndex, PartialMmr};
 use miden_protocol::note::NoteId;
 use miden_protocol::transaction::TransactionId;
 use miden_tx::auth::TransactionAuthenticator;
@@ -84,7 +85,6 @@ mod state_sync;
 pub use state_sync::{NoteUpdateAction, OnNoteReceived, StateSync, StateSyncInput};
 
 mod state_sync_update;
-use state_sync_update::untrack_blocks;
 pub use state_sync_update::{
     AccountUpdates,
     PartialBlockchainUpdates,
@@ -92,6 +92,22 @@ pub use state_sync_update::{
     StateSyncUpdate,
     TransactionUpdateTracker,
 };
+
+/// Untracks the given block leaves from `partial_mmr`, returning the authentication-node indices
+/// that are no longer needed by any remaining tracked leaf.
+///
+/// Untracking a leaf frees an inner node only once no other tracked leaf still needs it, so the
+/// returned indices are exactly the nodes that became removable.
+fn untrack_blocks(
+    partial_mmr: &mut PartialMmr,
+    block_positions: impl IntoIterator<Item = usize>,
+) -> Vec<InOrderIndex> {
+    block_positions
+        .into_iter()
+        .flat_map(|block_pos| partial_mmr.untrack(block_pos))
+        .map(|(index, _)| index)
+        .collect()
+}
 
 /// Client synchronization methods.
 impl<AUTH> Client<AUTH>

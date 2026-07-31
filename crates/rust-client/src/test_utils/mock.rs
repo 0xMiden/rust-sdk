@@ -20,7 +20,7 @@ use miden_protocol::block::{BlockHeader, BlockNumber, ProvenBlock};
 use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::crypto::merkle::mmr::{Forest, Mmr, MmrProof};
 use miden_protocol::note::{NoteAttachments, NoteHeader, NoteId, NoteScript, NoteTag};
-use miden_protocol::transaction::{OutputNote, ProvenTransaction, TransactionInputs};
+use miden_protocol::transaction::{OutputNote, ProvenTransaction};
 use miden_testing::{MockChain, MockChainNote};
 use miden_tx::utils::sync::RwLock;
 
@@ -43,6 +43,7 @@ use crate::rpc::domain::status::NetworkNoteStatusInfo;
 use crate::rpc::domain::storage_map::StorageMapInfo;
 use crate::rpc::domain::sync::{ChainMmrInfo, SyncTarget};
 use crate::rpc::domain::transaction::TransactionRecord;
+use crate::rpc::encryption::{AttestedTransactionEncryptionKey, SealedTransactionInputs};
 use crate::rpc::{AccountStateAt, NodeRpcClient, RpcError, RpcStatusInfo};
 
 pub type MockClient<AUTH> = Client<AUTH>;
@@ -455,12 +456,24 @@ impl NodeRpcClient for MockRpcApi {
         Ok(return_notes)
     }
 
+    /// The mock does not serve the encryption key. Verifying an attestation needs a validator
+    /// signature the mock chain cannot produce, so tests that submit transactions seed the key
+    /// directly through `Client::seed_transaction_encryption_key` instead.
+    async fn get_transaction_encryption_key(
+        &self,
+    ) -> Result<AttestedTransactionEncryptionKey, RpcError> {
+        Err(RpcError::TransactionEncryptionKeyRejected(
+            "the mock RPC client does not serve a transaction encryption key".into(),
+        ))
+    }
+
     /// Simulates the submission of a proven transaction to the node. This will create a new block
     /// just for the new transaction and return the block number of the newly created block.
     async fn submit_proven_transaction(
         &self,
         proven_transaction: ProvenTransaction,
-        _tx_inputs: TransactionInputs, // Unnecessary for testing client itself.
+        _sealed_transaction_inputs: SealedTransactionInputs, /* Unnecessary for testing client
+                                                              * itself. */
     ) -> Result<BlockNumber, RpcError> {
         // TODO: add some basic validations to test error cases
 
@@ -488,14 +501,14 @@ impl NodeRpcClient for MockRpcApi {
     }
 
     /// Simulates the submission of a proven batch to the node by adding it to the mock chain's
-    /// pending batches. The `proposed_batch` and `transaction_inputs` arguments are accepted to
-    /// match the trait signature but are unused — the mock relies on the `ProvenBatch` alone,
-    /// matching how `submit_proven_transaction` ignores its `transaction_inputs`.
+    /// pending batches. The `proposed_batch` and `sealed_transaction_inputs` arguments are accepted
+    /// to match the trait signature but are unused — the mock relies on the `ProvenBatch`
+    /// alone, matching how `submit_proven_transaction` ignores its `sealed_transaction_inputs`.
     async fn submit_proven_batch(
         &self,
         proven_batch: ProvenBatch,
         _proposed_batch: ProposedBatch,
-        _transaction_inputs: Vec<TransactionInputs>,
+        _sealed_transaction_inputs: Vec<SealedTransactionInputs>,
     ) -> Result<BlockNumber, RpcError> {
         let mut mock_chain = self.mock_chain.write();
         mock_chain.add_pending_batch(proven_batch);

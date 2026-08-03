@@ -8,7 +8,12 @@ use tracing::info;
 
 use crate::CLIENT_CONFIG_FILE_NAME;
 use crate::config::{
-    CliConfig, CliEndpoint, MIDEN_DIR, Network, NoteTransportConfig, get_global_miden_dir,
+    CliConfig,
+    CliEndpoint,
+    MIDEN_DIR,
+    Network,
+    NoteTransportConfig,
+    get_global_miden_dir,
     get_local_miden_dir,
 };
 use crate::errors::CliError;

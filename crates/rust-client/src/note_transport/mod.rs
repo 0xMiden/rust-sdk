@@ -4,7 +4,7 @@ pub mod generated;
 pub mod grpc;
 
 use alloc::boxed::Box;
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -32,6 +32,7 @@ use miden_tx::utils::serde::{
 };
 
 pub use self::errors::NoteTransportError;
+use crate::store::{InputNoteRecord, NoteFilter};
 use crate::{Client, ClientError};
 
 pub const NOTE_TRANSPORT_TESTNET_ENDPOINT: &str = "https://transport.miden.io";
@@ -368,9 +369,26 @@ where
             // e2ee impl hint:
             // for key in self.store.decryption_keys() try
             // key.decrypt(details_bytes_encrypted)
-            let note = rejoin_note(&note_info.header, &note_info.details_bytes)?;
+            //
+            // Drop invalid entries so the cursor can advance past them.
+            let note = match rejoin_note(&note_info.header, &note_info.details_bytes) {
+                Ok(note) => note,
+                Err(err) => {
+                    tracing::warn!(?err, "dropping malformed transport delivery");
+                    continue;
+                },
+            };
+            if !tags.contains(&note.metadata().tag()) {
+                tracing::warn!(
+                    tag = ?note.metadata().tag(),
+                    "dropping transport delivery for a tag that was not requested"
+                );
+                continue;
+            }
             notes.push((note, note_info.block_hint));
         }
+
+        self.drop_notes_processed_locally(&mut notes).await?;
 
         let sync_height = self.get_sync_height().await?;
         let fallback_after_block_num =
@@ -398,6 +416,32 @@ where
             .collect();
 
         Ok((imported_ids, rcursor))
+    }
+
+    /// Drops deliveries of notes a local transaction is consuming; importing them would fail
+    /// on the no-overwrite-while-processing guard.
+    async fn drop_notes_processed_locally(
+        &self,
+        notes: &mut Vec<(Note, Option<BlockNumber>)>,
+    ) -> Result<(), ClientError> {
+        if notes.is_empty() {
+            return Ok(());
+        }
+
+        let commitments = notes.iter().map(|(note, _)| note.details_commitment()).collect();
+        let processing: BTreeSet<NoteDetailsCommitment> = self
+            .get_input_notes(NoteFilter::DetailsCommitments(commitments))
+            .await?
+            .into_iter()
+            .filter(InputNoteRecord::is_processing)
+            .map(|record| record.details_commitment())
+            .collect();
+
+        if !processing.is_empty() {
+            tracing::warn!(?processing, "skipping deliveries of notes being consumed locally");
+            notes.retain(|(note, _)| !processing.contains(&note.details_commitment()));
+        }
+        Ok(())
     }
 }
 
@@ -560,6 +604,14 @@ impl Deserializable for NoteTransportCursor {
 fn rejoin_note(header: &NoteHeader, details_bytes: &[u8]) -> Result<Note, DeserializationError> {
     let mut reader = SliceReader::new(details_bytes);
     let details = NoteDetails::read_from(&mut reader)?;
+    // The header must commit to the delivered details.
+    if details.commitment() != header.details_commitment() {
+        return Err(DeserializationError::InvalidValue(format!(
+            "delivered note details (commitment {}) do not match the header's details commitment {}",
+            details.commitment().to_hex(),
+            header.details_commitment().to_hex(),
+        )));
+    }
     // The transport wire format only carries `NoteHeader` + serialized `NoteDetails`, not the
     // attachments collection. We rejoin with empty attachments; this matches the original note
     // only when it had no attachments in the first place.

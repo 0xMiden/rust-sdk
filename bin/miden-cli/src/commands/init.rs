@@ -8,12 +8,7 @@ use tracing::info;
 
 use crate::CLIENT_CONFIG_FILE_NAME;
 use crate::config::{
-    CliConfig,
-    CliEndpoint,
-    MIDEN_DIR,
-    Network,
-    NoteTransportConfig,
-    get_global_miden_dir,
+    CliConfig, CliEndpoint, MIDEN_DIR, Network, NoteTransportConfig, get_global_miden_dir,
     get_local_miden_dir,
 };
 use crate::errors::CliError;
@@ -138,14 +133,17 @@ impl InitCmd {
 
         // Check if config already exists
         if config_file_path.exists() {
+            let config = CliConfig::from_dir(&target_miden_dir)?;
+
             return Err(CliError::Config(
                 "Error with the configuration file".to_string().into(),
                 format!(
-                    "The file \"{}\" already exists in the {} {} directory ({}). Please remove it first or use a different location.",
+                    "The file \"{}\" already exists in the {} {} directory ({}), configured with the network \"{}\".",
                     CLIENT_CONFIG_FILE_NAME,
                     config_type,
                     MIDEN_DIR,
-                    target_miden_dir.display()
+                    target_miden_dir.display(),
+                    config.rpc.endpoint
                 ),
             ));
         }

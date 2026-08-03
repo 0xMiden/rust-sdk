@@ -31,6 +31,7 @@ use miden_client::store::{
     InputNoteState,
     NoteFilter,
     OutputNoteState,
+    StoreError,
     TransactionFilter,
 };
 use miden_client::sync::{NoteTagRecord, NoteTagSource};
@@ -82,6 +83,7 @@ use miden_protocol::account::{
 };
 use miden_protocol::asset::{Asset, AssetAmount, AssetId, FungibleAsset, TokenSymbol};
 use miden_protocol::crypto::dsa::eddsa_25519_sha512::KeyExchangeKey;
+use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::crypto::rand::{FeltRng, RandomCoin};
 use miden_protocol::note::{
     Note,
@@ -433,8 +435,9 @@ async fn sync_state() {
 
 #[tokio::test]
 async fn sync_state_mmr() {
-    // generate test client with a random store name
-    let (mut client, rpc_api, keystore) = Box::pin(create_test_client()).await;
+    let (builder, rpc_api, keystore) = Box::pin(create_test_client_builder()).await;
+    let mut client = builder.irrelevant_block_prune_interval(None).build().await.unwrap();
+    client.ensure_genesis_in_place().await.unwrap();
     // Import note and create wallet so that synced notes do not get discarded (due to being
     // irrelevant)
     insert_new_wallet(&mut client, AccountType::Private, &keystore).await.unwrap();
@@ -484,12 +487,11 @@ async fn sync_state_mmr() {
     // Try reconstructing the partial_mmr from what's in the database
     let partial_mmr = client.test_store().get_current_partial_mmr().await.unwrap();
     assert!(partial_mmr.forest().num_leaves() >= 6);
-    assert!(partial_mmr.open(0).unwrap().is_none());
     // Block 1 holds the only unspent public note, so its leaf stays tracked.
     assert!(partial_mmr.open(1).unwrap().is_some());
     assert!(partial_mmr.open(2).unwrap().is_none());
     assert!(partial_mmr.open(3).unwrap().is_none());
-    // Block 4's notes are all consumed externally, so pruning untracks its leaf.
+    // Block 4's notes are all consumed externally, so its leaf is never persisted as tracked.
     assert!(partial_mmr.open(4).unwrap().is_none());
     assert!(partial_mmr.open(5).unwrap().is_none());
 
@@ -498,9 +500,60 @@ async fn sync_state_mmr() {
     let (block_1, _) = rpc_api.get_block_header_by_number(Some(1.into()), false).await.unwrap();
     partial_mmr.peaks().verify(block_1.commitment(), mmr_proof).unwrap();
 
-    // Only block 1 remains tracked after pruning; block 4 was untracked because all its
-    // notes are already consumed externally.
-    assert_eq!(client.test_store().get_tracked_block_headers().await.unwrap().len(), 1);
+    // Automatic pruning is disabled: block 4 is absent because the sync update did not persist it.
+    assert!(
+        client
+            .test_store()
+            .get_tracked_block_headers()
+            .await
+            .unwrap()
+            .iter()
+            .all(|header| header.block_num() != BlockNumber::from(4u32))
+    );
+    assert!(
+        client
+            .test_store()
+            .get_block_headers(&[BlockNumber::from(4u32)].into_iter().collect())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+/// A block that becomes irrelevant because all of its notes are consumed during the same sync must
+/// still have its header and MMR path authenticated before it is omitted from storage.
+#[tokio::test]
+async fn sync_state_rejects_tampered_path_for_same_sync_consumed_note() {
+    let (builder, rpc_api, keystore) = Box::pin(create_test_client_builder()).await;
+    let mut client = builder.irrelevant_block_prune_interval(None).build().await.unwrap();
+    client.ensure_genesis_in_place().await.unwrap();
+    insert_new_wallet(&mut client, AccountType::Private, &keystore).await.unwrap();
+
+    let notes = rpc_api
+        .get_public_available_notes()
+        .into_iter()
+        .filter_map(|note| note.note().cloned())
+        .collect::<Vec<Note>>();
+
+    for note in &notes {
+        client
+            .import_notes(&[NoteFile::ExpectedNote {
+                details: note.clone().into(),
+                sync_hint: NoteSyncHint::new(0.into(), note.metadata().tag()),
+            }])
+            .await
+            .unwrap();
+    }
+
+    // The prebuilt chain commits the second note in block 4 and consumes it in block 5.
+    assert_eq!(rpc_api.get_chain_tip_block_num(), BlockNumber::from(5u32));
+    rpc_api.set_sync_notes_mmr_path(BlockNumber::from(4u32), MerklePath::default());
+
+    let result = client.sync_state().await;
+    assert!(
+        matches!(result, Err(ClientError::StoreError(StoreError::MmrError(_)))),
+        "the invalid MMR path must be rejected, got {result:?}"
+    );
 }
 
 #[tokio::test]
@@ -659,12 +712,12 @@ async fn sync_persists_auth_nodes_for_skipped_blocks() {
     // Blocks 1 and 4 had matching note tags but the screener discarded them,
     // so `include_block` was false for those steps.
     assert_eq!(
-        state_sync_update.partial_blockchain_updates.block_headers().count(),
+        state_sync_update.partial_blockchain_updates().block_headers().count(),
         1,
         "expected only the chain tip block header to be stored"
     );
     let (tip_header, ..) =
-        state_sync_update.partial_blockchain_updates.block_headers().next().unwrap();
+        state_sync_update.partial_blockchain_updates().block_headers().next().unwrap();
     assert_eq!(tip_header.block_num(), rpc_api.get_chain_tip_block_num());
 
     // Authentication nodes must be non-empty: they include nodes produced by applying
@@ -672,7 +725,7 @@ async fn sync_persists_auth_nodes_for_skipped_blocks() {
     // tracked genesis leaf's Merkle proof path, which changes as the tree grows.
     assert!(
         !state_sync_update
-            .partial_blockchain_updates
+            .partial_blockchain_updates()
             .new_authentication_nodes()
             .is_empty(),
         "expected authentication nodes from intermediate (skipped) blocks to be persisted"
@@ -744,7 +797,7 @@ async fn sync_state_no_redundant_get_account_calls() {
 
     // Only 1 updated public account entry, not N duplicates
     assert_eq!(
-        state_sync_update.account_updates.updated_public_accounts().len(),
+        state_sync_update.account_updates().updated_public_accounts().len(),
         1,
         "expected exactly 1 updated public account"
     );

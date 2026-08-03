@@ -19,7 +19,12 @@ use miden_client::store::input_note_states::{
     NoteSubmissionData,
 };
 use miden_client::store::{InputNoteRecord, NoteFilter, OutputNoteRecord, OutputNoteState, Store};
-use miden_client::sync::StateSyncUpdate;
+use miden_client::sync::{
+    AccountUpdates,
+    PartialBlockchainUpdates,
+    StateSyncUpdate,
+    TransactionUpdateTracker,
+};
 use miden_client::{Felt, ZERO};
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
@@ -493,10 +498,13 @@ async fn output_notes_never_match_script_root_filter() {
 
     let swap_note = create_expected_output_note_with_script(0, StandardNote::SWAP.script());
 
-    let state_sync_update = StateSyncUpdate {
-        note_updates: NoteUpdateTracker::for_transaction_updates([], [], [swap_note.clone()]),
-        ..Default::default()
-    };
+    let state_sync_update = StateSyncUpdate::from_parts(
+        BlockNumber::from(0u32),
+        PartialBlockchainUpdates::default(),
+        NoteUpdateTracker::for_transaction_updates([], [], [swap_note.clone()]),
+        TransactionUpdateTracker::default(),
+        AccountUpdates::default(),
+    );
     store.apply_state_sync(state_sync_update).await.unwrap();
 
     let notes = store.get_output_notes(NoteFilter::All).await.unwrap();

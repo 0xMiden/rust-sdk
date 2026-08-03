@@ -37,7 +37,7 @@ pub(crate) async fn discover_pswap_rounds(
     chain_note_updates: &[ObservedPswapNote],
 ) -> Result<Vec<PswapLineageRoundUpdate>, PswapLineageError> {
     let consumed_note_ids: BTreeSet<NoteId> =
-        state_sync_update.note_updates.consumed_note_ids().collect();
+        state_sync_update.note_updates().consumed_note_ids().collect();
 
     if consumed_note_ids.is_empty() && chain_note_updates.is_empty() {
         return Ok(Vec::new());
@@ -54,7 +54,7 @@ pub(crate) async fn discover_pswap_rounds(
 
     // Commit-block note roots for inserting reconstructed notes as `Committed`.
     let block_headers: BTreeMap<BlockNumber, BlockHeader> = state_sync_update
-        .partial_blockchain_updates
+        .partial_blockchain_updates()
         .block_headers()
         .map(|(header, _)| (header.block_num(), header.clone()))
         .collect();

@@ -9,7 +9,8 @@ use miden_protocol::Word;
 use miden_protocol::account::{Account, AccountHeader, AccountId, StorageSlotType};
 use miden_protocol::block::account_tree::AccountIdKey;
 use miden_protocol::block::{BlockHeader, BlockNumber};
-use miden_protocol::crypto::merkle::mmr::{MmrDelta, PartialMmr};
+use miden_protocol::crypto::merkle::MerklePath;
+use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrDelta, PartialMmr};
 use miden_protocol::note::{NoteAttachments, NoteId, NoteTag, Nullifier};
 use tracing::info;
 
@@ -71,6 +72,29 @@ struct FetchedSyncData {
     note_blocks: Vec<ResolvedSyncNotesBlock>,
     /// Transaction records for the synced range, as returned by `sync_transactions`.
     transactions: Vec<RpcTransactionRecord>,
+}
+
+/// A note block that must be authenticated after screening.
+///
+/// `observer_requires_block` preserves the [`NoteObserver::observe`] contract independently of
+/// whether any normally-tracked note in the block remains unspent at the end of the sync.
+struct RelevantNoteBlock {
+    block_header: BlockHeader,
+    mmr_path: MerklePath,
+    observer_requires_block: bool,
+}
+
+/// The two independent reasons a screened note block may be relevant.
+#[derive(Default)]
+struct NoteBlockRelevance {
+    has_client_note: bool,
+    observer_requires_block: bool,
+}
+
+impl NoteBlockRelevance {
+    fn is_relevant(&self) -> bool {
+        self.has_client_note || self.observer_requires_block
+    }
 }
 
 // SYNC REQUEST
@@ -241,12 +265,12 @@ impl StateSync {
     /// 1. Fetch sync data from the node (MMR delta, note inclusions, transactions).
     /// 2. Update account states (fetch updated public accounts, flag mismatched private ones).
     /// 3. Advance the partial MMR to the chain tip.
-    /// 4. Screen note inclusions via the configured [`OnNoteReceived`] callback and track relevant
-    ///    blocks in the MMR.
+    /// 4. Screen note inclusions via the configured [`OnNoteReceived`] callback.
     /// 5. Process transaction inclusions (commit local txs, record external consumers, discard
     ///    stale/expired txs, commit output notes).
     /// 6. Detect consumed notes via nullifier sync (optional, see
     ///    [`Self::disable_nullifier_sync`]).
+    /// 7. Track in the MMR the screened blocks that still hold an unspent note.
     pub async fn sync_state(
         &self,
         current_partial_mmr: &mut PartialMmr,
@@ -266,49 +290,93 @@ impl StateSync {
         let note_tags = Arc::new(note_tags);
         let account_ids: Vec<AccountId> = accounts.iter().map(AccountHeader::id).collect();
 
-        let mut state_sync_update = StateSyncUpdate {
-            block_num,
-            note_updates: NoteUpdateTracker::new(input_notes, output_notes),
-            transaction_updates: TransactionUpdateTracker::new(uncommitted_transactions),
-            ..Default::default()
-        };
-        let Some(sync_data) = self
-            .fetch_sync_data(state_sync_update.block_num, &account_ids, &note_tags)
-            .await?
+        let mut note_updates = NoteUpdateTracker::new(input_notes, output_notes);
+        let mut transaction_updates = TransactionUpdateTracker::new(uncommitted_transactions);
+        let mut partial_blockchain_updates = PartialBlockchainUpdates::default();
+        let mut account_updates = AccountUpdates::default();
+
+        let Some(sync_data) = self.fetch_sync_data(block_num, &account_ids, &note_tags).await?
         else {
             // No progress — already at the tip.
-            return Ok(state_sync_update);
+            return Ok(StateSyncUpdate::from_parts(
+                block_num,
+                partial_blockchain_updates,
+                note_updates,
+                transaction_updates,
+                account_updates,
+            ));
         };
 
-        state_sync_update.block_num = sync_data.chain_tip_header.block_num();
+        let FetchedSyncData {
+            mmr_delta,
+            chain_tip_header,
+            note_blocks,
+            transactions,
+        } = sync_data;
+        let chain_tip = chain_tip_header.block_num();
 
-        let new_commitments = derive_account_commitments(&sync_data.transactions);
+        let new_commitments = derive_account_commitments(&transactions);
         let superseded_states = self
             .account_state_sync(
-                &mut state_sync_update.account_updates,
+                &mut account_updates,
                 &accounts,
                 &new_commitments,
                 block_num,
-                &sync_data.chain_tip_header,
+                &chain_tip_header,
             )
             .await?;
 
         // Discard the local transactions whose result lost a same-nonce race against the network.
         for superseded_state in superseded_states {
-            state_sync_update
-                .transaction_updates
-                .apply_superseded_account_state(superseded_state);
+            transaction_updates.apply_superseded_account_state(superseded_state);
         }
 
-        // Apply local changes: update the MMR, screen notes, and apply state transitions.
-        self.apply_sync_result(sync_data, &mut state_sync_update, current_partial_mmr)
-            .await?;
+        // Work on a clone so any validation failure leaves `current_partial_mmr` untouched.
+        let mut working_mmr = current_partial_mmr.clone();
+
+        Self::advance_mmr(
+            mmr_delta,
+            &chain_tip_header,
+            &mut working_mmr,
+            &mut partial_blockchain_updates,
+        )?;
+        let relevant_note_blocks = self.screen_note_blocks(note_blocks, &mut note_updates).await?;
+        self.apply_transactions_and_nullifiers(
+            &chain_tip_header,
+            &transactions,
+            &mut note_updates,
+            &mut transaction_updates,
+        )?;
 
         if self.sync_nullifiers {
-            self.nullifiers_state_sync(&mut state_sync_update, block_num).await?;
+            self.nullifiers_state_sync(
+                &mut note_updates,
+                &mut transaction_updates,
+                chain_tip,
+                block_num,
+            )
+            .await?;
         }
 
-        Ok(state_sync_update)
+        let blocks_with_unspent_notes: BTreeSet<BlockNumber> =
+            note_updates.unspent_input_note_block_numbers().collect();
+
+        Self::validate_and_track_note_blocks(
+            relevant_note_blocks,
+            &blocks_with_unspent_notes,
+            &mut working_mmr,
+            &mut partial_blockchain_updates,
+        )?;
+
+        *current_partial_mmr = working_mmr;
+
+        Ok(StateSyncUpdate::from_parts(
+            chain_tip,
+            partial_blockchain_updates,
+            note_updates,
+            transaction_updates,
+            account_updates,
+        ))
     }
 
     /// Fetches the sync data from the node by calling the following endpoints:
@@ -400,51 +468,6 @@ impl StateSync {
 
     // HELPERS
     // --------------------------------------------------------------------------------------------
-
-    /// Applies sync results to the local state update.
-    ///
-    /// Applies fetched sync data to the local state:
-    /// 1. Advances the partial MMR (delta + chain tip leaf).
-    /// 2. Screens note blocks and tracks relevant ones in the MMR.
-    /// 3. Applies transaction and nullifier updates.
-    async fn apply_sync_result(
-        &self,
-        sync_data: FetchedSyncData,
-        state_sync_update: &mut StateSyncUpdate,
-        current_partial_mmr: &mut PartialMmr,
-    ) -> Result<(), ClientError> {
-        let FetchedSyncData {
-            mmr_delta,
-            chain_tip_header,
-            note_blocks,
-            transactions,
-        } = sync_data;
-
-        // Operate on a clone so any validation failure leaves `current_partial_mmr` untouched.
-        // The clone is committed back at the end of the function once all checks pass.
-        let mut working_mmr = current_partial_mmr.clone();
-
-        Self::advance_mmr(
-            mmr_delta,
-            &chain_tip_header,
-            &mut working_mmr,
-            &mut state_sync_update.partial_blockchain_updates,
-        )?;
-
-        self.screen_note_blocks(note_blocks, state_sync_update, &mut working_mmr)
-            .await?;
-
-        self.apply_transactions_and_nullifiers(
-            &chain_tip_header,
-            &transactions,
-            state_sync_update,
-        )?;
-
-        // Commit the working MMR back to the caller once all checks pass.
-        *current_partial_mmr = working_mmr;
-
-        Ok(())
-    }
 
     /// Validates that a `sync_chain_mmr` response covers the requested range.
     fn validate_chain_mmr_response(
@@ -549,62 +572,90 @@ impl StateSync {
                 .map_err(StoreError::MmrError)?,
         );
 
-        partial_blockchain_updates.insert(
-            chain_tip_header.clone(),
-            false,
-            new_authentication_nodes,
-        );
+        partial_blockchain_updates.insert(chain_tip_header.clone(), false);
+        partial_blockchain_updates.extend_authentication_nodes(new_authentication_nodes);
 
         Ok(())
     }
 
-    /// Screens each note block for relevance and, for blocks containing client-relevant notes,
-    /// tracks them in the partial MMR using the authentication path from the `sync_notes`
-    /// response.
+    /// Screens each note block for relevance, returning those with client-relevant notes and their
+    /// authentication path from the `sync_notes` response.
+    ///
+    /// These are candidates only — whether a normally-tracked note survives unspent isn't known
+    /// until nullifiers are processed, so tracking is deferred to
+    /// [`Self::validate_and_track_note_blocks`]. Blocks explicitly requested by an observer retain
+    /// that requirement separately.
     async fn screen_note_blocks(
         &self,
         note_blocks: Vec<ResolvedSyncNotesBlock>,
-        state_sync_update: &mut StateSyncUpdate,
-        current_partial_mmr: &mut PartialMmr,
-    ) -> Result<(), ClientError> {
+        note_updates: &mut NoteUpdateTracker,
+    ) -> Result<Vec<RelevantNoteBlock>, ClientError> {
+        let mut relevant_blocks = Vec::new();
+
         for block in note_blocks {
-            let found_relevant_note = self
-                .note_state_sync(
-                    &mut state_sync_update.note_updates,
-                    block.notes,
-                    &block.block_header,
-                )
-                .await?;
+            let relevance =
+                self.note_state_sync(note_updates, block.notes, &block.block_header).await?;
 
-            if found_relevant_note {
-                let block_pos = block.block_header.block_num().as_usize();
-
-                let nodes_before: BTreeMap<_, _> =
-                    current_partial_mmr.nodes().map(|(k, v)| (*k, *v)).collect();
-
-                if !current_partial_mmr.is_tracked(block_pos) {
-                    current_partial_mmr
-                        .track(block_pos, block.block_header.commitment(), &block.mmr_path)
-                        .map_err(StoreError::MmrError)?;
-                }
-
-                // Always collect new authentication nodes — even when the block was
-                // already tracked from the MMR delta, the delta's nodes may not include
-                // the full authentication path needed to reconstruct the PartialMmr
-                // from storage later.
-                let track_auth_nodes: Vec<_> = current_partial_mmr
-                    .nodes()
-                    .filter(|(k, _)| !nodes_before.contains_key(k))
-                    .map(|(k, v)| (*k, *v))
-                    .collect();
-
-                state_sync_update.partial_blockchain_updates.insert(
-                    block.block_header,
-                    true,
-                    track_auth_nodes,
-                );
+            if relevance.is_relevant() {
+                relevant_blocks.push(RelevantNoteBlock {
+                    block_header: block.block_header,
+                    mmr_path: block.mmr_path,
+                    observer_requires_block: relevance.observer_requires_block,
+                });
             }
         }
+
+        Ok(relevant_blocks)
+    }
+
+    /// Authenticates every relevant note block, then retains only blocks holding an unspent note or
+    /// explicitly requested by an observer.
+    ///
+    /// A block which does not need to be retained is temporarily tracked so its header and MMR path
+    /// are still validated against the current peaks, then immediately untracked. This avoids
+    /// persisting its header and authentication nodes without accepting unauthenticated sync data.
+    ///
+    /// Requires `partial_mmr` to be at the chain tip forest that `relevant_blocks`' paths are
+    /// relative to, which [`Self::advance_mmr`] establishes and nothing else in the pass changes.
+    fn validate_and_track_note_blocks(
+        relevant_blocks: Vec<RelevantNoteBlock>,
+        blocks_with_unspent_notes: &BTreeSet<BlockNumber>,
+        partial_mmr: &mut PartialMmr,
+        partial_blockchain_updates: &mut PartialBlockchainUpdates,
+    ) -> Result<(), ClientError> {
+        let nodes_before: BTreeSet<InOrderIndex> = partial_mmr.nodes().map(|(k, _)| *k).collect();
+
+        for RelevantNoteBlock {
+            block_header,
+            mmr_path,
+            observer_requires_block,
+        } in relevant_blocks
+        {
+            let block_pos = block_header.block_num().as_usize();
+            let was_tracked = partial_mmr.is_tracked(block_pos);
+
+            // `track` is also the authentication step: it verifies the supplied path against the
+            // current peaks before mutating the partial MMR.
+            partial_mmr
+                .track(block_pos, block_header.commitment(), &mmr_path)
+                .map_err(StoreError::MmrError)?;
+
+            if observer_requires_block
+                || blocks_with_unspent_notes.contains(&block_header.block_num())
+            {
+                partial_blockchain_updates.insert(block_header, true);
+            } else if !was_tracked {
+                partial_mmr.untrack(block_pos);
+            }
+        }
+
+        // Diffed once for the whole batch, since tracked paths share internal nodes.
+        partial_blockchain_updates.extend_authentication_nodes(
+            partial_mmr
+                .nodes()
+                .filter(|(index, _)| !nodes_before.contains(index))
+                .map(|(index, value)| (*index, *value)),
+        );
 
         Ok(())
     }
@@ -616,31 +667,26 @@ impl StateSync {
         &self,
         chain_tip_header: &BlockHeader,
         transactions: &[RpcTransactionRecord],
-        state_sync_update: &mut StateSyncUpdate,
+        note_updates: &mut NoteUpdateTracker,
+        transaction_updates: &mut TransactionUpdateTracker,
     ) -> Result<(), ClientError> {
-        state_sync_update
-            .note_updates
-            .extend_nullifiers(compute_ordered_nullifiers(transactions));
+        note_updates.extend_nullifiers(compute_ordered_nullifiers(transactions));
 
         for record in transactions {
-            state_sync_update
-                .transaction_updates
+            transaction_updates
                 .apply_transaction_inclusion(record, u64::from(chain_tip_header.timestamp())); //TODO: Change timestamps from u64 to u32
         }
-        state_sync_update
-            .transaction_updates
+        transaction_updates
             .apply_sync_height_update(chain_tip_header.block_num(), self.tx_discard_delta);
 
         for transaction in transactions {
             // Transition tracked output notes to Committed using inclusion proofs from the
             // transaction sync response. This covers output notes regardless of whether their
             // tags were tracked in the note sync.
-            state_sync_update
-                .note_updates
-                .apply_output_note_inclusion_proofs(&transaction.output_notes)?;
+            note_updates.apply_output_note_inclusion_proofs(&transaction.output_notes)?;
 
             // Detect output notes erased by same-batch note erasure.
-            Self::mark_erased_notes_as_consumed(state_sync_update, transaction);
+            Self::mark_erased_notes_as_consumed(note_updates, transaction);
         }
 
         Ok(())
@@ -652,14 +698,12 @@ impl StateSync {
     /// the block body. The node reports these as erased output notes in the transaction
     /// record (note ID only, no inclusion proof). We mark them as consumed.
     fn mark_erased_notes_as_consumed(
-        state_sync_update: &mut StateSyncUpdate,
+        note_updates: &mut NoteUpdateTracker,
         transaction: &RpcTransactionRecord,
     ) {
         for note_header in &transaction.erased_output_notes {
             // Best-effort: ignore errors for notes not tracked by this client.
-            let _ = state_sync_update
-                .note_updates
-                .mark_erased_note_as_consumed(note_header, transaction.block_num);
+            let _ = note_updates.mark_erased_note_as_consumed(note_header, transaction.block_num);
         }
     }
 
@@ -1015,9 +1059,8 @@ impl StateSync {
         note_updates: &mut NoteUpdateTracker,
         notes: BTreeMap<NoteId, SyncedNote>,
         block_header: &BlockHeader,
-    ) -> Result<bool, ClientError> {
-        // `found_relevant_note` tracks whether we want to persist the block header in the end
-        let mut found_relevant_note = false;
+    ) -> Result<NoteBlockRelevance, ClientError> {
+        let mut relevance = NoteBlockRelevance::default();
 
         for (_, SyncedNote { committed, content }) in notes {
             // Attachment content fetched for the note. Attachments are a public extension stored
@@ -1053,7 +1096,7 @@ impl StateSync {
             if !self.note_observers.is_empty() {
                 for obs in &self.note_observers {
                     match obs.observe(&committed, attachments.as_ref()).await {
-                        Ok(true) => found_relevant_note = true,
+                        Ok(true) => relevance.observer_requires_block = true,
                         Ok(false) => {},
                         Err(err) => {
                             tracing::warn!(
@@ -1071,14 +1114,15 @@ impl StateSync {
                     // Only mark the downloaded block header as relevant if we are talking about
                     // an input note (output notes get marked as committed but we don't need the
                     // block for anything there)
-                    found_relevant_note |= note_updates.apply_committed_note_state_transitions(
-                        &committed_note,
-                        block_header,
-                        attachments.as_ref(),
-                    )?;
+                    relevance.has_client_note |= note_updates
+                        .apply_committed_note_state_transitions(
+                            &committed_note,
+                            block_header,
+                            attachments.as_ref(),
+                        )?;
                 },
                 NoteUpdateAction::Insert(public_note) => {
-                    found_relevant_note = true;
+                    relevance.has_client_note = true;
 
                     note_updates.apply_new_public_note(public_note, block_header)?;
                 },
@@ -1086,45 +1130,44 @@ impl StateSync {
             }
         }
 
-        Ok(found_relevant_note)
+        Ok(relevance)
     }
 
     /// Collects the nullifier tags for the notes that were updated in the sync response and uses
     /// the `sync_nullifiers` endpoint to check if there are new nullifiers for these
     /// notes. It then processes the nullifiers to apply the state transitions on the note updates.
     ///
-    /// The `state_sync_update` parameter will be updated to track the new discarded transactions.
+    /// The `transaction_updates` parameter will be updated to track the new discarded
+    /// transactions.
     async fn nullifiers_state_sync(
         &self,
-        state_sync_update: &mut StateSyncUpdate,
+        note_updates: &mut NoteUpdateTracker,
+        transaction_updates: &mut TransactionUpdateTracker,
+        chain_tip: BlockNumber,
         current_block_num: BlockNumber,
     ) -> Result<(), ClientError> {
         // To receive information about added nullifiers, we reduce them to the higher 16 bits
         // Note that besides filtering by nullifier prefixes, the node also filters by block number
-        // (it only returns nullifiers from current_block_num + 1 until state_sync_update.block_num)
+        // (it only returns nullifiers from current_block_num + 1 until chain_tip)
 
         // Check for new nullifiers for input notes that were updated
-        let nullifiers_tags: Vec<u16> = state_sync_update
-            .note_updates
-            .unspent_nullifiers()
-            .map(|nullifier| nullifier.prefix())
-            .collect();
+        let nullifiers_tags: Vec<u16> =
+            note_updates.unspent_nullifiers().map(|nullifier| nullifier.prefix()).collect();
 
         let mut new_nullifiers = self
             .rpc_api
-            .sync_nullifiers(&nullifiers_tags, current_block_num + 1, state_sync_update.block_num)
+            .sync_nullifiers(&nullifiers_tags, current_block_num + 1, chain_tip)
             .await?;
 
         // Discard nullifiers that are newer than the current block (this might happen if the block
         // changes between the sync_state and the check_nullifier calls)
-        new_nullifiers.retain(|update| update.block_num <= state_sync_update.block_num);
+        new_nullifiers.retain(|update| update.block_num <= chain_tip);
 
         // Match each nullifier update with the externally-tracked consumer account.
         let consumptions: Vec<NoteConsumption> = new_nullifiers
             .into_iter()
             .map(|update| NoteConsumption {
-                external_consumer: state_sync_update
-                    .transaction_updates
+                external_consumer: transaction_updates
                     .external_nullifier_account(&update.nullifier),
                 nullifier: update.nullifier,
                 block_num: update.block_num,
@@ -1132,17 +1175,15 @@ impl StateSync {
             .collect();
 
         for consumption in consumptions {
-            state_sync_update.note_updates.apply_note_consumption(
+            note_updates.apply_note_consumption(
                 &consumption,
-                state_sync_update.transaction_updates.committed_transactions(),
+                transaction_updates.committed_transactions(),
             )?;
 
             // Process nullifiers and track the updates of local tracked transactions that were
             // discarded because the notes that they were processing were nullified by an
             // another transaction.
-            state_sync_update
-                .transaction_updates
-                .apply_input_note_nullified(consumption.nullifier);
+            transaction_updates.apply_input_note_nullified(consumption.nullifier);
         }
 
         Ok(())
@@ -1317,6 +1358,24 @@ mod tests {
             _public_note: Option<InputNoteRecord>,
         ) -> Result<NoteUpdateAction, ClientError> {
             Ok(NoteUpdateAction::Discard)
+        }
+    }
+
+    /// Observer that requires every matching note's block to remain tracked.
+    struct AlwaysRelevantObserver;
+
+    #[async_trait(?Send)]
+    impl NoteObserver for AlwaysRelevantObserver {
+        fn name(&self) -> &'static str {
+            "always-relevant"
+        }
+
+        async fn observe(
+            &self,
+            _committed_note: &CommittedNote,
+            _attachments: Option<&NoteAttachments>,
+        ) -> Result<bool, ClientError> {
+            Ok(true)
         }
     }
 
@@ -1968,7 +2027,7 @@ mod tests {
 
         let update = state_sync.sync_state(&mut partial_mmr, sync_input).await.unwrap();
 
-        let updated_notes: Vec<_> = update.note_updates.updated_input_notes().collect();
+        let updated_notes: Vec<_> = update.note_updates().updated_input_notes().collect();
 
         let find_order = |details_commitment| -> Option<u32> {
             updated_notes
@@ -2012,7 +2071,7 @@ mod tests {
         // First sync
         let update = state_sync.sync_state(&mut partial_mmr, empty()).await.unwrap();
 
-        assert_eq!(update.block_num, chain_tip_1);
+        assert_eq!(update.block_num(), chain_tip_1);
         let forest_1 = partial_mmr.forest();
         // The MMR should contain one leaf per block (genesis + the new blocks).
         assert_eq!(forest_1.num_leaves(), chain_tip_1.as_u32() as usize + 1);
@@ -2023,7 +2082,7 @@ mod tests {
 
         let update = state_sync.sync_state(&mut partial_mmr, empty()).await.unwrap();
 
-        assert_eq!(update.block_num, chain_tip_2);
+        assert_eq!(update.block_num(), chain_tip_2);
         let forest_2 = partial_mmr.forest();
         assert!(forest_2 > forest_1);
         assert_eq!(forest_2.num_leaves(), chain_tip_2.as_u32() as usize + 1);
@@ -2031,7 +2090,7 @@ mod tests {
         // Third sync (no new blocks)
         let update = state_sync.sync_state(&mut partial_mmr, empty()).await.unwrap();
 
-        assert_eq!(update.block_num, chain_tip_2);
+        assert_eq!(update.block_num(), chain_tip_2);
         assert_eq!(partial_mmr.forest(), forest_2);
     }
 
@@ -2137,6 +2196,40 @@ mod tests {
         }
 
         (chain, note_tags)
+    }
+
+    /// An observer's `true` result retains a note block even when the screener discards the note
+    /// and the regular note tracker therefore has no live note in that block.
+    #[tokio::test]
+    async fn observer_relevance_persists_discarded_note_block() {
+        let (chain, note_tags) = build_chain_with_mint_notes(2).await;
+        let mock_rpc = MockRpcApi::new(chain);
+        let chain_tip = mock_rpc.get_chain_tip_block_num();
+
+        let genesis_peaks =
+            mock_rpc.get_mmr().peaks_at(Forest::new(1).expect("valid forest")).unwrap();
+        let mut partial_mmr = PartialMmr::from_peaks(genesis_peaks);
+
+        let state_sync = StateSync::new(Arc::new(mock_rpc), Arc::new(MockScreener), None)
+            .with_note_observer(Arc::new(AlwaysRelevantObserver));
+        let mut input = empty();
+        input.note_tags = note_tags;
+
+        let update = state_sync.sync_state(&mut partial_mmr, input).await.unwrap();
+        let observed_non_tip_block = BlockNumber::from(1u32);
+
+        assert!(
+            update.partial_blockchain_updates().block_headers_to_store(chain_tip).any(
+                |(header, is_relevant)| {
+                    header.block_num() == observed_non_tip_block && *is_relevant
+                }
+            ),
+            "an observer-relevant block must be staged as relevant"
+        );
+        assert!(
+            partial_mmr.is_tracked(observed_non_tip_block.as_usize()),
+            "an observer-relevant block must remain tracked in the partial MMR"
+        );
     }
 
     /// Verifies that the sync correctly processes notes committed in multiple blocks
@@ -2406,7 +2499,7 @@ mod tests {
 
         // The output note record should transition to consumed.
         let updated_output = update
-            .note_updates
+            .note_updates()
             .updated_output_notes()
             .find(|n| n.id() == erased_note_id)
             .expect("output note should be in the update");
@@ -2418,7 +2511,7 @@ mod tests {
 
         // A new input note record should be created with the network account as consumer.
         let input_note_update = update
-            .note_updates
+            .note_updates()
             .updated_input_notes()
             .find(|n| n.id() == Some(erased_note_id))
             .expect("input note should be created from the erased output note");

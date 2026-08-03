@@ -17,6 +17,7 @@ use miden_protocol::account::{
 use miden_protocol::address::NetworkId;
 use miden_protocol::batch::{ProposedBatch, ProvenBatch};
 use miden_protocol::block::{BlockHeader, BlockNumber, ProvenBlock};
+use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::crypto::merkle::mmr::{Forest, Mmr, MmrProof};
 use miden_protocol::note::{NoteAttachments, NoteHeader, NoteId, NoteScript, NoteTag};
 use miden_protocol::transaction::{OutputNote, ProvenTransaction};
@@ -70,6 +71,8 @@ pub struct MockRpcApi {
     /// notes without their attachment content (only metadata), so tests that need
     /// `get_notes_by_id` to return private-note attachments register them here.
     private_note_attachments: Arc<RwLock<BTreeMap<NoteId, NoteAttachments>>>,
+    /// Test overrides for the MMR paths returned by `sync_notes`, keyed by block number.
+    sync_notes_mmr_path_overrides: Arc<RwLock<BTreeMap<BlockNumber, MerklePath>>>,
 }
 
 impl Default for MockRpcApi {
@@ -91,6 +94,7 @@ impl MockRpcApi {
             oversize_threshold: 1000,
             erased_notes: Arc::new(RwLock::new(Vec::new())),
             private_note_attachments: Arc::new(RwLock::new(BTreeMap::new())),
+            sync_notes_mmr_path_overrides: Arc::new(RwLock::new(BTreeMap::new())),
         }
     }
 
@@ -98,6 +102,11 @@ impl MockRpcApi {
     /// responses include it, mirroring a node that stores private-note attachments on-chain.
     pub fn register_private_note_attachments(&self, note_id: NoteId, attachments: NoteAttachments) {
         self.private_note_attachments.write().insert(note_id, attachments);
+    }
+
+    /// Overrides the MMR path returned by `sync_notes` for the specified block.
+    pub fn set_sync_notes_mmr_path(&self, block_num: BlockNumber, path: MerklePath) {
+        self.sync_notes_mmr_path_overrides.write().insert(block_num, path);
     }
 
     /// Sets the oversize threshold for `get_account`. Any storage map with more entries than
@@ -349,7 +358,10 @@ impl NodeRpcClient for MockRpcApi {
             .into_iter()
             .map(|(bn, notes)| {
                 let block_header = self.get_block_by_num(bn);
-                let mmr_path = self.get_mmr().open(bn.as_usize()).unwrap().merkle_path().clone();
+                let mmr_path =
+                    self.sync_notes_mmr_path_overrides.read().get(&bn).cloned().unwrap_or_else(
+                        || self.get_mmr().open(bn.as_usize()).unwrap().merkle_path().clone(),
+                    );
                 SyncNotesBlock { block_header, mmr_path, notes }
             })
             .collect())

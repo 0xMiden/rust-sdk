@@ -76,7 +76,8 @@ pub use builder::ClientBuilderSqliteExt;
 /// Represents a pool of connections with an `SQLite` database. The pool is used to interact
 /// concurrently with the underlying database in a safe and efficient manner.
 ///
-/// Current table definitions can be found at `store.sql` migration file.
+/// Current table definitions are the result of applying every migration under `migrations/` in
+/// order.
 pub struct SqliteStore {
     pub(crate) pool: Pool,
     database_filepath: String,

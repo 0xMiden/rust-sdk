@@ -1535,9 +1535,7 @@ fn call_nonexistent_procedure() {
 
 /// Helper: builds the `call-test` package (arithmetic + storage procedures) at runtime and
 /// writes the serialized `.masp` to `out_path`.
-fn call_test_exports(
-    library: &miden_client::assembly::Library,
-) -> Vec<miden_client::vm::PackageExport> {
+fn call_test_exports(package: &miden_client::vm::Package) -> Vec<miden_client::vm::PackageExport> {
     use miden_client::vm::{PackageExport, ProcedureExport, QualifiedProcedureName};
     use midenc_hir_type::{CallConv, FunctionType, Type};
 
@@ -1558,7 +1556,7 @@ fn call_test_exports(
     ];
 
     let mut exports = Vec::new();
-    for module_info in library.module_infos() {
+    for module_info in package.module_infos() {
         for (_, proc_info) in module_info.procedures() {
             let name = QualifiedProcedureName::new(module_info.path(), proc_info.name.clone());
             let override_sig = signature_overrides
@@ -1588,7 +1586,7 @@ fn build_call_test_masp(out_path: &Path) {
         ValueSlotSchema,
         WordSchema,
     };
-    use miden_client::assembly::{CodeBuilder, Library};
+    use miden_client::assembly::CodeBuilder;
     use miden_client::vm::{Package, Section, SectionId, TargetType};
 
     let call_test_code = r#"
@@ -1623,7 +1621,7 @@ fn build_call_test_masp(out_path: &Path) {
         end
     "#;
 
-    let library: Library = CodeBuilder::default()
+    let component_package: Package = CodeBuilder::default()
         .compile_component_code("miden::testing::call_test", call_test_code)
         .expect("failed to compile call-test component")
         .into();
@@ -1646,8 +1644,8 @@ fn build_call_test_masp(out_path: &Path) {
 
     let metadata = AccountComponentMetadata::new("call-test").with_storage_schema(storage_schema);
 
-    let exports = call_test_exports(&library);
-    let modules = library.module_infos().map(|module_info| {
+    let exports = call_test_exports(&component_package);
+    let modules = component_package.module_infos().map(|module_info| {
         miden_mast_package::PackageModule::new(
             std::sync::Arc::from(module_info.path().to_path_buf().into_boxed_path()),
             module_info
@@ -1662,7 +1660,7 @@ fn build_call_test_masp(out_path: &Path) {
         metadata.name().to_string().into(),
         metadata.version().clone(),
         TargetType::AccountComponent,
-        library.mast_forest().clone(),
+        component_package.mast_forest().clone(),
         exports,
         modules,
         [],

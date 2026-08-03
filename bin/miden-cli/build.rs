@@ -11,7 +11,6 @@ use miden_client::account::component::{
     MIDEN_PACKAGE_EXTENSION,
     NoAuth,
 };
-use miden_client::assembly::Library;
 use miden_client::utils::Serializable;
 use miden_client::vm::{
     Package,
@@ -28,13 +27,13 @@ const PACKAGE_DIR: &str = "packages";
 fn main() {
     // Basic wallet (no storage schema)
     let basic_wallet_metadata = BasicWallet::component_metadata();
-    build_package("basic-wallet", BasicWallet::code().as_library(), &basic_wallet_metadata, None);
+    build_package("basic-wallet", BasicWallet::code().as_package(), &basic_wallet_metadata, None);
 
     // Basic fungible faucet
     let basic_faucet_metadata = FungibleFaucet::component_metadata();
     build_package(
         "basic-fungible-faucet",
-        FungibleFaucet::code().as_library(),
+        FungibleFaucet::code().as_package(),
         &basic_faucet_metadata,
         None,
     );
@@ -44,7 +43,7 @@ fn main() {
 
     build_package(
         "basic-auth",
-        AuthSingleSig::code().as_library(),
+        AuthSingleSig::code().as_package(),
         &singlesig_metadata,
         Some("auth"),
     );
@@ -52,7 +51,7 @@ fn main() {
     // ECDSA auth (same component, different package name for discoverability)
     build_package(
         "ecdsa-auth",
-        AuthSingleSig::code().as_library(),
+        AuthSingleSig::code().as_package(),
         &singlesig_metadata,
         Some("auth"),
     );
@@ -60,27 +59,27 @@ fn main() {
     // No authentication component. Nonce is incremented on first transaction and when the account
     // state is changed. Provides no cryptographic authentication.
     let no_auth_metadata = NoAuth::component_metadata();
-    build_package("no-auth", NoAuth::code().as_library(), &no_auth_metadata, Some("auth"));
+    build_package("no-auth", NoAuth::code().as_package(), &no_auth_metadata, Some("auth"));
 
     // Multisig auth
     let multisig_metadata = AuthMultisig::component_metadata();
     build_package(
         "multisig-auth",
-        AuthMultisig::code().as_library(),
+        AuthMultisig::code().as_package(),
         &multisig_metadata,
         Some("auth"),
     );
 
     // ACL auth
     let acl_metadata = AuthSingleSigAcl::component_metadata();
-    build_package("acl-auth", AuthSingleSigAcl::code().as_library(), &acl_metadata, Some("auth"));
+    build_package("acl-auth", AuthSingleSigAcl::code().as_package(), &acl_metadata, Some("auth"));
 }
 
 /// Builds a package and stores it under `{OUT_DIR}/{PACKAGE_DIR}` or
 /// `{OUT_DIR}/{PACKAGE_DIR}/{subdirectory}` if a subdirectory is provided.
 pub fn build_package(
     package_name: &str,
-    library: &Library,
+    component_package: &Package,
     metadata: &AccountComponentMetadata,
     subdirectory: Option<&str>,
 ) {
@@ -88,7 +87,7 @@ pub fn build_package(
     // https://github.com/0xMiden/compiler/blob/61ee77f57c07c197323728642f8feca972b24217/midenc-compile/src/stages/assemble.rs#L71-L88
     // Gather all of the procedure metadata for exports of this package
     let mut exports: Vec<PackageExport> = Vec::new();
-    for module_info in library.module_infos() {
+    for module_info in component_package.module_infos() {
         for (_, proc_info) in module_info.procedures() {
             let name = QualifiedProcedureName::new(module_info.path(), proc_info.name.clone());
             let export = ProcedureExport {
@@ -103,7 +102,7 @@ pub fn build_package(
         }
     }
 
-    let mast = library.mast_forest().clone();
+    let mast = component_package.mast_forest().clone();
 
     let account_component_metadata_section =
         Section::new(SectionId::ACCOUNT_COMPONENT_METADATA, metadata.to_bytes());

@@ -14,7 +14,6 @@ use miden_protocol::note::{
     Note,
     NoteAssets,
     NoteAttachment,
-    NoteAttachments,
     NoteDetails,
     NoteDetailsCommitment,
     NoteId,
@@ -29,6 +28,7 @@ use miden_protocol::note::{
 use miden_protocol::transaction::TransactionScript;
 use miden_protocol::vm::AdviceMap;
 use miden_protocol::{Felt, Word};
+use miden_standards::account::auth::{FeeConversionInfo, commit_fee_conversion_info};
 use miden_standards::note::{P2idNote, P2ideNote, PswapNote, PswapNoteStorage, SwapNote};
 
 use super::{
@@ -270,6 +270,14 @@ impl TransactionRequestBuilder {
         self
     }
 
+    /// Declares the asset the transaction fee is paid in, and the rate converting the chain's
+    /// native fee into it.
+    #[must_use]
+    pub fn fee_conversion_info(self, conversion_info: FeeConversionInfo, salt: Word) -> Self {
+        let (auth_arg, preimage) = commit_fee_conversion_info(conversion_info, salt);
+        self.auth_arg(auth_arg).extend_advice_map([(auth_arg, preimage)])
+    }
+
     /// Specifies note scripts that the node's network transaction (NTX) builder will need in
     /// its script registry.
     ///
@@ -383,15 +391,17 @@ impl TransactionRequestBuilder {
     ) -> Result<TransactionRequest, TransactionRequestError> {
         // The created note is the one that we need as the output of the tx, the other one is the
         // one that we expect to receive and consume eventually.
-        let (created_note, payback_note_details) = SwapNote::create(
-            swap_data.account_id(),
-            swap_data.offered_asset(),
-            swap_data.requested_asset(),
-            note_type,
-            NoteAttachments::empty(),
-            payback_note_type,
-            rng,
-        )?;
+        let swap_note = SwapNote::builder()
+            .sender(swap_data.account_id())
+            .offered_asset(swap_data.offered_asset())
+            .requested_asset(swap_data.requested_asset())
+            .note_type(note_type)
+            .payback_note_type(payback_note_type)
+            .generate_serial_number(rng)
+            .build()?;
+
+        let payback_note_details = swap_note.payback_note_details();
+        let created_note = Note::from(swap_note);
 
         let payback_tag = NoteTag::with_account_target(swap_data.account_id());
 

@@ -265,7 +265,7 @@ fn create_test_account_with_many_assets(faucets: &[Account]) -> anyhow::Result<A
 
     let storage_map = create_large_storage_map();
     let acc_component = AccountComponent::new(
-        BasicWallet::code().as_library().clone(),
+        BasicWallet::code().as_package().clone(),
         vec![storage_map],
         AccountComponentMetadata::new("miden::testing::basic_wallet"),
     )
@@ -279,7 +279,7 @@ fn create_test_account_with_many_assets(faucets: &[Account]) -> anyhow::Result<A
     });
 
     let account = AccountBuilder::new(TEST_ACCOUNT_SEED)
-        .with_auth_component(AuthSingleSig::new(Approver::new(
+        .with_component(AuthSingleSig::new(Approver::new(
             sk.public_key().to_commitment(),
             AuthScheme::Falcon512Poseidon2,
         )))

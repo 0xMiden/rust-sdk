@@ -194,12 +194,19 @@ pub mod component {
         create_network_fungible_faucet,
         create_singlesig_user_fungible_faucet,
     };
+    pub use miden_standards::account::fees::{
+        BasicConstantFeePolicy,
+        FeePolicy,
+        FeePolicyError,
+        FeePolicyManager,
+        FeePolicyManagerBuilder,
+    };
     pub use miden_standards::account::policies::{
-        AllowlistOwnerControlled,
+        AllowlistManager,
         AllowlistStorage,
         BasicAllowlist,
         BasicBlocklist,
-        BlocklistOwnerControlled,
+        BlocklistManager,
         BlocklistStorage,
         BurnAllowAll,
         BurnOwnerOnly,
@@ -643,7 +650,7 @@ pub fn build_wallet_id(
 
     let account = AccountBuilder::new(init_seed)
         .account_type(account_visibility)
-        .with_auth_component(auth_component)
+        .with_component(auth_component)
         .with_component(BasicWallet)
         .build_with_schema_commitment()?;
 
@@ -671,7 +678,7 @@ mod schema_commitment_tests {
         let key = AuthSecretKey::new_falcon512_poseidon2();
         let account = AccountBuilder::new([2u8; 32])
             .account_type(AccountType::Private)
-            .with_auth_component(AuthSingleSig::new(Approver::new(
+            .with_component(AuthSingleSig::new(Approver::new(
                 key.public_key().to_commitment(),
                 AuthSchemeId::Falcon512Poseidon2,
             )))

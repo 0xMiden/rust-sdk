@@ -644,7 +644,7 @@ mod tests {
 
         let account = AccountBuilder::new(Default::default())
             .with_component(MockAccountComponent::with_empty_slots())
-            .with_auth_component(auth_component())
+            .with_component(auth_component())
             .account_type(AccountType::Private)
             .build_existing()
             .unwrap();

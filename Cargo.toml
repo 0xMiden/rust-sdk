@@ -40,15 +40,15 @@ miden-client              = { default-features = false, path = "crates/rust-clie
 miden-client-sqlite-store = { default-features = false, path = "crates/sqlite-store", version = "0.16.0-alpha.1" }
 
 # Miden protocol dependencies
-miden-agglayer  = { default-features = false, version = "0.16.0-alpha.4" }
-miden-protocol  = { default-features = false, version = "0.16.0-alpha.4" }
-miden-standards = { default-features = false, version = "0.16.0-alpha.4" }
-miden-testing   = { default-features = false, version = "0.16.0-alpha.2" }
-miden-tx        = { default-features = false, version = "0.16.0-alpha.4" }
-miden-tx-batch  = { default-features = false, version = "0.16.0-alpha.4" }
+miden-agglayer  = { default-features = false, git = "https://github.com/0xMiden/protocol.git", rev = "d951e7a9fa746f4177e8b1207076266e811830f7" }
+miden-protocol  = { default-features = false, git = "https://github.com/0xMiden/protocol.git", rev = "d951e7a9fa746f4177e8b1207076266e811830f7" }
+miden-standards = { default-features = false, git = "https://github.com/0xMiden/protocol.git", rev = "d951e7a9fa746f4177e8b1207076266e811830f7" }
+miden-testing   = { default-features = false, git = "https://github.com/0xMiden/protocol.git", rev = "d951e7a9fa746f4177e8b1207076266e811830f7" }
+miden-tx        = { default-features = false, git = "https://github.com/0xMiden/protocol.git", rev = "d951e7a9fa746f4177e8b1207076266e811830f7" }
+miden-tx-batch  = { default-features = false, git = "https://github.com/0xMiden/protocol.git", rev = "d951e7a9fa746f4177e8b1207076266e811830f7" }
 
 # Miden node dependencies
-miden-node-proto-build           = { default-features = false, git = "https://github.com/0xMiden/node.git", rev = "b4ece8c9036745840e1cdd904a10b573283c37e2" }
+miden-node-proto-build           = { default-features = false, git = "https://github.com/0xMiden/node.git", rev = "1226081d0b68126eb07f545d122cfb7ae501f7c7" }
 miden-note-transport-proto-build = { default-features = false, version = "0.5.0-alpha.1" }
 
 # Miden debug dependency

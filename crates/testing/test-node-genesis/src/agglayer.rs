@@ -1,9 +1,11 @@
 //! Builds the agglayer genesis accounts (bridge admin, GER manager, bridge, faucet) included in
 //! the genesis configuration when agglayer support is requested.
 
+use std::collections::BTreeSet;
+
 use ::rand::{RngExt, random};
 use anyhow::{Context, Result};
-use miden_agglayer::{create_agglayer_faucet, create_bridge_account};
+use miden_agglayer::{BridgeRoles, create_agglayer_faucet, create_bridge_account};
 use miden_protocol::account::auth::{AuthScheme, AuthSecretKey};
 use miden_protocol::account::{
     Account,
@@ -18,6 +20,13 @@ use miden_standards::account::auth::{Approver, AuthSingleSig};
 use miden_standards::account::wallets::BasicWallet;
 use rand_chacha::ChaCha20Rng;
 use rand_chacha::rand_core::SeedableRng;
+
+/// The `AggLayer` network ID assigned to the Miden chain.
+///
+/// Bridge-in asserts that a claim leaf's `destination_network` equals the value the bridge account
+/// was built with, so this must match the `MIDEN_NETWORK_ID` used to generate the Solidity test
+/// vectors in `bin/integration-tests/foundry-vectors`.
+pub const MIDEN_NETWORK_ID: u32 = 77;
 
 /// File names for agglayer genesis account exports.
 pub const BRIDGE_ADMIN_ACCOUNT_FILE: &str = "bridge_admin.mac";
@@ -61,8 +70,13 @@ pub fn create_agglayer_genesis_accounts() -> Result<AgglayerGenesisAccounts> {
 
     // 3. Create and deploy the Bridge account (unconfigured; configured at test time).
     let bridge_seed: Word = rng.random::<[u32; 4]>().map(Felt::from).into();
-    let bridge =
-        create_bridge_account(bridge_seed, admin_account.id(), ger_account.id(), ger_account.id());
+    let roles = BridgeRoles::new(
+        BTreeSet::from([admin_account.id()]),
+        BTreeSet::from([ger_account.id()]),
+        BTreeSet::from([ger_account.id()]),
+    )
+    .context("failed to build bridge roles")?;
+    let bridge = create_bridge_account(bridge_seed, admin_account.id(), roles, MIDEN_NETWORK_ID);
     let bridge = set_nonce_to_one(bridge);
 
     // 4. Create and deploy the Faucet. In protocol 0.15 the faucet no longer stores conversion
@@ -95,14 +109,14 @@ fn build_wallet_account(rng: &mut ChaCha20Rng, secret: &AuthSecretKey) -> Result
     let seed: [u8; 32] = rng.random();
 
     let acc_component = AccountComponent::new(
-        BasicWallet::code().as_library().clone(),
+        BasicWallet::code().as_package().clone(),
         vec![],
         AccountComponentMetadata::new("miden::testing::basic_wallet"),
     )
     .context("failed to create wallet component")?;
 
     let account = AccountBuilder::new(seed)
-        .with_auth_component(AuthSingleSig::new(Approver::new(
+        .with_component(AuthSingleSig::new(Approver::new(
             secret.public_key().to_commitment(),
             AuthScheme::Falcon512Poseidon2,
         )))

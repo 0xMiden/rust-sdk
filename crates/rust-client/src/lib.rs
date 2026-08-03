@@ -150,6 +150,13 @@ pub mod notes {
 /// Provides `AggLayer` bridge components, note constructors, and helper types.
 pub mod agglayer {
     pub use miden_agglayer::*;
+    pub use miden_standards::interop::eth::{
+        AddressConversionError,
+        EthAddress,
+        EthAmount,
+        EthAmountError,
+        EthEmbeddedAccountId,
+    };
 }
 
 /// Provides types and utilities for working with Miden Assembly.
@@ -161,14 +168,7 @@ pub mod assembly {
     pub use miden_protocol::assembly::diagnostics::Report;
     pub use miden_protocol::assembly::diagnostics::reporting::PrintDiagnostic;
     pub use miden_protocol::assembly::mast::MastNodeExt;
-    pub use miden_protocol::assembly::{
-        Assembler,
-        DefaultSourceManager,
-        Library,
-        Module,
-        ModuleKind,
-        Path,
-    };
+    pub use miden_protocol::assembly::{Assembler, DefaultSourceManager, Module, ModuleKind, Path};
     pub use miden_standards::code_builder::CodeBuilder;
 }
 

@@ -373,14 +373,11 @@ where
             .get_input_notes(NoteFilter::List(transaction_request.input_note_ids().collect()))
             .await?;
 
-        // Verify that none of the authenticated input notes are already consumed.
+        // Verify that none of the stored input notes are already consumed.
         for note in &stored_note_records {
             if note.is_consumed() {
-                let id = note.id().expect(
-                    "stored note records reaching this check carry metadata so id() is Some",
-                );
                 return Err(ClientError::TransactionRequestError(
-                    TransactionRequestError::InputNoteAlreadyConsumed(id),
+                    TransactionRequestError::InputNoteAlreadyConsumed(note.details_commitment()),
                 ));
             }
         }

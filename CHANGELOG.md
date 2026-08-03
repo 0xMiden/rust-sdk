@@ -21,6 +21,7 @@
 * [FEATURE][rust,store] Added `NoteFilter::ScriptRoots` to query input notes by their note script root directly at the store level, without loading and screening unrelated notes. The filter doesn't apply to output notes: querying output notes with it returns an empty list ([#2335](https://github.com/0xMiden/rust-sdk/pull/2335)).
 * [rust] Added `PartialBlockchainUpdates::block_headers_to_store`, which narrows the staged headers to the ones a sync must persist: those marked as relevant, genesis, and the block at the sync height. `block_headers` still yields all staged headers ([#2297](https://github.com/0xMiden/rust-sdk/pull/2297)).
 * [rust] State sync now authenticates every relevant note block but only persists block headers and MMR authentication nodes for blocks containing notes that remain unspent or that a `NoteObserver` explicitly marks as relevant ([#2297](https://github.com/0xMiden/rust-sdk/pull/2297)).
+* Improved the output of the `miden-client init` command when a configuration already exists ([#](https://github.com/0xMiden/rust-sdk/pull/2357)).
 
 ## 0.16.0-alpha.1 (2026-07-17)
 

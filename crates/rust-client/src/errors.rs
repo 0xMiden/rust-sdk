@@ -151,6 +151,10 @@ pub enum ClientError {
     #[error("RPC error")]
     RpcError(#[from] RpcError),
     #[error(
+        "no transaction encryption key is available; the validator set's key must be cached in the store before transaction inputs can be sealed for submission"
+    )]
+    MissingTransactionEncryptionKey,
+    #[error(
         "transaction failed a recency check: {0} — the reference block may be too old; try syncing and resubmitting"
     )]
     RecencyConditionError(&'static str),

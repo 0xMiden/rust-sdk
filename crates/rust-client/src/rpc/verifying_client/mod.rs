@@ -10,7 +10,7 @@ use miden_protocol::batch::{ProposedBatch, ProvenBatch};
 use miden_protocol::block::{BlockHeader, BlockNumber, ProvenBlock};
 use miden_protocol::crypto::merkle::mmr::MmrProof;
 use miden_protocol::note::{NoteId, NoteScript, NoteTag};
-use miden_protocol::transaction::{ProvenTransaction, TransactionInputs};
+use miden_protocol::transaction::ProvenTransaction;
 
 use super::domain::account::{AccountProof, GetAccountRequest};
 use super::domain::account_vault::AccountVaultInfo;
@@ -19,6 +19,7 @@ use super::domain::nullifier::NullifierUpdate;
 use super::domain::storage_map::StorageMapInfo;
 use super::domain::sync::{ChainMmrInfo, SyncTarget};
 use super::domain::transaction::TransactionRecord;
+use super::encryption::{AttestedTransactionEncryptionKey, SealedTransactionInputs};
 use super::{
     AccountStateAt,
     NetworkNoteStatusInfo,
@@ -148,22 +149,33 @@ impl<T: NodeRpcClient> NodeRpcClient for VerifyingRpcClient<T> {
         self.0.has_genesis_commitment()
     }
 
+    async fn get_transaction_encryption_key(
+        &self,
+    ) -> Result<AttestedTransactionEncryptionKey, RpcError> {
+        // Nothing to verify here: the request carries no payload to check the response against,
+        // and trust in the served key comes from the validator attestation, which the caller
+        // verifies via `AttestedTransactionEncryptionKey::verify`.
+        self.0.get_transaction_encryption_key().await
+    }
+
     async fn submit_proven_transaction(
         &self,
         proven_transaction: ProvenTransaction,
-        transaction_inputs: TransactionInputs,
+        sealed_transaction_inputs: SealedTransactionInputs,
     ) -> Result<BlockNumber, RpcError> {
-        self.0.submit_proven_transaction(proven_transaction, transaction_inputs).await
+        self.0
+            .submit_proven_transaction(proven_transaction, sealed_transaction_inputs)
+            .await
     }
 
     async fn submit_proven_batch(
         &self,
         proven_batch: ProvenBatch,
         proposed_batch: ProposedBatch,
-        transaction_inputs: Vec<TransactionInputs>,
+        sealed_transaction_inputs: Vec<SealedTransactionInputs>,
     ) -> Result<BlockNumber, RpcError> {
         self.0
-            .submit_proven_batch(proven_batch, proposed_batch, transaction_inputs)
+            .submit_proven_batch(proven_batch, proposed_batch, sealed_transaction_inputs)
             .await
     }
 

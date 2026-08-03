@@ -42,7 +42,11 @@ use miden_standards::testing::note::NoteBuilder;
 use miden_testing::{Auth, MockChainBuilder, TxContextInput};
 use rand::RngExt;
 
-use crate::tests::{create_test_client_builder, insert_new_wallet};
+use crate::tests::{
+    create_test_client_builder,
+    insert_new_wallet,
+    seed_mock_transaction_encryption_key,
+};
 
 #[tokio::test]
 async fn transport_basic() {
@@ -148,6 +152,7 @@ async fn transport_recovers_attachments() {
         .await
         .unwrap();
     client.ensure_genesis_in_place().await.unwrap();
+    seed_mock_transaction_encryption_key(&mut client).await;
     client.sync_state().await.unwrap();
 
     client.add_note_tag(private_note.metadata().tag()).await.unwrap();
@@ -550,6 +555,7 @@ async fn fetch_private_notes_finds_note_committed_at_sync_height() {
 
     let mut client = builder.build().await.unwrap();
     client.ensure_genesis_in_place().await.unwrap();
+    seed_mock_transaction_encryption_key(&mut client).await;
 
     // 3. Register tag 0 so chain sync sees the note's block.
     client.add_note_tag(NoteTag::new(0)).await.unwrap();
@@ -886,6 +892,7 @@ pub async fn create_test_client_transport(
 
     let mut client = builder_w_transport.build().await.unwrap();
     client.ensure_genesis_in_place().await.unwrap();
+    seed_mock_transaction_encryption_key(&mut client).await;
 
     (client, keystore)
 }
@@ -904,6 +911,7 @@ pub async fn create_test_client_with_transport(
     let (builder, _, keystore) = create_test_client_builder().await;
     let mut client = builder.note_transport(transport).build().await.unwrap();
     client.ensure_genesis_in_place().await.unwrap();
+    seed_mock_transaction_encryption_key(&mut client).await;
     (client, keystore)
 }
 
@@ -1004,6 +1012,7 @@ async fn committed_private_note_recipient(
 
     let mut client = builder.build().await.unwrap();
     client.ensure_genesis_in_place().await.unwrap();
+    seed_mock_transaction_encryption_key(&mut client).await;
 
     // Register tag 0 so chain sync sees the note's block, then sync to the tip. The NTL is empty,
     // so no transport notes are imported yet.

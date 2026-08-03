@@ -66,6 +66,7 @@ use domain::note::{
 };
 use domain::nullifier::NullifierUpdate;
 use domain::sync::{ChainMmrInfo, SyncTarget};
+use encryption::{AttestedTransactionEncryptionKey, SealedTransactionInputs};
 use miden_protocol::Word;
 use miden_protocol::account::{Account, AccountId};
 use miden_protocol::address::NetworkId;
@@ -73,13 +74,14 @@ use miden_protocol::batch::{ProposedBatch, ProvenBatch};
 use miden_protocol::block::{BlockHeader, BlockNumber, ProvenBlock};
 use miden_protocol::crypto::merkle::mmr::MmrProof;
 use miden_protocol::note::{NoteDetails, NoteId, NoteScript, NoteTag, NoteType, Nullifier};
-use miden_protocol::transaction::{ProvenTransaction, TransactionInputs};
+use miden_protocol::transaction::ProvenTransaction;
 
 use crate::rpc::domain::storage_map::StorageMapInfo;
 
 /// Contains domain types related to RPC requests and responses, as well as utility functions
 /// for dealing with them.
 pub mod domain;
+pub mod encryption;
 
 mod errors;
 pub use errors::*;
@@ -138,28 +140,45 @@ pub trait NodeRpcClient: Send + Sync {
     /// Returns the genesis commitment if it has been set, without fetching from the node.
     fn has_genesis_commitment(&self) -> Option<Word>;
 
+    /// Fetches the validator set's transaction encryption key using the
+    /// `/GetTransactionEncryptionKey` endpoint.
+    ///
+    /// The key arrives attested but untrusted: this endpoint is served by the RPC operator, so the
+    /// response must be passed through [`AttestedTransactionEncryptionKey::verify`] before it is
+    /// used to seal anything.
+    async fn get_transaction_encryption_key(
+        &self,
+    ) -> Result<AttestedTransactionEncryptionKey, RpcError>;
+
     /// Given a Proven Transaction, send it to the node for it to be included in a future block
     /// using the `/SubmitProvenTransaction` RPC endpoint.
+    ///
+    /// The transaction inputs are passed already sealed, since sealing needs the client's RNG
+    /// for the scheme's ephemeral key material. See [`encryption`] for how they are produced.
     ///
     /// Returns the node's chain tip at submission (not the block the transaction is committed in).
     async fn submit_proven_transaction(
         &self,
         proven_transaction: ProvenTransaction,
-        transaction_inputs: TransactionInputs,
+        sealed_transaction_inputs: SealedTransactionInputs,
     ) -> Result<BlockNumber, RpcError>;
 
     /// Given a Proven Batch together with the corresponding [`ProposedBatch`] and the list of
-    /// [`TransactionInputs`] (one per transaction, matching the ordering of the batch), sends
+    /// [`SealedTransactionInputs`] (one per transaction, matching the ordering of the batch), sends
     /// the batch to the node for inclusion in a future block using the `/SubmitProvenBatch`
     /// RPC endpoint. All transactions in the batch must build on the current mempool state
     /// following normal transaction submission rules.
+    ///
+    /// Each transaction's inputs are sealed independently against its own transaction ID, because
+    /// the node fans the batch out into one validator submission per transaction. See
+    /// [`encryption`] for how the sealed inputs are produced.
     ///
     /// Returns the node's chain tip at submission (not the block the batch is committed in).
     async fn submit_proven_batch(
         &self,
         proven_batch: ProvenBatch,
         proposed_batch: ProposedBatch,
-        transaction_inputs: Vec<TransactionInputs>,
+        transaction_inputs: Vec<SealedTransactionInputs>,
     ) -> Result<BlockNumber, RpcError>;
 
     /// Given a block number, fetches the block header corresponding to that height from the node
@@ -676,6 +695,7 @@ pub enum RpcEndpoint {
     SyncTransactions,
     GetLimits,
     GetNetworkNoteStatus,
+    GetTransactionEncryptionKey,
 }
 
 impl RpcEndpoint {
@@ -689,6 +709,7 @@ impl RpcEndpoint {
             RpcEndpoint::GetBlockHeaderByNumber => "GetBlockHeaderByNumber",
             RpcEndpoint::GetNotesById => "GetNotesById",
             RpcEndpoint::SyncChainMmr => "SyncChainMmr",
+            RpcEndpoint::GetTransactionEncryptionKey => "GetTransactionEncryptionKey",
             RpcEndpoint::SubmitProvenTx => "SubmitProvenTransaction",
             RpcEndpoint::SubmitProvenBatch => "SubmitProvenBatch",
             RpcEndpoint::SyncNotes => "SyncNotes",
@@ -716,6 +737,9 @@ impl fmt::Display for RpcEndpoint {
             },
             RpcEndpoint::GetNotesById => write!(f, "get_notes_by_id"),
             RpcEndpoint::SyncChainMmr => write!(f, "sync_chain_mmr"),
+            RpcEndpoint::GetTransactionEncryptionKey => {
+                write!(f, "get_transaction_encryption_key")
+            },
             RpcEndpoint::SubmitProvenTx => write!(f, "submit_proven_transaction"),
             RpcEndpoint::SubmitProvenBatch => write!(f, "submit_proven_batch"),
             RpcEndpoint::SyncNotes => write!(f, "sync_notes"),

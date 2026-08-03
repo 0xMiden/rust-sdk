@@ -48,7 +48,7 @@ miden-tx        = { default-features = false, version = "0.16.0-alpha.4" }
 miden-tx-batch  = { default-features = false, version = "0.16.0-alpha.4" }
 
 # Miden node dependencies
-miden-node-proto-build           = { default-features = false, version = "0.16.0-alpha.2" }
+miden-node-proto-build           = { default-features = false, git = "https://github.com/0xMiden/node.git", rev = "b4ece8c9036745840e1cdd904a10b573283c37e2" }
 miden-note-transport-proto-build = { default-features = false, version = "0.5.0-alpha.1" }
 
 # Miden debug dependency

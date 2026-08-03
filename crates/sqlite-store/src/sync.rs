@@ -97,13 +97,13 @@ impl SqliteStore {
         conn: &mut Connection,
         state_sync_update: StateSyncUpdate,
     ) -> Result<(), StoreError> {
-        let StateSyncUpdate {
+        let (
             block_num,
             partial_blockchain_updates,
             note_updates,
             transaction_updates,
             account_updates,
-        } = state_sync_update;
+        ) = state_sync_update.into_parts();
 
         let db_tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -125,10 +125,10 @@ impl SqliteStore {
             )
             .into_store_error()?;
 
-            for (block_header, block_has_relevant_notes) in
-                partial_blockchain_updates.block_headers()
+            for (block_header, is_relevant) in
+                partial_blockchain_updates.block_headers_to_store(block_num)
             {
-                Self::insert_block_header_tx(tx, block_header, *block_has_relevant_notes)?;
+                Self::insert_block_header_tx(tx, block_header, *is_relevant)?;
             }
 
             // Insert new authentication nodes (inner nodes of the PartialBlockchain)

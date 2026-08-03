@@ -32,7 +32,6 @@ use miden_protocol::testing::account_id::ACCOUNT_ID_SENDER;
 use miden_protocol::transaction::{
     OrderedTransactionHeaders,
     ProvenTransaction,
-    TransactionInputs,
     TransactionKernel,
 };
 use miden_protocol::{Felt, Word};
@@ -46,6 +45,7 @@ use crate::rpc::domain::nullifier::NullifierUpdate;
 use crate::rpc::domain::storage_map::StorageMapInfo;
 use crate::rpc::domain::sync::{ChainMmrInfo, SyncTarget};
 use crate::rpc::domain::transaction::TransactionRecord;
+use crate::rpc::encryption::{AttestedTransactionEncryptionKey, SealedTransactionInputs};
 use crate::rpc::{
     AccountStateAt,
     NetworkNoteStatusInfo,
@@ -211,10 +211,16 @@ impl NodeRpcClient for CannedTransport {
         unimplemented!("not used in these tests")
     }
 
+    async fn get_transaction_encryption_key(
+        &self,
+    ) -> Result<AttestedTransactionEncryptionKey, RpcError> {
+        unimplemented!("not used in these tests")
+    }
+
     async fn submit_proven_transaction(
         &self,
         _proven_transaction: ProvenTransaction,
-        _transaction_inputs: TransactionInputs,
+        _sealed_transaction_inputs: SealedTransactionInputs,
     ) -> Result<BlockNumber, RpcError> {
         unimplemented!("not used in these tests")
     }
@@ -223,7 +229,7 @@ impl NodeRpcClient for CannedTransport {
         &self,
         _proven_batch: ProvenBatch,
         _proposed_batch: ProposedBatch,
-        _transaction_inputs: Vec<TransactionInputs>,
+        _transaction_inputs: Vec<SealedTransactionInputs>,
     ) -> Result<BlockNumber, RpcError> {
         unimplemented!("not used in these tests")
     }

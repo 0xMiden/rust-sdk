@@ -239,6 +239,16 @@ pub mod block {
 /// network. It re-exports commonly used types and random number generators like `FeltRng` from
 /// the `miden_standards` crate.
 pub mod crypto {
+    pub mod ecdsa_k256_keccak {
+        pub use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
+            PublicKey,
+            Signature,
+            SigningKey,
+        };
+    }
+    pub mod eddsa_25519_sha512 {
+        pub use miden_protocol::crypto::dsa::eddsa_25519_sha512::{KeyExchangeKey, PublicKey};
+    }
     pub mod rpo_falcon512 {
         pub use miden_protocol::crypto::dsa::falcon512_poseidon2::{
             PublicKey,
@@ -354,7 +364,7 @@ use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::merkle::mmr::PartialMmr;
 use miden_protocol::crypto::rand::FeltRng;
 use miden_tx::auth::TransactionAuthenticator;
-use rand::TryRng;
+use rand::{TryCryptoRng, TryRng};
 use rpc::NodeRpcClient;
 use store::Store;
 
@@ -576,6 +586,11 @@ impl TryRng for ClientRng {
         Ok(())
     }
 }
+
+// The client's RNG already backs key and serial-number generation, so callers are required to
+// supply cryptographically secure randomness. Asserting it here lets the RNG drive primitives that
+// demand a `CryptoRng`, such as sealing transaction inputs.
+impl TryCryptoRng for ClientRng {}
 
 impl FeltRng for ClientRng {
     fn draw_element(&mut self) -> Felt {

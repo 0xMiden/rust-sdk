@@ -120,6 +120,7 @@ tonic-prost-build                = { version = "0.14" }
 miden-protocol  = { default-features = false, features = ["testing"], workspace = true }
 miden-standards = { features = ["testing"], workspace = true }
 miden-testing   = { default-features = false, workspace = true }
+rand_chacha     = { workspace = true }
 tokio           = { workspace = true }
 
 [lints]

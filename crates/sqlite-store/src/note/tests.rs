@@ -9,6 +9,7 @@ use miden_client::note::{
     NoteStorage,
     NoteTag,
     NoteType,
+    NoteUpdateTracker,
     PartialNoteMetadata,
 };
 use miden_client::store::input_note_states::{
@@ -17,12 +18,18 @@ use miden_client::store::input_note_states::{
     ExpectedNoteState,
     NoteSubmissionData,
 };
-use miden_client::store::{InputNoteRecord, NoteFilter, Store};
+use miden_client::store::{InputNoteRecord, NoteFilter, OutputNoteRecord, OutputNoteState, Store};
+use miden_client::sync::{
+    AccountUpdates,
+    PartialBlockchainUpdates,
+    StateSyncUpdate,
+    TransactionUpdateTracker,
+};
 use miden_client::{Felt, ZERO};
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
-use miden_protocol::note::NoteDetails;
+use miden_protocol::note::{NoteDetails, NoteScript};
 use miden_protocol::testing::account_id::{
     ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET,
     ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE,
@@ -63,14 +70,15 @@ fn create_consumed_external_input_note(
 
 /// Helper to create an expected (non-consumed) input note.
 fn create_expected_input_note(index: u32) -> InputNoteRecord {
+    create_expected_input_note_with_script(index, StandardNote::SWAP.script())
+}
+
+/// Helper to create an expected (non-consumed) input note with a specific script.
+fn create_expected_input_note_with_script(index: u32, script: NoteScript) -> InputNoteRecord {
     let serial_number: Word =
         [Felt::new_unchecked(u64::from(index) + 3000), ZERO, ZERO, ZERO].into();
     let assets = NoteAssets::new(vec![]).unwrap();
-    let recipient = NoteRecipient::new(
-        serial_number,
-        StandardNote::SWAP.script(),
-        NoteStorage::new(vec![]).unwrap(),
-    );
+    let recipient = NoteRecipient::new(serial_number, script, NoteStorage::new(vec![]).unwrap());
     let details = NoteDetails::new(assets, recipient);
 
     let state = ExpectedNoteState {
@@ -80,6 +88,27 @@ fn create_expected_input_note(index: u32) -> InputNoteRecord {
     };
 
     InputNoteRecord::new(details, NoteAttachments::empty(), Some(0), state.into())
+}
+
+/// Helper to create an expected output note with a specific script.
+fn create_expected_output_note_with_script(index: u32, script: NoteScript) -> OutputNoteRecord {
+    let serial_number: Word =
+        [Felt::new_unchecked(u64::from(index) + 7000), ZERO, ZERO, ZERO].into();
+    let recipient = NoteRecipient::new(serial_number, script, NoteStorage::new(vec![]).unwrap());
+    let sender = AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE).unwrap();
+
+    let partial_metadata =
+        PartialNoteMetadata::new(sender, NoteType::Public).with_tag(NoteTag::from(index));
+    let metadata = NoteMetadata::new(partial_metadata, &NoteAttachments::empty());
+
+    OutputNoteRecord::new(
+        recipient.digest(),
+        NoteAssets::new(vec![]).unwrap(),
+        metadata,
+        OutputNoteState::ExpectedFull { recipient },
+        BlockNumber::from(0u32),
+        NoteAttachments::empty(),
+    )
 }
 
 /// Helper to create a consumed-unauthenticated-local input note with a specific consumer.
@@ -411,4 +440,81 @@ async fn consumed_input_notes_null_tx_order_sort_last_within_block() {
     // Note with tx_order should come first (non-NULL sorts before NULL in ASC).
     assert_eq!(notes[0].id(), note_with_order.id());
     assert_eq!(notes[1].id(), note_without_order.id());
+}
+
+// SCRIPT ROOT FILTER TESTS
+// ================================================================================================
+
+#[tokio::test]
+async fn input_notes_filtered_by_script_root() {
+    let store = create_test_store().await;
+
+    let swap_note_a = create_expected_input_note_with_script(0, StandardNote::SWAP.script());
+    let swap_note_b = create_expected_input_note_with_script(1, StandardNote::SWAP.script());
+    let p2id_note = create_expected_input_note_with_script(2, StandardNote::P2ID.script());
+
+    store
+        .upsert_input_notes(&[swap_note_a.clone(), swap_note_b.clone(), p2id_note.clone()])
+        .await
+        .unwrap();
+
+    let notes = store
+        .get_input_notes(NoteFilter::ScriptRoots(vec![StandardNote::P2ID.script().root()]))
+        .await
+        .unwrap();
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0].details_commitment(), p2id_note.details_commitment());
+
+    let notes = store
+        .get_input_notes(NoteFilter::ScriptRoots(vec![StandardNote::SWAP.script().root()]))
+        .await
+        .unwrap();
+    let mut commitments: Vec<_> = notes.iter().map(InputNoteRecord::details_commitment).collect();
+    commitments.sort();
+    let mut expected_commitments =
+        vec![swap_note_a.details_commitment(), swap_note_b.details_commitment()];
+    expected_commitments.sort();
+    assert_eq!(commitments, expected_commitments);
+
+    let notes = store
+        .get_input_notes(NoteFilter::ScriptRoots(vec![
+            StandardNote::SWAP.script().root(),
+            StandardNote::P2ID.script().root(),
+        ]))
+        .await
+        .unwrap();
+    assert_eq!(notes.len(), 3);
+
+    let notes = store
+        .get_input_notes(NoteFilter::ScriptRoots(vec![StandardNote::MINT.script().root()]))
+        .await
+        .unwrap();
+    assert!(notes.is_empty());
+}
+
+#[tokio::test]
+async fn output_notes_never_match_script_root_filter() {
+    let store = create_test_store().await;
+
+    let swap_note = create_expected_output_note_with_script(0, StandardNote::SWAP.script());
+
+    let state_sync_update = StateSyncUpdate::from_parts(
+        BlockNumber::from(0u32),
+        PartialBlockchainUpdates::default(),
+        NoteUpdateTracker::for_transaction_updates([], [], [swap_note.clone()]),
+        TransactionUpdateTracker::default(),
+        AccountUpdates::default(),
+    );
+    store.apply_state_sync(state_sync_update).await.unwrap();
+
+    let notes = store.get_output_notes(NoteFilter::All).await.unwrap();
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0].id(), swap_note.id());
+
+    // The `output_notes` table has no script root column, so the filter can never match.
+    let notes = store
+        .get_output_notes(NoteFilter::ScriptRoots(vec![StandardNote::SWAP.script().root()]))
+        .await
+        .unwrap();
+    assert!(notes.is_empty());
 }

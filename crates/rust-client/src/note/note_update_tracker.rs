@@ -365,6 +365,18 @@ impl NoteUpdateTracker {
         input_note_unspent_nullifiers.chain(output_note_unspent_nullifiers)
     }
 
+    /// Returns the block numbers containing input notes that remain unspent after this update.
+    pub(crate) fn unspent_input_note_block_numbers(
+        &self,
+    ) -> impl Iterator<Item = BlockNumber> + '_ {
+        self.input_notes
+            .values()
+            .filter(|update| !update.inner().is_consumed())
+            .filter_map(|update| {
+                update.inner().inclusion_proof().map(|proof| proof.location().block_num())
+            })
+    }
+
     /// Appends nullifiers to the per-account ordered nullifier list.
     ///
     /// Nullifiers from the same account must be in execution order; ordering across different
@@ -412,7 +424,7 @@ impl NoteUpdateTracker {
             input_note_record.inclusion_proof_received(inclusion_proof.clone(), metadata)?;
             input_note_record.block_header_received(block_header)?;
             if let Some(attachments) = attachments {
-                input_note_record.set_attachments(attachments.clone());
+                input_note_record.attachments_received(attachments.clone());
             }
 
             true
@@ -428,7 +440,7 @@ impl NoteUpdateTracker {
                 record.inclusion_proof_received(inclusion_proof.clone(), metadata)?;
                 record.block_header_received(block_header)?;
                 if let Some(attachments) = attachments {
-                    record.set_attachments(attachments.clone());
+                    record.attachments_received(attachments.clone());
                 }
 
                 // `InsertCommitted` so the now-known `note_id`/`nullifier` columns are persisted
@@ -486,8 +498,7 @@ impl NoteUpdateTracker {
         let note_id = note_header.id();
 
         if let Some(output_note) = self.get_output_note_by_id(note_id)
-            && !output_note.is_consumed()
-            && !output_note.is_committed()
+            && output_note.is_inclusion_pending()
             && let Some(nullifier) = output_note.nullifier()
         {
             output_note.nullifier_received(nullifier, block_num)?;
@@ -520,7 +531,10 @@ impl NoteUpdateTracker {
 
     /// Records `note` as consumed by `consumer`, as a
     /// [`ConsumedExternal`](crate::store::InputNoteState::ConsumedExternal) input-note record.
-    /// No-op when the note is already tracked.
+    ///
+    /// No-op when the note is already tracked: recovery runs after transaction and nullifier
+    /// processing, so a tracked record's consumption has already been applied through
+    /// [`Self::apply_note_consumption`].
     pub(crate) fn insert_consumed_public_note(
         &mut self,
         note: Note,
@@ -532,18 +546,15 @@ impl NoteUpdateTracker {
             return Ok(());
         }
         let nullifier = note.nullifier();
+        // The consuming transaction belongs to this sync, so its nullifier must have a position
+        // in the execution order; storing the record without one would break the ordering
+        // guarantees of `InputNoteReader`.
+        let order = self
+            .get_nullifier_order(nullifier)
+            .ok_or(ClientError::MissingConsumedNoteOrder(note_id))?;
         let mut record = InputNoteRecord::from(note);
-        // The consuming transaction is part of the same sync, so the order is expected to be
-        // present. If it isn't, keep the note unordered rather than failing the whole sync.
-        let order = self.get_nullifier_order(nullifier);
-        if order.is_none() {
-            tracing::warn!(
-                note_id = %note_id,
-                "recovered consumed note has no execution order; storing it unordered"
-            );
-        }
         record.consumed_externally(nullifier, block_num, Some(consumer))?;
-        record.set_consumed_tx_order(order);
+        record.set_consumed_tx_order(Some(order));
         self.insert_input_note(record, NoteUpdateType::Insert);
         Ok(())
     }

@@ -71,9 +71,8 @@ pub struct TransactionRecord {
 }
 
 impl TransactionRecord {
-    /// Gets references to consumed notes: their nullifier and note id.
-    /// The purpose of this is to have the ids of the consumed notes so that we can query the node
-    /// to get them.
+    /// Returns the `(nullifier, note_id)` references of the public input notes this transaction
+    /// consumed, letting a client fetch by id consumed notes it never tracked.
     pub fn consumed_note_refs(&self) -> &[(Nullifier, NoteId)] {
         &self.consumed_note_refs
     }

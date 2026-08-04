@@ -496,11 +496,11 @@ impl Store for SqliteStore {
     async fn get_account_asset(
         &self,
         account_id: AccountId,
-        vault_id: AssetId,
+        asset_id: AssetId,
     ) -> Result<Option<(Asset, AssetWitness)>, StoreError> {
         let smt_forest = self.smt_forest.clone();
         self.interact_with_connection(move |conn| {
-            SqliteStore::get_account_asset(conn, &smt_forest, account_id, vault_id)
+            SqliteStore::get_account_asset(conn, &smt_forest, account_id, asset_id)
         })
         .await
     }

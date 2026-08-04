@@ -114,6 +114,10 @@ pub enum ClientError {
     ProvenBatchError(#[from] ProvenBatchError),
     #[error("failed to deserialize data")]
     DataDeserializationError(#[from] DeserializationError),
+    #[error(
+        "cannot recover consumed note {0}: its nullifier has no position in the sync's transaction execution order"
+    )]
+    MissingConsumedNoteOrder(NoteId),
     #[error("note with id {0} not found on chain")]
     NoteNotFoundOnChain(NoteId),
     #[error("failed to parse hex string")]
@@ -150,6 +154,10 @@ pub enum ClientError {
     NoConsumableNoteForAccount(AccountId),
     #[error("RPC error")]
     RpcError(#[from] RpcError),
+    #[error(
+        "no transaction encryption key is available; the validator set's key must be cached in the store before transaction inputs can be sealed for submission"
+    )]
+    MissingTransactionEncryptionKey,
     #[error(
         "transaction failed a recency check: {0} — the reference block may be too old; try syncing and resubmitting"
     )]

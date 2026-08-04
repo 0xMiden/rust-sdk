@@ -60,10 +60,16 @@ use miden_protocol::account::{Account, AccountId};
 use miden_protocol::batch::ProposedBatch;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::note::NoteId;
-use miden_protocol::transaction::{PartialBlockchain, ProvenTransaction, TransactionInputs};
+use miden_protocol::transaction::{
+    PartialBlockchain,
+    ProvenTransaction,
+    TransactionId,
+    TransactionInputs,
+};
 use miden_tx::auth::TransactionAuthenticator;
 use miden_tx_batch::{BatchExecutor, LocalBatchProver};
 
+use crate::rpc::encryption::seal_transaction_inputs;
 use crate::store::data_store::build_partial_mmr_with_paths;
 use crate::transaction::{
     TransactionRequest,
@@ -86,7 +92,7 @@ pub(crate) struct PushedTx {
 /// batch via the node's `SubmitProvenBatch` endpoint. See the module-level docs for the full
 /// usage and error semantics.
 pub struct BatchBuilder<'c, AUTH> {
-    pub(crate) client: &'c Client<AUTH>,
+    pub(crate) client: &'c mut Client<AUTH>,
     pub(crate) data_store: InMemoryBatchDataStore,
     pub(crate) pushed_txs: Vec<PushedTx>,
     pub(crate) consumed_input_notes: BTreeSet<NoteId>,
@@ -169,9 +175,11 @@ where
         //    ProposedBatch.
         let len = self.pushed_txs.len();
         let mut proven_txs: Vec<Arc<ProvenTransaction>> = Vec::with_capacity(len);
+        let mut tx_ids: Vec<TransactionId> = Vec::with_capacity(len);
         let mut transaction_inputs: Vec<TransactionInputs> = Vec::with_capacity(len);
         let mut tx_results: Vec<TransactionResult> = Vec::with_capacity(len);
         for pushed in self.pushed_txs {
+            tx_ids.push(pushed.proven_tx.id());
             proven_txs.push(pushed.proven_tx);
             transaction_inputs.push(pushed.transaction_inputs);
             tx_results.push(pushed.tx_result);
@@ -192,13 +200,27 @@ where
         let executed_batch = BatchExecutor::new().execute(proposed_batch.clone())?;
         let proven_batch = LocalBatchProver::new().prove(executed_batch)?;
 
-        // 7. Submit via RPC.
+        // 7. Seal each transaction's inputs, then submit via RPC. Each entry is sealed against its
+        //    own transaction id.
+        let key = self.client.transaction_encryption_key().await?;
+        let sealed_inputs = tx_ids
+            .iter()
+            .zip(transaction_inputs)
+            .map(|(tx_id, inputs)| {
+                seal_transaction_inputs(&mut self.client.rng, &key, *tx_id, &inputs)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
         let mut updates: Vec<TransactionStoreUpdate> = Vec::with_capacity(len);
-        let block_num = self
+        let result = self
             .client
             .rpc_api
-            .submit_proven_batch(proven_batch, proposed_batch, transaction_inputs)
-            .await?;
+            .submit_proven_batch(proven_batch, proposed_batch, sealed_inputs)
+            .await;
+        if let Err(err) = &result {
+            self.client.forget_stale_transaction_encryption_key(err).await;
+        }
+        let block_num = result?;
 
         // 8. Build per-tx TransactionStoreUpdates.
         for tx_result in &tx_results {

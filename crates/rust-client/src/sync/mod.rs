@@ -63,6 +63,7 @@ use core::cmp::max;
 
 use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
+use miden_protocol::crypto::merkle::mmr::{InOrderIndex, PartialMmr};
 use miden_protocol::note::NoteId;
 use miden_protocol::transaction::TransactionId;
 use miden_tx::auth::TransactionAuthenticator;
@@ -91,6 +92,22 @@ pub use state_sync_update::{
     StateSyncUpdate,
     TransactionUpdateTracker,
 };
+
+/// Untracks the given block leaves from `partial_mmr`, returning the authentication-node indices
+/// that are no longer needed by any remaining tracked leaf.
+///
+/// Untracking a leaf frees an inner node only once no other tracked leaf still needs it, so the
+/// returned indices are exactly the nodes that became removable.
+fn untrack_blocks(
+    partial_mmr: &mut PartialMmr,
+    block_positions: impl IntoIterator<Item = usize>,
+) -> Vec<InOrderIndex> {
+    block_positions
+        .into_iter()
+        .flat_map(|block_pos| partial_mmr.untrack(block_pos))
+        .map(|(index, _)| index)
+        .collect()
+}
 
 /// Client synchronization methods.
 impl<AUTH> Client<AUTH>
@@ -170,11 +187,20 @@ where
             tracing::warn!(?err, "relay outbox flush failed during sync; entries retained");
         }
 
+        // Recover historical private notes for any tag added after the global cursor advanced.
+        // This drains each newly tracked tag from the start, fetching only that tag's own history.
+        let mut imported_ids = self.backfill_new_tags().await?;
+
         let cursor = self.store.get_note_transport_cursor().await?;
         let note_tags: Vec<_> = self.store.get_unique_note_tags().await?.into_iter().collect();
         let (ids, new_cursor) = self.fetch_transport_notes(cursor, &note_tags).await?;
         self.store.update_note_transport_cursor(new_cursor).await?;
-        Ok(ids)
+        imported_ids.extend(ids);
+
+        imported_ids.sort_unstable();
+        imported_ids.dedup();
+
+        Ok(imported_ids)
     }
 
     /// Runs the full client sync.
@@ -288,10 +314,7 @@ where
             // Rebuild the PartialMmr and untrack each block to collect the authentication node
             // indices that are no longer needed by any remaining tracked leaf.
             let mut partial_mmr = self.get_current_partial_mmr().await?;
-            for &block_pos in &to_untrack {
-                nodes_to_remove
-                    .extend(partial_mmr.untrack(block_pos).into_iter().map(|(idx, _)| idx));
-            }
+            nodes_to_remove = untrack_blocks(&mut partial_mmr, to_untrack.iter().copied());
 
             blocks_to_untrack = to_untrack
                 .iter()

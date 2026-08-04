@@ -286,7 +286,7 @@ impl<AUTH> Client<AUTH> {
             }
         }
 
-        let tracked_account = self.store.get_account(account.id()).await?;
+        let tracked_account = self.store.get_minimal_partial_account(account.id()).await?;
 
         match tracked_account {
             None => {
@@ -467,7 +467,7 @@ impl<AUTH> Client<AUTH> {
             return Err(ClientError::AddressAlreadyTracked(address_bench32));
         }
 
-        let tracked_account = self.store.get_account(account_id).await?;
+        let tracked_account = self.store.get_minimal_partial_account(account_id).await?;
         match tracked_account {
             None => Err(ClientError::AccountDataNotFound(account_id)),
             Some(tracked_account) => {

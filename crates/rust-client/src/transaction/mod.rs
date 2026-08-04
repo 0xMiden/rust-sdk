@@ -69,7 +69,7 @@ use alloc::vec::Vec;
 
 use miden_protocol::account::{Account, AccountCode, AccountId};
 use miden_protocol::asset::{Asset, NonFungibleAsset};
-use miden_protocol::block::BlockNumber;
+use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::errors::AssetError;
 use miden_protocol::note::{
     Note,
@@ -96,7 +96,8 @@ use crate::rpc::domain::account::{
     StorageMapFetch,
     VaultFetch,
 };
-use crate::rpc::{AccountStateAt, NodeRpcClient};
+use crate::rpc::encryption::{TransactionEncryptionKey, seal_transaction_inputs};
+use crate::rpc::{AccountStateAt, NodeRpcClient, RpcError};
 use crate::store::data_store::ClientDataStore;
 use crate::store::input_note_states::ExpectedNoteState;
 use crate::store::{
@@ -209,7 +210,7 @@ where
     /// accounts.
     ///
     /// See [`crate::transaction::batch`] for usage and constraints.
-    pub fn new_transaction_batch(&self) -> BatchBuilder<'_, AUTH> {
+    pub fn new_transaction_batch(&mut self) -> BatchBuilder<'_, AUTH> {
         let inner_data_store = ClientDataStore::new(self.store.clone(), self.rpc_api.clone());
         BatchBuilder {
             client: self,
@@ -367,7 +368,6 @@ where
         account: &Account,
         transaction_request: TransactionRequest,
     ) -> Result<PreparedTransaction, ClientError> {
-        let account_id = account.id();
         self.validate_recency().await?;
         validate_account_request(&transaction_request, account)?;
 
@@ -400,7 +400,6 @@ where
         let future_notes: Vec<(NoteDetails, NoteTag)> =
             transaction_request.expected_future_notes().cloned().collect();
 
-        let account = self.try_get_account(account_id).await?;
         let tx_script = transaction_request.build_transaction_script(&account.code_interface())?;
 
         let foreign_accounts = transaction_request.foreign_accounts().clone();
@@ -461,13 +460,91 @@ where
         transaction_inputs: impl Into<TransactionInputs>,
     ) -> Result<BlockNumber, ClientError> {
         info!("Submitting transaction to the network...");
-        let block_num = self
-            .rpc_api
-            .submit_proven_transaction(proven_transaction, transaction_inputs.into())
-            .await?;
+        let tx_id = proven_transaction.id();
+        let key = self.transaction_encryption_key().await?;
+        let sealed_inputs =
+            seal_transaction_inputs(&mut self.rng, &key, tx_id, &transaction_inputs.into())?;
+        let result =
+            self.rpc_api.submit_proven_transaction(proven_transaction, sealed_inputs).await;
+        if let Err(err) = &result {
+            self.forget_stale_transaction_encryption_key(err).await;
+        }
+        let block_num = result?;
         info!("Transaction submitted.");
 
         Ok(block_num)
+    }
+
+    /// Returns the validator set's transaction encryption key, fetching and verifying it on first
+    /// use.
+    ///
+    /// The key is public data shared by the whole validator set, so it is cached in the store and
+    /// reused across submissions and restarts. A freshly fetched key is verified against the
+    /// validator set committed in the chain tip before it is cached or used: the endpoint is served
+    /// by the RPC operator, which is the party the encryption keeps out.
+    pub(crate) async fn transaction_encryption_key(
+        &self,
+    ) -> Result<TransactionEncryptionKey, ClientError> {
+        if let Some(key) = self.store.get_transaction_encryption_key().await? {
+            return Ok(key);
+        }
+
+        let attested = self.rpc_api.get_transaction_encryption_key().await?;
+
+        // The genesis commitment scopes the attestation to this chain, and the chain tip carries
+        // the validator set currently entitled to attest. Both come from the local store, so a
+        // response cannot supply its own trust anchor.
+        let genesis_commitment =
+            self.trusted_block_header(BlockNumber::GENESIS).await?.commitment();
+        let chain_tip = self.store.get_sync_height().await?;
+        let validator_keys = self.trusted_block_header(chain_tip).await?.validator_keys().clone();
+
+        let key = attested.verify(genesis_commitment, &validator_keys)?;
+        self.store.set_transaction_encryption_key(&key).await?;
+
+        Ok(key)
+    }
+
+    /// Installs the transaction encryption key that submission seals against, skipping the fetch
+    /// and its attestation check.
+    #[cfg(feature = "testing")]
+    pub async fn seed_transaction_encryption_key(
+        &self,
+        key: TransactionEncryptionKey,
+    ) -> Result<(), ClientError> {
+        Ok(self.store.set_transaction_encryption_key(&key).await?)
+    }
+
+    /// Evicts the cached encryption key when a submission was rejected for having been sealed
+    /// against a key the validator does not hold, so the next submission fetches a fresh one.
+    ///
+    /// An eviction failure is logged rather than returned: the caller is already reporting the
+    /// submission error, which the store error must not mask.
+    pub(crate) async fn forget_stale_transaction_encryption_key(&self, err: &RpcError) {
+        if err.is_stale_transaction_encryption_key()
+            && let Err(err) = self.store.remove_transaction_encryption_key().await
+        {
+            tracing::warn!("failed to evict the stale transaction encryption key: {err}");
+        }
+    }
+
+    /// Returns a locally stored block header, which the client has already authenticated during
+    /// sync.
+    ///
+    /// # Errors
+    /// Returns an error if the header is not stored locally, which means the client has not synced
+    /// far enough to have a trust anchor.
+    async fn trusted_block_header(
+        &self,
+        block_num: BlockNumber,
+    ) -> Result<BlockHeader, ClientError> {
+        self.store.get_block_header_by_num(block_num).await?.map(|(header, _)| header).ok_or_else(
+            || {
+                ClientError::ChainValidationError(alloc::format!(
+                    "block header {block_num} is not tracked locally; sync the client before it can verify data against the chain"
+                ))
+            },
+        )
     }
 
     /// Builds a [`TransactionStoreUpdate`] for the provided transaction result at the specified
@@ -479,7 +556,9 @@ where
     ) -> Result<TransactionStoreUpdate, TransactionStoreUpdateError> {
         let note_updates = self.get_note_updates(submission_height, tx_result).await?;
 
-        let mut new_tags: Vec<NoteTagRecord> = note_updates
+        // Only expected input notes need tags; output notes are committed (with proofs)
+        // via account-matched transaction sync.
+        let new_tags: Vec<NoteTagRecord> = note_updates
             .updated_input_notes()
             .filter_map(|note| {
                 let note = note.inner();
@@ -493,11 +572,6 @@ where
                 }
             })
             .collect();
-
-        new_tags.extend(note_updates.updated_output_notes().map(|note| {
-            let note = note.inner();
-            NoteTagRecord::with_note_source(note.metadata().tag(), note.details_commitment())
-        }));
 
         Ok(TransactionStoreUpdate::new(
             tx_result.executed_transaction().clone(),
@@ -797,18 +871,16 @@ where
             self.get_sync_height().await?
         };
 
-        let account_record = self
+        let account_code = self
             .store
-            .get_account(account_id)
+            .get_account_code(account_id)
             .await?
             .ok_or(ClientError::AccountDataNotFound(account_id))?;
-
-        let account: Account = account_record.try_into()?;
 
         let data_store = ClientDataStore::new(self.store.clone(), self.rpc_api.clone());
 
         // Ensure code is loaded on MAST store
-        data_store.mast_store().load_account_code(account.code());
+        data_store.mast_store().load_account_code(&account_code);
 
         for fpi_account in &foreign_account_inputs {
             data_store.mast_store().load_account_code(fpi_account.code());
@@ -891,7 +963,7 @@ where
         let output_notes: Vec<Note> =
             notes_from_output(executed_tx.output_notes()).cloned().collect();
         let note_screener = self.note_screener().clone();
-        let output_note_relevances = note_screener.can_consume_batch(&output_notes).await?;
+        let output_note_relevances = note_screener.get_batch_consumability(&output_notes).await?;
 
         for note in output_notes {
             if output_note_relevances.contains_key(&note.id()) {

@@ -6,6 +6,7 @@ pub mod custom_transaction;
 pub mod fpi;
 pub mod network_fpi;
 pub mod network_transaction;
+pub mod note_tags;
 pub mod onchain;
 pub mod pass_through;
 pub mod pswap_transaction;

@@ -31,17 +31,17 @@ impl SqliteStore {
         assets: impl Iterator<Item = Asset>,
     ) -> Result<(), StoreError> {
         const LATEST_QUERY: &str =
-            insert_sql!(latest_account_assets { account_id, vault_id, asset } | REPLACE);
+            insert_sql!(latest_account_assets { account_id, asset_id, asset } | REPLACE);
 
         let mut latest_stmt = tx.prepare_cached(LATEST_QUERY).into_store_error()?;
         let account_id_bytes = account_id.to_bytes();
 
         for asset in assets {
-            let vault_id_bytes = asset.id().to_bytes();
+            let asset_id_bytes = asset.id().to_bytes();
             let asset_bytes = asset.to_value_word().to_bytes();
 
             latest_stmt
-                .execute(params![&account_id_bytes, &vault_id_bytes, &asset_bytes])
+                .execute(params![&account_id_bytes, &asset_id_bytes, &asset_bytes])
                 .into_store_error()?;
         }
 
@@ -70,20 +70,20 @@ impl SqliteStore {
         // or signed-amount arithmetic is needed, and the asset value word already encodes the
         // callback flag for both fungible and non-fungible assets.
         let updated_assets_values: Vec<Asset> = vault_patch.updated_assets().collect();
-        let removed_vault_ids: Vec<AssetId> = vault_patch.removed_asset_ids().copied().collect();
+        let removed_asset_ids: Vec<AssetId> = vault_patch.removed_asset_ids().copied().collect();
 
         Self::persist_vault_delta(
             tx,
             &account_id_bytes,
             &nonce_val,
-            &removed_vault_ids,
+            &removed_asset_ids,
             &updated_assets_values,
         )?;
 
         let new_vault_root = smt_forest.update_asset_nodes(
             init_account_state.vault_root(),
             updated_assets_values.iter().copied(),
-            removed_vault_ids.iter().copied(),
+            removed_asset_ids.iter().copied(),
         )?;
         if new_vault_root != final_account_state.vault_root() {
             return Err(StoreError::MerkleStoreError(MerkleError::ConflictingRoots {
@@ -101,32 +101,32 @@ impl SqliteStore {
         tx: &Transaction<'_>,
         account_id_bytes: &[u8],
         nonce_val: &rusqlite::types::Value,
-        removed_vault_ids: &[AssetId],
+        removed_asset_ids: &[AssetId],
         updated_assets: &[Asset],
     ) -> Result<(), StoreError> {
         const READ_OLD_ASSET: &str =
-            "SELECT asset FROM latest_account_assets WHERE account_id = ? AND vault_id = ?";
+            "SELECT asset FROM latest_account_assets WHERE account_id = ? AND asset_id = ?";
         const HISTORICAL_INSERT: &str = insert_sql!(
             historical_account_assets {
                 account_id,
                 replaced_at_nonce,
-                vault_id,
+                asset_id,
                 old_asset
             } | REPLACE
         );
         const LATEST_INSERT: &str =
-            insert_sql!(latest_account_assets { account_id, vault_id, asset } | REPLACE);
+            insert_sql!(latest_account_assets { account_id, asset_id, asset } | REPLACE);
 
         let mut hist_stmt = tx.prepare_cached(HISTORICAL_INSERT).into_store_error()?;
         let mut latest_stmt = tx.prepare_cached(LATEST_INSERT).into_store_error()?;
 
         // Archive and delete removed assets
-        for vault_id in removed_vault_ids {
-            let vault_id_bytes = vault_id.to_bytes();
+        for asset_id in removed_asset_ids {
+            let asset_id_bytes = asset_id.to_bytes();
 
             // Read old asset value from latest (should exist since we're removing it)
             let old_asset: Option<Vec<u8>> = tx
-                .query_row(READ_OLD_ASSET, params![account_id_bytes, &vault_id_bytes], |row| {
+                .query_row(READ_OLD_ASSET, params![account_id_bytes, &asset_id_bytes], |row| {
                     row.get(0)
                 })
                 .optional()
@@ -135,20 +135,20 @@ impl SqliteStore {
 
             // Archive old value to historical
             hist_stmt
-                .execute(params![account_id_bytes, nonce_val, &vault_id_bytes, old_asset,])
+                .execute(params![account_id_bytes, nonce_val, &asset_id_bytes, old_asset,])
                 .into_store_error()?;
         }
 
         // Batch delete removed assets from latest
-        if !removed_vault_ids.is_empty() {
+        if !removed_asset_ids.is_empty() {
             const DELETE_LATEST_QUERY: &str =
-                "DELETE FROM latest_account_assets WHERE account_id = ? AND vault_id IN rarray(?)";
+                "DELETE FROM latest_account_assets WHERE account_id = ? AND asset_id IN rarray(?)";
             tx.execute(
                 DELETE_LATEST_QUERY,
                 params![
                     account_id_bytes,
                     Rc::new(
-                        removed_vault_ids
+                        removed_asset_ids
                             .iter()
                             .map(|id| Value::Blob(id.to_bytes()))
                             .collect::<Vec<Value>>(),
@@ -160,12 +160,12 @@ impl SqliteStore {
 
         // Archive old values and insert updated assets
         for asset in updated_assets {
-            let vault_id_bytes = asset.id().to_bytes();
+            let asset_id_bytes = asset.id().to_bytes();
             let asset_bytes = asset.to_value_word().to_bytes();
 
             // Read old asset value from latest (NULL if asset is new)
             let old_asset: Option<Vec<u8>> = tx
-                .query_row(READ_OLD_ASSET, params![account_id_bytes, &vault_id_bytes], |row| {
+                .query_row(READ_OLD_ASSET, params![account_id_bytes, &asset_id_bytes], |row| {
                     row.get(0)
                 })
                 .optional()
@@ -174,12 +174,12 @@ impl SqliteStore {
 
             // Archive old value to historical (NULL old_asset = asset was new)
             hist_stmt
-                .execute(params![account_id_bytes, nonce_val, &vault_id_bytes, old_asset,])
+                .execute(params![account_id_bytes, nonce_val, &asset_id_bytes, old_asset,])
                 .into_store_error()?;
 
             // Insert/update in latest
             latest_stmt
-                .execute(params![account_id_bytes, &vault_id_bytes, &asset_bytes])
+                .execute(params![account_id_bytes, &asset_id_bytes, &asset_bytes])
                 .into_store_error()?;
         }
 

@@ -6,7 +6,7 @@
 set -euo pipefail
 
 REPO_URL=${REPO_URL:-https://github.com/0xMiden/miden-note-transport}
-BINARY_NAME=miden-note-transport-node-bin
+BINARY_NAME=miden-note-transport-node
 
 if ! command -v "$BINARY_NAME" &>/dev/null; then
   echo "Installing note transport service..."

@@ -40,15 +40,15 @@ miden-client              = { default-features = false, path = "crates/rust-clie
 miden-client-sqlite-store = { default-features = false, path = "crates/sqlite-store", version = "0.16.0-alpha.1" }
 
 # Miden protocol dependencies
-miden-agglayer  = { default-features = false, git = "https://github.com/0xMiden/protocol.git", rev = "d951e7a9fa746f4177e8b1207076266e811830f7" }
-miden-protocol  = { default-features = false, git = "https://github.com/0xMiden/protocol.git", rev = "d951e7a9fa746f4177e8b1207076266e811830f7" }
-miden-standards = { default-features = false, git = "https://github.com/0xMiden/protocol.git", rev = "d951e7a9fa746f4177e8b1207076266e811830f7" }
-miden-testing   = { default-features = false, git = "https://github.com/0xMiden/protocol.git", rev = "d951e7a9fa746f4177e8b1207076266e811830f7" }
-miden-tx        = { default-features = false, git = "https://github.com/0xMiden/protocol.git", rev = "d951e7a9fa746f4177e8b1207076266e811830f7" }
-miden-tx-batch  = { default-features = false, git = "https://github.com/0xMiden/protocol.git", rev = "d951e7a9fa746f4177e8b1207076266e811830f7" }
+miden-agglayer  = { default-features = false, git = "https://github.com/0xMiden/protocol.git", rev = "4ea04b4ca05c7f41a3f03b1132636203186c1f5d" }
+miden-protocol  = { default-features = false, git = "https://github.com/0xMiden/protocol.git", rev = "4ea04b4ca05c7f41a3f03b1132636203186c1f5d" }
+miden-standards = { default-features = false, git = "https://github.com/0xMiden/protocol.git", rev = "4ea04b4ca05c7f41a3f03b1132636203186c1f5d" }
+miden-testing   = { default-features = false, git = "https://github.com/0xMiden/protocol.git", rev = "4ea04b4ca05c7f41a3f03b1132636203186c1f5d" }
+miden-tx        = { default-features = false, git = "https://github.com/0xMiden/protocol.git", rev = "4ea04b4ca05c7f41a3f03b1132636203186c1f5d" }
+miden-tx-batch  = { default-features = false, git = "https://github.com/0xMiden/protocol.git", rev = "4ea04b4ca05c7f41a3f03b1132636203186c1f5d" }
 
 # Miden node dependencies
-miden-node-proto-build           = { default-features = false, git = "https://github.com/0xMiden/node.git", rev = "1226081d0b68126eb07f545d122cfb7ae501f7c7" }
+miden-node-proto-build           = { default-features = false, git = "https://github.com/0xMiden/node.git", rev = "ba437302af153b90375dfe387bdf1e01c20179d5" }
 miden-note-transport-proto-build = { default-features = false, version = "0.5.0-alpha.1" }
 
 # Miden debug dependency

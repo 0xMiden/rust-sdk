@@ -299,7 +299,7 @@ impl TransactionRequest {
     /// Miden host.
     pub(crate) fn into_transaction_args(
         self,
-        tx_script: Option<TransactionScript>,
+        tx_script: Option<(TransactionScript, Option<Word>)>,
     ) -> TransactionArgs {
         let note_args = self.get_note_args();
         let TransactionRequest {
@@ -314,9 +314,9 @@ impl TransactionRequest {
         // A script argument without a script has nothing to bind to, so it is only applied when a
         // transaction script is present. With no argument the default empty word is used, which is
         // equivalent to setting no argument at all.
-        if let Some(tx_script) = tx_script {
-            tx_args =
-                tx_args.with_tx_script_and_args(tx_script, self.script_arg.unwrap_or_default());
+        if let Some((tx_script, script_args)) = tx_script {
+            let script_args = script_args.or(self.script_arg).unwrap_or_default();
+            tx_args = tx_args.with_tx_script_and_args(tx_script, script_args);
         }
 
         if let Some(auth_argument) = self.auth_arg {
@@ -341,9 +341,11 @@ impl TransactionRequest {
     pub(crate) fn build_transaction_script(
         &self,
         code_interface: &AccountCodeInterface,
-    ) -> Result<Option<TransactionScript>, TransactionRequestError> {
+    ) -> Result<Option<(TransactionScript, Option<Word>)>, TransactionRequestError> {
         match &self.script_template {
-            Some(TransactionScriptTemplate::CustomScript(script)) => Ok(Some(script.clone())),
+            Some(TransactionScriptTemplate::CustomScript(script)) => {
+                Ok(Some((script.clone(), None)))
+            },
             Some(TransactionScriptTemplate::SendNotes(notes)) => {
                 let script = match self.expiration_delta.and_then(NonZeroU16::new) {
                     Some(delta) => SendNotesTransactionScript::with_expiration_delta(
@@ -353,7 +355,7 @@ impl TransactionRequest {
                     )?,
                     None => SendNotesTransactionScript::new(code_interface, notes)?,
                 };
-                Ok(Some(script.into()))
+                Ok(Some((script.tx_script().clone(), Some(script.tx_script_args()))))
             },
             None => Ok(None),
         }

@@ -218,8 +218,6 @@ pub mod auth {
         AuthMultisig,
         AuthMultisigConfig,
         AuthSingleSig,
-        AuthSingleSigAcl,
-        AuthSingleSigAclConfig,
         NoAuth,
     };
     pub use miden_tx::auth::{BasicAuthenticator, SigningInputs, TransactionAuthenticator};

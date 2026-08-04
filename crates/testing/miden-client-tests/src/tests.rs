@@ -1108,7 +1108,7 @@ async fn note_without_asset() {
         error,
         ClientError::TransactionRequestError(
             TransactionRequestError::SendNotesTransactionScriptError(
-                SendNotesTransactionScriptError::FaucetNoteWithoutAsset
+                SendNotesTransactionScriptError::FaucetNoteUnexpectedNumAssets
             )
         )
     ));

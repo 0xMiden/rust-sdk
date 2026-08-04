@@ -5,7 +5,6 @@ use miden_client::account::component::{
     AccountComponentMetadata,
     AuthMultisig,
     AuthSingleSig,
-    AuthSingleSigAcl,
     BasicWallet,
     FungibleFaucet,
     MIDEN_PACKAGE_EXTENSION,
@@ -69,10 +68,6 @@ fn main() {
         &multisig_metadata,
         Some("auth"),
     );
-
-    // ACL auth
-    let acl_metadata = AuthSingleSigAcl::component_metadata();
-    build_package("acl-auth", AuthSingleSigAcl::code().as_package(), &acl_metadata, Some("auth"));
 }
 
 /// Builds a package and stores it under `{OUT_DIR}/{PACKAGE_DIR}` or

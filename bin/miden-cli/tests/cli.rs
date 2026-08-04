@@ -1944,43 +1944,7 @@ fn create_account_with_multisig_auth() {
     create_account_cmd.current_dir(&temp_dir).assert().success();
 }
 
-/// Tests creating an account with the acl-auth component.
-#[test]
-fn create_account_with_acl_auth() {
-    let temp_dir = init_cli().1;
-
-    // Create init storage data file for acl-auth with a test public key
-    let init_storage_data_toml = r#"
-        "miden::standards::auth::singlesig_acl::pub_key" = "0x0000000000000000000000000000000000000000000000000000000000000001"
-        "miden::standards::auth::singlesig_acl::scheme" = "Falcon512Poseidon2"
-        "miden::standards::auth::singlesig_acl::config.num_trigger_procs" = "1"
-        "miden::standards::auth::singlesig_acl::config.allow_unauthorized_output_notes" = "0"
-        "miden::standards::auth::singlesig_acl::config.allow_unauthorized_input_notes" = "0"
-
-        "miden::standards::auth::singlesig_acl::trigger_procedure_roots" = [
-            { key = ["0", "0", "0", "0"], value = "0xd2d1b6229d7cfb9f2ada31c5cb61453cf464f91828e124437c708eec55b9cd07" }
-        ]
-        "#;
-    let file_path = temp_dir.join("acl_init_data.toml");
-    fs::write(&file_path, init_storage_data_toml).unwrap();
-
-    let mut create_account_cmd = cargo_bin_cmd!("miden-client");
-    create_account_cmd.args([
-        "new-account",
-        "-t",
-        "private",
-        "-p",
-        "basic-wallet",
-        "-p",
-        "auth/acl-auth",
-        "-i",
-        "acl_init_data.toml",
-    ]);
-
-    create_account_cmd.current_dir(&temp_dir).assert().success();
-}
-
-// Tests creating an account with the acl-auth component.
+/// Tests creating an account with the ecdsa-auth component.
 #[test]
 fn create_account_with_ecdsa_auth() {
     let temp_dir = init_cli().1;

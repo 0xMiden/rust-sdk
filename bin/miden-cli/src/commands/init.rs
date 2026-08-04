@@ -50,11 +50,6 @@ const ECDSA_AUTH_PACKAGE: (&str, &[u8]) = (
     include_bytes!(concat!(env!("OUT_DIR"), "/packages/auth/", "ecdsa-auth.masp")),
 );
 
-const ACL_AUTH_PACKAGE: (&str, &[u8]) = (
-    "auth/acl-auth.masp",
-    include_bytes!(concat!(env!("OUT_DIR"), "/packages/auth/", "acl-auth.masp")),
-);
-
 const NO_AUTH_PACKAGE: (&str, &[u8]) = (
     "auth/no-auth.masp",
     include_bytes!(concat!(env!("OUT_DIR"), "/packages/auth/", "no-auth.masp")),
@@ -65,14 +60,13 @@ const MULTISIG_AUTH_PACKAGE: (&str, &[u8]) = (
     include_bytes!(concat!(env!("OUT_DIR"), "/packages/auth/", "multisig-auth.masp")),
 );
 
-const DEFAULT_INCLUDED_PACKAGES: [(&str, &[u8]); 7] = [
+const DEFAULT_INCLUDED_PACKAGES: [(&str, &[u8]); 6] = [
     BASIC_WALLET_PACKAGE,
     FAUCET_PACKAGE,
     BASIC_AUTH_PACKAGE,
     ECDSA_AUTH_PACKAGE,
     NO_AUTH_PACKAGE,
     MULTISIG_AUTH_PACKAGE,
-    ACL_AUTH_PACKAGE,
 ];
 
 // INIT COMMAND

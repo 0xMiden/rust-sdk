@@ -96,12 +96,12 @@ fn vault_update_from_proto(
 ) -> Result<(BlockNumber, AssetId, Option<Asset>), RpcError> {
     let block_num = BlockNumber::from(value.block_num);
 
-    let vault_id: Word = value
+    let asset_id: Word = value
         .vault_key
-        .ok_or(proto::rpc::SyncAccountVaultResponse::missing_field(stringify!(vault_id)))?
+        .ok_or(proto::rpc::SyncAccountVaultResponse::missing_field(stringify!(asset_id)))?
         .try_into()?;
     let asset_id =
-        AssetId::try_from(vault_id).map_err(|e| RpcError::InvalidResponse(e.to_string()))?;
+        AssetId::try_from(asset_id).map_err(|e| RpcError::InvalidResponse(e.to_string()))?;
 
     let asset = value.asset.map(Asset::try_from).transpose()?;
 

@@ -32,7 +32,7 @@ use miden_protocol::Felt;
 use miden_protocol::crypto::rand::RandomCoin;
 use miden_testing::{Auth, MockChainBuilder, TxContextInput};
 
-use crate::tests::create_test_client;
+use crate::tests::{create_test_client, seed_mock_transaction_encryption_key};
 
 /// Exercises the mock `submit_proven_batch` path end-to-end: build a real
 /// `ProvenBatch` from a proven transaction produced against a `MockChain`, submit it via
@@ -174,6 +174,7 @@ async fn apply_transaction_batch_rolls_back_on_mid_batch_failure() {
         .await
         .unwrap();
     client.ensure_genesis_in_place().await.unwrap();
+    seed_mock_transaction_encryption_key(&mut client).await;
 
     // Register ONLY account A. Account B stays unknown to the client store, so
     // `smt_forest.get_roots(B)` will return None during `apply_account_delta`.
@@ -256,10 +257,10 @@ async fn apply_transaction_batch_rolls_back_on_mid_batch_failure() {
         .expect("update_account on A must succeed after the failed batch was rolled back");
 }
 
-/// `BatchBuilder::push` must validate each transaction against the in-batch (stacked)
-/// account state, not the persisted pre-batch state — otherwise a tx that depends on
-/// state created by a prior push in the same batch is wrongly rejected at validation
-/// time even though the executor would accept it.
+/// `BatchBuilder::push` must execute each transaction against the in-batch (stacked)
+/// account state, not the persisted pre-batch state — otherwise a transaction that
+/// depends on state created by a prior push in the same batch fails even though the
+/// stacked state satisfies it.
 ///
 /// Setup: A starts with `MINT_AMOUNT` (consumed, also puts A on-chain). A second
 /// mint note also worth `MINT_AMOUNT` is left UNCONSUMED.
@@ -326,14 +327,14 @@ async fn batch_builder_push_succeeds_when_balance_depends_on_prior_push() {
             .await
     })
     .await
-    .expect("submit should succeed because validation uses in-batch state");
+    .expect("submit should succeed because execution uses in-batch state");
 
     assert!(block_num.as_u32() > 0);
 }
 
 /// A later transaction in a batch may touch a vault key that an earlier transaction in the same
 /// batch never touched. That key is absent from the earlier transaction's execution advice, so the
-/// batch data store must serve its witness by staging the accumulated in-batch delta onto the
+/// batch data store must serve its witness by staging the accumulated in-batch patch onto the
 /// store's committed Merkle forest — not fail. Regression test for the in-batch "untouched key"
 /// witness path.
 ///
@@ -410,7 +411,9 @@ async fn batch_builder_serves_witness_for_untouched_vault_key() {
             .await
     })
     .await
-    .expect("submit should succeed: the untouched G vault key is served via the store forest");
+    .expect(
+        "submit should succeed: the untouched held-faucet vault key is served via the store forest",
+    );
 
     assert!(block_num.as_u32() > 0);
 }
@@ -418,7 +421,7 @@ async fn batch_builder_serves_witness_for_untouched_vault_key() {
 /// Verify that submitting an empty batch (no pushes) returns `BatchBuilderError::Empty`.
 #[tokio::test]
 async fn batch_builder_empty_submit_returns_empty_error() {
-    let (client, rpc_api, _keystore) = Box::pin(create_test_client()).await;
+    let (mut client, rpc_api, _keystore) = Box::pin(create_test_client()).await;
 
     // Pick the first tracked account in the mock chain.
     let _account_id = rpc_api
@@ -533,6 +536,7 @@ async fn batch_builder_submits_txs_across_multiple_accounts() {
         .await
         .unwrap();
     client.ensure_genesis_in_place().await.unwrap();
+    seed_mock_transaction_encryption_key(&mut client).await;
 
     // Register both accounts with the client.
     client.add_account(&account_a, false).await.unwrap();
@@ -578,7 +582,7 @@ async fn batch_builder_submits_txs_across_multiple_accounts() {
 /// fails with `ClientError::AccountDataNotFound`.
 #[tokio::test]
 async fn batch_builder_push_for_unknown_account_returns_error() {
-    let (client, rpc_api, _keystore) = Box::pin(create_test_client()).await;
+    let (mut client, rpc_api, _keystore) = Box::pin(create_test_client()).await;
 
     // Pick an account that EXISTS on the mock chain but is NOT registered with the client
     // store (we never call `client.add_account` for it).

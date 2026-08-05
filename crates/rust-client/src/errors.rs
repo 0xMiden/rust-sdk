@@ -7,7 +7,6 @@ use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::crypto::merkle::MerkleError;
 pub use miden_protocol::errors::{
-    AccountDeltaError,
     AccountError,
     AccountIdError,
     AccountPatchError,
@@ -85,8 +84,6 @@ pub enum ClientError {
     AccountAlreadyTracked(AccountId),
     #[error("account error")]
     AccountError(#[from] AccountError),
-    #[error("account delta error")]
-    AccountDeltaError(#[from] AccountDeltaError),
     #[error("account patch error")]
     AccountPatchError(#[from] AccountPatchError),
     #[error("account {0} is locked because the local state may be out of date with the network")]
@@ -161,6 +158,10 @@ pub enum ClientError {
     NoConsumableNoteForAccount(AccountId),
     #[error("RPC error")]
     RpcError(#[from] RpcError),
+    #[error(
+        "no transaction encryption key is available; the validator set's key must be cached in the store before transaction inputs can be sealed for submission"
+    )]
+    MissingTransactionEncryptionKey,
     #[error(
         "transaction failed a recency check: {0} — the reference block may be too old; try syncing and resubmitting"
     )]

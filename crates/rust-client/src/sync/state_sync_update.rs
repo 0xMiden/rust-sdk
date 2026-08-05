@@ -31,18 +31,86 @@ use crate::transaction::{DiscardCause, TransactionRecord, TransactionStatus};
 // ================================================================================================
 
 /// Contains all information needed to apply the update in the store after syncing with the node.
-#[derive(Default)]
+///
+/// Immutable once built: [`StateSync::sync_state`](super::StateSync::sync_state) assembles the
+/// individual trackers and seals them into this type at the end of the sync pass. Use
+/// [`Self::from_parts`] to build one directly.
 pub struct StateSyncUpdate {
     /// The block number of the last block that was synced.
-    pub block_num: BlockNumber,
+    block_num: BlockNumber,
     /// New blocks, authentication nodes and MMR peaks.
-    pub partial_blockchain_updates: PartialBlockchainUpdates,
+    partial_blockchain_updates: PartialBlockchainUpdates,
     /// New and updated notes to be upserted in the store.
-    pub note_updates: NoteUpdateTracker,
+    note_updates: NoteUpdateTracker,
     /// Committed and discarded transactions after the sync.
-    pub transaction_updates: TransactionUpdateTracker,
+    transaction_updates: TransactionUpdateTracker,
     /// Public account updates and mismatched private accounts after the sync.
-    pub account_updates: AccountUpdates,
+    account_updates: AccountUpdates,
+}
+
+impl StateSyncUpdate {
+    /// Assembles an update from its constituent parts, mirroring [`Self::into_parts`].
+    ///
+    /// The parts are stored as given: no validation or minimization is applied.
+    pub fn from_parts(
+        block_num: BlockNumber,
+        partial_blockchain_updates: PartialBlockchainUpdates,
+        note_updates: NoteUpdateTracker,
+        transaction_updates: TransactionUpdateTracker,
+        account_updates: AccountUpdates,
+    ) -> Self {
+        Self {
+            block_num,
+            partial_blockchain_updates,
+            note_updates,
+            transaction_updates,
+            account_updates,
+        }
+    }
+
+    /// Returns the block number of the last synced block.
+    pub fn block_num(&self) -> BlockNumber {
+        self.block_num
+    }
+
+    /// Returns the partial blockchain updates.
+    pub fn partial_blockchain_updates(&self) -> &PartialBlockchainUpdates {
+        &self.partial_blockchain_updates
+    }
+
+    /// Returns the note updates.
+    pub fn note_updates(&self) -> &NoteUpdateTracker {
+        &self.note_updates
+    }
+
+    /// Returns the transaction updates.
+    pub fn transaction_updates(&self) -> &TransactionUpdateTracker {
+        &self.transaction_updates
+    }
+
+    /// Returns the account updates.
+    pub fn account_updates(&self) -> &AccountUpdates {
+        &self.account_updates
+    }
+
+    /// Decomposes this update into its constituent parts.
+    pub fn into_parts(
+        self,
+    ) -> (
+        BlockNumber,
+        PartialBlockchainUpdates,
+        NoteUpdateTracker,
+        TransactionUpdateTracker,
+        AccountUpdates,
+    ) {
+        (
+            self.block_num,
+            self.partial_blockchain_updates,
+            self.note_updates,
+            self.transaction_updates,
+            self.account_updates,
+        )
+    }
 }
 
 impl From<&StateSyncUpdate> for SyncSummary {
@@ -117,10 +185,12 @@ impl From<&StateSyncUpdate> for SyncSummary {
 
 /// Contains all the partial blockchain information that needs to be added in the client's store
 /// after a sync: block headers, authentication nodes and the MMR peaks at the new sync height.
+///
+/// Insert-only: entries are staged once known to be worth keeping, never revised or removed.
 #[derive(Debug, Clone, Default)]
 pub struct PartialBlockchainUpdates {
     /// New block headers to be stored, keyed by block number. The value contains the block
-    /// header and a flag indicating whether the block contains notes relevant to the client.
+    /// header and a flag indicating whether the block is relevant and should remain tracked.
     block_headers: BTreeMap<BlockNumber, (BlockHeader, bool)>,
     /// New authentication nodes that are meant to be stored in order to authenticate block
     /// headers.
@@ -130,30 +200,47 @@ pub struct PartialBlockchainUpdates {
 }
 
 impl PartialBlockchainUpdates {
-    /// Adds or updates a block header in this [`PartialBlockchainUpdates`].
+    /// Adds a block header to this [`PartialBlockchainUpdates`].
     ///
-    /// If the block header already exists (same block number), the `has_client_notes` flag is
-    /// OR-ed. Otherwise a new entry is added.
-    pub fn insert(
-        &mut self,
-        block_header: BlockHeader,
-        has_client_notes: bool,
-        new_authentication_nodes: Vec<(InOrderIndex, Word)>,
-    ) {
+    /// On a repeated block number the `is_relevant` flag is OR-ed — the chain tip block may itself
+    /// be relevant — so it only ever moves from `false` to `true`, matching
+    /// [`Store::insert_block_header`](crate::store::Store::insert_block_header)'s one-way upgrade.
+    pub fn insert(&mut self, block_header: BlockHeader, is_relevant: bool) {
         self.block_headers
             .entry(block_header.block_num())
-            .and_modify(|(_, existing_has_notes)| {
-                *existing_has_notes |= has_client_notes;
+            .and_modify(|(_, existing_is_relevant)| {
+                *existing_is_relevant |= is_relevant;
             })
-            .or_insert((block_header, has_client_notes));
-
-        self.new_authentication_nodes.extend(new_authentication_nodes);
+            .or_insert((block_header, is_relevant));
     }
 
-    /// Returns the new block headers to be stored, along with a flag indicating whether the block
-    /// contains notes that are relevant to the client.
+    /// Stages authentication nodes for storage.
+    ///
+    /// Kept as one flat set rather than per-header, since tracked blocks' paths share internal
+    /// nodes.
+    pub fn extend_authentication_nodes(
+        &mut self,
+        nodes: impl IntoIterator<Item = (InOrderIndex, Word)>,
+    ) {
+        self.new_authentication_nodes.extend(nodes);
+    }
+
+    /// Returns the new block headers to be stored, along with a flag indicating whether each block
+    /// is relevant and should remain tracked.
     pub fn block_headers(&self) -> impl Iterator<Item = &(BlockHeader, bool)> {
         self.block_headers.values()
+    }
+
+    /// Returns block headers that need to be persisted for this update.
+    pub fn block_headers_to_store(
+        &self,
+        sync_height: BlockNumber,
+    ) -> impl Iterator<Item = &(BlockHeader, bool)> {
+        self.block_headers.values().filter(move |(header, is_relevant)| {
+            *is_relevant
+                || header.block_num() == BlockNumber::GENESIS
+                || header.block_num() == sync_height
+        })
     }
 
     /// Returns the new authentication nodes that are meant to be stored in order to authenticate

@@ -17,9 +17,10 @@ use miden_protocol::account::{
 use miden_protocol::address::NetworkId;
 use miden_protocol::batch::{ProposedBatch, ProvenBatch};
 use miden_protocol::block::{BlockHeader, BlockNumber, ProvenBlock};
+use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::crypto::merkle::mmr::{Forest, Mmr, MmrProof};
 use miden_protocol::note::{NoteAttachments, NoteHeader, NoteId, NoteScript, NoteTag};
-use miden_protocol::transaction::{ProvenTransaction, TransactionInputs};
+use miden_protocol::transaction::{OutputNote, ProvenTransaction};
 use miden_testing::{MockChain, MockChainNote};
 use miden_tx::utils::sync::RwLock;
 
@@ -36,12 +37,13 @@ use crate::rpc::domain::account::{
     StorageMapFetch,
 };
 use crate::rpc::domain::account_vault::AccountVaultInfo;
-use crate::rpc::domain::note::{CommittedNote, FetchedNote, NoteSyncBlock};
+use crate::rpc::domain::note::{CommittedNote, FetchedNote, SyncNotesBlock};
 use crate::rpc::domain::nullifier::NullifierUpdate;
 use crate::rpc::domain::status::NetworkNoteStatusInfo;
 use crate::rpc::domain::storage_map::StorageMapInfo;
 use crate::rpc::domain::sync::{ChainMmrInfo, SyncTarget};
 use crate::rpc::domain::transaction::TransactionRecord;
+use crate::rpc::encryption::{AttestedTransactionEncryptionKey, SealedTransactionInputs};
 use crate::rpc::{AccountStateAt, NodeRpcClient, RpcError, RpcStatusInfo};
 
 pub type MockClient<AUTH> = Client<AUTH>;
@@ -60,6 +62,8 @@ pub type MockClient<AUTH> = Client<AUTH>;
 pub struct MockRpcApi {
     account_commitment_updates: Arc<RwLock<BTreeMap<BlockNumber, BTreeMap<AccountId, Word>>>>,
     pub mock_chain: Arc<RwLock<MockChain>>,
+    /// Chain snapshots used to answer block-pinned account queries.
+    historical_chains: Arc<RwLock<BTreeMap<BlockNumber, Arc<MockChain>>>>,
     oversize_threshold: usize,
     /// Note headers to report as erased in sync transaction responses.
     erased_notes: Arc<RwLock<Vec<NoteHeader>>>,
@@ -67,6 +71,8 @@ pub struct MockRpcApi {
     /// notes without their attachment content (only metadata), so tests that need
     /// `get_notes_by_id` to return private-note attachments register them here.
     private_note_attachments: Arc<RwLock<BTreeMap<NoteId, NoteAttachments>>>,
+    /// Test overrides for the MMR paths returned by `sync_notes`, keyed by block number.
+    sync_notes_mmr_path_overrides: Arc<RwLock<BTreeMap<BlockNumber, MerklePath>>>,
 }
 
 impl Default for MockRpcApi {
@@ -84,9 +90,11 @@ impl MockRpcApi {
         Self {
             account_commitment_updates: Arc::new(RwLock::new(build_account_updates(&mock_chain))),
             mock_chain: Arc::new(RwLock::new(mock_chain)),
+            historical_chains: Arc::new(RwLock::new(BTreeMap::new())),
             oversize_threshold: 1000,
             erased_notes: Arc::new(RwLock::new(Vec::new())),
             private_note_attachments: Arc::new(RwLock::new(BTreeMap::new())),
+            sync_notes_mmr_path_overrides: Arc::new(RwLock::new(BTreeMap::new())),
         }
     }
 
@@ -94,6 +102,11 @@ impl MockRpcApi {
     /// responses include it, mirroring a node that stores private-note attachments on-chain.
     pub fn register_private_note_attachments(&self, note_id: NoteId, attachments: NoteAttachments) {
         self.private_note_attachments.write().insert(note_id, attachments);
+    }
+
+    /// Overrides the MMR path returned by `sync_notes` for the specified block.
+    pub fn set_sync_notes_mmr_path(&self, block_num: BlockNumber, path: MerklePath) {
+        self.sync_notes_mmr_path_overrides.write().insert(block_num, path);
     }
 
     /// Sets the oversize threshold for `get_account`. Any storage map with more entries than
@@ -123,9 +136,16 @@ impl MockRpcApi {
     /// Advances the mock chain by proving the next block, committing all pending objects to the
     /// chain in the process.
     pub fn prove_block(&self) {
-        let proven_block = self.mock_chain.write().prove_next_block().unwrap();
-        let mut account_commitment_updates = self.account_commitment_updates.write();
+        let proven_block = {
+            let mut mock_chain = self.mock_chain.write();
+            let historical_block_num = mock_chain.latest_block_header().block_num();
+            let snapshot = Arc::new(mock_chain.clone());
+            let proven_block = mock_chain.prove_next_block().unwrap();
+            self.historical_chains.write().insert(historical_block_num, snapshot);
+            proven_block
+        };
         let block_num = proven_block.header().block_num();
+        let mut account_commitment_updates = self.account_commitment_updates.write();
         let updates: BTreeMap<AccountId, Word> = proven_block
             .body()
             .updated_accounts()
@@ -293,9 +313,11 @@ impl MockRpcApi {
     }
 
     pub fn advance_blocks(&self, num_blocks: u32) {
-        let current_height = self.get_chain_tip_block_num();
         let mut mock_chain = self.mock_chain.write();
-        mock_chain.prove_until_block(current_height + num_blocks).unwrap();
+        let block_num = mock_chain.latest_block_header().block_num();
+        let snapshot = Arc::new(mock_chain.clone());
+        mock_chain.prove_until_block(block_num + num_blocks).unwrap();
+        self.historical_chains.write().insert(block_num, snapshot);
     }
 }
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
@@ -317,7 +339,7 @@ impl NodeRpcClient for MockRpcApi {
         block_from: BlockNumber,
         block_to: BlockNumber,
         note_tags: &BTreeSet<NoteTag>,
-    ) -> Result<Vec<NoteSyncBlock>, RpcError> {
+    ) -> Result<Vec<SyncNotesBlock>, RpcError> {
         let mut blocks_with_notes: BTreeMap<BlockNumber, BTreeMap<NoteId, CommittedNote>> =
             BTreeMap::new();
         for note in self.mock_chain.read().committed_notes().values() {
@@ -336,8 +358,11 @@ impl NodeRpcClient for MockRpcApi {
             .into_iter()
             .map(|(bn, notes)| {
                 let block_header = self.get_block_by_num(bn);
-                let mmr_path = self.get_mmr().open(bn.as_usize()).unwrap().merkle_path().clone();
-                NoteSyncBlock { block_header, mmr_path, notes }
+                let mmr_path =
+                    self.sync_notes_mmr_path_overrides.read().get(&bn).cloned().unwrap_or_else(
+                        || self.get_mmr().open(bn.as_usize()).unwrap().merkle_path().clone(),
+                    );
+                SyncNotesBlock { block_header, mmr_path, notes }
             })
             .collect())
     }
@@ -431,14 +456,39 @@ impl NodeRpcClient for MockRpcApi {
         Ok(return_notes)
     }
 
+    /// The mock does not serve the encryption key. Verifying an attestation needs a validator
+    /// signature the mock chain cannot produce, so tests that submit transactions seed the key
+    /// directly through `Client::seed_transaction_encryption_key` instead.
+    async fn get_transaction_encryption_key(
+        &self,
+    ) -> Result<AttestedTransactionEncryptionKey, RpcError> {
+        Err(RpcError::TransactionEncryptionKeyRejected(
+            "the mock RPC client does not serve a transaction encryption key".into(),
+        ))
+    }
+
     /// Simulates the submission of a proven transaction to the node. This will create a new block
     /// just for the new transaction and return the block number of the newly created block.
     async fn submit_proven_transaction(
         &self,
         proven_transaction: ProvenTransaction,
-        _tx_inputs: TransactionInputs, // Unnecessary for testing client itself.
+        _sealed_transaction_inputs: SealedTransactionInputs, /* Unnecessary for testing client
+                                                              * itself. */
     ) -> Result<BlockNumber, RpcError> {
         // TODO: add some basic validations to test error cases
+
+        // Record private-note attachment content the way a real node does: attachments are
+        // stored on-chain even for private notes, so `get_notes_by_id` must be able to serve
+        // them. The mock chain itself only keeps private note headers.
+        for note in proven_transaction.output_notes().iter() {
+            if let OutputNote::Private(private_note) = note
+                && !private_note.attachments().is_empty()
+            {
+                self.private_note_attachments
+                    .write()
+                    .insert(private_note.id(), private_note.attachments().clone());
+            }
+        }
 
         {
             let mut mock_chain = self.mock_chain.write();
@@ -451,14 +501,14 @@ impl NodeRpcClient for MockRpcApi {
     }
 
     /// Simulates the submission of a proven batch to the node by adding it to the mock chain's
-    /// pending batches. The `proposed_batch` and `transaction_inputs` arguments are accepted to
-    /// match the trait signature but are unused — the mock relies on the `ProvenBatch` alone,
-    /// matching how `submit_proven_transaction` ignores its `transaction_inputs`.
+    /// pending batches. The `proposed_batch` and `sealed_transaction_inputs` arguments are accepted
+    /// to match the trait signature but are unused — the mock relies on the `ProvenBatch`
+    /// alone, matching how `submit_proven_transaction` ignores its `sealed_transaction_inputs`.
     async fn submit_proven_batch(
         &self,
         proven_batch: ProvenBatch,
         _proposed_batch: ProposedBatch,
-        _transaction_inputs: Vec<TransactionInputs>,
+        _sealed_transaction_inputs: Vec<SealedTransactionInputs>,
     ) -> Result<BlockNumber, RpcError> {
         let mut mock_chain = self.mock_chain.write();
         mock_chain.add_pending_batch(proven_batch);
@@ -470,20 +520,30 @@ impl NodeRpcClient for MockRpcApi {
     }
 
     /// Returns the account proof for the specified account. The `known_code` and `vault` fields
-    /// of the request are ignored in the mock implementation: the latest account code and full
-    /// asset list are always returned, and the truncation flags are set when the data exceeds
+    /// are ignored: full account data is returned, with truncation flags set when it exceeds
     /// `oversize_threshold`.
     async fn get_account(
         &self,
         account_id: AccountId,
         request: GetAccountRequest,
     ) -> Result<(BlockNumber, AccountProof), RpcError> {
-        let mock_chain = self.mock_chain.read();
-
+        let current_chain = self.mock_chain.read();
+        let current_block_number = current_chain.latest_block_header().block_num();
         let block_number = match request.at {
             AccountStateAt::Block(number) => number,
-            AccountStateAt::ChainTip => mock_chain.latest_block_header().block_num(),
+            AccountStateAt::ChainTip => current_block_number,
         };
+        let historical_chain = match request.at {
+            AccountStateAt::Block(_) if block_number != current_block_number => Some(
+                self.historical_chains.read().get(&block_number).cloned().ok_or_else(|| {
+                    RpcError::InvalidResponse(alloc::format!(
+                        "no mock chain snapshot at block {block_number}"
+                    ))
+                })?,
+            ),
+            AccountStateAt::ChainTip | AccountStateAt::Block(_) => None,
+        };
+        let mock_chain = historical_chain.as_deref().unwrap_or(&*current_chain);
 
         let headers = if account_id.is_public() {
             let account = mock_chain.committed_account(account_id).unwrap();

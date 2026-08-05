@@ -86,7 +86,7 @@ impl NoteObserver for PswapChainObserver {
 
         // Nothing observed AND nothing consumed — correlator has no work.
         if chain_note_updates.is_empty()
-            && sync_update.note_updates.consumed_note_ids().next().is_none()
+            && sync_update.note_updates().consumed_note_ids().next().is_none()
         {
             return Ok(());
         }

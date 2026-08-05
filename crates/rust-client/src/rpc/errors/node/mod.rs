@@ -108,6 +108,7 @@ pub fn parse_node_error(
         | RpcEndpoint::Status
         | RpcEndpoint::GetLimits
         | RpcEndpoint::GetNetworkNoteStatus
+        | RpcEndpoint::GetTransactionEncryptionKey
         | RpcEndpoint::SubmitProvenBatch => None,
     }
 }

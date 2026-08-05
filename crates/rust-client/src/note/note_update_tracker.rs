@@ -365,6 +365,18 @@ impl NoteUpdateTracker {
         input_note_unspent_nullifiers.chain(output_note_unspent_nullifiers)
     }
 
+    /// Returns the block numbers containing input notes that remain unspent after this update.
+    pub(crate) fn unspent_input_note_block_numbers(
+        &self,
+    ) -> impl Iterator<Item = BlockNumber> + '_ {
+        self.input_notes
+            .values()
+            .filter(|update| !update.inner().is_consumed())
+            .filter_map(|update| {
+                update.inner().inclusion_proof().map(|proof| proof.location().block_num())
+            })
+    }
+
     /// Appends nullifiers to the per-account ordered nullifier list.
     ///
     /// Nullifiers from the same account must be in execution order; ordering across different
@@ -412,7 +424,7 @@ impl NoteUpdateTracker {
             input_note_record.inclusion_proof_received(inclusion_proof.clone(), metadata)?;
             input_note_record.block_header_received(block_header)?;
             if let Some(attachments) = attachments {
-                input_note_record.set_attachments(attachments.clone());
+                input_note_record.attachments_received(attachments.clone());
             }
 
             true
@@ -428,7 +440,7 @@ impl NoteUpdateTracker {
                 record.inclusion_proof_received(inclusion_proof.clone(), metadata)?;
                 record.block_header_received(block_header)?;
                 if let Some(attachments) = attachments {
-                    record.set_attachments(attachments.clone());
+                    record.attachments_received(attachments.clone());
                 }
 
                 // `InsertCommitted` so the now-known `note_id`/`nullifier` columns are persisted
@@ -486,8 +498,7 @@ impl NoteUpdateTracker {
         let note_id = note_header.id();
 
         if let Some(output_note) = self.get_output_note_by_id(note_id)
-            && !output_note.is_consumed()
-            && !output_note.is_committed()
+            && output_note.is_inclusion_pending()
             && let Some(nullifier) = output_note.nullifier()
         {
             output_note.nullifier_received(nullifier, block_num)?;

@@ -30,6 +30,9 @@ CREATE TABLE latest_account_headers (
     PRIMARY KEY (id),
     FOREIGN KEY (code_commitment) REFERENCES account_code(commitment)
 );
+-- SQLite does not index foreign key child columns automatically. Without this, account code garbage
+-- collection scans the whole table once per candidate commitment.
+CREATE INDEX idx_latest_account_headers_code_commitment ON latest_account_headers(code_commitment);
 
 -- Historical account headers: stores old headers that were replaced by newer states.
 -- Each row represents a previous account state that was superseded at replaced_at_nonce.
@@ -49,6 +52,7 @@ CREATE TABLE historical_account_headers (
     CONSTRAINT check_seed_nonzero CHECK (NOT (nonce = 0 AND account_seed IS NULL))
 );
 CREATE INDEX idx_historical_account_headers_id_replaced_at ON historical_account_headers(id, replaced_at_nonce DESC);
+CREATE INDEX idx_historical_account_headers_code_commitment ON historical_account_headers(code_commitment);
 
 -- ── Account storage (latest + historical) ────────────────────────────────
 
@@ -119,6 +123,7 @@ CREATE TABLE foreign_account_code(
     PRIMARY KEY (account_id),
     FOREIGN KEY (code_commitment) REFERENCES account_code(commitment)
 );
+CREATE INDEX idx_foreign_account_code_code_commitment ON foreign_account_code(code_commitment);
 
 -- ── Transactions ─────────────────────────────────────────────────────────
 

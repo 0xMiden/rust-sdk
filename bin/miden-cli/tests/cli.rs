@@ -510,7 +510,7 @@ fn account_inspect_resolves_procedure_names() {
         // Resolved procedures are shown with the package they came from.
         .stdout(contains("Package"))
         .stdout(contains("receive_asset"))
-        // `auth_tx` carries a signature in its package manifest, rendered in compact form.
+        // `auth_tx` carries a signature in its package manifest, rendered as its function type.
         .stdout(contains("auth_tx"))
         .stdout(contains("fn([felt; 4])"));
 }

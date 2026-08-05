@@ -23,7 +23,7 @@ use miden_client::{Client, PrettyPrint, Word, ZERO};
 use crate::commands::new_account::load_packages;
 use crate::config::{CliConfig, RpcConfig};
 use crate::errors::CliError;
-use crate::utils::{format_signature, parse_account_id};
+use crate::utils::parse_account_id;
 use crate::{client_binary_name, create_dynamic_table};
 
 pub const DEFAULT_ACCOUNT_ID_KEY: &str = "default_account_id";
@@ -270,8 +270,12 @@ async fn show_account<AUTH>(
 /// Placeholder shown when a procedure's name or signature could not be resolved from any package.
 const NO_VALUE: &str = "—";
 
-/// A single account procedure with its resolved name, signature, and originating package, if known.
-struct ResolvedProcedure {
+/// A single account procedure with its name, signature, and originating package, if known.
+///
+/// The optional fields are only populated for procedures whose MAST root was matched against a
+/// package export; for the rest only the MAST root is known.
+#[derive(Clone)]
+struct Procedure {
     mast_root: Word,
     name: Option<String>,
     signature: Option<String>,
@@ -296,21 +300,15 @@ async fn inspect_account<AUTH>(
     let code = account.code();
 
     let exports = collect_package_procedure_exports(packages);
-    let procedures: Vec<ResolvedProcedure> = code
+    let procedures: Vec<Procedure> = code
         .procedure_roots()
-        .map(|mast_root| match exports.get(&mast_root) {
-            Some(export) => ResolvedProcedure {
-                mast_root,
-                name: Some(export.name.clone()),
-                signature: export.signature.clone(),
-                package: Some(export.package.clone()),
-            },
-            None => ResolvedProcedure {
+        .map(|mast_root| {
+            exports.get(&mast_root).cloned().unwrap_or(Procedure {
                 mast_root,
                 name: None,
                 signature: None,
                 package: None,
-            },
+            })
         })
         .collect();
 
@@ -318,7 +316,7 @@ async fn inspect_account<AUTH>(
     // resolved. A name can only be matched once a package supplies it, so a miss may mean the
     // account does not expose it *or* that its defining package was not provided.
     if let Some(procedure) = procedure_filter {
-        let matches: Vec<&ResolvedProcedure> = procedures
+        let matches: Vec<&Procedure> = procedures
             .iter()
             .filter(|proc| proc.name.as_deref() == Some(procedure))
             .collect();
@@ -337,7 +335,7 @@ async fn inspect_account<AUTH>(
     }
 
     // Full listing: split resolved from unresolved, each keeping the account's procedure order.
-    let (resolved, unresolved): (Vec<&ResolvedProcedure>, Vec<&ResolvedProcedure>) =
+    let (resolved, unresolved): (Vec<&Procedure>, Vec<&Procedure>) =
         procedures.iter().partition(|proc| proc.name.is_some());
 
     println!(
@@ -363,7 +361,7 @@ async fn inspect_account<AUTH>(
     }
 
     if verbose {
-        let all: Vec<&ResolvedProcedure> = procedures.iter().collect();
+        let all: Vec<&Procedure> = procedures.iter().collect();
         print_disassembly(&all, code);
     }
 
@@ -372,7 +370,7 @@ async fn inspect_account<AUTH>(
 
 /// Prints a table of procedures with their resolved name, originating package, signature, and full
 /// MAST root.
-fn print_procedure_table(procedures: &[&ResolvedProcedure]) {
+fn print_procedure_table(procedures: &[&Procedure]) {
     let mut table = create_dynamic_table(&["Procedure", "Package", "Signature", "MAST Root"]);
     for proc in procedures {
         table.add_row(vec![
@@ -389,7 +387,7 @@ fn print_procedure_table(procedures: &[&ResolvedProcedure]) {
 ///
 /// Only the requested procedures are disassembled, so a single-procedure lookup does not pay to
 /// render the whole account.
-fn print_disassembly(procedures: &[&ResolvedProcedure], code: &AccountCode) {
+fn print_disassembly(procedures: &[&Procedure], code: &AccountCode) {
     let names: HashMap<Word, &str> = procedures
         .iter()
         .map(|proc| (proc.mast_root, proc.name.as_deref().unwrap_or(NO_VALUE)))
@@ -403,28 +401,22 @@ fn print_disassembly(procedures: &[&ResolvedProcedure], code: &AccountCode) {
     }
 }
 
-/// A procedure export resolved from a package: its name, rendered signature, and the package it
-/// came from.
-struct ProcedureExportInfo {
-    name: String,
-    signature: Option<String>,
-    package: String,
-}
-
-/// Builds a lookup from procedure MAST root to its resolved export info across the given packages.
+/// Builds a lookup from procedure MAST root to the procedure exported under it across the given
+/// packages.
 ///
 /// When the same MAST root is exported by more than one package the first is kept and a warning is
 /// emitted, so the resolved metadata is never silently taken from an ambiguous source.
-fn collect_package_procedure_exports(packages: &[Package]) -> HashMap<Word, ProcedureExportInfo> {
-    let mut exports: HashMap<Word, ProcedureExportInfo> = HashMap::new();
+fn collect_package_procedure_exports(packages: &[Package]) -> HashMap<Word, Procedure> {
+    let mut exports: HashMap<Word, Procedure> = HashMap::new();
     for package in packages {
         let package_name = package.name.to_string();
         for export in package.manifest.exports() {
             if let PackageExport::Procedure(procedure) = export {
                 match exports.entry(procedure.digest) {
                     Entry::Occupied(existing) => {
-                        let first = &existing.get().package;
-                        if *first != package_name {
+                        // Entries in the map always carry the package they were resolved from.
+                        let first = existing.get().package.as_deref().unwrap_or_default();
+                        if first != package_name {
                             eprintln!(
                                 "Warning: procedure {} is exported by multiple packages ({first}, \
                                  {package_name}); resolving it from {first}.",
@@ -433,21 +425,11 @@ fn collect_package_procedure_exports(packages: &[Package]) -> HashMap<Word, Proc
                         }
                     },
                     Entry::Vacant(slot) => {
-                        let signature = procedure.signature.as_ref().map(|sig| {
-                            let mut params = Vec::with_capacity(sig.params.len());
-                            for ty in &sig.params {
-                                params.push(ty.size_in_felts());
-                            }
-                            let mut results = Vec::with_capacity(sig.results.len());
-                            for ty in &sig.results {
-                                results.push(ty.size_in_felts());
-                            }
-                            format_signature(&params, &results)
-                        });
-                        slot.insert(ProcedureExportInfo {
-                            name: export.name().to_string(),
-                            signature,
-                            package: package_name.clone(),
+                        slot.insert(Procedure {
+                            mast_root: procedure.digest,
+                            name: Some(export.name().to_string()),
+                            signature: procedure.signature.as_ref().map(ToString::to_string),
+                            package: Some(package_name.clone()),
                         });
                     },
                 }

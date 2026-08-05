@@ -463,7 +463,7 @@ miden-client call 0x4614b8bf575eab71455e97bd394e90:increment-count --package tar
 The command first prints the procedure's signature and its return values, then the effects the call has on the account:
 
 ```sh
-Raw Signature: increment-count() -> (Felt)
+Raw Signature: extern "fast" fn() -> felt
 
 Result: 1
 The transaction will have the following effects:

@@ -11,12 +11,7 @@ use miden_client::{Client, Deserializable, Felt, Word};
 
 use crate::advice_inputs::load_advice_map_from_file;
 use crate::errors::CliError;
-use crate::utils::{
-    format_signature,
-    parse_account_id,
-    print_executed_program_stack,
-    print_executed_transaction,
-};
+use crate::utils::{parse_account_id, print_executed_program_stack, print_executed_transaction};
 
 // CALL COMMAND
 // ================================================================================================
@@ -243,7 +238,7 @@ fn print_manifest_signature(package: &Package, procedure_name: &str) -> Procedur
                 result_felts.push(ty.size_in_felts());
             }
 
-            println!("Raw Signature: {}\n", format_signature(&param_felts, &result_felts));
+            println!("Raw Signature: {sig}\n");
 
             // The stack is flat, so the counts that matter are the flattened widths: a `Word`
             // parameter takes four stack slots, not one.

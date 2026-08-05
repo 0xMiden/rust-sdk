@@ -6,9 +6,10 @@
 
 use std::boxed::Box;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::string::{String, ToString};
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 use std::vec::Vec;
 
 use db_management::pool_manager::{Pool, SqlitePoolManager};
@@ -19,6 +20,7 @@ use db_management::utils::{
     remove_setting,
     set_setting,
 };
+use deadpool::Runtime;
 use miden_client::Word;
 use miden_client::account::{
     Account,
@@ -73,13 +75,18 @@ pub use builder::ClientBuilderSqliteExt;
 // SQLITE STORE
 // ================================================================================================
 
-/// Represents a pool of connections with an `SQLite` database. The pool is used to interact
-/// concurrently with the underlying database in a safe and efficient manner.
+/// `SQLite`-backed [`Store`] implementation.
+///
+/// # Single accessor
+///
+/// A database file must be reached through at most one live `SqliteStore` at a time, across every
+/// process. The instance keeps account SMT state in memory and only rebuilds it at construction, so
+/// another accessor's writes stay invisible to this one and its cached roots go stale.
 ///
 /// Current table definitions can be found at `store.sql` migration file.
 pub struct SqliteStore {
     pub(crate) pool: Pool,
-    database_filepath: String,
+    database_filepath: PathBuf,
     smt_forest: Arc<RwLock<AccountSmtForest>>,
 }
 
@@ -89,22 +96,35 @@ impl SqliteStore {
 
     /// Returns a new instance of [Store] instantiated with the specified configuration options.
     pub async fn new(database_filepath: PathBuf) -> Result<Self, StoreError> {
-        let database_filepath_str = database_filepath.to_string_lossy().into_owned();
-        let sqlite_pool_manager = SqlitePoolManager::new(database_filepath);
+        if database_filepath.to_str().is_none() {
+            return Err(StoreError::DatabaseError(format!(
+                "database path is not valid UTF-8: {}",
+                database_filepath.display()
+            )));
+        }
+
+        let sqlite_pool_manager = SqlitePoolManager::new(database_filepath.clone());
         let pool = Pool::builder(sqlite_pool_manager)
+            .max_size(1)
+            .wait_timeout(Some(Duration::from_secs(30)))
+            .runtime(Runtime::Tokio1)
             .build()
             .map_err(|e| StoreError::DatabaseError(e.to_string()))?;
 
-        let conn = pool.get().await.map_err(|e| StoreError::DatabaseError(e.to_string()))?;
+        // Scoped so the connection returns to the pool before the SMT forest initialization below
+        // reaches for it. The pool holds a single connection.
+        {
+            let conn = pool.get().await.map_err(|e| StoreError::DatabaseError(e.to_string()))?;
 
-        conn.interact(apply_migrations)
-            .await
-            .map_err(|e| StoreError::DatabaseError(e.to_string()))?
-            .map_err(|e| StoreError::DatabaseError(e.to_string()))?;
+            conn.interact(apply_migrations)
+                .await
+                .map_err(|e| StoreError::DatabaseError(e.to_string()))?
+                .map_err(|e| StoreError::DatabaseError(e.to_string()))?;
+        }
 
         let store = SqliteStore {
             pool,
-            database_filepath: database_filepath_str,
+            database_filepath,
             smt_forest: Arc::new(RwLock::new(AccountSmtForest::new())),
         };
 
@@ -123,6 +143,11 @@ impl SqliteStore {
         }
 
         Ok(store)
+    }
+
+    /// Returns the path of the database file backing this store.
+    pub fn database_filepath(&self) -> &Path {
+        &self.database_filepath
     }
 
     /// Interacts with the database by executing the provided function on a connection from the
@@ -153,7 +178,9 @@ impl SqliteStore {
 #[async_trait::async_trait]
 impl Store for SqliteStore {
     fn identifier(&self) -> &str {
-        &self.database_filepath
+        self.database_filepath
+            .to_str()
+            .expect("rejected by SqliteStore::new when not UTF-8")
     }
 
     fn get_current_timestamp(&self) -> Option<u64> {

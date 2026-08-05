@@ -1,4 +1,4 @@
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::ToString;
 use alloc::vec::Vec;
 
@@ -73,8 +73,21 @@ pub struct TransactionRecord {
 impl TransactionRecord {
     /// Returns the `(nullifier, note_id)` references of the public input notes this transaction
     /// consumed, letting a client fetch by id consumed notes it never tracked.
-    pub fn consumed_note_refs(&self) -> &[(Nullifier, NoteId)] {
-        &self.consumed_note_refs
+    ///
+    /// Only yields references whose nullifier appears in the transaction header's input notes:
+    /// a reference the node can't tie to an actually-consumed input is dropped, so a misbehaving
+    /// node can't attribute an unrelated note to this transaction's account.
+    pub fn trusted_consumed_note_refs(&self) -> impl Iterator<Item = (Nullifier, NoteId)> + '_ {
+        let consumed_nullifiers: BTreeSet<Nullifier> = self
+            .transaction_header
+            .input_notes()
+            .iter()
+            .map(InputNoteCommitment::nullifier)
+            .collect();
+        self.consumed_note_refs
+            .iter()
+            .copied()
+            .filter(move |(nullifier, _)| consumed_nullifiers.contains(nullifier))
     }
 }
 

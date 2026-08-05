@@ -12,7 +12,6 @@ use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrDelta, PartialMmr};
 use miden_protocol::note::{NoteAttachments, NoteId, NoteTag, Nullifier};
-use miden_protocol::transaction::InputNoteCommitment;
 use tracing::info;
 
 use super::state_sync_update::{TransactionUpdateTracker, build_account_patch};
@@ -402,30 +401,23 @@ impl StateSync {
         note_updates: &mut NoteUpdateTracker,
         transactions: &[RpcTransactionRecord],
     ) -> Result<(), ClientError> {
-        // Only trust a reference whose nullifier the transaction actually consumed, so a node
-        // can't attribute an unrelated note to this account. Skip references whose note the
-        // client already tracks (e.g. discovered by tag), to avoid clobbering full-detail records
-        // and fetching bodies we already hold.
-        let recoverable_consumed_notes: BTreeMap<NoteId, RecoverableConsumedNote> = transactions
-            .iter()
-            .flat_map(|tx| {
-                let consumer = tx.transaction_header.account_id();
-                let block_num = tx.block_num;
-                let consumed_nullifiers: BTreeSet<Nullifier> = tx
-                    .transaction_header
-                    .input_notes()
-                    .iter()
-                    .map(InputNoteCommitment::nullifier)
-                    .collect();
-                tx.consumed_note_refs()
-                    .iter()
-                    .filter(move |&&(nullifier, _)| consumed_nullifiers.contains(&nullifier))
-                    .map(move |&(nullifier, note_id)| {
-                        (note_id, RecoverableConsumedNote { nullifier, consumer, block_num })
-                    })
-            })
-            .filter(|(note_id, _)| !note_updates.tracks_note(*note_id))
-            .collect();
+        let mut recoverable_consumed_notes: BTreeMap<NoteId, RecoverableConsumedNote> =
+            BTreeMap::new();
+        for tx in transactions {
+            for (nullifier, note_id) in tx.trusted_consumed_note_refs() {
+                recoverable_consumed_notes.insert(
+                    note_id,
+                    RecoverableConsumedNote {
+                        nullifier,
+                        consumer: tx.transaction_header.account_id(),
+                        block_num: tx.block_num,
+                    },
+                );
+            }
+        }
+        // Skip references whose note the client already tracks (e.g. discovered by tag), to avoid
+        // clobbering full-detail records and fetching bodies we already hold.
+        recoverable_consumed_notes.retain(|note_id, _| !note_updates.tracks_note(*note_id));
 
         let note_ids: Vec<NoteId> = recoverable_consumed_notes.keys().copied().collect();
         for fetched in self.rpc_api.get_notes_by_id(&note_ids).await? {

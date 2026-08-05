@@ -49,6 +49,17 @@ const INPUT_NOTE_BATCH_SIZE: usize = 50;
 const OUTPUT_NOTE_BATCH_SIZE: usize = 80;
 const SCRIPT_BATCH_SIZE: usize = 200;
 
+// NOTE SCRIPT UPSERT
+// ================================================================================================
+
+// `input_notes.script_root` references `notes_scripts(script_root)`, so replacing a script row
+// deletes the parent and forces a foreign key check against every referencing note. Updating the
+// row in place keeps the parent alive, so no check runs at all.
+const UPSERT_NOTE_SCRIPT_QUERY: &str = "INSERT INTO `notes_scripts` \
+     (`script_root`, `serialized_note_script`) VALUES (?, ?) \
+     ON CONFLICT(`script_root`) DO UPDATE SET \
+     `serialized_note_script` = excluded.`serialized_note_script`";
+
 #[cfg(test)]
 mod tests;
 
@@ -307,9 +318,7 @@ pub(super) fn upsert_input_note_tx(
         consumer_account_id,
     } = serialize_input_note(note);
 
-    const SCRIPT_QUERY: &str =
-        insert_sql!(notes_scripts { script_root, serialized_note_script } | REPLACE);
-    tx.prepare_cached(SCRIPT_QUERY)
+    tx.prepare_cached(UPSERT_NOTE_SCRIPT_QUERY)
         .into_store_error()?
         .execute(params![script_root, script])
         .into_store_error()?;
@@ -615,7 +624,7 @@ pub(crate) fn apply_note_updates_tx(
     Ok(())
 }
 
-/// Batch-insert note scripts using multi-row INSERT OR REPLACE.
+/// Batch-upsert note scripts using a multi-row insert.
 /// Multi-row inserts reduce per-statement overhead and show faster insertion times than
 /// individual inserts.
 fn batch_upsert_scripts(
@@ -630,8 +639,10 @@ fn batch_upsert_scripts(
     for chunk in entries.chunks(SCRIPT_BATCH_SIZE) {
         let placeholders = vec!["(?, ?)"; chunk.len()].join(", ");
         let query = format!(
-            "INSERT OR REPLACE INTO `notes_scripts` (`script_root`, `serialized_note_script`) \
-             VALUES {placeholders}"
+            "INSERT INTO `notes_scripts` (`script_root`, `serialized_note_script`) \
+             VALUES {placeholders} \
+             ON CONFLICT(`script_root`) DO UPDATE SET \
+             `serialized_note_script` = excluded.`serialized_note_script`"
         );
         let mut param_values: Vec<Value> = Vec::with_capacity(chunk.len() * 2);
         for (root, script) in chunk {
@@ -797,14 +808,12 @@ fn batch_update_output_note_states(
 }
 
 /// Inserts the provided note script into the database, if the script already exists, it will be
-/// replaced.
+/// updated.
 pub(super) fn upsert_note_script_tx(
     tx: &Transaction<'_>,
     note_script: &NoteScript,
 ) -> Result<(), StoreError> {
-    const QUERY: &str =
-        insert_sql!(notes_scripts { script_root, serialized_note_script } | REPLACE);
-    tx.prepare_cached(QUERY)
+    tx.prepare_cached(UPSERT_NOTE_SCRIPT_QUERY)
         .into_store_error()?
         .execute(params![note_script.root().to_bytes(), note_script.to_bytes()])
         .into_store_error()?;

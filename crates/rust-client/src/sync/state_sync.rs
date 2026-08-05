@@ -420,6 +420,10 @@ impl StateSync {
         recoverable_consumed_notes.retain(|note_id, _| !note_updates.tracks_note(*note_id));
 
         let note_ids: Vec<NoteId> = recoverable_consumed_notes.keys().copied().collect();
+        if note_ids.is_empty() {
+            return Ok(());
+        }
+
         for fetched in self.rpc_api.get_notes_by_id(&note_ids).await? {
             match fetched {
                 FetchedNote::Public(note, _) => {

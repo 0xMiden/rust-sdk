@@ -109,17 +109,15 @@ impl TryFrom<proto::rpc::TransactionRecord> for TransactionRecord {
             .consumed_note_refs
             .into_iter()
             .map(|r| {
-                let word: Word = r
+                let nullifier: Nullifier = r
                     .nullifier
                     .ok_or(RpcError::ExpectedDataMissing("consumed_note_ref.nullifier".into()))?
-                    .try_into()
-                    .map_err(|e: RpcConversionError| RpcError::InvalidResponse(e.to_string()))?;
-                let note_id = r
+                    .try_into()?;
+                let note_id: NoteId = r
                     .note_id
                     .ok_or(RpcError::ExpectedDataMissing("consumed_note_ref.note_id".into()))?
-                    .try_into()
-                    .map_err(|e: RpcConversionError| RpcError::InvalidResponse(e.to_string()))?;
-                Ok((Nullifier::from_raw(word), note_id))
+                    .try_into()?;
+                Ok((nullifier, note_id))
             })
             .collect::<Result<Vec<_>, RpcError>>()?;
 

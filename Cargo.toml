@@ -40,15 +40,15 @@ miden-client              = { default-features = false, path = "crates/rust-clie
 miden-client-sqlite-store = { default-features = false, path = "crates/sqlite-store", version = "0.16.0-alpha.1" }
 
 # Miden protocol dependencies
-miden-agglayer  = { default-features = false, git = "https://github.com/0xMiden/protocol.git", rev = "4ea04b4ca05c7f41a3f03b1132636203186c1f5d" }
-miden-protocol  = { default-features = false, git = "https://github.com/0xMiden/protocol.git", rev = "4ea04b4ca05c7f41a3f03b1132636203186c1f5d" }
-miden-standards = { default-features = false, git = "https://github.com/0xMiden/protocol.git", rev = "4ea04b4ca05c7f41a3f03b1132636203186c1f5d" }
-miden-testing   = { default-features = false, git = "https://github.com/0xMiden/protocol.git", rev = "4ea04b4ca05c7f41a3f03b1132636203186c1f5d" }
-miden-tx        = { default-features = false, git = "https://github.com/0xMiden/protocol.git", rev = "4ea04b4ca05c7f41a3f03b1132636203186c1f5d" }
-miden-tx-batch  = { default-features = false, git = "https://github.com/0xMiden/protocol.git", rev = "4ea04b4ca05c7f41a3f03b1132636203186c1f5d" }
+miden-agglayer  = { default-features = false, version = "0.16.0-rc.2" }
+miden-protocol  = { default-features = false, version = "0.16.0-rc.2" }
+miden-standards = { default-features = false, version = "0.16.0-rc.2" }
+miden-testing   = { default-features = false, version = "0.16.0-rc.2" }
+miden-tx        = { default-features = false, version = "0.16.0-rc.2" }
+miden-tx-batch  = { default-features = false, version = "0.16.0-rc.2" }
 
 # Miden node dependencies
-miden-node-proto-build           = { default-features = false, git = "https://github.com/0xMiden/node.git", rev = "ba437302af153b90375dfe387bdf1e01c20179d5" }
+miden-node-proto-build           = { default-features = false, git = "https://github.com/0xMiden/node.git", rev = "a54d1a0725e427e9a985b81183cd50139be4c7ec" }
 miden-note-transport-proto-build = { default-features = false, version = "0.5.0-alpha.1" }
 
 # Miden debug dependency

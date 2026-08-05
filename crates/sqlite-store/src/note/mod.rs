@@ -222,12 +222,17 @@ impl SqliteStore {
     pub(crate) fn get_unspent_input_note_nullifiers(
         conn: &mut Connection,
     ) -> Result<Vec<Nullifier>, StoreError> {
+        // Listing the unspent states positively lets the query use `idx_input_notes_state`; a
+        // negated `NOT IN` over the consumed states cannot use it and scans the table.
         const QUERY: &str =
-            "SELECT nullifier FROM input_notes WHERE state_discriminant NOT IN rarray(?)";
+            "SELECT nullifier FROM input_notes WHERE state_discriminant IN rarray(?)";
         let unspent_filters = Rc::new(vec![
-            Value::from(InputNoteState::STATE_CONSUMED_AUTHENTICATED_LOCAL),
-            Value::from(InputNoteState::STATE_CONSUMED_UNAUTHENTICATED_LOCAL),
-            Value::from(InputNoteState::STATE_CONSUMED_EXTERNAL),
+            Value::from(InputNoteState::STATE_EXPECTED),
+            Value::from(InputNoteState::STATE_UNVERIFIED),
+            Value::from(InputNoteState::STATE_COMMITTED),
+            Value::from(InputNoteState::STATE_INVALID),
+            Value::from(InputNoteState::STATE_PROCESSING_AUTHENTICATED),
+            Value::from(InputNoteState::STATE_PROCESSING_UNAUTHENTICATED),
         ]);
         conn.prepare(QUERY)
             .into_store_error()?

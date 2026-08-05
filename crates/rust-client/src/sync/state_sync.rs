@@ -11,7 +11,7 @@ use miden_protocol::block::account_tree::AccountIdKey;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrDelta, PartialMmr};
-use miden_protocol::note::{Note, NoteAttachments, NoteId, NoteTag, Nullifier};
+use miden_protocol::note::{NoteAttachments, NoteId, NoteTag, Nullifier};
 use miden_protocol::transaction::InputNoteCommitment;
 use tracing::info;
 
@@ -76,11 +76,11 @@ struct FetchedSyncData {
     transactions: Vec<RpcTransactionRecord>,
 }
 
-/// A note a watched account consumed, carrying what recovery needs to fetch and attribute it.
+/// A note a watched account consumed, carrying what recovery needs to validate and attribute it.
 ///
-/// Enriches the node's `(nullifier, note_id)` reference with the consuming account and block.
+/// Complements the note id (under which recovery keys these entries) from the node's
+/// `(nullifier, note_id)` reference with the consuming account and block.
 struct RecoverableConsumedNote {
-    note_id: NoteId,
     nullifier: Nullifier,
     consumer: AccountId,
     block_num: BlockNumber,
@@ -403,8 +403,10 @@ impl StateSync {
         transactions: &[RpcTransactionRecord],
     ) -> Result<(), ClientError> {
         // Only trust a reference whose nullifier the transaction actually consumed, so a node
-        // can't attribute an unrelated note to this account.
-        let recoverable_consumed_notes: Vec<RecoverableConsumedNote> = transactions
+        // can't attribute an unrelated note to this account. Skip references whose note the
+        // client already tracks (e.g. discovered by tag), to avoid clobbering full-detail records
+        // and fetching bodies we already hold.
+        let recoverable_consumed_notes: BTreeMap<NoteId, RecoverableConsumedNote> = transactions
             .iter()
             .flat_map(|tx| {
                 let consumer = tx.transaction_header.account_id();
@@ -418,28 +420,34 @@ impl StateSync {
                 tx.consumed_note_refs()
                     .iter()
                     .filter(move |&&(nullifier, _)| consumed_nullifiers.contains(&nullifier))
-                    .map(move |&(nullifier, note_id)| RecoverableConsumedNote {
-                        note_id,
-                        nullifier,
-                        consumer,
-                        block_num,
+                    .map(move |&(nullifier, note_id)| {
+                        (note_id, RecoverableConsumedNote { nullifier, consumer, block_num })
                     })
             })
+            .filter(|(note_id, _)| !note_updates.tracks_note(*note_id))
             .collect();
 
-        // Skip references whose note the client already tracks (e.g. discovered by tag), to avoid
-        // clobbering full-detail records and fetching bodies we already hold.
-        let note_ids: Vec<NoteId> = recoverable_consumed_notes
-            .iter()
-            .filter(|note| !note_updates.tracks_note(note.note_id))
-            .map(|note| note.note_id)
-            .collect();
-
-        let mut bodies: BTreeMap<NoteId, Note> = BTreeMap::new();
+        let note_ids: Vec<NoteId> = recoverable_consumed_notes.keys().copied().collect();
         for fetched in self.rpc_api.get_notes_by_id(&note_ids).await? {
             match fetched {
                 FetchedNote::Public(note, _) => {
-                    bodies.insert(note.id(), note);
+                    let Some(reference) = recoverable_consumed_notes.get(&note.id()) else {
+                        continue;
+                    };
+                    // Make sure the fetched body actually hashes to the nullifier the transaction
+                    // consumed, so a byzantine node can't attribute an unrelated note here.
+                    if note.nullifier() != reference.nullifier {
+                        return Err(RpcError::InvalidResponse(format!(
+                            "node returned note {} whose nullifier doesn't match the consumed reference",
+                            note.id()
+                        ))
+                        .into());
+                    }
+                    note_updates.insert_consumed_public_note(
+                        note,
+                        reference.consumer,
+                        reference.block_num,
+                    )?;
                 },
                 FetchedNote::Private(note_id, ..) => {
                     return Err(RpcError::InvalidResponse(format!(
@@ -447,26 +455,6 @@ impl StateSync {
                     ))
                     .into());
                 },
-            }
-        }
-
-        for recoverable in recoverable_consumed_notes {
-            if let Some(note) = bodies.get(&recoverable.note_id) {
-                // The node returned a body for this id; make sure it actually hashes to the
-                // nullifier the transaction consumed, so a byzantine node can't attribute an
-                // unrelated note here.
-                if note.nullifier() != recoverable.nullifier {
-                    return Err(RpcError::InvalidResponse(format!(
-                        "node returned note {} whose nullifier doesn't match the consumed reference",
-                        recoverable.note_id
-                    ))
-                    .into());
-                }
-                note_updates.insert_consumed_public_note(
-                    note.clone(),
-                    recoverable.consumer,
-                    recoverable.block_num,
-                )?;
             }
         }
 

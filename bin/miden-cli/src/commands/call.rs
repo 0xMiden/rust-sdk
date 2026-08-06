@@ -11,7 +11,12 @@ use miden_client::{Client, Deserializable, Felt, Word};
 
 use crate::advice_inputs::load_advice_map_from_file;
 use crate::errors::CliError;
-use crate::utils::{parse_account_id, print_executed_program_stack, print_executed_transaction};
+use crate::utils::{
+    parse_account_id,
+    print_executed_program_stack,
+    print_executed_transaction,
+    split_procedure_target,
+};
 
 // CALL COMMAND
 // ================================================================================================
@@ -53,7 +58,8 @@ impl CallCmd {
             ));
         }
 
-        let (account_str, procedure) = self.target.split_once(':').ok_or_else(|| {
+        let (account_str, procedure) = split_procedure_target(&self.target);
+        let procedure = procedure.ok_or_else(|| {
             CliError::InvalidArgument(format!(
                 "Expected `<ACCOUNT_ID>:<PROCEDURE>`, got '{}'.",
                 self.target

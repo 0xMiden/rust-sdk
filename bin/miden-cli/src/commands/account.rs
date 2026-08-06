@@ -14,6 +14,7 @@ use miden_client::account::{
 };
 use miden_client::address::{Address, AddressInterface, NetworkId, RoutingParameters};
 use miden_client::asset::Asset;
+use miden_client::rpc::domain::account::GetAccountRequest;
 use miden_client::rpc::{GrpcClient, NodeRpcClient, VerifyingRpcClient};
 use miden_client::transaction::{AccountComponentInterface, AccountInterface};
 use miden_client::utils::base_units_to_tokens;
@@ -23,7 +24,7 @@ use miden_client::{Client, PrettyPrint, Word, ZERO};
 use crate::commands::new_account::load_packages;
 use crate::config::{CliConfig, RpcConfig};
 use crate::errors::CliError;
-use crate::utils::parse_account_id;
+use crate::utils::{parse_account_id, split_procedure_target};
 use crate::{client_binary_name, create_dynamic_table};
 
 pub const DEFAULT_ACCOUNT_ID_KEY: &str = "default_account_id";
@@ -87,12 +88,7 @@ impl AccountCmd {
                 default: None,
                 ..
             } => {
-                // Account IDs (hex or bech32) never contain a colon, so the first one separates the
-                // ID from an optional procedure name.
-                let (id, procedure) = match target.split_once(':') {
-                    Some((id, procedure)) => (id, Some(procedure)),
-                    None => (target.as_str(), None),
-                };
+                let (id, procedure) = split_procedure_target(target);
                 let account_id = parse_account_id(&client, id).await?;
 
                 // Explicit `--package` files take precedence over the configured packages
@@ -268,14 +264,14 @@ async fn show_account<AUTH>(
 // ================================================================================================
 
 /// Placeholder shown when a procedure's name or signature could not be resolved from any package.
-const NO_VALUE: &str = "—";
+const NO_VALUE: &str = "<unresolved>";
 
 /// A single account procedure with its name, signature, and originating package, if known.
 ///
 /// The optional fields are only populated for procedures whose MAST root was matched against a
 /// package export; for the rest only the MAST root is known.
 #[derive(Clone)]
-struct Procedure {
+struct ProcedureMetadata {
     mast_root: Word,
     name: Option<String>,
     signature: Option<String>,
@@ -296,14 +292,13 @@ async fn inspect_account<AUTH>(
     packages: &[Package],
     verbose: bool,
 ) -> Result<(), CliError> {
-    let account = load_account(client, account_id, rpc_config).await?;
-    let code = account.code();
+    let code = resolve_account_code(client, account_id, rpc_config).await?;
 
     let exports = collect_package_procedure_exports(packages);
-    let procedures: Vec<Procedure> = code
+    let procedures: Vec<ProcedureMetadata> = code
         .procedure_roots()
         .map(|mast_root| {
-            exports.get(&mast_root).cloned().unwrap_or(Procedure {
+            exports.get(&mast_root).cloned().unwrap_or(ProcedureMetadata {
                 mast_root,
                 name: None,
                 signature: None,
@@ -316,7 +311,7 @@ async fn inspect_account<AUTH>(
     // resolved. A name can only be matched once a package supplies it, so a miss may mean the
     // account does not expose it *or* that its defining package was not provided.
     if let Some(procedure) = procedure_filter {
-        let matches: Vec<&Procedure> = procedures
+        let matches: Vec<&ProcedureMetadata> = procedures
             .iter()
             .filter(|proc| proc.name.as_deref() == Some(procedure))
             .collect();
@@ -329,13 +324,13 @@ async fn inspect_account<AUTH>(
         }
         print_procedure_table(&matches);
         if verbose {
-            print_disassembly(&matches, code);
+            print_disassembly(&matches, &code);
         }
         return Ok(());
     }
 
     // Full listing: split resolved from unresolved, each keeping the account's procedure order.
-    let (resolved, unresolved): (Vec<&Procedure>, Vec<&Procedure>) =
+    let (resolved, unresolved): (Vec<&ProcedureMetadata>, Vec<&ProcedureMetadata>) =
         procedures.iter().partition(|proc| proc.name.is_some());
 
     println!(
@@ -361,8 +356,8 @@ async fn inspect_account<AUTH>(
     }
 
     if verbose {
-        let all: Vec<&Procedure> = procedures.iter().collect();
-        print_disassembly(&all, code);
+        let all: Vec<&ProcedureMetadata> = procedures.iter().collect();
+        print_disassembly(&all, &code);
     }
 
     Ok(())
@@ -370,7 +365,7 @@ async fn inspect_account<AUTH>(
 
 /// Prints a table of procedures with their resolved name, originating package, signature, and full
 /// MAST root.
-fn print_procedure_table(procedures: &[&Procedure]) {
+fn print_procedure_table(procedures: &[&ProcedureMetadata]) {
     let mut table = create_dynamic_table(&["Procedure", "Package", "Signature", "MAST Root"]);
     for proc in procedures {
         table.add_row(vec![
@@ -387,7 +382,7 @@ fn print_procedure_table(procedures: &[&Procedure]) {
 ///
 /// Only the requested procedures are disassembled, so a single-procedure lookup does not pay to
 /// render the whole account.
-fn print_disassembly(procedures: &[&Procedure], code: &AccountCode) {
+fn print_disassembly(procedures: &[&ProcedureMetadata], code: &AccountCode) {
     let names: HashMap<Word, &str> = procedures
         .iter()
         .map(|proc| (proc.mast_root, proc.name.as_deref().unwrap_or(NO_VALUE)))
@@ -406,8 +401,8 @@ fn print_disassembly(procedures: &[&Procedure], code: &AccountCode) {
 ///
 /// When the same MAST root is exported by more than one package the first is kept and a warning is
 /// emitted, so the resolved metadata is never silently taken from an ambiguous source.
-fn collect_package_procedure_exports(packages: &[Package]) -> HashMap<Word, Procedure> {
-    let mut exports: HashMap<Word, Procedure> = HashMap::new();
+fn collect_package_procedure_exports(packages: &[Package]) -> HashMap<Word, ProcedureMetadata> {
+    let mut exports: HashMap<Word, ProcedureMetadata> = HashMap::new();
     for package in packages {
         let package_name = package.name.to_string();
         for export in package.manifest.exports() {
@@ -425,7 +420,7 @@ fn collect_package_procedure_exports(packages: &[Package]) -> HashMap<Word, Proc
                         }
                     },
                     Entry::Vacant(slot) => {
-                        slot.insert(Procedure {
+                        slot.insert(ProcedureMetadata {
                             mast_root: procedure.digest,
                             name: Some(export.name().to_string()),
                             signature: procedure.signature.as_ref().map(ToString::to_string),
@@ -483,6 +478,37 @@ fn collect_masp_files(dir: &Path, paths: &mut Vec<PathBuf>) -> Result<(), CliErr
 
 // HELPERS
 // ================================================================================================
+
+/// Resolves the code of `account_id`, falling back to the network when the client does not track
+/// the account locally. The default request carries no vault or storage, so only the code is
+/// fetched.
+async fn resolve_account_code<AUTH>(
+    client: &Client<AUTH>,
+    account_id: AccountId,
+    rpc_config: &RpcConfig,
+) -> Result<AccountCode, CliError> {
+    if let Some(code) = client.get_account_code(account_id).await? {
+        return Ok(code);
+    }
+
+    println!("Account {account_id} is not tracked by the client. Fetching from the network...");
+
+    let rpc_client = VerifyingRpcClient::new(GrpcClient::new(
+        &rpc_config.endpoint.clone().into(),
+        rpc_config.timeout_ms,
+    ));
+
+    let (_, account_proof) = rpc_client
+        .get_account(account_id, GetAccountRequest::new())
+        .await
+        .map_err(|err| {
+            CliError::Input(format!("Unable to fetch account {account_id} from the network: {err}"))
+        })?;
+
+    account_proof.account_code().cloned().ok_or(CliError::Input(format!(
+        "Account {account_id} is private and not tracked by the client",
+    )))
+}
 
 /// Loads the account for `account_id`, falling back to fetching it from the network when the client
 /// does not track it locally.

@@ -4,6 +4,7 @@
 
 ### Breaking Changes
 
+* [BREAKING][type][rust] `rpc::domain::transaction::TransactionRecord` gained a non-public field, so it can no longer be constructed with a struct literal outside the crate ([#2300](https://github.com/0xMiden/rust-sdk/pull/2300)).
 * [BREAKING][rust] `StateSyncUpdate` is now immutable once built: its `block_num`, `partial_blockchain_updates`, `note_updates`, `transaction_updates` and `account_updates` fields are private and it no longer implements `Default`. Build one with `StateSyncUpdate::from_parts`, read it through the same-named accessors, and take ownership of the contents with `into_parts` ([#2297](https://github.com/0xMiden/rust-sdk/pull/2297)).
 * [BREAKING][param][rust] `PartialBlockchainUpdates::insert` no longer takes the block's MMR authentication nodes; stage them separately with the new `extend_authentication_nodes` ([#2297](https://github.com/0xMiden/rust-sdk/pull/2297)).
 * [BREAKING][rust] Transaction inputs are now sealed before submission. The client fetches the validator set's shared encryption key on first submission and verifies its validator attestations against the validator set committed in the chain tip before using it. A client must be synced far enough to have a genesis header and a chain-tip header locally before it can submit. `NodeRpcClient::submit_proven_transaction` and `NodeRpcClient::submit_proven_batch` now take `SealedTransactionInputs` instead of `TransactionInputs`.
@@ -16,6 +17,7 @@
 
 ### Enhancements
 
+* [FEATURE][rust] A client that only watches a public account now recovers notes the account consumed authenticated, even when it never tracked them by tag. During sync it reads the note references the node attaches to the account's transactions, fetches each note body by id, and surfaces it through `InputNoteReader`. Requires node `0.15.1` ([#2300](https://github.com/0xMiden/rust-sdk/pull/2300)).
 * [FEATURE][cli] Added a `--payback-note-type` option to `swap` so the payback note can be created as public or private (defaults to private). Public payback works without any off-band advice now that SWAP derives the payback recipient deterministically ([#2190](https://github.com/0xMiden/rust-sdk/pull/2190)).
 * [FEATURE][rust] `Client::get_consumable_notes(Some(account_id))` now screens only that account instead of screening every tracked account and discarding the rest, so its cost no longer grows with the number of tracked accounts. Added `NoteScreener::get_batch_consumability_for_account` to screen notes against a single account ([#2338](https://github.com/0xMiden/rust-sdk/pull/2338)).
 * [FEATURE][rust] Added the `miden_client::rpc::encryption` module backing encrypted submissions: `TransactionEncryptionKey`, `AttestedTransactionEncryptionKey` (whose `verify` is the only path to a usable key), `ValidatorAttestation`, `NextTransactionEncryptionKey`, `SealedTransactionInputs` and `seal_transaction_inputs`, along with re-exports of the validator DSA key types reachable from this API ([#2341](https://github.com/0xMiden/rust-sdk/pull/2341)).
@@ -23,6 +25,7 @@
 * [rust] Added `PartialBlockchainUpdates::block_headers_to_store`, which narrows the staged headers to the ones a sync must persist: those marked as relevant, genesis, and the block at the sync height. `block_headers` still yields all staged headers ([#2297](https://github.com/0xMiden/rust-sdk/pull/2297)).
 * [rust] State sync now authenticates every relevant note block but only persists block headers and MMR authentication nodes for blocks containing notes that remain unspent or that a `NoteObserver` explicitly marks as relevant ([#2297](https://github.com/0xMiden/rust-sdk/pull/2297)).
 * [FEATURE][cli] Added `account --inspect <ID>[:<PROCEDURE>]` to list the procedures an account exposes, grouped into resolved procedures (with their names and signatures) and unresolved ones (listed by MAST root). Names and signatures are resolved from the `.masp` packages in the configured packages directory plus any passed via `--package` (`-p`). `--verbose` prints each procedure's MASM disassembly. ([#2312](https://github.com/0xMiden/rust-sdk/issues/2312)).
+* Improved the output of the `miden-client init` command when a configuration already exists ([#](https://github.com/0xMiden/rust-sdk/pull/2357)).
 
 ## 0.16.0-alpha.1 (2026-07-17)
 

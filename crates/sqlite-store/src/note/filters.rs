@@ -50,7 +50,9 @@ pub(super) fn note_filter_output_notes_condition(filter: &NoteFilter) -> (String
                 OutputNoteState::STATE_EXPECTED_FULL
             )
         },
-        NoteFilter::Processing | NoteFilter::Unverified => "1 = 0".to_string(),
+        NoteFilter::Processing | NoteFilter::ScriptRoots(_) | NoteFilter::Unverified => {
+            "1 = 0".to_string()
+        },
         NoteFilter::Unique(note_id) => {
             let note_ids_list = vec![Value::Blob(note_id.as_word().to_bytes())];
             params.push(Rc::new(note_ids_list));
@@ -217,6 +219,15 @@ pub(super) fn note_filter_input_notes_condition(filter: &NoteFilter) -> (String,
 
             params.push(Rc::new(nullifiers_list));
             "(note.nullifier IN rarray(?))".to_string()
+        },
+        NoteFilter::ScriptRoots(script_roots) => {
+            let script_roots_list = script_roots
+                .iter()
+                .map(|script_root| Value::Blob(script_root.to_bytes()))
+                .collect::<Vec<Value>>();
+
+            params.push(Rc::new(script_roots_list));
+            "(note.script_root IN rarray(?))".to_string()
         },
         NoteFilter::Unverified => {
             format!("(state_discriminant = {})", InputNoteState::STATE_UNVERIFIED)

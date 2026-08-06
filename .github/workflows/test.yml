@@ -88,7 +88,7 @@ jobs:
         id: cache-note-transport
         uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
-          path: ~/.cargo/bin/miden-note-transport-node-bin
+          path: ~/.cargo/bin/miden-note-transport-node
           key: ${{ runner.os }}-note-transport-${{ steps.note-transport-rev.outputs.rev }}
       - name: Install Rust
         if: steps.cache-note-transport.outputs.cache-hit != 'true'
@@ -107,17 +107,17 @@ jobs:
         if: steps.cache-note-transport.outputs.cache-hit != 'true' && github.event_name == 'push' && github.ref == 'refs/heads/next'
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
-          path: ~/.cargo/bin/miden-note-transport-node-bin
+          path: ~/.cargo/bin/miden-note-transport-node
           key: ${{ runner.os }}-note-transport-${{ steps.note-transport-rev.outputs.rev }}
       - name: Stage note-transport binary
         run: |
           mkdir -p target/release
-          cp ~/.cargo/bin/miden-note-transport-node-bin target/release/miden-note-transport-node-bin
+          cp ~/.cargo/bin/miden-note-transport-node target/release/miden-note-transport-node
       - name: Upload note-transport binary
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: note-transport-artifact
-          path: target/release/miden-note-transport-node-bin
+          path: target/release/miden-note-transport-node
 
   build-test-node:
     name: Build test node
@@ -254,7 +254,7 @@ jobs:
           name: note-transport-artifact
           path: target/release
       - name: Restore note-transport permissions
-        run: chmod +x target/release/miden-note-transport-node-bin
+        run: chmod +x target/release/miden-note-transport-node
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@c7450ba673e133f5ee30098b3b54f444d3a2ca2d # v1.8
       # The test node now runs its own transaction prover (miden-remote-prover) for the ntx-builder;
@@ -262,7 +262,7 @@ jobs:
       - name: Start test node
         run: make start-node-background
       - name: Start note transport
-        run: ./scripts/start-ci-service.sh miden-note-transport-node-bin 57292 target/release/miden-note-transport-node-bin
+        run: ./scripts/start-ci-service.sh miden-note-transport-node 57292 target/release/miden-note-transport-node
       - name: Run integration tests
         run: make integration-test-full
       - name: Stop test node

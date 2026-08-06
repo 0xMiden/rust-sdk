@@ -6,15 +6,18 @@
 
 use std::boxed::Box;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::string::{String, ToString};
 use std::sync::{Arc, RwLock};
 use std::vec::Vec;
 
+use db_management::backup::{backup_path, create_backup, discard_backup, restore_backup};
+use db_management::errors::SqliteStoreError;
 use db_management::pool_manager::{Pool, SqlitePoolManager};
 use db_management::utils::{
     apply_migrations,
     get_setting,
+    has_pending_migrations,
     list_setting_keys,
     remove_setting,
     set_setting,
@@ -91,17 +94,12 @@ impl SqliteStore {
     /// Returns a new instance of [Store] instantiated with the specified configuration options.
     pub async fn new(database_filepath: PathBuf) -> Result<Self, StoreError> {
         let database_filepath_str = database_filepath.to_string_lossy().into_owned();
-        let sqlite_pool_manager = SqlitePoolManager::new(database_filepath);
+        let sqlite_pool_manager = SqlitePoolManager::new(database_filepath.clone());
         let pool = Pool::builder(sqlite_pool_manager)
             .build()
             .map_err(|e| StoreError::DatabaseError(e.to_string()))?;
 
-        let conn = pool.get().await.map_err(|e| StoreError::DatabaseError(e.to_string()))?;
-
-        conn.interact(apply_migrations)
-            .await
-            .map_err(|e| StoreError::DatabaseError(e.to_string()))?
-            .map_err(|e| StoreError::DatabaseError(e.to_string()))?;
+        Self::migrate(&pool, &database_filepath).await?;
 
         let store = SqliteStore {
             pool,
@@ -124,6 +122,59 @@ impl SqliteStore {
         }
 
         Ok(store)
+    }
+
+    /// Brings the database at `database_filepath` up to the latest schema version.
+    async fn migrate(pool: &Pool, database_filepath: &Path) -> Result<(), StoreError> {
+        Self::migrate_with(pool, database_filepath, has_pending_migrations, apply_migrations).await
+    }
+
+    /// [`Self::migrate`] with its two schema steps injected, so that tests can drive the paths a
+    /// single migration cannot reach on its own.
+    async fn migrate_with(
+        pool: &Pool,
+        database_filepath: &Path,
+        pending: fn(&Connection) -> Result<bool, SqliteStoreError>,
+        apply: fn(&mut Connection) -> Result<(), SqliteStoreError>,
+    ) -> Result<(), StoreError> {
+        let conn = pool.get().await.map_err(|e| StoreError::DatabaseError(e.to_string()))?;
+
+        let upgrading = conn
+            .interact(move |conn| pending(conn))
+            .await
+            .map_err(|e| StoreError::DatabaseError(e.to_string()))?
+            .map_err(|e| StoreError::DatabaseError(e.to_string()))?;
+
+        let backup = backup_path(database_filepath);
+        if upgrading {
+            let backup = backup.clone();
+            conn.interact(move |conn| create_backup(conn, &backup))
+                .await
+                .map_err(|e| StoreError::DatabaseError(e.to_string()))?
+                .map_err(|e| StoreError::DatabaseError(e.to_string()))?;
+        }
+
+        let migrated = conn
+            .interact(apply)
+            .await
+            .map_err(|e| StoreError::DatabaseError(e.to_string()))?;
+
+        // The database file cannot be replaced while anything is still reading it, so the
+        // connection goes back to the pool and the pool closes before the backup is put back.
+        drop(conn);
+
+        let Err(migration_error) = migrated else {
+            discard_backup(&backup).map_err(|e| StoreError::DatabaseError(e.to_string()))?;
+            return Ok(());
+        };
+
+        if upgrading {
+            pool.close();
+            restore_backup(database_filepath, &backup)
+                .map_err(|e| StoreError::DatabaseError(e.to_string()))?;
+        }
+
+        Err(StoreError::DatabaseError(migration_error.to_string()))
     }
 
     /// Interacts with the database by executing the provided function on a connection from the
@@ -617,7 +668,32 @@ pub mod tests {
     use miden_client::store::Store;
     use miden_client::testing::common::create_test_store_path;
 
-    use super::SqliteStore;
+    use super::db_management::pool_manager::SqlitePoolManager;
+    use super::{Pool, SqliteStore, SqliteStoreError, String, backup_path};
+
+    /// Stands in for a migration that damages the store before failing, which is what the backup
+    /// exists to undo.
+    fn failing_migration(conn: &mut rusqlite::Connection) -> Result<(), SqliteStoreError> {
+        conn.execute_batch("DROP TABLE input_notes;")?;
+        Err(SqliteStoreError::Migration(String::from("migration failed")))
+    }
+
+    #[tokio::test]
+    async fn failed_migration_leaves_the_store_as_it_was() {
+        let database_filepath = create_test_store_path();
+        drop(SqliteStore::new(database_filepath.clone()).await.unwrap());
+
+        let pool = Pool::builder(SqlitePoolManager::new(database_filepath.clone()))
+            .build()
+            .unwrap();
+        SqliteStore::migrate_with(&pool, &database_filepath, |_| Ok(true), failing_migration)
+            .await
+            .unwrap_err();
+
+        assert!(!backup_path(&database_filepath).exists(), "the backup should be consumed");
+        // Reopening verifies the schema, so it only succeeds if the dropped table came back.
+        SqliteStore::new(database_filepath).await.unwrap();
+    }
 
     fn assert_send_sync<T: Send + Sync>() {}
 

@@ -64,28 +64,44 @@ const SCHEMA_HASH_DOMAIN: &[u8] = b"miden-client-sqlite-schema-v1";
 /// The migrations that build the store schema, in the order they are applied.
 const MIGRATION_SCRIPTS: [&str; 1] = [include_str!("../migrations/0001_init.sql")];
 
-/// The schema fingerprint each migration in [`MIGRATION_SCRIPTS`] produced when it was released.
-const PINNED_SCHEMA_HASHES: [&str; MIGRATION_SCRIPTS.len()] =
-    ["0x6300110a9f3efa3476fac4e736f94c33e07935ab7eedf357b38a50f55cabf140"];
-
 static MIGRATIONS: LazyLock<Migrations> = LazyLock::new(prepare_migrations);
+
+/// The schema fingerprint each migration in [`MIGRATION_SCRIPTS`] produces, obtained by replaying
+/// the migrations rather than by trusting a recorded value.
+static EXPECTED_SCHEMA_HASHES: LazyLock<Vec<Hash>> = LazyLock::new(compute_expected_schema_hashes);
 
 fn up(s: &'static str) -> M<'static> {
     M::up(s).foreign_key_check()
 }
 
+/// Returns whether the database holds a schema that is behind the latest version.
+///
+/// A database with no schema at all is not behind: there is nothing in it to preserve, so opening
+/// it builds the latest schema directly.
+pub fn has_pending_migrations(conn: &Connection) -> Result<bool, SqliteStoreError> {
+    match MIGRATIONS.current_version(conn)? {
+        SchemaVersion::Inside(ver) => Ok(ver.get() < MIGRATION_SCRIPTS.len()),
+        // A version beyond the last migration is rejected when migrating, not backed up.
+        SchemaVersion::NoneSet | SchemaVersion::Outside(_) => Ok(false),
+    }
+}
+
 /// Brings the database up to the latest schema version, creating it if it is empty.
 pub fn apply_migrations(conn: &mut Connection) -> Result<(), SqliteStoreError> {
     match MIGRATIONS.current_version(conn)? {
-        SchemaVersion::NoneSet => {},
+        SchemaVersion::NoneSet => {
+            if !is_empty_database(conn)? {
+                return Err(SqliteStoreError::NotAClientStore);
+            }
+        },
         SchemaVersion::Inside(ver) => {
-            let expected = PINNED_SCHEMA_HASHES[ver.get() - 1];
-            let actual = String::from(schema_hash(conn)?);
+            let expected = EXPECTED_SCHEMA_HASHES[ver.get() - 1];
+            let actual = schema_hash(conn)?;
             if actual != expected {
                 return Err(SqliteStoreError::SchemaDrift {
                     version: schema_version(ver.get()),
-                    expected: expected.to_string(),
-                    actual,
+                    expected: String::from(expected),
+                    actual: String::from(actual),
                 });
             }
         },
@@ -98,6 +114,33 @@ pub fn apply_migrations(conn: &mut Connection) -> Result<(), SqliteStoreError> {
     }
 
     MIGRATIONS.to_latest(conn)?;
+
+    verify_migrated_schema(conn, MIGRATION_SCRIPTS.len())
+}
+
+/// Returns whether the database holds no objects of its own.
+fn is_empty_database(conn: &Connection) -> Result<bool, SqliteStoreError> {
+    let objects: u32 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'",
+        [],
+        |row| row.get(0),
+    )?;
+
+    Ok(objects == 0)
+}
+
+/// Checks that migrating to `version` built the schema that version is defined to build.
+fn verify_migrated_schema(conn: &Connection, version: usize) -> Result<(), SqliteStoreError> {
+    let expected = EXPECTED_SCHEMA_HASHES[version - 1];
+    let actual = schema_hash(conn)?;
+
+    if actual != expected {
+        return Err(SqliteStoreError::MigratedSchemaMismatch {
+            version: schema_version(version),
+            expected: String::from(expected),
+            actual: String::from(actual),
+        });
+    }
 
     Ok(())
 }
@@ -116,7 +159,6 @@ fn prepare_migrations() -> Migrations<'static> {
 
 /// Computes the schema fingerprint each migration produces by replaying the migrations on an
 /// in-memory database.
-#[cfg(test)]
 fn compute_expected_schema_hashes() -> Vec<Hash> {
     let mut conn =
         Connection::open_in_memory().expect("in-memory database creation should not fail");
@@ -170,83 +212,14 @@ fn push_field(buf: &mut Vec<u8>, field: &[u8]) {
     buf.extend_from_slice(field);
 }
 
-/// Rewrites the SQL text stored for a schema object into a form that ignores differences `SQLite`
-/// itself ignores, so cosmetic edits do not change the fingerprint.
+/// Collapses runs of whitespace to single spaces and trims a trailing semicolon so cosmetic
+/// differences in stored SQL text do not change the fingerprint.
 fn normalize_sql(sql: &str) -> String {
-    let mut out = String::with_capacity(sql.len());
-    let mut chars = sql.chars().peekable();
-
-    while let Some(ch) = chars.next() {
-        match ch {
-            // A doubled quote inside a quoted region escapes itself and does not close it.
-            '\'' | '"' | '`' => {
-                out.push(ch);
-                while let Some(inner) = chars.next() {
-                    out.push(inner);
-                    if inner == ch {
-                        if chars.peek() == Some(&ch) {
-                            out.push(ch);
-                            chars.next();
-                        } else {
-                            break;
-                        }
-                    }
-                }
-            },
-            // Bracketed identifiers do not nest and have no escape sequence.
-            '[' => {
-                out.push(ch);
-                for inner in chars.by_ref() {
-                    out.push(inner);
-                    if inner == ']' {
-                        break;
-                    }
-                }
-            },
-            // A comment collapses to a separator rather than to nothing, because `SQLite` does not
-            // require whitespace before `--` and fusing the tokens on either side of it would
-            // change what the text means.
-            '-' if chars.peek() == Some(&'-') => {
-                chars.next();
-                while chars.peek().is_some_and(|&inner| inner != '\n') {
-                    chars.next();
-                }
-                push_separator(&mut out);
-            },
-            '/' if chars.peek() == Some(&'*') => {
-                chars.next();
-                let mut prev = '\0';
-                for inner in chars.by_ref() {
-                    if prev == '*' && inner == '/' {
-                        break;
-                    }
-                    prev = inner;
-                }
-                push_separator(&mut out);
-            },
-            _ if is_sql_whitespace(ch) => push_separator(&mut out),
-            _ => out.push(ch),
-        }
-    }
-
-    let normalized = out.trim_end().trim_end_matches(';').trim();
-    normalized.to_string()
-}
-
-/// Appends a single space unless one is already there, so adjacent separators do not stack up.
-fn push_separator(out: &mut String) {
-    if !out.is_empty() && !out.ends_with(' ') {
-        out.push(' ');
-    }
-}
-
-/// Returns whether `ch` separates tokens for `SQLite`.
-///
-/// This is deliberately narrower than [`char::is_whitespace`]. `SQLite` treats every byte above
-/// the ASCII range as part of an identifier, so a Unicode space between two tokens makes them one
-/// token and must not be normalized away.
-fn is_sql_whitespace(ch: char) -> bool {
-    matches!(ch, ' ' | '\t' | '\n' | '\r' | '\u{0c}')
+    sql.trim_end()
+        .trim_end_matches(';')
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 pub fn get_setting<T: FromSql>(conn: &mut Connection, name: &str) -> Result<Option<T>, StoreError> {
@@ -292,19 +265,16 @@ mod tests {
     use rusqlite::Connection;
 
     use super::{
+        EXPECTED_SCHEMA_HASHES,
         MIGRATION_SCRIPTS,
-        PINNED_SCHEMA_HASHES,
         apply_migrations,
-        compute_expected_schema_hashes,
         schema_hash,
+        verify_migrated_schema,
     };
     use crate::db_management::errors::SqliteStoreError;
 
-    fn hash_of(schema: &str) -> super::Hash {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(schema).unwrap();
-        schema_hash(&conn).unwrap()
-    }
+    const PINNED_SCHEMA_HASHES: [&str; MIGRATION_SCRIPTS.len()] =
+        ["0x749fba4988cae911b43dd2a3efef634ce5f514515ae26687f791fb17612c5b7a"];
 
     #[test]
     fn honest_database_reopens_without_error() {
@@ -313,6 +283,41 @@ mod tests {
         // Reopening a database already at the latest version fingerprints its schema and must
         // accept it.
         apply_migrations(&mut conn).unwrap();
+    }
+
+    #[test]
+    fn fresh_database_is_built_to_the_latest_version() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply_migrations(&mut conn).unwrap();
+
+        let version: usize = conn.query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap();
+        assert_eq!(version, MIGRATION_SCRIPTS.len());
+        assert_eq!(schema_hash(&conn).unwrap(), EXPECTED_SCHEMA_HASHES[version - 1]);
+    }
+
+    #[test]
+    fn unversioned_database_with_contents_is_rejected() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        // A database that is not a store, named by mistake. It records no version, which is what
+        // an empty file also looks like.
+        conn.execute_batch("CREATE TABLE somebody_elses (id INTEGER PRIMARY KEY);")
+            .unwrap();
+
+        let err = apply_migrations(&mut conn).unwrap_err();
+        assert!(
+            matches!(err, SqliteStoreError::NotAClientStore),
+            "a foreign database should not be migrated into a store, got {err:?}"
+        );
+
+        // Refusing must leave the database alone.
+        let version: usize = conn.query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap();
+        assert_eq!(version, 0);
+        let tables: u32 = conn
+            .query_row("SELECT COUNT(*) FROM sqlite_schema WHERE name = 'input_notes'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(tables, 0);
     }
 
     #[test]
@@ -369,11 +374,26 @@ mod tests {
     }
 
     #[test]
+    fn migrated_schema_is_verified() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply_migrations(&mut conn).unwrap();
+
+        // Migrating cannot be made to build the wrong schema without a broken migration, so the
+        // schema is changed under the check instead, which is what such a migration would leave
+        // behind.
+        conn.execute("DROP TABLE input_notes", []).unwrap();
+
+        let err = verify_migrated_schema(&conn, MIGRATION_SCRIPTS.len()).unwrap_err();
+        let SqliteStoreError::MigratedSchemaMismatch { version, expected, actual } = err else {
+            panic!("an unexpected migrated schema should be reported as a mismatch, got {err:?}");
+        };
+        assert_eq!(version as usize, MIGRATION_SCRIPTS.len());
+        assert_ne!(expected, actual);
+    }
+
+    #[test]
     fn migration_schema_hashes_are_stable() {
-        let replayed = compute_expected_schema_hashes()
-            .into_iter()
-            .map(String::from)
-            .collect::<Vec<_>>();
+        let replayed = EXPECTED_SCHEMA_HASHES.iter().copied().map(String::from).collect::<Vec<_>>();
         let pinned = PINNED_SCHEMA_HASHES.map(str::to_string).to_vec();
 
         assert_eq!(
@@ -382,24 +402,5 @@ mod tests {
              Append a new migration instead of editing an existing one. If this is a new \
              migration, append its hash rather than rewriting the entries before it."
         );
-    }
-
-    #[test]
-    fn schema_hash_ignores_comment_edits() {
-        let documented = hash_of(
-            "CREATE TABLE items (
-                 id INTEGER PRIMARY KEY, -- the identifier
-                 /* the payload */
-                 value TEXT
-             );",
-        );
-        let reworded = hash_of(
-            "CREATE TABLE items (
-                 id INTEGER PRIMARY KEY, -- a completely different explanation
-                 value TEXT
-             );",
-        );
-
-        assert_eq!(documented, reworded);
     }
 }

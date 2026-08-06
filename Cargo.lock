@@ -2121,6 +2121,7 @@ dependencies = [
  "miden-standards",
  "rusqlite",
  "rusqlite_migration",
+ "tempfile",
  "thiserror",
  "tokio",
 ]

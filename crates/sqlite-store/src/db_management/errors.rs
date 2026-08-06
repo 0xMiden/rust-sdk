@@ -26,6 +26,24 @@ pub enum SqliteStoreError {
         "store is at schema version {found}, which is newer than the highest version this client supports ({supported})"
     )]
     SchemaTooNew { found: u32, supported: u32 },
+    #[error(
+        "migrating to schema version {version} produced a schema this client does not expect (expected {expected}, found {actual})"
+    )]
+    MigratedSchemaMismatch {
+        version: u32,
+        expected: String,
+        actual: String,
+    },
+    #[error(
+        "the database is not empty and does not record a schema version, so it was not created by this client and will not be migrated into a store"
+    )]
+    NotAClientStore,
+    #[error("failed to back up the store to {backup} before migrating it: {reason}")]
+    BackupFailed { backup: String, reason: String },
+    #[error(
+        "migrating the store failed and it could not be restored from its backup at {backup}: {reason}. The backup holds the store as it was before migrating"
+    )]
+    BackupRestoreFailed { backup: String, reason: String },
 }
 
 impl From<RusqliteError> for SqliteStoreError {
@@ -35,26 +53,23 @@ impl From<RusqliteError> for SqliteStoreError {
 }
 
 impl From<MigrationError> for SqliteStoreError {
+    /// Renders a migration failure without reproducing the migration script.
     fn from(err: MigrationError) -> Self {
-        SqliteStoreError::Migration(describe_migration_error(&err))
-    }
-}
+        let message = match &err {
+            MigrationError::RusqliteError {
+                err: RusqliteError::SqlInputError { msg, .. },
+                ..
+            } => msg.clone(),
+            MigrationError::RusqliteError { err, .. } => err.to_string(),
+            MigrationError::ForeignKeyCheck(violations) => {
+                format!(
+                    "{} foreign key violation(s) after applying the migration",
+                    violations.len()
+                )
+            },
+            other => other.to_string(),
+        };
 
-/// Renders a migration failure without reproducing the migration script.
-pub fn describe_migration_error(err: &MigrationError) -> String {
-    match err {
-        MigrationError::RusqliteError { err, .. } => describe_sqlite_error(err),
-        MigrationError::ForeignKeyCheck(violations) => {
-            format!("{} foreign key violation(s) after applying the migration", violations.len())
-        },
-        other => other.to_string(),
-    }
-}
-
-/// Renders a `SQLite` failure without reproducing the statement that caused it.
-fn describe_sqlite_error(err: &RusqliteError) -> String {
-    match err {
-        RusqliteError::SqlInputError { msg, .. } => msg.clone(),
-        other => other.to_string(),
+        SqliteStoreError::Migration(message)
     }
 }

@@ -524,6 +524,41 @@ impl NoteUpdateTracker {
         Ok(())
     }
 
+    /// Returns whether the note is already tracked as an input or output record.
+    pub(crate) fn tracks_note(&self, note_id: NoteId) -> bool {
+        self.input_notes_by_id.contains_key(&note_id) || self.output_notes.contains_key(&note_id)
+    }
+
+    /// Records `note` as consumed by `consumer`, as a
+    /// [`ConsumedExternal`](crate::store::InputNoteState::ConsumedExternal) input-note record.
+    ///
+    /// No-op when the note is already tracked: recovery runs after transaction and nullifier
+    /// processing, so a tracked record's consumption has already been applied through
+    /// [`Self::apply_note_consumption`].
+    pub(crate) fn insert_consumed_public_note(
+        &mut self,
+        note: Note,
+        consumer: AccountId,
+        block_num: BlockNumber,
+    ) -> Result<(), ClientError> {
+        let note_id = note.id();
+        if self.tracks_note(note_id) {
+            return Ok(());
+        }
+        let nullifier = note.nullifier();
+        // The consuming transaction belongs to this sync, so its nullifier must have a position
+        // in the execution order; storing the record without one would break the ordering
+        // guarantees of `InputNoteReader`.
+        let order = self
+            .get_nullifier_order(nullifier)
+            .ok_or(ClientError::MissingConsumedNoteOrder(note_id))?;
+        let mut record = InputNoteRecord::from(note);
+        record.consumed_externally(nullifier, block_num, Some(consumer))?;
+        record.set_consumed_tx_order(Some(order));
+        self.insert_input_note(record, NoteUpdateType::Insert);
+        Ok(())
+    }
+
     /// Builds a consumed input note record from a tracked output note and inserts it.
     ///
     /// Used when an output note is consumed externally and the client should also surface

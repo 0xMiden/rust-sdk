@@ -49,9 +49,7 @@ pub enum CliError {
     #[diagnostic(
         code(cli::config_error),
         help(
-            "Check if the configuration file exists and is well-formed. If it does not exist, run `{} init` command to create it. \
-            If it already exists, run `{} clear-config` to remove it.",
-            client_binary_name().display(),
+            "Check if the configuration file exists and is well-formed. If it does not exist, run `{} init` command to create it.",
             client_binary_name().display()
         )
     )]
@@ -65,6 +63,16 @@ pub enum CliError {
         )
     )]
     ConfigNotFound(String),
+    #[error("configuration file already exists: {0}")]
+    #[diagnostic(
+        code(cli::config_already_exists),
+        help(
+            "Edit the configuration file, or remove it with `{} clear-config{1}` \
+            (this deletes the whole .miden directory, including the store and keystore).",
+            client_binary_name().display(),
+        )
+    )]
+    ConfigAlreadyExists(String, String),
     #[error("execute program error: {1}")]
     #[diagnostic(code(cli::execute_program_error))]
     Exec(#[source] SourceError, String),

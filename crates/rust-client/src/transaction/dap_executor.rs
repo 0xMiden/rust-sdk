@@ -6,7 +6,7 @@
 //! client to attach before execution, set breakpoints, step through the transaction script, inspect
 //! VM state, and request restart without changing the normal transaction setup.
 
-use std::string::{String, ToString};
+use std::string::ToString;
 use std::sync::Arc;
 
 use miden_processor::advice::AdviceInputs;
@@ -26,6 +26,7 @@ use miden_protocol::vm::{
     DebugSourceNodeId,
     Package,
     PackageDebugInfo,
+    PackageDebugInfoError,
     PackageExport,
     ProcedureExport,
     Section,
@@ -40,14 +41,11 @@ pub struct DapProgramExecutor(miden_debug::DapExecutor);
 impl DapProgramExecutor {
     fn execute_package<H: Host + Send>(
         self,
-        package: Result<Arc<Package>, String>,
+        package: Result<Arc<Package>, ExecutionError>,
         host: &mut H,
     ) -> impl FutureMaybeSend<Result<ExecutionOutput, ExecutionError>> {
         async move {
-            let package = package.map_err(|error| {
-                tracing::error!(%error, "failed to construct the DAP executable package");
-                ExecutionError::Internal("failed to construct the DAP executable package")
-            })?;
+            let package = package?;
             self.0.execute_async(package, host).await
         }
     }
@@ -94,7 +92,7 @@ fn build_dap_package(
     program: &Program,
     package_debug_info: &PackageDebugInfo,
     entrypoint_source_node: Option<DebugSourceNodeId>,
-) -> Result<Arc<Package>, String> {
+) -> Result<Arc<Package>, ExecutionError> {
     // A transaction program is an executable whose root is exported as `$exec::$main`. Reusing
     // the program's MAST forest, entrypoint node, and digest makes `Package::try_into_program`
     // reconstruct the exact program that the transaction executor supplied.
@@ -115,46 +113,31 @@ fn build_dap_package(
         [PackageExport::Procedure(export)],
         [kernel.to_dependency()],
     )
-    .map_err(|error| error.to_string())?;
+    .map_err(|error| dap_package_construction_error(&error))?;
 
-    // `Package::create` installs the export, but executable packages also require the manifest's
-    // entrypoint field and the serialized kernel payload.
-    package.manifest = package
-        .manifest
-        .clone()
-        .with_entrypoint(entrypoint)
-        .map_err(|error| error.to_string())?;
+    // `Package::create` recognizes the exported `$main` procedure as the executable entrypoint.
+    // The embedded kernel payload gives the debugger the code required to execute the package
+    // independently of the transaction host's package store.
     package.sections.push(Section::new(SectionId::KERNEL, kernel.to_bytes()));
 
-    // Debug information is owned beside `Program` at the transaction-executor boundary. Copy each
-    // optional table into its well-known package section so the DAP executor can recover source
-    // locations, functions, variables, and the source graph.
-    push_debug_section(&mut package, SectionId::DEBUG_TYPES, package_debug_info.types());
-    push_debug_section(&mut package, SectionId::DEBUG_SOURCES, package_debug_info.sources());
-    push_debug_section(&mut package, SectionId::DEBUG_FUNCTIONS, package_debug_info.functions());
-    push_debug_section(
-        &mut package,
-        SectionId::DEBUG_SOURCE_GRAPH,
-        package_debug_info.source_graph(),
-    );
-    push_debug_section(&mut package, SectionId::DEBUG_SOURCE_MAP, package_debug_info.source_map());
-    push_debug_section(
-        &mut package,
-        SectionId::DEBUG_ERROR_MESSAGES,
-        package_debug_info.error_messages(),
-    );
+    // VM 0.25.8 consolidates all package-owned source locations, functions, variables, and source
+    // graph records in one versioned section, avoiding incomplete combinations of split tables.
+    package
+        .sections
+        .push(Section::new(SectionId::DEBUG_INFO, package_debug_info.to_bytes()));
 
-    // Decode once here to reject incomplete or internally inconsistent debug tables before the
-    // package reaches the asynchronous DAP session.
-    package.debug_info().map_err(|error| error.to_string())?;
+    // Decode once here to reject invalid references before the package reaches the asynchronous
+    // DAP session, preserving the structured package error for the caller.
+    package.debug_info()?;
 
     Ok(Arc::new(package))
 }
 
-fn push_debug_section<T: Serializable>(package: &mut Package, id: SectionId, section: Option<&T>) {
-    if let Some(section) = section {
-        package.sections.push(Section::new(id, section.to_bytes()));
+fn dap_package_construction_error(error: &impl ToString) -> ExecutionError {
+    PackageDebugInfoError::InvalidReference {
+        message: format!("failed to construct DAP executable package: {}", error.to_string()),
     }
+    .into()
 }
 
 #[cfg(test)]
@@ -182,6 +165,14 @@ mod tests {
 
             assert_eq!(package.try_into_program().unwrap(), program);
             assert_eq!(package.debug_info().unwrap().unwrap_or_default(), *debug_info);
+            assert_eq!(
+                package
+                    .sections
+                    .iter()
+                    .filter(|section| section.id == SectionId::DEBUG_INFO)
+                    .count(),
+                1
+            );
         }
     }
 }

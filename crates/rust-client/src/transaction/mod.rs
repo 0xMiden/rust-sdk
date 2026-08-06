@@ -344,14 +344,13 @@ where
         &mut self,
         account_id: AccountId,
         transaction_request: TransactionRequest,
-    ) -> Result<(), ClientError> {
+    ) -> Result<TransactionResult, ClientError> {
         self.execute_transaction_with_mode(
             account_id,
             transaction_request,
             TransactionExecutionMode::Dap,
         )
-        .await?;
-        Ok(())
+        .await
     }
 
     /// Executes a prepared transaction with the selected program executor while keeping request

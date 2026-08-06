@@ -141,6 +141,11 @@ host resolved (account code, note scripts, ...), and the recorded event log — 
 re-run the execution without the live transaction host. It always describes the final run of the
 session; restarting from the debugger resets it.
 
+:::warning Sensitive data
+Replay snapshots may contain private account state, note data, advice inputs, and other transaction
+witness material. Treat them as sensitive files and do not share or commit them publicly.
+:::
+
 Replay it later, offline, in the `miden-debug` TUI — no node, client, or account state required:
 
 ```bash

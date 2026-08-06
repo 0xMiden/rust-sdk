@@ -84,9 +84,11 @@ async fn dap_transaction_execution_records_replay_data() {
     });
 
     let transaction_request = TransactionRequestBuilder::new().build().unwrap();
-    Box::pin(client.execute_transaction_with_dap(wallet.id(), transaction_request))
-        .await
-        .expect("DAP transaction execution failed");
+    let transaction_result =
+        Box::pin(client.execute_transaction_with_dap(wallet.id(), transaction_request))
+            .await
+            .expect("DAP transaction execution failed");
+    assert_eq!(transaction_result.account_patch().id(), wallet.id());
     dap_session.join().expect("DAP client thread panicked");
 
     let event_log = event_recorder.take();

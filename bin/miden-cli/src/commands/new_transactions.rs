@@ -704,17 +704,29 @@ async fn debug_transaction<AUTH: Keystore + Sync + 'static>(
     // advice mutations are read back through this shared handle once the session ends.
     let recorder = config.record_event_mutations();
     let snapshot_recorder = record.map(|path| config.record_snapshot(path.to_path_buf()));
+    let config_handle = config.clone();
     miden_debug::DapConfig::set_global(config);
 
     println!(
         "Starting debug session on {addr}; connect a DAP client to step through the transaction..."
     );
-    let result = client
-        .execute_transaction_with_dap(account_id, transaction_request)
-        .await
-        .map_err(|err| {
-            CliError::Transaction(err.into(), "error debugging the transaction".to_string())
-        });
+    let result = loop {
+        let result = client
+            .execute_transaction_with_dap(account_id, transaction_request.clone())
+            .await
+            .map(|_| ())
+            .map_err(|err| {
+                CliError::Transaction(err.into(), "error debugging the transaction".to_string())
+            });
+
+        if config_handle.restart_requested() {
+            config_handle.reset_restart();
+            println!("Rebuilding transaction and restarting debug session...");
+            continue;
+        }
+
+        break result;
+    };
 
     let mutation_sets = recorder.take();
     if !mutation_sets.is_empty() {

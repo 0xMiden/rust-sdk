@@ -91,6 +91,10 @@ fn sidecar_path(database_filepath: &Path, suffix: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    // `tempfile` rather than `create_test_store_path`: `TempDir` removes the database and any
+    // backup left behind on drop, so repeated runs do not accumulate files in the system temp
+    // directory.
+
     use rusqlite::Connection;
 
     use super::{backup_path, create_backup, restore_backup, sidecar_path};

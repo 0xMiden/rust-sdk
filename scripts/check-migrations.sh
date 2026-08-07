@@ -21,7 +21,7 @@ if [ -z "${CHANGED}" ]; then
     exit 0
 fi
 
->&2 echo "The following released migrations were modified, renamed or deleted:"
+>&2 echo "The following merged migrations were modified, renamed or deleted:"
 >&2 echo "${CHANGED}"
 >&2 echo ""
 >&2 echo "Migrations are append-only. Add a new file under \"${MIGRATIONS_DIR}\" with the next

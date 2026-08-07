@@ -1556,9 +1556,10 @@ fn call_test_exports(package: &miden_client::vm::Package) -> Vec<miden_client::v
     ];
 
     let mut exports = Vec::new();
-    for module_info in package.module_infos() {
-        for (_, proc_info) in module_info.procedures() {
-            let name = QualifiedProcedureName::new(module_info.path(), proc_info.name.clone());
+    for module_descriptor in package.module_descriptors() {
+        for (_, proc_info) in module_descriptor.procedures() {
+            let name =
+                QualifiedProcedureName::new(module_descriptor.path(), proc_info.name.clone());
             let override_sig = signature_overrides
                 .iter()
                 .find(|(n, _)| *n == proc_info.name.as_str())
@@ -1645,7 +1646,7 @@ fn build_call_test_masp(out_path: &Path) {
     let metadata = AccountComponentMetadata::new("call-test").with_storage_schema(storage_schema);
 
     let exports = call_test_exports(&component_package);
-    let modules = component_package.module_infos().map(|module_info| {
+    let modules = component_package.module_descriptors().map(|module_info| {
         miden_mast_package::PackageModule::new(
             std::sync::Arc::from(module_info.path().to_path_buf().into_boxed_path()),
             module_info

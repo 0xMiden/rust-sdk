@@ -82,9 +82,10 @@ pub fn build_package(
     // https://github.com/0xMiden/compiler/blob/61ee77f57c07c197323728642f8feca972b24217/midenc-compile/src/stages/assemble.rs#L71-L88
     // Gather all of the procedure metadata for exports of this package
     let mut exports: Vec<PackageExport> = Vec::new();
-    for module_info in component_package.module_infos() {
-        for (_, proc_info) in module_info.procedures() {
-            let name = QualifiedProcedureName::new(module_info.path(), proc_info.name.clone());
+    for module_descriptor in component_package.module_descriptors() {
+        for (_, proc_info) in module_descriptor.procedures() {
+            let name =
+                QualifiedProcedureName::new(module_descriptor.path(), proc_info.name.clone());
             let export = ProcedureExport {
                 path: name.into_inner(),
                 node: None,

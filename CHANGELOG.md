@@ -27,7 +27,7 @@
 
 ### Fixes
 
-* [FIX][store] `SQLite` store operations no longer get slower as the database grows. Note scripts are updated in place instead of replaced, so persisting them no longer forces a foreign key check against every note referencing the script, and the note, block header and account code queries were rewritten to match the indices that serve them. Listing unspent nullifiers also no longer fails when a note's nullifier isn't known yet ([#2364](https://github.com/0xMiden/rust-sdk/pull/2364)).
+* [FIX][store] `SQLite` store operations no longer get slower as the database grows. Note scripts are updated in place instead of replaced, so persisting them no longer forces a foreign key check against every note referencing the script, the note and block header queries were rewritten to match the indices that serve them, and account code garbage collection no longer scans three tables per candidate commitment. Listing unspent nullifiers also no longer fails when a note's nullifier isn't known yet ([#2364](https://github.com/0xMiden/rust-sdk/pull/2364)).
 
 ## 0.16.0-alpha.1 (2026-07-17)
 

@@ -27,7 +27,7 @@
 
 ### Fixes
 
-* [FIX][store] Store operations whose cost grew with the size of the database now stay flat. Note script rows are updated in place instead of replaced, so persisting them no longer deletes the row `input_notes.script_root` references and checks every note referencing it: one 50-script batch cost 0.7ms at 25k notes, 3ms at 100k and 16ms at 400k, against a flat 0.05ms in place, on every sync. `get_unspent_input_note_nullifiers` lists the unspent states positively instead of negating the consumed ones, `get_input_note_by_offset` matches a single consumer with `=` instead of a one-element list so the consumption index serves its ordering too, the tracked block header queries compare `has_client_notes` to `1` so the partial index applies, and account code garbage collection no longer scans three tables per candidate commitment ([#2364](https://github.com/0xMiden/rust-sdk/pull/2364)).
+* [FIX][store] `SQLite` store operations no longer get slower as the database grows. Note scripts are updated in place instead of replaced, so persisting them no longer forces a foreign key check against every note referencing the script, and the note, block header and account code queries were rewritten to match the indices that serve them. Listing unspent nullifiers also no longer fails when a note's nullifier isn't known yet ([#2364](https://github.com/0xMiden/rust-sdk/pull/2364)).
 
 ## 0.16.0-alpha.1 (2026-07-17)
 

@@ -11,7 +11,12 @@ use miden_client::{Client, Deserializable, Felt, Word};
 
 use crate::advice_inputs::load_advice_map_from_file;
 use crate::errors::CliError;
-use crate::utils::{parse_account_id, print_executed_program_stack, print_executed_transaction};
+use crate::utils::{
+    parse_account_id,
+    print_executed_program_stack,
+    print_executed_transaction,
+    split_procedure_target,
+};
 
 // CALL COMMAND
 // ================================================================================================
@@ -53,7 +58,8 @@ impl CallCmd {
             ));
         }
 
-        let (account_str, procedure) = self.target.split_once(':').ok_or_else(|| {
+        let (account_str, procedure) = split_procedure_target(&self.target);
+        let procedure = procedure.ok_or_else(|| {
             CliError::InvalidArgument(format!(
                 "Expected `<ACCOUNT_ID>:<PROCEDURE>`, got '{}'.",
                 self.target
@@ -66,7 +72,7 @@ impl CallCmd {
         let package = load_package(&self.package)?;
 
         let digest = resolve_procedure_digest(&package, procedure)?;
-        let ProcedureSignature { param_count, result_count } =
+        let ProcedureSignature { param_felts, result_felts } =
             print_manifest_signature(&package, procedure);
 
         let args = parse_args(&self.args)?;
@@ -76,10 +82,12 @@ impl CallCmd {
             None => vec![],
         };
 
-        match param_count {
+        match param_felts {
             Some(expected) if args.len() != expected => {
                 return Err(CliError::InvalidArgument(format!(
-                    "Procedure '{procedure}' expects {expected} argument(s), got {}.",
+                    "Procedure '{procedure}' expects {expected} value(s), got {}. Types wider \
+                     than one field element are passed as one value per element, as shown in the \
+                     signature above.",
                     args.len()
                 )));
             },
@@ -100,10 +108,10 @@ impl CallCmd {
         // embedding the library bytes in the script.
         let linked_builder = client.code_builder().with_dynamically_linked_library(&package)?;
 
-        // 1) Read-only execution to get return values. If `result_count` is unknown we skip
+        // 1) Read-only execution to get return values. If `result_felts` is unknown we skip
         // the drop sequence and let `print_output_stack` auto-detect results from the stack.
         let read_tx_script =
-            generate_tx_script(linked_builder.clone(), &digest, &args, result_count)?;
+            generate_tx_script(linked_builder.clone(), &digest, &args, result_felts)?;
 
         let advice_inputs = AdviceInputs::default().with_map(advice_entries.clone());
 
@@ -111,7 +119,7 @@ impl CallCmd {
             .execute_program(account_id, read_tx_script, advice_inputs, BTreeMap::new())
             .await?;
 
-        print_executed_program_stack(&output_stack, result_count);
+        print_executed_program_stack(&output_stack, result_felts);
 
         // 2) Transaction execution to get state delta.
         let delta_tx_script = generate_tx_script(linked_builder, &digest, &args, Some(0))?;
@@ -194,18 +202,19 @@ fn parse_args(args: &[String]) -> Result<Vec<Felt>, CliError> {
         .collect()
 }
 
-/// Parameter and result counts from a procedure's manifest signature. `None` means the
+/// How many field elements a procedure's arguments and results occupy on the stack. A multi-felt
+/// type such as `Word` counts as its flattened width, not as one item. `None` means the
 /// information is unavailable (procedure missing from manifest or export lacks type info).
 struct ProcedureSignature {
-    param_count: Option<usize>,
-    result_count: Option<usize>,
+    param_felts: Option<usize>,
+    result_felts: Option<usize>,
 }
 
-/// Prints the signature of `procedure_name` from the package manifest and returns its parameter
-/// and result counts. If the procedure is missing, prints the list of available exports.
+/// Prints the signature of `procedure_name` from the package manifest and returns the stack width
+/// of its arguments and results. If the procedure is missing, prints the list of available exports.
 fn print_manifest_signature(package: &Package, procedure_name: &str) -> ProcedureSignature {
     const UNKNOWN: ProcedureSignature =
-        ProcedureSignature { param_count: None, result_count: None };
+        ProcedureSignature { param_felts: None, result_felts: None };
 
     let kebab_name = procedure_name.replace('_', "-");
     let quoted_kebab = format!("\"{kebab_name}\"");
@@ -226,21 +235,22 @@ fn print_manifest_signature(package: &Package, procedure_name: &str) -> Procedur
         }
 
         if let Some(sig) = &proc_export.signature {
-            let params: Vec<String> = sig.params.iter().map(|p| format!("{p:?}")).collect();
-            let results: Vec<String> = sig.results.iter().map(|r| format!("{r:?}")).collect();
+            let mut param_felts = Vec::with_capacity(sig.params.len());
+            for ty in &sig.params {
+                param_felts.push(ty.size_in_felts());
+            }
+            let mut result_felts = Vec::with_capacity(sig.results.len());
+            for ty in &sig.results {
+                result_felts.push(ty.size_in_felts());
+            }
 
-            let ret_str = if results.is_empty() {
-                String::new()
-            } else {
-                format!(" -> ({})", results.join(", "))
-            };
+            println!("Raw Signature: {sig}\n");
 
-            let params_str = params.join(", ");
-            println!("Raw Signature: {procedure_name}({params_str}){ret_str}\n");
-
+            // The stack is flat, so the counts that matter are the flattened widths: a `Word`
+            // parameter takes four stack slots, not one.
             return ProcedureSignature {
-                param_count: Some(sig.params.len()),
-                result_count: Some(sig.results.len()),
+                param_felts: Some(param_felts.iter().sum()),
+                result_felts: Some(result_felts.iter().sum()),
             };
         }
         println!("Raw Signature: {procedure_name}(...) [no type info]\n");

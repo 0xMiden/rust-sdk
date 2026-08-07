@@ -228,7 +228,7 @@ impl NewAccountCmd {
 // ================================================================================================
 
 /// Reads [[`miden_core::vm::Package`]]s from the given file paths.
-fn load_packages(
+pub(crate) fn load_packages(
     cli_config: &CliConfig,
     package_paths: &[PathBuf],
 ) -> Result<Vec<Package>, CliError> {

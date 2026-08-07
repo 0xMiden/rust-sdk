@@ -235,8 +235,8 @@ impl SqliteStore {
     ) -> Result<Vec<Nullifier>, StoreError> {
         // Listing the unspent states positively lets the query use `idx_input_notes_state`; a
         // negated `NOT IN` over the consumed states cannot use it and scans the table.
-        const QUERY: &str =
-            "SELECT nullifier FROM input_notes WHERE state_discriminant IN rarray(?)";
+        const QUERY: &str = "SELECT nullifier FROM input_notes \
+            WHERE state_discriminant IN rarray(?) AND nullifier IS NOT NULL";
         let unspent_filters = Rc::new(vec![
             Value::from(InputNoteState::STATE_EXPECTED),
             Value::from(InputNoteState::STATE_UNVERIFIED),

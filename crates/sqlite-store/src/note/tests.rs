@@ -90,6 +90,33 @@ fn create_expected_input_note_with_script(index: u32, script: NoteScript) -> Inp
     InputNoteRecord::new(details, NoteAttachments::empty(), Some(0), state.into())
 }
 
+/// Helper to create an expected (non-consumed) input note that carries metadata, so it has a
+/// known nullifier.
+fn create_expected_input_note_with_metadata(index: u32) -> InputNoteRecord {
+    let serial_number: Word =
+        [Felt::new_unchecked(u64::from(index) + 9000), ZERO, ZERO, ZERO].into();
+    let assets = NoteAssets::new(vec![]).unwrap();
+    let recipient = NoteRecipient::new(
+        serial_number,
+        StandardNote::SWAP.script(),
+        NoteStorage::new(vec![]).unwrap(),
+    );
+    let details = NoteDetails::new(assets, recipient);
+
+    let sender = AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE).unwrap();
+    let partial_metadata =
+        PartialNoteMetadata::new(sender, NoteType::Public).with_tag(NoteTag::from(index));
+    let metadata = NoteMetadata::new(partial_metadata, &NoteAttachments::empty());
+
+    let state = ExpectedNoteState {
+        metadata: Some(metadata),
+        after_block_num: BlockNumber::from(0u32),
+        tag: None,
+    };
+
+    InputNoteRecord::new(details, NoteAttachments::empty(), Some(0), state.into())
+}
+
 /// Helper to create an expected output note with a specific script.
 fn create_expected_output_note_with_script(index: u32, script: NoteScript) -> OutputNoteRecord {
     let serial_number: Word =
@@ -517,4 +544,55 @@ async fn output_notes_never_match_script_root_filter() {
         .await
         .unwrap();
     assert!(notes.is_empty());
+}
+
+// UNSPENT NULLIFIER TESTS
+// ================================================================================================
+
+#[tokio::test]
+async fn unspent_nullifiers_skip_notes_without_metadata() {
+    let store = create_test_store().await;
+
+    // An expected note without metadata has no nullifier, so its column is NULL.
+    let without_metadata = create_expected_input_note(0);
+    let with_metadata = create_expected_input_note_with_metadata(1);
+    assert!(without_metadata.nullifier().is_none());
+
+    store
+        .upsert_input_notes(&[without_metadata, with_metadata.clone()])
+        .await
+        .unwrap();
+
+    let nullifiers = store.get_unspent_input_note_nullifiers().await.unwrap();
+    assert_eq!(nullifiers, vec![with_metadata.nullifier().unwrap()]);
+}
+
+#[tokio::test]
+async fn unspent_nullifiers_are_empty_when_no_note_has_metadata() {
+    let store = create_test_store().await;
+
+    let notes: Vec<_> = (0..3u32).map(create_expected_input_note).collect();
+    store.upsert_input_notes(&notes).await.unwrap();
+
+    let nullifiers = store.get_unspent_input_note_nullifiers().await.unwrap();
+    assert!(nullifiers.is_empty());
+}
+
+#[tokio::test]
+async fn unspent_nullifiers_exclude_consumed_notes() {
+    let store = create_test_store().await;
+
+    let consumer = AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE).unwrap();
+    let consumed_local = create_consumed_input_note_with_consumer(consumer, 0, 1, 0);
+    let consumed_external = create_consumed_external_input_note(1, 1, Some(consumer));
+    let unspent = create_expected_input_note_with_metadata(2);
+    assert!(consumed_local.nullifier().is_some());
+
+    store
+        .upsert_input_notes(&[consumed_local, consumed_external, unspent.clone()])
+        .await
+        .unwrap();
+
+    let nullifiers = store.get_unspent_input_note_nullifiers().await.unwrap();
+    assert_eq!(nullifiers, vec![unspent.nullifier().unwrap()]);
 }

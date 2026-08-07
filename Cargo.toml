@@ -40,20 +40,20 @@ miden-client              = { default-features = false, path = "crates/rust-clie
 miden-client-sqlite-store = { default-features = false, path = "crates/sqlite-store", version = "0.16.0-alpha.1" }
 
 # Miden protocol dependencies
-miden-agglayer  = { default-features = false, version = "0.16.0-rc.2" }
-miden-protocol  = { default-features = false, version = "0.16.0-rc.2" }
-miden-standards = { default-features = false, version = "0.16.0-rc.2" }
-miden-testing   = { default-features = false, version = "0.16.0-rc.2" }
-miden-tx        = { default-features = false, version = "0.16.0-rc.2" }
-miden-tx-batch  = { default-features = false, version = "0.16.0-rc.2" }
+miden-agglayer  = { default-features = false, version = "0.16.0-rc.3" }
+miden-protocol  = { default-features = false, version = "0.16.0-rc.3" }
+miden-standards = { default-features = false, version = "0.16.0-rc.3" }
+miden-testing   = { default-features = false, version = "0.16.0-rc.3" }
+miden-tx        = { default-features = false, version = "0.16.0-rc.3" }
+miden-tx-batch  = { default-features = false, version = "0.16.0-rc.3" }
 
 # Miden node dependencies
-miden-node-proto-build           = { default-features = false, git = "https://github.com/0xMiden/node.git", rev = "a54d1a0725e427e9a985b81183cd50139be4c7ec" }
+miden-node-proto-build           = { branch = "igamigo-0.16rc3-protocol", default-features = false, git = "https://github.com/0xMiden/node.git" } # TODO: switch to rc.3 once available
 miden-note-transport-proto-build = { default-features = false, version = "0.5.0-alpha.1" }
 
 # Miden debug dependency
-miden-debug     = { default-features = false, features = ["dap", "std"], version = "0.9" }
-miden-processor = { default-features = false, version = "0.25" }
+miden-debug     = { default-features = false, features = ["dap", "std"], version = "0.10" }
+miden-processor = { default-features = false, version = "0.29" }
 
 # External dependencies
 anyhow             = { default-features = false, version = "1.0" }

@@ -703,7 +703,7 @@ async fn debug_transaction<AUTH: Keystore + Sync + 'static>(
     // The DAP executor is created and consumed inside the transaction executor, so recorded
     // advice mutations are read back through this shared handle once the session ends.
     let recorder = config.record_event_mutations();
-    let snapshot_recorder = record.map(|path| config.record_snapshot(path.to_path_buf()));
+    let snapshot_recorder = record.map(|path| (config.record_snapshot(path.to_path_buf()), path));
     let config_handle = config.clone();
     miden_debug::DapConfig::set_global(config);
 
@@ -735,11 +735,9 @@ async fn debug_transaction<AUTH: Keystore + Sync + 'static>(
             mutation_sets.len()
         );
     }
-    if let Err(err) = super::report_replay_snapshot_write(
-        snapshot_recorder.as_ref(),
-        record,
-        |source, message| CliError::Transaction(source.into(), message),
-    ) {
+    if let Some((snapshot_recorder, path)) = &snapshot_recorder
+        && let Err(err) = super::report_replay_snapshot_write(snapshot_recorder, path)
+    {
         if result.is_err() {
             eprintln!("{err}");
         } else {

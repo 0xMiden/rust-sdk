@@ -101,6 +101,9 @@ pub enum CliError {
     #[error("parse error: {1}")]
     #[diagnostic(code(cli::parse_error), help("Check the inputs."))]
     Parse(#[source] SourceError, String),
+    #[error("replay snapshot error: {0}")]
+    #[diagnostic(code(cli::replay_snapshot_error))]
+    ReplaySnapshot(#[source] SourceError),
     #[error("script builder error")]
     #[diagnostic(code(cli::script_builder_error))]
     CodeBuilder(#[from] CodeBuilderError),

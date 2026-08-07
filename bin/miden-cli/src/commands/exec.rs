@@ -117,8 +117,10 @@ impl ExecCmd {
             // When requested, the executor also writes a self-contained replay snapshot of the
             // session (program, inputs, resolved code, and event log) to the given path, so the
             // transaction can be replayed offline with `miden-debug --replay <FILE>`.
-            let snapshot_recorder =
-                self.record.as_ref().map(|path| config.record_snapshot(path.clone()));
+            let snapshot_recorder = self
+                .record
+                .as_deref()
+                .map(|path| (config.record_snapshot(path.to_path_buf()), path));
             let config_handle = config.clone();
             miden_debug::DapConfig::set_global(config);
 
@@ -156,11 +158,9 @@ impl ExecCmd {
                         mutation_sets.len()
                     );
                 }
-                if let Err(err) = super::report_replay_snapshot_write(
-                    snapshot_recorder.as_ref(),
-                    self.record.as_deref(),
-                    |source, message| CliError::Exec(source.into(), message),
-                ) {
+                if let Some((snapshot_recorder, path)) = &snapshot_recorder
+                    && let Err(err) = super::report_replay_snapshot_write(snapshot_recorder, path)
+                {
                     if result.is_err() {
                         eprintln!("{err}");
                     } else {

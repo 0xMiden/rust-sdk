@@ -55,11 +55,14 @@ miden-client new-wallet --offline
 Create a file `test_debug.masm`:
 
 ```
-begin
+@transaction_script
+pub proc main
   push.1.2
   add
   push.3
   mul
+  push.9
+  assert_eq
 end
 ```
 

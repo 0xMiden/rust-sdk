@@ -25,14 +25,7 @@ fn report_replay_snapshot_write(
 ) -> Result<(), CliError> {
     match recorder.take() {
         Some(Ok(write)) => {
-            println!(
-                "Wrote replay snapshot ({} event(s), {} forest(s)) to {}; replay it with \
-                 `miden-debug --replay {}`.",
-                write.event_count,
-                write.forest_count,
-                write.path.display(),
-                write.path.display()
-            );
+            println!("Replay it offline with `miden-debug --replay {}`.", write.path.display());
             Ok(())
         },
         Some(Err(err)) => Err(CliError::ReplaySnapshot(Box::new(err))),

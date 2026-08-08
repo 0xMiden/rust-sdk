@@ -92,7 +92,7 @@ We use [semver](https://semver.org/) naming convention.
 - Repo forked and branch created from `next` according to the naming convention.
 - Commit messages and code style follow conventions.
 - Tests added for new functionality, with all previously existing tests passing.
-  - Read more on how to run integration tests [here](./tests/README.md).
+  - Read more on how to run integration tests [here](./bin/integration-tests/README.md).
 - Documentation/comments updated for all changes according to our documentation convention.
 - Lints: Rustfmt, Clippy, Rustdoc, Typos and TOML-formatting linting passing.
   - As mentioned above, `make lint` can be used for checking there.

@@ -28,6 +28,10 @@
 * Improved the output of the `miden-client init` command when a configuration already exists ([#](https://github.com/0xMiden/rust-sdk/pull/2357)).
 * [FEATURE][cli] Added DAP-based transaction debugging with offline record/replay. `miden-client exec` and `consume-notes` accept `--start-debug-adapter <ADDR>` to run a transaction — script, kernel, note scripts, and account code — under a DAP client (e.g. the `miden-debug` TUI) instead of proving and submitting it (`consume-notes` is backed by a new `Client::execute_transaction_with_dap`). During the session the advice mutations produced by the transaction host's event handlers are recorded — readable via the handle from `DapConfig::record_event_mutations()`, and reported by the CLI — and `--record <FILE>` writes a self-contained replay snapshot (program, inputs, resolved code, and event log) that can be replayed offline with `miden-debug --replay <FILE>`, with no node, client, or account state. This uses the `miden-debug` 0.9.2 release ([#2306](https://github.com/0xMiden/rust-sdk/pull/2306)).
 
+### Fixes
+
+* [FIX][cli] `miden-client init` now reports invalid remote prover endpoints instead of silently writing a local-prover config ([#2376](https://github.com/0xMiden/rust-sdk/pull/2376)).
+
 ## 0.16.0-alpha.1 (2026-07-17)
 
 ### Breaking Changes

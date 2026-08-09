@@ -178,7 +178,9 @@ impl InitCmd {
         }
 
         cli_config.remote_prover_endpoint = match &self.remote_prover_endpoint {
-            Some(rpc) => CliEndpoint::try_from(rpc.as_str()).ok(),
+            Some(rpc) => Some(CliEndpoint::try_from(rpc.as_str()).map_err(|err| {
+                CliError::Parse(err.into(), "Failed to parse remote prover endpoint".to_string())
+            })?),
             None => None,
         };
 

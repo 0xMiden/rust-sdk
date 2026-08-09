@@ -92,6 +92,22 @@ fn init_with_params() {
 }
 
 #[test]
+fn init_rejects_invalid_remote_prover_endpoint() {
+    let temp_dir = temp_dir().join(format!("cli-test-{}", rand::rng().random::<u64>()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let mut init_cmd = cargo_bin_cmd!("miden-client");
+    init_cmd.args(["init", "--local", "--remote-prover-endpoint", "localhost:not-a-port"]);
+    init_cmd.current_dir(&temp_dir).assert().failure();
+
+    let config_path = temp_dir.join(MIDEN_DIR).join("miden-client.toml");
+    assert!(
+        !config_path.exists(),
+        "init should not write a config when the remote prover endpoint is invalid"
+    );
+}
+
+#[test]
 #[serial_test::file_serial]
 fn silent_initialization_uses_default_values() {
     let miden_home = set_isolated_miden_home();

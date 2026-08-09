@@ -311,13 +311,14 @@ async fn token_symbol_mapping() -> Result<()> {
     let fungible_faucet_account_id = new_faucet_cli(&temp_dir, AccountType::Private);
 
     // Encode the faucet ID as bech32 using the same NetworkId the CLI derives from its
-    // configured endpoint. The token symbol map's `id` field accepts bech32 only.
+    // configured endpoint. The token symbol map's `address` field accepts bech32 only.
     let faucet_id = AccountId::from_hex(&fungible_faucet_account_id).unwrap();
-    let bech32_id = Address::new(faucet_id).encode(endpoint.to_network_id());
+    let bech32_address = Address::new(faucet_id).encode(endpoint.to_network_id());
 
     // Create a token symbol mapping file in the MIDEN_DIR directory
     let token_symbol_map_path = temp_dir.join(MIDEN_DIR).join("token_symbol_map.toml");
-    let token_symbol_map_content = format!(r#"BTC = {{ id = "{bech32_id}", decimals = 10 }}"#);
+    let token_symbol_map_content =
+        format!(r#"BTC = {{ address = "{bech32_address}", decimals = 10 }}"#);
     fs::write(&token_symbol_map_path, token_symbol_map_content).unwrap();
 
     sync_cli(&temp_dir);

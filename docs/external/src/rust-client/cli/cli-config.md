@@ -131,11 +131,11 @@ This file must be updated manually with known token symbol mappings. A sample to
 
 ```toml
 # This addresses in this file are not real and are only for demonstration purposes.
-ETH = { id = "mlcl1qru2e5yvx40ndgqqqzusrryr0ucyd0uj", decimals = 18 }
-BTC = { id = "mlcl1qple0ejnutx8zyp0cm0pme9wjfgqz0u9djq", decimals = 8 }
+ETH = { address = "mlcl1qru2e5yvx40ndgqqqzusrryr0ucyd0uj", decimals = 18 }
+BTC = { address = "mlcl1qple0ejnutx8zyp0cm0pme9wjfgqz0u9djq", decimals = 8 }
 ```
 
-The `id` field must be the faucet account's full Bech32 address; hexadecimal account IDs are not accepted in this file. The `decimals` field is the number of decimals used by the token.
+The `address` field must be the faucet account's full Bech32 address; hexadecimal account IDs are not accepted in this file. The `decimals` field is the number of decimals used by the token.
 
 When the client is configured with a token symbol map, any transaction command that specifies an asset can use the token symbol instead of the asset ID. For example, when specifying an asset normally you would use something like:
 `1::mlcl1qple0ejnutx8zyp0cm0pme9wjfgqz0u9djq`

@@ -459,10 +459,9 @@ impl StateSync {
 
     /// Fetches the sync data from the node by calling the following endpoints:
     /// 1. `sync_chain_mmr` — discovers the chain tip, gets the MMR delta and chain tip header.
-    /// 2. `sync_notes` — loops until the full range to the chain tip is covered (handles paginated
-    ///    responses).
-    /// 3. `get_notes_by_id` — fetches full metadata for notes with attachments.
-    /// 4. `sync_transactions` — gets transaction data for the full range.
+    /// 2. Concurrently fetches the remaining data for the discovered range:
+    ///    - `sync_notes`, followed by `get_notes_by_id` for notes whose content is required.
+    ///    - `sync_transactions` for tracked accounts.
     ///
     /// Returns `None` when the client is already at the chain tip (no progress).
     async fn fetch_sync_data(
@@ -493,22 +492,40 @@ impl StateSync {
             "Syncing state.",
         );
 
-        // Step 2: sync notes and fetch full note bodies for public notes (and attachment content
-        // for private notes that carry attachments), paginating with the same chain tip so MMR
-        // paths are opened at a consistent forest. With no tracked tags there's nothing the node
-        // could match, so skip the RPC entirely.
-        let note_blocks = if note_tags.is_empty() {
-            Vec::new()
-        } else {
-            self.rpc_api
-                .sync_notes_with_content(
-                    current_block_num + 1,
-                    chain_tip,
-                    note_tags.as_ref(),
-                    NoteContentFetch::PublicDetailsAndAttachments,
-                )
-                .await?
+        // Step 2: fetch notes and transactions concurrently. Both requests use the chain tip
+        // discovered above so their responses cover the same snapshot range.
+        let note_sync = async {
+            // Fetch full note bodies for public notes (and attachment content for private notes
+            // that carry attachments), paginating with the same chain tip so MMR paths are opened
+            // at a consistent forest. With no tracked tags there's nothing the node could match,
+            // so skip the RPC entirely.
+            if note_tags.is_empty() {
+                Ok(Vec::new())
+            } else {
+                self.rpc_api
+                    .sync_notes_with_content(
+                        current_block_num + 1,
+                        chain_tip,
+                        note_tags.as_ref(),
+                        NoteContentFetch::PublicDetailsAndAttachments,
+                    )
+                    .await
+            }
         };
+
+        let transaction_sync = async {
+            // With no tracked accounts there's nothing the node could match, so skip the RPC
+            // entirely.
+            if account_ids.is_empty() {
+                Ok(Vec::new())
+            } else {
+                self.rpc_api
+                    .sync_transactions(current_block_num + 1, chain_tip, account_ids.to_vec())
+                    .await
+            }
+        };
+
+        let (note_blocks, transaction_records) = futures::try_join!(note_sync, transaction_sync)?;
 
         // Validate every returned note block falls in (current_block_num, chain_tip].
         Self::validate_note_blocks_range(&note_blocks, current_block_num, chain_tip)?;
@@ -519,16 +536,6 @@ impl StateSync {
             notes = note_count,
             "Fetched note sync data.",
         );
-
-        // Step 3: sync transactions for tracked accounts over the full range. With no tracked
-        // accounts there's nothing the node could match, so skip the RPC entirely.
-        let transaction_records = if account_ids.is_empty() {
-            Vec::new()
-        } else {
-            self.rpc_api
-                .sync_transactions(current_block_num + 1, chain_tip, account_ids.to_vec())
-                .await?
-        };
 
         Self::validate_transaction_records_range(
             &transaction_records,
@@ -2173,6 +2180,41 @@ mod tests {
 
         assert_eq!(update.block_num(), chain_tip_2);
         assert_eq!(partial_mmr.forest(), forest_2);
+    }
+
+    /// Verifies that the independent note and transaction RPCs are started concurrently and are
+    /// pinned to the chain tip discovered by `sync_chain_mmr`.
+    #[tokio::test]
+    async fn fetch_sync_data_fetches_notes_and_transactions_concurrently() {
+        let mut builder = MockChainBuilder::new();
+        let account = builder.add_existing_mock_account(miden_testing::Auth::IncrNonce).unwrap();
+        let rpc_api = MockRpcApi::new(builder.build().unwrap());
+        rpc_api.advance_blocks(1);
+
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let rpc_api = rpc_api.with_concurrent_sync_barrier(barrier);
+        let chain_tip = rpc_api.get_chain_tip_block_num();
+        let state_sync = StateSync::new(Arc::new(rpc_api.clone()), Arc::new(MockScreener), None);
+        let note_tags = Arc::new(BTreeSet::from([NoteTag::default()]));
+
+        let sync_result = tokio::time::timeout(
+            core::time::Duration::from_secs(1),
+            state_sync.fetch_sync_data(BlockNumber::GENESIS, &[account.id()], &note_tags),
+        )
+        .await
+        .expect("note and transaction RPCs should reach the concurrency barrier")
+        .unwrap()
+        .expect("the mock chain should have advanced past genesis");
+
+        assert_eq!(sync_result.chain_tip_header.block_num(), chain_tip);
+        assert_eq!(
+            rpc_api.concurrent_sync_ranges(),
+            BTreeMap::from([
+                ("notes", (BlockNumber::from(1u32), chain_tip)),
+                ("transactions", (BlockNumber::from(1u32), chain_tip)),
+            ]),
+            "both RPCs must be pinned to the MMR-discovered chain tip",
+        );
     }
 
     /// Builds a mock chain with a faucet that mints `num_blocks` notes, one per block.

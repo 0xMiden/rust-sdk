@@ -73,6 +73,12 @@ pub struct MockRpcApi {
     private_note_attachments: Arc<RwLock<BTreeMap<NoteId, NoteAttachments>>>,
     /// Test overrides for the MMR paths returned by `sync_notes`, keyed by block number.
     sync_notes_mmr_path_overrides: Arc<RwLock<BTreeMap<BlockNumber, MerklePath>>>,
+    /// Synchronizes note and transaction sync calls in state-sync concurrency tests.
+    #[cfg(test)]
+    concurrent_sync_barrier: Option<Arc<tokio::sync::Barrier>>,
+    /// Records the ranges used by note and transaction sync calls in concurrency tests.
+    #[cfg(test)]
+    concurrent_sync_ranges: Arc<RwLock<BTreeMap<&'static str, (BlockNumber, BlockNumber)>>>,
 }
 
 impl Default for MockRpcApi {
@@ -95,6 +101,42 @@ impl MockRpcApi {
             erased_notes: Arc::new(RwLock::new(Vec::new())),
             private_note_attachments: Arc::new(RwLock::new(BTreeMap::new())),
             sync_notes_mmr_path_overrides: Arc::new(RwLock::new(BTreeMap::new())),
+            #[cfg(test)]
+            concurrent_sync_barrier: None,
+            #[cfg(test)]
+            concurrent_sync_ranges: Arc::new(RwLock::new(BTreeMap::new())),
+        }
+    }
+
+    /// Configures a barrier that both note and transaction sync calls must reach.
+    #[cfg(test)]
+    pub(crate) fn with_concurrent_sync_barrier(
+        mut self,
+        barrier: Arc<tokio::sync::Barrier>,
+    ) -> Self {
+        self.concurrent_sync_barrier = Some(barrier);
+        self
+    }
+
+    /// Returns the ranges observed by note and transaction sync calls.
+    #[cfg(test)]
+    pub(crate) fn concurrent_sync_ranges(
+        &self,
+    ) -> BTreeMap<&'static str, (BlockNumber, BlockNumber)> {
+        self.concurrent_sync_ranges.read().clone()
+    }
+
+    /// Records a state-sync request and waits until its independent peer has started.
+    #[cfg(test)]
+    async fn wait_for_concurrent_sync_peer(
+        &self,
+        endpoint: &'static str,
+        block_from: BlockNumber,
+        block_to: BlockNumber,
+    ) {
+        self.concurrent_sync_ranges.write().insert(endpoint, (block_from, block_to));
+        if let Some(barrier) = &self.concurrent_sync_barrier {
+            barrier.wait().await;
         }
     }
 
@@ -341,6 +383,9 @@ impl NodeRpcClient for MockRpcApi {
         block_to: BlockNumber,
         note_tags: &BTreeSet<NoteTag>,
     ) -> Result<Vec<SyncNotesBlock>, RpcError> {
+        #[cfg(test)]
+        self.wait_for_concurrent_sync_peer("notes", block_from, block_to).await;
+
         let mut blocks_with_notes: BTreeMap<BlockNumber, BTreeMap<NoteId, CommittedNote>> =
             BTreeMap::new();
         for note in self.mock_chain.read().committed_notes().values() {
@@ -742,6 +787,9 @@ impl NodeRpcClient for MockRpcApi {
         block_to: BlockNumber,
         account_ids: Vec<AccountId>,
     ) -> Result<Vec<TransactionRecord>, RpcError> {
+        #[cfg(test)]
+        self.wait_for_concurrent_sync_peer("transactions", block_from, block_to).await;
+
         Ok(self.get_sync_transactions_request(block_from, block_to, &account_ids))
     }
 

@@ -214,11 +214,13 @@ async fn show_account<AUTH>(
                     ("Fungible Asset", faucet, amount)
                 },
                 Asset::NonFungible(non_fungible_asset) => {
-                    // TODO: Display non-fungible assets more clearly.
+                    // A vault holds at most one copy of a given non-fungible asset, so the amount
+                    // is always 1. The asset ID is appended because it is the only thing that
+                    // tells apart two non-fungible assets issued by the same faucet.
                     (
                         "Non Fungible Asset",
                         non_fungible_asset.faucet_id().prefix().to_hex(),
-                        1.0.to_string(),
+                        format!("1 ({})", non_fungible_asset.to_id_word().to_hex()),
                     )
                 },
             };

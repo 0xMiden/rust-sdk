@@ -53,7 +53,7 @@ make install-tools
 ## Code Style
 
 ### Rust
-- Edition 2024, MSRV 1.93
+- Edition 2024, MSRV 1.96
 - Use section headers for major code sections:
   ```rust
   // SECTION NAME
@@ -140,7 +140,7 @@ make stop-node              # Stop
 ## Dependencies
 
 Key external dependencies:
-- `miden-objects`, `miden-tx`, `miden-lib` - Miden protocol crates
+- `miden-protocol`, `miden-standards`, `miden-tx` - Miden protocol crates
 - `tokio` - Async runtime
 - `rusqlite` - SQLite bindings
 

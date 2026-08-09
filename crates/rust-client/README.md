@@ -7,7 +7,7 @@ Rust library, which can be used by other project to programmatically interact wi
 In order to utilize the `miden-client` library, you can add the dependency to your project's `Cargo.toml` file:
 
 ````toml
-miden-client = { version = "0.13" }
+miden-client = { version = "0.16.0-alpha.1" }
 ````
 
 ## Crate Features
@@ -24,7 +24,7 @@ The library user can provide their own implementations of `Store` and `RpcClient
 
 Storage backends are provided as separate crates:
 - SQLite: `miden-client-sqlite-store`, based on SQLite. For `std`-compatible environments.
-- Web (WASM): `idxdb-store`, based on IndexedDB. For browser environments.
+- Web (WASM): See [0xMiden/web-sdk](https://github.com/0xMiden/web-sdk) for browser storage.
 
 ## License
 This project is [MIT licensed](../../LICENSE).

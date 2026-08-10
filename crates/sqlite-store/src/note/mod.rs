@@ -52,7 +52,7 @@ const SCRIPT_BATCH_SIZE: usize = 200;
 // NOTE SCRIPT UPSERT
 // ================================================================================================
 
-// `input_notes.script_root` references `notes_scripts(script_root)`, so replacing a script row
+// `input_notes.script_root` references `notes_scripts.script_root`, so replacing a script row
 // deletes the parent and forces a foreign key check against every referencing note. Updating the
 // row in place keeps the parent alive, so no check runs at all.
 const UPSERT_NOTE_SCRIPT_QUERY: &str = "INSERT INTO `notes_scripts` \

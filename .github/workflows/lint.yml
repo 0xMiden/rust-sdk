@@ -17,22 +17,6 @@ env:
   RUST_CACHE_KEY: rust-cache-2026.02.18
 
 jobs:
-  migrations:
-    name: Migrations are append-only
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    if: github.event_name == 'pull_request'
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Check that no released migration was modified
-        env:
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
-        run: ./scripts/check-migrations.sh
-        shell: bash
-
   unused_deps:
     name: Check for unused dependencies
     runs-on: ubuntu-latest

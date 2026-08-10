@@ -5,6 +5,12 @@
 set -euo pipefail
 
 MIGRATIONS_DIR="${1:-crates/sqlite-store/src/migrations}"
+
+if [ "${NO_MIGRATION_CHECK_LABEL:-false}" = "true" ]; then
+    echo "\"no migration check\" label has been set"
+    exit 0
+fi
+
 BASE="origin/${BASE_REF:?must be set to the base branch of the pull request}"
 
 if ! git rev-parse --verify --quiet "${BASE}^{commit}" > /dev/null; then
@@ -27,5 +33,8 @@ fi
 >&2 echo "Migrations are append-only. Add a new file under \"${MIGRATIONS_DIR}\" with the next
 version prefix instead, register it in CLIENT_MIGRATIONS and append its schema hash to
 PINNED_SCHEMA_HASHES, both in crates/sqlite-store/src/db_management/migration.rs, rather than editing
-the existing entries."
+the existing entries.
+
+This behavior can be overridden by using the \"no migration check\" label, which is used for
+schema changes that no released client can encounter yet."
 exit 1

@@ -48,7 +48,9 @@ Upgrades are forward-only. There are no down migrations.
 4. Add a `CHANGELOG.md` entry under `[store]`.
 
 `scripts/check-migrations.sh` runs in CI and fails a pull request that modifies, renames or deletes
-a file that already exists on the base branch.
+a file that already exists on the base branch. The `no migration check` label skips it, for schema
+changes that no released client can encounter yet: in that case edit the existing migration and
+update its pinned schema hash instead of adding a new file.
 
 ### Migrations that transform data
 

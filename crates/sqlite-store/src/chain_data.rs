@@ -65,8 +65,8 @@ impl SqliteStore {
     pub(crate) fn get_tracked_block_headers(
         conn: &mut Connection,
     ) -> Result<Vec<BlockHeader>, StoreError> {
-        // `has_client_notes=1` rather than `=true`: SQLite only matches the partial index
-        // `idx_block_headers_has_notes` when the predicate is written the same way it is declared.
+        // `idx_block_headers_has_notes` is declared `WHERE has_client_notes = 1`, and SQLite
+        // matches a partial index only when the predicate is spelled the same way.
         const QUERY: &str = "SELECT block_num, header, has_client_notes FROM block_headers WHERE has_client_notes=1";
         conn.prepare(QUERY)
             .into_store_error()?

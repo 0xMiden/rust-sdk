@@ -617,9 +617,10 @@ fn unspent_state_filters_classify_every_note_state() {
 
     let unspent = unspent_state_filters();
     for discriminant in 0..=u8::MAX {
-        // A discriminant no state maps to fails with `InvalidValue`, while a real one gets past
-        // the discriminant match and fails on the state payload this input doesn't carry. Keep
-        // that distinction intact or new states stop being checked here.
+        // The deserializer decides which bytes are real discriminants: an unused one hits the
+        // catch-all arm and returns `InvalidValue`, while a real one gets past the discriminant
+        // match and fails later on the payload a one-byte input doesn't carry. A new state whose
+        // payload also reports `InvalidValue` would be skipped here instead of checked.
         if matches!(
             InputNoteState::read_from_bytes(&[discriminant]),
             Err(DeserializationError::InvalidValue(_))

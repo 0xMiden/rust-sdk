@@ -31,7 +31,6 @@ use miden_protocol::account::{
     AccountCode,
     AccountHeader,
     AccountId,
-    AccountPatch,
     AccountStorage,
     StorageMapKey,
     StorageMapWitness,
@@ -708,48 +707,6 @@ pub trait Store: Send + Sync {
                 Err(StoreError::AccountError(AccountError::StorageSlotNameNotFound { slot_name }))
             },
         }
-    }
-
-    // IN-BATCH (STAGED) WITNESSES
-    // --------------------------------------------------------------------------------------------
-
-    /// Returns vault asset witnesses for `asset_ids` as the account's vault would look after
-    /// applying `patch` to its committed state, *without* persisting the change. `vault_root` is
-    /// the in-batch vault root the witnesses are expected to be valid against.
-    ///
-    /// This lets [`crate::transaction::BatchBuilder`] serve witnesses for keys a prior in-batch
-    /// transaction never touched (and so are absent from its execution advice) against the
-    /// stacked account state, without reconstructing the full account.
-    ///
-    /// The default implementation returns [`StoreError::UnsupportedOperation`]; backends that
-    /// keep an in-memory Merkle forest (e.g. `SqliteStore`) override it by staging the patch on
-    /// that forest.
-    async fn vault_asset_witnesses_after_patch(
-        &self,
-        account_id: AccountId,
-        patch: AccountPatch,
-        vault_root: Word,
-        asset_ids: BTreeSet<AssetId>,
-    ) -> Result<Vec<AssetWitness>, StoreError> {
-        let _ = (account_id, patch, vault_root, asset_ids);
-        Err(StoreError::UnsupportedOperation("vault_asset_witnesses_after_patch"))
-    }
-
-    /// Returns the storage map witness for `map_key` as the account's storage would look after
-    /// applying `patch` to its committed state, *without* persisting the change. `map_root` is
-    /// the in-batch root of the map slot the witness is expected to be valid against.
-    ///
-    /// See [`Store::vault_asset_witnesses_after_patch`] for the rationale and the default
-    /// behavior.
-    async fn storage_map_witness_after_patch(
-        &self,
-        account_id: AccountId,
-        patch: AccountPatch,
-        map_root: Word,
-        map_key: StorageMapKey,
-    ) -> Result<StorageMapWitness, StoreError> {
-        let _ = (account_id, patch, map_root, map_key);
-        Err(StoreError::UnsupportedOperation("storage_map_witness_after_patch"))
     }
 
     // PARTIAL ACCOUNTS

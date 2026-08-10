@@ -25,7 +25,6 @@ use miden_client::account::{
     AccountCode,
     AccountHeader,
     AccountId,
-    AccountPatch,
     AccountStorage,
     Address,
     StorageMapKey,
@@ -527,48 +526,6 @@ impl Store for SqliteStore {
 
         self.interact_with_connection(move |conn| {
             SqliteStore::get_account_map_item(conn, &smt_forest, account_id, slot_name, key)
-        })
-        .await
-    }
-
-    async fn vault_asset_witnesses_after_patch(
-        &self,
-        account_id: AccountId,
-        patch: AccountPatch,
-        vault_root: Word,
-        asset_ids: BTreeSet<AssetId>,
-    ) -> Result<Vec<AssetWitness>, StoreError> {
-        let smt_forest = self.smt_forest.clone();
-        self.interact_with_connection(move |conn| {
-            SqliteStore::vault_asset_witnesses_after_patch(
-                conn,
-                &smt_forest,
-                account_id,
-                &patch,
-                vault_root,
-                asset_ids,
-            )
-        })
-        .await
-    }
-
-    async fn storage_map_witness_after_patch(
-        &self,
-        account_id: AccountId,
-        patch: AccountPatch,
-        map_root: Word,
-        map_key: StorageMapKey,
-    ) -> Result<StorageMapWitness, StoreError> {
-        let smt_forest = self.smt_forest.clone();
-        self.interact_with_connection(move |conn| {
-            SqliteStore::storage_map_witness_after_patch(
-                conn,
-                &smt_forest,
-                account_id,
-                &patch,
-                map_root,
-                map_key,
-            )
         })
         .await
     }

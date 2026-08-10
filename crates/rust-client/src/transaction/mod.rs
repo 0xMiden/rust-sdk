@@ -67,13 +67,7 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use miden_protocol::account::{
-    Account,
-    AccountCode,
-    AccountCodeInterface,
-    AccountId,
-    PartialAccount,
-};
+use miden_protocol::account::{Account, AccountCode, AccountCodeInterface, AccountId};
 use miden_protocol::asset::{Asset, NonFungibleAsset};
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::errors::AssetError;
@@ -326,7 +320,8 @@ where
     ) -> Result<TransactionResult, ClientError> {
         let account: Account = self.get_native_account_record(account_id).await?.try_into()?;
 
-        let prep = self.prepare_transaction(&account, transaction_request).await?;
+        validate_account_request(&transaction_request, &account)?;
+        let prep = self.prepare_transaction(account.code_interface(), transaction_request).await?;
 
         let data_store = ClientDataStore::new(self.store.clone(), self.rpc_api.clone());
         data_store.register_note_scripts(prep.output_note_scripts());
@@ -359,43 +354,22 @@ where
     }
 
     /// Performs the data-store-independent setup shared by `execute_transaction` and
-    /// `execute_transaction_for_batch`: validates the request when a full account is available,
-    /// loads/filters input notes, builds the transaction script and args, retrieves
-    /// foreign-account inputs, and computes the reference block number.
+    /// `execute_transaction_for_batch`: loads/filters input notes, builds the transaction script
+    /// and args, retrieves foreign-account inputs, and computes the reference block number.
     ///
     /// This method does not write to the store: any state produced by the transaction is
     /// persisted only after the transaction executes successfully.
     ///
-    /// In batch execution, request validation that needs a full account is skipped here; the
-    /// executor still runs against the in-batch [`PartialAccount`] state.
+    /// Checking the request against the account's balances is the caller's job, since it needs a
+    /// full [`Account`] (see [`validate_account_request`]). Batch execution only has the in-batch
+    /// [`miden_protocol::account::PartialAccount`] and so skips it; the executor still rejects an
+    /// unsatisfiable request.
     pub(crate) async fn prepare_transaction(
-        &self,
-        account: &Account,
-        transaction_request: TransactionRequest,
-    ) -> Result<PreparedTransaction, ClientError> {
-        self.prepare_transaction_inner(account.code_interface(), transaction_request, Some(account))
-            .await
-    }
-
-    pub(crate) async fn prepare_transaction_for_batch(
-        &self,
-        account: &PartialAccount,
-        transaction_request: TransactionRequest,
-    ) -> Result<PreparedTransaction, ClientError> {
-        self.prepare_transaction_inner(account.code_interface(), transaction_request, None)
-            .await
-    }
-
-    async fn prepare_transaction_inner(
         &self,
         account_code_interface: AccountCodeInterface,
         transaction_request: TransactionRequest,
-        account_to_validate: Option<&Account>,
     ) -> Result<PreparedTransaction, ClientError> {
         self.validate_recency().await?;
-        if let Some(account) = account_to_validate {
-            validate_account_request(&transaction_request, account)?;
-        }
 
         // Retrieve all input notes from the store.
         let mut stored_note_records = self

@@ -1,18 +1,16 @@
 //! Vault/asset-related database operations for accounts.
 
-use std::collections::BTreeSet;
 use std::rc::Rc;
-use std::sync::{Arc, RwLock};
 use std::vec::Vec;
 
-use miden_client::account::{AccountHeader, AccountId, AccountPatch, AccountVaultPatch};
-use miden_client::asset::{Asset, AssetWitness};
+use miden_client::Serializable;
+use miden_client::account::{AccountHeader, AccountId, AccountVaultPatch};
+use miden_client::asset::Asset;
 use miden_client::store::{AccountSmtForest, StoreError};
-use miden_client::{Serializable, Word};
 use miden_protocol::asset::AssetId;
 use miden_protocol::crypto::merkle::MerkleError;
 use rusqlite::types::Value;
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use rusqlite::{OptionalExtension, Transaction, params};
 
 use crate::sql_error::SqlResultExt;
 use crate::{SqliteStore, insert_sql, subst, u64_to_value};
@@ -50,7 +48,7 @@ impl SqliteStore {
         Ok(())
     }
 
-    /// Applies the vault patch to the account state, updating fungible and non-fungible assets.
+    /// Applies vault delta changes to the account state, updating fungible and non-fungible assets.
     ///
     /// The function updates the SMT forest with all asset changes and verifies that the resulting
     /// vault root matches the expected final state. It archives old values from latest to
@@ -95,50 +93,6 @@ impl SqliteStore {
         }
 
         Ok(())
-    }
-
-    /// Serves vault asset witnesses for `asset_ids` against the in-batch vault state obtained by
-    /// applying `patch` to the account's committed vault, *without* persisting the change.
-    ///
-    /// The patch's absolute asset values are staged on the in-memory [`AccountSmtForest`] (which
-    /// already holds the committed vault tree), the witnesses are read at the staged root, and the
-    /// staged tree is dropped. `vault_root` is the in-batch root the caller expects; a mismatch
-    /// means the supplied patch is inconsistent with the committed state.
-    pub(crate) fn vault_asset_witnesses_after_patch(
-        conn: &mut Connection,
-        smt_forest: &Arc<RwLock<AccountSmtForest>>,
-        account_id: AccountId,
-        patch: &AccountPatch,
-        vault_root: Word,
-        asset_ids: BTreeSet<AssetId>,
-    ) -> Result<Vec<AssetWitness>, StoreError> {
-        let updated_assets: Vec<Asset> = patch.vault().updated_assets().collect();
-        let removed_vault_ids: Vec<AssetId> = patch.vault().removed_asset_ids().copied().collect();
-
-        let committed_vault_root = Self::get_account_header(conn, account_id)?
-            .ok_or(StoreError::AccountDataNotFound(account_id))?
-            .0
-            .vault_root();
-
-        let mut smt_forest = smt_forest
-            .write()
-            .map_err(|_| StoreError::DatabaseError("smt_forest write lock poisoned".to_string()))?;
-
-        let (staged_root, witnesses) = smt_forest.staged_vault_asset_witnesses(
-            committed_vault_root,
-            updated_assets.into_iter(),
-            removed_vault_ids.into_iter(),
-            asset_ids,
-        )?;
-
-        if staged_root != vault_root {
-            return Err(StoreError::MerkleStoreError(MerkleError::ConflictingRoots {
-                expected_root: vault_root,
-                actual_root: staged_root,
-            }));
-        }
-
-        Ok(witnesses)
     }
 
     /// Persists vault delta changes: archives old values from latest to historical,

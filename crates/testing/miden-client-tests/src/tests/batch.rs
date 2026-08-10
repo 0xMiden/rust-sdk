@@ -434,20 +434,18 @@ fn batch_bump_map_request(module_name: &str, slot_name: &str) -> TransactionRequ
     TransactionRequestBuilder::new().custom_script(tx_script)
 }
 
-/// A later transaction in a batch may touch vault keys or storage maps that the immediately-prior
-/// transaction never touched. Only that prior transaction's execution advice is cached, so all
-/// such witness reads must be served by the store — by staging the accumulated in-batch patch
-/// onto its committed Merkle forest when the state was changed earlier in the batch, or straight
-/// from the committed forest when it wasn't. Regression test for the in-batch "untouched state"
-/// witness paths:
+/// A later transaction in a batch may touch vault keys or storage maps that no earlier
+/// transaction touched, and may re-touch state an earlier one already changed. Every such witness
+/// must be served at the in-batch root, by anchoring the key with its committed-state proof and
+/// replaying the batch's accumulated writes. Regression test covering both directions:
 ///
-/// - Push 1 consumes a note → touches only the consumed faucet's vault key.
-/// - Push 2 sends the held asset to `to` → the held faucet's vault key is absent from push 1's
-///   advice, so its witness is staged onto the committed vault.
-/// - Push 3 bumps map A → map A's committed root serves the witness directly (untouched so far).
-/// - Push 4 bumps map B → same, and map A drops out of the cached advice.
-/// - Push 5 bumps map A again → map A's root differs from committed and the key is absent from push
-///   4's advice, so the witness is staged onto the committed map.
+/// - Push 1 consumes a note → writes only the consumed faucet's vault key.
+/// - Push 2 sends the held asset to `to` → the held faucet's vault key was never written in-batch,
+///   so its witness comes from the committed vault replayed with push 1's write.
+/// - Push 3 bumps map A → map A is still at its committed root.
+/// - Push 4 bumps map B → same for map B, while map A is now ahead of its committed root.
+/// - Push 5 bumps map A again → map A's key must be opened at a root that differs from both the
+///   committed root and the root any single prior transaction left behind.
 #[allow(clippy::too_many_lines)]
 #[tokio::test]
 async fn batch_builder_serves_witnesses_for_state_untouched_by_prior_push() {

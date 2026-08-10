@@ -31,7 +31,6 @@ use miden_standards::account::faucets::{
 };
 use miden_standards::account::policies::{BurnPolicy, MintPolicy, TokenPolicyManager};
 use miden_standards::account::wallets::BasicWallet;
-use miden_standards::testing::faucet::user_faucet_single_sig_acl;
 use rand_chacha::ChaCha20Rng;
 use rand_chacha::rand_core::SeedableRng;
 
@@ -138,10 +137,10 @@ fn generate_genesis_account() -> anyhow::Result<AccountFile> {
     let mut rng = ChaCha20Rng::from_seed(random());
     let secret = AuthSecretKey::new_falcon512_poseidon2_with_rng(&mut rng);
 
-    let auth_component = user_faucet_single_sig_acl(
+    let auth_component = AuthSingleSig::new(Approver::new(
         secret.public_key().to_commitment(),
         AuthScheme::Falcon512Poseidon2,
-    );
+    ));
 
     let symbol = TokenSymbol::try_from("TST").expect("TST should be a valid token symbol");
     let name = TokenName::new(&symbol.to_string()).expect("token symbol is a valid token name");
@@ -230,10 +229,10 @@ fn create_single_test_faucet(index: u128, secret: &AuthSecretKey) -> anyhow::Res
         .try_into()
         .expect("concatenating two 16-byte arrays yields exactly 32 bytes");
 
-    let auth_component = user_faucet_single_sig_acl(
+    let auth_component = AuthSingleSig::new(Approver::new(
         secret.public_key().to_commitment(),
         AuthScheme::Falcon512Poseidon2,
-    );
+    ));
 
     let symbol = TokenSymbol::new("TKN")?;
     let name = TokenName::new(&symbol.to_string()).expect("token symbol is a valid token name");
@@ -265,7 +264,7 @@ fn create_test_account_with_many_assets(faucets: &[Account]) -> anyhow::Result<A
 
     let storage_map = create_large_storage_map();
     let acc_component = AccountComponent::new(
-        BasicWallet::code().as_library().clone(),
+        BasicWallet::code().as_package().clone(),
         vec![storage_map],
         AccountComponentMetadata::new("miden::testing::basic_wallet"),
     )
@@ -279,7 +278,7 @@ fn create_test_account_with_many_assets(faucets: &[Account]) -> anyhow::Result<A
     });
 
     let account = AccountBuilder::new(TEST_ACCOUNT_SEED)
-        .with_auth_component(AuthSingleSig::new(Approver::new(
+        .with_component(AuthSingleSig::new(Approver::new(
             sk.public_key().to_commitment(),
             AuthScheme::Falcon512Poseidon2,
         )))

@@ -1,6 +1,6 @@
 ---
 title: Troubleshooting
-sidebar-position: 3
+sidebar_position: 3
 ---
 
 ## Troubleshooting and transaction lifecycle (CLI)

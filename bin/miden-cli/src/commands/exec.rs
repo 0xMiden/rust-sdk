@@ -45,6 +45,16 @@ pub struct ExecCmd {
     #[cfg(feature = "dap")]
     #[arg(long = "start-debug-adapter")]
     start_debug_adapter: Option<SocketAddr>,
+
+    /// Write a replay snapshot of the debug session to this file once it ends.
+    ///
+    /// The snapshot captures the program, its inputs, the resolved code, and the advice mutations
+    /// produced by the transaction host's event handlers, so the same execution can be replayed
+    /// offline with `miden-debug --replay <FILE>`. Only meaningful together with
+    /// `--start-debug-adapter`.
+    #[cfg(feature = "dap")]
+    #[arg(long = "record", value_name = "FILE", requires = "start_debug_adapter")]
+    record: Option<PathBuf>,
 }
 
 impl ExecCmd {
@@ -99,7 +109,18 @@ impl ExecCmd {
 
         #[cfg(feature = "dap")]
         if let Some(addr) = self.start_debug_adapter.as_ref() {
-            let config = miden_debug::DapConfig::new(addr.to_string());
+            let mut config = miden_debug::DapConfig::new(addr.to_string());
+            // The DAP executor is created and consumed inside the transaction executor, so the
+            // advice mutations recorded during the session are read through this shared handle
+            // once execution returns.
+            let recorder = config.record_event_mutations();
+            // When requested, the executor also writes a self-contained replay snapshot of the
+            // session (program, inputs, resolved code, and event log) to the given path, so the
+            // transaction can be replayed offline with `miden-debug --replay <FILE>`.
+            let snapshot_recorder = self
+                .record
+                .as_deref()
+                .map(|path| (config.record_snapshot(path.to_path_buf()), path));
             let config_handle = config.clone();
             miden_debug::DapConfig::set_global(config);
 
@@ -126,6 +147,26 @@ impl ExecCmd {
                     continue;
                 }
 
+                // The recording describes the final run of the session and is what an
+                // event-replay debug session needs to re-execute this transaction without the
+                // live transaction host.
+                let mutation_sets = recorder.take();
+                if !mutation_sets.is_empty() {
+                    println!(
+                        "Recorded {} advice mutation set(s) from event handlers during the \
+                         debug session.",
+                        mutation_sets.len()
+                    );
+                }
+                if let Some((snapshot_recorder, path)) = &snapshot_recorder
+                    && let Err(err) = super::report_replay_snapshot_write(snapshot_recorder, path)
+                {
+                    if result.is_err() {
+                        eprintln!("{err}");
+                    } else {
+                        return Err(err);
+                    }
+                }
                 return result.map_err(|err| {
                     CliError::Exec(err.into(), "error executing the program".to_string())
                 });

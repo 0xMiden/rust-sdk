@@ -116,7 +116,7 @@ async fn apply_account_patch_additions() -> anyhow::Result<()> {
         StorageSlotName::new("miden::testing::sqlite_store::mapB").expect("valid slot name");
 
     let dummy_component = AccountComponent::new(
-        BasicWallet::code().as_library().clone(),
+        BasicWallet::code().as_package().clone(),
         vec![
             StorageSlot::with_empty_value(value_slot_name.clone()),
             StorageSlot::with_empty_map(map_slot_name.clone()),
@@ -128,7 +128,7 @@ async fn apply_account_patch_additions() -> anyhow::Result<()> {
     // Create and insert an account
     let account = AccountBuilder::new([0; 32])
         .account_type(AccountType::Private)
-        .with_auth_component(AuthSingleSig::new(Approver::new(
+        .with_component(AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
             AuthSchemeId::Falcon512Poseidon2,
         )))
@@ -238,7 +238,7 @@ async fn apply_account_patch_preserves_fungible_callback_flag() -> anyhow::Resul
     // Create and insert an account with an empty vault.
     let account = AccountBuilder::new([7; 32])
         .account_type(AccountType::Private)
-        .with_auth_component(AuthSingleSig::new(Approver::new(
+        .with_component(AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
             AuthSchemeId::Falcon512Poseidon2,
         )))
@@ -323,7 +323,7 @@ async fn apply_account_patch_removals() -> anyhow::Result<()> {
         .insert(StorageMapKey::new([ONE, ZERO, ZERO, ZERO].into()), [ONE, ONE, ONE, ONE].into())?;
 
     let dummy_component = AccountComponent::new(
-        BasicWallet::code().as_library().clone(),
+        BasicWallet::code().as_package().clone(),
         vec![
             StorageSlot::with_value(value_slot_name.clone(), [ZERO, ZERO, ZERO, ONE].into()),
             StorageSlot::with_map(map_slot_name.clone(), dummy_map),
@@ -342,7 +342,7 @@ async fn apply_account_patch_removals() -> anyhow::Result<()> {
     ];
     let account = AccountBuilder::new([0; 32])
         .account_type(AccountType::Private)
-        .with_auth_component(AuthSingleSig::new(Approver::new(
+        .with_component(AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
             AuthSchemeId::Falcon512Poseidon2,
         )))
@@ -439,14 +439,14 @@ async fn get_account_storage_item_success() -> anyhow::Result<()> {
     let test_value: [miden_client::Felt; 4] = [ONE, ONE, ONE, ONE];
 
     let dummy_component = AccountComponent::new(
-        BasicWallet::code().as_library().clone(),
+        BasicWallet::code().as_package().clone(),
         vec![StorageSlot::with_value(value_slot_name.clone(), test_value.into())],
         AccountComponentMetadata::new("miden::testing::dummy_component"),
     )?;
 
     let account = AccountBuilder::new([0; 32])
         .account_type(AccountType::Private)
-        .with_auth_component(AuthSingleSig::new(Approver::new(
+        .with_component(AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
             AuthSchemeId::Falcon512Poseidon2,
         )))
@@ -474,14 +474,14 @@ async fn get_account_storage_item_not_found() -> anyhow::Result<()> {
         StorageSlotName::new("miden::testing::sqlite_store::value").expect("valid slot name");
 
     let dummy_component = AccountComponent::new(
-        BasicWallet::code().as_library().clone(),
+        BasicWallet::code().as_package().clone(),
         vec![StorageSlot::with_empty_value(value_slot_name)],
         AccountComponentMetadata::new("miden::testing::dummy_component"),
     )?;
 
     let account = AccountBuilder::new([0; 32])
         .account_type(AccountType::Private)
-        .with_auth_component(AuthSingleSig::new(Approver::new(
+        .with_component(AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
             AuthSchemeId::Falcon512Poseidon2,
         )))
@@ -517,14 +517,14 @@ async fn get_account_map_item_success() -> anyhow::Result<()> {
     storage_map.insert(test_key, test_value)?;
 
     let dummy_component = AccountComponent::new(
-        BasicWallet::code().as_library().clone(),
+        BasicWallet::code().as_package().clone(),
         vec![StorageSlot::with_map(map_slot_name.clone(), storage_map)],
         AccountComponentMetadata::new("miden::testing::dummy_component"),
     )?;
 
     let account = AccountBuilder::new([0; 32])
         .account_type(AccountType::Private)
-        .with_auth_component(AuthSingleSig::new(Approver::new(
+        .with_component(AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
             AuthSchemeId::Falcon512Poseidon2,
         )))
@@ -553,14 +553,14 @@ async fn get_account_map_item_value_slot_error() -> anyhow::Result<()> {
         StorageSlotName::new("miden::testing::sqlite_store::value").expect("valid slot name");
 
     let dummy_component = AccountComponent::new(
-        BasicWallet::code().as_library().clone(),
+        BasicWallet::code().as_package().clone(),
         vec![StorageSlot::with_empty_value(value_slot_name.clone())],
         AccountComponentMetadata::new("miden::testing::dummy_component"),
     )?;
 
     let account = AccountBuilder::new([0; 32])
         .account_type(AccountType::Private)
-        .with_auth_component(AuthSingleSig::new(Approver::new(
+        .with_component(AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
             AuthSchemeId::Falcon512Poseidon2,
         )))
@@ -586,14 +586,14 @@ async fn get_account_code() -> anyhow::Result<()> {
     let store = create_test_store().await;
 
     let dummy_component = AccountComponent::new(
-        BasicWallet::code().as_library().clone(),
+        BasicWallet::code().as_package().clone(),
         vec![],
         AccountComponentMetadata::new("miden::testing::dummy_component"),
     )?;
 
     let account = AccountBuilder::new([0; 32])
         .account_type(AccountType::Private)
-        .with_auth_component(AuthSingleSig::new(Approver::new(
+        .with_component(AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
             AuthSchemeId::Falcon512Poseidon2,
         )))
@@ -641,14 +641,14 @@ async fn account_reader_nonce_and_status() -> anyhow::Result<()> {
     let store = Arc::new(create_test_store().await);
 
     let dummy_component = AccountComponent::new(
-        BasicWallet::code().as_library().clone(),
+        BasicWallet::code().as_package().clone(),
         vec![],
         AccountComponentMetadata::new("miden::testing::dummy_component"),
     )?;
 
     let account = AccountBuilder::new([0; 32])
         .account_type(AccountType::Private)
-        .with_auth_component(AuthSingleSig::new(Approver::new(
+        .with_component(AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
             AuthSchemeId::Falcon512Poseidon2,
         )))
@@ -719,14 +719,14 @@ async fn account_reader_storage_access() -> anyhow::Result<()> {
     let test_value: [miden_client::Felt; 4] = [ONE, ONE, ONE, ONE];
 
     let dummy_component = AccountComponent::new(
-        BasicWallet::code().as_library().clone(),
+        BasicWallet::code().as_package().clone(),
         vec![StorageSlot::with_value(value_slot_name.clone(), test_value.into())],
         AccountComponentMetadata::new("miden::testing::dummy_component"),
     )?;
 
     let account = AccountBuilder::new([0; 32])
         .account_type(AccountType::Private)
-        .with_auth_component(AuthSingleSig::new(Approver::new(
+        .with_component(AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
             AuthSchemeId::Falcon512Poseidon2,
         )))
@@ -758,14 +758,14 @@ async fn account_reader_addresses_access() -> anyhow::Result<()> {
     let store = Arc::new(create_test_store().await);
 
     let dummy_component = AccountComponent::new(
-        BasicWallet::code().as_library().clone(),
+        BasicWallet::code().as_package().clone(),
         vec![],
         AccountComponentMetadata::new("miden::testing::dummy_component"),
     )?;
 
     let account = AccountBuilder::new([0; 32])
         .account_type(AccountType::Private)
-        .with_auth_component(AuthSingleSig::new(Approver::new(
+        .with_component(AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
             AuthSchemeId::Falcon512Poseidon2,
         )))
@@ -890,13 +890,13 @@ async fn prune_account_history_multiple_accounts() -> anyhow::Result<()> {
 
     // Account B: different seed  to different account. We need a different builder seed.
     let component_b = AccountComponent::new(
-        BasicWallet::code().as_library().clone(),
+        BasicWallet::code().as_package().clone(),
         vec![StorageSlot::with_empty_map(map_slot_name_b.clone())],
         AccountComponentMetadata::new("miden::testing::dummy_component"),
     )?;
     let account_b = AccountBuilder::new([1; 32])
         .account_type(AccountType::Private)
-        .with_auth_component(AuthSingleSig::new(Approver::new(
+        .with_component(AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
             AuthSchemeId::Falcon512Poseidon2,
         )))
@@ -1097,14 +1097,14 @@ async fn setup_account_with_map(
     }
 
     let component = AccountComponent::new(
-        BasicWallet::code().as_library().clone(),
+        BasicWallet::code().as_package().clone(),
         vec![StorageSlot::with_map(map_slot_name.clone(), map)],
         AccountComponentMetadata::new("miden::testing::dummy_component"),
     )?;
 
     let account = AccountBuilder::new([0; 32])
         .account_type(AccountType::Private)
-        .with_auth_component(AuthSingleSig::new(Approver::new(
+        .with_component(AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
             AuthSchemeId::Falcon512Poseidon2,
         )))
@@ -1324,14 +1324,14 @@ async fn undo_account_state_deletes_account_entirely() -> anyhow::Result<()> {
         )?;
     }
     let component = AccountComponent::new(
-        BasicWallet::code().as_library().clone(),
+        BasicWallet::code().as_package().clone(),
         vec![StorageSlot::with_map(map_slot_name.clone(), map)],
         AccountComponentMetadata::new("miden::testing::dummy_component"),
     )?;
 
     let account = AccountBuilder::new([0; 32])
         .account_type(AccountType::Private)
-        .with_auth_component(AuthSingleSig::new(Approver::new(
+        .with_component(AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
             AuthSchemeId::Falcon512Poseidon2,
         )))
@@ -1523,7 +1523,7 @@ async fn undo_after_update_account_state_does_not_resurrect_removed_entries() ->
     initial_map.insert(key_c, [Felt::from(300u32), ZERO, ZERO, ZERO].into())?;
 
     let component = AccountComponent::new(
-        BasicWallet::code().as_library().clone(),
+        BasicWallet::code().as_package().clone(),
         vec![StorageSlot::with_map(map_slot_name.clone(), initial_map)],
         AccountComponentMetadata::new("miden::testing::dummy_component"),
     )?;
@@ -1531,7 +1531,7 @@ async fn undo_after_update_account_state_does_not_resurrect_removed_entries() ->
     // Build an existing account at nonce 1: no initial assets
     let account = AccountBuilder::new([0; 32])
         .account_type(AccountType::Private)
-        .with_auth_component(AuthSingleSig::new(Approver::new(
+        .with_component(AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
             AuthSchemeId::Falcon512Poseidon2,
         )))
@@ -2016,14 +2016,14 @@ async fn undo_after_update_removes_genuinely_new_entries() -> anyhow::Result<()>
     initial_map.insert(key_b, [Felt::from(200u32), ZERO, ZERO, ZERO].into())?;
 
     let component = AccountComponent::new(
-        BasicWallet::code().as_library().clone(),
+        BasicWallet::code().as_package().clone(),
         vec![StorageSlot::with_map(map_slot_name.clone(), initial_map)],
         AccountComponentMetadata::new("miden::testing::dummy_component"),
     )?;
 
     let account = AccountBuilder::new([0; 32])
         .account_type(AccountType::Private)
-        .with_auth_component(AuthSingleSig::new(Approver::new(
+        .with_component(AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
             AuthSchemeId::Falcon512Poseidon2,
         )))
@@ -2188,7 +2188,7 @@ async fn insert_account_with_storage_for_forest_test()
         StorageSlotName::new("miden::testing::sqlite_store::map").expect("valid slot name");
 
     let dummy_component = AccountComponent::new(
-        BasicWallet::code().as_library().clone(),
+        BasicWallet::code().as_package().clone(),
         vec![
             StorageSlot::with_empty_value(value_slot_name.clone()),
             StorageSlot::with_empty_map(map_slot_name.clone()),
@@ -2198,7 +2198,7 @@ async fn insert_account_with_storage_for_forest_test()
 
     let account = AccountBuilder::new([0; 32])
         .account_type(AccountType::Private)
-        .with_auth_component(AuthSingleSig::new(Approver::new(
+        .with_component(AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
             AuthSchemeId::Falcon512Poseidon2,
         )))
@@ -2326,7 +2326,7 @@ async fn forest_persists_across_store_reopen() -> anyhow::Result<()> {
     let map_slot_name =
         StorageSlotName::new("miden::testing::sqlite_store::map").expect("valid slot name");
     let dummy_component = AccountComponent::new(
-        BasicWallet::code().as_library().clone(),
+        BasicWallet::code().as_package().clone(),
         vec![
             StorageSlot::with_empty_value(value_slot_name.clone()),
             StorageSlot::with_empty_map(map_slot_name.clone()),
@@ -2335,7 +2335,7 @@ async fn forest_persists_across_store_reopen() -> anyhow::Result<()> {
     )?;
     let account = AccountBuilder::new([7; 32])
         .account_type(AccountType::Private)
-        .with_auth_component(AuthSingleSig::new(Approver::new(
+        .with_component(AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
             AuthSchemeId::Falcon512Poseidon2,
         )))
@@ -2426,12 +2426,12 @@ async fn watched_status_survives_state_replacement() -> anyhow::Result<()> {
 
     let account = AccountBuilder::new([0; 32])
         .account_type(AccountType::Private)
-        .with_auth_component(AuthSingleSig::new(Approver::new(
+        .with_component(AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
             AuthSchemeId::Falcon512Poseidon2,
         )))
         .with_component(AccountComponent::new(
-            BasicWallet::code().as_library().clone(),
+            BasicWallet::code().as_package().clone(),
             vec![],
             AccountComponentMetadata::new("miden::testing::watched_replace"),
         )?)

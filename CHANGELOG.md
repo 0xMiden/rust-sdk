@@ -6,23 +6,44 @@
 
 * [BREAKING][arch][store] The account SMT forest now persists in SQLite (new `forest_trees`, `forest_entries`, `forest_subtrees` and `forest_revision` tables) through a `LargeSmtForest` backend scoped to the store's own transaction, so forest mutations commit or roll back atomically with the account tables and opening the store no longer rebuilds the forest from account data. Tree inner nodes are persisted as packed subtree blobs, so witness reads load a single leaf plus eight blobs instead of rebuilding the account's tree, making their cost independent of the account's map size at the price of a larger store file. Tree updates are computed path-locally from the persisted leaves and subtree blobs, so committed update cost scales with the size of the change set rather than with the map size. Existing stores are not compatible and must be recreated ([#2333](https://github.com/0xMiden/rust-sdk/pull/2333)).
 * [BREAKING][removal][rust] `AccountSmtForest` is now generic over the forest storage `Backend` and is constructed per store operation. The in-memory root-staging API (`stage_roots`, `commit_roots`, `discard_roots`, `replace_roots`, `get_roots`) and the node-insertion helpers were removed; witness reads and `apply_updates` are the remaining surface ([#2333](https://github.com/0xMiden/rust-sdk/pull/2333)).
+* [BREAKING][type][rust] `rpc::domain::transaction::TransactionRecord` gained a non-public field, so it can no longer be constructed with a struct literal outside the crate ([#2300](https://github.com/0xMiden/rust-sdk/pull/2300)).
 * [BREAKING][rust] `StateSyncUpdate` is now immutable once built: its `block_num`, `partial_blockchain_updates`, `note_updates`, `transaction_updates` and `account_updates` fields are private and it no longer implements `Default`. Build one with `StateSyncUpdate::from_parts`, read it through the same-named accessors, and take ownership of the contents with `into_parts` ([#2297](https://github.com/0xMiden/rust-sdk/pull/2297)).
 * [BREAKING][param][rust] `PartialBlockchainUpdates::insert` no longer takes the block's MMR authentication nodes; stage them separately with the new `extend_authentication_nodes` ([#2297](https://github.com/0xMiden/rust-sdk/pull/2297)).
+* [BREAKING][rust] Transaction fees moved out of the kernel epilogue and into the authentication procedure. On a chain whose `verification_base_fee` is non-zero, signature-based auth components (`AuthSingleSig`, `AuthMultisig`) require the transaction to commit fee conversion info, and the paying account must hold a balance of the fee asset. use the new `TransactionRequestBuilder::fee_conversion_info` to commit it. Chains that charge no fee are unaffected.
+* [BREAKING][rename][rust] Protocol renames surfaced through the client's re-exports: `miden_client::assembly::Library` is removed (packages are the only representation now, use `miden_client::vm::Package`).
+* [BREAKING][param][rust] Network accounts now require a fee policy: `AuthNetworkAccount::with_allowed_notes` → `AuthNetworkAccount::new(notes, FeePolicyManager)` and `NetworkAccount::builder` takes a `FeePolicyManager`. Every allowlisted note script must have an explicit fee-schedule entry, including a zero one, because a script root missing from the schedule aborts fee estimation rather than defaulting to free. `AuthNetworkAccount` also no longer converts into a single `AccountComponent`: it yields the auth component plus its fee policy components, so it must be passed to `with_components`.
+* [BREAKING][rust] Removed the `AuthSingleSigAcl` and `AuthSingleSigAclConfig` re-exports along with the `auth/acl-auth`. Use `AuthSingleSig`, which requires a signature for every call, or `NoAuth` where no authentication is wanted.
+* [BREAKING][param][rust] `send_notes` transaction script now reads its payload from the advice provider and requires the payload commitment as its transaction script argument. The client binds that argument automatically, so a `TransactionRequestBuilder::script_arg` set alongside a `SendNotes` template is ignored; it still applies to caller-supplied custom scripts.
+* [BREAKING][behavior][rust] Creating a note that carries a `NetworkAccountTarget` attachment now performs a foreign procedure invocation into the target account to price the note, even on a chain that charges no fees. Such transactions must supply the target network account as a foreign account, anchored at a reference block that already commits it.
 * [BREAKING][rust] Transaction inputs are now sealed before submission. The client fetches the validator set's shared encryption key on first submission and verifies its validator attestations against the validator set committed in the chain tip before using it. A client must be synced far enough to have a genesis header and a chain-tip header locally before it can submit. `NodeRpcClient::submit_proven_transaction` and `NodeRpcClient::submit_proven_batch` now take `SealedTransactionInputs` instead of `TransactionInputs`.
 * [BREAKING][rename][rust] `NoteScreener::can_consume` → `NoteScreener::get_consumability` and `NoteScreener::can_consume_batch` → `NoteScreener::get_batch_consumability`. The new names reflect that both return a `NoteConsumptionStatus` per account rather than a boolean ([#2338](https://github.com/0xMiden/rust-sdk/pull/2338)).
 * [BREAKING][behavior][rust] Transaction inputs are now encrypted on submission, so the RPC operator relaying them cannot read them. `Client::submit_proven_transaction` seals the inputs against the validator set's shared transaction encryption key: on first use it fetches the key from the node, verifies a validator attestation for it against the validator set committed in a trusted block header (binding the genesis commitment, so an attestation cannot be replayed from another network), and caches the verified key in the store's settings table, evicting it when the node rejects a submission sealed against a retired key so the next submission re-fetches. Requires a node that unseals submitted inputs; such nodes reject plaintext submissions ([#2341](https://github.com/0xMiden/rust-sdk/pull/2341)).
 * [BREAKING][param][rust] `NodeRpcClient` models encrypted submissions: `submit_proven_transaction` now takes `SealedTransactionInputs` instead of `TransactionInputs`, `submit_proven_batch` now takes `Vec<SealedTransactionInputs>` (one per transaction, each sealed against its own transaction ID), and implementations must provide the new `get_transaction_encryption_key` method ([#2341](https://github.com/0xMiden/rust-sdk/pull/2341)).
+* [BREAKING][removal][cli] Removed the `account --show --with-code` flag. Use `account --inspect <ID> --verbose` to view procedure disassembly. ([#2312](https://github.com/0xMiden/rust-sdk/issues/2312)).
+* [BREAKING][rename][cli] Renamed the `token_symbol_map.toml` Bech32 field from `id` to `address` ([#2377](https://github.com/0xMiden/rust-sdk/pull/2377)).
 * [BREAKING][type][rust] Added the `NoteFilter::ScriptRoots` variant, so exhaustive matches on `NoteFilter` in `Store` implementations must handle it ([#2335](https://github.com/0xMiden/rust-sdk/pull/2335)).
+* [BREAKING][behavior][rpc] The `SyncNotes` response now carries a reduced note metadata message: instead of the note's attachments commitment it carries one entry per attachment, with single-word attachments sent verbatim and larger ones sent as commitments. The client reconstructs the protocol-level `NoteMetadata` from those entries, so it requires a node that speaks this format.
 * [BREAKING][behavior][store] The SQLite base schema now declares an index on `input_notes(script_root)`. This changes the schema fingerprint, so opening a database created before this change fails with `SchemaHashMismatch` and existing stores must be recreated ([#2335](https://github.com/0xMiden/rust-sdk/pull/2335)).
 
 ### Enhancements
 
+* [FEATURE][rust] A client that only watches a public account now recovers notes the account consumed authenticated, even when it never tracked them by tag. During sync it reads the note references the node attaches to the account's transactions, fetches each note body by id, and surfaces it through `InputNoteReader`. Requires node `0.15.1` ([#2300](https://github.com/0xMiden/rust-sdk/pull/2300)).
 * [FEATURE][cli] Added a `--payback-note-type` option to `swap` so the payback note can be created as public or private (defaults to private). Public payback works without any off-band advice now that SWAP derives the payback recipient deterministically ([#2190](https://github.com/0xMiden/rust-sdk/pull/2190)).
+* [FEATURE][cli] `init` now also writes the non-fungible faucet, guarded multisig auth and network account auth component packages ([#2356](https://github.com/0xMiden/rust-sdk/pull/2356)).
+* [FEATURE][rust] Added the `NonFungibleFaucet` component re-export to `miden_client::account::component` ([#2356](https://github.com/0xMiden/rust-sdk/pull/2356)).
+* [FEATURE][rust] A request built with `TransactionRequestBuilder::fee_conversion_info` is now rejected before execution, with `TransactionRequestError::FeeConversionInfoUnsupported` ([#2356](https://github.com/0xMiden/rust-sdk/pull/2356)).
 * [FEATURE][rust] `Client::get_consumable_notes(Some(account_id))` now screens only that account instead of screening every tracked account and discarding the rest, so its cost no longer grows with the number of tracked accounts. Added `NoteScreener::get_batch_consumability_for_account` to screen notes against a single account ([#2338](https://github.com/0xMiden/rust-sdk/pull/2338)).
 * [FEATURE][rust] Added the `miden_client::rpc::encryption` module backing encrypted submissions: `TransactionEncryptionKey`, `AttestedTransactionEncryptionKey` (whose `verify` is the only path to a usable key), `ValidatorAttestation`, `NextTransactionEncryptionKey`, `SealedTransactionInputs` and `seal_transaction_inputs`, along with re-exports of the validator DSA key types reachable from this API ([#2341](https://github.com/0xMiden/rust-sdk/pull/2341)).
 * [FEATURE][rust,store] Added `NoteFilter::ScriptRoots` to query input notes by their note script root directly at the store level, without loading and screening unrelated notes. The filter doesn't apply to output notes: querying output notes with it returns an empty list ([#2335](https://github.com/0xMiden/rust-sdk/pull/2335)).
 * [rust] Added `PartialBlockchainUpdates::block_headers_to_store`, which narrows the staged headers to the ones a sync must persist: those marked as relevant, genesis, and the block at the sync height. `block_headers` still yields all staged headers ([#2297](https://github.com/0xMiden/rust-sdk/pull/2297)).
 * [rust] State sync now authenticates every relevant note block but only persists block headers and MMR authentication nodes for blocks containing notes that remain unspent or that a `NoteObserver` explicitly marks as relevant ([#2297](https://github.com/0xMiden/rust-sdk/pull/2297)).
+* [FEATURE][cli] Added `account --inspect <ID>[:<PROCEDURE>]` to list the procedures an account exposes, grouped into resolved procedures (with their names and signatures) and unresolved ones (listed by MAST root). Names and signatures are resolved from the `.masp` packages in the configured packages directory plus any passed via `--package` (`-p`). `--verbose` prints each procedure's MASM disassembly. ([#2312](https://github.com/0xMiden/rust-sdk/issues/2312)).
+* Improved the output of the `miden-client init` command when a configuration already exists ([#2357](https://github.com/0xMiden/rust-sdk/pull/2357)).
+* [FEATURE][cli] Added DAP-based transaction debugging with offline record/replay. `miden-client exec` and `consume-notes` accept `--start-debug-adapter <ADDR>` to run a transaction — script, kernel, note scripts, and account code — under a DAP client (e.g. the `miden-debug` TUI) instead of proving and submitting it (`consume-notes` is backed by a new `Client::execute_transaction_with_dap`). During the session the advice mutations produced by the transaction host's event handlers are recorded — readable via the handle from `DapConfig::record_event_mutations()`, and reported by the CLI — and `--record <FILE>` writes a self-contained replay snapshot (program, inputs, resolved code, and event log) that can be replayed offline with `miden-debug --replay <FILE>`, with no node, client, or account state. This uses the `miden-debug` 0.9.2 release ([#2306](https://github.com/0xMiden/rust-sdk/pull/2306)).
+
+### Fixes
+
+* [FIX][cli] `miden-client init` now reports invalid remote prover endpoints instead of silently writing a local-prover config ([#2376](https://github.com/0xMiden/rust-sdk/pull/2376)).
 
 ## 0.16.0-alpha.1 (2026-07-17)
 
@@ -52,11 +73,12 @@
 
 ### Fixes
 
+* [FIX][cli] `init` now reports a dedicated error when a configuration file already exists, hinting at `clear-config` instead of suggesting `init`, which the shared config-error hint did ([#2366](https://github.com/0xMiden/rust-sdk/pull/2366)).
 * [FIX][store] Opening a `SQLite` store now fingerprints the live database schema and compares it against the schema its migrations produce, rejecting a database whose schema has drifted (manual DDL, a partially applied migration, or corruption) instead of trusting a hash stored inside the database file ([#2304](https://github.com/0xMiden/rust-sdk/pull/2304)).
 * [FIX][rust] Notes received over the note transport layer now fetch attachments from the node via `get_notes_by_id`. Fetched attachment content is verified against the note metadata's attachments commitment; a note whose advertised attachment content the node cannot serve (or serves incorrectly) is skipped with a warning instead of failing the sync, and a note record is never stored with incomplete attachment content ([#2295](https://github.com/0xMiden/rust-sdk/pull/2295)).
 * [FIX][store] The SQLite store now honors `StorageMapPatch` create/remove semantics: a `Create` patch on an existing map slot clears the prior entries before writing (so its root reflects only the created entries) and a `Remove` patch drops the slot's entries and collapses its root to the empty-map root ([#2290](https://github.com/0xMiden/rust-sdk/pull/2290)).
 * [FIX][rust] Storing an authenticated block header now persists the header and its MMR authentication nodes in a single store transaction, so an interrupted write can no longer leave a tracked block without the MMR nodes needed to rebuild the `PartialMmr` ([#2294](https://github.com/0xMiden/rust-sdk/pull/2294)).
-* [FIX][rust] RPC endpoint parsing now rejects endpoint strings that omit either the protocol or host. ([#2266](https://github.com/0xMiden/miden-client/pull/2266))
+* [FIX][rust] RPC endpoint parsing now rejects endpoint strings that omit either the protocol or host. ([#2266](https://github.com/0xMiden/rust-sdk/pull/2266))
 * [FIX][rust] State sync now re-verifies a tracked private account's commitment mismatch against the witness `get_account` returns. The witness is checked against the synced block's account root before locking the account, so a node can no longer durably lock it with a forged `sync_transactions` commitment ([#2260](https://github.com/0xMiden/rust-sdk/pull/2260)).
 * [FIX][rust] State sync now range-checks `sync_transactions` records to `(current, chain_tip]`, rejecting out-of-range records that could forge transaction commit heights ([#2252](https://github.com/0xMiden/rust-sdk/pull/2252)).
 * [FIX][rust] `Endpoint` parsing now strips a trailing slash from the host of no-port endpoints such as `http://host/`, matching the cleanup already applied when a port is present ([#2268](https://github.com/0xMiden/rust-sdk/pull/2268)).
@@ -64,7 +86,7 @@
 * [FIX][rust] `NodeRpcClient::get_notes_by_id` now rejects responses containing a note whose ID was not requested with `RpcError::InvalidResponse` ([#2283](https://github.com/0xMiden/rust-sdk/pull/2283)).
 * [FIX][rust] `NodeRpcClient::sync_nullifiers` now rejects responses containing a nullifier whose prefix was not requested with `RpcError::InvalidResponse` ([#2282](https://github.com/0xMiden/rust-sdk/pull/2282)).
 * [FIX][rust] `NodeRpcClient::sync_notes` now rejects responses containing a note whose tag was not requested with `RpcError::InvalidResponse` ([#2284](https://github.com/0xMiden/rust-sdk/pull/2284)).
-* [FIX][rust] Public account sync now binds `get_account` responses to the SyncMMR target block, rejecting snapshots from a different block, account, or account root ([#2255](https://github.com/0xMiden/miden-client/pull/2255)).
+* [FIX][rust] Public account sync now binds `get_account` responses to the SyncMMR target block, rejecting snapshots from a different block, account, or account root ([#2255](https://github.com/0xMiden/rust-sdk/pull/2255)).
 
 ## 0.15.4 (2026-07-16)
 
@@ -81,32 +103,32 @@
 
 * [FIX][store] Add metadata to ConsumedExternal notes so that they can be findable by their `NoteId`. The change is store-compatible because records written by older clients (the metadata-less layout) still decode, reading back with no metadata as before ([#2308](https://github.com/0xMiden/rust-sdk/pull/2308)).
 * [FIX][rust,store] Output notes no longer register note tags, which leaked one row per created note; a store migration prunes the previously leaked tags ([#2323](https://github.com/0xMiden/rust-sdk/pull/2323)).
-* [FIX][rust] Public account sync now pins `get_account` to the sync target block (backport of [#2255](https://github.com/0xMiden/miden-client/pull/2255)); an unpinned fetch could discard the client's own just-committed transaction as `Superseded`, permanently wedging the account.
+* [FIX][rust] Public account sync now pins `get_account` to the sync target block (backport of [#2255](https://github.com/0xMiden/rust-sdk/pull/2255)); an unpinned fetch could discard the client's own just-committed transaction as `Superseded`, permanently wedging the account.
 * [FIX][rpc] Align `AddTransactionError` app-level codes with the node's `MempoolSubmissionError`, so submit-transaction failures report the correct cause (e.g. an account commitment mismatch is no longer misreported as "unauthenticated notes not found") and the node's message is preserved for state conflicts ([#2320](https://github.com/0xMiden/rust-sdk/issues/2320)).
 
 ## 0.15.3 (2026-07-02)
 
 ### Enhancements
 
-* [FEATURE][cli] `miden-cli call` now accepts advice map entries supplied via `--inputs-path/-i <FILE.toml>` in the same TOML format as `exec` ([#2244](https://github.com/0xMiden/miden-client/pull/2244)).
-* [FEATURE][rust] The gRPC client now accepts responses up to 15% above the node's 4 MiB payload budget by default, and `GrpcClient::with_max_decoding_message_size` lets callers raise the decode ceiling further. The CLI raises its own ceiling to 6 MiB to cover large `SyncTransactions` responses. This prevents syncs from failing with a "decoded message length too large" error when a node response slightly exceeds the previous hard 4 MiB limit ([#2298](https://github.com/0xMiden/miden-client/pull/2299)).
+* [FEATURE][cli] `miden-cli call` now accepts advice map entries supplied via `--inputs-path/-i <FILE.toml>` in the same TOML format as `exec` ([#2244](https://github.com/0xMiden/rust-sdk/pull/2244)).
+* [FEATURE][rust] The gRPC client now accepts responses up to 15% above the node's 4 MiB payload budget by default, and `GrpcClient::with_max_decoding_message_size` lets callers raise the decode ceiling further. The CLI raises its own ceiling to 6 MiB to cover large `SyncTransactions` responses. This prevents syncs from failing with a "decoded message length too large" error when a node response slightly exceeds the previous hard 4 MiB limit ([#2299](https://github.com/0xMiden/rust-sdk/pull/2299)).
 
 ## 0.15.2 (2026-06-18)
 
 ### Features
 
-* [FEATURE][rust] Added PSWAP chain tracking: the client now follows a local creator's partial-swap order across foreign partial fills during sync, surfacing each reconstructed payback as a consumable input note and letting the creator reclaim the current tip. New `Client` API: `pswap_lineages`, `pswap_lineages_for`, `pswap_active_lineages`, `pswap_lineage`, and `build_pswap_cancel_by_order` ([#2231](https://github.com/0xMiden/miden-client/pull/2231)).
-* [FEATURE][rust] Added `Client::send_private_note_with_block_hint`, which relays a sender-provided `after_block_num` so recipients get deterministic delivery instead of relying on receiving side lookback. ([#2262](https://github.com/0xMiden/miden-client/issues/2262))
+* [FEATURE][rust] Added PSWAP chain tracking: the client now follows a local creator's partial-swap order across foreign partial fills during sync, surfacing each reconstructed payback as a consumable input note and letting the creator reclaim the current tip. New `Client` API: `pswap_lineages`, `pswap_lineages_for`, `pswap_active_lineages`, `pswap_lineage`, and `build_pswap_cancel_by_order` ([#2231](https://github.com/0xMiden/rust-sdk/pull/2231)).
+* [FEATURE][rust] Added `Client::send_private_note_with_block_hint`, which relays a sender-provided `after_block_num` so recipients get deterministic delivery instead of relying on receiving side lookback. ([#2262](https://github.com/0xMiden/rust-sdk/issues/2262))
 
 ### Changes
 
-* [rust] Bumped `miden-note-transport-proto-build` to `0.4.1`. Notes imported from the note transport layer now use the provided `after_block_num` when present, falling back to the 20-block lookback window otherwise. `NoteInfo` gained a `block_hint: Option<BlockNumber>` field (plus a `NoteInfo::new` constructor) and `NoteTransportClient` gained a `send_note_with_block_hint` method (defaulting to `send_note`, so existing implementors keep compiling).  ([#2262](https://github.com/0xMiden/miden-client/issues/2262))
+* [rust] Bumped `miden-note-transport-proto-build` to `0.4.1`. Notes imported from the note transport layer now use the provided `after_block_num` when present, falling back to the 20-block lookback window otherwise. `NoteInfo` gained a `block_hint: Option<BlockNumber>` field (plus a `NoteInfo::new` constructor) and `NoteTransportClient` gained a `send_note_with_block_hint` method (defaulting to `send_note`, so existing implementors keep compiling).  ([#2262](https://github.com/0xMiden/rust-sdk/issues/2262))
 
 ## 0.15.1 (2026-06-16)
 
 ### Enhancements
 
-* [FEATURE][rust] Re-exported `miden-agglayer` as `miden_client::agglayer`. ([#2253](https://github.com/0xMiden/miden-client/issues/2253))
+* [FEATURE][rust] Re-exported `miden-agglayer` as `miden_client::agglayer`. ([#2253](https://github.com/0xMiden/rust-sdk/pull/2253))
 
 ## 0.15.0 (2026-06-12)
 
@@ -357,7 +379,7 @@
 
 ## 0.13.1 (2026-02-13)
 
-* Added the `@miden-sdk/react` hooks library (see [its own changelog](packages/react-sdk/CHANGELOG.md)) ([#1711](https://github.com/0xMiden/rust-sdk/pull/1711)).
+* Added the `@miden-sdk/react` hooks library (see [its own changelog](https://github.com/0xMiden/web-sdk/blob/main/CHANGELOG.md)) ([#1711](https://github.com/0xMiden/rust-sdk/pull/1711)).
 * Fixed WASM bindings consuming JS objects: `RpcClient` and `WebClient` methods now take references (`&AccountId`, `&Word`) instead of owned values, so callers can reuse objects after passing them ([#1765](https://github.com/0xMiden/rust-sdk/pull/1765)).
 * Fixed `AccountSmtForest` pruning shared SMT roots between old and new account states, which caused `MerkleError::RootNotInStore` during note screening after `sync_state()` ([#1771](https://github.com/0xMiden/rust-sdk/pull/1771)).
 * [FEATURE][web] Added `setupLogging(level)` and `logLevel` parameter on `createClient` to route Rust tracing output to the browser console with configurable verbosity ([#1669](https://github.com/0xMiden/rust-sdk/pull/1669)).
@@ -383,7 +405,7 @@
 * [BREAKING] Renamed `NodeRpcClient::get_account_proofs` to `NodeRpcClient::get_account_proof` & added `account_state` parameter (block at which we want to retrieve the proof) ([#1616](https://github.com/0xMiden/rust-sdk/pull/1616)).
 * [BREAKING] Refactored `NetworkId` to allow custom networks ([#1612](https://github.com/0xMiden/rust-sdk/pull/1612)).
 * [BREAKING] Removed `toBech32Custom` and implemented custom id conversion for wasm derived class `NetworkId` ([#1612](https://github.com/0xMiden/rust-sdk/pull/1612)).
-* [BREAKING] Remove `SecretKey` model and consolidated functionality into `AuthSecretKey` ([#1592](https://github.com/0xMiden/rust-sdk/issues/1380))
+* [BREAKING] Remove `SecretKey` model and consolidated functionality into `AuthSecretKey` ([#1592](https://github.com/0xMiden/rust-sdk/pull/1592))
 * Incremented the limits for various RPC calls to accommodate larger data sets ([#1621](https://github.com/0xMiden/rust-sdk/pull/1621)).
 * [BREAKING] Introduced named storage slots, changed `FilesystemKeystore` to not be generic over RNG ([#1626](https://github.com/0xMiden/rust-sdk/pull/1626)).
 * Added `submit_new_transaction_with_prover` to the Rust client and `submitNewTransactionWithProver` to the WebClient([#1622](https://github.com/0xMiden/rust-sdk/pull/1622)).
@@ -463,7 +485,7 @@
 * Added `getMapEntries` method to `AccountStorage` in web client for iterating storage map entries ([#1323](https://github.com/0xMiden/rust-sdk/pull/1323)).
 * Added `Address` addition and removal for accounts ([#1367](https://github.com/0xMiden/rust-sdk/pull/1367)).
 * Refactored code into their own files and added `ProvenTransaction` and `TransactionStoreUpdate` bindings for the WebClient ([#1408](https://github.com/0xMiden/rust-sdk/pull/1408)).
-* Added `NoteFile` type, used for exporting and importing `Notes`([#1378](https://github.com/0xMiden/rust-sdk/pull/1383)).
+* Added `NoteFile` type, used for exporting and importing `Notes`([#1383](https://github.com/0xMiden/rust-sdk/pull/1383)).
 * Build `IndexedDB` code from a `build.rs` instead of pushing artifacts to the repo ([#1409](https://github.com/0xMiden/rust-sdk/pull/1409)).
 * Implemented missing RPC endpoints: `/SyncStorageMaps`, `/SyncAccountVault` & `/SyncTransactions` ([#1362](https://github.com/0xMiden/rust-sdk/pull/1362)).
 * Updated `submit_proven_transaction()` to include `TransactionInputs` for validator ([#1421](https://github.com/0xMiden/rust-sdk/pull/1421)).
@@ -490,7 +512,7 @@
 * Removed `miden-lib` and `miden-objects` dependencies from web client & cli ([#1333](https://github.com/0xMiden/rust-sdk/pull/1333)).
 * Add more context to errors when deserializing objects ([#1336](https://github.com/0xMiden/rust-sdk/pull/1336))
 * [BREAKING] Renamed `TonicRpcClient` to `GrpcClient` and `tonic_rpc_client()` method to `grpc_client()` ([#1360](https://github.com/0xMiden/rust-sdk/pull/1360)).
-* [BREAKING] Removed WebClient's `compileNoteScript` method and both `TransactionScript` and `NoteScript` compile methods; the new `ScriptBuilder` should be used instead ([#1331](https://github.com/0xMiden/rust-sdk/pull/1274)).
+* [BREAKING] Removed WebClient's `compileNoteScript` method and both `TransactionScript` and `NoteScript` compile methods; the new `ScriptBuilder` should be used instead ([#1331](https://github.com/0xMiden/rust-sdk/pull/1331)).
 * [BREAKING] Implemented `AccountFile` in the WebClient ([#1258](https://github.com/0xMiden/rust-sdk/pull/1258)).
 * [BREAKING] Added remote key storage and signature requesting to the `WebKeyStore` ([#1371](https://github.com/0xMiden/rust-sdk/pull/1371)).
 * Added `sqlite_store` under `ClientBuilderSqliteExt` method to the `ClientBuilder` ([#1416](https://github.com/0xMiden/rust-sdk/pull/1416)).

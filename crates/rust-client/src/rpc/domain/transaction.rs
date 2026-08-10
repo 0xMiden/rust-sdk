@@ -1,4 +1,4 @@
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::ToString;
 use alloc::vec::Vec;
 
@@ -63,6 +63,32 @@ pub struct TransactionRecord {
     pub output_notes: Vec<CommittedNote>,
     /// Output notes that were erased by same-batch note erasure.
     pub erased_output_notes: Vec<NoteHeader>,
+    /// Maps each consumed input note's nullifier to its note id, for public notes the node could
+    /// resolve. Lets a client recover, by id, a consumed note it never tracked. Empty for
+    /// private/unresolvable inputs.
+    // TODO: perhaps we might want to rename this field (see https://github.com/0xMiden/node/pull/2304#discussion_r3511308376)
+    pub(crate) consumed_note_refs: Vec<(Nullifier, NoteId)>,
+}
+
+impl TransactionRecord {
+    /// Returns the `(nullifier, note_id)` references of the public input notes this transaction
+    /// consumed, letting a client fetch by id consumed notes it never tracked.
+    ///
+    /// Only yields references whose nullifier appears in the transaction header's input notes:
+    /// a reference the node can't tie to an actually-consumed input is dropped, so a misbehaving
+    /// node can't attribute an unrelated note to this transaction's account.
+    pub fn trusted_consumed_note_refs(&self) -> impl Iterator<Item = (Nullifier, NoteId)> + '_ {
+        let consumed_nullifiers: BTreeSet<Nullifier> = self
+            .transaction_header
+            .input_notes()
+            .iter()
+            .map(InputNoteCommitment::nullifier)
+            .collect();
+        self.consumed_note_refs
+            .iter()
+            .copied()
+            .filter(move |(nullifier, _)| consumed_nullifiers.contains(nullifier))
+    }
 }
 
 impl TryFrom<proto::rpc::TransactionRecord> for TransactionRecord {
@@ -79,11 +105,28 @@ impl TryFrom<proto::rpc::TransactionRecord> for TransactionRecord {
         let (transaction_header, output_notes, erased_output_notes) =
             convert_transaction_header(proto_header, value.output_note_proofs)?;
 
+        let consumed_note_refs = value
+            .consumed_note_refs
+            .into_iter()
+            .map(|r| {
+                let nullifier: Nullifier = r
+                    .nullifier
+                    .ok_or(RpcError::ExpectedDataMissing("consumed_note_ref.nullifier".into()))?
+                    .try_into()?;
+                let note_id: NoteId = r
+                    .note_id
+                    .ok_or(RpcError::ExpectedDataMissing("consumed_note_ref.note_id".into()))?
+                    .try_into()?;
+                Ok((nullifier, note_id))
+            })
+            .collect::<Result<Vec<_>, RpcError>>()?;
+
         Ok(Self {
             block_num,
             transaction_header,
             output_notes,
             erased_output_notes,
+            consumed_note_refs,
         })
     }
 }

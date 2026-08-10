@@ -114,6 +114,10 @@ pub enum ClientError {
     ProvenBatchError(#[from] ProvenBatchError),
     #[error("failed to deserialize data")]
     DataDeserializationError(#[from] DeserializationError),
+    #[error(
+        "cannot recover consumed note {0}: its nullifier has no position in the sync's transaction execution order"
+    )]
+    MissingConsumedNoteOrder(NoteId),
     #[error("note with id {0} not found on chain")]
     NoteNotFoundOnChain(NoteId),
     #[error("failed to parse hex string")]

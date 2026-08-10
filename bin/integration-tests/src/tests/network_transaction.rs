@@ -8,7 +8,10 @@ use miden_client::account::component::{
     AccountComponent,
     AccountComponentMetadata,
     AuthNetworkAccount,
+    BasicConstantFeePolicy,
     BurnPolicy,
+    FeePolicy,
+    FeePolicyManager,
     FungibleFaucet,
     MintPolicy,
     NetworkAccount,
@@ -28,10 +31,13 @@ use miden_client::account::{
 use miden_client::assembly::{CodeBuilder, SourceManagerSync};
 use miden_client::asset::{AssetAmount, FungibleAsset, TokenSymbol};
 use miden_client::auth::RPO_FALCON_SCHEME_ID;
+use miden_client::block::BlockNumber;
 use miden_client::crypto::FeltRng;
 use miden_client::note::{
+    FeeSponsorshipNote,
     MintNote,
     MintNoteStorage,
+    NetworkAccountConfigNote,
     NetworkAccountTarget,
     Note,
     NoteAssets,
@@ -60,7 +66,7 @@ use miden_client::testing::common::{
     wait_for_blocks,
     wait_for_tx,
 };
-use miden_client::transaction::{ExpirationTransactionScript, TransactionRequestBuilder};
+use miden_client::transaction::TransactionRequestBuilder;
 use miden_client::{Felt, Word, ZERO};
 use rand::{Rng, RngExt};
 
@@ -170,7 +176,7 @@ const NON_STANDARD_CLAIM_NOTE_SCRIPT: &str = r#"
         # => []
 
         # move all of the note's assets into the consuming account's vault
-        exec.basic_wallet::add_assets_to_account
+        exec.basic_wallet::move_note_assets_to_account
         # => []
     end
 "#;
@@ -184,11 +190,39 @@ pub(crate) async fn deploy_network_counter_contract(
     allowed_note_script_roots: &[NoteScriptRoot],
 ) -> Result<Account> {
     let roots = allowed_note_script_roots.iter().copied().collect::<BTreeSet<NoteScriptRoot>>();
-    let auth = AuthNetworkAccount::with_allowed_notes(roots)
+    let (genesis, _) = client
+        .get_block_header_by_num(BlockNumber::GENESIS)
+        .await?
+        .context("genesis block header is not in the store")?;
+    let fee_policy_manager =
+        zero_fee_policy_manager(genesis.fee_parameters().fee_faucet_id(), roots.iter().copied());
+    let auth = AuthNetworkAccount::new(roots, fee_policy_manager)
         .map_err(|err| anyhow::anyhow!(err))
-        .context("failed to build network account auth component")?
-        .with_allowed_tx_scripts(BTreeSet::from([ExpirationTransactionScript::script_root()]));
+        .context("failed to build network account auth component")?;
     deploy_counter_with_auth(client, auth).await
+}
+
+/// Builds a fee policy manager pricing every note the account can consume at zero.
+///
+/// `fee_faucet_id` must be the faucet the chain charges fees in, as named by the genesis header's
+/// fee parameters.
+fn zero_fee_policy_manager(
+    fee_faucet_id: AccountId,
+    allowed_note_script_roots: impl IntoIterator<Item = NoteScriptRoot>,
+) -> FeePolicyManager {
+    let fee_policy: FeePolicy = BasicConstantFeePolicy::new()
+        .with_fees(
+            allowed_note_script_roots
+                .into_iter()
+                .chain([NetworkAccountConfigNote::script_root(), FeeSponsorshipNote::script_root()])
+                .map(|root| (root, AssetAmount::ZERO)),
+        )
+        .into();
+
+    FeePolicyManager::builder()
+        .fee_faucet_id(fee_faucet_id)
+        .active_fee_policy(fee_policy)
+        .build()
 }
 
 /// Deploys a counter contract as an ordinary public account that consumes notes via user
@@ -204,7 +238,7 @@ pub(crate) async fn deploy_counter_contract(client: &mut TestClient) -> Result<A
     )
     .map_err(|err| anyhow::anyhow!(err))
     .context("failed to create increment nonce auth component")?;
-    deploy_counter_with_auth(client, incr_nonce_auth).await
+    deploy_counter_with_auth(client, [incr_nonce_auth]).await
 }
 
 /// Builds a public counter contract account with the given auth component and deploys it with an
@@ -212,7 +246,7 @@ pub(crate) async fn deploy_counter_contract(client: &mut TestClient) -> Result<A
 /// update valid.
 async fn deploy_counter_with_auth(
     client: &mut TestClient,
-    auth: impl Into<AccountComponent>,
+    auth: impl IntoIterator<Item = impl Into<AccountComponent>>,
 ) -> Result<Account> {
     let counter_slot = StorageSlot::with_empty_value(COUNTER_SLOT_NAME.clone());
     let counter_code = CodeBuilder::default()
@@ -232,7 +266,7 @@ async fn deploy_counter_with_auth(
     let acc = AccountBuilder::new(init_seed)
         .account_type(AccountType::Public)
         .with_component(counter_component)
-        .with_auth_component(auth)
+        .with_components(auth)
         .build_with_schema_commitment()
         .context("failed to build counter contract account")?;
 
@@ -274,7 +308,15 @@ async fn deploy_network_fungible_faucet(
         .active_mint_policy(MintPolicy::owner_only())
         .active_burn_policy(BurnPolicy::allow_all())
         .build();
-    let faucet = NetworkAccount::builder(init_seed, allowed_roots)?
+    let (genesis, _) = client
+        .get_block_header_by_num(BlockNumber::GENESIS)
+        .await?
+        .context("genesis block header is not in the store")?;
+    let fee_policy_manager = zero_fee_policy_manager(
+        genesis.fee_parameters().fee_faucet_id(),
+        allowed_roots.iter().copied(),
+    );
+    let faucet = NetworkAccount::builder(init_seed, allowed_roots, fee_policy_manager)?
         .with_component(faucet_component)
         .with_components(AccessControl::Ownable2Step { owner: owner_id })
         .with_components(policy_manager)

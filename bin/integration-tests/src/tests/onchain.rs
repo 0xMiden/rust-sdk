@@ -434,9 +434,8 @@ pub async fn test_import_account_by_id(client_config: ClientConfig) -> Result<()
 ///   - `client_1` owns the wallet and faucet, executes transactions.
 ///   - `client_2` watches the wallet via `import_watched_account_by_id` (no note tag).
 ///   - After `client_1` runs another mint+consume on the wallet, `client_2` should observe (a) the
-///     new account commitment matching `client_1`, (b) no input note record for the mint targeted
-///     at the wallet (no tag → not synced), and (c) no output note record for the consumed note
-///     (watched accounts are state-only; note activity is intentionally not surfaced).
+///     new account commitment matching `client_1`, and (b) no output note record for the account's
+///     txs (watched accounts track on-chain state, not their note outputs).
 pub async fn test_import_watched_account_by_id(client_config: ClientConfig) -> Result<()> {
     let (mut client_1, keystore_1) = client_config.clone().into_client().await?;
     let (mut client_2, _keystore_2) = ClientConfig::default()
@@ -487,9 +486,9 @@ pub async fn test_import_watched_account_by_id(client_config: ClientConfig) -> R
         "watched account must not register a per-account note tag",
     );
 
-    // client_1 mints another note targeted at the wallet and consumes it. client_2 should
-    // observe the commitment advance, but NOT pick up either the input note (no tag) or any
-    // output-note record from the consume tx (watched accounts are state-only).
+    // client_1 mints another note to the wallet and consumes it, giving client_2's watched view
+    // fresh activity to track. No per-account tag is registered, so client_2 watches the account
+    // only through its on-chain state.
     let (tx_id, mint_note) = mint_note(&mut client_1, wallet_id, faucet_id, NoteType::Public).await;
     wait_for_tx(&mut client_1, tx_id).await?;
     let consume_tx_id =
@@ -509,19 +508,11 @@ pub async fn test_import_watched_account_by_id(client_config: ClientConfig) -> R
         "watched account state should have advanced",
     );
 
-    // Mint output note (targeted at the wallet) must NOT have been synced as an input note.
-    let watched_input_notes = client_2.test_store().get_input_notes(NoteFilter::All).await?;
-    assert!(
-        watched_input_notes.iter().all(|n| n.id() != Some(mint_note.id())),
-        "watched client must not have synced notes targeted at the wallet (no note tag)",
-    );
-
-    // No output-note records should have been created for the consume tx either: watched
-    // accounts do not surface note activity, only on-chain state.
+    // A watched account surfaces no output-note records from its transactions.
     let watched_output_notes = client_2.test_store().get_output_notes(NoteFilter::All).await?;
     assert!(
         watched_output_notes.is_empty(),
-        "watched client must not surface output notes from followed account txs",
+        "watched client must not surface output notes from the account's txs",
     );
 
     // Switching an already-tracked watched account to native (or vice versa) is not supported.
@@ -720,6 +711,82 @@ pub async fn test_consumed_note_ordering(client_config: ClientConfig) -> Result<
         positions.windows(2).all(|w| w[0] < w[1]),
         "Notes should appear in submission order, but got positions: {positions:?}"
     );
+
+    Ok(())
+}
+
+/// A client that only *watches* an account (no note tag registered) recovers a committed
+/// public note the account consumed authenticated, even though it never discovered the note by tag.
+///
+/// The node attaches a `consumed_note_refs` entry (the note's id, mapped from the input nullifier)
+/// to the consumer's transaction. The client reads it during sync, fetches the full body via
+/// `get_notes_by_id`, and surfaces the note through `input_note_reader`.
+pub async fn test_watched_account_recovers_consumed_public_note(
+    client_config: ClientConfig,
+) -> Result<()> {
+    let (mut client_a, keystore_a) = client_config.clone().into_client().await?;
+    let (mut client_b, _keystore_b) = ClientConfig::default()
+        .with_rpc_endpoint(client_config.rpc_endpoint())
+        .into_client()
+        .await?;
+    wait_for_node(&mut client_a).await;
+
+    let (faucet, _) = insert_new_fungible_faucet(
+        &mut client_a,
+        AccountType::Public,
+        &keystore_a,
+        RPO_FALCON_SCHEME_ID,
+    )
+    .await?;
+    let (consumer, ..) =
+        insert_new_wallet(&mut client_a, AccountType::Public, &keystore_a, RPO_FALCON_SCHEME_ID)
+            .await?;
+    let consumer_id = consumer.id();
+    let faucet_id = faucet.id();
+
+    // Put the consumer on-chain, then have B watch it. No per-account note tag is registered, so
+    // B can only learn about consumed notes from the consumer's transactions.
+    let bootstrap_tx =
+        mint_and_consume(&mut client_a, consumer_id, faucet_id, NoteType::Public).await;
+    wait_for_tx(&mut client_a, bootstrap_tx).await?;
+    client_a.sync_state().await?;
+    client_b.import_watched_account_by_id(consumer_id).await?;
+    client_b.sync_state().await?;
+
+    // A mints a public note to the consumer, lets it commit, then consumes it (authenticated). B
+    // never tracked this note's tag, so the only trace it can get is the consuming transaction.
+    let (mint_tx, note) = mint_note(&mut client_a, consumer_id, faucet_id, NoteType::Public).await;
+    wait_for_tx(&mut client_a, mint_tx).await?;
+    let consume_tx = consume_notes(&mut client_a, consumer_id, std::slice::from_ref(&note)).await;
+    wait_for_tx(&mut client_a, consume_tx).await?;
+
+    // B syncs until its reader surfaces the consumed note.
+    let mut found = None;
+    for _ in 0..15 {
+        client_b.sync_state().await?;
+        let mut reader = client_b.input_note_reader(consumer_id);
+        while let Some(n) = reader.next().await? {
+            if n.id() == Some(note.id()) {
+                found = Some(n);
+                break;
+            }
+        }
+        if found.is_some() {
+            break;
+        }
+        wait_for_blocks(&mut client_b, 1).await;
+    }
+
+    let found = found.context(
+        "watched account's reader did not surface the consumed note via consumed_note_refs",
+    )?;
+    assert_eq!(
+        found.details_commitment(),
+        note.details_commitment(),
+        "consumed public note should carry the full details fetched by id from the node",
+    );
+    assert_eq!(found.consumer_account(), Some(consumer_id));
+    assert_eq!(found.id(), Some(note.id()));
 
     Ok(())
 }

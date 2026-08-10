@@ -93,7 +93,7 @@ pub async fn insert_new_wallet_with_seed(
 
     let account = AccountBuilder::new(init_seed)
         .account_type(visibility)
-        .with_auth_component(auth_component)
+        .with_component(auth_component)
         .with_component(BasicWallet)
         .build_with_schema_commitment()
         .unwrap();
@@ -148,7 +148,7 @@ pub async fn insert_new_fungible_faucet(
         .build();
     let account = AccountBuilder::new(init_seed)
         .account_type(visibility)
-        .with_auth_component(auth_component)
+        .with_component(auth_component)
         .with_component(faucet)
         .with_components(policy_manager)
         .build_with_schema_commitment()
@@ -634,7 +634,7 @@ pub async fn insert_account_with_custom_component(
 
     let account = AccountBuilder::new(init_seed)
         .account_type(visibility)
-        .with_auth_component(AuthSingleSig::new(Approver::new(
+        .with_component(AuthSingleSig::new(Approver::new(
             pub_key.to_commitment(),
             AuthSchemeId::Falcon512Poseidon2,
         )))

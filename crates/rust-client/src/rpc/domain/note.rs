@@ -4,9 +4,11 @@ use alloc::vec::Vec;
 
 use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber};
+use miden_protocol::crypto::SequentialCommit;
 use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::note::{
     Note,
+    NoteAttachment,
     NoteAttachmentHeader,
     NoteAttachmentScheme,
     NoteAttachments,
@@ -21,7 +23,7 @@ use miden_protocol::note::{
     NoteType,
     PartialNoteMetadata,
 };
-use miden_protocol::{MastForest, MastNodeId, Word};
+use miden_protocol::{Felt, MastForest, MastNodeId, Word};
 use miden_tx::utils::serde::Deserializable;
 
 use super::{MissingFieldHelper, RpcConversionError};
@@ -120,6 +122,90 @@ impl TryFrom<proto::note::NoteMetadata> for NoteMetadata {
                 proto::note::NoteMetadata::missing_field(stringify!(attachments_commitment))
             })?
             .try_into()?;
+
+        Ok(NoteMetadata::from_parts(
+            partial_metadata,
+            attachment_headers,
+            attachments_commitment,
+        ))
+    }
+}
+
+/// Aggregates individual attachment commitments into the note's attachments commitment.
+///
+/// The element layout mirrors [`NoteAttachments`]' own sequential commitment, so hashing this
+/// yields the same value as the full attachments would, without needing their contents.
+// TODO: single-word attachment payloads now arrive inline in the sync response, so some note data
+// may be derived without a `GetNotesById` request
+// https://github.com/0xMiden/rust-sdk/issues/2360
+struct AttachmentCommitments(Vec<Word>);
+
+impl SequentialCommit for AttachmentCommitments {
+    type Commitment = Word;
+
+    fn to_elements(&self) -> Vec<Felt> {
+        let mut elements = Vec::with_capacity(self.0.len() * miden_protocol::WORD_SIZE);
+        for commitment in &self.0 {
+            elements.extend_from_slice(commitment.as_elements());
+        }
+        elements
+    }
+}
+
+impl TryFrom<proto::note::NoteSyncMetadata> for NoteMetadata {
+    type Error = RpcConversionError;
+
+    fn try_from(value: proto::note::NoteSyncMetadata) -> Result<Self, Self::Error> {
+        let sender = value
+            .sender
+            .ok_or_else(|| proto::note::NoteSyncMetadata::missing_field(stringify!(sender)))?
+            .try_into()?;
+        let note_type = note_type_from_proto(value.note_type)?;
+        let tag = NoteTag::new(value.tag);
+        let partial_metadata = PartialNoteMetadata::new(sender, note_type).with_tag(tag);
+
+        if value.attachments.len() > NoteAttachments::MAX_COUNT {
+            return Err(RpcConversionError::InvalidField(format!(
+                "attachments length {} exceeds NoteAttachments::MAX_COUNT",
+                value.attachments.len(),
+            )));
+        }
+
+        let mut attachment_headers = [NoteAttachmentHeader::absent(); NoteAttachments::MAX_COUNT];
+        let mut commitments = Vec::with_capacity(value.attachments.len());
+
+        for (slot, attachment) in value.attachments.into_iter().enumerate() {
+            let raw_scheme = u16::try_from(attachment.scheme).map_err(|_| {
+                RpcConversionError::InvalidField(format!(
+                    "attachments[{slot}].scheme={} does not fit in u16",
+                    attachment.scheme,
+                ))
+            })?;
+            let scheme = NoteAttachmentScheme::new(raw_scheme).map_err(|err| {
+                RpcConversionError::InvalidField(format!("attachments[{slot}].scheme: {err}"))
+            })?;
+            attachment_headers[slot] = NoteAttachmentHeader::new(scheme);
+
+            let payload = attachment.payload.ok_or_else(|| {
+                proto::note::NoteSyncAttachment::missing_field(stringify!(payload))
+            })?;
+            // Single-word attachments are sent verbatim, so their commitment is derived locally;
+            // larger ones are sent as commitments to keep the sync response bounded.
+            // TODO: the verbatim word is discarded here, but it could be kept to derive note data
+            // without a `GetNotesById` request
+            // https://github.com/0xMiden/rust-sdk/issues/2360
+            let commitment = match payload {
+                proto::note::note_sync_attachment::Payload::Value(value) => {
+                    NoteAttachment::with_word(scheme, Word::try_from(value)?).to_commitment()
+                },
+                proto::note::note_sync_attachment::Payload::Commitment(commitment) => {
+                    Word::try_from(commitment)?
+                },
+            };
+            commitments.push(commitment);
+        }
+
+        let attachments_commitment = AttachmentCommitments(commitments).to_commitment();
 
         Ok(NoteMetadata::from_parts(
             partial_metadata,
@@ -563,5 +649,135 @@ impl TryFrom<proto::note::NoteScript> for NoteScript {
         let mast_forest = MastForest::read_from_bytes(&note_script.mast)?;
         let entrypoint = MastNodeId::from_u32_safe(note_script.entrypoint, &mast_forest)?;
         Ok(NoteScript::from_parts(alloc::sync::Arc::new(mast_forest), entrypoint))
+    }
+}
+
+// TESTS
+// ================================================================================================
+
+#[cfg(test)]
+mod tests {
+    use miden_protocol::account::{AccountIdVersion, AccountType, AssetCallbackFlag};
+
+    use super::*;
+
+    fn sender() -> AccountId {
+        AccountId::dummy(
+            [1; 15],
+            AccountIdVersion::Version1,
+            AccountType::Public,
+            AssetCallbackFlag::Disabled,
+        )
+    }
+
+    /// Encodes attachments the way the node does in a sync response: single-word attachments carry
+    /// their value, larger ones only their commitment.
+    fn sync_attachments(attachments: &NoteAttachments) -> Vec<proto::note::NoteSyncAttachment> {
+        attachments
+            .iter()
+            .map(|attachment| {
+                let payload = if attachment.num_words() == 1 {
+                    proto::note::note_sync_attachment::Payload::Value(
+                        attachment.content().as_words()[0].into(),
+                    )
+                } else {
+                    proto::note::note_sync_attachment::Payload::Commitment(
+                        attachment.to_commitment().into(),
+                    )
+                };
+
+                proto::note::NoteSyncAttachment {
+                    scheme: u32::from(attachment.attachment_scheme().as_u16()),
+                    payload: Some(payload),
+                }
+            })
+            .collect()
+    }
+
+    fn sync_metadata(
+        attachments: Vec<proto::note::NoteSyncAttachment>,
+    ) -> proto::note::NoteSyncMetadata {
+        proto::note::NoteSyncMetadata {
+            sender: Some(sender().into()),
+            note_type: note_type_to_proto(NoteType::Private),
+            tag: 7,
+            attachments,
+        }
+    }
+
+    #[test]
+    fn sync_metadata_reconstructs_metadata_with_mixed_attachments() {
+        let attachments = NoteAttachments::new(vec![
+            NoteAttachment::with_word(
+                NoteAttachmentScheme::new(42).unwrap(),
+                Word::from([1u32, 2, 3, 4]),
+            ),
+            NoteAttachment::with_words(
+                NoteAttachmentScheme::new(100).unwrap(),
+                vec![Word::from([5u32, 6, 7, 8]), Word::from([9u32, 10, 11, 12])],
+            )
+            .unwrap(),
+        ])
+        .unwrap();
+
+        let expected = NoteMetadata::new(
+            PartialNoteMetadata::new(sender(), NoteType::Private).with_tag(NoteTag::new(7)),
+            &attachments,
+        );
+
+        let reconstructed: NoteMetadata =
+            sync_metadata(sync_attachments(&attachments)).try_into().unwrap();
+
+        assert_eq!(reconstructed, expected);
+    }
+
+    #[test]
+    fn sync_metadata_reconstructs_metadata_without_attachments() {
+        let attachments = NoteAttachments::empty();
+        let expected = NoteMetadata::new(
+            PartialNoteMetadata::new(sender(), NoteType::Private).with_tag(NoteTag::new(7)),
+            &attachments,
+        );
+
+        let reconstructed: NoteMetadata = sync_metadata(Vec::new()).try_into().unwrap();
+
+        assert_eq!(reconstructed, expected);
+    }
+
+    #[test]
+    fn sync_metadata_rejects_too_many_attachments() {
+        let attachment = proto::note::NoteSyncAttachment {
+            scheme: 42,
+            payload: Some(proto::note::note_sync_attachment::Payload::Value(Word::empty().into())),
+        };
+        let attachments = vec![attachment; NoteAttachments::MAX_COUNT + 1];
+
+        let err = NoteMetadata::try_from(sync_metadata(attachments)).unwrap_err();
+
+        assert!(matches!(err, RpcConversionError::InvalidField(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn sync_metadata_rejects_reserved_absent_scheme() {
+        let attachments = vec![proto::note::NoteSyncAttachment {
+            scheme: 0,
+            payload: Some(proto::note::note_sync_attachment::Payload::Value(Word::empty().into())),
+        }];
+
+        let err = NoteMetadata::try_from(sync_metadata(attachments)).unwrap_err();
+
+        assert!(matches!(err, RpcConversionError::InvalidField(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn sync_metadata_rejects_missing_attachment_payload() {
+        let attachments = vec![proto::note::NoteSyncAttachment { scheme: 42, payload: None }];
+
+        let err = NoteMetadata::try_from(sync_metadata(attachments)).unwrap_err();
+
+        assert!(
+            matches!(err, RpcConversionError::MissingFieldInProtobufRepresentation { .. }),
+            "got {err:?}"
+        );
     }
 }

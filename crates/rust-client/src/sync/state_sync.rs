@@ -33,13 +33,14 @@ use crate::rpc::domain::account::{
 };
 use crate::rpc::domain::note::{
     CommittedNote,
+    FetchedNote,
     ResolvedNoteContent,
     ResolvedSyncNotesBlock,
     SyncedNote,
 };
 use crate::rpc::domain::sync::{ChainMmrInfo, SyncTarget};
 use crate::rpc::domain::transaction::TransactionRecord as RpcTransactionRecord;
-use crate::rpc::{AccountStateAt, NodeRpcClient, NoteContentFetch};
+use crate::rpc::{AccountStateAt, NodeRpcClient, NoteContentFetch, RpcError};
 use crate::store::input_note_states::UnverifiedNoteState;
 use crate::store::{InputNoteRecord, OutputNoteRecord, StoreError};
 use crate::transaction::TransactionRecord;
@@ -72,6 +73,16 @@ struct FetchedSyncData {
     note_blocks: Vec<ResolvedSyncNotesBlock>,
     /// Transaction records for the synced range, as returned by `sync_transactions`.
     transactions: Vec<RpcTransactionRecord>,
+}
+
+/// A note a watched account consumed, carrying what recovery needs to validate and attribute it.
+///
+/// Complements the note id (under which recovery keys these entries) from the node's
+/// `(nullifier, note_id)` reference with the consuming account and block.
+struct RecoverableConsumedNote {
+    nullifier: Nullifier,
+    consumer: AccountId,
+    block_num: BlockNumber,
 }
 
 /// A note block that must be authenticated after screening.
@@ -358,6 +369,8 @@ impl StateSync {
             .await?;
         }
 
+        self.recover_consumed_public_notes(&mut note_updates, &transactions).await?;
+
         let blocks_with_unspent_notes: BTreeSet<BlockNumber> =
             note_updates.unspent_input_note_block_numbers().collect();
 
@@ -377,6 +390,71 @@ impl StateSync {
             transaction_updates,
             account_updates,
         ))
+    }
+
+    /// Recovers public notes a watched account consumed, from the `consumed_note_refs` the node
+    /// attaches to its transactions. Fetches the body of each not-yet-tracked note by id and hands
+    /// it to [`NoteUpdateTracker::insert_consumed_public_note`]. Notes the node doesn't return are
+    /// skipped; a reference the node resolves to a private note is rejected as an invalid response.
+    async fn recover_consumed_public_notes(
+        &self,
+        note_updates: &mut NoteUpdateTracker,
+        transactions: &[RpcTransactionRecord],
+    ) -> Result<(), ClientError> {
+        let mut recoverable_consumed_notes: BTreeMap<NoteId, RecoverableConsumedNote> =
+            BTreeMap::new();
+        for tx in transactions {
+            for (nullifier, note_id) in tx.trusted_consumed_note_refs() {
+                recoverable_consumed_notes.insert(
+                    note_id,
+                    RecoverableConsumedNote {
+                        nullifier,
+                        consumer: tx.transaction_header.account_id(),
+                        block_num: tx.block_num,
+                    },
+                );
+            }
+        }
+        // Skip references whose note the client already tracks (e.g. discovered by tag), to avoid
+        // clobbering full-detail records and fetching bodies we already hold.
+        recoverable_consumed_notes.retain(|note_id, _| !note_updates.tracks_note(*note_id));
+
+        let note_ids: Vec<NoteId> = recoverable_consumed_notes.keys().copied().collect();
+        if note_ids.is_empty() {
+            return Ok(());
+        }
+
+        for fetched in self.rpc_api.get_notes_by_id(&note_ids).await? {
+            match fetched {
+                FetchedNote::Public(note, _) => {
+                    let Some(reference) = recoverable_consumed_notes.get(&note.id()) else {
+                        continue;
+                    };
+                    // Make sure the fetched body actually hashes to the nullifier the transaction
+                    // consumed, so a byzantine node can't attribute an unrelated note here.
+                    if note.nullifier() != reference.nullifier {
+                        return Err(RpcError::InvalidResponse(format!(
+                            "node returned note {} whose nullifier doesn't match the consumed reference",
+                            note.id()
+                        ))
+                        .into());
+                    }
+                    note_updates.insert_consumed_public_note(
+                        note,
+                        reference.consumer,
+                        reference.block_num,
+                    )?;
+                },
+                FetchedNote::Private(note_id, ..) => {
+                    return Err(RpcError::InvalidResponse(format!(
+                        "node returned private note {note_id} for a public consumed-note reference"
+                    ))
+                    .into());
+                },
+            }
+        }
+
+        Ok(())
     }
 
     /// Fetches the sync data from the node by calling the following endpoints:
@@ -1341,7 +1419,7 @@ mod tests {
     use miden_protocol::{EMPTY_WORD, Felt, Word, ZERO};
     use miden_standards::code_builder::CodeBuilder;
     use miden_standards::note::{NetworkAccountTarget, NoteExecutionHint};
-    use miden_testing::{MockChainBuilder, TxContextInput};
+    use miden_testing::{MockChainBuilder, MockTransactionInput};
 
     use super::*;
     use crate::store::{OutputNoteRecord, OutputNoteState};
@@ -1623,8 +1701,7 @@ mod tests {
         let sync_target_header = chain.latest_block_header();
         let tx = Box::pin(
             chain
-                .build_tx_context(TxContextInput::AccountId(account.id()), &[], &[])
-                .unwrap()
+                .build_transaction(MockTransactionInput::AccountId(account.id()))
                 .build()
                 .unwrap()
                 .execute(),
@@ -1787,6 +1864,7 @@ mod tests {
                 ),
                 output_notes: vec![],
                 erased_output_notes: vec![],
+                consumed_note_refs: vec![],
             }
         }
 
@@ -1833,6 +1911,7 @@ mod tests {
                 ),
                 output_notes: vec![],
                 erased_output_notes: vec![],
+                consumed_note_refs: vec![],
             };
 
             let result = super::super::compute_ordered_nullifiers(&[tx_a2, tx_b1, tx_a3, tx_a1]);
@@ -1894,6 +1973,7 @@ mod tests {
                 ),
                 output_notes: vec![],
                 erased_output_notes: vec![],
+                consumed_note_refs: vec![],
             }
         };
 
@@ -1972,12 +2052,8 @@ mod tests {
         for note in [&note1, &note2, &note3] {
             let tx = Box::pin(
                 chain
-                    .build_tx_context(
-                        TxContextInput::Account(current_account.clone()),
-                        &[],
-                        core::slice::from_ref(note),
-                    )
-                    .unwrap()
+                    .build_transaction(MockTransactionInput::Account(current_account.clone()))
+                    .unauthenticated_input_note(note.clone())
                     .build()
                     .unwrap()
                     .execute(),
@@ -2170,12 +2246,9 @@ mod tests {
                 .unwrap();
             let tx = Box::pin(
                 chain
-                    .build_tx_context(
-                        miden_testing::TxContextInput::Account(faucet_account.clone()),
-                        &[],
-                        &[],
-                    )
-                    .unwrap()
+                    .build_transaction(miden_testing::MockTransactionInput::Account(
+                        faucet_account.clone(),
+                    ))
                     .extend_advice_inputs(recipient_advice.clone())
                     .tx_script(tx_script)
                     .with_source_manager(source_manager)
@@ -2425,12 +2498,8 @@ mod tests {
 
         let tx = Box::pin(
             chain
-                .build_tx_context(
-                    TxContextInput::Account(sender_account.clone()),
-                    &[],
-                    core::slice::from_ref(&note),
-                )
-                .unwrap()
+                .build_transaction(MockTransactionInput::Account(sender_account.clone()))
+                .unauthenticated_input_note(note.clone())
                 .build()
                 .unwrap()
                 .execute(),
@@ -2646,6 +2715,7 @@ mod tests {
             ),
             output_notes: vec![],
             erased_output_notes: vec![],
+            consumed_note_refs: vec![],
         }
     }
 }

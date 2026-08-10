@@ -29,7 +29,8 @@ use miden_protocol::note::{
     PartialNoteMetadata,
 };
 use miden_protocol::testing::account_id::{
-    ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE, ACCOUNT_ID_SENDER,
+    ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE,
+    ACCOUNT_ID_SENDER,
 };
 use miden_protocol::transaction::{
     InputNotes,
@@ -351,10 +352,7 @@ impl NodeRpcClient for CannedTransport {
         _block_to: BlockNumber,
         _account_ids: Vec<AccountId>,
     ) -> Result<Vec<TransactionRecord>, RpcError> {
-        self.canned(
-            self.transactions.as_ref(),
-            "test must set a canned sync_transactions response",
-        )
+        self.canned(self.transactions.as_ref(), "test must set a canned sync_transactions response")
     }
 
     async fn get_network_id(&self) -> Result<NetworkId, RpcError> {
@@ -653,11 +651,7 @@ async fn sync_transactions_accepts_empty_response() {
         ..Default::default()
     });
     let records = client
-        .sync_transactions(
-            BlockNumber::GENESIS,
-            BlockNumber::from(1u32),
-            vec![test_account_id()],
-        )
+        .sync_transactions(BlockNumber::GENESIS, BlockNumber::from(1u32), vec![test_account_id()])
         .await
         .expect("an empty response must be accepted");
     assert!(records.is_empty());

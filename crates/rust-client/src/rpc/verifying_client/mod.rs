@@ -98,7 +98,6 @@ fn verify_nullifier_prefixes(
     Ok(())
 }
 
-
 /// Returns [`RpcError::InvalidResponse`] if any returned transaction record carries an account ID
 /// that was not in `requested`.
 fn verify_account_ids(

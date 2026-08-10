@@ -52,11 +52,20 @@ use crate::tests::create_test_store;
 // HELPERS
 // ================================================================================================
 
-/// Helper to create a consumed-external input note with an optional consumer account.
+/// Helper to build the metadata of a note sent by the given account.
+fn create_note_metadata(sender: AccountId, index: u32) -> NoteMetadata {
+    let partial_metadata =
+        PartialNoteMetadata::new(sender, NoteType::Public).with_tag(NoteTag::from(index));
+    NoteMetadata::new(partial_metadata, &NoteAttachments::empty())
+}
+
+/// Helper to create a consumed-external input note with an optional consumer account. A note
+/// without metadata has no nullifier, so its column is NULL.
 fn create_consumed_external_input_note(
     index: u32,
     block_height: u32,
     consumer_account: Option<AccountId>,
+    metadata: Option<NoteMetadata>,
 ) -> InputNoteRecord {
     let serial_number: Word =
         [Felt::new_unchecked(u64::from(index) + 2000), ZERO, ZERO, ZERO].into();
@@ -72,7 +81,7 @@ fn create_consumed_external_input_note(
         nullifier_block_height: BlockNumber::from(block_height),
         consumer_account,
         consumed_tx_order: None,
-        metadata: None,
+        metadata,
     };
 
     InputNoteRecord::new(details, NoteAttachments::empty(), Some(0), state.into())
@@ -114,12 +123,9 @@ fn create_expected_input_note_with_metadata(index: u32) -> InputNoteRecord {
     let details = NoteDetails::new(assets, recipient);
 
     let sender = AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE).unwrap();
-    let partial_metadata =
-        PartialNoteMetadata::new(sender, NoteType::Public).with_tag(NoteTag::from(index));
-    let metadata = NoteMetadata::new(partial_metadata, &NoteAttachments::empty());
 
     let state = ExpectedNoteState {
-        metadata: Some(metadata),
+        metadata: Some(create_note_metadata(sender, index)),
         after_block_num: BlockNumber::from(0u32),
         tag: None,
     };
@@ -134,14 +140,10 @@ fn create_expected_output_note_with_script(index: u32, script: NoteScript) -> Ou
     let recipient = NoteRecipient::new(serial_number, script, NoteStorage::new(vec![]).unwrap());
     let sender = AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE).unwrap();
 
-    let partial_metadata =
-        PartialNoteMetadata::new(sender, NoteType::Public).with_tag(NoteTag::from(index));
-    let metadata = NoteMetadata::new(partial_metadata, &NoteAttachments::empty());
-
     OutputNoteRecord::new(
         recipient.digest(),
         NoteAssets::new(vec![]).unwrap(),
-        metadata,
+        create_note_metadata(sender, index),
         OutputNoteState::ExpectedFull { recipient },
         BlockNumber::from(0u32),
         NoteAttachments::empty(),
@@ -165,12 +167,8 @@ fn create_consumed_input_note_with_consumer(
     );
     let details = NoteDetails::new(assets, recipient);
 
-    let partial_metadata =
-        PartialNoteMetadata::new(consumer, NoteType::Public).with_tag(NoteTag::from(index));
-    let metadata = NoteMetadata::new(partial_metadata, &NoteAttachments::empty());
-
     let state = ConsumedUnauthenticatedLocalNoteState {
-        metadata,
+        metadata: create_note_metadata(consumer, index),
         nullifier_block_height: BlockNumber::from(block_height),
         submission_data: NoteSubmissionData {
             submitted_at: Some(0),
@@ -372,10 +370,10 @@ async fn input_note_reader_finds_externally_consumed_notes() {
     let store = create_test_store().await;
     let consumer = AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE).unwrap();
 
-    let mut tracked_note = create_consumed_external_input_note(0, 1, Some(consumer));
+    let mut tracked_note = create_consumed_external_input_note(0, 1, Some(consumer), None);
     tracked_note.set_consumed_tx_order(Some(0));
 
-    let mut untracked_note = create_consumed_external_input_note(1, 2, None);
+    let mut untracked_note = create_consumed_external_input_note(1, 2, None, None);
     untracked_note.set_consumed_tx_order(Some(0));
 
     store
@@ -413,9 +411,9 @@ async fn consumed_input_notes_ordered_by_block_height_then_tx_order() {
     let store = create_test_store().await;
 
     // Create consumed notes at different block heights with tx_order set.
-    let mut note_block3 = create_consumed_external_input_note(0, 3, None);
-    let mut note_block1 = create_consumed_external_input_note(1, 1, None);
-    let mut note_block2 = create_consumed_external_input_note(2, 2, None);
+    let mut note_block3 = create_consumed_external_input_note(0, 3, None, None);
+    let mut note_block1 = create_consumed_external_input_note(1, 1, None, None);
+    let mut note_block2 = create_consumed_external_input_note(2, 2, None, None);
     note_block3.set_consumed_tx_order(Some(0));
     note_block1.set_consumed_tx_order(Some(1));
     note_block2.set_consumed_tx_order(Some(0));
@@ -439,9 +437,9 @@ async fn consumed_input_notes_same_block_ordered_by_tx_order() {
     let store = create_test_store().await;
 
     // All notes consumed at the same block height, different tx_order.
-    let mut note_tx2 = create_consumed_external_input_note(10, 5, None);
-    let mut note_tx0 = create_consumed_external_input_note(11, 5, None);
-    let mut note_tx1 = create_consumed_external_input_note(12, 5, None);
+    let mut note_tx2 = create_consumed_external_input_note(10, 5, None, None);
+    let mut note_tx0 = create_consumed_external_input_note(11, 5, None, None);
+    let mut note_tx1 = create_consumed_external_input_note(12, 5, None, None);
     note_tx2.set_consumed_tx_order(Some(2));
     note_tx0.set_consumed_tx_order(Some(0));
     note_tx1.set_consumed_tx_order(Some(1));
@@ -463,8 +461,8 @@ async fn consumed_input_notes_null_tx_order_sort_last_within_block() {
     let store = create_test_store().await;
 
     // Two notes at the same block: one with tx_order, one without (external consumption).
-    let mut note_with_order = create_consumed_external_input_note(20, 5, None);
-    let note_without_order = create_consumed_external_input_note(21, 5, None);
+    let mut note_with_order = create_consumed_external_input_note(20, 5, None, None);
+    let note_without_order = create_consumed_external_input_note(21, 5, None, None);
     note_with_order.set_consumed_tx_order(Some(0));
 
     store
@@ -594,9 +592,17 @@ async fn unspent_nullifiers_exclude_consumed_notes() {
 
     let consumer = AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE).unwrap();
     let consumed_local = create_consumed_input_note_with_consumer(consumer, 0, 1, 0);
-    let consumed_external = create_consumed_external_input_note(1, 1, Some(consumer));
+    let consumed_external = create_consumed_external_input_note(
+        1,
+        1,
+        Some(consumer),
+        Some(create_note_metadata(consumer, 1)),
+    );
     let unspent = create_expected_input_note_with_metadata(2);
+
+    // Both consumed notes carry a nullifier, so only the state filter can exclude them.
     assert!(consumed_local.nullifier().is_some());
+    assert!(consumed_external.nullifier().is_some());
 
     store
         .upsert_input_notes(&[consumed_local, consumed_external, unspent.clone()])

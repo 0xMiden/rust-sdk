@@ -119,25 +119,33 @@ impl KeyIndex {
     }
 
     /// Gets all public key commitments for an account ID.
+    ///
+    /// # Errors
+    /// - [`KeyStoreError::StorageError`] if the account has no entry in the index.
+    /// - [`KeyStoreError::DecodingError`] if any of the account's entries isn't valid [`Word`] hex.
+    ///   Callers use the returned set to enumerate an account's keys, so skipping unreadable
+    ///   entries would understate the key set instead of reporting the corrupt index.
     fn get_commitments(
         &self,
         account_id: &AccountId,
     ) -> Result<BTreeSet<PublicKeyCommitment>, KeyStoreError> {
         let account_id_hex = account_id.to_hex();
 
-        self.mappings
-            .get(&account_id_hex)
-            .map(|commitments| {
-                commitments
-                    .iter()
-                    .filter_map(|hex| {
-                        Word::try_from(hex.as_str()).ok().map(PublicKeyCommitment::from)
-                    })
-                    .collect()
+        let commitments = self.mappings.get(&account_id_hex).ok_or_else(|| {
+            KeyStoreError::StorageError(format!("account not found {account_id_hex}"))
+        })?;
+
+        commitments
+            .iter()
+            .map(|hex| {
+                Word::try_from(hex.as_str()).map(PublicKeyCommitment::from).map_err(|err| {
+                    KeyStoreError::DecodingError(format!(
+                        "invalid public key commitment {hex} listed for account \
+                         {account_id_hex} in index file: {err}"
+                    ))
+                })
             })
-            .ok_or_else(|| {
-                KeyStoreError::StorageError(format!("account not found {account_id_hex}"))
-            })
+            .collect()
     }
 }
 
@@ -362,4 +370,83 @@ fn write_secret_key_file(file_path: &Path, key: &AuthSecretKey) -> Result<(), Ke
 
 fn keystore_error(context: &str) -> impl FnOnce(std::io::Error) -> KeyStoreError {
     move |err| KeyStoreError::StorageError(format!("{context}: {err:?}"))
+}
+
+// TESTS
+// ================================================================================================
+
+#[cfg(test)]
+mod tests {
+    use miden_protocol::testing::account_id::ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE;
+
+    use super::*;
+
+    fn test_account_id() -> AccountId {
+        AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE).unwrap()
+    }
+
+    /// Rewrites the on-disk index after applying `mutate` to it, standing in for an index file
+    /// corrupted outside the keystore.
+    fn corrupt_index_file(keys_directory: &Path, mutate: impl FnOnce(&mut KeyIndex)) {
+        let index_path = keys_directory.join(INDEX_FILE_NAME);
+        let mut index: KeyIndex =
+            serde_json::from_str(&fs::read_to_string(&index_path).unwrap()).unwrap();
+        mutate(&mut index);
+        fs::write(&index_path, serde_json::to_string_pretty(&index).unwrap()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn get_account_key_commitments_rejects_malformed_index_entry() {
+        let keys_directory = tempfile::tempdir().unwrap();
+        let account_id = test_account_id();
+
+        let keystore = FilesystemKeyStore::new(keys_directory.path().to_path_buf()).unwrap();
+        let key = AuthSecretKey::new_falcon512_poseidon2();
+        keystore.add_key(&key, account_id).await.unwrap();
+
+        corrupt_index_file(keys_directory.path(), |index| {
+            index
+                .mappings
+                .get_mut(&account_id.to_hex())
+                .unwrap()
+                .insert(String::from("not-a-word-commitment"));
+        });
+
+        let keystore = FilesystemKeyStore::new(keys_directory.path().to_path_buf()).unwrap();
+        let error = keystore
+            .get_account_key_commitments(&account_id)
+            .await
+            .expect_err("an index entry that isn't valid Word hex should be reported, not skipped");
+
+        assert!(
+            matches!(error, KeyStoreError::DecodingError(_)),
+            "expected a decoding error, got: {error:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_keys_for_account_rejects_missing_key_file() {
+        let keys_directory = tempfile::tempdir().unwrap();
+        let account_id = test_account_id();
+
+        let keystore = FilesystemKeyStore::new(keys_directory.path().to_path_buf()).unwrap();
+        let kept_key = AuthSecretKey::new_falcon512_poseidon2();
+        let deleted_key = AuthSecretKey::new_falcon512_poseidon2();
+        keystore.add_key(&kept_key, account_id).await.unwrap();
+        keystore.add_key(&deleted_key, account_id).await.unwrap();
+
+        // Delete one key file while leaving its commitment in the index.
+        let deleted_commitment = deleted_key.public_key().to_commitment();
+        fs::remove_file(key_file_path(keys_directory.path(), deleted_commitment)).unwrap();
+
+        let error = keystore
+            .get_keys_for_account(&account_id)
+            .await
+            .expect_err("a commitment whose key file is gone should be reported, not skipped");
+
+        assert!(
+            matches!(error, KeyStoreError::StorageError(_)),
+            "expected a storage error, got: {error:?}"
+        );
+    }
 }

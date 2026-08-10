@@ -2447,6 +2447,7 @@ dependencies = [
  "gloo-timers",
  "hex",
  "miden-agglayer",
+ "miden-debug",
  "miden-node-proto-build",
  "miden-note-transport-proto-build",
  "miden-processor",
@@ -2565,11 +2566,13 @@ version = "0.16.0-rc.1"
 dependencies = [
  "miden-client",
  "miden-client-sqlite-store",
+ "miden-debug",
  "miden-protocol",
  "miden-standards",
  "miden-testing",
  "rand 0.10.1",
  "rstest",
+ "tempfile",
  "tokio",
 ]
 

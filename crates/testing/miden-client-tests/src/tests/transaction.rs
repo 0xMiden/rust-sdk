@@ -1,5 +1,7 @@
 use alloc::boxed::Box;
 use alloc::sync::Arc;
+use std::net::TcpListener;
+use std::time::Duration;
 
 use miden_client::assembly::CodeBuilder;
 use miden_client::auth::{AuthSchemeId, AuthSecretKey, AuthSingleSig, RPO_FALCON_SCHEME_ID};
@@ -15,6 +17,7 @@ use miden_client::transaction::{
     TransactionRequestBuilder,
 };
 use miden_client::{ClientError, async_trait};
+use miden_debug::{DapClient, DapConfig, DapStopReason};
 use miden_protocol::account::{
     AccountBuilder,
     AccountComponent,
@@ -41,6 +44,63 @@ use miden_standards::account::wallets::BasicWallet;
 
 use super::PaymentNoteDescription;
 use crate::tests::{create_test_client, setup_wallet_and_faucet};
+
+#[tokio::test]
+async fn dap_transaction_execution_records_replay_data() {
+    let (mut client, _, keystore) = Box::pin(create_test_client()).await;
+    let (wallet, _) =
+        setup_wallet_and_faucet(&mut client, AccountType::Private, &keystore, RPO_FALCON_SCHEME_ID)
+            .await
+            .unwrap();
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let listen_addr = listener.local_addr().unwrap();
+    drop(listener);
+
+    let snapshot_dir = tempfile::tempdir().unwrap();
+    let snapshot_path = snapshot_dir.path().join("transaction.replay");
+
+    let mut config = DapConfig::new(listen_addr.to_string());
+    let event_recorder = config.record_event_mutations();
+    let snapshot_recorder = config.record_snapshot(snapshot_path.clone());
+    DapConfig::set_global(config);
+
+    let dap_session = std::thread::spawn(move || {
+        let mut dap_client =
+            DapClient::connect_with_retry(&listen_addr.to_string(), Duration::from_secs(10))
+                .expect("failed to connect to transaction DAP session");
+        dap_client.handshake().expect("DAP handshake failed");
+
+        loop {
+            match dap_client.continue_().expect("DAP continue failed") {
+                DapStopReason::Stopped(_) => {},
+                DapStopReason::Terminated => {
+                    dap_client.disconnect().expect("DAP disconnect failed");
+                    break;
+                },
+                DapStopReason::Restarting => panic!("unexpected DAP restart"),
+            }
+        }
+    });
+
+    let transaction_request = TransactionRequestBuilder::new().build().unwrap();
+    let transaction_result =
+        Box::pin(client.execute_transaction_with_dap(wallet.id(), transaction_request))
+            .await
+            .expect("DAP transaction execution failed");
+    assert_eq!(transaction_result.account_patch().id(), wallet.id());
+    dap_session.join().expect("DAP client thread panicked");
+
+    let event_log = event_recorder.take();
+    assert!(!event_log.is_empty(), "transaction host events were not recorded");
+
+    let snapshot_write = snapshot_recorder
+        .take()
+        .expect("replay snapshot status was not reported")
+        .expect("replay snapshot write failed");
+    assert_eq!(snapshot_write.event_count, event_log.len());
+    assert!(snapshot_path.is_file(), "replay snapshot was not written");
+}
 
 #[tokio::test]
 async fn transaction_creates_two_notes() {

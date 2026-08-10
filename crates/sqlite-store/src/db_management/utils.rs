@@ -63,26 +63,37 @@ const SCHEMA_HASH_DOMAIN: &[u8] = b"miden-client-sqlite-schema-v1";
 
 const MIGRATION_SCRIPTS: [&str; 1] = [include_str!("../store.sql")];
 static MIGRATIONS: LazyLock<Migrations> = LazyLock::new(prepare_migrations);
-static EXPECTED_SCHEMA_HASHES: LazyLock<Vec<Hash>> = LazyLock::new(compute_expected_schema_hashes);
+pub(crate) static EXPECTED_SCHEMA_HASHES: LazyLock<Vec<Hash>> =
+    LazyLock::new(compute_expected_schema_hashes);
 
 fn up(s: &'static str) -> M<'static> {
     M::up(s).foreign_key_check()
 }
 
-/// Applies the migrations to the database.
-pub fn apply_migrations(conn: &mut Connection) -> Result<(), SqliteStoreError> {
-    let version_before = MIGRATIONS.current_version(conn)?;
+/// Applies the given migrations to the database after validating the schema fingerprint for the
+/// current migration version.
+pub(crate) fn apply_migrations_with(
+    conn: &mut Connection,
+    migrations: &Migrations,
+    expected_schema_hashes: &[Hash],
+) -> Result<(), SqliteStoreError> {
+    let version_before = migrations.current_version(conn)?;
 
     if let SchemaVersion::Inside(ver) = version_before {
         let actual_hash = schema_hash(conn)?;
-        if actual_hash != EXPECTED_SCHEMA_HASHES[ver.get() - 1] {
+        if actual_hash != expected_schema_hashes[ver.get() - 1] {
             return Err(SqliteStoreError::SchemaHashMismatch);
         }
     }
 
-    MIGRATIONS.to_latest(conn)?;
+    migrations.to_latest(conn)?;
 
     Ok(())
+}
+
+/// Applies the migrations to the database.
+pub fn apply_migrations(conn: &mut Connection) -> Result<(), SqliteStoreError> {
+    apply_migrations_with(conn, &MIGRATIONS, &EXPECTED_SCHEMA_HASHES)
 }
 
 fn prepare_migrations() -> Migrations<'static> {
@@ -91,12 +102,15 @@ fn prepare_migrations() -> Migrations<'static> {
 
 /// Computes the schema fingerprint expected after each migration by replaying the migrations on an
 /// in-memory database.
-fn compute_expected_schema_hashes() -> Vec<Hash> {
+pub(crate) fn compute_expected_schema_hashes_for(
+    migrations: &Migrations,
+    migration_count: usize,
+) -> Vec<Hash> {
     let mut conn =
         Connection::open_in_memory().expect("in-memory database creation should not fail");
-    (1..=MIGRATION_SCRIPTS.len())
+    (1..=migration_count)
         .map(|version| {
-            MIGRATIONS
+            migrations
                 .to_version(&mut conn, version)
                 .expect("replaying a migration on the reference database should not fail");
             schema_hash(&conn).expect("hashing the reference schema should not fail")
@@ -104,11 +118,15 @@ fn compute_expected_schema_hashes() -> Vec<Hash> {
         .collect()
 }
 
+fn compute_expected_schema_hashes() -> Vec<Hash> {
+    compute_expected_schema_hashes_for(&MIGRATIONS, MIGRATION_SCRIPTS.len())
+}
+
 /// Fingerprints the database's current schema.
 ///
 /// Entries are ordered by type, name, and table name so the fingerprint does not depend on object
 /// creation order.
-fn schema_hash(conn: &Connection) -> Result<Hash> {
+pub(crate) fn schema_hash(conn: &Connection) -> Result<Hash> {
     let mut stmt = conn.prepare(
         "SELECT type, name, tbl_name, sql FROM sqlite_schema \
          WHERE sql IS NOT NULL AND name NOT GLOB 'sqlite_*' \

@@ -80,6 +80,18 @@ pub(crate) async fn parse_account_id<AUTH>(
     }
 }
 
+/// Splits a `<ACCOUNT_ID>[:<PROCEDURE>]` target into its account ID and procedure parts.
+///
+/// Account IDs (hex or bech32) never contain a colon, so the first one separates the two. The
+/// procedure is `None` when the target carries no colon; commands that require one reject that
+/// case themselves.
+pub(crate) fn split_procedure_target(target: &str) -> (&str, Option<&str>) {
+    match target.split_once(':') {
+        Some((account_id, procedure)) => (account_id, Some(procedure)),
+        None => (target, None),
+    }
+}
+
 /// Checks if either local or global configuration file exists.
 pub(super) fn config_file_exists() -> Result<bool, CliError> {
     let local_miden_dir = get_local_miden_dir()?;

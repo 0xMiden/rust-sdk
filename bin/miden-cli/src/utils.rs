@@ -490,6 +490,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(entries["BTC"].address, "mlcl1qru2e5yvx40ndgqqqzusrryr0ucyd0uj");
+        assert_eq!(entries["BTC"].decimals, 8);
     }
 
     #[test]

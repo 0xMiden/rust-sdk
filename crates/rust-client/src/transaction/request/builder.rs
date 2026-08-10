@@ -279,7 +279,8 @@ impl TransactionRequestBuilder {
     /// native fee into it.
     ///
     /// The info is committed to through the transaction's auth args, so it only has an effect on
-    /// accounts whose auth component reads them: [`AuthSingleSig`] and [`AuthMultisig`]. Executing
+    /// accounts whose auth component reads them: [`AuthSingleSig`](crate::auth::AuthSingleSig) and
+    /// [`AuthMultisig`](crate::auth::AuthMultisig). Executing
     /// such a request against an account with any other auth component is rejected before execution
     /// with [`TransactionRequestError::FeeConversionInfoUnsupported`].
     #[must_use]

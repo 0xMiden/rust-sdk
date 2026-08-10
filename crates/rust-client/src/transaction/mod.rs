@@ -335,12 +335,7 @@ where
         let mut notes = prep.notes;
         if prep.ignore_invalid_notes {
             notes = self
-                .get_valid_input_notes(
-                    &account,
-                    notes,
-                    prep.tx_args.clone(),
-                    &prep.output_recipients,
-                )
+                .get_valid_input_notes(&data_store, account.id(), notes, prep.tx_args.clone())
                 .await?;
         }
 
@@ -764,22 +759,7 @@ where
     /// `output_recipients` are the request's expected output recipients; their scripts are
     /// registered on the consumption-check data store so output note creation can resolve them
     /// without them being present in the store.
-    pub(crate) async fn get_valid_input_notes(
-        &self,
-        account: &Account,
-        input_notes: InputNotes<InputNote>,
-        tx_args: TransactionArgs,
-        output_recipients: &[NoteRecipient],
-    ) -> Result<InputNotes<InputNote>, ClientError> {
-        let data_store = ClientDataStore::new(self.store.clone(), self.rpc_api.clone());
-        data_store.register_note_scripts(output_recipients.iter().map(|r| r.script().clone()));
-        data_store.mast_store().load_account_code(account.code());
-
-        self.get_valid_input_notes_with_data_store(&data_store, account.id(), input_notes, tx_args)
-            .await
-    }
-
-    pub(crate) async fn get_valid_input_notes_with_data_store<STORE: DataStore + Sync>(
+    pub(crate) async fn get_valid_input_notes<STORE: DataStore + Sync>(
         &self,
         data_store: &STORE,
         account_id: AccountId,

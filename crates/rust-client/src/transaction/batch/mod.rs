@@ -301,7 +301,10 @@ where
         return Err(ClientError::AccountLocked(account_id));
     }
 
-    let account = data_store.current_account(&account_reader).await?;
+    let account = match data_store.cached_account(account_id) {
+        Some(account) => account,
+        None => account_reader.partial_account().await?,
+    };
 
     let prep = client
         .prepare_transaction(account.code_interface(), transaction_request)
@@ -318,12 +321,7 @@ where
     let mut notes = prep.notes;
     if prep.ignore_invalid_notes {
         notes = client
-            .get_valid_input_notes_with_data_store(
-                data_store,
-                account_id,
-                notes,
-                prep.tx_args.clone(),
-            )
+            .get_valid_input_notes(data_store, account_id, notes, prep.tx_args.clone())
             .await?;
     }
 

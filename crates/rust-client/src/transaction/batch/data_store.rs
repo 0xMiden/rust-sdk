@@ -36,7 +36,6 @@ use miden_tx::{
 
 use super::staged_smt::StagedSmt;
 use crate::ClientError;
-use crate::account::AccountReader;
 use crate::store::data_store::ClientDataStore;
 
 // IN-MEMORY BATCH DATA STORE
@@ -238,18 +237,10 @@ impl InMemoryBatchDataStore {
         self.inner.register_note_scripts(note_scripts);
     }
 
-    /// Returns the in-batch account state if a transaction earlier in the batch cached one,
-    /// or the account's persisted state otherwise.
-    pub(crate) async fn current_account(
-        &self,
-        account_reader: &AccountReader,
-    ) -> Result<PartialAccount, ClientError> {
-        let account_id = account_reader.account_id();
-        if let Some(state) = self.current_accounts.get(&account_id) {
-            return Ok(state.account.clone());
-        }
-
-        account_reader.partial_account().await
+    /// Returns the in-batch account state if a transaction earlier in the batch cached one.
+    /// `None` means the caller should fall back to the account's persisted state.
+    pub(crate) fn cached_account(&self, account_id: AccountId) -> Option<PartialAccount> {
+        self.current_accounts.get(&account_id).map(|state| state.account.clone())
     }
 }
 

@@ -47,7 +47,8 @@ pub trait Keystore: TransactionAuthenticator {
 
     /// Returns all public key commitments associated with the given account ID.
     ///
-    /// Returns an error if the account is not found.
+    /// Returns an error if the account is not found, or if any of the stored commitments can't be
+    /// decoded.
     async fn get_account_key_commitments(
         &self,
         account_id: &AccountId,
@@ -67,7 +68,9 @@ pub trait Keystore: TransactionAuthenticator {
     /// followed by `get_key` for each commitment.
     ///
     /// Returns an empty vector if the account has no associated keys.
-    /// Returns an error if any key lookup fails.
+    /// Returns an error if any key lookup fails, including when a commitment associated with the
+    /// account has no stored key. Callers treat the result as the account's complete key set, so a
+    /// short vector would be indistinguishable from an account that legitimately holds fewer keys.
     async fn get_keys_for_account(
         &self,
         account_id: &AccountId,
@@ -75,9 +78,13 @@ pub trait Keystore: TransactionAuthenticator {
         let commitments = self.get_account_key_commitments(account_id).await?;
         let mut keys = Vec::with_capacity(commitments.len());
         for commitment in commitments {
-            if let Some(key) = self.get_key(commitment).await? {
-                keys.push(key);
-            }
+            let key = self.get_key(commitment).await?.ok_or_else(|| {
+                KeyStoreError::StorageError(format!(
+                    "no key stored for commitment {commitment} associated with account {}",
+                    account_id.to_hex()
+                ))
+            })?;
+            keys.push(key);
         }
         Ok(keys)
     }

@@ -31,6 +31,7 @@
 ### Fixes
 
 * [FIX][cli] `miden-client init` now reports invalid remote prover endpoints instead of silently writing a local-prover config ([#2376](https://github.com/0xMiden/rust-sdk/pull/2376)).
+* [FIX][rust] The keystore no longer drops keys it can't read. `FilesystemKeyStore::get_account_key_commitments` returns a `DecodingError` for an index entry that isn't valid `Word` hex instead of skipping it, and `Keystore::get_keys_for_account` returns a `StorageError` when a commitment listed for an account has no stored key instead of omitting it. Both cases were previously reported as success with a short key set, so `miden-client export <ID> --account` could write a backup missing auth keys and still exit successfully.
 
 ## 0.16.0-alpha.1 (2026-07-17)
 

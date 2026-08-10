@@ -31,8 +31,7 @@ impl WitScalarCodec for AccountIdCodec {
     fn encode(&self, token: &str) -> Result<Vec<Felt>, TypedError> {
         let id = AccountId::from_hex(token)
             .map_err(|err| invalid_scalar(ACCOUNT_ID_WIT_NAME, token, &err))?;
-        let [prefix, suffix]: [Felt; 2] = id.into();
-        Ok(vec![prefix, suffix])
+        Ok(vec![id.prefix().into(), id.suffix()])
     }
 
     fn decode(&self, felts: &[Felt]) -> Result<String, TypedError> {
@@ -65,7 +64,8 @@ mod tests {
 
         // Compared against the felts the account id itself carries: a round-trip alone would also
         // pass if `encode` and `decode` had the two fields the same way around.
-        let expected: [Felt; 2] = AccountId::from_hex(hex).unwrap().into();
+        let id = AccountId::from_hex(hex).unwrap();
+        let expected = [Felt::from(id.prefix()), id.suffix()];
         assert_eq!(codec.encode(hex).unwrap(), expected);
 
         assert_eq!(codec.decode(&expected).unwrap(), format!("account-id({hex})"));

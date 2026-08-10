@@ -2251,7 +2251,7 @@ fn call_typed_account_id_field_order() {
     let (temp_dir, account_id, masp_path) = setup_call_test_account();
 
     let acct_hex = "0xaa0000000000bb110000cc000000dd";
-    let [_prefix, suffix]: [Felt; 2] = AccountId::from_hex(acct_hex).unwrap().into();
+    let suffix = AccountId::from_hex(acct_hex).unwrap().suffix();
 
     let mut cmd = cargo_bin_cmd!("miden-client");
     cmd.args([

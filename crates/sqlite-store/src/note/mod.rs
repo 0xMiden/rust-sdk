@@ -233,21 +233,13 @@ impl SqliteStore {
     pub(crate) fn get_unspent_input_note_nullifiers(
         conn: &mut Connection,
     ) -> Result<Vec<Nullifier>, StoreError> {
-        // Listing the unspent states positively lets the query use `idx_input_notes_state`; a
-        // negated `NOT IN` over the consumed states cannot use it and scans the table.
+        // `state_discriminant` is indexed by `idx_input_notes_state`; only a positive match can
+        // use it.
         const QUERY: &str = "SELECT nullifier FROM input_notes \
             WHERE state_discriminant IN rarray(?) AND nullifier IS NOT NULL";
-        let unspent_filters = Rc::new(vec![
-            Value::from(InputNoteState::STATE_EXPECTED),
-            Value::from(InputNoteState::STATE_UNVERIFIED),
-            Value::from(InputNoteState::STATE_COMMITTED),
-            Value::from(InputNoteState::STATE_INVALID),
-            Value::from(InputNoteState::STATE_PROCESSING_AUTHENTICATED),
-            Value::from(InputNoteState::STATE_PROCESSING_UNAUTHENTICATED),
-        ]);
         conn.prepare(QUERY)
             .into_store_error()?
-            .query_map([unspent_filters], |row| row.get(0))
+            .query_map([unspent_state_filters()], |row| row.get(0))
             .expect("no binding parameters used in query")
             .map(|result| {
                 result
@@ -293,6 +285,19 @@ impl SqliteStore {
 
 // HELPERS
 // ================================================================================================
+
+/// Returns the state discriminants of the notes that have not been nullified on chain, as
+/// `rarray` parameters.
+fn unspent_state_filters() -> Rc<Vec<Value>> {
+    Rc::new(vec![
+        Value::from(InputNoteState::STATE_EXPECTED),
+        Value::from(InputNoteState::STATE_UNVERIFIED),
+        Value::from(InputNoteState::STATE_COMMITTED),
+        Value::from(InputNoteState::STATE_INVALID),
+        Value::from(InputNoteState::STATE_PROCESSING_AUTHENTICATED),
+        Value::from(InputNoteState::STATE_PROCESSING_UNAUTHENTICATED),
+    ])
+}
 
 /// Inserts the provided input note into the database, if the note already exists, it will be
 /// replaced.

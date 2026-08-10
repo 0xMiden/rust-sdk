@@ -18,13 +18,21 @@ use miden_client::store::input_note_states::{
     ExpectedNoteState,
     NoteSubmissionData,
 };
-use miden_client::store::{InputNoteRecord, NoteFilter, OutputNoteRecord, OutputNoteState, Store};
+use miden_client::store::{
+    InputNoteRecord,
+    InputNoteState,
+    NoteFilter,
+    OutputNoteRecord,
+    OutputNoteState,
+    Store,
+};
 use miden_client::sync::{
     AccountUpdates,
     PartialBlockchainUpdates,
     StateSyncUpdate,
     TransactionUpdateTracker,
 };
+use miden_client::utils::{Deserializable, DeserializationError};
 use miden_client::{Felt, ZERO};
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
@@ -36,7 +44,9 @@ use miden_protocol::testing::account_id::{
 };
 use miden_protocol::transaction::TransactionId;
 use miden_standards::note::StandardNote;
+use rusqlite::types::Value;
 
+use super::unspent_state_filters;
 use crate::tests::create_test_store;
 
 // HELPERS
@@ -595,4 +605,31 @@ async fn unspent_nullifiers_exclude_consumed_notes() {
 
     let nullifiers = store.get_unspent_input_note_nullifiers().await.unwrap();
     assert_eq!(nullifiers, vec![unspent.nullifier().unwrap()]);
+}
+
+#[test]
+fn unspent_state_filters_classify_every_note_state() {
+    const CONSUMED: [u8; 3] = [
+        InputNoteState::STATE_CONSUMED_AUTHENTICATED_LOCAL,
+        InputNoteState::STATE_CONSUMED_UNAUTHENTICATED_LOCAL,
+        InputNoteState::STATE_CONSUMED_EXTERNAL,
+    ];
+
+    let unspent = unspent_state_filters();
+    for discriminant in 0..=u8::MAX {
+        // A discriminant no state maps to fails with `InvalidValue`, while a real one gets past
+        // the discriminant match and fails on the state payload this input doesn't carry. Keep
+        // that distinction intact or new states stop being checked here.
+        if matches!(
+            InputNoteState::read_from_bytes(&[discriminant]),
+            Err(DeserializationError::InvalidValue(_))
+        ) {
+            continue;
+        }
+
+        assert!(
+            unspent.contains(&Value::from(discriminant)) != CONSUMED.contains(&discriminant),
+            "note state {discriminant} is in neither list or in both"
+        );
+    }
 }

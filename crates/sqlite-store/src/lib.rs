@@ -105,7 +105,6 @@ impl SqliteStore {
 
         let sqlite_pool_manager = SqlitePoolManager::new(database_filepath.clone());
         let pool = Pool::builder(sqlite_pool_manager)
-            .max_size(1)
             .wait_timeout(Some(Duration::from_secs(30)))
             .runtime(Runtime::Tokio1)
             .build()

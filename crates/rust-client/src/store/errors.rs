@@ -86,6 +86,13 @@ pub enum StoreError {
     ParsingError(String),
     #[error("failed to retrieve data from the database: {0}")]
     QueryError(String),
+    #[error("setting {key:?} {operation} affected {actual} rows, expected {expected}")]
+    SettingUnexpectedRowCount {
+        operation: &'static str,
+        key: String,
+        expected: usize,
+        actual: usize,
+    },
     #[error("sparse merkle tree proof error")]
     SmtProofError(#[from] SmtProofError),
     #[error("account storage map error")]

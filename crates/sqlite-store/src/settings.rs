@@ -29,13 +29,21 @@ impl SqliteStore {
         conn: &Connection,
         name: &str,
         value: &T,
-    ) -> rusqlite::Result<()> {
-        let count =
-            conn.execute(insert_sql!(settings { name, value } | REPLACE), params![name, value])?;
+    ) -> Result<(), StoreError> {
+        let count = conn
+            .execute(insert_sql!(settings { name, value } | REPLACE), params![name, value])
+            .into_store_error()?;
 
-        debug_assert_eq!(count, 1);
-
-        Ok(())
+        if count == 1 {
+            Ok(())
+        } else {
+            Err(StoreError::SettingUnexpectedRowCount {
+                operation: "set",
+                key: name.to_string(),
+                expected: 1,
+                actual: count,
+            })
+        }
     }
 
     /// Returns `true` if a row was deleted, `false` if `name` wasn't present.
@@ -53,5 +61,43 @@ impl SqliteStore {
             .into_store_error()?
             .collect::<Result<Vec<String>, _>>()
             .into_store_error()
+    }
+}
+
+// TESTS
+// ================================================================================================
+
+#[cfg(test)]
+mod tests {
+    use miden_client::store::StoreError;
+    use rusqlite::Connection;
+
+    use super::SqliteStore;
+    use crate::db_management::migration::SqliteMigrator;
+
+    #[test]
+    fn set_setting_reports_unexpected_row_count() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        SqliteMigrator::client().apply(&mut conn).unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER ignore_settings_insert
+             BEFORE INSERT ON settings
+             BEGIN
+                 SELECT RAISE(IGNORE);
+             END;",
+        )
+        .unwrap();
+
+        let err = SqliteStore::set_setting(&conn, "ignored", &vec![1u8]).unwrap_err();
+
+        assert!(matches!(
+            err,
+            StoreError::SettingUnexpectedRowCount {
+                operation: "set",
+                ref key,
+                expected: 1,
+                actual: 0,
+            } if key == "ignored"
+        ));
     }
 }

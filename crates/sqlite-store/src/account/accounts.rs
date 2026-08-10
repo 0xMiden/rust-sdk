@@ -468,12 +468,7 @@ impl SqliteStore {
         // accounts would silently create partial state from empty trees), and stale or replayed
         // patches whose initial state does not match the stored latest state (they would
         // overwrite newer state and archive incorrect history).
-        let stored_header =
-            query_latest_account_headers(tx, "id = ?", params![account_id.to_bytes()])?
-                .into_iter()
-                .next()
-                .map(|(header, ..)| header)
-                .ok_or(StoreError::AccountDataNotFound(account_id))?;
+        let stored_header = Self::require_latest_account_header(tx, account_id)?;
         if stored_header.to_commitment() != init_account_state.to_commitment() {
             return Err(StoreError::DatabaseError(format!(
                 "apply_account_patch: stored state {} for account {} does not match the patch's \
@@ -571,7 +566,7 @@ impl SqliteStore {
             .map(|asset| (asset.id().hash().into(), asset.to_value_word()))
             .collect();
 
-        let map_targets: BTreeMap<StorageSlotName, BTreeMap<Word, Word>> = storage
+        let mut map_targets: BTreeMap<StorageSlotName, BTreeMap<Word, Word>> = storage
             .slots()
             .iter()
             .filter_map(|slot| match slot.content() {
@@ -583,14 +578,13 @@ impl SqliteStore {
             })
             .collect();
 
-        Self::reconcile_forest_lineages(
-            tx,
-            smt_forest,
-            account_id,
-            &vault_target,
-            &map_targets,
-            &Self::query_map_slot_names(tx, account_id)?,
-        )
+        // Slots that still have stored rows but are absent from the new state get an empty
+        // target, so their lineages are emptied instead of keeping their old entries.
+        for slot_name in Self::query_map_slot_names(tx, account_id)? {
+            map_targets.entry(slot_name).or_default();
+        }
+
+        Self::reconcile_forest_lineages(tx, smt_forest, account_id, &vault_target, &map_targets)
     }
 
     /// Reconciles the account's forest lineages to the state currently stored in the latest
@@ -648,26 +642,18 @@ impl SqliteStore {
                 .insert(Word::from(key.hash()), Word::read_from_bytes(&value_blob)?);
         }
 
-        Self::reconcile_forest_lineages(
-            tx,
-            smt_forest,
-            account_id,
-            &vault_target,
-            &map_targets,
-            &[],
-        )
+        Self::reconcile_forest_lineages(tx, smt_forest, account_id, &vault_target, &map_targets)
     }
 
     /// Applies one forest update batch that makes the account's lineages match the provided
-    /// targets: keys not in a target are removed, all target pairs are upserted. Slots listed
-    /// in `stale_map_slots` without a target are reset to the empty tree.
+    /// targets: keys not in a target are removed, all target pairs are upserted. A slot mapped
+    /// to an empty target has its lineage reset to the empty tree.
     fn reconcile_forest_lineages(
         tx: &Transaction<'_>,
         smt_forest: &mut ScopedAccountForest<'_, '_>,
         account_id: AccountId,
         vault_target: &BTreeMap<Word, Word>,
         map_targets: &BTreeMap<StorageSlotName, BTreeMap<Word, Word>>,
-        stale_map_slots: &[StorageSlotName],
     ) -> Result<(), StoreError> {
         let mut batch = SmtForestUpdateBatch::empty();
 
@@ -691,20 +677,23 @@ impl SqliteStore {
         for (slot_name, target) in map_targets {
             reconcile_lineage(&mut batch, storage_map_lineage_id(account_id, slot_name), target)?;
         }
-        let empty_target = BTreeMap::new();
-        for slot_name in stale_map_slots {
-            if !map_targets.contains_key(slot_name) {
-                reconcile_lineage(
-                    &mut batch,
-                    storage_map_lineage_id(account_id, slot_name),
-                    &empty_target,
-                )?;
-            }
-        }
 
         let revision = allocate_forest_revision(tx).into_store_error()?;
         smt_forest.apply_updates(revision, batch)?;
         Ok(())
+    }
+
+    /// Returns the stored latest header of an account, or [`StoreError::AccountDataNotFound`] if
+    /// the store does not track it.
+    fn require_latest_account_header(
+        tx: &Transaction<'_>,
+        account_id: AccountId,
+    ) -> Result<AccountHeader, StoreError> {
+        query_latest_account_headers(tx, "id = ?", params![account_id.to_bytes()])?
+            .into_iter()
+            .next()
+            .map(|(header, ..)| header)
+            .ok_or(StoreError::AccountDataNotFound(account_id))
     }
 
     /// Returns the names of the map slots that currently have entries stored for an account.
@@ -1097,12 +1086,7 @@ impl SqliteStore {
         let account_id = new_header.id();
 
         // Read current header from the store.
-        let init_header =
-            query_latest_account_headers(tx, "id = ?", params![account_id.to_bytes()])?
-                .into_iter()
-                .next()
-                .map(|(header, ..)| header)
-                .ok_or(StoreError::AccountDataNotFound(account_id))?;
+        let init_header = Self::require_latest_account_header(tx, account_id)?;
 
         if new_header.nonce().as_canonical_u64() <= init_header.nonce().as_canonical_u64() {
             return Err(StoreError::DatabaseError(format!(

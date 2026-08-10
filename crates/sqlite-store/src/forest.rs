@@ -13,6 +13,8 @@
 //! the affected lineage's SMT on demand, so memory usage is bounded by the trees touched by an
 //! operation rather than by the total account state.
 
+use std::collections::hash_map::Entry;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 
 use miden_client::store::StoreError;
@@ -172,6 +174,14 @@ fn require_tree_meta(conn: &Connection, lineage: LineageId) -> Result<(VersionId
     tree_meta(conn, lineage)?.ok_or(BackendError::UnknownLineage(lineage))
 }
 
+/// Decodes a stored `(key, value)` entry row, rejecting the empty values the write path never
+/// stores.
+fn decode_entry(lineage: LineageId, key_blob: &[u8], value_blob: &[u8]) -> Result<(Word, Word)> {
+    let (key, value) = (word_from_blob(key_blob)?, word_from_blob(value_blob)?);
+    require_non_empty_value(lineage, key, value)?;
+    Ok((key, value))
+}
+
 fn load_entries(conn: &Connection, lineage: LineageId) -> Result<Vec<(Word, Word)>> {
     let mut stmt = conn
         .prepare_cached("SELECT key, value FROM forest_entries WHERE lineage = ?1")
@@ -185,9 +195,7 @@ fn load_entries(conn: &Connection, lineage: LineageId) -> Result<Vec<(Word, Word
     let mut entries = Vec::new();
     for row in rows {
         let (key_blob, value_blob) = row.map_err(internal)?;
-        let (key, value) = (word_from_blob(&key_blob)?, word_from_blob(&value_blob)?);
-        require_non_empty_value(lineage, key, value)?;
-        entries.push((key, value));
+        entries.push(decode_entry(lineage, &key_blob, &value_blob)?);
     }
     Ok(entries)
 }
@@ -240,8 +248,7 @@ fn load_leaf_entries(
     let mut entries = Vec::new();
     for row in rows {
         let (key_blob, value_blob) = row.map_err(internal)?;
-        let (key, value) = (word_from_blob(&key_blob)?, word_from_blob(&value_blob)?);
-        require_non_empty_value(lineage, key, value)?;
+        let (key, value) = decode_entry(lineage, &key_blob, &value_blob)?;
         require_consistent_position(lineage, key, position)?;
         entries.push((key, value));
     }
@@ -376,8 +383,6 @@ fn compute_update_mutations(
     entry_count: usize,
     kv_ops: impl Iterator<Item = (Word, Word)>,
 ) -> Result<ComputedLineageMutations> {
-    use std::collections::{HashMap, HashSet};
-
     let kv_ops: Vec<(Word, Word)> = kv_ops.collect();
 
     // Stored subtrees on touched paths; never mutated during compute, so lookups through this
@@ -406,8 +411,7 @@ fn compute_update_mutations(
             .map_err(internal)?;
         for row in rows {
             let (key_blob, value_blob, position) = row.map_err(internal)?;
-            let (key, value) = (word_from_blob(&key_blob)?, word_from_blob(&value_blob)?);
-            require_non_empty_value(lineage, key, value)?;
+            let (key, value) = decode_entry(lineage, &key_blob, &value_blob)?;
             require_consistent_position(lineage, key, position)?;
             leaves.entry(position).or_default().push((key, value));
         }
@@ -432,10 +436,8 @@ fn compute_update_mutations(
      -> Result<Option<InnerNode>> {
         let root_index = Subtree::find_subtree_root(index);
         let subtree = match subtrees.entry(root_index) {
-            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                entry.insert(load_subtree(conn, lineage, root_index)?)
-            },
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => entry.insert(load_subtree(conn, lineage, root_index)?),
         };
         Ok(subtree.get_inner_node(index))
     };
@@ -450,7 +452,7 @@ fn compute_update_mutations(
         let leaf_index = LeafIndex::<SMT_DEPTH>::from(key);
         let position = leaf_index.position();
 
-        if let std::collections::hash_map::Entry::Vacant(entry) = leaves.entry(position) {
+        if let Entry::Vacant(entry) = leaves.entry(position) {
             let entries = if bulk_loaded {
                 Vec::new()
             } else {
@@ -656,12 +658,11 @@ fn write_pairs(conn: &Connection, lineage: LineageId, forward: &SmtMutationSet) 
 /// node absent from its blob means the stored subtrees have diverged from the stored entries,
 /// which is corruption of backend data.
 fn write_subtrees(conn: &Connection, lineage: LineageId, forward: &SmtMutationSet) -> Result<()> {
-    let mut groups: std::collections::BTreeMap<(u8, u64), Vec<(&NodeIndex, &NodeMutation)>> =
-        std::collections::BTreeMap::new();
+    // A `BTreeMap` (rather than a hash map) keeps the write order deterministic.
+    let mut groups: BTreeMap<NodeIndex, Vec<(&NodeIndex, &NodeMutation)>> = BTreeMap::new();
     for (index, mutation) in forward.node_mutations() {
-        let root_index = Subtree::find_subtree_root(*index);
         groups
-            .entry((root_index.depth(), root_index.position()))
+            .entry(Subtree::find_subtree_root(*index))
             .or_default()
             .push((index, mutation));
     }
@@ -679,9 +680,8 @@ fn write_subtrees(conn: &Connection, lineage: LineageId, forward: &SmtMutationSe
         )
         .map_err(internal)?;
 
-    for ((depth, position), mutations) in groups {
-        let root_index =
-            NodeIndex::new(depth, position).expect("subtree root computed from a valid node index");
+    for (root_index, mutations) in groups {
+        let (depth, position) = (root_index.depth(), root_index.position());
         let mut subtree = load_subtree(conn, lineage, root_index)?;
 
         for (index, mutation) in &mutations {

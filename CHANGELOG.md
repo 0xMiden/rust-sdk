@@ -43,6 +43,7 @@
 
 * [FIX][cli] `miden-client init` now reports invalid remote prover endpoints instead of silently writing a local-prover config ([#2376](https://github.com/0xMiden/rust-sdk/pull/2376)).
 * [FIX][rust] `VerifyingRpcClient::sync_transactions` now validates that every returned transaction record's account ID was actually requested, rejecting mismatches with `RpcError::InvalidResponse` ([#2372](https://github.com/0xMiden/rust-sdk/issues/2372)).
+* [FIX][rpc] `get_block_header_by_number` reports a malformed node response as an error instead of panicking: a `chain_length` that does not fit in `usize` (reachable on 32-bit targets such as `wasm32`) now yields `RpcError::InvalidResponse`, and an MMR path carrying more siblings than a `MerklePath` can represent now yields `RpcConversionError::InvalidField` ([#2378](https://github.com/0xMiden/rust-sdk/issues/2378)).
 
 ## 0.16.0-alpha.1 (2026-07-17)
 

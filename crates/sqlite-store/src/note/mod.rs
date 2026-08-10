@@ -233,8 +233,8 @@ impl SqliteStore {
     pub(crate) fn get_unspent_input_note_nullifiers(
         conn: &mut Connection,
     ) -> Result<Vec<Nullifier>, StoreError> {
-        // `state_discriminant` is indexed by `idx_input_notes_state`; only a positive match can
-        // use it.
+        // `idx_input_notes_state` carries `nullifier` after `state_discriminant`, so both columns
+        // are read from the index without touching `input_notes`.
         const QUERY: &str = "SELECT nullifier FROM input_notes \
             WHERE state_discriminant IN rarray(?) AND nullifier IS NOT NULL";
         conn.prepare(QUERY)

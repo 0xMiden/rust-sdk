@@ -168,7 +168,10 @@ CREATE TABLE input_notes (
     PRIMARY KEY (details_commitment),
     FOREIGN KEY (script_root) REFERENCES notes_scripts(script_root)
 ) WITHOUT ROWID;
-CREATE INDEX idx_input_notes_state ON input_notes(state_discriminant);
+-- `nullifier` trails `state_discriminant` so the unspent nullifier query is served by this index
+-- alone. Reading it from the table costs one primary key descent per row, and since the primary key
+-- is a commitment the rows are in random order, which is slower than scanning the whole table.
+CREATE INDEX idx_input_notes_state ON input_notes(state_discriminant, nullifier);
 CREATE INDEX idx_input_notes_nullifier ON input_notes(nullifier);
 CREATE INDEX idx_input_notes_note_id ON input_notes(note_id);
 CREATE INDEX idx_input_notes_consumption ON input_notes(consumer_account_id, consumed_block_height, consumed_tx_order);

@@ -92,6 +92,22 @@ fn init_with_params() {
 }
 
 #[test]
+fn init_rejects_invalid_remote_prover_endpoint() {
+    let temp_dir = temp_dir().join(format!("cli-test-{}", rand::rng().random::<u64>()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let mut init_cmd = cargo_bin_cmd!("miden-client");
+    init_cmd.args(["init", "--local", "--remote-prover-endpoint", "localhost:not-a-port"]);
+    init_cmd.current_dir(&temp_dir).assert().failure();
+
+    let config_path = temp_dir.join(MIDEN_DIR).join("miden-client.toml");
+    assert!(
+        !config_path.exists(),
+        "init should not write a config when the remote prover endpoint is invalid"
+    );
+}
+
+#[test]
 #[serial_test::file_serial]
 fn silent_initialization_uses_default_values() {
     let miden_home = set_isolated_miden_home();
@@ -311,13 +327,14 @@ async fn token_symbol_mapping() -> Result<()> {
     let fungible_faucet_account_id = new_faucet_cli(&temp_dir, AccountType::Private);
 
     // Encode the faucet ID as bech32 using the same NetworkId the CLI derives from its
-    // configured endpoint. The token symbol map's `id` field accepts bech32 only.
+    // configured endpoint. The token symbol map's `address` field accepts bech32 only.
     let faucet_id = AccountId::from_hex(&fungible_faucet_account_id).unwrap();
-    let bech32_id = Address::new(faucet_id).encode(endpoint.to_network_id());
+    let bech32_address = Address::new(faucet_id).encode(endpoint.to_network_id());
 
     // Create a token symbol mapping file in the MIDEN_DIR directory
     let token_symbol_map_path = temp_dir.join(MIDEN_DIR).join("token_symbol_map.toml");
-    let token_symbol_map_content = format!(r#"BTC = {{ id = "{bech32_id}", decimals = 10 }}"#);
+    let token_symbol_map_content =
+        format!(r#"BTC = {{ address = "{bech32_address}", decimals = 10 }}"#);
     fs::write(&token_symbol_map_path, token_symbol_map_content).unwrap();
 
     sync_cli(&temp_dir);

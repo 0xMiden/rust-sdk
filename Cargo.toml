@@ -52,8 +52,8 @@ miden-node-proto-build           = { default-features = false, git = "https://gi
 miden-note-transport-proto-build = { default-features = false, version = "0.5.0-alpha.1" }
 
 # Miden debug dependency
-miden-debug     = { default-features = false, features = ["dap", "std"], version = "0.9" }
-miden-processor = { default-features = false, version = "0.25" }
+miden-debug     = { default-features = false, features = ["dap", "std"], version = "0.9.2" }
+miden-processor = { default-features = false, version = "0.25.8" }
 
 # External dependencies
 anyhow             = { default-features = false, version = "1.0" }

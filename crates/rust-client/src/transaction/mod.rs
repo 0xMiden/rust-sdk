@@ -318,6 +318,50 @@ where
         account_id: AccountId,
         transaction_request: TransactionRequest,
     ) -> Result<TransactionResult, ClientError> {
+        self.execute_transaction_with_mode(
+            account_id,
+            transaction_request,
+            TransactionExecutionMode::Standard,
+        )
+        .await
+    }
+
+    /// Executes `transaction_request` (e.g. consuming a note) through the DAP program executor,
+    /// so a DAP client can attach and step through the whole transaction — kernel, note scripts,
+    /// and account code — instead of only a standalone transaction script.
+    ///
+    /// This is a debugging entry point: it runs the transaction interactively under the debug
+    /// adapter and does not prove, submit, or apply the result. The listen address (and optional
+    /// replay-snapshot path) are taken from the globally installed
+    /// [`DapConfig`](miden_debug::DapConfig).
+    ///
+    /// # Errors
+    ///
+    /// This applies the same request preparation and output-recipient validation as
+    /// [`Self::execute_transaction`], and returns the corresponding [`ClientError`] on failure.
+    #[cfg(feature = "dap")]
+    pub async fn execute_transaction_with_dap(
+        &mut self,
+        account_id: AccountId,
+        transaction_request: TransactionRequest,
+    ) -> Result<TransactionResult, ClientError> {
+        self.execute_transaction_with_mode(
+            account_id,
+            transaction_request,
+            TransactionExecutionMode::Dap,
+        )
+        .await
+    }
+
+    /// Executes a prepared transaction with the selected program executor while keeping request
+    /// preparation, data-store population, note filtering, and result validation identical across
+    /// execution modes.
+    async fn execute_transaction_with_mode(
+        &mut self,
+        account_id: AccountId,
+        transaction_request: TransactionRequest,
+        execution_mode: TransactionExecutionMode,
+    ) -> Result<TransactionResult, ClientError> {
         let account: Account = self.get_native_account_record(account_id).await?.try_into()?;
 
         let prep = self.prepare_transaction(&account, transaction_request).await?;
@@ -343,10 +387,19 @@ where
                 .await?;
         }
 
-        let executed_transaction = self
-            .build_executor(&data_store)?
-            .execute_transaction(account_id, prep.block_num, notes, prep.tx_args)
-            .await?;
+        let executed_transaction = match execution_mode {
+            TransactionExecutionMode::Standard => {
+                self.build_executor(&data_store)?
+                    .execute_transaction(account_id, prep.block_num, notes, prep.tx_args)
+                    .await?
+            },
+            #[cfg(feature = "dap")]
+            TransactionExecutionMode::Dap => {
+                self.build_dap_executor(&data_store)?
+                    .execute_transaction(account_id, prep.block_num, notes, prep.tx_args)
+                    .await?
+            },
+        };
 
         validate_executed_transaction(&executed_transaction, &prep.output_recipients)?;
         TransactionResult::new(executed_transaction, prep.future_notes)
@@ -1062,6 +1115,13 @@ pub enum TransactionStoreUpdateError {
 
 // HELPERS
 // ================================================================================================
+
+#[derive(Clone, Copy, Debug)]
+enum TransactionExecutionMode {
+    Standard,
+    #[cfg(feature = "dap")]
+    Dap,
+}
 
 /// Data-store-independent state produced during transaction preparation.
 pub(crate) struct PreparedTransaction {

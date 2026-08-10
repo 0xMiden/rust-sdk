@@ -16,9 +16,17 @@ use miden_client::transaction::{
     TransactionScript,
     build_fpi_script,
 };
-use miden_client::vm::{MIN_STACK_DEPTH, PackageExport, PackageManifest, ProcedureExport};
-use miden_client::{Client, Felt, Word};
-use miden_mast_package::typed::TypedProcInfo;
+use miden_client::vm::typed::TypedProcInfo;
+use miden_client::vm::{
+    ExecutionError,
+    MIN_STACK_DEPTH,
+    OperationError,
+    PackageExport,
+    PackageManifest,
+    ProcedureExport,
+    error_code_from_msg,
+};
+use miden_client::{Client, ClientError, Felt, TransactionExecutorError, Word};
 
 use crate::advice_inputs::load_advice_map_from_file;
 use crate::codecs::with_cli_codecs;
@@ -36,12 +44,13 @@ use crate::utils::{
 // CALL COMMAND
 // ================================================================================================
 
-/// Part of the transaction kernel's assertion message for a transaction that changes nothing.
+/// The transaction kernel's assertion message for a transaction that changes nothing.
 ///
-/// The assertion carries a message rather than a code the executor exposes, so this is matched as
-/// text. It only decides whether an explanatory line is printed: if the kernel ever rewords it,
-/// the line stops appearing and nothing else changes.
-const EMPTY_TRANSACTION_ASSERTION: &str = "neither changed the account state";
+/// The message is hashed into the error code the assertion carries, and compared against it. It
+/// only decides whether an explanatory line is printed: if the kernel ever rewords it, the line
+/// stops appearing and nothing else changes.
+const EMPTY_TRANSACTION_ASSERTION: &str =
+    "executed transaction neither changed the account state, nor consumed any notes";
 
 #[derive(Debug, Clone, Parser)]
 #[command(
@@ -94,15 +103,13 @@ impl CallCmd {
         let target_id = parse_account_id(&client, account_str).await?;
         let call_code = self.resolve_call_code(&client, &cli_config, procedure)?;
 
-        // The script passes every argument on the stack, and `MIN_STACK_DEPTH` is what the callee
-        // sees of it. An argument below that reaches the callee as a zero and the call still
-        // succeeds, so without this check a procedure with wide arguments would run on the wrong
-        // values.
+        // A procedure only sees the top MIN_STACK_DEPTH felts of the stack. An argument below
+        // that reaches it as a zero and the call still succeeds, so without this check a
+        // procedure with wide arguments would run on the wrong values.
         if call_code.args.len() > MIN_STACK_DEPTH {
             return Err(CliError::InvalidArgument(format!(
-                "The arguments occupy {} stack values, and a called procedure can only see {}.",
-                call_code.args.len(),
-                MIN_STACK_DEPTH
+                "A procedure takes at most {MIN_STACK_DEPTH} input values; got {}.",
+                call_code.args.len()
             )));
         }
 
@@ -164,7 +171,7 @@ impl CallCmd {
             return Ok(CallCode {
                 builder: client.code_builder(),
                 digest,
-                args: parse_raw_args(&self.args)?,
+                args: encode_raw_args(&self.args)?,
                 typed: None,
                 result_felts: None,
             });
@@ -176,7 +183,6 @@ impl CallCmd {
 
         let export = resolve_procedure_export(&package.manifest, procedure)?;
         let digest = export.digest;
-        let signature = export.signature.clone().ok_or_else(|| missing_signature(procedure))?;
         // The signature prints under the name the package carries, not the one the user typed, so
         // `call increment_by` shows `increment-by(felt) -> felt`.
         let name = export.path.last().ok_or_else(|| {
@@ -184,14 +190,30 @@ impl CallCmd {
                 "The export matching '{procedure}' has an empty path, so it names no procedure."
             ))
         })?;
-        let typed = with_cli_codecs(TypedProcInfo::new(name, signature));
 
-        println!("Signature: {typed}\n");
+        // Only a Component Model signature describes the values the user passes and reads; a
+        // `C`-ABI or `Fast` one describes the lowering instead, which would encode the wrong thing.
+        let typed = match export.signature.clone() {
+            Some(signature) if signature.abi.is_wasm_canonical_abi() => {
+                Some(with_cli_codecs(TypedProcInfo::new(name, signature)?))
+            },
+            _ => None,
+        };
 
-        let result_felts = typed.output_felt_count();
-        // Checks the argument count as well, and names the procedure and both counts when it is
-        // wrong, so there is nothing to check here first.
-        let args = typed.encode_args(&self.args)?;
+        let (args, result_felts) = if let Some(typed) = &typed {
+            println!("Signature: {typed}\n");
+            // Checks the argument count as well, and names the procedure and both counts when it
+            // is wrong, so there is nothing to check here first.
+            (typed.encode_args(&self.args)?, typed.output_felt_count())
+        } else {
+            println!("Signature: {name}(...) [no type info]\n");
+            println!(
+                "Warning: the package does not describe the types of '{procedure}', so each \
+                 argument is passed as one field element, the argument count is not checked, and \
+                 the result is printed as a stack dump."
+            );
+            (encode_raw_args(&self.args)?, None)
+        };
 
         // The account's code is loaded from the client's store at VM runtime, so the library
         // doesn't need to be embedded in the script. The assembler still needs it at compile
@@ -199,7 +221,7 @@ impl CallCmd {
         // "phantom target" warning. Dynamic linking provides that resolution without
         // embedding the library bytes.
         let builder = client.code_builder().with_dynamically_linked_package(&package)?;
-        Ok(CallCode { builder, digest, args, typed: Some(typed), result_felts })
+        Ok(CallCode { builder, digest, args, typed, result_felts })
     }
 }
 
@@ -222,7 +244,6 @@ struct CallCode {
 fn print_call_result(
     output_stack: &[Felt],
     typed: Option<&TypedProcInfo>,
-    result_felts: Option<usize>,
 ) -> Result<(), CliError> {
     match typed {
         // A procedure that returns nothing has no result to show; anything else that cannot be
@@ -233,7 +254,8 @@ fn print_call_result(
                 println!("Result: {rendered}");
             }
         },
-        None => print_executed_program_stack(output_stack, result_felts),
+        // Nothing says where the results end, so the dump runs to the last non-zero value.
+        None => print_executed_program_stack(output_stack, None),
     }
     Ok(())
 }
@@ -248,7 +270,7 @@ async fn run_remote_call<AUTH: Keystore + Sync + 'static>(
     call_code: CallCode,
     advice_entries: Vec<(Word, Vec<Felt>)>,
 ) -> Result<(), CliError> {
-    let CallCode { builder, digest, args, typed, result_felts } = call_code;
+    let CallCode { builder, digest, args, typed, .. } = call_code;
     let tx_script =
         build_fpi_script(builder, target_id, digest, &args).map_err(|err| match err {
             TransactionRequestError::ForeignProcedureInputsTooLong { max, actual } => {
@@ -271,7 +293,7 @@ async fn run_remote_call<AUTH: Keystore + Sync + 'static>(
         )
         .await?;
 
-    print_call_result(output_stack.as_slice(), typed.as_ref(), result_felts)?;
+    print_call_result(output_stack.as_slice(), typed.as_ref())?;
 
     println!("\nA call on an account read from the network can only read it; no state delta.");
     Ok(())
@@ -285,7 +307,7 @@ async fn run_local_call<AUTH: Keystore + Sync + 'static>(
     call_code: CallCode,
     advice_entries: Vec<(Word, Vec<Felt>)>,
 ) -> Result<(), CliError> {
-    let CallCode { builder, digest, args, typed, result_felts } = call_code;
+    let CallCode { builder, digest, args, typed, .. } = call_code;
     let tx_script = generate_tx_script(builder, &digest, &args)?;
 
     // 1) Read-only execution to get return values.
@@ -297,7 +319,7 @@ async fn run_local_call<AUTH: Keystore + Sync + 'static>(
             BTreeMap::new(),
         )
         .await?;
-    print_call_result(output_stack.as_slice(), typed.as_ref(), result_felts)?;
+    print_call_result(output_stack.as_slice(), typed.as_ref())?;
 
     // 2) Transaction execution to get the state delta.
     let tx_request = TransactionRequestBuilder::new()
@@ -312,33 +334,7 @@ async fn run_local_call<AUTH: Keystore + Sync + 'static>(
         Ok(tx_result) => {
             print_executed_transaction(client, tx_result.executed_transaction()).await?;
         },
-        Err(e) => {
-            let mut report = String::new();
-            let mut cause = std::error::Error::source(&e);
-            while let Some(err) = cause {
-                writeln!(report, "  caused by: {err}").unwrap();
-                cause = err.source();
-            }
-
-            if report.contains(EMPTY_TRANSACTION_ASSERTION) {
-                // A procedure that only reads, on an account whose components write nothing,
-                // leaves the transaction with no effects at all, and the kernel refuses those.
-                // For a read-only call that is the expected outcome rather than a fault, so it
-                // is reported instead of dumping the assertion chain. The kernel rejects only
-                // when the account was left unchanged and nothing was consumed, so that is all
-                // this can report; it says nothing about created notes.
-                println!();
-                println!("The transaction was rejected because it had no effects:\n");
-                println!("No notes were consumed.");
-                println!();
-                println!("Account Storage was not changed.");
-                println!("Account Vault was not changed.");
-                println!("Account nonce was not changed.");
-            } else {
-                println!("\n(Could not compute state delta: {e})");
-                print!("{report}");
-            }
-        },
+        Err(e) => report_failed_delta(&e),
     }
     Ok(())
 }
@@ -430,20 +426,6 @@ async fn pick_local_executor<AUTH: Keystore + Sync + 'static>(
         })
 }
 
-/// Parses the arguments of a call made without a package, where nothing describes their types and
-/// each one is one field element.
-fn parse_raw_args(args: &[String]) -> Result<Vec<Felt>, CliError> {
-    args.iter()
-        .map(|arg| {
-            let n = arg.parse::<u64>().map_err(|_| {
-                CliError::InvalidArgument(format!("Invalid argument '{arg}'. Expected u64."))
-            })?;
-            Felt::try_from(n)
-                .map_err(|_| CliError::InvalidArgument(format!("Argument '{arg}' is too large.")))
-        })
-        .collect()
-}
-
 /// Finds the export `procedure_name` names, which carries both the digest to call and the
 /// signature the arguments are encoded against.
 ///
@@ -463,7 +445,7 @@ fn resolve_procedure_export<'a>(
     let target = procedure_name.replace('_', "-");
 
     let mut available = Vec::new();
-    let mut found_without_signature = false;
+    let mut untyped = None;
 
     for export in manifest.exports() {
         let PackageExport::Procedure(proc) = export else {
@@ -480,26 +462,82 @@ fn resolve_procedure_export<'a>(
         if proc.signature.as_ref().is_some_and(|sig| sig.abi.is_wasm_canonical_abi()) {
             return Ok(proc);
         }
-        found_without_signature = true;
+        // Hand-written MASM carries no signature the caller can encode against, but it is still
+        // callable with raw field elements. Keep it and go on looking: the manifest is free to
+        // write the Component Model export after this one, and that one is worth more.
+        untyped.get_or_insert(proc);
     }
 
-    if found_without_signature {
-        return Err(missing_signature(procedure_name));
-    }
-
-    Err(CliError::InvalidArgument(format!(
-        "Procedure '{procedure_name}' not found. Available:\n{}",
-        available.join("\n")
-    )))
+    untyped.ok_or_else(|| {
+        CliError::InvalidArgument(format!(
+            "Procedure '{procedure_name}' not found. Available:\n{}",
+            available.join("\n")
+        ))
+    })
 }
 
-/// The error for a procedure the package exports but does not describe well enough to call: `call`
-/// encodes its arguments from the signature, so a procedure without one cannot be reached.
-fn missing_signature(procedure_name: &str) -> CliError {
-    CliError::InvalidArgument(format!(
-        "Procedure '{procedure_name}' is exported without a type signature, so its arguments \
-         cannot be encoded. Only procedures built from a WIT interface carry one."
-    ))
+/// Reports a transaction that did not execute, in place of the state delta it would have shown.
+///
+/// The read-only execution has already printed the result by this point, so this never fails the
+/// command: the call itself succeeded, only its effects could not be reported.
+fn report_failed_delta(error: &ClientError) {
+    let is_empty_transaction = matches!(
+        error,
+        ClientError::TransactionExecutorError(
+            TransactionExecutorError::TransactionProgramExecutionFailed(
+                ExecutionError::OperationError {
+                    err: OperationError::FailedAssertion { err_code, .. },
+                    ..
+                },
+            ),
+        ) if *err_code == error_code_from_msg(EMPTY_TRANSACTION_ASSERTION)
+    );
+
+    if is_empty_transaction {
+        // A procedure that only reads, on an account whose components write nothing, leaves the
+        // transaction with no effects at all, and the kernel refuses those. For a read-only call
+        // that is the expected outcome rather than a fault, so it is reported instead of dumping
+        // the assertion chain. The kernel rejects only when the account was left unchanged and
+        // nothing was consumed, so that is all this can report; it says nothing about created
+        // notes.
+        println!();
+        println!("The transaction was rejected because it had no effects:\n");
+        println!("No notes were consumed.");
+        println!();
+        println!("Account Storage was not changed.");
+        println!("Account Vault was not changed.");
+        println!("Account nonce was not changed.");
+        return;
+    }
+
+    let mut report = String::new();
+    let mut cause = std::error::Error::source(error);
+    while let Some(err) = cause {
+        writeln!(report, "  caused by: {err}").unwrap();
+        cause = err.source();
+    }
+
+    println!("\n(Could not compute state delta: {error})");
+    print!("{report}");
+}
+
+/// Parses `args` as one field element each, for a procedure whose types the package does not
+/// describe.
+///
+/// A value is written the way a `felt` is written on the typed path: in decimal. The untyped path
+/// is the fallback, so accepting more than the typed one would teach a syntax that stops working
+/// as soon as the procedure gains a signature.
+fn encode_raw_args(args: &[String]) -> Result<Vec<Felt>, CliError> {
+    args.iter()
+        .map(|arg| {
+            let value: u64 = arg.parse().map_err(|_| {
+                CliError::InvalidArgument(format!("Invalid argument '{arg}'. Expected a felt."))
+            })?;
+            Felt::try_from(value).map_err(|_| {
+                CliError::InvalidArgument(format!("Argument '{arg}' is too large for a felt."))
+            })
+        })
+        .collect()
 }
 
 // TESTS
@@ -608,13 +646,58 @@ mod tests {
     }
 
     #[test]
-    fn an_export_without_a_signature_is_reported_as_such() {
-        // MASM written by hand: the export has the name we ask for, but no type info. The error
-        // has to say that, not that the procedure is missing.
+    fn an_export_without_a_signature_is_still_resolved() {
+        // MASM written by hand: the export has the name we ask for, but no type info. It is still
+        // callable with raw field elements, so it has to resolve rather than be rejected.
         let manifest = manifest_with_exports(&[("::mix::\"increment-by\"", None)]);
 
-        let err = resolve_procedure_export(&manifest, "increment-by").unwrap_err();
-        assert_eq!(err.to_string(), missing_signature("increment-by").to_string());
+        let export = resolve_procedure_export(&manifest, "increment-by").unwrap();
+        assert_eq!(export.signature, None);
+    }
+
+    /// The Goldilocks field modulus, `2^64 - 2^32 + 1`. The first value with no felt of its own.
+    const FIELD_MODULUS: u64 = 18_446_744_069_414_584_321;
+
+    #[test]
+    fn raw_arguments_are_read_as_decimal_felts() {
+        let args = ["0", "10", (FIELD_MODULUS - 1).to_string().as_str()].map(String::from);
+
+        let encoded = encode_raw_args(&args).unwrap();
+
+        let expected = [0, 10, FIELD_MODULUS - 1].map(|v| Felt::new(v).unwrap());
+        assert_eq!(encoded, expected);
+    }
+
+    #[test]
+    fn a_raw_argument_at_the_field_modulus_is_rejected() {
+        // The modulus is what an unchecked `u64` argument would silently wrap around to.
+        let err = encode_raw_args(&[FIELD_MODULUS.to_string()]).unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            format!("invalid argument: Argument '{FIELD_MODULUS}' is too large for a felt.")
+        );
+    }
+
+    #[test]
+    fn a_raw_hex_argument_is_rejected() {
+        // The typed path writes a `felt` in decimal and reserves `0x` for wider values, so the
+        // untyped path cannot take hex either: it would work only until the procedure is given a
+        // signature.
+        let err = encode_raw_args(&["0xff".to_string()]).unwrap_err();
+
+        assert_eq!(err.to_string(), "invalid argument: Invalid argument '0xff'. Expected a felt.");
+    }
+
+    #[test]
+    fn the_component_model_export_wins_over_an_untyped_one_written_before_it() {
+        // The untyped export is seen first, but it is only the fallback: resolution has to go on
+        // and take the Component Model one.
+        let manifest =
+            manifest_with_exports(&[("::mix::\"increment-by\"", None), interface_form()]);
+
+        let export = resolve_procedure_export(&manifest, "increment-by").unwrap();
+        assert_eq!(export.signature, interface_form().1);
     }
 }
 

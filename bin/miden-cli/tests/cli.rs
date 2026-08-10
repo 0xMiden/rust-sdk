@@ -1852,6 +1852,13 @@ fn build_call_test_masp(out_path: &Path) {
             # unnoticed the way it does through the identity above.
             drop
         end
+
+        @account_procedure
+        pub proc raw_add
+            # Left out of `signature_overrides`, so the package describes no WIT types for it and
+            # `call` has to fall back to raw field elements.
+            add
+        end
     "#;
 
     let component_package: Package = CodeBuilder::default()
@@ -2174,6 +2181,66 @@ fn call_typed_account_id_roundtrip() {
         "Signature: take_account_id(account-id) -> account-id"
     );
     assert_eq!(output_line(&stdout, "Result:"), format!("Result: account-id({acct_hex})"));
+}
+
+/// Tests the untyped fallback: a procedure the package describes no WIT types for is still called,
+/// with one field element per argument and the output stack printed as-is.
+#[test]
+fn call_untyped_procedure_falls_back_to_raw_felts() {
+    let (temp_dir, account_id, masp_path) = setup_call_test_account();
+
+    let mut cmd = cargo_bin_cmd!("miden-client");
+    cmd.args([
+        "call",
+        &format!("{account_id}:raw_add"),
+        "3",
+        "7",
+        "--package",
+        masp_path.to_str().unwrap(),
+    ]);
+
+    let output = cmd.current_dir(&temp_dir).output().unwrap();
+    assert!(
+        output.status.success(),
+        "Call failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output_line(&stdout, "Signature:"), "Signature: raw_add(...) [no type info]");
+    // The arguments stay under the result, since there is no result count to step over them with,
+    // and the dump runs to the last non-zero value.
+    assert_eq!(output_line(&stdout, "Result ("), "Result (3 values):");
+    assert_eq!(
+        stdout.lines().filter(|line| line.starts_with("  [")).collect::<Vec<_>>(),
+        ["  [0]: 10", "  [1]: 3", "  [2]: 7"]
+    );
+}
+
+/// Tests that an untyped procedure takes its arguments the way a `felt` is written on the typed
+/// path, so the fallback cannot teach a syntax that stops working once the types arrive.
+#[test]
+fn call_untyped_procedure_rejects_a_hex_argument() {
+    let (temp_dir, account_id, masp_path) = setup_call_test_account();
+
+    let mut cmd = cargo_bin_cmd!("miden-client");
+    cmd.args([
+        "call",
+        &format!("{account_id}:raw_add"),
+        "0xff",
+        "7",
+        "--package",
+        masp_path.to_str().unwrap(),
+    ]);
+
+    let output = cmd.current_dir(&temp_dir).output().unwrap();
+    assert!(!output.status.success(), "Expected failure for a hex argument");
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("Invalid argument '0xff'. Expected a felt."),
+        "Unexpected stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 /// Tests that the two felts of an `account-id` argument reach the procedure in signature order.

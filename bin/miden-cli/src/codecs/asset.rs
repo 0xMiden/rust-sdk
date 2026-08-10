@@ -7,10 +7,10 @@
 //! fungible assets, minus the token symbol and address spellings: resolving those needs the
 //! client, and a codec only sees the text.
 
-use miden_mast_package::typed::{MIDEN_CORE_TYPES, TypedError, WitScalarCodec};
-use miden_protocol::account::AccountId;
-use miden_protocol::asset::{Asset, FungibleAsset};
-use miden_protocol::{Felt, Word};
+use miden_client::account::AccountId;
+use miden_client::asset::{Asset, FungibleAsset};
+use miden_client::vm::typed::{MIDEN_CORE_TYPES, TypedError, WitScalarCodec};
+use miden_client::{Felt, Word};
 
 use crate::codecs::invalid_scalar;
 

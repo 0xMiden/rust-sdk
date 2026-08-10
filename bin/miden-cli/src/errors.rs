@@ -5,6 +5,7 @@ use std::error::Error;
 
 use miden_client::account::{AccountId, AddressError};
 use miden_client::keystore::KeyStoreError;
+use miden_client::vm::typed::TypedError;
 use miden_client::{
     AccountError,
     AccountIdError,
@@ -14,7 +15,6 @@ use miden_client::{
     ErrorHint,
     NetworkIdError,
 };
-use miden_mast_package::typed::TypedError;
 use miette::Diagnostic;
 use thiserror::Error;
 

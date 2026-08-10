@@ -2314,13 +2314,12 @@ checksum = "88904434abc2901f197fe8cc55f0445e7ded921dba5911dad2e2b39b48e663c4"
 
 [[package]]
 name = "miden-ace-codegen"
-version = "0.29.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a66d3f9f8abd86405b76e5fb33425ca663a6c7db5bc3b93d1386f6aa817633f6"
+version = "0.29.1"
+source = "git+https://github.com/walnuthq/miden-vm?branch=pr%2Fdebug_info_encoder_decoder#2d71834d76c05ec7c3b2349647aab82a97afcebb"
 dependencies = [
  "miden-constraint-compiler",
  "miden-core",
- "miden-crypto",
+ "miden-crypto 0.29.1 (git+https://github.com/walnuthq/miden-vm?branch=pr%2Fdebug_info_encoder_decoder)",
  "thiserror",
 ]
 
@@ -2335,7 +2334,7 @@ dependencies = [
  "miden-assembly",
  "miden-core",
  "miden-core-lib",
- "miden-crypto",
+ "miden-crypto 0.29.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "miden-mast-package",
  "miden-package-registry",
  "miden-protocol",
@@ -2349,14 +2348,13 @@ dependencies = [
 
 [[package]]
 name = "miden-air"
-version = "0.29.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "06523a8e7130f70e5974c40861e808085a34eec27df1d397fb767850425a44e1"
+version = "0.29.1"
+source = "git+https://github.com/walnuthq/miden-vm?branch=pr%2Fdebug_info_encoder_decoder#2d71834d76c05ec7c3b2349647aab82a97afcebb"
 dependencies = [
  "miden-ace-codegen",
  "miden-core",
- "miden-crypto",
- "miden-utils-indexing",
+ "miden-crypto 0.29.1 (git+https://github.com/walnuthq/miden-vm?branch=pr%2Fdebug_info_encoder_decoder)",
+ "miden-utils-indexing 0.29.1",
  "p3-field",
  "proptest",
  "thiserror",
@@ -2366,8 +2364,7 @@ dependencies = [
 [[package]]
 name = "miden-assembly"
 version = "0.29.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "727de4350d9ba263be17d9f93dc4b8d0deebabab29c3bed34f32c4af7b1cf20c"
+source = "git+https://github.com/walnuthq/miden-vm?branch=pr%2Fdebug_info_encoder_decoder#2d71834d76c05ec7c3b2349647aab82a97afcebb"
 dependencies = [
  "env_logger",
  "log",
@@ -2384,14 +2381,13 @@ dependencies = [
 [[package]]
 name = "miden-assembly-syntax"
 version = "0.29.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3874c53f40656a56f74afe8e957d75667218808894ab8f5dbd91e58a8a0c3393"
+source = "git+https://github.com/walnuthq/miden-vm?branch=pr%2Fdebug_info_encoder_decoder#2d71834d76c05ec7c3b2349647aab82a97afcebb"
 dependencies = [
  "env_logger",
  "log",
  "miden-assembly-syntax-cst",
  "miden-core",
- "miden-debug-types",
+ "miden-debug-types 0.29.1",
  "miden-utils-diagnostics",
  "midenc-hir-type",
  "proptest",
@@ -2406,11 +2402,10 @@ dependencies = [
 
 [[package]]
 name = "miden-assembly-syntax-cst"
-version = "0.29.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c983ea80cf3c747f39f61a9cffbf048f9107b7a5175b873d37527398019c6760"
+version = "0.29.1"
+source = "git+https://github.com/walnuthq/miden-vm?branch=pr%2Fdebug_info_encoder_decoder#2d71834d76c05ec7c3b2349647aab82a97afcebb"
 dependencies = [
- "miden-debug-types",
+ "miden-debug-types 0.29.1",
  "miden-rowan",
  "miden-utils-diagnostics",
  "thiserror",
@@ -2439,6 +2434,7 @@ dependencies = [
  "hex",
  "miden-agglayer",
  "miden-debug",
+ "miden-mast-package",
  "miden-node-proto-build",
  "miden-note-transport-proto-build",
  "miden-processor",
@@ -2569,27 +2565,25 @@ dependencies = [
 
 [[package]]
 name = "miden-constraint-compiler"
-version = "0.29.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbc2de03e3ca664006f6a523810c1a5a3b4254bbda8bf78e5aa009e2502c4f5d"
+version = "0.29.1"
+source = "git+https://github.com/walnuthq/miden-vm?branch=pr%2Fdebug_info_encoder_decoder#2d71834d76c05ec7c3b2349647aab82a97afcebb"
 dependencies = [
  "miden-core",
- "miden-crypto",
+ "miden-crypto 0.29.1 (git+https://github.com/walnuthq/miden-vm?branch=pr%2Fdebug_info_encoder_decoder)",
 ]
 
 [[package]]
 name = "miden-core"
 version = "0.29.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "55df0c9b5fddcfc2c03c6e476bec0523328fb85090e716d1ab9a4db1d2267c67"
+source = "git+https://github.com/walnuthq/miden-vm?branch=pr%2Fdebug_info_encoder_decoder#2d71834d76c05ec7c3b2349647aab82a97afcebb"
 dependencies = [
  "derive_more",
  "log",
- "miden-crypto",
- "miden-debug-types",
+ "miden-crypto 0.29.1 (git+https://github.com/walnuthq/miden-vm?branch=pr%2Fdebug_info_encoder_decoder)",
+ "miden-debug-types 0.29.1",
  "miden-formatting",
  "miden-utils-core-derive",
- "miden-utils-indexing",
+ "miden-utils-indexing 0.29.1",
  "miden-utils-sync",
  "proptest",
  "serde",
@@ -2599,8 +2593,7 @@ dependencies = [
 [[package]]
 name = "miden-core-lib"
 version = "0.29.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f1f5b4dca8d29c99859e3470ec1fadfa89506e6b349ade7fa475574e3104db85"
+source = "git+https://github.com/walnuthq/miden-vm?branch=pr%2Fdebug_info_encoder_decoder#2d71834d76c05ec7c3b2349647aab82a97afcebb"
 dependencies = [
  "env_logger",
  "fs-err",
@@ -2608,7 +2601,7 @@ dependencies = [
  "miden-assembly-syntax",
  "miden-core",
  "miden-core-lib-codegen",
- "miden-crypto",
+ "miden-crypto 0.29.1 (git+https://github.com/walnuthq/miden-vm?branch=pr%2Fdebug_info_encoder_decoder)",
  "miden-mast-package",
  "miden-package-registry",
  "miden-precompiles",
@@ -2619,9 +2612,8 @@ dependencies = [
 
 [[package]]
 name = "miden-core-lib-codegen"
-version = "0.29.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "823c735b6d34b34ae6bdc390cefafc6d1e5c81fe08cc14efe6c78834c59a59cc"
+version = "0.29.1"
+source = "git+https://github.com/walnuthq/miden-vm?branch=pr%2Fdebug_info_encoder_decoder#2d71834d76c05ec7c3b2349647aab82a97afcebb"
 dependencies = [
  "miden-core",
  "miden-precompiles",
@@ -2642,10 +2634,51 @@ dependencies = [
  "flume",
  "hkdf",
  "k256",
- "miden-crypto-derive",
- "miden-field",
- "miden-lifted-stark",
- "miden-serde-utils",
+ "miden-crypto-derive 0.29.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "miden-field 0.29.0",
+ "miden-lifted-stark 0.29.0",
+ "miden-serde-utils 0.29.0",
+ "num",
+ "num-complex",
+ "once_cell",
+ "p3-blake3",
+ "p3-challenger",
+ "p3-dft",
+ "p3-goldilocks",
+ "p3-keccak",
+ "p3-matrix",
+ "p3-maybe-rayon",
+ "p3-symmetric",
+ "p3-util",
+ "rand 0.10.1",
+ "rand_chacha 0.10.0",
+ "rayon",
+ "serde",
+ "sha2",
+ "sha3 0.12.0",
+ "subtle",
+ "thiserror",
+ "x25519-dalek",
+]
+
+[[package]]
+name = "miden-crypto"
+version = "0.29.1"
+source = "git+https://github.com/walnuthq/miden-vm?branch=pr%2Fdebug_info_encoder_decoder#2d71834d76c05ec7c3b2349647aab82a97afcebb"
+dependencies = [
+ "blake3",
+ "cc",
+ "chacha20poly1305",
+ "curve25519-dalek",
+ "der",
+ "ed25519-dalek",
+ "flume",
+ "hkdf",
+ "k256",
+ "miden-crypto-derive 0.29.1 (git+https://github.com/walnuthq/miden-vm?branch=pr%2Fdebug_info_encoder_decoder)",
+ "miden-field 0.29.1",
+ "miden-lifted-stark 0.29.1",
+ "miden-serde-utils 0.29.1",
  "num",
  "num-complex",
  "once_cell",
@@ -2680,6 +2713,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "miden-crypto-derive"
+version = "0.29.1"
+source = "git+https://github.com/walnuthq/miden-vm?branch=pr%2Fdebug_info_encoder_decoder#2d71834d76c05ec7c3b2349647aab82a97afcebb"
+dependencies = [
+ "quote",
+ "syn 2.0.118",
+]
+
+[[package]]
 name = "miden-debug"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2693,7 +2735,7 @@ dependencies = [
  "miden-assembly-syntax",
  "miden-core",
  "miden-debug-engine",
- "miden-debug-types",
+ "miden-debug-types 0.29.0",
  "miden-mast-package",
  "miden-package-registry",
  "miden-processor",
@@ -2729,7 +2771,7 @@ dependencies = [
  "miden-assembly-syntax",
  "miden-core",
  "miden-debug-dap",
- "miden-debug-types",
+ "miden-debug-types 0.29.0",
  "miden-mast-package",
  "miden-package-registry",
  "miden-processor",
@@ -2752,10 +2794,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4556cf4e43be205707d04d9532dd302cd313162ee986160a37923b4a613a71c1"
 dependencies = [
  "memchr",
- "miden-crypto",
+ "miden-crypto 0.29.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "miden-formatting",
  "miden-miette",
- "miden-utils-indexing",
+ "miden-utils-indexing 0.29.0",
+ "miden-utils-sync",
+ "paste",
+ "thiserror",
+ "zerocopy",
+]
+
+[[package]]
+name = "miden-debug-types"
+version = "0.29.1"
+source = "git+https://github.com/walnuthq/miden-vm?branch=pr%2Fdebug_info_encoder_decoder#2d71834d76c05ec7c3b2349647aab82a97afcebb"
+dependencies = [
+ "memchr",
+ "miden-crypto 0.29.1 (git+https://github.com/walnuthq/miden-vm?branch=pr%2Fdebug_info_encoder_decoder)",
+ "miden-formatting",
+ "miden-miette",
+ "miden-utils-indexing 0.29.1",
  "miden-utils-sync",
  "paste",
  "proptest",
@@ -2771,7 +2829,25 @@ version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d86dc6aae6776bfdd2c3d148d2c7c29c56510887056dc48aa41ffc87c2e6eae4"
 dependencies = [
- "miden-serde-utils",
+ "miden-serde-utils 0.29.0",
+ "num-bigint 0.5.1",
+ "p3-challenger",
+ "p3-field",
+ "p3-goldilocks",
+ "p3-util",
+ "paste",
+ "rand 0.10.1",
+ "serde",
+ "subtle",
+ "thiserror",
+]
+
+[[package]]
+name = "miden-field"
+version = "0.29.1"
+source = "git+https://github.com/walnuthq/miden-vm?branch=pr%2Fdebug_info_encoder_decoder#2d71834d76c05ec7c3b2349647aab82a97afcebb"
+dependencies = [
+ "miden-serde-utils 0.29.1",
  "num-bigint 0.5.1",
  "p3-challenger",
  "p3-field",
@@ -2808,14 +2884,49 @@ dependencies = [
 ]
 
 [[package]]
+name = "miden-lifted-air"
+version = "0.29.1"
+source = "git+https://github.com/walnuthq/miden-vm?branch=pr%2Fdebug_info_encoder_decoder#2d71834d76c05ec7c3b2349647aab82a97afcebb"
+dependencies = [
+ "p3-air",
+ "p3-challenger",
+ "p3-field",
+ "p3-matrix",
+ "p3-util",
+ "thiserror",
+]
+
+[[package]]
 name = "miden-lifted-stark"
 version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e17c540c72c6a0adfa7e473f98bbf30b31ebd726026a76266eb77a5d00961931"
 dependencies = [
- "miden-lifted-air",
- "miden-stark-transcript",
- "miden-stateful-hasher",
+ "miden-lifted-air 0.29.0",
+ "miden-stark-transcript 0.29.0",
+ "miden-stateful-hasher 0.29.0",
+ "p3-challenger",
+ "p3-dft",
+ "p3-field",
+ "p3-goldilocks",
+ "p3-matrix",
+ "p3-maybe-rayon",
+ "p3-symmetric",
+ "p3-util",
+ "rand 0.10.1",
+ "serde",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
+name = "miden-lifted-stark"
+version = "0.29.1"
+source = "git+https://github.com/walnuthq/miden-vm?branch=pr%2Fdebug_info_encoder_decoder#2d71834d76c05ec7c3b2349647aab82a97afcebb"
+dependencies = [
+ "miden-lifted-air 0.29.1",
+ "miden-stark-transcript 0.29.1",
+ "miden-stateful-hasher 0.29.1",
  "p3-challenger",
  "p3-dft",
  "p3-field",
@@ -2833,15 +2944,14 @@ dependencies = [
 [[package]]
 name = "miden-mast-package"
 version = "0.29.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "26062f2e4cb18e7fa9244f8b18fe2adea2bfe3f016431f75f80b5b98249c34f6"
+source = "git+https://github.com/walnuthq/miden-vm?branch=pr%2Fdebug_info_encoder_decoder#2d71834d76c05ec7c3b2349647aab82a97afcebb"
 dependencies = [
  "hashbrown 0.17.1",
  "log",
  "miden-assembly-syntax",
  "miden-core",
- "miden-debug-types",
- "miden-utils-indexing",
+ "miden-debug-types 0.29.1",
+ "miden-utils-indexing 0.29.1",
  "rustc-hash",
  "serde",
  "thiserror",
@@ -2913,8 +3023,7 @@ dependencies = [
 [[package]]
 name = "miden-package-registry"
 version = "0.29.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8653a8792d81ec1807815e5735de98d9d928f89b7bb5280ffadb848e87eb3ed3"
+source = "git+https://github.com/walnuthq/miden-vm?branch=pr%2Fdebug_info_encoder_decoder#2d71834d76c05ec7c3b2349647aab82a97afcebb"
 dependencies = [
  "miden-assembly-syntax",
  "miden-core",
@@ -2928,28 +3037,26 @@ dependencies = [
 
 [[package]]
 name = "miden-precompiles"
-version = "0.29.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ee334f0a36c1a24d041323898b087da3b9bf2aa3b520d0d44ebc2ed07f5f617"
+version = "0.29.1"
+source = "git+https://github.com/walnuthq/miden-vm?branch=pr%2Fdebug_info_encoder_decoder#2d71834d76c05ec7c3b2349647aab82a97afcebb"
 dependencies = [
  "miden-core",
- "miden-crypto",
+ "miden-crypto 0.29.1 (git+https://github.com/walnuthq/miden-vm?branch=pr%2Fdebug_info_encoder_decoder)",
 ]
 
 [[package]]
 name = "miden-precompiles-prover"
-version = "0.29.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dcf74c0b721b4a04852561c4bad282644e5173089732132749dccc0cbca37088"
+version = "0.29.1"
+source = "git+https://github.com/walnuthq/miden-vm?branch=pr%2Fdebug_info_encoder_decoder#2d71834d76c05ec7c3b2349647aab82a97afcebb"
 dependencies = [
  "miden-ace-codegen",
  "miden-air",
  "miden-core",
- "miden-crypto",
- "miden-lifted-air",
- "miden-lifted-stark",
+ "miden-crypto 0.29.1 (git+https://github.com/walnuthq/miden-vm?branch=pr%2Fdebug_info_encoder_decoder)",
+ "miden-lifted-air 0.29.1",
+ "miden-lifted-stark 0.29.1",
  "miden-precompiles",
- "miden-serde-utils",
+ "miden-serde-utils 0.29.1",
  "ruint",
  "serde",
  "serde-wincode",
@@ -2961,18 +3068,17 @@ dependencies = [
 [[package]]
 name = "miden-processor"
 version = "0.29.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "57b3f6dbcea246715c7c528bbc2fbee46464493c11ac417c12c9562a229b136f"
+source = "git+https://github.com/walnuthq/miden-vm?branch=pr%2Fdebug_info_encoder_decoder#2d71834d76c05ec7c3b2349647aab82a97afcebb"
 dependencies = [
  "hashbrown 0.17.1",
  "itertools 0.15.0",
  "miden-air",
  "miden-core",
- "miden-debug-types",
+ "miden-debug-types 0.29.1",
  "miden-mast-package",
  "miden-precompiles",
  "miden-utils-diagnostics",
- "miden-utils-indexing",
+ "miden-utils-indexing 0.29.1",
  "paste",
  "rayon",
  "thiserror",
@@ -2982,8 +3088,7 @@ dependencies = [
 [[package]]
 name = "miden-project"
 version = "0.29.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e02ac82735cd86ea17fcf8614496ce7e462f3e80dbc1113bf821e8197dcda49d"
+source = "git+https://github.com/walnuthq/miden-vm?branch=pr%2Fdebug_info_encoder_decoder#2d71834d76c05ec7c3b2349647aab82a97afcebb"
 dependencies = [
  "miden-assembly-syntax",
  "miden-core",
@@ -3009,8 +3114,8 @@ dependencies = [
  "miden-assembly-syntax",
  "miden-core",
  "miden-core-lib",
- "miden-crypto",
- "miden-crypto-derive",
+ "miden-crypto 0.29.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "miden-crypto-derive 0.29.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "miden-mast-package",
  "miden-package-registry",
  "miden-processor",
@@ -3046,12 +3151,11 @@ dependencies = [
 [[package]]
 name = "miden-prover"
 version = "0.29.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d29bbc158dc3cf2498e351cd691192d362f67873b5b197d6b23c207c956caa60"
+source = "git+https://github.com/walnuthq/miden-vm?branch=pr%2Fdebug_info_encoder_decoder#2d71834d76c05ec7c3b2349647aab82a97afcebb"
 dependencies = [
  "miden-air",
  "miden-core",
- "miden-crypto",
+ "miden-crypto 0.29.1 (git+https://github.com/walnuthq/miden-vm?branch=pr%2Fdebug_info_encoder_decoder)",
  "miden-precompiles-prover",
  "miden-processor",
  "serde",
@@ -3074,6 +3178,16 @@ name = "miden-serde-utils"
 version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a8bc2e1ffd6d9c0a445259f3e32f02b79af2776d34d7dc5dbd6e39e19bbebdce"
+dependencies = [
+ "p3-field",
+ "p3-goldilocks",
+ "wincode",
+]
+
+[[package]]
+name = "miden-serde-utils"
+version = "0.29.1"
+source = "git+https://github.com/walnuthq/miden-vm?branch=pr%2Fdebug_info_encoder_decoder#2d71834d76c05ec7c3b2349647aab82a97afcebb"
 dependencies = [
  "p3-field",
  "p3-goldilocks",
@@ -3110,10 +3224,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "miden-stark-transcript"
+version = "0.29.1"
+source = "git+https://github.com/walnuthq/miden-vm?branch=pr%2Fdebug_info_encoder_decoder#2d71834d76c05ec7c3b2349647aab82a97afcebb"
+dependencies = [
+ "p3-challenger",
+ "p3-field",
+ "serde",
+ "thiserror",
+]
+
+[[package]]
 name = "miden-stateful-hasher"
 version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "99c1612fbad6502deb79a34bd852a53b30cbcae92fbf20a2f2c220a708e1aec7"
+dependencies = [
+ "p3-field",
+ "p3-symmetric",
+]
+
+[[package]]
+name = "miden-stateful-hasher"
+version = "0.29.1"
+source = "git+https://github.com/walnuthq/miden-vm?branch=pr%2Fdebug_info_encoder_decoder#2d71834d76c05ec7c3b2349647aab82a97afcebb"
 dependencies = [
  "p3-field",
  "p3-symmetric",
@@ -3129,7 +3263,7 @@ dependencies = [
  "itertools 0.15.0",
  "miden-block-prover",
  "miden-core-lib",
- "miden-crypto",
+ "miden-crypto 0.29.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "miden-processor",
  "miden-protocol",
  "miden-standards",
@@ -3170,9 +3304,8 @@ dependencies = [
 
 [[package]]
 name = "miden-utils-core-derive"
-version = "0.29.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a21bd1f2a35b3e8e48b391c51bd5d4d3d080066d9f0cd8a1567be477fd6acbed"
+version = "0.29.1"
+source = "git+https://github.com/walnuthq/miden-vm?branch=pr%2Fdebug_info_encoder_decoder#2d71834d76c05ec7c3b2349647aab82a97afcebb"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3181,11 +3314,10 @@ dependencies = [
 
 [[package]]
 name = "miden-utils-diagnostics"
-version = "0.29.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9927aebed020f53666d1daf01b834e134ce80ced02cef6f6b82c3a2f855fb85c"
+version = "0.29.1"
+source = "git+https://github.com/walnuthq/miden-vm?branch=pr%2Fdebug_info_encoder_decoder#2d71834d76c05ec7c3b2349647aab82a97afcebb"
 dependencies = [
- "miden-debug-types",
+ "miden-debug-types 0.29.1",
  "miden-miette",
  "tracing",
 ]
@@ -3196,7 +3328,16 @@ version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e1ce02f96261808a50f86088c83bc9eef809205bbc51f76f10432bb9a5e1337"
 dependencies = [
- "miden-serde-utils",
+ "miden-serde-utils 0.29.0",
+ "thiserror",
+]
+
+[[package]]
+name = "miden-utils-indexing"
+version = "0.29.1"
+source = "git+https://github.com/walnuthq/miden-vm?branch=pr%2Fdebug_info_encoder_decoder#2d71834d76c05ec7c3b2349647aab82a97afcebb"
+dependencies = [
+ "miden-serde-utils 0.29.1",
  "proptest",
  "serde",
  "thiserror",
@@ -3205,8 +3346,7 @@ dependencies = [
 [[package]]
 name = "miden-utils-sync"
 version = "0.29.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0fa9c0af7dab7842819c02ef386ed1640884db5c2efa32d30da7d4739548f70e"
+source = "git+https://github.com/walnuthq/miden-vm?branch=pr%2Fdebug_info_encoder_decoder#2d71834d76c05ec7c3b2349647aab82a97afcebb"
 dependencies = [
  "lock_api",
  "loom",
@@ -3217,15 +3357,14 @@ dependencies = [
 [[package]]
 name = "miden-verifier"
 version = "0.29.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "900c0473191ecbe2328e3d6550571f0b1ab42d1417f43c1d98a50cafc3ae4ff1"
+source = "git+https://github.com/walnuthq/miden-vm?branch=pr%2Fdebug_info_encoder_decoder#2d71834d76c05ec7c3b2349647aab82a97afcebb"
 dependencies = [
  "miden-air",
  "miden-core",
- "miden-crypto",
+ "miden-crypto 0.29.1 (git+https://github.com/walnuthq/miden-vm?branch=pr%2Fdebug_info_encoder_decoder)",
  "miden-precompiles",
  "miden-precompiles-prover",
- "miden-serde-utils",
+ "miden-serde-utils 0.29.1",
  "serde",
  "serde-wincode",
  "thiserror",
@@ -3234,11 +3373,10 @@ dependencies = [
 [[package]]
 name = "midenc-hir-type"
 version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e03aa1e30a8eec3e08eba9a1fd17c7c4462f0d49dfbd64cb65193b68ee14cdcc"
+source = "git+https://github.com/walnuthq/miden-vm?branch=pr%2Fdebug_info_encoder_decoder#2d71834d76c05ec7c3b2349647aab82a97afcebb"
 dependencies = [
  "miden-formatting",
- "miden-serde-utils",
+ "miden-serde-utils 0.29.1",
  "serde",
  "serde_repr",
  "smallvec",

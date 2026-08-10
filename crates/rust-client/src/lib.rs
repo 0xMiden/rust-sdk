@@ -304,6 +304,10 @@ pub mod address {
 
 /// Provides types for working with the virtual machine within the Miden network.
 pub mod vm {
+    pub use miden_mast_package::typed;
+    pub use miden_processor::ExecutionError;
+    pub use miden_processor::mast::error_code_from_msg;
+    pub use miden_processor::operation::OperationError;
     pub use miden_protocol::vm::{
         AdviceInputs,
         AdviceMap,

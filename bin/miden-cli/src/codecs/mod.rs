@@ -11,15 +11,16 @@
 //! [`with_cli_codecs`] registers them in one place, so the commands that render typed signatures
 //! do not know the individual types.
 //!
-//! [`WitScalarCodec`]: miden_mast_package::typed::WitScalarCodec
-//! [`TypedProcInfo`]: miden_mast_package::typed::TypedProcInfo
+//! [`WitScalarCodec`]: miden_client::vm::typed::WitScalarCodec
+//! [`TypedProcInfo`]: miden_client::vm::typed::TypedProcInfo
+
+use miden_client::vm::typed::{TypedError, TypedProcInfo};
 
 mod account_id;
 mod asset;
 
 pub use account_id::AccountIdCodec;
 pub use asset::AssetCodec;
-use miden_mast_package::typed::{TypedError, TypedProcInfo};
 
 /// Builds the `InvalidScalar` error a codec returns when it can't parse `token`. Shared so every
 /// codec reports the same error shape from one place.

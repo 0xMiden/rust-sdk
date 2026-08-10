@@ -21,15 +21,10 @@ use miden_protocol::transaction::TransactionId;
 // ================================================================================================
 pub use miden_standards::errors::CodeBuilderError;
 use miden_standards::tx_script::SendNotesTransactionScriptError;
-pub use miden_tx::AuthenticationError;
 use miden_tx::utils::HexParseError;
 use miden_tx::utils::serde::DeserializationError;
-use miden_tx::{
-    DataStoreError,
-    NoteCheckerError,
-    TransactionExecutorError,
-    TransactionProverError,
-};
+pub use miden_tx::{AuthenticationError, TransactionExecutorError};
+use miden_tx::{DataStoreError, NoteCheckerError, TransactionProverError};
 use thiserror::Error;
 
 use crate::note::NoteScreenerError;

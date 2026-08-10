@@ -4,11 +4,11 @@
 //! (via [`TypedProcInfo::with_scalar_codec`]) to encode one hex token into the two stack felts the
 //! procedure expects and render the returned felts back as `account-id(0x..)`.
 //!
-//! [`TypedProcInfo::with_scalar_codec`]: miden_mast_package::typed::TypedProcInfo::with_scalar_codec
+//! [`TypedProcInfo::with_scalar_codec`]: miden_client::vm::typed::TypedProcInfo::with_scalar_codec
 
-use miden_mast_package::typed::{MIDEN_CORE_TYPES, TypedError, WitScalarCodec};
-use miden_protocol::Felt;
-use miden_protocol::account::AccountId;
+use miden_client::Felt;
+use miden_client::account::AccountId;
+use miden_client::vm::typed::{MIDEN_CORE_TYPES, TypedError, WitScalarCodec};
 
 use crate::codecs::invalid_scalar;
 

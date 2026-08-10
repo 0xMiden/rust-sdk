@@ -228,7 +228,7 @@ impl NewAccountCmd {
 // ================================================================================================
 
 /// Reads [[`miden_core::vm::Package`]]s from the given file paths.
-fn load_packages(
+pub(crate) fn load_packages(
     cli_config: &CliConfig,
     package_paths: &[PathBuf],
 ) -> Result<Vec<Package>, CliError> {
@@ -537,12 +537,12 @@ async fn create_client_account<AUTH: Keystore + Sync + 'static>(
     // Add the auth component (either from packages or default Falcon)
     let key_pair = if let Some(auth_component) = auth_component {
         debug!("Adding auth component from package");
-        builder = builder.with_auth_component(auth_component);
+        builder = builder.with_component(auth_component);
         None
     } else {
         debug!("Adding default Falcon auth component");
         let kp = AuthSecretKey::new_falcon512_poseidon2_with_rng(client.rng());
-        builder = builder.with_auth_component(AuthSingleSig::new(Approver::new(
+        builder = builder.with_component(AuthSingleSig::new(Approver::new(
             kp.public_key().to_commitment(),
             AuthSchemeId::Falcon512Poseidon2,
         )));

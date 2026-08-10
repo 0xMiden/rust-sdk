@@ -14,7 +14,6 @@ use miden_protocol::note::{
     Note,
     NoteAssets,
     NoteAttachment,
-    NoteAttachments,
     NoteDetails,
     NoteDetailsCommitment,
     NoteId,
@@ -29,6 +28,7 @@ use miden_protocol::note::{
 use miden_protocol::transaction::TransactionScript;
 use miden_protocol::vm::AdviceMap;
 use miden_protocol::{Felt, Word};
+use miden_standards::account::auth::{FeeConversionInfo, commit_fee_conversion_info};
 use miden_standards::note::{P2idNote, P2ideNote, PswapNote, PswapNoteStorage, SwapNote};
 
 use super::{
@@ -90,6 +90,10 @@ pub struct TransactionRequestBuilder {
     /// Optional [`Word`] that will be pushed to the stack for the authentication procedure
     /// during transaction execution.
     auth_arg: Option<Word>,
+    /// Whether the auth arg carries fee conversion info set through
+    /// [`TransactionRequestBuilder::fee_conversion_info`], which only accounts with a
+    /// fee-conversion-aware auth component can consume.
+    declares_fee_conversion_info: bool,
     /// Note scripts that the node's NTX builder will need in its script registry.
     ///
     /// See [`TransactionRequestBuilder::expected_ntx_scripts`] for details.
@@ -116,6 +120,7 @@ impl TransactionRequestBuilder {
             ignore_invalid_input_notes: false,
             script_arg: None,
             auth_arg: None,
+            declares_fee_conversion_info: false,
             expected_ntx_scripts: vec![],
         }
     }
@@ -270,6 +275,21 @@ impl TransactionRequestBuilder {
         self
     }
 
+    /// Declares the asset the transaction fee is paid in, and the rate converting the chain's
+    /// native fee into it.
+    ///
+    /// The info is committed to through the transaction's auth args, so it only has an effect on
+    /// accounts whose auth component reads them: [`AuthSingleSig`](crate::auth::AuthSingleSig) and
+    /// [`AuthMultisig`](crate::auth::AuthMultisig). Executing
+    /// such a request against an account with any other auth component is rejected before execution
+    /// with [`TransactionRequestError::FeeConversionInfoUnsupported`].
+    #[must_use]
+    pub fn fee_conversion_info(mut self, conversion_info: FeeConversionInfo, salt: Word) -> Self {
+        let (auth_arg, preimage) = commit_fee_conversion_info(conversion_info, salt);
+        self.declares_fee_conversion_info = true;
+        self.auth_arg(auth_arg).extend_advice_map([(auth_arg, preimage)])
+    }
+
     /// Specifies note scripts that the node's network transaction (NTX) builder will need in
     /// its script registry.
     ///
@@ -383,15 +403,17 @@ impl TransactionRequestBuilder {
     ) -> Result<TransactionRequest, TransactionRequestError> {
         // The created note is the one that we need as the output of the tx, the other one is the
         // one that we expect to receive and consume eventually.
-        let (created_note, payback_note_details) = SwapNote::create(
-            swap_data.account_id(),
-            swap_data.offered_asset(),
-            swap_data.requested_asset(),
-            note_type,
-            NoteAttachments::empty(),
-            payback_note_type,
-            rng,
-        )?;
+        let swap_note = SwapNote::builder()
+            .sender(swap_data.account_id())
+            .offered_asset(swap_data.offered_asset())
+            .requested_asset(swap_data.requested_asset())
+            .note_type(note_type)
+            .payback_note_type(payback_note_type)
+            .generate_serial_number(rng)
+            .build()?;
+
+        let payback_note_details = swap_note.payback_note_details();
+        let created_note = Note::from(swap_note);
 
         let payback_tag = NoteTag::with_account_target(swap_data.account_id());
 
@@ -612,6 +634,7 @@ impl TransactionRequestBuilder {
             ignore_invalid_input_notes: self.ignore_invalid_input_notes,
             script_arg: self.script_arg,
             auth_arg: self.auth_arg,
+            declares_fee_conversion_info: self.declares_fee_conversion_info,
             expected_ntx_scripts: self.expected_ntx_scripts,
         })
     }

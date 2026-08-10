@@ -40,7 +40,7 @@ pub proc main
 
     # move the incoming note's assets into the account vault so they can be
     # moved into the output note from the account context
-    exec.basic_wallet::add_assets_to_account
+    exec.basic_wallet::move_note_assets_to_account
     # => []
 
     # pad the stack for the create_note call

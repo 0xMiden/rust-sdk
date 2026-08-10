@@ -28,7 +28,14 @@ To do this, we use two terminals with their own state (using their own `miden-cl
     mkdir miden-client-2
     cd miden-client-2
     ```
-2. On the new client, create a new [basic account](https://docs.miden.xyz/builder/smart-contracts/accounts):
+
+2. Initialize a local configuration for the second client.
+
+    ```sh
+    miden-client init --local
+    ```
+
+3. On the new client, create a new [basic account](https://docs.miden.xyz/builder/smart-contracts/accounts):
 
     ```sh
     miden-client new-wallet --account-type public
@@ -36,7 +43,7 @@ To do this, we use two terminals with their own state (using their own `miden-cl
 
     We refer to this account as _Account C_. Note that we set the account visibility to `public`, which means that the account details are public and its latest state can be retrieved from the node.
 
-3. List and view the account with the following command:
+4. List and view the account with the following command:
 
       ```sh
       miden-client account -l
@@ -53,7 +60,7 @@ To do this, we use two terminals with their own state (using their own `miden-cl
     ```
 
     :::note
-    The faucet account ID can be found on the [Miden faucet website](https://testnet.miden.io/) under the title **Miden faucet**.
+    The faucet account ID can be found on the [Miden faucet website](https://faucet.testnet.miden.io/) under the title **Miden faucet**.
     :::
 
     This generates a Pay-to-ID (`P2ID`) note containing `50` tokens, transferred from one account to the other. As the note is public, the second account can receive the necessary details by syncing with the node.

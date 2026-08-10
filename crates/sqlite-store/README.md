@@ -2,7 +2,7 @@
 
 SQLite-backed `Store` implementation for the Miden client. This crate provides a production‑ready
 persistence layer for std environments using SQLite (via `rusqlite`) with a small in‑memory
-MerkleStore cache for fast proof queries.
+`AccountSmtForest` cache for fast proof queries.
 
 - Persists accounts, notes, transactions, block headers, and MMR nodes
 - Atomic updates on transaction and state sync paths
@@ -13,8 +13,8 @@ MerkleStore cache for fast proof queries.
 Add to `Cargo.toml`:
 
 ```toml
-miden-client              = { version = "0.13" }
-miden-client-sqlite-store = { version = "0.13" }
+miden-client              = { version = "0.16.0-alpha.1" }
+miden-client-sqlite-store = { version = "0.16.0-alpha.1" }
 ```
 
 ## License

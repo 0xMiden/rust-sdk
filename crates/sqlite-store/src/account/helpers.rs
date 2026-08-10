@@ -13,7 +13,7 @@ use miden_client::account::{
     StorageSlotName,
     StorageSlotType,
 };
-use miden_client::asset::Asset;
+use miden_client::asset::{Asset, AssetId};
 use miden_client::store::{AccountStatus, AccountStorageFilter, ClientAccountType, StoreError};
 use miden_client::{Deserializable, Serializable, Word};
 use rusqlite::types::Value;
@@ -214,9 +214,9 @@ pub(crate) fn query_vault_assets(
         .into_store_error()?
         .map(|result| {
             let (asset_id_bytes, asset_bytes): (Vec<u8>, Vec<u8>) = result.into_store_error()?;
-            let key_word = Word::read_from_bytes(&asset_id_bytes)?;
+            let asset_id = AssetId::read_from_bytes(&asset_id_bytes)?;
             let value_word = Word::read_from_bytes(&asset_bytes)?;
-            Ok(Asset::from_id_and_value_words(key_word, value_word)?)
+            Ok(Asset::from_id_and_value_words(asset_id.to_word(), value_word)?)
         })
         .collect::<Result<Vec<Asset>, StoreError>>()
 }

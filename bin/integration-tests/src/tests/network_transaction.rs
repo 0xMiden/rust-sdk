@@ -190,27 +190,26 @@ pub(crate) async fn deploy_network_counter_contract(
     allowed_note_script_roots: &[NoteScriptRoot],
 ) -> Result<Account> {
     let roots = allowed_note_script_roots.iter().copied().collect::<BTreeSet<NoteScriptRoot>>();
-    let fee_policy_manager = zero_fee_policy_manager(client, roots.iter().copied()).await?;
+    let (genesis, _) = client
+        .get_block_header_by_num(BlockNumber::GENESIS)
+        .await?
+        .context("genesis block header is not in the store")?;
+    let fee_policy_manager =
+        zero_fee_policy_manager(genesis.fee_parameters().fee_faucet_id(), roots.iter().copied());
     let auth = AuthNetworkAccount::new(roots, fee_policy_manager)
         .map_err(|err| anyhow::anyhow!(err))
         .context("failed to build network account auth component")?;
     deploy_counter_with_auth(client, auth).await
 }
 
-/// Reads the fee faucet the chain charges fees in from the genesis header.
-async fn chain_fee_faucet_id(client: &TestClient) -> Result<AccountId> {
-    let (genesis, _) = client
-        .get_block_header_by_num(BlockNumber::GENESIS)
-        .await?
-        .context("genesis block header is not in the store")?;
-    Ok(genesis.fee_parameters().fee_faucet_id())
-}
-
 /// Builds a fee policy manager pricing every note the account can consume at zero.
-async fn zero_fee_policy_manager(
-    client: &TestClient,
+///
+/// `fee_faucet_id` must be the faucet the chain charges fees in, as named by the genesis header's
+/// fee parameters.
+fn zero_fee_policy_manager(
+    fee_faucet_id: AccountId,
     allowed_note_script_roots: impl IntoIterator<Item = NoteScriptRoot>,
-) -> Result<FeePolicyManager> {
+) -> FeePolicyManager {
     let fee_policy: FeePolicy = BasicConstantFeePolicy::new()
         .with_fees(
             allowed_note_script_roots
@@ -220,10 +219,10 @@ async fn zero_fee_policy_manager(
         )
         .into();
 
-    Ok(FeePolicyManager::builder()
-        .fee_faucet_id(chain_fee_faucet_id(client).await?)
+    FeePolicyManager::builder()
+        .fee_faucet_id(fee_faucet_id)
         .active_fee_policy(fee_policy)
-        .build())
+        .build()
 }
 
 /// Deploys a counter contract as an ordinary public account that consumes notes via user
@@ -309,7 +308,14 @@ async fn deploy_network_fungible_faucet(
         .active_mint_policy(MintPolicy::owner_only())
         .active_burn_policy(BurnPolicy::allow_all())
         .build();
-    let fee_policy_manager = zero_fee_policy_manager(client, allowed_roots.iter().copied()).await?;
+    let (genesis, _) = client
+        .get_block_header_by_num(BlockNumber::GENESIS)
+        .await?
+        .context("genesis block header is not in the store")?;
+    let fee_policy_manager = zero_fee_policy_manager(
+        genesis.fee_parameters().fee_faucet_id(),
+        allowed_roots.iter().copied(),
+    );
     let faucet = NetworkAccount::builder(init_seed, allowed_roots, fee_policy_manager)?
         .with_component(faucet_component)
         .with_components(AccessControl::Ownable2Step { owner: owner_id })

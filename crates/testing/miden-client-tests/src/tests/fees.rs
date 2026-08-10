@@ -9,7 +9,7 @@ use miden_client::account::component::{FeeConversionInfo, commit_fee_conversion_
 use miden_client::account::{Account, AccountId};
 use miden_client::asset::{Asset, FungibleAsset};
 use miden_client::auth::AuthSchemeId;
-use miden_client::transaction::TransactionRequestBuilder;
+use miden_client::transaction::{TransactionExecutorError, TransactionRequestBuilder};
 use miden_protocol::Word;
 use miden_protocol::testing::account_id::ACCOUNT_ID_FEE_FAUCET;
 use miden_testing::{Auth, MockChain, MockChainBuilder};
@@ -164,8 +164,15 @@ async fn fee_payment_fails_without_fee_asset_balance() {
     )
     .await;
 
+    // The withdrawal aborts inside the vault, so the failure surfaces as a kernel assertion rather
+    // than as a client-side balance check.
+    let TransactionExecutorError::TransactionProgramExecutionFailed(err) = result.unwrap_err()
+    else {
+        panic!("expected the fee withdrawal to fail while executing the transaction program");
+    };
     assert!(
-        result.is_err(),
-        "an account with no fee asset balance should not be able to pay the fee"
+        format!("{err}")
+            .contains("amount of the asset in the vault is less than the amount to remove"),
+        "expected the vault withdrawal to abort, got: {err:?}"
     );
 }

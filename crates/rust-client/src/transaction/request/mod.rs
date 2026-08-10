@@ -123,6 +123,10 @@ pub struct TransactionRequest {
     /// Optional [`Word`] that will be pushed to the stack for the authentication procedure
     /// during transaction execution.
     auth_arg: Option<Word>,
+    /// Whether the auth arg carries fee conversion info set through
+    /// [`TransactionRequestBuilder::fee_conversion_info`], which only accounts with a
+    /// fee-conversion-aware auth component can consume.
+    declares_fee_conversion_info: bool,
     /// Note scripts that the node's NTX builder will need in its script registry.
     ///
     /// See [`TransactionRequestBuilder::expected_ntx_scripts`] for details.
@@ -232,6 +236,12 @@ impl TransactionRequest {
         &self.auth_arg
     }
 
+    /// Returns whether the auth arg carries fee conversion info set through
+    /// [`TransactionRequestBuilder::fee_conversion_info`].
+    pub fn declares_fee_conversion_info(&self) -> bool {
+        self.declares_fee_conversion_info
+    }
+
     /// Returns the expected NTX scripts that the node's NTX builder will need in its registry.
     pub fn expected_ntx_scripts(&self) -> &[NoteScript] {
         &self.expected_ntx_scripts
@@ -332,8 +342,13 @@ impl TransactionRequest {
 
     /// Builds the transaction script based on the account capabilities and the transaction request.
     ///
-    /// Returns `None` when the request carries no script template, producing a transaction with no
-    /// transaction script (a zero script root).
+    /// Returns the script together with the `TX_SCRIPT_ARGS` word it must be executed with, if the
+    /// script determines it. The `SendNotes` script reads the notes it creates from the advice
+    /// provider and only receives their payload commitment on the stack, so its argument
+    /// is fixed by the notes the script was built for, and passing anything else
+    /// makes the script fail to resolve its payload. A caller-supplied
+    /// [`TransactionScriptTemplate::CustomScript`] carries no such constraint and yields `None`, so
+    /// the request's own [`TransactionRequestBuilder::script_arg`] applies to it.
     ///
     /// Scripts supplied by the caller via [`TransactionScriptTemplate::CustomScript`] are expected
     /// to have already been compiled against the client's source manager (e.g. via
@@ -390,6 +405,7 @@ impl Serializable for TransactionRequest {
         target.write_u8(u8::from(self.ignore_invalid_input_notes));
         self.script_arg.write_into(target);
         self.auth_arg.write_into(target);
+        target.write_u8(u8::from(self.declares_fee_conversion_info));
         self.expected_ntx_scripts.write_into(target);
     }
 }
@@ -430,6 +446,7 @@ impl Deserializable for TransactionRequest {
         let ignore_invalid_input_notes = source.read_u8()? == 1;
         let script_arg = Option::<Word>::read_from(source)?;
         let auth_arg = Option::<Word>::read_from(source)?;
+        let declares_fee_conversion_info = source.read_u8()? == 1;
         let expected_ntx_scripts = Vec::<NoteScript>::read_from(source)?;
 
         Ok(TransactionRequest {
@@ -445,6 +462,7 @@ impl Deserializable for TransactionRequest {
             ignore_invalid_input_notes,
             script_arg,
             auth_arg,
+            declares_fee_conversion_info,
             expected_ntx_scripts,
         })
     }
@@ -518,6 +536,10 @@ pub enum TransactionRequestError {
         "output note declares sender {actual} but the transaction is executed by account {expected}"
     )]
     OutputNoteSenderMismatch { expected: AccountId, actual: AccountId },
+    #[error(
+        "the request declares fee conversion info but the account's auth component {0} does not read it"
+    )]
+    FeeConversionInfoUnsupported(String),
     #[error("invalid transaction script")]
     InvalidTransactionScript(#[from] TransactionScriptError),
     #[error("merkle proof error")]

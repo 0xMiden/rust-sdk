@@ -188,6 +188,7 @@ pub mod component {
         FungibleFaucetBuilder,
         FungibleFaucetError,
         LogoURI,
+        NonFungibleFaucet,
         TokenMetadata,
         TokenMetadataError,
         TokenName,

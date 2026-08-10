@@ -3,23 +3,18 @@ use std::{env, fs};
 
 use miden_client::account::component::{
     AccountComponentMetadata,
+    AuthGuardedMultisig,
     AuthMultisig,
+    AuthNetworkAccount,
     AuthSingleSig,
     BasicWallet,
     FungibleFaucet,
     MIDEN_PACKAGE_EXTENSION,
     NoAuth,
+    NonFungibleFaucet,
 };
 use miden_client::utils::Serializable;
-use miden_client::vm::{
-    Package,
-    PackageExport,
-    ProcedureExport,
-    QualifiedProcedureName,
-    Section,
-    SectionId,
-    TargetType,
-};
+use miden_client::vm::{Package, Section, SectionId, TargetType};
 
 const PACKAGE_DIR: &str = "packages";
 
@@ -34,6 +29,15 @@ fn main() {
         "basic-fungible-faucet",
         FungibleFaucet::code().as_package(),
         &basic_faucet_metadata,
+        None,
+    );
+
+    // Basic non-fungible faucet
+    let non_fungible_faucet_metadata = NonFungibleFaucet::component_metadata();
+    build_package(
+        "basic-non-fungible-faucet",
+        NonFungibleFaucet::code().as_package(),
+        &non_fungible_faucet_metadata,
         None,
     );
 
@@ -68,6 +72,24 @@ fn main() {
         &multisig_metadata,
         Some("auth"),
     );
+
+    // Guarded multisig auth
+    let guarded_multisig_metadata = AuthGuardedMultisig::component_metadata();
+    build_package(
+        "guarded-multisig-auth",
+        AuthGuardedMultisig::code().as_package(),
+        &guarded_multisig_metadata,
+        Some("auth"),
+    );
+
+    // Network account auth
+    let network_account_metadata = AuthNetworkAccount::component_metadata();
+    build_package(
+        "network-account-auth",
+        AuthNetworkAccount::code().as_package(),
+        &network_account_metadata,
+        Some("auth"),
+    );
 }
 
 /// Builds a package and stores it under `{OUT_DIR}/{PACKAGE_DIR}` or
@@ -78,42 +100,15 @@ pub fn build_package(
     metadata: &AccountComponentMetadata,
     subdirectory: Option<&str>,
 ) {
-    // NOTE: Taken from the miden-compiler's build_package function:
-    // https://github.com/0xMiden/compiler/blob/61ee77f57c07c197323728642f8feca972b24217/midenc-compile/src/stages/assemble.rs#L71-L88
-    // Gather all of the procedure metadata for exports of this package
-    let mut exports: Vec<PackageExport> = Vec::new();
-    for module_descriptor in component_package.module_descriptors() {
-        for (_, proc_info) in module_descriptor.procedures() {
-            let name =
-                QualifiedProcedureName::new(module_descriptor.path(), proc_info.name.clone());
-            let export = ProcedureExport {
-                path: name.into_inner(),
-                node: None,
-                source_node: None,
-                digest: proc_info.digest,
-                signature: proc_info.signature.as_deref().cloned(),
-                attributes: proc_info.attributes.clone(),
-            };
-            exports.push(PackageExport::Procedure(export));
-        }
-    }
-
-    let mast = component_package.mast_forest().clone();
-
-    let account_component_metadata_section =
-        Section::new(SectionId::ACCOUNT_COMPONENT_METADATA, metadata.to_bytes());
-
-    let mut package = Package::create(
-        metadata.name().to_string().into(),
-        metadata.version().clone(),
-        TargetType::AccountComponent,
-        mast,
-        exports,
-        [],
-    )
-    .expect("package creation failed");
+    // The component's code is already a package carrying its MAST forest and exports, so it only
+    // needs the component's identity and its metadata section on top.
+    let mut package = component_package.clone();
+    package.name = metadata.name().to_string().into();
+    package.version = metadata.version().clone();
+    package.kind = TargetType::AccountComponent;
     package.description = Some(metadata.description().to_string());
-    package.sections = vec![account_component_metadata_section];
+    package.sections =
+        vec![Section::new(SectionId::ACCOUNT_COMPONENT_METADATA, metadata.to_bytes())];
 
     let out_dir = env::var("OUT_DIR").expect("OUT_DIR environment variable not set");
 

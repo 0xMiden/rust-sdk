@@ -180,6 +180,24 @@ fn miden_directory_structure_creation() {
     let basic_faucet_package = packages_dir.join("basic-fungible-faucet.masp");
     assert!(basic_faucet_package.exists(), "basic-fungible-faucet package should be created");
 
+    let non_fungible_faucet_package = packages_dir.join("basic-non-fungible-faucet.masp");
+    assert!(
+        non_fungible_faucet_package.exists(),
+        "basic-non-fungible-faucet package should be created"
+    );
+
+    let guarded_multisig_auth_package = packages_dir.join("auth/guarded-multisig-auth.masp");
+    assert!(
+        guarded_multisig_auth_package.exists(),
+        "guarded-multisig-auth package should be created"
+    );
+
+    let network_account_auth_package = packages_dir.join("auth/network-account-auth.masp");
+    assert!(
+        network_account_auth_package.exists(),
+        "network-account-auth package should be created"
+    );
+
     // Verify config file contains correct paths relative to config file location
     let config_content = std::fs::read_to_string(&config_file).unwrap();
     assert!(

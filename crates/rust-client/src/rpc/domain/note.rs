@@ -135,6 +135,9 @@ impl TryFrom<proto::note::NoteMetadata> for NoteMetadata {
 ///
 /// The element layout mirrors [`NoteAttachments`]' own sequential commitment, so hashing this
 /// yields the same value as the full attachments would, without needing their contents.
+// TODO: single-word attachment payloads now arrive inline in the sync response, so some note data
+// may be derived without a `GetNotesById` request
+// https://github.com/0xMiden/rust-sdk/issues/2360
 struct AttachmentCommitments(Vec<Word>);
 
 impl SequentialCommit for AttachmentCommitments {
@@ -188,6 +191,9 @@ impl TryFrom<proto::note::NoteSyncMetadata> for NoteMetadata {
             })?;
             // Single-word attachments are sent verbatim, so their commitment is derived locally;
             // larger ones are sent as commitments to keep the sync response bounded.
+            // TODO: the verbatim word is discarded here, but it could be kept to derive note data
+            // without a `GetNotesById` request
+            // https://github.com/0xMiden/rust-sdk/issues/2360
             let commitment = match payload {
                 proto::note::note_sync_attachment::Payload::Value(value) => {
                     NoteAttachment::with_word(scheme, Word::try_from(value)?).to_commitment()

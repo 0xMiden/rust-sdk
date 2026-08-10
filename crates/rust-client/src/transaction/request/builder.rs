@@ -90,6 +90,10 @@ pub struct TransactionRequestBuilder {
     /// Optional [`Word`] that will be pushed to the stack for the authentication procedure
     /// during transaction execution.
     auth_arg: Option<Word>,
+    /// Whether the auth arg carries fee conversion info set through
+    /// [`TransactionRequestBuilder::fee_conversion_info`], which only accounts with a
+    /// fee-conversion-aware auth component can consume.
+    declares_fee_conversion_info: bool,
     /// Note scripts that the node's NTX builder will need in its script registry.
     ///
     /// See [`TransactionRequestBuilder::expected_ntx_scripts`] for details.
@@ -116,6 +120,7 @@ impl TransactionRequestBuilder {
             ignore_invalid_input_notes: false,
             script_arg: None,
             auth_arg: None,
+            declares_fee_conversion_info: false,
             expected_ntx_scripts: vec![],
         }
     }
@@ -272,9 +277,15 @@ impl TransactionRequestBuilder {
 
     /// Declares the asset the transaction fee is paid in, and the rate converting the chain's
     /// native fee into it.
+    ///
+    /// The info is committed to through the transaction's auth args, so it only has an effect on
+    /// accounts whose auth component reads them: [`AuthSingleSig`] and [`AuthMultisig`]. Executing
+    /// such a request against an account with any other auth component is rejected before execution
+    /// with [`TransactionRequestError::FeeConversionInfoUnsupported`].
     #[must_use]
-    pub fn fee_conversion_info(self, conversion_info: FeeConversionInfo, salt: Word) -> Self {
+    pub fn fee_conversion_info(mut self, conversion_info: FeeConversionInfo, salt: Word) -> Self {
         let (auth_arg, preimage) = commit_fee_conversion_info(conversion_info, salt);
+        self.declares_fee_conversion_info = true;
         self.auth_arg(auth_arg).extend_advice_map([(auth_arg, preimage)])
     }
 
@@ -622,6 +633,7 @@ impl TransactionRequestBuilder {
             ignore_invalid_input_notes: self.ignore_invalid_input_notes,
             script_arg: self.script_arg,
             auth_arg: self.auth_arg,
+            declares_fee_conversion_info: self.declares_fee_conversion_info,
             expected_ntx_scripts: self.expected_ntx_scripts,
         })
     }

@@ -57,6 +57,10 @@ pub(crate) struct InMemoryBatchDataStore {
 
 /// The in-batch state of one account: the partial account served to the executor, plus the
 /// staged view of each of its SMTs from which witnesses at the in-batch roots are opened.
+///
+/// Cloned to apply a transaction's writes atomically; the staged trees only hold the paths the
+/// batch has touched, so a copy stays proportional to the batch rather than to the account.
+#[derive(Clone)]
 struct CachedAccountState {
     account: PartialAccount,
     vault: StagedSmt,
@@ -161,6 +165,10 @@ impl InMemoryBatchDataStore {
     /// writes onto the account's SMT views and rebuilds the cached [`PartialAccount`], so later
     /// transactions in the batch observe the post-transaction state and can obtain witnesses for
     /// any of its keys.
+    ///
+    /// The fold is applied to a copy that replaces the cached state only once every step has
+    /// succeeded, so a failure here leaves the batch's view of the account exactly as it was and
+    /// the caller may keep building on it.
     pub(crate) async fn apply_executed_transaction(
         &mut self,
         executed_tx: &ExecutedTransaction,
@@ -169,10 +177,10 @@ impl InMemoryBatchDataStore {
         let final_account = executed_tx.final_account();
         let patch = executed_tx.account_patch();
 
-        let state = self
-            .current_accounts
-            .entry(account_id)
-            .or_insert_with(|| CachedAccountState::new(executed_tx.initial_account()));
+        let mut state = match self.current_accounts.get(&account_id) {
+            Some(state) => state.clone(),
+            None => CachedAccountState::new(executed_tx.initial_account()),
+        };
 
         let vault_root = state.fold_vault_writes(&self.inner, account_id, patch.vault()).await?;
         ensure_matches("vault root", vault_root, final_account.vault_root(), account_id)?;
@@ -212,6 +220,8 @@ impl InMemoryBatchDataStore {
             seed,
         )
         .map_err(ClientError::AccountError)?;
+
+        self.current_accounts.insert(account_id, state);
 
         Ok(())
     }

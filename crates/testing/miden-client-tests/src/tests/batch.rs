@@ -131,14 +131,10 @@ async fn batch_builder_submits_two_txs_on_one_account() {
     let req2 = TransactionRequestBuilder::new().build().unwrap();
 
     let block_num = Box::pin(async {
-        client
-            .new_transaction_batch()
-            .push(account_id, req1)
-            .await?
-            .push(account_id, req2)
-            .await?
-            .submit()
-            .await
+        let mut batch = client.new_transaction_batch();
+        batch.push(account_id, req1).await?;
+        batch.push(account_id, req2).await?;
+        batch.submit().await
     })
     .await
     .expect("batch submit should succeed");
@@ -328,14 +324,10 @@ async fn batch_builder_push_succeeds_when_balance_depends_on_prior_push() {
         .unwrap();
 
     let block_num = Box::pin(async {
-        client
-            .new_transaction_batch()
-            .push(from_account_id, push1)
-            .await?
-            .push(from_account_id, push2)
-            .await?
-            .submit()
-            .await
+        let mut batch = client.new_transaction_batch();
+        batch.push(from_account_id, push1).await?;
+        batch.push(from_account_id, push2).await?;
+        batch.submit().await
     })
     .await
     .expect("submit should succeed because execution uses in-batch state");
@@ -532,18 +524,12 @@ async fn batch_builder_serves_witnesses_for_state_untouched_by_prior_push() {
     let push4 = batch_bump_map_request().build().unwrap();
 
     let block_num = Box::pin(async {
-        client
-            .new_transaction_batch()
-            .push(from_id, push1)
-            .await?
-            .push(from_id, push2)
-            .await?
-            .push(from_id, push3)
-            .await?
-            .push(from_id, push4)
-            .await?
-            .submit()
-            .await
+        let mut batch = client.new_transaction_batch();
+        batch.push(from_id, push1).await?;
+        batch.push(from_id, push2).await?;
+        batch.push(from_id, push3).await?;
+        batch.push(from_id, push4).await?;
+        batch.submit().await
     })
     .await
     .expect("submit should succeed: in-batch vault and map witnesses are served from the store");
@@ -581,7 +567,8 @@ async fn batch_builder_empty_submit_returns_empty_error() {
 }
 
 /// Verify that pushing two transactions that consume the same input note in one batch
-/// fails the second push with `BatchBuilderError::DuplicateInputNote(note_id)`.
+/// fails the second push with `BatchBuilderError::DuplicateInputNote(note_id)`, and that the
+/// rejected push leaves the batch intact so it still submits the transaction pushed before it.
 #[tokio::test]
 async fn batch_builder_push_rejects_duplicate_input_note() {
     let (mut client, rpc_api, authenticator) = Box::pin(create_test_client()).await;
@@ -619,16 +606,10 @@ async fn batch_builder_push_rejects_duplicate_input_note() {
     let req2 = TransactionRequestBuilder::new().build_consume_notes(vec![note]).unwrap();
 
     // First push must succeed; second must fail with DuplicateInputNote(note_id).
-    let result = Box::pin(async {
-        client
-            .new_transaction_batch()
-            .push(from_account_id, req1)
-            .await?
-            .push(from_account_id, req2)
-            .await
-    })
-    .await;
+    let mut batch = client.new_transaction_batch();
+    batch.push(from_account_id, req1).await.expect("first push should succeed");
 
+    let result = batch.push(from_account_id, req2).await.map(|_| ());
     match result {
         Err(ClientError::BatchBuilder(BatchBuilderError::DuplicateInputNote(id))) => {
             assert_eq!(id, note_id, "DuplicateInputNote should carry the duplicated note id");
@@ -636,10 +617,16 @@ async fn batch_builder_push_rejects_duplicate_input_note() {
         Err(other) => {
             panic!("expected BatchBuilderError::DuplicateInputNote({note_id}), got {other:?}")
         },
-        Ok(_) => {
+        Ok(()) => {
             panic!("expected BatchBuilderError::DuplicateInputNote({note_id}), got Ok(_)")
         },
     }
+
+    // The rejected push must leave the batch exactly as it was, so the transaction pushed
+    // before it is still there and the batch still submits.
+    assert_eq!(batch.len(), 1, "a rejected push must not drop the accumulated transaction");
+    let block_num = batch.submit().await.expect("batch must submit after a rejected push");
+    assert!(block_num.as_u32() > 0);
 }
 
 /// Build a 2-account batch (1 tx per account, both pushing trivial no-op `TransactionRequests`)
@@ -681,14 +668,10 @@ async fn batch_builder_submits_txs_across_multiple_accounts() {
     let req_b = TransactionRequestBuilder::new().build().unwrap();
 
     let block_num = Box::pin(async {
-        client
-            .new_transaction_batch()
-            .push(account_id_a, req_a)
-            .await?
-            .push(account_id_b, req_b)
-            .await?
-            .submit()
-            .await
+        let mut batch = client.new_transaction_batch();
+        batch.push(account_id_a, req_a).await?;
+        batch.push(account_id_b, req_b).await?;
+        batch.submit().await
     })
     .await
     .expect("multi-account batch submit should succeed");
@@ -732,7 +715,8 @@ async fn batch_builder_push_for_unknown_account_returns_error() {
     // Build a no-op request; we never get to submission — the push itself must fail.
     let req = TransactionRequestBuilder::new().build().unwrap();
 
-    match client.new_transaction_batch().push(account_id, req).await {
+    let mut batch = client.new_transaction_batch();
+    match batch.push(account_id, req).await {
         Err(ClientError::AccountDataNotFound(id)) => {
             assert_eq!(id, account_id, "AccountDataNotFound should carry the requested id");
         },
@@ -796,14 +780,10 @@ async fn batch_builder_cross_account_note_flow() {
         .unwrap();
 
     let block_num = Box::pin(async {
-        client
-            .new_transaction_batch()
-            .push(account_id_a, req_send)
-            .await?
-            .push(account_id_b, req_consume)
-            .await?
-            .submit()
-            .await
+        let mut batch = client.new_transaction_batch();
+        batch.push(account_id_a, req_send).await?;
+        batch.push(account_id_b, req_consume).await?;
+        batch.submit().await
     })
     .await
     .expect("cross-account in-batch note flow should succeed");
@@ -879,12 +859,10 @@ async fn batch_builder_dedup_rejects_duplicate_input_note_across_accounts() {
     let req_b = TransactionRequestBuilder::new().build_consume_notes(vec![note]).unwrap();
 
     let result = Box::pin(async {
-        client
-            .new_transaction_batch()
-            .push(account_id_a, req_a)
-            .await?
-            .push(account_id_b, req_b)
-            .await
+        let mut batch = client.new_transaction_batch();
+        batch.push(account_id_a, req_a).await?;
+        batch.push(account_id_b, req_b).await?;
+        Ok(())
     })
     .await;
 

@@ -16,6 +16,7 @@ use miden_protocol::crypto::merkle::smt::{PartialSmt, SmtProof};
 /// supplied, which the store can always serve since the committed state is never mutated while a
 /// batch is being built. The one exception is a tree anchored at the empty root (a fresh or
 /// removed map slot): there every key is implicitly provable and no proofs are needed at all.
+#[derive(Clone)]
 pub(crate) struct StagedSmt {
     /// Committed-root proofs for every key an in-batch transaction has written so far. Its root
     /// is the committed root the view is anchored at.

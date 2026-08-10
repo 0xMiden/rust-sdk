@@ -649,7 +649,7 @@ fn foreign_account_with_code(
 
     let account = AccountBuilder::new(Default::default())
         .with_component(get_item_component.clone())
-        .with_auth_component(auth_component)
+        .with_component(auth_component)
         .account_type(account_type)
         .build_with_schema_commitment()
         .context("failed to build foreign account")?;

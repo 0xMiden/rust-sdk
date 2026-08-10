@@ -126,12 +126,13 @@ use miden_standards::note::{
 use miden_standards::testing::mock_account::MockAccountExt;
 use miden_standards::testing::note::NoteBuilder;
 use miden_standards::tx_script::SendNotesTransactionScriptError;
-use miden_testing::{MockChain, MockChainBuilder, TxContextInput};
+use miden_testing::{MockChain, MockChainBuilder, MockTransactionInput};
 use rand::rngs::StdRng;
 use rand::{Rng, RngExt, SeedableRng};
 use rstest::rstest;
 
 mod batch;
+mod fees;
 pub mod store;
 mod transaction;
 mod transport;
@@ -325,10 +326,10 @@ async fn insert_same_account_twice_fails() {
 
     let account = Account::mock(
         ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2,
-        AuthSingleSig::new(Approver::new(
+        [AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
             AuthSchemeId::Falcon512Poseidon2,
-        )),
+        ))],
     );
 
     assert!(client.add_account(&account, false).await.is_ok());
@@ -342,10 +343,10 @@ async fn account_code() {
 
     let account = Account::mock(
         ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE,
-        AuthSingleSig::new(Approver::new(
+        [AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
             AuthSchemeId::Falcon512Poseidon2,
-        )),
+        ))],
     );
 
     let account_code = account.code();
@@ -367,10 +368,10 @@ async fn get_account_by_id() {
 
     let account = Account::mock(
         ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_UPDATABLE_CODE,
-        AuthSingleSig::new(Approver::new(
+        [AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
             AuthSchemeId::Falcon512Poseidon2,
-        )),
+        ))],
     );
 
     client.add_account(&account, false).await.unwrap();
@@ -1107,7 +1108,7 @@ async fn note_without_asset() {
         error,
         ClientError::TransactionRequestError(
             TransactionRequestError::SendNotesTransactionScriptError(
-                SendNotesTransactionScriptError::FaucetNoteWithoutAsset
+                SendNotesTransactionScriptError::FaucetNoteUnexpectedNumAssets
             )
         )
     ));
@@ -1400,12 +1401,8 @@ async fn input_note_reader_finds_externally_consumed_notes() {
     // Consumer consumes the note directly on the chain (bypassing any client).
     let tx = Box::pin(
         chain
-            .build_tx_context(
-                miden_testing::TxContextInput::Account(consumer.clone()),
-                &[],
-                core::slice::from_ref(&p2id_note),
-            )
-            .unwrap()
+            .build_transaction(miden_testing::MockTransactionInput::Account(consumer.clone()))
+            .unauthenticated_input_note(p2id_note.clone())
             .build()
             .unwrap()
             .execute(),
@@ -1511,12 +1508,8 @@ async fn import_by_id_already_consumed_note_is_findable_by_id() {
     // Consumer consumes the note directly on the chain (bypassing any client).
     let tx = Box::pin(
         chain
-            .build_tx_context(
-                miden_testing::TxContextInput::Account(consumer.clone()),
-                &[],
-                core::slice::from_ref(&p2id_note),
-            )
-            .unwrap()
+            .build_transaction(miden_testing::MockTransactionInput::Account(consumer.clone()))
+            .unauthenticated_input_note(p2id_note.clone())
             .build()
             .unwrap()
             .execute(),
@@ -1597,9 +1590,9 @@ async fn setup_prunable_block_scenario(
     // Block 1: create the first unspent note (keeps block 1 permanently relevant).
     let tx = Box::pin(
         chain
-            .build_tx_context(TxContextInput::AccountId(mock_account.id()), &[], &[spawn_note_1])
-            .unwrap()
-            .extend_expected_output_notes(vec![RawOutputNote::Full(note_first)])
+            .build_transaction(MockTransactionInput::AccountId(mock_account.id()))
+            .unauthenticated_input_note(spawn_note_1)
+            .expected_output_notes(vec![RawOutputNote::Full(note_first)])
             .build()
             .unwrap()
             .execute(),
@@ -1617,9 +1610,9 @@ async fn setup_prunable_block_scenario(
     // irrelevant.
     let tx = Box::pin(
         chain
-            .build_tx_context(TxContextInput::AccountId(mock_account.id()), &[], &[spawn_note_2])
-            .unwrap()
-            .extend_expected_output_notes(vec![RawOutputNote::Full(note_second.clone())])
+            .build_transaction(MockTransactionInput::AccountId(mock_account.id()))
+            .unauthenticated_input_note(spawn_note_2)
+            .expected_output_notes(vec![RawOutputNote::Full(note_second.clone())])
             .build()
             .unwrap()
             .execute(),
@@ -1665,8 +1658,8 @@ async fn consume_note_and_prove(mock_rpc: &MockRpcApi, account_id: AccountId, no
         let tx_context = mock_rpc
             .mock_chain
             .write()
-            .build_tx_context(TxContextInput::AccountId(account_id), &[], &[note])
-            .unwrap()
+            .build_transaction(MockTransactionInput::AccountId(account_id))
+            .unauthenticated_input_note(note)
             .build()
             .unwrap();
         Box::pin(tx_context.execute()).await.unwrap()
@@ -3984,7 +3977,7 @@ async fn empty_storage_map() {
 
     let account = AccountBuilder::new(init_seed)
         .account_type(AccountType::Public)
-        .with_auth_component(AuthSingleSig::new(Approver::new(
+        .with_component(AuthSingleSig::new(Approver::new(
             pub_key.to_commitment(),
             AuthSchemeId::Falcon512Poseidon2,
         )))
@@ -4101,7 +4094,7 @@ async fn storage_and_vault_proofs() {
 
     let account = AccountBuilder::new(init_seed)
         .account_type(AccountType::Public)
-        .with_auth_component(AuthSingleSig::new(Approver::new(
+        .with_component(AuthSingleSig::new(Approver::new(
             pub_key.to_commitment(),
             AuthSchemeId::Falcon512Poseidon2,
         )))
@@ -4196,10 +4189,10 @@ async fn account_addresses_basic_wallet() {
 
     let account = Account::mock(
         ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2,
-        AuthSingleSig::new(Approver::new(
+        [AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
             AuthSchemeId::Falcon512Poseidon2,
-        )),
+        ))],
     );
 
     client.add_account(&account, false).await.unwrap();
@@ -4239,10 +4232,10 @@ async fn account_add_address_after_creation() {
 
     let account = Account::mock(
         ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2,
-        AuthSingleSig::new(Approver::new(
+        [AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
             AuthSchemeId::Falcon512Poseidon2,
-        )),
+        ))],
     );
 
     client.add_account(&account, false).await.unwrap();
@@ -4577,9 +4570,9 @@ async fn sync_stores_private_note_attachments() {
     // 3. Commit the private note at block 1, then advance a few blocks.
     let tx = Box::pin(
         mock_chain
-            .build_tx_context(TxContextInput::AccountId(sender.id()), &[], &[spawn_note])
-            .unwrap()
-            .extend_expected_output_notes(vec![RawOutputNote::Full(private_note.clone())])
+            .build_transaction(MockTransactionInput::AccountId(sender.id()))
+            .unauthenticated_input_note(spawn_note)
+            .expected_output_notes(vec![RawOutputNote::Full(private_note.clone())])
             .build()
             .unwrap()
             .execute(),
@@ -4724,8 +4717,7 @@ async fn sync_large_public_account() {
     // This changes the on-chain commitment so sync detects a mismatch.
     let tx = Box::pin(
         mock_chain
-            .build_tx_context(TxContextInput::AccountId(mock_account.id()), &[], &[])
-            .unwrap()
+            .build_transaction(MockTransactionInput::AccountId(mock_account.id()))
             .build()
             .unwrap()
             .execute(),
@@ -4932,9 +4924,9 @@ pub async fn create_prebuilt_mock_chain() -> MockChain {
     // Block 1: Create first note
     let tx = Box::pin(
         mock_chain
-            .build_tx_context(TxContextInput::AccountId(mock_account.id()), &[], &[spawn_note_1])
-            .unwrap()
-            .extend_expected_output_notes(vec![RawOutputNote::Full(note_first)])
+            .build_transaction(MockTransactionInput::AccountId(mock_account.id()))
+            .unauthenticated_input_note(spawn_note_1)
+            .expected_output_notes(vec![RawOutputNote::Full(note_first)])
             .build()
             .unwrap()
             .execute(),
@@ -4954,9 +4946,9 @@ pub async fn create_prebuilt_mock_chain() -> MockChain {
 
     let tx = Box::pin(
         mock_chain
-            .build_tx_context(mock_account.id(), &[], &[spawn_note_2])
-            .unwrap()
-            .extend_expected_output_notes(vec![RawOutputNote::Full(note_second.clone())])
+            .build_transaction(mock_account.id())
+            .unauthenticated_input_note(spawn_note_2)
+            .expected_output_notes(vec![RawOutputNote::Full(note_second.clone())])
             .build()
             .unwrap()
             .execute(),
@@ -4969,8 +4961,8 @@ pub async fn create_prebuilt_mock_chain() -> MockChain {
 
     let transaction = Box::pin(
         mock_chain
-            .build_tx_context(mock_account.id(), &[], &[note_second])
-            .unwrap()
+            .build_transaction(mock_account.id())
+            .unauthenticated_input_note(note_second)
             .build()
             .unwrap()
             .execute(),
@@ -4998,7 +4990,7 @@ async fn insert_new_wallet(
 
     let account = AccountBuilder::new(init_seed)
         .account_type(visibility)
-        .with_auth_component(AuthSingleSig::new(Approver::new(
+        .with_component(AuthSingleSig::new(Approver::new(
             pub_key.to_commitment(),
             AuthSchemeId::Falcon512Poseidon2,
         )))
@@ -5026,7 +5018,7 @@ async fn insert_new_ecdsa_wallet(
 
     let account = AccountBuilder::new(init_seed)
         .account_type(visibility)
-        .with_auth_component(AuthSingleSig::new(Approver::new(
+        .with_component(AuthSingleSig::new(Approver::new(
             pub_key.to_commitment(),
             AuthSchemeId::EcdsaK256Keccak,
         )))
@@ -5072,7 +5064,7 @@ async fn insert_new_fungible_faucet(
 
     let account = AccountBuilder::new(init_seed)
         .account_type(visibility)
-        .with_auth_component(AuthSingleSig::new(Approver::new(
+        .with_component(AuthSingleSig::new(Approver::new(
             pub_key.to_commitment(),
             AuthSchemeId::Falcon512Poseidon2,
         )))
@@ -5121,7 +5113,7 @@ async fn insert_new_ecdsa_fungible_faucet(
 
     let account = AccountBuilder::new(init_seed)
         .account_type(visibility)
-        .with_auth_component(AuthSingleSig::new(Approver::new(
+        .with_component(AuthSingleSig::new(Approver::new(
             pub_key.to_commitment(),
             AuthSchemeId::EcdsaK256Keccak,
         )))
@@ -5193,7 +5185,7 @@ async fn storage_and_vault_proofs_ecdsa() {
 
     let account = AccountBuilder::new(init_seed)
         .account_type(AccountType::Public)
-        .with_auth_component(AuthSingleSig::new(Approver::new(
+        .with_component(AuthSingleSig::new(Approver::new(
             pub_key.to_commitment(),
             AuthSchemeId::EcdsaK256Keccak,
         )))
@@ -5313,7 +5305,7 @@ async fn execute_transaction_fails_for_watched_account() {
         .build();
     let faucet = AccountBuilder::new(init_seed)
         .account_type(AccountType::Public)
-        .with_auth_component(auth_component)
+        .with_component(auth_component)
         .with_component(token)
         .with_components(policy_manager)
         .build_with_schema_commitment()

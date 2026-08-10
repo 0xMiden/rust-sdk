@@ -48,8 +48,8 @@ miden-client = { features = ["std"], workspace = true }
 anyhow             = { workspace = true }
 assert_cmd         = { workspace = true }
 miden-client       = { features = ["testing"], workspace = true }
-miden-mast-package = { version = "0.25.8" }
-midenc-hir-type    = { version = "0.9" }
+miden-mast-package = { version = "0.29" }
+midenc-hir-type    = { version = "0.10" }
 predicates         = { workspace = true }
 regex              = { workspace = true }
 serial_test        = { features = ["file_locks"], version = "3.0" }

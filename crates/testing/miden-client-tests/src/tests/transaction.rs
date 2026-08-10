@@ -119,7 +119,7 @@ async fn transaction_creates_two_notes() {
 
     let account = AccountBuilder::new(Default::default())
         .with_component(BasicWallet)
-        .with_auth_component(AuthSingleSig::new(Approver::new(
+        .with_component(AuthSingleSig::new(Approver::new(
             pub_key.to_commitment(),
             AuthSchemeId::Falcon512Poseidon2,
         )))
@@ -388,7 +388,7 @@ async fn lazy_foreign_account_loading() {
     let foreign_account = AccountBuilder::new(Default::default())
         .account_type(AccountType::Public)
         .with_component(fpi_component)
-        .with_auth_component(AuthSingleSig::new(Approver::new(
+        .with_component(AuthSingleSig::new(Approver::new(
             secret_key.public_key().to_commitment(),
             AuthSchemeId::Falcon512Poseidon2,
         )))

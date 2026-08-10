@@ -1419,7 +1419,7 @@ mod tests {
     use miden_protocol::{EMPTY_WORD, Felt, Word, ZERO};
     use miden_standards::code_builder::CodeBuilder;
     use miden_standards::note::{NetworkAccountTarget, NoteExecutionHint};
-    use miden_testing::{MockChainBuilder, TxContextInput};
+    use miden_testing::{MockChainBuilder, MockTransactionInput};
 
     use super::*;
     use crate::store::{OutputNoteRecord, OutputNoteState};
@@ -1701,8 +1701,7 @@ mod tests {
         let sync_target_header = chain.latest_block_header();
         let tx = Box::pin(
             chain
-                .build_tx_context(TxContextInput::AccountId(account.id()), &[], &[])
-                .unwrap()
+                .build_transaction(MockTransactionInput::AccountId(account.id()))
                 .build()
                 .unwrap()
                 .execute(),
@@ -2053,12 +2052,8 @@ mod tests {
         for note in [&note1, &note2, &note3] {
             let tx = Box::pin(
                 chain
-                    .build_tx_context(
-                        TxContextInput::Account(current_account.clone()),
-                        &[],
-                        core::slice::from_ref(note),
-                    )
-                    .unwrap()
+                    .build_transaction(MockTransactionInput::Account(current_account.clone()))
+                    .unauthenticated_input_note(note.clone())
                     .build()
                     .unwrap()
                     .execute(),
@@ -2251,12 +2246,9 @@ mod tests {
                 .unwrap();
             let tx = Box::pin(
                 chain
-                    .build_tx_context(
-                        miden_testing::TxContextInput::Account(faucet_account.clone()),
-                        &[],
-                        &[],
-                    )
-                    .unwrap()
+                    .build_transaction(miden_testing::MockTransactionInput::Account(
+                        faucet_account.clone(),
+                    ))
                     .extend_advice_inputs(recipient_advice.clone())
                     .tx_script(tx_script)
                     .with_source_manager(source_manager)
@@ -2506,12 +2498,8 @@ mod tests {
 
         let tx = Box::pin(
             chain
-                .build_tx_context(
-                    TxContextInput::Account(sender_account.clone()),
-                    &[],
-                    core::slice::from_ref(&note),
-                )
-                .unwrap()
+                .build_transaction(MockTransactionInput::Account(sender_account.clone()))
+                .unauthenticated_input_note(note.clone())
                 .build()
                 .unwrap()
                 .execute(),

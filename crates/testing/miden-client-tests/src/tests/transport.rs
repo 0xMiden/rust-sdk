@@ -39,7 +39,7 @@ use miden_protocol::transaction::RawOutputNote;
 use miden_protocol::utils::serde::Serializable;
 use miden_standards::note::P2idNote;
 use miden_standards::testing::note::NoteBuilder;
-use miden_testing::{Auth, MockChainBuilder, TxContextInput};
+use miden_testing::{Auth, MockChainBuilder, MockTransactionInput};
 use rand::RngExt;
 
 use crate::tests::{
@@ -122,9 +122,9 @@ async fn transport_recovers_attachments() {
     let mut mock_chain = mock_chain_builder.build().unwrap();
     let tx = Box::pin(
         mock_chain
-            .build_tx_context(TxContextInput::AccountId(sender.id()), &[], &[spawn_note])
-            .unwrap()
-            .extend_expected_output_notes(vec![RawOutputNote::Full(private_note.clone())])
+            .build_transaction(MockTransactionInput::AccountId(sender.id()))
+            .unauthenticated_input_note(spawn_note)
+            .expected_output_notes(vec![RawOutputNote::Full(private_note.clone())])
             .build()
             .unwrap()
             .execute(),
@@ -514,9 +514,9 @@ async fn fetch_private_notes_finds_note_committed_at_sync_height() {
     // Block 1: commit the private note.
     let tx = Box::pin(
         mock_chain
-            .build_tx_context(TxContextInput::AccountId(mock_account.id()), &[], &[spawn_note])
-            .unwrap()
-            .extend_expected_output_notes(vec![RawOutputNote::Full(private_note.clone())])
+            .build_transaction(MockTransactionInput::AccountId(mock_account.id()))
+            .unauthenticated_input_note(spawn_note)
+            .expected_output_notes(vec![RawOutputNote::Full(private_note.clone())])
             .build()
             .unwrap()
             .execute(),
@@ -973,9 +973,9 @@ async fn committed_private_note_recipient(
     // Block 1: commit the private note.
     let tx = Box::pin(
         mock_chain
-            .build_tx_context(TxContextInput::AccountId(mock_account.id()), &[], &[spawn_note])
-            .unwrap()
-            .extend_expected_output_notes(vec![RawOutputNote::Full(private_note.clone())])
+            .build_transaction(MockTransactionInput::AccountId(mock_account.id()))
+            .unauthenticated_input_note(spawn_note)
+            .expected_output_notes(vec![RawOutputNote::Full(private_note.clone())])
             .build()
             .unwrap()
             .execute(),

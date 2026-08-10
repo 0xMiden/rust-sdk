@@ -35,6 +35,13 @@ const FAUCET_PACKAGE: (&str, &[u8]) = (
     include_bytes!(concat!(env!("OUT_DIR"), "/packages/", "basic-fungible-faucet.masp")),
 );
 
+/// Contains the account component template file generated on build.rs, corresponding to the
+/// non-fungible faucet component.
+const NON_FUNGIBLE_FAUCET_PACKAGE: (&str, &[u8]) = (
+    "basic-non-fungible-faucet.masp",
+    include_bytes!(concat!(env!("OUT_DIR"), "/packages/", "basic-non-fungible-faucet.masp")),
+);
+
 // AUTH COMPONENT PACKAGES
 // ================================================================================================
 
@@ -50,11 +57,6 @@ const ECDSA_AUTH_PACKAGE: (&str, &[u8]) = (
     include_bytes!(concat!(env!("OUT_DIR"), "/packages/auth/", "ecdsa-auth.masp")),
 );
 
-const ACL_AUTH_PACKAGE: (&str, &[u8]) = (
-    "auth/acl-auth.masp",
-    include_bytes!(concat!(env!("OUT_DIR"), "/packages/auth/", "acl-auth.masp")),
-);
-
 const NO_AUTH_PACKAGE: (&str, &[u8]) = (
     "auth/no-auth.masp",
     include_bytes!(concat!(env!("OUT_DIR"), "/packages/auth/", "no-auth.masp")),
@@ -65,14 +67,26 @@ const MULTISIG_AUTH_PACKAGE: (&str, &[u8]) = (
     include_bytes!(concat!(env!("OUT_DIR"), "/packages/auth/", "multisig-auth.masp")),
 );
 
-const DEFAULT_INCLUDED_PACKAGES: [(&str, &[u8]); 7] = [
+const GUARDED_MULTISIG_AUTH_PACKAGE: (&str, &[u8]) = (
+    "auth/guarded-multisig-auth.masp",
+    include_bytes!(concat!(env!("OUT_DIR"), "/packages/auth/", "guarded-multisig-auth.masp")),
+);
+
+const NETWORK_ACCOUNT_AUTH_PACKAGE: (&str, &[u8]) = (
+    "auth/network-account-auth.masp",
+    include_bytes!(concat!(env!("OUT_DIR"), "/packages/auth/", "network-account-auth.masp")),
+);
+
+const DEFAULT_INCLUDED_PACKAGES: [(&str, &[u8]); 9] = [
     BASIC_WALLET_PACKAGE,
     FAUCET_PACKAGE,
+    NON_FUNGIBLE_FAUCET_PACKAGE,
     BASIC_AUTH_PACKAGE,
     ECDSA_AUTH_PACKAGE,
     NO_AUTH_PACKAGE,
     MULTISIG_AUTH_PACKAGE,
-    ACL_AUTH_PACKAGE,
+    GUARDED_MULTISIG_AUTH_PACKAGE,
+    NETWORK_ACCOUNT_AUTH_PACKAGE,
 ];
 
 // INIT COMMAND

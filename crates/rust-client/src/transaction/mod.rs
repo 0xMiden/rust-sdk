@@ -84,6 +84,7 @@ use miden_protocol::transaction::AccountInputs;
 use miden_protocol::vm::MIN_STACK_DEPTH;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::faucets::FungibleFaucet;
+use miden_standards::account::interface::AccountInterfaceExt;
 use miden_tx::{DataStore, NoteConsumptionChecker, TransactionExecutor};
 use tracing::info;
 
@@ -1180,12 +1181,42 @@ pub(super) fn validate_account_request(
     transaction_request: &TransactionRequest,
     account: &Account,
 ) -> Result<(), ClientError> {
+    validate_fee_conversion_info_support(transaction_request, account)?;
+
     if account.code_interface().contains([FungibleFaucet::mint_and_send_root()]) {
         // TODO(SantiagoPittella): Add faucet validations.
         Ok(())
     } else {
         validate_basic_account_request(transaction_request, account)
     }
+}
+
+/// Verifies that the account can consume fee conversion info passed through the auth args.
+///
+/// Only the signature-based auth components read the auth args as conversion info (through
+/// `miden::standards::fee`). On any other auth component the declared asset and rate would be
+/// silently ignored and the fee paid in the chain's native asset, so the request is rejected here
+/// instead.
+fn validate_fee_conversion_info_support(
+    transaction_request: &TransactionRequest,
+    account: &Account,
+) -> Result<(), ClientError> {
+    if !transaction_request.declares_fee_conversion_info() {
+        return Ok(());
+    }
+
+    let interface = AccountInterface::from_account(account);
+    let auth_component = interface.auth_component();
+    if matches!(
+        auth_component,
+        AccountComponentInterface::AuthSingleSig | AccountComponentInterface::AuthMultisig
+    ) {
+        return Ok(());
+    }
+
+    Err(ClientError::TransactionRequestError(
+        TransactionRequestError::FeeConversionInfoUnsupported(auth_component.name()),
+    ))
 }
 
 /// Verifies that every output note emitted directly by the transaction declares `account_id` as
@@ -1375,7 +1406,8 @@ mod tests {
     use alloc::vec;
 
     use miden_protocol::Word;
-    use miden_protocol::account::AccountId;
+    use miden_protocol::account::auth::AuthSecretKey;
+    use miden_protocol::account::{AccountBuilder, AccountComponent, AccountId, AccountType};
     use miden_protocol::asset::FungibleAsset;
     use miden_protocol::crypto::rand::RandomCoin;
     use miden_protocol::note::{Note, NoteType};
@@ -1384,10 +1416,21 @@ mod tests {
         ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE,
         ACCOUNT_ID_SENDER,
     };
+    use miden_standards::account::AccountBuilderSchemaCommitmentExt;
+    use miden_standards::account::auth::{Approver, AuthSingleSig, FeeConversionInfo, NoAuth};
+    use miden_standards::account::wallets::BasicWallet;
     use miden_standards::note::P2idNote;
 
-    use super::{TransactionRequestBuilder, validate_output_note_senders};
+    use super::{
+        Account,
+        AccountComponentInterface,
+        TransactionRequest,
+        TransactionRequestBuilder,
+        validate_fee_conversion_info_support,
+        validate_output_note_senders,
+    };
     use crate::ClientError;
+    use crate::auth::AuthSchemeId;
     use crate::transaction::TransactionRequestError;
 
     fn own_note_with_sender(sender: AccountId) -> Note {
@@ -1457,5 +1500,60 @@ mod tests {
             .unwrap();
 
         validate_output_note_senders(&request, account_id).unwrap();
+    }
+
+    /// Builds an account carrying `auth_component` and a basic wallet.
+    fn account_with_auth(auth_component: impl Into<AccountComponent>) -> Account {
+        AccountBuilder::new([7u8; 32])
+            .account_type(AccountType::Public)
+            .with_component(auth_component)
+            .with_component(BasicWallet)
+            .build_with_schema_commitment()
+            .expect("account creation failed")
+    }
+
+    fn fee_conversion_request() -> TransactionRequest {
+        let faucet_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
+
+        TransactionRequestBuilder::new()
+            .fee_conversion_info(FeeConversionInfo::one_to_one(faucet_id), Word::default())
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn fee_conversion_info_is_accepted_by_a_signature_authenticated_account() {
+        let key = AuthSecretKey::new_falcon512_poseidon2();
+        let auth = AuthSingleSig::new(Approver::new(
+            key.public_key().to_commitment(),
+            AuthSchemeId::Falcon512Poseidon2,
+        ));
+
+        validate_fee_conversion_info_support(&fee_conversion_request(), &account_with_auth(auth))
+            .unwrap();
+    }
+
+    #[test]
+    fn fee_conversion_info_is_rejected_by_an_account_that_cannot_read_it() {
+        let account = account_with_auth(NoAuth);
+
+        let err = validate_fee_conversion_info_support(&fee_conversion_request(), &account)
+            .expect_err("NoAuth does not read the auth args");
+        match err {
+            ClientError::TransactionRequestError(
+                TransactionRequestError::FeeConversionInfoUnsupported(auth_component),
+            ) => assert_eq!(auth_component, AccountComponentInterface::AuthNoAuth.name()),
+            other => panic!("expected FeeConversionInfoUnsupported, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_request_without_fee_conversion_info_skips_the_auth_component_check() {
+        // `NoAuth` cannot read conversion info, but a request that declares none is unaffected.
+        validate_fee_conversion_info_support(
+            &TransactionRequestBuilder::new().build().unwrap(),
+            &account_with_auth(NoAuth),
+        )
+        .unwrap();
     }
 }

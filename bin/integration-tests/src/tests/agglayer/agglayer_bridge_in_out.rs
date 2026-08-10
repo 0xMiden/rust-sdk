@@ -29,13 +29,12 @@ use miden_agglayer::{
     ClaimNoteStorage,
     ConfigAggBridgeNote,
     ConversionMetadata,
-    EthAddress,
-    EthEmbeddedAccountId,
     UpdateGerNote,
     create_agglayer_faucet,
 };
 use miden_client::Felt;
 use miden_client::account::AccountType;
+use miden_client::agglayer::{EthAddress, EthEmbeddedAccountId};
 use miden_client::asset::{Asset, AssetAmount, FungibleAsset};
 use miden_client::auth::RPO_FALCON_SCHEME_ID;
 use miden_client::crypto::FeltRng;
@@ -227,7 +226,7 @@ pub async fn test_agglayer_bridge_in_out(client_config: ClientConfig) -> Result<
         // Submit CLAIM note: done by the user (or could also be a claim manager entity)
         let miden_claim_amount = leaf_data
             .amount
-            .scale_to_token_amount(scale as u32)
+            .scale_to_asset_amount(scale as u32)
             .expect("amount should scale successfully");
         println!("[bridge_in_out] Round {round}: miden claim amount: {:?}", miden_claim_amount);
 

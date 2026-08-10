@@ -2498,3 +2498,70 @@ async fn remove_map_patch_clears_slot() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+/// A `Remove` patch deletes the value slot from latest storage and archives its prior value.
+#[tokio::test]
+async fn remove_value_patch_clears_slot() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+    let value_slot_name = StorageSlotName::new("test::remove::value").expect("valid slot name");
+    let test_value = [Felt::from(42u32), ZERO, ZERO, ZERO].into();
+
+    let dummy_component = AccountComponent::new(
+        BasicWallet::code().as_library().clone(),
+        vec![StorageSlot::with_value(value_slot_name.clone(), test_value)],
+        AccountComponentMetadata::new("miden::testing::dummy_component"),
+    )?;
+
+    let account = AccountBuilder::new([0; 32])
+        .account_type(AccountType::Private)
+        .with_auth_component(AuthSingleSig::new(Approver::new(
+            PublicKeyCommitment::from(EMPTY_WORD),
+            AuthSchemeId::Falcon512Poseidon2,
+        )))
+        .with_component(dummy_component)
+        .build_existing()?;
+
+    let default_address = Address::new(account.id());
+    store
+        .insert_account(&account, default_address, ClientAccountType::Native)
+        .await?;
+
+    let account_id = account.id();
+    let m_before = get_storage_metrics(&store).await;
+    read_slot_value(&store, account_id, &value_slot_name).await?;
+
+    let storage_patch = AccountStoragePatch::from_entries([(
+        value_slot_name.clone(),
+        StorageSlotPatch::Value(StorageValuePatch::Remove),
+    )])?;
+
+    apply_storage_patch_directly(&store, account_id, 2, storage_patch).await?;
+
+    let slot_name = value_slot_name.to_string();
+    let account_id_bytes = account_id.to_bytes();
+    let latest_rows = store
+        .interact_with_connection(move |conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM latest_account_storage WHERE account_id = ? AND slot_name = ?",
+                params![account_id_bytes, slot_name],
+                |row| row.get::<_, i64>(0),
+            )
+            .into_store_error()
+        })
+        .await?;
+    assert_eq!(latest_rows, 0, "removed value slot must have no latest row");
+
+    let m_after = get_storage_metrics(&store).await;
+    assert_eq!(
+        m_after.latest_account_storage,
+        m_before.latest_account_storage - 1,
+        "remove must drop exactly one latest storage row"
+    );
+    assert_eq!(
+        m_after.historical_account_storage,
+        m_before.historical_account_storage + 1,
+        "remove must archive exactly one prior value"
+    );
+
+    Ok(())
+}

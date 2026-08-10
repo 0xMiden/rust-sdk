@@ -14,6 +14,7 @@ use miden_client::account::{
     StorageSlotContent,
     StorageSlotName,
     StorageSlotType,
+    StorageValuePatch,
 };
 use miden_client::store::{AccountSmtForest, StoreError};
 use miden_client::{Deserializable, EMPTY_WORD, Serializable, Word};
@@ -178,6 +179,18 @@ impl SqliteStore {
         let patch_maps: BTreeMap<&StorageSlotName, &StorageMapPatch> =
             storage_patch.maps().collect();
 
+        for (slot_name, value_patch) in storage_patch.values() {
+            if matches!(value_patch, StorageValuePatch::Remove) {
+                Self::write_value_slot_remove(
+                    tx,
+                    &mut hist_slot_stmt,
+                    &account_id_bytes,
+                    &nonce_val,
+                    slot_name,
+                )?;
+            }
+        }
+
         for (slot_name, (value, slot_type)) in updated_slots {
             let slot_name_str = slot_name.to_string();
             let slot_value_bytes = value.to_bytes();
@@ -340,6 +353,49 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// Archives and deletes a value slot removed by [`StorageValuePatch::Remove`].
+    fn write_value_slot_remove(
+        tx: &Transaction<'_>,
+        hist_slot_stmt: &mut rusqlite::CachedStatement<'_>,
+        account_id_bytes: &[u8],
+        nonce_val: &rusqlite::types::Value,
+        slot_name: &StorageSlotName,
+    ) -> Result<(), StoreError> {
+        const READ_OLD_SLOT: &str =
+            "SELECT slot_value, slot_type FROM latest_account_storage WHERE account_id = ? AND slot_name = ?";
+        const DELETE_LATEST_SLOT: &str =
+            "DELETE FROM latest_account_storage WHERE account_id = ? AND slot_name = ?";
+
+        let slot_name_str = slot_name.to_string();
+
+        let (old_slot_value, slot_type_val): (Option<Vec<u8>>, u8) = tx
+            .query_row(READ_OLD_SLOT, params![account_id_bytes, &slot_name_str], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .optional()
+            .into_store_error()?
+            .ok_or_else(|| {
+                StoreError::ParsingError(format!(
+                    "cannot remove storage value slot '{slot_name_str}': slot not found"
+                ))
+            })?;
+
+        hist_slot_stmt
+            .execute(params![
+                account_id_bytes,
+                nonce_val,
+                &slot_name_str,
+                old_slot_value,
+                slot_type_val,
+            ])
+            .into_store_error()?;
+
+        tx.execute(DELETE_LATEST_SLOT, params![account_id_bytes, &slot_name_str])
+            .into_store_error()?;
+
+        Ok(())
+    }
+
     /// Archives old map entry values to historical and updates latest for each changed entry.
     fn write_map_entry_delta(
         tx: &Transaction<'_>,
@@ -408,20 +464,15 @@ impl SqliteStore {
         old_map_roots: &BTreeMap<StorageSlotName, Word>,
         storage_patch: &AccountStoragePatch,
     ) -> Result<BTreeMap<StorageSlotName, (Word, StorageSlotType)>, StoreError> {
-        let mut updated_slots: BTreeMap<StorageSlotName, (Word, StorageSlotType)> = storage_patch
-            .values()
-            .map(|(slot_name, value_patch)| {
-                (
-                    slot_name.clone(),
-                    (
-                        value_patch
-                            .value()
-                            .expect("the protocol does not generate Remove value patches"),
-                        StorageSlotType::Value,
-                    ),
-                )
-            })
-            .collect();
+        let mut updated_slots: BTreeMap<StorageSlotName, (Word, StorageSlotType)> = BTreeMap::new();
+        for (slot_name, value_patch) in storage_patch.values() {
+            match value_patch {
+                StorageValuePatch::Create { value } | StorageValuePatch::Update { value } => {
+                    updated_slots.insert(slot_name.clone(), (*value, StorageSlotType::Value));
+                },
+                StorageValuePatch::Remove => {},
+            }
+        }
 
         let default_map_root = StorageMap::default().root();
 

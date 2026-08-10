@@ -2892,8 +2892,8 @@ dependencies = [
 
 [[package]]
 name = "miden-node-proto-build"
-version = "0.16.0-alpha.3"
-source = "git+https://github.com/0xMiden/node.git?branch=igamigo-0.16rc3-protocol#0614b8a1e064776e3fd454ba3a9b8cea091a8e0b"
+version = "0.16.0-rc.1"
+source = "git+https://github.com/0xMiden/node.git?branch=next#92dd097a2835143d6e70de11cbfebc42e5f0b6bd"
 dependencies = [
  "build-rs",
  "codegen",

@@ -554,6 +554,48 @@ async fn output_notes_never_match_script_root_filter() {
     assert!(notes.is_empty());
 }
 
+// BATCH SCRIPT TESTS
+// ================================================================================================
+
+#[tokio::test]
+async fn state_sync_stores_scripts_of_new_input_notes() {
+    let store = create_test_store().await;
+
+    // Two notes share the SWAP script, so the batch holds one entry per distinct root rather than
+    // one per note. The multi-row upsert relies on that dedup: a root repeated inside a single
+    // VALUES list would make ON CONFLICT DO UPDATE fail at runtime.
+    let swap_a = create_expected_input_note_with_script(0, StandardNote::SWAP.script());
+    let swap_b = create_expected_input_note_with_script(1, StandardNote::SWAP.script());
+    let p2id = create_expected_input_note_with_script(2, StandardNote::P2ID.script());
+
+    let notes = [swap_a, swap_b, p2id];
+
+    // Applying the same update twice takes the insert branch and then the DO UPDATE branch.
+    for _ in 0..2 {
+        let state_sync_update = StateSyncUpdate::from_parts(
+            BlockNumber::from(0u32),
+            PartialBlockchainUpdates::default(),
+            NoteUpdateTracker::for_transaction_updates(notes.clone(), [], []),
+            TransactionUpdateTracker::default(),
+            AccountUpdates::default(),
+        );
+        store.apply_state_sync(state_sync_update).await.unwrap();
+
+        let swap_notes = store
+            .get_input_notes(NoteFilter::ScriptRoots(vec![StandardNote::SWAP.script().root()]))
+            .await
+            .unwrap();
+        assert_eq!(swap_notes.len(), 2);
+
+        let p2id_notes = store
+            .get_input_notes(NoteFilter::ScriptRoots(vec![StandardNote::P2ID.script().root()]))
+            .await
+            .unwrap();
+        assert_eq!(p2id_notes.len(), 1);
+        assert_eq!(p2id_notes[0].details().script().root(), StandardNote::P2ID.script().root());
+    }
+}
+
 // UNSPENT NULLIFIER TESTS
 // ================================================================================================
 

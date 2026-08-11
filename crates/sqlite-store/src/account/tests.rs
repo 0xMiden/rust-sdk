@@ -24,7 +24,7 @@ use miden_client::account::{
 use miden_client::assembly::CodeBuilder;
 use miden_client::asset::{Asset, FungibleAsset, NonFungibleAsset, NonFungibleAssetDetails};
 use miden_client::auth::{AuthSchemeId, AuthSingleSig, PublicKeyCommitment};
-use miden_client::store::{ClientAccountType, Store, StoreError, storage_map_lineage_id};
+use miden_client::store::{AccountUpdate, ClientAccountType, Store, StoreError};
 use miden_client::testing::common::{ACCOUNT_ID_REGULAR, create_test_store_path};
 use miden_client::{EMPTY_WORD, Felt, ONE, Serializable, Word, ZERO};
 use miden_protocol::account::{
@@ -35,7 +35,6 @@ use miden_protocol::account::{
     StorageSlotType,
     StorageValuePatch,
 };
-use miden_protocol::crypto::merkle::smt::SmtForestUpdateBatch;
 use miden_protocol::testing::account_id::{
     ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET,
     ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_WITH_CALLBACKS,
@@ -2481,16 +2480,15 @@ async fn apply_storage_patch_directly(
             let tx = conn.transaction().into_store_error()?;
             let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
 
-            let mut batch = SmtForestUpdateBatch::empty();
-            let touched_map_slots = SqliteStore::add_storage_map_patch_ops(
-                &tx,
+            let mut update = AccountUpdate::new();
+            let touched_map_slots = smt_forest.add_storage_patch_ops(
+                &mut update,
                 account_id,
-                &mut batch,
                 &old_map_roots,
                 &storage_patch,
             )?;
             let revision = allocate_forest_revision(&tx).into_store_error()?;
-            smt_forest.apply_updates(revision, batch)?;
+            smt_forest.apply(revision, update)?;
 
             let mut updated_slots: BTreeMap<StorageSlotName, (Word, StorageSlotType)> =
                 storage_patch
@@ -2507,7 +2505,7 @@ async fn apply_storage_patch_directly(
                     .collect();
             for slot_name in touched_map_slots {
                 let root = smt_forest
-                    .latest_root(storage_map_lineage_id(account_id, &slot_name))
+                    .map_root(account_id, &slot_name)
                     .expect("touched map slot has a lineage");
                 updated_slots.insert(slot_name, (root, StorageSlotType::Map));
             }

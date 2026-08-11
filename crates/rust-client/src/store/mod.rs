@@ -73,14 +73,7 @@ mod errors;
 pub use errors::*;
 
 mod smt_forest;
-pub use smt_forest::{
-    AccountSmtForest,
-    add_storage_map_ops,
-    add_vault_ops,
-    forest_error,
-    storage_map_lineage_id,
-    vault_lineage_id,
-};
+pub use smt_forest::{AccountSmtForest, AccountUpdate};
 
 mod account;
 pub use account::{

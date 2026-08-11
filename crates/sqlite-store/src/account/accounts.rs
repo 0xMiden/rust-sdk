@@ -27,18 +27,15 @@ use miden_client::store::{
     AccountRecordData,
     AccountStatus,
     AccountStorageFilter,
+    AccountUpdate,
     ClientAccountType,
     StoreError,
-    add_vault_ops,
-    storage_map_lineage_id,
-    vault_lineage_id,
 };
 use miden_client::utils::{Deserializable, Serializable};
 use miden_client::{AccountError, Felt, Word};
 use miden_protocol::account::{AccountStorageHeader, StorageMapWitness, StorageSlotHeader};
 use miden_protocol::asset::{AssetId, PartialVault};
 use miden_protocol::crypto::merkle::MerkleError;
-use miden_protocol::crypto::merkle::smt::SmtForestUpdateBatch;
 use rusqlite::types::Value;
 use rusqlite::{
     Connection,
@@ -58,12 +55,7 @@ use crate::account::helpers::{
     query_storage_values,
     query_vault_assets,
 };
-use crate::forest::{
-    ScopedAccountForest,
-    SqliteForestBackend,
-    allocate_forest_revision,
-    forest_entry_keys,
-};
+use crate::forest::{ScopedAccountForest, SqliteForestBackend, allocate_forest_revision};
 use crate::sql_error::SqlResultExt;
 use crate::{SqliteStore, column_value_as_u64, insert_sql, subst, u64_to_value};
 
@@ -484,29 +476,27 @@ impl SqliteStore {
 
         Self::apply_account_vault_patch(tx, account_id, final_account_state, patch.vault())?;
 
-        // Build one forest update batch covering the vault and every changed map slot, and
-        // apply it at a freshly allocated revision.
-        let mut batch = SmtForestUpdateBatch::empty();
-        add_vault_ops(
-            &mut batch,
+        // Build one forest update covering the vault and every changed map slot, and apply it at
+        // a freshly allocated revision.
+        let mut update = AccountUpdate::new();
+        update.vault_ops(
             account_id,
             patch.vault().updated_assets(),
             patch.vault().removed_asset_ids().copied(),
         );
-        let touched_map_slots = Self::add_storage_map_patch_ops(
-            tx,
+        let touched_map_slots = smt_forest.add_storage_patch_ops(
+            &mut update,
             account_id,
-            &mut batch,
             old_map_roots,
             patch.storage(),
         )?;
 
         let revision = allocate_forest_revision(tx).into_store_error()?;
-        smt_forest.apply_updates(revision, batch)?;
+        smt_forest.apply(revision, update)?;
 
         // Verify the vault landed on the final header's root.
         let new_vault_root = smt_forest
-            .latest_root(vault_lineage_id(account_id))
+            .vault_root(account_id)
             .ok_or(StoreError::AccountDataNotFound(account_id))?;
         if new_vault_root != final_account_state.vault_root() {
             return Err(StoreError::MerkleStoreError(MerkleError::ConflictingRoots {
@@ -534,7 +524,7 @@ impl SqliteStore {
             .collect();
         for slot_name in touched_map_slots {
             let root = smt_forest
-                .latest_root(storage_map_lineage_id(account_id, &slot_name))
+                .map_root(account_id, &slot_name)
                 .ok_or(StoreError::AccountDataNotFound(account_id))?;
             updated_storage_slots.insert(slot_name, (root, StorageSlotType::Map));
         }
@@ -645,9 +635,7 @@ impl SqliteStore {
         Self::reconcile_forest_lineages(tx, smt_forest, account_id, &vault_target, &map_targets)
     }
 
-    /// Applies one forest update batch that makes the account's lineages match the provided
-    /// targets: keys not in a target are removed, all target pairs are upserted. A slot mapped
-    /// to an empty target has its lineage reset to the empty tree.
+    /// Applies one forest update that makes the account's lineages match the provided targets.
     fn reconcile_forest_lineages(
         tx: &Transaction<'_>,
         smt_forest: &mut ScopedAccountForest<'_, '_>,
@@ -655,31 +643,11 @@ impl SqliteStore {
         vault_target: &BTreeMap<Word, Word>,
         map_targets: &BTreeMap<StorageSlotName, BTreeMap<Word, Word>>,
     ) -> Result<(), StoreError> {
-        let mut batch = SmtForestUpdateBatch::empty();
-
-        let reconcile_lineage = |batch: &mut SmtForestUpdateBatch,
-                                 lineage,
-                                 target: &BTreeMap<Word, Word>|
-         -> Result<(), StoreError> {
-            for key in forest_entry_keys(tx, lineage)? {
-                if !target.contains_key(&key) {
-                    batch.operations(lineage).add_remove(key);
-                }
-            }
-            let ops = batch.operations(lineage);
-            for (key, value) in target {
-                ops.add_insert(*key, *value);
-            }
-            Ok(())
-        };
-
-        reconcile_lineage(&mut batch, vault_lineage_id(account_id), vault_target)?;
-        for (slot_name, target) in map_targets {
-            reconcile_lineage(&mut batch, storage_map_lineage_id(account_id, slot_name), target)?;
-        }
+        let mut update = AccountUpdate::new();
+        smt_forest.reconcile_account(&mut update, account_id, vault_target, map_targets)?;
 
         let revision = allocate_forest_revision(tx).into_store_error()?;
-        smt_forest.apply_updates(revision, batch)?;
+        smt_forest.apply(revision, update)?;
         Ok(())
     }
 

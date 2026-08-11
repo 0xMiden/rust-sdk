@@ -17,7 +17,6 @@ use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 
-use miden_client::store::StoreError;
 use miden_client::utils::{Deserializable, Serializable};
 use miden_protocol::crypto::merkle::smt::{
     AppliedLineageMutation,
@@ -46,7 +45,6 @@ use miden_protocol::crypto::merkle::{EmptySubtreeRoots, MerkleError, NodeIndex, 
 use miden_protocol::{EMPTY_WORD, Word};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
-use crate::sql_error::SqlResultExt;
 use crate::{column_value_as_u64, u64_to_value};
 
 type Result<T> = core::result::Result<T, BackendError>;
@@ -579,42 +577,6 @@ fn compute_update_mutations(
     let forward = SmtMutationSet::from_parts(old_root, forward_nodes, forward_pairs, new_root);
     let reverse = SmtMutationSet::from_parts(new_root, reverse_nodes, reverse_pairs, old_root);
     Ok(ComputedLineageMutations { forward, reverse, entry_count_delta })
-}
-
-/// Returns the latest stored root of a lineage, or `None` if the lineage is unknown.
-///
-/// Store-side helper for consistency checks against roots recorded in the account tables.
-pub(crate) fn forest_lineage_root(
-    conn: &Connection,
-    lineage: LineageId,
-) -> core::result::Result<Option<Word>, StoreError> {
-    match tree_meta(conn, lineage) {
-        Ok(meta) => Ok(meta.map(|(_, root, _)| root)),
-        Err(e) => Err(StoreError::DatabaseError(e.to_string())),
-    }
-}
-
-/// Returns the SMT keys currently stored for a lineage.
-///
-/// Store-side helper for building reset and reconciliation update batches (removing keys that
-/// are no longer part of a lineage's target state).
-pub(crate) fn forest_entry_keys(
-    conn: &Connection,
-    lineage: LineageId,
-) -> core::result::Result<Vec<Word>, StoreError> {
-    let mut stmt = conn
-        .prepare_cached("SELECT key FROM forest_entries WHERE lineage = ?1")
-        .into_store_error()?;
-    let rows = stmt
-        .query_map(params![lineage.as_bytes().as_slice()], |row| row.get::<_, Vec<u8>>(0))
-        .into_store_error()?;
-
-    let mut keys = Vec::new();
-    for row in rows {
-        let blob = row.into_store_error()?;
-        keys.push(Word::read_from_bytes(&blob)?);
-    }
-    Ok(keys)
 }
 
 /// Writes the changed key-value pairs of a forward mutation set to the entries table. Values

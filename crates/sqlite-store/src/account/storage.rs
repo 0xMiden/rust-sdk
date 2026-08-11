@@ -19,6 +19,7 @@ use miden_client::{Deserializable, EMPTY_WORD, Serializable, Word};
 use rusqlite::types::Value;
 use rusqlite::{OptionalExtension, Transaction, params};
 
+use crate::forest::ScopedAccountForest;
 use crate::sql_error::SqlResultExt;
 use crate::{SqliteStore, insert_sql, subst, u64_to_value};
 
@@ -123,16 +124,15 @@ impl SqliteStore {
     }
 
     /// Writes only the changed storage slots, archiving old values from latest to historical
-    /// before overwriting.
+    /// before replacing or removing them.
     ///
-    /// For each changed slot, the old value is read from latest and archived to historical.
-    /// NULL `old_slot_value` means the slot was new. For map entries, the old entry value is
-    /// similarly archived before updating latest.
+    /// The storage patch is the source of truth for slot type, value, and removal. Roots for map
+    /// slots that remain present are read from the already-updated forest.
     pub(crate) fn write_storage_patch(
         tx: &Transaction<'_>,
+        smt_forest: &ScopedAccountForest<'_, '_>,
         account_id: AccountId,
         nonce: u64,
-        updated_slots: &BTreeMap<StorageSlotName, (Word, StorageSlotType)>,
         storage_patch: &AccountStoragePatch,
     ) -> Result<(), StoreError> {
         const LATEST_SLOT_QUERY: &str = insert_sql!(
@@ -165,6 +165,8 @@ impl SqliteStore {
         );
         const READ_OLD_SLOT: &str =
             "SELECT slot_value FROM latest_account_storage WHERE account_id = ? AND slot_name = ?";
+        const DELETE_LATEST_SLOT: &str =
+            "DELETE FROM latest_account_storage WHERE account_id = ? AND slot_name = ?";
 
         let mut latest_slot_stmt = tx.prepare_cached(LATEST_SLOT_QUERY).into_store_error()?;
         let mut hist_slot_stmt = tx.prepare_cached(HISTORICAL_SLOT_QUERY).into_store_error()?;
@@ -173,14 +175,25 @@ impl SqliteStore {
         let account_id_bytes = account_id.to_bytes();
         let nonce_val = u64_to_value(nonce);
 
-        // Look up each map slot's patch by name so the write path can honor the patch operation.
-        let patch_maps: BTreeMap<&StorageSlotName, &StorageMapPatch> =
-            storage_patch.maps().collect();
+        let value_slots = storage_patch.values().map(|(slot_name, value_patch)| {
+            Ok::<_, StoreError>((slot_name, value_patch.value(), StorageSlotType::Value, None))
+        });
+        let map_slots = storage_patch.maps().map(|(slot_name, map_patch)| {
+            let new_value = match map_patch {
+                StorageMapPatch::Remove => None,
+                StorageMapPatch::Create { .. } | StorageMapPatch::Update { .. } => Some(
+                    smt_forest
+                        .map_root(account_id, slot_name)
+                        .ok_or(StoreError::AccountDataNotFound(account_id))?,
+                ),
+            };
+            Ok((slot_name, new_value, StorageSlotType::Map, Some(map_patch)))
+        });
 
-        for (slot_name, (value, slot_type)) in updated_slots {
+        for slot_update in value_slots.chain(map_slots) {
+            let (slot_name, new_value, slot_type, map_patch) = slot_update?;
             let slot_name_str = slot_name.to_string();
-            let slot_value_bytes = value.to_bytes();
-            let slot_type_val = *slot_type as u8;
+            let slot_type_val = slot_type as u8;
 
             // Read old slot value from latest (NULL if slot is new)
             let old_slot_value: Option<Vec<u8>> = tx
@@ -202,17 +215,21 @@ impl SqliteStore {
                 ])
                 .into_store_error()?;
 
-            // Update latest slot
-            latest_slot_stmt
-                .execute(params![
-                    &account_id_bytes,
-                    &slot_name_str,
-                    &slot_value_bytes,
-                    slot_type_val
-                ])
-                .into_store_error()?;
+            if let Some(value) = new_value {
+                latest_slot_stmt
+                    .execute(params![
+                        &account_id_bytes,
+                        &slot_name_str,
+                        value.to_bytes(),
+                        slot_type_val
+                    ])
+                    .into_store_error()?;
+            } else {
+                tx.execute(DELETE_LATEST_SLOT, params![&account_id_bytes, &slot_name_str])
+                    .into_store_error()?;
+            }
 
-            if let Some(map_patch) = patch_maps.get(slot_name) {
+            if let Some(map_patch) = map_patch {
                 Self::write_map_patch(
                     tx,
                     &mut latest_map_stmt,

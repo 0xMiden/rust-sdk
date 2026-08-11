@@ -32,7 +32,6 @@ use miden_protocol::account::{
     StorageMapPatch,
     StorageMapPatchEntries,
     StorageSlotPatch,
-    StorageSlotType,
     StorageValuePatch,
 };
 use miden_protocol::testing::account_id::{
@@ -42,7 +41,7 @@ use miden_protocol::testing::account_id::{
 };
 use miden_protocol::testing::constants::NON_FUNGIBLE_ASSET_DATA;
 use miden_standards::account::auth::Approver;
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 
 use crate::SqliteStore;
 use crate::forest::{ScopedAccountForest, SqliteForestBackend, allocate_forest_revision};
@@ -309,7 +308,7 @@ async fn apply_account_patch_preserves_fungible_callback_flag() -> anyhow::Resul
 }
 
 #[tokio::test]
-async fn apply_account_patch_removals() -> anyhow::Result<()> {
+async fn apply_account_patch_removes_slots_and_assets() -> anyhow::Result<()> {
     let store = create_test_store().await;
 
     let value_slot_name =
@@ -353,19 +352,9 @@ async fn apply_account_patch_removals() -> anyhow::Result<()> {
         .insert_account(&account, default_address, ClientAccountType::Native)
         .await?;
 
-    // A removed map entry is represented by an empty value for the key.
-    let mut map_entries = StorageMapPatchEntries::new();
-    map_entries.insert(StorageMapKey::new([ONE, ZERO, ZERO, ZERO].into()), EMPTY_WORD);
     let storage_patch = AccountStoragePatch::from_entries([
-        // A cleared value slot is represented by an empty value.
-        (
-            value_slot_name.clone(),
-            StorageSlotPatch::Value(StorageValuePatch::Update { value: EMPTY_WORD }),
-        ),
-        (
-            map_slot_name.clone(),
-            StorageSlotPatch::Map(StorageMapPatch::Update { entries: map_entries }),
-        ),
+        (value_slot_name.clone(), StorageSlotPatch::Value(StorageValuePatch::Remove)),
+        (map_slot_name.clone(), StorageSlotPatch::Map(StorageMapPatch::Remove)),
     ])?;
 
     // Both assets are removed: the absolute final state is an empty vault, so each asset's vault
@@ -414,17 +403,8 @@ async fn apply_account_patch_removals() -> anyhow::Result<()> {
 
     assert_eq!(updated_account, account_after_patch);
     assert!(updated_account.vault().is_empty());
-    assert_eq!(updated_account.storage().get_item(&value_slot_name)?, EMPTY_WORD);
-    let map_slot = updated_account
-        .storage()
-        .slots()
-        .iter()
-        .find(|slot| slot.name() == &map_slot_name)
-        .expect("storage should contain map slot");
-    let StorageSlotContent::Map(updated_map) = map_slot.content() else {
-        panic!("Expected map slot content");
-    };
-    assert_eq!(updated_map.entries().count(), 0);
+    assert!(read_slot_value(&store, account_id, &value_slot_name).await?.is_none());
+    assert!(read_slot_value(&store, account_id, &map_slot_name).await?.is_none());
 
     Ok(())
 }
@@ -1192,16 +1172,11 @@ async fn undo_account_state_restores_previous_latest() -> anyhow::Result<()> {
     let mut account = setup_account_with_map(&store, 5, &map_slot_name).await?;
     let initial_commitment = account.to_commitment();
 
-    // Apply a patch (nonce 2) that changes a map entry AND adds a fungible asset, so the undo
-    // has to reconcile both the vault and the map lineage.
-    let mut map_entries = StorageMapPatchEntries::new();
-    map_entries.insert(
-        StorageMapKey::new([Felt::from(1u32), ZERO, ZERO, ZERO].into()),
-        [Felt::from(1000u32), ZERO, ZERO, ZERO].into(),
-    );
+    // Apply a patch (nonce 2) that removes the map slot and adds a fungible asset, so undo has to
+    // restore both the top-level slot and its forest lineage.
     let storage_patch = AccountStoragePatch::from_entries([(
         map_slot_name.clone(),
-        StorageSlotPatch::Map(StorageMapPatch::Update { entries: map_entries }),
+        StorageSlotPatch::Map(StorageMapPatch::Remove),
     )])?;
     // The account starts with an empty vault, so the absolute value of the added asset is the
     // asset itself.
@@ -2481,38 +2456,11 @@ async fn apply_storage_patch_directly(
             let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
 
             let mut update = AccountUpdate::new();
-            let touched_map_slots =
-                update.storage_patch(account_id, &old_map_roots, &storage_patch);
+            update.storage_patch(account_id, &old_map_roots, &storage_patch);
             let revision = allocate_forest_revision(&tx).into_store_error()?;
             smt_forest.apply(revision, update)?;
 
-            let mut updated_slots: BTreeMap<StorageSlotName, (Word, StorageSlotType)> =
-                storage_patch
-                    .values()
-                    .map(|(slot_name, value_patch)| {
-                        (
-                            slot_name.clone(),
-                            (
-                                value_patch.value().expect("no Remove value patches"),
-                                StorageSlotType::Value,
-                            ),
-                        )
-                    })
-                    .collect();
-            for slot_name in touched_map_slots {
-                let root = smt_forest
-                    .map_root(account_id, &slot_name)
-                    .expect("touched map slot has a lineage");
-                updated_slots.insert(slot_name, (root, StorageSlotType::Map));
-            }
-
-            SqliteStore::write_storage_patch(
-                &tx,
-                account_id,
-                nonce,
-                &updated_slots,
-                &storage_patch,
-            )?;
+            SqliteStore::write_storage_patch(&tx, &smt_forest, account_id, nonce, &storage_patch)?;
             drop(smt_forest);
             tx.commit().into_store_error()?;
             Ok(())
@@ -2555,7 +2503,7 @@ async fn read_slot_value(
     store: &SqliteStore,
     account_id: AccountId,
     slot_name: &StorageSlotName,
-) -> anyhow::Result<Vec<u8>> {
+) -> anyhow::Result<Option<Vec<u8>>> {
     let account_id_bytes = account_id.to_bytes();
     let slot = slot_name.to_string();
     let value = store
@@ -2566,6 +2514,7 @@ async fn read_slot_value(
                 params![account_id_bytes, slot],
                 |r| r.get::<_, Vec<u8>>(0),
             )
+            .optional()
             .into_store_error()
         })
         .await?;
@@ -2611,7 +2560,7 @@ async fn create_map_patch_replaces_existing_entries() -> anyhow::Result<()> {
 
     // The stored root must match a map built from only the created entries.
     let root_bytes = read_slot_value(&store, account_id, &map_slot_name).await?;
-    assert_eq!(root_bytes, expected.root().to_bytes());
+    assert_eq!(root_bytes, Some(expected.root().to_bytes()));
 
     // Every affected key (union of old {1..5} and new {1,6}) is archived exactly once.
     let m = get_storage_metrics(&store).await;
@@ -2620,10 +2569,9 @@ async fn create_map_patch_replaces_existing_entries() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// A `Remove` patch clears the map slot: its latest entries are dropped and its root collapses to
-/// the empty-map root.
+/// A `Remove` patch deletes the map slot and its latest entries.
 #[tokio::test]
-async fn remove_map_patch_clears_slot() -> anyhow::Result<()> {
+async fn remove_map_patch_deletes_slot() -> anyhow::Result<()> {
     let store = create_test_store().await;
     let map_slot_name = StorageSlotName::new("test::remove::map").expect("valid slot name");
 
@@ -2641,12 +2589,12 @@ async fn remove_map_patch_clears_slot() -> anyhow::Result<()> {
     let latest = read_latest_map_entries(&store, account_id, &map_slot_name).await?;
     assert!(latest.is_empty(), "removed map slot must have no latest entries");
 
-    // The root collapses to the empty-map root.
-    let root_bytes = read_slot_value(&store, account_id, &map_slot_name).await?;
-    assert_eq!(root_bytes, StorageMap::new().root().to_bytes());
+    // The top-level slot is absent, rather than retained with an empty-map root.
+    assert!(read_slot_value(&store, account_id, &map_slot_name).await?.is_none());
 
     // The 5 prior entries are archived.
     let m = get_storage_metrics(&store).await;
+    assert_eq!(m.historical_account_storage, 1);
     assert_eq!(m.historical_storage_map_entries, 5);
 
     Ok(())

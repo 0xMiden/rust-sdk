@@ -479,7 +479,7 @@ impl SqliteStore {
         // a freshly allocated revision.
         let mut update = AccountUpdate::new();
         update.vault_patch(account_id, patch.vault());
-        let touched_map_slots = update.storage_patch(account_id, old_map_roots, patch.storage());
+        update.storage_patch(account_id, old_map_roots, patch.storage());
 
         let revision = allocate_forest_revision(tx).into_store_error()?;
         smt_forest.apply(revision, update)?;
@@ -495,35 +495,11 @@ impl SqliteStore {
             }));
         }
 
-        // Collect updated slots: value slots straight from the patch, map roots from the
-        // forest's post-apply state.
-        let mut updated_storage_slots: BTreeMap<StorageSlotName, (Word, StorageSlotType)> = patch
-            .storage()
-            .values()
-            .map(|(slot_name, value_patch)| {
-                (
-                    slot_name.clone(),
-                    (
-                        value_patch
-                            .value()
-                            .expect("the protocol does not generate Remove value patches"),
-                        StorageSlotType::Value,
-                    ),
-                )
-            })
-            .collect();
-        for slot_name in touched_map_slots {
-            let root = smt_forest
-                .map_root(account_id, &slot_name)
-                .ok_or(StoreError::AccountDataNotFound(account_id))?;
-            updated_storage_slots.insert(slot_name, (root, StorageSlotType::Map));
-        }
-
         Self::write_storage_patch(
             tx,
+            smt_forest,
             account_id,
             final_account_state.nonce().as_canonical_u64(),
-            &updated_storage_slots,
             patch.storage(),
         )?;
 

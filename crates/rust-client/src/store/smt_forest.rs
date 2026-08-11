@@ -95,7 +95,7 @@ impl AccountUpdate {
             .extend(patch.removed_asset_ids().map(|id| (id.hash().into(), EMPTY_WORD)));
     }
 
-    /// Records an account's storage patch, returning the map slots it touched.
+    /// Records an account's storage patch.
     ///
     /// Map slots are layered onto their current tree for `Update` patches and replaced wholesale
     /// for `Create` and `Remove`. An `Update` also records the map's old root, which [`apply`]
@@ -109,12 +109,9 @@ impl AccountUpdate {
         account_id: AccountId,
         old_map_roots: &BTreeMap<StorageSlotName, Word>,
         patch: &AccountStoragePatch,
-    ) -> Vec<StorageSlotName> {
+    ) {
         let default_root = StorageMap::default().root();
-        let mut touched = Vec::new();
         for (slot_name, map_patch) in patch.maps() {
-            touched.push(slot_name.clone());
-
             let ops = self.entry(storage_map_lineage_id(account_id, slot_name));
             ops.pairs.extend(
                 map_patch
@@ -133,8 +130,6 @@ impl AccountUpdate {
                 StorageMapPatch::Create { .. } | StorageMapPatch::Remove => ops.exhaustive = true,
             }
         }
-
-        touched
     }
 
     /// Records that an account's vault and map slots hold exactly the provided state.

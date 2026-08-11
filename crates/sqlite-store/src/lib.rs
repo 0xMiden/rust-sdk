@@ -11,17 +11,9 @@ use std::string::{String, ToString};
 use std::sync::{Arc, RwLock};
 use std::vec::Vec;
 
-use db_management::backup::{backup_path, create_backup, discard_backup, restore_backup};
-use db_management::errors::SqliteStoreError;
+use db_management::backup::SqliteBackup;
+use db_management::migration::SqliteMigration;
 use db_management::pool_manager::{Pool, SqlitePoolManager};
-use db_management::utils::{
-    apply_migrations,
-    get_setting,
-    has_pending_migrations,
-    list_setting_keys,
-    remove_setting,
-    set_setting,
-};
 use miden_client::Word;
 use miden_client::account::{
     Account,
@@ -67,6 +59,7 @@ mod builder;
 mod chain_data;
 mod db_management;
 mod note;
+mod settings;
 mod sql_error;
 mod sync;
 mod transaction;
@@ -95,11 +88,9 @@ impl SqliteStore {
     pub async fn new(database_filepath: PathBuf) -> Result<Self, StoreError> {
         let database_filepath_str = database_filepath.to_string_lossy().into_owned();
         let sqlite_pool_manager = SqlitePoolManager::new(database_filepath.clone());
-        let pool = Pool::builder(sqlite_pool_manager)
-            .build()
-            .map_err(|e| StoreError::DatabaseError(e.to_string()))?;
+        let pool = Pool::builder(sqlite_pool_manager).build().map_err(database_error)?;
 
-        Self::migrate(&pool, &database_filepath).await?;
+        Self::migrate(&pool, &database_filepath, SqliteMigration::client()).await?;
 
         let store = SqliteStore {
             pool,
@@ -124,54 +115,51 @@ impl SqliteStore {
         Ok(store)
     }
 
-    /// Brings the database at `database_filepath` up to the latest schema version.
-    async fn migrate(pool: &Pool, database_filepath: &Path) -> Result<(), StoreError> {
-        Self::migrate_with(pool, database_filepath, has_pending_migrations, apply_migrations).await
-    }
-
-    /// [`Self::migrate`] with its two schema steps injected, so that tests can drive the paths a
-    /// single migration cannot reach on its own.
-    async fn migrate_with(
+    /// Brings the database at `database_filepath` up to the latest version of the schema
+    /// `migration` builds.
+    async fn migrate(
         pool: &Pool,
         database_filepath: &Path,
-        pending: fn(&Connection) -> Result<bool, SqliteStoreError>,
-        apply: fn(&mut Connection) -> Result<(), SqliteStoreError>,
+        migration: &'static SqliteMigration,
     ) -> Result<(), StoreError> {
-        let conn = pool.get().await.map_err(|e| StoreError::DatabaseError(e.to_string()))?;
+        let conn = pool.get().await.map_err(database_error)?;
 
         let upgrading = conn
-            .interact(move |conn| pending(conn))
+            .interact(move |conn| migration.has_pending(conn))
             .await
-            .map_err(|e| StoreError::DatabaseError(e.to_string()))?
-            .map_err(|e| StoreError::DatabaseError(e.to_string()))?;
+            .map_err(database_error)?
+            .map_err(database_error)?;
 
-        let backup = backup_path(database_filepath);
-        if upgrading {
-            let backup = backup.clone();
-            conn.interact(move |conn| create_backup(conn, &backup))
-                .await
-                .map_err(|e| StoreError::DatabaseError(e.to_string()))?
-                .map_err(|e| StoreError::DatabaseError(e.to_string()))?;
-        }
+        let backup = if upgrading {
+            let database_filepath = database_filepath.to_path_buf();
 
-        let migrated = conn
-            .interact(apply)
-            .await
-            .map_err(|e| StoreError::DatabaseError(e.to_string()))?;
+            Some(
+                conn.interact(move |conn| SqliteBackup::create(conn, database_filepath))
+                    .await
+                    .map_err(database_error)?
+                    .map_err(database_error)?,
+            )
+        } else {
+            None
+        };
+
+        let migrated =
+            conn.interact(move |conn| migration.apply(conn)).await.map_err(database_error)?;
 
         // The database file cannot be replaced while anything is still reading it, so the
         // connection goes back to the pool and the pool closes before the backup is put back.
         drop(conn);
 
         let Err(migration_error) = migrated else {
-            discard_backup(&backup).map_err(|e| StoreError::DatabaseError(e.to_string()))?;
-            return Ok(());
+            return match backup {
+                Some(backup) => backup.discard().map_err(database_error),
+                None => SqliteBackup::discard_for(database_filepath).map_err(database_error),
+            };
         };
 
-        if upgrading {
+        if let Some(backup) = backup {
             pool.close();
-            restore_backup(database_filepath, &backup)
-                .map_err(|e| StoreError::DatabaseError(e.to_string()))?;
+            backup.restore().map_err(database_error)?;
         }
 
         Err(StoreError::DatabaseError(migration_error.to_string()))
@@ -191,10 +179,10 @@ impl SqliteStore {
         self.pool
             .get()
             .await
-            .map_err(|err| StoreError::DatabaseError(err.to_string()))?
+            .map_err(database_error)?
             .interact(f)
             .await
-            .map_err(|err| StoreError::DatabaseError(err.to_string()))?
+            .map_err(database_error)?
     }
 }
 
@@ -498,21 +486,24 @@ impl Store for SqliteStore {
 
     async fn set_setting(&self, key: String, value: Vec<u8>) -> Result<(), StoreError> {
         self.interact_with_connection(move |conn| {
-            set_setting(conn, &key, &value).into_store_error()
+            SqliteStore::set_setting(conn, &key, &value).into_store_error()
         })
         .await
     }
 
     async fn get_setting(&self, key: String) -> Result<Option<Vec<u8>>, StoreError> {
-        self.interact_with_connection(move |conn| get_setting(conn, &key)).await
+        self.interact_with_connection(move |conn| SqliteStore::get_setting(conn, &key))
+            .await
     }
 
     async fn remove_setting(&self, key: String) -> Result<(), StoreError> {
-        self.interact_with_connection(move |conn| remove_setting(conn, &key)).await
+        self.interact_with_connection(move |conn| SqliteStore::remove_setting(conn, &key))
+            .await
     }
 
     async fn list_setting_keys(&self) -> Result<Vec<String>, StoreError> {
-        self.interact_with_connection(move |conn| list_setting_keys(conn)).await
+        self.interact_with_connection(move |conn| SqliteStore::list_setting_keys(conn))
+            .await
     }
 
     async fn apply_settings_mutations(
@@ -524,9 +515,9 @@ impl Store for SqliteStore {
             for mutation in &mutations {
                 match mutation {
                     SettingMutation::Set { key, value } => {
-                        set_setting(&tx, key, value).into_store_error()?;
+                        SqliteStore::set_setting(&tx, key, value).into_store_error()?;
                     },
-                    SettingMutation::Remove { key } => remove_setting(&tx, key)?,
+                    SettingMutation::Remove { key } => SqliteStore::remove_setting(&tx, key)?,
                 }
             }
             tx.commit().into_store_error()?;
@@ -624,6 +615,10 @@ impl Store for SqliteStore {
 // UTILS
 // ================================================================================================
 
+fn database_error(err: impl core::fmt::Display) -> StoreError {
+    StoreError::DatabaseError(err.to_string())
+}
+
 /// Returns the current UTC timestamp as `u64` (non-leap seconds since Unix epoch).
 pub(crate) fn current_timestamp_u64() -> u64 {
     let now = chrono::Utc::now();
@@ -664,19 +659,20 @@ pub fn u64_to_value(v: u64) -> Value {
 #[cfg(test)]
 pub mod tests {
     use std::boxed::Box;
+    use std::sync::LazyLock;
 
     use miden_client::store::Store;
     use miden_client::testing::common::create_test_store_path;
 
+    use super::db_management::backup::SqliteBackup;
+    use super::db_management::migration::SqliteMigration;
+    use super::db_management::migration::tests::damaging_migration;
     use super::db_management::pool_manager::SqlitePoolManager;
-    use super::{Pool, SqliteStore, SqliteStoreError, String, backup_path};
+    use super::{Pool, SqliteStore};
 
-    /// Stands in for a migration that damages the store before failing, which is what the backup
-    /// exists to undo.
-    fn failing_migration(conn: &mut rusqlite::Connection) -> Result<(), SqliteStoreError> {
-        conn.execute_batch("DROP TABLE input_notes;")?;
-        Err(SqliteStoreError::Migration(String::from("migration failed")))
-    }
+    /// A migration set that changes the store and is then rejected, which is the failure the
+    /// pre-migration backup exists to undo.
+    static DAMAGING_MIGRATION: LazyLock<SqliteMigration> = LazyLock::new(damaging_migration);
 
     #[tokio::test]
     async fn failed_migration_leaves_the_store_as_it_was() {
@@ -686,11 +682,18 @@ pub mod tests {
         let pool = Pool::builder(SqlitePoolManager::new(database_filepath.clone()))
             .build()
             .unwrap();
-        SqliteStore::migrate_with(&pool, &database_filepath, |_| Ok(true), failing_migration)
+        let err = SqliteStore::migrate(&pool, &database_filepath, &DAMAGING_MIGRATION)
             .await
             .unwrap_err();
 
-        assert!(!backup_path(&database_filepath).exists(), "the backup should be consumed");
+        assert!(
+            err.to_string().contains("produced a schema this client does not expect"),
+            "the migration should have been committed and then rejected, got {err}"
+        );
+        assert!(
+            !SqliteBackup::path_for(&database_filepath).exists(),
+            "the backup should be consumed"
+        );
         // Reopening verifies the schema, so it only succeeds if the dropped table came back.
         SqliteStore::new(database_filepath).await.unwrap();
     }

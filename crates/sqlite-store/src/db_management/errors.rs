@@ -18,19 +18,19 @@ pub enum SqliteStoreError {
         "stored schema at version {version} does not match the schema this client builds for that version (expected {expected}, found {actual})"
     )]
     SchemaDrift {
-        version: u32,
+        version: usize,
         expected: String,
         actual: String,
     },
     #[error(
         "store is at schema version {found}, which is newer than the highest version this client supports ({supported})"
     )]
-    SchemaTooNew { found: u32, supported: u32 },
+    SchemaTooNew { found: usize, supported: usize },
     #[error(
         "migrating to schema version {version} produced a schema this client does not expect (expected {expected}, found {actual})"
     )]
     MigratedSchemaMismatch {
-        version: u32,
+        version: usize,
         expected: String,
         actual: String,
     },

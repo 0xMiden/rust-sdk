@@ -1,5 +1,6 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::string::{String, ToString};
 
 use rusqlite::{Connection, params};
 
@@ -15,60 +16,82 @@ const BACKUP_SUFFIX: &str = ".pre-migration-backup";
 /// must not outlive it.
 const SIDECAR_SUFFIXES: [&str; 3] = ["-journal", "-wal", "-shm"];
 
-/// Returns the path of the backup taken before migrating the store at `database_filepath`.
-pub fn backup_path(database_filepath: &Path) -> PathBuf {
-    let mut path = OsString::from(database_filepath);
-    path.push(BACKUP_SUFFIX);
-    PathBuf::from(path)
+/// A copy of a store, taken before migrating it.
+#[derive(Debug)]
+pub(crate) struct SqliteBackup {
+    database_filepath: PathBuf,
+    backup_filepath: PathBuf,
 }
 
-/// Copies the database into `backup_filepath`, replacing a backup left behind by an earlier run.
-///
-/// `VACUUM INTO` writes a consistent snapshot even while the connection is open, so this does not
-/// depend on the caller quiescing the store.
-pub fn create_backup(conn: &Connection, backup_filepath: &Path) -> Result<(), SqliteStoreError> {
-    // A backup that is still here was left by a run that died mid-migration. Its database was
-    // already restored or abandoned, and `VACUUM INTO` refuses to write to a file that exists.
-    discard_backup(backup_filepath)?;
+impl SqliteBackup {
+    /// Copies the database into its backup path, replacing a copy left behind by an earlier run.
+    ///
+    /// `VACUUM INTO` writes a consistent snapshot even while the connection is open, so this does
+    /// not depend on the caller quiescing the store.
+    pub(crate) fn create(
+        conn: &Connection,
+        database_filepath: PathBuf,
+    ) -> Result<Self, SqliteStoreError> {
+        let backup_filepath = Self::path_for(&database_filepath);
 
-    conn.execute("VACUUM INTO ?1", params![path_argument(backup_filepath)?])?;
+        // Remove any previous hanged migration
+        remove_file(&backup_filepath)?;
 
-    Ok(())
-}
+        conn.execute("VACUUM INTO ?1", params![path_argument(&backup_filepath)?])?;
 
-/// Puts the backup back in place of the database, consuming the backup.
-///
-/// The caller must have closed every connection to the database first. Restoring under an open
-/// connection would leave that connection reading a file that no longer exists, and on Windows the
-/// replacement cannot happen at all.
-pub fn restore_backup(
-    database_filepath: &Path,
-    backup_filepath: &Path,
-) -> Result<(), SqliteStoreError> {
-    // These describe the database being replaced, not the backup, so leaving one behind would let
-    // `SQLite` apply it to the restored file.
-    for suffix in SIDECAR_SUFFIXES {
-        discard_backup(&sidecar_path(database_filepath, suffix))?;
+        Ok(Self { database_filepath, backup_filepath })
     }
 
-    std::fs::rename(backup_filepath, database_filepath).map_err(|err| {
-        SqliteStoreError::BackupRestoreFailed {
-            backup: backup_filepath.display().to_string(),
-            reason: err.to_string(),
+    /// Returns the path of the backup of the store at `database_filepath`.
+    pub(crate) fn path_for(database_filepath: &Path) -> PathBuf {
+        with_suffix(database_filepath, BACKUP_SUFFIX)
+    }
+
+    /// Puts the copy back in place of the database, consuming it.
+    ///
+    /// The caller must have closed every connection to the database first.
+    pub(crate) fn restore(self) -> Result<(), SqliteStoreError> {
+        for suffix in SIDECAR_SUFFIXES {
+            remove_file(&with_suffix(&self.database_filepath, suffix))?;
         }
-    })
+
+        std::fs::rename(&self.backup_filepath, &self.database_filepath).map_err(|err| {
+            SqliteStoreError::BackupRestoreFailed {
+                backup: self.backup_filepath.display().to_string(),
+                reason: err.to_string(),
+            }
+        })
+    }
+
+    /// Removes the copy, consuming it.
+    pub(crate) fn discard(self) -> Result<(), SqliteStoreError> {
+        remove_file(&self.backup_filepath)
+    }
+
+    /// Removes the backup of the store at `database_filepath`, if there is one.
+    pub(crate) fn discard_for(database_filepath: &Path) -> Result<(), SqliteStoreError> {
+        remove_file(&Self::path_for(database_filepath))
+    }
 }
 
-/// Removes `backup_filepath` if it exists.
-pub fn discard_backup(backup_filepath: &Path) -> Result<(), SqliteStoreError> {
-    match std::fs::remove_file(backup_filepath) {
+/// Removes `filepath` if it exists.
+fn remove_file(filepath: &Path) -> Result<(), SqliteStoreError> {
+    match std::fs::remove_file(filepath) {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(err) => Err(SqliteStoreError::BackupFailed {
-            backup: backup_filepath.display().to_string(),
+            backup: filepath.display().to_string(),
             reason: err.to_string(),
         }),
     }
+}
+
+/// Returns `path` with `suffix` appended to its filename.
+fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut suffixed = OsString::from(path);
+    suffixed.push(suffix);
+
+    PathBuf::from(suffixed)
 }
 
 /// Renders a path for `SQLite`, which takes filenames as text.
@@ -77,13 +100,6 @@ fn path_argument(path: &Path) -> Result<&str, SqliteStoreError> {
         backup: path.display().to_string(),
         reason: String::from("backup path is not valid UTF-8"),
     })
-}
-
-/// Returns the path of the `SQLite` sidecar file for `database_filepath` with the given suffix.
-fn sidecar_path(database_filepath: &Path, suffix: &str) -> PathBuf {
-    let mut path = OsString::from(database_filepath);
-    path.push(suffix);
-    PathBuf::from(path)
 }
 
 // TESTS
@@ -97,7 +113,7 @@ mod tests {
 
     use rusqlite::Connection;
 
-    use super::{backup_path, create_backup, restore_backup, sidecar_path};
+    use super::{SqliteBackup, with_suffix};
 
     fn table_names(conn: &Connection) -> Vec<String> {
         let mut stmt = conn
@@ -113,7 +129,6 @@ mod tests {
     fn backup_restores_the_database_as_it_was() {
         let dir = tempfile::tempdir().unwrap();
         let database = dir.path().join("store.sqlite3");
-        let backup = backup_path(&database);
 
         let conn = Connection::open(&database).unwrap();
         conn.execute_batch(
@@ -122,8 +137,8 @@ mod tests {
         )
         .unwrap();
 
-        create_backup(&conn, &backup).unwrap();
-        assert!(backup.exists());
+        let backup = SqliteBackup::create(&conn, database.clone()).unwrap();
+        assert!(SqliteBackup::path_for(&database).exists());
 
         // The change the restore is meant to undo.
         conn.execute_batch(
@@ -133,8 +148,11 @@ mod tests {
         .unwrap();
         drop(conn);
 
-        restore_backup(&database, &backup).unwrap();
-        assert!(!backup.exists(), "a consumed backup should not be left behind");
+        backup.restore().unwrap();
+        assert!(
+            !SqliteBackup::path_for(&database).exists(),
+            "a consumed backup should not be left behind"
+        );
 
         let conn = Connection::open(&database).unwrap();
         assert_eq!(table_names(&conn), vec![String::from("items")]);
@@ -148,15 +166,15 @@ mod tests {
     fn backup_replaces_one_left_by_an_earlier_run() {
         let dir = tempfile::tempdir().unwrap();
         let database = dir.path().join("store.sqlite3");
-        let backup = backup_path(&database);
-        std::fs::write(&backup, b"not a database").unwrap();
+        let backup_filepath = SqliteBackup::path_for(&database);
+        std::fs::write(&backup_filepath, b"not a database").unwrap();
 
         let conn = Connection::open(&database).unwrap();
         conn.execute_batch("CREATE TABLE items (id INTEGER PRIMARY KEY);").unwrap();
 
-        create_backup(&conn, &backup).unwrap();
+        SqliteBackup::create(&conn, database).unwrap();
 
-        let restored = Connection::open(&backup).unwrap();
+        let restored = Connection::open(&backup_filepath).unwrap();
         assert_eq!(table_names(&restored), vec![String::from("items")]);
     }
 
@@ -164,17 +182,16 @@ mod tests {
     fn restore_removes_sidecars_of_the_replaced_database() {
         let dir = tempfile::tempdir().unwrap();
         let database = dir.path().join("store.sqlite3");
-        let backup = backup_path(&database);
 
         let conn = Connection::open(&database).unwrap();
         conn.execute_batch("CREATE TABLE items (id INTEGER PRIMARY KEY);").unwrap();
-        create_backup(&conn, &backup).unwrap();
+        let backup = SqliteBackup::create(&conn, database.clone()).unwrap();
         drop(conn);
 
-        let journal = sidecar_path(&database, "-journal");
+        let journal = with_suffix(&database, "-journal");
         std::fs::write(&journal, b"stale").unwrap();
 
-        restore_backup(&database, &backup).unwrap();
+        backup.restore().unwrap();
 
         assert!(!journal.exists(), "a sidecar of the replaced database must not survive it");
     }

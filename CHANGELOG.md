@@ -13,7 +13,7 @@
 * [BREAKING][param][rust] `NodeRpcClient` models encrypted submissions: `submit_proven_transaction` now takes `SealedTransactionInputs` instead of `TransactionInputs`, `submit_proven_batch` now takes `Vec<SealedTransactionInputs>` (one per transaction, each sealed against its own transaction ID), and implementations must provide the new `get_transaction_encryption_key` method ([#2341](https://github.com/0xMiden/rust-sdk/pull/2341)).
 * [BREAKING][removal][cli] Removed the `account --show --with-code` flag. Use `account --inspect <ID> --verbose` to view procedure disassembly. ([#2312](https://github.com/0xMiden/rust-sdk/issues/2312)).
 * [BREAKING][type][rust] Added the `NoteFilter::ScriptRoots` variant, so exhaustive matches on `NoteFilter` in `Store` implementations must handle it ([#2335](https://github.com/0xMiden/rust-sdk/pull/2335)).
-* [BREAKING][behavior][store] The SQLite base schema now declares an index on `input_notes(script_root)`. This changes the schema fingerprint, so opening a database created before this change fails with `SchemaHashMismatch` and existing stores must be recreated ([#2335](https://github.com/0xMiden/rust-sdk/pull/2335)).
+* [BREAKING][behavior][store] The SQLite base schema now declares an index on `input_notes(script_root)`. This changes the schema fingerprint, so opening a database created before this change fails with `SchemaDrift` and existing stores must be recreated ([#2335](https://github.com/0xMiden/rust-sdk/pull/2335)).
 
 ### Enhancements
 

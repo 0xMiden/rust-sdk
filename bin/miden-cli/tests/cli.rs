@@ -2208,13 +2208,8 @@ fn call_untyped_procedure_falls_back_to_raw_felts() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(output_line(&stdout, "Signature:"), "Signature: raw_add(...) [no type info]");
-    // The arguments stay under the result, since there is no result count to step over them with,
-    // and the dump runs to the last non-zero value.
-    assert_eq!(output_line(&stdout, "Result ("), "Result (3 values):");
-    assert_eq!(
-        stdout.lines().filter(|line| line.starts_with("  [")).collect::<Vec<_>>(),
-        ["  [0]: 10", "  [1]: 3", "  [2]: 7"]
-    );
+    // The dump runs to the last non-zero value, and `add` leaves nothing but the sum.
+    assert_eq!(output_line(&stdout, "Result:"), "Result: 10");
 }
 
 /// Tests that an untyped procedure takes its arguments the way a `felt` is written on the typed

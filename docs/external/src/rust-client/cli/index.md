@@ -462,7 +462,7 @@ Arguments are passed positionally after the target, one token per value in the p
 | `asset` | `<AMOUNT>::<FAUCET_ID>`, fungible only | `100::0xabcdef0123456789` |
 | records and fixed arrays | one token per field, in order | `3 4` for `point { x, y }` |
 
-Only procedures exported from a WIT interface carry a signature. A procedure a package exports without one cannot be called by name; call it by its hex digest instead, without `--package`, and pass each argument as one field element.
+Only procedures exported from a WIT interface carry a signature. A procedure without one is still called, with one raw field element per argument written in decimal (a `0x` hex literal is not accepted); the argument count is not checked and the result is printed as a stack dump.
 
 The arguments are pushed onto the stack so that the first one ends up on top, and together they may occupy at most 16 stack values — that is all a called procedure can see.
 

@@ -242,7 +242,7 @@ struct CallCode {
 /// Prints the values the procedure returned, rendered as their declared types when the package
 /// describes them and as raw stack felts otherwise.
 fn print_call_result(
-    output_stack: &[Felt],
+    output_stack: &[Felt; MIN_STACK_DEPTH],
     typed: Option<&TypedProcInfo>,
 ) -> Result<(), CliError> {
     match typed {
@@ -250,7 +250,7 @@ fn print_call_result(
         // rendered is an error, since a raw stack dump would hide that the result is not a valid
         // value of its type.
         Some(typed) => {
-            if let Some(rendered) = typed.decode_result(output_stack)? {
+            if let Some(rendered) = typed.decode_result(output_stack.as_slice())? {
                 println!("Result: {rendered}");
             }
         },
@@ -293,7 +293,7 @@ async fn run_remote_call<AUTH: Keystore + Sync + 'static>(
         )
         .await?;
 
-    print_call_result(output_stack.as_slice(), typed.as_ref())?;
+    print_call_result(&output_stack, typed.as_ref())?;
 
     println!("\nA call on an account read from the network can only read it; no state delta.");
     Ok(())
@@ -319,7 +319,7 @@ async fn run_local_call<AUTH: Keystore + Sync + 'static>(
             BTreeMap::new(),
         )
         .await?;
-    print_call_result(output_stack.as_slice(), typed.as_ref())?;
+    print_call_result(&output_stack, typed.as_ref())?;
 
     // 2) Transaction execution to get the state delta.
     let tx_request = TransactionRequestBuilder::new()

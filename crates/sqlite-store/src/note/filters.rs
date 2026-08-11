@@ -147,7 +147,7 @@ pub(super) fn note_filter_to_query_input_note_by_offset(
     use core::fmt::Write;
     let (mut condition, mut params) = note_filter_input_notes_condition(filter);
 
-    // `consumer_account_id` is the first column of `idx_input_notes_consumption`; the equality
+    // `consumer_account_id` is the first column of `idx_input_notes_consumption`. The equality
     // avoids a full sort for the ORDER BY.
     params.push(ToSqlOutput::from(consumer.to_bytes()));
     condition.push_str(" AND note.consumer_account_id = ?");

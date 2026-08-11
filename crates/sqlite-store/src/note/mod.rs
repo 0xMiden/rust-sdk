@@ -44,7 +44,7 @@ mod filters;
 // ================================================================================================
 
 // SQLite limits statements to 999 parameters. Each batch size is chosen to stay under that
-// limit: input notes: 13 columns × 50 = 650, output notes: 8 × 80 = 640, scripts: 2 × 200 = 400.
+// limit: input notes: 14 columns × 50 = 700, output notes: 10 × 80 = 800, scripts: 2 × 200 = 400.
 const INPUT_NOTE_BATCH_SIZE: usize = 50;
 const OUTPUT_NOTE_BATCH_SIZE: usize = 80;
 const SCRIPT_BATCH_SIZE: usize = 200;

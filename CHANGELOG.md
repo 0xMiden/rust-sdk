@@ -14,6 +14,7 @@
 * [BREAKING][type][rust] Added the `NoteFilter::ScriptRoots` variant, so exhaustive matches on `NoteFilter` in `Store` implementations must handle it ([#2335](https://github.com/0xMiden/rust-sdk/pull/2335)).
 * [BREAKING][behavior][store] The SQLite base schema now declares an index on `input_notes(script_root)`. This changes the schema fingerprint, so opening a database created before this change fails with `SchemaHashMismatch` and existing stores must be recreated ([#2335](https://github.com/0xMiden/rust-sdk/pull/2335)).
 * [BREAKING][behavior][store] The SQLite base schema now indexes `code_commitment` on `latest_account_headers`, `historical_account_headers` and `foreign_account_code`, the `input_notes` consumption index now leads with `consumer_account_id`, and the `input_notes` state index now carries `nullifier`. This changes the schema fingerprint, so opening a database created before this change fails with `SchemaHashMismatch` and existing stores must be recreated ([#2364](https://github.com/0xMiden/rust-sdk/pull/2364)).
+* [BREAKING][param][rust] `Store::get_input_note_by_offset` is replaced by `Store::get_input_note_after`, which takes an `Option<InputNoteCursor>` identifying the last note read instead of an ordinal offset. Build the cursor for the next call with `InputNoteCursor::from_record`. `Store` implementations must be updated; `InputNoteReader` is unaffected ([#2364](https://github.com/0xMiden/rust-sdk/pull/2364)).
 
 ### Enhancements
 
@@ -27,7 +28,7 @@
 
 ### Fixes
 
-* [FIX][store] `SQLite` store operations no longer get slower as the database grows. Note scripts are updated in place instead of replaced, so persisting them no longer forces a foreign key check against every note referencing the script, the note and block header queries were rewritten to match the indices that serve them, and account code garbage collection no longer scans three tables per candidate commitment. Listing unspent nullifiers now matches `NoteFilter::Unspent`, skipping invalid notes and notes whose nullifier isn't known yet ([#2364](https://github.com/0xMiden/rust-sdk/pull/2364)).
+* [FIX][store] `SQLite` store operations no longer get slower as the database grows. Note scripts are updated in place instead of replaced, so persisting them no longer forces a foreign key check against every note referencing the script, the note and block header queries were rewritten to match the indices that serve them, and account code garbage collection no longer scans three tables per candidate commitment. Iterating an account's consumed notes with `InputNoteReader` costs one index seek per note, regardless of how far into the account's history it is. Listing unspent nullifiers now matches `NoteFilter::Unspent`, skipping invalid notes and notes whose nullifier isn't known yet ([#2364](https://github.com/0xMiden/rust-sdk/pull/2364)).
 
 ## 0.16.0-alpha.1 (2026-07-17)
 

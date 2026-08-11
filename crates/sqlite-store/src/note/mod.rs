@@ -19,6 +19,7 @@ use miden_client::note::{
     Nullifier,
 };
 use miden_client::store::{
+    InputNoteCursor,
     InputNoteRecord,
     InputNoteState,
     NoteFilter,
@@ -182,25 +183,25 @@ impl SqliteStore {
         Ok(notes)
     }
 
-    /// Retrieves a single input note at the given offset from the filtered set, restricted to a
-    /// consumer account and optionally to a block range.
-    pub(crate) fn get_input_note_by_offset(
+    /// Retrieves the input note following `cursor` in the filtered set, restricted to a consumer
+    /// account and optionally to a block range.
+    pub(crate) fn get_input_note_after(
         conn: &mut Connection,
         filter: &NoteFilter,
         consumer: AccountId,
         block_start: Option<BlockNumber>,
         block_end: Option<BlockNumber>,
-        offset: u32,
+        cursor: Option<InputNoteCursor>,
     ) -> Result<Option<InputNoteRecord>, StoreError> {
-        let (query, params) = filters::note_filter_to_query_input_note_by_offset(
+        let (query, params) = filters::note_filter_to_query_input_note_after(
             filter,
             consumer,
             block_start,
             block_end,
-            offset,
+            cursor,
         );
         let note = conn
-            .prepare(&query)
+            .prepare_cached(&query)
             .into_store_error()?
             .query_map(params_from_iter(params), parse_input_note_columns)
             .expect("no binding parameters used in query")

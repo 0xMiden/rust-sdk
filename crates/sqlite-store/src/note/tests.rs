@@ -19,6 +19,7 @@ use miden_client::store::input_note_states::{
     NoteSubmissionData,
 };
 use miden_client::store::{
+    InputNoteCursor,
     InputNoteRecord,
     InputNoteState,
     NoteFilter,
@@ -32,7 +33,7 @@ use miden_client::sync::{
     StateSyncUpdate,
     TransactionUpdateTracker,
 };
-use miden_client::utils::{Deserializable, DeserializationError};
+use miden_client::utils::{Deserializable, DeserializationError, Serializable};
 use miden_client::{Felt, ZERO};
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
@@ -400,6 +401,102 @@ async fn input_note_reader_finds_externally_consumed_notes() {
     );
     assert_eq!(collected[0].id(), tracked_note.id());
     assert_eq!(collected[0].consumer_account(), Some(consumer));
+}
+
+#[tokio::test]
+async fn input_note_reader_separates_notes_consumed_by_the_same_transaction() {
+    let store = create_test_store().await;
+    let consumer = AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE).unwrap();
+
+    // Externally-consumed notes without metadata have no note id, and all three share a block
+    // height and tx order, so only the details commitment separates them.
+    let notes: Vec<_> = (0..3u32)
+        .map(|index| {
+            let mut note = create_consumed_external_input_note(index, 1, Some(consumer), None);
+            note.set_consumed_tx_order(Some(0));
+            note
+        })
+        .collect();
+    store.upsert_input_notes(&notes).await.unwrap();
+
+    let store: Arc<dyn Store> = Arc::new(store);
+    let mut reader = InputNoteReader::new(store, consumer);
+
+    let mut collected = Vec::new();
+    while let Some(note) = reader.next().await.unwrap() {
+        collected.push(note.details_commitment());
+    }
+
+    let mut expected: Vec<_> = notes.iter().map(InputNoteRecord::details_commitment).collect();
+    expected.sort_by_key(Serializable::to_bytes);
+
+    assert_eq!(collected, expected);
+}
+
+#[tokio::test]
+async fn input_note_reader_reset_restarts_the_iteration() {
+    let store = create_test_store().await;
+    let consumer = AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE).unwrap();
+
+    let notes: Vec<_> = (0..3u32)
+        .map(|index| create_consumed_input_note_with_consumer(consumer, index, index, 0))
+        .collect();
+    store.upsert_input_notes(&notes).await.unwrap();
+
+    let store: Arc<dyn Store> = Arc::new(store);
+    let mut reader = InputNoteReader::new(store, consumer);
+
+    let mut first_pass = Vec::new();
+    while let Some(note) = reader.next().await.unwrap() {
+        first_pass.push(note.details_commitment());
+    }
+    assert_eq!(first_pass.len(), 3);
+
+    reader.reset();
+
+    let mut second_pass = Vec::new();
+    while let Some(note) = reader.next().await.unwrap() {
+        second_pass.push(note.details_commitment());
+    }
+
+    assert_eq!(first_pass, second_pass);
+}
+
+#[test]
+fn input_note_cursor_is_none_for_a_note_that_is_not_consumed() {
+    assert!(InputNoteCursor::from_record(&create_expected_input_note(0)).is_none());
+}
+
+#[tokio::test]
+async fn input_note_after_ignores_a_cursor_before_the_block_range() {
+    let store = create_test_store().await;
+    let consumer = AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE).unwrap();
+
+    let note_at_1 = create_consumed_input_note_with_consumer(consumer, 0, 1, 0);
+    // Follows the cursor but falls outside the range, so it must not be returned.
+    let note_at_3 = create_consumed_input_note_with_consumer(consumer, 1, 3, 0);
+    let note_at_5 = create_consumed_input_note_with_consumer(consumer, 2, 5, 0);
+    store
+        .upsert_input_notes(&[note_at_1.clone(), note_at_3, note_at_5.clone()])
+        .await
+        .unwrap();
+
+    // A cursor before `block_start` selects nothing that the range does not already exclude, so
+    // the first note in the range is returned.
+    let cursor = InputNoteCursor::from_record(&note_at_1).unwrap();
+    let note = store
+        .get_input_note_after(
+            NoteFilter::Consumed,
+            consumer,
+            Some(BlockNumber::from(5u32)),
+            None,
+            Some(cursor),
+        )
+        .await
+        .unwrap()
+        .expect("the range holds a note following the cursor");
+
+    assert_eq!(note.details_commitment(), note_at_5.details_commitment());
 }
 
 // ORDERING TESTS (INPUT NOTES)

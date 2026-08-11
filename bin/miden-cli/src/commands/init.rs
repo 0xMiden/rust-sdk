@@ -35,6 +35,13 @@ const FAUCET_PACKAGE: (&str, &[u8]) = (
     include_bytes!(concat!(env!("OUT_DIR"), "/packages/", "basic-fungible-faucet.masp")),
 );
 
+/// Contains the account component template file generated on build.rs, corresponding to the
+/// non-fungible faucet component.
+const NON_FUNGIBLE_FAUCET_PACKAGE: (&str, &[u8]) = (
+    "basic-non-fungible-faucet.masp",
+    include_bytes!(concat!(env!("OUT_DIR"), "/packages/", "basic-non-fungible-faucet.masp")),
+);
+
 // AUTH COMPONENT PACKAGES
 // ================================================================================================
 
@@ -50,11 +57,6 @@ const ECDSA_AUTH_PACKAGE: (&str, &[u8]) = (
     include_bytes!(concat!(env!("OUT_DIR"), "/packages/auth/", "ecdsa-auth.masp")),
 );
 
-const ACL_AUTH_PACKAGE: (&str, &[u8]) = (
-    "auth/acl-auth.masp",
-    include_bytes!(concat!(env!("OUT_DIR"), "/packages/auth/", "acl-auth.masp")),
-);
-
 const NO_AUTH_PACKAGE: (&str, &[u8]) = (
     "auth/no-auth.masp",
     include_bytes!(concat!(env!("OUT_DIR"), "/packages/auth/", "no-auth.masp")),
@@ -65,14 +67,26 @@ const MULTISIG_AUTH_PACKAGE: (&str, &[u8]) = (
     include_bytes!(concat!(env!("OUT_DIR"), "/packages/auth/", "multisig-auth.masp")),
 );
 
-const DEFAULT_INCLUDED_PACKAGES: [(&str, &[u8]); 7] = [
+const GUARDED_MULTISIG_AUTH_PACKAGE: (&str, &[u8]) = (
+    "auth/guarded-multisig-auth.masp",
+    include_bytes!(concat!(env!("OUT_DIR"), "/packages/auth/", "guarded-multisig-auth.masp")),
+);
+
+const NETWORK_ACCOUNT_AUTH_PACKAGE: (&str, &[u8]) = (
+    "auth/network-account-auth.masp",
+    include_bytes!(concat!(env!("OUT_DIR"), "/packages/auth/", "network-account-auth.masp")),
+);
+
+const DEFAULT_INCLUDED_PACKAGES: [(&str, &[u8]); 9] = [
     BASIC_WALLET_PACKAGE,
     FAUCET_PACKAGE,
+    NON_FUNGIBLE_FAUCET_PACKAGE,
     BASIC_AUTH_PACKAGE,
     ECDSA_AUTH_PACKAGE,
     NO_AUTH_PACKAGE,
     MULTISIG_AUTH_PACKAGE,
-    ACL_AUTH_PACKAGE,
+    GUARDED_MULTISIG_AUTH_PACKAGE,
+    NETWORK_ACCOUNT_AUTH_PACKAGE,
 ];
 
 // INIT COMMAND
@@ -138,19 +152,23 @@ impl InitCmd {
 
         // Check if config already exists
         if config_file_path.exists() {
-            let config = CliConfig::from_dir(&target_miden_dir)?;
-
-            return Err(CliError::Config(
-                "Error with the configuration file".to_string().into(),
-                format!(
-                    "The file \"{}\" already exists in the {} {} directory ({}), configured with the network \"{}\".",
-                    CLIENT_CONFIG_FILE_NAME,
-                    config_type,
-                    MIDEN_DIR,
-                    target_miden_dir.display(),
-                    config.rpc.endpoint
-                ),
-            ));
+            // An unparsable file must still hint at `clear-config`, not `init`.
+            let network_info = match CliConfig::from_dir(&target_miden_dir) {
+                Ok(config) => {
+                    format!(", configured with the network \"{}\"", config.rpc.endpoint)
+                },
+                Err(_) => ", but it could not be parsed".to_string(),
+            };
+            let global_flag: String = if self.local { "" } else { " --global" }.into();
+            let error_msg = format!(
+                "\"{}\" already exists in the {} {} directory ({}){}.",
+                CLIENT_CONFIG_FILE_NAME,
+                config_type,
+                MIDEN_DIR,
+                target_miden_dir.display(),
+                network_info
+            );
+            return Err(CliError::ConfigAlreadyExists(error_msg, global_flag));
         }
 
         // Create the miden directory if not existent
@@ -178,7 +196,9 @@ impl InitCmd {
         }
 
         cli_config.remote_prover_endpoint = match &self.remote_prover_endpoint {
-            Some(rpc) => CliEndpoint::try_from(rpc.as_str()).ok(),
+            Some(rpc) => Some(CliEndpoint::try_from(rpc.as_str()).map_err(|err| {
+                CliError::Parse(err.into(), "Failed to parse remote prover endpoint".to_string())
+            })?),
             None => None,
         };
 

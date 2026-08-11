@@ -1,7 +1,8 @@
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use miden_agglayer::create_bridge_account;
+use miden_agglayer::{BridgeRoles, create_bridge_account};
 use miden_client::Deserializable;
 use miden_client::account::{AccountFile, AccountId, AccountType};
 use miden_client::auth::RPO_FALCON_SCHEME_ID;
@@ -22,6 +23,13 @@ pub mod agglayer_bridge_in_out;
 mod agglayer_test_utils;
 pub mod ger;
 pub mod note_reader;
+
+/// The `AggLayer` network ID assigned to the Miden chain.
+///
+/// Bridge-in asserts that a claim leaf's `destination_network` equals the value the bridge account
+/// was built with, so this must match the `MIDEN_NETWORK_ID` used to generate the Solidity test
+/// vectors under `foundry-vectors/`.
+const MIDEN_NETWORK_ID: u32 = 77;
 
 // AGGLAYER CONFIG
 // ================================================================================================
@@ -218,12 +226,14 @@ pub async fn setup_core_accounts(
     // The bridge is an `AuthNetworkAccount`. Create it (unconfigured) and distribute it to all
     // three clients so each can build transactions that reference it.
     let bridge_seed = bridge_admin.client.rng().draw_word();
-    let bridge_account = create_bridge_account(
-        bridge_seed,
-        bridge_admin_account.id(),
-        ger_manager_account.id(),
-        ger_manager_account.id(),
-    );
+    let roles = BridgeRoles::new(
+        BTreeSet::from([bridge_admin_account.id()]),
+        BTreeSet::from([ger_manager_account.id()]),
+        BTreeSet::from([ger_manager_account.id()]),
+    )
+    .context("failed to build bridge roles")?;
+    let bridge_account =
+        create_bridge_account(bridge_seed, bridge_admin_account.id(), roles, MIDEN_NETWORK_ID);
     println!("[setup]   bridge admin:  {}", bridge_admin_account.id());
     println!("[setup]   GER manager:   {}", ger_manager_account.id());
     println!("[setup]   bridge:        {}", bridge_account.id());
@@ -240,6 +250,14 @@ pub async fn setup_core_accounts(
         .await?;
     wait_for_tx(&mut bridge_admin.client, tx_id).await?;
     println!("[setup] Bridge account deployed on-chain");
+
+    // Only the submitting client advanced past the deploy. Creating a note aimed at the bridge
+    // makes an FPI call into it to price the note, and the kernel resolves that foreign account
+    // against the transaction's reference block, so a client still anchored before the deploy
+    // block cannot see the account at all.
+    for pair in [&mut *ger_manager, &mut *user] {
+        pair.client.sync_state().await?;
+    }
 
     Ok((bridge_admin_account.id(), ger_manager_account.id(), bridge_account.id()))
 }

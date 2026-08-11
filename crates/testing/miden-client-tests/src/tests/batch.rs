@@ -28,7 +28,7 @@ use miden_client::transaction::{
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
 use miden_protocol::Felt;
 use miden_protocol::crypto::rand::RandomCoin;
-use miden_testing::{Auth, MockChainBuilder, TxContextInput};
+use miden_testing::{Auth, MockChainBuilder, MockTransactionInput};
 
 use crate::tests::{create_test_client, seed_mock_transaction_encryption_key};
 
@@ -56,8 +56,7 @@ async fn submit_proven_batch_returns_chain_tip() {
     let tx_context = rpc_api
         .mock_chain
         .read()
-        .build_tx_context(TxContextInput::AccountId(account_id), &[], &[])
-        .unwrap()
+        .build_transaction(MockTransactionInput::AccountId(account_id))
         .build()
         .unwrap();
     let executed_tx = Box::pin(tx_context.execute()).await.unwrap();
@@ -185,8 +184,7 @@ async fn apply_transaction_batch_rolls_back_on_mid_batch_failure() {
     let tx_ctx_a = rpc_api
         .mock_chain
         .read()
-        .build_tx_context(TxContextInput::AccountId(a_id), &[], &[])
-        .unwrap()
+        .build_transaction(MockTransactionInput::AccountId(a_id))
         .build()
         .unwrap();
     let executed_a = Box::pin(tx_ctx_a.execute()).await.unwrap();
@@ -194,8 +192,7 @@ async fn apply_transaction_batch_rolls_back_on_mid_batch_failure() {
     let tx_ctx_b = rpc_api
         .mock_chain
         .read()
-        .build_tx_context(TxContextInput::AccountId(b_id), &[], &[])
-        .unwrap()
+        .build_transaction(MockTransactionInput::AccountId(b_id))
         .build()
         .unwrap();
     let executed_b = Box::pin(tx_ctx_b.execute()).await.unwrap();

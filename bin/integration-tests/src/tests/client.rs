@@ -1752,7 +1752,7 @@ pub async fn test_get_account_storage_map_key_filtering(client_config: ClientCon
 
     let account = AccountBuilder::new(Default::default())
         .with_component(component)
-        .with_auth_component(auth_component)
+        .with_component(auth_component)
         .account_type(AccountType::Public)
         .build_with_schema_commitment()
         .context("failed to build account")?;

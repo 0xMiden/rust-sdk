@@ -92,6 +92,22 @@ fn init_with_params() {
 }
 
 #[test]
+fn init_rejects_invalid_remote_prover_endpoint() {
+    let temp_dir = temp_dir().join(format!("cli-test-{}", rand::rng().random::<u64>()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let mut init_cmd = cargo_bin_cmd!("miden-client");
+    init_cmd.args(["init", "--local", "--remote-prover-endpoint", "localhost:not-a-port"]);
+    init_cmd.current_dir(&temp_dir).assert().failure();
+
+    let config_path = temp_dir.join(MIDEN_DIR).join("miden-client.toml");
+    assert!(
+        !config_path.exists(),
+        "init should not write a config when the remote prover endpoint is invalid"
+    );
+}
+
+#[test]
 #[serial_test::file_serial]
 fn silent_initialization_uses_default_values() {
     let miden_home = set_isolated_miden_home();
@@ -180,6 +196,24 @@ fn miden_directory_structure_creation() {
 
     let basic_faucet_package = packages_dir.join("basic-fungible-faucet.masp");
     assert!(basic_faucet_package.exists(), "basic-fungible-faucet package should be created");
+
+    let non_fungible_faucet_package = packages_dir.join("basic-non-fungible-faucet.masp");
+    assert!(
+        non_fungible_faucet_package.exists(),
+        "basic-non-fungible-faucet package should be created"
+    );
+
+    let guarded_multisig_auth_package = packages_dir.join("auth/guarded-multisig-auth.masp");
+    assert!(
+        guarded_multisig_auth_package.exists(),
+        "guarded-multisig-auth package should be created"
+    );
+
+    let network_account_auth_package = packages_dir.join("auth/network-account-auth.masp");
+    assert!(
+        network_account_auth_package.exists(),
+        "network-account-auth package should be created"
+    );
 
     // Verify config file contains correct paths relative to config file location
     let config_content = std::fs::read_to_string(&config_file).unwrap();
@@ -311,13 +345,14 @@ async fn token_symbol_mapping() -> Result<()> {
     let fungible_faucet_account_id = new_faucet_cli(&temp_dir, AccountType::Private);
 
     // Encode the faucet ID as bech32 using the same NetworkId the CLI derives from its
-    // configured endpoint. The token symbol map's `id` field accepts bech32 only.
+    // configured endpoint. The token symbol map's `address` field accepts bech32 only.
     let faucet_id = AccountId::from_hex(&fungible_faucet_account_id).unwrap();
-    let bech32_id = Address::new(faucet_id).encode(endpoint.to_network_id());
+    let bech32_address = Address::new(faucet_id).encode(endpoint.to_network_id());
 
     // Create a token symbol mapping file in the MIDEN_DIR directory
     let token_symbol_map_path = temp_dir.join(MIDEN_DIR).join("token_symbol_map.toml");
-    let token_symbol_map_content = format!(r#"BTC = {{ id = "{bech32_id}", decimals = 10 }}"#);
+    let token_symbol_map_content =
+        format!(r#"BTC = {{ address = "{bech32_address}", decimals = 10 }}"#);
     fs::write(&token_symbol_map_path, token_symbol_map_content).unwrap();
 
     sync_cli(&temp_dir);
@@ -1686,9 +1721,7 @@ fn call_nonexistent_procedure() {
 
 /// Helper: builds the `call-test` package (arithmetic + storage procedures) at runtime and
 /// writes the serialized `.masp` to `out_path`.
-fn call_test_exports(
-    library: &miden_client::assembly::Library,
-) -> Vec<miden_client::vm::PackageExport> {
+fn call_test_exports(package: &miden_client::vm::Package) -> Vec<miden_client::vm::PackageExport> {
     use miden_client::vm::{PackageExport, ProcedureExport, QualifiedProcedureName};
     use midenc_hir_type::{CallConv, FunctionType, Type};
 
@@ -1709,9 +1742,10 @@ fn call_test_exports(
     ];
 
     let mut exports = Vec::new();
-    for module_info in library.module_infos() {
-        for (_, proc_info) in module_info.procedures() {
-            let name = QualifiedProcedureName::new(module_info.path(), proc_info.name.clone());
+    for module_descriptor in package.module_descriptors() {
+        for (_, proc_info) in module_descriptor.procedures() {
+            let name =
+                QualifiedProcedureName::new(module_descriptor.path(), proc_info.name.clone());
             let override_sig = signature_overrides
                 .iter()
                 .find(|(n, _)| *n == proc_info.name.as_str())
@@ -1739,7 +1773,7 @@ fn build_call_test_masp(out_path: &Path) {
         ValueSlotSchema,
         WordSchema,
     };
-    use miden_client::assembly::{CodeBuilder, Library};
+    use miden_client::assembly::CodeBuilder;
     use miden_client::vm::{Package, Section, SectionId, TargetType};
 
     let call_test_code = r#"
@@ -1774,7 +1808,7 @@ fn build_call_test_masp(out_path: &Path) {
         end
     "#;
 
-    let library: Library = CodeBuilder::default()
+    let component_package: Package = CodeBuilder::default()
         .compile_component_code("miden::testing::call_test", call_test_code)
         .expect("failed to compile call-test component")
         .into();
@@ -1797,8 +1831,8 @@ fn build_call_test_masp(out_path: &Path) {
 
     let metadata = AccountComponentMetadata::new("call-test").with_storage_schema(storage_schema);
 
-    let exports = call_test_exports(&library);
-    let modules = library.module_infos().map(|module_info| {
+    let exports = call_test_exports(&component_package);
+    let modules = component_package.module_descriptors().map(|module_info| {
         miden_mast_package::PackageModule::new(
             std::sync::Arc::from(module_info.path().to_path_buf().into_boxed_path()),
             module_info
@@ -1813,7 +1847,7 @@ fn build_call_test_masp(out_path: &Path) {
         metadata.name().to_string().into(),
         metadata.version().clone(),
         TargetType::AccountComponent,
-        library.mast_forest().clone(),
+        component_package.mast_forest().clone(),
         exports,
         modules,
         [],
@@ -2097,43 +2131,7 @@ fn create_account_with_multisig_auth() {
     create_account_cmd.current_dir(&temp_dir).assert().success();
 }
 
-/// Tests creating an account with the acl-auth component.
-#[test]
-fn create_account_with_acl_auth() {
-    let temp_dir = init_cli().1;
-
-    // Create init storage data file for acl-auth with a test public key
-    let init_storage_data_toml = r#"
-        "miden::standards::auth::singlesig_acl::pub_key" = "0x0000000000000000000000000000000000000000000000000000000000000001"
-        "miden::standards::auth::singlesig_acl::scheme" = "Falcon512Poseidon2"
-        "miden::standards::auth::singlesig_acl::config.num_trigger_procs" = "1"
-        "miden::standards::auth::singlesig_acl::config.allow_unauthorized_output_notes" = "0"
-        "miden::standards::auth::singlesig_acl::config.allow_unauthorized_input_notes" = "0"
-
-        "miden::standards::auth::singlesig_acl::trigger_procedure_roots" = [
-            { key = ["0", "0", "0", "0"], value = "0xd2d1b6229d7cfb9f2ada31c5cb61453cf464f91828e124437c708eec55b9cd07" }
-        ]
-        "#;
-    let file_path = temp_dir.join("acl_init_data.toml");
-    fs::write(&file_path, init_storage_data_toml).unwrap();
-
-    let mut create_account_cmd = cargo_bin_cmd!("miden-client");
-    create_account_cmd.args([
-        "new-account",
-        "-t",
-        "private",
-        "-p",
-        "basic-wallet",
-        "-p",
-        "auth/acl-auth",
-        "-i",
-        "acl_init_data.toml",
-    ]);
-
-    create_account_cmd.current_dir(&temp_dir).assert().success();
-}
-
-// Tests creating an account with the acl-auth component.
+/// Tests creating an account with the ecdsa-auth component.
 #[test]
 fn create_account_with_ecdsa_auth() {
     let temp_dir = init_cli().1;

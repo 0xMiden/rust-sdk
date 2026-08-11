@@ -20,7 +20,7 @@ miden-client <command> <flags> <arguments>
 
 ### `init`
 
-Creates a configuration file for the client in the current directory. Running this command is optional, as the client will self-initialize by default. By default, the command uses the Testnet network.
+Creates a global configuration file for the client. Pass `--local` to create one in the current directory. Running this command is optional, as the client will self-initialize by default. By default, the command uses the Testnet network.
 
 ```sh
 # This will create a config file named `miden-client.toml` using default values
@@ -33,10 +33,10 @@ miden-client init --network devnet
 miden-client init --network localhost
 
 # You can also specify a custom network
-miden-client init --network 18.203.155.106
+miden-client init --network http://18.203.155.106
 # You can specify the port
-miden-client init --network 18.203.155.106:8080
-# You can also specify the protocol (http/https)
+miden-client init --network http://18.203.155.106:8080
+# You can use HTTPS
 miden-client init --network https://18.203.155.106
 # You can specify both
 miden-client init --network https://18.203.155.106:1234
@@ -48,7 +48,7 @@ miden-client init --store-path db/store.sqlite3
 miden-client init --block-delta 250
 
 # You can provide both flags
-miden-client init --network 18.203.155.106 --store-path db/store.sqlite3
+miden-client init --network http://18.203.155.106 --store-path db/store.sqlite3
 
 # You can set a remote prover to offload the proving process (along with the `--delegate-proving` flag in transaction commands)
 miden-client init --remote-prover-endpoint <PROVER_URL>
@@ -352,7 +352,7 @@ miden-client address remove 0x17f13f4f83a8e8100c19d2961dfda2 mlcl1qple0ejnutx8zy
 
 #### Tips
 
-For `transfer` and `consume-notes`, you can omit the `--sender` and `--account` flags to use the default account defined in the [config](cli-config.md). If you omit the flag but have no default account defined in the config, you'll get an error instead.
+For `transfer` and `consume-notes`, you can omit the `--sender` and `--account` flags to use the client's [default account](cli-config.md#default-account-id). If you omit the flag but have no default account set, you'll get an error instead.
 
 For every command which needs an account ID (either wallet or faucet), you can also provide a partial ID instead of the full ID for each account. So instead of
 

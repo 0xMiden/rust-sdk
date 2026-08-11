@@ -172,14 +172,14 @@ mod tests {
 
         // Wallet component: provides standard wallet operations (no storage slots)
         let wallet_component = AccountComponent::new(
-            BasicWallet::code().as_library().clone(),
+            BasicWallet::code().as_package().clone(),
             vec![],
             BasicWallet::component_metadata(),
         )
         .expect("basic wallet component should satisfy account component requirements");
 
         let account = AccountBuilder::new(config.seed)
-            .with_auth_component(AuthSingleSig::new(Approver::new(
+            .with_component(AuthSingleSig::new(Approver::new(
                 sk.public_key().to_commitment(),
                 AuthSchemeId::Falcon512Poseidon2,
             )))

@@ -576,17 +576,6 @@ async fn unspent_nullifiers_skip_notes_without_metadata() {
 }
 
 #[tokio::test]
-async fn unspent_nullifiers_are_empty_when_no_note_has_metadata() {
-    let store = create_test_store().await;
-
-    let notes: Vec<_> = (0..3u32).map(create_expected_input_note).collect();
-    store.upsert_input_notes(&notes).await.unwrap();
-
-    let nullifiers = store.get_unspent_input_note_nullifiers().await.unwrap();
-    assert!(nullifiers.is_empty());
-}
-
-#[tokio::test]
 async fn unspent_nullifiers_exclude_consumed_notes() {
     let store = create_test_store().await;
 

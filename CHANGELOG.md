@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+* [FIX][cli] Faucets created from the `basic-fungible-faucet` package now carry the pause flag storage slot, so minting from them no longer aborts with "storage slot with the provided name does not exist" ([#XXXX](https://github.com/0xMiden/rust-sdk/pull/XXXX)).
+
 ## 0.15.5 (2026-08-03)
 
 ### Breaking Changes

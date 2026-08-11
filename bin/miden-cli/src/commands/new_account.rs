@@ -14,6 +14,7 @@ use miden_client::account::component::{
     InitStorageData,
     MIDEN_PACKAGE_EXTENSION,
     MintPolicyConfig,
+    PausableStorage,
     PolicyRegistration,
     StorageSlotSchema,
     TokenName,
@@ -433,6 +434,42 @@ fn separate_auth_components(
     Ok((auth_component, regular_components))
 }
 
+/// Restores the `is_paused` storage slot on a fungible faucet component that was instantiated
+/// from a package.
+///
+/// The faucet's code reads `is_paused`, and the typed `FungibleFaucet` component contributes the
+/// slot when it builds its storage. The storage schema published in the component's metadata does
+/// not declare that slot though, and instantiating a component from a package derives its storage
+/// exclusively from that schema. A faucet created from `basic-fungible-faucet.masp` therefore
+/// lacks `is_paused`, and every mint against it aborts in the transaction kernel with "storage
+/// slot with the provided name does not exist".
+///
+/// TODO: fix upstream instead, by declaring `PausableStorage::is_paused_slot_schema()` in
+/// `FungibleFaucet::component_metadata()`. That fixes every consumer of the package, and this
+/// workaround can then be removed.
+fn restore_faucet_pausable_slot(component: AccountComponent) -> Result<AccountComponent, CliError> {
+    if component.metadata().name() != FungibleFaucet::NAME {
+        return Ok(component);
+    }
+
+    let pausable_slot_name = PausableStorage::is_paused_slot();
+    if component.storage_slots().iter().any(|slot| slot.name() == pausable_slot_name) {
+        return Ok(component);
+    }
+
+    let mut storage_slots = component.storage_slots().to_vec();
+    storage_slots.push(PausableStorage::default().into_slot());
+
+    AccountComponent::new(
+        component.component_code().clone(),
+        storage_slots,
+        component.metadata().clone(),
+    )
+    .map_err(|err| {
+        CliError::Account(err, "failed to add the pause flag slot to the faucet component".into())
+    })
+}
+
 /// Returns `true` when the CLI should inject a default `TokenPolicyManager` for a fungible
 /// faucet account built from package components.
 ///
@@ -683,7 +720,7 @@ fn process_packages(
                 )
             })?;
 
-        account_components.push(account_component);
+        account_components.push(restore_faucet_pausable_slot(account_component)?);
     }
 
     Ok(account_components)
@@ -732,5 +769,21 @@ mod tests {
         let regular_components = vec![AccountComponent::from(BasicWallet)];
 
         assert!(!should_add_implicit_token_policy_manager(&regular_components));
+    }
+
+    #[test]
+    fn pausable_slot_is_not_added_to_non_faucet_components() {
+        let wallet = AccountComponent::from(BasicWallet);
+        let slot_count = wallet.storage_slots().len();
+
+        let restored = restore_faucet_pausable_slot(wallet).unwrap();
+
+        assert_eq!(restored.storage_slots().len(), slot_count);
+        assert!(
+            !restored
+                .storage_slots()
+                .iter()
+                .any(|slot| slot.name() == PausableStorage::is_paused_slot())
+        );
     }
 }

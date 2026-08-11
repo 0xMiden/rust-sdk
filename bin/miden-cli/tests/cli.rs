@@ -1,4 +1,5 @@
 use std::env::{self, temp_dir};
+use std::fmt::Write as _;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -310,6 +311,31 @@ async fn mint_with_untracked_account() -> Result<()> {
     // Wait until the faucet's mint transaction is committed on the node.
     // We sync for a committed transaction (not note) because the target account is untracked,
     // so the output note's tag won't be requested during sync and the note will never appear.
+    sync_until_committed_transaction(&temp_dir);
+    Ok(())
+}
+
+/// Mints from a faucet built through the plain `basic-fungible-faucet` package path, where every
+/// templated storage value comes from the init data file rather than from the
+/// `[fungible-faucet-metadata]` shortcut.
+///
+/// Both paths must yield a faucet whose storage carries every slot the faucet code reads, so the
+/// mint has to execute in the transaction kernel just like it does for a faucet built from the
+/// metadata block.
+#[tokio::test]
+async fn mint_from_package_created_faucet() -> Result<()> {
+    let temp_dir = init_cli().1;
+
+    let fungible_faucet_account_id = new_faucet_from_package_cli(&temp_dir, AccountType::Private);
+
+    sync_cli(&temp_dir);
+
+    mint_cli(
+        &temp_dir,
+        &AccountId::try_from(ACCOUNT_ID_REGULAR).unwrap().to_hex(),
+        &fungible_faucet_account_id,
+    );
+
     sync_until_committed_transaction(&temp_dir);
     Ok(())
 }
@@ -1445,6 +1471,66 @@ fn new_faucet_cli(cli_path: &Path, visibility: AccountType) -> String {
 
     let output = create_faucet_cmd.current_dir(cli_path).output().unwrap();
     assert!(output.status.success());
+
+    std::str::from_utf8(&output.stdout)
+        .unwrap()
+        .split_whitespace()
+        .skip_while(|&word| word != "-s")
+        .nth(1)
+        .unwrap()
+        .to_string()
+}
+
+/// Creates a new faucet account through the plain package path, without the
+/// `[fungible-faucet-metadata]` shortcut, using the CLI given by `cli_path`.
+///
+/// The init data is derived from the package's own storage schema so every templated value is
+/// supplied up front and the command never falls back to prompting on stdin.
+fn new_faucet_from_package_cli(cli_path: &Path, visibility: AccountType) -> String {
+    const INIT_DATA_FILENAME: &str = "package_init_data.toml";
+
+    let mut init_storage_data_toml = String::new();
+    for (value_name, requirement) in FungibleFaucet::component_metadata().schema_requirements() {
+        if requirement.default_value.is_some() {
+            continue;
+        }
+
+        let name = value_name.to_string();
+        let value = if name.ends_with(".symbol") {
+            "BTC"
+        } else if name.ends_with(".max_supply") {
+            "10000000"
+        } else if name.ends_with(".decimals") {
+            "10"
+        } else if requirement.r#type.to_string() == "bool" {
+            "false"
+        } else {
+            "0"
+        };
+
+        writeln!(init_storage_data_toml, "\"{name}\" = \"{value}\"").unwrap();
+    }
+
+    fs::write(cli_path.join(INIT_DATA_FILENAME), init_storage_data_toml).unwrap();
+
+    let mut create_faucet_cmd = cargo_bin_cmd!("miden-client");
+    create_faucet_cmd.args([
+        "new-account",
+        "-t",
+        visibility.to_string().as_str(),
+        "-p",
+        "basic-fungible-faucet",
+        "-i",
+        INIT_DATA_FILENAME,
+    ]);
+
+    let output = create_faucet_cmd.current_dir(cli_path).output().unwrap();
+    assert!(
+        output.status.success(),
+        "new_faucet_from_package_cli failed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     std::str::from_utf8(&output.stdout)
         .unwrap()

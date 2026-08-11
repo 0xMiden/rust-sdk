@@ -2481,12 +2481,8 @@ async fn apply_storage_patch_directly(
             let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
 
             let mut update = AccountUpdate::new();
-            let touched_map_slots = smt_forest.add_storage_patch_ops(
-                &mut update,
-                account_id,
-                &old_map_roots,
-                &storage_patch,
-            )?;
+            let touched_map_slots =
+                update.storage_patch(account_id, &old_map_roots, &storage_patch);
             let revision = allocate_forest_revision(&tx).into_store_error()?;
             smt_forest.apply(revision, update)?;
 

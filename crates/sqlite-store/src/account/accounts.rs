@@ -17,7 +17,6 @@ use miden_client::account::{
     PartialStorage,
     PartialStorageMap,
     StorageMapKey,
-    StorageSlotContent,
     StorageSlotName,
     StorageSlotType,
 };
@@ -479,17 +478,8 @@ impl SqliteStore {
         // Build one forest update covering the vault and every changed map slot, and apply it at
         // a freshly allocated revision.
         let mut update = AccountUpdate::new();
-        update.vault_ops(
-            account_id,
-            patch.vault().updated_assets(),
-            patch.vault().removed_asset_ids().copied(),
-        );
-        let touched_map_slots = smt_forest.add_storage_patch_ops(
-            &mut update,
-            account_id,
-            old_map_roots,
-            patch.storage(),
-        )?;
+        update.vault_patch(account_id, patch.vault());
+        let touched_map_slots = update.storage_patch(account_id, old_map_roots, patch.storage());
 
         let revision = allocate_forest_revision(tx).into_store_error()?;
         smt_forest.apply(revision, update)?;
@@ -551,30 +541,17 @@ impl SqliteStore {
         vault: &AssetVault,
         storage: &AccountStorage,
     ) -> Result<(), StoreError> {
-        let vault_target: BTreeMap<Word, Word> = vault
-            .assets()
-            .map(|asset| (asset.id().hash().into(), asset.to_value_word()))
-            .collect();
+        let mut update = AccountUpdate::new();
+        update.full_state(account_id, vault.assets(), storage.slots().iter());
 
-        let mut map_targets: BTreeMap<StorageSlotName, BTreeMap<Word, Word>> = storage
-            .slots()
-            .iter()
-            .filter_map(|slot| match slot.content() {
-                StorageSlotContent::Map(map) => Some((
-                    slot.name().clone(),
-                    map.entries().map(|(key, value)| (Word::from(key.hash()), *value)).collect(),
-                )),
-                StorageSlotContent::Value(_) => None,
-            })
-            .collect();
-
-        // Slots that still have stored rows but are absent from the new state get an empty
-        // target, so their lineages are emptied instead of keeping their old entries.
+        // Slots that still have stored rows but are absent from the new state must be emptied
+        // rather than keeping their old entries. Slots the new state does repopulate keep the
+        // entries recorded above; this only marks the lineage exhaustive.
         for slot_name in Self::query_map_slot_names(tx, account_id)? {
-            map_targets.entry(slot_name).or_default();
+            update.clear_map(account_id, &slot_name);
         }
 
-        Self::reconcile_forest_lineages(tx, smt_forest, account_id, &vault_target, &map_targets)
+        Self::apply_forest_update(tx, smt_forest, update)
     }
 
     /// Reconciles the account's forest lineages to the state currently stored in the latest
@@ -589,66 +566,26 @@ impl SqliteStore {
         account_id: AccountId,
         extra_map_slots: &[StorageSlotName],
     ) -> Result<(), StoreError> {
-        let account_id_bytes = account_id.to_bytes();
+        let assets = query_vault_assets(tx, account_id)?;
+        let slots = query_storage_slots(tx, account_id, &AccountStorageFilter::All)?;
 
-        let mut vault_target: BTreeMap<Word, Word> = BTreeMap::new();
-        let mut stmt = tx
-            .prepare("SELECT asset_id, asset FROM latest_account_assets WHERE account_id = ?")
-            .into_store_error()?;
-        let rows = stmt
-            .query_map(params![&account_id_bytes], |row| {
-                Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
-            })
-            .into_store_error()?;
-        for row in rows {
-            let (asset_id_blob, asset_blob) = row.into_store_error()?;
-            let asset_id = AssetId::read_from_bytes(&asset_id_blob)?;
-            vault_target.insert(asset_id.hash().into(), Word::read_from_bytes(&asset_blob)?);
+        let mut update = AccountUpdate::new();
+        update.full_state(account_id, assets.into_iter(), slots.values());
+        for slot_name in extra_map_slots {
+            update.clear_map(account_id, slot_name);
         }
 
-        let mut map_targets: BTreeMap<StorageSlotName, BTreeMap<Word, Word>> = extra_map_slots
-            .iter()
-            .map(|slot_name| (slot_name.clone(), BTreeMap::new()))
-            .collect();
-        let mut stmt = tx
-            .prepare(
-                "SELECT slot_name, key, value FROM latest_storage_map_entries \
-                 WHERE account_id = ?",
-            )
-            .into_store_error()?;
-        let rows = stmt
-            .query_map(params![&account_id_bytes], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?, row.get::<_, Vec<u8>>(2)?))
-            })
-            .into_store_error()?;
-        for row in rows {
-            let (slot_name, key_blob, value_blob) = row.into_store_error()?;
-            let slot_name = StorageSlotName::new(slot_name)
-                .map_err(|e| StoreError::ParsingError(e.to_string()))?;
-            let key = StorageMapKey::new(Word::read_from_bytes(&key_blob)?);
-            map_targets
-                .entry(slot_name)
-                .or_default()
-                .insert(Word::from(key.hash()), Word::read_from_bytes(&value_blob)?);
-        }
-
-        Self::reconcile_forest_lineages(tx, smt_forest, account_id, &vault_target, &map_targets)
+        Self::apply_forest_update(tx, smt_forest, update)
     }
 
-    /// Applies one forest update that makes the account's lineages match the provided targets.
-    fn reconcile_forest_lineages(
+    /// Applies a recorded forest update at a freshly allocated revision.
+    fn apply_forest_update(
         tx: &Transaction<'_>,
         smt_forest: &mut ScopedAccountForest<'_, '_>,
-        account_id: AccountId,
-        vault_target: &BTreeMap<Word, Word>,
-        map_targets: &BTreeMap<StorageSlotName, BTreeMap<Word, Word>>,
+        update: AccountUpdate,
     ) -> Result<(), StoreError> {
-        let mut update = AccountUpdate::new();
-        smt_forest.reconcile_account(&mut update, account_id, vault_target, map_targets)?;
-
         let revision = allocate_forest_revision(tx).into_store_error()?;
-        smt_forest.apply(revision, update)?;
-        Ok(())
+        smt_forest.apply(revision, update)
     }
 
     /// Returns the stored latest header of an account, or [`StoreError::AccountDataNotFound`] if

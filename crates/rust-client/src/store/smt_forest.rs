@@ -5,10 +5,13 @@ use alloc::vec::Vec;
 use miden_protocol::account::{
     AccountId,
     AccountStoragePatch,
+    AccountVaultPatch,
     StorageMap,
     StorageMapKey,
     StorageMapPatch,
     StorageMapWitness,
+    StorageSlot,
+    StorageSlotContent,
     StorageSlotName,
 };
 use miden_protocol::asset::{Asset, AssetId, AssetWitness};
@@ -53,64 +56,118 @@ fn storage_map_lineage_id(account_id: AccountId, slot_name: &StorageSlotName) ->
 // ACCOUNT UPDATE
 // ================================================================================================
 
-/// A set of pending account SMT changes, applied as a single batch by
-/// [`AccountSmtForest::apply`].
-///
-/// Operations accumulate per account lineage. Where a key receives more than one operation, the
-/// last one recorded wins, which lets callers stage a wholesale reset followed by the entries
-/// that survive it.
-pub struct AccountUpdate {
-    batch: SmtForestUpdateBatch,
+/// Changes recorded for one lineage.
+#[derive(Default)]
+struct LineageOps {
+    /// When set, the lineage's root must equal this before the pairs are layered onto it.
+    expect_root: Option<Word>,
+    /// When set, keys absent from `pairs` are removed, so the tree ends up holding exactly the
+    /// recorded pairs.
+    exhaustive: bool,
+    /// Key-value pairs in recording order. An empty-word value is a removal, and a later pair
+    /// for the same key supersedes an earlier one.
+    pairs: Vec<(Word, Word)>,
 }
 
-impl Default for AccountUpdate {
-    fn default() -> Self {
-        Self::new()
-    }
+/// Account SMT changes, applied as a single batch by [`AccountSmtForest::apply`].
+///
+/// Recording is pure bookkeeping: the entries a change implies are worked out when the update is
+/// applied, which is where the forest can be read.
+#[derive(Default)]
+pub struct AccountUpdate {
+    ops: BTreeMap<LineageId, LineageOps>,
 }
 
 impl AccountUpdate {
-    /// Creates an update with no pending changes.
+    /// Creates an update with no recorded changes.
     pub fn new() -> Self {
-        Self { batch: SmtForestUpdateBatch::empty() }
+        Self::default()
     }
 
-    /// Records vault asset changes for an account.
-    pub fn vault_ops(
-        &mut self,
-        account_id: AccountId,
-        updated_assets: impl Iterator<Item = Asset>,
-        removed_asset_ids: impl Iterator<Item = AssetId>,
-    ) {
-        let lineage = vault_lineage_id(account_id);
-        let ops = self.batch.operations(lineage);
-        for asset in updated_assets {
-            ops.add_insert(asset.id().hash().into(), asset.to_value_word());
-        }
-        for asset_id in removed_asset_ids {
-            ops.add_remove(asset_id.hash().into());
-        }
+    /// Records an account's vault patch.
+    pub fn vault_patch(&mut self, account_id: AccountId, patch: &AccountVaultPatch) {
+        let vault = self.entry(vault_lineage_id(account_id));
+        vault
+            .pairs
+            .extend(patch.updated_assets().map(|a| (a.id().hash().into(), a.to_value_word())));
+        vault
+            .pairs
+            .extend(patch.removed_asset_ids().map(|id| (id.hash().into(), EMPTY_WORD)));
     }
 
-    /// Records storage map entry changes for one of an account's map slots.
+    /// Records an account's storage patch, returning the map slots it touched.
     ///
-    /// Entries with an empty-word value are removals.
-    pub fn map_ops(
+    /// Map slots are layered onto their current tree for `Update` patches and replaced wholesale
+    /// for `Create` and `Remove`. An `Update` also records the map's old root, which [`apply`]
+    /// verifies before layering: unlike the vault root, map roots are not re-checked against the
+    /// account header afterwards, so this is the only guard against the forest and the account
+    /// tables having diverged.
+    ///
+    /// [`apply`]: AccountSmtForest::apply
+    pub fn storage_patch(
         &mut self,
         account_id: AccountId,
-        slot_name: &StorageSlotName,
-        entries: impl Iterator<Item = (StorageMapKey, Word)>,
-    ) {
-        let lineage = storage_map_lineage_id(account_id, slot_name);
-        let ops = self.batch.operations(lineage);
-        for (key, value) in entries {
-            let key_word = Word::from(key.hash());
-            if value == EMPTY_WORD {
-                ops.add_remove(key_word);
-            } else {
-                ops.add_insert(key_word, value);
+        old_map_roots: &BTreeMap<StorageSlotName, Word>,
+        patch: &AccountStoragePatch,
+    ) -> Vec<StorageSlotName> {
+        let default_root = StorageMap::default().root();
+        let mut touched = Vec::new();
+        for (slot_name, map_patch) in patch.maps() {
+            touched.push(slot_name.clone());
+
+            let ops = self.entry(storage_map_lineage_id(account_id, slot_name));
+            ops.pairs.extend(
+                map_patch
+                    .entries()
+                    .into_iter()
+                    .flat_map(|e| e.as_map().iter())
+                    .map(|(key, value)| (Word::from(key.hash()), *value)),
+            );
+            match map_patch {
+                StorageMapPatch::Update { .. } => {
+                    // A lineage the forest does not know yet starts from the empty tree, which is
+                    // consistent with an absent old root.
+                    ops.expect_root =
+                        Some(old_map_roots.get(slot_name).copied().unwrap_or(default_root));
+                },
+                StorageMapPatch::Create { .. } | StorageMapPatch::Remove => ops.exhaustive = true,
             }
         }
+
+        touched
+    }
+
+    /// Records that an account's vault and map slots hold exactly the provided state.
+    ///
+    /// Slots that the account no longer has are not implied by `slots` and must be named with
+    /// [`Self::clear_map`].
+    pub fn full_state<'a>(
+        &mut self,
+        account_id: AccountId,
+        assets: impl Iterator<Item = Asset>,
+        slots: impl Iterator<Item = &'a StorageSlot>,
+    ) {
+        let vault = self.entry(vault_lineage_id(account_id));
+        vault.exhaustive = true;
+        vault.pairs.extend(assets.map(|a| (a.id().hash().into(), a.to_value_word())));
+
+        for slot in slots {
+            if let StorageSlotContent::Map(map) = slot.content() {
+                let ops = self.entry(storage_map_lineage_id(account_id, slot.name()));
+                ops.exhaustive = true;
+                ops.pairs
+                    .extend(map.entries().map(|(key, value)| (Word::from(key.hash()), *value)));
+            }
+        }
+    }
+
+    /// Records that one of an account's map slots holds nothing.
+    pub fn clear_map(&mut self, account_id: AccountId, slot_name: &StorageSlotName) {
+        self.entry(storage_map_lineage_id(account_id, slot_name)).exhaustive = true;
+    }
+
+    fn entry(&mut self, lineage: LineageId) -> &mut LineageOps {
+        self.ops.entry(lineage).or_default()
     }
 }
 
@@ -205,105 +262,10 @@ impl<B: Backend> AccountSmtForest<B> {
         Ok(StorageMapWitness::new(proof, [key])?)
     }
 
-    // UPDATE BUILDING
-    // --------------------------------------------------------------------------------------------
-
-    /// Records the removal of every entry currently stored in one of an account's map slots.
-    ///
-    /// Entries added to `update` after this call take precedence, so a reset followed by the
-    /// slot's new entries leaves the lineage holding exactly those entries.
-    pub fn reset_map(
-        &self,
-        update: &mut AccountUpdate,
-        account_id: AccountId,
-        slot_name: &StorageSlotName,
-    ) -> Result<(), StoreError> {
-        let lineage = storage_map_lineage_id(account_id, slot_name);
-        let stored_keys = self.lineage_entry_keys(lineage)?;
-
-        let ops = update.batch.operations(lineage);
-        for key in stored_keys {
-            ops.add_remove(key);
-        }
-        Ok(())
-    }
-
-    /// Records the operations for every map slot of a storage patch, returning the touched slot
-    /// names.
-    ///
-    /// `Update` layers its entries onto the lineage's latest tree, after verifying that the
-    /// tree's root matches the old root recorded in the account tables (a mismatch means the
-    /// forest and the account state diverged). `Create` and `Remove` reset the lineage first, so
-    /// the resulting tree reflects only the patch's own entries, or collapses to the empty root
-    /// for `Remove`.
-    pub fn add_storage_patch_ops(
-        &self,
-        update: &mut AccountUpdate,
-        account_id: AccountId,
-        old_map_roots: &BTreeMap<StorageSlotName, Word>,
-        storage_patch: &AccountStoragePatch,
-    ) -> Result<Vec<StorageSlotName>, StoreError> {
-        let default_map_root = StorageMap::default().root();
-        let mut touched = Vec::new();
-
-        for (slot_name, map_patch) in storage_patch.maps() {
-            touched.push(slot_name.clone());
-
-            match map_patch {
-                StorageMapPatch::Update { .. } => {
-                    // A lineage the forest does not know yet starts from the empty tree, which
-                    // is consistent with an absent old root.
-                    let forest_root =
-                        self.map_root(account_id, slot_name).unwrap_or(default_map_root);
-                    let expected_root =
-                        old_map_roots.get(slot_name).copied().unwrap_or(default_map_root);
-                    if forest_root != expected_root {
-                        return Err(StoreError::MerkleStoreError(MerkleError::ConflictingRoots {
-                            expected_root,
-                            actual_root: forest_root,
-                        }));
-                    }
-                },
-                StorageMapPatch::Create { .. } | StorageMapPatch::Remove => {
-                    self.reset_map(update, account_id, slot_name)?;
-                },
-            }
-
-            let entries = map_patch
-                .entries()
-                .into_iter()
-                .flat_map(|e| e.as_map().iter())
-                .map(|(key, value)| (*key, *value));
-            update.map_ops(account_id, slot_name, entries);
-        }
-
-        Ok(touched)
-    }
-
-    /// Records the operations that make an account's lineages match the provided targets
-    /// exactly: keys absent from a target are removed and every target pair is upserted.
-    ///
-    /// Both targets are keyed by hashed SMT key. A slot mapped to an empty target has its
-    /// lineage reset to the empty tree, so callers undoing account state should include every
-    /// slot that may still hold entries.
-    pub fn reconcile_account(
-        &self,
-        update: &mut AccountUpdate,
-        account_id: AccountId,
-        vault_target: &BTreeMap<Word, Word>,
-        map_targets: &BTreeMap<StorageSlotName, BTreeMap<Word, Word>>,
-    ) -> Result<(), StoreError> {
-        self.reconcile_lineage(update, vault_lineage_id(account_id), vault_target)?;
-        for (slot_name, target) in map_targets {
-            self.reconcile_lineage(update, storage_map_lineage_id(account_id, slot_name), target)?;
-        }
-        Ok(())
-    }
-
     // MUTATIONS
     // --------------------------------------------------------------------------------------------
 
-    /// Applies a pending update at the given version.
+    /// Applies a recorded update at the given version.
     ///
     /// Lineages unknown to the forest are created from the empty tree; known lineages are
     /// updated from their latest tree. `new_version` must be strictly greater than the latest
@@ -314,10 +276,49 @@ impl<B: Backend> AccountSmtForest<B> {
         new_version: VersionId,
         update: AccountUpdate,
     ) -> Result<(), StoreError> {
-        let mutations = self
-            .forest
-            .compute_forest_mutations(new_version, update.batch)
-            .map_err(forest_error)?;
+        let empty_root = StorageMap::default().root();
+        let mut batch = SmtForestUpdateBatch::empty();
+
+        for (lineage, ops) in update.ops {
+            if let Some(expected_root) = ops.expect_root {
+                let actual_root = self.forest.latest_root(lineage).unwrap_or(empty_root);
+                if actual_root != expected_root {
+                    return Err(StoreError::MerkleStoreError(MerkleError::ConflictingRoots {
+                        expected_root,
+                        actual_root,
+                    }));
+                }
+            }
+
+            // Removals are staged as they are seen so a key removed and then re-inserted ends up
+            // inserted, and vice versa: the batch keeps the last operation per key.
+            let stored_keys = if ops.exhaustive {
+                self.lineage_entry_keys(lineage)?
+            } else {
+                Vec::new()
+            };
+            let batch_ops = batch.operations(lineage);
+            let mut target = BTreeMap::new();
+            for (key, value) in ops.pairs {
+                if value == EMPTY_WORD {
+                    target.remove(&key);
+                    batch_ops.add_remove(key);
+                } else {
+                    target.insert(key, value);
+                }
+            }
+            for key in stored_keys {
+                if !target.contains_key(&key) {
+                    batch_ops.add_remove(key);
+                }
+            }
+            for (key, value) in target {
+                batch_ops.add_insert(key, value);
+            }
+        }
+
+        let mutations =
+            self.forest.compute_forest_mutations(new_version, batch).map_err(forest_error)?;
         self.forest.apply_mutations(mutations).map_err(forest_error)?;
         Ok(())
     }
@@ -359,27 +360,6 @@ impl<B: Backend> AccountSmtForest<B> {
         }
         Ok(keys)
     }
-
-    /// Records the operations that make one lineage match `target` exactly.
-    fn reconcile_lineage(
-        &self,
-        update: &mut AccountUpdate,
-        lineage: LineageId,
-        target: &BTreeMap<Word, Word>,
-    ) -> Result<(), StoreError> {
-        let stored_keys = self.lineage_entry_keys(lineage)?;
-
-        let ops = update.batch.operations(lineage);
-        for key in stored_keys {
-            if !target.contains_key(&key) {
-                ops.add_remove(key);
-            }
-        }
-        for (key, value) in target {
-            ops.add_insert(*key, *value);
-        }
-        Ok(())
-    }
 }
 
 // ERROR MAPPING
@@ -398,14 +378,12 @@ fn forest_error(err: LargeSmtForestError) -> StoreError {
 
 #[cfg(test)]
 mod tests {
-    use miden_protocol::account::StorageMapKey;
     use miden_protocol::asset::FungibleAsset;
     use miden_protocol::crypto::merkle::smt::ForestInMemoryBackend;
     use miden_protocol::testing::account_id::{
         ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET,
         ACCOUNT_ID_PUBLIC_NON_FUNGIBLE_FAUCET,
     };
-    use miden_protocol::{ONE, ZERO};
 
     use super::*;
 
@@ -421,8 +399,18 @@ mod tests {
         StorageSlotName::new(name).unwrap()
     }
 
+    fn asset(amount: u64) -> Asset {
+        FungibleAsset::new(account_a(), amount).unwrap().into()
+    }
+
     fn forest() -> AccountSmtForest<ForestInMemoryBackend> {
         AccountSmtForest::new(ForestInMemoryBackend::new()).unwrap()
+    }
+
+    fn set_vault(forest: &mut AccountSmtForest<ForestInMemoryBackend>, version: u64, of: &[Asset]) {
+        let mut update = AccountUpdate::new();
+        update.full_state(account_a(), of.iter().copied(), core::iter::empty::<&StorageSlot>());
+        forest.apply(version, update).unwrap();
     }
 
     /// Colliding lineages would silently serve one account's witnesses from another's tree, so
@@ -444,119 +432,58 @@ mod tests {
         );
     }
 
+    /// A full-state record is exhaustive: assets missing from it are dropped, not merged.
     #[test]
-    fn apply_updates_and_read_witnesses() {
+    fn full_state_replaces_previous_entries() {
         let mut forest = forest();
         let id = account_a();
+        let (old, new) = (asset(100), asset(250));
 
-        let asset: Asset = FungibleAsset::new(account_a(), 100).unwrap().into();
-        let map_slot = slot("miden::test::map");
-        let map_key = StorageMapKey::new([ONE, ZERO, ZERO, ZERO].into());
-        let map_value: Word = [ONE, ONE, ONE, ONE].into();
+        set_vault(&mut forest, 1, &[old]);
+        let (read, _) = forest
+            .get_asset_and_witness(id, forest.vault_root(id).unwrap(), old.id())
+            .unwrap();
+        assert_eq!(read, old);
 
-        let mut update = AccountUpdate::new();
-        update.vault_ops(id, [asset].into_iter(), core::iter::empty());
-        update.map_ops(id, &map_slot, [(map_key, map_value)].into_iter());
-        forest.apply(1, update).unwrap();
+        set_vault(&mut forest, 2, &[new]);
+        let (read, _) = forest
+            .get_asset_and_witness(id, forest.vault_root(id).unwrap(), new.id())
+            .unwrap();
+        assert_eq!(read, new);
 
-        let vault_root = forest.vault_root(id).unwrap();
-        let map_root = forest.map_root(id, &map_slot).unwrap();
-
-        // Witness reads against the recorded roots succeed.
-        let (read_asset, _witness) =
-            forest.get_asset_and_witness(id, vault_root, asset.id()).unwrap();
-        assert_eq!(read_asset, asset);
-
-        let witness =
-            forest.get_storage_map_item_witness(id, &map_slot, map_root, map_key).unwrap();
-        assert_eq!(witness.get(map_key), Some(map_value));
+        // Same faucet, so both assets share a vault key; the replacement is visible as the value.
+        assert_ne!(old.to_value_word(), new.to_value_word());
     }
 
+    /// An empty full state clears the vault rather than leaving the old entries in place.
+    #[test]
+    fn full_state_can_empty_a_vault() {
+        let mut forest = forest();
+        let id = account_a();
+        let held = asset(100);
+
+        set_vault(&mut forest, 1, &[held]);
+        set_vault(&mut forest, 2, &[]);
+
+        let vault_root = forest.vault_root(id).unwrap();
+        assert_eq!(vault_root, StorageMap::default().root());
+        assert!(matches!(
+            forest.get_asset_and_witness(id, vault_root, held.id()),
+            Err(StoreError::VaultKeyNotTracked(..))
+        ));
+    }
+
+    /// Witness reads are the point at which forest/account divergence is caught.
     #[test]
     fn witness_reads_reject_mismatched_roots() {
         let mut forest = forest();
-        let id = account_a();
+        let held = asset(100);
+        set_vault(&mut forest, 1, &[held]);
 
-        let asset: Asset = FungibleAsset::new(account_a(), 100).unwrap().into();
-        let mut update = AccountUpdate::new();
-        update.vault_ops(id, [asset].into_iter(), core::iter::empty());
-        forest.apply(1, update).unwrap();
-
-        // A stale expected root (the empty word here) must be rejected.
-        let result = forest.get_asset_and_witness(id, EMPTY_WORD, asset.id());
+        let result = forest.get_asset_and_witness(account_a(), EMPTY_WORD, held.id());
         assert!(matches!(
             result,
             Err(StoreError::MerkleStoreError(MerkleError::ConflictingRoots { .. }))
         ));
-    }
-
-    #[test]
-    fn removals_are_applied() {
-        let mut forest = forest();
-        let id = account_a();
-
-        let map_slot = slot("miden::test::map");
-        let map_key = StorageMapKey::new([ONE, ZERO, ZERO, ZERO].into());
-        let map_value: Word = [ONE, ONE, ONE, ONE].into();
-
-        let mut update = AccountUpdate::new();
-        update.map_ops(id, &map_slot, [(map_key, map_value)].into_iter());
-        forest.apply(1, update).unwrap();
-        let root_with_entry = forest.map_root(id, &map_slot).unwrap();
-
-        // An empty-word value removes the entry, collapsing the tree back to the empty root.
-        let mut update = AccountUpdate::new();
-        update.map_ops(id, &map_slot, [(map_key, EMPTY_WORD)].into_iter());
-        forest.apply(2, update).unwrap();
-        let root_after_removal = forest.map_root(id, &map_slot).unwrap();
-
-        assert_ne!(root_with_entry, root_after_removal);
-        assert_eq!(root_after_removal, StorageMap::default().root());
-    }
-
-    #[test]
-    fn reconcile_account_matches_targets_exactly() {
-        let mut forest = forest();
-        let id = account_a();
-
-        let map_slot = slot("miden::test::map");
-        let stale_key = StorageMapKey::new([ONE, ZERO, ZERO, ZERO].into());
-        let target_key = StorageMapKey::new([ZERO, ONE, ZERO, ZERO].into());
-        let value: Word = [ONE, ONE, ONE, ONE].into();
-
-        let asset: Asset = FungibleAsset::new(account_a(), 100).unwrap().into();
-
-        let mut update = AccountUpdate::new();
-        update.vault_ops(id, [asset].into_iter(), core::iter::empty());
-        update.map_ops(id, &map_slot, [(stale_key, value)].into_iter());
-        forest.apply(1, update).unwrap();
-
-        // Reconcile to an empty vault and a map holding only `target_key`.
-        let mut map_targets = BTreeMap::new();
-        map_targets
-            .insert(map_slot.clone(), BTreeMap::from([(Word::from(target_key.hash()), value)]));
-
-        let mut update = AccountUpdate::new();
-        forest
-            .reconcile_account(&mut update, id, &BTreeMap::new(), &map_targets)
-            .unwrap();
-        forest.apply(2, update).unwrap();
-
-        // The vault collapsed to empty, so the asset is no longer tracked.
-        let vault_root = forest.vault_root(id).unwrap();
-        assert!(matches!(
-            forest.get_asset_and_witness(id, vault_root, asset.id()),
-            Err(StoreError::VaultKeyNotTracked(..))
-        ));
-
-        let map_root = forest.map_root(id, &map_slot).unwrap();
-        let witness =
-            forest.get_storage_map_item_witness(id, &map_slot, map_root, stale_key).unwrap();
-        assert_eq!(witness.get(stale_key), Some(EMPTY_WORD));
-
-        let witness = forest
-            .get_storage_map_item_witness(id, &map_slot, map_root, target_key)
-            .unwrap();
-        assert_eq!(witness.get(target_key), Some(value));
     }
 }

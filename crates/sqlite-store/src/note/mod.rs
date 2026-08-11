@@ -1,7 +1,6 @@
 #![allow(clippy::items_after_statements)]
 
 use std::collections::BTreeMap;
-use std::rc::Rc;
 use std::string::ToString;
 use std::vec::Vec;
 
@@ -34,7 +33,11 @@ use rusqlite::{Connection, Transaction, params, params_from_iter};
 
 use super::SqliteStore;
 use crate::chain_data::set_block_header_has_client_notes;
-use crate::note::filters::{note_filter_to_query_input_notes, note_filter_to_query_output_notes};
+use crate::note::filters::{
+    note_filter_input_notes_condition,
+    note_filter_to_query_input_notes,
+    note_filter_to_query_output_notes,
+};
 use crate::sql_error::SqlResultExt;
 use crate::{insert_sql, subst};
 
@@ -233,13 +236,14 @@ impl SqliteStore {
     pub(crate) fn get_unspent_input_note_nullifiers(
         conn: &mut Connection,
     ) -> Result<Vec<Nullifier>, StoreError> {
-        // `idx_input_notes_state` carries `nullifier` after `state_discriminant`, so both columns
-        // are read from the index without touching `input_notes`.
-        const QUERY: &str = "SELECT nullifier FROM input_notes \
-            WHERE state_discriminant IN rarray(?) AND nullifier IS NOT NULL";
-        conn.prepare(QUERY)
+        let (unspent_condition, _) = note_filter_input_notes_condition(&NoteFilter::Unspent);
+        let query = format!(
+            "SELECT nullifier FROM input_notes \
+             WHERE {unspent_condition} AND nullifier IS NOT NULL"
+        );
+        conn.prepare(&query)
             .into_store_error()?
-            .query_map([unspent_state_filters()], |row| row.get(0))
+            .query_map([], |row| row.get(0))
             .expect("no binding parameters used in query")
             .map(|result| {
                 result
@@ -285,19 +289,6 @@ impl SqliteStore {
 
 // HELPERS
 // ================================================================================================
-
-/// Returns the state discriminants of the notes that have not been nullified on chain, as
-/// `rarray` parameters.
-fn unspent_state_filters() -> Rc<Vec<Value>> {
-    Rc::new(vec![
-        Value::from(InputNoteState::STATE_EXPECTED),
-        Value::from(InputNoteState::STATE_UNVERIFIED),
-        Value::from(InputNoteState::STATE_COMMITTED),
-        Value::from(InputNoteState::STATE_INVALID),
-        Value::from(InputNoteState::STATE_PROCESSING_AUTHENTICATED),
-        Value::from(InputNoteState::STATE_PROCESSING_UNAUTHENTICATED),
-    ])
-}
 
 /// Inserts the provided input note into the database, if the note already exists, it will be
 /// replaced.

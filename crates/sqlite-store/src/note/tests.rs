@@ -44,9 +44,8 @@ use miden_protocol::testing::account_id::{
 };
 use miden_protocol::transaction::TransactionId;
 use miden_standards::note::StandardNote;
-use rusqlite::types::Value;
 
-use super::unspent_state_filters;
+use crate::note::filters::UNSPENT_INPUT_NOTE_STATES;
 use crate::tests::create_test_store;
 
 // HELPERS
@@ -645,14 +644,16 @@ async fn unspent_nullifiers_exclude_consumed_notes() {
 }
 
 #[test]
-fn unspent_state_filters_classify_every_note_state() {
-    const CONSUMED: [u8; 3] = [
+fn unspent_states_classify_every_note_state() {
+    // Invalid notes sit here because they can't be consumed, so they are not offered as unspent
+    // either.
+    const SPENT_OR_UNCONSUMABLE: [u8; 4] = [
+        InputNoteState::STATE_INVALID,
         InputNoteState::STATE_CONSUMED_AUTHENTICATED_LOCAL,
         InputNoteState::STATE_CONSUMED_UNAUTHENTICATED_LOCAL,
         InputNoteState::STATE_CONSUMED_EXTERNAL,
     ];
 
-    let unspent = unspent_state_filters();
     for discriminant in 0..=u8::MAX {
         // The deserializer decides which bytes are real discriminants: an unused one hits the
         // catch-all arm and returns `InvalidValue`, while a real one gets past the discriminant
@@ -666,7 +667,8 @@ fn unspent_state_filters_classify_every_note_state() {
         }
 
         assert!(
-            unspent.contains(&Value::from(discriminant)) != CONSUMED.contains(&discriminant),
+            UNSPENT_INPUT_NOTE_STATES.contains(&discriminant)
+                != SPENT_OR_UNCONSUMABLE.contains(&discriminant),
             "note state {discriminant} is in neither list or in both"
         );
     }

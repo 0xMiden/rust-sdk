@@ -1,7 +1,6 @@
 //! Storage-related database operations for accounts.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::rc::Rc;
 use std::string::ToString;
 use std::vec::Vec;
 
@@ -11,12 +10,10 @@ use miden_client::account::{
     StorageMapPatch,
     StorageSlot,
     StorageSlotContent,
-    StorageSlotName,
     StorageSlotType,
 };
 use miden_client::store::StoreError;
-use miden_client::{Deserializable, EMPTY_WORD, Serializable, Word};
-use rusqlite::types::Value;
+use miden_client::{EMPTY_WORD, Serializable, Word};
 use rusqlite::{OptionalExtension, Transaction, params};
 
 use crate::forest::ScopedAccountForest;
@@ -26,45 +23,6 @@ use crate::{SqliteStore, insert_sql, subst, u64_to_value};
 impl SqliteStore {
     // READER METHODS
     // --------------------------------------------------------------------------------------------
-
-    /// Fetches the current root values for storage maps that will be updated by the account delta.
-    ///
-    /// Only queries the slot values (roots) from the latest storage table, avoiding the need to
-    /// load full storage map entries into memory. The `AccountSmtForest` handles the actual
-    /// Merkle tree operations.
-    pub(crate) fn get_storage_map_roots_for_patch(
-        conn: &rusqlite::Connection,
-        account_id: AccountId,
-        storage_patch: &AccountStoragePatch,
-    ) -> Result<BTreeMap<StorageSlotName, Word>, StoreError> {
-        let map_slot_names: Vec<Value> = storage_patch
-            .maps()
-            .map(|(slot_name, _)| Value::Text(slot_name.to_string()))
-            .collect();
-
-        if map_slot_names.is_empty() {
-            return Ok(BTreeMap::new());
-        }
-
-        const QUERY: &str = "SELECT slot_name, slot_value FROM latest_account_storage \
-                             WHERE account_id = ? AND slot_name IN rarray(?)";
-
-        conn.prepare(QUERY)
-            .into_store_error()?
-            .query_map(params![account_id.to_bytes(), Rc::new(map_slot_names)], |row| {
-                let name: String = row.get(0)?;
-                let value: Vec<u8> = row.get(1)?;
-                Ok((name, value))
-            })
-            .into_store_error()?
-            .map(|result| {
-                let (name, value) = result.into_store_error()?;
-                let slot_name = StorageSlotName::new(name)
-                    .map_err(|err| StoreError::ParsingError(err.to_string()))?;
-                Ok((slot_name, Word::read_from_bytes(&value)?))
-            })
-            .collect()
-    }
 
     // MUTATOR/WRITER METHODS
     // --------------------------------------------------------------------------------------------

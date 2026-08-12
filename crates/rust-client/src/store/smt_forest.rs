@@ -59,7 +59,7 @@ fn storage_map_lineage_id(account_id: AccountId, slot_name: &StorageSlotName) ->
 /// Changes recorded for one lineage.
 #[derive(Default)]
 struct LineageOps {
-    /// When set, the lineage's root must equal this before the pairs are layered onto it.
+    /// When set, the lineage's root must equal this once the update has been applied.
     expect_root: Option<Word>,
     /// When set, keys absent from `pairs` are removed, so the tree ends up holding exactly the
     /// recorded pairs.
@@ -84,9 +84,21 @@ impl AccountUpdate {
         Self::default()
     }
 
-    /// Records an account's vault patch.
-    pub fn vault_patch(&mut self, account_id: AccountId, patch: &AccountVaultPatch) {
+    /// Records an account's vault patch, along with the vault root the transaction produced.
+    ///
+    /// [`apply`] checks the resulting root against `expected_root`. That check is what ties the
+    /// vault tree back to the transaction kernel's result, so a wrong root fails the update
+    /// instead of being persisted.
+    ///
+    /// [`apply`]: AccountSmtForest::apply
+    pub fn vault_patch(
+        &mut self,
+        account_id: AccountId,
+        patch: &AccountVaultPatch,
+        expected_root: Word,
+    ) {
         let vault = self.entry(vault_lineage_id(account_id));
+        vault.expect_root = Some(expected_root);
         vault
             .pairs
             .extend(patch.updated_assets().map(|a| (a.id().hash().into(), a.to_value_word())));
@@ -98,19 +110,10 @@ impl AccountUpdate {
     /// Records an account's storage patch.
     ///
     /// Map slots are layered onto their current tree for `Update` patches and replaced wholesale
-    /// for `Create` and `Remove`. An `Update` also records the map's old root, which [`apply`]
-    /// verifies before layering: unlike the vault root, map roots are not re-checked against the
-    /// account header afterwards, so this is the only guard against the forest and the account
-    /// tables having diverged.
-    ///
-    /// [`apply`]: AccountSmtForest::apply
-    pub fn storage_patch(
-        &mut self,
-        account_id: AccountId,
-        old_map_roots: &BTreeMap<StorageSlotName, Word>,
-        patch: &AccountStoragePatch,
-    ) {
-        let default_root = StorageMap::default().root();
+    /// for `Create` and `Remove`. No per-slot root is recorded: the store checks the resulting map
+    /// roots collectively against the transaction's storage commitment, which also catches a tree
+    /// that had drifted from the account tables.
+    pub fn storage_patch(&mut self, account_id: AccountId, patch: &AccountStoragePatch) {
         for (slot_name, map_patch) in patch.maps() {
             let ops = self.entry(storage_map_lineage_id(account_id, slot_name));
             ops.pairs.extend(
@@ -120,14 +123,8 @@ impl AccountUpdate {
                     .flat_map(|e| e.as_map().iter())
                     .map(|(key, value)| (Word::from(key.hash()), *value)),
             );
-            match map_patch {
-                StorageMapPatch::Update { .. } => {
-                    // A lineage the forest does not know yet starts from the empty tree, which is
-                    // consistent with an absent old root.
-                    ops.expect_root =
-                        Some(old_map_roots.get(slot_name).copied().unwrap_or(default_root));
-                },
-                StorageMapPatch::Create { .. } | StorageMapPatch::Remove => ops.exhaustive = true,
+            if matches!(map_patch, StorageMapPatch::Create { .. } | StorageMapPatch::Remove) {
+                ops.exhaustive = true;
             }
         }
     }
@@ -266,6 +263,9 @@ impl<B: Backend> AccountSmtForest<B> {
     /// updated from their latest tree. `new_version` must be strictly greater than the latest
     /// version of every updated lineage. Resulting roots are read back with [`Self::vault_root`]
     /// and [`Self::map_root`].
+    ///
+    /// Any root recorded on the update is verified once the mutations have been applied, so a
+    /// result that does not match what the caller expected is reported rather than persisted.
     pub fn apply(
         &mut self,
         new_version: VersionId,
@@ -273,16 +273,11 @@ impl<B: Backend> AccountSmtForest<B> {
     ) -> Result<(), StoreError> {
         let empty_root = StorageMap::default().root();
         let mut batch = SmtForestUpdateBatch::empty();
+        let mut expected_roots = Vec::new();
 
         for (lineage, ops) in update.ops {
             if let Some(expected_root) = ops.expect_root {
-                let actual_root = self.forest.latest_root(lineage).unwrap_or(empty_root);
-                if actual_root != expected_root {
-                    return Err(StoreError::MerkleStoreError(MerkleError::ConflictingRoots {
-                        expected_root,
-                        actual_root,
-                    }));
-                }
+                expected_roots.push((lineage, expected_root));
             }
 
             // Removals are staged as they are seen so a key removed and then re-inserted ends up
@@ -315,6 +310,17 @@ impl<B: Backend> AccountSmtForest<B> {
         let mutations =
             self.forest.compute_forest_mutations(new_version, batch).map_err(forest_error)?;
         self.forest.apply_mutations(mutations).map_err(forest_error)?;
+
+        for (lineage, expected_root) in expected_roots {
+            let actual_root = self.forest.latest_root(lineage).unwrap_or(empty_root);
+            if actual_root != expected_root {
+                return Err(StoreError::MerkleStoreError(MerkleError::ConflictingRoots {
+                    expected_root,
+                    actual_root,
+                }));
+            }
+        }
+
         Ok(())
     }
 

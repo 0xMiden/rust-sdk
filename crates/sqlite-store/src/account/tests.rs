@@ -2191,16 +2191,15 @@ async fn vault_root_mismatch_rolls_back_account_and_forest() -> anyhow::Result<(
     Ok(())
 }
 
-/// A map slot whose forest lineage has drifted from the root recorded in the account tables is
-/// rejected before the patch is layered onto it, rather than producing a wrong new root.
+/// A map slot whose forest lineage has drifted from the account tables produces a storage
+/// commitment that does not match the transaction's, so the patch is rejected rather than
+/// persisting a wrong root.
 #[tokio::test]
 async fn diverged_map_lineage_is_rejected() -> anyhow::Result<()> {
     let (store, account, value_slot_name, map_slot_name) =
         insert_account_with_storage_for_forest_test().await?;
 
     let account_id = account.id();
-    let stored_map_root =
-        account.storage().get_item(&map_slot_name).context("map slot should exist")?;
 
     // Desync the forest from the account tables by giving the map's lineage an entry the storage
     // rows never recorded, so the forest's root drifts away from the stored one.
@@ -2218,7 +2217,7 @@ async fn diverged_map_lineage_is_rejected() -> anyhow::Result<()> {
             let tx = conn.transaction().into_store_error()?;
             let mut forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
             let mut update = AccountUpdate::new();
-            update.storage_patch(account_id, &BTreeMap::new(), &drift_patch);
+            update.storage_patch(account_id, &drift_patch);
             let revision = allocate_forest_revision(&tx).into_store_error()?;
             forest.apply(revision, update)?;
             tx.commit().into_store_error()?;
@@ -2229,6 +2228,7 @@ async fn diverged_map_lineage_is_rejected() -> anyhow::Result<()> {
     let (patch, account_after_patch) =
         build_patch_for_forest_rollback_test(&account, value_slot_name, map_slot_name)?;
     let final_state: AccountHeader = (&account_after_patch).into();
+    let expected_commitment = final_state.storage_commitment();
 
     let init_header: AccountHeader = (&account).into();
     let outcome = store
@@ -2244,10 +2244,10 @@ async fn diverged_map_lineage_is_rejected() -> anyhow::Result<()> {
             expected_root,
             actual_root,
         })) => {
-            assert_eq!(expected_root, stored_map_root, "the account tables' root is expected");
-            assert_ne!(actual_root, stored_map_root, "the drifted forest root is reported");
+            assert_eq!(expected_root, expected_commitment, "the transaction's commitment");
+            assert_ne!(actual_root, expected_commitment, "the drifted commitment is reported");
         },
-        other => panic!("expected a map root divergence, got {other:?}"),
+        other => panic!("expected a storage commitment mismatch, got {other:?}"),
     }
 
     Ok(())
@@ -2524,11 +2524,8 @@ async fn apply_storage_patch_directly(
             let tx = conn.transaction().into_store_error()?;
             let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
 
-            let old_map_roots =
-                SqliteStore::get_storage_map_roots_for_patch(&tx, account_id, &storage_patch)?;
-
             let mut update = AccountUpdate::new();
-            update.storage_patch(account_id, &old_map_roots, &storage_patch);
+            update.storage_patch(account_id, &storage_patch);
             let revision = allocate_forest_revision(&tx).into_store_error()?;
             smt_forest.apply(revision, update)?;
 

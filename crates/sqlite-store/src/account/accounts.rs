@@ -454,10 +454,6 @@ impl SqliteStore {
     ) -> Result<(), StoreError> {
         let account_id = final_account_state.id();
 
-        // Read the pre-patch map roots here rather than taking them as an argument, so every
-        // caller observes them through the same transaction the patch is applied in.
-        let old_map_roots = Self::get_storage_map_roots_for_patch(tx, account_id, patch.storage())?;
-
         // Reject patches for accounts the store does not track (forest updates for unknown
         // accounts would silently create partial state from empty trees), and stale or replayed
         // patches whose initial state does not match the stored latest state (they would
@@ -481,22 +477,11 @@ impl SqliteStore {
         // Build one forest update covering the vault and every changed map slot, and apply it at
         // a freshly allocated revision.
         let mut update = AccountUpdate::new();
-        update.vault_patch(account_id, patch.vault());
-        update.storage_patch(account_id, &old_map_roots, patch.storage());
+        update.vault_patch(account_id, patch.vault(), final_account_state.vault_root());
+        update.storage_patch(account_id, patch.storage());
 
         let revision = allocate_forest_revision(tx).into_store_error()?;
         smt_forest.apply(revision, update)?;
-
-        // Verify the vault landed on the final header's root.
-        let new_vault_root = smt_forest
-            .vault_root(account_id)
-            .ok_or(StoreError::AccountDataNotFound(account_id))?;
-        if new_vault_root != final_account_state.vault_root() {
-            return Err(StoreError::MerkleStoreError(MerkleError::ConflictingRoots {
-                expected_root: final_account_state.vault_root(),
-                actual_root: new_vault_root,
-            }));
-        }
 
         Self::write_storage_patch(
             tx,

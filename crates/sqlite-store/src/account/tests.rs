@@ -34,6 +34,7 @@ use miden_protocol::account::{
     StorageSlotPatch,
     StorageValuePatch,
 };
+use miden_protocol::crypto::merkle::MerkleError;
 use miden_protocol::testing::account_id::{
     ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET,
     ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_WITH_CALLBACKS,
@@ -2187,17 +2188,26 @@ async fn insert_account_with_storage_for_forest_test()
     Ok((store, account, value_slot_name, map_slot_name))
 }
 
-/// A failed transaction must leave the forest tables unchanged, even though
-/// `apply_account_patch` had already written forest mutations inside the rolled-back
-/// transaction.
+/// A storage commitment mismatch must roll back the account tables and forest mutations.
 #[tokio::test]
-async fn failed_transaction_leaves_forest_tables_unchanged() -> anyhow::Result<()> {
+async fn storage_commitment_mismatch_rolls_back_account_and_forest() -> anyhow::Result<()> {
     let (store, account, value_slot_name, map_slot_name) =
         insert_account_with_storage_for_forest_test().await?;
 
     let (patch, account_after_patch) =
         build_patch_for_forest_rollback_test(&account, value_slot_name, map_slot_name)?;
-    let final_state: AccountHeader = (&account_after_patch).into();
+    let correct_final_state: AccountHeader = (&account_after_patch).into();
+    let correct_storage_commitment = correct_final_state.storage_commitment();
+    let wrong_storage_commitment = EMPTY_WORD;
+    assert_ne!(wrong_storage_commitment, correct_storage_commitment);
+
+    let final_state = AccountHeader::new(
+        correct_final_state.id(),
+        correct_final_state.nonce(),
+        correct_final_state.vault_root(),
+        wrong_storage_commitment,
+        correct_final_state.code_commitment(),
+    );
 
     let forest_before = read_forest_trees(&store).await?;
 
@@ -2205,23 +2215,28 @@ async fn failed_transaction_leaves_forest_tables_unchanged() -> anyhow::Result<(
     let outcome = store
         .interact_with_connection(move |conn| {
             let tx = conn.transaction().into_store_error()?;
-            {
-                let mut forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
-                SqliteStore::apply_account_patch(
-                    &tx,
-                    &mut forest,
-                    &init_header,
-                    &final_state,
-                    &BTreeMap::new(),
-                    &patch,
-                )?;
-            }
-            // The transaction is dropped without committing, rolling everything back.
-            Err::<(), _>(StoreError::DatabaseError("forced rollback".to_string()))
+            let mut forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
+            SqliteStore::apply_account_patch(
+                &tx,
+                &mut forest,
+                &init_header,
+                &final_state,
+                &BTreeMap::new(),
+                &patch,
+            )
         })
         .await;
 
-    assert!(matches!(outcome, Err(StoreError::DatabaseError(_))));
+    match outcome {
+        Err(StoreError::MerkleStoreError(MerkleError::ConflictingRoots {
+            expected_root,
+            actual_root,
+        })) => {
+            assert_eq!(expected_root, wrong_storage_commitment);
+            assert_eq!(actual_root, correct_storage_commitment);
+        },
+        other => panic!("expected a storage commitment mismatch, got {other:?}"),
+    }
 
     let forest_after = read_forest_trees(&store).await?;
     assert_eq!(
@@ -2229,12 +2244,12 @@ async fn failed_transaction_leaves_forest_tables_unchanged() -> anyhow::Result<(
         "forest tables must be unchanged after a rolled-back transaction"
     );
 
-    // The DB transaction was rolled back too; account state is still at nonce 1.
-    let (header, _) = store
-        .interact_with_connection(move |conn| SqliteStore::get_account_header(conn, account.id()))
+    let stored_account: Account = store
+        .get_account(account.id())
         .await?
-        .expect("account header present");
-    assert_eq!(header.nonce().as_canonical_u64(), 1);
+        .context("account should still exist")?
+        .try_into()?;
+    assert_eq!(stored_account, account);
 
     Ok(())
 }

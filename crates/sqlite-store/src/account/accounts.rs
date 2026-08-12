@@ -502,6 +502,7 @@ impl SqliteStore {
             final_account_state.nonce().as_canonical_u64(),
             patch.storage(),
         )?;
+        Self::verify_storage_commitment(tx, account_id, final_account_state.storage_commitment())?;
 
         Ok(())
     }
@@ -552,6 +553,36 @@ impl SqliteStore {
         }
 
         Self::apply_forest_update(tx, smt_forest, update)
+    }
+
+    /// Verifies that the persisted top-level storage slots match the expected commitment.
+    ///
+    /// This runs after the storage patch is written so create, update, and removal semantics have
+    /// a single source of truth. A mismatch rolls back together with the rest of the transaction.
+    fn verify_storage_commitment(
+        tx: &Transaction<'_>,
+        account_id: AccountId,
+        expected: Word,
+    ) -> Result<(), StoreError> {
+        let mut slot_headers: Vec<StorageSlotHeader> = query_storage_values(tx, account_id)?
+            .into_iter()
+            .map(|(slot_name, (slot_type, value))| {
+                StorageSlotHeader::new(slot_name, slot_type, value)
+            })
+            .collect();
+        slot_headers.sort_by_key(StorageSlotHeader::id);
+
+        let actual = AccountStorageHeader::new(slot_headers)
+            .map_err(StoreError::AccountError)?
+            .to_commitment();
+        if actual != expected {
+            return Err(StoreError::MerkleStoreError(MerkleError::ConflictingRoots {
+                expected_root: expected,
+                actual_root: actual,
+            }));
+        }
+
+        Ok(())
     }
 
     /// Applies a recorded forest update at a freshly allocated revision.

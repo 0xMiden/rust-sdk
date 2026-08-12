@@ -491,6 +491,12 @@ where
     }
 
     /// Proves the specified transaction using the provided prover.
+    ///
+    /// # Errors
+    ///
+    /// - Returns a [`ClientError::TransactionProvingError`] if the prover fails to produce a proof.
+    /// - Returns a [`ClientError::MismatchedProvenTransaction`] if the prover returns a proof of a
+    ///   transaction other than the requested one.
     pub async fn prove_transaction_with(
         &self,
         tx_result: &TransactionResult,
@@ -498,8 +504,23 @@ where
     ) -> Result<ProvenTransaction, ClientError> {
         info!("Proving transaction...");
 
-        let proven_transaction =
-            tx_prover.prove(tx_result.executed_transaction().clone().into()).await?;
+        let executed_transaction = tx_result.executed_transaction();
+        let proven_transaction = tx_prover.prove(executed_transaction.clone().into()).await?;
+
+        // A prover is trusted with the witness, but not with choosing which transaction gets
+        // submitted. Everything downstream (submission, the local store update, the returned
+        // id) is derived from `tx_result`, so a proof of anything else would be submitted
+        // while the local state recorded the transaction that never reached the network.
+        //
+        // The id commits to the initial and final account commitments and to the input and
+        // output note commitments; the account commitments in turn commit to the account id,
+        // so a matching id covers the account as well.
+        if proven_transaction.id() != executed_transaction.id() {
+            return Err(ClientError::MismatchedProvenTransaction {
+                requested: executed_transaction.id(),
+                returned: proven_transaction.id(),
+            });
+        }
 
         info!("Transaction proven.");
 

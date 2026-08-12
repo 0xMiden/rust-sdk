@@ -40,19 +40,27 @@ fn migrate_tag_sources(tx: &Transaction) -> HookResult {
 
     for row in rows {
         let (rowid, source) = row?;
+        if source.len() == AccountId::SERIALIZED_SIZE {
+            let account_id = AccountId::read_from_bytes(&source).map_err(|err| {
+                rusqlite_migration::HookError::Hook(format!(
+                    "bare account source failed to decode: {err}"
+                ))
+            })?;
+            tx.execute(
+                "UPDATE tags SET source = ?1 WHERE rowid = ?2",
+                params![NoteTagSource::Account(account_id).to_bytes(), rowid],
+            )?;
+            continue;
+        }
+
         if NoteTagSource::read_from_bytes(&source).is_ok() {
             continue;
         }
 
-        let account_id = AccountId::read_from_bytes(&source).map_err(|err| {
-            rusqlite_migration::HookError::Hook(format!(
-                "tag source is neither NoteTagSource nor AccountId: {err}"
-            ))
-        })?;
-        tx.execute(
-            "UPDATE tags SET source = ?1 WHERE rowid = ?2",
-            params![NoteTagSource::Account(account_id).to_bytes(), rowid],
-        )?;
+        return Err(rusqlite_migration::HookError::Hook(format!(
+            "tag source is neither NoteTagSource nor bare AccountId (len {})",
+            source.len()
+        )));
     }
 
     Ok(())

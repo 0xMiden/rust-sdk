@@ -150,12 +150,6 @@ impl SqliteStore {
         let executed_transaction = tx_update.executed_transaction();
         let account_patch = executed_transaction.account_patch();
 
-        let old_map_roots = Self::get_storage_map_roots_for_patch(
-            db_tx,
-            executed_transaction.account_id(),
-            account_patch.storage(),
-        )?;
-
         // Build transaction record
         let nullifiers: Vec<Word> = executed_transaction
             .input_notes()
@@ -193,7 +187,6 @@ impl SqliteStore {
             smt_forest,
             &executed_transaction.initial_account().into(),
             executed_transaction.final_account(),
-            &old_map_roots,
             account_patch,
         )?;
 

@@ -184,7 +184,6 @@ async fn apply_account_patch_additions() -> anyhow::Result<()> {
                 &mut smt_forest,
                 &account.into(),
                 &final_state,
-                &BTreeMap::new(),
                 &patch,
             )?;
 
@@ -286,7 +285,6 @@ async fn apply_account_patch_preserves_fungible_callback_flag() -> anyhow::Resul
                 &mut smt_forest,
                 &account.into(),
                 &final_state,
-                &BTreeMap::new(),
                 &patch,
             )?;
 
@@ -376,8 +374,6 @@ async fn apply_account_patch_removes_slots_and_assets() -> anyhow::Result<()> {
 
     store
         .interact_with_connection(move |conn| {
-            let old_map_roots =
-                SqliteStore::get_storage_map_roots_for_patch(conn, account.id(), patch.storage())?;
             let tx = conn.transaction().into_store_error()?;
             let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
 
@@ -386,7 +382,6 @@ async fn apply_account_patch_removes_slots_and_assets() -> anyhow::Result<()> {
                 &mut smt_forest,
                 &account.into(),
                 &final_state,
-                &old_map_roots,
                 &patch,
             )?;
 
@@ -1127,15 +1122,8 @@ async fn apply_single_entry_update(
     account.apply_patch(&patch)?;
     let final_header: AccountHeader = (&*account).into();
 
-    let patch_clone = patch.clone();
-    let account_id = account.id();
     store
         .interact_with_connection(move |conn| {
-            let old_map_roots = SqliteStore::get_storage_map_roots_for_patch(
-                conn,
-                account_id,
-                patch_clone.storage(),
-            )?;
             let tx = conn.transaction().into_store_error()?;
             let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
 
@@ -1144,7 +1132,6 @@ async fn apply_single_entry_update(
                 &mut smt_forest,
                 &prev_header,
                 &final_header,
-                &old_map_roots,
                 &patch,
             )?;
 
@@ -1194,14 +1181,8 @@ async fn undo_account_state_restores_previous_latest() -> anyhow::Result<()> {
     let post_patch_commitment = account.to_commitment();
 
     let account_id = account.id();
-    let patch_clone = patch.clone();
     store
         .interact_with_connection(move |conn| {
-            let old_map_roots = SqliteStore::get_storage_map_roots_for_patch(
-                conn,
-                account_id,
-                patch_clone.storage(),
-            )?;
             let tx = conn.transaction().into_store_error()?;
             let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
             SqliteStore::apply_account_patch(
@@ -1209,7 +1190,6 @@ async fn undo_account_state_restores_previous_latest() -> anyhow::Result<()> {
                 &mut smt_forest,
                 &prev_header,
                 &final_header,
-                &old_map_roots,
                 &patch,
             )?;
             drop(smt_forest);
@@ -1395,14 +1375,8 @@ async fn lock_account_affects_latest_and_historical() -> anyhow::Result<()> {
     account.apply_patch(&patch)?;
     let final_header: AccountHeader = (&account).into();
 
-    let patch_clone = patch.clone();
     store
         .interact_with_connection(move |conn| {
-            let old_map_roots = SqliteStore::get_storage_map_roots_for_patch(
-                conn,
-                account_id,
-                patch_clone.storage(),
-            )?;
             let tx = conn.transaction().into_store_error()?;
             let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
             SqliteStore::apply_account_patch(
@@ -1410,7 +1384,6 @@ async fn lock_account_affects_latest_and_historical() -> anyhow::Result<()> {
                 &mut smt_forest,
                 &prev_header,
                 &final_header,
-                &old_map_roots,
                 &patch,
             )?;
             drop(smt_forest);
@@ -1550,7 +1523,6 @@ async fn undo_after_update_account_state_does_not_resurrect_removed_entries() ->
                 &mut smt_forest,
                 &prev_header_1,
                 &final_header_2,
-                &BTreeMap::new(),
                 &patch_1,
             )?;
             drop(smt_forest);
@@ -1632,14 +1604,8 @@ async fn undo_after_update_account_state_does_not_resurrect_removed_entries() ->
     let final_header: AccountHeader = (&account_next).into();
     let commitment_next = account_next.to_commitment();
 
-    let patch_next_clone = patch_next.clone();
     store
         .interact_with_connection(move |conn| {
-            let old_map_roots = SqliteStore::get_storage_map_roots_for_patch(
-                conn,
-                account_id,
-                patch_next_clone.storage(),
-            )?;
             let tx = conn.transaction().into_store_error()?;
             let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
             SqliteStore::apply_account_patch(
@@ -1647,7 +1613,6 @@ async fn undo_after_update_account_state_does_not_resurrect_removed_entries() ->
                 &mut smt_forest,
                 &prev_header,
                 &final_header,
-                &old_map_roots,
                 &patch_next,
             )?;
             drop(smt_forest);
@@ -1847,14 +1812,8 @@ async fn undo_multiple_nonces_at_once() -> anyhow::Result<()> {
     let final_header_2: AccountHeader = (&account_nonce2).into();
     let commitment_nonce2 = account_nonce2.to_commitment();
 
-    let patch_1_clone = patch_1.clone();
     store
         .interact_with_connection(move |conn| {
-            let old_map_roots = SqliteStore::get_storage_map_roots_for_patch(
-                conn,
-                account_id,
-                patch_1_clone.storage(),
-            )?;
             let tx = conn.transaction().into_store_error()?;
             let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
             SqliteStore::apply_account_patch(
@@ -1862,7 +1821,6 @@ async fn undo_multiple_nonces_at_once() -> anyhow::Result<()> {
                 &mut smt_forest,
                 &prev_header_1,
                 &final_header_2,
-                &old_map_roots,
                 &patch_1,
             )?;
             drop(smt_forest);
@@ -1902,14 +1860,8 @@ async fn undo_multiple_nonces_at_once() -> anyhow::Result<()> {
     let final_header_3: AccountHeader = (&account_nonce3).into();
     let commitment_nonce3 = account_nonce3.to_commitment();
 
-    let patch_2_clone = patch_2.clone();
     store
         .interact_with_connection(move |conn| {
-            let old_map_roots = SqliteStore::get_storage_map_roots_for_patch(
-                conn,
-                account_id,
-                patch_2_clone.storage(),
-            )?;
             let tx = conn.transaction().into_store_error()?;
             let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
             SqliteStore::apply_account_patch(
@@ -1917,7 +1869,6 @@ async fn undo_multiple_nonces_at_once() -> anyhow::Result<()> {
                 &mut smt_forest,
                 &prev_header_2,
                 &final_header_3,
-                &old_map_roots,
                 &patch_2,
             )?;
             drop(smt_forest);
@@ -2188,6 +2139,120 @@ async fn insert_account_with_storage_for_forest_test()
     Ok((store, account, value_slot_name, map_slot_name))
 }
 
+/// The applied vault root is checked against the one the transaction produced.
+#[tokio::test]
+async fn vault_root_mismatch_rolls_back_account_and_forest() -> anyhow::Result<()> {
+    let (store, account, value_slot_name, map_slot_name) =
+        insert_account_with_storage_for_forest_test().await?;
+
+    let (patch, account_after_patch) =
+        build_patch_for_forest_rollback_test(&account, value_slot_name, map_slot_name)?;
+    let correct_final_state: AccountHeader = (&account_after_patch).into();
+    let correct_vault_root = correct_final_state.vault_root();
+    let wrong_vault_root = EMPTY_WORD;
+    assert_ne!(wrong_vault_root, correct_vault_root);
+
+    let final_state = AccountHeader::new(
+        correct_final_state.id(),
+        correct_final_state.nonce(),
+        wrong_vault_root,
+        correct_final_state.storage_commitment(),
+        correct_final_state.code_commitment(),
+    );
+
+    let forest_before = read_forest_trees(&store).await?;
+
+    let init_header: AccountHeader = (&account).into();
+    let outcome = store
+        .interact_with_connection(move |conn| {
+            let tx = conn.transaction().into_store_error()?;
+            let mut forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
+            SqliteStore::apply_account_patch(&tx, &mut forest, &init_header, &final_state, &patch)
+        })
+        .await;
+
+    match outcome {
+        Err(StoreError::MerkleStoreError(MerkleError::ConflictingRoots {
+            expected_root,
+            actual_root,
+        })) => {
+            assert_eq!(expected_root, wrong_vault_root);
+            assert_eq!(actual_root, correct_vault_root);
+        },
+        other => panic!("expected a vault root mismatch, got {other:?}"),
+    }
+
+    let forest_after = read_forest_trees(&store).await?;
+    assert_eq!(
+        forest_after, forest_before,
+        "forest tables must be unchanged after a rolled-back transaction"
+    );
+
+    Ok(())
+}
+
+/// A map slot whose forest lineage has drifted from the root recorded in the account tables is
+/// rejected before the patch is layered onto it, rather than producing a wrong new root.
+#[tokio::test]
+async fn diverged_map_lineage_is_rejected() -> anyhow::Result<()> {
+    let (store, account, value_slot_name, map_slot_name) =
+        insert_account_with_storage_for_forest_test().await?;
+
+    let account_id = account.id();
+    let stored_map_root =
+        account.storage().get_item(&map_slot_name).context("map slot should exist")?;
+
+    // Desync the forest from the account tables by giving the map's lineage an entry the storage
+    // rows never recorded, so the forest's root drifts away from the stored one.
+    let mut drift_entries = StorageMapPatchEntries::new();
+    drift_entries.insert(
+        StorageMapKey::new([ZERO, ONE, ZERO, ZERO].into()),
+        [ONE, ZERO, ZERO, ZERO].into(),
+    );
+    let drift_patch = AccountStoragePatch::from_entries([(
+        map_slot_name.clone(),
+        StorageSlotPatch::Map(StorageMapPatch::Create { entries: drift_entries }),
+    )])?;
+    store
+        .interact_with_connection(move |conn| {
+            let tx = conn.transaction().into_store_error()?;
+            let mut forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
+            let mut update = AccountUpdate::new();
+            update.storage_patch(account_id, &BTreeMap::new(), &drift_patch);
+            let revision = allocate_forest_revision(&tx).into_store_error()?;
+            forest.apply(revision, update)?;
+            tx.commit().into_store_error()?;
+            Ok(())
+        })
+        .await?;
+
+    let (patch, account_after_patch) =
+        build_patch_for_forest_rollback_test(&account, value_slot_name, map_slot_name)?;
+    let final_state: AccountHeader = (&account_after_patch).into();
+
+    let init_header: AccountHeader = (&account).into();
+    let outcome = store
+        .interact_with_connection(move |conn| {
+            let tx = conn.transaction().into_store_error()?;
+            let mut forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
+            SqliteStore::apply_account_patch(&tx, &mut forest, &init_header, &final_state, &patch)
+        })
+        .await;
+
+    match outcome {
+        Err(StoreError::MerkleStoreError(MerkleError::ConflictingRoots {
+            expected_root,
+            actual_root,
+        })) => {
+            assert_eq!(expected_root, stored_map_root, "the account tables' root is expected");
+            assert_ne!(actual_root, stored_map_root, "the drifted forest root is reported");
+        },
+        other => panic!("expected a map root divergence, got {other:?}"),
+    }
+
+    Ok(())
+}
+
 /// A storage commitment mismatch must roll back the account tables and forest mutations.
 #[tokio::test]
 async fn storage_commitment_mismatch_rolls_back_account_and_forest() -> anyhow::Result<()> {
@@ -2216,14 +2281,7 @@ async fn storage_commitment_mismatch_rolls_back_account_and_forest() -> anyhow::
         .interact_with_connection(move |conn| {
             let tx = conn.transaction().into_store_error()?;
             let mut forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
-            SqliteStore::apply_account_patch(
-                &tx,
-                &mut forest,
-                &init_header,
-                &final_state,
-                &BTreeMap::new(),
-                &patch,
-            )
+            SqliteStore::apply_account_patch(&tx, &mut forest, &init_header, &final_state, &patch)
         })
         .await;
 
@@ -2279,7 +2337,6 @@ async fn committed_transaction_persists_forest_tables() -> anyhow::Result<()> {
                     &mut forest,
                     &init_header,
                     &final_state,
-                    &BTreeMap::new(),
                     &patch,
                 )?;
             }
@@ -2349,7 +2406,6 @@ async fn forest_persists_across_store_reopen() -> anyhow::Result<()> {
                     &mut forest,
                     &init_header,
                     &final_state,
-                    &BTreeMap::new(),
                     &patch,
                 )?;
             }
@@ -2465,10 +2521,11 @@ async fn apply_storage_patch_directly(
 ) -> anyhow::Result<()> {
     store
         .interact_with_connection(move |conn| {
-            let old_map_roots =
-                SqliteStore::get_storage_map_roots_for_patch(conn, account_id, &storage_patch)?;
             let tx = conn.transaction().into_store_error()?;
             let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
+
+            let old_map_roots =
+                SqliteStore::get_storage_map_roots_for_patch(&tx, account_id, &storage_patch)?;
 
             let mut update = AccountUpdate::new();
             update.storage_patch(account_id, &old_map_roots, &storage_patch);

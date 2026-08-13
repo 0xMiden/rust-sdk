@@ -273,6 +273,11 @@ pub mod crypto {
         SmtLeaf,
         SmtProof,
     };
+    // [`AccountSmtForest`](crate::store::AccountSmtForest) is generic over the forest storage
+    // `Backend`, so a store implementation outside this workspace needs these to name the forest
+    // it owns: the trait for the bound, the in-memory backend for stores that rebuild the forest
+    // instead of persisting it, and the version type `apply` takes.
+    pub use miden_protocol::crypto::merkle::smt::{Backend, ForestInMemoryBackend, VersionId};
     pub use miden_protocol::crypto::merkle::store::MerkleStore;
     pub use miden_protocol::crypto::merkle::{
         EmptySubtreeRoots,

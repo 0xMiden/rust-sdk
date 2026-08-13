@@ -26,11 +26,7 @@ impl<AUTH> Client<AUTH> {
         self.store.get_block_header_by_num(block_num).await.map_err(Into::into)
     }
 
-    /// Retrieves the block header at the current sync height from the store, along with a boolean
-    /// value that represents whether the block contains notes relevant to the client.
-    ///
-    /// This is the highest block header held by the store: block pruning keeps the sync-height
-    /// header even when it has no relevant notes.
+    /// Retrieves the block header at the current sync height from the store.
     ///
     /// Returns `None` if the store holds no header at that height, which is the case before the
     /// genesis block is inserted.

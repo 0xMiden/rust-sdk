@@ -48,7 +48,7 @@ miden-tx        = { default-features = false, version = "0.16.0-rc.4" }
 miden-tx-batch  = { default-features = false, version = "0.16.0-rc.4" }
 
 # Miden node dependencies
-miden-node-proto-build           = { branch = "jmunoz-update-protocol-0.16.0-rc4", default-features = false, git = "https://github.com/0xMiden/node.git" } # TODO: switch to rc.4 once available
+miden-node-proto-build           = { branch = "next", default-features = false, git = "https://github.com/0xMiden/node.git" } # TODO: switch to rc.4 once available
 miden-note-transport-proto-build = { default-features = false, version = "0.5.0-alpha.1" }
 
 # Miden debug dependency

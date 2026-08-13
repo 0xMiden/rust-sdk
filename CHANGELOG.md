@@ -22,6 +22,7 @@
 * [BREAKING][type][rust] Added the `NoteFilter::ScriptRoots` variant, so exhaustive matches on `NoteFilter` in `Store` implementations must handle it ([#2335](https://github.com/0xMiden/rust-sdk/pull/2335)).
 * [BREAKING][behavior][rpc] The `SyncNotes` response now carries a reduced note metadata message: instead of the note's attachments commitment it carries one entry per attachment, with single-word attachments sent verbatim and larger ones sent as commitments. The client reconstructs the protocol-level `NoteMetadata` from those entries, so it requires a node that speaks this format.
 * [BREAKING][behavior][store] The SQLite base schema now declares an index on `input_notes(script_root)`. This changes the schema fingerprint, so opening a database created before this change fails with `SchemaHashMismatch` and existing stores must be recreated ([#2335](https://github.com/0xMiden/rust-sdk/pull/2335)).
+* [BREAKING][removal][rust] `miden_client::agglayer::create_bridge_account` and `miden_client::agglayer::create_agglayer_faucet` are removed. Build the accounts with `AggLayerBridge::account_builder` and `AggLayerFaucet::account_builder`, which return an `AccountBuilder` and take the account's `FeePolicyManager` explicitly; its active policy must be a `BasicConstantFeePolicy` scheduling every root in the account's `allowed_notes()`. The faucet builder additionally takes the initial token supply and the account seeding its `ADMIN` role.
 
 ### Enhancements
 

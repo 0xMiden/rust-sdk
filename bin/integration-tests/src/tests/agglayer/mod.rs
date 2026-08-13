@@ -2,7 +2,8 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use miden_agglayer::{BridgeRoles, create_bridge_account};
+use miden_agglayer::testing::zero_fee_policy_manager;
+use miden_agglayer::{AggLayerBridge, BridgeRoles};
 use miden_client::Deserializable;
 use miden_client::account::{AccountFile, AccountId, AccountType};
 use miden_client::auth::RPO_FALCON_SCHEME_ID;
@@ -232,8 +233,15 @@ pub async fn setup_core_accounts(
         BTreeSet::from([ger_manager_account.id()]),
     )
     .context("failed to build bridge roles")?;
-    let bridge_account =
-        create_bridge_account(bridge_seed, bridge_admin_account.id(), roles, MIDEN_NETWORK_ID);
+    let bridge_account = AggLayerBridge::account_builder(
+        bridge_seed,
+        bridge_admin_account.id(),
+        roles,
+        MIDEN_NETWORK_ID,
+        zero_fee_policy_manager(AggLayerBridge::allowed_notes()),
+    )
+    .build()
+    .context("failed to build bridge account")?;
     println!("[setup]   bridge admin:  {}", bridge_admin_account.id());
     println!("[setup]   GER manager:   {}", ger_manager_account.id());
     println!("[setup]   bridge:        {}", bridge_account.id());

@@ -3,6 +3,7 @@
 
 use core::convert::TryFrom;
 
+use alloc::format;
 use miden_tx::utils::serde::{
     ByteReader,
     ByteWriter,
@@ -88,6 +89,14 @@ fn get_param(
             field_name: param,
         },
     )?;
+    if *limit == 0 {
+        return Err(RpcConversionError::InvalidField(format!(
+            "{}.{} must be greater than zero",
+            endpoint.proto_name(),
+            param
+        )));
+    }
+
     Ok(*limit)
 }
 
@@ -121,5 +130,39 @@ mod tests {
         let deserialized = RpcLimits::read_from_bytes(&bytes).expect("deserialization failed");
 
         assert_eq!(original, deserialized);
+    }
+
+    #[test]
+    fn rejects_zero_limits_from_rpc_response() {
+        let mut proto = proto::RpcLimits::default();
+
+        proto.endpoints.insert(
+            RpcEndpoint::GetNotesById.proto_name().into(),
+            proto::RpcEndpointLimits {
+                parameters: [(String::from("note_id"), 0)].into(),
+            },
+        );
+        proto.endpoints.insert(
+            RpcEndpoint::SyncNullifiers.proto_name().into(),
+            proto::RpcEndpointLimits {
+                parameters: [(String::from("nullifier_prefix"), 1000)].into(),
+            },
+        );
+        proto.endpoints.insert(
+            RpcEndpoint::SyncTransactions.proto_name().into(),
+            proto::RpcEndpointLimits {
+                parameters: [(String::from("account_id"), 1000)].into(),
+            },
+        );
+        proto.endpoints.insert(
+            RpcEndpoint::SyncNotes.proto_name().into(),
+            proto::RpcEndpointLimits {
+                parameters: [(String::from("note_tag"), 1000)].into(),
+            },
+        );
+
+        let err = RpcLimits::try_from(proto).expect_err("zero limit should be rejected");
+
+        assert!(matches!(err, RpcConversionError::InvalidField(_)), "got {err:?}");
     }
 }

@@ -20,13 +20,13 @@
 * [BREAKING][removal][cli] Removed the `account --show --with-code` flag. Use `account --inspect <ID> --verbose` to view procedure disassembly. ([#2312](https://github.com/0xMiden/rust-sdk/issues/2312)).
 * [BREAKING][rename][cli] Renamed the `token_symbol_map.toml` Bech32 field from `id` to `address` ([#2377](https://github.com/0xMiden/rust-sdk/pull/2377)).
 * [BREAKING][type][rust] Added the `NoteFilter::ScriptRoots` variant, so exhaustive matches on `NoteFilter` in `Store` implementations must handle it ([#2335](https://github.com/0xMiden/rust-sdk/pull/2335)).
-* [BREAKING][behavior][store] `SqliteStore::new` rejects a database path that is not valid UTF-8. ([#2349](https://github.com/0xMiden/rust-sdk/pull/2349)).
+* [BREAKING][behavior][store] `SqliteStore::new` rejects a database path that is not valid UTF-8 ([#2363](https://github.com/0xMiden/rust-sdk/pull/2363)).
 * [BREAKING][behavior][rpc] The `SyncNotes` response now carries a reduced note metadata message: instead of the note's attachments commitment it carries one entry per attachment, with single-word attachments sent verbatim and larger ones sent as commitments. The client reconstructs the protocol-level `NoteMetadata` from those entries, so it requires a node that speaks this format.
 * [BREAKING][behavior][store] The SQLite base schema now declares an index on `input_notes(script_root)`. This changes the schema fingerprint, so opening a database created before this change fails with `SchemaHashMismatch` and existing stores must be recreated ([#2335](https://github.com/0xMiden/rust-sdk/pull/2335)).
 
 ### Enhancements
 
-* [store] Added `SqliteStore::database_filepath`, which returns the backing database path losslessly as a `&Path` ([#2349](https://github.com/0xMiden/rust-sdk/pull/2349)).
+* [store] Added `SqliteStore::database_filepath`, which returns the backing database path losslessly as a `&Path` ([#2363](https://github.com/0xMiden/rust-sdk/pull/2363)).
 * [FEATURE][rust] A client that only watches a public account now recovers notes the account consumed authenticated, even when it never tracked them by tag. During sync it reads the note references the node attaches to the account's transactions, fetches each note body by id, and surfaces it through `InputNoteReader`. Requires node `0.15.1` ([#2300](https://github.com/0xMiden/rust-sdk/pull/2300)).
 * [FEATURE][cli] Added a `--payback-note-type` option to `swap` so the payback note can be created as public or private (defaults to private). Public payback works without any off-band advice now that SWAP derives the payback recipient deterministically ([#2190](https://github.com/0xMiden/rust-sdk/pull/2190)).
 * [FEATURE][cli] `init` now also writes the non-fungible faucet, guarded multisig auth and network account auth component packages ([#2356](https://github.com/0xMiden/rust-sdk/pull/2356)).

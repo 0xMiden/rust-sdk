@@ -111,7 +111,7 @@ impl SqliteStore {
             .map_err(|e| StoreError::DatabaseError(e.to_string()))?;
 
         // Scoped so the connection returns to the pool before the SMT forest initialization below
-        // reaches for it. The pool holds a single connection.
+        // reaches for it, keeping construction to one connection at a time.
         {
             let conn = pool.get().await.map_err(|e| StoreError::DatabaseError(e.to_string()))?;
 

@@ -148,14 +148,16 @@ mod tests {
     /// Builds a minimal account that can be inserted into a store.
     fn test_account(init_seed: [u8; 32]) -> anyhow::Result<Account> {
         let component = AccountComponent::new(
-            BasicWallet::code().as_library().clone(),
+            BasicWallet::code().clone(),
             vec![],
             AccountComponentMetadata::new("miden::testing::dummy_component"),
         )?;
 
+        // The auth component has to be added first, because `AccountCode` takes its first
+        // component as the authentication one.
         Ok(AccountBuilder::new(init_seed)
             .account_type(AccountType::Private)
-            .with_auth_component(AuthSingleSig::new(Approver::new(
+            .with_component(AuthSingleSig::new(Approver::new(
                 PublicKeyCommitment::from(EMPTY_WORD),
                 AuthSchemeId::Falcon512Poseidon2,
             )))
@@ -197,17 +199,10 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn pool_holds_a_single_connection() -> anyhow::Result<()> {
-        let store = create_test_store().await;
-        assert_eq!(store.pool.status().max_size, 1);
-
-        Ok(())
-    }
-
-    /// Reopening a database that already holds accounts makes the SMT forest initialization in
-    /// `SqliteStore::new` acquire a connection after the migrations did, which deadlocks if the
-    /// migration connection has not been returned to the single-connection pool.
+    /// `SqliteStore::new` acquires a connection twice on a database that already holds accounts:
+    /// once for the migrations and again for the SMT forest initialization. It has to release the
+    /// first before taking the second, so that construction never needs two connections at once
+    /// and cannot exhaust the pool.
     #[tokio::test]
     async fn new_does_not_deadlock_on_a_populated_database() -> anyhow::Result<()> {
         let path = create_test_store_path();
@@ -228,7 +223,7 @@ mod tests {
     }
 
     /// A panic inside `interact` poisons the connection's mutex. `recycle` has to drop that
-    /// connection, otherwise the single-connection pool hands the poisoned one back forever.
+    /// connection, otherwise the pool keeps handing the poisoned one back to callers.
     #[tokio::test]
     async fn poisoned_connection_is_replaced() -> anyhow::Result<()> {
         let store = create_test_store().await;

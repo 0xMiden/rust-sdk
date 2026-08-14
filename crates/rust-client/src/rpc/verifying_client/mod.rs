@@ -272,7 +272,7 @@ impl<T: NodeRpcClient> NodeRpcClient for VerifyingRpcClient<T> {
         Ok(nullifiers)
     }
 
-     async fn get_account(
+    async fn get_account(
         &self,
         account_id: AccountId,
         request: GetAccountRequest,

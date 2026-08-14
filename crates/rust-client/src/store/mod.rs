@@ -816,7 +816,8 @@ pub enum NoteFilter {
     /// output notes.
     Processing,
     /// Return a list containing any notes whose script root matches one of the provided
-    /// [`NoteScriptRoot`]s. This filter doesn't apply to output notes.
+    /// [`NoteScriptRoot`]s. Notes whose script isn't known (e.g. partial output notes) never
+    /// match.
     ScriptRoots(Vec<NoteScriptRoot>),
     /// Return a list containing the note that matches with the provided [`NoteId`]. The query will
     /// return an error if the note isn't found.

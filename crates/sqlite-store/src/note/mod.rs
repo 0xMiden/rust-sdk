@@ -44,7 +44,7 @@ mod filters;
 // ================================================================================================
 
 // SQLite limits statements to 999 parameters. Each batch size is chosen to stay under that
-// limit: input notes: 13 columns × 50 = 650, output notes: 8 × 80 = 640, scripts: 2 × 200 = 400.
+// limit: input notes: 14 columns × 50 = 700, output notes: 11 × 80 = 880, scripts: 2 × 200 = 400.
 const INPUT_NOTE_BATCH_SIZE: usize = 50;
 const OUTPUT_NOTE_BATCH_SIZE: usize = 80;
 const SCRIPT_BATCH_SIZE: usize = 200;
@@ -83,6 +83,8 @@ struct SerializedOutputNoteData {
     pub nullifier: Option<Vec<u8>>,
     pub recipient_digest: Vec<u8>,
     pub expected_height: u32,
+    pub script_root: Option<Vec<u8>>,
+    pub script: Option<Vec<u8>>,
     pub state_discriminant: u8,
     pub state: Vec<u8>,
     pub attachments: Vec<u8>,
@@ -538,6 +540,11 @@ fn serialize_output_note(note: &OutputNoteRecord) -> SerializedOutputNoteData {
 
     let nullifier = note.nullifier().map(|nullifier| nullifier.to_bytes());
 
+    // The script is only known when the note's full details (recipient) are known. It is stored
+    // in the shared `notes_scripts` table, with the note row referencing it by root.
+    let script_root = note.script_root().map(|root| root.to_bytes());
+    let script = note.recipient().map(|recipient| recipient.script().to_bytes());
+
     let state_discriminant = note.state().discriminant();
     let state = note.state().to_bytes();
 
@@ -551,6 +558,8 @@ fn serialize_output_note(note: &OutputNoteRecord) -> SerializedOutputNoteData {
         nullifier,
         recipient_digest,
         expected_height: note.expected_height().as_u32(),
+        script_root,
+        script,
         state_discriminant,
         state,
         attachments,
@@ -582,11 +591,8 @@ pub(crate) fn apply_note_updates_tx(
         }
     }
 
-    batch_upsert_scripts(tx, &scripts)?;
-    batch_insert_input_notes(tx, &input_inserts)?;
-    batch_update_input_note_states(tx, &input_updates)?;
-
-    // Split output notes into inserts and updates.
+    // Split output notes into inserts and updates, collecting scripts from new notes whose full
+    // details are known.
     let mut output_inserts = Vec::new();
     let mut output_updates = Vec::new();
 
@@ -595,7 +601,11 @@ pub(crate) fn apply_note_updates_tx(
             // Output notes are never assigned `InsertCommitted`, but it is insert-like for
             // exhaustiveness.
             NoteUpdateType::Insert | NoteUpdateType::InsertCommitted => {
-                output_inserts.push(serialize_output_note(output_note.inner()));
+                let serialized = serialize_output_note(output_note.inner());
+                if let (Some(root), Some(script)) = (&serialized.script_root, &serialized.script) {
+                    scripts.insert(root.clone(), script.clone());
+                }
+                output_inserts.push(serialized);
             },
             NoteUpdateType::Update => {
                 output_updates.push(serialize_output_note_state(output_note.inner()));
@@ -604,6 +614,10 @@ pub(crate) fn apply_note_updates_tx(
         }
     }
 
+    // Scripts must be inserted before the notes that reference them via foreign key.
+    batch_upsert_scripts(tx, &scripts)?;
+    batch_insert_input_notes(tx, &input_inserts)?;
+    batch_update_input_note_states(tx, &input_updates)?;
     batch_insert_output_notes(tx, &output_inserts)?;
     batch_update_output_note_states(tx, &output_updates)?;
 
@@ -739,14 +753,15 @@ fn batch_insert_output_notes(
     }
 
     for chunk in notes.chunks(OUTPUT_NOTE_BATCH_SIZE) {
-        let placeholders = vec!["(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"; chunk.len()].join(", ");
+        let placeholders = vec!["(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"; chunk.len()].join(", ");
         let query = format!(
             "INSERT OR REPLACE INTO `output_notes` \
              (`details_commitment`, `note_id`, `assets`, `recipient_digest`, `metadata`, \
-              `nullifier`, `expected_height`, `state_discriminant`, `state`, `attachments`) \
+              `nullifier`, `expected_height`, `script_root`, `state_discriminant`, `state`, \
+              `attachments`) \
              VALUES {placeholders}"
         );
-        let mut param_values: Vec<Value> = Vec::with_capacity(chunk.len() * 10);
+        let mut param_values: Vec<Value> = Vec::with_capacity(chunk.len() * 11);
         for note in chunk {
             param_values.push(Value::Blob(note.details_commitment.clone()));
             param_values.push(Value::Blob(note.id.clone()));
@@ -758,6 +773,10 @@ fn batch_insert_output_notes(
                 None => param_values.push(Value::Null),
             }
             param_values.push(Value::Integer(i64::from(note.expected_height)));
+            match &note.script_root {
+                Some(root) => param_values.push(Value::Blob(root.clone())),
+                None => param_values.push(Value::Null),
+            }
             param_values.push(Value::Integer(i64::from(note.state_discriminant)));
             param_values.push(Value::Blob(note.state.clone()));
             param_values.push(Value::Blob(note.attachments.clone()));

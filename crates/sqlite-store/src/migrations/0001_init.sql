@@ -5,14 +5,14 @@ CREATE TABLE settings (
 
     PRIMARY KEY (name),
     CONSTRAINT setting_name_is_not_empty CHECK (length(name) > 0)
-) STRICT, WITHOUT ROWID;
+) WITHOUT ROWID, STRICT;
 
 -- Create account_code table
 CREATE TABLE account_code (
     commitment BLOB NOT NULL,   -- commitment to the account code
     code BLOB NOT NULL,         -- serialized account code.
     PRIMARY KEY (commitment)
-);
+) STRICT;
 
 -- ── Account headers ──────────────────────────────────────────────────────
 
@@ -23,31 +23,31 @@ CREATE TABLE latest_account_headers (
     code_commitment BLOB NOT NULL,            -- commitment to the account code
     storage_commitment BLOB NOT NULL,         -- commitment to the account storage
     vault_root BLOB NOT NULL,                 -- root of the account vault Merkle tree
-    nonce BIGINT NOT NULL,                   -- account nonce
+    nonce INT NOT NULL,                   -- account nonce
     account_seed BLOB NULL,                  -- seed used to generate the ID; NULL for non-new accounts
-    locked BOOLEAN NOT NULL,                 -- whether the account is locked
-    watched BOOLEAN NOT NULL DEFAULT FALSE, -- Whether the account is tracked in watch mode
+    locked INT NOT NULL,                 -- whether the account is locked
+    watched INT NOT NULL DEFAULT FALSE, -- Whether the account is tracked in watch mode
     PRIMARY KEY (id),
     FOREIGN KEY (code_commitment) REFERENCES account_code(commitment)
-);
+) STRICT;
 
 -- Historical account headers: stores old headers that were replaced by newer states.
 -- Each row represents a previous account state that was superseded at replaced_at_nonce.
 CREATE TABLE historical_account_headers (
     id BLOB NOT NULL,                        -- serialized account ID
-    account_commitment BLOB NOT NULL UNIQUE,  -- commitment of this old state
+    account_commitment BLOB NOT NULL,  -- commitment of this old state
     code_commitment BLOB NOT NULL,            -- commitment to the old account code
     storage_commitment BLOB NOT NULL,         -- commitment to the old account storage
     vault_root BLOB NOT NULL,                 -- root of the old account vault Merkle tree
-    nonce BIGINT NOT NULL,                   -- nonce of this old state
+    nonce INT NOT NULL,                   -- nonce of this old state
     account_seed BLOB NULL,                  -- seed used to generate the ID; NULL for non-new accounts
-    locked BOOLEAN NOT NULL,                 -- whether the account was locked
-    replaced_at_nonce BIGINT NOT NULL,       -- nonce of the new state that replaced this one
+    locked INT NOT NULL,                 -- whether the account was locked
+    replaced_at_nonce INT NOT NULL,       -- nonce of the new state that replaced this one
     PRIMARY KEY (account_commitment),
     FOREIGN KEY (code_commitment) REFERENCES account_code(commitment),
 
     CONSTRAINT check_seed_nonzero CHECK (NOT (nonce = 0 AND account_seed IS NULL))
-);
+) STRICT;
 CREATE INDEX idx_historical_account_headers_id_replaced_at ON historical_account_headers(id, replaced_at_nonce DESC);
 
 -- ── Account storage (latest + historical) ────────────────────────────────
@@ -58,18 +58,18 @@ CREATE TABLE latest_account_storage (
     slot_value BLOB NULL,         -- top-level value of the slot (for maps, contains the root)
     slot_type INTEGER NOT NULL,   -- type of the slot (0 = Value, 1 = Map)
     PRIMARY KEY (account_id, slot_name)
-) WITHOUT ROWID;
+) WITHOUT ROWID, STRICT;
 
 -- Historical account storage: stores old slot values that were replaced.
 -- NULL old_slot_value means the slot didn't exist before (was created at replaced_at_nonce).
 CREATE TABLE historical_account_storage (
     account_id BLOB NOT NULL,           -- serialized account ID
-    replaced_at_nonce BIGINT NOT NULL,  -- nonce at which this old value was replaced
+    replaced_at_nonce INT NOT NULL,  -- nonce at which this old value was replaced
     slot_name TEXT NOT NULL,            -- name of the storage slot
     old_slot_value BLOB NULL,           -- old top-level value (NULL = slot was new)
     slot_type INTEGER NOT NULL,         -- type of the slot (0 = Value, 1 = Map)
     PRIMARY KEY (account_id, replaced_at_nonce, slot_name)
-) WITHOUT ROWID;
+) WITHOUT ROWID, STRICT;
 
 -- ── Storage map entries (latest + historical) ────────────────────────────
 
@@ -79,18 +79,18 @@ CREATE TABLE latest_storage_map_entries (
     key BLOB NOT NULL,          -- map entry key
     value BLOB NOT NULL,        -- map entry value
     PRIMARY KEY (account_id, slot_name, key)
-) WITHOUT ROWID;
+) WITHOUT ROWID, STRICT;
 
 -- Historical storage map entries: stores old map entry values that were replaced.
 -- NULL old_value means the entry didn't exist before (was created at replaced_at_nonce).
 CREATE TABLE historical_storage_map_entries (
     account_id BLOB NOT NULL,           -- account ID
-    replaced_at_nonce BIGINT NOT NULL,  -- nonce at which this old entry was replaced
+    replaced_at_nonce INT NOT NULL,  -- nonce at which this old entry was replaced
     slot_name TEXT NOT NULL,            -- name of the storage slot this entry belongs to
     key BLOB NOT NULL,                  -- map entry key
     old_value BLOB NULL,                -- old map entry value (NULL = entry was new)
     PRIMARY KEY (account_id, replaced_at_nonce, slot_name, key)
-) WITHOUT ROWID;
+) WITHOUT ROWID, STRICT;
 
 -- ── Account assets (latest + historical) ─────────────────────────────────
 
@@ -99,17 +99,17 @@ CREATE TABLE latest_account_assets (
     asset_id BLOB NOT NULL,          -- asset's asset id
     asset BLOB NOT NULL,             -- serialized asset value
     PRIMARY KEY (account_id, asset_id)
-) WITHOUT ROWID;
+) WITHOUT ROWID, STRICT;
 
 -- Historical account assets: stores old assets that were replaced.
 -- NULL old_asset means the asset didn't exist before (was created at replaced_at_nonce).
 CREATE TABLE historical_account_assets (
     account_id BLOB NOT NULL,           -- account ID
-    replaced_at_nonce BIGINT NOT NULL,  -- nonce at which this old asset was replaced
+    replaced_at_nonce INT NOT NULL,  -- nonce at which this old asset was replaced
     asset_id BLOB NOT NULL,             -- asset key in the vault's underlying SMT
     old_asset BLOB NULL,                -- old serialized asset value (NULL = asset was new)
     PRIMARY KEY (account_id, replaced_at_nonce, asset_id)
-) WITHOUT ROWID;
+) WITHOUT ROWID, STRICT;
 
 -- ── Foreign account code ─────────────────────────────────────────────────
 
@@ -118,7 +118,7 @@ CREATE TABLE foreign_account_code(
     code_commitment BLOB NOT NULL,
     PRIMARY KEY (account_id),
     FOREIGN KEY (code_commitment) REFERENCES account_code(commitment)
-);
+) STRICT;
 
 -- ── Transactions ─────────────────────────────────────────────────────────
 
@@ -126,12 +126,12 @@ CREATE TABLE transactions (
     id BLOB NOT NULL,                                -- Transaction ID (commitment of various components)
     details BLOB NOT NULL,                           -- Serialized transaction details
     script_root BLOB,                                -- Transaction script root
-    block_num UNSIGNED BIG INT,                      -- Block number for the block against which the transaction was executed.
+    block_num INT,                      -- Block number for the block against which the transaction was executed.
     status_variant INT NOT NULL,                     -- Status variant identifier
     status BLOB NOT NULL,                            -- Serialized transaction status
     FOREIGN KEY (script_root) REFERENCES transaction_scripts(script_root),
     PRIMARY KEY (id)
-) WITHOUT ROWID;
+) WITHOUT ROWID, STRICT;
 CREATE INDEX idx_transactions_uncommitted ON transactions(status_variant);
 
 
@@ -140,7 +140,7 @@ CREATE TABLE transaction_scripts (
     script BLOB,                                     -- serialized Transaction script
 
     PRIMARY KEY (script_root)
-) WITHOUT ROWID;
+) WITHOUT ROWID, STRICT;
 
 -- ── Notes ────────────────────────────────────────────────────────────────
 
@@ -153,16 +153,16 @@ CREATE TABLE input_notes (
     inputs BLOB NOT NULL,                                   -- the serialized list of note inputs
     script_root BLOB NOT NULL,                              -- the script root of the note, used to join with the notes_scripts table
     nullifier BLOB NULL,                                    -- the nullifier of the note, used to query by nullifier; NULL until metadata is known
-    state_discriminant UNSIGNED INT NOT NULL,               -- state discriminant of the note, used to query by state
+    state_discriminant INT NOT NULL,               -- state discriminant of the note, used to query by state
     state BLOB NOT NULL,                                    -- serialized note state
-    created_at UNSIGNED BIG INT NOT NULL,                   -- timestamp of the note creation/import
+    created_at INT NOT NULL,                   -- timestamp of the note creation/import
     consumed_block_height INTEGER NULL,                     -- block height at which the note was consumed; NULL for non-consumed notes
     consumed_tx_order INTEGER NULL,                         -- per-account position of the consuming tx in the account's execution chain within the block; NULL for external consumption or non-consumed notes
     consumer_account_id BLOB NULL,                          -- serialized account ID that consumed this note; NULL for non-consumed or externally consumed notes
 
     PRIMARY KEY (details_commitment),
     FOREIGN KEY (script_root) REFERENCES notes_scripts(script_root)
-) WITHOUT ROWID;
+) WITHOUT ROWID, STRICT;
 CREATE INDEX idx_input_notes_state ON input_notes(state_discriminant);
 CREATE INDEX idx_input_notes_nullifier ON input_notes(nullifier);
 CREATE INDEX idx_input_notes_note_id ON input_notes(note_id);
@@ -176,15 +176,15 @@ CREATE TABLE output_notes (
     assets BLOB NOT NULL,                                   -- the serialized NoteAssets, including vault commitment and list of assets
     metadata BLOB NOT NULL,                                 -- serialized metadata
     nullifier BLOB NULL,
-    expected_height UNSIGNED INT NOT NULL,                  -- the block height after which the note is expected to be created
--- TODO: normalize script data for output notes
---     script_commitment BLOB NULL,
-    state_discriminant UNSIGNED INT NOT NULL,               -- state discriminant of the note, used to query by state
+    expected_height INT NOT NULL,                           -- the block height after which the note is expected to be created
+    script_root BLOB NULL,                                  -- the root of the note's script (NULL if the full note details are unknown)
+    state_discriminant INT NOT NULL,                        -- state discriminant of the note, used to query by state
     state BLOB NOT NULL,                                    -- serialized note state
     attachments BLOB NOT NULL,
 
-    PRIMARY KEY (details_commitment)
-) WITHOUT ROWID;
+    PRIMARY KEY (details_commitment),
+    FOREIGN KEY (script_root) REFERENCES notes_scripts(script_root)
+) WITHOUT ROWID, STRICT;
 CREATE INDEX idx_output_notes_state ON output_notes(state_discriminant);
 CREATE INDEX idx_output_notes_nullifier ON output_notes(nullifier);
 CREATE INDEX idx_output_notes_note_id ON output_notes(note_id);
@@ -194,20 +194,20 @@ CREATE TABLE notes_scripts (
     serialized_note_script BLOB,                     -- NoteScript, serialized
 
     PRIMARY KEY (script_root)
-);
+) STRICT;
 
 -- ── Blockchain checkpoint & tags ─────────────────────────────────────────
 
 CREATE TABLE blockchain_checkpoint (
-    block_num UNSIGNED BIG INT NOT NULL,    -- the block number of the most recent state sync
+    block_num INT NOT NULL,    -- the block number of the most recent state sync
     partial_blockchain_peaks BLOB NOT NULL, -- serialized MMR peaks at the current sync height
     PRIMARY KEY (block_num)
-);
+) STRICT;
 
 CREATE TABLE tags (
     tag BLOB NOT NULL,     -- the serialized tag
     source BLOB NOT NULL   -- the serialized tag source
-);
+) STRICT;
 -- Enforces tag idempotency: `add_note_tag` uses `INSERT OR IGNORE` against this index so a
 -- repeated (tag, source) pair is a no-op instead of a duplicated row.
 CREATE UNIQUE INDEX idx_tags_tag_source ON tags(tag, source);
@@ -222,18 +222,18 @@ WHERE (
 -- ── Block headers & partial blockchain ───────────────────────────────────
 
 CREATE TABLE block_headers (
-    block_num UNSIGNED BIG INT NOT NULL,  -- block number
+    block_num INT NOT NULL,  -- block number
     header BLOB NOT NULL,                 -- serialized block header
-    has_client_notes BOOL NOT NULL,       -- whether the block has notes relevant to the client
+    has_client_notes INT NOT NULL,       -- whether the block has notes relevant to the client
     PRIMARY KEY (block_num)
-);
+) STRICT;
 CREATE INDEX IF NOT EXISTS idx_block_headers_has_notes ON block_headers(block_num) WHERE has_client_notes = 1;
 
 CREATE TABLE partial_blockchain_nodes (
-    id UNSIGNED BIG INT NOT NULL,   -- in-order index of the internal MMR node
+    id INT NOT NULL,   -- in-order index of the internal MMR node
     node BLOB NOT NULL,             -- internal node value (commitment)
     PRIMARY KEY (id)
-) WITHOUT ROWID;
+) WITHOUT ROWID, STRICT;
 
 -- ── Addresses ────────────────────────────────────────────────────────────
 
@@ -242,7 +242,7 @@ CREATE TABLE addresses (
     account_id BLOB NOT NULL,       -- associated serialized account ID
 
     PRIMARY KEY (address)
-) WITHOUT ROWID;
+) WITHOUT ROWID, STRICT;
 
 CREATE INDEX idx_addresses_account_id ON addresses(account_id);
 
@@ -256,7 +256,7 @@ CREATE TABLE forest_trees (
     entry_count INTEGER NOT NULL,  -- number of key-value entries in the latest tree
 
     PRIMARY KEY (lineage)
-) WITHOUT ROWID;
+) WITHOUT ROWID, STRICT;
 
 -- Key-value entries of the latest tree of each lineage.
 CREATE TABLE forest_entries (
@@ -266,7 +266,7 @@ CREATE TABLE forest_entries (
     leaf_position INTEGER NOT NULL,  -- SMT leaf index of the key (bit-preserved u64)
 
     PRIMARY KEY (lineage, key)
-) WITHOUT ROWID;
+) WITHOUT ROWID, STRICT;
 
 -- Groups the entries of one SMT leaf so witness reads can load a single leaf without scanning
 -- the lineage. Covering (it includes key and value) so the query planner picks it over the
@@ -284,7 +284,7 @@ CREATE TABLE forest_subtrees (
     data     BLOB NOT NULL,     -- serialized subtree (bitmap plus non-empty child hashes)
 
     PRIMARY KEY (lineage, depth, position)
-) WITHOUT ROWID;
+) WITHOUT ROWID, STRICT;
 
 -- Global counter for forest version numbers. It has a single row (id = 0); every forest
 -- mutation atomically takes the next value, so committed versions always increase and are
@@ -294,6 +294,6 @@ CREATE TABLE forest_revision (
     next_version INTEGER NOT NULL,
 
     PRIMARY KEY (id)
-);
+) STRICT;
 
 INSERT INTO forest_revision (id, next_version) VALUES (0, 1);

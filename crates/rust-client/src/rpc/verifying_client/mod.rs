@@ -127,6 +127,17 @@ fn verify_note_script_root(requested: Word, script: &NoteScript) -> Result<(), R
     Ok(())
 }
 
+/// Returns [`RpcError::InvalidResponse`] if the proof's account ID does not match `requested`.
+fn verify_account_id(requested: AccountId, proof: &AccountProof) -> Result<(), RpcError> {
+    let returned = proof.account_id();
+    if returned != requested {
+        return Err(RpcError::InvalidResponse(format!(
+            "node returned account proof for {returned} but {requested} was requested"
+        )));
+    }
+    Ok(())
+}
+
 // VERIFYING RPC CLIENT
 // ================================================================================================
 
@@ -261,7 +272,7 @@ impl<T: NodeRpcClient> NodeRpcClient for VerifyingRpcClient<T> {
         Ok(nullifiers)
     }
 
-    async fn get_account(
+     async fn get_account(
         &self,
         account_id: AccountId,
         request: GetAccountRequest,
@@ -272,6 +283,7 @@ impl<T: NodeRpcClient> NodeRpcClient for VerifyingRpcClient<T> {
         };
         let (block_num, proof) = self.0.get_account(account_id, request).await?;
         verify_block_num(requested, block_num)?;
+        verify_account_id(account_id, &proof)?;
         Ok((block_num, proof))
     }
 

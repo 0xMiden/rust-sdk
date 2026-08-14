@@ -171,6 +171,15 @@ fn account_proof() -> AccountProof {
     AccountProof::new(witness, None).expect("a proof without details has nothing to cross-check")
 }
 
+fn account_proof_for(account_id: AccountId) -> AccountProof {
+    let path = SparseMerklePath::from_parts(u64::MAX, Vec::new())
+        .expect("an all-empty path spans the full account tree depth");
+    let witness = AccountWitness::new(account_id, Word::empty(), path)
+        .expect("the path depth matches the account tree depth");
+
+    AccountProof::new(witness, None).expect("a proof without details has nothing to cross-check")
+}
+
 // CANNED TRANSPORT
 // ================================================================================================
 
@@ -568,6 +577,34 @@ async fn get_account_verifies_block_num_only_for_pinned_requests() {
         )
         .await
         .expect_err("state at another block must be rejected");
+    assert!(matches!(err, RpcError::InvalidResponse(_)));
+}
+
+#[tokio::test]
+async fn get_account_verifies_account_id() {
+    let requested = test_account_id();
+    let other = AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE)
+        .expect("test public account ID is well formed");
+
+    // Matching ID must be accepted.
+    let client = VerifyingRpcClient::new(CannedTransport {
+        account: Some((BlockNumber::from(5u32), account_proof_for(requested))),
+        ..Default::default()
+    });
+    client
+        .get_account(requested, GetAccountRequest::new().at(AccountStateAt::ChainTip))
+        .await
+        .expect("a proof for the requested account must be accepted");
+
+    // Mismatched ID must be rejected.
+    let client = VerifyingRpcClient::new(CannedTransport {
+        account: Some((BlockNumber::from(5u32), account_proof_for(other))),
+        ..Default::default()
+    });
+    let err = client
+        .get_account(requested, GetAccountRequest::new().at(AccountStateAt::ChainTip))
+        .await
+        .expect_err("a proof for a different account must be rejected");
     assert!(matches!(err, RpcError::InvalidResponse(_)));
 }
 

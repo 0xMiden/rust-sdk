@@ -52,9 +52,10 @@ miden-node-proto-build           = { default-features = false, version = "0.16.0
 miden-note-transport-proto-build = { default-features = false, version = "0.5.0-alpha.1" }
 
 # Miden debug dependency
-miden-debug        = { default-features = false, features = ["dap", "std"], version = "0.10" }
-miden-mast-package = { default-features = false, version = "0.29" }
-miden-processor    = { default-features = false, version = "0.29.1" }
+miden-assembly-syntax = { default-features = false, version = "0.29" }
+miden-debug           = { default-features = false, features = ["dap", "std"], version = "0.10" }
+miden-mast-package    = { default-features = false, version = "0.29" }
+miden-processor       = { default-features = false, version = "0.29.1" }
 
 # External dependencies
 anyhow             = { default-features = false, version = "1.0" }
@@ -82,10 +83,10 @@ tracing-subscriber = { default-features = false, version = "0.3" }
 uuid               = { version = "1.10" }
 
 # TEMPORARY (do not merge): `miden call` reads argument and result types through
-# `miden_mast_package::typed`, which is not in a published miden-vm release yet. Point the whole
-# miden-vm crate set at the branch carrying it; patching `mast-package` alone pulls a second
-# `miden-core` and breaks type unification. Delete this entire block once the module lands in a
-# release — the caret `"0.29"` requirement then picks it up from crates.io.
+# `miden_assembly_syntax::ast::types::signatures`, which is not in a published miden-vm release yet.
+# Point the whole miden-vm crate set at the branch carrying it; patching a single crate pulls a
+# second `miden-core` and breaks type unification. Delete this entire block once the module lands in
+# a release — the caret `"0.29"` requirement then picks it up from crates.io.
 [patch.crates-io]
 miden-ace-codegen         = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
 miden-air                 = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }

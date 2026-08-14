@@ -1,6 +1,6 @@
 //! Protocol-aware WIT scalar codecs.
 //!
-//! The encode/decode engine and the [`WitScalarCodec`] trait live in `miden-mast-package`, which
+//! The encode/decode engine and the [`WitScalarCodec`] trait live in `miden-assembly-syntax`, which
 //! does not depend on `miden-protocol` and should not: the VM does not depend on the protocol. So
 //! it ships the two codecs it can write itself, `word` and `felt`, and leaves the trait for the
 //! rest.

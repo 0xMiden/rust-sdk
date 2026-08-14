@@ -55,7 +55,7 @@ std = [
   "dep:tempfile",
   "dep:tokio",
   "miden-agglayer/std",
-  "miden-mast-package/std",
+  "miden-assembly-syntax/std",
   "miden-processor/std",
   "miden-protocol/std",
   "miden-tx/std",
@@ -75,15 +75,15 @@ tonic = []
 
 [dependencies]
 # Miden dependencies
-miden-agglayer     = { workspace = true }
-miden-debug        = { optional = true, workspace = true }
-miden-mast-package = { workspace = true }
-miden-processor    = { workspace = true }
-miden-protocol     = { workspace = true }
-miden-standards    = { workspace = true }
-miden-testing      = { optional = true, workspace = true }
-miden-tx           = { workspace = true }
-miden-tx-batch     = { workspace = true }
+miden-agglayer        = { workspace = true }
+miden-assembly-syntax = { workspace = true }
+miden-debug           = { optional = true, workspace = true }
+miden-processor       = { workspace = true }
+miden-protocol        = { workspace = true }
+miden-standards       = { workspace = true }
+miden-testing         = { optional = true, workspace = true }
+miden-tx              = { workspace = true }
+miden-tx-batch        = { workspace = true }
 
 # External dependencies
 anyhow       = { workspace = true }

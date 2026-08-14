@@ -18,6 +18,7 @@ use miden_protocol::asset::{Asset, AssetId, AssetWitness};
 use miden_protocol::crypto::merkle::MerkleError;
 use miden_protocol::crypto::merkle::smt::{
     Backend,
+    BackendReader,
     LargeSmtForest,
     LargeSmtForestError,
     LineageId,
@@ -179,11 +180,11 @@ impl AccountUpdate {
 /// The wrapper is generic over the forest storage [`Backend`], so persistence is decided by the
 /// store that owns it. Construction only loads tree metadata from the backend, which makes
 /// short-lived (per store operation) instances cheap.
-pub struct AccountSmtForest<B: Backend> {
+pub struct AccountSmtForest<B: BackendReader> {
     forest: LargeSmtForest<B>,
 }
 
-impl<B: Backend> AccountSmtForest<B> {
+impl<B: BackendReader> AccountSmtForest<B> {
     /// Creates a forest over the provided backend, loading tree metadata from it.
     pub fn new(backend: B) -> Result<Self, StoreError> {
         Ok(Self {
@@ -257,6 +258,11 @@ impl<B: Backend> AccountSmtForest<B> {
     // MUTATIONS
     // --------------------------------------------------------------------------------------------
 
+    // MUTATIONS
+    // --------------------------------------------------------------------------------------------
+}
+
+impl<B: Backend> AccountSmtForest<B> {
     /// Applies a recorded update at the given version.
     ///
     /// Lineages unknown to the forest are created from the empty tree; known lineages are
@@ -323,7 +329,9 @@ impl<B: Backend> AccountSmtForest<B> {
 
         Ok(())
     }
+}
 
+impl<B: BackendReader> AccountSmtForest<B> {
     // HELPERS
     // --------------------------------------------------------------------------------------------
 

@@ -98,6 +98,24 @@ fn verify_nullifier_prefixes(
     Ok(())
 }
 
+/// Returns [`RpcError::InvalidResponse`] if any returned transaction record carries an account ID
+/// that was not in `requested`.
+fn verify_account_ids(
+    requested: &BTreeSet<AccountId>,
+    records: &[TransactionRecord],
+) -> Result<(), RpcError> {
+    for record in records {
+        let id = record.transaction_header.account_id();
+        if !requested.contains(&id) {
+            let list = requested.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ");
+            return Err(RpcError::InvalidResponse(format!(
+                "node returned transaction for account {id} but [{list}] were requested"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Returns [`RpcError::InvalidResponse`] if `script`'s root does not equal the `requested` root.
 fn verify_note_script_root(requested: Word, script: &NoteScript) -> Result<(), RpcError> {
     let fetched_root = script.root();
@@ -127,6 +145,8 @@ fn verify_note_script_root(requested: Word, script: &NoteScript) -> Result<(), R
 ///   the response must be for that block.
 /// - [`get_note_script_by_root`](NodeRpcClient::get_note_script_by_root): a returned script's root
 ///   must match the requested one.
+/// - [`sync_transactions`](NodeRpcClient::sync_transactions): every returned transaction record's
+///   account ID must have been requested.
 ///
 /// All other methods delegate to the wrapped client unchanged.
 pub struct VerifyingRpcClient<T>(T);
@@ -287,7 +307,10 @@ impl<T: NodeRpcClient> NodeRpcClient for VerifyingRpcClient<T> {
         block_to: BlockNumber,
         account_ids: Vec<AccountId>,
     ) -> Result<Vec<TransactionRecord>, RpcError> {
-        self.0.sync_transactions(block_from, block_to, account_ids).await
+        let requested: BTreeSet<AccountId> = account_ids.iter().copied().collect();
+        let records = self.0.sync_transactions(block_from, block_to, account_ids).await?;
+        verify_account_ids(&requested, &records)?;
+        Ok(records)
     }
 
     async fn get_network_id(&self) -> Result<NetworkId, RpcError> {

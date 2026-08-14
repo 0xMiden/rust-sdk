@@ -1,21 +1,21 @@
 #![allow(clippy::items_after_statements)]
 
 use std::collections::BTreeSet;
-use std::sync::{Arc, RwLock};
 use std::vec::Vec;
 
 use miden_client::Word;
 use miden_client::account::AccountId;
 use miden_client::note::{BlockNumber, NoteTag};
-use miden_client::store::{AccountSmtForest, StoreError};
+use miden_client::store::StoreError;
 use miden_client::sync::{NoteTagRecord, NoteTagSource, PublicAccountUpdate, StateSyncUpdate};
 use miden_client::utils::{Deserializable, Serializable};
-use rusqlite::{Connection, Transaction, params};
+use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 
 use super::SqliteStore;
+use crate::forest::{ScopedAccountForest, SqliteForestBackend};
 use crate::note::apply_note_updates_tx;
 use crate::sql_error::SqlResultExt;
-use crate::transaction::{upsert_transaction_record, with_forest_snapshot};
+use crate::transaction::upsert_transaction_record;
 use crate::{insert_sql, subst};
 
 impl SqliteStore {
@@ -95,7 +95,6 @@ impl SqliteStore {
 
     pub(super) fn apply_state_sync(
         conn: &mut Connection,
-        smt_forest: &Arc<RwLock<AccountSmtForest>>,
         state_sync_update: StateSyncUpdate,
     ) -> Result<(), StoreError> {
         let (
@@ -106,34 +105,39 @@ impl SqliteStore {
             account_updates,
         ) = state_sync_update.into_parts();
 
-        with_forest_snapshot(conn, smt_forest, |tx, smt_forest| {
+        let db_tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .into_store_error()?;
+        {
+            let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&db_tx))?;
             // Update blockchain checkpoint (block number and peaks) only if moving forward.
             let new_peaks_bytes = partial_blockchain_updates.new_peaks.peaks().to_vec().to_bytes();
             const BLOCKCHAIN_CHECKPOINT_QUERY: &str = "UPDATE blockchain_checkpoint SET block_num = ?, partial_blockchain_peaks = ? WHERE block_num < ?";
-            tx.execute(
-                BLOCKCHAIN_CHECKPOINT_QUERY,
-                params![
-                    i64::from(block_num.as_u32()),
-                    new_peaks_bytes,
-                    i64::from(block_num.as_u32())
-                ],
-            )
-            .into_store_error()?;
+            db_tx
+                .execute(
+                    BLOCKCHAIN_CHECKPOINT_QUERY,
+                    params![
+                        i64::from(block_num.as_u32()),
+                        new_peaks_bytes,
+                        i64::from(block_num.as_u32())
+                    ],
+                )
+                .into_store_error()?;
 
             for (block_header, is_relevant) in
                 partial_blockchain_updates.block_headers_to_store(block_num)
             {
-                Self::insert_block_header_tx(tx, block_header, *is_relevant)?;
+                Self::insert_block_header_tx(&db_tx, block_header, *is_relevant)?;
             }
 
             // Insert new authentication nodes (inner nodes of the PartialBlockchain)
             Self::insert_partial_blockchain_nodes_tx(
-                tx,
+                &db_tx,
                 partial_blockchain_updates.new_authentication_nodes(),
             )?;
 
             // Update notes
-            apply_note_updates_tx(tx, &note_updates)?;
+            apply_note_updates_tx(&db_tx, &note_updates)?;
 
             // Remove tags of input notes whose inclusion settled in this sync (committed,
             // consumed during catch-up, or invalidated): their tag no longer drives note sync.
@@ -154,14 +158,14 @@ impl SqliteStore {
                 .collect::<Vec<_>>();
 
             for tag in tags_to_remove {
-                remove_note_tag_tx(tx, tag)?;
+                remove_note_tag_tx(&db_tx, tag)?;
             }
 
             for transaction_record in transaction_updates
                 .committed_transactions()
                 .chain(transaction_updates.discarded_transactions())
             {
-                upsert_transaction_record(tx, transaction_record)?;
+                upsert_transaction_record(&db_tx, transaction_record)?;
             }
 
             // Remove the accounts that are originated from the discarded transactions
@@ -170,31 +174,25 @@ impl SqliteStore {
                 .map(|tx| (tx.details.account_id, tx.details.final_account_state))
                 .collect();
 
-            Self::undo_account_state(tx, smt_forest, &discarded_states)?;
-
-            // For committed transactions, release the old staged roots.
-            for committed_tx in transaction_updates.committed_transactions() {
-                smt_forest.commit_roots(committed_tx.details.account_id);
-            }
+            Self::undo_account_state(&db_tx, &mut smt_forest, &discarded_states)?;
 
             // Update public accounts on the db that have been updated onchain
             for update in account_updates.updated_public_accounts() {
                 match update {
                     PublicAccountUpdate::Full(account) => {
-                        Self::update_account_state(tx, smt_forest, account)?;
+                        Self::update_account_state(&db_tx, &mut smt_forest, account)?;
                     },
                     PublicAccountUpdate::Patch { new_header, patch } => {
-                        Self::apply_sync_account_patch(tx, smt_forest, new_header, patch)?;
+                        Self::apply_sync_account_patch(&db_tx, &mut smt_forest, new_header, patch)?;
                     },
                 }
             }
 
             for (account_id, digest) in account_updates.mismatched_private_accounts() {
-                Self::lock_account_on_unexpected_commitment(tx, account_id, digest)?;
+                Self::lock_account_on_unexpected_commitment(&db_tx, account_id, digest)?;
             }
-
-            Ok(())
-        })
+        }
+        db_tx.commit().into_store_error()
     }
 }
 

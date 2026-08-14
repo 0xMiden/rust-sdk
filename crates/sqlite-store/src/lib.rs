@@ -8,7 +8,6 @@ use std::boxed::Box;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::string::{String, ToString};
-use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use std::vec::Vec;
 
@@ -38,7 +37,6 @@ use miden_client::crypto::{InOrderIndex, MmrPeaks};
 use miden_client::note::{BlockNumber, NoteScript, NoteTag, Nullifier};
 use miden_client::store::{
     AccountRecord,
-    AccountSmtForest,
     AccountStatus,
     AccountStorageFilter,
     BlockRelevance,
@@ -65,6 +63,7 @@ mod account;
 mod builder;
 mod chain_data;
 mod db_management;
+mod forest;
 mod note;
 mod sql_error;
 mod sync;
@@ -87,7 +86,6 @@ pub use builder::ClientBuilderSqliteExt;
 pub struct SqliteStore {
     pub(crate) pool: Pool,
     database_filepath: PathBuf,
-    smt_forest: Arc<RwLock<AccountSmtForest>>,
 }
 
 impl SqliteStore {
@@ -121,27 +119,9 @@ impl SqliteStore {
                 .map_err(|e| StoreError::DatabaseError(e.to_string()))?;
         }
 
-        let store = SqliteStore {
-            pool,
-            database_filepath,
-            smt_forest: Arc::new(RwLock::new(AccountSmtForest::new())),
-        };
-
-        // Initialize SMT forest
-        for id in store.get_account_ids().await? {
-            let vault = store.get_account_vault(id).await?;
-            let storage = store.get_account_storage(id, AccountStorageFilter::All).await?;
-            let header = store.get_account_header(id).await?;
-
-            let mut smt_forest = store.smt_forest.write().expect("smt write lock not poisoned");
-            if header.is_some() {
-                smt_forest.insert_and_register_account_state(id, &vault, &storage)?;
-            } else {
-                smt_forest.insert_account_state(&vault, &storage)?;
-            }
-        }
-
-        Ok(store)
+        // Account SMT data is persisted in the forest tables and read on demand, so no state
+        // needs to be rebuilt here.
+        Ok(SqliteStore { pool, database_filepath })
     }
 
     /// Returns the path of the database file backing this store.
@@ -209,9 +189,8 @@ impl Store for SqliteStore {
     }
 
     async fn apply_state_sync(&self, state_sync_update: StateSyncUpdate) -> Result<(), StoreError> {
-        let smt_forest = self.smt_forest.clone();
         self.interact_with_connection(move |conn| {
-            SqliteStore::apply_state_sync(conn, &smt_forest, state_sync_update)
+            SqliteStore::apply_state_sync(conn, state_sync_update)
         })
         .await
     }
@@ -227,20 +206,16 @@ impl Store for SqliteStore {
     }
 
     async fn apply_transaction(&self, tx_update: TransactionStoreUpdate) -> Result<(), StoreError> {
-        let smt_forest = self.smt_forest.clone();
-        self.interact_with_connection(move |conn| {
-            SqliteStore::apply_transaction(conn, &smt_forest, &tx_update)
-        })
-        .await
+        self.interact_with_connection(move |conn| SqliteStore::apply_transaction(conn, &tx_update))
+            .await
     }
 
     async fn apply_transaction_batch(
         &self,
         tx_updates: Vec<TransactionStoreUpdate>,
     ) -> Result<(), StoreError> {
-        let smt_forest = self.smt_forest.clone();
         self.interact_with_connection(move |conn| {
-            SqliteStore::apply_transaction_batch(conn, &smt_forest, &tx_updates)
+            SqliteStore::apply_transaction_batch(conn, &tx_updates)
         })
         .await
     }
@@ -381,12 +356,10 @@ impl Store for SqliteStore {
         client_account_type: ClientAccountType,
     ) -> Result<(), StoreError> {
         let cloned_account = account.clone();
-        let smt_forest = self.smt_forest.clone();
 
         self.interact_with_connection(move |conn| {
             SqliteStore::insert_account(
                 conn,
-                &smt_forest,
                 &cloned_account,
                 &initial_address,
                 client_account_type,
@@ -397,10 +370,9 @@ impl Store for SqliteStore {
 
     async fn update_account(&self, account: &Account) -> Result<(), StoreError> {
         let cloned_account = account.clone();
-        let smt_forest = self.smt_forest.clone();
 
         self.interact_with_connection(move |conn| {
-            SqliteStore::update_account(conn, &smt_forest, &cloned_account)
+            SqliteStore::update_account(conn, &cloned_account)
         })
         .await
     }
@@ -524,9 +496,8 @@ impl Store for SqliteStore {
         account_id: AccountId,
         asset_id: AssetId,
     ) -> Result<Option<(Asset, AssetWitness)>, StoreError> {
-        let smt_forest = self.smt_forest.clone();
         self.interact_with_connection(move |conn| {
-            SqliteStore::get_account_asset(conn, &smt_forest, account_id, asset_id)
+            SqliteStore::get_account_asset(conn, account_id, asset_id)
         })
         .await
     }
@@ -548,10 +519,8 @@ impl Store for SqliteStore {
         slot_name: StorageSlotName,
         key: StorageMapKey,
     ) -> Result<(Word, StorageMapWitness), StoreError> {
-        let smt_forest = self.smt_forest.clone();
-
         self.interact_with_connection(move |conn| {
-            SqliteStore::get_account_map_item(conn, &smt_forest, account_id, slot_name, key)
+            SqliteStore::get_account_map_item(conn, account_id, slot_name, key)
         })
         .await
     }

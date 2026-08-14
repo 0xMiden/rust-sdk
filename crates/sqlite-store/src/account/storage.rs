@@ -1,70 +1,28 @@
 //! Storage-related database operations for accounts.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::rc::Rc;
 use std::string::ToString;
 use std::vec::Vec;
 
 use miden_client::account::{
     AccountId,
     AccountStoragePatch,
-    StorageMap,
     StorageMapPatch,
     StorageSlot,
     StorageSlotContent,
-    StorageSlotName,
     StorageSlotType,
 };
-use miden_client::store::{AccountSmtForest, StoreError};
-use miden_client::{Deserializable, EMPTY_WORD, Serializable, Word};
-use rusqlite::types::Value;
+use miden_client::store::StoreError;
+use miden_client::{EMPTY_WORD, Serializable, Word};
 use rusqlite::{OptionalExtension, Transaction, params};
 
+use crate::forest::ScopedAccountForest;
 use crate::sql_error::SqlResultExt;
 use crate::{SqliteStore, insert_sql, subst, u64_to_value};
 
 impl SqliteStore {
     // READER METHODS
     // --------------------------------------------------------------------------------------------
-
-    /// Fetches the current root values for storage maps that will be updated by the account delta.
-    ///
-    /// Only queries the slot values (roots) from the latest storage table, avoiding the need to
-    /// load full storage map entries into memory. The `AccountSmtForest` handles the actual
-    /// Merkle tree operations.
-    pub(crate) fn get_storage_map_roots_for_patch(
-        conn: &rusqlite::Connection,
-        account_id: AccountId,
-        storage_patch: &AccountStoragePatch,
-    ) -> Result<BTreeMap<StorageSlotName, Word>, StoreError> {
-        let map_slot_names: Vec<Value> = storage_patch
-            .maps()
-            .map(|(slot_name, _)| Value::Text(slot_name.to_string()))
-            .collect();
-
-        if map_slot_names.is_empty() {
-            return Ok(BTreeMap::new());
-        }
-
-        const QUERY: &str = "SELECT slot_name, slot_value FROM latest_account_storage \
-                             WHERE account_id = ? AND slot_name IN rarray(?)";
-
-        conn.prepare(QUERY)
-            .into_store_error()?
-            .query_map(params![account_id.to_bytes(), Rc::new(map_slot_names)], |row| {
-                let name: String = row.get(0)?;
-                let value: Vec<u8> = row.get(1)?;
-                Ok((name, value))
-            })
-            .into_store_error()?
-            .map(|result| {
-                let (name, value) = result.into_store_error()?;
-                let slot_name = StorageSlotName::new(name)
-                    .map_err(|err| StoreError::ParsingError(err.to_string()))?;
-                Ok((slot_name, Word::read_from_bytes(&value)?))
-            })
-            .collect()
-    }
 
     // MUTATOR/WRITER METHODS
     // --------------------------------------------------------------------------------------------
@@ -124,16 +82,15 @@ impl SqliteStore {
     }
 
     /// Writes only the changed storage slots, archiving old values from latest to historical
-    /// before overwriting.
+    /// before replacing or removing them.
     ///
-    /// For each changed slot, the old value is read from latest and archived to historical.
-    /// NULL `old_slot_value` means the slot was new. For map entries, the old entry value is
-    /// similarly archived before updating latest.
+    /// The storage patch is the source of truth for slot type, value, and removal. Roots for map
+    /// slots that remain present are read from the already-updated forest.
     pub(crate) fn write_storage_patch(
         tx: &Transaction<'_>,
+        smt_forest: &ScopedAccountForest<'_, '_>,
         account_id: AccountId,
         nonce: u64,
-        updated_slots: &BTreeMap<StorageSlotName, (Word, StorageSlotType)>,
         storage_patch: &AccountStoragePatch,
     ) -> Result<(), StoreError> {
         const LATEST_SLOT_QUERY: &str = insert_sql!(
@@ -166,6 +123,8 @@ impl SqliteStore {
         );
         const READ_OLD_SLOT: &str =
             "SELECT slot_value FROM latest_account_storage WHERE account_id = ? AND slot_name = ?";
+        const DELETE_LATEST_SLOT: &str =
+            "DELETE FROM latest_account_storage WHERE account_id = ? AND slot_name = ?";
 
         let mut latest_slot_stmt = tx.prepare_cached(LATEST_SLOT_QUERY).into_store_error()?;
         let mut hist_slot_stmt = tx.prepare_cached(HISTORICAL_SLOT_QUERY).into_store_error()?;
@@ -174,14 +133,25 @@ impl SqliteStore {
         let account_id_bytes = account_id.to_bytes();
         let nonce_val = u64_to_value(nonce);
 
-        // Look up each map slot's patch by name so the write path can honor the patch operation.
-        let patch_maps: BTreeMap<&StorageSlotName, &StorageMapPatch> =
-            storage_patch.maps().collect();
+        let value_slots = storage_patch.values().map(|(slot_name, value_patch)| {
+            Ok::<_, StoreError>((slot_name, value_patch.value(), StorageSlotType::Value, None))
+        });
+        let map_slots = storage_patch.maps().map(|(slot_name, map_patch)| {
+            let new_value = match map_patch {
+                StorageMapPatch::Remove => None,
+                StorageMapPatch::Create { .. } | StorageMapPatch::Update { .. } => Some(
+                    smt_forest
+                        .map_root(account_id, slot_name)
+                        .ok_or(StoreError::AccountDataNotFound(account_id))?,
+                ),
+            };
+            Ok((slot_name, new_value, StorageSlotType::Map, Some(map_patch)))
+        });
 
-        for (slot_name, (value, slot_type)) in updated_slots {
+        for slot_update in value_slots.chain(map_slots) {
+            let (slot_name, new_value, slot_type, map_patch) = slot_update?;
             let slot_name_str = slot_name.to_string();
-            let slot_value_bytes = value.to_bytes();
-            let slot_type_val = *slot_type as u8;
+            let slot_type_val = slot_type as u8;
 
             // Read old slot value from latest (NULL if slot is new)
             let old_slot_value: Option<Vec<u8>> = tx
@@ -203,17 +173,21 @@ impl SqliteStore {
                 ])
                 .into_store_error()?;
 
-            // Update latest slot
-            latest_slot_stmt
-                .execute(params![
-                    &account_id_bytes,
-                    &slot_name_str,
-                    &slot_value_bytes,
-                    slot_type_val
-                ])
-                .into_store_error()?;
+            if let Some(value) = new_value {
+                latest_slot_stmt
+                    .execute(params![
+                        &account_id_bytes,
+                        &slot_name_str,
+                        value.to_bytes(),
+                        slot_type_val
+                    ])
+                    .into_store_error()?;
+            } else {
+                tx.execute(DELETE_LATEST_SLOT, params![&account_id_bytes, &slot_name_str])
+                    .into_store_error()?;
+            }
 
-            if let Some(map_patch) = patch_maps.get(slot_name) {
+            if let Some(map_patch) = map_patch {
                 Self::write_map_patch(
                     tx,
                     &mut latest_map_stmt,
@@ -395,57 +369,5 @@ impl SqliteStore {
         }
 
         Ok(())
-    }
-
-    /// Applies storage delta changes to the account state, computing new roots via the SMT forest.
-    ///
-    /// Value-type slot updates are taken directly from the delta. For map-type slots, the old
-    /// root is used to update the SMT forest with the delta entries, producing the new root.
-    /// Full storage maps are never loaded into memory — the `AccountSmtForest` handles all
-    /// Merkle tree operations.
-    pub(crate) fn apply_account_storage_patch(
-        smt_forest: &mut AccountSmtForest,
-        old_map_roots: &BTreeMap<StorageSlotName, Word>,
-        storage_patch: &AccountStoragePatch,
-    ) -> Result<BTreeMap<StorageSlotName, (Word, StorageSlotType)>, StoreError> {
-        let mut updated_slots: BTreeMap<StorageSlotName, (Word, StorageSlotType)> = storage_patch
-            .values()
-            .map(|(slot_name, value_patch)| {
-                (
-                    slot_name.clone(),
-                    (
-                        value_patch
-                            .value()
-                            .expect("the protocol does not generate Remove value patches"),
-                        StorageSlotType::Value,
-                    ),
-                )
-            })
-            .collect();
-
-        let default_map_root = StorageMap::default().root();
-
-        for (slot_name, map_patch) in storage_patch.maps() {
-            // Update layers its entries onto the existing map. Create and Remove start from an
-            // empty map, so Create reflects only its own entries and Remove collapses
-            // to the empty root.
-            let base_root = match map_patch {
-                StorageMapPatch::Update { .. } => {
-                    old_map_roots.get(slot_name).copied().unwrap_or(default_map_root)
-                },
-                StorageMapPatch::Create { .. } | StorageMapPatch::Remove => default_map_root,
-            };
-            let entries: Vec<_> = map_patch
-                .entries()
-                .into_iter()
-                .flat_map(|e| e.as_map().iter())
-                .map(|(key, value)| (*key, *value))
-                .collect();
-
-            let new_root = smt_forest.update_storage_map_nodes(base_root, entries.into_iter())?;
-            updated_slots.insert(slot_name.clone(), (new_root, StorageSlotType::Map));
-        }
-
-        Ok(updated_slots)
     }
 }

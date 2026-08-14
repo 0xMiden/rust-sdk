@@ -73,7 +73,7 @@ mod errors;
 pub use errors::*;
 
 mod smt_forest;
-pub use smt_forest::AccountSmtForest;
+pub use smt_forest::{AccountSmtForest, AccountUpdate};
 
 mod account;
 pub use account::{

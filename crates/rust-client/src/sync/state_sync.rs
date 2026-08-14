@@ -326,7 +326,7 @@ impl StateSync {
         } = sync_data;
         let chain_tip = chain_tip_header.block_num();
 
-        let new_commitments = derive_account_commitments(&transactions);
+        let new_commitments = derive_account_commitments(&transactions)?;
         let superseded_states = self
             .account_state_sync(
                 &mut account_updates,
@@ -748,7 +748,7 @@ impl StateSync {
         note_updates: &mut NoteUpdateTracker,
         transaction_updates: &mut TransactionUpdateTracker,
     ) -> Result<(), ClientError> {
-        note_updates.extend_nullifiers(compute_ordered_nullifiers(transactions));
+        note_updates.extend_nullifiers(compute_ordered_nullifiers(transactions)?);
 
         for record in transactions {
             transaction_updates
@@ -1288,10 +1288,20 @@ fn group_txs_by_account_block(
 ///
 /// Same-block transactions for the same account form an execution chain: each tx's
 /// `final_state_commitment` is the next tx's `initial_state_commitment`. This finds the chain
-/// start and walks forward, yielding each tx in execution order.
+/// start and walks forward, returning each tx in execution order.
+///
+/// # Errors
+///
+/// Returns [`RpcError::InvalidResponse`] if the chained records do not form exactly one path:
+/// either none of them starts the chain (their commitments form a cycle) or the walk does not
+/// reach all of them (the response is missing a link, or repeats an initial commitment). Both
+/// mean the node's response does not describe an execution order, and neither is recoverable by
+/// walking what is there: a truncated walk would silently drop the unreached records, taking
+/// their nullifiers out of the consumed-transaction order and moving the account's terminal
+/// state commitment back to the last record the walk happened to reach.
 fn walk_execution_chain<'a>(
     txs: &'a [&'a RpcTransactionRecord],
-) -> impl Iterator<Item = &'a RpcTransactionRecord> + 'a {
+) -> Result<Vec<&'a RpcTransactionRecord>, ClientError> {
     let (self_loops, chained): (Vec<&RpcTransactionRecord>, Vec<&RpcTransactionRecord>) =
         txs.iter().copied().partition(|tx| {
             tx.transaction_header.initial_state_commitment()
@@ -1308,24 +1318,39 @@ fn walk_execution_chain<'a>(
         .map(|tx| (tx.transaction_header.initial_state_commitment(), *tx))
         .collect();
 
-    let start = chained
-        .iter()
-        .find(|tx| !final_states.contains(&tx.transaction_header.initial_state_commitment()))
-        .copied();
+    let mut ordered: Vec<&RpcTransactionRecord> = Vec::with_capacity(txs.len());
 
-    assert!(start.is_some() || chained.is_empty(), "cannot walk cyclic execution chain");
+    if !chained.is_empty() {
+        let start = chained
+            .iter()
+            .find(|tx| !final_states.contains(&tx.transaction_header.initial_state_commitment()))
+            .copied()
+            .ok_or_else(|| {
+                RpcError::InvalidResponse(
+                    "transaction records of one account and block form a cyclic execution chain"
+                        .into(),
+                )
+            })?;
 
-    let mut current =
-        start.and_then(|tx| init_to_tx.remove(&tx.transaction_header.initial_state_commitment()));
-    let mut self_loops_iter = self_loops.into_iter();
-
-    core::iter::from_fn(move || {
-        if let Some(tx) = current {
+        let mut current = init_to_tx.remove(&start.transaction_header.initial_state_commitment());
+        while let Some(tx) = current {
             current = init_to_tx.remove(&tx.transaction_header.final_state_commitment());
-            return Some(tx);
+            ordered.push(tx);
         }
-        self_loops_iter.next()
-    })
+
+        // A shorter walk means the group holds a record the chain never reaches, either because
+        // a link is missing or because two records share an initial commitment.
+        if ordered.len() != chained.len() {
+            return Err(RpcError::InvalidResponse(
+                "transaction records of one account and block do not form a single execution chain"
+                    .into(),
+            )
+            .into());
+        }
+    }
+
+    ordered.extend(self_loops);
+    Ok(ordered)
 }
 
 /// Derives account commitment updates from transaction records.
@@ -1334,11 +1359,12 @@ fn walk_execution_chain<'a>(
 /// the highest `block_num`.
 fn derive_account_commitments(
     transaction_records: &[RpcTransactionRecord],
-) -> Vec<(AccountId, Word)> {
+) -> Result<Vec<(AccountId, Word)>, ClientError> {
     let mut latest_by_account: BTreeMap<AccountId, (BlockNumber, Word)> = BTreeMap::new();
 
     for ((account_id, block_num), txs) in &group_txs_by_account_block(transaction_records) {
-        let terminal_state = walk_execution_chain(txs)
+        let ordered = walk_execution_chain(txs)?;
+        let terminal_state = ordered
             .last()
             .expect("account must have a final state")
             .transaction_header
@@ -1355,10 +1381,10 @@ fn derive_account_commitments(
             .or_insert((*block_num, terminal_state));
     }
 
-    latest_by_account
+    Ok(latest_by_account
         .into_iter()
         .map(|(account_id, (_, state))| (account_id, state))
-        .collect()
+        .collect())
 }
 
 /// Returns nullifiers ordered by consuming transaction position, per account.
@@ -1367,18 +1393,20 @@ fn derive_account_commitments(
 /// `initial_state_commitment` / `final_state_commitment`, and collects each transaction's
 /// input note nullifiers in execution order. Nullifiers from the same account are in execution
 /// order; ordering across different accounts is arbitrary.
-fn compute_ordered_nullifiers(transaction_records: &[RpcTransactionRecord]) -> Vec<Nullifier> {
+fn compute_ordered_nullifiers(
+    transaction_records: &[RpcTransactionRecord],
+) -> Result<Vec<Nullifier>, ClientError> {
     let mut result = Vec::new();
 
     for txs in group_txs_by_account_block(transaction_records).values() {
-        for tx in walk_execution_chain(txs) {
+        for tx in walk_execution_chain(txs)? {
             for commitment in tx.transaction_header.input_notes().iter() {
                 result.push(commitment.nullifier());
             }
         }
     }
 
-    result
+    Ok(result)
 }
 
 #[cfg(all(test, feature = "testing"))]
@@ -1833,6 +1861,8 @@ mod tests {
         use miden_protocol::transaction::{InputNoteCommitment, InputNotes, TransactionHeader};
 
         use super::word;
+        use crate::ClientError;
+        use crate::rpc::RpcError;
         use crate::rpc::domain::transaction::TransactionRecord as RpcTransactionRecord;
 
         fn make_rpc_tx(
@@ -1868,6 +1898,39 @@ mod tests {
             }
         }
 
+        /// A node can return records whose state commitments close a loop. There is no chain
+        /// start then, which used to trip an assertion instead of reporting a bad response.
+        #[test]
+        fn cyclic_execution_chain_is_an_invalid_response() {
+            let tx_a = make_rpc_tx(1, 2, &[10], 5);
+            let tx_b = make_rpc_tx(2, 1, &[20], 5);
+
+            let err = super::super::compute_ordered_nullifiers(&[tx_a, tx_b])
+                .expect_err("a cyclic chain must be rejected");
+
+            assert!(
+                matches!(err, ClientError::RpcError(RpcError::InvalidResponse(_))),
+                "unexpected error: {err}"
+            );
+        }
+
+        /// A group missing the link between two records used to walk only as far as the break,
+        /// silently dropping the nullifiers of every record past it.
+        #[test]
+        fn broken_execution_chain_is_an_invalid_response() {
+            // 2 -> 3 is missing, so tx_c is unreachable from tx_a.
+            let tx_a = make_rpc_tx(1, 2, &[10], 5);
+            let tx_c = make_rpc_tx(3, 4, &[30], 5);
+
+            let err = super::super::compute_ordered_nullifiers(&[tx_a, tx_c])
+                .expect_err("a broken chain must be rejected");
+
+            assert!(
+                matches!(err, ClientError::RpcError(RpcError::InvalidResponse(_))),
+                "unexpected error: {err}"
+            );
+        }
+
         #[test]
         fn chains_rpc_transactions_by_state_commitment() {
             // Chain: tx_a (state 1->2) -> tx_b (state 2->3) -> tx_c (state 3->4)
@@ -1876,7 +1939,7 @@ mod tests {
             let tx_b = make_rpc_tx(2, 3, &[20], 5);
             let tx_c = make_rpc_tx(3, 4, &[30], 5);
 
-            let result = super::super::compute_ordered_nullifiers(&[tx_c, tx_a, tx_b]);
+            let result = super::super::compute_ordered_nullifiers(&[tx_c, tx_a, tx_b]).unwrap();
 
             assert_eq!(result[0], Nullifier::from_raw(word(10)));
             assert_eq!(result[1], Nullifier::from_raw(word(20)));
@@ -1914,7 +1977,8 @@ mod tests {
                 consumed_note_refs: vec![],
             };
 
-            let result = super::super::compute_ordered_nullifiers(&[tx_a2, tx_b1, tx_a3, tx_a1]);
+            let result =
+                super::super::compute_ordered_nullifiers(&[tx_a2, tx_b1, tx_a3, tx_a1]).unwrap();
 
             // Nullifiers are ordered by chain position within each (account, block) group.
             // The exact global indices depend on BTreeMap iteration order of the groups.
@@ -1934,7 +1998,7 @@ mod tests {
             // Single tx consuming 3 notes — all should appear consecutively.
             let tx = make_rpc_tx(1, 2, &[10, 20, 30], 5);
 
-            let result = super::super::compute_ordered_nullifiers(&[tx]);
+            let result = super::super::compute_ordered_nullifiers(&[tx]).unwrap();
 
             assert_eq!(result.len(), 3);
             assert!(result.contains(&Nullifier::from_raw(word(10))));
@@ -1944,7 +2008,7 @@ mod tests {
 
         #[test]
         fn empty_input_returns_empty_vec() {
-            let result = super::super::compute_ordered_nullifiers(&[]);
+            let result = super::super::compute_ordered_nullifiers(&[]).unwrap();
             assert!(result.is_empty());
         }
     }
@@ -1990,7 +2054,8 @@ mod tests {
         // Insert transactions not ordered by execution order.
         let result = super::derive_account_commitments(&[
             tx_a_b6_1, tx_b_b6, tx_a_b5_2, tx_a_b6_2, tx_a_b5_1,
-        ]);
+        ])
+        .unwrap();
 
         assert_eq!(result.len(), 2, "one entry per account");
         assert!(

@@ -6,7 +6,6 @@ use miden_protocol::account::{
     AccountId,
     AccountStoragePatch,
     AccountVaultPatch,
-    StorageMap,
     StorageMapKey,
     StorageMapPatch,
     StorageMapWitness,
@@ -60,7 +59,7 @@ fn storage_map_lineage_id(account_id: AccountId, slot_name: &StorageSlotName) ->
 /// Changes recorded for one lineage.
 #[derive(Default)]
 struct LineageOps {
-    /// When set, the lineage's root must equal this once the update has been applied.
+    /// When set, the lineage's computed root must equal this before the update is applied.
     expect_root: Option<Word>,
     /// When set, keys absent from `pairs` are removed, so the tree ends up holding exactly the
     /// recorded pairs.
@@ -177,9 +176,9 @@ impl AccountUpdate {
 /// slot name, so no store can construct a lineage that diverges from the one this wrapper
 /// derives.
 ///
-/// The wrapper is generic over the forest storage [`Backend`], so persistence is decided by the
-/// store that owns it. Construction only loads tree metadata from the backend, which makes
-/// short-lived (per store operation) instances cheap.
+/// The wrapper is generic over the forest storage [`BackendReader`], so read-only backends can
+/// serve roots and witnesses. Applying updates additionally requires [`Backend`]. Construction
+/// loads the backend's tree metadata.
 pub struct AccountSmtForest<B: BackendReader> {
     forest: LargeSmtForest<B>,
 }
@@ -254,13 +253,10 @@ impl<B: BackendReader> AccountSmtForest<B> {
         let proof = self.forest.open(tree, Word::from(hashed_key)).map_err(forest_error)?;
         Ok(StorageMapWitness::new(proof, [key])?)
     }
-
-    // MUTATIONS
-    // --------------------------------------------------------------------------------------------
-
-    // MUTATIONS
-    // --------------------------------------------------------------------------------------------
 }
+
+// MUTATIONS
+// ================================================================================================
 
 impl<B: Backend> AccountSmtForest<B> {
     /// Applies a recorded update at the given version.
@@ -270,14 +266,13 @@ impl<B: Backend> AccountSmtForest<B> {
     /// version of every updated lineage. Resulting roots are read back with [`Self::vault_root`]
     /// and [`Self::map_root`].
     ///
-    /// Any root recorded on the update is verified once the mutations have been applied, so a
-    /// result that does not match what the caller expected is reported rather than persisted.
+    /// Any root recorded on the update is verified against the computed mutations before they are
+    /// applied, so a mismatch is rejected without modifying the forest.
     pub fn apply(
         &mut self,
         new_version: VersionId,
         update: AccountUpdate,
     ) -> Result<(), StoreError> {
-        let empty_root = StorageMap::default().root();
         let mut batch = SmtForestUpdateBatch::empty();
         let mut expected_roots = Vec::new();
 
@@ -315,10 +310,13 @@ impl<B: Backend> AccountSmtForest<B> {
 
         let mutations =
             self.forest.compute_forest_mutations(new_version, batch).map_err(forest_error)?;
-        self.forest.apply_mutations(mutations).map_err(forest_error)?;
 
         for (lineage, expected_root) in expected_roots {
-            let actual_root = self.forest.latest_root(lineage).unwrap_or(empty_root);
+            let actual_root = mutations
+                .roots()
+                .find(|root| root.lineage() == lineage)
+                .map(|root| root.root())
+                .expect("every expected lineage has a computed mutation");
             if actual_root != expected_root {
                 return Err(StoreError::MerkleStoreError(MerkleError::ConflictingRoots {
                     expected_root,
@@ -326,6 +324,8 @@ impl<B: Backend> AccountSmtForest<B> {
                 }));
             }
         }
+
+        self.forest.apply_mutations(mutations).map_err(forest_error)?;
 
         Ok(())
     }
@@ -387,7 +387,8 @@ fn forest_error(err: LargeSmtForestError) -> StoreError {
 
 #[cfg(test)]
 mod tests {
-    use miden_protocol::asset::FungibleAsset;
+    use miden_protocol::account::StorageMap;
+    use miden_protocol::asset::{AssetVault, FungibleAsset};
     use miden_protocol::crypto::merkle::smt::ForestInMemoryBackend;
     use miden_protocol::testing::account_id::{
         ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET,
@@ -420,6 +421,14 @@ mod tests {
         let mut update = AccountUpdate::new();
         update.full_state(account_a(), of.iter().copied(), core::iter::empty::<&StorageSlot>());
         forest.apply(version, update).unwrap();
+    }
+
+    #[test]
+    fn accepts_read_only_backend() {
+        let backend = ForestInMemoryBackend::new();
+        let forest = AccountSmtForest::new(backend.reader().unwrap()).unwrap();
+
+        assert_eq!(forest.vault_root(account_a()), None);
     }
 
     /// Colliding lineages would silently serve one account's witnesses from another's tree, so
@@ -494,5 +503,33 @@ mod tests {
             result,
             Err(StoreError::MerkleStoreError(MerkleError::ConflictingRoots { .. }))
         ));
+    }
+
+    #[test]
+    fn rejected_update_does_not_advance_forest() {
+        let mut forest = forest();
+        let id = account_a();
+        let (old, new) = (asset(100), asset(250));
+        set_vault(&mut forest, 1, &[old]);
+
+        let old_root = forest.vault_root(id).unwrap();
+        let new_root = AssetVault::new(&[new]).unwrap().root();
+        assert_ne!(new_root, old_root);
+
+        let mut rejected = AccountUpdate::new();
+        rejected.vault_patch(id, &AccountVaultPatch::with_assets([new]), old_root);
+        assert!(matches!(
+            forest.apply(2, rejected),
+            Err(StoreError::MerkleStoreError(MerkleError::ConflictingRoots {
+                expected_root,
+                actual_root,
+            })) if expected_root == old_root && actual_root == new_root
+        ));
+        assert_eq!(forest.vault_root(id), Some(old_root));
+
+        let mut accepted = AccountUpdate::new();
+        accepted.vault_patch(id, &AccountVaultPatch::with_assets([new]), new_root);
+        forest.apply(2, accepted).unwrap();
+        assert_eq!(forest.vault_root(id), Some(new_root));
     }
 }

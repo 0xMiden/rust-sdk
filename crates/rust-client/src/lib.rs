@@ -265,11 +265,10 @@ pub mod crypto {
         MmrProof,
         PartialMmr,
     };
-    // `Backend`, `ForestInMemoryBackend`, and `VersionId` are re-exported so a store outside
-    // this workspace can name the [`AccountSmtForest`](crate::store::AccountSmtForest) it
-    // owns, which is generic over the forest storage backend.
+    // Forest backend types are re-exported for downstream stores.
     pub use miden_protocol::crypto::merkle::smt::{
         Backend,
+        BackendReader,
         ForestInMemoryBackend,
         LeafIndex,
         SMT_DEPTH,

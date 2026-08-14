@@ -2360,9 +2360,46 @@ async fn committed_transaction_persists_forest_tables() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Builds a second patch for the reopen test: enough map entries to spread across several leaves
+/// (and therefore several stored subtree blobs) plus one more asset, at the next nonce.
+fn build_bulk_patch_for_reopen_test(
+    account: &Account,
+    map_slot_name: StorageSlotName,
+) -> anyhow::Result<(AccountPatch, Account, Vec<StorageMapKey>)> {
+    let mut map_entries = StorageMapPatchEntries::new();
+    let mut keys = Vec::new();
+    for i in 1u32..=32 {
+        let key = StorageMapKey::new([Felt::from(i), Felt::from(i * 7919), ZERO, ONE].into());
+        map_entries.insert(key, [Felt::from(i), ONE, ZERO, ZERO].into());
+        keys.push(key);
+    }
+    let storage_patch = AccountStoragePatch::from_entries([(
+        map_slot_name,
+        StorageSlotPatch::Map(StorageMapPatch::Update { entries: map_entries }),
+    )])?;
+
+    let mut vault_patch = AccountVaultPatch::default();
+    vault_patch.insert_asset(
+        FungibleAsset::new(AccountId::try_from(ACCOUNT_ID_PUBLIC_NON_FUNGIBLE_FAUCET)?, 0)?.into(),
+    );
+
+    let patch =
+        AccountPatch::new(account.id(), storage_patch, vault_patch, None, Some(Felt::from(3u32)))?;
+
+    let mut account_after = account.clone();
+    account_after.apply_patch(&patch)?;
+    Ok((patch, account_after, keys))
+}
+
 /// The forest is persisted in the database: after dropping and reopening the store from the
 /// same file, witness reads are served from the persisted forest without any state rebuild.
+///
+/// The account is taken through two committed patches so more than one forest version precedes the
+/// reopen, and the map is filled with enough entries to span several of the 8-level subtree blobs
+/// the inner nodes are packed into. Witnesses are compared whole, not just by value, so a tree that
+/// round-tripped to a different shape is caught rather than passing on a matching lookup.
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn forest_persists_across_store_reopen() -> anyhow::Result<()> {
     let store_path = create_test_store_path();
     let store = SqliteStore::new(store_path.clone()).await?;
@@ -2414,35 +2451,79 @@ async fn forest_persists_across_store_reopen() -> anyhow::Result<()> {
         })
         .await?;
 
+    // Commit a second patch so the reopen is preceded by more than one forest version, and so the
+    // map holds enough entries to occupy several stored subtree blobs.
+    let (bulk_patch, account_after_bulk, bulk_keys) =
+        build_bulk_patch_for_reopen_test(&account_after_patch, map_slot_name.clone())?;
+    let bulk_init: AccountHeader = (&account_after_patch).into();
+    let bulk_final: AccountHeader = (&account_after_bulk).into();
+    store
+        .interact_with_connection(move |conn| {
+            let tx = conn.transaction().into_store_error()?;
+            {
+                let mut forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
+                SqliteStore::apply_account_patch(
+                    &tx,
+                    &mut forest,
+                    &bulk_init,
+                    &bulk_final,
+                    &bulk_patch,
+                )?;
+            }
+            tx.commit().into_store_error()?;
+            Ok(())
+        })
+        .await?;
+
     let account_id = account.id();
     let map_key = StorageMapKey::new([ONE, ZERO, ZERO, ZERO].into());
     let map_value: Word = [ONE, ONE, ONE, ONE].into();
     let asset_id =
         FungibleAsset::new(AccountId::try_from(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET)?, 100)?.id();
 
-    let (item_before, _witness_before) =
+    // Capture whole witnesses, not just values: a tree that round-trips to a different shape still
+    // resolves the value but yields a different proof.
+    let (item_before, witness_before) =
         store.get_account_map_item(account_id, map_slot_name.clone(), map_key).await?;
     assert_eq!(item_before, map_value);
-    let (asset_before, _) = store
+    let (asset_before, asset_witness_before) = store
         .get_account_asset(account_id, asset_id)
         .await?
         .expect("asset present before reopen");
+
+    // Sample keys from the bulk entries so the comparison covers leaves on several distinct paths.
+    let sampled_keys =
+        [bulk_keys[0], bulk_keys[bulk_keys.len() / 2], bulk_keys[bulk_keys.len() - 1]];
+    let mut bulk_before = Vec::new();
+    for key in sampled_keys {
+        bulk_before.push(store.get_account_map_item(account_id, map_slot_name.clone(), key).await?);
+    }
 
     // Reopen the store from the same database file. The forest must serve identical data
     // from its persisted tables.
     drop(store);
     let reopened = SqliteStore::new(store_path).await?;
 
-    let (item_after, witness_after) =
-        reopened.get_account_map_item(account_id, map_slot_name, map_key).await?;
+    let (item_after, witness_after) = reopened
+        .get_account_map_item(account_id, map_slot_name.clone(), map_key)
+        .await?;
     assert_eq!(item_after, map_value);
     assert_eq!(witness_after.get(map_key), Some(map_value));
+    assert_eq!(witness_after, witness_before, "map witness changed across reopen");
 
-    let (asset_after, _) = reopened
+    for (key, (value_before, witness_before)) in sampled_keys.into_iter().zip(bulk_before) {
+        let (value_after, witness_after) =
+            reopened.get_account_map_item(account_id, map_slot_name.clone(), key).await?;
+        assert_eq!(value_after, value_before);
+        assert_eq!(witness_after, witness_before, "bulk map witness changed across reopen");
+    }
+
+    let (asset_after, asset_witness_after) = reopened
         .get_account_asset(account_id, asset_id)
         .await?
         .expect("asset present after reopen");
     assert_eq!(asset_after, asset_before);
+    assert_eq!(asset_witness_after, asset_witness_before, "asset witness changed across reopen");
 
     Ok(())
 }

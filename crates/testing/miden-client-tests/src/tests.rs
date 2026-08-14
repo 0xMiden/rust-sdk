@@ -842,10 +842,9 @@ async fn get_latest_block_header_tracks_sync_height() {
 
     client.sync_state().await.unwrap();
 
-    let (header, _) = client
+    let header = client
         .get_latest_block_header()
         .await
-        .unwrap()
         .expect("a header should be stored at the sync height");
 
     assert_eq!(header.block_num(), client.get_sync_height().await.unwrap());

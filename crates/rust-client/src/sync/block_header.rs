@@ -27,14 +27,14 @@ impl<AUTH> Client<AUTH> {
     }
 
     /// Retrieves the block header at the current sync height from the store.
-    ///
-    /// Returns `None` if the store holds no header at that height, which is the case before the
-    /// genesis block is inserted.
-    pub async fn get_latest_block_header(
-        &self,
-    ) -> Result<Option<(BlockHeader, BlockRelevance)>, ClientError> {
+    pub async fn get_latest_block_header(&self) -> Result<BlockHeader, ClientError> {
         let sync_height = self.store.get_sync_height().await?;
-        self.get_block_header_by_num(sync_height).await
+        let Some((block_header, _)) = self.get_block_header_by_num(sync_height).await? else {
+            return Err(ClientError::DataStoreError(miden_tx::DataStoreError::BlockNotFound(
+                sync_height,
+            )));
+        };
+        Ok(block_header)
     }
 
     /// Ensures that the genesis block is available. If the genesis commitment is already

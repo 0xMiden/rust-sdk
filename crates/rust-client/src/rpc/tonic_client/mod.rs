@@ -6,6 +6,7 @@ use alloc::vec::Vec;
 use core::error::Error;
 use core::pin::Pin;
 
+use futures::{StreamExt, TryStreamExt};
 use miden_protocol::vm::FutureMaybeSend;
 
 type RpcFuture<T> = Pin<Box<dyn FutureMaybeSend<T>>>;
@@ -68,6 +69,42 @@ mod api_client;
 mod retry;
 
 use api_client::api_client_wrapper::ApiClient;
+
+/// Maximum number of independent sync chunk pipelines polled at once.
+///
+/// Pagination and retries remain sequential within each pipeline, so this is also the maximum
+/// number of requests these sync methods can have in flight concurrently.
+const MAX_CONCURRENT_SYNC_CHUNKS: usize = 4;
+
+/// Runs sync chunk pipelines with a bounded concurrency and restores their input order.
+///
+/// [`StreamExt::buffer_unordered`] keeps every available request slot busy. Pairing each result
+/// with its input index before sorting makes the externally-observed order independent of response
+/// timing.
+async fn index_sync_chunk<F, T, E>(chunk_index: usize, chunk_future: F) -> Result<(usize, T), E>
+where
+    F: core::future::Future<Output = Result<T, E>>,
+{
+    chunk_future.await.map(|value| (chunk_index, value))
+}
+
+async fn try_collect_sync_chunks<F, T, E>(chunk_futures: Vec<F>) -> Result<Vec<T>, E>
+where
+    F: core::future::Future<Output = Result<T, E>>,
+{
+    let mut indexed_futures = Vec::with_capacity(chunk_futures.len());
+    for (chunk_index, chunk_future) in chunk_futures.into_iter().enumerate() {
+        indexed_futures.push(index_sync_chunk(chunk_index, chunk_future));
+    }
+
+    let mut indexed_results: Vec<(usize, T)> = futures::stream::iter(indexed_futures)
+        .buffer_unordered(MAX_CONCURRENT_SYNC_CHUNKS)
+        .try_collect()
+        .await?;
+    indexed_results.sort_unstable_by_key(|(chunk_index, _)| *chunk_index);
+
+    Ok(indexed_results.into_iter().map(|(_, value)| value).collect())
+}
 
 /// Tracks the pagination state for block-driven endpoints.
 struct BlockPagination {
@@ -320,6 +357,155 @@ impl GrpcClient {
                 Err(status) => return Err(self.rpc_error_from_status(endpoint, status)),
             }
         }
+    }
+
+    /// Fetches and merges every page for one note-tag chunk.
+    async fn sync_notes_chunk(
+        &self,
+        block_from: BlockNumber,
+        block_to: BlockNumber,
+        proto_tags: Vec<u32>,
+    ) -> Result<Vec<SyncNotesBlock>, RpcError> {
+        let mut pagination = BlockPagination::new(block_from, block_to);
+        let mut merged_blocks: BTreeMap<BlockNumber, SyncNotesBlock> = BTreeMap::new();
+
+        loop {
+            let request = proto::rpc::SyncNotesRequest {
+                block_range: Some(BlockRange {
+                    block_from: pagination.current_block_from().as_u32(),
+                    block_to: block_to.as_u32(),
+                }),
+                note_tags: proto_tags.clone(),
+            };
+
+            let response = self
+                .call_with_retry(RpcEndpoint::SyncNotes, |mut rpc_api| {
+                    let request = request.clone();
+                    Box::pin(async move { rpc_api.sync_notes(request).await })
+                })
+                .await?
+                .into_inner();
+
+            let page = response.pagination_info.ok_or(RpcError::ExpectedDataMissing(
+                "SyncNotesResponse.pagination_info".to_owned(),
+            ))?;
+            let page_chain_tip = BlockNumber::from(page.chain_tip);
+            let page_block_to = BlockNumber::from(page.block_num);
+
+            for proto_block in response.blocks {
+                let block: SyncNotesBlock = proto_block.try_into()?;
+                let bn = block.block_header.block_num();
+                if let Some(existing) = merged_blocks.get_mut(&bn) {
+                    for (id, note) in block.notes {
+                        existing.notes.entry(id).or_insert(note);
+                    }
+                } else {
+                    merged_blocks.insert(bn, block);
+                }
+            }
+
+            match pagination.advance(page_block_to, page_chain_tip)? {
+                PaginationResult::Continue => {},
+                PaginationResult::Done { .. } => break,
+            }
+        }
+
+        Ok(merged_blocks.into_values().collect())
+    }
+
+    /// Fetches and merges every page for one nullifier-prefix chunk.
+    async fn sync_nullifiers_chunk(
+        &self,
+        block_from: BlockNumber,
+        block_to: BlockNumber,
+        proto_prefixes: Vec<u32>,
+    ) -> Result<Vec<NullifierUpdate>, RpcError> {
+        let mut pagination = BlockPagination::new(block_from, block_to);
+        let mut nullifiers = BTreeSet::new();
+
+        loop {
+            let request = proto::rpc::SyncNullifiersRequest {
+                nullifiers: proto_prefixes.clone(),
+                prefix_len: 16,
+                block_range: Some(BlockRange {
+                    block_from: pagination.current_block_from().as_u32(),
+                    block_to: pagination.block_to().as_u32(),
+                }),
+            };
+
+            let response = self
+                .call_with_retry(RpcEndpoint::SyncNullifiers, |mut rpc_api| {
+                    let request = request.clone();
+                    Box::pin(async move { rpc_api.sync_nullifiers(request).await })
+                })
+                .await?
+                .into_inner();
+
+            let batch_nullifiers = response
+                .nullifiers
+                .iter()
+                .map(TryFrom::try_from)
+                .collect::<Result<Vec<NullifierUpdate>, _>>()
+                .map_err(|err| RpcError::InvalidResponse(err.to_string()))?;
+            nullifiers.extend(batch_nullifiers);
+
+            let page = response.pagination_info.ok_or(RpcError::ExpectedDataMissing(
+                "SyncNullifiersResponse.pagination_info".to_owned(),
+            ))?;
+
+            match pagination.advance(page.block_num.into(), page.chain_tip.into())? {
+                PaginationResult::Continue => {},
+                PaginationResult::Done { .. } => break,
+            }
+        }
+
+        Ok(nullifiers.into_iter().collect())
+    }
+
+    /// Fetches and concatenates every page for one account-ID chunk.
+    async fn sync_transactions_chunk(
+        &self,
+        block_from: BlockNumber,
+        block_to: BlockNumber,
+        proto_account_ids: Vec<proto::account::AccountId>,
+    ) -> Result<Vec<TransactionRecord>, RpcError> {
+        let mut pagination = BlockPagination::new(block_from, block_to);
+        let mut transactions = Vec::new();
+
+        loop {
+            let request = proto::rpc::SyncTransactionsRequest {
+                block_range: Some(BlockRange {
+                    block_from: pagination.current_block_from().as_u32(),
+                    block_to: block_to.as_u32(),
+                }),
+                account_ids: proto_account_ids.clone(),
+            };
+
+            let response = self
+                .call_with_retry(RpcEndpoint::SyncTransactions, |mut rpc_api| {
+                    let request = request.clone();
+                    Box::pin(async move { rpc_api.sync_transactions(request).await })
+                })
+                .await?
+                .into_inner();
+
+            let page = response.pagination_info.ok_or(RpcError::ExpectedDataMissing(
+                "SyncTransactionsResponse.pagination_info".to_owned(),
+            ))?;
+            let page_chain_tip = BlockNumber::from(page.chain_tip);
+            let page_block_to = BlockNumber::from(page.block_num);
+
+            for proto_tx in response.transactions {
+                transactions.push(TransactionRecord::try_from(proto_tx)?);
+            }
+
+            match pagination.advance(page_block_to, page_chain_tip)? {
+                PaginationResult::Continue => {},
+                PaginationResult::Done { .. } => break,
+            }
+        }
+
+        Ok(transactions)
     }
 
     /// Fetches RPC status without injecting an Accept header.
@@ -692,48 +878,22 @@ impl NodeRpcClient for GrpcClient {
         // different chunks, so the same block can appear in multiple chunks' responses.
         let mut merged_blocks: BTreeMap<BlockNumber, SyncNotesBlock> = BTreeMap::new();
 
+        let mut chunk_futures = Vec::new();
         for chunk in tags.chunks(limits.note_tags_limit as usize) {
-            let proto_tags: Vec<u32> = chunk.iter().map(|&t| t.into()).collect();
-            let mut pagination = BlockPagination::new(block_from, block_to);
+            let proto_tags = chunk.iter().map(|&tag| tag.into()).collect();
+            chunk_futures.push(self.sync_notes_chunk(block_from, block_to, proto_tags));
+        }
+        let chunk_results = try_collect_sync_chunks(chunk_futures).await?;
 
-            loop {
-                let request = proto::rpc::SyncNotesRequest {
-                    block_range: Some(BlockRange {
-                        block_from: pagination.current_block_from().as_u32(),
-                        block_to: block_to.as_u32(),
-                    }),
-                    note_tags: proto_tags.clone(),
-                };
-
-                let response = self
-                    .call_with_retry(RpcEndpoint::SyncNotes, |mut rpc_api| {
-                        let request = request.clone();
-                        Box::pin(async move { rpc_api.sync_notes(request).await })
-                    })
-                    .await?
-                    .into_inner();
-
-                let page = response.pagination_info.ok_or(RpcError::ExpectedDataMissing(
-                    "SyncNotesResponse.pagination_info".to_owned(),
-                ))?;
-                let page_chain_tip = BlockNumber::from(page.chain_tip);
-                let page_block_to = BlockNumber::from(page.block_num);
-
-                for proto_block in response.blocks {
-                    let block: SyncNotesBlock = proto_block.try_into()?;
-                    let bn = block.block_header.block_num();
-                    if let Some(existing) = merged_blocks.get_mut(&bn) {
-                        for (id, note) in block.notes {
-                            existing.notes.entry(id).or_insert(note);
-                        }
-                    } else {
-                        merged_blocks.insert(bn, block);
+        for chunk_blocks in chunk_results {
+            for block in chunk_blocks {
+                let block_num = block.block_header.block_num();
+                if let Some(existing) = merged_blocks.get_mut(&block_num) {
+                    for (id, note) in block.notes {
+                        existing.notes.entry(id).or_insert(note);
                     }
-                }
-
-                match pagination.advance(page_block_to, page_chain_tip)? {
-                    PaginationResult::Continue => {},
-                    PaginationResult::Done { .. } => break,
+                } else {
+                    merged_blocks.insert(block_num, block);
                 }
             }
         }
@@ -748,51 +908,16 @@ impl NodeRpcClient for GrpcClient {
         block_to: BlockNumber,
     ) -> Result<Vec<NullifierUpdate>, RpcError> {
         let limits = self.get_rpc_limits().await?;
-        let mut all_nullifiers = BTreeSet::new();
-
-        // If the prefixes are too many, we need to chunk them into smaller groups to avoid
-        // violating the RPC limit.
+        // Each chunk paginates independently, while the number of chunk pipelines in flight stays
+        // bounded.
+        let mut chunk_futures = Vec::new();
         for chunk in prefixes.chunks(limits.nullifiers_limit as usize) {
-            let proto_prefixes: Vec<u32> = chunk.iter().map(|&x| u32::from(x)).collect();
-            let mut pagination = BlockPagination::new(block_from, block_to);
-
-            loop {
-                let request = proto::rpc::SyncNullifiersRequest {
-                    nullifiers: proto_prefixes.clone(),
-                    prefix_len: 16,
-                    block_range: Some(BlockRange {
-                        block_from: pagination.current_block_from().as_u32(),
-                        block_to: pagination.block_to().as_u32(),
-                    }),
-                };
-
-                let response = self
-                    .call_with_retry(RpcEndpoint::SyncNullifiers, |mut rpc_api| {
-                        let request = request.clone();
-                        Box::pin(async move { rpc_api.sync_nullifiers(request).await })
-                    })
-                    .await?
-                    .into_inner();
-
-                let batch_nullifiers = response
-                    .nullifiers
-                    .iter()
-                    .map(TryFrom::try_from)
-                    .collect::<Result<Vec<NullifierUpdate>, _>>()
-                    .map_err(|err| RpcError::InvalidResponse(err.to_string()))?;
-
-                all_nullifiers.extend(batch_nullifiers);
-
-                let page = response.pagination_info.ok_or(RpcError::ExpectedDataMissing(
-                    "SyncNullifiersResponse.pagination_info".to_owned(),
-                ))?;
-
-                match pagination.advance(page.block_num.into(), page.chain_tip.into())? {
-                    PaginationResult::Continue => {},
-                    PaginationResult::Done { .. } => break,
-                }
-            }
+            let proto_prefixes = chunk.iter().map(|&prefix| u32::from(prefix)).collect();
+            chunk_futures.push(self.sync_nullifiers_chunk(block_from, block_to, proto_prefixes));
         }
+        let chunk_results = try_collect_sync_chunks(chunk_futures).await?;
+
+        let all_nullifiers: BTreeSet<_> = chunk_results.into_iter().flatten().collect();
         Ok(all_nullifiers.into_iter().collect::<Vec<_>>())
     }
 
@@ -939,47 +1064,18 @@ impl NodeRpcClient for GrpcClient {
         }
 
         let limits = self.get_rpc_limits().await?;
-        let mut transactions: Vec<TransactionRecord> = Vec::new();
-
+        let mut chunk_futures = Vec::new();
         for chunk in account_ids.chunks(limits.account_ids_limit as usize) {
-            let proto_account_ids: Vec<_> = chunk.iter().map(|acc_id| (*acc_id).into()).collect();
-            let mut pagination = BlockPagination::new(block_from, block_to);
-
-            loop {
-                let request = proto::rpc::SyncTransactionsRequest {
-                    block_range: Some(BlockRange {
-                        block_from: pagination.current_block_from().as_u32(),
-                        block_to: block_to.as_u32(),
-                    }),
-                    account_ids: proto_account_ids.clone(),
-                };
-
-                let response = self
-                    .call_with_retry(RpcEndpoint::SyncTransactions, |mut rpc_api| {
-                        let request = request.clone();
-                        Box::pin(async move { rpc_api.sync_transactions(request).await })
-                    })
-                    .await?
-                    .into_inner();
-
-                let page = response.pagination_info.ok_or(RpcError::ExpectedDataMissing(
-                    "SyncTransactionsResponse.pagination_info".to_owned(),
-                ))?;
-                let page_chain_tip = BlockNumber::from(page.chain_tip);
-                let page_block_to = BlockNumber::from(page.block_num);
-
-                for proto_tx in response.transactions {
-                    transactions.push(TransactionRecord::try_from(proto_tx)?);
-                }
-
-                match pagination.advance(page_block_to, page_chain_tip)? {
-                    PaginationResult::Continue => {},
-                    PaginationResult::Done { .. } => break,
-                }
-            }
+            let proto_account_ids = chunk.iter().map(|account_id| (*account_id).into()).collect();
+            chunk_futures.push(self.sync_transactions_chunk(
+                block_from,
+                block_to,
+                proto_account_ids,
+            ));
         }
+        let chunk_results = try_collect_sync_chunks(chunk_futures).await?;
 
-        Ok(transactions)
+        Ok(chunk_results.into_iter().flatten().collect())
     }
 
     async fn get_network_id(&self) -> Result<NetworkId, RpcError> {
@@ -1074,11 +1170,20 @@ impl From<&Status> for GrpcError {
 #[cfg(test)]
 mod tests {
     use std::boxed::Box;
+    use std::vec::Vec;
 
     use miden_protocol::Word;
     use miden_protocol::block::BlockNumber;
+    use tokio::sync::{mpsc, oneshot};
 
-    use super::{BlockPagination, DEFAULT_MAX_RESPONSE_SIZE_BYTES, GrpcClient, PaginationResult};
+    use super::{
+        BlockPagination,
+        DEFAULT_MAX_RESPONSE_SIZE_BYTES,
+        GrpcClient,
+        MAX_CONCURRENT_SYNC_CHUNKS,
+        PaginationResult,
+        try_collect_sync_chunks,
+    };
     use crate::alloc::string::ToString;
     use crate::rpc::{Endpoint, NodeRpcClient, RpcError};
 
@@ -1142,6 +1247,66 @@ mod tests {
             .expect("expected pagination to succeed");
         assert!(matches!(res, PaginationResult::Continue));
         assert_eq!(pagination.current_block_from().as_u32(), 6);
+    }
+
+    #[tokio::test]
+    async fn sync_chunk_collection_is_bounded_and_preserves_input_order() {
+        let total_chunks = MAX_CONCURRENT_SYNC_CHUNKS + 2;
+        let (started_tx, mut started_rx) = mpsc::unbounded_channel();
+        let mut release_senders = Vec::with_capacity(total_chunks);
+        let mut release_receivers = Vec::with_capacity(total_chunks);
+
+        for _ in 0..total_chunks {
+            let (sender, receiver) = oneshot::channel();
+            release_senders.push(Some(sender));
+            release_receivers.push(receiver);
+        }
+
+        let chunk_futures = release_receivers
+            .into_iter()
+            .enumerate()
+            .map(move |(chunk_index, release)| {
+                let started_tx = started_tx.clone();
+                async move {
+                    started_tx.send(chunk_index).map_err(|_| "chunk-start receiver dropped")?;
+                    release.await.map_err(|_| "chunk-release sender dropped")?;
+                    Ok::<_, &'static str>(chunk_index)
+                }
+            })
+            .collect();
+
+        let collector =
+            tokio::spawn(async move { try_collect_sync_chunks(chunk_futures).await.unwrap() });
+
+        // The initial window fills in input order and no later chunk starts while every slot is
+        // occupied by a blocked request.
+        for expected in 0..MAX_CONCURRENT_SYNC_CHUNKS {
+            assert_eq!(started_rx.recv().await, Some(expected));
+        }
+        assert!(matches!(started_rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
+
+        // Complete requests out of order. Each completion admits exactly one more chunk, proving
+        // that the bound is maintained while available slots are reused.
+        release_senders[MAX_CONCURRENT_SYNC_CHUNKS - 1]
+            .take()
+            .unwrap()
+            .send(())
+            .unwrap();
+        assert_eq!(started_rx.recv().await, Some(MAX_CONCURRENT_SYNC_CHUNKS));
+
+        release_senders[MAX_CONCURRENT_SYNC_CHUNKS - 2]
+            .take()
+            .unwrap()
+            .send(())
+            .unwrap();
+        assert_eq!(started_rx.recv().await, Some(MAX_CONCURRENT_SYNC_CHUNKS + 1));
+
+        for sender in release_senders.into_iter().rev().flatten() {
+            sender.send(()).unwrap();
+        }
+
+        let collected = collector.await.unwrap();
+        assert_eq!(collected, (0..total_chunks).collect::<Vec<_>>());
     }
 
     // Function that returns a `Send` future from a dynamic trait that must be `Sync`.

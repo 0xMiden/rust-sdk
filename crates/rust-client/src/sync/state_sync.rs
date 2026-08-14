@@ -60,9 +60,10 @@ enum PublicAccountSync {
 
 /// Data fetched from the node needed to sync the client to the chain tip.
 ///
-/// Aggregates the responses of `sync_chain_mmr`, `sync_notes`, `get_notes_by_id`, and
-/// `sync_transactions`. This may contain more data than a particular client needs to store — it is
-/// filtered and transformed into a [`StateSyncUpdate`] before being applied.
+/// Aggregates the responses of `sync_chain_mmr`, `sync_notes`, `get_notes_by_id`,
+/// `sync_transactions`, and any account-state requests derived from those transactions. This may
+/// contain more data than a particular client needs to store — it is filtered and transformed into
+/// a [`StateSyncUpdate`] before being applied.
 struct FetchedSyncData {
     /// MMR delta covering the full range from `current_block` to `chain_tip`.
     mmr_delta: MmrDelta,
@@ -73,6 +74,10 @@ struct FetchedSyncData {
     note_blocks: Vec<ResolvedSyncNotesBlock>,
     /// Transaction records for the synced range, as returned by `sync_transactions`.
     transactions: Vec<RpcTransactionRecord>,
+    /// Public-account updates and private-account mismatches derived from the transaction records.
+    account_updates: AccountUpdates,
+    /// Local account states that lost a same-nonce race against the network.
+    superseded_account_states: Vec<Word>,
 }
 
 /// A note a watched account consumed, carrying what recovery needs to validate and attribute it.
@@ -273,8 +278,8 @@ impl StateSync {
     /// mutable reference so callers can keep it in memory across syncs.
     ///
     /// During the sync process, the following steps are performed:
-    /// 1. Fetch sync data from the node (MMR delta, note inclusions, transactions).
-    /// 2. Update account states (fetch updated public accounts, flag mismatched private ones).
+    /// 1. Fetch the MMR delta and chain tip from the node.
+    /// 2. Concurrently fetch note content and transaction-derived account updates.
     /// 3. Advance the partial MMR to the chain tip.
     /// 4. Screen note inclusions via the configured [`OnNoteReceived`] callback.
     /// 5. Process transaction inclusions (commit local txs, record external consumers, discard
@@ -299,22 +304,24 @@ impl StateSync {
             .into();
 
         let note_tags = Arc::new(note_tags);
-        let account_ids: Vec<AccountId> = accounts.iter().map(AccountHeader::id).collect();
+
+        // Fetch and validate every network-derived update before mutating any local tracker or the
+        // caller's MMR. In particular, account reconciliation runs in the transaction branch while
+        // note content is still being fetched.
+        let sync_data = self.fetch_sync_data(block_num, &accounts, &note_tags).await?;
 
         let mut note_updates = NoteUpdateTracker::new(input_notes, output_notes);
         let mut transaction_updates = TransactionUpdateTracker::new(uncommitted_transactions);
         let mut partial_blockchain_updates = PartialBlockchainUpdates::default();
-        let mut account_updates = AccountUpdates::default();
 
-        let Some(sync_data) = self.fetch_sync_data(block_num, &account_ids, &note_tags).await?
-        else {
+        let Some(sync_data) = sync_data else {
             // No progress — already at the tip.
             return Ok(StateSyncUpdate::from_parts(
                 block_num,
                 partial_blockchain_updates,
                 note_updates,
                 transaction_updates,
-                account_updates,
+                AccountUpdates::default(),
             ));
         };
 
@@ -323,22 +330,13 @@ impl StateSync {
             chain_tip_header,
             note_blocks,
             transactions,
+            account_updates,
+            superseded_account_states,
         } = sync_data;
         let chain_tip = chain_tip_header.block_num();
 
-        let new_commitments = derive_account_commitments(&transactions);
-        let superseded_states = self
-            .account_state_sync(
-                &mut account_updates,
-                &accounts,
-                &new_commitments,
-                block_num,
-                &chain_tip_header,
-            )
-            .await?;
-
         // Discard the local transactions whose result lost a same-nonce race against the network.
-        for superseded_state in superseded_states {
+        for superseded_state in superseded_account_states {
             transaction_updates.apply_superseded_account_state(superseded_state);
         }
 
@@ -459,16 +457,16 @@ impl StateSync {
 
     /// Fetches the sync data from the node by calling the following endpoints:
     /// 1. `sync_chain_mmr` — discovers the chain tip, gets the MMR delta and chain tip header.
-    /// 2. `sync_notes` — loops until the full range to the chain tip is covered (handles paginated
-    ///    responses).
-    /// 3. `get_notes_by_id` — fetches full metadata for notes with attachments.
-    /// 4. `sync_transactions` — gets transaction data for the full range.
+    /// 2. Concurrently fetches and validates the remaining data for the discovered range:
+    ///    - `sync_notes`, followed by `get_notes_by_id` for notes whose content is required.
+    ///    - `sync_transactions` for tracked accounts, followed by any `get_account` requests needed
+    ///      to reconcile the resulting account commitments.
     ///
     /// Returns `None` when the client is already at the chain tip (no progress).
     async fn fetch_sync_data(
         &self,
         current_block_num: BlockNumber,
-        account_ids: &[AccountId],
+        accounts: &[AccountHeader],
         note_tags: &Arc<BTreeSet<NoteTag>>,
     ) -> Result<Option<FetchedSyncData>, ClientError> {
         // Step 1: Fetch the MMR delta and chain tip header.
@@ -493,25 +491,73 @@ impl StateSync {
             "Syncing state.",
         );
 
-        // Step 2: sync notes and fetch full note bodies for public notes (and attachment content
-        // for private notes that carry attachments), paginating with the same chain tip so MMR
-        // paths are opened at a consistent forest. With no tracked tags there's nothing the node
-        // could match, so skip the RPC entirely.
-        let note_blocks = if note_tags.is_empty() {
-            Vec::new()
-        } else {
-            self.rpc_api
-                .sync_notes_with_content(
-                    current_block_num + 1,
-                    chain_tip,
-                    note_tags.as_ref(),
-                    NoteContentFetch::PublicDetailsAndAttachments,
-                )
-                .await?
+        // Step 2: fetch notes and the transaction-derived account state concurrently. Every request
+        // uses the chain tip discovered above so its response belongs to the same snapshot.
+        let note_sync = async {
+            // Fetch full note bodies for public notes (and attachment content for private notes
+            // that carry attachments), paginating with the same chain tip so MMR paths are opened
+            // at a consistent forest. With no tracked tags there's nothing the node could match,
+            // so skip the RPC entirely.
+            let note_blocks = if note_tags.is_empty() {
+                Ok(Vec::new())
+            } else {
+                self.rpc_api
+                    .sync_notes_with_content(
+                        current_block_num + 1,
+                        chain_tip,
+                        note_tags.as_ref(),
+                        NoteContentFetch::PublicDetailsAndAttachments,
+                    )
+                    .await
+            }?;
+
+            // Validate as soon as this branch completes so an invalid response cancels the
+            // transaction branch instead of waiting for it to finish.
+            Self::validate_note_blocks_range(&note_blocks, current_block_num, chain_tip)?;
+
+            Ok::<_, ClientError>(note_blocks)
         };
 
-        // Validate every returned note block falls in (current_block_num, chain_tip].
-        Self::validate_note_blocks_range(&note_blocks, current_block_num, chain_tip)?;
+        let transaction_and_account_sync = async {
+            // With no tracked accounts there's nothing the node could match, so skip the RPC
+            // entirely.
+            let transaction_records = if accounts.is_empty() {
+                Ok(Vec::new())
+            } else {
+                let account_ids = accounts.iter().map(AccountHeader::id).collect();
+                self.rpc_api
+                    .sync_transactions(current_block_num + 1, chain_tip, account_ids)
+                    .await
+            }?;
+
+            // Validate as soon as this branch completes so an invalid response cancels the note
+            // branch instead of waiting for it to finish.
+            Self::validate_transaction_records_range(
+                &transaction_records,
+                current_block_num,
+                chain_tip,
+            )?;
+
+            // Account commitment changes are carried by transaction records, so account requests
+            // can start as soon as this branch has validated them without waiting for note content.
+            // The accumulator is branch-local and is not observable until the join succeeds.
+            let new_commitments = derive_account_commitments(&transaction_records);
+            let mut account_updates = AccountUpdates::default();
+            let superseded_account_states = self
+                .account_state_sync(
+                    &mut account_updates,
+                    accounts,
+                    &new_commitments,
+                    current_block_num,
+                    &chain_mmr_info.block_header,
+                )
+                .await?;
+
+            Ok::<_, ClientError>((transaction_records, account_updates, superseded_account_states))
+        };
+
+        let (note_blocks, (transaction_records, account_updates, superseded_account_states)) =
+            futures::try_join!(note_sync, transaction_and_account_sync)?;
 
         let note_count: usize = note_blocks.iter().map(|b| b.notes.len()).sum();
         info!(
@@ -520,27 +566,13 @@ impl StateSync {
             "Fetched note sync data.",
         );
 
-        // Step 3: sync transactions for tracked accounts over the full range. With no tracked
-        // accounts there's nothing the node could match, so skip the RPC entirely.
-        let transaction_records = if account_ids.is_empty() {
-            Vec::new()
-        } else {
-            self.rpc_api
-                .sync_transactions(current_block_num + 1, chain_tip, account_ids.to_vec())
-                .await?
-        };
-
-        Self::validate_transaction_records_range(
-            &transaction_records,
-            current_block_num,
-            chain_tip,
-        )?;
-
         Ok(Some(FetchedSyncData {
             mmr_delta: chain_mmr_info.mmr_delta,
             chain_tip_header: chain_mmr_info.block_header,
             note_blocks,
             transactions: transaction_records,
+            account_updates,
+            superseded_account_states,
         }))
     }
 
@@ -1385,6 +1417,8 @@ fn compute_ordered_nullifiers(transaction_records: &[RpcTransactionRecord]) -> V
 mod tests {
     use alloc::collections::BTreeSet;
     use alloc::sync::Arc;
+    #[cfg(feature = "std")]
+    use core::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 
     use async_trait::async_trait;
     use miden_protocol::account::Account;
@@ -1454,6 +1488,50 @@ mod tests {
             _attachments: Option<&NoteAttachments>,
         ) -> Result<bool, ClientError> {
             Ok(true)
+        }
+    }
+
+    /// Observer used to assert that transaction-derived account requests have joined before note
+    /// callbacks begin.
+    #[cfg(feature = "std")]
+    struct AccountSyncJoinObserver {
+        was_called: Arc<AtomicBool>,
+    }
+
+    #[cfg(feature = "std")]
+    #[async_trait(?Send)]
+    impl NoteObserver for AccountSyncJoinObserver {
+        fn name(&self) -> &'static str {
+            "account-sync-join"
+        }
+
+        async fn observe(
+            &self,
+            _committed_note: &CommittedNote,
+            _attachments: Option<&NoteAttachments>,
+        ) -> Result<bool, ClientError> {
+            self.was_called.store(true, AtomicOrdering::Release);
+            Ok(false)
+        }
+    }
+
+    /// Screener paired with [`AccountSyncJoinObserver`] to verify both note hook types are
+    /// deferred.
+    #[cfg(feature = "std")]
+    struct AccountSyncJoinScreener {
+        was_called: Arc<AtomicBool>,
+    }
+
+    #[cfg(feature = "std")]
+    #[async_trait(?Send)]
+    impl OnNoteReceived for AccountSyncJoinScreener {
+        async fn on_note_received(
+            &self,
+            _committed_note: CommittedNote,
+            _public_note: Option<InputNoteRecord>,
+        ) -> Result<NoteUpdateAction, ClientError> {
+            self.was_called.store(true, AtomicOrdering::Release);
+            Ok(NoteUpdateAction::Discard)
         }
     }
 
@@ -2175,11 +2253,101 @@ mod tests {
         assert_eq!(partial_mmr.forest(), forest_2);
     }
 
+    /// Verifies that the independent note and transaction RPCs are started concurrently and are
+    /// pinned to the chain tip discovered by `sync_chain_mmr`.
+    #[cfg(feature = "std")]
+    #[tokio::test]
+    async fn fetch_sync_data_fetches_notes_and_transactions_concurrently() {
+        let mut builder = MockChainBuilder::new();
+        let account = builder.add_existing_mock_account(miden_testing::Auth::IncrNonce).unwrap();
+        let rpc_api = MockRpcApi::new(builder.build().unwrap());
+        rpc_api.advance_blocks(1);
+
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let rpc_api = rpc_api.with_concurrent_sync_barrier(barrier);
+        let chain_tip = rpc_api.get_chain_tip_block_num();
+        let state_sync = StateSync::new(Arc::new(rpc_api.clone()), Arc::new(MockScreener), None);
+        let note_tags = Arc::new(BTreeSet::from([NoteTag::default()]));
+        let accounts = [AccountHeader::from(account)];
+
+        let sync_result = tokio::time::timeout(
+            core::time::Duration::from_secs(5),
+            state_sync.fetch_sync_data(BlockNumber::GENESIS, &accounts, &note_tags),
+        )
+        .await
+        .expect("note and transaction RPCs should reach the concurrency barrier")
+        .unwrap()
+        .expect("the mock chain should have advanced past genesis");
+
+        assert_eq!(sync_result.chain_tip_header.block_num(), chain_tip);
+        assert_eq!(
+            rpc_api.concurrent_sync_ranges(),
+            BTreeMap::from([
+                ("notes", (BlockNumber::from(1u32), chain_tip)),
+                ("transactions", (BlockNumber::from(1u32), chain_tip)),
+            ]),
+            "both RPCs must be pinned to the MMR-discovered chain tip",
+        );
+    }
+
+    /// Verifies that concurrent fetching retains the fast paths that avoid requests with empty
+    /// filters.
+    #[cfg(feature = "std")]
+    #[tokio::test]
+    async fn fetch_sync_data_skips_empty_sync_inputs() {
+        async fn observed_sync_ranges(
+            include_note_tag: bool,
+            include_account: bool,
+        ) -> BTreeMap<&'static str, (BlockNumber, BlockNumber)> {
+            let mut builder = MockChainBuilder::new();
+            let account =
+                builder.add_existing_mock_account(miden_testing::Auth::IncrNonce).unwrap();
+            let rpc_api = MockRpcApi::new(builder.build().unwrap());
+            rpc_api.advance_blocks(1);
+
+            // A one-party barrier records whichever endpoint is reached without blocking it.
+            let rpc_api =
+                rpc_api.with_concurrent_sync_barrier(Arc::new(tokio::sync::Barrier::new(1)));
+            let state_sync =
+                StateSync::new(Arc::new(rpc_api.clone()), Arc::new(MockScreener), None);
+            let note_tags = Arc::new(if include_note_tag {
+                BTreeSet::from([NoteTag::default()])
+            } else {
+                BTreeSet::new()
+            });
+            let accounts = if include_account {
+                vec![AccountHeader::from(account)]
+            } else {
+                Vec::new()
+            };
+
+            state_sync
+                .fetch_sync_data(BlockNumber::GENESIS, &accounts, &note_tags)
+                .await
+                .unwrap()
+                .expect("the mock chain should have advanced past genesis");
+
+            rpc_api.concurrent_sync_ranges()
+        }
+
+        let block_range = (BlockNumber::from(1u32), BlockNumber::from(1u32));
+        assert_eq!(
+            observed_sync_ranges(false, true).await,
+            BTreeMap::from([("transactions", block_range)]),
+        );
+        assert_eq!(
+            observed_sync_ranges(true, false).await,
+            BTreeMap::from([("notes", block_range)]),
+        );
+        assert!(observed_sync_ranges(false, false).await.is_empty());
+    }
+
     /// Builds a mock chain with a faucet that mints `num_blocks` notes, one per block.
-    /// Returns the chain and the set of note tags for filtering.
+    /// Returns the chain, the set of note tags for filtering, and the faucet's pre-mint header.
     async fn build_chain_with_mint_notes(
         num_blocks: u64,
-    ) -> (miden_testing::MockChain, BTreeSet<NoteTag>) {
+        note_type: NoteType,
+    ) -> (miden_testing::MockChain, BTreeSet<NoteTag>, AccountHeader) {
         let mut builder = MockChainBuilder::new();
         let faucet = builder
             .add_existing_basic_faucet(
@@ -2215,6 +2383,8 @@ mod tests {
         let recipient_advice = recipient_args.advice_inputs().clone();
 
         let tag = NoteTag::default();
+        let note_type = note_type as u8;
+        let initial_faucet_header = AccountHeader::from(faucet.clone());
         let mut faucet_account = faucet.clone();
         let mut note_tags = BTreeSet::new();
 
@@ -2241,7 +2411,7 @@ mod tests {
                 end
                 ",
                 recipient = recipient,
-                note_type = NoteType::Private as u8,
+                note_type = note_type,
                 tag = u32::from(tag),
                 asset_value = asset_value_word,
                 asset_id = asset_id_word,
@@ -2276,14 +2446,92 @@ mod tests {
             chain.prove_next_block().unwrap();
         }
 
-        (chain, note_tags)
+        (chain, note_tags, initial_faucet_header)
+    }
+
+    /// Proves the transaction branch continues through account reconciliation while note content is
+    /// still in flight, and that the join completes before the first note observer callback.
+    #[cfg(feature = "std")]
+    #[tokio::test]
+    async fn transaction_derived_account_sync_overlaps_notes_before_callbacks() {
+        let (chain, note_tags, initial_faucet_header) =
+            build_chain_with_mint_notes(1, NoteType::Public).await;
+        let note_content_gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let account_sync_gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let rpc_api = MockRpcApi::new(chain)
+            .with_note_account_sync_gates(note_content_gate.clone(), account_sync_gate.clone());
+        let genesis_peaks =
+            rpc_api.get_mmr().peaks_at(Forest::new(1).expect("valid forest")).unwrap();
+        let mut partial_mmr = PartialMmr::from_peaks(genesis_peaks);
+
+        let observer_called = Arc::new(AtomicBool::new(false));
+        let screener_called = Arc::new(AtomicBool::new(false));
+        let observer = AccountSyncJoinObserver { was_called: observer_called.clone() };
+        let screener = AccountSyncJoinScreener { was_called: screener_called.clone() };
+        let state_sync = StateSync::new(Arc::new(rpc_api.clone()), Arc::new(screener), None)
+            .with_note_observer(Arc::new(observer));
+        let input = StateSyncInput {
+            accounts: vec![initial_faucet_header],
+            note_tags,
+            input_notes: Vec::new(),
+            output_notes: Vec::new(),
+            uncommitted_transactions: Vec::new(),
+        };
+
+        let sync_future = state_sync.sync_state(&mut partial_mmr, input);
+        tokio::pin!(sync_future);
+
+        assert!(
+            futures::poll!(sync_future.as_mut()).is_pending(),
+            "both independently gated RPCs should still be pending"
+        );
+        assert_eq!(
+            rpc_api.coordinated_sync_requests_started(),
+            (true, true),
+            "note-content and transaction-derived account RPCs must overlap"
+        );
+
+        // Let the complete note branch finish while account sync remains blocked. Neither the
+        // observer nor the screener may run until the outer join also has the account result.
+        note_content_gate.add_permits(1);
+        assert!(
+            futures::poll!(sync_future.as_mut()).is_pending(),
+            "account sync should keep the outer join pending"
+        );
+        assert!(
+            !observer_called.load(AtomicOrdering::Acquire),
+            "note observers must remain deferred while account sync is pending"
+        );
+        assert!(
+            !screener_called.load(AtomicOrdering::Acquire),
+            "the note screener must remain deferred while account sync is pending"
+        );
+
+        account_sync_gate.add_permits(1);
+        let update = tokio::time::timeout(core::time::Duration::from_secs(5), sync_future.as_mut())
+            .await
+            .expect("sync should finish after both RPC gates are released")
+            .unwrap();
+
+        assert!(
+            observer_called.load(AtomicOrdering::Acquire),
+            "the test note must reach the observer"
+        );
+        assert!(
+            screener_called.load(AtomicOrdering::Acquire),
+            "the test note must reach the screener"
+        );
+        assert!(
+            !update.account_updates().updated_public_accounts().is_empty(),
+            "the transaction branch must reconcile the changed faucet account"
+        );
     }
 
     /// An observer's `true` result retains a note block even when the screener discards the note
     /// and the regular note tracker therefore has no live note in that block.
     #[tokio::test]
     async fn observer_relevance_persists_discarded_note_block() {
-        let (chain, note_tags) = build_chain_with_mint_notes(2).await;
+        let (chain, note_tags, _) = build_chain_with_mint_notes(2, NoteType::Private).await;
         let mock_rpc = MockRpcApi::new(chain);
         let chain_tip = mock_rpc.get_chain_tip_block_num();
 
@@ -2324,7 +2572,7 @@ mod tests {
     /// - Block headers for note blocks are stored
     #[tokio::test]
     async fn sync_state_tracks_note_blocks_in_mmr() {
-        let (chain, note_tags) = build_chain_with_mint_notes(3).await;
+        let (chain, note_tags, _) = build_chain_with_mint_notes(3, NoteType::Private).await;
         let mock_rpc = MockRpcApi::new(chain);
         let chain_tip = mock_rpc.get_chain_tip_block_num();
 
@@ -2395,7 +2643,7 @@ mod tests {
 
     #[tokio::test]
     async fn sync_notes_with_content_fetches_inclusive_upper_bound_page() {
-        let (chain, note_tags) = build_chain_with_mint_notes(10).await;
+        let (chain, note_tags, _) = build_chain_with_mint_notes(10, NoteType::Private).await;
         let mock_rpc = MockRpcApi::new(chain);
 
         let blocks = mock_rpc

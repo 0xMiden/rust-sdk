@@ -2,6 +2,8 @@ use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+#[cfg(all(test, feature = "std"))]
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use miden_protocol::Word;
 use miden_protocol::account::{
@@ -73,6 +75,24 @@ pub struct MockRpcApi {
     private_note_attachments: Arc<RwLock<BTreeMap<NoteId, NoteAttachments>>>,
     /// Test overrides for the MMR paths returned by `sync_notes`, keyed by block number.
     sync_notes_mmr_path_overrides: Arc<RwLock<BTreeMap<BlockNumber, MerklePath>>>,
+    /// Synchronizes note and transaction sync calls in state-sync concurrency tests.
+    #[cfg(all(test, feature = "std"))]
+    concurrent_sync_barrier: Option<Arc<tokio::sync::Barrier>>,
+    /// Records the ranges used by note and transaction sync calls in concurrency tests.
+    #[cfg(all(test, feature = "std"))]
+    concurrent_sync_ranges: Arc<RwLock<BTreeMap<&'static str, (BlockNumber, BlockNumber)>>>,
+    /// Gates note-content retrieval independently in transaction/account overlap tests.
+    #[cfg(all(test, feature = "std"))]
+    coordinated_note_content_gate: Option<Arc<tokio::sync::Semaphore>>,
+    /// Gates transaction-derived account sync independently in overlap tests.
+    #[cfg(all(test, feature = "std"))]
+    coordinated_account_sync_gate: Option<Arc<tokio::sync::Semaphore>>,
+    /// Whether the independently gated note-content request has started.
+    #[cfg(all(test, feature = "std"))]
+    coordinated_note_content_started: Arc<AtomicBool>,
+    /// Whether the independently gated account request has started.
+    #[cfg(all(test, feature = "std"))]
+    coordinated_account_sync_started: Arc<AtomicBool>,
 }
 
 impl Default for MockRpcApi {
@@ -95,7 +115,95 @@ impl MockRpcApi {
             erased_notes: Arc::new(RwLock::new(Vec::new())),
             private_note_attachments: Arc::new(RwLock::new(BTreeMap::new())),
             sync_notes_mmr_path_overrides: Arc::new(RwLock::new(BTreeMap::new())),
+            #[cfg(all(test, feature = "std"))]
+            concurrent_sync_barrier: None,
+            #[cfg(all(test, feature = "std"))]
+            concurrent_sync_ranges: Arc::new(RwLock::new(BTreeMap::new())),
+            #[cfg(all(test, feature = "std"))]
+            coordinated_note_content_gate: None,
+            #[cfg(all(test, feature = "std"))]
+            coordinated_account_sync_gate: None,
+            #[cfg(all(test, feature = "std"))]
+            coordinated_note_content_started: Arc::new(AtomicBool::new(false)),
+            #[cfg(all(test, feature = "std"))]
+            coordinated_account_sync_started: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Configures a barrier that both note and transaction sync calls must reach.
+    #[cfg(all(test, feature = "std"))]
+    pub(crate) fn with_concurrent_sync_barrier(
+        mut self,
+        barrier: Arc<tokio::sync::Barrier>,
+    ) -> Self {
+        self.concurrent_sync_barrier = Some(barrier);
+        self
+    }
+
+    /// Returns the ranges observed by note and transaction sync calls.
+    #[cfg(all(test, feature = "std"))]
+    pub(crate) fn concurrent_sync_ranges(
+        &self,
+    ) -> BTreeMap<&'static str, (BlockNumber, BlockNumber)> {
+        self.concurrent_sync_ranges.read().clone()
+    }
+
+    /// Records a state-sync request and waits until its independent peer has started.
+    #[cfg(all(test, feature = "std"))]
+    async fn wait_for_concurrent_sync_peer(
+        &self,
+        endpoint: &'static str,
+        block_from: BlockNumber,
+        block_to: BlockNumber,
+    ) {
+        let Some(barrier) = &self.concurrent_sync_barrier else {
+            return;
+        };
+        self.concurrent_sync_ranges.write().insert(endpoint, (block_from, block_to));
+        barrier.wait().await;
+    }
+
+    /// Configures independent gates for note-content and transaction-derived account requests.
+    #[cfg(all(test, feature = "std"))]
+    pub(crate) fn with_note_account_sync_gates(
+        mut self,
+        note_gate: Arc<tokio::sync::Semaphore>,
+        account_gate: Arc<tokio::sync::Semaphore>,
+    ) -> Self {
+        self.coordinated_note_content_gate = Some(note_gate);
+        self.coordinated_account_sync_gate = Some(account_gate);
+        self.coordinated_note_content_started.store(false, Ordering::Release);
+        self.coordinated_account_sync_started.store(false, Ordering::Release);
+        self
+    }
+
+    /// Returns which independently gated sync requests have started.
+    #[cfg(all(test, feature = "std"))]
+    pub(crate) fn coordinated_sync_requests_started(&self) -> (bool, bool) {
+        (
+            self.coordinated_note_content_started.load(Ordering::Acquire),
+            self.coordinated_account_sync_started.load(Ordering::Acquire),
+        )
+    }
+
+    /// Waits for the independently controlled note-content gate, when configured.
+    #[cfg(all(test, feature = "std"))]
+    async fn wait_for_coordinated_note_content(&self) {
+        let Some(gate) = &self.coordinated_note_content_gate else {
+            return;
+        };
+        self.coordinated_note_content_started.store(true, Ordering::Release);
+        gate.acquire().await.expect("test note-content gate must remain open").forget();
+    }
+
+    /// Waits for the independently controlled account-sync gate, when configured.
+    #[cfg(all(test, feature = "std"))]
+    async fn wait_for_coordinated_account_sync(&self) {
+        let Some(gate) = &self.coordinated_account_sync_gate else {
+            return;
+        };
+        self.coordinated_account_sync_started.store(true, Ordering::Release);
+        gate.acquire().await.expect("test account-sync gate must remain open").forget();
     }
 
     /// Registers the attachment content for a private note so that subsequent `get_notes_by_id`
@@ -341,6 +449,8 @@ impl NodeRpcClient for MockRpcApi {
         block_to: BlockNumber,
         note_tags: &BTreeSet<NoteTag>,
     ) -> Result<Vec<SyncNotesBlock>, RpcError> {
+        #[cfg(all(test, feature = "std"))]
+        self.wait_for_concurrent_sync_peer("notes", block_from, block_to).await;
         let mut blocks_with_notes: BTreeMap<BlockNumber, BTreeMap<NoteId, CommittedNote>> =
             BTreeMap::new();
         for note in self.mock_chain.read().committed_notes().values() {
@@ -427,6 +537,9 @@ impl NodeRpcClient for MockRpcApi {
 
     /// Returns the node's tracked notes that match the provided note IDs.
     async fn get_notes_by_id(&self, note_ids: &[NoteId]) -> Result<Vec<FetchedNote>, RpcError> {
+        #[cfg(all(test, feature = "std"))]
+        self.wait_for_coordinated_note_content().await;
+
         // assume all public notes for now
         let notes = self.mock_chain.read().committed_notes().clone();
 
@@ -528,6 +641,9 @@ impl NodeRpcClient for MockRpcApi {
         account_id: AccountId,
         request: GetAccountRequest,
     ) -> Result<(BlockNumber, AccountProof), RpcError> {
+        #[cfg(all(test, feature = "std"))]
+        self.wait_for_coordinated_account_sync().await;
+
         let current_chain = self.mock_chain.read();
         let current_block_number = current_chain.latest_block_header().block_num();
         let block_number = match request.at {
@@ -742,6 +858,9 @@ impl NodeRpcClient for MockRpcApi {
         block_to: BlockNumber,
         account_ids: Vec<AccountId>,
     ) -> Result<Vec<TransactionRecord>, RpcError> {
+        #[cfg(all(test, feature = "std"))]
+        self.wait_for_concurrent_sync_peer("transactions", block_from, block_to).await;
+
         Ok(self.get_sync_transactions_request(block_from, block_to, &account_ids))
     }
 

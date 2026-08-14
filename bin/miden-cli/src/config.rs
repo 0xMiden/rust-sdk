@@ -539,7 +539,7 @@ impl FromStr for Network {
             "devnet" => Ok(Network::Devnet),
             "localhost" => Ok(Network::Localhost),
             "testnet" => Ok(Network::Testnet),
-            custom => Ok(Network::Custom(custom.to_string())),
+            _ => Ok(Network::Custom(s.to_string())),
         }
     }
 }
@@ -554,5 +554,26 @@ impl Network {
             Network::Localhost => Endpoint::default().to_string(),
             Network::Testnet => Endpoint::testnet().to_string(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Network;
+
+    #[test]
+    fn network_from_str_preserves_custom_endpoint_case() {
+        let endpoint = "https://rpc.example.com/MyOrg/CaseSensitivePath";
+
+        let network = endpoint.parse::<Network>().unwrap();
+
+        assert!(matches!(network, Network::Custom(custom) if custom == endpoint));
+    }
+
+    #[test]
+    fn network_from_str_keeps_named_networks_case_insensitive() {
+        assert!(matches!("DEVNET".parse::<Network>().unwrap(), Network::Devnet));
+        assert!(matches!("LocalHost".parse::<Network>().unwrap(), Network::Localhost));
+        assert!(matches!("testNET".parse::<Network>().unwrap(), Network::Testnet));
     }
 }

@@ -8,8 +8,7 @@ use figment::providers::{Format, Toml};
 use figment::value::{Dict, Map};
 use figment::{Figment, Metadata, Profile, Provider};
 use miden_client::note_transport::{
-    NOTE_TRANSPORT_DEVNET_ENDPOINT,
-    NOTE_TRANSPORT_TESTNET_ENDPOINT,
+    NOTE_TRANSPORT_DEVNET_ENDPOINT, NOTE_TRANSPORT_TESTNET_ENDPOINT,
 };
 use miden_client::rpc::Endpoint;
 use serde::{Deserialize, Serialize};
@@ -539,7 +538,7 @@ impl FromStr for Network {
             "devnet" => Ok(Network::Devnet),
             "localhost" => Ok(Network::Localhost),
             "testnet" => Ok(Network::Testnet),
-            custom => Ok(Network::Custom(custom.to_string())),
+            _ => Ok(Network::Custom(s.to_string())),
         }
     }
 }
@@ -554,5 +553,27 @@ impl Network {
             Network::Localhost => Endpoint::default().to_string(),
             Network::Testnet => Endpoint::testnet().to_string(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn network_from_str_preserves_custom_endpoint_case() {
+        let endpoint = "https://rpc.example.com/MyOrg/CaseSensitivePath";
+
+        match endpoint.parse::<Network>().expect("custom endpoint should parse") {
+            Network::Custom(actual) => assert_eq!(actual, endpoint),
+            other => panic!("expected custom network, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn network_from_str_keeps_known_networks_case_insensitive() {
+        assert!(matches!("DEVNET".parse::<Network>(), Ok(Network::Devnet)));
+        assert!(matches!("LocalHost".parse::<Network>(), Ok(Network::Localhost)));
+        assert!(matches!("TESTNET".parse::<Network>(), Ok(Network::Testnet)));
     }
 }

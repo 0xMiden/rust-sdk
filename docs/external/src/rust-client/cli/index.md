@@ -446,7 +446,7 @@ Usage: `miden-client call <ACCOUNT_ID>:<PROCEDURE> [ARGS]... [--package <PACKAGE
 | `--package <PACKAGE>`         | Path to the `.masp` package that exports the procedure.       | `-p`    |
 | `--inputs-path <INPUTS_PATH>` | Path to a TOML file with advice map entries.                  | `-i`    |
 
-The target is a single argument of the form `<ACCOUNT_ID>:<PROCEDURE>`. The account ID may be given as a partial ID. The procedure name is matched against the package's exports with `_` and `-` treated as equivalent, so it can be written in either snake_case or kebab-case (`get_count` matches the export `get-count`).
+The target is a single argument of the form `<ACCOUNT_ID>:<PROCEDURE>`. For an account tracked by the client, the ID may be given as a partial ID; an account that isn't tracked has to be named by its full hex ID or its bech32 address, since a prefix is resolved against the local store. The procedure name is matched against the package's exports with `_` and `-` treated as equivalent, so it can be written in either snake_case or kebab-case (`get_count` matches the export `get-count`).
 
 `--package` is optional. Without it, `<PROCEDURE>` must be the procedure's hex digest instead of its name, and the output stack is printed as raw field elements since there is no manifest to read the signature from.
 
@@ -493,26 +493,26 @@ The call is executed locally. No proof is generated, nothing is submitted to the
 
 ##### Calling an account that isn't tracked locally
 
-If the target account is not in the local store, the client reads it from the network via a foreign procedure invocation and runs the call from one of your local wallets. The wallet is only the executor; nothing about it changes.
+If the target account is not in the local store, the client reads its state from the network and runs the call from one of your own accounts — the default account if one is set, otherwise the first usable one. That account only runs the call; nothing about it changes.
 
-This requires the target account to be public, since its state has to be readable from the node, and it requires at least one local wallet to execute from. Such calls are read-only: a foreign procedure cannot modify the account it runs on, so only the return values are printed and no state delta is shown.
+This requires the target account's state to be public, so the node can serve it, and it requires at least one of your own accounts to run the call from (accounts whose local state is out of sync with the node are skipped). Such calls can only read the account: the account cannot be modified by a call made this way, so only the return values are printed and no state delta is shown. The account has to be named by its full hex ID or its bech32 address — a partial ID is resolved against the local store, which by definition does not have this account.
 
 ```sh
 miden-client call 0x4614b8bf575eab71455e97bd394e90:get-count --package target/miden/dev/counter-contract.masp
 ```
 
 ```sh
-Account 0x4614b8bf575eab71455e97bd394e90 not found locally; reading from network via FPI (executor: 0x8fa1c2...).
+Account 0x4614b8bf575eab71455e97bd394e90 isn't tracked locally; reading its state from the network and running the call from your account 0x8fa1c2....
 
 Raw Signature: extern "fast" fn() -> felt
 
 Result: 1
 
-Remote calls are read-only; no state delta.
+A call on an account read from the network can only read it; no state delta.
 ```
 
 :::note
-The account state read this way comes from the transaction's reference block, which the executor picks. It is not revalidated against the account's current on-chain state, so run `miden-client sync` first if you need a recent value.
+The account state read this way comes from the transaction's reference block, which the wallet running the call picks. It is not revalidated against the account's current on-chain state, so run `miden-client sync` first if you need a recent value.
 :::
 
 ### `note-transport`

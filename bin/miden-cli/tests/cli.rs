@@ -1910,6 +1910,77 @@ fn setup_call_test_account() -> (PathBuf, String, PathBuf) {
     (temp_dir, account_id, masp_dst)
 }
 
+/// Helper: reads the hex digest of `procedure` from a `.masp`, for calling without the package.
+/// Picks the `ComponentModel` export, since the same name is also exported as a `C`-ABI lowering.
+fn procedure_digest_hex(masp_path: &Path, procedure: &str) -> String {
+    use miden_client::Deserializable;
+    use miden_client::vm::{Package, PackageExport};
+
+    let bytes = fs::read(masp_path).expect("failed to read call-test package");
+    let package = Package::read_from_bytes(&bytes).expect("failed to parse call-test package");
+
+    package
+        .manifest
+        .exports()
+        .find_map(|export| match export {
+            PackageExport::Procedure(proc)
+                if export.name() == procedure
+                    && proc
+                        .signature
+                        .as_ref()
+                        .is_some_and(|sig| sig.abi.is_wasm_canonical_abi()) =>
+            {
+                Some(proc.digest.to_hex())
+            },
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no ComponentModel export named '{procedure}'"))
+}
+
+/// Tests calling a procedure by its hex digest with no `--package`. With no manifest to read the
+/// signature from, the stack is printed as raw felts.
+#[test]
+fn call_by_digest_without_package() {
+    let (temp_dir, account_id, masp_path) = setup_call_test_account();
+    let digest = procedure_digest_hex(&masp_path, "add");
+
+    let mut cmd = cargo_bin_cmd!("miden-client");
+    cmd.args(["call", &format!("{account_id}:{digest}"), "3", "7"]);
+
+    let output = cmd.current_dir(&temp_dir).output().unwrap();
+    assert!(
+        output.status.success(),
+        "Call by digest failed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("No `--package` provided; output will be raw felts."),
+        "Expected the raw-felts notice in output:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("\nResult: 10\n"),
+        "Expected `add(3, 7)` to leave 10 on top of the stack:\n{stdout}"
+    );
+}
+
+/// Tests that a procedure name is rejected without `--package`, as there is no manifest to
+/// resolve it against.
+#[test]
+fn call_without_package_rejects_procedure_name() {
+    let (temp_dir, account_id, _masp_path) = setup_call_test_account();
+
+    let mut cmd = cargo_bin_cmd!("miden-client");
+    cmd.args(["call", &format!("{account_id}:add"), "3", "7"]);
+
+    cmd.current_dir(&temp_dir)
+        .assert()
+        .failure()
+        .stderr(contains("'add' is not a hex digest"));
+}
+
 /// Tests calling a procedure by name (add) with felt arguments.
 #[test]
 fn call_procedure_by_name() {
@@ -2148,8 +2219,8 @@ fn call_remote_account_via_fpi() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("reading from network via FPI"),
-        "Expected FPI routing message in output:\n{stdout}"
+        stdout.contains("reading its state from the network"),
+        "Expected the network-read message in output:\n{stdout}"
     );
     assert!(
         stdout.contains("Result: 10"),

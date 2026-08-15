@@ -3,10 +3,11 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use clap::Parser;
-use miden_client::account::AccountId;
+use miden_client::account::{AccountHeader, AccountId};
 use miden_client::assembly::CodeBuilder;
 use miden_client::keystore::Keystore;
 use miden_client::rpc::domain::account::AccountStorageRequirements;
+use miden_client::store::AccountStatus;
 use miden_client::transaction::{
     AdviceInputs,
     ForeignAccount,
@@ -18,7 +19,7 @@ use miden_client::vm::{Package, PackageExport};
 use miden_client::{Client, Deserializable, Felt, Word};
 
 use crate::advice_inputs::load_advice_map_from_file;
-use crate::commands::account::account_code_has_basic_wallet;
+use crate::commands::account::DEFAULT_ACCOUNT_ID_KEY;
 use crate::errors::CliError;
 use crate::utils::{
     parse_account_id,
@@ -193,7 +194,7 @@ async fn run_remote_call<AUTH: Keystore + Sync + 'static>(
         .await?;
 
     print_executed_program_stack(&output_stack, result_felts);
-    println!("\nRemote calls are read-only; no state delta.");
+    println!("\nA call on an account read from the network can only read it; no state delta.");
     Ok(())
 }
 
@@ -207,14 +208,13 @@ async fn run_local_call<AUTH: Keystore + Sync + 'static>(
     advice_entries: Vec<(Word, Vec<Felt>)>,
 ) -> Result<(), CliError> {
     let CallCode { builder, digest, result_felts } = call_code;
-    let read_tx_script = generate_tx_script(builder.clone(), &digest, args, result_felts)?;
-    let delta_tx_script = generate_tx_script(builder, &digest, args, Some(0))?;
+    let tx_script = generate_tx_script(builder, &digest, args)?;
 
     // 1) Read-only execution to get return values.
     let output_stack = client
         .execute_program(
             executor,
-            read_tx_script,
+            tx_script.clone(),
             AdviceInputs::default().with_map(advice_entries.clone()),
             BTreeMap::new(),
         )
@@ -223,7 +223,7 @@ async fn run_local_call<AUTH: Keystore + Sync + 'static>(
 
     // 2) Transaction execution to get the state delta.
     let tx_request = TransactionRequestBuilder::new()
-        .custom_script(delta_tx_script)
+        .custom_script(tx_script)
         .extend_advice_map(advice_entries)
         .build()
         .map_err(|err| {
@@ -256,31 +256,33 @@ async fn resolve_call_target<AUTH: Keystore + Sync + 'static>(
     client: &Client<AUTH>,
     target_id: AccountId,
 ) -> Result<CallTarget, CliError> {
-    if client.get_account(target_id).await?.is_some() {
+    let local_accounts = client.get_account_headers().await?;
+
+    if local_accounts.iter().any(|(header, _)| header.id() == target_id) {
         return Ok(CallTarget {
             executor: target_id,
             foreign_accounts: BTreeMap::new(),
         });
     }
 
-    let executor = pick_local_executor(client).await?;
+    let executor = pick_local_executor(client, &local_accounts).await?;
 
     let foreign_account = ForeignAccount::public(target_id, AccountStorageRequirements::default())
         .map_err(|err| match err {
             TransactionRequestError::InvalidForeignAccountId(_) => {
                 CliError::InvalidArgument(format!(
-                    "Account {target_id} is not in the local store and is not a public account; \
-                     remote calls require an account with public state."
+                    "Account {target_id} isn't tracked locally and its state isn't public, so it \
+                     can't be read from the network."
                 ))
             },
             other => CliError::InvalidArgument(format!(
-                "Failed to construct foreign account for {target_id}: {other}"
+                "Account {target_id} can't be read from the network: {other}"
             )),
         })?;
 
     println!(
-        "Account {target_id} not found locally; reading from network via FPI \
-         (executor: {executor})."
+        "Account {target_id} isn't tracked locally; reading its state from the network and \
+         running the call from your account {executor}."
     );
 
     Ok(CallTarget {
@@ -289,25 +291,36 @@ async fn resolve_call_target<AUTH: Keystore + Sync + 'static>(
     })
 }
 
-/// Picks the first local wallet to use as the FPI executor. The account ID no longer encodes
-/// whether an account is a wallet, so the interface is derived from the account's code.
+/// Picks the local account the FPI call runs from, preferring the default account.
+///
+/// Any account works: the script calls the foreign procedure, not the native account's code.
+/// Locked accounts are skipped because their local state doesn't match the node's.
 async fn pick_local_executor<AUTH: Keystore + Sync + 'static>(
     client: &Client<AUTH>,
+    local_accounts: &[(AccountHeader, AccountStatus)],
 ) -> Result<AccountId, CliError> {
-    for (header, _status) in client.get_account_headers().await? {
-        let id = header.id();
-        if let Some(code) = client.get_account_code(id).await?
-            && account_code_has_basic_wallet(id, &code)
-        {
-            return Ok(id);
-        }
+    let unlocked_ids: Vec<AccountId> = local_accounts
+        .iter()
+        .filter(|(_, status)| !status.is_locked())
+        .map(|(header, _)| header.id())
+        .collect();
+
+    let default_id: Option<AccountId> =
+        client.get_setting(DEFAULT_ACCOUNT_ID_KEY.to_string()).await?;
+    if let Some(default_id) = default_id
+        && unlocked_ids.contains(&default_id)
+    {
+        return Ok(default_id);
     }
 
-    Err(CliError::InvalidArgument(
-        "No local wallet found to make the remote call from. Create one with \
-         `miden-client new-wallet` and re-run."
-            .to_string(),
-    ))
+    unlocked_ids.first().copied().ok_or_else(|| {
+        CliError::InvalidArgument(
+            "Calling an account that isn't tracked locally needs one of your own accounts to run \
+             the call from, and none is usable. Create one with `miden-client new-wallet` and \
+             re-run."
+                .to_string(),
+        )
+    })
 }
 
 fn load_package(path: &Path) -> Result<Package, CliError> {
@@ -430,30 +443,16 @@ fn print_manifest_signature(package: &Package, procedure_name: &str) -> Procedur
     UNKNOWN
 }
 
-/// Builds a transaction script that pushes `args`, calls the procedure at `digest`, and optionally
-/// drops the pushed args from under the results. `Some(n)` keeps the top `n` values; `None` skips
-/// drops.
+/// Builds a transaction script that pushes `args` and calls the procedure at `digest`.
+///
+/// Only the top results are read back, and `truncate_stack` restores the 16-element exit
+/// invariant, so anything left below the results can stay there.
 fn generate_tx_script(
     code_builder: CodeBuilder,
     digest: &Word,
     args: &[Felt],
-    result_count: Option<usize>,
 ) -> Result<TransactionScript, CliError> {
-    // MASM `movup.n` only works for n in 2..=15. The VM stack exposes only the top
-    // 16 elements; anything deeper lives in the overflow table and cannot be reached
-    // by `movup`. So we can't drop args from under more than 15 results.
-    // See miden-vm/docs/src/user_docs/assembly/instruction_reference.md (movup row)
-    // and miden-vm/docs/src/design/stack/stack_ops.md (MOVUP/MOVDN sections).
-    if let Some(n) = result_count
-        && n > 15
-    {
-        return Err(CliError::InvalidArgument(format!(
-            "Procedure returns {n} values; only up to 15 are supported."
-        )));
-    }
-
-    let mut script =
-        String::from("use miden::core::sys\n\n@transaction_script\npub proc main\n");
+    let mut script = String::from("use miden::core::sys\n\n@transaction_script\npub proc main\n");
 
     // Push args in reverse so the first arg ends up on top.
     for arg in args.iter().rev() {
@@ -462,30 +461,6 @@ fn generate_tx_script(
 
     writeln!(script, "    call.{}", digest.to_hex()).unwrap();
 
-    let to_drop = args.len();
-    if to_drop > 0 {
-        match result_count {
-            Some(0) => {
-                for _ in 0..to_drop {
-                    script.push_str("    drop\n");
-                }
-            },
-            Some(1) => {
-                for _ in 0..to_drop {
-                    script.push_str("    swap drop\n");
-                }
-            },
-            Some(n) => {
-                for _ in 0..to_drop {
-                    writeln!(script, "    movup.{n} drop").unwrap();
-                }
-            },
-            None => {},
-        }
-    }
-
-    // Without a known result count we can't drop the pushed args from under the results, so the
-    // stack ends up with extra elements. `truncate_stack` enforces the 16-element exit invariant.
     script.push_str("    exec.sys::truncate_stack\n");
     script.push_str("end\n");
     Ok(code_builder.compile_tx_script(&script)?)
@@ -503,7 +478,8 @@ fn generate_fpi_tx_script(
     const FPI_INPUT_SLOTS: usize = 16;
     if args.len() > FPI_INPUT_SLOTS {
         return Err(CliError::InvalidArgument(format!(
-            "FPI supports up to {FPI_INPUT_SLOTS} input felts; got {}",
+            "A call on an account read from the network takes at most {FPI_INPUT_SLOTS} input \
+             felts; got {}",
             args.len()
         )));
     }

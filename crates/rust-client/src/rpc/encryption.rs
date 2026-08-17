@@ -160,10 +160,31 @@ impl Serializable for TransactionEncryptionKey {
 }
 
 impl Deserializable for TransactionEncryptionKey {
+    /// Decoding is the type's second constructor, so it holds the same line as
+    /// [`AttestedTransactionEncryptionKey::verify`]: a stored key that verification would have
+    /// rejected does not decode. The attestation itself cannot be rechecked here, since it is not
+    /// serialized and the trust anchors are not available, but the invariants that do not depend on
+    /// it are enforced.
     fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
         let scheme = source.read_u32()?;
+        if scheme != SUPPORTED_SCHEME {
+            return Err(DeserializationError::InvalidValue(format!(
+                "unsupported IES scheme '{scheme}'"
+            )));
+        }
+
         let key_id_len = source.read_usize()?;
+        // Checked before reading so a corrupt length cannot ask for a large allocation.
+        if key_id_len > MAX_KEY_ID_LEN {
+            return Err(DeserializationError::InvalidValue(format!(
+                "encryption key id is {key_id_len} bytes, which exceeds the maximum of \
+                 {MAX_KEY_ID_LEN}"
+            )));
+        }
         let key_id = source.read_vec(key_id_len)?;
+        validate_key_id(&key_id, "encryption key id")
+            .map_err(|err| DeserializationError::InvalidValue(err.to_string()))?;
+
         let public_key = PublicKey::read_from(source)?;
         let genesis_commitment = Word::read_from(source)?;
 
@@ -474,6 +495,50 @@ mod tests {
     use super::*;
 
     const TEST_KEY_ID: [u8; 4] = [0xde, 0xad, 0xbe, 0xef];
+
+    /// A key the store already holds must still decode unchanged.
+    #[test]
+    fn a_verified_key_round_trips() {
+        let (key, _) = key_pair();
+
+        let decoded = TransactionEncryptionKey::read_from_bytes(&key.to_bytes())
+            .expect("a verified key must decode");
+
+        assert_eq!(decoded, key);
+    }
+
+    /// `verify` rejects a scheme it does not support, so decoding must reject it too rather than
+    /// hand the seal path a key that never passed verification.
+    #[test]
+    fn deserialization_rejects_an_unsupported_scheme() {
+        let (key, _) = key_pair();
+        let stored = TransactionEncryptionKey { scheme: SUPPORTED_SCHEME + 1, ..key }.to_bytes();
+
+        let err = TransactionEncryptionKey::read_from_bytes(&stored)
+            .expect_err("an unsupported scheme must be rejected");
+
+        assert!(matches!(err, DeserializationError::InvalidValue(_)), "unexpected error: {err}");
+    }
+
+    /// Same for the key id bounds `verify` enforces through `validate_key_id`.
+    #[test]
+    fn deserialization_rejects_a_malformed_key_id() {
+        let (key, _) = key_pair();
+
+        for key_id in [Vec::new(), vec![0u8; MAX_KEY_ID_LEN + 1]] {
+            let len = key_id.len();
+            let stored = TransactionEncryptionKey { key_id, ..key.clone() }.to_bytes();
+
+            let err = TransactionEncryptionKey::read_from_bytes(&stored)
+                .err()
+                .unwrap_or_else(|| panic!("a {len}-byte key id must be rejected"));
+
+            assert!(
+                matches!(err, DeserializationError::InvalidValue(_)),
+                "unexpected error: {err}"
+            );
+        }
+    }
 
     fn rng() -> ChaCha20Rng {
         ChaCha20Rng::seed_from_u64(0xface)

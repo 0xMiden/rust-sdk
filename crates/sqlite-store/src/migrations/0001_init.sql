@@ -23,10 +23,10 @@ CREATE TABLE latest_account_headers (
     code_commitment BLOB NOT NULL,            -- commitment to the account code
     storage_commitment BLOB NOT NULL,         -- commitment to the account storage
     vault_root BLOB NOT NULL,                 -- root of the account vault Merkle tree
-    nonce INT NOT NULL,                   -- account nonce
+    nonce INTEGER NOT NULL,                   -- account nonce
     account_seed BLOB NULL,                  -- seed used to generate the ID; NULL for non-new accounts
-    locked INT NOT NULL,                 -- whether the account is locked
-    watched INT NOT NULL DEFAULT FALSE, -- Whether the account is tracked in watch mode
+    locked INTEGER NOT NULL,                 -- whether the account is locked
+    watched INTEGER NOT NULL DEFAULT FALSE, -- Whether the account is tracked in watch mode
     PRIMARY KEY (id),
     FOREIGN KEY (code_commitment) REFERENCES account_code(commitment)
 ) STRICT;
@@ -39,10 +39,10 @@ CREATE TABLE historical_account_headers (
     code_commitment BLOB NOT NULL,            -- commitment to the old account code
     storage_commitment BLOB NOT NULL,         -- commitment to the old account storage
     vault_root BLOB NOT NULL,                 -- root of the old account vault Merkle tree
-    nonce INT NOT NULL,                   -- nonce of this old state
+    nonce INTEGER NOT NULL,                   -- nonce of this old state
     account_seed BLOB NULL,                  -- seed used to generate the ID; NULL for non-new accounts
-    locked INT NOT NULL,                 -- whether the account was locked
-    replaced_at_nonce INT NOT NULL,       -- nonce of the new state that replaced this one
+    locked INTEGER NOT NULL,                 -- whether the account was locked
+    replaced_at_nonce INTEGER NOT NULL,       -- nonce of the new state that replaced this one
     PRIMARY KEY (account_commitment),
     FOREIGN KEY (code_commitment) REFERENCES account_code(commitment),
 
@@ -64,7 +64,7 @@ CREATE TABLE latest_account_storage (
 -- NULL old_slot_value means the slot didn't exist before (was created at replaced_at_nonce).
 CREATE TABLE historical_account_storage (
     account_id BLOB NOT NULL,           -- serialized account ID
-    replaced_at_nonce INT NOT NULL,  -- nonce at which this old value was replaced
+    replaced_at_nonce INTEGER NOT NULL,  -- nonce at which this old value was replaced
     slot_name TEXT NOT NULL,            -- name of the storage slot
     old_slot_value BLOB NULL,           -- old top-level value (NULL = slot was new)
     slot_type INTEGER NOT NULL,         -- type of the slot (0 = Value, 1 = Map)
@@ -85,7 +85,7 @@ CREATE TABLE latest_storage_map_entries (
 -- NULL old_value means the entry didn't exist before (was created at replaced_at_nonce).
 CREATE TABLE historical_storage_map_entries (
     account_id BLOB NOT NULL,           -- account ID
-    replaced_at_nonce INT NOT NULL,  -- nonce at which this old entry was replaced
+    replaced_at_nonce INTEGER NOT NULL,  -- nonce at which this old entry was replaced
     slot_name TEXT NOT NULL,            -- name of the storage slot this entry belongs to
     key BLOB NOT NULL,                  -- map entry key
     old_value BLOB NULL,                -- old map entry value (NULL = entry was new)
@@ -105,7 +105,7 @@ CREATE TABLE latest_account_assets (
 -- NULL old_asset means the asset didn't exist before (was created at replaced_at_nonce).
 CREATE TABLE historical_account_assets (
     account_id BLOB NOT NULL,           -- account ID
-    replaced_at_nonce INT NOT NULL,  -- nonce at which this old asset was replaced
+    replaced_at_nonce INTEGER NOT NULL,  -- nonce at which this old asset was replaced
     asset_id BLOB NOT NULL,             -- asset key in the vault's underlying SMT
     old_asset BLOB NULL,                -- old serialized asset value (NULL = asset was new)
     PRIMARY KEY (account_id, replaced_at_nonce, asset_id)
@@ -126,8 +126,8 @@ CREATE TABLE transactions (
     id BLOB NOT NULL,                                -- Transaction ID (commitment of various components)
     details BLOB NOT NULL,                           -- Serialized transaction details
     script_root BLOB,                                -- Transaction script root
-    block_num INT,                      -- Block number for the block against which the transaction was executed.
-    status_variant INT NOT NULL,                     -- Status variant identifier
+    block_num INTEGER,                      -- Block number for the block against which the transaction was executed.
+    status_variant INTEGER NOT NULL,                     -- Status variant identifier
     status BLOB NOT NULL,                            -- Serialized transaction status
     FOREIGN KEY (script_root) REFERENCES transaction_scripts(script_root),
     PRIMARY KEY (id)
@@ -153,9 +153,9 @@ CREATE TABLE input_notes (
     inputs BLOB NOT NULL,                                   -- the serialized list of note inputs
     script_root BLOB NOT NULL,                              -- the script root of the note, used to join with the notes_scripts table
     nullifier BLOB NULL,                                    -- the nullifier of the note, used to query by nullifier; NULL until metadata is known
-    state_discriminant INT NOT NULL,               -- state discriminant of the note, used to query by state
+    state_discriminant INTEGER NOT NULL,               -- state discriminant of the note, used to query by state
     state BLOB NOT NULL,                                    -- serialized note state
-    created_at INT NOT NULL,                   -- timestamp of the note creation/import
+    created_at INTEGER NOT NULL,                   -- timestamp of the note creation/import
     consumed_block_height INTEGER NULL,                     -- block height at which the note was consumed; NULL for non-consumed notes
     consumed_tx_order INTEGER NULL,                         -- per-account position of the consuming tx in the account's execution chain within the block; NULL for external consumption or non-consumed notes
     consumer_account_id BLOB NULL,                          -- serialized account ID that consumed this note; NULL for non-consumed or externally consumed notes
@@ -176,9 +176,9 @@ CREATE TABLE output_notes (
     assets BLOB NOT NULL,                                   -- the serialized NoteAssets, including vault commitment and list of assets
     metadata BLOB NOT NULL,                                 -- serialized metadata
     nullifier BLOB NULL,
-    expected_height INT NOT NULL,                           -- the block height after which the note is expected to be created
+    expected_height INTEGER NOT NULL,                           -- the block height after which the note is expected to be created
     script_root BLOB NULL,                                  -- the root of the note's script (NULL if the full note details are unknown)
-    state_discriminant INT NOT NULL,                        -- state discriminant of the note, used to query by state
+    state_discriminant INTEGER NOT NULL,                        -- state discriminant of the note, used to query by state
     state BLOB NOT NULL,                                    -- serialized note state
     attachments BLOB NOT NULL,
 
@@ -199,7 +199,7 @@ CREATE TABLE notes_scripts (
 -- ── Blockchain checkpoint & tags ─────────────────────────────────────────
 
 CREATE TABLE blockchain_checkpoint (
-    block_num INT NOT NULL,    -- the block number of the most recent state sync
+    block_num INTEGER NOT NULL,    -- the block number of the most recent state sync
     partial_blockchain_peaks BLOB NOT NULL, -- serialized MMR peaks at the current sync height
     PRIMARY KEY (block_num)
 ) STRICT;
@@ -222,15 +222,15 @@ WHERE (
 -- ── Block headers & partial blockchain ───────────────────────────────────
 
 CREATE TABLE block_headers (
-    block_num INT NOT NULL,  -- block number
+    block_num INTEGER NOT NULL,  -- block number
     header BLOB NOT NULL,                 -- serialized block header
-    has_client_notes INT NOT NULL,       -- whether the block has notes relevant to the client
+    has_client_notes INTEGER NOT NULL,       -- whether the block has notes relevant to the client
     PRIMARY KEY (block_num)
 ) STRICT;
 CREATE INDEX IF NOT EXISTS idx_block_headers_has_notes ON block_headers(block_num) WHERE has_client_notes = 1;
 
 CREATE TABLE partial_blockchain_nodes (
-    id INT NOT NULL,   -- in-order index of the internal MMR node
+    id INTEGER NOT NULL,   -- in-order index of the internal MMR node
     node BLOB NOT NULL,             -- internal node value (commitment)
     PRIMARY KEY (id)
 ) WITHOUT ROWID, STRICT;

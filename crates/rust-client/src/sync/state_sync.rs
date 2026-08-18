@@ -1128,23 +1128,33 @@ fn walk_execution_chain<'a>(
         .map(|tx| (tx.transaction_header.initial_state_commitment(), *tx))
         .collect();
 
-    let start = chained
+    let mut starts = chained
         .iter()
-        .find(|tx| !final_states.contains(&tx.transaction_header.initial_state_commitment()))
-        .copied();
+        .filter(|tx| !final_states.contains(&tx.transaction_header.initial_state_commitment()))
+        .map(|tx| tx.transaction_header.initial_state_commitment())
+        .collect::<Vec<_>>()
+        .into_iter();
 
-    assert!(start.is_some() || chained.is_empty(), "cannot walk cyclic execution chain");
+    assert!(
+        starts.len() > 0 || chained.is_empty(),
+        "cannot walk cyclic execution chain"
+    );
 
-    let mut current =
-        start.and_then(|tx| init_to_tx.remove(&tx.transaction_header.initial_state_commitment()));
+    let mut current = starts.next().and_then(|state| init_to_tx.remove(&state));
     let mut self_loops_iter = self_loops.into_iter();
 
-    core::iter::from_fn(move || {
+    core::iter::from_fn(move || loop {
         if let Some(tx) = current {
             current = init_to_tx.remove(&tx.transaction_header.final_state_commitment());
             return Some(tx);
         }
-        self_loops_iter.next()
+
+        if let Some(start) = starts.next() {
+            current = init_to_tx.remove(&start);
+            continue;
+        }
+
+        return self_loops_iter.next();
     })
 }
 
@@ -1573,6 +1583,35 @@ mod tests {
             assert_eq!(result[0], Nullifier::from_raw(word(10)));
             assert_eq!(result[1], Nullifier::from_raw(word(20)));
             assert_eq!(result[2], Nullifier::from_raw(word(30)));
+        }
+
+        #[test]
+        fn preserves_multiple_disjoint_chains_in_same_account_block() {
+            // Two independent chains for the same account and block:
+            // 1 -> 2 -> 3 and 100 -> 101 -> 102.
+            let tx_a1 = make_rpc_tx(1, 2, &[10], 5);
+            let tx_a2 = make_rpc_tx(2, 3, &[20], 5);
+            let tx_b1 = make_rpc_tx(100, 101, &[30], 5);
+            let tx_b2 = make_rpc_tx(101, 102, &[40], 5);
+
+            let result =
+                super::super::compute_ordered_nullifiers(&[tx_b2, tx_a2, tx_b1, tx_a1]);
+
+            assert_eq!(
+                result.len(),
+                4,
+                "all transactions from disjoint chains must be preserved"
+            );
+
+            let pos = |val: u64| -> usize {
+                result
+                    .iter()
+                    .position(|n| *n == Nullifier::from_raw(word(val)))
+                    .expect("nullifier should be present")
+            };
+
+            assert!(pos(10) < pos(20));
+            assert!(pos(30) < pos(40));
         }
 
         #[test]

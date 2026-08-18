@@ -287,7 +287,29 @@ pub mod crypto {
         NodeIndex,
         SparseMerklePath,
     };
-    pub use miden_protocol::crypto::rand::{FeltRng, RandomCoin};
+    pub use miden_protocol::crypto::rand::FeltRng;
+
+    /// Draws a field element uniformly at random from `rng`.
+    ///
+    /// Uses rejection sampling: [`Felt::new`] rejects any `u64` at or beyond the field modulus,
+    /// which keeps the result uniform over the field. The rejection probability is about 2^-32.
+    pub fn draw_felt(rng: &mut impl rand::Rng) -> crate::Felt {
+        use rand::RngExt;
+
+        loop {
+            if let Ok(felt) = crate::Felt::new(rng.random::<u64>()) {
+                return felt;
+            }
+        }
+    }
+
+    /// Draws a [`Word`](crate::Word) uniformly at random from `rng`.
+    ///
+    /// Use this for note serial numbers when building notes from a plain [`rand`] generator, which
+    /// does not implement [`FeltRng`].
+    pub fn draw_word(rng: &mut impl rand::Rng) -> crate::Word {
+        crate::Word::new([draw_felt(rng), draw_felt(rng), draw_felt(rng), draw_felt(rng)])
+    }
 }
 
 /// Provides types for working with addresses within the Miden network.
@@ -367,7 +389,7 @@ use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::merkle::mmr::PartialMmr;
 use miden_protocol::crypto::rand::FeltRng;
 use miden_tx::auth::TransactionAuthenticator;
-use rand::{CryptoRng, RngExt, TryCryptoRng, TryRng};
+use rand::{CryptoRng, TryCryptoRng, TryRng};
 use rpc::NodeRpcClient;
 use store::Store;
 
@@ -622,22 +644,11 @@ impl TryCryptoRng for ClientRng {}
 
 impl FeltRng for ClientRng {
     fn draw_element(&mut self) -> Felt {
-        // Rejection sampling: `Felt::new` rejects any `u64` at or beyond the field modulus, which
-        // keeps the result uniform over the field. The rejection probability is about 2^-32.
-        loop {
-            if let Ok(felt) = Felt::new(self.0.random::<u64>()) {
-                return felt;
-            }
-        }
+        crypto::draw_felt(&mut self.0)
     }
 
     fn draw_word(&mut self) -> Word {
-        Word::new([
-            self.draw_element(),
-            self.draw_element(),
-            self.draw_element(),
-            self.draw_element(),
-        ])
+        crypto::draw_word(&mut self.0)
     }
 }
 

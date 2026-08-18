@@ -1430,7 +1430,6 @@ mod tests {
     use miden_protocol::account::auth::AuthSecretKey;
     use miden_protocol::account::{AccountBuilder, AccountComponent, AccountId, AccountType};
     use miden_protocol::asset::FungibleAsset;
-    use miden_protocol::crypto::rand::RandomCoin;
     use miden_protocol::note::{Note, NoteType};
     use miden_protocol::testing::account_id::{
         ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET,
@@ -1441,6 +1440,8 @@ mod tests {
     use miden_standards::account::auth::{Approver, AuthSingleSig, FeeConversionInfo, NoAuth};
     use miden_standards::account::wallets::BasicWallet;
     use miden_standards::note::P2idNote;
+    use rand::SeedableRng;
+    use rand_chacha::ChaCha20Rng;
 
     use super::{
         Account,
@@ -1452,20 +1453,21 @@ mod tests {
     };
     use crate::ClientError;
     use crate::auth::AuthSchemeId;
+    use crate::crypto::draw_word;
     use crate::transaction::TransactionRequestError;
 
     fn own_note_with_sender(sender: AccountId) -> Note {
         let faucet_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
         let target_id =
             AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE).unwrap();
-        let mut rng = RandomCoin::new(Word::default());
+        let mut rng = ChaCha20Rng::seed_from_u64(0);
 
         P2idNote::builder()
             .sender(sender)
             .target(target_id)
             .asset(FungibleAsset::new(faucet_id, 100).unwrap())
             .note_type(NoteType::Public)
-            .generate_serial_number(&mut rng)
+            .serial_number(draw_word(&mut rng))
             .build()
             .expect("note creation failed")
             .into()

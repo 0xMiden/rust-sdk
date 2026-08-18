@@ -18,6 +18,7 @@ use miden_client::auth::{
     RPO_FALCON_SCHEME_ID,
 };
 use miden_client::builder::ClientBuilder;
+use miden_client::crypto::draw_word;
 use miden_client::keystore::{FilesystemKeyStore, Keystore};
 use miden_client::note::{BlockNumber, NetworkAccountTarget, NoteExecutionHint};
 use miden_client::pswap::PswapLineageState;
@@ -84,7 +85,7 @@ use miden_protocol::account::{
 use miden_protocol::asset::{Asset, AssetAmount, AssetId, FungibleAsset, TokenSymbol};
 use miden_protocol::crypto::dsa::eddsa_25519_sha512::KeyExchangeKey;
 use miden_protocol::crypto::merkle::MerklePath;
-use miden_protocol::crypto::rand::{FeltRng, RandomCoin};
+use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::note::{
     Note,
     NoteAssets,
@@ -129,6 +130,7 @@ use miden_standards::tx_script::SendNotesTransactionScriptError;
 use miden_testing::{MockChain, MockChainBuilder, MockTransactionInput};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
+use rand_chacha::ChaCha20Rng;
 use rstest::rstest;
 
 mod batch;
@@ -1559,22 +1561,16 @@ async fn setup_prunable_block_scenario(
     let mut builder = MockChainBuilder::new();
     let mock_account = builder.add_existing_mock_account(miden_testing::Auth::IncrNonce).unwrap();
 
-    let note_first = NoteBuilder::new(
-        mock_account.id(),
-        RandomCoin::new([0, 0, 0, 0].map(Felt::new_unchecked).into()),
-    )
-    .note_type(NoteType::Public)
-    .tag(NoteTag::new(0).into())
-    .build()
-    .unwrap();
-    let note_second = NoteBuilder::new(
-        mock_account.id(),
-        RandomCoin::new([0, 0, 0, 1].map(Felt::new_unchecked).into()),
-    )
-    .note_type(NoteType::Public)
-    .tag(NoteTag::new(0).into())
-    .build()
-    .unwrap();
+    let note_first = NoteBuilder::new(mock_account.id(), ChaCha20Rng::seed_from_u64(0))
+        .note_type(NoteType::Public)
+        .tag(NoteTag::new(0).into())
+        .build()
+        .unwrap();
+    let note_second = NoteBuilder::new(mock_account.id(), ChaCha20Rng::seed_from_u64(1))
+        .note_type(NoteType::Public)
+        .tag(NoteTag::new(0).into())
+        .build()
+        .unwrap();
 
     let spawn_note_1 = builder.add_spawn_note(std::slice::from_ref(&note_first)).unwrap();
     let spawn_note_2 = builder.add_spawn_note(std::slice::from_ref(&note_second)).unwrap();
@@ -2282,15 +2278,12 @@ async fn note_screening_reports_only_the_account_bound_by_the_note() {
     let mut records = Vec::with_capacity(NOTE_COUNT);
     let mut expected_ids = BTreeSet::new();
     for i in 0..NOTE_COUNT {
-        let note = NoteBuilder::new(
-            faucet_id,
-            RandomCoin::new([i as u64, 0, 0, 0].map(Felt::new_unchecked).into()),
-        )
-        .script(script.clone())
-        .note_storage([target.suffix(), target.prefix().as_felt()])
-        .unwrap()
-        .build()
-        .unwrap();
+        let note = NoteBuilder::new(faucet_id, ChaCha20Rng::seed_from_u64(i as u64))
+            .script(script.clone())
+            .note_storage([target.suffix(), target.prefix().as_felt()])
+            .unwrap()
+            .build()
+            .unwrap();
         expected_ids.insert(note.id());
 
         let metadata = *note.metadata();
@@ -4532,14 +4525,14 @@ async fn sync_stores_private_note_attachments() {
     // 2. Build a PRIVATE P2ID note carrying a NetworkAccountTarget attachment.
     let ntx_target = NetworkAccountTarget::new(target.id(), NoteExecutionHint::Always).unwrap();
     let attachments = NoteAttachments::new(vec![ntx_target.into()]).unwrap();
-    let mut note_rng = RandomCoin::new([1, 2, 3, 4].map(Felt::new_unchecked).into());
+    let mut note_rng = ChaCha20Rng::seed_from_u64(1234);
     let private_note = P2idNote::builder()
         .sender(sender.id())
         .target(target.id())
         .asset(note_asset)
         .note_type(NoteType::Private)
         .attachments(attachments.clone().into_vec())
-        .generate_serial_number(&mut note_rng)
+        .serial_number(draw_word(&mut note_rng))
         .build()
         .unwrap()
         .into();
@@ -4861,23 +4854,17 @@ pub async fn create_prebuilt_mock_chain() -> MockChain {
         .add_existing_mock_account(miden_testing::Auth::IncrNonce)
         .unwrap();
 
-    let note_first = NoteBuilder::new(
-        mock_account.id(),
-        RandomCoin::new([0, 0, 0, 0].map(Felt::new_unchecked).into()),
-    )
-    .note_type(NoteType::Public)
-    .tag(NoteTag::new(0).into())
-    .build()
-    .unwrap();
+    let note_first = NoteBuilder::new(mock_account.id(), ChaCha20Rng::seed_from_u64(0))
+        .note_type(NoteType::Public)
+        .tag(NoteTag::new(0).into())
+        .build()
+        .unwrap();
 
-    let note_second = NoteBuilder::new(
-        mock_account.id(),
-        RandomCoin::new([0, 0, 0, 1].map(Felt::new_unchecked).into()),
-    )
-    .note_type(NoteType::Public)
-    .tag(NoteTag::new(0).into())
-    .build()
-    .unwrap();
+    let note_second = NoteBuilder::new(mock_account.id(), ChaCha20Rng::seed_from_u64(1))
+        .note_type(NoteType::Public)
+        .tag(NoteTag::new(0).into())
+        .build()
+        .unwrap();
     let spawn_note_1 =
         mock_chain_builder.add_spawn_note(std::slice::from_ref(&note_first)).unwrap();
     let spawn_note_2 =

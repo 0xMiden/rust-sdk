@@ -338,12 +338,15 @@ where
         self
     }
 
-    /// Optionally provide a custom RNG for note serial numbers and script arguments.
+    /// Optionally provide a custom RNG for note serial numbers, script arguments and account
+    /// seeds.
     ///
-    /// This does **not** affect secret keys, account seeds or the sealing of transaction inputs.
-    /// Those draw from a separate generator that is always seeded from the operating system and
-    /// cannot be overridden, so seeding this one for a reproducible run cannot replay a key or a
-    /// sealing nonce. See [`Client::secure_rng`](crate::Client::secure_rng).
+    /// This does **not** affect secret keys or the sealing of transaction inputs. Those draw
+    /// from a separate generator that is always seeded from the operating system and cannot be
+    /// overridden, so seeding this one for a reproducible run cannot replay a key or a sealing
+    /// nonce. Account seeds do belong here: they grind a public account ID, so predicting one
+    /// costs the caller's own privacy and nothing more. See
+    /// [`Client::secure_rng`](crate::Client::secure_rng).
     ///
     /// If not set, an OS-seeded `ChaCha20Rng` is used here too. Seed a `ChaCha20Rng` explicitly to
     /// make serial numbers reproducible; predicting them reveals a private note's recipient and
@@ -532,8 +535,8 @@ where
             Box::new(ChaCha20Rng::from_rng(&mut rand::rng()))
         };
 
-        // The secure RNG is never caller-supplied: it backs secret keys, account seeds and the
-        // sealing of transaction inputs, which must stay unpredictable even when `rng` is seeded.
+        // The secure RNG is never caller-supplied: it backs secret keys and the sealing of
+        // transaction inputs, which must stay unpredictable even when `rng` is seeded.
         let secure_rng: ClientRngBox = Box::new(ChaCha20Rng::from_rng(&mut rand::rng()));
 
         // Set default prover if not provided

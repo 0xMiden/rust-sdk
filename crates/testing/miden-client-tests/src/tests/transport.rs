@@ -40,7 +40,6 @@ use miden_protocol::utils::serde::Serializable;
 use miden_standards::note::P2idNote;
 use miden_standards::testing::note::NoteBuilder;
 use miden_testing::{Auth, MockChainBuilder, MockTransactionInput};
-use rand::RngExt;
 
 use crate::tests::{
     create_test_client_builder,
@@ -139,11 +138,8 @@ async fn transport_recovers_attachments() {
 
     let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
     let keystore = FilesystemKeyStore::new(temp_dir()).unwrap();
-    let rng =
-        RandomCoin::new(rand::random::<[u64; 4]>().map(|v| Felt::new_unchecked(v >> 1)).into());
     let mut client = ClientBuilder::new()
         .rpc(rpc_api.clone())
-        .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore))
         .note_transport(Arc::new(MockNoteTransportApi::new(mock_node.clone())))
@@ -538,16 +534,11 @@ async fn fetch_private_notes_finds_note_committed_at_sync_height() {
     let arc_rpc_api = Arc::new(rpc_api);
     let transport_client = MockNoteTransportApi::new(mock_transport_node.clone());
 
-    let mut rng = rand::rng();
-    let coin_seed: [u64; 4] = rng.random();
-    let rng = RandomCoin::new(coin_seed.map(|v| Felt::new_unchecked(v >> 1)).into());
-
     let keystore_path = temp_dir();
     let keystore = FilesystemKeyStore::new(keystore_path.clone()).unwrap();
 
     let builder: ClientBuilder<FilesystemKeyStore> = ClientBuilder::new()
         .rpc(arc_rpc_api)
-        .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore))
         .tx_discard_delta(None)
@@ -995,16 +986,11 @@ async fn committed_private_note_recipient(
     let arc_rpc_api = Arc::new(rpc_api);
     let transport_client = MockNoteTransportApi::new(mock_transport_node.clone());
 
-    let mut rng = rand::rng();
-    let coin_seed: [u64; 4] = rng.random();
-    let rng = RandomCoin::new(coin_seed.map(|v| Felt::new_unchecked(v >> 1)).into());
-
     let keystore_path = temp_dir();
     let keystore = FilesystemKeyStore::new(keystore_path.clone()).unwrap();
 
     let builder: ClientBuilder<FilesystemKeyStore> = ClientBuilder::new()
         .rpc(arc_rpc_api)
-        .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore))
         .tx_discard_delta(None)

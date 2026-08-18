@@ -91,6 +91,7 @@ hex          = { workspace = true }
 prost        = { features = ["derive"], workspace = true }
 prost-types  = { version = "0.14" }
 rand         = { workspace = true }
+rand_chacha  = { workspace = true }
 serde        = { workspace = true }
 serde_json   = { workspace = true }
 tempfile     = { optional = true, workspace = true }
@@ -121,7 +122,6 @@ tonic-prost-build                = { version = "0.14" }
 miden-protocol  = { default-features = false, features = ["testing"], workspace = true }
 miden-standards = { features = ["testing"], workspace = true }
 miden-testing   = { default-features = false, workspace = true }
-rand_chacha     = { workspace = true }
 tokio           = { workspace = true }
 
 [lints]

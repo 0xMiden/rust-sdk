@@ -5,8 +5,8 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use miden_client::RemoteTransactionProver;
 use miden_client::builder::ClientBuilder;
-use miden_client::crypto::RandomCoin;
 use miden_client::grpc_support::{DEVNET_PROVER_ENDPOINT, TESTNET_PROVER_ENDPOINT};
 use miden_client::note_transport::grpc::GrpcNoteTransportClient;
 use miden_client::note_transport::{
@@ -15,9 +15,7 @@ use miden_client::note_transport::{
 };
 use miden_client::rpc::{Endpoint, GrpcClient, VerifyingRpcClient};
 use miden_client::testing::common::{FilesystemKeyStore, TestClient, create_test_store_path};
-use miden_client::{Felt, RemoteTransactionProver};
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
-use rand::RngExt;
 use uuid::Uuid;
 
 const NETWORK_DEVNET: &str = "devnet";
@@ -134,11 +132,6 @@ impl ClientConfig {
     ) -> Result<(ClientBuilder<FilesystemKeyStore>, FilesystemKeyStore)> {
         let (rpc_endpoint, rpc_timeout, store_config, auth_path) = self.as_parts();
 
-        let mut rng = rand::rng();
-        let coin_seed: [u64; 4] = rng.random();
-
-        let rng = RandomCoin::new(coin_seed.map(Felt::new_unchecked).into());
-
         let keystore = FilesystemKeyStore::new(auth_path.clone()).with_context(|| {
             format!("failed to create keystore at path: {}", auth_path.to_string_lossy())
         })?;
@@ -148,7 +141,6 @@ impl ClientConfig {
 
         let mut builder = ClientBuilder::new()
             .rpc(rpc_client)
-            .rng(Box::new(rng))
             .sqlite_store(store_config)
             .authenticator(Arc::new(keystore.clone()))
             .tx_discard_delta(None);

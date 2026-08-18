@@ -128,7 +128,7 @@ use miden_standards::testing::note::NoteBuilder;
 use miden_standards::tx_script::SendNotesTransactionScriptError;
 use miden_testing::{MockChain, MockChainBuilder, MockTransactionInput};
 use rand::rngs::StdRng;
-use rand::{Rng, RngExt, SeedableRng};
+use rand::{Rng, SeedableRng};
 use rstest::rstest;
 
 mod batch;
@@ -1414,15 +1414,12 @@ async fn input_note_reader_finds_externally_consumed_notes() {
     chain.prove_next_block().unwrap();
 
     // Build a client backed by this chain.
-    let rng =
-        RandomCoin::new(rand::random::<[u64; 4]>().map(|v| Felt::new_unchecked(v >> 1)).into());
     let keystore_path = std::env::temp_dir();
     let keystore = FilesystemKeyStore::new(keystore_path).unwrap();
     let mock_rpc = MockRpcApi::new(chain);
 
     let mut client = ClientBuilder::new()
         .rpc(Arc::new(mock_rpc))
-        .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore))
         .tx_discard_delta(None)
@@ -1521,14 +1518,11 @@ async fn import_by_id_already_consumed_note_is_findable_by_id() {
     chain.prove_next_block().unwrap();
 
     // Build a client backed by this chain. This client never saw the note before.
-    let rng =
-        RandomCoin::new(rand::random::<[u64; 4]>().map(|v| Felt::new_unchecked(v >> 1)).into());
     let keystore = FilesystemKeyStore::new(std::env::temp_dir()).unwrap();
     let mock_rpc = MockRpcApi::new(chain);
 
     let mut client = ClientBuilder::new()
         .rpc(Arc::new(mock_rpc))
-        .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore))
         .tx_discard_delta(None)
@@ -1622,14 +1616,11 @@ async fn setup_prunable_block_scenario(
     chain.add_pending_executed_transaction(&tx).unwrap();
     chain.prove_next_block().unwrap();
 
-    let rng =
-        RandomCoin::new(rand::random::<[u64; 4]>().map(|v| Felt::new_unchecked(v >> 1)).into());
     let keystore = FilesystemKeyStore::new(std::env::temp_dir()).unwrap();
     let mock_rpc = MockRpcApi::new(chain);
 
     let mut client = ClientBuilder::new()
         .rpc(Arc::new(mock_rpc.clone()))
-        .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore))
         .tx_discard_delta(None)
@@ -3308,15 +3299,10 @@ async fn pswap_cancel_test() {
 async fn create_pswap_test_client(
     mock_rpc_api: &MockRpcApi,
 ) -> (MockClient<FilesystemKeyStore>, FilesystemKeyStore) {
-    let mut seed_rng = rand::rng();
-    let coin_seed: [u64; 4] = seed_rng.random();
-    let rng = RandomCoin::new(coin_seed.map(|v| Felt::new_unchecked(v >> 1)).into());
-
     let keystore = FilesystemKeyStore::new(temp_dir()).unwrap();
 
     let mut client = ClientBuilder::new()
         .rpc(Arc::new(mock_rpc_api.clone()))
-        .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore.clone()))
         .tx_discard_delta(None)
@@ -4279,13 +4265,9 @@ async fn import_watched_account_by_id_rejects_already_tracked_native_account() {
     let account_id = account.id();
     let rpc_api = MockRpcApi::new(mock_chain_builder.build().unwrap());
     let arc_rpc_api = Arc::new(rpc_api);
-    let mut rng = rand::rng();
-    let coin_seed: [u64; 4] = rng.random();
-    let rng = RandomCoin::new(coin_seed.map(|v| Felt::new_unchecked(v >> 1)).into());
     let keystore = FilesystemKeyStore::new(temp_dir()).unwrap();
     let mut client = ClientBuilder::new()
         .rpc(arc_rpc_api)
-        .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore))
         .build()
@@ -4591,12 +4573,9 @@ async fn sync_stores_private_note_attachments() {
     let rpc_api = Arc::new(MockRpcApi::new(mock_chain));
     rpc_api.register_private_note_attachments(private_note.id(), attachments.clone());
 
-    let rng =
-        RandomCoin::new(rand::random::<[u64; 4]>().map(|v| Felt::new_unchecked(v >> 1)).into());
     let keystore = FilesystemKeyStore::new(std::env::temp_dir()).unwrap();
     let mut client = ClientBuilder::new()
         .rpc(rpc_api)
-        .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore))
         .tx_discard_delta(None)
@@ -4734,16 +4713,11 @@ async fn sync_large_public_account() {
 
     // 4. Build a client and add the ORIGINAL (pre-tx) account.
     // The pre-tx commitment differs from on-chain, which triggers sync.
-    let mut rng = rand::rng();
-    let coin_seed: [u64; 4] = rng.random();
-    let rng = RandomCoin::new(coin_seed.map(|v| Felt::new_unchecked(v >> 1)).into());
-
     let keystore_path = temp_dir();
     let keystore = FilesystemKeyStore::new(keystore_path).unwrap();
 
     let mut client = ClientBuilder::new()
         .rpc(arc_rpc_api)
-        .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore))
         .build()
@@ -4799,10 +4773,6 @@ async fn prepare_offline_bootstrap_inserts_mock_chain_genesis() {
     use miden_protocol::crypto::merkle::smt::Smt;
     use miden_protocol::transaction::TransactionKernel;
 
-    let mut rng_seed = rand::rng();
-    let coin_seed: [u64; 4] = rng_seed.random();
-    let rng = RandomCoin::new(coin_seed.map(Felt::new_unchecked).into());
-
     let reference_rpc = MockRpcApi::default();
     let (expected_genesis, _) = reference_rpc
         .get_block_header_by_number(Some(BlockNumber::GENESIS), false)
@@ -4815,7 +4785,6 @@ async fn prepare_offline_bootstrap_inserts_mock_chain_genesis() {
     let mut client = ClientBuilder::new()
         .rpc(Arc::new(MockRpcApi::default()))
         .sqlite_store(create_test_store_path())
-        .rng(Box::new(rng))
         .authenticator(Arc::new(keystore))
         .build()
         .await
@@ -4871,11 +4840,6 @@ pub async fn seed_mock_transaction_encryption_key(client: &mut MockClient<Filesy
 
 pub async fn create_test_client_builder()
 -> (ClientBuilder<FilesystemKeyStore>, MockRpcApi, FilesystemKeyStore) {
-    let mut rng = rand::rng();
-    let coin_seed: [u64; 4] = rng.random();
-
-    let rng = RandomCoin::new(coin_seed.map(|v| Felt::new_unchecked(v >> 1)).into());
-
     let keystore_path = temp_dir();
     let keystore = FilesystemKeyStore::new(keystore_path).unwrap();
 
@@ -4884,7 +4848,6 @@ pub async fn create_test_client_builder()
 
     let builder = ClientBuilder::new()
         .rpc(arc_rpc_api)
-        .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore.clone()))
         .tx_discard_delta(None);

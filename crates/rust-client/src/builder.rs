@@ -5,10 +5,10 @@ use alloc::vec::Vec;
 
 use miden_protocol::assembly::{DefaultSourceManager, SourceManagerSync};
 use miden_protocol::block::BlockNumber;
-use miden_protocol::crypto::rand::RandomCoin;
-use miden_protocol::{Felt, MAX_TX_EXECUTION_CYCLES, MIN_TX_EXECUTION_CYCLES};
+use miden_protocol::{MAX_TX_EXECUTION_CYCLES, MIN_TX_EXECUTION_CYCLES};
 use miden_tx::{ExecutionOptions, LocalTransactionProver};
-use rand::RngExt;
+use rand::SeedableRng;
+use rand_chacha::ChaCha20Rng;
 
 #[cfg(any(feature = "tonic", feature = "std"))]
 use crate::alloc::string::ToString;
@@ -85,9 +85,9 @@ pub trait StoreFactory {
 /// - **Store** ([`Store`]): Provides persistence for accounts, notes, and transaction history.
 ///   Configure via [`store()`](Self::store).
 ///
-/// - **RNG** ([`FeltRng`](miden_protocol::crypto::rand::FeltRng)): Provides randomness for
-///   generating keys, serial numbers, and other cryptographic operations. If not provided, a random
-///   seed-based RNG is created automatically. Configure via [`rng()`](Self::rng).
+/// - **RNG** ([`ClientCryptoRng`](crate::ClientCryptoRng)): Provides randomness for generating
+///   keys, serial numbers, and other cryptographic operations. If not provided, an OS-seeded
+///   `ChaCha20Rng` is created automatically. Configure via [`rng()`](Self::rng).
 ///
 /// - **Authenticator** ([`TransactionAuthenticator`](miden_tx::auth::TransactionAuthenticator)):
 ///   Handles transaction signing when signatures are requested from within the VM. Configure via
@@ -338,6 +338,53 @@ where
     }
 
     /// Optionally provide a custom RNG.
+    ///
+    /// The generator must implement [`CryptoRng`](rand::CryptoRng), because it backs key
+    /// generation, account seeds and the ephemeral key and nonce used to seal transaction inputs.
+    /// If not set, an OS-seeded `ChaCha20Rng` is used.
+    ///
+    /// Seed a `ChaCha20Rng` explicitly to make a client's randomness reproducible. Note that
+    /// `CryptoRng` constrains the generator's algorithm and not the entropy of its seed, so a
+    /// low-entropy seed still yields predictable keys.
+    ///
+    /// ```
+    /// # use miden_client::builder::ClientBuilder;
+    /// # use miden_client::keystore::FilesystemKeyStore;
+    /// use rand::SeedableRng;
+    /// use rand_chacha::ChaCha20Rng;
+    ///
+    /// let builder =
+    ///     ClientBuilder::<FilesystemKeyStore>::new().rng(Box::new(ChaCha20Rng::from_seed([7u8; 32])));
+    /// ```
+    ///
+    /// A generator that is not a `CryptoRng` is rejected at compile time, even when it implements
+    /// [`FeltRng`](miden_protocol::crypto::rand::FeltRng):
+    ///
+    /// ```compile_fail
+    /// # use miden_client::builder::ClientBuilder;
+    /// # use miden_client::keystore::FilesystemKeyStore;
+    /// use miden_protocol::crypto::rand::FeltRng;
+    /// use miden_protocol::{Felt, Word};
+    ///
+    /// struct FixedRng(u64);
+    ///
+    /// impl rand::TryRng for FixedRng {
+    ///     type Error = core::convert::Infallible;
+    ///     fn try_next_u32(&mut self) -> Result<u32, Self::Error> { Ok(self.0 as u32) }
+    ///     fn try_next_u64(&mut self) -> Result<u64, Self::Error> { Ok(self.0) }
+    ///     fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), Self::Error> {
+    ///         dest.fill(self.0 as u8);
+    ///         Ok(())
+    ///     }
+    /// }
+    ///
+    /// impl FeltRng for FixedRng {
+    ///     fn draw_element(&mut self) -> Felt { Felt::new_unchecked(self.0) }
+    ///     fn draw_word(&mut self) -> Word { Word::new([self.draw_element(); 4]) }
+    /// }
+    ///
+    /// let builder = ClientBuilder::<FilesystemKeyStore>::new().rng(Box::new(FixedRng(7)));
+    /// ```
     #[must_use]
     pub fn rng(mut self, rng: ClientRngBox) -> Self {
         self.rng = Some(rng);
@@ -473,14 +520,9 @@ where
             ));
         };
 
-        // Use the provided RNG, or create a default one.
-        let rng = if let Some(user_rng) = self.rng {
-            user_rng
-        } else {
-            let mut seed_rng = rand::rng();
-            let coin_seed: [u64; 4] = seed_rng.random();
-            Box::new(RandomCoin::new(coin_seed.map(Felt::new_unchecked).into()))
-        };
+        // Use the provided RNG, or create a default one seeded from the OS.
+        let rng: ClientRngBox =
+            self.rng.unwrap_or_else(|| Box::new(ChaCha20Rng::from_rng(&mut rand::rng())));
 
         // Set default prover if not provided
         let tx_prover: Arc<dyn TransactionProver + Send + Sync> =

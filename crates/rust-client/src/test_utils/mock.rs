@@ -35,6 +35,7 @@ use crate::rpc::domain::account::{
     StorageMapEntries,
     StorageMapEntry,
     StorageMapFetch,
+    VaultFetch,
 };
 use crate::rpc::domain::account_vault::AccountVaultInfo;
 use crate::rpc::domain::note::{CommittedNote, FetchedNote, SyncNotesBlock};
@@ -593,9 +594,24 @@ impl NodeRpcClient for MockRpcApi {
                 map_details,
             };
 
+            // Model the node's conditional-vault behaviour: with `IfChangedFrom(root)` it OMITS
+            // the asset list when the account's vault root already equals `root`. Without this the
+            // double never exercises the omitted path — which is exactly why the reconstruction bug
+            // it hides (an omitted list rebuilt as an EMPTY vault, producing a wrong commitment)
+            // could not be caught by any test here.
+            //
+            // `VaultFetch::Skip` is deliberately still ignored: several callers build requests that
+            // default to `Skip` while expecting assets back, so modelling it faithfully is a
+            // separate change with its own blast radius.
+            let vault_unchanged = matches!(
+                request.vault,
+                VaultFetch::IfChangedFrom(root) if root == account.vault().root()
+            );
             let mut assets = vec![];
-            for asset in account.vault().assets() {
-                assets.push(asset);
+            if !vault_unchanged {
+                for asset in account.vault().assets() {
+                    assets.push(asset);
+                }
             }
             let vault_details = AccountVaultDetails {
                 too_many_assets: assets.len() > self.oversize_threshold,

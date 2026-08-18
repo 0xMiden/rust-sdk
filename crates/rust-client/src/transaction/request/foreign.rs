@@ -181,8 +181,12 @@ pub(crate) fn account_proof_into_inputs(
             storage_map_proofs.push(partial_storage);
         }
 
-        let vault =
-            foreign_account_vault(&vault_details, account_header.vault_root(), known_vault)?;
+        let vault = foreign_account_vault(
+            &vault_details,
+            account_header.id(),
+            account_header.vault_root(),
+            known_vault,
+        )?;
         return Ok(AccountInputs::new(
             PartialAccount::new(
                 account_header.id(),
@@ -215,6 +219,7 @@ pub(crate) fn account_proof_into_inputs(
 /// impossible to hand the kernel a vault that does not hash to the committed root.
 fn foreign_account_vault(
     vault_details: &AccountVaultDetails,
+    account_id: AccountId,
     expected_root: Word,
     known_vault: Option<AssetVault>,
 ) -> Result<AssetVault, TransactionRequestError> {
@@ -230,6 +235,7 @@ fn foreign_account_vault(
     }
 
     Err(TransactionRequestError::ForeignAccountVaultMismatch {
+        account_id,
         expected: expected_root,
         actual: from_response.root(),
     })
@@ -265,6 +271,10 @@ mod foreign_vault_tests {
 
     use super::{AccountVaultDetails, TransactionRequestError, foreign_account_vault};
 
+    fn account_id() -> AccountId {
+        AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap()
+    }
+
     fn asset(amount: u64) -> Asset {
         let faucet_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
         Asset::Fungible(FungibleAsset::new(faucet_id, amount).unwrap())
@@ -278,7 +288,9 @@ mod foreign_vault_tests {
     fn uses_the_response_assets_when_the_node_sent_them() {
         let vault = AssetVault::new(&[asset(100)]).unwrap();
 
-        let built = foreign_account_vault(&details(vec![asset(100)]), vault.root(), None).unwrap();
+        let built =
+            foreign_account_vault(&details(vec![asset(100)]), account_id(), vault.root(), None)
+                .unwrap();
 
         assert_eq!(built.root(), vault.root());
     }
@@ -294,7 +306,9 @@ mod foreign_vault_tests {
         let committed_root = local.root();
 
         // Response with an omitted (hence empty) asset list.
-        let built = foreign_account_vault(&details(vec![]), committed_root, Some(local)).unwrap();
+        let built =
+            foreign_account_vault(&details(vec![]), account_id(), committed_root, Some(local))
+                .unwrap();
 
         assert_eq!(
             built.root(),
@@ -313,7 +327,8 @@ mod foreign_vault_tests {
         let empty_root = AssetVault::new(&[]).unwrap().root();
 
         // No local vault to fall back on, and none needed: the header commits to an empty vault.
-        let built = foreign_account_vault(&details(vec![]), empty_root, None).unwrap();
+        let built =
+            foreign_account_vault(&details(vec![]), account_id(), empty_root, None).unwrap();
 
         assert_eq!(built.root(), empty_root);
     }
@@ -325,9 +340,70 @@ mod foreign_vault_tests {
         let stale_local = AssetVault::new(&[asset(100)]).unwrap();
         let committed_root = AssetVault::new(&[asset(250)]).unwrap().root();
 
-        let err = foreign_account_vault(&details(vec![]), committed_root, Some(stale_local))
-            .expect_err("a vault that does not match the committed root must not be used");
+        let err = foreign_account_vault(
+            &details(vec![]),
+            account_id(),
+            committed_root,
+            Some(stale_local),
+        )
+        .expect_err("a vault that does not match the committed root must not be used");
 
         assert!(matches!(err, TransactionRequestError::ForeignAccountVaultMismatch { .. }));
+    }
+}
+
+/// End-to-end cover for the omitted-vault path: the real mock RPC (which now models the node's
+/// `IfChangedFrom` omission) feeding the real reconstruction. The unit tests above pin the
+/// reconstruction in isolation; this pins the two halves agreeing, which is where the bug actually
+/// lived — the request asked for a conditional fetch and the reconstruction ignored that it had.
+#[cfg(all(test, feature = "testing"))]
+mod foreign_vault_rpc_tests {
+    use alloc::sync::Arc;
+
+    use miden_protocol::asset::FungibleAsset;
+    use miden_testing::{Auth, MockChainBuilder};
+
+    use super::{TransactionRequestError, account_proof_into_inputs};
+    use crate::rpc::NodeRpcClient;
+    use crate::rpc::domain::account::{AccountStorageRequirements, GetAccountRequest, VaultFetch};
+    use crate::test_utils::mock::MockRpcApi;
+
+    #[tokio::test]
+    async fn omitted_vault_is_reconstructed_from_the_locally_known_vault() {
+        let mut builder = MockChainBuilder::new();
+        let account = builder
+            .add_existing_wallet_with_assets(Auth::IncrNonce, [FungibleAsset::mock(500)])
+            .unwrap();
+        let rpc: Arc<dyn NodeRpcClient> = Arc::new(MockRpcApi::new(builder.build().unwrap()));
+
+        let local_vault = account.vault().clone();
+        let committed_root = local_vault.root();
+
+        // Ask exactly as `fetch_public_account_inputs` does when our vault is already current.
+        let (_block, proof) = rpc
+            .get_account(
+                account.id(),
+                GetAccountRequest::new().with_vault(VaultFetch::IfChangedFrom(committed_root)),
+            )
+            .await
+            .unwrap();
+
+        let vault_details = proof.vault_details().expect("public account must carry vault details");
+        assert!(
+            vault_details.assets.is_empty(),
+            "the node omits the asset list when the caller's vault root already matches"
+        );
+
+        let reqs = AccountStorageRequirements::default();
+
+        // Without the locally-known vault there is nothing to rebuild from, and the mismatch is
+        // caught instead of being passed to the kernel as a wrong commitment.
+        let err = account_proof_into_inputs(proof.clone(), &reqs, None)
+            .expect_err("an omitted asset list must not be reconstructed as an empty vault");
+        assert!(matches!(err, TransactionRequestError::ForeignAccountVaultMismatch { .. }));
+
+        // With it, reconstruction produces the vault the account header commits to.
+        let inputs = account_proof_into_inputs(proof, &reqs, Some(local_vault)).unwrap();
+        assert_eq!(inputs.vault().root(), committed_root);
     }
 }

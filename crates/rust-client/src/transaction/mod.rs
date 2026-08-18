@@ -1345,11 +1345,29 @@ pub(crate) async fn fetch_public_account_inputs(
     // Ask the node to skip the asset list when our local copy of the vault is already current.
     // The node honours that by OMITTING the assets, which the reconstruction below has to know
     // about — an omitted list is indistinguishable from an empty vault in the response.
-    let local_vault_root = store
-        .get_account_header(account_id)
-        .await?
-        .map(|(header, ..)| header.vault_root());
-    let vault = local_vault_root.map_or(VaultFetch::Always, VaultFetch::IfChangedFrom);
+    //
+    // The vault is loaded HERE, before the request, and its own root is what we send. Deriving the
+    // root from the header instead and loading the vault after the round trip would read two
+    // different snapshots: a sync landing in between would leave us holding a vault that does not
+    // match the root the node answered against, turning a benign race into a hard failure.
+    let known_vault = match store.get_account_header(account_id).await? {
+        Some(_) => store
+            .get_account_vault(account_id)
+            .await
+            .inspect_err(|err| {
+                tracing::warn!(
+                    %account_id,
+                    %err,
+                    "Failed to read the local vault for a tracked foreign account; \
+                     falling back to fetching the full vault from the node"
+                );
+            })
+            .ok(),
+        None => None,
+    };
+    let vault = known_vault
+        .as_ref()
+        .map_or(VaultFetch::Always, |vault| VaultFetch::IfChangedFrom(vault.root()));
 
     let (block_num, mut account_proof) = rpc_api
         .get_account(
@@ -1368,14 +1386,8 @@ pub(crate) async fn fetch_public_account_inputs(
     }
 
     // On the `IfChangedFrom` path the node may have sent no assets, meaning "same as the root you
-    // gave me" — so hand the reconstruction our local vault to use in that case. It is read only
-    // when we actually asked for the conditional fetch, and it is verified against the header's
-    // vault root before use, so a stale local copy is rejected rather than silently trusted.
-    let known_vault = match local_vault_root {
-        Some(_) => store.get_account_vault(account_id).await.ok(),
-        None => None,
-    };
-
+    // gave me" — so hand the reconstruction the vault we asked against. It is verified against the
+    // header's vault root before use, so a stale copy is rejected rather than silently trusted.
     let account_inputs =
         request::account_proof_into_inputs(account_proof, &storage_requirements, known_vault)?;
 

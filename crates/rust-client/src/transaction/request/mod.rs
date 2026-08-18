@@ -523,9 +523,13 @@ pub enum TransactionRequestError {
     )]
     ForeignAccountDataMissing,
     #[error(
-        "reconstructed foreign account vault has root {actual} but the account header commits to {expected}; the node's asset list and the locally-known vault both disagree with the header"
+        "reconstructed vault for foreign account {account_id} has root {actual} but its account header commits to {expected}; the node's asset list and the locally-known vault both disagree with the header"
     )]
-    ForeignAccountVaultMismatch { expected: Word, actual: Word },
+    ForeignAccountVaultMismatch {
+        account_id: AccountId,
+        expected: Word,
+        actual: Word,
+    },
     #[error(
         "foreign account {0} has incompatible visibility; use `ForeignAccount::public()` for public accounts and `ForeignAccount::private()` for private accounts"
     )]

@@ -24,9 +24,15 @@ CREATE TABLE tags (
 CREATE UNIQUE INDEX idx_tags_tag_source ON tags(tag, source);
 ";
 
-/// v2 transforms rows from a Rust hook rather than from SQL.
+/// Schema marker so v1 and v2 fingerprints differ. Empty SQL would leave a v2-stamped
+/// database with v1 schema indistinguishable from a real v2.
+const TAGS_V2_SCHEMA: &str = "CREATE TABLE tags_encoding (version INTEGER NOT NULL);";
+
 static TAGS_FIXTURE_MIGRATIONS: LazyLock<Migrations<'static>> = LazyLock::new(|| {
-    Migrations::new(vec![M::up(TAGS_V1_SCHEMA), M::up_with_hook("", migrate_tag_sources)])
+    Migrations::new(vec![
+        M::up(TAGS_V1_SCHEMA),
+        M::up_with_hook(TAGS_V2_SCHEMA, migrate_tag_sources),
+    ])
 });
 
 static TAGS_FIXTURE_EXPECTED_SCHEMA_HASHES: LazyLock<
@@ -201,5 +207,21 @@ fn hook_migration_failure_rolls_back() {
 
     // The well-formed row precedes the undecodable one in rowid order, so its rewrite must have
     // been rolled back with the rest of the migration.
+    assert_eq!(untransformed_source_count(&conn), 1);
+}
+
+/// Rejects a database stamped at v2 whose schema is still v1.
+/// Legacy rows must stay untransformed.
+#[test]
+fn unencoded_rows_at_the_latest_version_are_rejected() {
+    let mut conn = open_tags_db_at_v1();
+    let account_id = test_account_id();
+    insert_tag_row(&conn, NoteTag::with_account_target(account_id), &account_id.to_bytes());
+
+    conn.pragma_update(None, "user_version", 2).unwrap();
+
+    assert_ne!(TAGS_FIXTURE_EXPECTED_SCHEMA_HASHES[0], TAGS_FIXTURE_EXPECTED_SCHEMA_HASHES[1]);
+    let err = apply_tags_fixture_migrations(&mut conn).unwrap_err();
+    assert!(matches!(err, SqliteStoreError::SchemaHashMismatch));
     assert_eq!(untransformed_source_count(&conn), 1);
 }

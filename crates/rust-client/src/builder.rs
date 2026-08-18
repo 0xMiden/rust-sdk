@@ -525,9 +525,12 @@ where
             ));
         };
 
-        // Use the provided RNG, or create a default one seeded from the OS.
-        let rng: ClientRngBox =
-            self.rng.unwrap_or_else(|| Box::new(ChaCha20Rng::from_rng(&mut rand::rng())));
+        // Use the provided RNG, or create a default one.
+        let rng: ClientRngBox = if let Some(user_rng) = self.rng {
+            user_rng
+        } else {
+            Box::new(ChaCha20Rng::from_rng(&mut rand::rng()))
+        };
 
         // The secure RNG is never caller-supplied: it backs secret keys, account seeds and the
         // sealing of transaction inputs, which must stay unpredictable even when `rng` is seeded.

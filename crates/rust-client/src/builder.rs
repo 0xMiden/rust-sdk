@@ -86,9 +86,8 @@ pub trait StoreFactory {
 ///   Configure via [`store()`](Self::store).
 ///
 /// - **RNG** ([`ClientCryptoRng`](crate::ClientCryptoRng)): Provides randomness for note serial
-///   numbers, script arguments and account seeds. If not provided, an OS-seeded `ChaCha20Rng` is
-///   created automatically. Configure via [`rng()`](Self::rng). Secret keys and transaction input
-///   sealing use a separate, non-overridable OS-seeded generator.
+///   numbers, script arguments and account seeds. If not provided, a random seed-based RNG is
+///   created automatically. Configure via [`rng()`](Self::rng).
 ///
 /// - **Authenticator** ([`TransactionAuthenticator`](miden_tx::auth::TransactionAuthenticator)):
 ///   Handles transaction signing when signatures are requested from within the VM. Configure via
@@ -339,21 +338,14 @@ where
     }
 
     /// Optionally provide a custom RNG for note serial numbers, script arguments and account
-    /// seeds.
+    /// seeds. Defaults to an OS-seeded `ChaCha20Rng`.
     ///
-    /// This does **not** affect secret keys or the sealing of transaction inputs. Those draw
-    /// from a separate generator that is always seeded from the operating system and cannot be
-    /// overridden, so seeding this one for a reproducible run cannot replay a key or a sealing
-    /// nonce. Account seeds do belong here: they grind a public account ID, so predicting one
-    /// costs the caller's own privacy and nothing more. See
-    /// [`Client::secure_rng`](crate::Client::secure_rng).
+    /// Secret keys and transaction input sealing are unaffected: they draw from a separate,
+    /// non-overridable generator, so seeding this one for a reproducible run cannot replay a key
+    /// or a sealing nonce. See [`Client::secure_rng`](crate::Client::secure_rng).
     ///
-    /// If not set, an OS-seeded `ChaCha20Rng` is used here too. Seed a `ChaCha20Rng` explicitly to
-    /// make serial numbers reproducible; predicting them reveals a private note's recipient and
-    /// nullifier, so this trades away the caller's own privacy.
-    ///
-    /// The generator must still implement [`CryptoRng`](rand::CryptoRng). Note that `CryptoRng`
-    /// constrains the generator's algorithm and not the entropy of its seed.
+    /// The [`CryptoRng`](rand::CryptoRng) bound rules out non-cryptographic generators. It
+    /// constrains the algorithm only, not the entropy of a seed.
     ///
     /// ```
     /// # use miden_client::builder::ClientBuilder;
@@ -361,37 +353,16 @@ where
     /// use rand::SeedableRng;
     /// use rand_chacha::ChaCha20Rng;
     ///
-    /// let builder =
-    ///     ClientBuilder::<FilesystemKeyStore>::new().rng(Box::new(ChaCha20Rng::from_seed([7u8; 32])));
+    /// ClientBuilder::<FilesystemKeyStore>::new().rng(Box::new(ChaCha20Rng::from_seed([7u8; 32])));
     /// ```
-    ///
-    /// A generator that is not a `CryptoRng` is rejected at compile time, even when it implements
-    /// [`FeltRng`](miden_protocol::crypto::rand::FeltRng):
     ///
     /// ```compile_fail
     /// # use miden_client::builder::ClientBuilder;
     /// # use miden_client::keystore::FilesystemKeyStore;
-    /// use miden_protocol::crypto::rand::FeltRng;
-    /// use miden_protocol::{Felt, Word};
+    /// use rand::SeedableRng;
+    /// use rand::rngs::SmallRng;
     ///
-    /// struct FixedRng(u64);
-    ///
-    /// impl rand::TryRng for FixedRng {
-    ///     type Error = core::convert::Infallible;
-    ///     fn try_next_u32(&mut self) -> Result<u32, Self::Error> { Ok(self.0 as u32) }
-    ///     fn try_next_u64(&mut self) -> Result<u64, Self::Error> { Ok(self.0) }
-    ///     fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), Self::Error> {
-    ///         dest.fill(self.0 as u8);
-    ///         Ok(())
-    ///     }
-    /// }
-    ///
-    /// impl FeltRng for FixedRng {
-    ///     fn draw_element(&mut self) -> Felt { Felt::new_unchecked(self.0) }
-    ///     fn draw_word(&mut self) -> Word { Word::new([self.draw_element(); 4]) }
-    /// }
-    ///
-    /// let builder = ClientBuilder::<FilesystemKeyStore>::new().rng(Box::new(FixedRng(7)));
+    /// ClientBuilder::<FilesystemKeyStore>::new().rng(Box::new(SmallRng::seed_from_u64(7)));
     /// ```
     #[must_use]
     pub fn rng(mut self, rng: ClientRngBox) -> Self {
@@ -535,8 +506,8 @@ where
             Box::new(ChaCha20Rng::from_rng(&mut rand::rng()))
         };
 
-        // The secure RNG is never caller-supplied: it backs secret keys and the sealing of
-        // transaction inputs, which must stay unpredictable even when `rng` is seeded.
+        // Create a separate, secure RNG for the sealing of transaction inputs and secret key
+        // generation.
         let secure_rng: ClientRngBox = Box::new(ChaCha20Rng::from_rng(&mut rand::rng()));
 
         // Set default prover if not provided

@@ -338,31 +338,20 @@ where
     }
 
     /// Optionally provide a custom RNG for note serial numbers, script arguments and account
-    /// seeds. Defaults to an OS-seeded `ChaCha20Rng`.
+    /// seeds. Defaults to an OS-seeded `ChaCha20Rng`. Secret keys and transaction input sealing
+    /// use a separate, non-overridable generator; see
+    /// [`Client::secure_rng`](crate::Client::secure_rng).
     ///
-    /// Secret keys and transaction input sealing are unaffected: they draw from a separate,
-    /// non-overridable generator, so seeding this one for a reproducible run cannot replay a key
-    /// or a sealing nonce. See [`Client::secure_rng`](crate::Client::secure_rng).
-    ///
-    /// The [`CryptoRng`](rand::CryptoRng) bound rules out non-cryptographic generators. It
-    /// constrains the algorithm only, not the entropy of a seed.
-    ///
-    /// ```
-    /// # use miden_client::builder::ClientBuilder;
-    /// # use miden_client::keystore::FilesystemKeyStore;
-    /// use rand::SeedableRng;
-    /// use rand_chacha::ChaCha20Rng;
-    ///
-    /// ClientBuilder::<FilesystemKeyStore>::new().rng(Box::new(ChaCha20Rng::from_seed([7u8; 32])));
-    /// ```
+    /// The [`CryptoRng`](rand::CryptoRng) bound rejects generators that only implement
+    /// [`FeltRng`](miden_protocol::crypto::rand::FeltRng), such as `RandomCoin`:
     ///
     /// ```compile_fail
     /// # use miden_client::builder::ClientBuilder;
     /// # use miden_client::keystore::FilesystemKeyStore;
-    /// use rand::SeedableRng;
-    /// use rand::rngs::SmallRng;
+    /// use miden_protocol::Word;
+    /// use miden_protocol::crypto::rand::RandomCoin;
     ///
-    /// ClientBuilder::<FilesystemKeyStore>::new().rng(Box::new(SmallRng::seed_from_u64(7)));
+    /// ClientBuilder::<FilesystemKeyStore>::new().rng(Box::new(RandomCoin::new(Word::default())));
     /// ```
     #[must_use]
     pub fn rng(mut self, rng: ClientRngBox) -> Self {

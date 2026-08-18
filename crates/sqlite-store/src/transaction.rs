@@ -316,3 +316,132 @@ fn parse_transaction(
         status: TransactionStatus::read_from_bytes(&status)?,
     })
 }
+
+// TESTS
+// ================================================================================================
+
+#[cfg(test)]
+mod tests {
+    use miden_client::store::TransactionFilter;
+    use miden_client::transaction::{
+        DiscardCause,
+        RawOutputNotes,
+        TransactionDetails,
+        TransactionId,
+        TransactionRecord,
+        TransactionStatus,
+    };
+    use miden_client::{Felt, Word, ZERO};
+    use miden_protocol::account::AccountId;
+    use miden_protocol::block::BlockNumber;
+    use miden_protocol::testing::account_id::ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE;
+    use rusqlite::Connection;
+
+    use super::{SqliteStore, upsert_transaction_record};
+    use crate::db_management::utils::apply_migrations;
+
+    /// Builds a script-less transaction record executed against `block_num`.
+    fn create_transaction_record(
+        index: u64,
+        block_num: u32,
+        status: TransactionStatus,
+    ) -> TransactionRecord {
+        let account_id =
+            AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE).unwrap();
+        let details = TransactionDetails {
+            account_id,
+            init_account_state: Word::default(),
+            final_account_state: Word::default(),
+            input_note_nullifiers: vec![],
+            output_notes: RawOutputNotes::new(vec![]).unwrap(),
+            block_num: BlockNumber::from(block_num),
+            submission_height: BlockNumber::from(block_num),
+            expiration_block_num: BlockNumber::from(block_num + 1),
+            creation_timestamp: 0,
+        };
+
+        let id = TransactionId::from_raw([Felt::new_unchecked(index), ZERO, ZERO, ZERO].into());
+
+        TransactionRecord::new(id, details, None, status)
+    }
+
+    fn create_test_connection(records: &[TransactionRecord]) -> Connection {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply_migrations(&mut conn).unwrap();
+
+        let db_tx = conn.transaction().unwrap();
+        for record in records {
+            upsert_transaction_record(&db_tx, record).unwrap();
+        }
+        db_tx.commit().unwrap();
+
+        conn
+    }
+
+    /// Returns the `detail` column of every step of the query plan for `query`.
+    fn query_plan(conn: &Connection, query: &str) -> Vec<String> {
+        let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {query}")).unwrap();
+        stmt.query_map([], |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn expired_before_returns_only_pending_transactions_executed_before_the_bound() {
+        let expired = create_transaction_record(1, 5, TransactionStatus::Pending);
+        // The bound is exclusive, so a transaction executed against it is not expired yet.
+        let at_the_bound = create_transaction_record(2, 10, TransactionStatus::Pending);
+        let later = create_transaction_record(3, 15, TransactionStatus::Pending);
+        let committed = create_transaction_record(
+            4,
+            5,
+            TransactionStatus::Committed {
+                block_number: BlockNumber::from(6u32),
+                commit_timestamp: 0,
+            },
+        );
+        let discarded =
+            create_transaction_record(5, 5, TransactionStatus::Discarded(DiscardCause::Expired));
+
+        let mut conn =
+            create_test_connection(&[expired.clone(), at_the_bound, later, committed, discarded]);
+
+        let records = SqliteStore::get_transactions(
+            &mut conn,
+            &TransactionFilter::ExpiredBefore(BlockNumber::from(10u32)),
+        )
+        .unwrap();
+
+        let ids: Vec<_> = records.iter().map(|record| record.id).collect();
+        assert_eq!(ids, vec![expired.id]);
+    }
+
+    #[test]
+    fn expired_before_is_served_by_the_pending_transactions_index() {
+        let conn = create_test_connection(&[]);
+
+        let query = TransactionFilter::ExpiredBefore(BlockNumber::from(10u32)).to_query();
+        let plan = query_plan(&conn, &query).join("\n");
+
+        assert!(
+            plan.contains("SEARCH tx USING INDEX idx_transactions_pending_block_num (block_num<?)"),
+            "the block number bound must be applied inside the index: {plan}"
+        );
+    }
+
+    #[test]
+    fn uncommitted_is_served_by_the_pending_transactions_index() {
+        let conn = create_test_connection(&[]);
+
+        let query = TransactionFilter::Uncommitted.to_query();
+        let plan = query_plan(&conn, &query).join("\n");
+
+        // Every entry of the partial index is a pending transaction, so walking the index in full
+        // still never touches a committed or discarded row.
+        assert!(
+            plan.contains("tx USING INDEX idx_transactions_pending_block_num"),
+            "pending transactions must be read from the partial index: {plan}"
+        );
+    }
+}

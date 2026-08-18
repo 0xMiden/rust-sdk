@@ -822,10 +822,9 @@ impl TransactionFilter {
             },
             TransactionFilter::ExpiredBefore(block_num) => {
                 format!(
-                    "{QUERY} WHERE tx.block_num < {} AND tx.status_variant != {} AND tx.status_variant != {}",
+                    "{QUERY} WHERE tx.block_num < {} AND tx.status_variant = {}",
                     block_num.as_u32(),
-                    TransactionStatusVariant::Discarded as u8,
-                    TransactionStatusVariant::Committed as u8
+                    TransactionStatusVariant::Pending as u8,
                 )
             },
         }

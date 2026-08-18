@@ -136,7 +136,7 @@ pub(super) fn note_filter_to_query_input_notes(filter: &NoteFilter) -> (String, 
             "{INPUT_NOTES_BASE_QUERY} WHERE {condition} \
              ORDER BY note.consumed_block_height ASC, \
                       note.consumed_tx_order IS NULL, note.consumed_tx_order ASC, \
-                      note.note_id ASC"
+                      note.details_commitment ASC"
         )
     } else {
         format!("{INPUT_NOTES_BASE_QUERY} WHERE {condition}")

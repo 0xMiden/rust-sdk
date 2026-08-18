@@ -76,7 +76,12 @@ impl InputNoteReader {
             .map_err(ClientError::StoreError)?;
 
         if let Some(note) = &note {
-            self.cursor = InputNoteCursor::from_record(note);
+            // A note with no position cannot move the cursor forward, so silently keeping or
+            // clearing it would either return this same note forever or restart the walk.
+            let cursor = InputNoteCursor::from_record(note).ok_or_else(|| {
+                ClientError::MissingNoteConsumptionPosition(note.details_commitment().as_word())
+            })?;
+            self.cursor = Some(cursor);
         }
         Ok(note)
     }

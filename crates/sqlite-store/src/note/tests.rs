@@ -181,6 +181,25 @@ fn create_consumed_input_note_with_consumer(
     InputNoteRecord::new(details, NoteAttachments::empty(), Some(0), state.into())
 }
 
+/// Returns the key that the per-account consumption order sorts by: consumption block height,
+/// transaction order within that block and, as the tie-break, the details commitment.
+fn consumption_key(note: &InputNoteRecord) -> (u32, u32, Vec<u8>) {
+    (
+        note.state().consumed_block_height().expect("note is consumed").as_u32(),
+        note.state().consumed_tx_order().expect("note has a consumption order"),
+        note.details_commitment().to_bytes(),
+    )
+}
+
+/// Drains `reader`, returning the consumption key of every note it yields.
+async fn walk(reader: &mut InputNoteReader) -> Vec<(u32, u32, Vec<u8>)> {
+    let mut collected = Vec::new();
+    while let Some(note) = reader.next().await.unwrap() {
+        collected.push(consumption_key(&note));
+    }
+    collected
+}
+
 // INPUT NOTE READER TESTS
 // ================================================================================================
 
@@ -497,6 +516,91 @@ async fn input_note_after_ignores_a_cursor_before_the_block_range() {
         .expect("the range holds a note following the cursor");
 
     assert_eq!(note.details_commitment(), note_at_5.details_commitment());
+}
+
+#[tokio::test]
+async fn input_note_reader_walks_every_note_of_a_long_history() {
+    const BLOCKS: u32 = 8;
+    const TXS_PER_BLOCK: u32 = 5;
+
+    let store = create_test_store().await;
+    let consumer = AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE).unwrap();
+
+    let mut notes = Vec::new();
+    for block in 1..=BLOCKS {
+        for tx_order in 0..TXS_PER_BLOCK {
+            let index = block * TXS_PER_BLOCK + tx_order;
+            notes.push(create_consumed_input_note_with_consumer(consumer, index, block, tx_order));
+        }
+    }
+
+    // Insert from the last note backwards, so a walk that leaned on insertion order would fail.
+    let mut inserted = notes.clone();
+    inserted.reverse();
+    store.upsert_input_notes(&inserted).await.unwrap();
+
+    let store: Arc<dyn Store> = Arc::new(store);
+    let mut reader = InputNoteReader::new(store, consumer);
+
+    let mut expected: Vec<_> = notes.iter().map(consumption_key).collect();
+    expected.sort();
+    assert_eq!(expected.len(), usize::try_from(BLOCKS * TXS_PER_BLOCK).unwrap());
+
+    // Equality against the full expected sequence rules out both a skipped and a repeated note.
+    assert_eq!(walk(&mut reader).await, expected);
+}
+
+#[tokio::test]
+async fn input_note_reader_only_returns_mid_iteration_inserts_after_the_cursor() {
+    let store = create_test_store().await;
+    let consumer = AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE).unwrap();
+
+    let at_2 = create_consumed_input_note_with_consumer(consumer, 60, 2, 0);
+    store.upsert_input_notes(std::slice::from_ref(&at_2)).await.unwrap();
+
+    let store: Arc<dyn Store> = Arc::new(store);
+    let mut reader = InputNoteReader::new(store.clone(), consumer);
+
+    let first = reader.next().await.unwrap().expect("the store holds one consumed note");
+    assert_eq!(consumption_key(&first), consumption_key(&at_2));
+
+    // One note lands before the cursor and one after it.
+    let at_1 = create_consumed_input_note_with_consumer(consumer, 61, 1, 0);
+    let at_3 = create_consumed_input_note_with_consumer(consumer, 62, 3, 0);
+    store.upsert_input_notes(&[at_1, at_3.clone()]).await.unwrap();
+
+    assert_eq!(walk(&mut reader).await, vec![consumption_key(&at_3)]);
+}
+
+#[tokio::test]
+async fn input_note_after_keeps_a_cursor_at_the_start_of_the_block_range() {
+    let store = create_test_store().await;
+    let consumer = AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE).unwrap();
+
+    let at_1 = create_consumed_input_note_with_consumer(consumer, 71, 1, 0);
+    let first_at_3 = create_consumed_input_note_with_consumer(consumer, 72, 3, 0);
+    let second_at_3 = create_consumed_input_note_with_consumer(consumer, 73, 3, 1);
+    store
+        .upsert_input_notes(&[at_1, first_at_3.clone(), second_at_3.clone()])
+        .await
+        .unwrap();
+
+    // The cursor sits exactly at `block_start`, so it is the tighter bound: dropping it in favour
+    // of the range would return the note the cursor points at all over again.
+    let cursor = InputNoteCursor::from_record(&first_at_3).unwrap();
+    let note = store
+        .get_input_note_after(
+            NoteFilter::Consumed,
+            consumer,
+            Some(BlockNumber::from(3u32)),
+            None,
+            Some(cursor),
+        )
+        .await
+        .unwrap()
+        .expect("the second note of block 3 follows the cursor");
+
+    assert_eq!(note.details_commitment(), second_at_3.details_commitment());
 }
 
 // ORDERING TESTS (INPUT NOTES)

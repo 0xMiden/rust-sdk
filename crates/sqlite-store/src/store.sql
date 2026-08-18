@@ -137,7 +137,7 @@ CREATE TABLE transactions (
     FOREIGN KEY (script_root) REFERENCES transaction_scripts(script_root),
     PRIMARY KEY (id)
 ) WITHOUT ROWID;
-CREATE INDEX idx_transactions_uncommitted ON transactions(status_variant);
+CREATE INDEX idx_transactions_pending_block_num ON transactions(block_num) WHERE status_variant = 0;
 
 
 CREATE TABLE transaction_scripts (

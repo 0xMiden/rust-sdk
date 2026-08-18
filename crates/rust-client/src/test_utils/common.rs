@@ -629,7 +629,7 @@ pub async fn insert_account_with_custom_component(
     let mut init_seed = [0u8; 32];
     client.rng().fill_bytes(&mut init_seed);
 
-    let key_pair = AuthSecretKey::new_falcon512_poseidon2_with_rng(client.rng());
+    let key_pair = AuthSecretKey::new_falcon512_poseidon2_with_rng(client.secure_rng());
     let pub_key = key_pair.public_key();
 
     let account = AccountBuilder::new(init_seed)

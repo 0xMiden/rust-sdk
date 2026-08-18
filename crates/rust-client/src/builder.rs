@@ -85,9 +85,10 @@ pub trait StoreFactory {
 /// - **Store** ([`Store`]): Provides persistence for accounts, notes, and transaction history.
 ///   Configure via [`store()`](Self::store).
 ///
-/// - **RNG** ([`ClientCryptoRng`](crate::ClientCryptoRng)): Provides randomness for generating
-///   keys, serial numbers, and other cryptographic operations. If not provided, an OS-seeded
-///   `ChaCha20Rng` is created automatically. Configure via [`rng()`](Self::rng).
+/// - **RNG** ([`ClientCryptoRng`](crate::ClientCryptoRng)): Provides randomness for note serial
+///   numbers, script arguments and account seeds. If not provided, an OS-seeded `ChaCha20Rng` is
+///   created automatically. Configure via [`rng()`](Self::rng). Secret keys and transaction input
+///   sealing use a separate, non-overridable OS-seeded generator.
 ///
 /// - **Authenticator** ([`TransactionAuthenticator`](miden_tx::auth::TransactionAuthenticator)):
 ///   Handles transaction signing when signatures are requested from within the VM. Configure via
@@ -337,15 +338,19 @@ where
         self
     }
 
-    /// Optionally provide a custom RNG.
+    /// Optionally provide a custom RNG for note serial numbers and script arguments.
     ///
-    /// The generator must implement [`CryptoRng`](rand::CryptoRng), because it backs key
-    /// generation, account seeds and the ephemeral key and nonce used to seal transaction inputs.
-    /// If not set, an OS-seeded `ChaCha20Rng` is used.
+    /// This does **not** affect secret keys, account seeds or the sealing of transaction inputs.
+    /// Those draw from a separate generator that is always seeded from the operating system and
+    /// cannot be overridden, so seeding this one for a reproducible run cannot replay a key or a
+    /// sealing nonce. See [`Client::secure_rng`](crate::Client::secure_rng).
     ///
-    /// Seed a `ChaCha20Rng` explicitly to make a client's randomness reproducible. Note that
-    /// `CryptoRng` constrains the generator's algorithm and not the entropy of its seed, so a
-    /// low-entropy seed still yields predictable keys.
+    /// If not set, an OS-seeded `ChaCha20Rng` is used here too. Seed a `ChaCha20Rng` explicitly to
+    /// make serial numbers reproducible; predicting them reveals a private note's recipient and
+    /// nullifier, so this trades away the caller's own privacy.
+    ///
+    /// The generator must still implement [`CryptoRng`](rand::CryptoRng). Note that `CryptoRng`
+    /// constrains the generator's algorithm and not the entropy of its seed.
     ///
     /// ```
     /// # use miden_client::builder::ClientBuilder;
@@ -524,6 +529,10 @@ where
         let rng: ClientRngBox =
             self.rng.unwrap_or_else(|| Box::new(ChaCha20Rng::from_rng(&mut rand::rng())));
 
+        // The secure RNG is never caller-supplied: it backs secret keys, account seeds and the
+        // sealing of transaction inputs, which must stay unpredictable even when `rng` is seeded.
+        let secure_rng: ClientRngBox = Box::new(ChaCha20Rng::from_rng(&mut rand::rng()));
+
         // Set default prover if not provided
         let tx_prover: Arc<dyn TransactionProver + Send + Sync> =
             self.tx_prover.unwrap_or_else(|| Arc::new(LocalTransactionProver::default()));
@@ -566,6 +575,7 @@ where
         Ok(Client {
             store,
             rng: ClientRng::new(rng),
+            secure_rng: ClientRng::new(secure_rng),
             rpc_api,
             tx_prover,
             authenticator: self.authenticator,

@@ -387,9 +387,16 @@ use crate::transaction::TransactionProver;
 pub struct Client<AUTH> {
     /// The client's store, which provides a way to write and read entities to provide persistence.
     store: Arc<dyn Store>,
-    /// An instance of [`FeltRng`] which provides randomness tools for generating new keys,
-    /// serial numbers, etc.
+    /// Randomness for values whose predictability costs only the caller's own privacy, such as
+    /// note serial numbers, script arguments and account seeds. This is the generator a caller
+    /// may override through [`ClientBuilder::rng`](crate::builder::ClientBuilder::rng), so it may
+    /// be seeded for reproducibility.
     rng: ClientRng,
+    /// Randomness for values whose predictability would harm someone other than the caller,
+    /// namely secret keys and the ephemeral key and nonce that seal transaction inputs. Always
+    /// seeded from the operating system and never overridable, so a caller replaying a seeded
+    /// `rng` cannot replay a sealing nonce or a key.
+    secure_rng: ClientRng,
     /// An instance of [`NodeRpcClient`] which provides a way for the client to connect to the
     /// Miden node.
     rpc_api: Arc<dyn NodeRpcClient>,
@@ -481,10 +488,26 @@ where
         note::NoteScreener::new(self.store.clone(), self.rpc_api.clone())
     }
 
-    /// Returns a reference to the client's random number generator. This can be used to generate
-    /// randomness for various purposes such as serial numbers, keys, etc.
+    /// Returns the client's general-purpose random number generator, used for note serial numbers
+    /// and script arguments.
+    ///
+    /// This generator can be replaced with
+    /// [`ClientBuilder::rng`](crate::builder::ClientBuilder::rng), so a caller may have seeded
+    /// it for reproducibility. Account seeds belong here too: they grind a public account ID, so
+    /// predicting one costs the caller's own privacy and nothing more. Use
+    /// [`Client::secure_rng`] for secret keys.
     pub fn rng(&mut self) -> &mut ClientRng {
         &mut self.rng
+    }
+
+    /// Returns the client's secure random number generator, seeded from the operating system and
+    /// never overridable.
+    ///
+    /// Use this for secret keys. It is also what the client uses internally to seal transaction
+    /// inputs, so an ephemeral key and nonce stay unpredictable even when the caller seeds
+    /// [`Client::rng`] for reproducible runs.
+    pub fn secure_rng(&mut self) -> &mut ClientRng {
+        &mut self.secure_rng
     }
 
     pub fn prover(&self) -> Arc<dyn TransactionProver + Send + Sync> {

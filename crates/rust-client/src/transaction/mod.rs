@@ -538,7 +538,7 @@ where
         let tx_id = proven_transaction.id();
         let key = self.transaction_encryption_key().await?;
         let sealed_inputs =
-            seal_transaction_inputs(&mut self.rng, &key, tx_id, &transaction_inputs.into())?;
+            seal_transaction_inputs(&mut self.secure_rng, &key, tx_id, &transaction_inputs.into())?;
         let result =
             self.rpc_api.submit_proven_transaction(proven_transaction, sealed_inputs).await;
         if let Err(err) = &result {

@@ -4945,7 +4945,7 @@ async fn insert_new_wallet(
     visibility: AccountType,
     keystore: &FilesystemKeyStore,
 ) -> Result<Account, ClientError> {
-    let key_pair = AuthSecretKey::new_falcon512_poseidon2_with_rng(client.rng());
+    let key_pair = AuthSecretKey::new_falcon512_poseidon2_with_rng(client.secure_rng());
     let pub_key = key_pair.public_key();
 
     let mut init_seed = [0u8; 32];
@@ -5001,7 +5001,7 @@ async fn insert_new_fungible_faucet(
     visibility: AccountType,
     keystore: &FilesystemKeyStore,
 ) -> Result<Account, ClientError> {
-    let key_pair = AuthSecretKey::new_falcon512_poseidon2_with_rng(client.rng());
+    let key_pair = AuthSecretKey::new_falcon512_poseidon2_with_rng(client.secure_rng());
     let pub_key = key_pair.public_key();
 
     // we need to use an initial seed to create the wallet account

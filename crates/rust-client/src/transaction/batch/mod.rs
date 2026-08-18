@@ -207,7 +207,7 @@ where
             .iter()
             .zip(transaction_inputs)
             .map(|(tx_id, inputs)| {
-                seal_transaction_inputs(&mut self.client.rng, &key, *tx_id, &inputs)
+                seal_transaction_inputs(&mut self.client.secure_rng, &key, *tx_id, &inputs)
             })
             .collect::<Result<Vec<_>, _>>()?;
 

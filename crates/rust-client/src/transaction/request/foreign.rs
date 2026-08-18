@@ -3,6 +3,7 @@ use alloc::string::ToString;
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 
+use miden_protocol::Word;
 use miden_protocol::account::{
     AccountId,
     PartialAccount,
@@ -22,6 +23,7 @@ use crate::rpc::domain::account::{
     AccountDetails,
     AccountProof,
     AccountStorageRequirements,
+    AccountVaultDetails,
     StorageMapEntries,
 };
 
@@ -144,6 +146,7 @@ impl Deserializable for ForeignAccount {
 pub(crate) fn account_proof_into_inputs(
     account_proof: AccountProof,
     storage_requirements: &AccountStorageRequirements,
+    known_vault: Option<AssetVault>,
 ) -> Result<AccountInputs, TransactionRequestError> {
     let (witness, account_details) = account_proof.into_parts();
 
@@ -178,7 +181,8 @@ pub(crate) fn account_proof_into_inputs(
             storage_map_proofs.push(partial_storage);
         }
 
-        let vault = AssetVault::new(&vault_details.assets)?;
+        let vault =
+            foreign_account_vault(&vault_details, account_header.vault_root(), known_vault)?;
         return Ok(AccountInputs::new(
             PartialAccount::new(
                 account_header.id(),
@@ -192,6 +196,43 @@ pub(crate) fn account_proof_into_inputs(
         ));
     }
     Err(TransactionRequestError::ForeignAccountDataMissing)
+}
+
+/// Builds a foreign account's vault, tolerating the node's "vault unchanged" optimization.
+///
+/// When the client requests a vault with [`VaultFetch::IfChangedFrom`], the node OMITS the asset
+/// list if the account's vault root already equals the root the client sent. The response then
+/// carries an empty asset list, which is byte-identical to a genuinely empty vault — so rebuilding
+/// from it unconditionally produces an empty vault and a wrong account commitment. The kernel
+/// rejects that with `ERR_FOREIGN_ACCOUNT_INVALID_COMMITMENT`, and it does so deterministically:
+/// the better-synced the client, the more reliably the node omits, so every subsequent FPI against
+/// that account fails. While the foreign vault is empty the bad reconstruction is accidentally
+/// correct, which is why this stays hidden until the first asset lands in the foreign vault.
+///
+/// The omission happens *only* when the foreign vault matches the one the client already has, so on
+/// that path the locally-known vault is not a workaround — it is exactly the right vault. Checking
+/// both candidates against the header's vault root keeps the bandwidth optimization while making it
+/// impossible to hand the kernel a vault that does not hash to the committed root.
+fn foreign_account_vault(
+    vault_details: &AccountVaultDetails,
+    expected_root: Word,
+    known_vault: Option<AssetVault>,
+) -> Result<AssetVault, TransactionRequestError> {
+    let from_response = AssetVault::new(&vault_details.assets)?;
+    if from_response.root() == expected_root {
+        return Ok(from_response);
+    }
+
+    if let Some(known_vault) = known_vault
+        && known_vault.root() == expected_root
+    {
+        return Ok(known_vault);
+    }
+
+    Err(TransactionRequestError::ForeignAccountVaultMismatch {
+        expected: expected_root,
+        actual: from_response.root(),
+    })
 }
 
 /// Pairs each [`SmtProof`] with its corresponding key to produce [`StorageMapWitness`]es.
@@ -211,4 +252,82 @@ fn proofs_to_witnesses(
             StorageMapWitness::new(proof, [*key]).map_err(TransactionRequestError::StorageMapError)
         })
         .collect()
+}
+
+#[cfg(test)]
+mod foreign_vault_tests {
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    use miden_protocol::account::AccountId;
+    use miden_protocol::asset::{Asset, AssetVault, FungibleAsset};
+    use miden_protocol::testing::account_id::ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET;
+
+    use super::{AccountVaultDetails, TransactionRequestError, foreign_account_vault};
+
+    fn asset(amount: u64) -> Asset {
+        let faucet_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
+        Asset::Fungible(FungibleAsset::new(faucet_id, amount).unwrap())
+    }
+
+    fn details(assets: Vec<Asset>) -> AccountVaultDetails {
+        AccountVaultDetails { too_many_assets: false, assets }
+    }
+
+    #[test]
+    fn uses_the_response_assets_when_the_node_sent_them() {
+        let vault = AssetVault::new(&[asset(100)]).unwrap();
+
+        let built = foreign_account_vault(&details(vec![asset(100)]), vault.root(), None).unwrap();
+
+        assert_eq!(built.root(), vault.root());
+    }
+
+    /// The regression. The node omits the asset list when the caller's vault root already matches,
+    /// so the response carries NO assets while the header still commits to a non-empty vault.
+    /// Rebuilding from the response alone yields an empty vault and a wrong commitment, which the
+    /// kernel rejects with `ERR_FOREIGN_ACCOUNT_INVALID_COMMITMENT` — deterministically, and only
+    /// once the foreign vault stops being empty.
+    #[test]
+    fn falls_back_to_the_local_vault_when_the_node_omitted_the_assets() {
+        let local = AssetVault::new(&[asset(100)]).unwrap();
+        let committed_root = local.root();
+
+        // Response with an omitted (hence empty) asset list.
+        let built = foreign_account_vault(&details(vec![]), committed_root, Some(local)).unwrap();
+
+        assert_eq!(
+            built.root(),
+            committed_root,
+            "an omitted asset list must not be reconstructed as an empty vault"
+        );
+        assert_ne!(
+            built.root(),
+            AssetVault::new(&[]).unwrap().root(),
+            "the pre-fix behaviour built an empty vault here"
+        );
+    }
+
+    #[test]
+    fn accepts_a_genuinely_empty_foreign_vault() {
+        let empty_root = AssetVault::new(&[]).unwrap().root();
+
+        // No local vault to fall back on, and none needed: the header commits to an empty vault.
+        let built = foreign_account_vault(&details(vec![]), empty_root, None).unwrap();
+
+        assert_eq!(built.root(), empty_root);
+    }
+
+    /// A stale local copy must be rejected rather than trusted — handing the kernel a vault that
+    /// does not hash to the committed root is what this whole path exists to prevent.
+    #[test]
+    fn rejects_when_neither_candidate_matches_the_committed_root() {
+        let stale_local = AssetVault::new(&[asset(100)]).unwrap();
+        let committed_root = AssetVault::new(&[asset(250)]).unwrap().root();
+
+        let err = foreign_account_vault(&details(vec![]), committed_root, Some(stale_local))
+            .expect_err("a vault that does not match the committed root must not be used");
+
+        assert!(matches!(err, TransactionRequestError::ForeignAccountVaultMismatch { .. }));
+    }
 }

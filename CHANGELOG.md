@@ -44,6 +44,7 @@
 
 ### Fixes
 
+* [FIX][rust] Foreign procedure invocation against a tracked public account with a non-empty vault no longer fails with `ERR_FOREIGN_ACCOUNT_INVALID_COMMITMENT`. The client requests the foreign vault with `VaultFetch::IfChangedFrom`, so the node omits the asset list when the client's vault root is already current, but the reconstruction rebuilt the vault from that omitted list — producing an empty vault and a commitment the kernel rejects. The omission only happens when the foreign vault matches the locally-known one, so that local vault is now used on the unchanged path (keeping the bandwidth optimization), and the reconstructed vault is verified against the account header's vault root before use ([#2400](https://github.com/0xMiden/rust-sdk/pull/2400)).
 * [FIX][cli] `miden-client init` now reports invalid remote prover endpoints instead of silently writing a local-prover config ([#2376](https://github.com/0xMiden/rust-sdk/pull/2376)).
 * [FIX][rust] `VerifyingRpcClient::sync_transactions` now validates that every returned transaction record's account ID was actually requested, rejecting mismatches with `RpcError::InvalidResponse` ([#2372](https://github.com/0xMiden/rust-sdk/issues/2372)).
 * [FIX][rust] `Client::prove_transaction_with` now checks that the `TransactionProver` returned a proof of the transaction it was asked to prove, rejecting a mismatch with the new `ClientError::MismatchedProvenTransaction` ([#2391](https://github.com/0xMiden/rust-sdk/pull/2391)).

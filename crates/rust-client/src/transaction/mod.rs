@@ -1342,12 +1342,14 @@ pub(crate) async fn fetch_public_account_inputs(
     let known_code: Option<AccountCode> =
         store.get_foreign_account_code(vec![account_id]).await?.into_values().next();
 
-    let vault = store
+    // Ask the node to skip the asset list when our local copy of the vault is already current.
+    // The node honours that by OMITTING the assets, which the reconstruction below has to know
+    // about — an omitted list is indistinguishable from an empty vault in the response.
+    let local_vault_root = store
         .get_account_header(account_id)
         .await?
-        .map_or(VaultFetch::Always, |(header, ..)| {
-            VaultFetch::IfChangedFrom(header.vault_root())
-        });
+        .map(|(header, ..)| header.vault_root());
+    let vault = local_vault_root.map_or(VaultFetch::Always, VaultFetch::IfChangedFrom);
 
     let (block_num, mut account_proof) = rpc_api
         .get_account(
@@ -1365,7 +1367,17 @@ pub(crate) async fn fetch_public_account_inputs(
         rpc_api.resolve_oversize_storage_maps(account_id, block_num, details).await?;
     }
 
-    let account_inputs = request::account_proof_into_inputs(account_proof, &storage_requirements)?;
+    // On the `IfChangedFrom` path the node may have sent no assets, meaning "same as the root you
+    // gave me" — so hand the reconstruction our local vault to use in that case. It is read only
+    // when we actually asked for the conditional fetch, and it is verified against the header's
+    // vault root before use, so a stale local copy is rejected rather than silently trusted.
+    let known_vault = match local_vault_root {
+        Some(_) => store.get_account_vault(account_id).await.ok(),
+        None => None,
+    };
+
+    let account_inputs =
+        request::account_proof_into_inputs(account_proof, &storage_requirements, known_vault)?;
 
     let _ = store
         .upsert_foreign_account_code(account_id, account_inputs.code().clone())

@@ -1,11 +1,12 @@
 use std::collections::BTreeMap;
 
 use anyhow::{Context, Result};
-use miden_client::account::component::{AccountComponent, AccountComponentMetadata};
+use miden_client::account::component::{AccountComponent, AccountComponentMetadata, BasicWallet};
 use miden_client::account::{
     Account,
     AccountBuilder,
     AccountBuilderSchemaCommitmentExt,
+    AccountId,
     AccountType,
     PartialAccount,
     PartialStorage,
@@ -15,6 +16,7 @@ use miden_client::account::{
     StorageSlotName,
 };
 use miden_client::assembly::CodeBuilder;
+use miden_client::asset::{AssetId, FungibleAsset};
 use miden_client::auth::{
     Approver,
     AuthSchemeId,
@@ -23,6 +25,7 @@ use miden_client::auth::{
     RPO_FALCON_SCHEME_ID,
 };
 use miden_client::keystore::{FilesystemKeyStore, Keystore};
+use miden_client::note::NoteType;
 use miden_client::rpc::domain::account::AccountStorageRequirements;
 use miden_client::testing::common::*;
 use miden_client::transaction::{AdviceInputs, ForeignAccount, TransactionRequestBuilder};
@@ -592,6 +595,154 @@ async fn standard_fpi(
     Ok(())
 }
 
+/// Deploys a foreign account exposing a procedure that reads an asset from its own vault, funds
+/// the vault with a freshly minted asset, and returns the foreign account's ID, the transaction
+/// script performing the FPI asset read, and the stack expected from a successful read.
+async fn setup_fpi_vault_asset_read(
+    client_config: &ClientConfig,
+) -> Result<(AccountId, String, [Felt; 16])> {
+    let (mut client, keystore) = client_config.clone().into_client().await?;
+    wait_for_node(&mut client).await;
+    client.sync_state().await?;
+
+    // Deploy a foreign account exposing a procedure that reads an asset from its own vault.
+    let (foreign_account, proc_root) = deploy_foreign_account(
+        &mut client,
+        &keystore,
+        AccountType::Public,
+        "
+            use miden::protocol::active_account
+            @account_procedure
+            pub proc get_foreign_asset
+                # inputs are passed as foreign_procedure_inputs: [ASSET_ID, pad(12)]
+                exec.active_account::get_asset
+            end"
+        .to_string(),
+        RPO_FALCON_SCHEME_ID,
+    )
+    .await?;
+    let foreign_account_id = foreign_account.id();
+
+    // Fund the foreign account's vault so the asset read runs against a non-empty vault.
+    let (faucet_account, ..) = insert_new_fungible_faucet(
+        &mut client,
+        AccountType::Private,
+        &keystore,
+        RPO_FALCON_SCHEME_ID,
+    )
+    .await?;
+    let (tx_id, note) =
+        mint_note(&mut client, foreign_account_id, faucet_account.id(), NoteType::Private).await;
+    wait_for_tx(&mut client, tx_id).await?;
+    let tx_id = consume_notes(&mut client, foreign_account_id, &[note]).await;
+    wait_for_tx(&mut client, tx_id).await?;
+
+    let fungible_asset = FungibleAsset::new(faucet_account.id(), MINT_AMOUNT)
+        .context("failed to build the expected fungible asset")?;
+    let asset_id = AssetId::from(fungible_asset);
+
+    let tx_script_code = format!(
+        "
+        use miden::protocol::tx
+        use miden::core::sys
+        @transaction_script
+        pub proc main
+            # pad the stack for the foreign procedure inputs
+            padw padw padw
+
+            # push the ID of the asset to read from the foreign vault
+            push.{asset_id}
+            # => [ASSET_ID, pad(12)]
+
+            # push the root of the `get_foreign_asset` account procedure
+            push.{proc_root}
+
+            # push the foreign account id
+            push.{account_id_prefix} push.{account_id_suffix}
+            # => [foreign_id_suffix, foreign_id_prefix, FOREIGN_PROC_ROOT, ASSET_ID, pad(12)]
+
+            exec.tx::execute_foreign_procedure
+            # => [ASSET_VALUE, pad(12)]
+
+            exec.sys::truncate_stack
+        end
+        ",
+        asset_id = Word::from(asset_id),
+        account_id_prefix = foreign_account_id.prefix().as_u64(),
+        account_id_suffix = foreign_account_id.suffix(),
+    );
+
+    let mut expected_stack = [Felt::ZERO; 16];
+    expected_stack[..4].copy_from_slice(fungible_asset.to_value_word().as_elements());
+
+    Ok((foreign_account_id, tx_script_code, expected_stack))
+}
+
+/// Tests that FPI can read an asset from an untracked foreign account's vault: the client
+/// requests the vault with `VaultFetch::Always`, so the asset list arrives with the account
+/// proof and is kept (after verifying it hashes to the header's vault root).
+pub async fn test_fpi_vault_asset_read_untracked(client_config: ClientConfig) -> Result<()> {
+    let (foreign_account_id, tx_script_code, expected_stack) =
+        setup_fpi_vault_asset_read(&client_config).await?;
+
+    // A fresh client, so no foreign account data is cached or tracked.
+    let (mut client, keystore) = client_config.clone().into_client().await?;
+    client.sync_state().await?;
+    let (wallet, ..) =
+        insert_new_wallet(&mut client, AccountType::Private, &keystore, RPO_FALCON_SCHEME_ID)
+            .await?;
+    let tx_script = client.code_builder().compile_tx_script(&tx_script_code)?;
+    let foreign_accounts = BTreeMap::from([(
+        foreign_account_id,
+        ForeignAccount::public(foreign_account_id, AccountStorageRequirements::default())?,
+    )]);
+
+    let output_stack = client
+        .execute_program(wallet.id(), tx_script, AdviceInputs::default(), foreign_accounts)
+        .await?;
+    assert_eq!(
+        output_stack, expected_stack,
+        "untracked foreign asset read returned a wrong value"
+    );
+
+    Ok(())
+}
+
+/// Tests that FPI can read an asset from a tracked and synced foreign account's vault: the
+/// client requests `VaultFetch::IfChangedFrom` with a matching root, the node omits the asset
+/// list, the foreign inputs carry a root-only partial vault, and the asset read is served during
+/// execution by a per-asset witness from the local store.
+pub async fn test_fpi_vault_asset_read_tracked(client_config: ClientConfig) -> Result<()> {
+    let (foreign_account_id, tx_script_code, expected_stack) =
+        setup_fpi_vault_asset_read(&client_config).await?;
+
+    let (mut client, keystore) = client_config.clone().into_client().await?;
+    client.sync_state().await?;
+    let (wallet, ..) =
+        insert_new_wallet(&mut client, AccountType::Private, &keystore, RPO_FALCON_SCHEME_ID)
+            .await?;
+
+    // Track the foreign account so the client's stored vault root matches the node's.
+    client.import_account_by_id(foreign_account_id).await?;
+    client.sync_state().await?;
+
+    let tx_script = client.code_builder().compile_tx_script(&tx_script_code)?;
+    let foreign_accounts = BTreeMap::from([(
+        foreign_account_id,
+        ForeignAccount::public(foreign_account_id, AccountStorageRequirements::default())?,
+    )]);
+
+    let output_stack = client
+        .execute_program(wallet.id(), tx_script, AdviceInputs::default(), foreign_accounts)
+        .await?;
+    assert_eq!(
+        output_stack, expected_stack,
+        "tracked foreign asset read returned a wrong value"
+    );
+
+    Ok(())
+}
+
 /// Builds a foreign account with a custom component that exports the specified code.
 ///
 /// # Returns
@@ -647,8 +798,10 @@ fn foreign_account_with_code(
         },
     };
 
+    // The wallet component lets the account receive assets, so tests can fund its vault.
     let account = AccountBuilder::new(Default::default())
         .with_component(get_item_component.clone())
+        .with_component(BasicWallet)
         .with_component(auth_component)
         .account_type(account_type)
         .build_with_schema_commitment()

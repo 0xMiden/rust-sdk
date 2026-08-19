@@ -799,12 +799,17 @@ pub enum VaultFetch {
     /// Always include vault data in the response.
     Always,
     /// Include vault data only if the account's current vault root differs from this commitment.
+    ///
+    /// An omitted asset list is byte-identical to a genuinely empty vault, so callers must keep
+    /// the vault whose root they send and verify any reconstruction against the header's vault
+    /// root.
     IfChangedFrom(Word),
 }
 
 impl From<VaultFetch> for Option<proto::primitives::Digest> {
     /// Encodes the policy as the request's `asset_vault_commitment`: `None` skips the vault, the
-    /// empty word always fetches it, and a concrete commitment fetches only when it differs.
+    /// empty word (which no real vault root equals) always fetches it, and a concrete commitment
+    /// fetches only when it differs.
     fn from(vault: VaultFetch) -> Self {
         match vault {
             VaultFetch::Skip => None,

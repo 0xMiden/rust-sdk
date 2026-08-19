@@ -614,7 +614,7 @@ pub async fn test_consumed_note_ordering(client_config: ClientConfig) -> Result<
             .build_consume_notes(vec![note.clone()])
             .unwrap();
         info!(note_id = %note.id(), index = i, "Pushing consume tx into batch");
-        batch = batch.push(wallet_account.id(), tx_request).await?;
+        batch.push(wallet_account.id(), tx_request).await?;
     }
     let submission_tip = batch.submit().await?;
     info!(submission_tip = submission_tip.as_u32(), "Submitted 3-tx consume batch");

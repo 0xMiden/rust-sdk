@@ -572,6 +572,23 @@ async fn get_account_verifies_block_num_only_for_pinned_requests() {
 }
 
 #[tokio::test]
+async fn get_account_rejects_proof_for_wrong_account_id() {
+    // account_proof() is built for test_account_id() (ACCOUNT_ID_SENDER),
+    // but we request a different account ID -- the verifying client must reject it.
+    let client = VerifyingRpcClient::new(CannedTransport {
+        account: Some((BlockNumber::from(1u32), account_proof())),
+        ..Default::default()
+    });
+    let other = AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE)
+        .expect("test account ID is well formed");
+    let err = client
+        .get_account(other, GetAccountRequest::new())
+        .await
+        .expect_err("proof for a different account must be rejected");
+    assert!(matches!(err, RpcError::InvalidResponse(_)));
+}
+
+#[tokio::test]
 async fn get_note_script_by_root_verifies_script_root() {
     let script = StandardNote::P2ID.script();
     let root = Word::from(script.root());

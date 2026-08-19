@@ -1,5 +1,4 @@
-//! Do not delete. `cargo shear` reports this file as unlinked because trybuild loads it as
-//! data rather than as a cargo target; the test that drives it is `builder::tests::ui`.
+//! Do not delete: this fixture is driven by the `builder::tests::ui` test.
 //!
 //! `ClientBuilder::rng` must reject a generator that is not a `CryptoRng`, even when it
 //! implements `FeltRng`. See `Client::secure_rng` for why the bound is there.

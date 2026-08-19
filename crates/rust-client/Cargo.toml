@@ -24,6 +24,9 @@ ignored = ["getrandom", "prost-types", "tonic-prost"]
 # getrandom is used through rand's wasm backend selection. The other entries are used by
 # generated proto bindings and std-only keystore code that shear does not fully resolve.
 ignored = ["getrandom", "prost-types", "serde", "serde_json", "tempfile", "tonic-prost"]
+# trybuild loads the UI fixtures as data rather than as cargo targets, so shear sees them
+# as unreachable files and suggests deleting them.
+ignored-paths = ["tests/ui/*.rs"]
 
 [lib]
 crate-type = ["lib"]

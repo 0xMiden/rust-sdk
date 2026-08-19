@@ -1,4 +1,6 @@
+use alloc::boxed::Box;
 use alloc::collections::BTreeSet;
+use alloc::string::ToString;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
@@ -38,7 +40,7 @@ use crate::rpc::domain::account::{
 };
 use crate::rpc::{AccountStateAt, NodeRpcClient};
 use crate::store::StoreError;
-use crate::transaction::fetch_public_account_inputs;
+use crate::transaction::{ChainAnchor, ChainAnchorError, fetch_public_account_inputs};
 
 mod cache;
 use cache::DataStoreCache;
@@ -54,6 +56,10 @@ pub struct ClientDataStore {
     cache: DataStoreCache,
     /// RPC client used to lazy-load foreign account data on cache miss.
     rpc_api: Arc<dyn NodeRpcClient>,
+    /// When set, chain data (reference block header and partial blockchain) is served from this
+    /// anchor instead of being rebuilt at the store's sync height. Boxed to keep the data store
+    /// small: it is held inline by every execution future.
+    anchor: Option<Box<ChainAnchor>>,
 }
 
 impl ClientDataStore {
@@ -62,7 +68,21 @@ impl ClientDataStore {
             store,
             cache: DataStoreCache::new(),
             rpc_api,
+            anchor: None,
         }
+    }
+
+    /// Serves chain data from the provided [`ChainAnchor`] instead of rebuilding it at the
+    /// store's sync height, pinning execution to the anchor's reference block.
+    ///
+    /// The store's account data is still used as-is: only the reference block header and the
+    /// partial blockchain come from the anchor. Any authenticated input note must have been
+    /// created in a block tracked by the anchor's partial blockchain, otherwise
+    /// `get_transaction_inputs` fails.
+    #[must_use]
+    pub fn with_chain_anchor(mut self, anchor: ChainAnchor) -> Self {
+        self.anchor = Some(Box::new(anchor));
+        self
     }
 
     /// Enables memoization of `get_transaction_inputs` and `get_vault_asset_witnesses` for the
@@ -267,7 +287,31 @@ impl DataStore for ClientDataStore {
                 partial_account
             };
 
-        let (block_header, partial_blockchain) = if let Some((block_header, partial_blockchain)) =
+        let (block_header, partial_blockchain) = if let Some(anchor) = &self.anchor {
+            // Anchored execution: serve the pinned chain data instead of rebuilding it at the
+            // sync height. The executor derives the reference block from the request, so it must
+            // match the anchor; every other block in the set (input note creation blocks) must
+            // already be tracked by the anchor's partial blockchain.
+            if ref_block != anchor.block_num() {
+                return Err(DataStoreError::other(
+                    ChainAnchorError::ReferenceBlockMismatch {
+                        requested: ref_block,
+                        anchor: anchor.block_num(),
+                    }
+                    .to_string(),
+                ));
+            }
+
+            for block_num in block_refs.iter().filter(|block_num| **block_num != ref_block) {
+                if !anchor.partial_blockchain().contains_block(*block_num) {
+                    return Err(DataStoreError::other(
+                        ChainAnchorError::BlockNotTracked { block_num: *block_num }.to_string(),
+                    ));
+                }
+            }
+
+            (anchor.header().clone(), anchor.partial_blockchain().clone())
+        } else if let Some((block_header, partial_blockchain)) =
             self.cache.get_blockchain(&block_refs)
         {
             (block_header, partial_blockchain)

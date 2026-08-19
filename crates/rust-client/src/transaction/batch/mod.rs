@@ -307,7 +307,7 @@ where
     };
 
     let prep = client
-        .prepare_transaction(account.code_interface(), transaction_request)
+        .prepare_transaction(account.code_interface(), transaction_request, None)
         .await?;
 
     data_store.register_note_scripts(prep.output_note_scripts());

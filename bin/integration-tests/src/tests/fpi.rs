@@ -6,6 +6,7 @@ use miden_client::account::{
     Account,
     AccountBuilder,
     AccountBuilderSchemaCommitmentExt,
+    AccountId,
     AccountType,
     PartialAccount,
     PartialStorage,
@@ -594,20 +595,12 @@ async fn standard_fpi(
     Ok(())
 }
 
-/// Tests that FPI can read an asset from a foreign account's vault, on both vault-transfer paths:
-///
-/// - Untracked foreign account: the client requests the vault with `VaultFetch::Always`, so the
-///   asset list arrives with the account proof and is kept (after verifying it hashes to the
-///   header's vault root).
-/// - Tracked and synced foreign account: the client requests `VaultFetch::IfChangedFrom` with a
-///   matching root, the node omits the asset list, the foreign inputs carry a root-only partial
-///   vault, and the asset read is served during execution by a per-asset witness from the local
-///   store.
-///
-/// The tracked case is the regression scenario for the empty-vault reconstruction bug: before the
-/// fix, the omitted list was rebuilt into an empty vault and every FPI against a tracked account
-/// with a non-empty vault failed with `ERR_FOREIGN_ACCOUNT_INVALID_COMMITMENT`.
-pub async fn test_fpi_vault_asset_read(client_config: ClientConfig) -> Result<()> {
+/// Deploys a foreign account exposing a procedure that reads an asset from its own vault, funds
+/// the vault with a freshly minted asset, and returns the foreign account's ID, the transaction
+/// script performing the FPI asset read, and the stack expected from a successful read.
+async fn setup_fpi_vault_asset_read(
+    client_config: &ClientConfig,
+) -> Result<(AccountId, String, [Felt; 16])> {
     let (mut client, keystore) = client_config.clone().into_client().await?;
     wait_for_node(&mut client).await;
     client.sync_state().await?;
@@ -682,38 +675,64 @@ pub async fn test_fpi_vault_asset_read(client_config: ClientConfig) -> Result<()
     let mut expected_stack = [Felt::ZERO; 16];
     expected_stack[..4].copy_from_slice(fungible_asset.to_value_word().as_elements());
 
+    Ok((foreign_account_id, tx_script_code, expected_stack))
+}
+
+/// Tests that FPI can read an asset from an untracked foreign account's vault: the client
+/// requests the vault with `VaultFetch::Always`, so the asset list arrives with the account
+/// proof and is kept (after verifying it hashes to the header's vault root).
+pub async fn test_fpi_vault_asset_read_untracked(client_config: ClientConfig) -> Result<()> {
+    let (foreign_account_id, tx_script_code, expected_stack) =
+        setup_fpi_vault_asset_read(&client_config).await?;
+
     // A fresh client, so no foreign account data is cached or tracked.
-    let (mut client2, keystore2) = client_config.clone().into_client().await?;
-    client2.sync_state().await?;
+    let (mut client, keystore) = client_config.clone().into_client().await?;
+    client.sync_state().await?;
     let (wallet, ..) =
-        insert_new_wallet(&mut client2, AccountType::Private, &keystore2, RPO_FALCON_SCHEME_ID)
+        insert_new_wallet(&mut client, AccountType::Private, &keystore, RPO_FALCON_SCHEME_ID)
             .await?;
-    let tx_script = client2.code_builder().compile_tx_script(&tx_script_code)?;
+    let tx_script = client.code_builder().compile_tx_script(&tx_script_code)?;
     let foreign_accounts = BTreeMap::from([(
         foreign_account_id,
         ForeignAccount::public(foreign_account_id, AccountStorageRequirements::default())?,
     )]);
 
-    // Untracked: the asset list is fetched with the account proof and kept in the inputs.
-    let output_stack = client2
-        .execute_program(
-            wallet.id(),
-            tx_script.clone(),
-            AdviceInputs::default(),
-            foreign_accounts.clone(),
-        )
+    let output_stack = client
+        .execute_program(wallet.id(), tx_script, AdviceInputs::default(), foreign_accounts)
         .await?;
     assert_eq!(
         output_stack, expected_stack,
         "untracked foreign asset read returned a wrong value"
     );
 
-    // Tracked and synced: the node omits the asset list (the client's vault root is current), the
-    // inputs carry a root-only vault, and the read resolves through a local per-asset witness.
-    client2.import_account_by_id(foreign_account_id).await?;
-    client2.sync_state().await?;
+    Ok(())
+}
 
-    let output_stack = client2
+/// Tests that FPI can read an asset from a tracked and synced foreign account's vault: the
+/// client requests `VaultFetch::IfChangedFrom` with a matching root, the node omits the asset
+/// list, the foreign inputs carry a root-only partial vault, and the asset read is served during
+/// execution by a per-asset witness from the local store.
+pub async fn test_fpi_vault_asset_read_tracked(client_config: ClientConfig) -> Result<()> {
+    let (foreign_account_id, tx_script_code, expected_stack) =
+        setup_fpi_vault_asset_read(&client_config).await?;
+
+    let (mut client, keystore) = client_config.clone().into_client().await?;
+    client.sync_state().await?;
+    let (wallet, ..) =
+        insert_new_wallet(&mut client, AccountType::Private, &keystore, RPO_FALCON_SCHEME_ID)
+            .await?;
+
+    // Track the foreign account so the client's stored vault root matches the node's.
+    client.import_account_by_id(foreign_account_id).await?;
+    client.sync_state().await?;
+
+    let tx_script = client.code_builder().compile_tx_script(&tx_script_code)?;
+    let foreign_accounts = BTreeMap::from([(
+        foreign_account_id,
+        ForeignAccount::public(foreign_account_id, AccountStorageRequirements::default())?,
+    )]);
+
+    let output_stack = client
         .execute_program(wallet.id(), tx_script, AdviceInputs::default(), foreign_accounts)
         .await?;
     assert_eq!(

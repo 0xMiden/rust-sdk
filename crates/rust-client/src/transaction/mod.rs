@@ -1329,6 +1329,9 @@ fn validate_basic_account_request(
 /// Fetches a foreign account's proof and details from the network, converts them into
 /// [`AccountInputs`], and caches the returned code in the store for future requests.
 ///
+/// Storage maps the node caps as oversized (returned truncated) are carried root-only in the
+/// inputs; reads from them resolve lazily as per-key witnesses during execution.
+///
 /// # Errors
 /// Fails if the account is private: the RPC does not return account details for them, causing
 /// [`TransactionRequestError::ForeignAccountDataMissing`].
@@ -1351,7 +1354,7 @@ pub(crate) async fn fetch_public_account_inputs(
             VaultFetch::IfChangedFrom(header.vault_root())
         });
 
-    let (block_num, mut account_proof) = rpc_api
+    let (_block_num, account_proof) = rpc_api
         .get_account(
             account_id,
             GetAccountRequest::new()
@@ -1361,10 +1364,6 @@ pub(crate) async fn fetch_public_account_inputs(
                 .with_vault(vault),
         )
         .await?;
-
-    if let Some(details) = account_proof.details_mut() {
-        rpc_api.resolve_oversize_storage_maps(account_id, block_num, details).await?;
-    }
 
     let account_inputs = request::account_proof_into_inputs(account_proof, &storage_requirements)?;
 

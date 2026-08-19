@@ -432,7 +432,15 @@ impl DataStore for ClientDataStore {
         if asset_witnesses.len() != asset_ids.len() {
             let vault = match self.store.get_account_vault(account_id).await {
                 Ok(vault) if vault.root() == vault_root => vault,
-                Ok(_) => self.fetch_vault_via_rpc(account_id, vault_root).await?,
+                Ok(vault) => {
+                    tracing::debug!(
+                        %account_id,
+                        local_root = %vault.root(),
+                        requested_root = %vault_root,
+                        "local vault is missing or stale, will fetch it via RPC"
+                    );
+                    self.fetch_vault_via_rpc(account_id, vault_root).await?
+                },
                 Err(err) => {
                     tracing::debug!(
                         %account_id,

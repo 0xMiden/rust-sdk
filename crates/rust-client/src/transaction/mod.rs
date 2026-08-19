@@ -1342,6 +1342,8 @@ pub(crate) async fn fetch_public_account_inputs(
     let known_code: Option<AccountCode> =
         store.get_foreign_account_code(vec![account_id]).await?.into_values().next();
 
+    // Tracked accounts skip the asset list when unchanged; untracked accounts fetch it in full
+    // so asset reads need no execution-time RPC.
     let vault = store
         .get_account_header(account_id)
         .await?
@@ -1361,7 +1363,6 @@ pub(crate) async fn fetch_public_account_inputs(
         .await?;
 
     if let Some(details) = account_proof.details_mut() {
-        rpc_api.resolve_oversize_vault(account_id, block_num, details).await?;
         rpc_api.resolve_oversize_storage_maps(account_id, block_num, details).await?;
     }
 

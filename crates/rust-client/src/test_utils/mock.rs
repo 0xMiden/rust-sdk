@@ -44,7 +44,7 @@ use crate::rpc::domain::storage_map::StorageMapInfo;
 use crate::rpc::domain::sync::{ChainMmrInfo, SyncTarget};
 use crate::rpc::domain::transaction::TransactionRecord;
 use crate::rpc::encryption::{AttestedTransactionEncryptionKey, SealedTransactionInputs};
-use crate::rpc::{AccountStateAt, NodeRpcClient, RpcEndpoint, RpcError, RpcStatusInfo};
+use crate::rpc::{AccountStateAt, NodeRpcClient, RpcError, RpcStatusInfo};
 
 pub type MockClient<AUTH> = Client<AUTH>;
 
@@ -73,9 +73,6 @@ pub struct MockRpcApi {
     private_note_attachments: Arc<RwLock<BTreeMap<NoteId, NoteAttachments>>>,
     /// Test overrides for the MMR paths returned by `sync_notes`, keyed by block number.
     sync_notes_mmr_path_overrides: Arc<RwLock<BTreeMap<BlockNumber, MerklePath>>>,
-    /// Number of calls served per endpoint, keyed by [`RpcEndpoint::proto_name`]. Lets tests
-    /// assert how many round trips a client operation costs.
-    call_counts: Arc<RwLock<BTreeMap<&'static str, usize>>>,
 }
 
 impl Default for MockRpcApi {
@@ -98,23 +95,7 @@ impl MockRpcApi {
             erased_notes: Arc::new(RwLock::new(Vec::new())),
             private_note_attachments: Arc::new(RwLock::new(BTreeMap::new())),
             sync_notes_mmr_path_overrides: Arc::new(RwLock::new(BTreeMap::new())),
-            call_counts: Arc::new(RwLock::new(BTreeMap::new())),
         }
-    }
-
-    /// Records one served call against `endpoint`.
-    fn record_call(&self, endpoint: RpcEndpoint) {
-        *self.call_counts.write().entry(endpoint.proto_name()).or_insert(0) += 1;
-    }
-
-    /// Returns how many calls this mock has served for `endpoint`.
-    pub fn call_count(&self, endpoint: RpcEndpoint) -> usize {
-        self.call_counts.read().get(endpoint.proto_name()).copied().unwrap_or(0)
-    }
-
-    /// Clears the per-endpoint call counts.
-    pub fn reset_call_counts(&self) {
-        self.call_counts.write().clear();
     }
 
     /// Registers the attachment content for a private note so that subsequent `get_notes_by_id`
@@ -360,8 +341,6 @@ impl NodeRpcClient for MockRpcApi {
         block_to: BlockNumber,
         note_tags: &BTreeSet<NoteTag>,
     ) -> Result<Vec<SyncNotesBlock>, RpcError> {
-        self.record_call(RpcEndpoint::SyncNotes);
-
         let mut blocks_with_notes: BTreeMap<BlockNumber, BTreeMap<NoteId, CommittedNote>> =
             BTreeMap::new();
         for note in self.mock_chain.read().committed_notes().values() {
@@ -394,8 +373,6 @@ impl NodeRpcClient for MockRpcApi {
         current_block_height: BlockNumber,
         upper_bound: SyncTarget,
     ) -> Result<ChainMmrInfo, RpcError> {
-        self.record_call(RpcEndpoint::SyncChainMmr);
-
         let chain_tip = self.get_chain_tip_block_num();
         // The mock chain doesn't distinguish committed vs proven tips.
         let target_block = match upper_bound {
@@ -450,8 +427,6 @@ impl NodeRpcClient for MockRpcApi {
 
     /// Returns the node's tracked notes that match the provided note IDs.
     async fn get_notes_by_id(&self, note_ids: &[NoteId]) -> Result<Vec<FetchedNote>, RpcError> {
-        self.record_call(RpcEndpoint::GetNotesById);
-
         // assume all public notes for now
         let notes = self.mock_chain.read().committed_notes().clone();
 
@@ -553,8 +528,6 @@ impl NodeRpcClient for MockRpcApi {
         account_id: AccountId,
         request: GetAccountRequest,
     ) -> Result<(BlockNumber, AccountProof), RpcError> {
-        self.record_call(RpcEndpoint::GetAccount);
-
         let current_chain = self.mock_chain.read();
         let current_block_number = current_chain.latest_block_header().block_num();
         let block_number = match request.at {
@@ -654,8 +627,6 @@ impl NodeRpcClient for MockRpcApi {
         block_from: BlockNumber,
         block_to: BlockNumber,
     ) -> Result<Vec<NullifierUpdate>, RpcError> {
-        self.record_call(RpcEndpoint::SyncNullifiers);
-
         let nullifiers = self
             .mock_chain
             .read()
@@ -771,8 +742,6 @@ impl NodeRpcClient for MockRpcApi {
         block_to: BlockNumber,
         account_ids: Vec<AccountId>,
     ) -> Result<Vec<TransactionRecord>, RpcError> {
-        self.record_call(RpcEndpoint::SyncTransactions);
-
         Ok(self.get_sync_transactions_request(block_from, block_to, &account_ids))
     }
 

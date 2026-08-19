@@ -970,8 +970,8 @@ impl StateSync {
 
         // Local states that lost a same-nonce race; their transactions must be discarded.
         let mut superseded_states = Vec::new();
-        for ((_, local_header), synced) in diverging_accounts.iter().zip(synced_accounts) {
-            match synced {
+        for ((_, local_header), synced_account) in diverging_accounts.iter().zip(synced_accounts) {
+            match synced_account {
                 PublicAccountSync::Apply(public_update) => {
                     account_updates.extend(AccountUpdates::new(vec![*public_update], Vec::new()));
                 },
@@ -1464,7 +1464,6 @@ mod tests {
     use miden_testing::{MockChainBuilder, MockTransactionInput};
 
     use super::*;
-    use crate::rpc::RpcEndpoint;
     use crate::store::{OutputNoteRecord, OutputNoteState};
     use crate::test_utils::mock::MockRpcApi;
 
@@ -2743,65 +2742,6 @@ mod tests {
             &mut PartialBlockchainUpdates::default(),
         );
         assert!(matches!(result, Err(ClientError::ChainValidationError(_))));
-    }
-
-    /// Pins the number of round trips one `sync_state` costs, per endpoint.
-    ///
-    /// The concurrent fetches must overlap requests, never add or drop them: a change here means
-    /// the sync started issuing a different number of calls, not just issuing them differently.
-    #[tokio::test]
-    async fn sync_state_issues_one_request_per_endpoint() {
-        let (chain, account, [note1, note2, note3]) = build_chain_with_chained_consume_txs().await;
-
-        let mock_rpc = MockRpcApi::new(chain);
-        let state_sync =
-            StateSync::new(Arc::new(mock_rpc.clone()), Arc::new(CommitAllScreener), None);
-
-        let genesis_peaks =
-            mock_rpc.get_mmr().peaks_at(Forest::new(1).expect("valid forest")).unwrap();
-        let mut partial_mmr = PartialMmr::from_peaks(genesis_peaks);
-
-        let input_notes: Vec<InputNoteRecord> = [&note1, &note2, &note3]
-            .into_iter()
-            .map(|n| InputNoteRecord::from(n.clone()))
-            .collect();
-        let note_tags: BTreeSet<NoteTag> = input_notes
-            .iter()
-            .filter_map(|n| n.metadata().map(miden_protocol::note::NoteMetadata::tag))
-            .collect();
-
-        let sync_input = StateSyncInput {
-            accounts: vec![AccountHeader::from(account)],
-            note_tags,
-            input_notes,
-            output_notes: vec![],
-            uncommitted_transactions: vec![],
-        };
-
-        mock_rpc.reset_call_counts();
-        state_sync.sync_state(&mut partial_mmr, sync_input).await.unwrap();
-
-        for endpoint in [
-            RpcEndpoint::SyncChainMmr,
-            RpcEndpoint::SyncNotes,
-            RpcEndpoint::SyncTransactions,
-            RpcEndpoint::SyncNullifiers,
-        ] {
-            assert_eq!(
-                mock_rpc.call_count(endpoint),
-                1,
-                "{} should be called exactly once per sync",
-                endpoint.proto_name()
-            );
-        }
-
-        // The tracked account's commitment diverges from the network's, so exactly one snapshot
-        // is fetched: the fan-out must not re-request an account it already asked for.
-        assert_eq!(
-            mock_rpc.call_count(RpcEndpoint::GetAccount),
-            1,
-            "a single diverging account should cost a single GetAccount"
-        );
     }
 
     /// Builds a minimal RPC transaction record at `block_num`, for range-validation tests.

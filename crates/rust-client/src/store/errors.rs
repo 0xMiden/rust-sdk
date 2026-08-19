@@ -98,6 +98,8 @@ pub enum StoreError {
     VaultKeyNotTracked(AssetId, Word),
     #[error("failed to parse word")]
     WordError(#[from] WordError),
+    #[error("operation `{0}` is not supported by this store backend")]
+    UnsupportedOperation(&'static str),
 }
 
 impl From<StoreError> for DataStoreError {

@@ -67,7 +67,7 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use miden_protocol::account::{Account, AccountCode, AccountCodeInterface, AccountId};
+use miden_protocol::account::{AccountCode, AccountCodeInterface, AccountId, PartialAccount};
 use miden_protocol::asset::{Asset, NonFungibleAsset};
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::errors::AssetError;
@@ -84,7 +84,7 @@ use miden_protocol::transaction::AccountInputs;
 use miden_protocol::vm::MIN_STACK_DEPTH;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::faucets::FungibleFaucet;
-use miden_standards::account::interface::AccountInterfaceExt;
+use miden_standards::account::interface::AccountComponentInterfaceExt;
 use miden_tx::{DataStore, NoteConsumptionChecker, TransactionExecutor};
 use tracing::info;
 
@@ -363,10 +363,10 @@ where
         transaction_request: TransactionRequest,
         execution_mode: TransactionExecutionMode,
     ) -> Result<TransactionResult, ClientError> {
-        let account: Account = self.get_native_account_record(account_id).await?.try_into()?;
+        let account: PartialAccount =
+            self.get_native_account_record(account_id).await?.try_into()?;
 
-        validate_account_request(&transaction_request, &account)?;
-        let prep = self.prepare_transaction(account.code_interface(), transaction_request).await?;
+        let prep = self.prepare_transaction(&account, transaction_request).await?;
 
         let data_store = ClientDataStore::new(self.store.clone(), self.rpc_api.clone());
         data_store.register_note_scripts(prep.output_note_scripts());
@@ -403,22 +403,53 @@ where
     }
 
     /// Performs the data-store-independent setup shared by `execute_transaction` and
-    /// `execute_transaction_for_batch`: loads/filters input notes, builds the transaction script
-    /// and args, retrieves foreign-account inputs, and computes the reference block number.
+    /// `execute_transaction_for_batch`: validates the request against the account's committed
+    /// store state, loads/filters input notes, builds the transaction script and args, retrieves
+    /// foreign-account inputs, and computes the reference block number.
     ///
     /// This method does not write to the store: any state produced by the transaction is
     /// persisted only after the transaction executes successfully.
     ///
-    /// Checking the request against the account's balances is the caller's job, since it needs a
-    /// full [`Account`] (see [`validate_account_request`]). Batch execution only has the in-batch
-    /// [`miden_protocol::account::PartialAccount`] and so skips it; the executor still rejects an
-    /// unsatisfiable request.
+    /// In batch execution, request validation is skipped: the committed store state does not
+    /// reflect balances stacked by prior in-batch pushes, so validating against it would wrongly
+    /// reject transactions the executor accepts.
     pub(crate) async fn prepare_transaction(
+        &self,
+        account: &PartialAccount,
+        transaction_request: TransactionRequest,
+    ) -> Result<PreparedTransaction, ClientError> {
+        self.prepare_transaction_inner(
+            account.code_interface(),
+            transaction_request,
+            Some(account.id()),
+        )
+        .await
+    }
+
+    pub(crate) async fn prepare_transaction_for_batch(
+        &self,
+        account: &PartialAccount,
+        transaction_request: TransactionRequest,
+    ) -> Result<PreparedTransaction, ClientError> {
+        self.prepare_transaction_inner(account.code_interface(), transaction_request, None)
+            .await
+    }
+
+    async fn prepare_transaction_inner(
         &self,
         account_code_interface: AccountCodeInterface,
         transaction_request: TransactionRequest,
+        account_to_validate: Option<AccountId>,
     ) -> Result<PreparedTransaction, ClientError> {
         self.validate_recency().await?;
+        if let Some(account_id) = account_to_validate {
+            self.validate_account_request(
+                &transaction_request,
+                account_id,
+                &account_code_interface,
+            )
+            .await?;
+        }
 
         // Retrieve all input notes from the store.
         let mut stored_note_records = self
@@ -752,8 +783,35 @@ where
     ) -> Result<(), ClientError> {
         self.validate_recency().await?;
         validate_output_note_senders(transaction_request, account_id)?;
-        let account = self.try_get_account(account_id).await?;
-        validate_account_request(transaction_request, &account)
+        let account: PartialAccount = self
+            .store
+            .get_minimal_partial_account(account_id)
+            .await?
+            .ok_or(ClientError::AccountDataNotFound(account_id))?
+            .try_into()?;
+        self.validate_account_request(transaction_request, account_id, &account.code_interface())
+            .await
+    }
+
+    /// Validates the request against the account's committed store state: faucet accounts are
+    /// accepted as-is, other accounts get their vault asset list checked against the request's
+    /// outgoing assets. Only the asset list is loaded from the store; the account itself is not
+    /// reconstructed.
+    async fn validate_account_request(
+        &self,
+        transaction_request: &TransactionRequest,
+        account_id: AccountId,
+        account_code_interface: &AccountCodeInterface,
+    ) -> Result<(), ClientError> {
+        validate_fee_conversion_info_support(transaction_request, account_code_interface)?;
+
+        if account_code_interface.contains([FungibleFaucet::mint_and_send_root()]) {
+            // TODO(SantiagoPittella): Add faucet validations.
+            Ok(())
+        } else {
+            let assets = self.store.get_account_assets(account_id).await?;
+            validate_basic_account_request(transaction_request, &assets)
+        }
     }
 
     async fn validate_recency(&self) -> Result<(), ClientError> {
@@ -831,9 +889,9 @@ where
 
     /// Filters the provided input notes down to the subset that can be consumed by the account.
     ///
-    /// `output_recipients` are the request's expected output recipients; their scripts are
-    /// registered on the consumption-check data store so output note creation can resolve them
-    /// without them being present in the store.
+    /// The provided data store must already have the account's code loaded and the request's
+    /// output note scripts registered, so output note creation can resolve them without them
+    /// being present in the store.
     pub(crate) async fn get_valid_input_notes<STORE: DataStore + Sync>(
         &self,
         data_store: &STORE,
@@ -972,15 +1030,17 @@ where
         Ok(executor)
     }
 
-    /// Loads an [`AccountRecord`] for an account that must be usable as a transaction's native
-    /// account. Errors out if the account is not tracked or if it is watched.
+    /// Loads a minimal partial [`AccountRecord`] for an account that must be usable as a
+    /// transaction's native account. Errors out if the account is not tracked or if it is
+    /// watched. The full account state is never loaded: the executor reads it lazily through the
+    /// [`DataStore`].
     async fn get_native_account_record(
         &self,
         account_id: AccountId,
     ) -> Result<AccountRecord, ClientError> {
         let account_record = self
             .store
-            .get_account(account_id)
+            .get_minimal_partial_account(account_id)
             .await?
             .ok_or(ClientError::AccountDataNotFound(account_id))?;
         if account_record.is_watched() {
@@ -1186,23 +1246,6 @@ fn get_outgoing_assets(
     request::collect_assets(outgoing_assets)
 }
 
-/// Validates a transaction request against the supplied `account`. Faucets are currently
-/// skipped; for non-faucets, defers to [`validate_basic_account_request`] for asset-balance
-/// checks.
-pub(super) fn validate_account_request(
-    transaction_request: &TransactionRequest,
-    account: &Account,
-) -> Result<(), ClientError> {
-    validate_fee_conversion_info_support(transaction_request, account)?;
-
-    if account.code_interface().contains([FungibleFaucet::mint_and_send_root()]) {
-        // TODO(SantiagoPittella): Add faucet validations.
-        Ok(())
-    } else {
-        validate_basic_account_request(transaction_request, account)
-    }
-}
-
 /// Verifies that the account can consume fee conversion info passed through the auth args.
 ///
 /// Only the signature-based auth components read the auth args as conversion info (through
@@ -1211,13 +1254,17 @@ pub(super) fn validate_account_request(
 /// instead.
 fn validate_fee_conversion_info_support(
     transaction_request: &TransactionRequest,
-    account: &Account,
+    account_code_interface: &AccountCodeInterface,
 ) -> Result<(), ClientError> {
     if !transaction_request.declares_fee_conversion_info() {
         return Ok(());
     }
 
-    let interface = AccountInterface::from_account(account);
+    let procedures: Vec<_> = account_code_interface.procedures().iter().copied().collect();
+    let interface = AccountInterface::new(
+        account_code_interface.id(),
+        AccountComponentInterface::from_procedures(&procedures),
+    );
     let auth_component = interface.auth_component();
     if matches!(
         auth_component,
@@ -1230,7 +1277,6 @@ fn validate_fee_conversion_info_support(
         TransactionRequestError::FeeConversionInfoUnsupported(auth_component.name()),
     ))
 }
-
 /// Verifies that every output note emitted directly by the transaction declares `account_id` as
 /// its sender.
 ///
@@ -1257,11 +1303,11 @@ fn validate_output_note_senders(
     Ok(())
 }
 
-/// Ensures a transaction request is compatible with the current account state,
+/// Ensures a transaction request is compatible with the account's committed vault assets,
 /// primarily by checking asset balances against the requested transfers.
 fn validate_basic_account_request(
     transaction_request: &TransactionRequest,
-    account: &Account,
+    vault_assets: &[Asset],
 ) -> Result<(), ClientError> {
     // Get outgoing assets
     let (fungible_balance_map, non_fungible_set) = get_outgoing_assets(transaction_request);
@@ -1273,7 +1319,7 @@ fn validate_basic_account_request(
     // Aggregate the account's fungible balance per faucet in one pass. A faucet's fungible asset
     // may occupy more than one callback-flag vault key, so all matching entries are summed.
     let mut available_fungible: BTreeMap<AccountId, u64> = BTreeMap::new();
-    for asset in account.vault().assets() {
+    for asset in vault_assets {
         if let Asset::Fungible(fungible) = asset {
             let balance = available_fungible.entry(fungible.faucet_id()).or_default();
             *balance = balance.saturating_add(fungible.amount().as_u64());
@@ -1296,21 +1342,13 @@ fn validate_basic_account_request(
     // Check if the account balance plus incoming assets is greater than or equal to the
     // outgoing non fungible assets
     for non_fungible in &non_fungible_set {
-        match account.vault().has_non_fungible_asset(*non_fungible) {
-            Ok(true) => (),
-            Ok(false) => {
-                // Check if the non fungible asset is in the incoming assets
-                if !incoming_non_fungible_balance_set.contains(non_fungible) {
-                    return Err(ClientError::TransactionRequestError(
-                        TransactionRequestError::MissingNonFungibleAsset(non_fungible.faucet_id()),
-                    ));
-                }
-            },
-            _ => {
-                return Err(ClientError::TransactionRequestError(
-                    TransactionRequestError::MissingNonFungibleAsset(non_fungible.faucet_id()),
-                ));
-            },
+        let held = vault_assets
+            .iter()
+            .any(|asset| matches!(asset, Asset::NonFungible(nf) if nf == non_fungible));
+        if !held && !incoming_non_fungible_balance_set.contains(non_fungible) {
+            return Err(ClientError::TransactionRequestError(
+                TransactionRequestError::MissingNonFungibleAsset(non_fungible.faucet_id()),
+            ));
         }
     }
 
@@ -1419,7 +1457,13 @@ mod tests {
 
     use miden_protocol::Word;
     use miden_protocol::account::auth::AuthSecretKey;
-    use miden_protocol::account::{AccountBuilder, AccountComponent, AccountId, AccountType};
+    use miden_protocol::account::{
+        Account,
+        AccountBuilder,
+        AccountComponent,
+        AccountId,
+        AccountType,
+    };
     use miden_protocol::asset::FungibleAsset;
     use miden_protocol::crypto::rand::RandomCoin;
     use miden_protocol::note::{Note, NoteType};
@@ -1434,7 +1478,6 @@ mod tests {
     use miden_standards::note::P2idNote;
 
     use super::{
-        Account,
         AccountComponentInterface,
         TransactionRequest,
         TransactionRequestBuilder,
@@ -1541,16 +1584,22 @@ mod tests {
             AuthSchemeId::Falcon512Poseidon2,
         ));
 
-        validate_fee_conversion_info_support(&fee_conversion_request(), &account_with_auth(auth))
-            .unwrap();
+        validate_fee_conversion_info_support(
+            &fee_conversion_request(),
+            &account_with_auth(auth).code_interface(),
+        )
+        .unwrap();
     }
 
     #[test]
     fn fee_conversion_info_is_rejected_by_an_account_that_cannot_read_it() {
         let account = account_with_auth(NoAuth);
 
-        let err = validate_fee_conversion_info_support(&fee_conversion_request(), &account)
-            .expect_err("NoAuth does not read the auth args");
+        let err = validate_fee_conversion_info_support(
+            &fee_conversion_request(),
+            &account.code_interface(),
+        )
+        .expect_err("NoAuth does not read the auth args");
         match err {
             ClientError::TransactionRequestError(
                 TransactionRequestError::FeeConversionInfoUnsupported(auth_component),
@@ -1564,7 +1613,7 @@ mod tests {
         // `NoAuth` cannot read conversion info, but a request that declares none is unaffected.
         validate_fee_conversion_info_support(
             &TransactionRequestBuilder::new().build().unwrap(),
-            &account_with_auth(NoAuth),
+            &account_with_auth(NoAuth).code_interface(),
         )
         .unwrap();
     }

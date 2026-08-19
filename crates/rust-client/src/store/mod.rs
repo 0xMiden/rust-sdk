@@ -41,6 +41,7 @@ use miden_protocol::account::{
 use miden_protocol::address::Address;
 use miden_protocol::asset::{Asset, AssetId, AssetVault, AssetWitness};
 use miden_protocol::block::{BlockHeader, BlockNumber};
+use miden_protocol::crypto::merkle::MerkleError;
 use miden_protocol::crypto::merkle::mmr::{Forest, InOrderIndex, MmrPeaks, PartialMmr};
 use miden_protocol::errors::AccountError;
 use miden_protocol::note::{
@@ -633,6 +634,41 @@ pub trait Store: Send + Sync {
     /// Retrieves the asset vault for a specific account.
     async fn get_account_vault(&self, account_id: AccountId) -> Result<AssetVault, StoreError>;
 
+    /// Retrieves all assets in the account's vault as a plain list, without building the vault's
+    /// Merkle tree.
+    ///
+    /// Prefer this over [`Store::get_account_vault`] when only asset values are needed (e.g.
+    /// balance checks): it avoids hashing every asset into an SMT.
+    ///
+    /// The default implementation of this method uses [`Store::get_account_vault`].
+    async fn get_account_assets(&self, account_id: AccountId) -> Result<Vec<Asset>, StoreError> {
+        Ok(self.get_account_vault(account_id).await?.assets().collect())
+    }
+
+    /// Returns vault asset witnesses for `asset_ids` against the account's vault with root
+    /// `vault_root`. An asset absent from the vault yields an emptiness proof rather than an
+    /// error, which the executor needs when an asset is being added to the vault.
+    ///
+    /// The default implementation reconstructs the vault via [`Store::get_account_vault`] and
+    /// opens each witness from it; backends that keep an in-memory Merkle forest (e.g.
+    /// `SqliteStore`) override it to open the witnesses directly, without materializing the
+    /// vault.
+    async fn get_vault_asset_witnesses(
+        &self,
+        account_id: AccountId,
+        vault_root: Word,
+        asset_ids: BTreeSet<AssetId>,
+    ) -> Result<Vec<AssetWitness>, StoreError> {
+        let vault = self.get_account_vault(account_id).await?;
+        if vault.root() != vault_root {
+            return Err(StoreError::MerkleStoreError(MerkleError::ConflictingRoots {
+                expected_root: vault_root,
+                actual_root: vault.root(),
+            }));
+        }
+        Ok(asset_ids.into_iter().map(|asset_id| vault.open(asset_id)).collect())
+    }
+
     /// Retrieves a specific asset (by vault id) from the account's vault along with its Merkle
     /// witness.
     ///
@@ -708,6 +744,9 @@ pub trait Store: Send + Sync {
             },
         }
     }
+
+    // IN-BATCH (STAGED) WITNESSES
+    // --------------------------------------------------------------------------------------------
 
     // PARTIAL ACCOUNTS
     // --------------------------------------------------------------------------------------------

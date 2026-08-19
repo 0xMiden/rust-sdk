@@ -1,6 +1,6 @@
 //! Account-related database operations.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 use std::string::ToString;
 use std::vec::Vec;
@@ -294,6 +294,22 @@ impl SqliteStore {
         let item = witness.get(key).unwrap_or(miden_client::EMPTY_WORD);
 
         Ok((item, witness))
+    }
+
+    /// Retrieves vault asset witnesses for the given vault keys, including emptiness proofs for
+    /// keys absent from the vault (which the executor needs when an asset is being added).
+    ///
+    /// The witnesses are opened against the account's vault tree in the forest, after verifying
+    /// that its root matches `vault_root` — the committed root the caller expects.
+    pub(crate) fn get_vault_asset_witnesses(
+        conn: &mut Connection,
+        account_id: AccountId,
+        vault_root: Word,
+        asset_ids: BTreeSet<AssetId>,
+    ) -> Result<Vec<AssetWitness>, StoreError> {
+        let db_tx = conn.transaction().into_store_error()?;
+        let smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&db_tx))?;
+        smt_forest.open_vault_asset_witnesses(account_id, vault_root, asset_ids)
     }
 
     pub(crate) fn get_account_addresses(

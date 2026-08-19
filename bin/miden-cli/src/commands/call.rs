@@ -67,7 +67,8 @@ impl CallCmd {
         })?;
 
         let account_id = parse_account_id(&client, account_str).await?;
-        client.try_get_account(account_id).await?;
+        // Ensure the account is tracked before executing against it; only the header is needed.
+        client.account_reader(account_id).header().await?;
 
         let package = load_package(&self.package)?;
 

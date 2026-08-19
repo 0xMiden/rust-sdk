@@ -15,8 +15,8 @@ use miden_protocol::account::{
 };
 use miden_protocol::asset::{AssetId, AssetWitness};
 use miden_protocol::block::{BlockHeader, BlockNumber};
+use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrPeaks, PartialMmr};
-use miden_protocol::crypto::merkle::{MerkleError, MerklePath};
 use miden_protocol::note::{NoteScript, NoteScriptRoot};
 use miden_protocol::transaction::{AccountInputs, PartialBlockchain};
 use miden_protocol::vm::FutureMaybeSend;
@@ -325,27 +325,13 @@ impl DataStore for ClientDataStore {
             return Ok(witnesses);
         }
 
-        let mut asset_witnesses = vec![];
-        for asset_id in asset_ids.iter().copied() {
-            match self.store.get_account_asset(account_id, asset_id).await {
-                Ok(Some((_, asset_witness))) => asset_witnesses.push(asset_witness),
-                Ok(None) | Err(StoreError::MerkleStoreError(MerkleError::RootNotInStore(_))) => {
-                    let vault = self.store.get_account_vault(account_id).await?;
-
-                    if vault.root() != vault_root {
-                        return Err(DataStoreError::other("Vault root mismatch"));
-                    }
-
-                    asset_witnesses.push(vault.open(asset_id));
-                },
-                Err(err) => {
-                    return Err(DataStoreError::other_with_source(
-                        "Failed to get account asset",
-                        err,
-                    ));
-                },
-            }
-        }
+        let asset_witnesses = self
+            .store
+            .get_vault_asset_witnesses(account_id, vault_root, asset_ids.clone())
+            .await
+            .map_err(|err| {
+                DataStoreError::other_with_source("failed to get vault asset witnesses", err)
+            })?;
 
         self.cache
             .insert_vault_asset_witnesses(vault_root, &asset_ids, &asset_witnesses);

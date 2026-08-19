@@ -57,6 +57,8 @@ use rusqlite::Connection;
 use rusqlite::types::Value;
 use sql_error::SqlResultExt;
 
+use crate::account::helpers::query_vault_assets;
+
 mod account;
 mod builder;
 mod chain_data;
@@ -468,6 +470,23 @@ impl Store for SqliteStore {
             .await
     }
 
+    async fn get_account_assets(&self, account_id: AccountId) -> Result<Vec<Asset>, StoreError> {
+        self.interact_with_connection(move |conn| query_vault_assets(conn, account_id))
+            .await
+    }
+
+    async fn get_vault_asset_witnesses(
+        &self,
+        account_id: AccountId,
+        vault_root: Word,
+        asset_ids: BTreeSet<AssetId>,
+    ) -> Result<Vec<AssetWitness>, StoreError> {
+        self.interact_with_connection(move |conn| {
+            SqliteStore::get_vault_asset_witnesses(conn, account_id, vault_root, asset_ids)
+        })
+        .await
+    }
+
     async fn get_account_asset(
         &self,
         account_id: AccountId,
@@ -475,17 +494,6 @@ impl Store for SqliteStore {
     ) -> Result<Option<(Asset, AssetWitness)>, StoreError> {
         self.interact_with_connection(move |conn| {
             SqliteStore::get_account_asset(conn, account_id, asset_id)
-        })
-        .await
-    }
-
-    async fn get_account_storage(
-        &self,
-        account_id: AccountId,
-        filter: AccountStorageFilter,
-    ) -> Result<AccountStorage, StoreError> {
-        self.interact_with_connection(move |conn| {
-            SqliteStore::get_account_storage(conn, account_id, &filter)
         })
         .await
     }
@@ -498,6 +506,17 @@ impl Store for SqliteStore {
     ) -> Result<(Word, StorageMapWitness), StoreError> {
         self.interact_with_connection(move |conn| {
             SqliteStore::get_account_map_item(conn, account_id, slot_name, key)
+        })
+        .await
+    }
+
+    async fn get_account_storage(
+        &self,
+        account_id: AccountId,
+        filter: AccountStorageFilter,
+    ) -> Result<AccountStorage, StoreError> {
+        self.interact_with_connection(move |conn| {
+            SqliteStore::get_account_storage(conn, account_id, &filter)
         })
         .await
     }

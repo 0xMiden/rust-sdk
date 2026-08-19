@@ -152,9 +152,9 @@ fn tree_meta(conn: &Connection, lineage: LineageId) -> Result<Option<(VersionId,
         params![lineage.as_bytes().as_slice()],
         |row| {
             Ok((
-                column_value_as_u64(row, 0)?,
-                row.get::<_, Vec<u8>>(1)?,
-                column_value_as_u64(row, 2)?,
+                column_value_as_u64(row, "version")?,
+                row.get::<_, Vec<u8>>("root")?,
+                column_value_as_u64(row, "entry_count")?,
             ))
         },
     )
@@ -186,7 +186,7 @@ fn load_entries(conn: &Connection, lineage: LineageId) -> Result<Vec<(Word, Word
         .map_err(internal)?;
     let rows = stmt
         .query_map(params![lineage.as_bytes().as_slice()], |row| {
-            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+            Ok((row.get::<_, Vec<u8>>("key")?, row.get::<_, Vec<u8>>("value")?))
         })
         .map_err(internal)?;
 
@@ -239,7 +239,7 @@ fn load_leaf_entries(
         .map_err(internal)?;
     let rows = stmt
         .query_map(params![lineage.as_bytes().as_slice(), u64_to_value(position)], |row| {
-            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+            Ok((row.get::<_, Vec<u8>>("key")?, row.get::<_, Vec<u8>>("value")?))
         })
         .map_err(internal)?;
 
@@ -401,9 +401,9 @@ fn compute_update_mutations(
         let rows = stmt
             .query_map(params![lineage.as_bytes().as_slice()], |row| {
                 Ok((
-                    row.get::<_, Vec<u8>>(0)?,
-                    row.get::<_, Vec<u8>>(1)?,
-                    column_value_as_u64(row, 2)?,
+                    row.get::<_, Vec<u8>>("key")?,
+                    row.get::<_, Vec<u8>>("value")?,
+                    column_value_as_u64(row, "leaf_position")?,
                 ))
             })
             .map_err(internal)?;
@@ -769,9 +769,9 @@ impl BackendReader for SqliteForestBackend<'_, '_> {
         let rows = stmt
             .query_map([], |row| {
                 Ok((
-                    row.get::<_, Vec<u8>>(0)?,
-                    column_value_as_u64(row, 1)?,
-                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, Vec<u8>>("lineage")?,
+                    column_value_as_u64(row, "version")?,
+                    row.get::<_, Vec<u8>>("root")?,
                 ))
             })
             .map_err(internal)?;
@@ -1040,7 +1040,7 @@ mod tests {
     use miden_protocol::{Felt, ONE, ZERO};
 
     use super::*;
-    use crate::db_management::utils::apply_migrations;
+    use crate::db_management::migrations::apply_migrations;
 
     fn setup_conn() -> Connection {
         let mut conn = Connection::open_in_memory().unwrap();

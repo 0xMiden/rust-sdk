@@ -1,58 +1,14 @@
+//! Database migrations and schema-fingerprint verification.
+
 use std::string::String;
 use std::sync::LazyLock;
 use std::vec::Vec;
 
-use miden_client::store::StoreError;
 use miden_protocol::crypto::hash::blake::{Blake3_256, Blake3Digest};
-use rusqlite::types::FromSql;
-use rusqlite::{Connection, OptionalExtension, Result, ToSql, params};
+use rusqlite::{Connection, Result};
 use rusqlite_migration::{M, Migrations, SchemaVersion};
 
 use super::errors::SqliteStoreError;
-use crate::sql_error::SqlResultExt;
-
-// MACROS
-// ================================================================================================
-
-/// Auxiliary macro which substitutes `$src` token by `$dst` expression.
-#[macro_export]
-macro_rules! subst {
-    ($src:tt, $dst:expr_2021) => {
-        $dst
-    };
-}
-
-/// Generates a simple insert SQL statement with parameters for the provided table name and fields.
-/// Supports optional conflict resolution (adding "| REPLACE" or "| IGNORE" at the end will generate
-/// "OR REPLACE" and "OR IGNORE", correspondingly).
-///
-/// # Usage:
-///
-/// ```ignore
-/// insert_sql!(users { id, first_name, last_name, age } | REPLACE);
-/// ```
-///
-/// which generates:
-/// ```sql
-/// INSERT OR REPLACE INTO `users` (`id`, `first_name`, `last_name`, `age`) VALUES (?, ?, ?, ?)
-/// ```
-#[macro_export]
-macro_rules! insert_sql {
-    ($table:ident { $first_field:ident $(, $($field:ident),+)? $(,)? } $(| $on_conflict:expr)?) => {
-        concat!(
-            stringify!(INSERT $(OR $on_conflict)? INTO ),
-            "`",
-            stringify!($table),
-            "` (`",
-            stringify!($first_field),
-            $($(concat!("`, `", stringify!($field))),+ ,)?
-            "`) VALUES (",
-            subst!($first_field, "?"),
-            $($(subst!($field, ", ?")),+ ,)?
-            ")"
-        )
-    };
-}
 
 // MIGRATIONS
 // ================================================================================================
@@ -61,7 +17,7 @@ type Hash = Blake3Digest<32>;
 
 const SCHEMA_HASH_DOMAIN: &[u8] = b"miden-client-sqlite-schema-v1";
 
-const MIGRATION_SCRIPTS: [&str; 1] = [include_str!("../store.sql")];
+const MIGRATION_SCRIPTS: [&str; 1] = [include_str!("../migrations/0001_init.sql")];
 static MIGRATIONS: LazyLock<Migrations> = LazyLock::new(prepare_migrations);
 pub(crate) static EXPECTED_SCHEMA_HASHES: LazyLock<Vec<Hash>> =
     LazyLock::new(compute_expected_schema_hashes);
@@ -170,41 +126,6 @@ fn normalize_sql(sql: &str) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-pub fn get_setting<T: FromSql>(conn: &mut Connection, name: &str) -> Result<Option<T>, StoreError> {
-    conn.transaction()
-        .into_store_error()?
-        .query_row("SELECT value FROM settings WHERE name = $1", params![name], |row| row.get(0))
-        .optional()
-        .into_store_error()
-}
-
-pub fn set_setting<T: ToSql>(conn: &Connection, name: &str, value: &T) -> Result<()> {
-    let count =
-        conn.execute(insert_sql!(settings { name, value } | REPLACE), params![name, value])?;
-
-    debug_assert_eq!(count, 1);
-
-    Ok(())
-}
-
-pub fn remove_setting(conn: &Connection, name: &str) -> Result<(), StoreError> {
-    let count = conn
-        .execute("DELETE FROM settings WHERE name = $1", params![name])
-        .into_store_error()?;
-
-    debug_assert_eq!(count, 1);
-
-    Ok(())
-}
-
-pub fn list_setting_keys(conn: &Connection) -> Result<Vec<String>, StoreError> {
-    let mut stmt = conn.prepare("SELECT name FROM settings").into_store_error()?;
-    stmt.query_map([], |row| row.get::<_, String>(0))
-        .into_store_error()?
-        .collect::<Result<Vec<String>, _>>()
-        .into_store_error()
 }
 
 // TESTS

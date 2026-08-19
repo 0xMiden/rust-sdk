@@ -7,17 +7,13 @@
 use std::boxed::Box;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::string::{String, ToString};
 use std::vec::Vec;
 
+use db_management::migrations::apply_migrations;
 use db_management::pool_manager::{Pool, SqlitePoolManager};
-use db_management::utils::{
-    apply_migrations,
-    get_setting,
-    list_setting_keys,
-    remove_setting,
-    set_setting,
-};
+use db_management::settings::{get_setting, list_setting_keys, remove_setting, set_setting};
 use miden_client::Word;
 use miden_client::account::{
     Account,
@@ -50,6 +46,7 @@ use miden_client::store::{
 };
 use miden_client::sync::{NoteTagRecord, StateSyncUpdate};
 use miden_client::transaction::{TransactionRecord, TransactionStoreUpdate};
+use miden_client::utils::Serializable;
 use miden_protocol::Felt;
 use miden_protocol::account::StorageMapWitness;
 use miden_protocol::asset::AssetId;
@@ -62,6 +59,7 @@ mod builder;
 mod chain_data;
 mod db_management;
 mod forest;
+mod macros;
 mod note;
 mod sql_error;
 mod sync;
@@ -75,7 +73,7 @@ pub use builder::ClientBuilderSqliteExt;
 /// Represents a pool of connections with an `SQLite` database. The pool is used to interact
 /// concurrently with the underlying database in a safe and efficient manner.
 ///
-/// Current table definitions can be found at `store.sql` migration file.
+/// Current table definitions can be found in the `migrations/` SQL files.
 pub struct SqliteStore {
     pub(crate) pool: Pool,
     database_filepath: String,
@@ -275,7 +273,11 @@ impl Store for SqliteStore {
         let blocks_to_untrack = blocks_to_untrack.to_vec();
         let node_indices_to_remove = node_indices_to_remove.to_vec();
         self.interact_with_connection(move |conn| {
-            SqliteStore::prune_irrelevant_blocks(conn, &blocks_to_untrack, &node_indices_to_remove)
+            SqliteStore::untrack_and_prune_irrelevant_blocks(
+                conn,
+                &blocks_to_untrack,
+                &node_indices_to_remove,
+            )
         })
         .await
     }
@@ -296,11 +298,10 @@ impl Store for SqliteStore {
         block_numbers: &BTreeSet<BlockNumber>,
     ) -> Result<Vec<(BlockHeader, BlockRelevance)>, StoreError> {
         let block_numbers = block_numbers.clone();
-        Ok(self
-            .interact_with_connection(move |conn| {
-                SqliteStore::get_block_headers(conn, &block_numbers)
-            })
-            .await?)
+        self.interact_with_connection(move |conn| {
+            SqliteStore::get_block_headers(conn, &block_numbers)
+        })
+        .await
     }
 
     async fn get_tracked_block_headers(&self) -> Result<Vec<BlockHeader>, StoreError> {
@@ -420,10 +421,7 @@ impl Store for SqliteStore {
     }
 
     async fn set_setting(&self, key: String, value: Vec<u8>) -> Result<(), StoreError> {
-        self.interact_with_connection(move |conn| {
-            set_setting(conn, &key, &value).into_store_error()
-        })
-        .await
+        self.interact_with_connection(move |conn| set_setting(conn, &key, &value)).await
     }
 
     async fn get_setting(&self, key: String) -> Result<Option<Vec<u8>>, StoreError> {
@@ -443,17 +441,7 @@ impl Store for SqliteStore {
         mutations: Vec<SettingMutation>,
     ) -> Result<(), StoreError> {
         self.interact_with_connection(move |conn| {
-            let tx = conn.transaction().into_store_error()?;
-            for mutation in &mutations {
-                match mutation {
-                    SettingMutation::Set { key, value } => {
-                        set_setting(&tx, key, value).into_store_error()?;
-                    },
-                    SettingMutation::Remove { key } => remove_setting(&tx, key)?,
-                }
-            }
-            tx.commit().into_store_error()?;
-            Ok(())
+            SqliteStore::apply_settings_mutations(conn, &mutations)
         })
         .await
     }
@@ -518,9 +506,7 @@ impl Store for SqliteStore {
         account_id: AccountId,
     ) -> Result<(), StoreError> {
         self.interact_with_connection(move |conn| {
-            let tx = conn.transaction().into_store_error()?;
-            SqliteStore::insert_address(&tx, &address, account_id)?;
-            tx.commit().into_store_error()
+            SqliteStore::insert_address(conn, &address, account_id)
         })
         .await
     }
@@ -554,7 +540,7 @@ pub(crate) fn current_timestamp_u64() -> u64 {
 ///
 /// `Sqlite` uses `i64` as its internal representation format, and so when retrieving
 /// we need to make sure we cast as `u64` to get the original value
-pub fn column_value_as_u64<I: rusqlite::RowIndex>(
+pub(crate) fn column_value_as_u64<I: rusqlite::RowIndex>(
     row: &rusqlite::Row<'_>,
     index: I,
 ) -> rusqlite::Result<u64> {
@@ -570,12 +556,62 @@ pub fn column_value_as_u64<I: rusqlite::RowIndex>(
 ///
 /// `Sqlite` uses `i64` as its internal representation format. Note that the `as` operator performs
 /// a lossless conversion from `u64` to `i64`.
-pub fn u64_to_value(v: u64) -> Value {
+pub(crate) fn u64_to_value(v: u64) -> Value {
     #[allow(
         clippy::cast_possible_wrap,
         reason = "We store u64 as i64 as sqlite only allows the latter."
     )]
     Value::Integer(v as i64)
+}
+
+/// Builds the value list for a `rarray(?)` parameter from serializable items, each stored as a
+/// BLOB of its canonical byte encoding.
+///
+/// Binding the list as a single table-valued parameter keeps the SQL text constant, so the
+/// prepared statement stays cacheable regardless of the list length (and the list is not subject
+/// to `SQLite`'s bound-parameter limit).
+pub(crate) fn blob_array<T: Serializable>(items: impl IntoIterator<Item = T>) -> Rc<Vec<Value>> {
+    Rc::new(items.into_iter().map(|item| Value::Blob(item.to_bytes())).collect())
+}
+
+/// Builds the value list for a `rarray(?)` parameter from `u64` values, stored as SQL INTEGERs
+/// through the same bit-cast as [`u64_to_value`].
+pub(crate) fn int_array(items: impl IntoIterator<Item = u64>) -> Rc<Vec<Value>> {
+    Rc::new(items.into_iter().map(u64_to_value).collect())
+}
+
+/// Builds the value list for a `rarray(?)` parameter from string values, stored as SQL TEXT.
+pub(crate) fn text_array(items: impl IntoIterator<Item = String>) -> Rc<Vec<Value>> {
+    Rc::new(items.into_iter().map(Value::Text).collect())
+}
+
+/// Runs `f` inside a rusqlite transaction, committing on `Ok` and rolling back on `Err`.
+pub(crate) fn with_write_tx<R>(
+    conn: &mut Connection,
+    f: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<R, StoreError>,
+) -> Result<R, StoreError> {
+    with_write_tx_behavior(conn, rusqlite::TransactionBehavior::Deferred, f)
+}
+
+/// Runs `f` inside an `IMMEDIATE` rusqlite transaction, committing on `Ok` and rolling back on
+/// `Err`. Immediate transactions take the write lock up front, so writes that read current state
+/// first cannot be invalidated by a concurrent writer between the read and the write.
+pub(crate) fn with_immediate_write_tx<R>(
+    conn: &mut Connection,
+    f: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<R, StoreError>,
+) -> Result<R, StoreError> {
+    with_write_tx_behavior(conn, rusqlite::TransactionBehavior::Immediate, f)
+}
+
+fn with_write_tx_behavior<R>(
+    conn: &mut Connection,
+    behavior: rusqlite::TransactionBehavior,
+    f: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<R, StoreError>,
+) -> Result<R, StoreError> {
+    let tx = conn.transaction_with_behavior(behavior).into_store_error()?;
+    let result = f(&tx)?;
+    tx.commit().into_store_error()?;
+    Ok(result)
 }
 
 // TESTS
@@ -588,9 +624,52 @@ pub mod tests {
     use miden_client::store::Store;
     use miden_client::testing::common::create_test_store_path;
 
-    use super::SqliteStore;
+    use super::{SqliteStore, StoreError, column_value_as_u64, u64_to_value, with_write_tx};
 
     fn assert_send_sync<T: Send + Sync>() {}
+
+    /// The write path bit-casts `u64` to `i64` and the read path must bit-cast it back, including
+    /// for values whose top bit is set (which are stored as negative SQL INTEGERs).
+    #[test]
+    fn u64_column_round_trip() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        for value in [0u64, 1, 1 << 63, u64::MAX] {
+            let read: u64 = conn
+                .query_row("SELECT ?1", [u64_to_value(value)], |row| column_value_as_u64(row, 0))
+                .unwrap();
+            assert_eq!(read, value);
+        }
+    }
+
+    #[test]
+    fn with_write_tx_rolls_back_on_error() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE t (id INTEGER PRIMARY KEY);").unwrap();
+
+        let result = with_write_tx(&mut conn, |tx| {
+            tx.execute("INSERT INTO t (id) VALUES (1)", []).unwrap();
+            Err::<(), _>(StoreError::DatabaseError("forced failure".into()))
+        });
+        assert!(result.is_err());
+
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM t", [], |row| row.get(0)).unwrap();
+        assert_eq!(count, 0, "the insert must roll back when the closure errors");
+    }
+
+    #[test]
+    fn with_write_tx_commits_on_success() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE t (id INTEGER PRIMARY KEY);").unwrap();
+
+        with_write_tx(&mut conn, |tx| {
+            tx.execute("INSERT INTO t (id) VALUES (1)", []).unwrap();
+            Ok(())
+        })
+        .unwrap();
+
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM t", [], |row| row.get(0)).unwrap();
+        assert_eq!(count, 1);
+    }
 
     #[test]
     fn is_send_sync() {

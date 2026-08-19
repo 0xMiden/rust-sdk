@@ -9,14 +9,14 @@ use miden_client::note::{BlockNumber, NoteTag};
 use miden_client::store::StoreError;
 use miden_client::sync::{NoteTagRecord, NoteTagSource, PublicAccountUpdate, StateSyncUpdate};
 use miden_client::utils::{Deserializable, Serializable};
-use rusqlite::{Connection, Transaction, TransactionBehavior, params};
+use rusqlite::{Connection, Transaction, params};
 
 use super::SqliteStore;
 use crate::forest::{ScopedAccountForest, SqliteForestBackend};
 use crate::note::apply_note_updates_tx;
 use crate::sql_error::SqlResultExt;
 use crate::transaction::upsert_transaction_record;
-use crate::{insert_sql, subst};
+use crate::{insert_sql, subst, with_immediate_write_tx, with_write_tx};
 
 impl SqliteStore {
     pub(crate) fn get_note_tags(conn: &mut Connection) -> Result<Vec<NoteTagRecord>, StoreError> {
@@ -24,7 +24,7 @@ impl SqliteStore {
 
         conn.prepare_cached(QUERY)
             .into_store_error()?
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .query_map([], |row| Ok((row.get("tag")?, row.get("source")?)))
             .expect("no binding parameters used in query")
             .map(|result| {
                 let (tag, source): (Vec<u8>, Vec<u8>) = result.into_store_error()?;
@@ -58,24 +58,14 @@ impl SqliteStore {
         conn: &mut Connection,
         tag: NoteTagRecord,
     ) -> Result<bool, StoreError> {
-        let tx = conn.transaction().into_store_error()?;
-        let inserted = add_note_tag_tx(&tx, &tag)?;
-
-        tx.commit().into_store_error()?;
-
-        Ok(inserted)
+        with_write_tx(conn, |tx| add_note_tag_tx(tx, &tag))
     }
 
     pub(super) fn remove_note_tag(
         conn: &mut Connection,
         tag: NoteTagRecord,
     ) -> Result<usize, StoreError> {
-        let tx = conn.transaction().into_store_error()?;
-        let removed_tags = remove_note_tag_tx(&tx, tag)?;
-
-        tx.commit().into_store_error()?;
-
-        Ok(removed_tags)
+        with_write_tx(conn, |tx| remove_note_tag_tx(tx, tag))
     }
 
     pub(super) fn get_sync_height(conn: &mut Connection) -> Result<BlockNumber, StoreError> {
@@ -87,10 +77,12 @@ impl SqliteStore {
             .expect("no binding parameters used in query")
             .map(|result| {
                 let v: i64 = result.into_store_error()?;
-                Ok(BlockNumber::from(u32::try_from(v).expect("block number is always positive")))
+                Ok(BlockNumber::from(u32::try_from(v)?))
             })
             .next()
-            .expect("state sync block number exists")
+            .unwrap_or_else(|| {
+                Err(StoreError::QueryError("the blockchain checkpoint row is missing".to_string()))
+            })
     }
 
     pub(super) fn apply_state_sync(
@@ -105,11 +97,8 @@ impl SqliteStore {
             account_updates,
         ) = state_sync_update.into_parts();
 
-        let db_tx = conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .into_store_error()?;
-        {
-            let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&db_tx))?;
+        with_immediate_write_tx(conn, |db_tx| {
+            let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(db_tx))?;
             // Update blockchain checkpoint (block number and peaks) only if moving forward.
             let new_peaks_bytes = partial_blockchain_updates.new_peaks.peaks().to_vec().to_bytes();
             const BLOCKCHAIN_CHECKPOINT_QUERY: &str = "UPDATE blockchain_checkpoint SET block_num = ?, partial_blockchain_peaks = ? WHERE block_num < ?";
@@ -127,17 +116,17 @@ impl SqliteStore {
             for (block_header, is_relevant) in
                 partial_blockchain_updates.block_headers_to_store(block_num)
             {
-                Self::insert_block_header_tx(&db_tx, block_header, *is_relevant)?;
+                Self::insert_block_header_tx(db_tx, block_header, *is_relevant)?;
             }
 
             // Insert new authentication nodes (inner nodes of the PartialBlockchain)
             Self::insert_partial_blockchain_nodes_tx(
-                &db_tx,
+                db_tx,
                 partial_blockchain_updates.new_authentication_nodes(),
             )?;
 
             // Update notes
-            apply_note_updates_tx(&db_tx, &note_updates)?;
+            apply_note_updates_tx(db_tx, &note_updates)?;
 
             // Remove tags of input notes whose inclusion settled in this sync (committed,
             // consumed during catch-up, or invalidated): their tag no longer drives note sync.
@@ -158,14 +147,14 @@ impl SqliteStore {
                 .collect::<Vec<_>>();
 
             for tag in tags_to_remove {
-                remove_note_tag_tx(&db_tx, tag)?;
+                remove_note_tag_tx(db_tx, tag)?;
             }
 
             for transaction_record in transaction_updates
                 .committed_transactions()
                 .chain(transaction_updates.discarded_transactions())
             {
-                upsert_transaction_record(&db_tx, transaction_record)?;
+                upsert_transaction_record(db_tx, transaction_record)?;
             }
 
             // Remove the accounts that are originated from the discarded transactions
@@ -174,25 +163,26 @@ impl SqliteStore {
                 .map(|tx| (tx.details.account_id, tx.details.final_account_state))
                 .collect();
 
-            Self::undo_account_state(&db_tx, &mut smt_forest, &discarded_states)?;
+            Self::undo_account_state(db_tx, &mut smt_forest, &discarded_states)?;
 
             // Update public accounts on the db that have been updated onchain
             for update in account_updates.updated_public_accounts() {
                 match update {
                     PublicAccountUpdate::Full(account) => {
-                        Self::update_account_state(&db_tx, &mut smt_forest, account)?;
+                        Self::update_account_state(db_tx, &mut smt_forest, account)?;
                     },
                     PublicAccountUpdate::Patch { new_header, patch } => {
-                        Self::apply_sync_account_patch(&db_tx, &mut smt_forest, new_header, patch)?;
+                        Self::apply_sync_account_patch(db_tx, &mut smt_forest, new_header, patch)?;
                     },
                 }
             }
 
             for (account_id, digest) in account_updates.mismatched_private_accounts() {
-                Self::lock_account_on_unexpected_commitment(&db_tx, account_id, digest)?;
+                Self::lock_account_on_unexpected_commitment(db_tx, account_id, digest)?;
             }
-        }
-        db_tx.commit().into_store_error()
+
+            Ok(())
+        })
     }
 }
 
@@ -220,4 +210,24 @@ pub(super) fn remove_note_tag_tx(
         .into_store_error()?;
 
     Ok(removed_tags)
+}
+
+#[cfg(test)]
+mod tests {
+    use rusqlite::Connection;
+
+    use crate::SqliteStore;
+    use crate::db_management::migrations::apply_migrations;
+
+    /// A missing checkpoint row is only reachable through corruption (the initial migration seeds
+    /// it); it must surface as an error, not a panic.
+    #[test]
+    fn get_sync_height_errors_when_checkpoint_is_missing() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply_migrations(&mut conn).unwrap();
+        conn.execute("DELETE FROM blockchain_checkpoint", []).unwrap();
+
+        let err = SqliteStore::get_sync_height(&mut conn).unwrap_err();
+        assert!(matches!(err, miden_client::store::StoreError::QueryError(_)));
+    }
 }

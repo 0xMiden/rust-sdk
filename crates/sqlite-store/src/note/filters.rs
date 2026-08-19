@@ -1,29 +1,38 @@
-// NOTE FILTER (OUTPUT NOTES)
+// NOTE FILTER QUERIES
 // ================================================================================================
 
 use std::rc::Rc;
 
 use miden_client::account::AccountId;
-use miden_client::note::BlockNumber;
+use miden_client::note::{BlockNumber, NoteId};
 use miden_client::store::{InputNoteState, NoteFilter, OutputNoteState};
-use miden_client::utils::Serializable;
 use rusqlite::types::Value;
+
+use super::{INPUT_NOTE_COLUMNS, OUTPUT_NOTE_COLUMNS};
+use crate::blob_array;
 
 type NoteQueryParams = Vec<Rc<Vec<Value>>>;
 
+/// Builds a `column IN rarray(?)` condition, pushing the bound value list onto `params`.
+///
+/// The list is bound as a single table-valued parameter so the SQL text stays constant no matter
+/// how many values the filter carries.
+fn in_rarray_condition(
+    column: &str,
+    values: Rc<Vec<Value>>,
+    params: &mut NoteQueryParams,
+) -> String {
+    params.push(values);
+    format!("({column} IN rarray(?))")
+}
+
+// NOTE FILTER (OUTPUT NOTES)
+// ================================================================================================
+
 /// Returns the output notes query for a specific `NoteFilter`
 pub(super) fn note_filter_to_query_output_notes(filter: &NoteFilter) -> (String, NoteQueryParams) {
-    let base = "SELECT
-                    note.recipient_digest,
-                    note.assets,
-                    note.metadata,
-                    note.expected_height,
-                    note.state,
-                    note.attachments
-                    from output_notes AS note";
-
     let (condition, params) = note_filter_output_notes_condition(filter);
-    let query = format!("{base} WHERE {condition}");
+    let query = format!("SELECT {OUTPUT_NOTE_COLUMNS} from output_notes AS note WHERE {condition}");
 
     (query, params)
 }
@@ -54,36 +63,18 @@ pub(super) fn note_filter_output_notes_condition(filter: &NoteFilter) -> (String
             "1 = 0".to_string()
         },
         NoteFilter::Unique(note_id) => {
-            let note_ids_list = vec![Value::Blob(note_id.as_word().to_bytes())];
-            params.push(Rc::new(note_ids_list));
-            "note.note_id IN rarray(?)".to_string()
+            in_rarray_condition("note.note_id", blob_array([note_id.as_word()]), &mut params)
         },
-        NoteFilter::List(note_ids) => {
-            let note_ids_list = note_ids
-                .iter()
-                .map(|note_id| Value::Blob(note_id.as_word().to_bytes()))
-                .collect::<Vec<Value>>();
-
-            params.push(Rc::new(note_ids_list));
-            "note.note_id IN rarray(?)".to_string()
-        },
+        NoteFilter::List(note_ids) => in_rarray_condition(
+            "note.note_id",
+            blob_array(note_ids.iter().map(NoteId::as_word)),
+            &mut params,
+        ),
         NoteFilter::DetailsCommitments(commitments) => {
-            let commitments_list = commitments
-                .iter()
-                .map(|commitment| Value::Blob(commitment.to_bytes()))
-                .collect::<Vec<Value>>();
-
-            params.push(Rc::new(commitments_list));
-            "note.details_commitment IN rarray(?)".to_string()
+            in_rarray_condition("note.details_commitment", blob_array(commitments), &mut params)
         },
         NoteFilter::Nullifiers(nullifiers) => {
-            let nullifiers_list = nullifiers
-                .iter()
-                .map(|nullifier| Value::Blob(nullifier.to_bytes()))
-                .collect::<Vec<Value>>();
-
-            params.push(Rc::new(nullifiers_list));
-            "note.nullifier IN rarray(?)".to_string()
+            in_rarray_condition("note.nullifier", blob_array(nullifiers), &mut params)
         },
         NoteFilter::Unspent => {
             format!(
@@ -102,29 +93,25 @@ pub(super) fn note_filter_output_notes_condition(filter: &NoteFilter) -> (String
 // NOTE FILTER (INPUT NOTES)
 // ================================================================================================
 
-const INPUT_NOTES_BASE_QUERY: &str = "SELECT
-                note.assets,
-                note.serial_number,
-                note.inputs,
-                script.serialized_note_script,
-                note.state,
-                note.created_at,
-                note.attachments
-                from input_notes AS note
-                LEFT OUTER JOIN notes_scripts AS script
-                    ON note.script_root = script.script_root";
+fn input_notes_base_query() -> String {
+    format!(
+        "SELECT {INPUT_NOTE_COLUMNS} from input_notes AS note \
+         LEFT OUTER JOIN notes_scripts AS script ON note.script_root = script.script_root"
+    )
+}
 
 pub(super) fn note_filter_to_query_input_notes(filter: &NoteFilter) -> (String, NoteQueryParams) {
+    let base_query = input_notes_base_query();
     let (condition, params) = note_filter_input_notes_condition(filter);
     let query = if matches!(filter, NoteFilter::Consumed) {
         format!(
-            "{INPUT_NOTES_BASE_QUERY} WHERE {condition} \
+            "{base_query} WHERE {condition} \
              ORDER BY note.consumed_block_height ASC, \
                       note.consumed_tx_order IS NULL, note.consumed_tx_order ASC, \
                       note.note_id ASC"
         )
     } else {
-        format!("{INPUT_NOTES_BASE_QUERY} WHERE {condition}")
+        format!("{base_query} WHERE {condition}")
     };
 
     (query, params)
@@ -142,8 +129,9 @@ pub(super) fn note_filter_to_query_input_note_by_offset(
     use core::fmt::Write;
     let (mut condition, mut params) = note_filter_input_notes_condition(filter);
 
-    params.push(Rc::new(vec![Value::Blob(consumer.to_bytes())]));
-    condition.push_str(" AND note.consumer_account_id IN rarray(?)");
+    let consumer_condition =
+        in_rarray_condition("note.consumer_account_id", blob_array([&consumer]), &mut params);
+    let _ = write!(condition, " AND {consumer_condition}");
     condition.push_str(" AND note.consumed_tx_order IS NOT NULL");
 
     if let Some(start) = block_start {
@@ -154,9 +142,10 @@ pub(super) fn note_filter_to_query_input_note_by_offset(
     }
 
     let query = format!(
-        "{INPUT_NOTES_BASE_QUERY} WHERE {condition} \
+        "{} WHERE {condition} \
          ORDER BY note.consumed_block_height ASC, note.consumed_tx_order ASC, note.note_id ASC \
-         LIMIT 1 OFFSET {offset}"
+         LIMIT 1 OFFSET {offset}",
+        input_notes_base_query()
     );
 
     (query, params)
@@ -189,45 +178,21 @@ pub(super) fn note_filter_input_notes_condition(filter: &NoteFilter) -> (String,
             )
         },
         NoteFilter::Unique(note_id) => {
-            let note_ids_list = vec![Value::Blob(note_id.as_word().to_bytes())];
-            params.push(Rc::new(note_ids_list));
-            "(note.note_id IN rarray(?))".to_string()
+            in_rarray_condition("note.note_id", blob_array([note_id.as_word()]), &mut params)
         },
-        NoteFilter::List(note_ids) => {
-            let note_ids_list = note_ids
-                .iter()
-                .map(|note_id| Value::Blob(note_id.as_word().to_bytes()))
-                .collect::<Vec<Value>>();
-
-            params.push(Rc::new(note_ids_list));
-            "(note.note_id IN rarray(?))".to_string()
-        },
+        NoteFilter::List(note_ids) => in_rarray_condition(
+            "note.note_id",
+            blob_array(note_ids.iter().map(NoteId::as_word)),
+            &mut params,
+        ),
         NoteFilter::DetailsCommitments(commitments) => {
-            let commitments_list = commitments
-                .iter()
-                .map(|commitment| Value::Blob(commitment.to_bytes()))
-                .collect::<Vec<Value>>();
-
-            params.push(Rc::new(commitments_list));
-            "(note.details_commitment IN rarray(?))".to_string()
+            in_rarray_condition("note.details_commitment", blob_array(commitments), &mut params)
         },
         NoteFilter::Nullifiers(nullifiers) => {
-            let nullifiers_list = nullifiers
-                .iter()
-                .map(|nullifier| Value::Blob(nullifier.to_bytes()))
-                .collect::<Vec<Value>>();
-
-            params.push(Rc::new(nullifiers_list));
-            "(note.nullifier IN rarray(?))".to_string()
+            in_rarray_condition("note.nullifier", blob_array(nullifiers), &mut params)
         },
         NoteFilter::ScriptRoots(script_roots) => {
-            let script_roots_list = script_roots
-                .iter()
-                .map(|script_root| Value::Blob(script_root.to_bytes()))
-                .collect::<Vec<Value>>();
-
-            params.push(Rc::new(script_roots_list));
-            "(note.script_root IN rarray(?))".to_string()
+            in_rarray_condition("note.script_root", blob_array(script_roots), &mut params)
         },
         NoteFilter::Unverified => {
             format!("(state_discriminant = {})", InputNoteState::STATE_UNVERIFIED)

@@ -1,7 +1,6 @@
 //! Account-related database operations.
 
 use std::collections::BTreeMap;
-use std::rc::Rc;
 use std::string::ToString;
 use std::vec::Vec;
 
@@ -35,17 +34,9 @@ use miden_client::{AccountError, Felt, Word};
 use miden_protocol::account::{AccountStorageHeader, StorageMapWitness, StorageSlotHeader};
 use miden_protocol::asset::{AssetId, PartialVault};
 use miden_protocol::crypto::merkle::MerkleError;
-use rusqlite::types::Value;
-use rusqlite::{
-    Connection,
-    OptionalExtension,
-    Transaction,
-    TransactionBehavior,
-    named_params,
-    params,
-};
+use rusqlite::{Connection, OptionalExtension, Transaction, named_params, params};
 
-use crate::account::helpers::{
+use crate::account::rows::{
     query_account_addresses,
     query_account_code,
     query_historical_account_headers,
@@ -56,7 +47,17 @@ use crate::account::helpers::{
 };
 use crate::forest::{ScopedAccountForest, SqliteForestBackend, allocate_forest_revision};
 use crate::sql_error::SqlResultExt;
-use crate::{SqliteStore, column_value_as_u64, insert_sql, subst, u64_to_value};
+use crate::{
+    SqliteStore,
+    blob_array,
+    column_value_as_u64,
+    insert_sql,
+    int_array,
+    subst,
+    u64_to_value,
+    with_immediate_write_tx,
+    with_write_tx,
+};
 
 impl SqliteStore {
     // READER METHODS
@@ -70,8 +71,8 @@ impl SqliteStore {
             .query_map([], |row| row.get(0))
             .expect("no binding parameters used in query")
             .map(|result| {
-                let id: Vec<u8> = result.map_err(|e| StoreError::ParsingError(e.to_string()))?;
-                Ok(AccountId::read_from_bytes(&id).expect("account id is valid"))
+                let id: Vec<u8> = result.into_store_error()?;
+                Ok(AccountId::read_from_bytes(&id)?)
             })
             .collect::<Result<Vec<AccountId>, StoreError>>()
     }
@@ -195,12 +196,11 @@ impl SqliteStore {
         Ok(Some(AccountRecord::new(account_record_data, status, client_account_type)))
     }
 
-    pub fn get_foreign_account_code(
+    pub(crate) fn get_foreign_account_code(
         conn: &mut Connection,
         account_ids: Vec<AccountId>,
     ) -> Result<BTreeMap<AccountId, AccountCode>, StoreError> {
-        let params: Vec<Value> =
-            account_ids.into_iter().map(|id| Value::Blob(id.to_bytes())).collect();
+        let account_id_list = blob_array(account_ids);
         const QUERY: &str = "
             SELECT account_id, code
             FROM foreign_account_code JOIN account_code ON foreign_account_code.code_commitment = account_code.commitment
@@ -208,25 +208,17 @@ impl SqliteStore {
 
         conn.prepare_cached(QUERY)
             .into_store_error()?
-            .query_map([Rc::new(params)], |row| Ok((row.get(0)?, row.get(1)?)))
-            .expect("no binding parameters used in query")
+            .query_map([account_id_list], |row| Ok((row.get("account_id")?, row.get("code")?)))
+            .into_store_error()?
             .map(|result| {
-                result.map_err(|err| StoreError::ParsingError(err.to_string())).and_then(
-                    |(id, code): (Vec<u8>, Vec<u8>)| {
-                        Ok((
-                            AccountId::read_from_bytes(&id)
-                                .map_err(StoreError::DataDeserializationError)?,
-                            AccountCode::read_from_bytes(&code)
-                                .map_err(StoreError::DataDeserializationError)?,
-                        ))
-                    },
-                )
+                let (id, code): (Vec<u8>, Vec<u8>) = result.into_store_error()?;
+                Ok((AccountId::read_from_bytes(&id)?, AccountCode::read_from_bytes(&code)?))
             })
             .collect::<Result<BTreeMap<AccountId, AccountCode>, _>>()
     }
 
     /// Retrieves the full asset vault for a specific account.
-    pub fn get_account_vault(
+    pub(crate) fn get_account_vault(
         conn: &Connection,
         account_id: AccountId,
     ) -> Result<AssetVault, StoreError> {
@@ -235,7 +227,7 @@ impl SqliteStore {
     }
 
     /// Retrieves the full storage for a specific account.
-    pub fn get_account_storage(
+    pub(crate) fn get_account_storage(
         conn: &Connection,
         account_id: AccountId,
         filter: &AccountStorageFilter,
@@ -328,85 +320,64 @@ impl SqliteStore {
         initial_address: &Address,
         client_account_type: ClientAccountType,
     ) -> Result<(), StoreError> {
-        let db_tx = conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .into_store_error()?;
-        {
-            let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&db_tx))?;
-            Self::insert_account_code(&db_tx, account.code())?;
+        with_immediate_write_tx(conn, |tx| {
+            let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(tx))?;
+            Self::insert_account_code(tx, account.code())?;
 
             let account_id = account.id();
-            Self::insert_storage_slots(&db_tx, account_id, account.storage().slots().iter())?;
-            Self::insert_assets(&db_tx, account_id, account.vault().assets())?;
+            Self::insert_storage_slots(tx, account_id, account.storage().slots().iter())?;
+            Self::insert_assets(tx, account_id, account.vault().assets())?;
             let watched = matches!(client_account_type, ClientAccountType::Watched);
-            Self::insert_new_account_header(&db_tx, &account.into(), account.seed(), watched)?;
-            Self::insert_address(&db_tx, initial_address, account.id())?;
+            Self::insert_new_account_header(tx, &account.into(), account.seed(), watched)?;
+            Self::insert_address_tx(tx, initial_address, account.id())?;
 
             Self::reconcile_account_forest(
-                &db_tx,
+                tx,
                 &mut smt_forest,
                 account_id,
                 account.vault(),
                 account.storage(),
-            )?;
-        }
-        db_tx.commit().into_store_error()
+            )
+        })
     }
 
     pub(crate) fn update_account(
         conn: &mut Connection,
         new_account_state: &Account,
     ) -> Result<(), StoreError> {
-        const QUERY: &str = "SELECT id FROM latest_account_headers WHERE id = ?";
-        if conn
-            .prepare(QUERY)
-            .into_store_error()?
-            .query_map(params![new_account_state.id().to_bytes()], |row| row.get(0))
-            .into_store_error()?
-            .map(|result| {
-                result.map_err(|err| StoreError::ParsingError(err.to_string())).and_then(
-                    |id: Vec<u8>| {
-                        AccountId::read_from_bytes(&id)
-                            .map_err(StoreError::DataDeserializationError)
-                    },
-                )
-            })
-            .next()
-            .is_none()
-        {
-            return Err(StoreError::AccountDataNotFound(new_account_state.id()));
-        }
-
-        let db_tx = conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .into_store_error()?;
-        {
-            let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&db_tx))?;
-            Self::update_account_state(&db_tx, &mut smt_forest, new_account_state)?;
-        }
-        db_tx.commit().into_store_error()
+        with_immediate_write_tx(conn, |tx| {
+            let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(tx))?;
+            Self::update_account_state(tx, &mut smt_forest, new_account_state)
+        })
     }
 
-    pub fn upsert_foreign_account_code(
+    pub(crate) fn upsert_foreign_account_code(
         conn: &mut Connection,
         account_id: AccountId,
         code: &AccountCode,
     ) -> Result<(), StoreError> {
-        let tx = conn.transaction().into_store_error()?;
+        with_write_tx(conn, |tx| {
+            Self::insert_account_code(tx, code)?;
 
-        Self::insert_account_code(&tx, code)?;
+            const QUERY: &str =
+                insert_sql!(foreign_account_code { account_id, code_commitment } | REPLACE);
 
-        const QUERY: &str =
-            insert_sql!(foreign_account_code { account_id, code_commitment } | REPLACE);
+            tx.execute(QUERY, params![account_id.to_bytes(), code.commitment().to_bytes()])
+                .into_store_error()?;
 
-        tx.execute(QUERY, params![account_id.to_bytes(), code.commitment().to_bytes()])
-            .into_store_error()?;
-
-        Self::insert_account_code(&tx, code)?;
-        tx.commit().into_store_error()
+            Ok(())
+        })
     }
 
     pub(crate) fn insert_address(
+        conn: &mut Connection,
+        address: &Address,
+        account_id: AccountId,
+    ) -> Result<(), StoreError> {
+        with_write_tx(conn, |tx| Self::insert_address_tx(tx, address, account_id))
+    }
+
+    pub(crate) fn insert_address_tx(
         tx: &Transaction<'_>,
         address: &Address,
         account_id: AccountId,
@@ -423,12 +394,12 @@ impl SqliteStore {
         conn: &mut Connection,
         address: &Address,
     ) -> Result<(), StoreError> {
-        let tx = conn.transaction().into_store_error()?;
-        let serialized_address = address.to_bytes();
-        const DELETE_QUERY: &str = "DELETE FROM addresses WHERE address = ?";
-        tx.execute(DELETE_QUERY, params![serialized_address]).into_store_error()?;
-
-        tx.commit().into_store_error()
+        with_write_tx(conn, |tx| {
+            let serialized_address = address.to_bytes();
+            const DELETE_QUERY: &str = "DELETE FROM addresses WHERE address = ?";
+            tx.execute(DELETE_QUERY, params![serialized_address]).into_store_error()?;
+            Ok(())
+        })
     }
 
     /// Inserts an [`AccountCode`].
@@ -630,12 +601,8 @@ impl SqliteStore {
             return Ok(());
         }
 
-        let commitment_params = Rc::new(
-            discarded_states
-                .iter()
-                .map(|(_, commitment)| Value::Blob(commitment.to_bytes()))
-                .collect::<Vec<_>>(),
-        );
+        let commitment_params =
+            blob_array(discarded_states.iter().map(|(_, commitment)| commitment));
 
         // Step 1: Resolve (account_id, nonce) pairs from both latest and historical headers.
         // The most recent discarded state is in latest, older ones are in historical.
@@ -644,17 +611,18 @@ impl SqliteStore {
             "SELECT id, nonce FROM latest_account_headers WHERE account_commitment IN rarray(?)",
             "SELECT id, nonce FROM historical_account_headers WHERE account_commitment IN rarray(?)",
         ] {
-            id_nonce_pairs.extend(
-                tx.prepare(query)
-                    .into_store_error()?
-                    .query_map(params![commitment_params.clone()], |row| {
-                        let id: Vec<u8> = row.get(0)?;
-                        let nonce: u64 = column_value_as_u64(row, 1)?;
-                        Ok((id, nonce))
-                    })
-                    .into_store_error()?
-                    .filter_map(Result::ok),
-            );
+            let pairs = tx
+                .prepare(query)
+                .into_store_error()?
+                .query_map(params![commitment_params.clone()], |row| {
+                    let id: Vec<u8> = row.get("id")?;
+                    let nonce: u64 = column_value_as_u64(row, "nonce")?;
+                    Ok((id, nonce))
+                })
+                .into_store_error()?
+                .collect::<Result<Vec<_>, _>>()
+                .into_store_error()?;
+            id_nonce_pairs.extend(pairs);
         }
 
         // Step 2: Group nonces by account, sort descending (undo most recent first).
@@ -753,7 +721,7 @@ impl SqliteStore {
         }
 
         // Step 5: Delete all consumed historical entries at the discarded nonces
-        let nonce_params = Rc::new(nonces.iter().map(|n| u64_to_value(*n)).collect::<Vec<_>>());
+        let nonce_params = int_array(nonces.iter().copied());
         for table in [
             "historical_account_storage",
             "historical_storage_map_entries",
@@ -1120,7 +1088,7 @@ impl SqliteStore {
             .query_row(
                 "SELECT account_seed, locked, watched FROM latest_account_headers WHERE id = ?",
                 params![&id_bytes],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| Ok((row.get("account_seed")?, row.get("locked")?, row.get("watched")?)),
             )
             .optional()
             .into_store_error()?
@@ -1174,88 +1142,91 @@ impl SqliteStore {
     /// Deletes all historical entries with `replaced_at_nonce <= up_to_nonce`
     /// (see DESIGN.md for why this threshold is safe), then removes any account
     /// code that was only referenced by the deleted headers.
-    pub fn prune_account_history(
+    pub(crate) fn prune_account_history(
         conn: &mut Connection,
         account_id: AccountId,
         up_to_nonce: Felt,
     ) -> Result<usize, StoreError> {
-        let tx = conn.transaction().into_store_error()?;
-        let account_id_bytes = account_id.to_bytes();
-        let boundary_val = u64_to_value(up_to_nonce.as_canonical_u64());
-        let mut total_deleted: usize = 0;
+        with_write_tx(conn, |tx| {
+            let account_id_bytes = account_id.to_bytes();
+            let boundary_val = u64_to_value(up_to_nonce.as_canonical_u64());
+            let mut total_deleted: usize = 0;
 
-        // Collect code commitments from headers we are about to delete.
-        let candidate_code_commitments: Vec<Vec<u8>> = {
-            let mut stmt = tx
-                .prepare(
-                    "SELECT DISTINCT code_commitment FROM historical_account_headers \
+            // Collect code commitments from headers we are about to delete.
+            let candidate_code_commitments: Vec<Vec<u8>> = {
+                let mut stmt = tx
+                    .prepare(
+                        "SELECT DISTINCT code_commitment FROM historical_account_headers \
                      WHERE id = ? AND replaced_at_nonce <= ?",
+                    )
+                    .into_store_error()?;
+                let rows = stmt
+                    .query_map(params![&account_id_bytes, &boundary_val], |row| row.get(0))
+                    .into_store_error()?;
+                rows.collect::<Result<Vec<Vec<u8>>, _>>().into_store_error()?
+            };
+
+            // Delete historical entries.
+            total_deleted += tx
+                .execute(
+                    "DELETE FROM historical_account_headers \
+                 WHERE id = ? AND replaced_at_nonce <= ?",
+                    params![&account_id_bytes, &boundary_val],
                 )
                 .into_store_error()?;
-            let rows = stmt
-                .query_map(params![&account_id_bytes, &boundary_val], |row| row.get(0))
+
+            total_deleted += tx
+                .execute(
+                    "DELETE FROM historical_account_storage \
+                 WHERE account_id = ? AND replaced_at_nonce <= ?",
+                    params![&account_id_bytes, &boundary_val],
+                )
                 .into_store_error()?;
-            rows.collect::<Result<Vec<Vec<u8>>, _>>().into_store_error()?
-        };
 
-        // Delete historical entries.
-        total_deleted += tx
-            .execute(
-                "DELETE FROM historical_account_headers \
-                 WHERE id = ? AND replaced_at_nonce <= ?",
-                params![&account_id_bytes, &boundary_val],
-            )
-            .into_store_error()?;
-
-        total_deleted += tx
-            .execute(
-                "DELETE FROM historical_account_storage \
+            total_deleted += tx
+                .execute(
+                    "DELETE FROM historical_storage_map_entries \
                  WHERE account_id = ? AND replaced_at_nonce <= ?",
-                params![&account_id_bytes, &boundary_val],
-            )
-            .into_store_error()?;
+                    params![&account_id_bytes, &boundary_val],
+                )
+                .into_store_error()?;
 
-        total_deleted += tx
-            .execute(
-                "DELETE FROM historical_storage_map_entries \
+            total_deleted += tx
+                .execute(
+                    "DELETE FROM historical_account_assets \
                  WHERE account_id = ? AND replaced_at_nonce <= ?",
-                params![&account_id_bytes, &boundary_val],
-            )
-            .into_store_error()?;
+                    params![&account_id_bytes, &boundary_val],
+                )
+                .into_store_error()?;
 
-        total_deleted += tx
-            .execute(
-                "DELETE FROM historical_account_assets \
-                 WHERE account_id = ? AND replaced_at_nonce <= ?",
-                params![&account_id_bytes, &boundary_val],
-            )
-            .into_store_error()?;
-
-        // Delete orphaned code: only check commitments from the deleted headers,
-        // and only if they are not referenced by any remaining header or foreign code.
-        for commitment in &candidate_code_commitments {
-            let still_referenced: bool = tx
-                .query_row(
-                    "SELECT EXISTS(
+            // Delete orphaned code: only check commitments from the deleted headers,
+            // and only if they are not referenced by any remaining header or foreign code.
+            for commitment in &candidate_code_commitments {
+                let still_referenced: bool = tx
+                    .query_row(
+                        "SELECT EXISTS(
                         SELECT 1 FROM latest_account_headers WHERE code_commitment = ?1
                         UNION ALL
                         SELECT 1 FROM historical_account_headers WHERE code_commitment = ?1
                         UNION ALL
                         SELECT 1 FROM foreign_account_code WHERE code_commitment = ?1
                     )",
-                    params![commitment],
-                    |row| row.get(0),
-                )
-                .into_store_error()?;
-
-            if !still_referenced {
-                total_deleted += tx
-                    .execute("DELETE FROM account_code WHERE commitment = ?", params![commitment])
+                        params![commitment],
+                        |row| row.get(0),
+                    )
                     .into_store_error()?;
-            }
-        }
 
-        tx.commit().into_store_error()?;
-        Ok(total_deleted)
+                if !still_referenced {
+                    total_deleted += tx
+                        .execute(
+                            "DELETE FROM account_code WHERE commitment = ?",
+                            params![commitment],
+                        )
+                        .into_store_error()?;
+                }
+            }
+
+            Ok(total_deleted)
+        })
     }
 }

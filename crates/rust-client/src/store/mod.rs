@@ -762,7 +762,8 @@ pub enum TransactionFilter {
 impl TransactionFilter {
     /// Returns a [String] containing the query for this Filter.
     pub fn to_query(&self) -> String {
-        const QUERY: &str = "SELECT tx.id, script.script, tx.details, tx.status \
+        const QUERY: &str = "SELECT tx.id AS id, script.script AS script, tx.details AS details, \
+            tx.status AS status \
             FROM transactions AS tx LEFT JOIN transaction_scripts AS script ON tx.script_root = script.script_root";
         match self {
             TransactionFilter::All => QUERY.to_string(),

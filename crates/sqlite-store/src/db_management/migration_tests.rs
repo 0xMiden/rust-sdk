@@ -4,7 +4,7 @@ use rusqlite::{Connection, params};
 use rusqlite_migration::{M, Migrations, SchemaVersion};
 
 use crate::db_management::errors::SqliteStoreError;
-use crate::db_management::utils::{
+use crate::db_management::migrations::{
     EXPECTED_SCHEMA_HASHES,
     apply_migrations,
     apply_migrations_with,

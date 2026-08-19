@@ -46,10 +46,7 @@ use crate::store::input_note_states::UnverifiedNoteState;
 use crate::store::{InputNoteRecord, OutputNoteRecord, StoreError};
 use crate::transaction::TransactionRecord;
 
-/// Maximum number of `get_account` requests kept in flight while reconciling tracked accounts.
-///
-/// Bounded rather than unbounded: a client tracking many accounts that all changed in the synced
-/// range would otherwise put every fetch on the wire at once and trip the node's rate limit.
+/// Maximum number of `get_account` requests kept in flight while syncing the state.
 const MAX_CONCURRENT_ACCOUNT_FETCHES: usize = 4;
 
 // STATE UPDATE DATA
@@ -471,9 +468,6 @@ impl StateSync {
     /// 3. `get_notes_by_id` — fetches full metadata for notes with attachments.
     /// 4. `sync_transactions` — gets transaction data for the full range.
     ///
-    /// Endpoint 1 dictates the range every other request uses. Endpoints 2-3 (chained: the note
-    /// content fetch needs the ids `sync_notes` returned) run concurrently with endpoint 4.
-    ///
     /// Returns `None` when the client is already at the chain tip (no progress).
     async fn fetch_sync_data(
         &self,
@@ -534,9 +528,7 @@ impl StateSync {
             }
         };
 
-        // Both fetches are pinned to `chain_tip` and neither reads the other's response, so the
-        // note fetch (and its `get_notes_by_id` follow-up) overlaps the transaction fetch. When
-        // both fail, the surfaced error is whichever resolved first.
+        // Fetch notes and transaction records concurrently
         let (note_blocks, transaction_records) =
             futures::try_join!(note_blocks_fut, transactions_fut)?;
 

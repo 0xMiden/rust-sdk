@@ -10,7 +10,6 @@ use miden_protocol::account::{
     AccountVaultPatch,
     PartialAccount,
     PartialStorage,
-    PartialStorageMap,
     StorageMapKey,
     StorageMapPatch,
     StorageMapWitness,
@@ -96,8 +95,9 @@ impl CachedAccountState {
             .map(|asset| asset.id())
             .chain(patch.removed_asset_ids().copied())
             .collect();
-        let proofs =
-            committed_vault_proofs(inner, account_id, self.vault.committed_root(), written).await?;
+        let proofs = inner
+            .committed_vault_proofs(account_id, self.vault.committed_root(), written)
+            .await?;
 
         let entries = patch
             .updated_assets()
@@ -129,13 +129,7 @@ impl CachedAccountState {
                     value_patch.value().unwrap_or(EMPTY_WORD)
                 },
                 (StorageSlotType::Map, Some(StorageSlotPatch::Map(map_patch))) => {
-                    let staged = self.maps.get_mut(slot.name()).ok_or_else(|| {
-                        DataStoreError::other(format!(
-                            "no staged tree for map slot {} of account {account_id}",
-                            slot.name()
-                        ))
-                    })?;
-                    fold_map_writes(inner, account_id, staged, map_patch).await?
+                    self.fold_map_writes(inner, account_id, slot.name(), map_patch).await?
                 },
                 (slot_type, Some(_)) => {
                     return Err(DataStoreError::other(format!(
@@ -151,6 +145,45 @@ impl CachedAccountState {
         AccountStorageHeader::new(slots).map_err(|err| {
             DataStoreError::other_with_source("failed to rebuild in-batch storage header", err)
                 .into()
+        })
+    }
+
+    /// Folds a transaction's writes to one storage map into its staged view and returns the new
+    /// in-batch map root. A removed map re-anchors the view at the empty tree.
+    async fn fold_map_writes(
+        &mut self,
+        inner: &ClientDataStore,
+        account_id: AccountId,
+        slot_name: &StorageSlotName,
+        map_patch: &StorageMapPatch,
+    ) -> Result<Word, ClientError> {
+        let map = self.maps.get_mut(slot_name).ok_or_else(|| {
+            DataStoreError::other(format!(
+                "no staged tree for map slot {slot_name} of account {account_id}"
+            ))
+        })?;
+
+        let Some(entries) = map_patch.entries() else {
+            *map = StagedSmt::empty();
+            return Ok(map.current_root());
+        };
+        let entries = entries.as_map();
+
+        let mut committed_proofs = Vec::new();
+        for map_key in entries.keys() {
+            if let Some(proof) =
+                inner.committed_map_proof(account_id, map.committed_root(), *map_key).await?
+            {
+                committed_proofs.push(proof);
+            }
+        }
+
+        map.apply_entries(
+            committed_proofs,
+            entries.iter().map(|(map_key, value)| (Word::from(map_key.hash()), *value)),
+        )
+        .map_err(|err| {
+            DataStoreError::other_with_source("failed to stage storage map writes", err).into()
         })
     }
 }
@@ -202,15 +235,15 @@ impl InMemoryBatchDataStore {
             account_id,
         )?;
 
-        let storage = PartialStorage::new(storage_header, core::iter::empty::<PartialStorageMap>())
-            .map_err(|err| {
-                DataStoreError::other_with_source("failed to rebuild in-batch storage", err)
-            })?;
+        let storage = PartialStorage::new(storage_header, vec![])
+            .expect("partial storage creation from empty maps is infallible");
+
         let seed = if final_account.nonce() == ZERO {
             executed_tx.initial_account().seed()
         } else {
             None
         };
+
         state.account = PartialAccount::new(
             account_id,
             final_account.nonce(),
@@ -274,67 +307,41 @@ fn ensure_matches(
     .into())
 }
 
-/// Fetches the committed-root proofs anchoring `asset_ids` in a staged vault view. A view
-/// anchored at the empty tree needs none: an account created in-batch has no committed vault in
-/// the store, and every key of the empty tree is implicitly provable anyway.
-async fn committed_vault_proofs(
-    inner: &ClientDataStore,
-    account_id: AccountId,
-    committed_root: Word,
-    asset_ids: BTreeSet<AssetId>,
-) -> Result<Vec<SmtProof>, DataStoreError> {
-    if committed_root == PartialSmt::EMPTY_ROOT || asset_ids.is_empty() {
-        return Ok(Vec::new());
-    }
-    let witnesses = inner.get_vault_asset_witnesses(account_id, committed_root, asset_ids).await?;
-    Ok(witnesses.into_iter().map(SmtProof::from).collect())
-}
-
-/// Fetches the committed-root proof anchoring `map_key` in a staged map view, or `None` for a
-/// view anchored at the empty tree. See [`committed_vault_proofs`].
-async fn committed_map_proof(
-    inner: &ClientDataStore,
-    account_id: AccountId,
-    committed_root: Word,
-    map_key: StorageMapKey,
-) -> Result<Option<SmtProof>, DataStoreError> {
-    if committed_root == PartialSmt::EMPTY_ROOT {
-        return Ok(None);
-    }
-    let witness = inner.get_storage_map_witness(account_id, committed_root, map_key).await?;
-    Ok(Some(SmtProof::from(witness)))
-}
-
-/// Folds a transaction's writes to one storage map into its staged view and returns the new
-/// in-batch map root. A removed map re-anchors the view at the empty tree.
-async fn fold_map_writes(
-    inner: &ClientDataStore,
-    account_id: AccountId,
-    map: &mut StagedSmt,
-    map_patch: &StorageMapPatch,
-) -> Result<Word, ClientError> {
-    let Some(entries) = map_patch.entries() else {
-        *map = StagedSmt::empty();
-        return Ok(map.current_root());
-    };
-    let entries = entries.as_map();
-
-    let mut committed_proofs = Vec::new();
-    for map_key in entries.keys() {
-        if let Some(proof) =
-            committed_map_proof(inner, account_id, map.committed_root(), *map_key).await?
-        {
-            committed_proofs.push(proof);
+/// Batch-private helpers for fetching the committed-root proofs that anchor staged SMT views.
+/// The methods stay private to this module so the anchoring semantics don't leak into the
+/// store's public surface.
+impl ClientDataStore {
+    /// Fetches the committed-root proofs anchoring `asset_ids` in a staged vault view. A view
+    /// anchored at the empty tree needs none: an account created in-batch has no committed vault
+    /// in the store, and every key of the empty tree is implicitly provable anyway.
+    async fn committed_vault_proofs(
+        &self,
+        account_id: AccountId,
+        committed_root: Word,
+        asset_ids: BTreeSet<AssetId>,
+    ) -> Result<Vec<SmtProof>, DataStoreError> {
+        if committed_root == PartialSmt::EMPTY_ROOT || asset_ids.is_empty() {
+            return Ok(Vec::new());
         }
+        let witnesses =
+            self.get_vault_asset_witnesses(account_id, committed_root, asset_ids).await?;
+        Ok(witnesses.into_iter().map(SmtProof::from).collect())
     }
 
-    map.apply_entries(
-        committed_proofs,
-        entries.iter().map(|(map_key, value)| (Word::from(map_key.hash()), *value)),
-    )
-    .map_err(|err| {
-        DataStoreError::other_with_source("failed to stage storage map writes", err).into()
-    })
+    /// Fetches the committed-root proof anchoring `map_key` in a staged map view, or `None` for
+    /// a view anchored at the empty tree. See [`Self::committed_vault_proofs`].
+    async fn committed_map_proof(
+        &self,
+        account_id: AccountId,
+        committed_root: Word,
+        map_key: StorageMapKey,
+    ) -> Result<Option<SmtProof>, DataStoreError> {
+        if committed_root == PartialSmt::EMPTY_ROOT {
+            return Ok(None);
+        }
+        let witness = self.get_storage_map_witness(account_id, committed_root, map_key).await?;
+        Ok(Some(SmtProof::from(witness)))
+    }
 }
 
 // DATA STORE IMPL
@@ -375,13 +382,10 @@ impl DataStore for InMemoryBatchDataStore {
 
         // Anchor the requested keys with their committed proofs, replay the batch's writes, and
         // open every key at the in-batch root.
-        let committed_proofs = committed_vault_proofs(
-            &self.inner,
-            account_id,
-            state.vault.committed_root(),
-            asset_ids.clone(),
-        )
-        .await?;
+        let committed_proofs = self
+            .inner
+            .committed_vault_proofs(account_id, state.vault.committed_root(), asset_ids.clone())
+            .await?;
         let staged = state.vault.staged_view(committed_proofs).map_err(|err| {
             DataStoreError::other_with_source("failed to build staged vault view", err)
         })?;
@@ -418,9 +422,10 @@ impl DataStore for InMemoryBatchDataStore {
 
         // Anchor the requested key with its committed proof, replay the batch's writes, and open
         // the key at the in-batch root.
-        let committed_proof =
-            committed_map_proof(&self.inner, account_id, staged_map.committed_root(), map_key)
-                .await?;
+        let committed_proof = self
+            .inner
+            .committed_map_proof(account_id, staged_map.committed_root(), map_key)
+            .await?;
         let staged = staged_map.staged_view(committed_proof).map_err(|err| {
             DataStoreError::other_with_source("failed to build staged storage map view", err)
         })?;

@@ -25,6 +25,7 @@
 * [BREAKING][behavior][rpc] The `SyncNotes` response now carries a reduced note metadata message: instead of the note's attachments commitment it carries one entry per attachment, with single-word attachments sent verbatim and larger ones sent as commitments. The client reconstructs the protocol-level `NoteMetadata` from those entries, so it requires a node that speaks this format.
 * [BREAKING][behavior][store] The SQLite base schema now declares an index on `input_notes(script_root)`. This changes the schema fingerprint, so opening a database created before this change fails with `SchemaHashMismatch` and existing stores must be recreated ([#2335](https://github.com/0xMiden/rust-sdk/pull/2335)).
 * [BREAKING][removal][rust] `miden_client::agglayer::create_bridge_account` and `miden_client::agglayer::create_agglayer_faucet` are removed. Build the accounts with `AggLayerBridge::account_builder` and `AggLayerFaucet::account_builder`, which return an `AccountBuilder` and take the account's `FeePolicyManager` explicitly; its active policy must be a `BasicConstantFeePolicy` scheduling every root in the account's `allowed_notes()`. The faucet builder additionally takes the initial token supply and the account seeding its `ADMIN` role.
+* [BREAKING][rust] `Client::add_note_tag` and `Client::remove_note_tag` return `bool` instead of `()`, reporting whether the tag was actually added or removed. Both used to swallow that outcome and only log it ([#2416](https://github.com/0xMiden/rust-sdk/pull/2416)).
 
 ### Enhancements
 
@@ -48,6 +49,7 @@
 * [FIX][rust] `VerifyingRpcClient::sync_transactions` now validates that every returned transaction record's account ID was actually requested, rejecting mismatches with `RpcError::InvalidResponse` ([#2372](https://github.com/0xMiden/rust-sdk/issues/2372)).
 * [FIX][rust] `Client::prove_transaction_with` now checks that the `TransactionProver` returned a proof of the transaction it was asked to prove, rejecting a mismatch with the new `ClientError::MismatchedProvenTransaction` ([#2391](https://github.com/0xMiden/rust-sdk/pull/2391)).
 * [FIX][cli] `miden-client notes --show` now prints the note sender in the `Sender` row; it was printing the note tag there ([#2412](https://github.com/0xMiden/rust-sdk/pull/2412)).
+* [FIX][cli] `miden-client tags --add` and `--remove` now report what actually happened instead of always printing that the tag was added or removed ([#2416](https://github.com/0xMiden/rust-sdk/pull/2416)).
 
 ## 0.16.0-alpha.1 (2026-07-17)
 

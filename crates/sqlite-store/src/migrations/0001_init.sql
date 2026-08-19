@@ -204,13 +204,14 @@ CREATE TABLE blockchain_checkpoint (
     PRIMARY KEY (block_num)
 ) STRICT;
 
+-- WITHOUT ROWID stores the table as a single B-tree keyed by (tag, source), so no separate
+-- unique index is needed. The primary key also enforces tag idempotency: `add_note_tag` uses
+-- `INSERT OR IGNORE` so a repeated (tag, source) pair is a no-op instead of a duplicated row.
 CREATE TABLE tags (
     tag BLOB NOT NULL,     -- the serialized tag
-    source BLOB NOT NULL   -- the serialized tag source
-) STRICT;
--- Enforces tag idempotency: `add_note_tag` uses `INSERT OR IGNORE` against this index so a
--- repeated (tag, source) pair is a no-op instead of a duplicated row.
-CREATE UNIQUE INDEX idx_tags_tag_source ON tags(tag, source);
+    source BLOB NOT NULL,  -- the serialized tag source
+    PRIMARY KEY (tag, source)
+) STRICT, WITHOUT ROWID;
 
 -- insert initial row into blockchain_checkpoint table
 INSERT OR IGNORE INTO blockchain_checkpoint (block_num, partial_blockchain_peaks)

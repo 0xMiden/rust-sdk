@@ -32,6 +32,7 @@
 * [BREAKING][rust] `Client::remove_address` and `Store::remove_address` return `bool` instead of `()`, reporting whether the address was tracked. When it wasn't, `Client::remove_address` now leaves the derived note tag in place instead of running its cleanup.
 * [BREAKING][type][rust] Added the `TransactionRequestError::ForeignProcedureInputsTooLong` variant ([#2187](https://github.com/0xMiden/rust-sdk/pull/2187)).
 * [BREAKING][behavior][store] The `output_notes` table gained a nullable `script_root` column referencing `notes_scripts`. This changes the schema fingerprint, so opening a database created before this change fails with `SchemaHashMismatch` and existing stores must be recreated.
+* [BREAKING][behavior][store] The `output_notes` table gained a nullable `script_root` column referencing `notes_scripts`, all tables are now `STRICT`, and the `tags` table stores its rows keyed by a `(tag, source)` primary key (`WITHOUT ROWID`) instead of carrying a separate unique index. This changes the schema fingerprint, so opening a database created before this change fails with `SchemaHashMismatch` and existing stores must be recreated.
 
 ### Enhancements
 

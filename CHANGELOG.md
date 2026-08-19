@@ -48,6 +48,7 @@
 * [FIX][rust] `VerifyingRpcClient::sync_transactions` now validates that every returned transaction record's account ID was actually requested, rejecting mismatches with `RpcError::InvalidResponse` ([#2372](https://github.com/0xMiden/rust-sdk/issues/2372)).
 * [FIX][rust] `Client::prove_transaction_with` now checks that the `TransactionProver` returned a proof of the transaction it was asked to prove, rejecting a mismatch with the new `ClientError::MismatchedProvenTransaction` ([#2391](https://github.com/0xMiden/rust-sdk/pull/2391)).
 * [FIX][cli] `miden-client notes --show` now prints the note sender in the `Sender` row; it was printing the note tag there ([#2412](https://github.com/0xMiden/rust-sdk/pull/2412)).
+* [FIX][rust] `VerifyingRpcClient::get_account` now validates that the returned `AccountProof` belongs to the requested account ID, rejecting a mismatch with `RpcError::InvalidResponse` ([#2419](https://github.com/0xMiden/rust-sdk/pull/2419)).
 
 ## 0.16.0-alpha.1 (2026-07-17)
 

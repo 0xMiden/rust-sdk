@@ -163,6 +163,9 @@ impl ClientDataStore {
     }
 
     /// Fetches a storage map witness for a specific key from the network via RPC and caches it.
+    ///
+    /// Anchored at the transaction reference block: a chain-tip query would return proofs for a
+    /// newer map root whenever the account changed after the caller's last sync.
     async fn fetch_and_cache_storage_map_witness(
         &self,
         account_id: AccountId,
@@ -171,6 +174,9 @@ impl ClientDataStore {
         map_key: StorageMapKey,
         known_code: AccountCode,
     ) -> Result<StorageMapWitness, DataStoreError> {
+        let account_state_at =
+            self.cache.ref_block().map_or(AccountStateAt::ChainTip, AccountStateAt::Block);
+
         let storage_requirements = AccountStorageRequirements::new([(slot_name, &[map_key])]);
         let (_, account_proof): (BlockNumber, _) = self
             .rpc_api
@@ -178,7 +184,8 @@ impl ClientDataStore {
                 account_id,
                 GetAccountRequest::new()
                     .with_storage(StorageMapFetch::Slots(storage_requirements))
-                    .with_known_code(Some(known_code)),
+                    .with_known_code(Some(known_code))
+                    .at(account_state_at),
             )
             .await
             .map_err(|err| {

@@ -338,21 +338,9 @@ where
     }
 
     /// Optionally provide a custom RNG for note serial numbers, script arguments and account
-    /// seeds. Defaults to an OS-seeded `ChaCha20Rng`. Secret keys and transaction input sealing
+    /// seeds. Defaults to `ChaCha20Rng`. Secret keys and transaction input sealing
     /// use a separate, non-overridable generator; see
     /// [`Client::secure_rng`](crate::Client::secure_rng).
-    ///
-    /// The [`CryptoRng`](rand::CryptoRng) bound rejects generators that only implement
-    /// [`FeltRng`](miden_protocol::crypto::rand::FeltRng), such as `RandomCoin`:
-    ///
-    /// ```compile_fail
-    /// # use miden_client::builder::ClientBuilder;
-    /// # use miden_client::keystore::FilesystemKeyStore;
-    /// use miden_protocol::Word;
-    /// use miden_protocol::crypto::rand::RandomCoin;
-    ///
-    /// ClientBuilder::<FilesystemKeyStore>::new().rng(Box::new(RandomCoin::new(Word::default())));
-    /// ```
     #[must_use]
     pub fn rng(mut self, rng: ClientRngBox) -> Self {
         self.rng = Some(rng);

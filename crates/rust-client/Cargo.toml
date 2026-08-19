@@ -123,6 +123,7 @@ miden-protocol  = { default-features = false, features = ["testing"], workspace 
 miden-standards = { features = ["testing"], workspace = true }
 miden-testing   = { default-features = false, workspace = true }
 tokio           = { workspace = true }
+trybuild        = { version = "1.0" }
 
 [lints]
 workspace = true

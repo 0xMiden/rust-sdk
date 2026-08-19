@@ -611,3 +611,25 @@ impl ClientBuilder<FilesystemKeyStore> {
         Ok(self.authenticator(Arc::new(keystore)))
     }
 }
+
+// TESTS
+// ================================================================================================
+
+#[cfg(test)]
+mod tests {
+    /// Checks that [`ClientBuilder::rng`] rejects a generator that is not a `CryptoRng`.
+    ///
+    /// The driver lives here rather than in `tests/` because `make test` runs `--lib` only.
+    ///
+    /// The expected diagnostic is snapshotted in `tests/ui/*.stderr`. It quotes the compiler
+    /// verbatim, so a `rand` or `rustc` upgrade can reword it; regenerate with
+    /// `TRYBUILD=overwrite cargo test -p miden-client --features "testing std" --lib ui`.
+    ///
+    /// `cargo shear` reports the fixture as an unlinked file and suggests deleting it. That is a
+    /// false positive: trybuild loads it as data rather than as a cargo target. The warning does
+    /// not fail `make lint`.
+    #[test]
+    fn ui() {
+        trybuild::TestCases::new().compile_fail("tests/ui/*.rs");
+    }
+}

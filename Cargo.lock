@@ -2463,6 +2463,7 @@ dependencies = [
  "tonic-prost-build",
  "tonic-web-wasm-client",
  "tracing",
+ "trybuild",
  "uuid",
 ]
 

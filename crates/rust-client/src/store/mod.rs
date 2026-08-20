@@ -792,13 +792,6 @@ pub enum TransactionFilter {
     Uncommitted,
     /// Return a list of the transaction that matches the provided [`TransactionId`]s.
     Ids(Vec<TransactionId>),
-    /// Return a list of the expired transactions that were executed before the provided
-    /// [`BlockNumber`]. Transactions created after the provided block number are not
-    /// considered.
-    ///
-    /// A transaction is considered expired if is uncommitted and the transaction's block number
-    /// is less than the provided block number.
-    ExpiredBefore(BlockNumber),
 }
 
 // TRANSACTIONS FILTER HELPERS
@@ -818,13 +811,6 @@ impl TransactionFilter {
             TransactionFilter::Ids(_) => {
                 // Use SQLite's array parameter binding
                 format!("{QUERY} WHERE tx.id IN rarray(?)")
-            },
-            TransactionFilter::ExpiredBefore(block_num) => {
-                format!(
-                    "{QUERY} WHERE tx.block_num < {} AND tx.status_variant = {}",
-                    block_num.as_u32(),
-                    TransactionStatusVariant::Pending as u8,
-                )
             },
         }
     }

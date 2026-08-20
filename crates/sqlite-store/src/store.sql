@@ -131,13 +131,13 @@ CREATE TABLE transactions (
     id BLOB NOT NULL,                                -- Transaction ID (commitment of various components)
     details BLOB NOT NULL,                           -- Serialized transaction details
     script_root BLOB,                                -- Transaction script root
-    block_num UNSIGNED BIG INT,                      -- Block number for the block against which the transaction was executed.
     status_variant INT NOT NULL,                     -- Status variant identifier
     status BLOB NOT NULL,                            -- Serialized transaction status
     FOREIGN KEY (script_root) REFERENCES transaction_scripts(script_root),
     PRIMARY KEY (id)
 ) WITHOUT ROWID;
-CREATE INDEX idx_transactions_pending_block_num ON transactions(block_num) WHERE status_variant = 0;
+-- Only pending transactions (status 0) are ever filtered by status, so the index covers just those rows.
+CREATE INDEX idx_transactions_pending ON transactions(status_variant) WHERE status_variant = 0;
 
 
 CREATE TABLE transaction_scripts (

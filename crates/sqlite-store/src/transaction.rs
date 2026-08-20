@@ -30,7 +30,6 @@ pub(crate) const UPSERT_TRANSACTION_QUERY: &str = insert_sql!(
         id,
         details,
         script_root,
-        block_num,
         status_variant,
         status
     } | REPLACE
@@ -51,8 +50,6 @@ struct SerializedTransactionData {
     tx_script: Option<Vec<u8>>,
     /// Transaction details
     details: Vec<u8>,
-    /// Block number
-    block_num: u32,
     /// Transaction status variant identifier
     status_variant: u8,
     /// Serialized transaction status
@@ -212,7 +209,6 @@ pub(crate) fn upsert_transaction_record(
         script_root,
         tx_script,
         details,
-        block_num,
         status_variant,
         status,
     } = serialize_transaction_data(transaction);
@@ -224,7 +220,7 @@ pub(crate) fn upsert_transaction_record(
 
     tx.execute(
         UPSERT_TRANSACTION_QUERY,
-        params![id, details, script_root, block_num, status_variant, status],
+        params![id, details, script_root, status_variant, status],
     )
     .into_store_error()?;
 
@@ -243,7 +239,6 @@ fn serialize_transaction_data(transaction_record: &TransactionRecord) -> Seriali
         script_root,
         tx_script,
         details: transaction_record.details.to_bytes(),
-        block_num: transaction_record.details.block_num.as_u32(),
         status_variant: transaction_record.status.variant() as u8,
         status: transaction_record.status.to_bytes(),
     }
@@ -303,12 +298,10 @@ mod tests {
     use super::{SqliteStore, upsert_transaction_record};
     use crate::db_management::utils::apply_migrations;
 
-    /// Builds a script-less transaction record executed against `block_num`.
-    fn create_transaction_record(
-        index: u64,
-        block_num: u32,
-        status: TransactionStatus,
-    ) -> TransactionRecord {
+    /// Builds a script-less transaction record with the given status.
+    fn create_transaction_record(index: u64, status: TransactionStatus) -> TransactionRecord {
+        const BLOCK_NUM: u32 = 5;
+
         let account_id =
             AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE).unwrap();
         let details = TransactionDetails {
@@ -317,9 +310,9 @@ mod tests {
             final_account_state: Word::default(),
             input_note_nullifiers: vec![],
             output_notes: RawOutputNotes::new(vec![]).unwrap(),
-            block_num: BlockNumber::from(block_num),
-            submission_height: BlockNumber::from(block_num),
-            expiration_block_num: BlockNumber::from(block_num + 1),
+            block_num: BlockNumber::from(BLOCK_NUM),
+            submission_height: BlockNumber::from(BLOCK_NUM),
+            expiration_block_num: BlockNumber::from(BLOCK_NUM + 1),
             creation_timestamp: 0,
         };
 
@@ -351,46 +344,25 @@ mod tests {
     }
 
     #[test]
-    fn expired_before_returns_only_pending_transactions_executed_before_the_bound() {
-        let expired = create_transaction_record(1, 5, TransactionStatus::Pending);
-        // The bound is exclusive, so a transaction executed against it is not expired yet.
-        let at_the_bound = create_transaction_record(2, 10, TransactionStatus::Pending);
-        let later = create_transaction_record(3, 15, TransactionStatus::Pending);
+    fn uncommitted_returns_only_pending_transactions() {
+        let pending = create_transaction_record(1, TransactionStatus::Pending);
         let committed = create_transaction_record(
-            4,
-            5,
+            2,
             TransactionStatus::Committed {
                 block_number: BlockNumber::from(6u32),
                 commit_timestamp: 0,
             },
         );
         let discarded =
-            create_transaction_record(5, 5, TransactionStatus::Discarded(DiscardCause::Expired));
+            create_transaction_record(3, TransactionStatus::Discarded(DiscardCause::Expired));
 
-        let mut conn =
-            create_test_connection(&[expired.clone(), at_the_bound, later, committed, discarded]);
+        let mut conn = create_test_connection(&[pending.clone(), committed, discarded]);
 
-        let records = SqliteStore::get_transactions(
-            &mut conn,
-            &TransactionFilter::ExpiredBefore(BlockNumber::from(10u32)),
-        )
-        .unwrap();
+        let records =
+            SqliteStore::get_transactions(&mut conn, &TransactionFilter::Uncommitted).unwrap();
 
         let ids: Vec<_> = records.iter().map(|record| record.id).collect();
-        assert_eq!(ids, vec![expired.id]);
-    }
-
-    #[test]
-    fn expired_before_is_served_by_the_pending_transactions_index() {
-        let conn = create_test_connection(&[]);
-
-        let query = TransactionFilter::ExpiredBefore(BlockNumber::from(10u32)).to_query();
-        let plan = query_plan(&conn, &query).join("\n");
-
-        assert!(
-            plan.contains("SEARCH tx USING INDEX idx_transactions_pending_block_num (block_num<?)"),
-            "the block number bound must be applied inside the index: {plan}"
-        );
+        assert_eq!(ids, vec![pending.id]);
     }
 
     #[test]
@@ -400,10 +372,10 @@ mod tests {
         let query = TransactionFilter::Uncommitted.to_query();
         let plan = query_plan(&conn, &query).join("\n");
 
-        // Every entry of the partial index is a pending transaction, so walking the index in full
-        // still never touches a committed or discarded row.
+        // Every entry of the partial index is a pending transaction, so the search never touches
+        // a committed or discarded row.
         assert!(
-            plan.contains("tx USING INDEX idx_transactions_pending_block_num"),
+            plan.contains("SEARCH tx USING INDEX idx_transactions_pending (status_variant=?)"),
             "pending transactions must be read from the partial index: {plan}"
         );
     }

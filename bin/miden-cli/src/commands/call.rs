@@ -1,25 +1,28 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+use std::slice;
 
 use clap::Parser;
-use miden_client::account::{AccountHeader, AccountId};
+use miden_client::account::AccountId;
 use miden_client::assembly::CodeBuilder;
 use miden_client::keystore::Keystore;
 use miden_client::rpc::domain::account::AccountStorageRequirements;
-use miden_client::store::AccountStatus;
 use miden_client::transaction::{
     AdviceInputs,
     ForeignAccount,
     TransactionRequestBuilder,
     TransactionRequestError,
     TransactionScript,
+    build_fpi_script,
 };
-use miden_client::vm::{Package, PackageExport};
-use miden_client::{Client, Deserializable, Felt, Word};
+use miden_client::vm::{MIN_STACK_DEPTH, Package, PackageExport};
+use miden_client::{Client, Felt, Word};
 
 use crate::advice_inputs::load_advice_map_from_file;
 use crate::commands::account::DEFAULT_ACCOUNT_ID_KEY;
+use crate::commands::new_account::load_packages;
+use crate::config::CliConfig;
 use crate::errors::CliError;
 use crate::utils::{
     parse_account_id,
@@ -72,6 +75,7 @@ impl CallCmd {
             ));
         }
 
+        let cli_config = CliConfig::load()?;
         let (account_str, procedure) = split_procedure_target(&self.target);
         let procedure = procedure.ok_or_else(|| {
             CliError::InvalidArgument(format!(
@@ -81,21 +85,32 @@ impl CallCmd {
         })?;
 
         let target_id = parse_account_id(&client, account_str).await?;
-        let call_target = resolve_call_target(&client, target_id).await?;
         let args = parse_args(&self.args)?;
-        let call_code = self.resolve_call_code(&client, procedure, &args)?;
+        let call_code = self.resolve_call_code(&client, &cli_config, procedure, &args)?;
 
         let advice_entries = match &self.inputs_path {
             Some(path) => load_advice_map_from_file(path)?,
             None => vec![],
         };
 
-        if call_target.is_remote() {
-            run_remote_call(&mut client, &call_target, target_id, call_code, &args, advice_entries)
+        let call_target = resolve_call_target(&client, target_id).await?;
+
+        match call_target {
+            CallTarget::Local(account_id) => {
+                run_local_call(&mut client, account_id, call_code, &args, advice_entries).await
+            },
+            CallTarget::Remote { target_id, executor_id, foreign_account } => {
+                run_remote_call(
+                    &mut client,
+                    target_id,
+                    executor_id,
+                    foreign_account,
+                    call_code,
+                    &args,
+                    advice_entries,
+                )
                 .await
-        } else {
-            run_local_call(&mut client, call_target.executor, call_code, &args, advice_entries)
-                .await
+            },
         }
     }
 
@@ -104,11 +119,22 @@ impl CallCmd {
     fn resolve_call_code<AUTH: Keystore + Sync + 'static>(
         &self,
         client: &Client<AUTH>,
+        cli_config: &CliConfig,
         procedure: &str,
         args: &[Felt],
     ) -> Result<CallCode, CliError> {
+        // A procedure only sees the top MIN_STACK_DEPTH felts of the stack.
+        if args.len() > MIN_STACK_DEPTH {
+            return Err(CliError::InvalidArgument(format!(
+                "A procedure takes at most {MIN_STACK_DEPTH} input values; got {}.",
+                args.len()
+            )));
+        }
+
         if let Some(pkg_path) = &self.package {
-            let package = load_package(pkg_path)?;
+            let package = load_packages(cli_config, slice::from_ref(pkg_path))?
+                .pop()
+                .expect("load_packages returns one package per path");
             let digest = resolve_procedure_digest(&package, procedure)?;
             let ProcedureSignature { param_felts, result_felts } =
                 print_manifest_signature(&package, procedure);
@@ -130,6 +156,16 @@ impl CallCmd {
                     );
                 },
                 _ => {},
+            }
+
+            // The output stack only holds MIN_STACK_DEPTH felts.
+            if let Some(n) = result_felts
+                && n > MIN_STACK_DEPTH
+            {
+                return Err(CliError::InvalidArgument(format!(
+                    "Procedure '{procedure}' returns {n} values; only up to {MIN_STACK_DEPTH} \
+                     can be read from the output stack."
+                )));
             }
 
             // The account's code is loaded from the client's store at VM runtime, so the library
@@ -175,34 +211,47 @@ struct CallCode {
 /// to compute — only the read phase runs.
 async fn run_remote_call<AUTH: Keystore + Sync + 'static>(
     client: &mut Client<AUTH>,
-    call_target: &CallTarget,
     target_id: AccountId,
+    executor_id: AccountId,
+    foreign_account: Box<ForeignAccount>,
     call_code: CallCode,
     args: &[Felt],
     advice_entries: Vec<(Word, Vec<Felt>)>,
 ) -> Result<(), CliError> {
     let CallCode { builder, digest, result_felts } = call_code;
-    let tx_script = generate_fpi_tx_script(builder, target_id, &digest, args)?;
+    let tx_script =
+        build_fpi_script(builder, target_id, digest, args).map_err(|err| match err {
+            TransactionRequestError::ForeignProcedureInputsTooLong { max, actual } => {
+                CliError::InvalidArgument(format!(
+                    "A call on an account read from the network takes at most {max} input felts; \
+                     got {actual}"
+                ))
+            },
+            other => {
+                CliError::Transaction(other.into(), "Failed to build the call script".to_string())
+            },
+        })?;
 
     let output_stack = client
         .execute_program(
-            call_target.executor,
+            executor_id,
             tx_script,
             AdviceInputs::default().with_map(advice_entries),
-            call_target.foreign_accounts.clone(),
+            BTreeMap::from([(target_id, *foreign_account)]),
         )
         .await?;
 
     print_executed_program_stack(&output_stack, result_felts);
+
     println!("\nA call on an account read from the network can only read it; no state delta.");
     Ok(())
 }
 
 /// Runs a local call: a read phase for the return values, then a transaction for the state delta.
-/// The executor is the target account itself, so the procedure may mutate it.
+/// The account runs the call itself, so the procedure may mutate it.
 async fn run_local_call<AUTH: Keystore + Sync + 'static>(
     client: &mut Client<AUTH>,
-    executor: AccountId,
+    account_id: AccountId,
     call_code: CallCode,
     args: &[Felt],
     advice_entries: Vec<(Word, Vec<Felt>)>,
@@ -213,7 +262,7 @@ async fn run_local_call<AUTH: Keystore + Sync + 'static>(
     // 1) Read-only execution to get return values.
     let output_stack = client
         .execute_program(
-            executor,
+            account_id,
             tx_script.clone(),
             AdviceInputs::default().with_map(advice_entries.clone()),
             BTreeMap::new(),
@@ -230,7 +279,7 @@ async fn run_local_call<AUTH: Keystore + Sync + 'static>(
             CliError::Transaction(err.into(), "Failed to build transaction".to_string())
         })?;
 
-    match client.execute_transaction(executor, tx_request).await {
+    match client.execute_transaction(account_id, tx_request).await {
         Ok(tx_result) => {
             print_executed_transaction(client, tx_result.executed_transaction()).await?;
         },
@@ -239,33 +288,34 @@ async fn run_local_call<AUTH: Keystore + Sync + 'static>(
     Ok(())
 }
 
-/// Resolved call target. Local accounts run themselves; remote accounts are read via FPI
-/// using a local account as executor.
-struct CallTarget {
-    executor: AccountId,
-    foreign_accounts: BTreeMap<AccountId, ForeignAccount>,
-}
-
-impl CallTarget {
-    fn is_remote(&self) -> bool {
-        !self.foreign_accounts.is_empty()
-    }
+/// Resolved call target.
+enum CallTarget {
+    /// The account is tracked locally, so it runs the call itself and may be mutated by it.
+    Local(AccountId),
+    /// The account is read from the network and the call runs from a local account.
+    Remote {
+        target_id: AccountId,
+        executor_id: AccountId,
+        foreign_account: Box<ForeignAccount>,
+    },
 }
 
 async fn resolve_call_target<AUTH: Keystore + Sync + 'static>(
     client: &Client<AUTH>,
     target_id: AccountId,
 ) -> Result<CallTarget, CliError> {
-    let local_accounts = client.get_account_headers().await?;
+    if let Some((_, status)) = client.get_account_header(target_id).await? {
+        // A locked account holds outdated state and is always private, so it can't be read from
+        // the network either.
+        if status.is_locked() {
+            return Err(CliError::InvalidArgument(format!(
+                "Account {target_id} is locked: its local state doesn't match the network's, so \
+                 the call can't run on it."
+            )));
+        }
 
-    if local_accounts.iter().any(|(header, _)| header.id() == target_id) {
-        return Ok(CallTarget {
-            executor: target_id,
-            foreign_accounts: BTreeMap::new(),
-        });
+        return Ok(CallTarget::Local(target_id));
     }
-
-    let executor = pick_local_executor(client, &local_accounts).await?;
 
     let foreign_account = ForeignAccount::public(target_id, AccountStorageRequirements::default())
         .map_err(|err| match err {
@@ -280,14 +330,17 @@ async fn resolve_call_target<AUTH: Keystore + Sync + 'static>(
             )),
         })?;
 
+    let executor_id = pick_local_executor(client).await?;
+
     println!(
         "Account {target_id} isn't tracked locally; reading its state from the network and \
-         running the call from your account {executor}."
+         running the call from your account {executor_id}."
     );
 
-    Ok(CallTarget {
-        executor,
-        foreign_accounts: BTreeMap::from([(target_id, foreign_account)]),
+    Ok(CallTarget::Remote {
+        target_id,
+        executor_id,
+        foreign_account: Box::new(foreign_account),
     })
 }
 
@@ -297,43 +350,29 @@ async fn resolve_call_target<AUTH: Keystore + Sync + 'static>(
 /// Locked accounts are skipped because their local state doesn't match the node's.
 async fn pick_local_executor<AUTH: Keystore + Sync + 'static>(
     client: &Client<AUTH>,
-    local_accounts: &[(AccountHeader, AccountStatus)],
 ) -> Result<AccountId, CliError> {
-    let unlocked_ids: Vec<AccountId> = local_accounts
-        .iter()
-        .filter(|(_, status)| !status.is_locked())
-        .map(|(header, _)| header.id())
-        .collect();
-
     let default_id: Option<AccountId> =
         client.get_setting(DEFAULT_ACCOUNT_ID_KEY.to_string()).await?;
     if let Some(default_id) = default_id
-        && unlocked_ids.contains(&default_id)
+        && let Some((_, status)) = client.get_account_header(default_id).await?
+        && !status.is_locked()
     {
         return Ok(default_id);
     }
 
-    unlocked_ids.first().copied().ok_or_else(|| {
-        CliError::InvalidArgument(
-            "Calling an account that isn't tracked locally needs one of your own accounts to run \
-             the call from, and none is usable. Create one with `miden-client new-wallet` and \
-             re-run."
-                .to_string(),
-        )
-    })
-}
-
-fn load_package(path: &Path) -> Result<Package, CliError> {
-    if !path.exists() {
-        return Err(CliError::InvalidArgument(format!(
-            "Package file not found: {}",
-            path.display()
-        )));
-    }
-    let bytes = std::fs::read(path)?;
-    Package::read_from_bytes(&bytes).map_err(|e| {
-        CliError::Parse(Box::new(e), format!("Failed to deserialize package: {}", path.display()))
-    })
+    let local_accounts = client.get_account_headers().await?;
+    local_accounts
+        .iter()
+        .find(|(_, status)| !status.is_locked())
+        .map(|(header, _)| header.id())
+        .ok_or_else(|| {
+            CliError::InvalidArgument(
+                "Calling an account that isn't tracked locally needs one of your own accounts to \
+                 run the call from, and none is usable. Create one with `miden-client new-wallet` \
+                 and re-run."
+                    .to_string(),
+            )
+        })
 }
 
 fn resolve_procedure_digest(package: &Package, procedure_name: &str) -> Result<Word, CliError> {
@@ -463,52 +502,5 @@ fn generate_tx_script(
 
     script.push_str("    exec.sys::truncate_stack\n");
     script.push_str("end\n");
-    Ok(code_builder.compile_tx_script(&script)?)
-}
-
-/// Builds a script that invokes `proc_digest` on `foreign_id` via FPI. Args are pushed so
-/// args[0] ends up on top, matching the direct-call convention. `truncate_stack` enforces the
-/// 16-element exit invariant required by FPI component exports.
-fn generate_fpi_tx_script(
-    code_builder: CodeBuilder,
-    foreign_id: AccountId,
-    proc_digest: &Word,
-    args: &[Felt],
-) -> Result<TransactionScript, CliError> {
-    const FPI_INPUT_SLOTS: usize = 16;
-    if args.len() > FPI_INPUT_SLOTS {
-        return Err(CliError::InvalidArgument(format!(
-            "A call on an account read from the network takes at most {FPI_INPUT_SLOTS} input \
-             felts; got {}",
-            args.len()
-        )));
-    }
-
-    let mut script = String::from(
-        "use miden::protocol::tx\nuse miden::core::sys\n\n@transaction_script\npub proc main\n",
-    );
-
-    // Pad the deeper input slots with zeros, then push args so args[0] lands on top.
-    let pad_count = FPI_INPUT_SLOTS - args.len();
-    let full_words = pad_count / 4;
-    let remainder = pad_count % 4;
-    for _ in 0..full_words {
-        script.push_str("    padw\n");
-    }
-    for _ in 0..remainder {
-        script.push_str("    push.0\n");
-    }
-    for arg in args.iter().rev() {
-        writeln!(script, "    push.{arg}").unwrap();
-    }
-
-    writeln!(script, "    push.{}", proc_digest.to_hex()).unwrap();
-    writeln!(script, "    push.{}", foreign_id.prefix().as_u64()).unwrap();
-    writeln!(script, "    push.{}", foreign_id.suffix()).unwrap();
-
-    script.push_str("    exec.tx::execute_foreign_procedure\n");
-    script.push_str("    exec.sys::truncate_stack\n");
-    script.push_str("end\n");
-
     Ok(code_builder.compile_tx_script(&script)?)
 }

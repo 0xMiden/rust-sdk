@@ -561,6 +561,17 @@ impl<AUTH> Client<AUTH> {
         self.store.get_account_headers().await.map_err(Into::into)
     }
 
+    /// Returns the [`AccountHeader`] of the account with the specified ID along with its status,
+    /// or `None` if the account isn't tracked by the client.
+    ///
+    /// Said account's state is the state after the last performed sync.
+    pub async fn get_account_header(
+        &self,
+        account_id: AccountId,
+    ) -> Result<Option<(AccountHeader, AccountStatus)>, ClientError> {
+        self.store.get_account_header(account_id).await.map_err(Into::into)
+    }
+
     /// Retrieves the full [`Account`] object from the store, returning `None` if not found.
     ///
     /// This method loads the complete account state including vault, storage, and code.

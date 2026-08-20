@@ -149,6 +149,7 @@ pub use request::{
     TransactionRequestBuilder,
     TransactionRequestError,
     TransactionScriptTemplate,
+    build_fpi_script,
 };
 
 mod observer;

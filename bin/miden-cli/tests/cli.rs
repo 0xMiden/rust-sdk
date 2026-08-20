@@ -1725,7 +1725,7 @@ fn call_test_exports(package: &miden_client::vm::Package) -> Vec<miden_client::v
     use miden_client::vm::{PackageExport, ProcedureExport, QualifiedProcedureName};
     use midenc_hir_type::{CallConv, FunctionType, Type};
 
-    let signature_overrides: [(&str, FunctionType); 3] = [
+    let signature_overrides: [(&str, FunctionType); 4] = [
         (
             "add",
             FunctionType::new(CallConv::ComponentModel, [Type::Felt, Type::Felt], [Type::Felt]),
@@ -1739,6 +1739,11 @@ fn call_test_exports(package: &miden_client::vm::Package) -> Vec<miden_client::v
             ),
         ),
         ("read_advice", FunctionType::new(CallConv::ComponentModel, [], [Type::Felt])),
+        // Wider than the 16-felt output stack, so the call is rejected before it runs.
+        (
+            "wide_result",
+            FunctionType::new(CallConv::ComponentModel, [], vec![Type::Felt; 17]),
+        ),
     ];
 
     let mut exports = Vec::new();
@@ -1793,6 +1798,11 @@ fn build_call_test_masp(out_path: &Path) {
             push.STORED_VALUE[0..2]
             exec.native_account::set_item
             dropw
+            exec.sys::truncate_stack
+        end
+
+        @account_procedure
+        pub proc wide_result
             exec.sys::truncate_stack
         end
 
@@ -2133,6 +2143,45 @@ fn call_rejects_wrong_arg_count() {
     );
 }
 
+/// Tests passing more arguments than a procedure can be given.
+#[test]
+fn call_rejects_more_args_than_stack_window() {
+    let (temp_dir, account_id, masp_path) = setup_call_test_account();
+
+    // Called by digest, so that the manifest's argument check doesn't run first.
+    let digest = procedure_digest_hex(&masp_path, "add");
+    let mut args = vec!["call".to_string(), format!("{account_id}:{digest}")];
+    args.extend((0..17).map(|value| value.to_string()));
+
+    let mut cmd = cargo_bin_cmd!("miden-client");
+    cmd.args(&args);
+
+    cmd.current_dir(&temp_dir)
+        .assert()
+        .failure()
+        .stderr(contains("takes at most 16 input values; got 17"));
+}
+
+/// Tests calling a procedure whose manifest declares more result values than the output stack
+/// holds. They could not be read back, so the call must fail.
+#[test]
+fn call_rejects_results_wider_than_stack_window() {
+    let (temp_dir, account_id, masp_path) = setup_call_test_account();
+
+    let mut cmd = cargo_bin_cmd!("miden-client");
+    cmd.args([
+        "call",
+        &format!("{account_id}:wide_result"),
+        "--package",
+        masp_path.to_str().unwrap(),
+    ]);
+
+    cmd.current_dir(&temp_dir)
+        .assert()
+        .failure()
+        .stderr(contains("returns 17 values"));
+}
+
 /// Helper: sets up two isolated clients. The first owns a public `call-test` account deployed
 /// on-chain; the second has only a local wallet to act as the FPI executor. Returns the second
 /// client's (`caller_dir`, `account_id`, `masp_path`).
@@ -2226,6 +2275,81 @@ fn call_remote_account_via_fpi() {
         stdout.contains("Result: 10"),
         "Expected `add(3, 7)` result in output:\n{stdout}"
     );
+}
+
+/// Tests calling a procedure that writes to storage on an account read from the network. The
+/// kernel only allows writes to the account running the transaction, so the call must fail.
+#[test]
+fn call_remote_account_rejects_state_change() {
+    let (caller_dir, account_id, masp_path) = setup_remote_call_test();
+
+    let mut cmd = cargo_bin_cmd!("miden-client");
+    cmd.args([
+        "call",
+        &format!("{account_id}:set_value"),
+        "42",
+        "0",
+        "0",
+        "0",
+        "--package",
+        masp_path.to_str().unwrap(),
+    ]);
+
+    // The kernel rejects this with ERR_ACCOUNT_IS_NOT_NATIVE. Its text is matched instead of
+    // the constant name, which is printed only when the kernel source is rendered.
+    cmd.current_dir(&caller_dir)
+        .assert()
+        .failure()
+        .stderr(contains("the active account is not"));
+}
+
+/// Tests calling a private account that isn't tracked locally. The node cannot serve its state,
+/// so the call must fail.
+#[test]
+fn call_rejects_untracked_private_account() {
+    let owner_dir = init_cli().1;
+    let target_id = new_wallet_cli(&owner_dir, AccountType::Private);
+
+    // A second client that never saw that account.
+    let caller_dir = init_cli().1;
+    new_wallet_cli(&caller_dir, AccountType::Private);
+    sync_cli(&caller_dir);
+
+    // The digest is only parsed, never resolved, because the call fails on the account first.
+    let digest = format!("0x{}", "0".repeat(64));
+    let mut cmd = cargo_bin_cmd!("miden-client");
+    cmd.args(["call", &format!("{target_id}:{digest}")]);
+
+    cmd.current_dir(&caller_dir)
+        .assert()
+        .failure()
+        .stderr(contains("its state isn't public"));
+}
+
+/// Tests calling an account that isn't tracked locally from a client with no accounts of its
+/// own. There is nothing to run the call from, so it must fail.
+#[test]
+fn call_remote_account_requires_local_executor() {
+    let (_caller_dir, account_id, masp_path) = setup_remote_call_test();
+
+    // A client with no accounts at all.
+    let empty_dir = init_cli().1;
+    sync_cli(&empty_dir);
+
+    let mut cmd = cargo_bin_cmd!("miden-client");
+    cmd.args([
+        "call",
+        &format!("{account_id}:add"),
+        "3",
+        "7",
+        "--package",
+        masp_path.to_str().unwrap(),
+    ]);
+
+    cmd.current_dir(&empty_dir)
+        .assert()
+        .failure()
+        .stderr(contains("of your own accounts to run the call from"));
 }
 
 // AUTH COMPONENT TESTS

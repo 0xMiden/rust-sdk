@@ -56,6 +56,7 @@
 * [FIX][cli] `miden-client notes --show` now prints the note sender in the `Sender` row; it was printing the note tag there ([#2412](https://github.com/0xMiden/rust-sdk/pull/2412)).
 * [FIX][cli] `miden-client tags --add` and `--remove` now report what actually happened instead of always printing that the tag was added or removed ([#2416](https://github.com/0xMiden/rust-sdk/pull/2416)).
 * [FIX][rust] `VerifyingRpcClient::get_account` now validates that the returned `AccountProof` belongs to the requested account ID, rejecting a mismatch with `RpcError::InvalidResponse` ([#2419](https://github.com/0xMiden/rust-sdk/pull/2419)).
+* [FIX][cli] `miden-client import` now reports that a file is neither a note file nor an account file, naming the file and both parse failures, instead of surfacing only the account attempt as an opaque `io error: invalid data` ([#2428](https://github.com/0xMiden/rust-sdk/pull/2428)).
 
 ## 0.16.0-alpha.1 (2026-07-17)
 

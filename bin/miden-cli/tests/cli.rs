@@ -678,6 +678,28 @@ fn account_inspect_flags_require_inspect() {
 // IMPORT TESTS
 // ================================================================================================
 
+/// A file that parses as neither kind should say so, naming the file and both reasons, rather
+/// than surfacing the account attempt alone as an opaque I/O failure.
+#[test]
+fn import_reports_why_a_file_is_neither_a_note_nor_an_account() {
+    let temp_dir = temp_dir().join(format!("cli-test-{}", rand::rng().random::<u64>()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let mut init_cmd = cargo_bin_cmd!("miden-client");
+    init_cmd.args(["init", "--local"]);
+    init_cmd.current_dir(&temp_dir).assert().success();
+
+    std::fs::write(temp_dir.join("not-a-note.mno"), b"definitely not a miden file").unwrap();
+
+    let mut import_cmd = cargo_bin_cmd!("miden-client");
+    import_cmd.args(["import", "not-a-note.mno"]);
+    import_cmd
+        .current_dir(&temp_dir)
+        .assert()
+        .failure()
+        .stderr(contains("not-a-note.mno").and(contains("neither a note file")));
+}
+
 // Only one faucet is being created on the genesis block
 const GENESIS_ACCOUNTS_FILENAMES: [&str; 1] = ["account.mac"];
 

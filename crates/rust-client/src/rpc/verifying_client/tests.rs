@@ -28,10 +28,15 @@ use miden_protocol::note::{
     Nullifier,
     PartialNoteMetadata,
 };
-use miden_protocol::testing::account_id::ACCOUNT_ID_SENDER;
+use miden_protocol::testing::account_id::{
+    ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE,
+    ACCOUNT_ID_SENDER,
+};
 use miden_protocol::transaction::{
+    InputNotes,
     OrderedTransactionHeaders,
     ProvenTransaction,
+    TransactionHeader,
     TransactionKernel,
 };
 use miden_protocol::{Felt, Word};
@@ -141,6 +146,22 @@ fn sync_notes_block(block_num: u32, tags: &[NoteTag]) -> SyncNotesBlock {
     }
 }
 
+fn transaction_record(account_id: AccountId) -> TransactionRecord {
+    TransactionRecord {
+        block_num: BlockNumber::GENESIS,
+        transaction_header: TransactionHeader::new(
+            account_id,
+            Word::default(),
+            Word::default(),
+            InputNotes::new_unchecked(vec![]),
+            vec![],
+        ),
+        output_notes: vec![],
+        erased_output_notes: vec![],
+        consumed_note_refs: vec![],
+    }
+}
+
 fn account_proof() -> AccountProof {
     let path = SparseMerklePath::from_parts(u64::MAX, Vec::new())
         .expect("an all-empty path spans the full account tree depth");
@@ -180,6 +201,7 @@ struct CannedTransport {
     nullifiers: Option<Vec<NullifierUpdate>>,
     account: Option<(BlockNumber, AccountProof)>,
     note_script: CannedScript,
+    transactions: Option<Vec<TransactionRecord>>,
     /// When set, every canned method fails instead of answering.
     fail_with: Option<String>,
 }
@@ -330,7 +352,7 @@ impl NodeRpcClient for CannedTransport {
         _block_to: BlockNumber,
         _account_ids: Vec<AccountId>,
     ) -> Result<Vec<TransactionRecord>, RpcError> {
-        unimplemented!("not used in these tests")
+        self.canned(self.transactions.as_ref(), "test must set a canned sync_transactions response")
     }
 
     async fn get_network_id(&self) -> Result<NetworkId, RpcError> {
@@ -550,6 +572,23 @@ async fn get_account_verifies_block_num_only_for_pinned_requests() {
 }
 
 #[tokio::test]
+async fn get_account_rejects_proof_for_wrong_account_id() {
+    // account_proof() is built for test_account_id() (ACCOUNT_ID_SENDER),
+    // but we request a different account ID -- the verifying client must reject it.
+    let client = VerifyingRpcClient::new(CannedTransport {
+        account: Some((BlockNumber::from(1u32), account_proof())),
+        ..Default::default()
+    });
+    let other = AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE)
+        .expect("test account ID is well formed");
+    let err = client
+        .get_account(other, GetAccountRequest::new())
+        .await
+        .expect_err("proof for a different account must be rejected");
+    assert!(matches!(err, RpcError::InvalidResponse(_)));
+}
+
+#[tokio::test]
 async fn get_note_script_by_root_verifies_script_root() {
     let script = StandardNote::P2ID.script();
     let root = Word::from(script.root());
@@ -585,6 +624,54 @@ async fn get_note_script_by_root_verifies_script_root() {
         .await
         .expect_err("a script with another root must be rejected");
     assert!(matches!(err, RpcError::InvalidResponse(_)));
+}
+
+#[tokio::test]
+async fn sync_transactions_verifies_account_ids() {
+    let requested = test_account_id();
+    let other = AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE)
+        .expect("test public account ID is well formed");
+
+    let client = VerifyingRpcClient::new(CannedTransport {
+        transactions: Some(vec![transaction_record(requested)]),
+        ..Default::default()
+    });
+    let records = client
+        .sync_transactions(BlockNumber::GENESIS, BlockNumber::from(1u32), vec![requested])
+        .await
+        .expect("the requested account must be accepted");
+    assert_eq!(records.len(), 1);
+
+    // A superset request that includes the returned account is fine.
+    client
+        .sync_transactions(BlockNumber::GENESIS, BlockNumber::from(1u32), vec![requested, other])
+        .await
+        .expect("a superset of accounts must be accepted");
+
+    let err = client
+        .sync_transactions(BlockNumber::GENESIS, BlockNumber::from(1u32), vec![other])
+        .await
+        .expect_err("a transaction for an unrequested account must be rejected");
+    assert!(matches!(err, RpcError::InvalidResponse(_)));
+
+    let err = client
+        .sync_transactions(BlockNumber::GENESIS, BlockNumber::from(1u32), vec![])
+        .await
+        .expect_err("no transaction may come back when no account was requested");
+    assert!(matches!(err, RpcError::InvalidResponse(_)));
+}
+
+#[tokio::test]
+async fn sync_transactions_accepts_empty_response() {
+    let client = VerifyingRpcClient::new(CannedTransport {
+        transactions: Some(Vec::new()),
+        ..Default::default()
+    });
+    let records = client
+        .sync_transactions(BlockNumber::GENESIS, BlockNumber::from(1u32), vec![test_account_id()])
+        .await
+        .expect("an empty response must be accepted");
+    assert!(records.is_empty());
 }
 
 #[tokio::test]

@@ -11,7 +11,6 @@ use miden_tx::utils::serde::{
     DeserializationError,
     Serializable,
 };
-use tracing::warn;
 
 use crate::Client;
 use crate::errors::ClientError;
@@ -36,29 +35,25 @@ impl<AUTH> Client<AUTH> {
     }
 
     /// Adds a note tag for the client to track. This tag's source will be marked as `User`.
-    pub async fn add_note_tag(&mut self, tag: NoteTag) -> Result<(), ClientError> {
-        let added = self
-            .store
+    ///
+    /// Returns true if the tag was added, and false if it was already being tracked.
+    pub async fn add_note_tag(&mut self, tag: NoteTag) -> Result<bool, ClientError> {
+        self.store
             .add_note_tag(NoteTagRecord { tag, source: NoteTagSource::User })
-            .await?;
-        if !added {
-            warn!("Tag {} is already being tracked", tag);
-        }
-        Ok(())
+            .await
+            .map_err(Into::into)
     }
 
     /// Removes a note tag for the client to track. Only tags added by the user can be removed.
-    pub async fn remove_note_tag(&mut self, tag: NoteTag) -> Result<(), ClientError> {
-        if self
+    ///
+    /// Returns true if the tag was removed, and false if it was not being tracked.
+    pub async fn remove_note_tag(&mut self, tag: NoteTag) -> Result<bool, ClientError> {
+        let removed = self
             .store
             .remove_note_tag(NoteTagRecord { tag, source: NoteTagSource::User })
-            .await?
-            == 0
-        {
-            warn!("Tag {} wasn't being tracked", tag);
-        }
+            .await?;
 
-        Ok(())
+        Ok(removed > 0)
     }
 }
 

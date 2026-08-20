@@ -73,7 +73,7 @@ mod errors;
 pub use errors::*;
 
 mod smt_forest;
-pub use smt_forest::AccountSmtForest;
+pub use smt_forest::{AccountSmtForest, AccountUpdate};
 
 mod account;
 pub use account::{
@@ -511,8 +511,7 @@ pub trait Store: Send + Sync {
 
     /// Removes a note tag from the list of tags that the client is interested in.
     ///
-    /// If the tag wasn't present in the store returns false since no tag was actually removed.
-    /// Otherwise returns true.
+    /// Returns the number of tags that were removed.
     async fn remove_note_tag(&self, tag: NoteTagRecord) -> Result<usize, StoreError>;
 
     /// Returns the block number of the last state sync block.

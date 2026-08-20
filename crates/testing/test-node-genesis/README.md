@@ -48,4 +48,4 @@ consumes, so this crate stays decoupled from the node's internal crates.
 
 ## License
 
-This project is [MIT licensed](../../LICENSE).
+This project is [MIT licensed](../../../LICENSE).

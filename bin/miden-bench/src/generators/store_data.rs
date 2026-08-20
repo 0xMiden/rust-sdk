@@ -225,7 +225,7 @@ pub fn wallet_accounts(count: usize) -> anyhow::Result<Vec<Account>> {
 
             AccountBuilder::new(init_seed)
                 .account_type(AccountType::Private)
-                .with_auth_component(auth)
+                .with_component(auth)
                 .with_component(BasicWallet)
                 .build_existing()
                 .map_err(anyhow::Error::from)

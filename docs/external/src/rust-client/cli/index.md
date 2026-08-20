@@ -20,7 +20,7 @@ miden-client <command> <flags> <arguments>
 
 ### `init`
 
-Creates a configuration file for the client in the current directory. Running this command is optional, as the client will self-initialize by default. By default, the command uses the Testnet network.
+Creates a global configuration file for the client. Pass `--local` to create one in the current directory. Running this command is optional, as the client will self-initialize by default. By default, the command uses the Testnet network.
 
 ```sh
 # This will create a config file named `miden-client.toml` using default values
@@ -33,10 +33,10 @@ miden-client init --network devnet
 miden-client init --network localhost
 
 # You can also specify a custom network
-miden-client init --network 18.203.155.106
+miden-client init --network http://18.203.155.106
 # You can specify the port
-miden-client init --network 18.203.155.106:8080
-# You can also specify the protocol (http/https)
+miden-client init --network http://18.203.155.106:8080
+# You can use HTTPS
 miden-client init --network https://18.203.155.106
 # You can specify both
 miden-client init --network https://18.203.155.106:1234
@@ -48,7 +48,7 @@ miden-client init --store-path db/store.sqlite3
 miden-client init --block-delta 250
 
 # You can provide both flags
-miden-client init --network 18.203.155.106 --store-path db/store.sqlite3
+miden-client init --network http://18.203.155.106 --store-path db/store.sqlite3
 
 # You can set a remote prover to offload the proving process (along with the `--delegate-proving` flag in transaction commands)
 miden-client init --remote-prover-endpoint <PROVER_URL>
@@ -65,11 +65,12 @@ Inspect account details.
 
 #### Action Flags
 
-| Flags            | Description                                      | Short Flag |
-| ---------------- | ------------------------------------------------ | ---------- |
-| `--list`         | List all accounts monitored by this client       | `-l`       |
-| `--show <ID>`    | Show details of the account for the specified ID | `-s`       |
-| `--default <ID>` | Manage the setting for the default account       | `-d`       |
+| Flags                        | Description                                                   | Short Flag |
+| ---------------------------- | ------------------------------------------------------------ | ---------- |
+| `--list`                     | List all accounts monitored by this client                   | `-l`       |
+| `--show <ID>`                | Show details of the account for the specified ID             | `-s`       |
+| `--inspect <ID[:PROCEDURE]>` | List the procedures an account exposes, or resolve a single one |         |
+| `--default <ID>`             | Manage the setting for the default account                   | `-d`       |
 
 The `--show` flag also accepts a partial ID instead of the full ID. For example, instead of:
 
@@ -84,6 +85,11 @@ miden-client account --show 0x8fd4b86
 ```
 
 For the `--default` flag, if `<ID>` is "none" then the previous default account is cleared. If no `<ID>` is specified then the default account is shown.
+
+The `--inspect` flag lists the procedures an account exposes, grouped into resolved procedures (shown in a table with their name, signature, and MAST root) and unresolved ones (listed by their MAST root under a hint to pass `--package`). Pass `<ID>:<PROCEDURE>` to resolve a single procedure by name; if no procedure with that name can be resolved (the account does not expose it, or its defining package was not provided) the command fails with an error. Like `--show`, it accepts a partial ID. It supports two additional flags:
+
+- `-p, --package <FILE>`: Supplies an additional `.masp` package used to resolve procedure MAST roots to their names and signatures, on top of the packages in the configured packages directory. It is repeatable (pass it once per package); when the same MAST root is exported by more than one package the first-loaded one wins (passed packages are consulted first) and a warning lists the packages involved. Procedures whose name cannot be resolved are still listed by their MAST root.
+- `-v, --verbose`: Prints the MASM disassembly of each procedure.
 
 ### `new-wallet`
 
@@ -346,7 +352,7 @@ miden-client address remove 0x17f13f4f83a8e8100c19d2961dfda2 mlcl1qple0ejnutx8zy
 
 #### Tips
 
-For `transfer` and `consume-notes`, you can omit the `--sender` and `--account` flags to use the default account defined in the [config](cli-config.md). If you omit the flag but have no default account defined in the config, you'll get an error instead.
+For `transfer` and `consume-notes`, you can omit the `--sender` and `--account` flags to use the client's [default account](cli-config.md#default-account-id). If you omit the flag but have no default account set, you'll get an error instead.
 
 For every command which needs an account ID (either wallet or faucet), you can also provide a partial ID instead of the full ID for each account. So instead of
 
@@ -457,7 +463,7 @@ miden-client call 0x4614b8bf575eab71455e97bd394e90:increment-count --package tar
 The command first prints the procedure's signature and its return values, then the effects the call has on the account:
 
 ```sh
-Raw Signature: increment-count() -> (Felt)
+Raw Signature: extern "fast" fn() -> felt
 
 Result: 1
 The transaction will have the following effects:

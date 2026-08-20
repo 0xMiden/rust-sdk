@@ -67,7 +67,7 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use miden_protocol::account::{Account, AccountCode, AccountId};
+use miden_protocol::account::{Account, AccountCode, AccountCodeInterface, AccountId};
 use miden_protocol::asset::{Asset, NonFungibleAsset};
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::errors::AssetError;
@@ -84,6 +84,7 @@ use miden_protocol::transaction::AccountInputs;
 use miden_protocol::vm::MIN_STACK_DEPTH;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::faucets::FungibleFaucet;
+use miden_standards::account::interface::AccountInterfaceExt;
 use miden_tx::{DataStore, NoteConsumptionChecker, TransactionExecutor};
 use tracing::info;
 
@@ -318,9 +319,54 @@ where
         account_id: AccountId,
         transaction_request: TransactionRequest,
     ) -> Result<TransactionResult, ClientError> {
+        self.execute_transaction_with_mode(
+            account_id,
+            transaction_request,
+            TransactionExecutionMode::Standard,
+        )
+        .await
+    }
+
+    /// Executes `transaction_request` (e.g. consuming a note) through the DAP program executor,
+    /// so a DAP client can attach and step through the whole transaction — kernel, note scripts,
+    /// and account code — instead of only a standalone transaction script.
+    ///
+    /// This is a debugging entry point: it runs the transaction interactively under the debug
+    /// adapter and does not prove, submit, or apply the result. The listen address (and optional
+    /// replay-snapshot path) are taken from the globally installed
+    /// [`DapConfig`](miden_debug::DapConfig).
+    ///
+    /// # Errors
+    ///
+    /// This applies the same request preparation and output-recipient validation as
+    /// [`Self::execute_transaction`], and returns the corresponding [`ClientError`] on failure.
+    #[cfg(feature = "dap")]
+    pub async fn execute_transaction_with_dap(
+        &mut self,
+        account_id: AccountId,
+        transaction_request: TransactionRequest,
+    ) -> Result<TransactionResult, ClientError> {
+        self.execute_transaction_with_mode(
+            account_id,
+            transaction_request,
+            TransactionExecutionMode::Dap,
+        )
+        .await
+    }
+
+    /// Executes a prepared transaction with the selected program executor while keeping request
+    /// preparation, data-store population, note filtering, and result validation identical across
+    /// execution modes.
+    async fn execute_transaction_with_mode(
+        &mut self,
+        account_id: AccountId,
+        transaction_request: TransactionRequest,
+        execution_mode: TransactionExecutionMode,
+    ) -> Result<TransactionResult, ClientError> {
         let account: Account = self.get_native_account_record(account_id).await?.try_into()?;
 
-        let prep = self.prepare_transaction(&account, transaction_request).await?;
+        validate_account_request(&transaction_request, &account)?;
+        let prep = self.prepare_transaction(account.code_interface(), transaction_request).await?;
 
         let data_store = ClientDataStore::new(self.store.clone(), self.rpc_api.clone());
         data_store.register_note_scripts(prep.output_note_scripts());
@@ -334,42 +380,45 @@ where
         let mut notes = prep.notes;
         if prep.ignore_invalid_notes {
             notes = self
-                .get_valid_input_notes(
-                    &account,
-                    notes,
-                    prep.tx_args.clone(),
-                    &prep.output_recipients,
-                )
+                .get_valid_input_notes(&data_store, account.id(), notes, prep.tx_args.clone())
                 .await?;
         }
 
-        let executed_transaction = self
-            .build_executor(&data_store)?
-            .execute_transaction(account_id, prep.block_num, notes, prep.tx_args)
-            .await?;
+        let executed_transaction = match execution_mode {
+            TransactionExecutionMode::Standard => {
+                self.build_executor(&data_store)?
+                    .execute_transaction(account_id, prep.block_num, notes, prep.tx_args)
+                    .await?
+            },
+            #[cfg(feature = "dap")]
+            TransactionExecutionMode::Dap => {
+                self.build_dap_executor(&data_store)?
+                    .execute_transaction(account_id, prep.block_num, notes, prep.tx_args)
+                    .await?
+            },
+        };
 
         validate_executed_transaction(&executed_transaction, &prep.output_recipients)?;
         TransactionResult::new(executed_transaction, prep.future_notes)
     }
 
     /// Performs the data-store-independent setup shared by `execute_transaction` and
-    /// `execute_transaction_for_batch`: validates the request against the supplied
-    /// `account`, loads/filters input notes, builds the transaction script and args,
-    /// retrieves foreign-account inputs, and computes the reference block number.
+    /// `execute_transaction_for_batch`: loads/filters input notes, builds the transaction script
+    /// and args, retrieves foreign-account inputs, and computes the reference block number.
     ///
     /// This method does not write to the store: any state produced by the transaction is
     /// persisted only after the transaction executes successfully.
     ///
-    /// `account` is the state validation runs against — for a single transaction this is
-    /// the persisted account; inside [`crate::transaction::BatchBuilder::push`] it is the
-    /// in-batch (stacked) state, so balances reflect prior pushes.
+    /// Checking the request against the account's balances is the caller's job, since it needs a
+    /// full [`Account`] (see [`validate_account_request`]). Batch execution only has the in-batch
+    /// [`miden_protocol::account::PartialAccount`] and so skips it; the executor still rejects an
+    /// unsatisfiable request.
     pub(crate) async fn prepare_transaction(
         &self,
-        account: &Account,
+        account_code_interface: AccountCodeInterface,
         transaction_request: TransactionRequest,
     ) -> Result<PreparedTransaction, ClientError> {
         self.validate_recency().await?;
-        validate_account_request(&transaction_request, account)?;
 
         // Retrieve all input notes from the store.
         let mut stored_note_records = self
@@ -400,7 +449,7 @@ where
         let future_notes: Vec<(NoteDetails, NoteTag)> =
             transaction_request.expected_future_notes().cloned().collect();
 
-        let tx_script = transaction_request.build_transaction_script(&account.code_interface())?;
+        let tx_script = transaction_request.build_transaction_script(&account_code_interface)?;
 
         let foreign_accounts = transaction_request.foreign_accounts().clone();
 
@@ -437,6 +486,12 @@ where
     }
 
     /// Proves the specified transaction using the provided prover.
+    ///
+    /// # Errors
+    ///
+    /// - Returns a [`ClientError::TransactionProvingError`] if the prover fails to produce a proof.
+    /// - Returns a [`ClientError::MismatchedProvenTransaction`] if the prover returns a proof of a
+    ///   transaction other than the requested one.
     pub async fn prove_transaction_with(
         &self,
         tx_result: &TransactionResult,
@@ -444,8 +499,23 @@ where
     ) -> Result<ProvenTransaction, ClientError> {
         info!("Proving transaction...");
 
-        let proven_transaction =
-            tx_prover.prove(tx_result.executed_transaction().clone().into()).await?;
+        let executed_transaction = tx_result.executed_transaction();
+        let proven_transaction = tx_prover.prove(executed_transaction.clone().into()).await?;
+
+        // A prover is trusted with the witness, but not with choosing which transaction gets
+        // submitted. Everything downstream (submission, the local store update, the returned
+        // id) is derived from `tx_result`, so a proof of anything else would be submitted
+        // while the local state recorded the transaction that never reached the network.
+        //
+        // The id commits to the initial and final account commitments and to the input and
+        // output note commitments; the account commitments in turn commit to the account id,
+        // so a matching id covers the account as well.
+        if proven_transaction.id() != executed_transaction.id() {
+            return Err(ClientError::MismatchedProvenTransaction {
+                requested: executed_transaction.id(),
+                returned: proven_transaction.id(),
+            });
+        }
 
         info!("Transaction proven.");
 
@@ -764,21 +834,17 @@ where
     /// `output_recipients` are the request's expected output recipients; their scripts are
     /// registered on the consumption-check data store so output note creation can resolve them
     /// without them being present in the store.
-    pub(crate) async fn get_valid_input_notes(
+    pub(crate) async fn get_valid_input_notes<STORE: DataStore + Sync>(
         &self,
-        account: &Account,
+        data_store: &STORE,
+        account_id: AccountId,
         mut input_notes: InputNotes<InputNote>,
         tx_args: TransactionArgs,
-        output_recipients: &[NoteRecipient],
     ) -> Result<InputNotes<InputNote>, ClientError> {
         loop {
-            let data_store = ClientDataStore::new(self.store.clone(), self.rpc_api.clone());
-            data_store.register_note_scripts(output_recipients.iter().map(|r| r.script().clone()));
-
-            data_store.mast_store().load_account_code(account.code());
-            let execution = NoteConsumptionChecker::new(&self.build_executor(&data_store)?)
+            let execution = NoteConsumptionChecker::new(&self.build_executor(data_store)?)
                 .check_notes_consumability(
-                    account.id(),
+                    account_id,
                     self.store.get_sync_height().await?,
                     input_notes.iter().map(|n| n.clone().into_note()).collect(),
                     tx_args.clone(),
@@ -1063,6 +1129,13 @@ pub enum TransactionStoreUpdateError {
 // HELPERS
 // ================================================================================================
 
+#[derive(Clone, Copy, Debug)]
+enum TransactionExecutionMode {
+    Standard,
+    #[cfg(feature = "dap")]
+    Dap,
+}
+
 /// Data-store-independent state produced during transaction preparation.
 pub(crate) struct PreparedTransaction {
     pub(crate) notes: InputNotes<InputNote>,
@@ -1120,12 +1193,42 @@ pub(super) fn validate_account_request(
     transaction_request: &TransactionRequest,
     account: &Account,
 ) -> Result<(), ClientError> {
+    validate_fee_conversion_info_support(transaction_request, account)?;
+
     if account.code_interface().contains([FungibleFaucet::mint_and_send_root()]) {
         // TODO(SantiagoPittella): Add faucet validations.
         Ok(())
     } else {
         validate_basic_account_request(transaction_request, account)
     }
+}
+
+/// Verifies that the account can consume fee conversion info passed through the auth args.
+///
+/// Only the signature-based auth components read the auth args as conversion info (through
+/// `miden::standards::fee`). On any other auth component the declared asset and rate would be
+/// silently ignored and the fee paid in the chain's native asset, so the request is rejected here
+/// instead.
+fn validate_fee_conversion_info_support(
+    transaction_request: &TransactionRequest,
+    account: &Account,
+) -> Result<(), ClientError> {
+    if !transaction_request.declares_fee_conversion_info() {
+        return Ok(());
+    }
+
+    let interface = AccountInterface::from_account(account);
+    let auth_component = interface.auth_component();
+    if matches!(
+        auth_component,
+        AccountComponentInterface::AuthSingleSig | AccountComponentInterface::AuthMultisig
+    ) {
+        return Ok(());
+    }
+
+    Err(ClientError::TransactionRequestError(
+        TransactionRequestError::FeeConversionInfoUnsupported(auth_component.name()),
+    ))
 }
 
 /// Verifies that every output note emitted directly by the transaction declares `account_id` as
@@ -1217,6 +1320,9 @@ fn validate_basic_account_request(
 /// Fetches a foreign account's proof and details from the network, converts them into
 /// [`AccountInputs`], and caches the returned code in the store for future requests.
 ///
+/// Storage maps the node caps as oversized (returned truncated) are carried root-only in the
+/// inputs; reads from them resolve lazily as per-key witnesses during execution.
+///
 /// # Errors
 /// Fails if the account is private: the RPC does not return account details for them, causing
 /// [`TransactionRequestError::ForeignAccountDataMissing`].
@@ -1230,6 +1336,8 @@ pub(crate) async fn fetch_public_account_inputs(
     let known_code: Option<AccountCode> =
         store.get_foreign_account_code(vec![account_id]).await?.into_values().next();
 
+    // Tracked accounts skip the asset list when unchanged; untracked accounts fetch it in full
+    // so asset reads need no execution-time RPC.
     let vault = store
         .get_account_header(account_id)
         .await?
@@ -1237,7 +1345,7 @@ pub(crate) async fn fetch_public_account_inputs(
             VaultFetch::IfChangedFrom(header.vault_root())
         });
 
-    let (block_num, mut account_proof) = rpc_api
+    let (_block_num, account_proof) = rpc_api
         .get_account(
             account_id,
             GetAccountRequest::new()
@@ -1247,11 +1355,6 @@ pub(crate) async fn fetch_public_account_inputs(
                 .with_vault(vault),
         )
         .await?;
-
-    if let Some(details) = account_proof.details_mut() {
-        rpc_api.resolve_oversize_vault(account_id, block_num, details).await?;
-        rpc_api.resolve_oversize_storage_maps(account_id, block_num, details).await?;
-    }
 
     let account_inputs = request::account_proof_into_inputs(account_proof, &storage_requirements)?;
 
@@ -1315,7 +1418,8 @@ mod tests {
     use alloc::vec;
 
     use miden_protocol::Word;
-    use miden_protocol::account::AccountId;
+    use miden_protocol::account::auth::AuthSecretKey;
+    use miden_protocol::account::{AccountBuilder, AccountComponent, AccountId, AccountType};
     use miden_protocol::asset::FungibleAsset;
     use miden_protocol::crypto::rand::RandomCoin;
     use miden_protocol::note::{Note, NoteType};
@@ -1324,10 +1428,21 @@ mod tests {
         ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE,
         ACCOUNT_ID_SENDER,
     };
+    use miden_standards::account::AccountBuilderSchemaCommitmentExt;
+    use miden_standards::account::auth::{Approver, AuthSingleSig, FeeConversionInfo, NoAuth};
+    use miden_standards::account::wallets::BasicWallet;
     use miden_standards::note::P2idNote;
 
-    use super::{TransactionRequestBuilder, validate_output_note_senders};
+    use super::{
+        Account,
+        AccountComponentInterface,
+        TransactionRequest,
+        TransactionRequestBuilder,
+        validate_fee_conversion_info_support,
+        validate_output_note_senders,
+    };
     use crate::ClientError;
+    use crate::auth::AuthSchemeId;
     use crate::transaction::TransactionRequestError;
 
     fn own_note_with_sender(sender: AccountId) -> Note {
@@ -1397,5 +1512,60 @@ mod tests {
             .unwrap();
 
         validate_output_note_senders(&request, account_id).unwrap();
+    }
+
+    /// Builds an account carrying `auth_component` and a basic wallet.
+    fn account_with_auth(auth_component: impl Into<AccountComponent>) -> Account {
+        AccountBuilder::new([7u8; 32])
+            .account_type(AccountType::Public)
+            .with_component(auth_component)
+            .with_component(BasicWallet)
+            .build_with_schema_commitment()
+            .expect("account creation failed")
+    }
+
+    fn fee_conversion_request() -> TransactionRequest {
+        let faucet_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
+
+        TransactionRequestBuilder::new()
+            .fee_conversion_info(FeeConversionInfo::one_to_one(faucet_id), Word::default())
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn fee_conversion_info_is_accepted_by_a_signature_authenticated_account() {
+        let key = AuthSecretKey::new_falcon512_poseidon2();
+        let auth = AuthSingleSig::new(Approver::new(
+            key.public_key().to_commitment(),
+            AuthSchemeId::Falcon512Poseidon2,
+        ));
+
+        validate_fee_conversion_info_support(&fee_conversion_request(), &account_with_auth(auth))
+            .unwrap();
+    }
+
+    #[test]
+    fn fee_conversion_info_is_rejected_by_an_account_that_cannot_read_it() {
+        let account = account_with_auth(NoAuth);
+
+        let err = validate_fee_conversion_info_support(&fee_conversion_request(), &account)
+            .expect_err("NoAuth does not read the auth args");
+        match err {
+            ClientError::TransactionRequestError(
+                TransactionRequestError::FeeConversionInfoUnsupported(auth_component),
+            ) => assert_eq!(auth_component, AccountComponentInterface::AuthNoAuth.name()),
+            other => panic!("expected FeeConversionInfoUnsupported, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_request_without_fee_conversion_info_skips_the_auth_component_check() {
+        // `NoAuth` cannot read conversion info, but a request that declares none is unaffected.
+        validate_fee_conversion_info_support(
+            &TransactionRequestBuilder::new().build().unwrap(),
+            &account_with_auth(NoAuth),
+        )
+        .unwrap();
     }
 }

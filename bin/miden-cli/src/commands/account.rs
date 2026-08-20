@@ -16,6 +16,7 @@ use miden_client::address::{Address, AddressInterface, NetworkId, RoutingParamet
 use miden_client::asset::{Asset, TokenSymbol};
 use miden_client::rpc::domain::account::GetAccountRequest;
 use miden_client::rpc::{GrpcClient, NodeRpcClient, VerifyingRpcClient};
+use miden_client::store::AccountStorageFilter;
 use miden_client::transaction::{AccountComponentInterface, AccountInterface};
 use miden_client::utils::base_units_to_tokens;
 use miden_client::vm::{Package, PackageExport};
@@ -568,31 +569,22 @@ fn print_summary_table(account: &Account, network_id: NetworkId, token_symbol: O
     println!("{table}\n");
 }
 
-/// Reads the faucet's token symbol and decimals from its token config storage slot.
+/// Reads the faucet's token symbol and decimals by reconstructing the [`FungibleFaucet`]
+/// component from the account's storage.
 ///
 /// # Errors
-/// Returns an error if the account is not tracked by the client, has no token config slot (i.e.
-/// is not a fungible faucet), or the token config can't be decoded.
+/// Returns an error if the account is not tracked by the client or its storage does not hold a
+/// valid [`FungibleFaucet`] component (i.e. it is not a fungible faucet).
 async fn get_faucet_token_info<AUTH>(
     client: &Client<AUTH>,
     account_id: AccountId,
 ) -> Result<(TokenSymbol, u8), CliError> {
-    let token_config = client
-        .account_reader(account_id)
-        .get_storage_item(FungibleFaucet::token_config_slot().clone())
-        .await?;
-
-    // Token config word layout: `[token_supply, max_supply, decimals, symbol]` (see
-    // `FungibleFaucet::token_config_slot_value`).
-    let [_token_supply, _max_supply, decimals, symbol] = *token_config;
-    let symbol = TokenSymbol::try_from(symbol).map_err(|err| {
-        CliError::Input(format!("failed to decode token symbol of faucet {account_id}: {err}"))
-    })?;
-    let decimals = u8::try_from(decimals.as_canonical_u64()).map_err(|err| {
-        CliError::Input(format!("failed to decode token decimals of faucet {account_id}: {err}"))
+    let storage = client.account_reader(account_id).storage(AccountStorageFilter::All).await?;
+    let faucet = FungibleFaucet::try_from(&storage).map_err(|err| {
+        CliError::Faucet(err.into(), format!("Failed to read faucet metadata for {account_id}"))
     })?;
 
-    Ok((symbol, decimals))
+    Ok((faucet.symbol().clone(), faucet.decimals()))
 }
 
 /// Reconstructs the [`FungibleFaucet`] component from a materialized [`Account`].

@@ -6,6 +6,7 @@ use alloc::vec::Vec;
 use miden_protocol::account::{
     AccountHeader,
     AccountId,
+    AccountStorage,
     PartialAccount,
     StorageMapKey,
     StorageMapWitness,
@@ -16,7 +17,7 @@ use miden_protocol::asset::{Asset, AssetAmount, AssetId};
 use miden_protocol::{Felt, Word};
 
 use crate::errors::ClientError;
-use crate::store::{AccountStatus, Store};
+use crate::store::{AccountStatus, AccountStorageFilter, Store};
 
 /// Provides lazy access to account data.
 ///
@@ -141,6 +142,21 @@ impl AccountReader {
 
     // STORAGE ACCESS
     // --------------------------------------------------------------------------------------------
+
+    /// Retrieves the account's storage, restricted to the slots selected by `filter`.
+    ///
+    /// Use [`Self::get_storage_item`] or [`Self::get_storage_map_item`] when a single value is
+    /// enough; this method is for consumers that need an [`AccountStorage`], such as component
+    /// reconstruction via `TryFrom<&AccountStorage>`.
+    pub async fn storage(
+        &self,
+        filter: AccountStorageFilter,
+    ) -> Result<AccountStorage, ClientError> {
+        self.store
+            .get_account_storage(self.account_id, filter)
+            .await
+            .map_err(ClientError::StoreError)
+    }
 
     /// Retrieves a storage slot value by name.
     ///

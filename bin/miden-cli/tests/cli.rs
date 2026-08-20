@@ -1266,6 +1266,8 @@ async fn list_addresses_remove() -> Result<()> {
     remove_address_cmd.args(["address", "remove", &basic_account_id, unspecified_wallet_address]);
     let output = remove_address_cmd.current_dir(temp_dir.clone()).output().unwrap();
     assert!(output.status.success());
+    let formatted_output = String::from_utf8(output.stdout).unwrap();
+    assert!(formatted_output.contains("Address removed"));
 
     // List of addresses for created account should now contain one BasicWallet address
     sync_cli(&temp_dir);
@@ -1274,6 +1276,14 @@ async fn list_addresses_remove() -> Result<()> {
     let formatted_output = String::from_utf8(output.stdout).unwrap();
     assert!(formatted_output.contains(&basic_account_id));
     assert_eq!(formatted_output.matches("Unspecified").count(), 0);
+
+    // Removing the same address again removes nothing, so the CLI has to say so
+    // rather than repeat the removal message.
+    let output = remove_address_cmd.current_dir(temp_dir.clone()).output().unwrap();
+    assert!(output.status.success());
+    let formatted_output = String::from_utf8(output.stdout).unwrap();
+    assert!(formatted_output.contains("wasn't being tracked"));
+    assert!(!formatted_output.contains("Address removed"));
 
     Ok(())
 }

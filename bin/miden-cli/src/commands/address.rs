@@ -166,9 +166,24 @@ async fn remove_address<AUTH>(
     let address = decode_account_address(&address, account_id, &network_id)?;
     let note_tag = address.to_note_tag();
 
-    println!("removing address - Account Id {account_id} - Note tag: {note_tag}");
+    // `Client::remove_address` is a no-op when the address was never tracked, so the
+    // outcome has to be established before removing. Reporting beforehand claimed a
+    // removal that may not have happened.
+    let was_tracked = client
+        .account_reader(account_id)
+        .addresses()
+        .await
+        .map_err(|_| CliError::Input(format!("The account with id `{account_id}` does not exist")))?
+        .contains(&address);
+
+    if !was_tracked {
+        println!("Address wasn't being tracked for Account Id {account_id}");
+        return Ok(());
+    }
 
     client.remove_address(address, account_id).await?;
+
+    println!("Address removed: Account Id {account_id} - Note tag: {note_tag}");
     Ok(())
 }
 

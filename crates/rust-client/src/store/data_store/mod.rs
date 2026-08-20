@@ -404,7 +404,7 @@ impl DataStore for ClientDataStore {
             return Ok(witnesses);
         }
 
-        let asset_witnesses = self
+        let mut asset_witnesses = self
             .store
             .get_vault_asset_witnesses(account_id, vault_root, asset_ids.clone())
             .await

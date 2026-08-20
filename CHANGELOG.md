@@ -54,6 +54,7 @@
 * [FIX][rust] `Client::prove_transaction_with` now checks that the `TransactionProver` returned a proof of the transaction it was asked to prove, rejecting a mismatch with the new `ClientError::MismatchedProvenTransaction` ([#2391](https://github.com/0xMiden/rust-sdk/pull/2391)).
 * [FIX][cli] `miden-client notes --show` now prints the note sender in the `Sender` row; it was printing the note tag there ([#2412](https://github.com/0xMiden/rust-sdk/pull/2412)).
 * [FIX][rust] `VerifyingRpcClient::get_account` now validates that the returned `AccountProof` belongs to the requested account ID, rejecting a mismatch with `RpcError::InvalidResponse` ([#2419](https://github.com/0xMiden/rust-sdk/pull/2419)).
+* [FIX][rust] `GrpcClient::get_block_header_by_number` no longer panics when the server-reported chain length doesn't fit in `usize`; it returns `RpcError::InvalidResponse` instead. This is reachable on `wasm32`, where `usize` is 32 bits, so a chain length above `u32::MAX` previously crashed any wasm32 client (e.g. the web-sdk) requesting an MMR proof ([#PENDING](https://github.com/0xMiden/rust-sdk/pull/PENDING)).
 
 ## 0.16.0-alpha.1 (2026-07-17)
 

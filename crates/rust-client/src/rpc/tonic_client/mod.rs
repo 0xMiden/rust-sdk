@@ -517,7 +517,7 @@ impl NodeRpcClient for GrpcClient {
                 .ok_or(RpcError::ExpectedDataMissing("MmrPath".into()))?
                 .try_into()?;
 
-            let forest_size = usize::try_from(forest).expect("u64 should fit in usize");
+            let forest_size = chain_length_to_usize(forest)?;
             let forest = Forest::new(forest_size).map_err(|_| {
                 RpcError::InvalidResponse(format!("invalid forest size: {forest_size}"))
             })?;
@@ -1071,6 +1071,17 @@ impl From<&Status> for GrpcError {
     }
 }
 
+/// Converts a server-reported chain length into a `usize` forest size.
+///
+/// `chain_length` comes directly from the RPC response and is not otherwise
+/// bounded, so this must return an error instead of panicking on platforms
+/// where `usize` is narrower than `u64` (notably `wasm32`, which this crate
+/// targets via the web-sdk).
+fn chain_length_to_usize(chain_length: u64) -> Result<usize, RpcError> {
+    usize::try_from(chain_length)
+        .map_err(|_| RpcError::InvalidResponse(format!("chain length {chain_length} exceeds usize")))
+}
+
 #[cfg(test)]
 mod tests {
     use std::boxed::Box;
@@ -1083,6 +1094,35 @@ mod tests {
     use crate::rpc::{Endpoint, NodeRpcClient, RpcError};
 
     fn assert_send_sync<T: Send + Sync>() {}
+
+    // Before this fix, `get_block_header_by_number` used
+    // `usize::try_from(forest).expect(...)` directly, which panics instead
+    // of returning an `RpcError` whenever a
+    // server-reported chain length doesn't fit in `usize`. That's always
+    // possible on wasm32 (usize is 32 bits there, and this crate explicitly
+    // targets wasm32 for the web-sdk), and would let a malicious or buggy RPC
+    // server crash a wasm32 client just by returning a chain length above
+    // u32::MAX. This test exercises the extracted, panic-free helper directly
+    // rather than standing up a tonic mock server, since no such harness
+    // exists in this crate for GrpcClient's protobuf-conversion methods.
+    // `usize::try_from(u64)` can only fail on targets where `usize` is
+    // narrower than 64 bits (e.g. wasm32, where this crate's web-sdk
+    // consumer actually runs). On 64-bit hosts, which is where this suite
+    // normally runs, every `u64` value fits in `usize`, so this test is
+    // gated to the platform where the bug is actually reachable.
+    #[test]
+    #[cfg(target_pointer_width = "32")]
+    fn chain_length_to_usize_rejects_value_too_large_for_usize() {
+        let oversized = u64::from(u32::MAX) + 1;
+        let result = super::chain_length_to_usize(oversized);
+        assert!(result.is_err(), "expected an error for a chain length exceeding u32::MAX");
+    }
+
+    #[test]
+    fn chain_length_to_usize_accepts_in_range_value() {
+        let result = super::chain_length_to_usize(42);
+        assert_eq!(result.unwrap(), 42usize);
+    }
 
     #[test]
     fn is_send_sync() {

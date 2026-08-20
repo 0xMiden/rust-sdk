@@ -559,28 +559,15 @@ impl<AUTH> Client<AUTH> {
 
     /// Retrieves the full [`Account`] object from the store, returning `None` if not found.
     ///
-    /// This method loads the complete account state including vault, storage, and code.
-    ///
-    /// For lazy access that fetches only the data you need, use
+    /// This method loads the complete account state including vault, storage, and code —
+    /// including building the vault's Merkle tree. For lazy access that fetches only the data
+    /// you need (existence checks, single fields, storage items), use
     /// [`Client::account_reader`] instead.
-    ///
-    /// Use [`Client::try_get_account`] if you want to error when the account is not found.
     pub async fn get_account(&self, account_id: AccountId) -> Result<Option<Account>, ClientError> {
         match self.store.get_account(account_id).await? {
             Some(record) => Ok(Some(record.try_into()?)),
             None => Ok(None),
         }
-    }
-
-    /// Retrieves the full [`Account`] object from the store, erroring if not found.
-    ///
-    /// This method loads the complete account state including vault, storage, and code.
-    ///
-    /// Use [`Client::get_account`] if you want to handle missing accounts gracefully.
-    pub async fn try_get_account(&self, account_id: AccountId) -> Result<Account, ClientError> {
-        self.get_account(account_id)
-            .await?
-            .ok_or(ClientError::AccountDataNotFound(account_id))
     }
 
     /// Creates an [`AccountReader`] for lazy access to account data.

@@ -1,9 +1,9 @@
 // RPC LIMITS
 // ================================================================================================
 
+use alloc::format;
 use core::convert::TryFrom;
 
-use alloc::format;
 use miden_tx::utils::serde::{
     ByteReader,
     ByteWriter,
@@ -115,6 +115,8 @@ impl TryFrom<proto::RpcLimits> for RpcLimits {
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::String;
+
     use super::*;
 
     #[test]
@@ -138,25 +140,25 @@ mod tests {
 
         proto.endpoints.insert(
             RpcEndpoint::GetNotesById.proto_name().into(),
-            proto::RpcEndpointLimits {
+            proto::EndpointLimits {
                 parameters: [(String::from("note_id"), 0)].into(),
             },
         );
         proto.endpoints.insert(
             RpcEndpoint::SyncNullifiers.proto_name().into(),
-            proto::RpcEndpointLimits {
+            proto::EndpointLimits {
                 parameters: [(String::from("nullifier_prefix"), 1000)].into(),
             },
         );
         proto.endpoints.insert(
             RpcEndpoint::SyncTransactions.proto_name().into(),
-            proto::RpcEndpointLimits {
+            proto::EndpointLimits {
                 parameters: [(String::from("account_id"), 1000)].into(),
             },
         );
         proto.endpoints.insert(
             RpcEndpoint::SyncNotes.proto_name().into(),
-            proto::RpcEndpointLimits {
+            proto::EndpointLimits {
                 parameters: [(String::from("note_tag"), 1000)].into(),
             },
         );

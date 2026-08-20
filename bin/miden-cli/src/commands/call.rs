@@ -67,8 +67,16 @@ impl CallCmd {
         })?;
 
         let account_id = parse_account_id(&client, account_str).await?;
-        // Ensure the account is tracked before executing against it; only the header is needed.
-        client.account_reader(account_id).header().await?;
+        // Untracked accounts are imported from the node before executing against them; private
+        // accounts have no public state to import and fail here.
+        if client.account_reader(account_id).header().await.is_err() {
+            client.import_account_by_id(account_id).await.map_err(|err| {
+                CliError::InvalidArgument(format!(
+                    "Account {account_id} is not tracked and could not be imported from the \
+                     node: {err}"
+                ))
+            })?;
+        }
 
         let package = load_package(&self.package)?;
 

@@ -568,8 +568,7 @@ fn print_summary_table(account: &Account, network_id: NetworkId, token_symbol: O
     println!("{table}\n");
 }
 
-/// Reads the faucet's token symbol and decimals from its token config storage slot, without
-/// loading the full account.
+/// Reads the faucet's token symbol and decimals from its token config storage slot.
 ///
 /// # Errors
 /// Returns an error if the account is not tracked by the client, has no token config slot (i.e.

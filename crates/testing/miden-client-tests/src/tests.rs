@@ -18,10 +18,10 @@ use miden_client::auth::{
     RPO_FALCON_SCHEME_ID,
 };
 use miden_client::builder::ClientBuilder;
-use miden_client::crypto::draw_word;
 use miden_client::keystore::{FilesystemKeyStore, Keystore};
 use miden_client::note::{BlockNumber, NetworkAccountTarget, NoteExecutionHint};
 use miden_client::pswap::PswapLineageState;
+use miden_client::rng::draw_word;
 use miden_client::rpc::NodeRpcClient;
 use miden_client::rpc::encryption::TransactionEncryptionKey;
 use miden_client::store::input_note_states::ConsumedAuthenticatedLocalNoteState;

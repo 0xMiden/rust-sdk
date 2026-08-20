@@ -614,7 +614,7 @@ mod tests {
     use rand_chacha::ChaCha20Rng;
 
     use super::{TransactionRequest, TransactionRequestBuilder};
-    use crate::crypto::draw_word;
+    use crate::rng::draw_word;
     use crate::rpc::domain::account::AccountStorageRequirements;
     use crate::transaction::ForeignAccount;
 

@@ -132,6 +132,7 @@ pub mod transaction;
 pub mod utils;
 
 pub mod builder;
+pub mod rng;
 
 #[cfg(feature = "testing")]
 mod test_utils;
@@ -288,29 +289,6 @@ pub mod crypto {
         SparseMerklePath,
     };
     pub use miden_protocol::crypto::rand::FeltRng;
-
-    /// Draws a field element uniformly at random from `rng`.
-    ///
-    /// Uses rejection sampling: [`Felt::new`](crate::Felt::new) rejects any `u64` at or beyond
-    /// the field modulus, which keeps the result uniform over the field. The rejection
-    /// probability is about 2^-32.
-    pub fn draw_felt(rng: &mut impl rand::Rng) -> crate::Felt {
-        use rand::RngExt;
-
-        loop {
-            if let Ok(felt) = crate::Felt::new(rng.random::<u64>()) {
-                return felt;
-            }
-        }
-    }
-
-    /// Draws a [`Word`](crate::Word) uniformly at random from `rng`.
-    ///
-    /// Use this for note serial numbers when building notes from a plain [`rand`] generator, which
-    /// does not implement [`FeltRng`].
-    pub fn draw_word(rng: &mut impl rand::Rng) -> crate::Word {
-        crate::Word::new([draw_felt(rng), draw_felt(rng), draw_felt(rng), draw_felt(rng)])
-    }
 }
 
 /// Provides types for working with addresses within the Miden network.
@@ -630,11 +608,11 @@ impl TryCryptoRng for ClientRng {}
 
 impl FeltRng for ClientRng {
     fn draw_element(&mut self) -> Felt {
-        crypto::draw_felt(&mut self.0)
+        rng::draw_felt(&mut self.0)
     }
 
     fn draw_word(&mut self) -> Word {
-        crypto::draw_word(&mut self.0)
+        rng::draw_word(&mut self.0)
     }
 }
 

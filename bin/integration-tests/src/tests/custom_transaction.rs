@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use miden_client::account::{AccountId, AccountType};
 use miden_client::asset::FungibleAsset;
 use miden_client::auth::RPO_FALCON_SCHEME_ID;
-use miden_client::crypto::{MerkleStore, MerkleTree, NodeIndex, Poseidon2, draw_word};
+use miden_client::crypto::{MerkleStore, MerkleTree, NodeIndex, Poseidon2};
 use miden_client::note::{
     Note,
     NoteAssets,
@@ -12,6 +12,7 @@ use miden_client::note::{
     NoteType,
     PartialNoteMetadata,
 };
+use miden_client::rng::draw_word;
 use miden_client::store::{NoteFilter, TransactionFilter};
 use miden_client::testing::common::*;
 use miden_client::transaction::{

@@ -1444,7 +1444,7 @@ mod tests {
     };
     use crate::ClientError;
     use crate::auth::AuthSchemeId;
-    use crate::crypto::draw_word;
+    use crate::rng::draw_word;
     use crate::transaction::TransactionRequestError;
 
     fn own_note_with_sender(sender: AccountId) -> Note {

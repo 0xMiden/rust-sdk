@@ -125,8 +125,18 @@ impl AccountCmd {
                         println!("Current default account ID: {default_account}");
                     },
                     Some(id) if id == "none" => {
-                        client.remove_setting(DEFAULT_ACCOUNT_ID_KEY.to_string()).await?;
-                        println!("Removing default account...");
+                        // `remove_setting` succeeds whether or not a default was set, so the
+                        // previous value has to be read first to report which of the two happened.
+                        let previous: Option<AccountId> =
+                            client.get_setting(DEFAULT_ACCOUNT_ID_KEY.to_string()).await?;
+
+                        match previous {
+                            Some(previous) => {
+                                client.remove_setting(DEFAULT_ACCOUNT_ID_KEY.to_string()).await?;
+                                println!("Default account removed (was {previous})");
+                            },
+                            None => println!("No default account was set"),
+                        }
                     },
                     Some(id) => {
                         let account_id: AccountId = parse_account_id(&client, id).await?;
@@ -137,7 +147,10 @@ impl AccountCmd {
                         client
                             .set_setting(DEFAULT_ACCOUNT_ID_KEY.to_string(), account.id())
                             .await?;
-                        println!("Setting default account to {id}...");
+                        // Report the ID that was stored, not the argument: `parse_account_id`
+                        // also accepts an ID prefix or a bech32 address, so echoing the input
+                        // hides which account the setting now points at.
+                        println!("Default account set to {}", account.id());
                     },
                 }
             },

@@ -76,6 +76,7 @@ use miden_protocol::note::{
     NoteAttachments,
     NoteDetails,
     NoteId,
+    NoteLocation,
     NoteRecipient,
     NoteScript,
     NoteTag,
@@ -353,7 +354,7 @@ where
     ///
     /// In addition to the [`Self::execute_transaction`] errors:
     /// - Returns [`ClientError::ChainAnchorError`] if an authenticated input note's creation block
-    ///   is not tracked by the anchor.
+    ///   is neither tracked by the anchor nor available in the local store.
     /// - Returns a [`ClientError::TransactionExecutorError`] if an input note was created after the
     ///   anchored reference block.
     pub async fn execute_transaction_at(
@@ -515,7 +516,13 @@ where
         let mut notes = prep.notes;
         if prep.ignore_invalid_notes {
             notes = self
-                .get_valid_input_notes(&data_store, account.id(), notes, prep.tx_args.clone())
+                .get_valid_input_notes(
+                    &data_store,
+                    account.id(),
+                    prep.block_num,
+                    notes,
+                    prep.tx_args.clone(),
+                )
                 .await?;
         }
 
@@ -585,6 +592,35 @@ where
 
         let notes = transaction_request.build_input_notes(stored_note_records)?;
 
+        // Each authenticated note's creation block must be tracked by the anchor or fillable
+        // from the local store; fail with a typed error otherwise so callers can recapture a
+        // wider anchor. Notes newer than the anchor are left for the executor to reject.
+        if let Some(anchor) = anchor {
+            let untracked: BTreeSet<BlockNumber> = notes
+                .iter()
+                .filter_map(|note| note.location())
+                .map(NoteLocation::block_num)
+                .filter(|block_num| {
+                    *block_num < anchor.block_num()
+                        && !anchor.partial_blockchain().contains_block(*block_num)
+                })
+                .collect();
+
+            if !untracked.is_empty() {
+                let available: BTreeSet<BlockNumber> = self
+                    .store
+                    .get_block_headers(&untracked)
+                    .await?
+                    .into_iter()
+                    .map(|(header, _has_notes)| header.block_num())
+                    .collect();
+
+                if let Some(&block_num) = untracked.difference(&available).next() {
+                    return Err(ChainAnchorError::BlockNotTracked { block_num }.into());
+                }
+            }
+        }
+
         let output_recipients =
             transaction_request.expected_output_recipients().cloned().collect::<Vec<_>>();
 
@@ -596,8 +632,7 @@ where
         let foreign_accounts = transaction_request.foreign_accounts().clone();
 
         // The reference block: the anchor's block when pinned, the sync height otherwise.
-        // Foreign account proofs are fetched at this block so they stay consistent with the
-        // reference block the transaction executes against.
+        // Foreign account proofs are fetched at this block to stay consistent with it.
         let block_num = match anchor {
             Some(anchor) => anchor.block_num(),
             None => self.store.get_sync_height().await?,
@@ -975,13 +1010,13 @@ where
 
     /// Filters the provided input notes down to the subset that can be consumed by the account.
     ///
-    /// `output_recipients` are the request's expected output recipients; their scripts are
-    /// registered on the consumption-check data store so output note creation can resolve them
-    /// without them being present in the store.
+    /// The trial runs against `data_store` at `block_ref`, which must match the reference block
+    /// the actual execution will use.
     pub(crate) async fn get_valid_input_notes<STORE: DataStore + Sync>(
         &self,
         data_store: &STORE,
         account_id: AccountId,
+        block_ref: BlockNumber,
         mut input_notes: InputNotes<InputNote>,
         tx_args: TransactionArgs,
     ) -> Result<InputNotes<InputNote>, ClientError> {
@@ -989,7 +1024,7 @@ where
             let execution = NoteConsumptionChecker::new(&self.build_executor(data_store)?)
                 .check_notes_consumability(
                     account_id,
-                    self.store.get_sync_height().await?,
+                    block_ref,
                     input_notes.iter().map(|n| n.clone().into_note()).collect(),
                     tx_args.clone(),
                 )

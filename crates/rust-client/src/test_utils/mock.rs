@@ -2,6 +2,7 @@ use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use miden_protocol::Word;
 use miden_protocol::account::{
@@ -68,12 +69,15 @@ pub struct MockRpcApi {
     oversize_threshold: usize,
     /// Note headers to report as erased in sync transaction responses.
     erased_notes: Arc<RwLock<Vec<NoteHeader>>>,
-    /// Attachment content for private notes, keyed by note ID. The [`MockChain`] stores private
-    /// notes without their attachment content (only metadata), so tests that need
-    /// `get_notes_by_id` to return private-note attachments register them here.
+    /// Attachment content `get_notes_by_id` serves for private notes, populated by
+    /// `submit_proven_transaction` and by `register_private_note_attachments`. A note absent here
+    /// is served with empty attachments, which is how a test simulates a withholding node.
     private_note_attachments: Arc<RwLock<BTreeMap<NoteId, NoteAttachments>>>,
     /// Test overrides for the MMR paths returned by `sync_notes`, keyed by block number.
     sync_notes_mmr_path_overrides: Arc<RwLock<BTreeMap<BlockNumber, MerklePath>>>,
+    /// Number of `get_notes_by_id` requests served, so a test can assert that a flow avoided the
+    /// round trip.
+    get_notes_by_id_calls: Arc<AtomicUsize>,
 }
 
 impl Default for MockRpcApi {
@@ -96,6 +100,7 @@ impl MockRpcApi {
             erased_notes: Arc::new(RwLock::new(Vec::new())),
             private_note_attachments: Arc::new(RwLock::new(BTreeMap::new())),
             sync_notes_mmr_path_overrides: Arc::new(RwLock::new(BTreeMap::new())),
+            get_notes_by_id_calls: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -103,6 +108,11 @@ impl MockRpcApi {
     /// responses include it, mirroring a node that stores private-note attachments on-chain.
     pub fn register_private_note_attachments(&self, note_id: NoteId, attachments: NoteAttachments) {
         self.private_note_attachments.write().insert(note_id, attachments);
+    }
+
+    /// Returns how many `get_notes_by_id` requests this API has served.
+    pub fn get_notes_by_id_call_count(&self) -> usize {
+        self.get_notes_by_id_calls.load(Ordering::Relaxed)
     }
 
     /// Overrides the MMR path returned by `sync_notes` for the specified block.
@@ -350,8 +360,14 @@ impl NodeRpcClient for MockRpcApi {
                 && note_block >= block_from
                 && note_block <= block_to
             {
-                let committed =
+                let mut committed =
                     CommittedNote::new(note.id(), *note.metadata(), note.inclusion_proof().clone());
+                // Mirror the node: a single-word attachment is sent verbatim and the record is
+                // complete. A larger one is sent as a commitment only.
+                let attachments = note.attachments();
+                if attachments.iter().all(|attachment| attachment.num_words() == 1) {
+                    committed = committed.with_attachments(attachments.clone());
+                }
                 blocks_with_notes.entry(note_block).or_default().insert(note.id(), committed);
             }
         }
@@ -428,6 +444,8 @@ impl NodeRpcClient for MockRpcApi {
 
     /// Returns the node's tracked notes that match the provided note IDs.
     async fn get_notes_by_id(&self, note_ids: &[NoteId]) -> Result<Vec<FetchedNote>, RpcError> {
+        self.get_notes_by_id_calls.fetch_add(1, Ordering::Relaxed);
+
         // assume all public notes for now
         let notes = self.mock_chain.read().committed_notes().clone();
 

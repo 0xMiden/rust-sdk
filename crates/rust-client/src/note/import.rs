@@ -25,7 +25,7 @@ use miden_protocol::note::{
 use miden_standards::note::NoteFile;
 use miden_tx::auth::TransactionAuthenticator;
 
-use crate::rpc::domain::note::{FetchedNote, ResolvedNoteContent, SyncedNote};
+use crate::rpc::domain::note::{FetchedNote, SyncedNote};
 use crate::rpc::{NoteContentFetch, RpcError};
 use crate::store::input_note_states::ExpectedNoteState;
 use crate::store::{InputNoteRecord, InputNoteState, NoteFilter};
@@ -369,16 +369,16 @@ where
             });
 
             // Notes the node has not reported as committed keep their expected record untouched.
-            let Some(SyncedNote { committed: committed_note, content }) =
-                committed_notes_data.remove(&note_record.details_commitment())
+            let Some(SyncedNote {
+                committed: committed_note, attachments, ..
+            }) = committed_notes_data.remove(&note_record.details_commitment())
             else {
                 note_records.push(note_record);
                 continue;
             };
 
-            let attachments = content
-                .map(ResolvedNoteContent::into_attachments)
-                .filter(|attachments| !attachments.is_empty());
+            // A note that carries no attachments has nothing to apply to the record.
+            let attachments = (!attachments.is_empty()).then_some(attachments);
 
             let block_header = self
                 .get_and_store_authenticated_block(committed_note.block_num(), &mut partial_mmr)

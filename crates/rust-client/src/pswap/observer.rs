@@ -56,13 +56,10 @@ impl NoteObserver for PswapChainObserver {
     async fn observe(
         &self,
         committed_note: &CommittedNote,
-        attachments: Option<&NoteAttachments>,
+        attachments: &NoteAttachments,
     ) -> Result<bool, ClientError> {
         // Notes without a PSWAP attachment are the common case; `extract_pswap_attachment`
         // fast-rejects them. Foreign-order filtering happens later in `discovery`.
-        let Some(attachments) = attachments else {
-            return Ok(false);
-        };
         let Some(attachment) = extract_pswap_attachment(attachments) else {
             return Ok(false);
         };

@@ -16,7 +16,7 @@ pub fn draw_felt(rng: &mut impl rand::Rng) -> crate::Felt {
 /// Draws a [`Word`](crate::Word) uniformly at random from `rng`.
 ///
 /// Use this for note serial numbers when building notes from a plain [`rand`] generator, which
-/// does not implement [`FeltRng`].
+/// does not implement [`FeltRng`](crate::Felt).
 pub fn draw_word(rng: &mut impl rand::Rng) -> crate::Word {
     crate::Word::new([draw_felt(rng), draw_felt(rng), draw_felt(rng), draw_felt(rng)])
 }

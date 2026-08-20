@@ -847,27 +847,27 @@ async fn tags() {
     // add a tag
     let tag_1: NoteTag = 1.into();
     let tag_2: NoteTag = 2.into();
-    client.add_note_tag(tag_1).await.unwrap();
-    client.add_note_tag(tag_2).await.unwrap();
+    assert!(client.add_note_tag(tag_1).await.unwrap());
+    assert!(client.add_note_tag(tag_2).await.unwrap());
 
     // verify that the tag is being tracked
     assert_eq!(client.get_note_tags().await.unwrap(), vec![tag_1, tag_2]);
 
     // attempt to add the same tag again
-    client.add_note_tag(tag_1).await.unwrap();
+    assert!(!client.add_note_tag(tag_1).await.unwrap());
 
     // verify that the tag is still being tracked only once
     assert_eq!(client.get_note_tags().await.unwrap(), vec![tag_1, tag_2]);
 
     // Try removing non-existent tag
     let tag_4: NoteTag = 4.into();
-    client.remove_note_tag(tag_4).await.unwrap();
+    assert!(!client.remove_note_tag(tag_4).await.unwrap());
 
     // verify that the tracked tags are unchanged
     assert_eq!(client.get_note_tags().await.unwrap(), vec![tag_1, tag_2]);
 
     // remove second tag
-    client.remove_note_tag(tag_1).await.unwrap();
+    assert!(client.remove_note_tag(tag_1).await.unwrap());
 
     // verify that tag_1 is not tracked anymore
     assert_eq!(client.get_note_tags().await.unwrap(), vec![tag_2]);

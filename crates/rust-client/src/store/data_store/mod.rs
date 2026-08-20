@@ -13,7 +13,7 @@ use miden_protocol::account::{
     StorageSlotContent,
     StorageSlotName,
 };
-use miden_protocol::asset::{AssetId, AssetWitness};
+use miden_protocol::asset::{AssetId, AssetVault, AssetWitness};
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrPeaks, PartialMmr};
@@ -35,6 +35,7 @@ use crate::rpc::domain::account::{
     GetAccountRequest,
     StorageMapEntries,
     StorageMapFetch,
+    VaultFetch,
 };
 use crate::rpc::{AccountStateAt, NodeRpcClient};
 use crate::store::StoreError;
@@ -163,6 +164,9 @@ impl ClientDataStore {
     }
 
     /// Fetches a storage map witness for a specific key from the network via RPC and caches it.
+    ///
+    /// Anchored at the transaction reference block: a chain-tip query would return proofs for a
+    /// newer map root whenever the account changed after the caller's last sync.
     async fn fetch_and_cache_storage_map_witness(
         &self,
         account_id: AccountId,
@@ -171,6 +175,9 @@ impl ClientDataStore {
         map_key: StorageMapKey,
         known_code: AccountCode,
     ) -> Result<StorageMapWitness, DataStoreError> {
+        let account_state_at =
+            self.cache.ref_block().map_or(AccountStateAt::ChainTip, AccountStateAt::Block);
+
         let storage_requirements = AccountStorageRequirements::new([(slot_name, &[map_key])]);
         let (_, account_proof): (BlockNumber, _) = self
             .rpc_api
@@ -178,7 +185,8 @@ impl ClientDataStore {
                 account_id,
                 GetAccountRequest::new()
                     .with_storage(StorageMapFetch::Slots(storage_requirements))
-                    .with_known_code(Some(known_code)),
+                    .with_known_code(Some(known_code))
+                    .at(account_state_at),
             )
             .await
             .map_err(|err| {
@@ -213,11 +221,79 @@ impl ClientDataStore {
             },
         };
 
+        // Reject a wrong-root proof here rather than as an opaque merkle error inside the VM.
+        let proof_root = proof.compute_root();
+        if proof_root != map_root {
+            return Err(DataStoreError::other(format!(
+                "storage map proof fetched for account {account_id} verifies against root \
+                 {proof_root} but the executor requires root {map_root}"
+            )));
+        }
+
         let witness = StorageMapWitness::new(proof, [map_key]).map_err(|err| {
             DataStoreError::other_with_source("failed to create storage map witness", err)
         })?;
         self.cache.insert_storage_map_witness(map_root, map_key, witness.clone());
         Ok(witness)
+    }
+
+    /// Fetches an account's full vault via RPC — anchored at the transaction reference block —
+    /// and verifies it against the vault root the executor requires. Fallback for vault reads
+    /// the local store cannot serve, typically foreign accounts whose [`AccountInputs`] carry
+    /// only their vault root.
+    async fn fetch_vault_via_rpc(
+        &self,
+        account_id: AccountId,
+        vault_root: Word,
+    ) -> Result<AssetVault, DataStoreError> {
+        let account_state_at =
+            self.cache.ref_block().map_or(AccountStateAt::ChainTip, AccountStateAt::Block);
+
+        // The cached foreign inputs hold the code, letting the node omit it from the response.
+        let known_code = self
+            .cache
+            .with_foreign_account_inputs(account_id, |inputs| inputs.code().clone());
+
+        let (block_num, mut account_proof) = self
+            .rpc_api
+            .get_account(
+                account_id,
+                GetAccountRequest::new()
+                    .at(account_state_at)
+                    .with_known_code(known_code)
+                    .with_vault(VaultFetch::Always),
+            )
+            .await
+            .map_err(|err| {
+                DataStoreError::other_with_source("failed to fetch account vault via RPC", err)
+            })?;
+
+        let details = account_proof.details_mut().ok_or_else(|| {
+            DataStoreError::other(format!(
+                "RPC returned no account details for account {account_id}"
+            ))
+        })?;
+
+        self.rpc_api
+            .resolve_oversize_vault(account_id, block_num, details)
+            .await
+            .map_err(|err| {
+                DataStoreError::other_with_source("failed to resolve oversize vault via RPC", err)
+            })?;
+
+        let vault = AssetVault::new(&details.vault_details.assets).map_err(|err| {
+            DataStoreError::other_with_source("failed to build the fetched vault", err)
+        })?;
+
+        if vault.root() != vault_root {
+            return Err(DataStoreError::other(format!(
+                "vault fetched for account {account_id} has root {} but the executor requires \
+                 root {vault_root}",
+                vault.root()
+            )));
+        }
+
+        Ok(vault)
     }
 }
 
@@ -315,6 +391,9 @@ impl DataStore for ClientDataStore {
         Ok((partial_account, block_header, partial_blockchain))
     }
 
+    /// Retrieves witnesses for the requested assets, trying everything local first — per-asset
+    /// reads, then the full local vault — and falling back to a single RPC vault fetch when the
+    /// local store cannot serve the requested root.
     async fn get_vault_asset_witnesses(
         &self,
         account_id: AccountId,
@@ -332,6 +411,35 @@ impl DataStore for ClientDataStore {
             .map_err(|err| {
                 DataStoreError::other_with_source("failed to get vault asset witnesses", err)
             })?;
+
+        // Fall back to the full local vault — an absent asset still needs a non-membership
+        // witness, which only the vault itself can produce — and lastly to an RPC vault fetch,
+        // for accounts the local store cannot serve at the requested root.
+        if asset_witnesses.len() != asset_ids.len() {
+            let vault = match self.store.get_account_vault(account_id).await {
+                Ok(vault) if vault.root() == vault_root => vault,
+                Ok(vault) => {
+                    tracing::debug!(
+                        %account_id,
+                        local_root = %vault.root(),
+                        requested_root = %vault_root,
+                        "local vault is missing or stale, will fetch it via RPC"
+                    );
+                    self.fetch_vault_via_rpc(account_id, vault_root).await?
+                },
+                Err(err) => {
+                    tracing::debug!(
+                        %account_id,
+                        %err,
+                        "vault not available locally, will fetch it via RPC"
+                    );
+                    self.fetch_vault_via_rpc(account_id, vault_root).await?
+                },
+            };
+
+            asset_witnesses =
+                asset_ids.iter().copied().map(|asset_id| vault.open(asset_id)).collect();
+        }
 
         self.cache
             .insert_vault_asset_witnesses(vault_root, &asset_ids, &asset_witnesses);

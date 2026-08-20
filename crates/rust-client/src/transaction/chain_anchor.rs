@@ -1,10 +1,7 @@
 use alloc::string::ToString;
-use alloc::vec::Vec;
 
 use miden_protocol::Word;
 use miden_protocol::block::{BlockHeader, BlockNumber};
-use miden_protocol::crypto::merkle::MerklePath;
-use miden_protocol::crypto::merkle::mmr::MmrError;
 use miden_protocol::transaction::PartialBlockchain;
 use miden_tx::utils::serde::{
     ByteReader,
@@ -38,9 +35,7 @@ use thiserror::Error;
 ///
 /// When the transaction consumes authenticated notes, the anchor's [`PartialBlockchain`] must
 /// track each note's creation block; [`crate::Client::chain_anchor_for_request`] captures an
-/// anchor tracking the blocks of a request's authenticated input notes. An executing client
-/// serves blocks the anchor misses from its own store when it tracks them, and an anchor can be
-/// widened after capture with [`Self::track_block`].
+/// anchor tracking the blocks of a request's authenticated input notes.
 ///
 /// [`TransactionSummary`]: miden_protocol::transaction::TransactionSummary
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,48 +92,6 @@ impl ChainAnchor {
         &self.chain
     }
 
-    /// Tracks an additional block in the anchor's partial blockchain, so that transactions
-    /// consuming authenticated notes created in that block can execute against the anchor.
-    ///
-    /// `path` must be the block's MMR authentication path at the anchor's forest. It is verified
-    /// against the anchor's peaks, so [`Self::block_commitment`] is unaffected. Tracking an
-    /// already-tracked block is a no-op.
-    ///
-    /// # Errors
-    ///
-    /// - The block is not older than the anchor block.
-    /// - The path does not verify against the anchor's peaks.
-    pub fn track_block(
-        &mut self,
-        header: BlockHeader,
-        path: &MerklePath,
-    ) -> Result<(), ChainAnchorError> {
-        let block_num = header.block_num();
-        if block_num >= self.header.block_num() {
-            return Err(ChainAnchorError::BlockPastAnchor {
-                block_num,
-                anchor: self.header.block_num(),
-            });
-        }
-
-        if self.chain.contains_block(block_num) {
-            return Ok(());
-        }
-
-        let mut mmr = self.chain.mmr().clone();
-        mmr.track(block_num.as_usize(), header.commitment(), path)
-            .map_err(|source| ChainAnchorError::UntrackablePath { block_num, source })?;
-
-        let mut blocks: Vec<BlockHeader> = self.chain.block_headers().cloned().collect();
-        blocks.push(header);
-
-        // `track` verified the path against the peaks, so the cheap constructor suffices.
-        self.chain = PartialBlockchain::new_unchecked(mmr, blocks)
-            .expect("tracked block extends an already-valid partial blockchain");
-
-        Ok(())
-    }
-
     /// Consumes the anchor and returns its parts.
     pub fn into_parts(self) -> (BlockHeader, PartialBlockchain) {
         (self.header, self.chain)
@@ -178,18 +131,9 @@ pub enum ChainAnchorError {
     )]
     ChainCommitmentMismatch { block_num: BlockNumber },
     #[error(
-        "block {block_num} is not tracked by the anchor's partial blockchain and could not be served from the local store; capture the anchor with the blocks of all authenticated input notes"
+        "block {block_num} is not tracked by the anchor's partial blockchain; capture the anchor with the blocks of all authenticated input notes"
     )]
     BlockNotTracked { block_num: BlockNumber },
-    #[error(
-        "block {block_num} is not older than the anchor block {anchor}, so it cannot be tracked"
-    )]
-    BlockPastAnchor {
-        block_num: BlockNumber,
-        anchor: BlockNumber,
-    },
-    #[error("authentication path for block {block_num} does not verify against the anchor's peaks")]
-    UntrackablePath { block_num: BlockNumber, source: MmrError },
     #[error("transaction reference block {requested} does not match the anchor block {anchor}")]
     ReferenceBlockMismatch {
         requested: BlockNumber,

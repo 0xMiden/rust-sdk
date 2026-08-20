@@ -76,7 +76,6 @@ use miden_protocol::note::{
     NoteAttachments,
     NoteDetails,
     NoteId,
-    NoteLocation,
     NoteRecipient,
     NoteScript,
     NoteTag,
@@ -354,7 +353,7 @@ where
     ///
     /// In addition to the [`Self::execute_transaction`] errors:
     /// - Returns [`ClientError::ChainAnchorError`] if an authenticated input note's creation block
-    ///   is neither tracked by the anchor nor available in the local store.
+    ///   is not tracked by the anchor.
     /// - Returns a [`ClientError::TransactionExecutorError`] if an input note was created after the
     ///   anchored reference block.
     pub async fn execute_transaction_at(
@@ -592,31 +591,18 @@ where
 
         let notes = transaction_request.build_input_notes(stored_note_records)?;
 
-        // Each authenticated note's creation block must be tracked by the anchor or fillable
-        // from the local store; fail with a typed error otherwise so callers can recapture a
-        // wider anchor. Notes newer than the anchor are left for the executor to reject.
+        // Each authenticated note's creation block must be tracked by the anchor; fail with a
+        // typed error so callers can recapture a wider anchor. Notes newer than the anchor are
+        // left for the executor to reject.
         if let Some(anchor) = anchor {
-            let untracked: BTreeSet<BlockNumber> = notes
-                .iter()
-                .filter_map(|note| note.location())
-                .map(NoteLocation::block_num)
-                .filter(|block_num| {
-                    *block_num < anchor.block_num()
-                        && !anchor.partial_blockchain().contains_block(*block_num)
-                })
-                .collect();
-
-            if !untracked.is_empty() {
-                let available: BTreeSet<BlockNumber> = self
-                    .store
-                    .get_block_headers(&untracked)
-                    .await?
-                    .into_iter()
-                    .map(|(header, _has_notes)| header.block_num())
-                    .collect();
-
-                if let Some(&block_num) = untracked.difference(&available).next() {
-                    return Err(ChainAnchorError::BlockNotTracked { block_num }.into());
+            for note in notes.iter() {
+                if let Some(location) = note.location() {
+                    let block_num = location.block_num();
+                    if block_num < anchor.block_num()
+                        && !anchor.partial_blockchain().contains_block(block_num)
+                    {
+                        return Err(ChainAnchorError::BlockNotTracked { block_num }.into());
+                    }
                 }
             }
         }

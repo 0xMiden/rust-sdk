@@ -75,9 +75,9 @@ impl ClientDataStore {
     /// store's sync height, pinning execution to the anchor's reference block.
     ///
     /// The store's account data is still used as-is: only the reference block header and the
-    /// partial blockchain come from the anchor. Blocks the anchor doesn't track are served from
-    /// the local store, verified against the anchor's peaks; `get_transaction_inputs` fails for
-    /// blocks neither can supply.
+    /// partial blockchain come from the anchor. Any authenticated input note must have been
+    /// created in a block tracked by the anchor's partial blockchain, otherwise
+    /// `get_transaction_inputs` fails.
     #[must_use]
     pub fn with_chain_anchor(mut self, anchor: ChainAnchor) -> Self {
         self.anchor = Some(Box::new(anchor));
@@ -238,54 +238,6 @@ impl ClientDataStore {
         self.cache.insert_storage_map_witness(map_root, map_key, witness.clone());
         Ok(witness)
     }
-
-    /// Returns the anchor's chain data extended to track `untracked`, served from the local
-    /// store. Paths are built at the anchor's forest and verified against its peaks, so the
-    /// extension cannot change what the anchor commits to.
-    async fn extend_anchor_from_store(
-        &self,
-        anchor: &ChainAnchor,
-        untracked: &BTreeSet<BlockNumber>,
-    ) -> Result<(BlockHeader, PartialBlockchain), DataStoreError> {
-        let headers: Vec<BlockHeader> = self
-            .store
-            .get_block_headers(untracked)
-            .await?
-            .into_iter()
-            .map(|(header, _has_notes)| header)
-            .collect();
-
-        if let Some(missing) = untracked
-            .iter()
-            .find(|block_num| !headers.iter().any(|header| header.block_num() == **block_num))
-        {
-            return Err(DataStoreError::other_with_source(
-                "anchored data store cannot serve an untracked block",
-                ChainAnchorError::BlockNotTracked { block_num: *missing },
-            ));
-        }
-
-        let block_nums: Vec<BlockNumber> = headers.iter().map(BlockHeader::block_num).collect();
-        let paths = get_authentication_path_for_blocks(
-            &self.store,
-            &block_nums,
-            anchor.block_num().as_usize(),
-        )
-        .await?;
-
-        let mut anchor = anchor.clone();
-        for (header, path) in headers.into_iter().zip(paths.iter()) {
-            anchor.track_block(header, path).map_err(|err| {
-                DataStoreError::other_with_source(
-                    "failed to track a locally stored block in the anchor; the anchor may belong \
-                     to a different chain",
-                    err,
-                )
-            })?;
-        }
-
-        Ok(anchor.into_parts())
-    }
 }
 
 impl DataStore for ClientDataStore {
@@ -336,7 +288,8 @@ impl DataStore for ClientDataStore {
 
         let (block_header, partial_blockchain) = if let Some(anchor) = &self.anchor {
             // Anchored execution: serve the pinned chain data. The executor-derived reference
-            // block must match the anchor; untracked blocks are filled from the local store.
+            // block must match the anchor, and every other block in the set (input note creation
+            // blocks) must already be tracked by the anchor's partial blockchain.
             if ref_block != anchor.block_num() {
                 return Err(DataStoreError::other_with_source(
                     "anchored data store cannot serve the requested reference block",
@@ -347,20 +300,16 @@ impl DataStore for ClientDataStore {
                 ));
             }
 
-            let untracked: BTreeSet<BlockNumber> = block_refs
-                .iter()
-                .filter(|block_num| {
-                    **block_num != ref_block
-                        && !anchor.partial_blockchain().contains_block(**block_num)
-                })
-                .copied()
-                .collect();
-
-            if untracked.is_empty() {
-                (anchor.header().clone(), anchor.partial_blockchain().clone())
-            } else {
-                self.extend_anchor_from_store(anchor, &untracked).await?
+            for block_num in block_refs.iter().filter(|block_num| **block_num != ref_block) {
+                if !anchor.partial_blockchain().contains_block(*block_num) {
+                    return Err(DataStoreError::other_with_source(
+                        "anchored data store cannot serve an untracked block",
+                        ChainAnchorError::BlockNotTracked { block_num: *block_num },
+                    ));
+                }
             }
+
+            (anchor.header().clone(), anchor.partial_blockchain().clone())
         } else if let Some((block_header, partial_blockchain)) =
             self.cache.get_blockchain(&block_refs)
         {

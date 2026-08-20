@@ -2,6 +2,7 @@ pub mod account;
 pub mod address;
 pub mod call;
 pub mod clear_config;
+pub mod completions;
 pub mod exec;
 pub mod export;
 pub mod import;

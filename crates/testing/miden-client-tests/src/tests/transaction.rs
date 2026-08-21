@@ -801,3 +801,122 @@ async fn chain_anchor_untracked_note_block_fails_with_typed_error() {
             if block_num == note_block
     ));
 }
+
+/// A transaction whose expiration block has been reached cannot be included by the network, so
+/// anchored execution must fail with a diagnosable error instead of handing back an
+/// unsubmittable transaction.
+#[tokio::test]
+async fn chain_anchor_execution_rejects_an_already_expired_transaction() {
+    let (mut client, rpc_api, keystore) = Box::pin(create_test_client()).await;
+    let (wallet, faucet) =
+        setup_wallet_and_faucet(&mut client, AccountType::Private, &keystore, RPO_FALCON_SCHEME_ID)
+            .await
+            .unwrap();
+    client.sync_state().await.unwrap();
+
+    // The shortest expiry the builder accepts, so a handful of blocks is enough to pass it.
+    let transaction_request = TransactionRequestBuilder::new()
+        .expiration_delta(1)
+        .build_mint_fungible_asset(
+            FungibleAsset::new(faucet.id(), 5u64).unwrap(),
+            wallet.id(),
+            NoteType::Private,
+            client.rng(),
+        )
+        .unwrap();
+
+    let anchor = client.chain_anchor_for_request(&transaction_request).await.unwrap();
+    let anchor_block = anchor.block_num();
+
+    // Advance to exactly the expiration block: a transaction expiring at the tip can no longer
+    // be included, so the guard must already fire at this boundary.
+    rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+    let tip = client.get_sync_height().await.unwrap();
+    assert_eq!(
+        tip,
+        anchor_block + 1,
+        "the chain must have reached exactly the expiration block"
+    );
+
+    let err = Box::pin(client.execute_transaction_at(
+        faucet.id(),
+        transaction_request.clone(),
+        anchor.clone(),
+    ))
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            ClientError::ChainAnchorError(ChainAnchorError::AnchoredTransactionExpired { .. })
+        ),
+        "expected an expiration error at exactly the expiration block, got {err:?}"
+    );
+
+    // And well past it — the ordinary case of a signing round that ran long.
+    for _ in 0..4 {
+        rpc_api.prove_block();
+    }
+    client.sync_state().await.unwrap();
+    let err =
+        Box::pin(client.execute_transaction_at(faucet.id(), transaction_request.clone(), anchor))
+            .await
+            .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            ClientError::ChainAnchorError(ChainAnchorError::AnchoredTransactionExpired { .. })
+        ),
+        "expected an expiration error well past the expiration block, got {err:?}"
+    );
+
+    // The same request still executes against the tip, so the failure is the anchor's staleness.
+    Box::pin(client.execute_transaction(faucet.id(), transaction_request))
+        .await
+        .unwrap();
+}
+
+/// The reference block is not a leaf of its own MMR, so the capture path must not try to
+/// authenticate it. Consuming a note created in that very block exercises this.
+#[tokio::test]
+async fn chain_anchor_for_request_handles_a_note_created_in_the_reference_block() {
+    let (mut client, rpc_api, keystore) = Box::pin(create_test_client()).await;
+    let (wallet, faucet) =
+        setup_wallet_and_faucet(&mut client, AccountType::Private, &keystore, RPO_FALCON_SCHEME_ID)
+            .await
+            .unwrap();
+    client.sync_state().await.unwrap();
+
+    let mint_request = TransactionRequestBuilder::new()
+        .build_mint_fungible_asset(
+            FungibleAsset::new(faucet.id(), 5u64).unwrap(),
+            wallet.id(),
+            NoteType::Private,
+            client.rng(),
+        )
+        .unwrap();
+    let note_id = mint_request.expected_output_own_notes().pop().unwrap().id();
+    Box::pin(client.submit_new_transaction(faucet.id(), mint_request))
+        .await
+        .unwrap();
+    rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+
+    // Do not advance the chain: the note's inclusion block stays the tip the anchor will pin.
+    let note = client.get_input_note(note_id).await.unwrap().unwrap();
+    let note_block = note.inclusion_proof().unwrap().location().block_num();
+    let tip = client.get_sync_height().await.unwrap();
+    assert_eq!(note_block, tip, "the note must have been created in the block the anchor pins");
+
+    let consume_request = TransactionRequestBuilder::new()
+        .build_consume_notes(vec![note.try_into().unwrap()])
+        .unwrap();
+    let anchor = client.chain_anchor_for_request(&consume_request).await.unwrap();
+
+    assert_eq!(anchor.block_num(), tip);
+
+    Box::pin(client.execute_transaction_at(wallet.id(), consume_request, anchor))
+        .await
+        .unwrap();
+}

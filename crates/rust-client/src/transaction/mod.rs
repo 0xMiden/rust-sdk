@@ -356,19 +356,36 @@ where
     ///   is not tracked by the anchor.
     /// - Returns a [`ClientError::TransactionExecutorError`] if an input note was created after the
     ///   anchored reference block.
+    /// - Returns [`ChainAnchorError::AnchoredTransactionExpired`] if the executed transaction's
+    ///   expiration block has already been reached, which the network would reject.
     pub async fn execute_transaction_at(
         &mut self,
         account_id: AccountId,
         transaction_request: TransactionRequest,
         anchor: ChainAnchor,
     ) -> Result<TransactionResult, ClientError> {
-        self.execute_transaction_with_mode(
-            account_id,
-            transaction_request,
-            TransactionExecutionMode::Standard,
-            Some(Box::new(anchor)),
-        )
-        .await
+        let result = self
+            .execute_transaction_with_mode(
+                account_id,
+                transaction_request,
+                TransactionExecutionMode::Standard,
+                Some(Box::new(anchor)),
+            )
+            .await?;
+
+        // The expiration delta counts from the anchored reference block, so a stale anchor can
+        // yield an already-expired transaction, which the network would only reject after the
+        // caller has paid for proving. The sync height never runs ahead of the real tip, so this
+        // fires only on transactions that are certainly too late.
+        let expiration = result.executed_transaction().expiration_block_num();
+        let sync_height = self.store.get_sync_height().await?;
+        if expiration <= sync_height {
+            return Err(
+                ChainAnchorError::AnchoredTransactionExpired { expiration, sync_height }.into()
+            );
+        }
+
+        Ok(result)
     }
 
     /// Captures a [`ChainAnchor`] at the client's current sync height, tracking the blocks in
@@ -399,14 +416,11 @@ where
             .map(|(header, _has_notes)| header)
             .collect();
 
-        if block_headers.len() != tracked_blocks.len() {
-            let missing = tracked_blocks
-                .iter()
-                .find(|block_num| {
-                    !block_headers.iter().any(|header| header.block_num() == **block_num)
-                })
-                .copied()
-                .expect("a tracked block is missing from the returned headers");
+        // `Store::get_block_headers` may silently omit missing headers, so verify each requested
+        // block is present rather than comparing lengths.
+        let fetched_nums: BTreeSet<BlockNumber> =
+            block_headers.iter().map(BlockHeader::block_num).collect();
+        if let Some(&missing) = tracked_blocks.difference(&fetched_nums).next() {
             return Err(StoreError::BlockHeaderNotFound(missing).into());
         }
 
@@ -433,6 +447,8 @@ where
     ///
     /// - Returns [`ClientError::StoreError`] if a header for the sync height or a tracked block is
     ///   not present in the store.
+    /// - Returns [`ChainAnchorError::TooManyTrackedBlocks`] if the request's authenticated input
+    ///   notes were created across more blocks than a transaction can reference.
     pub async fn chain_anchor_for_request(
         &self,
         transaction_request: &TransactionRequest,
@@ -1007,6 +1023,12 @@ where
         tx_args: TransactionArgs,
     ) -> Result<InputNotes<InputNote>, ClientError> {
         loop {
+            // The consumption checker rejects a zero-note call; the set can be empty because the
+            // request carried no notes or because screening removed them all.
+            if input_notes.is_empty() {
+                break;
+            }
+
             let execution = NoteConsumptionChecker::new(&self.build_executor(data_store)?)
                 .check_notes_consumability(
                     account_id,

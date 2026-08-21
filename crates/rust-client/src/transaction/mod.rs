@@ -809,7 +809,7 @@ where
             // TODO(SantiagoPittella): Add faucet validations.
             Ok(())
         } else {
-            let assets = self.store.get_account_assets(account_id).await?;
+            let assets = self.account_reader(account_id).assets().await?;
             validate_basic_account_request(transaction_request, &assets)
         }
     }

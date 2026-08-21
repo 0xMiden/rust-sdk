@@ -532,7 +532,7 @@ impl Store for SqliteStore {
         .await
     }
 
-    async fn remove_address(&self, address: Address) -> Result<(), StoreError> {
+    async fn remove_address(&self, address: Address) -> Result<bool, StoreError> {
         self.interact_with_connection(move |conn| SqliteStore::remove_address(conn, &address))
             .await
     }

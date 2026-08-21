@@ -419,10 +419,10 @@ pub trait Store: Send + Sync {
         account_id: AccountId,
     ) -> Result<(), StoreError>;
 
-    /// Removes an [`Address`].
+    /// Removes an [`Address`]. Returns `true` if the address was tracked.
     ///
     /// Tag removal is the caller's responsibility — see [`Self::remove_note_tag`].
-    async fn remove_address(&self, address: Address) -> Result<(), StoreError>;
+    async fn remove_address(&self, address: Address) -> Result<bool, StoreError>;
 
     // SETTINGS
     // --------------------------------------------------------------------------------------------

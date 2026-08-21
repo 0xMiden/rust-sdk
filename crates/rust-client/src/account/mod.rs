@@ -494,21 +494,25 @@ impl<AUTH> Client<AUTH> {
     }
 
     /// Removes an [`Address`] from the associated [`AccountId`], alongside its derived [`NoteTag`].
-    /// If no address was tracked for the given account, this is a no-op.
+    ///
+    /// Returns `true` if the address was tracked. If it wasn't, this is a no-op: the derived tag is
+    /// left in place, since it may have been registered by something other than this address.
     pub async fn remove_address(
         &mut self,
         address: Address,
         account_id: AccountId,
-    ) -> Result<(), ClientError> {
+    ) -> Result<bool, ClientError> {
         let derived_note_tag = address.to_note_tag();
         let note_tag_record = NoteTagRecord::with_account_source(derived_note_tag, account_id);
-        self.store.remove_address(address).await?;
+        if !self.store.remove_address(address).await? {
+            return Ok(false);
+        }
         // Remove the note tag if no other address are associated with it.
         let addresses = self.store.get_addresses_by_account_id(account_id).await?;
         if addresses.iter().all(|address| address.to_note_tag() != derived_note_tag) {
             self.store.remove_note_tag(note_tag_record).await?;
         }
-        Ok(())
+        Ok(true)
     }
 
     // ACCOUNT DATA RETRIEVAL

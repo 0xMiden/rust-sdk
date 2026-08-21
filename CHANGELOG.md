@@ -29,6 +29,7 @@
 * [BREAKING][removal][rust] `miden_client::agglayer::create_bridge_account` and `miden_client::agglayer::create_agglayer_faucet` are removed. Build the accounts with `AggLayerBridge::account_builder` and `AggLayerFaucet::account_builder`, which return an `AccountBuilder` and take the account's `FeePolicyManager` explicitly; its active policy must be a `BasicConstantFeePolicy` scheduling every root in the account's `allowed_notes()`. The faucet builder additionally takes the initial token supply and the account seeding its `ADMIN` role.
 * [BREAKING][rust] `Client::add_note_tag` and `Client::remove_note_tag` return `bool` instead of `()`, reporting whether the tag was actually added or removed. Both used to swallow that outcome and only log it ([#2416](https://github.com/0xMiden/rust-sdk/pull/2416)).
 * [BREAKING][rust] `Client::remove_setting` and `Store::remove_setting` return `bool` instead of `()`, reporting whether the key had a value set.
+* [BREAKING][rust] `Client::remove_address` and `Store::remove_address` return `bool` instead of `()`, reporting whether the address was tracked. When it wasn't, `Client::remove_address` now leaves the derived note tag in place instead of running its cleanup.
 
 ### Enhancements
 
@@ -62,6 +63,7 @@
 * [FIX][cli] `miden-client notes --show` now prints the note sender in the `Sender` row; it was printing the note tag there ([#2412](https://github.com/0xMiden/rust-sdk/pull/2412)).
 * [FIX][cli] `miden-client tags --add` and `--remove` now report what actually happened instead of always printing that the tag was added or removed ([#2416](https://github.com/0xMiden/rust-sdk/pull/2416)).
 * [FIX][cli] `miden-client account --default none` now reports whether a default account was actually removed instead of always printing that it was. Removing an absent setting also no longer panics in debug builds.
+* [FIX][cli] `miden-client address remove` now reports whether the address was actually removed instead of always printing that it was being removed.
 * [FIX][rust] `VerifyingRpcClient::get_account` now validates that the returned `AccountProof` belongs to the requested account ID, rejecting a mismatch with `RpcError::InvalidResponse` ([#2419](https://github.com/0xMiden/rust-sdk/pull/2419)).
 
 ## 0.16.0-alpha.1 (2026-07-17)

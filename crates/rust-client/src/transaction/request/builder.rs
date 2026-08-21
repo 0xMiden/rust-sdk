@@ -17,6 +17,7 @@ use miden_protocol::note::{
     NoteDetails,
     NoteDetailsCommitment,
     NoteId,
+    NoteInclusionProof,
     NoteRecipient,
     NoteScript,
     NoteStorage,
@@ -25,7 +26,7 @@ use miden_protocol::note::{
     PartialNote,
     PartialNoteMetadata,
 };
-use miden_protocol::transaction::TransactionScript;
+use miden_protocol::transaction::{InputNote, TransactionScript};
 use miden_protocol::vm::AdviceMap;
 use miden_protocol::{Felt, Word};
 use miden_standards::note::{P2idNote, P2ideNote, PswapNote, PswapNoteStorage, SwapNote};
@@ -55,6 +56,8 @@ pub struct TransactionRequestBuilder {
     /// Optional arguments of the Notes to be consumed by the transaction. This
     /// includes both authenticated and unauthenticated notes.
     input_notes_args: Vec<(NoteId, Option<NoteArgs>)>,
+    /// Explicit authentication mode for selected input notes.
+    explicit_input_notes: BTreeMap<NoteId, Option<NoteInclusionProof>>,
     /// Notes to be created by the transaction. The full note data is needed internally
     /// to build the transaction script template.
     own_output_notes: Vec<Note>,
@@ -108,6 +111,7 @@ impl TransactionRequestBuilder {
         Self {
             input_notes: vec![],
             input_notes_args: vec![],
+            explicit_input_notes: BTreeMap::new(),
             own_output_notes: Vec::new(),
             expected_output_recipients: BTreeMap::new(),
             expected_future_notes: BTreeMap::new(),
@@ -133,6 +137,26 @@ impl TransactionRequestBuilder {
         for (note, argument) in notes {
             self.input_notes_args.push((note.id(), argument));
             self.input_notes.push(note);
+        }
+        self
+    }
+
+    /// Adds input notes with an explicit authentication mode.
+    ///
+    /// The executing client will not infer their mode from its store.
+    #[must_use]
+    pub fn explicit_input_notes(
+        mut self,
+        notes: impl IntoIterator<Item = (InputNote, Option<NoteArgs>)>,
+    ) -> Self {
+        for (input_note, argument) in notes {
+            let proof = input_note.proof().cloned();
+            let note = input_note.into_note();
+            let note_id = note.id();
+
+            self.input_notes_args.push((note_id, argument));
+            self.input_notes.push(note);
+            self.explicit_input_notes.insert(note_id, proof);
         }
         self
     }
@@ -635,6 +659,7 @@ impl TransactionRequestBuilder {
         Ok(TransactionRequest {
             input_notes: self.input_notes,
             input_notes_args: self.input_notes_args,
+            explicit_input_notes: self.explicit_input_notes,
             script_template,
             expected_output_recipients: self.expected_output_recipients,
             expected_future_notes: self.expected_future_notes,

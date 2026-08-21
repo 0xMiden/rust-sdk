@@ -337,10 +337,12 @@ where
     ///
     /// Since protocol 0.16 the signed transaction summary binds the reference block commitment,
     /// so signatures collected over a summary only authorize an execution whose reference block
-    /// is the one the summary was built at. This method makes such an execution reproducible on
-    /// any client, regardless of its sync height: the anchor supplies the reference block header
-    /// and a consistent [`PartialBlockchain`], typically captured by the transaction's original
-    /// proposer via [`Self::chain_anchor_for_request`] and shipped alongside the signed data.
+    /// is the one the summary was built at. This method makes such an execution reproducible,
+    /// regardless of the executing client's sync height, by any client holding the same request,
+    /// the same native account state and the same note classification: the anchor supplies the
+    /// reference block header and a consistent [`PartialBlockchain`], typically captured by the
+    /// transaction's original proposer via [`Self::chain_anchor_for_request`] and shipped
+    /// alongside the signed data. The three caveats are the subject of the paragraphs below.
     ///
     /// Callers holding an anchor from an untrusted source should first compare
     /// [`ChainAnchor::block_commitment`] against an independently trusted value (e.g. the block
@@ -349,11 +351,22 @@ where
     /// Foreign account proofs are fetched at the anchor's block, so requests with foreign
     /// accounts additionally require the node to serve account state at that block.
     ///
+    /// The anchor pins the *chain* data only. The native account is still taken at its current
+    /// state in this client's store, because a transaction executes against the account it is
+    /// being applied to. The summary binds the account delta rather than the initial state, so an
+    /// account that has since changed does not automatically change the summary — but it does
+    /// change what the transaction executes against, and any resulting difference in the delta or
+    /// the output notes changes the summary. Replaying against the account state the summary was
+    /// built at is the only way to be sure; it is sufficient, not strictly necessary.
+    ///
     /// # Errors
     ///
     /// In addition to the [`Self::execute_transaction`] errors:
-    /// - Returns [`ClientError::ChainAnchorError`] if an authenticated input note's creation block
-    ///   is not tracked by the anchor.
+    /// - Returns [`ClientError::ChainAnchorError`] with [`ChainAnchorError::BlockNotTracked`] if an
+    ///   authenticated input note's creation block predates the anchor without being tracked by it,
+    ///   so callers can recapture a wider anchor. The data store enforces the same rule for every
+    ///   other block the executor asks for, but there the [`ChainAnchorError`] is carried in the
+    ///   executor error's source chain rather than surfacing as a typed variant.
     /// - Returns a [`ClientError::TransactionExecutorError`] if an input note was created after the
     ///   anchored reference block.
     /// - Returns [`ClientError::ChainAnchorError`] if the executed transaction's expiration block
@@ -451,12 +464,22 @@ where
     ///
     /// - Returns [`ClientError::StoreError`] if a header for the sync height or a tracked block is
     ///   not present in the store.
+    /// - Returns [`ClientError::DataStoreError`] if the store is missing an MMR node needed to
+    ///   authenticate a tracked block.
+    /// - Returns [`ClientError::PartialBlockchainError`] or [`ClientError::ChainAnchorError`] if
+    ///   the assembled chain data is not self-consistent, which indicates a corrupt store. One
+    ///   variant is instead a property of the request: [`ChainAnchorError::TooManyTrackedBlocks`],
+    ///   when its authenticated input notes were created across more blocks than a transaction can
+    ///   reference.
     pub async fn chain_anchor_for_request(
         &self,
         transaction_request: &TransactionRequest,
     ) -> Result<ChainAnchor, ClientError> {
         let input_note_ids: Vec<NoteId> = transaction_request.input_note_ids().collect();
 
+        // Locally-consumed notes must be tracked too: the replaying client may still hold the same
+        // note as merely committed, and an anchor omitting the block needed to authenticate it
+        // would fail with `BlockNotTracked`.
         let tracked_blocks: BTreeSet<BlockNumber> = if input_note_ids.is_empty() {
             BTreeSet::new()
         } else {
@@ -1015,7 +1038,11 @@ where
     /// Filters the provided input notes down to the subset that can be consumed by the account.
     ///
     /// The trial runs against `data_store` at `block_ref`, which must match the reference block
-    /// the actual execution will use.
+    /// the actual execution will use: an anchored data store serves chain data for exactly one
+    /// block and rejects any other reference.
+    ///
+    /// The scripts of the request's expected output notes must already be registered on
+    /// `data_store`, so that output note creation can resolve them during the trial executions.
     pub(crate) async fn get_valid_input_notes<STORE: DataStore + Sync>(
         &self,
         data_store: &STORE,

@@ -24,10 +24,10 @@ use thiserror::Error;
 /// The anchor bundles the reference [`BlockHeader`] with a [`PartialBlockchain`] consistent with
 /// it — exactly the chain data `TransactionInputs` requires: `chain_length()` equals the header's
 /// block number and the peaks hash to the header's chain commitment. Both invariants are enforced
-/// on construction (including deserialization), so an anchor received from an untrusted party only
-/// needs its [`Self::block_commitment`] checked against an independently trusted value — e.g. the
-/// `BLOCK_COMMITMENT` word bound into a signed [`TransactionSummary`] — to be safe to execute
-/// against.
+/// on construction (including deserialization), so the *chain data* in an anchor received from an
+/// untrusted party only needs its [`Self::block_commitment`] checked against an independently
+/// trusted value — e.g. the reference-block commitment bound into a signed [`TransactionSummary`]
+/// — to be safe to execute against. [`Self::verify_block_commitment`] performs that check.
 ///
 /// The anchor never has to be trusted for the block headers it carries: [`PartialBlockchain::new`]
 /// proves every tracked header's commitment against the MMR, and [`Deserializable`] routes through
@@ -39,8 +39,12 @@ use thiserror::Error;
 /// summary produced at one block cannot be reproduced by re-executing at another. Flows that
 /// collect signatures over a summary and execute later (e.g. multisig) capture an anchor at the
 /// block the summary was built at ([`crate::Client::chain_anchor_for_request`]), ship it with the
-/// signed data, and replay the transaction with [`crate::Client::execute_transaction_at`] so the
-/// summary — and with it the signature advice keys — reproduces exactly.
+/// signed data, and replay the transaction with [`crate::Client::execute_transaction_at`].
+///
+/// The anchor pins the chain-dependent half of that reproduction. The rest — the same request, the
+/// native account state the transaction executes against, and the same
+/// authenticated/unauthenticated classification of the input notes — still comes from the replaying
+/// client, so an anchor makes the summary reproducible rather than guaranteeing it on its own.
 ///
 /// When the transaction consumes authenticated notes, the anchor's [`PartialBlockchain`] must
 /// track each note's creation block; [`crate::Client::chain_anchor_for_request`] captures an
@@ -203,6 +207,9 @@ impl Deserializable for ChainAnchor {
 // CHAIN ANCHOR ERROR
 // ================================================================================================
 
+/// An error raised while constructing a [`ChainAnchor`], while checking one against the state of
+/// the client that is about to execute with it, while the data store serves chain data during
+/// execution, or — for expiry — once execution has already produced a transaction.
 #[derive(Debug, Error)]
 pub enum ChainAnchorError {
     #[error(

@@ -324,7 +324,7 @@ pub(crate) mod tests {
     use crate::db_management::errors::SqliteStoreError;
 
     const PINNED_SCHEMA_HASHES: [&str; CLIENT_MIGRATIONS.len()] =
-        ["0x749fba4988cae911b43dd2a3efef634ce5f514515ae26687f791fb17612c5b7a"];
+        ["0xd02b6d09378d300dd92bfc44a2ce15f5852d76eec336b204f87e0d3a916cfa08"];
 
     // FIXTURES
     // --------------------------------------------------------------------------------------------

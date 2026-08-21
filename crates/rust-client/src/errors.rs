@@ -16,6 +16,7 @@ use miden_protocol::errors::{
     TransactionScriptError,
 };
 use miden_protocol::note::NoteId;
+use miden_protocol::transaction::TransactionId;
 // RE-EXPORTS
 // ================================================================================================
 pub use miden_standards::errors::CodeBuilderError;
@@ -172,6 +173,11 @@ pub enum ClientError {
     TransactionInputError(#[source] TransactionInputError),
     #[error("transaction proving failed")]
     TransactionProvingError(#[from] TransactionProverError),
+    #[error("prover returned a proof of transaction {returned}, but {requested} was requested")]
+    MismatchedProvenTransaction {
+        requested: TransactionId,
+        returned: TransactionId,
+    },
     #[error("invalid transaction request")]
     TransactionRequestError(#[from] TransactionRequestError),
     #[error("failed to build the send-notes transaction script")]

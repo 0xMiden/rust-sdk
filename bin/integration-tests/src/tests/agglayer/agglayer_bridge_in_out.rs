@@ -22,15 +22,16 @@ extern crate alloc;
 
 use alloc::vec;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use miden_agglayer::testing::zero_fee_policy_manager;
 use miden_agglayer::{
+    AggLayerFaucet,
     B2AggNote,
     ClaimNote,
     ClaimNoteStorage,
     ConfigAggBridgeNote,
     ConversionMetadata,
     UpdateGerNote,
-    create_agglayer_faucet,
 };
 use miden_client::Felt;
 use miden_client::account::AccountType;
@@ -131,13 +132,18 @@ pub async fn test_agglayer_bridge_in_out(client_config: ClientConfig) -> Result<
         },
         None => {
             let faucet_seed = bridge_admin.client.rng().draw_word();
-            let faucet = create_agglayer_faucet(
+            let faucet = AggLayerFaucet::account_builder(
                 faucet_seed,
                 "AGG",
                 12,
                 Felt::from(1_000_000_000u32),
+                Felt::ZERO,
+                bridge_admin_id,
                 bridge_id,
-            );
+                zero_fee_policy_manager(AggLayerFaucet::allowed_notes()),
+            )
+            .build()
+            .context("failed to build agglayer faucet account")?;
             let faucet_id = faucet.id();
             println!("[bridge_in_out] Creating runtime faucet: {faucet_id}");
             for pair in [&mut bridge_admin, &mut ger_manager, &mut user] {
@@ -248,9 +254,12 @@ pub async fn test_agglayer_bridge_in_out(client_config: ClientConfig) -> Result<
         wait_for_tx(&mut user.client, tx_id).await?;
         println!("[bridge_in_out] Round {round}: CLAIM note submitted");
 
-        // Wait for the P2ID note to arrive at the destination
+        // Wait for the P2ID note to arrive at the destination. The budget spans a network
+        // transaction round trip (the bridge consuming the CLAIM note and emitting the P2ID),
+        // which is far more load-sensitive than a directly submitted transaction, so it is set
+        // well above the ~5 blocks that round trip normally takes.
         let consumable_notes =
-            wait_for_consumable_notes(&mut user.client, destination_account.id(), 30).await;
+            wait_for_consumable_notes(&mut user.client, destination_account.id(), 60).await;
         println!(
             "[bridge_in_out] Round {round}: found {} consumable notes for destination",
             consumable_notes.len()

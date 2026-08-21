@@ -1,5 +1,6 @@
 use alloc::boxed::Box;
 use alloc::sync::Arc;
+use std::collections::BTreeSet;
 use std::net::TcpListener;
 use std::time::Duration;
 
@@ -7,7 +8,7 @@ use miden_client::assembly::CodeBuilder;
 use miden_client::auth::{AuthSchemeId, AuthSecretKey, AuthSingleSig, RPO_FALCON_SCHEME_ID};
 use miden_client::keystore::Keystore;
 use miden_client::note::{Note, P2idNote};
-use miden_client::store::NoteFilter;
+use miden_client::store::{NoteFilter, TransactionFilter};
 use miden_client::transaction::{
     ProvenTransaction,
     TransactionExecutorError,
@@ -298,6 +299,119 @@ impl TransactionProver for AlwaysFailingProver {
     ) -> Result<ProvenTransaction, TransactionProverError> {
         Err(TransactionProverError::other("simulated remote prover failure"))
     }
+}
+
+/// A prover that discards the transaction it is asked to prove and always hands back a
+/// pre-baked, independently valid proof of a completely different transaction.
+/// Used to test that the client rejects a prover response unrelated to its request.
+struct SwapProver {
+    swapped: ProvenTransaction,
+}
+
+#[async_trait]
+impl TransactionProver for SwapProver {
+    async fn prove(
+        &self,
+        _inputs: TransactionInputs,
+    ) -> Result<ProvenTransaction, TransactionProverError> {
+        Ok(self.swapped.clone())
+    }
+}
+
+// PROVER RESPONSE VALIDATION TESTS
+// ================================================================================================
+
+/// A prover that returns a valid proof of a transaction other than
+/// the one it was asked to prove must be rejected, instead of having its answer submitted and
+/// the local store updated as if the requested transaction had gone through.
+#[tokio::test]
+async fn submit_rejects_proven_transaction_unrelated_to_the_request() {
+    let (mut client, _, keystore) = Box::pin(create_test_client()).await;
+    let (wallet, faucet_a) =
+        setup_wallet_and_faucet(&mut client, AccountType::Private, &keystore, RPO_FALCON_SCHEME_ID)
+            .await
+            .unwrap();
+    let (_, faucet_b) =
+        setup_wallet_and_faucet(&mut client, AccountType::Private, &keystore, RPO_FALCON_SCHEME_ID)
+            .await
+            .unwrap();
+
+    // Transaction B: a mint from a different faucet, executed and proven on its own. This is
+    // what the rogue prover hands back regardless of what it is asked to prove.
+    let request_b = TransactionRequestBuilder::new()
+        .build_mint_fungible_asset(
+            FungibleAsset::new(faucet_b.id(), 50).unwrap(),
+            wallet.id(),
+            NoteType::Private,
+            client.rng(),
+        )
+        .unwrap();
+    let result_b = Box::pin(client.execute_transaction(faucet_b.id(), request_b)).await.unwrap();
+    let proven_b = Box::pin(client.prove_transaction(&result_b)).await.unwrap();
+    let tx_id_b = proven_b.id();
+
+    // Transaction A: the mint the client is actually asked to submit.
+    let request_a = TransactionRequestBuilder::new()
+        .build_mint_fungible_asset(
+            FungibleAsset::new(faucet_a.id(), 100).unwrap(),
+            wallet.id(),
+            NoteType::Private,
+            client.rng(),
+        )
+        .unwrap();
+
+    // Local state before the rejected submission, to check nothing is written for a transaction
+    // that never reached the network.
+    let tracked_before: BTreeSet<_> = client
+        .get_transactions(TransactionFilter::All)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|tx| tx.id)
+        .collect();
+    let faucet_a_commitment_before =
+        client.account_reader(faucet_a.id()).commitment().await.unwrap();
+
+    let swap_prover = Arc::new(SwapProver { swapped: proven_b });
+    let result =
+        Box::pin(client.submit_new_transaction_with_prover(faucet_a.id(), request_a, swap_prover))
+            .await;
+
+    let err = match result {
+        Ok(id) => panic!(
+            "submitting a proven transaction unrelated to the requested one must be rejected, but \
+             the call succeeded reporting {id} while the network received {tx_id_b}"
+        ),
+        Err(err) => err,
+    };
+    match err {
+        ClientError::MismatchedProvenTransaction { returned, .. } => {
+            assert_eq!(
+                returned, tx_id_b,
+                "the error must report the transaction the prover returned"
+            );
+        },
+        other => panic!("unexpected error variant: {other:?}"),
+    }
+
+    let tracked_after: BTreeSet<_> = client
+        .get_transactions(TransactionFilter::All)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|tx| tx.id)
+        .collect();
+    assert_eq!(
+        tracked_before, tracked_after,
+        "a rejected prover response must not record a transaction locally"
+    );
+
+    let faucet_a_commitment_after =
+        client.account_reader(faucet_a.id()).commitment().await.unwrap();
+    assert_eq!(
+        faucet_a_commitment_before, faucet_a_commitment_after,
+        "a rejected prover response must not advance the requesting account's local state"
+    );
 }
 
 // PROVER FALLBACK TESTS

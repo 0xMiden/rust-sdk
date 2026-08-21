@@ -265,13 +265,18 @@ pub mod crypto {
         MmrProof,
         PartialMmr,
     };
+    // Forest backend types are re-exported for downstream stores.
     pub use miden_protocol::crypto::merkle::smt::{
+        Backend,
+        BackendReader,
+        ForestInMemoryBackend,
         LeafIndex,
         SMT_DEPTH,
         Smt,
         SmtForest,
         SmtLeaf,
         SmtProof,
+        VersionId,
     };
     pub use miden_protocol::crypto::merkle::store::MerkleStore;
     pub use miden_protocol::crypto::merkle::{

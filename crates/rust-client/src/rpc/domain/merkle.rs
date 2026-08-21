@@ -7,6 +7,13 @@ use miden_protocol::crypto::merkle::{MerklePath, SparseMerklePath};
 use crate::rpc::errors::RpcConversionError;
 use crate::rpc::generated as proto;
 
+// CONSTANTS
+// ================================================================================================
+
+/// The maximum number of siblings a [`MerklePath`] can hold. `MerklePath` represents its depth as
+/// a `u8`, so a longer path is not representable.
+const MAX_MERKLE_PATH_SIBLINGS: usize = u8::MAX as usize;
+
 // MERKLE PATH
 // ================================================================================================
 
@@ -27,6 +34,15 @@ impl TryFrom<&proto::primitives::MerklePath> for MerklePath {
     type Error = RpcConversionError;
 
     fn try_from(merkle_path: &proto::primitives::MerklePath) -> Result<Self, Self::Error> {
+        // `MerklePath` enforces this bound with an assertion, so the count has to be checked here
+        // for the conversion to stay fallible on an oversized response.
+        if merkle_path.siblings.len() > MAX_MERKLE_PATH_SIBLINGS {
+            return Err(RpcConversionError::InvalidField(format!(
+                "MerklePath has {} siblings but at most {MAX_MERKLE_PATH_SIBLINGS} are allowed",
+                merkle_path.siblings.len(),
+            )));
+        }
+
         merkle_path.siblings.iter().map(Word::try_from).collect()
     }
 }
@@ -100,5 +116,34 @@ impl TryFrom<proto::primitives::MmrDelta> for MmrDelta {
                 .map_err(|_| RpcConversionError::InvalidField("MmrDelta forest invalid".into()))?,
             data: data?,
         })
+    }
+}
+
+// TESTS
+// ================================================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn proto_merkle_path(siblings: usize) -> proto::primitives::MerklePath {
+        proto::primitives::MerklePath {
+            siblings: vec![proto::primitives::Digest::default(); siblings],
+        }
+    }
+
+    #[test]
+    fn merkle_path_conversion_accepts_the_maximum_sibling_count() {
+        let path = MerklePath::try_from(&proto_merkle_path(MAX_MERKLE_PATH_SIBLINGS))
+            .expect("the maximum sibling count must convert");
+
+        assert_eq!(path.depth(), u8::MAX);
+    }
+
+    #[test]
+    fn merkle_path_conversion_rejects_an_oversized_sibling_count() {
+        let oversized = proto_merkle_path(MAX_MERKLE_PATH_SIBLINGS + 1);
+
+        assert!(MerklePath::try_from(&oversized).is_err());
     }
 }

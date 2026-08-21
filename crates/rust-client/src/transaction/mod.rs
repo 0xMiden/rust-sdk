@@ -67,7 +67,7 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use miden_protocol::account::{Account, AccountCode, AccountId};
+use miden_protocol::account::{Account, AccountCode, AccountCodeInterface, AccountId};
 use miden_protocol::asset::{Asset, NonFungibleAsset};
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::errors::AssetError;
@@ -365,7 +365,8 @@ where
     ) -> Result<TransactionResult, ClientError> {
         let account: Account = self.get_native_account_record(account_id).await?.try_into()?;
 
-        let prep = self.prepare_transaction(&account, transaction_request).await?;
+        validate_account_request(&transaction_request, &account)?;
+        let prep = self.prepare_transaction(account.code_interface(), transaction_request).await?;
 
         let data_store = ClientDataStore::new(self.store.clone(), self.rpc_api.clone());
         data_store.register_note_scripts(prep.output_note_scripts());
@@ -379,12 +380,7 @@ where
         let mut notes = prep.notes;
         if prep.ignore_invalid_notes {
             notes = self
-                .get_valid_input_notes(
-                    &account,
-                    notes,
-                    prep.tx_args.clone(),
-                    &prep.output_recipients,
-                )
+                .get_valid_input_notes(&data_store, account.id(), notes, prep.tx_args.clone())
                 .await?;
         }
 
@@ -407,23 +403,22 @@ where
     }
 
     /// Performs the data-store-independent setup shared by `execute_transaction` and
-    /// `execute_transaction_for_batch`: validates the request against the supplied
-    /// `account`, loads/filters input notes, builds the transaction script and args,
-    /// retrieves foreign-account inputs, and computes the reference block number.
+    /// `execute_transaction_for_batch`: loads/filters input notes, builds the transaction script
+    /// and args, retrieves foreign-account inputs, and computes the reference block number.
     ///
     /// This method does not write to the store: any state produced by the transaction is
     /// persisted only after the transaction executes successfully.
     ///
-    /// `account` is the state validation runs against — for a single transaction this is
-    /// the persisted account; inside [`crate::transaction::BatchBuilder::push`] it is the
-    /// in-batch (stacked) state, so balances reflect prior pushes.
+    /// Checking the request against the account's balances is the caller's job, since it needs a
+    /// full [`Account`] (see [`validate_account_request`]). Batch execution only has the in-batch
+    /// [`miden_protocol::account::PartialAccount`] and so skips it; the executor still rejects an
+    /// unsatisfiable request.
     pub(crate) async fn prepare_transaction(
         &self,
-        account: &Account,
+        account_code_interface: AccountCodeInterface,
         transaction_request: TransactionRequest,
     ) -> Result<PreparedTransaction, ClientError> {
         self.validate_recency().await?;
-        validate_account_request(&transaction_request, account)?;
 
         // Retrieve all input notes from the store.
         let mut stored_note_records = self
@@ -454,7 +449,7 @@ where
         let future_notes: Vec<(NoteDetails, NoteTag)> =
             transaction_request.expected_future_notes().cloned().collect();
 
-        let tx_script = transaction_request.build_transaction_script(&account.code_interface())?;
+        let tx_script = transaction_request.build_transaction_script(&account_code_interface)?;
 
         let foreign_accounts = transaction_request.foreign_accounts().clone();
 
@@ -491,6 +486,12 @@ where
     }
 
     /// Proves the specified transaction using the provided prover.
+    ///
+    /// # Errors
+    ///
+    /// - Returns a [`ClientError::TransactionProvingError`] if the prover fails to produce a proof.
+    /// - Returns a [`ClientError::MismatchedProvenTransaction`] if the prover returns a proof of a
+    ///   transaction other than the requested one.
     pub async fn prove_transaction_with(
         &self,
         tx_result: &TransactionResult,
@@ -498,8 +499,23 @@ where
     ) -> Result<ProvenTransaction, ClientError> {
         info!("Proving transaction...");
 
-        let proven_transaction =
-            tx_prover.prove(tx_result.executed_transaction().clone().into()).await?;
+        let executed_transaction = tx_result.executed_transaction();
+        let proven_transaction = tx_prover.prove(executed_transaction.clone().into()).await?;
+
+        // A prover is trusted with the witness, but not with choosing which transaction gets
+        // submitted. Everything downstream (submission, the local store update, the returned
+        // id) is derived from `tx_result`, so a proof of anything else would be submitted
+        // while the local state recorded the transaction that never reached the network.
+        //
+        // The id commits to the initial and final account commitments and to the input and
+        // output note commitments; the account commitments in turn commit to the account id,
+        // so a matching id covers the account as well.
+        if proven_transaction.id() != executed_transaction.id() {
+            return Err(ClientError::MismatchedProvenTransaction {
+                requested: executed_transaction.id(),
+                returned: proven_transaction.id(),
+            });
+        }
 
         info!("Transaction proven.");
 
@@ -818,21 +834,17 @@ where
     /// `output_recipients` are the request's expected output recipients; their scripts are
     /// registered on the consumption-check data store so output note creation can resolve them
     /// without them being present in the store.
-    pub(crate) async fn get_valid_input_notes(
+    pub(crate) async fn get_valid_input_notes<STORE: DataStore + Sync>(
         &self,
-        account: &Account,
+        data_store: &STORE,
+        account_id: AccountId,
         mut input_notes: InputNotes<InputNote>,
         tx_args: TransactionArgs,
-        output_recipients: &[NoteRecipient],
     ) -> Result<InputNotes<InputNote>, ClientError> {
         loop {
-            let data_store = ClientDataStore::new(self.store.clone(), self.rpc_api.clone());
-            data_store.register_note_scripts(output_recipients.iter().map(|r| r.script().clone()));
-
-            data_store.mast_store().load_account_code(account.code());
-            let execution = NoteConsumptionChecker::new(&self.build_executor(&data_store)?)
+            let execution = NoteConsumptionChecker::new(&self.build_executor(data_store)?)
                 .check_notes_consumability(
-                    account.id(),
+                    account_id,
                     self.store.get_sync_height().await?,
                     input_notes.iter().map(|n| n.clone().into_note()).collect(),
                     tx_args.clone(),
@@ -1308,6 +1320,9 @@ fn validate_basic_account_request(
 /// Fetches a foreign account's proof and details from the network, converts them into
 /// [`AccountInputs`], and caches the returned code in the store for future requests.
 ///
+/// Storage maps the node caps as oversized (returned truncated) are carried root-only in the
+/// inputs; reads from them resolve lazily as per-key witnesses during execution.
+///
 /// # Errors
 /// Fails if the account is private: the RPC does not return account details for them, causing
 /// [`TransactionRequestError::ForeignAccountDataMissing`].
@@ -1321,6 +1336,8 @@ pub(crate) async fn fetch_public_account_inputs(
     let known_code: Option<AccountCode> =
         store.get_foreign_account_code(vec![account_id]).await?.into_values().next();
 
+    // Tracked accounts skip the asset list when unchanged; untracked accounts fetch it in full
+    // so asset reads need no execution-time RPC.
     let vault = store
         .get_account_header(account_id)
         .await?
@@ -1328,7 +1345,7 @@ pub(crate) async fn fetch_public_account_inputs(
             VaultFetch::IfChangedFrom(header.vault_root())
         });
 
-    let (block_num, mut account_proof) = rpc_api
+    let (_block_num, account_proof) = rpc_api
         .get_account(
             account_id,
             GetAccountRequest::new()
@@ -1338,11 +1355,6 @@ pub(crate) async fn fetch_public_account_inputs(
                 .with_vault(vault),
         )
         .await?;
-
-    if let Some(details) = account_proof.details_mut() {
-        rpc_api.resolve_oversize_vault(account_id, block_num, details).await?;
-        rpc_api.resolve_oversize_storage_maps(account_id, block_num, details).await?;
-    }
 
     let account_inputs = request::account_proof_into_inputs(account_proof, &storage_requirements)?;
 

@@ -6,9 +6,8 @@ use std::vec::Vec;
 use miden_client::Serializable;
 use miden_client::account::{AccountHeader, AccountId, AccountVaultPatch};
 use miden_client::asset::Asset;
-use miden_client::store::{AccountSmtForest, StoreError};
+use miden_client::store::StoreError;
 use miden_protocol::asset::AssetId;
-use miden_protocol::crypto::merkle::MerkleError;
 use rusqlite::types::Value;
 use rusqlite::{OptionalExtension, Transaction, params};
 
@@ -48,16 +47,16 @@ impl SqliteStore {
         Ok(())
     }
 
-    /// Applies vault delta changes to the account state, updating fungible and non-fungible assets.
+    /// Persists vault patch changes to the asset tables, updating fungible and non-fungible
+    /// assets. It archives old values from latest to historical, deletes removed assets from
+    /// latest, then inserts updated assets.
     ///
-    /// The function updates the SMT forest with all asset changes and verifies that the resulting
-    /// vault root matches the expected final state. It archives old values from latest to
-    /// historical, deletes removed assets from latest, then inserts updated assets.
+    /// The corresponding forest update (and the verification that the resulting vault root
+    /// matches the final header) happens in `apply_account_patch`, which applies all of an
+    /// account's tree changes in one batch.
     pub(crate) fn apply_account_vault_patch(
         tx: &Transaction<'_>,
-        smt_forest: &mut AccountSmtForest,
         account_id: AccountId,
-        init_account_state: &AccountHeader,
         final_account_state: &AccountHeader,
         vault_patch: &AccountVaultPatch,
     ) -> Result<(), StoreError> {
@@ -79,18 +78,6 @@ impl SqliteStore {
             &removed_asset_ids,
             &updated_assets_values,
         )?;
-
-        let new_vault_root = smt_forest.update_asset_nodes(
-            init_account_state.vault_root(),
-            updated_assets_values.iter().copied(),
-            removed_asset_ids.iter().copied(),
-        )?;
-        if new_vault_root != final_account_state.vault_root() {
-            return Err(StoreError::MerkleStoreError(MerkleError::ConflictingRoots {
-                expected_root: final_account_state.vault_root(),
-                actual_root: new_vault_root,
-            }));
-        }
 
         Ok(())
     }

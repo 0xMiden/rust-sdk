@@ -31,8 +31,8 @@
 //! - Locked accounts are rejected with [`crate::ClientError::AccountLocked`].
 //! - No two transactions in a batch may consume the same input note (rejected with
 //!   [`BatchBuilderError::DuplicateInputNote`]).
-//! - The builder is succeed-only: every transaction must be pushed successfully for the batch to
-//!   reach [`submit`](BatchBuilder::submit).
+//! - A failed [`push`](BatchBuilder::push) leaves the batch exactly as it was, so the caller may
+//!   retry with a different request or submit the transactions accumulated so far.
 //!
 //! ## Error semantics after RPC accept
 //!
@@ -48,7 +48,9 @@
 
 mod data_store;
 mod error;
+mod staged_smt;
 
+use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -56,16 +58,11 @@ use alloc::vec::Vec;
 pub(crate) use data_store::InMemoryBatchDataStore;
 pub use error::BatchBuilderError;
 use miden_protocol::MIN_PROOF_SECURITY_LEVEL;
-use miden_protocol::account::{Account, AccountId};
+use miden_protocol::account::AccountId;
 use miden_protocol::batch::ProposedBatch;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::note::NoteId;
-use miden_protocol::transaction::{
-    PartialBlockchain,
-    ProvenTransaction,
-    TransactionId,
-    TransactionInputs,
-};
+use miden_protocol::transaction::{PartialBlockchain, ProvenTransaction};
 use miden_tx::auth::TransactionAuthenticator;
 use miden_tx_batch::{BatchExecutor, LocalBatchProver};
 
@@ -79,12 +76,11 @@ use crate::transaction::{
 };
 use crate::{Client, ClientError};
 
-/// A transaction successfully pushed into a [`BatchBuilder`]: bundles the locally-proven
-/// transaction with the [`TransactionInputs`] needed by the RPC submission and the
-/// [`TransactionResult`] used to build the per-tx [`TransactionStoreUpdate`].
+/// A transaction successfully pushed into a [`BatchBuilder`]: the locally-proven transaction
+/// alongside the [`TransactionResult`] used to build the per-tx [`TransactionStoreUpdate`]. The
+/// transaction inputs the RPC submission seals are read back from the result.
 pub(crate) struct PushedTx {
     pub(crate) proven_tx: Arc<ProvenTransaction>,
-    pub(crate) transaction_inputs: TransactionInputs,
     pub(crate) tx_result: TransactionResult,
 }
 
@@ -171,17 +167,13 @@ where
             build_partial_mmr_with_paths(&store, current_peaks, &authenticated_blocks).await?;
         let partial_blockchain = PartialBlockchain::new(partial_mmr, authenticated_blocks)?;
 
-        // 5. Split pushed_txs into the three views required by the remaining steps and build the
+        // 5. Split pushed_txs into the two views required by the remaining steps and build the
         //    ProposedBatch.
         let len = self.pushed_txs.len();
         let mut proven_txs: Vec<Arc<ProvenTransaction>> = Vec::with_capacity(len);
-        let mut tx_ids: Vec<TransactionId> = Vec::with_capacity(len);
-        let mut transaction_inputs: Vec<TransactionInputs> = Vec::with_capacity(len);
         let mut tx_results: Vec<TransactionResult> = Vec::with_capacity(len);
         for pushed in self.pushed_txs {
-            tx_ids.push(pushed.proven_tx.id());
             proven_txs.push(pushed.proven_tx);
-            transaction_inputs.push(pushed.transaction_inputs);
             tx_results.push(pushed.tx_result);
         }
 
@@ -203,11 +195,16 @@ where
         // 7. Seal each transaction's inputs, then submit via RPC. Each entry is sealed against its
         //    own transaction id.
         let key = self.client.transaction_encryption_key().await?;
-        let sealed_inputs = tx_ids
+        let sealed_inputs = tx_results
             .iter()
-            .zip(transaction_inputs)
-            .map(|(tx_id, inputs)| {
-                seal_transaction_inputs(&mut self.client.rng, &key, *tx_id, &inputs)
+            .map(|tx_result| {
+                let executed = tx_result.executed_transaction();
+                seal_transaction_inputs(
+                    &mut self.client.rng,
+                    &key,
+                    executed.id(),
+                    executed.tx_inputs(),
+                )
             })
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -249,14 +246,14 @@ where
     /// the client's configured prover, and append the resulting proven transaction to the
     /// batch. The first push for a given account lazily loads its state from the store.
     ///
-    /// Consumes the builder and returns it on success. On failure the builder is dropped
-    /// along with every transaction accumulated so far; the caller cannot recover the
-    /// partial batch.
+    /// The batch is only advanced once the transaction has both executed and been proven, so on
+    /// failure the builder still holds exactly the transactions it held before the call and
+    /// remains usable. Returns `&mut Self` so pushes can be chained.
     pub async fn push(
-        mut self,
+        &mut self,
         account_id: AccountId,
         req: TransactionRequest,
-    ) -> Result<Self, ClientError> {
+    ) -> Result<&mut Self, ClientError> {
         // 1. Dedup input notes globally for the batch.
         for note_id in req.input_note_ids() {
             if self.consumed_input_notes.contains(&note_id) {
@@ -264,54 +261,54 @@ where
             }
         }
 
-        // 2. Execute against in-batch state, prove.
+        // 2. Execute against in-batch state, then prove. Both run before any batch state is
+        //    advanced, so a failure in either leaves the builder untouched. Execution holds a large
+        //    future, boxed here so callers don't have to.
         let tx_result =
-            execute_transaction_for_batch(self.client, &mut self.data_store, account_id, req)
+            Box::pin(execute_transaction_for_batch(self.client, &self.data_store, account_id, req))
                 .await?;
-        let tx_inputs = tx_result.executed_transaction().tx_inputs().clone();
         let proven_tx = self.client.prove_transaction(&tx_result).await?;
 
-        // 3. Record consumed input notes, append PushedTx.
+        // 3. The transaction is final: fold it into the in-batch account state, record its consumed
+        //    notes, and append it to the batch.
+        self.data_store
+            .apply_executed_transaction(tx_result.executed_transaction())
+            .await?;
         for note in tx_result.consumed_notes().iter() {
             self.consumed_input_notes.insert(note.id());
         }
         self.pushed_txs.push(PushedTx {
             proven_tx: Arc::new(proven_tx),
-            transaction_inputs: tx_inputs,
             tx_result,
         });
         Ok(self)
     }
 }
 
-/// Executes a single transaction, that is part of the batch to be sent to the node.
-/// Transaction is ran as the provided `Account`
+/// Executes a single transaction that is part of the batch to be sent to the node.
+/// The transaction runs against the current in-batch partial account state.
 async fn execute_transaction_for_batch<AUTH>(
     client: &Client<AUTH>,
-    data_store: &mut InMemoryBatchDataStore,
+    data_store: &InMemoryBatchDataStore,
     account_id: AccountId,
     transaction_request: TransactionRequest,
 ) -> Result<TransactionResult, ClientError>
 where
     AUTH: TransactionAuthenticator + Sync + 'static,
 {
-    let mut account = if let Some(account) = data_store.get_account(account_id) {
-        account.clone()
-    } else {
-        let record = client
-            .store
-            .get_account(account_id)
-            .await?
-            .ok_or(ClientError::AccountDataNotFound(account_id))?;
-        if record.is_locked() {
-            return Err(ClientError::AccountLocked(account_id));
-        }
-        let account: Account = record.try_into()?;
-        account
+    let account_reader = client.account_reader(account_id);
+    if account_reader.status().await?.is_locked() {
+        return Err(ClientError::AccountLocked(account_id));
+    }
+
+    let account = match data_store.cached_account(account_id) {
+        Some(account) => account,
+        None => account_reader.partial_account().await?,
     };
 
-    let account_id = account.id();
-    let prep = client.prepare_transaction(&account, transaction_request).await?;
+    let prep = client
+        .prepare_transaction(account.code_interface(), transaction_request)
+        .await?;
 
     data_store.register_note_scripts(prep.output_note_scripts());
     for fpi_account in &prep.foreign_account_inputs {
@@ -324,7 +321,7 @@ where
     let mut notes = prep.notes;
     if prep.ignore_invalid_notes {
         notes = client
-            .get_valid_input_notes(&account, notes, prep.tx_args.clone(), &prep.output_recipients)
+            .get_valid_input_notes(data_store, account_id, notes, prep.tx_args.clone())
             .await?;
     }
 
@@ -332,16 +329,6 @@ where
         .build_executor(data_store)?
         .execute_transaction(account_id, prep.block_num, notes, prep.tx_args)
         .await?;
-
-    // Cache new account state in memory data store.
-    let patch = executed_transaction.account_patch();
-    let account = if patch.is_full_state() {
-        Account::try_from(patch).map_err(ClientError::AccountError)?
-    } else {
-        account.apply_patch(patch).map_err(ClientError::AccountError)?;
-        account
-    };
-    data_store.cache_account(account_id, account);
 
     validate_executed_transaction(&executed_transaction, &prep.output_recipients)?;
     TransactionResult::new(executed_transaction, prep.future_notes)

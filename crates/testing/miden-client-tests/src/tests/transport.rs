@@ -6,30 +6,20 @@ use miden_client::address::{Address, AddressInterface, RoutingParameters};
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;
 use miden_client::note::{
-    NetworkAccountTarget,
-    Note,
-    NoteDetails,
-    NoteExecutionHint,
-    NoteTag,
-    NoteType,
+    NetworkAccountTarget, Note, NoteDetails, NoteExecutionHint, NoteTag, NoteType,
 };
 use miden_client::note_transport::NoteTransportClient;
-use miden_client::store::NoteFilter;
+use miden_client::store::{InputNoteState, NoteFilter};
 use miden_client::testing::common::create_test_store_path;
 use miden_client::testing::mock::{MockClient, MockRpcApi};
 use miden_client::testing::note_transport::{
-    FaultyNoteTransportApi,
-    MockNoteTransportApi,
-    MockNoteTransportNode,
+    FaultyNoteTransportApi, MockNoteTransportApi, MockNoteTransportNode,
 };
 use miden_client::utils::RwLock;
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
 use miden_protocol::Felt;
 use miden_protocol::account::{
-    AccountId,
-    AccountIdVersion,
-    AccountType as ProtocolAccountType,
-    AssetCallbackFlag,
+    AccountId, AccountIdVersion, AccountType as ProtocolAccountType, AssetCallbackFlag,
 };
 use miden_protocol::asset::{Asset, FungibleAsset};
 use miden_protocol::block::BlockNumber;
@@ -43,9 +33,7 @@ use miden_testing::{Auth, MockChainBuilder, MockTransactionInput};
 use rand::RngExt;
 
 use crate::tests::{
-    create_test_client_builder,
-    insert_new_wallet,
-    seed_mock_transaction_encryption_key,
+    create_test_client_builder, insert_new_wallet, seed_mock_transaction_encryption_key,
 };
 
 #[tokio::test]
@@ -180,7 +168,7 @@ async fn unavailable_attachments_do_not_fail_sync() {
     // path: the note advertises attachment content the node cannot serve, and the sync succeeds
     // by skipping the note.
     let (mut client, private_note, mock_transport_node) =
-        committed_private_note_recipient(0, true).await;
+        committed_private_note_recipient(0, true, false).await;
     assert!(client.get_input_notes(NoteFilter::All).await.unwrap().is_empty());
 
     // Receiving the same note over the NTL imports it, but it stays expected rather than being
@@ -812,7 +800,7 @@ async fn fetch_private_notes_uses_sender_provided_after_block_num() {
     // Commit the note at block 1, then advance far enough that the 20-block fallback window
     // (sync_height - 20) starts well above block 1 and would miss it.
     let (mut client, private_note, mock_transport_node) =
-        committed_private_note_recipient(30, false).await;
+        committed_private_note_recipient(30, false, false).await;
 
     let sync_height = client.get_sync_height().await.unwrap();
     assert!(
@@ -844,7 +832,7 @@ async fn fetch_private_notes_uses_sender_provided_after_block_num() {
 #[tokio::test]
 async fn fetch_private_notes_without_floor_falls_back_to_lookback_window() {
     let (mut client, private_note, mock_transport_node) =
-        committed_private_note_recipient(30, false).await;
+        committed_private_note_recipient(30, false, false).await;
 
     // Deliver the note WITHOUT a floor: the recipient must rely on the lookback heuristic.
     let details_bytes = NoteDetails::from(private_note.clone()).to_bytes();
@@ -865,6 +853,30 @@ async fn fetch_private_notes_without_floor_falls_back_to_lookback_window() {
     assert!(
         !committed_notes.iter().any(|n| n.id() == Some(private_note.id())),
         "without a floor the lookback window misses a note committed before sync_height - 20"
+    );
+}
+
+/// A note already consumed before first delivery through NTL must not remain consumable.
+#[tokio::test]
+async fn fetch_private_notes_marks_historically_consumed_note() {
+    let (mut client, private_note, mock_transport_node) =
+        committed_private_note_recipient(0, false, true).await;
+
+    let details_bytes = NoteDetails::from(private_note.clone()).to_bytes();
+    mock_transport_node.write().add_note(*private_note.header(), details_bytes);
+
+    client.sync_state().await.unwrap();
+
+    let notes = client
+        .get_input_notes(NoteFilter::DetailsCommitments(vec![private_note.details_commitment()]))
+        .await
+        .unwrap();
+    assert_eq!(notes.len(), 1, "the NTL-delivered note should be imported");
+    assert!(notes[0].is_consumed(), "historically spent note must not remain consumable");
+    assert!(
+        matches!(notes[0].state(), InputNoteState::ConsumedExternal(..)),
+        "expected ConsumedExternal, got {}",
+        notes[0].state()
     );
 }
 
@@ -947,6 +959,7 @@ fn private_note_with_tag(account: AccountId, tag: NoteTag, seed: u64) -> Note {
 async fn committed_private_note_recipient(
     blocks_past_commitment: u32,
     with_unserved_attachment: bool,
+    consume_before_sync: bool,
 ) -> (MockClient<FilesystemKeyStore>, Note, Arc<RwLock<MockNoteTransportNode>>) {
     let mut mock_chain_builder = MockChainBuilder::new();
     let mock_account = mock_chain_builder
@@ -984,6 +997,21 @@ async fn committed_private_note_recipient(
     .unwrap();
     mock_chain.add_pending_executed_transaction(&tx).unwrap();
     mock_chain.prove_next_block().unwrap();
+
+    if consume_before_sync {
+        let consume_tx = Box::pin(
+            mock_chain
+                .build_transaction(MockTransactionInput::AccountId(mock_account.id()))
+                .unauthenticated_input_note(private_note.clone())
+                .build()
+                .unwrap()
+                .execute(),
+        )
+        .await
+        .unwrap();
+        mock_chain.add_pending_executed_transaction(&consume_tx).unwrap();
+        mock_chain.prove_next_block().unwrap();
+    }
 
     // Advance the chain past the note's commitment block.
     for _ in 0..blocks_past_commitment {

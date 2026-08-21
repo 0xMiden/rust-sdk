@@ -14,13 +14,8 @@ use alloc::vec::Vec;
 
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{
-    Note,
-    NoteAttachments,
-    NoteDetails,
-    NoteDetailsCommitment,
-    NoteId,
-    NoteInclusionProof,
-    NoteTag,
+    Note, NoteAttachments, NoteDetails, NoteDetailsCommitment, NoteId, NoteInclusionProof, NoteTag,
+    Nullifier,
 };
 use miden_standards::note::NoteFile;
 use miden_tx::auth::TransactionAuthenticator;
@@ -355,6 +350,30 @@ where
         let mut committed_notes_data =
             self.sync_expected_notes(lowest_request_block, note_requests).await?;
 
+        let details_by_commitment: BTreeMap<NoteDetailsCommitment, NoteDetails> = requested_notes
+            .iter()
+            .map(|(_, details, _, _)| (details.commitment(), details.clone()))
+            .collect();
+        let mut nullifier_requests = BTreeSet::new();
+        let mut lowest_nullifier_block: BlockNumber = u32::MAX.into();
+        for (commitment, synced_note) in &committed_notes_data {
+            let Some(details) = details_by_commitment.get(commitment) else {
+                continue;
+            };
+            nullifier_requests.insert(Nullifier::from_details_and_metadata(
+                details,
+                synced_note.committed.metadata(),
+            ));
+            lowest_nullifier_block = lowest_nullifier_block.min(synced_note.committed.block_num());
+        }
+        let nullifier_commit_heights = if nullifier_requests.is_empty() {
+            BTreeMap::new()
+        } else {
+            self.rpc_api
+                .get_nullifier_commit_heights(nullifier_requests, lowest_nullifier_block)
+                .await?
+        };
+
         let mut note_records = vec![];
         let mut partial_mmr = self.get_current_partial_mmr().await?;
 
@@ -394,6 +413,14 @@ where
 
             // `block_header_received` transitions the record's state, so it must always run.
             note_changed |= note_record.block_header_received(&block_header)?;
+
+            let nullifier = Nullifier::from_details_and_metadata(note_record.details(), &metadata);
+            if let Some(nullifier_block_height) =
+                nullifier_commit_heights.get(&nullifier).and_then(|height| *height)
+            {
+                note_changed |=
+                    note_record.consumed_externally(nullifier, nullifier_block_height, None)?;
+            }
 
             // Once committed, the note no longer needs its expected-note tag.
             if note_changed {

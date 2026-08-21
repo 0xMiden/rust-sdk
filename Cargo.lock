@@ -1378,7 +1378,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2326,9 +2326,9 @@ dependencies = [
 
 [[package]]
 name = "miden-agglayer"
-version = "0.16.0-rc.4"
+version = "0.16.0-rc.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "945d8d676a85d4e1de133aaa51280203b753af249e81c0743d7378366cc16765"
+checksum = "74e2e7c3dc76bb2f4a81eb2a20a9b99b134441ae6f9ac9464451e7847b4b72b5"
 dependencies = [
  "alloy-sol-types",
  "fs-err",
@@ -2418,9 +2418,9 @@ dependencies = [
 
 [[package]]
 name = "miden-block-prover"
-version = "0.16.0-rc.4"
+version = "0.16.0-rc.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "47e13a9881d61a5334bdb12bdd66677b41d0d31ebff9a0e7b48e457bc1e161e4"
+checksum = "ff08a6f57bf1cd5b1464e46013ac5d0e25c12ccae2fe454771f43a9edd08935f"
 dependencies = [
  "miden-protocol",
  "thiserror",
@@ -2428,7 +2428,7 @@ dependencies = [
 
 [[package]]
 name = "miden-client"
-version = "0.16.0-rc.1"
+version = "0.16.0-rc.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2468,7 +2468,7 @@ dependencies = [
 
 [[package]]
 name = "miden-client-bench"
-version = "0.16.0-rc.1"
+version = "0.16.0-rc.2"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -2484,7 +2484,7 @@ dependencies = [
 
 [[package]]
 name = "miden-client-cli"
-version = "0.16.0-rc.1"
+version = "0.16.0-rc.2"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -2512,7 +2512,7 @@ dependencies = [
 
 [[package]]
 name = "miden-client-integration-tests"
-version = "0.16.0-rc.1"
+version = "0.16.0-rc.2"
 dependencies = [
  "anyhow",
  "assert_matches",
@@ -2535,7 +2535,7 @@ dependencies = [
 
 [[package]]
 name = "miden-client-sqlite-store"
-version = "0.16.0-rc.1"
+version = "0.16.0-rc.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2553,7 +2553,7 @@ dependencies = [
 
 [[package]]
 name = "miden-client-unit-tests"
-version = "0.16.0-rc.1"
+version = "0.16.0-rc.2"
 dependencies = [
  "miden-client",
  "miden-client-sqlite-store",
@@ -2998,9 +2998,9 @@ dependencies = [
 
 [[package]]
 name = "miden-protocol"
-version = "0.16.0-rc.4"
+version = "0.16.0-rc.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e275feebbe9c2458c5877c5f2a03b8e2152831ce956376f015fc4c50acfffb50"
+checksum = "57ad59cd3d44cd3d480f4b5bb2e500c36aef7dc1bf6f4222f989a433dba56179"
 dependencies = [
  "bech32",
  "fs-err",
@@ -3029,9 +3029,9 @@ dependencies = [
 
 [[package]]
 name = "miden-protocol-build-utils"
-version = "0.16.0-rc.4"
+version = "0.16.0-rc.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a35f63db32f2e7ea9fc47abf17023aa509beadd77b6dffc4efff385eef4634b"
+checksum = "1f1145d0f5cb0efde2484af06587225b2a222fbf4811c4606d0d7f1bd3ff40dc"
 dependencies = [
  "fs-err",
  "miden-assembly",
@@ -3082,9 +3082,9 @@ dependencies = [
 
 [[package]]
 name = "miden-standards"
-version = "0.16.0-rc.4"
+version = "0.16.0-rc.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d309c7d728eccc884e18ff8bb020656dfaf3547ac2475115bea3a4bdd200c0a9"
+checksum = "a4287a40b8f10b0d824dd513ee2a17d75dad9fb5b389699d043ca1510721b61d"
 dependencies = [
  "bon",
  "miden-assembly",
@@ -3121,9 +3121,9 @@ dependencies = [
 
 [[package]]
 name = "miden-testing"
-version = "0.16.0-rc.4"
+version = "0.16.0-rc.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7e330412635cc28f7076b99a46829e5391224d9d57c31e95d2ba430b1c068391"
+checksum = "f5a053ed53bae22b40058550863560f71d51e3927b9fd97e14e22873934bb43f"
 dependencies = [
  "anyhow",
  "itertools 0.15.0",
@@ -3142,9 +3142,9 @@ dependencies = [
 
 [[package]]
 name = "miden-tx"
-version = "0.16.0-rc.4"
+version = "0.16.0-rc.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b2a33858c9e0dd18959949a10e61883712faafa2857cd1f39d641deae783e28e"
+checksum = "c924fb92588645df967d981415c94adb5c030d0512a90ff4e670f9211cdc9983"
 dependencies = [
  "bon",
  "miden-agglayer",
@@ -3157,9 +3157,9 @@ dependencies = [
 
 [[package]]
 name = "miden-tx-batch"
-version = "0.16.0-rc.4"
+version = "0.16.0-rc.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce1333fd5d5eed16e667af4340dc4ecea3c7dbd6020c95db7382e6f5ee26f390"
+checksum = "7be4c5fa200b15f66f6ab729eb04cb5a9b4a6ecf55d722dc57a10e6cb598760f"
 dependencies = [
  "miden-processor",
  "miden-protocol",
@@ -4043,7 +4043,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "343d3bd7056eda839b03204e68deff7d1b13aba7af2b2fd16890697274262ee7"
 dependencies = [
  "heck",
- "itertools 0.10.5",
+ "itertools 0.13.0",
  "log",
  "multimap",
  "petgraph",
@@ -4064,7 +4064,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.10.5",
+ "itertools 0.13.0",
  "proc-macro2",
  "quote",
  "syn 2.0.118",
@@ -4544,7 +4544,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5093,10 +5093,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5126,7 +5126,7 @@ checksum = "8f50febec83f5ee1df3015341d8bd429f2d1cc62bcba7ea2076759d315084683"
 
 [[package]]
 name = "test-node-genesis"
-version = "0.16.0-rc.1"
+version = "0.16.0-rc.2"
 dependencies = [
  "anyhow",
  "miden-agglayer",
@@ -5908,7 +5908,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

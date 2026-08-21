@@ -14,10 +14,10 @@ use miden_protocol::account::{
     StorageSlotContent,
     StorageSlotName,
 };
-use miden_protocol::asset::{AssetId, AssetWitness};
+use miden_protocol::asset::{AssetId, AssetVault, AssetWitness};
 use miden_protocol::block::{BlockHeader, BlockNumber};
-use miden_protocol::crypto::merkle::mmr::{Forest, InOrderIndex, MmrPeaks, PartialMmr};
-use miden_protocol::crypto::merkle::{MerkleError, MerklePath};
+use miden_protocol::crypto::merkle::MerklePath;
+use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrPeaks, PartialMmr};
 use miden_protocol::note::{NoteScript, NoteScriptRoot};
 use miden_protocol::transaction::{AccountInputs, PartialBlockchain};
 use miden_protocol::vm::FutureMaybeSend;
@@ -36,6 +36,7 @@ use crate::rpc::domain::account::{
     GetAccountRequest,
     StorageMapEntries,
     StorageMapFetch,
+    VaultFetch,
 };
 use crate::rpc::{AccountStateAt, NodeRpcClient};
 use crate::store::StoreError;
@@ -183,9 +184,8 @@ impl ClientDataStore {
 
     /// Fetches a storage map witness for a specific key from the network via RPC and caches it.
     ///
-    /// The witness is fetched at `account_state_at` — the transaction's reference block — so that
-    /// it stays consistent with the rest of the foreign account's inputs. Defaulting to the chain
-    /// tip would serve a witness against a different map root under anchored execution.
+    /// Anchored at the transaction reference block: a chain-tip query would return proofs for a
+    /// newer map root whenever the account changed after the caller's last sync.
     async fn fetch_and_cache_storage_map_witness(
         &self,
         account_id: AccountId,
@@ -193,17 +193,19 @@ impl ClientDataStore {
         slot_name: StorageSlotName,
         map_key: StorageMapKey,
         known_code: AccountCode,
-        account_state_at: AccountStateAt,
     ) -> Result<StorageMapWitness, DataStoreError> {
+        let account_state_at =
+            self.cache.ref_block().map_or(AccountStateAt::ChainTip, AccountStateAt::Block);
+
         let storage_requirements = AccountStorageRequirements::new([(slot_name, &[map_key])]);
         let (_, account_proof): (BlockNumber, _) = self
             .rpc_api
             .get_account(
                 account_id,
                 GetAccountRequest::new()
-                    .at(account_state_at)
                     .with_storage(StorageMapFetch::Slots(storage_requirements))
-                    .with_known_code(Some(known_code)),
+                    .with_known_code(Some(known_code))
+                    .at(account_state_at),
             )
             .await
             .map_err(|err| {
@@ -238,11 +240,79 @@ impl ClientDataStore {
             },
         };
 
+        // Reject a wrong-root proof here rather than as an opaque merkle error inside the VM.
+        let proof_root = proof.compute_root();
+        if proof_root != map_root {
+            return Err(DataStoreError::other(format!(
+                "storage map proof fetched for account {account_id} verifies against root \
+                 {proof_root} but the executor requires root {map_root}"
+            )));
+        }
+
         let witness = StorageMapWitness::new(proof, [map_key]).map_err(|err| {
             DataStoreError::other_with_source("failed to create storage map witness", err)
         })?;
         self.cache.insert_storage_map_witness(map_root, map_key, witness.clone());
         Ok(witness)
+    }
+
+    /// Fetches an account's full vault via RPC — anchored at the transaction reference block —
+    /// and verifies it against the vault root the executor requires. Fallback for vault reads
+    /// the local store cannot serve, typically foreign accounts whose [`AccountInputs`] carry
+    /// only their vault root.
+    async fn fetch_vault_via_rpc(
+        &self,
+        account_id: AccountId,
+        vault_root: Word,
+    ) -> Result<AssetVault, DataStoreError> {
+        let account_state_at =
+            self.cache.ref_block().map_or(AccountStateAt::ChainTip, AccountStateAt::Block);
+
+        // The cached foreign inputs hold the code, letting the node omit it from the response.
+        let known_code = self
+            .cache
+            .with_foreign_account_inputs(account_id, |inputs| inputs.code().clone());
+
+        let (block_num, mut account_proof) = self
+            .rpc_api
+            .get_account(
+                account_id,
+                GetAccountRequest::new()
+                    .at(account_state_at)
+                    .with_known_code(known_code)
+                    .with_vault(VaultFetch::Always),
+            )
+            .await
+            .map_err(|err| {
+                DataStoreError::other_with_source("failed to fetch account vault via RPC", err)
+            })?;
+
+        let details = account_proof.details_mut().ok_or_else(|| {
+            DataStoreError::other(format!(
+                "RPC returned no account details for account {account_id}"
+            ))
+        })?;
+
+        self.rpc_api
+            .resolve_oversize_vault(account_id, block_num, details)
+            .await
+            .map_err(|err| {
+                DataStoreError::other_with_source("failed to resolve oversize vault via RPC", err)
+            })?;
+
+        let vault = AssetVault::new(&details.vault_details.assets).map_err(|err| {
+            DataStoreError::other_with_source("failed to build the fetched vault", err)
+        })?;
+
+        if vault.root() != vault_root {
+            return Err(DataStoreError::other(format!(
+                "vault fetched for account {account_id} has root {} but the executor requires \
+                 root {vault_root}",
+                vault.root()
+            )));
+        }
+
+        Ok(vault)
     }
 }
 
@@ -364,6 +434,9 @@ impl DataStore for ClientDataStore {
         Ok((partial_account, block_header, partial_blockchain))
     }
 
+    /// Retrieves witnesses for the requested assets, trying everything local first — per-asset
+    /// reads, then the full local vault — and falling back to a single RPC vault fetch when the
+    /// local store cannot serve the requested root.
     async fn get_vault_asset_witnesses(
         &self,
         account_id: AccountId,
@@ -374,26 +447,55 @@ impl DataStore for ClientDataStore {
             return Ok(witnesses);
         }
 
-        let mut asset_witnesses = vec![];
+        let mut asset_witnesses = Vec::with_capacity(asset_ids.len());
         for asset_id in asset_ids.iter().copied() {
             match self.store.get_account_asset(account_id, asset_id).await {
-                Ok(Some((_, asset_witness))) => asset_witnesses.push(asset_witness),
-                Ok(None) | Err(StoreError::MerkleStoreError(MerkleError::RootNotInStore(_))) => {
-                    let vault = self.store.get_account_vault(account_id).await?;
-
-                    if vault.root() != vault_root {
-                        return Err(DataStoreError::other("Vault root mismatch"));
-                    }
-
-                    asset_witnesses.push(vault.open(asset_id));
+                Ok(Some((_, witness))) if witness.proof().compute_root() == vault_root => {
+                    asset_witnesses.push(witness);
+                },
+                Ok(_) => {
+                    asset_witnesses.clear();
+                    break;
                 },
                 Err(err) => {
-                    return Err(DataStoreError::other_with_source(
-                        "Failed to get account asset",
-                        err,
-                    ));
+                    tracing::debug!(
+                        %account_id,
+                        %err,
+                        "asset witness not available locally, will try the full vault"
+                    );
+                    asset_witnesses.clear();
+                    break;
                 },
             }
+        }
+
+        // Fall back to the full local vault — an absent asset still needs a non-membership
+        // witness, which only the vault itself can produce — and lastly to an RPC vault fetch,
+        // for accounts the local store cannot serve at the requested root.
+        if asset_witnesses.len() != asset_ids.len() {
+            let vault = match self.store.get_account_vault(account_id).await {
+                Ok(vault) if vault.root() == vault_root => vault,
+                Ok(vault) => {
+                    tracing::debug!(
+                        %account_id,
+                        local_root = %vault.root(),
+                        requested_root = %vault_root,
+                        "local vault is missing or stale, will fetch it via RPC"
+                    );
+                    self.fetch_vault_via_rpc(account_id, vault_root).await?
+                },
+                Err(err) => {
+                    tracing::debug!(
+                        %account_id,
+                        %err,
+                        "vault not available locally, will fetch it via RPC"
+                    );
+                    self.fetch_vault_via_rpc(account_id, vault_root).await?
+                },
+            };
+
+            asset_witnesses =
+                asset_ids.iter().copied().map(|asset_id| vault.open(asset_id)).collect();
         }
 
         self.cache
@@ -423,17 +525,6 @@ impl DataStore for ClientDataStore {
             return Ok(witness);
         }
 
-        // Every remote fetch below resolves at the transaction's reference block, so the account
-        // data and the map witness describe the same state — under anchored execution the
-        // reference block is the anchor's, not the chain tip.
-        let account_state_at = self.cache.ref_block().map(AccountStateAt::Block).ok_or_else(
-            || {
-                DataStoreError::other(
-                    "reference block not set: get_transaction_inputs must run before witnesses are resolved",
-                )
-            },
-        )?;
-
         // Resolve against the cached account inputs (without cloning them), fetching and caching
         // the account first if it isn't cached yet.
         let resolution = if let Some(resolution) =
@@ -442,6 +533,11 @@ impl DataStore for ClientDataStore {
             }) {
             resolution?
         } else {
+            let account_state_at = self
+                .cache
+                .ref_block()
+                .map(AccountStateAt::Block)
+                .expect("reference block should be set");
             let inputs = self.fetch_and_cache_foreign_account(account_id, account_state_at).await?;
             resolve_witness_from_inputs(&inputs, map_root, map_key)?
         };
@@ -450,12 +546,7 @@ impl DataStore for ClientDataStore {
             WitnessResolution::Witness(witness) => Ok(witness),
             WitnessResolution::FetchParams(slot_name, known_code) => {
                 self.fetch_and_cache_storage_map_witness(
-                    account_id,
-                    map_root,
-                    slot_name,
-                    map_key,
-                    known_code,
-                    account_state_at,
+                    account_id, map_root, slot_name, map_key, known_code,
                 )
                 .await
             },
@@ -595,7 +686,8 @@ pub(crate) async fn build_partial_mmr_with_paths(
         authenticated_blocks.iter().map(BlockHeader::block_num).collect();
 
     let authentication_paths =
-        get_authentication_path_for_blocks(store, &block_nums, partial_mmr.forest()).await?;
+        get_authentication_path_for_blocks(store, &block_nums, partial_mmr.forest().num_leaves())
+            .await?;
 
     for (header, path) in authenticated_blocks.iter().zip(authentication_paths.iter()) {
         partial_mmr
@@ -609,22 +701,18 @@ pub(crate) async fn build_partial_mmr_with_paths(
 /// Retrieves all Partial Blockchain nodes required for authenticating the set of blocks, and then
 /// constructs the path for each of them.
 ///
-/// # Errors
-///
-/// - Returns [`StoreError::BlockHeaderNotFound`] if a block number is not below `forest`, since
-///   such a block is not yet part of the chain the paths are being built against.
-/// - Returns [`StoreError::PartialBlockchainNodeNotFound`] if the store is missing an MMR node a
-///   path needs.
+/// This function assumes `block_nums` doesn't contain values above or equal to `forest`.
+/// If there are any such values, the function will panic when calling `mmr_merkle_path_len()`.
 async fn get_authentication_path_for_blocks(
     store: &alloc::sync::Arc<dyn Store>,
     block_nums: &[BlockNumber],
-    forest: Forest,
+    forest: usize,
 ) -> Result<Vec<MerklePath>, StoreError> {
     let mut node_indices = BTreeSet::new();
 
     // Calculate all needed nodes indices for generating the paths
     for block_num in block_nums {
-        let path_depth = path_depth_for(forest, *block_num)?;
+        let path_depth = mmr_merkle_path_len(block_num.as_usize(), forest);
 
         let mut idx = InOrderIndex::from_leaf_pos(block_num.as_usize());
 
@@ -643,19 +731,10 @@ async fn get_authentication_path_for_blocks(
     // Construct authentication paths
     let mut authentication_paths = vec![];
     for block_num in block_nums {
-        // Walk exactly the depth the path needs. Stopping at the first sibling the store happens
-        // to be missing would instead yield a short path, which fails much further downstream (in
-        // `PartialMmr::track` or the inclusion check in `PartialBlockchain::new`) as an opaque MMR
-        // error that says nothing about which node is absent.
-        let path_depth = path_depth_for(forest, *block_num)?;
-        let mut merkle_nodes = Vec::with_capacity(path_depth);
+        let mut merkle_nodes = vec![];
         let mut idx = InOrderIndex::from_leaf_pos(block_num.as_usize());
 
-        for _ in 0..path_depth {
-            let sibling = idx.sibling();
-            let node = mmr_nodes
-                .get(&sibling)
-                .ok_or(StoreError::PartialBlockchainNodeNotFound(sibling.inner() as u64))?;
+        while let Some(node) = mmr_nodes.get(&idx.sibling()) {
             merkle_nodes.push(*node);
             idx = idx.parent();
         }
@@ -666,13 +745,12 @@ async fn get_authentication_path_for_blocks(
     Ok(authentication_paths)
 }
 
-/// Returns the depth of `block_num`'s authentication path in `forest`.
-///
-/// A block outside the forest has no path; that includes the reference block of an anchor, which
-/// is not a leaf of its own MMR.
-fn path_depth_for(forest: Forest, block_num: BlockNumber) -> Result<usize, StoreError> {
-    forest
-        .leaf_to_corresponding_tree(block_num.as_usize())
-        .map(|depth| depth as usize)
-        .ok_or(StoreError::BlockHeaderNotFound(block_num))
+/// Calculates the merkle path length for an MMR of a specific forest and a leaf index
+/// `leaf_index` is a 0-indexed leaf number and `forest` is the total amount of leaves
+/// in the MMR at this point.
+fn mmr_merkle_path_len(leaf_index: usize, forest: usize) -> usize {
+    let before: usize = forest & leaf_index;
+    let after = forest ^ before;
+
+    after.ilog2() as usize
 }

@@ -337,12 +337,10 @@ where
     ///
     /// Since protocol 0.16 the signed transaction summary binds the reference block commitment,
     /// so signatures collected over a summary only authorize an execution whose reference block
-    /// is the one the summary was built at. This method makes such an execution reproducible,
-    /// regardless of the executing client's sync height, by any client holding the same request,
-    /// the same native account state and the same note classification: the anchor supplies the
-    /// reference block header and a consistent [`PartialBlockchain`], typically captured by the
-    /// transaction's original proposer via [`Self::chain_anchor_for_request`] and shipped
-    /// alongside the signed data. The three caveats are the subject of the paragraphs below.
+    /// is the one the summary was built at. This method makes such an execution reproducible on
+    /// any client, regardless of its sync height: the anchor supplies the reference block header
+    /// and a consistent [`PartialBlockchain`], typically captured by the transaction's original
+    /// proposer via [`Self::chain_anchor_for_request`] and shipped alongside the signed data.
     ///
     /// Callers holding an anchor from an untrusted source should first compare
     /// [`ChainAnchor::block_commitment`] against an independently trusted value (e.g. the block
@@ -351,57 +349,26 @@ where
     /// Foreign account proofs are fetched at the anchor's block, so requests with foreign
     /// accounts additionally require the node to serve account state at that block.
     ///
-    /// The anchor pins the *chain* data only. The native account is still taken at its current
-    /// state in this client's store, because a transaction executes against the account it is
-    /// being applied to. The summary binds the account delta rather than the initial state, so an
-    /// account that has since changed does not automatically change the summary — but it does
-    /// change what the transaction executes against, and any resulting difference in the delta or
-    /// the output notes changes the summary. Replaying against the account state the summary was
-    /// built at is the only way to be sure; it is sufficient, not strictly necessary.
-    ///
     /// # Errors
     ///
     /// In addition to the [`Self::execute_transaction`] errors:
-    /// - Returns [`ClientError::ChainAnchorError`] with [`ChainAnchorError::BlockNotTracked`] if an
-    ///   authenticated input note's creation block predates the anchor without being tracked by it,
-    ///   so callers can recapture a wider anchor. The data store enforces the same rule for every
-    ///   other block the executor asks for, but there the [`ChainAnchorError`] is carried in the
-    ///   executor error's source chain rather than surfacing as a typed variant.
+    /// - Returns [`ClientError::ChainAnchorError`] if an authenticated input note's creation block
+    ///   is not tracked by the anchor.
     /// - Returns a [`ClientError::TransactionExecutorError`] if an input note was created after the
     ///   anchored reference block.
-    /// - Returns [`ClientError::ChainAnchorError`] if the executed transaction's expiration block
-    ///   has already been reached, which the network would reject.
-    /// - Returns [`ClientError::StoreError`] if the sync height cannot be read for that expiration
-    ///   check, which happens after execution has already succeeded.
     pub async fn execute_transaction_at(
         &mut self,
         account_id: AccountId,
         transaction_request: TransactionRequest,
         anchor: ChainAnchor,
     ) -> Result<TransactionResult, ClientError> {
-        let result = self
-            .execute_transaction_with_mode(
-                account_id,
-                transaction_request,
-                TransactionExecutionMode::Standard,
-                Some(Box::new(anchor)),
-            )
-            .await?;
-
-        // The expiration delta is counted from the reference block, so an anchor far enough behind
-        // the tip yields a transaction that is already expired. Execution cannot notice — it only
-        // sees the anchored block — and the network rejects it at batch building, after the caller
-        // has paid for proving. Compare against the sync height, which never runs ahead of the
-        // real tip, so this only fires on transactions that are certainly too late.
-        let expiration = result.executed_transaction().expiration_block_num();
-        let sync_height = self.store.get_sync_height().await?;
-        if expiration <= sync_height {
-            return Err(
-                ChainAnchorError::AnchoredTransactionExpired { expiration, sync_height }.into()
-            );
-        }
-
-        Ok(result)
+        self.execute_transaction_with_mode(
+            account_id,
+            transaction_request,
+            TransactionExecutionMode::Standard,
+            Some(Box::new(anchor)),
+        )
+        .await
     }
 
     /// Captures a [`ChainAnchor`] at the client's current sync height, tracking the blocks in
@@ -432,12 +399,14 @@ where
             .map(|(header, _has_notes)| header)
             .collect();
 
-        // `Store::get_block_headers` may return fewer headers than requested, so check membership
-        // rather than length: a length comparison would be defeated by an implementation that
-        // returned an extra header alongside a missing one.
-        let fetched_nums: BTreeSet<BlockNumber> =
-            block_headers.iter().map(BlockHeader::block_num).collect();
-        if let Some(&missing) = tracked_blocks.difference(&fetched_nums).next() {
+        if block_headers.len() != tracked_blocks.len() {
+            let missing = tracked_blocks
+                .iter()
+                .find(|block_num| {
+                    !block_headers.iter().any(|header| header.block_num() == **block_num)
+                })
+                .copied()
+                .expect("a tracked block is missing from the returned headers");
             return Err(StoreError::BlockHeaderNotFound(missing).into());
         }
 
@@ -464,22 +433,12 @@ where
     ///
     /// - Returns [`ClientError::StoreError`] if a header for the sync height or a tracked block is
     ///   not present in the store.
-    /// - Returns [`ClientError::DataStoreError`] if the store is missing an MMR node needed to
-    ///   authenticate a tracked block.
-    /// - Returns [`ClientError::PartialBlockchainError`] or [`ClientError::ChainAnchorError`] if
-    ///   the assembled chain data is not self-consistent, which indicates a corrupt store. One
-    ///   variant is instead a property of the request: [`ChainAnchorError::TooManyTrackedBlocks`],
-    ///   when its authenticated input notes were created across more blocks than a transaction can
-    ///   reference.
     pub async fn chain_anchor_for_request(
         &self,
         transaction_request: &TransactionRequest,
     ) -> Result<ChainAnchor, ClientError> {
         let input_note_ids: Vec<NoteId> = transaction_request.input_note_ids().collect();
 
-        // Locally-consumed notes must be tracked too: the replaying client may still hold the same
-        // note as merely committed, and an anchor omitting the block needed to authenticate it
-        // would fail with `BlockNotTracked`.
         let tracked_blocks: BTreeSet<BlockNumber> = if input_note_ids.is_empty() {
             BTreeSet::new()
         } else {
@@ -1038,11 +997,7 @@ where
     /// Filters the provided input notes down to the subset that can be consumed by the account.
     ///
     /// The trial runs against `data_store` at `block_ref`, which must match the reference block
-    /// the actual execution will use: an anchored data store serves chain data for exactly one
-    /// block and rejects any other reference.
-    ///
-    /// The scripts of the request's expected output notes must already be registered on
-    /// `data_store`, so that output note creation can resolve them during the trial executions.
+    /// the actual execution will use.
     pub(crate) async fn get_valid_input_notes<STORE: DataStore + Sync>(
         &self,
         data_store: &STORE,
@@ -1052,13 +1007,6 @@ where
         tx_args: TransactionArgs,
     ) -> Result<InputNotes<InputNote>, ClientError> {
         loop {
-            // The consumption checker rejects a zero-note call as an out-of-range note count, so
-            // ask it nothing when there is nothing to ask about. That happens both when screening
-            // has emptied the set and when the request set the flag but carried no notes at all.
-            if input_notes.is_empty() {
-                break;
-            }
-
             let execution = NoteConsumptionChecker::new(&self.build_executor(data_store)?)
                 .check_notes_consumability(
                     account_id,
@@ -1535,6 +1483,9 @@ fn validate_basic_account_request(
 /// Fetches a foreign account's proof and details from the network, converts them into
 /// [`AccountInputs`], and caches the returned code in the store for future requests.
 ///
+/// Storage maps the node caps as oversized (returned truncated) are carried root-only in the
+/// inputs; reads from them resolve lazily as per-key witnesses during execution.
+///
 /// # Errors
 /// Fails if the account is private: the RPC does not return account details for them, causing
 /// [`TransactionRequestError::ForeignAccountDataMissing`].
@@ -1548,6 +1499,8 @@ pub(crate) async fn fetch_public_account_inputs(
     let known_code: Option<AccountCode> =
         store.get_foreign_account_code(vec![account_id]).await?.into_values().next();
 
+    // Tracked accounts skip the asset list when unchanged; untracked accounts fetch it in full
+    // so asset reads need no execution-time RPC.
     let vault = store
         .get_account_header(account_id)
         .await?
@@ -1555,7 +1508,7 @@ pub(crate) async fn fetch_public_account_inputs(
             VaultFetch::IfChangedFrom(header.vault_root())
         });
 
-    let (block_num, mut account_proof) = rpc_api
+    let (_block_num, account_proof) = rpc_api
         .get_account(
             account_id,
             GetAccountRequest::new()
@@ -1565,11 +1518,6 @@ pub(crate) async fn fetch_public_account_inputs(
                 .with_vault(vault),
         )
         .await?;
-
-    if let Some(details) = account_proof.details_mut() {
-        rpc_api.resolve_oversize_vault(account_id, block_num, details).await?;
-        rpc_api.resolve_oversize_storage_maps(account_id, block_num, details).await?;
-    }
 
     let account_inputs = request::account_proof_into_inputs(account_proof, &storage_requirements)?;
 

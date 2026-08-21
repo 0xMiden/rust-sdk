@@ -16,7 +16,7 @@ use miden_protocol::account::{
 };
 use miden_protocol::asset::{AssetId, AssetWitness};
 use miden_protocol::block::{BlockHeader, BlockNumber};
-use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrPeaks, PartialMmr};
+use miden_protocol::crypto::merkle::mmr::{Forest, InOrderIndex, MmrPeaks, PartialMmr};
 use miden_protocol::crypto::merkle::{MerkleError, MerklePath};
 use miden_protocol::note::{NoteScript, NoteScriptRoot};
 use miden_protocol::transaction::{AccountInputs, PartialBlockchain};
@@ -578,8 +578,7 @@ pub(crate) async fn build_partial_mmr_with_paths(
         authenticated_blocks.iter().map(BlockHeader::block_num).collect();
 
     let authentication_paths =
-        get_authentication_path_for_blocks(store, &block_nums, partial_mmr.forest().num_leaves())
-            .await?;
+        get_authentication_path_for_blocks(store, &block_nums, partial_mmr.forest()).await?;
 
     for (header, path) in authenticated_blocks.iter().zip(authentication_paths.iter()) {
         partial_mmr
@@ -593,18 +592,20 @@ pub(crate) async fn build_partial_mmr_with_paths(
 /// Retrieves all Partial Blockchain nodes required for authenticating the set of blocks, and then
 /// constructs the path for each of them.
 ///
-/// This function assumes `block_nums` doesn't contain values above or equal to `forest`.
-/// If there are any such values, the function will panic when calling `mmr_merkle_path_len()`.
+/// # Errors
+///
+/// - Returns [`StoreError::BlockHeaderNotFound`] if a block number is not below `forest`, since
+///   such a block is not yet part of the chain the paths are being built against.
 async fn get_authentication_path_for_blocks(
     store: &alloc::sync::Arc<dyn Store>,
     block_nums: &[BlockNumber],
-    forest: usize,
+    forest: Forest,
 ) -> Result<Vec<MerklePath>, StoreError> {
     let mut node_indices = BTreeSet::new();
 
     // Calculate all needed nodes indices for generating the paths
     for block_num in block_nums {
-        let path_depth = mmr_merkle_path_len(block_num.as_usize(), forest);
+        let path_depth = path_depth_for(forest, *block_num)?;
 
         let mut idx = InOrderIndex::from_leaf_pos(block_num.as_usize());
 
@@ -637,12 +638,13 @@ async fn get_authentication_path_for_blocks(
     Ok(authentication_paths)
 }
 
-/// Calculates the merkle path length for an MMR of a specific forest and a leaf index
-/// `leaf_index` is a 0-indexed leaf number and `forest` is the total amount of leaves
-/// in the MMR at this point.
-fn mmr_merkle_path_len(leaf_index: usize, forest: usize) -> usize {
-    let before: usize = forest & leaf_index;
-    let after = forest ^ before;
-
-    after.ilog2() as usize
+/// Returns the depth of `block_num`'s authentication path in `forest`.
+///
+/// A block outside the forest has no path; that includes the reference block of an anchor, which
+/// is not a leaf of its own MMR.
+fn path_depth_for(forest: Forest, block_num: BlockNumber) -> Result<usize, StoreError> {
+    forest
+        .leaf_to_corresponding_tree(block_num.as_usize())
+        .map(|depth| depth as usize)
+        .ok_or(StoreError::BlockHeaderNotFound(block_num))
 }

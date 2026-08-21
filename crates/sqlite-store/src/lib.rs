@@ -433,7 +433,7 @@ impl Store for SqliteStore {
             .await
     }
 
-    async fn remove_setting(&self, key: String) -> Result<(), StoreError> {
+    async fn remove_setting(&self, key: String) -> Result<bool, StoreError> {
         self.interact_with_connection(move |conn| SqliteStore::remove_setting(conn, &key))
             .await
     }
@@ -454,7 +454,9 @@ impl Store for SqliteStore {
                     SettingMutation::Set { key, value } => {
                         SqliteStore::set_setting(&tx, key, value).into_store_error()?;
                     },
-                    SettingMutation::Remove { key } => SqliteStore::remove_setting(&tx, key)?,
+                    SettingMutation::Remove { key } => {
+                        SqliteStore::remove_setting(&tx, key)?;
+                    },
                 }
             }
             tx.commit().into_store_error()?;

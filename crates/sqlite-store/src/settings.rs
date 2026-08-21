@@ -38,14 +38,13 @@ impl SqliteStore {
         Ok(())
     }
 
-    pub(crate) fn remove_setting(conn: &Connection, name: &str) -> Result<(), StoreError> {
+    /// Returns `true` if a row was deleted, `false` if `name` wasn't present.
+    pub(crate) fn remove_setting(conn: &Connection, name: &str) -> Result<bool, StoreError> {
         let count = conn
             .execute("DELETE FROM settings WHERE name = $1", params![name])
             .into_store_error()?;
 
-        debug_assert_eq!(count, 1);
-
-        Ok(())
+        Ok(count > 0)
     }
 
     pub(crate) fn list_setting_keys(conn: &Connection) -> Result<Vec<String>, StoreError> {

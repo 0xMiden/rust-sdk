@@ -419,14 +419,12 @@ where
             .map(|(header, _has_notes)| header)
             .collect();
 
-        if block_headers.len() != tracked_blocks.len() {
-            let missing = tracked_blocks
-                .iter()
-                .find(|block_num| {
-                    !block_headers.iter().any(|header| header.block_num() == **block_num)
-                })
-                .copied()
-                .expect("a tracked block is missing from the returned headers");
+        // `Store::get_block_headers` may return fewer headers than requested, so check membership
+        // rather than length: a length comparison would be defeated by an implementation that
+        // returned an extra header alongside a missing one.
+        let fetched_nums: BTreeSet<BlockNumber> =
+            block_headers.iter().map(BlockHeader::block_num).collect();
+        if let Some(&missing) = tracked_blocks.difference(&fetched_nums).next() {
             return Err(StoreError::BlockHeaderNotFound(missing).into());
         }
 

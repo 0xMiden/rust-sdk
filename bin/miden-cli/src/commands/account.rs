@@ -69,7 +69,7 @@ pub struct AccountCmd {
 }
 
 impl AccountCmd {
-    pub async fn execute<AUTH>(&self, mut client: Client<AUTH>) -> Result<(), CliError> {
+    pub async fn execute<AUTH>(&self, client: Client<AUTH>) -> Result<(), CliError> {
         let cli_config = CliConfig::load()?;
         match self {
             AccountCmd {

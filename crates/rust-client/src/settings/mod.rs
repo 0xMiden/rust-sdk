@@ -23,7 +23,7 @@ impl<AUTH> Client<AUTH> {
 
     /// Sets a setting value in the store. It can then be retrieved using `get_setting`.
     pub async fn set_setting<T: Serializable>(
-        &mut self,
+        &self,
         key: String,
         value: T,
     ) -> Result<(), ClientError> {
@@ -44,7 +44,7 @@ impl<AUTH> Client<AUTH> {
     }
 
     /// Deletes the setting value from the store. Returns `true` if `key` had a value set.
-    pub async fn remove_setting(&mut self, key: String) -> Result<bool, ClientError> {
+    pub async fn remove_setting(&self, key: String) -> Result<bool, ClientError> {
         self.store.remove_setting(key).await.map_err(Into::into)
     }
 

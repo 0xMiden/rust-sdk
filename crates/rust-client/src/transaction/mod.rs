@@ -319,7 +319,7 @@ where
     /// - Returns a [`ClientError::TransactionExecutorError`] if the execution fails.
     /// - Returns a [`ClientError::TransactionRequestError`] if the request is invalid.
     pub async fn execute_transaction(
-        &mut self,
+        &self,
         account_id: AccountId,
         transaction_request: TransactionRequest,
     ) -> Result<TransactionResult, ClientError> {
@@ -487,7 +487,7 @@ where
     /// [`Self::execute_transaction`], and returns the corresponding [`ClientError`] on failure.
     #[cfg(feature = "dap")]
     pub async fn execute_transaction_with_dap(
-        &mut self,
+        &self,
         account_id: AccountId,
         transaction_request: TransactionRequest,
     ) -> Result<TransactionResult, ClientError> {
@@ -504,7 +504,7 @@ where
     /// preparation, data-store population, note filtering, and result validation identical across
     /// execution modes.
     async fn execute_transaction_with_mode(
-        &mut self,
+        &self,
         account_id: AccountId,
         transaction_request: TransactionRequest,
         execution_mode: TransactionExecutionMode,
@@ -884,7 +884,7 @@ where
     ///
     /// The transaction will use the current sync height as the block reference.
     pub async fn execute_program(
-        &mut self,
+        &self,
         account_id: AccountId,
         tx_script: TransactionScript,
         advice_inputs: AdviceInputs,
@@ -903,7 +903,7 @@ where
     /// connections, allowing interactive debugging via any DAP-compatible client.
     #[cfg(feature = "dap")]
     pub async fn execute_program_with_dap(
-        &mut self,
+        &self,
         account_id: AccountId,
         tx_script: TransactionScript,
         advice_inputs: AdviceInputs,
@@ -1114,7 +1114,7 @@ where
     ///
     /// This is shared setup for both `execute_program` and `execute_program_with_dap`.
     async fn prepare_program_execution(
-        &mut self,
+        &self,
         account_id: AccountId,
         foreign_accounts: BTreeMap<AccountId, ForeignAccount>,
     ) -> Result<(ClientDataStore, BlockNumber), ClientError> {

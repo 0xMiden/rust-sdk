@@ -67,7 +67,7 @@ pub struct CallCmd {
 impl CallCmd {
     pub async fn execute<AUTH: Keystore + Sync + 'static>(
         &self,
-        mut client: Client<AUTH>,
+        client: Client<AUTH>,
     ) -> Result<(), CliError> {
         if client.get_sync_height().await? == 0.into() {
             return Err(CliError::InvalidArgument(
@@ -97,11 +97,11 @@ impl CallCmd {
 
         match call_target {
             CallTarget::Local(account_id) => {
-                run_local_call(&mut client, account_id, call_code, &args, advice_entries).await
+                run_local_call(&client, account_id, call_code, &args, advice_entries).await
             },
             CallTarget::Remote { target_id, executor_id, foreign_account } => {
                 run_remote_call(
-                    &mut client,
+                    &client,
                     target_id,
                     executor_id,
                     foreign_account,
@@ -210,7 +210,7 @@ struct CallCode {
 /// Runs a remote call via FPI. FPI cannot mutate the foreign account, so there is no state delta
 /// to compute — only the read phase runs.
 async fn run_remote_call<AUTH: Keystore + Sync + 'static>(
-    client: &mut Client<AUTH>,
+    client: &Client<AUTH>,
     target_id: AccountId,
     executor_id: AccountId,
     foreign_account: Box<ForeignAccount>,
@@ -250,7 +250,7 @@ async fn run_remote_call<AUTH: Keystore + Sync + 'static>(
 /// Runs a local call: a read phase for the return values, then a transaction for the state delta.
 /// The account runs the call itself, so the procedure may mutate it.
 async fn run_local_call<AUTH: Keystore + Sync + 'static>(
-    client: &mut Client<AUTH>,
+    client: &Client<AUTH>,
     account_id: AccountId,
     call_code: CallCode,
     args: &[Felt],

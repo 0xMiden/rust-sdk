@@ -182,6 +182,10 @@ impl ClientDataStore {
     }
 
     /// Fetches a storage map witness for a specific key from the network via RPC and caches it.
+    ///
+    /// The witness is fetched at `account_state_at` — the transaction's reference block — so that
+    /// it stays consistent with the rest of the foreign account's inputs. Defaulting to the chain
+    /// tip would serve a witness against a different map root under anchored execution.
     async fn fetch_and_cache_storage_map_witness(
         &self,
         account_id: AccountId,
@@ -189,6 +193,7 @@ impl ClientDataStore {
         slot_name: StorageSlotName,
         map_key: StorageMapKey,
         known_code: AccountCode,
+        account_state_at: AccountStateAt,
     ) -> Result<StorageMapWitness, DataStoreError> {
         let storage_requirements = AccountStorageRequirements::new([(slot_name, &[map_key])]);
         let (_, account_proof): (BlockNumber, _) = self
@@ -196,6 +201,7 @@ impl ClientDataStore {
             .get_account(
                 account_id,
                 GetAccountRequest::new()
+                    .at(account_state_at)
                     .with_storage(StorageMapFetch::Slots(storage_requirements))
                     .with_known_code(Some(known_code)),
             )
@@ -417,6 +423,17 @@ impl DataStore for ClientDataStore {
             return Ok(witness);
         }
 
+        // Every remote fetch below resolves at the transaction's reference block, so the account
+        // data and the map witness describe the same state — under anchored execution the
+        // reference block is the anchor's, not the chain tip.
+        let account_state_at = self.cache.ref_block().map(AccountStateAt::Block).ok_or_else(
+            || {
+                DataStoreError::other(
+                    "reference block not set: get_transaction_inputs must run before witnesses are resolved",
+                )
+            },
+        )?;
+
         // Resolve against the cached account inputs (without cloning them), fetching and caching
         // the account first if it isn't cached yet.
         let resolution = if let Some(resolution) =
@@ -425,11 +442,6 @@ impl DataStore for ClientDataStore {
             }) {
             resolution?
         } else {
-            let account_state_at = self
-                .cache
-                .ref_block()
-                .map(AccountStateAt::Block)
-                .expect("reference block should be set");
             let inputs = self.fetch_and_cache_foreign_account(account_id, account_state_at).await?;
             resolve_witness_from_inputs(&inputs, map_root, map_key)?
         };
@@ -438,7 +450,12 @@ impl DataStore for ClientDataStore {
             WitnessResolution::Witness(witness) => Ok(witness),
             WitnessResolution::FetchParams(slot_name, known_code) => {
                 self.fetch_and_cache_storage_map_witness(
-                    account_id, map_root, slot_name, map_key, known_code,
+                    account_id,
+                    map_root,
+                    slot_name,
+                    map_key,
+                    known_code,
+                    account_state_at,
                 )
                 .await
             },

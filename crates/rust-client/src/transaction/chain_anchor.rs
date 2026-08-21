@@ -2,10 +2,10 @@ use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::ToString;
 
-use miden_protocol::Word;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::merkle::mmr::PartialMmr;
 use miden_protocol::transaction::PartialBlockchain;
+use miden_protocol::{MAX_INPUT_NOTES_PER_TX, Word};
 use miden_tx::utils::serde::{
     ByteReader,
     ByteWriter,
@@ -60,6 +60,7 @@ impl ChainAnchor {
     ///
     /// - The partial blockchain's length does not match the header's block number.
     /// - The partial blockchain's peaks do not hash to the header's chain commitment.
+    /// - The partial blockchain tracks more blocks than a transaction can reference.
     pub fn new(header: BlockHeader, chain: PartialBlockchain) -> Result<Self, ChainAnchorError> {
         if chain.chain_length() != header.block_num() {
             return Err(ChainAnchorError::ChainLengthMismatch {
@@ -71,6 +72,15 @@ impl ChainAnchor {
         if chain.peaks().hash_peaks() != header.chain_commitment() {
             return Err(ChainAnchorError::ChainCommitmentMismatch {
                 block_num: header.block_num(),
+            });
+        }
+
+        // A transaction references at most one creation block per input note, so a chain tracking
+        // more blocks than that is not an anchor any honest peer would produce.
+        if chain.num_tracked_blocks() > MAX_INPUT_NOTES_PER_TX {
+            return Err(ChainAnchorError::TooManyTrackedBlocks {
+                count: chain.num_tracked_blocks(),
+                max: MAX_INPUT_NOTES_PER_TX,
             });
         }
 
@@ -128,6 +138,19 @@ impl Deserializable for ChainAnchor {
         let mmr = PartialMmr::read_from(source)?;
         let blocks = BTreeMap::<BlockNumber, BlockHeader>::read_from(source)?;
 
+        // `Self::new` enforces this too, but only after every block below has been opened and then
+        // proved again by `PartialBlockchain::new`. Rejecting here keeps the work an oversized
+        // anchor can buy proportional to the bytes it costs to send.
+        if blocks.len() > MAX_INPUT_NOTES_PER_TX {
+            return Err(DeserializationError::InvalidValue(
+                ChainAnchorError::TooManyTrackedBlocks {
+                    count: blocks.len(),
+                    max: MAX_INPUT_NOTES_PER_TX,
+                }
+                .to_string(),
+            ));
+        }
+
         for (block_num, header) in &blocks {
             // `PartialBlockchain::new_unchecked` discards these keys and re-derives each position
             // from the header itself, so opening the key would let a crafted anchor aim this check
@@ -170,6 +193,8 @@ pub enum ChainAnchorError {
         "block {block_num} is not tracked by the anchor's partial blockchain; capture the anchor with the blocks of all authenticated input notes"
     )]
     BlockNotTracked { block_num: BlockNumber },
+    #[error("the anchor tracks {count} blocks, more than the {max} a transaction can reference")]
+    TooManyTrackedBlocks { count: usize, max: usize },
     #[error("transaction reference block {requested} does not match the anchor block {anchor}")]
     ReferenceBlockMismatch {
         requested: BlockNumber,

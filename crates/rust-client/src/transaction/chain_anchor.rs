@@ -295,6 +295,41 @@ mod tests {
     }
 
     #[test]
+    fn new_accepts_a_consistent_header_and_chain() {
+        let (header, chain) = anchor_parts(8, &[3]);
+        let block_num = header.block_num();
+
+        let anchor = ChainAnchor::new(header, chain).unwrap();
+
+        assert_eq!(anchor.block_num(), block_num);
+    }
+
+    #[test]
+    fn new_rejects_a_chain_length_that_does_not_match_the_header() {
+        let (_, chain) = anchor_parts(8, &[3]);
+        // Commit to the right chain, so the block number is the only thing wrong. A `None`
+        // commitment here would be filled with a random word, and the test would then pass on the
+        // commitment check too — including if the two checks were ever reordered.
+        let header =
+            BlockHeader::mock(9, Some(chain.peaks().hash_peaks()), None, &[], Word::empty());
+
+        let err = ChainAnchor::new(header, chain).unwrap_err();
+
+        assert!(matches!(err, ChainAnchorError::ChainLengthMismatch { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn new_rejects_peaks_that_do_not_hash_to_the_chain_commitment() {
+        let (_, chain) = anchor_parts(8, &[3]);
+        // Right block number, but a header committing to an unrelated chain commitment.
+        let header = BlockHeader::mock(8, None, None, &[], Word::empty());
+
+        let err = ChainAnchor::new(header, chain).unwrap_err();
+
+        assert!(matches!(err, ChainAnchorError::ChainCommitmentMismatch { .. }), "got {err:?}");
+    }
+
+    #[test]
     fn verify_block_commitment_accepts_the_anchored_block_and_rejects_any_other() {
         let (header, chain) = anchor_parts(8, &[3]);
         let commitment = header.commitment();
@@ -304,6 +339,24 @@ mod tests {
 
         let err = anchor.verify_block_commitment(Word::empty()).unwrap_err();
         assert!(matches!(err, ChainAnchorError::BlockCommitmentMismatch { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn serialization_round_trips() {
+        let (header, chain) = anchor_parts(8, &[3]);
+        let anchor = ChainAnchor::new(header, chain).unwrap();
+
+        let deserialized = ChainAnchor::read_from_bytes(&anchor.to_bytes()).unwrap();
+        assert_eq!(anchor, deserialized);
+    }
+
+    #[test]
+    fn deserialization_rejects_truncated_and_garbage_input() {
+        let (header, chain) = anchor_parts(8, &[3]);
+        let bytes = ChainAnchor::new(header, chain).unwrap().to_bytes();
+
+        assert!(ChainAnchor::read_from_bytes(&bytes[..bytes.len() - 1]).is_err());
+        assert!(ChainAnchor::read_from_bytes(&[0xaa; 64]).is_err());
     }
 
     /// Reproduces a crafted-anchor panic: a `PartialMmr` whose tracked leaf has a value but whose

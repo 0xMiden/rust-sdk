@@ -605,8 +605,12 @@ async fn chain_anchor_pins_execution_to_an_older_reference_block() {
     let anchor = client.chain_anchor_for_request(&transaction_request).await.unwrap();
     let anchor_block = anchor.block_num();
 
-    // The anchor round-trips through serialization, as it would inside a proposal payload.
-    let anchor = ChainAnchor::read_from_bytes(&anchor.to_bytes()).unwrap();
+    // The anchor round-trips through serialization, as it would inside a proposal payload. This
+    // chain came from the store via `build_partial_mmr_with_paths`, so unlike the synthetic
+    // fixtures in the unit tests it exercises the real capture path's output.
+    let deserialized = ChainAnchor::read_from_bytes(&anchor.to_bytes()).unwrap();
+    assert_eq!(anchor, deserialized, "a captured anchor must survive serialization unchanged");
+    let anchor = deserialized;
     assert_eq!(anchor.block_num(), anchor_block);
 
     // Advance the chain past the anchor and sync, so the local tip no longer matches it.
@@ -636,6 +640,119 @@ async fn chain_anchor_pins_execution_to_an_older_reference_block() {
         tip_result.executed_transaction().block_header().block_num(),
         tip,
         "default execution must reference the sync height"
+    );
+}
+
+/// The reason the anchor exists: a transaction executed against it must come out identical no
+/// matter how far the local chain has moved on, because signatures collected over a slow approval
+/// round are bound to the transaction summary and stop applying the moment it changes.
+///
+/// A literal `TransactionSummary` cannot be built here — it is raised by the `Unauthorized` kernel
+/// event, which only a multisig-style auth component triggers, and no such flow exists in this
+/// workspace. Its inputs are reachable, though, and this test stands in for it with the final
+/// account commitment and the input, output and reference block commitments. Of those, only the
+/// block commitment moves with the chain — the expiration delta the summary binds is relative, so
+/// it comes from the request rather than the reference block — which is why the assertion on it,
+/// and the unanchored control below, are what stop this test passing if the anchor did nothing.
+#[tokio::test]
+async fn chain_anchor_execution_reproduces_the_same_transaction_at_a_later_height() {
+    let (mut client, rpc_api, keystore) = Box::pin(create_test_client()).await;
+    let (wallet, faucet) =
+        setup_wallet_and_faucet(&mut client, AccountType::Private, &keystore, RPO_FALCON_SCHEME_ID)
+            .await
+            .unwrap();
+    client.sync_state().await.unwrap();
+
+    // Consuming a note gives the transaction a non-empty input notes commitment and a real account
+    // delta, so the assertions below are not comparing empty values.
+    let mint_request = TransactionRequestBuilder::new()
+        .build_mint_fungible_asset(
+            FungibleAsset::new(faucet.id(), 5u64).unwrap(),
+            wallet.id(),
+            NoteType::Private,
+            client.rng(),
+        )
+        .unwrap();
+    let note_id = mint_request.expected_output_own_notes().pop().unwrap().id();
+    Box::pin(client.submit_new_transaction(faucet.id(), mint_request))
+        .await
+        .unwrap();
+    rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+
+    let note = client.get_input_note(note_id).await.unwrap().unwrap();
+    let consume_request = TransactionRequestBuilder::new()
+        .build_consume_notes(vec![note.try_into().unwrap()])
+        .unwrap();
+
+    // Capture once, as a proposer would, and round-trip it as the proposal payload would.
+    let anchor = client.chain_anchor_for_request(&consume_request).await.unwrap();
+    let anchor = ChainAnchor::read_from_bytes(&anchor.to_bytes()).unwrap();
+
+    let before = Box::pin(client.execute_transaction_at(
+        wallet.id(),
+        consume_request.clone(),
+        anchor.clone(),
+    ))
+    .await
+    .unwrap();
+    let (before_account, before_inputs, before_outputs, before_block) = {
+        let tx = before.executed_transaction();
+        (
+            tx.final_account().to_commitment(),
+            tx.input_notes().commitment(),
+            tx.output_notes().commitment(),
+            tx.block_header().commitment(),
+        )
+    };
+    assert!(!before.executed_transaction().input_notes().is_empty());
+
+    // Time passes while approvals are gathered.
+    for _ in 0..4 {
+        rpc_api.prove_block();
+    }
+    client.sync_state().await.unwrap();
+    assert!(client.get_sync_height().await.unwrap() > anchor.block_num());
+
+    let after =
+        Box::pin(client.execute_transaction_at(wallet.id(), consume_request.clone(), anchor))
+            .await
+            .unwrap();
+    let after_tx = after.executed_transaction();
+
+    assert_eq!(
+        before_account,
+        after_tx.final_account().to_commitment(),
+        "the account delta must not depend on when the anchored transaction was executed"
+    );
+    assert_eq!(
+        before_inputs,
+        after_tx.input_notes().commitment(),
+        "the input notes commitment must not depend on when the anchored transaction was executed"
+    );
+    assert_eq!(
+        before_outputs,
+        after_tx.output_notes().commitment(),
+        "the output notes commitment must not depend on when the anchored transaction was executed"
+    );
+    assert_eq!(
+        before_block,
+        after_tx.block_header().commitment(),
+        "the summary's block commitment must not depend on when the anchored transaction was run"
+    );
+
+    // The control, and the reason this test asserts on the block commitment at all: the account
+    // delta and both note commitments come out identical with or without an anchor for a request
+    // this simple, so the block commitment is the whole difference between a summary the collected
+    // signatures still verify against and one they do not. Without this assertion the three above
+    // would pass even if `execute_transaction_at` ignored the anchor entirely.
+    let unanchored = Box::pin(client.execute_transaction(wallet.id(), consume_request))
+        .await
+        .unwrap();
+    assert_ne!(
+        before_block,
+        unanchored.executed_transaction().block_header().commitment(),
+        "the unanchored control must bind a different block, or this test proves nothing"
     );
 }
 
@@ -719,6 +836,52 @@ async fn chain_anchor_execution_rejects_an_already_expired_transaction() {
         .unwrap();
 }
 
+/// The capture path removes the reference block from the set of blocks it authenticates, because
+/// the reference block is not a leaf of its own MMR. A note created in that very block is the case
+/// that exercises the removal; without it the anchor would ask for a nonexistent path.
+#[tokio::test]
+async fn chain_anchor_for_request_handles_a_note_created_in_the_reference_block() {
+    let (mut client, rpc_api, keystore) = Box::pin(create_test_client()).await;
+    let (wallet, faucet) =
+        setup_wallet_and_faucet(&mut client, AccountType::Private, &keystore, RPO_FALCON_SCHEME_ID)
+            .await
+            .unwrap();
+    client.sync_state().await.unwrap();
+
+    let mint_request = TransactionRequestBuilder::new()
+        .build_mint_fungible_asset(
+            FungibleAsset::new(faucet.id(), 5u64).unwrap(),
+            wallet.id(),
+            NoteType::Private,
+            client.rng(),
+        )
+        .unwrap();
+    let note_id = mint_request.expected_output_own_notes().pop().unwrap().id();
+    Box::pin(client.submit_new_transaction(faucet.id(), mint_request))
+        .await
+        .unwrap();
+    rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+
+    // Unlike the test below, do not advance the chain again: the note's inclusion block stays the
+    // tip, which is exactly the block the anchor will pin as its reference.
+    let note = client.get_input_note(note_id).await.unwrap().unwrap();
+    let note_block = note.inclusion_proof().unwrap().location().block_num();
+    let tip = client.get_sync_height().await.unwrap();
+    assert_eq!(note_block, tip, "the note must have been created in the block the anchor pins");
+
+    let consume_request = TransactionRequestBuilder::new()
+        .build_consume_notes(vec![note.try_into().unwrap()])
+        .unwrap();
+    let anchor = client.chain_anchor_for_request(&consume_request).await.unwrap();
+
+    assert_eq!(anchor.block_num(), tip);
+
+    Box::pin(client.execute_transaction_at(wallet.id(), consume_request, anchor))
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn chain_anchor_for_request_tracks_consumed_note_blocks() {
     let (mut client, rpc_api, keystore) = Box::pin(create_test_client()).await;
@@ -778,8 +941,12 @@ async fn chain_anchor_for_request_tracks_consumed_note_blocks() {
     assert_eq!(result.executed_transaction().block_header().block_num(), anchor_block);
 }
 
+/// Note screening runs against the anchored data store, so it must use the anchor's reference
+/// block. Using the sync height instead makes every anchored execution of a request built with
+/// `ignore_invalid_input_notes` fail once the chain moves past the anchor — including, as here,
+/// one where screening drops nothing and the flag is therefore inert.
 #[tokio::test]
-async fn chain_anchor_execution_ignoring_invalid_input_notes() {
+async fn chain_anchor_note_screening_uses_the_anchor_block() {
     let (mut client, rpc_api, keystore) = Box::pin(create_test_client()).await;
     let (wallet, faucet) =
         setup_wallet_and_faucet(&mut client, AccountType::Private, &keystore, RPO_FALCON_SCHEME_ID)
@@ -805,6 +972,10 @@ async fn chain_anchor_execution_ignoring_invalid_input_notes() {
 
     let note = client.get_input_note(note_id).await.unwrap().unwrap();
 
+    // Advance one block so the note's creation block is older than the anchor's reference block.
+    rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+
     // The invalid-note trial must run at the anchor block, not the sync height.
     let consume_request = TransactionRequestBuilder::new()
         .ignore_invalid_input_notes()
@@ -813,6 +984,7 @@ async fn chain_anchor_execution_ignoring_invalid_input_notes() {
     let anchor = client.chain_anchor_for_request(&consume_request).await.unwrap();
     let anchor_block = anchor.block_num();
 
+    // Advance the chain past the anchor and sync.
     for _ in 0..3 {
         rpc_api.prove_block();
     }

@@ -47,6 +47,7 @@
 
 ### Fixes
 
+* [FIX][rust] A request that set `ignore_invalid_input_notes` but carried no input notes at all no longer fails with an out-of-range note-count error from the consumption checker ([#2421](https://github.com/0xMiden/rust-sdk/pull/2421)).
 * [FIX][cli] `miden-client init` now reports invalid remote prover endpoints instead of silently writing a local-prover config ([#2376](https://github.com/0xMiden/rust-sdk/pull/2376)).
 * [FIX][rust] `VerifyingRpcClient::sync_transactions` now validates that every returned transaction record's account ID was actually requested, rejecting mismatches with `RpcError::InvalidResponse` ([#2372](https://github.com/0xMiden/rust-sdk/issues/2372)).
 * [FIX][rust] `Client::prove_transaction_with` now checks that the `TransactionProver` returned a proof of the transaction it was asked to prove, rejecting a mismatch with the new `ClientError::MismatchedProvenTransaction` ([#2391](https://github.com/0xMiden/rust-sdk/pull/2391)).

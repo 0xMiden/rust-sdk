@@ -1027,6 +1027,13 @@ where
         tx_args: TransactionArgs,
     ) -> Result<InputNotes<InputNote>, ClientError> {
         loop {
+            // The consumption checker rejects a zero-note call as an out-of-range note count, so
+            // ask it nothing when there is nothing to ask about. That happens both when screening
+            // has emptied the set and when the request set the flag but carried no notes at all.
+            if input_notes.is_empty() {
+                break;
+            }
+
             let execution = NoteConsumptionChecker::new(&self.build_executor(data_store)?)
                 .check_notes_consumability(
                     account_id,

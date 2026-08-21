@@ -96,9 +96,36 @@ impl ChainAnchor {
     ///
     /// Callers holding an anchor from an untrusted source should compare this against an
     /// independently trusted commitment (e.g. the block commitment bound into a signed
-    /// transaction summary) before executing with the anchor.
+    /// transaction summary) before executing with the anchor. [`Self::verify_block_commitment`]
+    /// does that comparison.
     pub fn block_commitment(&self) -> Word {
         self.header.commitment()
+    }
+
+    /// Checks the anchored reference block against an independently trusted commitment.
+    ///
+    /// Nothing within an anchor proves it refers to the block the signers agreed on, so this is
+    /// the check that ties it to one. Pass the reference-block commitment bound into the signed
+    /// [`TransactionSummary`].
+    ///
+    /// It is sufficient only in combination with the construction-time invariants: for an anchor
+    /// that reached this client through [`Deserializable`] every tracked header is proven against
+    /// the MMR, so a matching commitment covers the whole chain. An anchor assembled in-process
+    /// over a [`PartialBlockchain::new_unchecked`] chain carries no such proof, and this check
+    /// does not add one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ChainAnchorError::BlockCommitmentMismatch`] if the commitments differ.
+    ///
+    /// [`TransactionSummary`]: miden_protocol::transaction::TransactionSummary
+    pub fn verify_block_commitment(&self, expected: Word) -> Result<(), ChainAnchorError> {
+        let actual = self.block_commitment();
+        if actual != expected {
+            return Err(ChainAnchorError::BlockCommitmentMismatch { expected, actual });
+        }
+
+        Ok(())
     }
 
     /// Returns the anchored reference block header.
@@ -190,6 +217,10 @@ pub enum ChainAnchorError {
     )]
     ChainCommitmentMismatch { block_num: BlockNumber },
     #[error(
+        "anchor block commitment is {actual} but {expected} was expected; the anchor refers to a different block than the one that was signed"
+    )]
+    BlockCommitmentMismatch { expected: Word, actual: Word },
+    #[error(
         "block {block_num} is not tracked by the anchor's partial blockchain; capture the anchor with the blocks of all authenticated input notes"
     )]
     BlockNotTracked { block_num: BlockNumber },
@@ -222,7 +253,7 @@ mod tests {
     use miden_protocol::transaction::PartialBlockchain;
     use miden_tx::utils::serde::{Deserializable, DeserializationError, Serializable};
 
-    use super::ChainAnchor;
+    use super::{ChainAnchor, ChainAnchorError};
 
     /// Returns a partial blockchain of length `chain_length` tracking the given block numbers,
     /// alongside a header whose block number and chain commitment are consistent with it.
@@ -261,6 +292,18 @@ mod tests {
         );
 
         (header, chain)
+    }
+
+    #[test]
+    fn verify_block_commitment_accepts_the_anchored_block_and_rejects_any_other() {
+        let (header, chain) = anchor_parts(8, &[3]);
+        let commitment = header.commitment();
+        let anchor = ChainAnchor::new(header, chain).unwrap();
+
+        anchor.verify_block_commitment(commitment).unwrap();
+
+        let err = anchor.verify_block_commitment(Word::empty()).unwrap_err();
+        assert!(matches!(err, ChainAnchorError::BlockCommitmentMismatch { .. }), "got {err:?}");
     }
 
     /// Reproduces a crafted-anchor panic: a `PartialMmr` whose tracked leaf has a value but whose

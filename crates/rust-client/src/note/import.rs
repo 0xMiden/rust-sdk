@@ -21,6 +21,7 @@ use miden_protocol::note::{
     NoteId,
     NoteInclusionProof,
     NoteTag,
+    Nullifier,
 };
 use miden_standards::note::NoteFile;
 use miden_tx::auth::TransactionAuthenticator;
@@ -154,6 +155,40 @@ where
         if !requests_by_proof.is_empty() {
             let notes_by_proof = self.import_note_records_by_proof(requests_by_proof).await?;
             imported_notes.extend(notes_by_proof);
+        }
+
+        let mut nullifier_requests = BTreeSet::new();
+        let mut lowest_nullifier_block: BlockNumber = u32::MAX.into();
+        for note in &imported_notes {
+            match note.state() {
+                InputNoteState::Committed(committed_state) => {
+                    let block_num = committed_state.inclusion_proof.location().block_num();
+                    nullifier_requests.insert(Nullifier::from_details_and_metadata(
+                        note.details(),
+                        note.metadata().unwrap(),
+                    ));
+                    lowest_nullifier_block = lowest_nullifier_block.min(block_num);
+                },
+                _ => {},
+            };
+        }
+
+        let nullifier_commit_heights = if nullifier_requests.is_empty() {
+            BTreeMap::new()
+        } else {
+            self.rpc_api
+                .get_nullifier_commit_heights(nullifier_requests, lowest_nullifier_block)
+                .await?
+        };
+
+        for note in &mut imported_notes {
+            if let Some(nullifier) = note.nullifier() {
+                if let Some(nullifier_block_height) =
+                    nullifier_commit_heights.get(&nullifier).and_then(|height| *height)
+                {
+                    note.consumed_externally(nullifier, nullifier_block_height, None)?;
+                }
+            }
         }
 
         let mut imported_commitments = Vec::with_capacity(imported_notes.len());

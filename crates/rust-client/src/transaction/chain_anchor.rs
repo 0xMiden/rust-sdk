@@ -200,6 +200,13 @@ pub enum ChainAnchorError {
         requested: BlockNumber,
         anchor: BlockNumber,
     },
+    #[error(
+        "the anchored transaction expires at block {expiration}, which the chain has already reached (sync height {sync_height}); it would be rejected by the network, so re-capture the anchor closer to the tip or raise the request's expiration delta"
+    )]
+    AnchoredTransactionExpired {
+        expiration: BlockNumber,
+        sync_height: BlockNumber,
+    },
 }
 
 // TESTS

@@ -356,19 +356,39 @@ where
     ///   is not tracked by the anchor.
     /// - Returns a [`ClientError::TransactionExecutorError`] if an input note was created after the
     ///   anchored reference block.
+    /// - Returns [`ClientError::ChainAnchorError`] if the executed transaction's expiration block
+    ///   has already been reached, which the network would reject.
+    /// - Returns [`ClientError::StoreError`] if the sync height cannot be read for that expiration
+    ///   check, which happens after execution has already succeeded.
     pub async fn execute_transaction_at(
         &mut self,
         account_id: AccountId,
         transaction_request: TransactionRequest,
         anchor: ChainAnchor,
     ) -> Result<TransactionResult, ClientError> {
-        self.execute_transaction_with_mode(
-            account_id,
-            transaction_request,
-            TransactionExecutionMode::Standard,
-            Some(Box::new(anchor)),
-        )
-        .await
+        let result = self
+            .execute_transaction_with_mode(
+                account_id,
+                transaction_request,
+                TransactionExecutionMode::Standard,
+                Some(Box::new(anchor)),
+            )
+            .await?;
+
+        // The expiration delta is counted from the reference block, so an anchor far enough behind
+        // the tip yields a transaction that is already expired. Execution cannot notice — it only
+        // sees the anchored block — and the network rejects it at batch building, after the caller
+        // has paid for proving. Compare against the sync height, which never runs ahead of the
+        // real tip, so this only fires on transactions that are certainly too late.
+        let expiration = result.executed_transaction().expiration_block_num();
+        let sync_height = self.store.get_sync_height().await?;
+        if expiration <= sync_height {
+            return Err(
+                ChainAnchorError::AnchoredTransactionExpired { expiration, sync_height }.into()
+            );
+        }
+
+        Ok(result)
     }
 
     /// Captures a [`ChainAnchor`] at the client's current sync height, tracking the blocks in

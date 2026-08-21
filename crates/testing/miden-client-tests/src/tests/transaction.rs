@@ -639,6 +639,86 @@ async fn chain_anchor_pins_execution_to_an_older_reference_block() {
     );
 }
 
+/// An anchor collected days before it is executed can expire while signatures are gathered. The
+/// protocol rejects a transaction that can no longer be included in the next block
+/// (`ProposedBatchError::ExpiredTransaction`), so the client has to fail at execution with a
+/// diagnosable error rather than hand back a transaction that cannot be submitted.
+#[tokio::test]
+async fn chain_anchor_execution_rejects_an_already_expired_transaction() {
+    let (mut client, rpc_api, keystore) = Box::pin(create_test_client()).await;
+    let (wallet, faucet) =
+        setup_wallet_and_faucet(&mut client, AccountType::Private, &keystore, RPO_FALCON_SCHEME_ID)
+            .await
+            .unwrap();
+    client.sync_state().await.unwrap();
+
+    // The shortest expiry the builder accepts, so a handful of blocks is enough to pass it.
+    let transaction_request = TransactionRequestBuilder::new()
+        .expiration_delta(1)
+        .build_mint_fungible_asset(
+            FungibleAsset::new(faucet.id(), 5u64).unwrap(),
+            wallet.id(),
+            NoteType::Private,
+            client.rng(),
+        )
+        .unwrap();
+
+    let anchor = client.chain_anchor_for_request(&transaction_request).await.unwrap();
+    let anchor_block = anchor.block_num();
+
+    // Advance to exactly the expiration block, not past it. The guard is `expiration <=
+    // sync_height`, and a transaction expiring at the tip can no longer be included, so this is
+    // the case that separates the correct boundary from a `<`, which would let it through. The
+    // well-past case below then covers the other direction, so neither mutation survives.
+    rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+    let tip = client.get_sync_height().await.unwrap();
+    assert_eq!(
+        tip,
+        anchor_block + 1,
+        "the chain must have reached exactly the expiration block"
+    );
+
+    let err = Box::pin(client.execute_transaction_at(
+        faucet.id(),
+        transaction_request.clone(),
+        anchor.clone(),
+    ))
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            ClientError::ChainAnchorError(ChainAnchorError::AnchoredTransactionExpired { .. })
+        ),
+        "expected an expiration error at exactly the expiration block, got {err:?}"
+    );
+
+    // And well past it, which is the ordinary case of a signing round that ran long. Asserting
+    // only this one would leave `<` alive; asserting only the boundary above would leave `==`.
+    for _ in 0..4 {
+        rpc_api.prove_block();
+    }
+    client.sync_state().await.unwrap();
+    let err =
+        Box::pin(client.execute_transaction_at(faucet.id(), transaction_request.clone(), anchor))
+            .await
+            .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            ClientError::ChainAnchorError(ChainAnchorError::AnchoredTransactionExpired { .. })
+        ),
+        "expected an expiration error well past the expiration block, got {err:?}"
+    );
+
+    // The same request still executes against the tip, so the failure is the anchor's staleness
+    // and not something wrong with the request itself.
+    Box::pin(client.execute_transaction(faucet.id(), transaction_request))
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn chain_anchor_for_request_tracks_consumed_note_blocks() {
     let (mut client, rpc_api, keystore) = Box::pin(create_test_client()).await;

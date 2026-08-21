@@ -38,12 +38,6 @@ pub enum SqliteStoreError {
         "the database is not empty and does not record a schema version, so it was not created by this client and will not be migrated into a store"
     )]
     NotAClientStore,
-    #[error("failed to back up the store to {backup} before migrating it: {reason}")]
-    BackupFailed { backup: String, reason: String },
-    #[error(
-        "migrating the store failed and it could not be restored from its backup at {backup}: {reason}. The backup holds the store as it was before migrating"
-    )]
-    BackupRestoreFailed { backup: String, reason: String },
 }
 
 impl From<RusqliteError> for SqliteStoreError {

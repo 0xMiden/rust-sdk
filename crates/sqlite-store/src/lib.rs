@@ -6,13 +6,12 @@
 
 use std::boxed::Box;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::string::{String, ToString};
 use std::sync::{Arc, RwLock};
 use std::vec::Vec;
 
-use db_management::backup::SqliteBackup;
-use db_management::migration::SqliteMigration;
+use db_management::migration::SqliteMigrator;
 use db_management::pool_manager::{Pool, SqlitePoolManager};
 use miden_client::Word;
 use miden_client::account::{
@@ -90,7 +89,7 @@ impl SqliteStore {
         let sqlite_pool_manager = SqlitePoolManager::new(database_filepath.clone());
         let pool = Pool::builder(sqlite_pool_manager).build().map_err(database_error)?;
 
-        Self::migrate(&pool, &database_filepath, SqliteMigration::client()).await?;
+        Self::migrate(&pool, SqliteMigrator::client()).await?;
 
         let store = SqliteStore {
             pool,
@@ -115,54 +114,17 @@ impl SqliteStore {
         Ok(store)
     }
 
-    /// Brings the database at `database_filepath` up to the latest version of the schema
-    /// `migration` builds.
-    async fn migrate(
-        pool: &Pool,
-        database_filepath: &Path,
-        migration: &'static SqliteMigration,
-    ) -> Result<(), StoreError> {
+    /// Brings the database in `pool` up to the latest version of the schema `migration` builds.
+    ///
+    /// The upgrade is verified before it is committed, so a failure is rolled back by `SQLite` and
+    /// leaves the store exactly as it was.
+    async fn migrate(pool: &Pool, migration: &'static SqliteMigrator) -> Result<(), StoreError> {
         let conn = pool.get().await.map_err(database_error)?;
 
-        let upgrading = conn
-            .interact(move |conn| migration.has_pending(conn))
+        conn.interact(move |conn| migration.apply(conn))
             .await
             .map_err(database_error)?
-            .map_err(database_error)?;
-
-        let backup = if upgrading {
-            let database_filepath = database_filepath.to_path_buf();
-
-            Some(
-                conn.interact(move |conn| SqliteBackup::create(conn, database_filepath))
-                    .await
-                    .map_err(database_error)?
-                    .map_err(database_error)?,
-            )
-        } else {
-            None
-        };
-
-        let migrated =
-            conn.interact(move |conn| migration.apply(conn)).await.map_err(database_error)?;
-
-        // The database file cannot be replaced while anything is still reading it, so the
-        // connection goes back to the pool and the pool closes before the backup is put back.
-        drop(conn);
-
-        let Err(migration_error) = migrated else {
-            return match backup {
-                Some(backup) => backup.discard().map_err(database_error),
-                None => SqliteBackup::discard_for(database_filepath).map_err(database_error),
-            };
-        };
-
-        if let Some(backup) = backup {
-            pool.close();
-            backup.restore().map_err(database_error)?;
-        }
-
-        Err(StoreError::DatabaseError(migration_error.to_string()))
+            .map_err(database_error)
     }
 
     /// Interacts with the database by executing the provided function on a connection from the
@@ -664,15 +626,14 @@ pub mod tests {
     use miden_client::store::Store;
     use miden_client::testing::common::create_test_store_path;
 
-    use super::db_management::backup::SqliteBackup;
-    use super::db_management::migration::SqliteMigration;
+    use super::db_management::migration::SqliteMigrator;
     use super::db_management::migration::tests::damaging_migration;
     use super::db_management::pool_manager::SqlitePoolManager;
     use super::{Pool, SqliteStore};
 
     /// A migration set that changes the store and is then rejected, which is the failure the
-    /// pre-migration backup exists to undo.
-    static DAMAGING_MIGRATION: LazyLock<SqliteMigration> = LazyLock::new(damaging_migration);
+    /// rollback has to undo.
+    static DAMAGING_MIGRATION: LazyLock<SqliteMigrator> = LazyLock::new(damaging_migration);
 
     #[tokio::test]
     async fn failed_migration_leaves_the_store_as_it_was() {
@@ -682,19 +643,13 @@ pub mod tests {
         let pool = Pool::builder(SqlitePoolManager::new(database_filepath.clone()))
             .build()
             .unwrap();
-        let err = SqliteStore::migrate(&pool, &database_filepath, &DAMAGING_MIGRATION)
-            .await
-            .unwrap_err();
+        let err = SqliteStore::migrate(&pool, &DAMAGING_MIGRATION).await.unwrap_err();
 
         assert!(
             err.to_string().contains("produced a schema this client does not expect"),
-            "the migration should have been committed and then rejected, got {err}"
+            "the migration should have been rejected, got {err}"
         );
-        assert!(
-            !SqliteBackup::path_for(&database_filepath).exists(),
-            "the backup should be consumed"
-        );
-        // Reopening verifies the schema, so it only succeeds if the dropped table came back.
+        // Reopening verifies the schema, so it only succeeds if the dropped table is still there.
         SqliteStore::new(database_filepath).await.unwrap();
     }
 

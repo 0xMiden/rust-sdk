@@ -25,7 +25,7 @@ fi
 >&2 echo "${CHANGED}"
 >&2 echo ""
 >&2 echo "Migrations are append-only. Add a new file under \"${MIGRATIONS_DIR}\" with the next
-version prefix instead, register it in MIGRATION_SCRIPTS and append its schema hash to
+version prefix instead, register it in CLIENT_MIGRATIONS and append its schema hash to
 PINNED_SCHEMA_HASHES, both in crates/sqlite-store/src/db_management/migration.rs, rather than editing
 the existing entries."
 exit 1

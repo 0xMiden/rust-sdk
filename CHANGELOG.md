@@ -61,6 +61,7 @@
 
 ### Enhancements
 
+* [FEATURE][rust] Added `TransactionRequestBuilder::explicit_input_notes` so callers can pin each input note as authenticated or unauthenticated instead of deriving its mode from the executing client's store ([#2437](https://github.com/0xMiden/rust-sdk/pull/2437)).
 * [FEATURE][rust] `ClientBuilder` accepts any `TransactionAuthenticator + 'static` as its authenticator. The `BuilderAuthenticator` bound no longer requires `Keystore` or `From<FilesystemKeyStore>`, so a signer that holds no secret key, such as a remote signing service, can be plugged into the builder without implementing key management.
 * [FEATURE][rust] Added `AuthGuardedMultisig`, `AuthGuardedMultisigConfig`, `GuardianConfig` and `ApproverSet` to `miden_client::auth`, which previously exposed only the single- and multisig components. Building a guarded multisig account no longer means reaching past the client into `miden_standards` ([#2465](https://github.com/0xMiden/rust-sdk/pull/2465)).
 * [FEATURE][rust] `Client::sync_state` now issues its independent gRPC calls concurrently instead of one after another, reducing the total time a sync takes. `NodeRpcClient::sync_notes_with_content` and `NodeRpcClient::sync_transactions` are now called concurrently rather than in sequence, and the per-account `NodeRpcClient::get_account` requests are issued in parallel instead of one at a time ([#2420](https://github.com/0xMiden/rust-sdk/pull/2420)).

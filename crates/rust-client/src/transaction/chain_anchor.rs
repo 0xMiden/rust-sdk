@@ -1,9 +1,11 @@
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::format;
 use alloc::string::ToString;
+use alloc::vec::Vec;
 
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::merkle::mmr::PartialMmr;
+use miden_protocol::note::NoteId;
 use miden_protocol::transaction::PartialBlockchain;
 use miden_protocol::{MAX_INPUT_NOTES_PER_TX, Word};
 use miden_tx::utils::serde::{
@@ -29,6 +31,14 @@ use thiserror::Error;
 /// trusted value — e.g. the reference-block commitment bound into a signed [`TransactionSummary`]
 /// — to be safe to execute against. [`Self::verify_block_commitment`] performs that check.
 ///
+/// That check covers the header and the chain, and nothing else. The recorded classification (see
+/// [`Self::with_authenticated_notes`]) is not committed to by the block commitment, so a party
+/// relaying the anchor can strip it — turning the classification check into a no-op —
+/// or add to it, turning a correct replay into an error. Neither forges a valid transaction, since
+/// a divergent summary fails signature verification regardless; the classification is a diagnostic
+/// that fails early and clearly, so callers who rely on it must receive the anchor over a channel
+/// that authenticates it.
+///
 /// The anchor never has to be trusted for the block headers it carries: [`PartialBlockchain::new`]
 /// proves every tracked header's commitment against the MMR, and [`Deserializable`] routes through
 /// it, so headers are authenticated by the peaks the block commitment already covers. Building the
@@ -44,7 +54,9 @@ use thiserror::Error;
 /// The anchor pins the chain-dependent half of that reproduction. The rest — the same request, the
 /// native account state the transaction executes against, and the same
 /// authenticated/unauthenticated classification of the input notes — still comes from the replaying
-/// client, so an anchor makes the summary reproducible rather than guaranteeing it on its own.
+/// client, so an anchor makes the summary reproducible rather than guaranteeing it on its own. The
+/// classification is the one of those the anchor can at least check, if it was recorded: see
+/// [`Self::with_authenticated_notes`].
 ///
 /// When the transaction consumes authenticated notes, the anchor's [`PartialBlockchain`] must
 /// track each note's creation block; [`crate::Client::chain_anchor_for_request`] captures an
@@ -55,10 +67,13 @@ use thiserror::Error;
 pub struct ChainAnchor {
     header: BlockHeader,
     chain: PartialBlockchain,
+    authenticated_notes: Option<BTreeSet<NoteId>>,
 }
 
 impl ChainAnchor {
     /// Returns a new anchor after validating that `chain` is consistent with `header`.
+    ///
+    /// The anchor records no input note classification; see [`Self::with_authenticated_notes`].
     ///
     /// # Errors
     ///
@@ -88,7 +103,46 @@ impl ChainAnchor {
             });
         }
 
-        Ok(Self { header, chain })
+        Ok(Self { header, chain, authenticated_notes: None })
+    }
+
+    /// Records which of the request's input notes were authenticated when the anchor was captured.
+    ///
+    /// The input notes commitment covers each note's nullifier paired with its id, and that id is
+    /// present only for a note consumed unauthenticated — an authenticated one contributes an
+    /// empty word in its place. Classification therefore changes the commitment, and with it the
+    /// [`TransactionSummary`], so a replaying client that classifies a note differently from the
+    /// capturing client produces a summary the collected signatures silently fail to apply to.
+    /// Classification is read from each client's own store, which the reference block does not
+    /// pin, so the anchor has to carry it.
+    ///
+    /// Recording it lets [`crate::Client::execute_transaction_at`] reject the mismatch up front
+    /// with [`ChainAnchorError::NoteAuthenticationMismatch`]. An anchor without this (see
+    /// [`Self::new`]) executes as before, and a divergence surfaces later as an unexplained
+    /// signature failure.
+    ///
+    /// [`TransactionSummary`]: miden_protocol::transaction::TransactionSummary
+    /// # Errors
+    ///
+    /// Returns [`ChainAnchorError::TooManyAuthenticatedNotes`] if more notes are recorded than a
+    /// transaction can consume. Such a set could never match what a replaying client classifies,
+    /// and enforcing the bound here rather than only on the wire keeps an anchor that was built
+    /// in-process from failing its own deserialization.
+    pub fn with_authenticated_notes(
+        mut self,
+        authenticated_notes: impl IntoIterator<Item = NoteId>,
+    ) -> Result<Self, ChainAnchorError> {
+        let authenticated_notes: BTreeSet<NoteId> = authenticated_notes.into_iter().collect();
+
+        if authenticated_notes.len() > MAX_INPUT_NOTES_PER_TX {
+            return Err(ChainAnchorError::TooManyAuthenticatedNotes {
+                count: authenticated_notes.len(),
+                max: MAX_INPUT_NOTES_PER_TX,
+            });
+        }
+
+        self.authenticated_notes = Some(authenticated_notes);
+        Ok(self)
     }
 
     /// Returns the number of the anchored reference block.
@@ -142,9 +196,53 @@ impl ChainAnchor {
         &self.chain
     }
 
+    /// Returns the ids of the input notes that were authenticated when this anchor was captured,
+    /// or `None` if the anchor does not record the classification.
+    pub fn authenticated_notes(&self) -> Option<&BTreeSet<NoteId>> {
+        self.authenticated_notes.as_ref()
+    }
+
+    /// Checks that `locally_authenticated` matches the classification recorded when the anchor was
+    /// captured, so that a divergent transaction summary is caught before proving rather than
+    /// surfacing as a signature that will not apply.
+    ///
+    /// Returns `Ok(())` when the anchor records no classification.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ChainAnchorError::NoteAuthenticationMismatch`] for the first note whose
+    /// classification differs, in either direction.
+    pub(crate) fn verify_authenticated_notes(
+        &self,
+        locally_authenticated: &BTreeSet<NoteId>,
+    ) -> Result<(), ChainAnchorError> {
+        let Some(anchored) = self.authenticated_notes.as_ref() else {
+            return Ok(());
+        };
+
+        if let Some(&note_id) = anchored.difference(locally_authenticated).next() {
+            return Err(ChainAnchorError::NoteAuthenticationMismatch {
+                note_id,
+                authenticated_at_capture: true,
+            });
+        }
+
+        if let Some(&note_id) = locally_authenticated.difference(anchored).next() {
+            return Err(ChainAnchorError::NoteAuthenticationMismatch {
+                note_id,
+                authenticated_at_capture: false,
+            });
+        }
+
+        Ok(())
+    }
+
     /// Consumes the anchor and returns its parts.
-    pub fn into_parts(self) -> (BlockHeader, PartialBlockchain) {
-        (self.header, self.chain)
+    ///
+    /// The recorded classification is returned alongside the chain data so that rebuilding an
+    /// anchor from the parts cannot silently drop it.
+    pub fn into_parts(self) -> (BlockHeader, PartialBlockchain, Option<BTreeSet<NoteId>>) {
+        (self.header, self.chain, self.authenticated_notes)
     }
 }
 
@@ -152,6 +250,7 @@ impl Serializable for ChainAnchor {
     fn write_into<W: ByteWriter>(&self, target: &mut W) {
         self.header.write_into(target);
         self.chain.write_into(target);
+        self.authenticated_notes.write_into(target);
     }
 }
 
@@ -200,7 +299,17 @@ impl Deserializable for ChainAnchor {
         let chain = PartialBlockchain::new(mmr, blocks.into_values())
             .map_err(|err| DeserializationError::InvalidValue(err.to_string()))?;
 
-        Self::new(header, chain).map_err(|err| DeserializationError::InvalidValue(err.to_string()))
+        let authenticated_notes = Option::<BTreeSet<NoteId>>::read_from(source)?;
+
+        let anchor = Self::new(header, chain)
+            .map_err(|err| DeserializationError::InvalidValue(err.to_string()))?;
+
+        match authenticated_notes {
+            Some(notes) => anchor
+                .with_authenticated_notes(notes)
+                .map_err(|err| DeserializationError::InvalidValue(err.to_string())),
+            None => Ok(anchor),
+        }
     }
 }
 
@@ -233,10 +342,23 @@ pub enum ChainAnchorError {
     BlockNotTracked { block_num: BlockNumber },
     #[error("the anchor tracks {count} blocks, more than the {max} a transaction can reference")]
     TooManyTrackedBlocks { count: usize, max: usize },
+    #[error(
+        "the anchor records {count} authenticated notes, more than the {max} a transaction can consume"
+    )]
+    TooManyAuthenticatedNotes { count: usize, max: usize },
     #[error("transaction reference block {requested} does not match the anchor block {anchor}")]
     ReferenceBlockMismatch {
         requested: BlockNumber,
         anchor: BlockNumber,
+    },
+    #[error(
+        "input note {note_id} was {} when the anchor was captured but is {} in this client's store, so the transaction summary would not reproduce",
+        if *.authenticated_at_capture { "authenticated" } else { "unauthenticated" },
+        if *.authenticated_at_capture { "not authenticated" } else { "authenticated" }
+    )]
+    NoteAuthenticationMismatch {
+        note_id: NoteId,
+        authenticated_at_capture: bool,
     },
     #[error(
         "the anchored transaction expires at block {expiration}, which the chain has already reached (sync height {sync_height}); it would be rejected by the network, so re-capture the anchor closer to the tip or raise the request's expiration delta"
@@ -245,6 +367,11 @@ pub enum ChainAnchorError {
         expiration: BlockNumber,
         sync_height: BlockNumber,
     },
+    #[error(
+        "{} of the request's input notes were dropped as unconsumable ({dropped:?}), which changes the input notes commitment and therefore the transaction summary; `ignore_invalid_input_notes` decides consumability from the native account state, which an anchor cannot pin, so drop the unconsumable notes from the request instead of relying on the flag",
+        dropped.len()
+    )]
+    InputNotesDropped { dropped: Vec<NoteId> },
 }
 
 // TESTS
@@ -252,11 +379,13 @@ pub enum ChainAnchorError {
 
 #[cfg(test)]
 mod tests {
+    use alloc::collections::BTreeSet;
     use alloc::vec::Vec;
 
     use miden_protocol::Word;
     use miden_protocol::block::BlockHeader;
     use miden_protocol::crypto::merkle::mmr::{Mmr, PartialMmr};
+    use miden_protocol::note::NoteId;
     use miden_protocol::transaction::PartialBlockchain;
     use miden_tx::utils::serde::{Deserializable, DeserializationError, Serializable};
 
@@ -301,6 +430,10 @@ mod tests {
         (header, chain)
     }
 
+    fn test_note_id(n: u32) -> NoteId {
+        NoteId::from_raw(Word::from([n, 0, 0, 0]))
+    }
+
     #[test]
     fn new_accepts_a_consistent_header_and_chain() {
         let (header, chain) = anchor_parts(8, &[3]);
@@ -309,6 +442,7 @@ mod tests {
         let anchor = ChainAnchor::new(header, chain).unwrap();
 
         assert_eq!(anchor.block_num(), block_num);
+        assert!(anchor.authenticated_notes().is_none());
     }
 
     #[test]
@@ -323,6 +457,32 @@ mod tests {
         let err = ChainAnchor::new(header, chain).unwrap_err();
 
         assert!(matches!(err, ChainAnchorError::ChainLengthMismatch { .. }), "got {err:?}");
+    }
+
+    /// The bound exists so that an anchor built in process cannot fail its own deserialization.
+    /// Both halves matter: the builder has to reject the set, and the wire path has to route
+    /// through the builder rather than accepting what the builder would not have produced.
+    #[test]
+    fn a_classification_larger_than_a_transaction_can_consume_is_rejected_by_both_paths() {
+        let (header, chain) = anchor_parts(8, &[3]);
+        let too_many: Vec<NoteId> = (0..=u32::try_from(super::MAX_INPUT_NOTES_PER_TX).unwrap())
+            .map(test_note_id)
+            .collect();
+
+        let anchor = ChainAnchor::new(header, chain).unwrap();
+        let err = anchor.clone().with_authenticated_notes(too_many.clone()).unwrap_err();
+        assert!(matches!(err, ChainAnchorError::TooManyAuthenticatedNotes { .. }), "got {err:?}");
+
+        // The builder cannot produce such an anchor, so the payload has to be assembled by hand.
+        let mut bytes = anchor.to_bytes();
+        bytes.truncate(bytes.len() - Option::<BTreeSet<NoteId>>::None.to_bytes().len());
+        Some(too_many.into_iter().collect::<BTreeSet<NoteId>>()).write_into(&mut bytes);
+
+        let err = ChainAnchor::read_from_bytes(&bytes).unwrap_err();
+        assert!(
+            matches!(&err, DeserializationError::InvalidValue(msg) if msg.contains("authenticated notes")),
+            "got {err:?}"
+        );
     }
 
     #[test]
@@ -349,12 +509,102 @@ mod tests {
     }
 
     #[test]
-    fn serialization_round_trips() {
+    fn verify_authenticated_notes_is_a_noop_when_the_anchor_records_no_classification() {
+        let (header, chain) = anchor_parts(8, &[3]);
+        let anchor = ChainAnchor::new(header, chain).unwrap();
+
+        anchor
+            .verify_authenticated_notes(&[test_note_id(1)].into_iter().collect())
+            .unwrap();
+    }
+
+    #[test]
+    fn verify_authenticated_notes_catches_a_mismatch_in_both_directions() {
+        let (header, chain) = anchor_parts(8, &[3]);
+        let anchor = ChainAnchor::new(header, chain)
+            .unwrap()
+            .with_authenticated_notes([test_note_id(1), test_note_id(2)])
+            .unwrap();
+
+        anchor
+            .verify_authenticated_notes(&[test_note_id(1), test_note_id(2)].into_iter().collect())
+            .unwrap();
+
+        // Authenticated at capture, unauthenticated locally.
+        let err = anchor
+            .verify_authenticated_notes(&[test_note_id(1)].into_iter().collect())
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ChainAnchorError::NoteAuthenticationMismatch {
+                    note_id,
+                    authenticated_at_capture: true
+                } if note_id == test_note_id(2)
+            ),
+            "got {err:?}"
+        );
+
+        // Unauthenticated at capture, authenticated locally.
+        let err = anchor
+            .verify_authenticated_notes(
+                &[test_note_id(1), test_note_id(2), test_note_id(3)].into_iter().collect(),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ChainAnchorError::NoteAuthenticationMismatch {
+                    note_id,
+                    authenticated_at_capture: false
+                } if note_id == test_note_id(3)
+            ),
+            "got {err:?}"
+        );
+    }
+
+    /// Recording "no note was authenticated" must stay distinguishable from recording nothing at
+    /// all: the first rejects a client that authenticated one, the second waves it through.
+    #[test]
+    fn an_empty_recorded_classification_is_not_the_same_as_an_unrecorded_one() {
+        let (header, chain) = anchor_parts(8, &[3]);
+        let anchor = ChainAnchor::new(header, chain).unwrap().with_authenticated_notes([]).unwrap();
+
+        assert_eq!(anchor.authenticated_notes(), Some(&BTreeSet::new()));
+
+        anchor.verify_authenticated_notes(&BTreeSet::new()).unwrap();
+
+        let err = anchor
+            .verify_authenticated_notes(&[test_note_id(1)].into_iter().collect())
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ChainAnchorError::NoteAuthenticationMismatch {
+                    authenticated_at_capture: false,
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+
+        let deserialized = ChainAnchor::read_from_bytes(&anchor.to_bytes()).unwrap();
+        assert_eq!(deserialized.authenticated_notes(), Some(&BTreeSet::new()));
+    }
+
+    #[test]
+    fn serialization_round_trips_with_and_without_a_recorded_classification() {
         let (header, chain) = anchor_parts(8, &[3]);
         let anchor = ChainAnchor::new(header, chain).unwrap();
 
         let deserialized = ChainAnchor::read_from_bytes(&anchor.to_bytes()).unwrap();
         assert_eq!(anchor, deserialized);
+        assert!(deserialized.authenticated_notes().is_none());
+
+        let anchor = anchor.with_authenticated_notes([test_note_id(7)]).unwrap();
+        let deserialized = ChainAnchor::read_from_bytes(&anchor.to_bytes()).unwrap();
+        assert_eq!(anchor, deserialized);
+        assert_eq!(deserialized.authenticated_notes().unwrap().len(), 1);
     }
 
     #[test]
@@ -399,6 +649,7 @@ mod tests {
             PartialBlockchain::new_unchecked(partial_mmr, [headers[3].clone()])
                 .unwrap()
                 .write_into(&mut buf);
+            None::<BTreeSet<NoteId>>.write_into(&mut buf);
             buf
         };
 
@@ -429,6 +680,7 @@ mod tests {
             header.write_into(&mut buf);
             chain.mmr().write_into(&mut buf);
             blocks.write_into(&mut buf);
+            None::<BTreeSet<NoteId>>.write_into(&mut buf);
             buf
         };
 

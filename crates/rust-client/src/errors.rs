@@ -108,6 +108,10 @@ pub enum ClientError {
     AssetError(#[from] AssetError),
     #[error("account data wasn't found for account id {0}")]
     AccountDataNotFound(AccountId),
+    #[error(
+        "every input note was screened out as unconsumable ({requested:?}), leaving a transaction that consumes nothing; `ignore_invalid_input_notes` drops the notes that cannot be consumed, not all of them"
+    )]
+    AllInputNotesScreenedOut { requested: Vec<NoteId> },
     #[error(transparent)]
     BatchBuilder(#[from] BatchBuilderError),
     #[error(transparent)]

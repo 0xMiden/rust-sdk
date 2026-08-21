@@ -320,7 +320,10 @@ where
 
     let mut notes = prep.notes;
     if prep.ignore_invalid_notes {
-        notes = client
+        // Batches never carry an anchor, so a partial drop is exactly what the flag asked for and
+        // the dropped ids are not needed here; screening out every note is still refused, by
+        // `get_valid_input_notes` itself.
+        (notes, _) = client
             .get_valid_input_notes(
                 data_store,
                 account_id,

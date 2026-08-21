@@ -84,6 +84,11 @@ impl ClientDataStore {
         self
     }
 
+    /// Returns the [`ChainAnchor`] execution is pinned to, if any.
+    pub fn chain_anchor(&self) -> Option<&ChainAnchor> {
+        self.anchor.as_deref()
+    }
+
     /// Enables memoization of `get_transaction_inputs` and `get_vault_asset_witnesses` for the
     /// lifetime of this data store.
     ///

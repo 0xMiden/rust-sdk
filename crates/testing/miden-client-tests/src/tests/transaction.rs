@@ -876,6 +876,31 @@ async fn chain_anchor_for_request_handles_a_note_created_in_the_reference_block(
     let anchor = client.chain_anchor_for_request(&consume_request).await.unwrap();
 
     assert_eq!(anchor.block_num(), tip);
+    assert_eq!(
+        anchor.authenticated_notes(),
+        Some(&BTreeSet::from([note_id])),
+        "the note is authenticated even though its block needs no separate proof"
+    );
+
+    // Every anchor in these tests is captured from the same store that later replays it, so the
+    // classification check agrees by construction and would pass even if it were deleted. Standing
+    // in for a replaying client whose store disagrees: record "nothing was authenticated" and the
+    // execution must refuse rather than build a summary the signatures would not match.
+    let disagreeing = anchor.clone().with_authenticated_notes([]).unwrap();
+    let err =
+        Box::pin(client.execute_transaction_at(wallet.id(), consume_request.clone(), disagreeing))
+            .await
+            .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            ClientError::ChainAnchorError(ChainAnchorError::NoteAuthenticationMismatch {
+                note_id: mismatched,
+                authenticated_at_capture: false,
+            }) if mismatched == note_id
+        ),
+        "got {err:?}"
+    );
 
     Box::pin(client.execute_transaction_at(wallet.id(), consume_request, anchor))
         .await
@@ -939,6 +964,147 @@ async fn chain_anchor_for_request_tracks_consumed_note_blocks() {
         .await
         .unwrap();
     assert_eq!(result.executed_transaction().block_header().block_num(), anchor_block);
+}
+
+/// `ignore_invalid_input_notes` decides consumability from the native account state, which the
+/// anchor does not pin, so a note this client drops is one another client may keep — and the two
+/// then commit to different input notes and produce different summaries. The drop has to be
+/// refused, and the refusal has to name screening as the cause rather than the store.
+#[tokio::test]
+async fn chain_anchor_execution_refuses_to_drop_an_unconsumable_input_note() {
+    let (mut client, rpc_api, keystore) = Box::pin(create_test_client()).await;
+    let (wallet, faucet) =
+        setup_wallet_and_faucet(&mut client, AccountType::Private, &keystore, RPO_FALCON_SCHEME_ID)
+            .await
+            .unwrap();
+    // A second account to address the unconsumable note to. `wallet` tracks it either way, so it
+    // reaches screening as a perfectly valid authenticated input note that simply cannot be
+    // consumed by this account.
+    let other = super::insert_new_wallet(&mut client, AccountType::Private, &keystore)
+        .await
+        .unwrap();
+    client.sync_state().await.unwrap();
+
+    let mut minted = Vec::new();
+    for target in [wallet.id(), other.id()] {
+        let mint_request = TransactionRequestBuilder::new()
+            .build_mint_fungible_asset(
+                FungibleAsset::new(faucet.id(), 5u64).unwrap(),
+                target,
+                NoteType::Private,
+                client.rng(),
+            )
+            .unwrap();
+        minted.push(mint_request.expected_output_own_notes().pop().unwrap().id());
+        Box::pin(client.submit_new_transaction(faucet.id(), mint_request))
+            .await
+            .unwrap();
+        rpc_api.prove_block();
+        client.sync_state().await.unwrap();
+    }
+
+    let mut notes = Vec::new();
+    for note_id in &minted {
+        notes.push(client.get_input_note(*note_id).await.unwrap().unwrap().try_into().unwrap());
+    }
+
+    let consume_request = TransactionRequestBuilder::new()
+        .ignore_invalid_input_notes()
+        .build_consume_notes(notes)
+        .unwrap();
+
+    // Without an anchor the flag does what it says, which is what makes the refusal below a
+    // property of anchored execution rather than of the request.
+    let unanchored = Box::pin(client.execute_transaction(wallet.id(), consume_request.clone()))
+        .await
+        .unwrap();
+    assert_eq!(
+        unanchored.executed_transaction().input_notes().num_notes(),
+        1,
+        "the note addressed to the other account should have been screened out"
+    );
+
+    let anchor = client.chain_anchor_for_request(&consume_request).await.unwrap();
+    let err = Box::pin(client.execute_transaction_at(wallet.id(), consume_request, anchor))
+        .await
+        .unwrap_err();
+
+    let ClientError::ChainAnchorError(ChainAnchorError::InputNotesDropped { dropped }) = err else {
+        panic!("expected the dropped-note error, got {err:?}");
+    };
+    assert_eq!(dropped, vec![minted[1]], "the refusal must name the note that was dropped");
+}
+
+/// The all-dropped case takes a different path than the partial one: screening empties the note
+/// set, and asking the consumption checker about zero notes gets an out-of-range note count back —
+/// an error about counts that says nothing about consumability. A request whose notes are *all*
+/// unconsumable is wrong whether or not it is anchored, so both paths have to refuse it, and the
+/// refusal lives in the screening helper both of them share.
+#[tokio::test]
+async fn execution_refuses_to_screen_out_every_input_note() {
+    let (mut client, rpc_api, keystore) = Box::pin(create_test_client()).await;
+    let (wallet, faucet) =
+        setup_wallet_and_faucet(&mut client, AccountType::Private, &keystore, RPO_FALCON_SCHEME_ID)
+            .await
+            .unwrap();
+    let other = super::insert_new_wallet(&mut client, AccountType::Private, &keystore)
+        .await
+        .unwrap();
+    client.sync_state().await.unwrap();
+
+    let mint_request = TransactionRequestBuilder::new()
+        .build_mint_fungible_asset(
+            FungibleAsset::new(faucet.id(), 5u64).unwrap(),
+            other.id(),
+            NoteType::Private,
+            client.rng(),
+        )
+        .unwrap();
+    let note_id = mint_request.expected_output_own_notes().pop().unwrap().id();
+    Box::pin(client.submit_new_transaction(faucet.id(), mint_request))
+        .await
+        .unwrap();
+    rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+
+    let note = client.get_input_note(note_id).await.unwrap().unwrap();
+    let consume_request = TransactionRequestBuilder::new()
+        .ignore_invalid_input_notes()
+        .build_consume_notes(vec![note.try_into().unwrap()])
+        .unwrap();
+
+    // Unanchored, this produced a transaction that consumed nothing — which still costs a proof
+    // and a fee once submitted.
+    let err = Box::pin(client.execute_transaction(wallet.id(), consume_request.clone()))
+        .await
+        .unwrap_err();
+    let ClientError::AllInputNotesScreenedOut { requested } = err else {
+        panic!("expected the screened-out error, got {err:?}");
+    };
+    assert_eq!(requested, vec![note_id]);
+
+    // Anchored, the same refusal applies, and it takes precedence over the anchor-specific
+    // `InputNotesDropped`: with nothing left to consume the request is broken on its own terms,
+    // whatever the anchor would have made of a partial drop.
+    let anchor = client.chain_anchor_for_request(&consume_request).await.unwrap();
+    let err = Box::pin(client.execute_transaction_at(wallet.id(), consume_request.clone(), anchor))
+        .await
+        .unwrap_err();
+    let ClientError::AllInputNotesScreenedOut { requested } = err else {
+        panic!("expected the screened-out error, got {err:?}");
+    };
+    assert_eq!(requested, vec![note_id]);
+
+    // And through the batch builder, the second caller of the screening helper. It had no guard of
+    // its own until the refusal moved into the helper, so this is what stops it drifting back out.
+    let mut batch = client.new_transaction_batch();
+    let Err(err) = Box::pin(batch.push(wallet.id(), consume_request)).await else {
+        panic!("the batch builder accepted a request with nothing left to consume");
+    };
+    let ClientError::AllInputNotesScreenedOut { requested } = err else {
+        panic!("expected the screened-out error, got {err:?}");
+    };
+    assert_eq!(requested, vec![note_id]);
 }
 
 /// Note screening runs against the anchored data store, so it must use the anchor's reference

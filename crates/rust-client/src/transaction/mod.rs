@@ -317,6 +317,8 @@ where
     ///   notes are not a subset of executor's output notes.
     /// - Returns a [`ClientError::TransactionExecutorError`] if the execution fails.
     /// - Returns a [`ClientError::TransactionRequestError`] if the request is invalid.
+    /// - Returns [`ClientError::AllInputNotesScreenedOut`] if the request set
+    ///   `ignore_invalid_input_notes` and every one of its input notes proved unconsumable.
     pub async fn execute_transaction(
         &mut self,
         account_id: AccountId,
@@ -369,8 +371,17 @@ where
     ///   executor error's source chain rather than surfacing as a typed variant.
     /// - Returns a [`ClientError::TransactionExecutorError`] if an input note was created after the
     ///   anchored reference block.
+    /// - Returns [`ClientError::ChainAnchorError`] if an input note's authentication state differs
+    ///   from the one the anchor recorded at capture, since the resulting summary would not match
+    ///   the one that was signed.
     /// - Returns [`ClientError::ChainAnchorError`] if the executed transaction's expiration block
     ///   has already been reached, which the network would reject.
+    /// - Returns [`ClientError::ChainAnchorError`] if the request sets `ignore_invalid_input_notes`
+    ///   and screening drops some but not all of its notes. Consumability is decided by the native
+    ///   account state, which the anchor does not pin, so the drop is not reproducible and the
+    ///   resulting summary would not match the one that was signed.
+    /// - Returns [`ClientError::AllInputNotesScreenedOut`] if screening drops *every* note, since
+    ///   such a request is broken whether or not it is anchored.
     /// - Returns [`ClientError::StoreError`] if the sync height cannot be read for that expiration
     ///   check, which happens after execution has already succeeded.
     pub async fn execute_transaction_at(
@@ -467,33 +478,50 @@ where
     /// - Returns [`ClientError::DataStoreError`] if the store is missing an MMR node needed to
     ///   authenticate a tracked block.
     /// - Returns [`ClientError::PartialBlockchainError`] or [`ClientError::ChainAnchorError`] if
-    ///   the assembled chain data is not self-consistent, which indicates a corrupt store. One
-    ///   variant is instead a property of the request: [`ChainAnchorError::TooManyTrackedBlocks`],
+    ///   the assembled chain data is not self-consistent, which indicates a corrupt store. Two
+    ///   variants are instead properties of the request: [`ChainAnchorError::TooManyTrackedBlocks`]
     ///   when its authenticated input notes were created across more blocks than a transaction can
-    ///   reference.
+    ///   reference, and [`ChainAnchorError::TooManyAuthenticatedNotes`] when it carries more
+    ///   authenticated input notes than a transaction can consume.
     pub async fn chain_anchor_for_request(
         &self,
         transaction_request: &TransactionRequest,
     ) -> Result<ChainAnchor, ClientError> {
         let input_note_ids: Vec<NoteId> = transaction_request.input_note_ids().collect();
 
-        // Locally-consumed notes must be tracked too: the replaying client may still hold the same
-        // note as merely committed, and an anchor omitting the block needed to authenticate it
-        // would fail with `BlockNotTracked`.
-        let tracked_blocks: BTreeSet<BlockNumber> = if input_note_ids.is_empty() {
-            BTreeSet::new()
+        let authenticated_records: Vec<InputNoteRecord> = if input_note_ids.is_empty() {
+            Vec::new()
         } else {
             self.store
                 .get_input_notes(NoteFilter::List(input_note_ids))
                 .await?
-                .iter()
-                .filter(|record| record.is_authenticated())
-                .filter_map(|record| record.inclusion_proof())
-                .map(|proof| proof.location().block_num())
+                .into_iter()
+                .filter(InputNoteRecord::is_authenticated)
                 .collect()
         };
 
-        self.chain_anchor_at_tip(tracked_blocks).await
+        // Both sets are derived from the same records, with no further filtering. Locally-consumed
+        // notes must be tracked too: the replaying client may still hold the same note as merely
+        // committed, and an anchor that listed it as authenticated while omitting the block needed
+        // to authenticate it would fail with `BlockNotTracked`.
+        let tracked_blocks: BTreeSet<BlockNumber> = authenticated_records
+            .iter()
+            .filter_map(|record| record.inclusion_proof())
+            .map(|proof| proof.location().block_num())
+            .collect();
+
+        // Whether a note is consumed authenticated or unauthenticated changes its commitment and
+        // therefore the transaction summary, and it is read from each client's own store rather
+        // than pinned by the reference block. Record it so a replaying client whose store
+        // classifies a note differently fails loudly instead of producing a summary the collected
+        // signatures do not match.
+        let authenticated_notes: Vec<NoteId> =
+            authenticated_records.iter().filter_map(InputNoteRecord::id).collect();
+
+        Ok(self
+            .chain_anchor_at_tip(tracked_blocks)
+            .await?
+            .with_authenticated_notes(authenticated_notes)?)
     }
 
     /// Executes `transaction_request` (e.g. consuming a note) through the DAP program executor,
@@ -555,7 +583,8 @@ where
 
         let mut notes = prep.notes;
         if prep.ignore_invalid_notes {
-            notes = self
+            let dropped;
+            (notes, dropped) = self
                 .get_valid_input_notes(
                     &data_store,
                     account.id(),
@@ -564,6 +593,15 @@ where
                     prep.tx_args.clone(),
                 )
                 .await?;
+
+            // Dropping a note changes the input notes commitment and therefore the summary,
+            // whatever that note's classification was, so this looks at every dropped note rather
+            // than the authenticated ones only. Consumability is decided by the native account
+            // state, which the anchor does not pin, so the drop cannot be reproduced by another
+            // client and the request has to stop relying on the flag.
+            if data_store.chain_anchor().is_some() && !dropped.is_empty() {
+                return Err(ChainAnchorError::InputNotesDropped { dropped }.into());
+            }
         }
 
         let executed_transaction = match execution_mode {
@@ -629,6 +667,15 @@ where
 
         // Only keep authenticated input notes from the store.
         stored_note_records.retain(InputNoteRecord::is_authenticated);
+
+        // Authentication is decided by this client's store, which the reference block does not
+        // pin, so an anchored execution has to agree with the classification the anchor recorded
+        // or it reproduces a different summary than the one that was signed.
+        if let Some(anchor) = anchor {
+            let locally_authenticated: BTreeSet<NoteId> =
+                stored_note_records.iter().filter_map(InputNoteRecord::id).collect();
+            anchor.verify_authenticated_notes(&locally_authenticated)?;
+        }
 
         let notes = transaction_request.build_input_notes(stored_note_records)?;
 
@@ -1043,6 +1090,16 @@ where
     ///
     /// The scripts of the request's expected output notes must already be registered on
     /// `data_store`, so that output note creation can resolve them during the trial executions.
+    ///
+    /// Returns the surviving notes together with the ids of the ones that were dropped, ordered by
+    /// note id within each screening pass. Callers need the latter because dropping a note changes
+    /// the input notes commitment, which not every caller can accept.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError::AllInputNotesScreenedOut`] if every note is dropped. The flag this
+    /// serves asks to ignore the notes that cannot be consumed, not to proceed with none of them,
+    /// and a transaction consuming nothing still costs a proof and a fee to submit.
     pub(crate) async fn get_valid_input_notes<STORE: DataStore + Sync>(
         &self,
         data_store: &STORE,
@@ -1050,7 +1107,10 @@ where
         block_ref: BlockNumber,
         mut input_notes: InputNotes<InputNote>,
         tx_args: TransactionArgs,
-    ) -> Result<InputNotes<InputNote>, ClientError> {
+    ) -> Result<(InputNotes<InputNote>, Vec<NoteId>), ClientError> {
+        let had_notes = !input_notes.is_empty();
+        let mut dropped: Vec<NoteId> = Vec::new();
+
         loop {
             // The consumption checker rejects a zero-note call as an out-of-range note count, so
             // ask it nothing when there is nothing to ask about. That happens both when screening
@@ -1082,10 +1142,15 @@ where
             )
             .expect("Created from a valid input notes list");
 
+            dropped.extend(failed_note_ids.iter().copied());
             input_notes = filtered_input_notes;
         }
 
-        Ok(input_notes)
+        if had_notes && input_notes.is_empty() {
+            return Err(ClientError::AllInputNotesScreenedOut { requested: dropped });
+        }
+
+        Ok((input_notes, dropped))
     }
 
     /// Returns foreign account inputs for the required foreign accounts specified by the

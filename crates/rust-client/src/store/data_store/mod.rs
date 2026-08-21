@@ -596,6 +596,8 @@ pub(crate) async fn build_partial_mmr_with_paths(
 ///
 /// - Returns [`StoreError::BlockHeaderNotFound`] if a block number is not below `forest`, since
 ///   such a block is not yet part of the chain the paths are being built against.
+/// - Returns [`StoreError::PartialBlockchainNodeNotFound`] if the store is missing an MMR node a
+///   path needs.
 async fn get_authentication_path_for_blocks(
     store: &alloc::sync::Arc<dyn Store>,
     block_nums: &[BlockNumber],
@@ -624,10 +626,19 @@ async fn get_authentication_path_for_blocks(
     // Construct authentication paths
     let mut authentication_paths = vec![];
     for block_num in block_nums {
-        let mut merkle_nodes = vec![];
+        // Walk exactly the depth the path needs. Stopping at the first sibling the store happens
+        // to be missing would instead yield a short path, which fails much further downstream (in
+        // `PartialMmr::track` or the inclusion check in `PartialBlockchain::new`) as an opaque MMR
+        // error that says nothing about which node is absent.
+        let path_depth = path_depth_for(forest, *block_num)?;
+        let mut merkle_nodes = Vec::with_capacity(path_depth);
         let mut idx = InOrderIndex::from_leaf_pos(block_num.as_usize());
 
-        while let Some(node) = mmr_nodes.get(&idx.sibling()) {
+        for _ in 0..path_depth {
+            let sibling = idx.sibling();
+            let node = mmr_nodes
+                .get(&sibling)
+                .ok_or(StoreError::PartialBlockchainNodeNotFound(sibling.inner() as u64))?;
             merkle_nodes.push(*node);
             idx = idx.parent();
         }

@@ -110,7 +110,7 @@ pub enum ClientError {
     AccountDataNotFound(AccountId),
     #[error(transparent)]
     BatchBuilder(#[from] BatchBuilderError),
-    #[error("chain anchor error")]
+    #[error(transparent)]
     ChainAnchorError(#[from] ChainAnchorError),
     #[error("data store error")]
     DataStoreError(#[from] DataStoreError),

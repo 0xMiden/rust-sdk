@@ -14,7 +14,13 @@ use alloc::vec::Vec;
 
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{
-    Note, NoteAttachments, NoteDetails, NoteDetailsCommitment, NoteId, NoteInclusionProof, NoteTag,
+    Note,
+    NoteAttachments,
+    NoteDetails,
+    NoteDetailsCommitment,
+    NoteId,
+    NoteInclusionProof,
+    NoteTag,
     Nullifier,
 };
 use miden_standards::note::NoteFile;
@@ -350,9 +356,16 @@ where
         let mut committed_notes_data =
             self.sync_expected_notes(lowest_request_block, note_requests).await?;
 
+        // Spends that happened at or below the current sync height are invisible to the forward
+        // nullifier sync, which only scans from `sync_height + 1` onwards and never rewinds. Look
+        // those up here, from the earliest imported note's inclusion block, so a note that was
+        // already consumed before this client learned about it is not imported as consumable.
+        // Spends above the sync height are left to the next sync, which also attributes the
+        // consuming account when it is tracked locally.
+        let sync_height = self.get_sync_height().await?;
         let details_by_commitment: BTreeMap<NoteDetailsCommitment, NoteDetails> = requested_notes
             .iter()
-            .map(|(_, details, _, _)| (details.commitment(), details.clone()))
+            .map(|(_, details, ..)| (details.commitment(), details.clone()))
             .collect();
         let mut nullifier_requests = BTreeSet::new();
         let mut lowest_nullifier_block: BlockNumber = u32::MAX.into();
@@ -417,6 +430,7 @@ where
             let nullifier = Nullifier::from_details_and_metadata(note_record.details(), &metadata);
             if let Some(nullifier_block_height) =
                 nullifier_commit_heights.get(&nullifier).and_then(|height| *height)
+                && nullifier_block_height <= sync_height
             {
                 note_changed |=
                     note_record.consumed_externally(nullifier, nullifier_block_height, None)?;

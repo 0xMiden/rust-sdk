@@ -6,20 +6,30 @@ use miden_client::address::{Address, AddressInterface, RoutingParameters};
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;
 use miden_client::note::{
-    NetworkAccountTarget, Note, NoteDetails, NoteExecutionHint, NoteTag, NoteType,
+    NetworkAccountTarget,
+    Note,
+    NoteDetails,
+    NoteExecutionHint,
+    NoteTag,
+    NoteType,
 };
 use miden_client::note_transport::NoteTransportClient;
 use miden_client::store::{InputNoteState, NoteFilter};
 use miden_client::testing::common::create_test_store_path;
 use miden_client::testing::mock::{MockClient, MockRpcApi};
 use miden_client::testing::note_transport::{
-    FaultyNoteTransportApi, MockNoteTransportApi, MockNoteTransportNode,
+    FaultyNoteTransportApi,
+    MockNoteTransportApi,
+    MockNoteTransportNode,
 };
 use miden_client::utils::RwLock;
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
 use miden_protocol::Felt;
 use miden_protocol::account::{
-    AccountId, AccountIdVersion, AccountType as ProtocolAccountType, AssetCallbackFlag,
+    AccountId,
+    AccountIdVersion,
+    AccountType as ProtocolAccountType,
+    AssetCallbackFlag,
 };
 use miden_protocol::asset::{Asset, FungibleAsset};
 use miden_protocol::block::BlockNumber;
@@ -33,7 +43,9 @@ use miden_testing::{Auth, MockChainBuilder, MockTransactionInput};
 use rand::RngExt;
 
 use crate::tests::{
-    create_test_client_builder, insert_new_wallet, seed_mock_transaction_encryption_key,
+    create_test_client_builder,
+    insert_new_wallet,
+    seed_mock_transaction_encryption_key,
 };
 
 #[tokio::test]

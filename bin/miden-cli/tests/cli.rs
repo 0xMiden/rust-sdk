@@ -7,9 +7,18 @@ use std::sync::Arc;
 use anyhow::Result;
 use assert_cmd::Command;
 use assert_cmd::cargo::cargo_bin_cmd;
-use miden_client::account::component::FungibleFaucet;
-use miden_client::account::{AccountId, AccountType, FaucetMetadata};
+use miden_client::account::component::{
+    AccountComponentMetadata,
+    FeltSchema,
+    FungibleFaucet,
+    StorageSchema,
+    StorageSlotSchema,
+    ValueSlotSchema,
+    WordSchema,
+};
+use miden_client::account::{AccountId, AccountType, FaucetMetadata, StorageSlotName};
 use miden_client::address::{Address, NetworkId};
+use miden_client::assembly::CodeBuilder;
 use miden_client::auth::TransactionAuthenticator;
 use miden_client::builder::ClientBuilder;
 use miden_client::crypto::RandomCoin;
@@ -24,10 +33,20 @@ use miden_client::testing::common::{
     create_test_store_path,
 };
 use miden_client::utils::Serializable;
-use miden_client::{self, Client, Felt};
+use miden_client::vm::{
+    Package,
+    PackageExport,
+    ProcedureExport,
+    QualifiedProcedureName,
+    Section,
+    SectionId,
+    TargetType,
+};
+use miden_client::{self, Client, Deserializable, Felt};
 use miden_client_cli::MIDEN_DIR;
 use miden_client_cli::config::Network;
 use miden_client_sqlite_store::SqliteStore;
+use midenc_hir_type::{CallConv, FunctionType, Type};
 use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
 use rand::RngExt;
@@ -1721,10 +1740,7 @@ fn call_nonexistent_procedure() {
 
 /// Helper: builds the `call-test` package (arithmetic + storage procedures) at runtime and
 /// writes the serialized `.masp` to `out_path`.
-fn call_test_exports(package: &miden_client::vm::Package) -> Vec<miden_client::vm::PackageExport> {
-    use miden_client::vm::{PackageExport, ProcedureExport, QualifiedProcedureName};
-    use midenc_hir_type::{CallConv, FunctionType, Type};
-
+fn call_test_exports(package: &Package) -> Vec<PackageExport> {
     let signature_overrides: [(&str, FunctionType); 4] = [
         (
             "add",
@@ -1769,18 +1785,6 @@ fn call_test_exports(package: &miden_client::vm::Package) -> Vec<miden_client::v
 }
 
 fn build_call_test_masp(out_path: &Path) {
-    use miden_client::account::StorageSlotName;
-    use miden_client::account::component::{
-        AccountComponentMetadata,
-        FeltSchema,
-        StorageSchema,
-        StorageSlotSchema,
-        ValueSlotSchema,
-        WordSchema,
-    };
-    use miden_client::assembly::CodeBuilder;
-    use miden_client::vm::{Package, Section, SectionId, TargetType};
-
     let call_test_code = r#"
         use miden::protocol::native_account
         use miden::core::word
@@ -1923,9 +1927,6 @@ fn setup_call_test_account() -> (PathBuf, String, PathBuf) {
 /// Helper: reads the hex digest of `procedure` from a `.masp`, for calling without the package.
 /// Picks the `ComponentModel` export, since the same name is also exported as a `C`-ABI lowering.
 fn procedure_digest_hex(masp_path: &Path, procedure: &str) -> String {
-    use miden_client::Deserializable;
-    use miden_client::vm::{Package, PackageExport};
-
     let bytes = fs::read(masp_path).expect("failed to read call-test package");
     let package = Package::read_from_bytes(&bytes).expect("failed to parse call-test package");
 

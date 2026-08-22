@@ -52,10 +52,10 @@ miden-node-proto-build           = { default-features = false, version = "0.16.0
 miden-note-transport-proto-build = { default-features = false, version = "0.5.0-alpha.1" }
 
 # Miden debug dependency
-miden-assembly-syntax = { default-features = false, version = "0.29" }
+miden-assembly-syntax = { default-features = false, version = "0.29.2" }
 miden-debug           = { default-features = false, features = ["dap", "std"], version = "0.10" }
-miden-mast-package    = { default-features = false, version = "0.29" }
-miden-processor       = { default-features = false, version = "0.29.1" }
+miden-mast-package    = { default-features = false, version = "0.29.2" }
+miden-processor       = { default-features = false, version = "0.29.2" }
 
 # External dependencies
 anyhow             = { default-features = false, version = "1.0" }
@@ -81,44 +81,6 @@ tonic              = { default-features = false, version = "0.14" }
 tracing            = { version = "0.1" }
 tracing-subscriber = { default-features = false, version = "0.3" }
 uuid               = { version = "1.10" }
-
-# TEMPORARY (do not merge): `miden call` reads argument and result types through
-# `miden_assembly_syntax::ast::types::signatures`, which is not in a published miden-vm release yet.
-# Point the whole miden-vm crate set at the branch carrying it; patching a single crate pulls a
-# second `miden-core` and breaks type unification. Delete this entire block once the module lands in
-# a release — the caret `"0.29"` requirement then picks it up from crates.io.
-[patch.crates-io]
-miden-ace-codegen         = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
-miden-air                 = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
-miden-assembly            = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
-miden-assembly-syntax     = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
-miden-assembly-syntax-cst = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
-miden-constraint-compiler = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
-miden-core                = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
-miden-core-lib            = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
-miden-core-lib-codegen    = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
-miden-crypto              = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
-miden-crypto-derive       = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
-miden-debug-types         = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
-miden-field               = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
-miden-lifted-air          = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
-miden-lifted-stark        = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
-miden-mast-package        = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
-miden-package-registry    = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
-miden-precompiles         = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
-miden-precompiles-prover  = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
-miden-processor           = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
-miden-project             = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
-miden-prover              = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
-miden-serde-utils         = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
-miden-stark-transcript    = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
-miden-stateful-hasher     = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
-miden-utils-core-derive   = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
-miden-utils-diagnostics   = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
-miden-utils-indexing      = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
-miden-utils-sync          = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
-miden-verifier            = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
-midenc-hir-type           = { branch = "pr/debug_info_encoder_decoder", git = "https://github.com/walnuthq/miden-vm" }
 
 # Lints are set to warn for development, which are promoted to errors in CI.
 [workspace.lints.clippy]

@@ -24,6 +24,9 @@ ignored = ["getrandom", "prost-types", "tonic-prost"]
 # getrandom is used through rand's wasm backend selection. The other entries are used by
 # generated proto bindings and std-only keystore code that shear does not fully resolve.
 ignored = ["getrandom", "prost-types", "serde", "serde_json", "tempfile", "tonic-prost"]
+# trybuild loads the UI fixtures as data rather than as cargo targets, so shear sees them
+# as unreachable files and suggests deleting them.
+ignored-paths = ["tests/ui/*.rs"]
 
 [lib]
 crate-type = ["lib"]
@@ -91,6 +94,7 @@ hex          = { workspace = true }
 prost        = { features = ["derive"], workspace = true }
 prost-types  = { version = "0.14" }
 rand         = { workspace = true }
+rand_chacha  = { workspace = true }
 serde        = { workspace = true }
 serde_json   = { workspace = true }
 tempfile     = { optional = true, workspace = true }
@@ -121,8 +125,8 @@ tonic-prost-build                = { version = "0.14" }
 miden-protocol  = { default-features = false, features = ["testing"], workspace = true }
 miden-standards = { features = ["testing"], workspace = true }
 miden-testing   = { default-features = false, workspace = true }
-rand_chacha     = { workspace = true }
 tokio           = { workspace = true }
+trybuild        = { version = "1.0" }
 
 [lints]
 workspace = true

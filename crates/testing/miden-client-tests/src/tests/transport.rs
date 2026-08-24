@@ -24,7 +24,6 @@ use miden_client::testing::note_transport::{
 };
 use miden_client::utils::RwLock;
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
-use miden_protocol::Felt;
 use miden_protocol::account::{
     AccountId,
     AccountIdVersion,
@@ -33,14 +32,14 @@ use miden_protocol::account::{
 };
 use miden_protocol::asset::{Asset, FungibleAsset};
 use miden_protocol::block::BlockNumber;
-use miden_protocol::crypto::rand::RandomCoin;
 use miden_protocol::note::NoteType as ProtocolNoteType;
 use miden_protocol::transaction::RawOutputNote;
 use miden_protocol::utils::serde::Serializable;
 use miden_standards::note::P2idNote;
 use miden_standards::testing::note::NoteBuilder;
 use miden_testing::{Auth, MockChainBuilder, MockTransactionInput};
-use rand::RngExt;
+use rand::SeedableRng;
+use rand_chacha::ChaCha20Rng;
 
 use crate::tests::{
     create_test_client_builder,
@@ -106,15 +105,12 @@ async fn transport_recovers_attachments() {
     let target = mock_chain_builder.add_existing_wallet(Auth::IncrNonce).unwrap();
 
     let ntx_target = NetworkAccountTarget::new(target.id(), NoteExecutionHint::Always).unwrap();
-    let private_note = NoteBuilder::new(
-        sender.id(),
-        RandomCoin::new([1, 2, 3, 4].map(Felt::new_unchecked).into()),
-    )
-    .note_type(ProtocolNoteType::Private)
-    .tag(NoteTag::new(0).into())
-    .attachment(ntx_target)
-    .build()
-    .unwrap();
+    let private_note = NoteBuilder::new(sender.id(), ChaCha20Rng::seed_from_u64(1234))
+        .note_type(ProtocolNoteType::Private)
+        .tag(NoteTag::new(0).into())
+        .attachment(ntx_target)
+        .build()
+        .unwrap();
     let attachments = private_note.attachments().clone();
 
     let spawn_note =
@@ -139,11 +135,8 @@ async fn transport_recovers_attachments() {
 
     let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
     let keystore = FilesystemKeyStore::new(temp_dir()).unwrap();
-    let rng =
-        RandomCoin::new(rand::random::<[u64; 4]>().map(|v| Felt::new_unchecked(v >> 1)).into());
     let mut client = ClientBuilder::new()
         .rpc(rpc_api.clone())
-        .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore))
         .note_transport(Arc::new(MockNoteTransportApi::new(mock_node.clone())))
@@ -498,14 +491,11 @@ async fn fetch_private_notes_finds_note_committed_at_sync_height() {
         .add_existing_mock_account(miden_testing::Auth::IncrNonce)
         .unwrap();
 
-    let private_note = NoteBuilder::new(
-        mock_account.id(),
-        RandomCoin::new([1, 2, 3, 4].map(Felt::new_unchecked).into()),
-    )
-    .note_type(ProtocolNoteType::Private)
-    .tag(NoteTag::new(0).into())
-    .build()
-    .unwrap();
+    let private_note = NoteBuilder::new(mock_account.id(), ChaCha20Rng::seed_from_u64(1234))
+        .note_type(ProtocolNoteType::Private)
+        .tag(NoteTag::new(0).into())
+        .build()
+        .unwrap();
 
     let spawn_note =
         mock_chain_builder.add_spawn_note(std::slice::from_ref(&private_note)).unwrap();
@@ -538,16 +528,11 @@ async fn fetch_private_notes_finds_note_committed_at_sync_height() {
     let arc_rpc_api = Arc::new(rpc_api);
     let transport_client = MockNoteTransportApi::new(mock_transport_node.clone());
 
-    let mut rng = rand::rng();
-    let coin_seed: [u64; 4] = rng.random();
-    let rng = RandomCoin::new(coin_seed.map(|v| Felt::new_unchecked(v >> 1)).into());
-
     let keystore_path = temp_dir();
     let keystore = FilesystemKeyStore::new(keystore_path.clone()).unwrap();
 
     let builder: ClientBuilder<FilesystemKeyStore> = ClientBuilder::new()
         .rpc(arc_rpc_api)
-        .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore))
         .tx_discard_delta(None)
@@ -927,14 +912,11 @@ pub async fn create_test_user_with_transport(
 /// distinct notes. Lets a test seed the mock transport with notes whose tag and relative ordering
 /// it controls, independent of any recipient's auto-registered account tag.
 fn private_note_with_tag(account: AccountId, tag: NoteTag, seed: u64) -> Note {
-    NoteBuilder::new(
-        account,
-        RandomCoin::new([seed, seed + 1, seed + 2, seed + 3].map(Felt::new_unchecked).into()),
-    )
-    .note_type(ProtocolNoteType::Private)
-    .tag(tag.into())
-    .build()
-    .unwrap()
+    NoteBuilder::new(account, ChaCha20Rng::seed_from_u64(seed))
+        .note_type(ProtocolNoteType::Private)
+        .tag(tag.into())
+        .build()
+        .unwrap()
 }
 
 /// Build a chain with a private note (tag 0) committed at block 1, advance
@@ -953,12 +935,9 @@ async fn committed_private_note_recipient(
         .add_existing_mock_account(miden_testing::Auth::IncrNonce)
         .unwrap();
 
-    let mut note_builder = NoteBuilder::new(
-        mock_account.id(),
-        RandomCoin::new([1, 2, 3, 4].map(Felt::new_unchecked).into()),
-    )
-    .note_type(ProtocolNoteType::Private)
-    .tag(NoteTag::new(0).into());
+    let mut note_builder = NoteBuilder::new(mock_account.id(), ChaCha20Rng::seed_from_u64(1234))
+        .note_type(ProtocolNoteType::Private)
+        .tag(NoteTag::new(0).into());
     if with_unserved_attachment {
         let ntx_target =
             NetworkAccountTarget::new(mock_account.id(), NoteExecutionHint::Always).unwrap();
@@ -995,16 +974,11 @@ async fn committed_private_note_recipient(
     let arc_rpc_api = Arc::new(rpc_api);
     let transport_client = MockNoteTransportApi::new(mock_transport_node.clone());
 
-    let mut rng = rand::rng();
-    let coin_seed: [u64; 4] = rng.random();
-    let rng = RandomCoin::new(coin_seed.map(|v| Felt::new_unchecked(v >> 1)).into());
-
     let keystore_path = temp_dir();
     let keystore = FilesystemKeyStore::new(keystore_path.clone()).unwrap();
 
     let builder: ClientBuilder<FilesystemKeyStore> = ClientBuilder::new()
         .rpc(arc_rpc_api)
-        .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore))
         .tx_discard_delta(None)

@@ -39,7 +39,6 @@ use miden_protocol::account::{
     StorageSlot,
     StorageSlotName,
 };
-use miden_protocol::crypto::rand::RandomCoin;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::auth::Approver;
 use miden_standards::account::wallets::BasicWallet;
@@ -168,13 +167,10 @@ async fn apply_transaction_batch_rolls_back_on_mid_batch_failure() {
     let mock_chain = chain_builder.build().unwrap();
 
     // Build a client backed by the mock chain.
-    let rng =
-        RandomCoin::new(rand::random::<[u64; 4]>().map(|v| Felt::new_unchecked(v >> 1)).into());
     let keystore = FilesystemKeyStore::new(std::env::temp_dir()).unwrap();
     let rpc_api = MockRpcApi::new(mock_chain);
     let mut client = ClientBuilder::new()
         .rpc(Arc::new(rpc_api.clone()))
-        .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore))
         .tx_discard_delta(None)
@@ -641,12 +637,10 @@ async fn batch_builder_submits_txs_across_multiple_accounts() {
     let account_id_b = account_b.id();
     let mock_chain = chain_builder.build().unwrap();
 
-    let rng = RandomCoin::new(rand::random::<[u64; 4]>().map(Felt::new_unchecked).into());
     let keystore = FilesystemKeyStore::new(std::env::temp_dir()).unwrap();
     let rpc_api = MockRpcApi::new(mock_chain);
     let mut client = ClientBuilder::new()
         .rpc(Arc::new(rpc_api.clone()))
-        .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore))
         .tx_discard_delta(None)

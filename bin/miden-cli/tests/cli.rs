@@ -12,7 +12,6 @@ use miden_client::account::{AccountId, AccountType, FaucetMetadata};
 use miden_client::address::{Address, NetworkId};
 use miden_client::auth::TransactionAuthenticator;
 use miden_client::builder::ClientBuilder;
-use miden_client::crypto::RandomCoin;
 use miden_client::keystore::Keystore;
 use miden_client::note::NoteId;
 use miden_client::note_transport::NOTE_TRANSPORT_TESTNET_ENDPOINT;
@@ -24,7 +23,7 @@ use miden_client::testing::common::{
     create_test_store_path,
 };
 use miden_client::utils::Serializable;
-use miden_client::{self, Client, Felt};
+use miden_client::{self, Client};
 use miden_client_cli::MIDEN_DIR;
 use miden_client_cli::config::Network;
 use miden_client_sqlite_store::SqliteStore;
@@ -1598,16 +1597,10 @@ async fn create_rust_client_with_store_path(
         std::sync::Arc::new(sqlite_store)
     };
 
-    let mut rng = rand::rng();
-    let coin_seed: [u64; 4] = rng.random();
-
-    let rng = Box::new(RandomCoin::new(coin_seed.map(Felt::new_unchecked).into()));
-
     let keystore = FilesystemKeyStore::new(temp_dir())?;
 
     let client = ClientBuilder::new()
         .grpc_client(&endpoint, Some(10_000))
-        .rng(rng)
         .store(store)
         .authenticator(Arc::new(keystore.clone()))
         .build()

@@ -132,6 +132,7 @@ pub mod transaction;
 pub mod utils;
 
 pub mod builder;
+pub mod rng;
 
 #[cfg(feature = "testing")]
 mod test_utils;
@@ -287,7 +288,7 @@ pub mod crypto {
         NodeIndex,
         SparseMerklePath,
     };
-    pub use miden_protocol::crypto::rand::{FeltRng, RandomCoin};
+    pub use miden_protocol::crypto::rand::FeltRng;
 }
 
 /// Provides types for working with addresses within the Miden network.
@@ -367,7 +368,7 @@ use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::merkle::mmr::PartialMmr;
 use miden_protocol::crypto::rand::FeltRng;
 use miden_tx::auth::TransactionAuthenticator;
-use rand::{TryCryptoRng, TryRng};
+use rand::{CryptoRng, TryCryptoRng, TryRng};
 use rpc::NodeRpcClient;
 use store::Store;
 
@@ -387,9 +388,13 @@ use crate::transaction::TransactionProver;
 pub struct Client<AUTH> {
     /// The client's store, which provides a way to write and read entities to provide persistence.
     store: Arc<dyn Store>,
-    /// An instance of [`FeltRng`] which provides randomness tools for generating new keys,
-    /// serial numbers, etc.
+    /// The client's random number generator for non-secret values: note serial
+    /// numbers, script arguments, account seeds, etc. The caller can override it,
+    /// so it must not be used for secret keys; see [`Client::secure_rng`] for those.
     rng: ClientRng,
+    /// The client's random number generator for secret values: secret keys and the
+    /// ephemeral key and nonce that seal transaction inputs.
+    secure_rng: ClientRng,
     /// An instance of [`NodeRpcClient`] which provides a way for the client to connect to the
     /// Miden node.
     rpc_api: Arc<dyn NodeRpcClient>,
@@ -482,9 +487,17 @@ where
     }
 
     /// Returns a reference to the client's random number generator. This can be used to generate
-    /// randomness for various purposes such as serial numbers, keys, etc.
+    /// randomness for non-secret values such as serial numbers, script arguments, etc.
+    /// Use [`Client::secure_rng`] for generating randomness for secret values.
     pub fn rng(&mut self) -> &mut ClientRng {
         &mut self.rng
+    }
+
+    /// Returns a reference to the client's secure random number generator. This can be used to
+    /// generate randomness for secret values such as account keys, and the nonces that seal
+    /// transaction inputs.
+    pub fn secure_rng(&mut self) -> &mut ClientRng {
+        &mut self.secure_rng
     }
 
     pub fn prover(&self) -> Arc<dyn TransactionProver + Send + Sync> {
@@ -544,7 +557,7 @@ impl<AUTH> Client<AUTH> {
 // CLIENT RNG
 // ================================================================================================
 
-// NOTE: The idea of having `ClientRng` is to enforce `Send` and `Sync` over `FeltRng`.
+// NOTE: The idea of having `ClientRng` is to enforce `Send` and `Sync` over the supplied RNG.
 // This allows `Client`` to be `Send` and `Sync`. There may be users that would want to use clients
 // with !Send/!Sync RNGs. For this we have two options:
 //
@@ -553,13 +566,13 @@ impl<AUTH> Client<AUTH> {
 //   these bounds. (similar to TransactionAuthenticator)
 
 /// Marker trait for RNGs that can be shared across threads and used by the client.
-pub trait ClientFeltRng: FeltRng + Send + Sync {}
-impl<T> ClientFeltRng for T where T: FeltRng + Send + Sync {}
+pub trait ClientCryptoRng: CryptoRng + Send + Sync {}
+impl<T> ClientCryptoRng for T where T: CryptoRng + Send + Sync {}
 
 /// Boxed RNG trait object used by the client.
-pub type ClientRngBox = Box<dyn ClientFeltRng>;
+pub type ClientRngBox = Box<dyn ClientCryptoRng>;
 
-/// A wrapper around a [`FeltRng`] that implements the [`TryRng`] trait.
+/// A wrapper around a [`CryptoRng`] that implements the [`TryRng`] and [`FeltRng`] traits.
 /// This allows the user to pass their own generic RNG so that it's used by the client.
 pub struct ClientRng(ClientRngBox);
 
@@ -590,18 +603,16 @@ impl TryRng for ClientRng {
     }
 }
 
-// The client's RNG already backs key and serial-number generation, so callers are required to
-// supply cryptographically secure randomness. Asserting it here lets the RNG drive primitives that
-// demand a `CryptoRng`, such as sealing transaction inputs.
+// Holds because the inner generator is a `CryptoRng` and the delegation above is infallible.
 impl TryCryptoRng for ClientRng {}
 
 impl FeltRng for ClientRng {
     fn draw_element(&mut self) -> Felt {
-        self.0.draw_element()
+        rng::draw_felt(&mut self.0)
     }
 
     fn draw_word(&mut self) -> Word {
-        self.0.draw_word()
+        rng::draw_word(&mut self.0)
     }
 }
 

@@ -5,10 +5,10 @@ use alloc::vec::Vec;
 
 use miden_protocol::assembly::{DefaultSourceManager, SourceManagerSync};
 use miden_protocol::block::BlockNumber;
-use miden_protocol::crypto::rand::RandomCoin;
-use miden_protocol::{Felt, MAX_TX_EXECUTION_CYCLES, MIN_TX_EXECUTION_CYCLES};
+use miden_protocol::{MAX_TX_EXECUTION_CYCLES, MIN_TX_EXECUTION_CYCLES};
 use miden_tx::{ExecutionOptions, LocalTransactionProver};
-use rand::RngExt;
+use rand::SeedableRng;
+use rand_chacha::ChaCha20Rng;
 
 #[cfg(any(feature = "tonic", feature = "std"))]
 use crate::alloc::string::ToString;
@@ -85,9 +85,9 @@ pub trait StoreFactory {
 /// - **Store** ([`Store`]): Provides persistence for accounts, notes, and transaction history.
 ///   Configure via [`store()`](Self::store).
 ///
-/// - **RNG** ([`FeltRng`](miden_protocol::crypto::rand::FeltRng)): Provides randomness for
-///   generating keys, serial numbers, and other cryptographic operations. If not provided, a random
-///   seed-based RNG is created automatically. Configure via [`rng()`](Self::rng).
+/// - **RNG** ([`ClientCryptoRng`](crate::ClientCryptoRng)): Provides randomness for note serial
+///   numbers, script arguments and account seeds. If not provided, a random seed-based RNG is
+///   created automatically. Configure via [`rng()`](Self::rng).
 ///
 /// - **Authenticator** ([`TransactionAuthenticator`](miden_tx::auth::TransactionAuthenticator)):
 ///   Handles transaction signing when signatures are requested from within the VM. Configure via
@@ -337,7 +337,10 @@ where
         self
     }
 
-    /// Optionally provide a custom RNG.
+    /// Optionally provide a custom RNG for note serial numbers, script arguments and account
+    /// seeds. Defaults to `ChaCha20Rng`. Secret keys and transaction input sealing
+    /// use a separate, non-overridable generator; see
+    /// [`Client::secure_rng`](crate::Client::secure_rng).
     #[must_use]
     pub fn rng(mut self, rng: ClientRngBox) -> Self {
         self.rng = Some(rng);
@@ -474,13 +477,15 @@ where
         };
 
         // Use the provided RNG, or create a default one.
-        let rng = if let Some(user_rng) = self.rng {
+        let rng: ClientRngBox = if let Some(user_rng) = self.rng {
             user_rng
         } else {
-            let mut seed_rng = rand::rng();
-            let coin_seed: [u64; 4] = seed_rng.random();
-            Box::new(RandomCoin::new(coin_seed.map(Felt::new_unchecked).into()))
+            Box::new(ChaCha20Rng::from_rng(&mut rand::rng()))
         };
+
+        // Create a separate, secure RNG for the sealing of transaction inputs and secret key
+        // generation.
+        let secure_rng: ClientRngBox = Box::new(ChaCha20Rng::from_rng(&mut rand::rng()));
 
         // Set default prover if not provided
         let tx_prover: Arc<dyn TransactionProver + Send + Sync> =
@@ -524,6 +529,7 @@ where
         Ok(Client {
             store,
             rng: ClientRng::new(rng),
+            secure_rng: ClientRng::new(secure_rng),
             rpc_api,
             tx_prover,
             authenticator: self.authenticator,
@@ -591,5 +597,23 @@ impl ClientBuilder<FilesystemKeyStore> {
         let keystore = FilesystemKeyStore::new(keystore_path.into())
             .map_err(|e| ClientError::ClientInitializationError(e.to_string()))?;
         Ok(self.authenticator(Arc::new(keystore)))
+    }
+}
+
+// TESTS
+// ================================================================================================
+
+#[cfg(test)]
+mod tests {
+    /// Checks that [`ClientBuilder::rng`] rejects a generator that is not a `CryptoRng`.
+    ///
+    /// The driver lives here rather than in `tests/` because `make test` runs `--lib` only.
+    ///
+    /// The expected diagnostic is snapshotted in `tests/ui/*.stderr`. It quotes the compiler
+    /// verbatim, so a `rand` or `rustc` upgrade can reword it; regenerate with
+    /// `TRYBUILD=overwrite cargo test -p miden-client --features "testing std" --lib ui`.
+    #[test]
+    fn ui() {
+        trybuild::TestCases::new().compile_fail("tests/ui/*.rs");
     }
 }

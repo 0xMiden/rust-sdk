@@ -1,0 +1,15 @@
+error[E0277]: the trait bound `FixedRng: ClientCryptoRng` is not satisfied
+  --> tests/ui/rng_requires_cryptorng.rs:43:60
+   |
+43 |     let _ = ClientBuilder::<FilesystemKeyStore>::new().rng(Box::new(FixedRng(7)));
+   |                                                            ^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
+   |
+help: the trait `DerefMut` is not implemented for `FixedRng`
+  --> tests/ui/rng_requires_cryptorng.rs:13:1
+   |
+13 | struct FixedRng(u64);
+   | ^^^^^^^^^^^^^^^
+   = note: required for `FixedRng` to implement `TryCryptoRng`
+   = note: required for `FixedRng` to implement `CryptoRng`
+   = note: required for `FixedRng` to implement `ClientCryptoRng`
+   = note: required for the cast from `Box<FixedRng>` to `Box<(dyn ClientCryptoRng + 'static)>`

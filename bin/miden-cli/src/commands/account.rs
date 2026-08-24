@@ -143,8 +143,7 @@ impl AccountCmd {
                         client
                             .set_setting(DEFAULT_ACCOUNT_ID_KEY.to_string(), account.id())
                             .await?;
-                        // `parse_account_id` also accepts an ID prefix or a bech32 address, so
-                        // echoing the argument hides which account the setting now points at.
+
                         println!("Default account set to {}", account.id());
                     },
                 }

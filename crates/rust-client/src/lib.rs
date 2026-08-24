@@ -373,6 +373,7 @@ use store::Store;
 
 use crate::note_transport::NoteTransportClient;
 use crate::transaction::TransactionProver;
+use crate::utils::RwLock;
 
 // MIDEN CLIENT
 // ================================================================================================
@@ -419,7 +420,10 @@ pub struct Client<AUTH> {
     cache_partial_mmr_in_memory: bool,
     /// Cached [`PartialMmr`] for the chain's MMR. Lazily built from the store and kept in sync
     /// across sync/prune operations. `None` forces a rebuild on next access.
-    partial_mmr: Option<CachedPartialMmr>,
+    ///
+    /// Behind a lock so the cache can be refreshed through a shared reference, which lets the two
+    /// halves of [`Client::sync_state`] borrow the client concurrently.
+    partial_mmr: RwLock<Option<CachedPartialMmr>>,
     /// Observers fired by `apply_transaction`. See
     /// [`Client::with_transaction_observer`].
     transaction_observers: Vec<Arc<dyn transaction::TransactionObserver>>,
@@ -537,7 +541,7 @@ impl<AUTH> Client<AUTH> {
 
     #[cfg(any(test, feature = "testing"))]
     pub fn test_has_cached_partial_mmr(&self) -> bool {
-        self.partial_mmr.is_some()
+        self.partial_mmr.read().is_some()
     }
 }
 

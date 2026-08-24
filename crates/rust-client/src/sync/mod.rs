@@ -136,6 +136,24 @@ where
         self.ensure_genesis_in_place().await?;
         self.ensure_rpc_limits_in_place().await?;
 
+        let mut partial_mmr = self.get_current_partial_mmr().await?;
+        let update = self.fetch_chain_update(&mut partial_mmr).await?;
+
+        self.apply_chain_update(update, partial_mmr).await
+    }
+
+    /// Fetches the on-chain state update from the node, without writing anything to the store.
+    ///
+    /// Split out of [`Client::sync_chain`] so it can run concurrently with
+    /// [`Client::sync_note_transport`]: it takes `&self`, and `partial_mmr` is owned by the
+    /// caller rather than read from the client's cache.
+    ///
+    /// Assumes the genesis block and the RPC limits are already in place; [`Client::sync_chain`]
+    /// and [`Client::sync_state`] both ensure that before calling this.
+    async fn fetch_chain_update(
+        &self,
+        partial_mmr: &mut PartialMmr,
+    ) -> Result<StateSyncUpdate, ClientError> {
         // Each `NoteObserver` owns its own per-sync state; `with_note_observer` just attaches.
         let note_screener = self.note_screener();
         let state_sync =
@@ -143,25 +161,33 @@ where
                 .with_note_observer(Arc::new(PswapChainObserver::new(self.store.clone())));
         let input = self.build_sync_input().await?;
 
-        let mut partial_mmr = self.get_current_partial_mmr().await?;
-
         // Get the sync update from the network
-        let state_sync_update = state_sync.sync_state(&mut partial_mmr, input).await?;
-
-        let sync_summary: SyncSummary = (&state_sync_update).into();
-        debug!(sync_summary = ?sync_summary, "Sync summary computed");
+        let state_sync_update = state_sync.sync_state(partial_mmr, input).await?;
 
         // Post-sync observer hooks; run before persisting. Per-observer errors are logged, not
         // propagated.
         state_sync.run_apply_hooks(&state_sync_update).await?;
 
+        Ok(state_sync_update)
+    }
+
+    /// Writes a fetched state update to the store, refreshes the cached partial MMR, and prunes
+    /// irrelevant blocks according to the configured cadence.
+    ///
+    /// `partial_mmr` must be the one [`Client::fetch_chain_update`] advanced while producing
+    /// `update`.
+    async fn apply_chain_update(
+        &mut self,
+        update: StateSyncUpdate,
+        partial_mmr: PartialMmr,
+    ) -> Result<SyncSummary, ClientError> {
+        let sync_summary: SyncSummary = (&update).into();
+        debug!(sync_summary = ?sync_summary, "Sync summary computed");
+
         info!("Applying changes to the store.");
 
         // Apply received and computed updates to the store
-        self.store
-            .apply_state_sync(state_sync_update)
-            .await
-            .map_err(ClientError::StoreError)?;
+        self.store.apply_state_sync(update).await.map_err(ClientError::StoreError)?;
 
         // Cache MMR so pruning can reuse in-memory MMR.
         self.cache_partial_mmr(partial_mmr).await?;
@@ -175,7 +201,7 @@ where
     ///
     /// Returns the IDs of notes imported in this call. No-op (returns an empty vec) if note
     /// transport is disabled.
-    pub async fn sync_note_transport(&mut self) -> Result<Vec<NoteId>, ClientError> {
+    pub async fn sync_note_transport(&self) -> Result<Vec<NoteId>, ClientError> {
         if !self.is_note_transport_enabled() {
             return Ok(Vec::new());
         }
@@ -205,16 +231,36 @@ where
 
     /// Runs the full client sync.
     ///
-    /// First fetches private notes from the Note Transport Layer (see
-    /// [`Client::sync_note_transport`]), then syncs the client's on-chain state with the Miden
-    /// node (see [`Client::sync_chain`]). If note transport is disabled, this is equivalent to
-    /// [`Client::sync_chain`].
+    /// Fetches private notes from the Note Transport Layer (see
+    /// [`Client::sync_note_transport`]) concurrently with the on-chain state fetch from the Miden
+    /// node (see [`Client::sync_chain`]), then applies the chain update. The two halves talk to
+    /// different endpoints, so overlapping them saves a round trip; they are polled on this task
+    /// rather than spawned, so nothing here requires the futures to be `Send`. If note transport
+    /// is disabled, this is equivalent to [`Client::sync_chain`].
     ///
-    /// Fails fast on the first error. Private notes delivered via NTL are imported before the
-    /// chain sync reads its input set, so their nullifiers are checked in the same call.
+    /// Fails fast on the first error.
+    ///
+    /// A private note delivered over NTL does not depend on this call's chain sync to learn that
+    /// it was already consumed: [`Client::import_notes`] checks the nullifiers of the notes it
+    /// imports. The chain sync reads its input set concurrently with that import, so a note
+    /// imported here is picked up by the *next* chain sync.
     pub async fn sync_state(&mut self) -> Result<SyncSummary, ClientError> {
-        let new_private_notes = self.sync_note_transport().await?;
-        let mut summary = self.sync_chain().await?;
+        // Hoisted out of the join: both are read-then-write-if-absent against shared state, and
+        // `import_notes` needs the genesis block in place as well.
+        self.ensure_genesis_in_place().await?;
+        self.ensure_rpc_limits_in_place().await?;
+
+        let mut partial_mmr = self.get_current_partial_mmr().await?;
+
+        // Both halves borrow `&self`; `partial_mmr` is a local, so advancing it does not conflict.
+        let (new_private_notes, update) = futures::try_join!(
+            self.sync_note_transport(),
+            self.fetch_chain_update(&mut partial_mmr),
+        )?;
+
+        // The store write is kept out of the join: `apply_state_sync` opens an `Immediate`
+        // transaction and holds the write lock for its whole duration.
+        let mut summary = self.apply_chain_update(update, partial_mmr).await?;
         summary.new_private_notes = new_private_notes;
         Ok(summary)
     }
@@ -338,7 +384,7 @@ where
 
     /// Ensures that the RPC limits are set in the RPC client. If not already cached,
     /// fetches them from the node and persists them in the store.
-    pub async fn ensure_rpc_limits_in_place(&mut self) -> Result<(), ClientError> {
+    pub async fn ensure_rpc_limits_in_place(&self) -> Result<(), ClientError> {
         if self.rpc_api.has_rpc_limits().is_some() {
             return Ok(());
         }

@@ -22,6 +22,7 @@ use crate::rpc::{Endpoint, NodeRpcClient};
 use crate::rpc::{GrpcClient, VerifyingRpcClient};
 use crate::store::{Store, StoreError};
 use crate::transaction::{TransactionObserver, TransactionProver};
+use crate::utils::RwLock;
 use crate::{Client, ClientError, ClientRng, ClientRngBox, grpc_support};
 
 // CONSTANTS
@@ -540,7 +541,7 @@ where
             max_block_number_delta: self.max_block_number_delta,
             note_transport_api: self.note_transport_api.clone(),
             cache_partial_mmr_in_memory: self.cache_partial_mmr_in_memory,
-            partial_mmr: None,
+            partial_mmr: RwLock::new(None),
             transaction_observers,
         })
     }

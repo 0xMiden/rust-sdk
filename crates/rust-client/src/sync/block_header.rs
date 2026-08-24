@@ -29,7 +29,7 @@ impl<AUTH> Client<AUTH> {
     /// Ensures that the genesis block is available. If the genesis commitment is already
     /// cached in the RPC client, returns early. Otherwise, fetches the genesis block from
     /// the node, stores it, and sets the commitment in the RPC client.
-    pub async fn ensure_genesis_in_place(&mut self) -> Result<(), ClientError> {
+    pub async fn ensure_genesis_in_place(&self) -> Result<(), ClientError> {
         if self.rpc_api.has_genesis_commitment().is_some() {
             return Ok(());
         }
@@ -71,12 +71,22 @@ impl<AUTH> Client<AUTH> {
     /// Returns the cached [`PartialMmr`] if in-memory caching is enabled and its fingerprint
     /// matches the current store state, otherwise rebuilds from the store.
     pub async fn get_current_partial_mmr(&self) -> Result<PartialMmr, ClientError> {
-        if self.cache_partial_mmr_in_memory
-            && let Some(ref cached) = self.partial_mmr
-            && cached.store_peaks_hash == self.current_store_peaks_hash().await?
-            && cached.tracked_blocks_hash == self.current_tracked_blocks_hash().await?
-        {
-            return Ok(cached.mmr.clone());
+        if self.cache_partial_mmr_in_memory {
+            // Copy the fingerprint out and release the guard on this statement: no lock may be
+            // held across the `await`s below, since a concurrent `sync_state` half can take it.
+            let fingerprint = self
+                .partial_mmr
+                .read()
+                .as_ref()
+                .map(|cached| (cached.store_peaks_hash, cached.tracked_blocks_hash));
+
+            if let Some((store_peaks_hash, tracked_blocks_hash)) = fingerprint
+                && store_peaks_hash == self.current_store_peaks_hash().await?
+                && tracked_blocks_hash == self.current_tracked_blocks_hash().await?
+                && let Some(ref cached) = *self.partial_mmr.read()
+            {
+                return Ok(cached.mmr.clone());
+            }
         }
         self.store.get_current_partial_mmr().await.map_err(Into::into)
     }
@@ -84,14 +94,14 @@ impl<AUTH> Client<AUTH> {
     /// Stores the MMR in the cache if in-memory caching is enabled, capturing the current store
     /// fingerprint. Must run after any store mutation that may have changed the sync-height peaks
     /// or the tracked block set.
-    pub(crate) async fn cache_partial_mmr(&mut self, mmr: PartialMmr) -> Result<(), ClientError> {
+    pub(crate) async fn cache_partial_mmr(&self, mmr: PartialMmr) -> Result<(), ClientError> {
         if !self.cache_partial_mmr_in_memory {
             return Ok(());
         }
 
         let store_peaks_hash = self.current_store_peaks_hash().await?;
         let tracked_blocks_hash = self.current_tracked_blocks_hash().await?;
-        self.partial_mmr = Some(CachedPartialMmr {
+        *self.partial_mmr.write() = Some(CachedPartialMmr {
             store_peaks_hash,
             tracked_blocks_hash,
             mmr,

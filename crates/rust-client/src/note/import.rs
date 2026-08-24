@@ -20,8 +20,8 @@ use miden_protocol::note::{
     NoteDetailsCommitment,
     NoteId,
     NoteInclusionProof,
+    NoteMetadata,
     NoteTag,
-    Nullifier,
 };
 use miden_standards::note::NoteFile;
 use miden_tx::auth::TransactionAuthenticator;
@@ -32,6 +32,17 @@ use crate::store::input_note_states::ExpectedNoteState;
 use crate::store::{InputNoteRecord, InputNoteState, NoteFilter};
 use crate::sync::NoteTagRecord;
 use crate::{Client, ClientError};
+
+/// A note to import from its details: the previously stored record if there is one, the note's
+/// details, the block after which it is expected to be committed, its tag, and its metadata when
+/// the caller already knows it (see [`Client::import_notes_with_metadata`]).
+type DetailsImportRequest = (
+    Option<InputNoteRecord>,
+    NoteDetails,
+    BlockNumber,
+    Option<NoteTag>,
+    Option<NoteMetadata>,
+);
 
 /// Note importing methods.
 impl<AUTH> Client<AUTH>
@@ -66,8 +77,26 @@ where
     // TODO: Validations need to be added to the import workflows. For example, when adding a block
     // header for a note we need to check the chain root validity, etc.
     pub async fn import_notes(
-        &mut self,
+        &self,
         note_files: &[NoteFile],
+    ) -> Result<Vec<NoteDetailsCommitment>, ClientError> {
+        let note_files: Vec<_> = note_files.iter().map(|file| (file.clone(), None)).collect();
+        self.import_notes_with_metadata(&note_files).await
+    }
+
+    /// Imports note files whose metadata is already known from a trusted-enough source, such as
+    /// the note header the transport delivers alongside the details.
+    ///
+    /// [`NoteFile::ExpectedNote`] carries no metadata, because a note file is normally expected to
+    /// recover it from the chain. That recovery is bounded by the client's sync height, so a note
+    /// committed above it stays metadata-less — and without metadata there is no nullifier to
+    /// check, leaving an already-consumed note looking unspent. Supplying the metadata here skips
+    /// the recovery and lets the nullifier check below cover the note in the same call.
+    ///
+    /// The metadata is ignored for variants that carry their own.
+    pub(crate) async fn import_notes_with_metadata(
+        &self,
+        note_files: &[(NoteFile, Option<NoteMetadata>)],
     ) -> Result<Vec<NoteDetailsCommitment>, ClientError> {
         self.ensure_genesis_in_place().await?;
 
@@ -77,16 +106,18 @@ where
         // they may have no note ID of their own.
         let mut ids = BTreeSet::new();
         let mut files_by_commitment = BTreeMap::new();
-        for note_file in note_files {
+        for (note_file, metadata) in note_files {
             match note_file {
                 NoteFile::NoteId(id) => {
                     ids.insert(*id);
                 },
                 NoteFile::ExpectedNote { details, .. } => {
-                    files_by_commitment.insert(details.commitment(), note_file.clone());
+                    files_by_commitment
+                        .insert(details.commitment(), (note_file.clone(), *metadata));
                 },
                 NoteFile::Committed { note, .. } => {
-                    files_by_commitment.insert(note.details_commitment(), note_file.clone());
+                    files_by_commitment
+                        .insert(note.details_commitment(), (note_file.clone(), *metadata));
                 },
             }
         }
@@ -120,7 +151,7 @@ where
             requests_by_id.insert(id, previous_note);
         }
 
-        for (commitment, note_file) in files_by_commitment {
+        for (commitment, (note_file, metadata)) in files_by_commitment {
             let previous_note = previous_by_commitment.get(&commitment).cloned();
             ensure_not_processing(previous_note.as_ref())?;
             match note_file {
@@ -130,6 +161,7 @@ where
                         details,
                         sync_hint.after_block_num(),
                         Some(sync_hint.tag()),
+                        metadata,
                     ));
                 },
                 NoteFile::Committed { note, proof } => {
@@ -157,39 +189,7 @@ where
             imported_notes.extend(notes_by_proof);
         }
 
-        let mut nullifier_requests = BTreeSet::new();
-        let mut lowest_nullifier_block: BlockNumber = u32::MAX.into();
-        for note in &imported_notes {
-            match note.state() {
-                InputNoteState::Committed(committed_state) => {
-                    let block_num = committed_state.inclusion_proof.location().block_num();
-                    nullifier_requests.insert(Nullifier::from_details_and_metadata(
-                        note.details(),
-                        note.metadata().unwrap(),
-                    ));
-                    lowest_nullifier_block = lowest_nullifier_block.min(block_num);
-                },
-                _ => {},
-            };
-        }
-
-        let nullifier_commit_heights = if nullifier_requests.is_empty() {
-            BTreeMap::new()
-        } else {
-            self.rpc_api
-                .get_nullifier_commit_heights(nullifier_requests, lowest_nullifier_block)
-                .await?
-        };
-
-        for note in &mut imported_notes {
-            if let Some(nullifier) = note.nullifier() {
-                if let Some(nullifier_block_height) =
-                    nullifier_commit_heights.get(&nullifier).and_then(|height| *height)
-                {
-                    note.consumed_externally(nullifier, nullifier_block_height, None)?;
-                }
-            }
-        }
+        self.mark_externally_consumed(&mut imported_notes).await?;
 
         let mut imported_commitments = Vec::with_capacity(imported_notes.len());
         for note in imported_notes {
@@ -220,7 +220,7 @@ where
     /// - If a note doesn't exist on the node.
     /// - If a note exists but is private.
     async fn import_note_records_by_id(
-        &mut self,
+        &self,
         notes: BTreeMap<NoteId, Option<InputNoteRecord>>,
     ) -> Result<Vec<InputNoteRecord>, ClientError> {
         let note_ids = notes.keys().copied().collect::<Vec<_>>();
@@ -285,7 +285,7 @@ where
     ///
     /// Only records that changed as a result of the import are returned.
     pub(crate) async fn import_note_records_by_proof(
-        &mut self,
+        &self,
         requested_notes: Vec<(Option<InputNoteRecord>, Note, NoteInclusionProof)>,
     ) -> Result<Vec<InputNoteRecord>, ClientError> {
         // TODO: iterating twice over requested notes
@@ -375,13 +375,64 @@ where
     /// Only records that need to be stored are returned: notes the node has not reported as
     /// committed keep (or get) their expected record, while committed notes are returned only if
     /// the new information changed them.
+    /// Marks every note in `notes` whose nullifier is already committed on chain as consumed
+    /// externally.
+    ///
+    /// A nullifier is derived from the note's details *and* its metadata, so notes still lacking
+    /// metadata are skipped here and left for a later sync to resolve and check.
+    async fn mark_externally_consumed(
+        &self,
+        notes: &mut [InputNoteRecord],
+    ) -> Result<(), ClientError> {
+        let mut nullifier_requests = BTreeSet::new();
+        let mut lowest_nullifier_block: BlockNumber = u32::MAX.into();
+
+        for note in notes.iter() {
+            let Some(nullifier) = note.nullifier() else {
+                continue;
+            };
+
+            // Earliest block the note could have been committed in, which bounds the search.
+            let from_block = match note.state() {
+                InputNoteState::Expected(state) => Some(state.after_block_num),
+                _ => note.inclusion_proof().map(|proof| proof.location().block_num()),
+            };
+            let Some(from_block) = from_block else {
+                continue;
+            };
+
+            nullifier_requests.insert(nullifier);
+            lowest_nullifier_block = lowest_nullifier_block.min(from_block);
+        }
+
+        if nullifier_requests.is_empty() {
+            return Ok(());
+        }
+
+        let nullifier_commit_heights = self
+            .rpc_api
+            .get_nullifier_commit_heights(nullifier_requests, lowest_nullifier_block)
+            .await?;
+
+        for note in notes.iter_mut() {
+            if let Some(nullifier) = note.nullifier()
+                && let Some(block_height) =
+                    nullifier_commit_heights.get(&nullifier).and_then(|height| *height)
+            {
+                note.consumed_externally(nullifier, block_height, None)?;
+            }
+        }
+
+        Ok(())
+    }
+
     async fn import_note_records_by_details(
-        &mut self,
-        requested_notes: Vec<(Option<InputNoteRecord>, NoteDetails, BlockNumber, Option<NoteTag>)>,
+        &self,
+        requested_notes: Vec<DetailsImportRequest>,
     ) -> Result<Vec<InputNoteRecord>, ClientError> {
         let mut lowest_request_block: BlockNumber = u32::MAX.into();
         let mut note_requests = vec![];
-        for (_, details, after_block_num, tag) in &requested_notes {
+        for (_, details, after_block_num, tag, _) in &requested_notes {
             if let Some(tag) = tag {
                 note_requests.push((details.commitment(), *tag));
                 lowest_request_block = lowest_request_block.min(*after_block_num);
@@ -393,13 +444,13 @@ where
         let mut note_records = vec![];
         let mut partial_mmr = self.get_current_partial_mmr().await?;
 
-        for (previous_note, details, after_block_num, tag) in requested_notes {
+        for (previous_note, details, after_block_num, tag, metadata) in requested_notes {
             let mut note_record = previous_note.unwrap_or_else(|| {
                 InputNoteRecord::new(
                     details,
                     NoteAttachments::empty(),
                     self.store.get_current_timestamp(),
-                    ExpectedNoteState { metadata: None, after_block_num, tag }.into(),
+                    ExpectedNoteState { metadata, after_block_num, tag }.into(),
                 )
             });
 
@@ -457,7 +508,7 @@ where
     /// reconstructing the id from the committed metadata: `NoteId::new(details_commitment,
     /// metadata)`.
     async fn sync_expected_notes(
-        &mut self,
+        &self,
         request_block_num: BlockNumber,
         // Expected notes' details commitments with their tags.
         expected_notes: Vec<(NoteDetailsCommitment, NoteTag)>,

@@ -345,7 +345,7 @@ where
     /// An internal pagination mechanism is employed to reduce the number of downloaded notes: this
     /// fetches only notes past the stored cursor. Historical notes for a newly tracked tag are
     /// recovered automatically by [`Client::sync_note_transport`], which backfills each new tag.
-    pub async fn fetch_private_notes(&mut self) -> Result<(), ClientError> {
+    pub async fn fetch_private_notes(&self) -> Result<(), ClientError> {
         let note_tags: Vec<NoteTag> =
             self.store.get_unique_note_tags().await?.into_iter().collect();
         let cursor = self.store.get_note_transport_cursor().await?;
@@ -369,7 +369,7 @@ where
     ///
     /// At most [`Self::MAX_BACKFILL_TAGS_PER_SYNC`] tags are backfilled per call; any remainder
     /// stays uncovered and is picked up on the next sync. Returns the ids of notes imported here.
-    pub(crate) async fn backfill_new_tags(&mut self) -> Result<Vec<NoteId>, ClientError> {
+    pub(crate) async fn backfill_new_tags(&self) -> Result<Vec<NoteId>, ClientError> {
         let candidates = self.backfill_candidate_tags().await?;
         let loaded = self.load_covered_tags().await?;
 
@@ -398,7 +398,7 @@ where
     /// Drain a single tag's full history from the transport, paging until the cursor stops
     /// advancing. Uses a local cursor and never touches the global one, so it cannot regress
     /// steady-state progress. Returns the ids of the notes it imported.
-    async fn backfill_tag(&mut self, tag: NoteTag) -> Result<Vec<NoteId>, ClientError> {
+    async fn backfill_tag(&self, tag: NoteTag) -> Result<Vec<NoteId>, ClientError> {
         let mut imported_ids = Vec::new();
         let mut cursor = NoteTransportCursor::init();
         for _ in 0..Self::MAX_BACKFILL_ITERATIONS {
@@ -432,7 +432,7 @@ where
     /// left to the caller so that drain loops can guard against regression of an already-advanced
     /// stored cursor.
     pub(crate) async fn fetch_transport_notes(
-        &mut self,
+        &self,
         cursor: NoteTransportCursor,
         tags: &[NoteTag],
     ) -> Result<(Vec<NoteId>, NoteTransportCursor), ClientError> {
@@ -459,7 +459,11 @@ where
             // The header carries the attachment-aware (on-chain) note id; the rejoined note has
             // empty attachments and would hash to a different id, so key off the header.
             id_by_commitment.insert(note.details_commitment(), note_info.header.id());
-            notes.push((note, note_info.block_hint));
+            // Take the metadata from the header rather than the rejoined note: `rejoin_note`
+            // rebuilds with empty attachments, and the nullifier commits to the attachments
+            // commitment, so the rejoined note's metadata would yield the wrong nullifier for a
+            // note that has attachments.
+            notes.push((note, *note_info.header.metadata(), note_info.block_hint));
         }
 
         let sync_height = self.get_sync_height().await?;
@@ -467,17 +471,19 @@ where
             BlockNumber::from(sync_height.as_u32().saturating_sub(NOTE_LOOKBACK_BLOCKS));
 
         let mut note_requests = Vec::with_capacity(notes.len());
-        for (note, block_hint) in notes {
-            let tag = note.metadata().tag();
+        for (note, metadata, block_hint) in notes {
+            let tag = metadata.tag();
             // Prefer the sender-provided hint, falling back to the lookback window when absent.
             let after_block_num = block_hint.unwrap_or(fallback_after_block_num);
             let note_file = NoteFile::ExpectedNote {
                 details: note.into(),
                 sync_hint: NoteSyncHint::new(after_block_num, tag),
             };
-            note_requests.push(note_file);
+            // The transport delivered the metadata alongside the details, so the import does not
+            // need to recover it from the chain to compute the note's nullifier.
+            note_requests.push((note_file, Some(metadata)));
         }
-        let imported_commitments = self.import_notes(&note_requests).await?;
+        let imported_commitments = self.import_notes_with_metadata(&note_requests).await?;
         let imported_ids = imported_commitments
             .into_iter()
             .filter_map(|commitment| id_by_commitment.get(&commitment).copied())

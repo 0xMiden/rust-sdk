@@ -14,7 +14,7 @@ use miden_client::note::{
     NoteType,
 };
 use miden_client::note_transport::NoteTransportClient;
-use miden_client::store::NoteFilter;
+use miden_client::store::{InputNoteState, NoteFilter};
 use miden_client::testing::common::create_test_store_path;
 use miden_client::testing::mock::{MockClient, MockRpcApi};
 use miden_client::testing::note_transport::{
@@ -24,7 +24,6 @@ use miden_client::testing::note_transport::{
 };
 use miden_client::utils::RwLock;
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
-use miden_protocol::Felt;
 use miden_protocol::account::{
     AccountId,
     AccountIdVersion,
@@ -37,6 +36,7 @@ use miden_protocol::crypto::rand::RandomCoin;
 use miden_protocol::note::NoteType as ProtocolNoteType;
 use miden_protocol::transaction::RawOutputNote;
 use miden_protocol::utils::serde::Serializable;
+use miden_protocol::{Felt, Word};
 use miden_standards::note::P2idNote;
 use miden_standards::testing::note::NoteBuilder;
 use miden_testing::{Auth, MockChainBuilder, MockTransactionInput};
@@ -179,7 +179,7 @@ async fn unavailable_attachments_do_not_fail_sync() {
     // The helper tracks the note's tag and syncs to the tip, so it already exercises the sync
     // path: the note advertises attachment content the node cannot serve, and the sync succeeds
     // by skipping the note.
-    let (mut client, private_note, mock_transport_node) =
+    let (client, private_note, mock_transport_node) =
         committed_private_note_recipient(0, true).await;
     assert!(client.get_input_notes(NoteFilter::All).await.unwrap().is_empty());
 
@@ -1020,4 +1020,95 @@ async fn committed_private_note_recipient(
     client.sync_state().await.unwrap();
 
     (client, private_note, mock_transport_node)
+}
+
+/// A private note that arrives over the NTL while already consumed on-chain lands as consumed in
+/// a single `sync_state`.
+///
+/// `sync_state` fetches from the transport and from the node concurrently, so the chain sync reads
+/// its input set without seeing this note. What makes the note come out consumed anyway is
+/// `import_notes` checking the nullifiers of what it imports. If that check is lost, the note ends
+/// up merely committed here and stays that way until a second sync.
+#[tokio::test]
+async fn ntl_note_already_consumed_on_chain_is_consumed_in_one_sync() {
+    let mut mock_chain_builder = MockChainBuilder::new();
+    let sender = mock_chain_builder.add_existing_mock_account(Auth::IncrNonce).unwrap();
+    let consumer = mock_chain_builder.add_existing_wallet(Auth::IncrNonce).unwrap();
+
+    let private_note = NoteBuilder::new(sender.id(), RandomCoin::new(Word::default()))
+        .note_type(ProtocolNoteType::Private)
+        .tag(NoteTag::new(0).into())
+        .build()
+        .unwrap();
+    let details_commitment = NoteDetails::from(private_note.clone()).commitment();
+
+    // Put the note on chain.
+    let spawn_note =
+        mock_chain_builder.add_spawn_note(std::slice::from_ref(&private_note)).unwrap();
+    let mut mock_chain = mock_chain_builder.build().unwrap();
+    let tx = Box::pin(
+        mock_chain
+            .build_transaction(MockTransactionInput::AccountId(sender.id()))
+            .unauthenticated_input_note(spawn_note)
+            .expected_output_notes(vec![RawOutputNote::Full(private_note.clone())])
+            .build()
+            .unwrap()
+            .execute(),
+    )
+    .await
+    .unwrap();
+    mock_chain.add_pending_executed_transaction(&tx).unwrap();
+    mock_chain.prove_next_block().unwrap();
+
+    // Consume it on chain, bypassing any client, so its nullifier is already committed.
+    let consume_tx = Box::pin(
+        mock_chain
+            .build_transaction(MockTransactionInput::Account(consumer.clone()))
+            .unauthenticated_input_note(private_note.clone())
+            .build()
+            .unwrap()
+            .execute(),
+    )
+    .await
+    .unwrap();
+    mock_chain.add_pending_executed_transaction(&consume_tx).unwrap();
+    mock_chain.prove_next_block().unwrap();
+
+    // Only now hand the note to the transport, so the client learns of it after the fact.
+    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
+    mock_node
+        .write()
+        .add_note(*private_note.header(), NoteDetails::from(private_note.clone()).to_bytes());
+
+    let keystore = FilesystemKeyStore::new(temp_dir()).unwrap();
+    let rng =
+        RandomCoin::new(rand::random::<[u64; 4]>().map(|v| Felt::new_unchecked(v >> 1)).into());
+    let mut client = ClientBuilder::new()
+        .rpc(Arc::new(MockRpcApi::new(mock_chain)))
+        .rng(Box::new(rng))
+        .sqlite_store(create_test_store_path())
+        .authenticator(Arc::new(keystore))
+        .note_transport(Arc::new(MockNoteTransportApi::new(mock_node.clone())))
+        .tx_discard_delta(None)
+        .build()
+        .await
+        .unwrap();
+    client.ensure_genesis_in_place().await.unwrap();
+    seed_mock_transaction_encryption_key(&mut client).await;
+    client.add_note_tag(private_note.metadata().tag()).await.unwrap();
+
+    client.sync_state().await.unwrap();
+
+    let note = client
+        .get_input_notes(NoteFilter::DetailsCommitments(vec![details_commitment]))
+        .await
+        .unwrap()
+        .pop()
+        .expect("the note should have been imported over the transport");
+
+    assert!(
+        matches!(note.state(), InputNoteState::ConsumedExternal(..)),
+        "note should be consumed after one sync_state, got: {}",
+        note.state(),
+    );
 }

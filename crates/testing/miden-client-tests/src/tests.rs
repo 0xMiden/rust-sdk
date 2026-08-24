@@ -150,8 +150,8 @@ const NUM_STORAGE_MAP_ENTRIES_LARGE_ACCOUNT: u64 = 2001;
 const NUM_FAUCETS_LARGE_ACCOUNT: u64 = 10;
 
 /// Oversize threshold used for the mock RPC in large-account tests.
-/// Both storage map entries and vault assets must exceed this to trigger
-/// the `too_many_entries` / `too_many_assets` flags.
+/// Both storage map entries and vault assets must exceed this, so the maps come back as
+/// `StorageMapEntries::LimitExceeded` and the vault with the `too_many_assets` flag set.
 const OVERSIZE_THRESHOLD: usize = 5;
 
 // TESTS
@@ -4749,8 +4749,8 @@ async fn sync_large_public_account() {
     mock_chain.add_pending_executed_transaction(&tx).unwrap();
     mock_chain.prove_next_block().unwrap();
 
-    // 3. Create MockRpcApi with a low oversize threshold so both the storage map
-    // and vault trigger the `too_many_entries` / `too_many_assets` flags.
+    // 3. Create MockRpcApi with a low oversize threshold so the storage map comes back as
+    // `LimitExceeded` and the vault with the `too_many_assets` flag set.
     let rpc_api = MockRpcApi::new(mock_chain).with_oversize_threshold(OVERSIZE_THRESHOLD);
     let arc_rpc_api = Arc::new(rpc_api.clone());
 

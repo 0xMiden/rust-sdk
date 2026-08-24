@@ -51,6 +51,7 @@ use core::fmt;
 use domain::account::{
     AccountDetails,
     AccountProof,
+    AccountStorageMapDetails,
     GetAccountRequest,
     StorageMapEntries,
     StorageMapEntry,
@@ -335,27 +336,26 @@ pub trait NodeRpcClient: Send + Sync {
             .map(|note| *note.note_id())
             .collect();
 
-        let mut fetched_content: BTreeMap<NoteId, (Option<NoteDetails>, NoteAttachments)> =
+        let mut fetched_content: BTreeMap<NoteId, (Option<NoteDetails>, Option<NoteAttachments>)> =
             BTreeMap::new();
         if !note_ids.is_empty() {
             for fetched_note in self.get_notes_by_id(&note_ids).await? {
-                match fetched_note {
+                let (note_id, details, attachments) = match fetched_note {
                     FetchedNote::Public(note, _) => {
                         let note_id = note.id();
                         let (assets, _, recipient, attachments) = note.into_parts();
-                        fetched_content.insert(
-                            note_id,
-                            (Some(NoteDetails::new(assets, recipient)), attachments),
-                        );
+                        (note_id, Some(NoteDetails::new(assets, recipient)), attachments)
                     },
                     FetchedNote::Private(note_id, _, attachments, _) => {
-                        // An empty set carries nothing, and recording it would shadow the
-                        // attachments the note's own sync record may already have carried.
-                        if !attachments.is_empty() {
-                            fetched_content.insert(note_id, (None, attachments));
-                        }
+                        (note_id, None, attachments)
                     },
-                }
+                };
+
+                // An empty set carries nothing, so it is recorded as absent rather than as
+                // content: keeping it would shadow the attachments the note's own sync record may
+                // already have carried, for a public note as much as for a private one.
+                let attachments = (!attachments.is_empty()).then_some(attachments);
+                fetched_content.insert(note_id, (details, attachments));
             }
         }
 
@@ -369,14 +369,14 @@ pub trait NodeRpcClient: Send + Sync {
         for block in blocks {
             let mut notes = BTreeMap::new();
             for (note_id, committed) in block.notes {
-                // Fetched content wins: a public note's attachments are bound to the requested id,
-                // which `VerifyingRpcClient` checks. The sync record is the fallback.
-                let (details, attachments) =
-                    fetched_content.remove(&note_id).unwrap_or_else(|| {
-                        let attachments =
-                            committed.attachments().cloned().unwrap_or_else(NoteAttachments::empty);
-                        (None, attachments)
-                    });
+                // Fetched attachments win when the response actually carried some: a public note's
+                // attachments are bound to the requested id, which `VerifyingRpcClient` checks.
+                // The sync record is the fallback, and a note reporting neither has none.
+                let (details, fetched_attachments) =
+                    fetched_content.remove(&note_id).unwrap_or_default();
+                let attachments = fetched_attachments
+                    .or_else(|| committed.attachments().cloned())
+                    .unwrap_or_else(NoteAttachments::empty);
 
                 match SyncedNote::new(committed, details, attachments) {
                     Ok(synced_note) => {
@@ -455,21 +455,26 @@ pub trait NodeRpcClient: Send + Sync {
         Ok(())
     }
 
-    /// Fills in the entries of any storage map flagged `too_many_entries`, by querying
-    /// [`NodeRpcClient::sync_storage_maps`] over `[GENESIS, block_to]`. No-op when no map
-    /// has the flag set.
+    /// Fills in the entries of any storage map the node reported as oversize, by querying
+    /// [`NodeRpcClient::sync_storage_maps`] over `[GENESIS, block_to]`. No-op when no map is
+    /// oversize.
     async fn resolve_oversize_storage_maps(
         &self,
         account_id: AccountId,
         block_to: BlockNumber,
         details: &mut AccountDetails,
     ) -> Result<(), RpcError> {
-        if !details.storage_details.map_details.iter().any(|m| m.too_many_entries) {
+        if !details
+            .storage_details
+            .map_details
+            .iter()
+            .any(AccountStorageMapDetails::is_limit_exceeded)
+        {
             return Ok(());
         }
         let info = self.sync_storage_maps(BlockNumber::GENESIS, block_to, account_id).await?;
         for map_details in &mut details.storage_details.map_details {
-            if !map_details.too_many_entries {
+            if !map_details.is_limit_exceeded() {
                 continue;
             }
             // Syncing from genesis merges the full history of each slot into its absolute
@@ -485,7 +490,6 @@ pub trait NodeRpcClient: Send + Sync {
                         .collect()
                 })
                 .unwrap_or_default();
-            map_details.too_many_entries = false;
             map_details.entries = StorageMapEntries::AllEntries(entries);
         }
         Ok(())

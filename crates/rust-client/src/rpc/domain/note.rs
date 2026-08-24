@@ -484,13 +484,25 @@ impl CommittedNote {
 
     /// Records the note's attachment content, for a source that reports every attachment verbatim.
     ///
-    /// The content must hash to the metadata's attachments commitment. Recording content that does
-    /// not is what turns [`CommittedNote::needs_attachment_fetch`] off for a note whose real
-    /// content was never obtained.
-    #[must_use]
-    pub fn with_attachments(mut self, attachments: NoteAttachments) -> Self {
+    /// # Errors
+    ///
+    /// Returns an error if the content does not hash to the metadata's attachments commitment.
+    /// Such content would turn [`CommittedNote::needs_attachment_fetch`] off for a note whose real
+    /// content was never obtained, leaving it to be dropped for good by the consistency check in
+    /// [`SyncedNote::new`] instead of being fetched.
+    pub fn with_attachments(
+        mut self,
+        attachments: NoteAttachments,
+    ) -> Result<Self, RpcConversionError> {
+        if attachments.to_commitment() != self.metadata.attachments_commitment() {
+            return Err(RpcConversionError::InvalidField(format!(
+                "attachments recorded for note {} do not match its attachments commitment",
+                self.note_id,
+            )));
+        }
+
         self.attachments = Some(attachments);
-        self
+        Ok(self)
     }
 
     pub fn note_id(&self) -> &NoteId {
@@ -568,10 +580,10 @@ impl TryFrom<proto::note::NoteSyncRecord> for CommittedNote {
 
         let committed = CommittedNote::new(note_id, metadata, inclusion_proof);
 
-        Ok(match attachments.into_content() {
+        match attachments.into_content() {
             Some(attachments) => committed.with_attachments(attachments),
-            None => committed,
-        })
+            None => Ok(committed),
+        }
     }
 }
 
@@ -727,15 +739,19 @@ mod tests {
         sync_metadata(sync_attachments(attachments)).try_into().unwrap()
     }
 
-    fn committed_note(decoded: SyncNoteMetadata) -> CommittedNote {
+    fn bare_committed_note(metadata: NoteMetadata) -> CommittedNote {
         let path = SparseMerklePath::from_parts(0, Vec::new()).unwrap();
         let inclusion_proof =
             NoteInclusionProof::new(BlockNumber::GENESIS, 0, path).expect("index 0 is in range");
-        let committed =
-            CommittedNote::new(NoteId::from_raw(Word::empty()), decoded.metadata, inclusion_proof);
+
+        CommittedNote::new(NoteId::from_raw(Word::empty()), metadata, inclusion_proof)
+    }
+
+    fn committed_note(decoded: SyncNoteMetadata) -> CommittedNote {
+        let committed = bare_committed_note(decoded.metadata);
 
         match decoded.attachments.into_content() {
-            Some(attachments) => committed.with_attachments(attachments),
+            Some(attachments) => committed.with_attachments(attachments).unwrap(),
             None => committed,
         }
     }

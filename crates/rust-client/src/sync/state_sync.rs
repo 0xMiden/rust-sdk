@@ -27,6 +27,7 @@ use crate::note::{NoteConsumption, NoteUpdateTracker};
 use crate::rpc::domain::account::{
     AccountDetails,
     AccountProof,
+    AccountStorageMapDetails,
     GetAccountRequest,
     StorageMapFetch,
     VaultFetch,
@@ -993,8 +994,11 @@ impl StateSync {
         }
 
         let vault_oversized = details.vault_details.too_many_assets;
-        let any_map_oversized =
-            details.storage_details.map_details.iter().any(|m| m.too_many_entries);
+        let any_map_oversized = details
+            .storage_details
+            .map_details
+            .iter()
+            .any(AccountStorageMapDetails::is_limit_exceeded);
 
         // TODO: we can handle vault and storage-map oversize independently. Today any oversize
         // routes the whole account through the incremental patch path, which always fetches

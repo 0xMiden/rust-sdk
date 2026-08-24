@@ -307,7 +307,7 @@ where
     };
 
     let prep = client
-        .prepare_transaction(account.code_interface(), transaction_request)
+        .prepare_transaction(account.code_interface(), transaction_request, None)
         .await?;
 
     data_store.register_note_scripts(prep.output_note_scripts());
@@ -321,7 +321,13 @@ where
     let mut notes = prep.notes;
     if prep.ignore_invalid_notes {
         notes = client
-            .get_valid_input_notes(data_store, account_id, notes, prep.tx_args.clone())
+            .get_valid_input_notes(
+                data_store,
+                account_id,
+                prep.block_num,
+                notes,
+                prep.tx_args.clone(),
+            )
             .await?;
     }
 

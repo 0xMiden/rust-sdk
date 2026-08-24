@@ -419,10 +419,10 @@ pub trait Store: Send + Sync {
         account_id: AccountId,
     ) -> Result<(), StoreError>;
 
-    /// Removes an [`Address`].
+    /// Removes an [`Address`]. Returns `true` if the address was tracked.
     ///
     /// Tag removal is the caller's responsibility — see [`Self::remove_note_tag`].
-    async fn remove_address(&self, address: Address) -> Result<(), StoreError>;
+    async fn remove_address(&self, address: Address) -> Result<bool, StoreError>;
 
     // SETTINGS
     // --------------------------------------------------------------------------------------------
@@ -433,8 +433,8 @@ pub trait Store: Send + Sync {
     /// Retrieves a value from the `settings` table.
     async fn get_setting(&self, key: String) -> Result<Option<Vec<u8>>, StoreError>;
 
-    /// Deletes a value from the `settings` table.
-    async fn remove_setting(&self, key: String) -> Result<(), StoreError>;
+    /// Deletes a value from the `settings` table. Returns `true` if the key was present.
+    async fn remove_setting(&self, key: String) -> Result<bool, StoreError>;
 
     /// Returns all the keys from the `settings` table.
     async fn list_setting_keys(&self) -> Result<Vec<String>, StoreError>;
@@ -575,7 +575,8 @@ pub trait Store: Send + Sync {
     /// Removes the cached transaction encryption key, so the next submission fetches and verifies
     /// a fresh one. Used when the node rejects a submission sealed against a retired key.
     async fn remove_transaction_encryption_key(&self) -> Result<(), StoreError> {
-        self.remove_setting(TRANSACTION_ENCRYPTION_KEY_STORE_SETTING.into()).await
+        self.remove_setting(TRANSACTION_ENCRYPTION_KEY_STORE_SETTING.into()).await?;
+        Ok(())
     }
 
     // PARTIAL MMR

@@ -43,8 +43,8 @@ impl<AUTH> Client<AUTH> {
             .map_err(Into::into)
     }
 
-    /// Deletes the setting value from the store.
-    pub async fn remove_setting(&mut self, key: String) -> Result<(), ClientError> {
+    /// Deletes the setting value from the store. Returns `true` if `key` had a value set.
+    pub async fn remove_setting(&mut self, key: String) -> Result<bool, ClientError> {
         self.store.remove_setting(key).await.map_err(Into::into)
     }
 

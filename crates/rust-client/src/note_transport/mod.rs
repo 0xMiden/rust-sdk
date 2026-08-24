@@ -382,9 +382,19 @@ where
 
         let new_tags: Vec<NoteTag> = candidates.difference(&covered).copied().collect();
 
+        tracing::debug!(
+            candidates = candidates.len(),
+            covered = covered.len(),
+            new_tags = new_tags.len(),
+            capped = new_tags.len() > Self::MAX_BACKFILL_TAGS_PER_SYNC,
+            "Backfilling newly tracked tags."
+        );
+
         let mut imported_ids = Vec::new();
         for tag in new_tags.into_iter().take(Self::MAX_BACKFILL_TAGS_PER_SYNC) {
-            imported_ids.extend(self.backfill_tag(tag).await?);
+            let found = self.backfill_tag(tag).await?;
+            tracing::debug!(%tag, notes = found.len(), "Backfilled tag.");
+            imported_ids.extend(found);
             covered.insert(tag);
             // Persist after each tag so a crash mid-backfill keeps completed tags covered. A redo
             // is harmless because imports dedupe; the dangerous direction (marking covered before
@@ -483,11 +493,21 @@ where
             // need to recover it from the chain to compute the note's nullifier.
             note_requests.push((note_file, Some(metadata)));
         }
+        let fetched = note_requests.len();
         let imported_commitments = self.import_notes_with_metadata(&note_requests).await?;
-        let imported_ids = imported_commitments
+        let imported_ids: Vec<NoteId> = imported_commitments
             .into_iter()
             .filter_map(|commitment| id_by_commitment.get(&commitment).copied())
             .collect();
+
+        tracing::debug!(
+            tags = tags.len(),
+            fetched,
+            imported = imported_ids.len(),
+            cursor_from = cursor.value(),
+            cursor_to = rcursor.value(),
+            "Fetched notes from the transport."
+        );
 
         Ok((imported_ids, rcursor))
     }

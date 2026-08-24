@@ -173,6 +173,14 @@ where
             }
         }
 
+        tracing::debug!(
+            by_id = requests_by_id.len(),
+            by_details = requests_by_details.len(),
+            by_proof = requests_by_proof.len(),
+            with_metadata = requests_by_details.iter().filter(|r| r.4.is_some()).count(),
+            "Importing notes."
+        );
+
         let mut imported_notes = vec![];
         if !requests_by_id.is_empty() {
             let notes_by_id = self.import_note_records_by_id(requests_by_id).await?;
@@ -405,6 +413,14 @@ where
             lowest_nullifier_block = lowest_nullifier_block.min(from_block);
         }
 
+        tracing::debug!(
+            notes = notes.len(),
+            requested = nullifier_requests.len(),
+            skipped_no_nullifier = notes.len() - nullifier_requests.len(),
+            from_block = %lowest_nullifier_block,
+            "Checking imported notes for on-chain nullifiers."
+        );
+
         if nullifier_requests.is_empty() {
             return Ok(());
         }
@@ -414,14 +430,18 @@ where
             .get_nullifier_commit_heights(nullifier_requests, lowest_nullifier_block)
             .await?;
 
+        let mut consumed = 0usize;
         for note in notes.iter_mut() {
             if let Some(nullifier) = note.nullifier()
                 && let Some(block_height) =
                     nullifier_commit_heights.get(&nullifier).and_then(|height| *height)
             {
                 note.consumed_externally(nullifier, block_height, None)?;
+                consumed += 1;
             }
         }
+
+        tracing::debug!(consumed, "Marked imported notes consumed externally.");
 
         Ok(())
     }
@@ -521,6 +541,12 @@ where
         // Notes expected only after a block we have not reached can't be committed within our
         // synced view yet: skip the lookup and let them stay expected until a future sync.
         if request_block_num > current_block_num {
+            tracing::debug!(
+                %request_block_num,
+                %current_block_num,
+                notes = expected_notes.len(),
+                "Expected notes are above the synced height; skipping the chain lookup."
+            );
             return Ok(matched_notes);
         }
 
@@ -551,6 +577,14 @@ where
                 matched_notes.insert(*commitment, sync_note);
             }
         }
+
+        tracing::debug!(
+            requested = expected_notes.len(),
+            matched = matched_notes.len(),
+            %request_block_num,
+            %current_block_num,
+            "Resolved expected notes against the chain."
+        );
 
         Ok(matched_notes)
     }

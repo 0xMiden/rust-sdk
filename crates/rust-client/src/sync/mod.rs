@@ -203,6 +203,7 @@ where
     /// transport is disabled.
     pub async fn sync_note_transport(&self) -> Result<Vec<NoteId>, ClientError> {
         if !self.is_note_transport_enabled() {
+            debug!("Note transport disabled, skipping transport sync.");
             return Ok(Vec::new());
         }
 
@@ -217,14 +218,27 @@ where
         // This drains each newly tracked tag from the start, fetching only that tag's own history.
         let mut imported_ids = self.backfill_new_tags().await?;
 
+        let backfilled = imported_ids.len();
+
         let cursor = self.store.get_note_transport_cursor().await?;
         let note_tags: Vec<_> = self.store.get_unique_note_tags().await?.into_iter().collect();
         let (ids, new_cursor) = self.fetch_transport_notes(cursor, &note_tags).await?;
         self.store.update_note_transport_cursor(new_cursor).await?;
+        let streamed = ids.len();
         imported_ids.extend(ids);
 
         imported_ids.sort_unstable();
         imported_ids.dedup();
+
+        debug!(
+            backfilled,
+            streamed,
+            total = imported_ids.len(),
+            tags = note_tags.len(),
+            cursor_from = cursor.value(),
+            cursor_to = new_cursor.value(),
+            "Transport sync finished."
+        );
 
         Ok(imported_ids)
     }

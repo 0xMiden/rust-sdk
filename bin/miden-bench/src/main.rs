@@ -242,6 +242,10 @@ impl std::fmt::Display for Network {
 
 #[tokio::main]
 async fn main() {
+    // Honour RUST_LOG so the client's own tracing is visible, e.g.
+    //   RUST_LOG=miden_client=debug miden-bench ... sync ...
+    tracing_subscriber::fmt::init();
+
     let args = CliArgs::parse();
     let store_flag = if args.store == DEFAULT_STORE_DIR {
         String::new()

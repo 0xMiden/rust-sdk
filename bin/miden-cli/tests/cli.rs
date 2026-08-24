@@ -638,6 +638,75 @@ async fn public_faucet_metadata_is_fetched_and_persisted() -> Result<()> {
     Ok(())
 }
 
+/// Mints an asset and then inspects the resulting transaction through `tx`, covering both the
+/// single-transaction view and the listing filters against the same mint.
+#[tokio::test]
+async fn tx_show_and_list_filters() -> Result<()> {
+    let temp_dir = init_cli().1;
+
+    let wallet_account_id = new_wallet_cli(&temp_dir, AccountType::Private);
+    let fungible_faucet_account_id = new_faucet_cli(&temp_dir, AccountType::Private);
+
+    sync_cli(&temp_dir);
+
+    let output_note_id = mint_cli(&temp_dir, &wallet_account_id, &fungible_faucet_account_id);
+    let transaction_id = latest_transaction_id_cli(&temp_dir);
+
+    // A prefix of the ID has to resolve to the same transaction.
+    let mut show_cmd = cargo_bin_cmd!("miden-client");
+    show_cmd.args(["tx", "--show", &transaction_id[..10]]);
+    show_cmd
+        .current_dir(&temp_dir)
+        .assert()
+        .success()
+        .stdout(contains(transaction_id.as_str()))
+        .stdout(contains(fungible_faucet_account_id.as_str()))
+        .stdout(contains(output_note_id.as_str()))
+        .stdout(contains("Account State Before"));
+
+    // The faucet executed the mint, and with no sync in between it is still pending.
+    let filters_keeping_the_transaction: [&[&str]; 2] = [
+        &["tx", "--list", "--account-id", fungible_faucet_account_id.as_str()],
+        &["tx", "--list", "--status", "pending"],
+    ];
+    for args in filters_keeping_the_transaction {
+        let mut list_cmd = cargo_bin_cmd!("miden-client");
+        list_cmd.args(args);
+        list_cmd
+            .current_dir(&temp_dir)
+            .assert()
+            .success()
+            .stdout(contains(transaction_id.as_str()));
+    }
+
+    let filters_dropping_the_transaction: [&[&str]; 2] = [
+        &["tx", "--list", "--account-id", wallet_account_id.as_str()],
+        &["tx", "--list", "--status", "committed"],
+    ];
+    for args in filters_dropping_the_transaction {
+        let mut list_cmd = cargo_bin_cmd!("miden-client");
+        list_cmd.args(args);
+        list_cmd
+            .current_dir(&temp_dir)
+            .assert()
+            .success()
+            .stdout(contains(transaction_id.as_str()).not());
+    }
+
+    Ok(())
+}
+
+#[test]
+fn tx_list_filters_conflict_with_show() {
+    let temp_dir = init_cli().1;
+
+    for filter in [["--account-id", "0x1234"], ["--status", "pending"], ["--limit", "1"]] {
+        let mut show_cmd = cargo_bin_cmd!("miden-client");
+        show_cmd.args(["tx", "--show", "0x1234"]).args(filter);
+        show_cmd.current_dir(&temp_dir).assert().failure();
+    }
+}
+
 // ACCOUNT SHOW TESTS
 // ================================================================================================
 
@@ -1894,6 +1963,28 @@ fn mint_cli(cli_path: &Path, target_account_id: &str, faucet_id: &str) -> String
         .skip_while(|&word| word != "Output")
         .find(|word| word.starts_with("0x"))
         .unwrap()
+        .to_string()
+}
+
+/// Returns the ID of the most recently created transaction, read off the first column of
+/// `tx --list --limit 1`.
+fn latest_transaction_id_cli(cli_path: &Path) -> String {
+    let mut list_cmd = cargo_bin_cmd!("miden-client");
+    list_cmd.args(["tx", "--list", "--limit", "1"]);
+
+    let output = list_cmd.current_dir(cli_path).output().unwrap();
+    assert!(
+        output.status.success(),
+        "latest_transaction_id_cli failed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    String::from_utf8(output.stdout)
+        .unwrap()
+        .split_whitespace()
+        .find(|word| word.starts_with("0x"))
+        .expect("the listing should hold a transaction")
         .to_string()
 }
 

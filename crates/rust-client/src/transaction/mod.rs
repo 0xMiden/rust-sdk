@@ -185,6 +185,7 @@ pub use miden_protocol::vm::{AdviceInputs, AdviceMap};
 pub use miden_standards::account::interface::{AccountComponentInterface, AccountInterface};
 pub use miden_standards::tx_script::{
     ExpirationTransactionScript,
+    SendNotesTransactionScript,
     SendNotesTransactionScriptError,
 };
 pub use miden_tx::auth::TransactionAuthenticator;

@@ -837,6 +837,20 @@ async fn sync_state_tags() {
 }
 
 #[tokio::test]
+async fn get_latest_block_header_tracks_sync_height() {
+    let (mut client, _rpc_api, _) = Box::pin(create_test_client()).await;
+
+    client.sync_state().await.unwrap();
+
+    let header = client
+        .get_latest_block_header()
+        .await
+        .expect("a header should be stored at the sync height");
+
+    assert_eq!(header.block_num(), client.get_sync_height().await.unwrap());
+}
+
+#[tokio::test]
 async fn tags() {
     // generate test client with a random store name
     let (mut client, _rpc_api, _) = Box::pin(create_test_client()).await;

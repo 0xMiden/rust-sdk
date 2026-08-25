@@ -26,6 +26,17 @@ impl<AUTH> Client<AUTH> {
         self.store.get_block_header_by_num(block_num).await.map_err(Into::into)
     }
 
+    /// Retrieves the block header at the current sync height from the store.
+    pub async fn get_latest_block_header(&self) -> Result<BlockHeader, ClientError> {
+        let sync_height = self.store.get_sync_height().await?;
+        let Some((block_header, _)) = self.get_block_header_by_num(sync_height).await? else {
+            return Err(ClientError::DataStoreError(miden_tx::DataStoreError::BlockNotFound(
+                sync_height,
+            )));
+        };
+        Ok(block_header)
+    }
+
     /// Ensures that the genesis block is available. If the genesis commitment is already
     /// cached in the RPC client, returns early. Otherwise, fetches the genesis block from
     /// the node, stores it, and sets the commitment in the RPC client.

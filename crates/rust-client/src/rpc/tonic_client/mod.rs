@@ -297,9 +297,10 @@ impl GrpcClient {
     /// Executes an RPC call and automatically retries transient failures.
     ///
     /// The provided closure is invoked with a freshly connected [`ApiClient`] on each attempt.
-    /// Retries are delegated to [`retry::RetryState`], which currently handles gRPC
-    /// [`tonic::Code::ResourceExhausted`] and [`tonic::Code::Unavailable`] responses, including
-    /// honoring cooldown delays when the node provides them.
+    /// Retries are delegated to [`retry::RetryState`]. Read-only calls retry gRPC
+    /// [`tonic::Code::ResourceExhausted`] and [`tonic::Code::Unavailable`] responses, while
+    /// transaction submissions retry only [`tonic::Code::ResourceExhausted`] because an
+    /// `Unavailable` response may arrive after the node has already accepted the submission.
     ///
     /// Returns the first successful gRPC response. If the call keeps failing after retries are
     /// exhausted, or if the error is not retryable, this returns the corresponding [`RpcError`]
@@ -310,13 +311,15 @@ impl GrpcClient {
         mut call: impl FnMut(ApiClient) -> RpcFuture<Result<tonic::Response<T>, Status>>,
     ) -> Result<tonic::Response<T>, RpcError> {
         let mut retry_state = retry::RetryState::new(self.max_retries, self.retry_interval_ms);
+        let retry_unavailable =
+            !matches!(endpoint, RpcEndpoint::SubmitProvenTx | RpcEndpoint::SubmitProvenBatch);
 
         loop {
             let rpc_api = self.ensure_connected().await?;
 
             match call(rpc_api).await {
                 Ok(response) => return Ok(response),
-                Err(status) if retry_state.should_retry(&status).await => {},
+                Err(status) if retry_state.should_retry(&status, retry_unavailable).await => {},
                 Err(status) => return Err(self.rpc_error_from_status(endpoint, status)),
             }
         }

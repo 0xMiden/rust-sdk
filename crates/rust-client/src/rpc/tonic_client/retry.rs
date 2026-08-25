@@ -42,8 +42,8 @@ impl RetryState {
     /// Returns `true` after waiting the requested cooldown when the error is retryable and the
     /// attempt limit has not been reached. Returns `false` for non-retryable statuses or once the
     /// retry budget is exhausted.
-    pub(super) async fn should_retry(&mut self, status: &Status) -> bool {
-        if self.attempt >= self.max_retries || !is_retryable(status) {
+    pub(super) async fn should_retry(&mut self, status: &Status, retry_unavailable: bool) -> bool {
+        if self.attempt >= self.max_retries || !is_retryable(status, retry_unavailable) {
             return false;
         }
 
@@ -64,8 +64,9 @@ impl RetryState {
 // HELPERS
 // ================================================================================================
 
-fn is_retryable(status: &Status) -> bool {
-    matches!(status.code(), tonic::Code::ResourceExhausted | tonic::Code::Unavailable)
+fn is_retryable(status: &Status, retry_unavailable: bool) -> bool {
+    matches!(status.code(), tonic::Code::ResourceExhausted)
+        || (retry_unavailable && matches!(status.code(), tonic::Code::Unavailable))
 }
 
 fn retry_delay(status: &Status, fallback_ms: u64) -> Duration {
@@ -101,12 +102,25 @@ mod tests {
     use tonic::metadata::MetadataMap;
     use tonic::{Code, Status};
 
-    use super::{DEFAULT_RETRY_INTERVAL_MS, retry_delay};
+    use super::{DEFAULT_RETRY_INTERVAL_MS, is_retryable, retry_delay};
 
     fn status_with_retry_after(retry_after: &str) -> Status {
         let mut metadata = MetadataMap::new();
         metadata.insert("retry-after", retry_after.parse().unwrap());
         Status::with_metadata(Code::ResourceExhausted, "Too Many Requests! Wait for 0s", metadata)
+    }
+
+    #[test]
+    fn unavailable_retry_can_be_disabled_for_submissions() {
+        let status = Status::unavailable("temporarily unavailable");
+        assert!(!is_retryable(&status, false));
+        assert!(is_retryable(&status, true));
+    }
+
+    #[test]
+    fn resource_exhausted_remains_retryable_for_submissions() {
+        let status = Status::resource_exhausted("rate limited");
+        assert!(is_retryable(&status, false));
     }
 
     #[test]

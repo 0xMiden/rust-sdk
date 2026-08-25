@@ -2289,10 +2289,7 @@ fn call_rejects_wrong_arg_count() {
     let out = too_few.current_dir(&temp_dir).output().unwrap();
     assert!(!out.status.success(), "Expected failure for too-few args");
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("expects 2 value") && stderr.contains("got 1"),
-        "Unexpected stderr:\n{stderr}"
-    );
+    assert_eq!(output_line(&stderr, "  ×"), "  × procedure 'add' expects 2 argument(s), got 1");
 
     // Too many: 3 args for a 2-arg procedure.
     let mut too_many = cargo_bin_cmd!("miden-client");
@@ -2308,10 +2305,7 @@ fn call_rejects_wrong_arg_count() {
     let out = too_many.current_dir(&temp_dir).output().unwrap();
     assert!(!out.status.success(), "Expected failure for too-many args");
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("expects 2 value") && stderr.contains("got 3"),
-        "Unexpected stderr:\n{stderr}"
-    );
+    assert_eq!(output_line(&stderr, "  ×"), "  × procedure 'add' expects 2 argument(s), got 3");
 }
 
 /// Tests passing more arguments than a procedure can be given.

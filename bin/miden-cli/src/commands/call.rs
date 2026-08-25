@@ -103,26 +103,6 @@ impl CallCmd {
         let target_id = parse_account_id(&client, account_str).await?;
         let call_code = self.resolve_call_code(&client, &cli_config, procedure)?;
 
-        // A procedure only sees the top MIN_STACK_DEPTH felts of the stack. An argument below
-        // that reaches it as a zero and the call still succeeds, so without this check a
-        // procedure with wide arguments would run on the wrong values.
-        if call_code.args.len() > MIN_STACK_DEPTH {
-            return Err(CliError::InvalidArgument(format!(
-                "A procedure takes at most {MIN_STACK_DEPTH} input values; got {}.",
-                call_code.args.len()
-            )));
-        }
-
-        // The output stack only holds MIN_STACK_DEPTH felts.
-        if let Some(n) = call_code.result_felts
-            && n > MIN_STACK_DEPTH
-        {
-            return Err(CliError::InvalidArgument(format!(
-                "Procedure '{procedure}' returns {n} values; only up to {MIN_STACK_DEPTH} \
-                 can be read from the output stack."
-            )));
-        }
-
         let advice_entries = match &self.inputs_path {
             Some(path) => load_advice_map_from_file(path)?,
             None => vec![],
@@ -156,27 +136,43 @@ impl CallCmd {
         cli_config: &CliConfig,
         procedure: &str,
     ) -> Result<CallCode, CliError> {
-        let Some(pkg_path) = &self.package else {
-            let digest = Word::try_from(procedure).map_err(|_| {
-                CliError::InvalidArgument(format!(
-                    "'{procedure}' is not a hex digest. Pass `--package <FILE>.masp` to \
-                     call a procedure by name, or give its hex digest to call without a \
-                     package."
-                ))
-            })?;
-            println!(
-                "No `--package` provided; output will be raw felts. Pass \
-                 `--package <FILE>.masp` for typed output."
-            );
-            return Ok(CallCode {
-                builder: client.code_builder(),
-                digest,
-                args: encode_raw_args(&self.args)?,
-                typed: None,
-                result_felts: None,
-            });
+        let call_code = match &self.package {
+            Some(pkg_path) => self.resolve_from_package(client, cli_config, pkg_path, procedure)?,
+            None => self.resolve_from_digest(client, procedure)?,
         };
 
+        // A procedure only sees the top MIN_STACK_DEPTH felts of the stack. An argument below
+        // that reaches it as a zero and the call still succeeds, so without this check a
+        // procedure with wide arguments would run on the wrong values.
+        if call_code.args.len() > MIN_STACK_DEPTH {
+            return Err(CliError::InvalidArgument(format!(
+                "A procedure takes at most {MIN_STACK_DEPTH} input values; got {}.",
+                call_code.args.len()
+            )));
+        }
+
+        // The output stack only holds MIN_STACK_DEPTH felts.
+        if let Some(n) = call_code.result_felts
+            && n > MIN_STACK_DEPTH
+        {
+            return Err(CliError::InvalidArgument(format!(
+                "Procedure '{procedure}' returns {n} values; only up to {MIN_STACK_DEPTH} \
+                 can be read from the output stack."
+            )));
+        }
+
+        Ok(call_code)
+    }
+
+    /// Resolves the call from the package's manifest, which names the procedure and, when it was
+    /// built from a WIT interface, describes the types its arguments and results are encoded as.
+    fn resolve_from_package<AUTH: Keystore + Sync + 'static>(
+        &self,
+        client: &Client<AUTH>,
+        cli_config: &CliConfig,
+        pkg_path: &PathBuf,
+        procedure: &str,
+    ) -> Result<CallCode, CliError> {
         let package = load_packages(cli_config, slice::from_ref(pkg_path))?
             .pop()
             .expect("load_packages returns one package per path");
@@ -221,7 +217,41 @@ impl CallCmd {
         // "phantom target" warning. Dynamic linking provides that resolution without
         // embedding the library bytes.
         let builder = client.code_builder().with_dynamically_linked_package(&package)?;
-        Ok(CallCode { builder, digest, args, typed, result_felts })
+        Ok(CallCode {
+            builder,
+            digest,
+            args,
+            typed,
+            result_felts,
+        })
+    }
+
+    /// Resolves the call from a hex digest. Nothing describes the procedure, so each argument is
+    /// one field element and the results are read back as raw stack felts.
+    fn resolve_from_digest<AUTH: Keystore + Sync + 'static>(
+        &self,
+        client: &Client<AUTH>,
+        procedure: &str,
+    ) -> Result<CallCode, CliError> {
+        let digest = Word::try_from(procedure).map_err(|_| {
+            CliError::InvalidArgument(format!(
+                "'{procedure}' is not a hex digest. Pass `--package <FILE>.masp` to \
+                 call a procedure by name, or give its hex digest to call without a \
+                 package."
+            ))
+        })?;
+        println!(
+            "No `--package` provided; output will be raw felts. Pass \
+             `--package <FILE>.masp` for typed output."
+        );
+
+        Ok(CallCode {
+            builder: client.code_builder(),
+            digest,
+            args: encode_raw_args(&self.args)?,
+            typed: None,
+            result_felts: None,
+        })
     }
 }
 
@@ -540,6 +570,29 @@ fn encode_raw_args(args: &[String]) -> Result<Vec<Felt>, CliError> {
         .collect()
 }
 
+/// Builds a transaction script that pushes `args` and calls the procedure at `digest`.
+///
+/// Only the top results are read back, and `truncate_stack` restores the 16-element exit
+/// invariant, so anything left below the results can stay there.
+fn generate_tx_script(
+    code_builder: CodeBuilder,
+    digest: &Word,
+    args: &[Felt],
+) -> Result<TransactionScript, CliError> {
+    let mut script = String::from("use miden::core::sys\n\n@transaction_script\npub proc main\n");
+
+    // Push args in reverse so the first arg ends up on top.
+    for arg in args.iter().rev() {
+        writeln!(script, "    push.{arg}").unwrap();
+    }
+
+    writeln!(script, "    call.{}", digest.to_hex()).unwrap();
+
+    script.push_str("    exec.sys::truncate_stack\n");
+    script.push_str("end\n");
+    Ok(code_builder.compile_tx_script(&script)?)
+}
+
 // TESTS
 // ================================================================================================
 
@@ -699,28 +752,4 @@ mod tests {
         let export = resolve_procedure_export(&manifest, "increment-by").unwrap();
         assert_eq!(export.signature, interface_form().1);
     }
-}
-
-
-/// Builds a transaction script that pushes `args` and calls the procedure at `digest`.
-///
-/// Only the top results are read back, and `truncate_stack` restores the 16-element exit
-/// invariant, so anything left below the results can stay there.
-fn generate_tx_script(
-    code_builder: CodeBuilder,
-    digest: &Word,
-    args: &[Felt],
-) -> Result<TransactionScript, CliError> {
-    let mut script = String::from("use miden::core::sys\n\n@transaction_script\npub proc main\n");
-
-    // Push args in reverse so the first arg ends up on top.
-    for arg in args.iter().rev() {
-        writeln!(script, "    push.{arg}").unwrap();
-    }
-
-    writeln!(script, "    call.{}", digest.to_hex()).unwrap();
-
-    script.push_str("    exec.sys::truncate_stack\n");
-    script.push_str("end\n");
-    Ok(code_builder.compile_tx_script(&script)?)
 }

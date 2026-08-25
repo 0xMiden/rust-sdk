@@ -341,7 +341,7 @@ pub async fn wait_for_consumable_notes(
             %deadline_block,
             "No consumable notes yet, waiting..."
         );
-        std::thread::sleep(Duration::from_secs(3));
+        tokio::time::sleep(Duration::from_secs(3)).await;
     }
 }
 

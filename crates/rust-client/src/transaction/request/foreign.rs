@@ -1,7 +1,8 @@
 //! Contains structures and functions related to FPI (Foreign Procedure Invocation) transactions.
-use alloc::string::ToString;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::cmp::Ordering;
+use core::fmt::Write as _;
 
 use miden_protocol::account::{
     AccountId,
@@ -15,7 +16,10 @@ use miden_protocol::account::{
 };
 use miden_protocol::asset::{AssetVault, PartialVault};
 use miden_protocol::crypto::merkle::smt::SmtProof;
-use miden_protocol::transaction::AccountInputs;
+use miden_protocol::transaction::{AccountInputs, TransactionScript};
+use miden_protocol::vm::MIN_STACK_DEPTH;
+use miden_protocol::{Felt, Word};
+use miden_standards::code_builder::CodeBuilder;
 use miden_tx::utils::serde::{Deserializable, DeserializationError, Serializable};
 
 use super::TransactionRequestError;
@@ -25,6 +29,59 @@ use crate::rpc::domain::account::{
     AccountStorageRequirements,
     StorageMapEntries,
 };
+
+// FPI SCRIPT
+// ================================================================================================
+
+/// Builds a transaction script that invokes the procedure with the given root on a foreign
+/// account.
+///
+/// `args` are the procedure's inputs, pushed so that `args[0]` ends up on top of the stack. The
+/// kernel reads them as a fixed window of [`MIN_STACK_DEPTH`] felts, so no more may be passed.
+///
+/// The script leaves the procedure's outputs on top of the stack and drops the rest.
+pub fn build_fpi_script(
+    code_builder: CodeBuilder,
+    foreign_account_id: AccountId,
+    procedure_root: Word,
+    args: &[Felt],
+) -> Result<TransactionScript, TransactionRequestError> {
+    if args.len() > MIN_STACK_DEPTH {
+        return Err(TransactionRequestError::ForeignProcedureInputsTooLong {
+            max: MIN_STACK_DEPTH,
+            actual: args.len(),
+        });
+    }
+
+    let mut script = String::from(
+        "use miden::protocol::tx\nuse miden::core::sys\n\n@transaction_script\npub proc main\n",
+    );
+
+    // Fill the unused input slots with zeros, then push the args on top of them.
+    let pad_count = MIN_STACK_DEPTH - args.len();
+    for _ in 0..pad_count / 4 {
+        script.push_str("    padw\n");
+    }
+    for _ in 0..pad_count % 4 {
+        script.push_str("    push.0\n");
+    }
+    for arg in args.iter().rev() {
+        writeln!(script, "    push.{arg}").expect("writing to a string never fails");
+    }
+
+    writeln!(script, "    push.{}", procedure_root.to_hex())
+        .expect("writing to a string never fails");
+    writeln!(script, "    push.{}", foreign_account_id.prefix().as_u64())
+        .expect("writing to a string never fails");
+    writeln!(script, "    push.{}", foreign_account_id.suffix())
+        .expect("writing to a string never fails");
+
+    script.push_str("    exec.tx::execute_foreign_procedure\n");
+    script.push_str("    exec.sys::truncate_stack\n");
+    script.push_str("end\n");
+
+    Ok(code_builder.compile_tx_script(&script)?)
+}
 
 // FOREIGN ACCOUNT
 // ================================================================================================
@@ -231,6 +288,9 @@ fn proofs_to_witnesses(
         .collect()
 }
 
+// TESTS
+// ================================================================================================
+
 #[cfg(all(test, feature = "testing"))]
 mod foreign_vault_tests {
     use alloc::sync::Arc;
@@ -415,5 +475,29 @@ mod foreign_storage_map_tests {
             inputs.storage().maps().next().is_none(),
             "a truncated entry list must not be carried in the partial storage"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use miden_protocol::testing::account_id::ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET;
+
+    use super::*;
+
+    /// The inputs are read as a fixed window, so a longer argument list is rejected.
+    #[test]
+    fn build_fpi_script_rejects_more_args_than_the_input_window() {
+        let foreign_id: AccountId = ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET.try_into().unwrap();
+        let arg = Felt::new(1).expect("one is a valid field element");
+        let args = vec![arg; MIN_STACK_DEPTH + 1];
+
+        let err = build_fpi_script(CodeBuilder::new(), foreign_id, Word::empty(), &args)
+            .expect_err("a longer argument list must be rejected");
+
+        assert!(matches!(
+            err,
+            TransactionRequestError::ForeignProcedureInputsTooLong { max, actual }
+                if max == MIN_STACK_DEPTH && actual == MIN_STACK_DEPTH + 1
+        ));
     }
 }

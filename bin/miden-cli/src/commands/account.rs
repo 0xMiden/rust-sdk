@@ -69,7 +69,7 @@ pub struct AccountCmd {
 }
 
 impl AccountCmd {
-    pub async fn execute<AUTH>(&self, mut client: Client<AUTH>) -> Result<(), CliError> {
+    pub async fn execute<AUTH>(&self, client: Client<AUTH>) -> Result<(), CliError> {
         let cli_config = CliConfig::load()?;
         match self {
             AccountCmd {
@@ -125,8 +125,14 @@ impl AccountCmd {
                         println!("Current default account ID: {default_account}");
                     },
                     Some(id) if id == "none" => {
-                        client.remove_setting(DEFAULT_ACCOUNT_ID_KEY.to_string()).await?;
-                        println!("Removing default account...");
+                        let removed =
+                            client.remove_setting(DEFAULT_ACCOUNT_ID_KEY.to_string()).await?;
+
+                        if removed {
+                            println!("Default account removed");
+                        } else {
+                            println!("No default account was set");
+                        }
                     },
                     Some(id) => {
                         let account_id: AccountId = parse_account_id(&client, id).await?;
@@ -137,7 +143,8 @@ impl AccountCmd {
                         client
                             .set_setting(DEFAULT_ACCOUNT_ID_KEY.to_string(), account.id())
                             .await?;
-                        println!("Setting default account to {id}...");
+
+                        println!("Default account set to {}", account.id());
                     },
                 }
             },

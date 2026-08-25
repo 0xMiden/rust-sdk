@@ -4251,16 +4251,19 @@ async fn account_add_address_after_creation() {
     assert!(client.add_address(basic_wallet_address.clone(), account.id()).await.is_ok());
 
     // We can remove the default address and the note tag is still present
-    assert!(client.remove_address(default_address.clone(), account.id()).await.is_ok());
+    assert!(client.remove_address(default_address.clone(), account.id()).await.unwrap());
     let derived_note_tag = default_address.to_note_tag();
     let note_tag_record = NoteTagRecord::with_account_source(derived_note_tag, account.id());
     let note_tags = client.get_note_tags().await.unwrap();
     assert!(note_tags.contains(&note_tag_record));
 
     // If we remove all addresses, note tag should be removed
-    assert!(client.remove_address(basic_wallet_address.clone(), account.id()).await.is_ok());
+    assert!(client.remove_address(basic_wallet_address.clone(), account.id()).await.unwrap());
     let note_tags = client.get_note_tags().await.unwrap();
     assert!(!note_tags.contains(&note_tag_record));
+
+    // Removing an address that isn't tracked reports that nothing was removed
+    assert!(!client.remove_address(basic_wallet_address, account.id()).await.unwrap());
 
     // Then add it again
     assert!(client.add_address(default_address, account.id()).await.is_ok());

@@ -258,8 +258,9 @@ where
     ///    the chain update as an update to the row the transport insert creates.
     ///
     /// Fails fast on the first error: the concurrent fetch drops the other side, and neither has
-    /// written anything at that point. A relay re-send that already went out stays in the outbox
-    /// and is retried on the next sync, which the receiver dedupes by note id.
+    /// written anything the sync depends on. The one exception is the relay outbox, which
+    /// [`Client::flush_relay_outbox`] persists during the fetch; a re-send that already went out
+    /// stays in the outbox and is retried on the next sync, which the receiver dedupes by note id.
     ///
     /// Unlike the previous sequential behavior, the chain sync's input set is read before the
     /// delivered notes are written, so a note tag registered by this call's transport import is

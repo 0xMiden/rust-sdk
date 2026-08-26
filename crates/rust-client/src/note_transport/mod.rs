@@ -177,33 +177,11 @@ impl<AUTH> Client<AUTH> {
     /// error, so a relay failure can't block a sync. Callers driving retries
     /// themselves can invoke it directly and inspect the returned error.
     pub async fn flush_relay_outbox(&self) -> Result<(), ClientError> {
-        let (remaining, last_err) = self.retry_relay_outbox().await?;
-
-        if let Some(remaining) = remaining {
-            self.save_relay_outbox(remaining).await?;
-        }
-
-        if let Some(err) = last_err {
-            return Err(err.into());
-        }
-        Ok(())
-    }
-
-    /// Re-sends every relay payload in the durable outbox, returning the entries that still failed
-    /// and the last error, without writing anything.
-    ///
-    /// The returned entries are `None` when the outbox was empty and there is therefore nothing to
-    /// persist; `Some` (possibly empty) means the outbox must be overwritten with them.
-    /// [`Client::flush_relay_outbox`] does that write; the note transport sync defers it to its
-    /// apply phase.
-    async fn retry_relay_outbox(
-        &self,
-    ) -> Result<(Option<Vec<NoteInfo>>, Option<NoteTransportError>), ClientError> {
         let api = self.get_note_transport_api()?;
 
         let entries = self.load_relay_outbox().await?;
         if entries.is_empty() {
-            return Ok((None, None));
+            return Ok(());
         }
 
         // Attempt every entry independently so a single persistently-failing
@@ -234,7 +212,12 @@ impl<AUTH> Client<AUTH> {
             }
         }
 
-        Ok((Some(remaining), last_err))
+        self.save_relay_outbox(remaining).await?;
+
+        if let Some(err) = last_err {
+            return Err(err.into());
+        }
+        Ok(())
     }
 
     /// Load the durable relay outbox.
@@ -518,11 +501,17 @@ where
         Ok((import, rcursor))
     }
 
-    /// Fetches everything the note transport sync is about to write, without writing any of it.
+    /// Fetches what the note transport sync is about to write, writing only the relay outbox.
     ///
-    /// Runs the relay-outbox retries, the per-tag history backfill and the steady-state page, and
-    /// returns them as a [`NoteTransportSyncData`] for [`Client::apply_note_transport_updates`].
-    /// Takes `&self` so it can run concurrently with the chain sync's fetch phase.
+    /// Runs the relay-outbox flush, the per-tag history backfill and the steady-state page, and
+    /// returns the latter two as a [`NoteTransportSyncData`] for
+    /// [`Client::apply_note_transport_updates`]. Takes `&self` so it can run concurrently with the
+    /// chain sync's fetch phase.
+    ///
+    /// The outbox flush is the exception to this being a read-only phase: it persists its own
+    /// remaining entries rather than handing them to the apply phase. That write touches only the
+    /// outbox setting and is safe to redo, so it does not affect what a failure part way through
+    /// leaves behind for the notes, tags and cursor.
     ///
     /// The block proofs of the notes reported as committed are *not* fetched here: they are a
     /// second network pass over this result (see [`Client::fetch_note_block_proofs`]), because the
@@ -537,19 +526,12 @@ where
             return Ok(data);
         }
 
-        // Re-send any private notes whose previous relay attempt failed. A relay error is logged,
+        // Drain any private notes whose previous relay attempt failed. A flush error is logged,
         // not propagated: a failing relay must not block the sync, and the entries stay durable
-        // for the next attempt.
-        match self.retry_relay_outbox().await {
-            Ok((outbox_remaining, last_err)) => {
-                if let Some(err) = last_err {
-                    tracing::warn!(?err, "relay outbox flush failed during sync; entries retained");
-                }
-                data.outbox_remaining = outbox_remaining;
-            },
-            Err(err) => {
-                tracing::warn!(?err, "relay outbox flush failed during sync; entries retained");
-            },
+        // for the next attempt. This is the one write the fetch phase performs; it touches only
+        // the outbox setting, which is independent of everything the apply phase writes.
+        if let Err(err) = self.flush_relay_outbox().await {
+            tracing::warn!(?err, "relay outbox flush failed during sync; entries retained");
         }
 
         // Recover historical private notes for any tag added after the global cursor advanced.
@@ -583,6 +565,9 @@ where
     /// re-fetches instead of skipping notes that were never written. `partial_mmr` is loaded and
     /// cached by the caller, so one MMR can be shared with the chain sync's apply phase.
     ///
+    /// The relay outbox is not written here: [`Client::flush_relay_outbox`] persists it itself,
+    /// during the fetch phase.
+    ///
     /// [`Client::fetch_note_block_proofs`] must have run on `data` first, otherwise the records
     /// waiting on a block header are still pending and the import panics.
     pub(crate) async fn apply_note_transport_updates(
@@ -591,17 +576,12 @@ where
         partial_mmr: &mut PartialMmr,
     ) -> Result<Vec<NoteId>, ClientError> {
         let NoteTransportSyncData {
-            outbox_remaining,
             covered_tags,
             imports,
             blocks,
             id_by_commitment,
             cursor,
         } = data;
-
-        if let Some(outbox_remaining) = outbox_remaining {
-            self.save_relay_outbox(outbox_remaining).await?;
-        }
 
         self.apply_blocks(blocks, partial_mmr).await?;
 
@@ -640,9 +620,6 @@ where
 /// [`Client::apply_note_transport_updates`].
 #[derive(Default)]
 pub(crate) struct NoteTransportSyncData {
-    /// Relay entries whose re-send failed and that the outbox is overwritten with. `None` when
-    /// the outbox was empty and needs no write.
-    outbox_remaining: Option<Vec<NoteInfo>>,
     /// Covered-tag set to persist, `None` when it did not change.
     covered_tags: Option<BTreeSet<NoteTag>>,
     /// One entry per fetched page, in fetch order.

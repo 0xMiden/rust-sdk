@@ -33,7 +33,7 @@
 * [BREAKING][type][rust] Added the `TransactionRequestError::ForeignProcedureInputsTooLong` variant ([#2187](https://github.com/0xMiden/rust-sdk/pull/2187)).
 
 * [BREAKING][behavior][rust] `Client::sync_state` now fetches the Note Transport Layer pages and the node's chain data concurrently, and writes both afterwards, instead of running a full note transport sync before the chain sync. Notes delivered over the transport are still checked for consumption in the same call — the nullifier check runs after both fetches and covers them — but the chain sync's note-tag set is now read before they are written, so a tag first registered by this call's transport import is not part of this call's `SyncNotes` query. The transport path queries the node for those notes itself, so only other notes sharing that tag wait for the next sync.
-* [BREAKING][behavior][rust] The note transport sync no longer persists its progress incrementally. The relay outbox, the imported notes, the backfill's covered-tag set and the transport cursor are all written after every page has been fetched, so a failure part way through leaves nothing written and the next sync re-fetches. Imports dedupe by note id, so a redo is harmless.
+* [BREAKING][behavior][rust] The note transport sync no longer persists its progress incrementally. The imported notes, the backfill's covered-tag set and the transport cursor are all written after every page has been fetched, so a failure part way through leaves none of them written and the next sync re-fetches. Imports dedupe by note id, so a redo is harmless. The relay outbox is unchanged: `Client::flush_relay_outbox` still persists its own remaining entries as it runs.
 
 ### Enhancements
 

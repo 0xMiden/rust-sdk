@@ -77,8 +77,8 @@ impl NotesCmd {
         mut client: Client<AUTH>,
     ) -> Result<(), CliError> {
         match self {
-            NotesCmd { list: Some(NoteFilter::Consumable), .. } => {
-                list_consumable_notes(client, None).await?;
+            NotesCmd { list: Some(NoteFilter::Consumable), account_id, .. } => {
+                list_consumable_notes(client, account_id.as_ref()).await?;
             },
             NotesCmd { list: Some(filter), .. } => {
                 list_notes(

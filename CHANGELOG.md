@@ -9,6 +9,8 @@
 ### Fixes
 
 * [FIX][rust] Added validation of cached transaction encryption keys during deserialization. Unsupported encryption schemes and empty or oversized key IDs are rejected before reading the key ID bytes ([#2411](https://github.com/0xMiden/rust-sdk/pull/2411)).
+* [FIX][cli] `notes --list consumable` now respects the `--account-id` filter ([#2449](https://github.com/0xMiden/rust-sdk/pull/2449)).
+* [store] Simplified `SqliteStore::get_setting` to take `&Connection` directly without opening an unnecessary transaction ([#2449](https://github.com/0xMiden/rust-sdk/pull/2449)).
 * [FIX][cli] `miden-client import` now rejects invocations without a file path instead of silently succeeding ([#2450](https://github.com/0xMiden/rust-sdk/pull/2450)).
 * [FIX][rust] `TransactionRequestBuilder::build_swap` and `build_pswap_create` now reject a zero-amount asset on either side of the exchange. A zero requested asset produced a payback P2ID note carrying nothing, and a zero offered asset produced a note whose consumer pays and receives nothing ([#2459](https://github.com/0xMiden/rust-sdk/pull/2459)).
 

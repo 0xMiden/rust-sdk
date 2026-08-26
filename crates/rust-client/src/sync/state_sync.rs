@@ -275,7 +275,7 @@ impl StateSync {
     ///
     /// Runs the three phases in order, each of which can also be driven separately:
     /// 1. [`Self::fetch_state`] — every node call but the nullifier check.
-    /// 2. [`ChainSyncData::fetch_nullifiers`] — the nullifier check.
+    /// 2. [`Self::fetch_nullifiers`] — the nullifier check.
     /// 3. [`Self::build_update`] — verify against the MMR and assemble the update.
     pub async fn sync_state(
         &self,
@@ -285,7 +285,7 @@ impl StateSync {
         let block_num = block_num_from_forest(current_partial_mmr)?;
 
         let mut data = self.fetch_state(block_num, input).await?;
-        data.fetch_nullifiers(Vec::new()).await?;
+        self.fetch_nullifiers(&mut data, Vec::new()).await?;
 
         // Work on a clone so any validation failure leaves `current_partial_mmr` untouched.
         let mut working_mmr = current_partial_mmr.clone();
@@ -299,7 +299,7 @@ impl StateSync {
     /// against the client's MMR or writing anything.
     ///
     /// Runs every node call of a chain sync except the nullifier check, which
-    /// [`ChainSyncData::fetch_nullifiers`] performs afterwards so it can also cover notes another
+    /// [`Self::fetch_nullifiers`] performs afterwards so it can also cover notes another
     /// sync path delivered in the same call. Screening the received notes reads the store and may
     /// execute transactions, but nothing is persisted.
     ///
@@ -334,7 +334,6 @@ impl StateSync {
         else {
             // No progress — already at the tip.
             return Ok(ChainSyncData {
-                state_sync: self.clone(),
                 block_from,
                 advance: None,
                 note_updates,
@@ -377,7 +376,6 @@ impl StateSync {
         self.recover_consumed_public_notes(&mut note_updates, &transactions).await?;
 
         Ok(ChainSyncData {
-            state_sync: self.clone(),
             block_from,
             advance: Some(ChainAdvance {
                 chain_tip_header,
@@ -453,6 +451,45 @@ impl StateSync {
             transaction_updates,
             account_updates,
         ))
+    }
+
+    /// Checks the node for nullifiers of every note `data` could have consumed.
+    ///
+    /// `extra_notes` are notes another sync path fetched in the same call and is about to write —
+    /// the private notes delivered over the note transport layer. They are not in the store yet,
+    /// so they are tracked here as existing notes: that puts their nullifiers in the query and
+    /// lets a hit be applied to the record that will be written, which is what makes a note
+    /// delivered and consumed within one sync report as consumed by that same sync.
+    ///
+    /// Runs separately from [`Self::fetch_state`] so a caller syncing more than one source can
+    /// fetch both before checking nullifiers once, across all of them.
+    ///
+    /// No-op when the nullifier sync is disabled (see [`Self::disable_nullifier_sync`]) or when
+    /// the node reported no progress, since there is no block range to query.
+    pub async fn fetch_nullifiers(
+        &self,
+        data: &mut ChainSyncData,
+        extra_notes: Vec<InputNoteRecord>,
+    ) -> Result<(), ClientError> {
+        if !self.sync_nullifiers {
+            return Ok(());
+        }
+
+        let Some(chain_tip) =
+            data.advance.as_ref().map(|advance| advance.chain_tip_header.block_num())
+        else {
+            return Ok(());
+        };
+
+        data.note_updates.track_existing_input_notes(extra_notes);
+
+        self.nullifiers_state_sync(
+            &mut data.note_updates,
+            &mut data.transaction_updates,
+            chain_tip,
+            data.block_from,
+        )
+        .await
     }
 
     /// Recovers public notes a watched account consumed, from the `consumed_note_refs` the node
@@ -1337,13 +1374,11 @@ impl StateSync {
 /// The chain data a sync fetched from the node, before any of it has been verified against the
 /// client's MMR or written.
 ///
-/// Built by [`StateSync::fetch_state`], extended by [`Self::fetch_nullifiers`] and turned into a
-/// [`StateSyncUpdate`] by [`StateSync::build_update`]. It carries the [`StateSync`] that produced
-/// it, since the note observers accumulate per-note state during the fetch and drain it in their
-/// apply hook, so the same instances have to survive into the apply phase.
+/// Built by [`StateSync::fetch_state`], extended by [`StateSync::fetch_nullifiers`] and turned
+/// into a [`StateSyncUpdate`] by [`StateSync::build_update`]. Carries no behavior of its own: the
+/// [`StateSync`] that produced it has to stay in scope until the update is applied, because the
+/// note observers accumulate per-note state during the fetch and drain it in their apply hook.
 pub struct ChainSyncData {
-    /// The component that produced this data.
-    pub(crate) state_sync: StateSync,
     /// The chain tip the sync started from.
     pub(crate) block_from: BlockNumber,
     /// What the node reported beyond `block_from`, or `None` when the client was already at the
@@ -1362,44 +1397,6 @@ struct ChainAdvance {
     mmr_delta: MmrDelta,
     /// Screened blocks holding a client-relevant note, each with its `sync_notes` MMR path.
     relevant_note_blocks: Vec<RelevantNoteBlock>,
-}
-
-impl ChainSyncData {
-    /// Checks the node for nullifiers of every note this sync could have consumed.
-    ///
-    /// `extra_notes` are notes another sync path fetched in the same call and is about to write —
-    /// the private notes delivered over the note transport layer. They are not in the store yet,
-    /// so they are tracked here as existing notes: that puts their nullifiers in the query and
-    /// lets a hit be applied to the record that will be written, which is what makes a note
-    /// delivered and consumed within one sync report as consumed by that same sync.
-    ///
-    /// No-op when the nullifier sync is disabled (see [`StateSync::disable_nullifier_sync`]) or
-    /// when the node reported no progress, since there is no block range to query.
-    pub async fn fetch_nullifiers(
-        &mut self,
-        extra_notes: Vec<InputNoteRecord>,
-    ) -> Result<(), ClientError> {
-        if !self.state_sync.sync_nullifiers {
-            return Ok(());
-        }
-
-        let Some(chain_tip) =
-            self.advance.as_ref().map(|advance| advance.chain_tip_header.block_num())
-        else {
-            return Ok(());
-        };
-
-        self.note_updates.track_existing_input_notes(extra_notes);
-
-        self.state_sync
-            .nullifiers_state_sync(
-                &mut self.note_updates,
-                &mut self.transaction_updates,
-                chain_tip,
-                self.block_from,
-            )
-            .await
-    }
 }
 
 // HELPERS

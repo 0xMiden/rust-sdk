@@ -132,19 +132,19 @@ where
     /// separately.
     ///
     /// Fetches everything from the node first ([`Client::fetch_chain_updates`] and
-    /// [`ChainSyncData::fetch_nullifiers`]), then applies the result
+    /// [`StateSync::fetch_nullifiers`]), then applies the result
     /// ([`Client::apply_chain_updates`]), caches the partial MMR, and prunes irrelevant blocks
     /// according to the configured cadence.
     pub async fn sync_chain(&mut self) -> Result<SyncSummary, ClientError> {
         self.ensure_genesis_in_place().await?;
         self.ensure_rpc_limits_in_place().await?;
 
-        let mut data = self.fetch_chain_updates().await?;
+        let (state_sync, mut data) = self.fetch_chain_updates().await?;
         // No other sync path ran, so there are no externally delivered notes to cover.
-        data.fetch_nullifiers(Vec::new()).await?;
+        state_sync.fetch_nullifiers(&mut data, Vec::new()).await?;
 
         let mut partial_mmr = self.get_current_partial_mmr().await?;
-        let sync_summary = self.apply_chain_updates(data, &mut partial_mmr).await?;
+        let sync_summary = self.apply_chain_updates(&state_sync, data, &mut partial_mmr).await?;
 
         // Cache MMR so pruning can reuse in-memory MMR.
         self.cache_partial_mmr(partial_mmr).await?;
@@ -158,11 +158,15 @@ where
     /// writing anything or modifying the partial MMR.
     ///
     /// Builds the default sync input and runs [`StateSync::fetch_state`]. The nullifier check is
-    /// not part of this: run [`ChainSyncData::fetch_nullifiers`] on the result before applying it,
-    /// so it can also cover notes another sync path delivered in the same call.
+    /// not part of this: run [`StateSync::fetch_nullifiers`] on the result before applying it, so
+    /// it can also cover notes another sync path delivered in the same call.
+    ///
+    /// The [`StateSync`] is returned with the data because it must stay in scope until the update
+    /// is applied: its note observers accumulate per-note state during the fetch and drain it in
+    /// their apply hook, so [`Client::apply_chain_updates`] has to run against the same instances.
     ///
     /// Takes `&self` so it can run concurrently with the note transport sync's fetch phase.
-    pub async fn fetch_chain_updates(&self) -> Result<ChainSyncData, ClientError> {
+    pub async fn fetch_chain_updates(&self) -> Result<(StateSync, ChainSyncData), ClientError> {
         // Each `NoteObserver` owns its own per-sync state; `with_note_observer` just attaches.
         let note_screener = self.note_screener();
         let state_sync =
@@ -172,10 +176,15 @@ where
         let input = self.build_sync_input().await?;
         let block_from = block_num_from_forest(&self.get_current_partial_mmr().await?)?;
 
-        state_sync.fetch_state(block_from, input).await
+        let data = state_sync.fetch_state(block_from, input).await?;
+
+        Ok((state_sync, data))
     }
 
     /// Verifies fetched chain data against `partial_mmr` and writes the resulting update.
+    ///
+    /// `state_sync` must be the one that produced `data`: its note observers hold the state they
+    /// accumulated during the fetch, and their apply hooks run here.
     ///
     /// `partial_mmr` is loaded and cached by the caller, so one MMR can be shared with the note
     /// transport sync's apply phase; it is left advanced to the chain tip.
@@ -186,6 +195,7 @@ where
     /// means another sync advanced the store in between and the data is stale.
     pub async fn apply_chain_updates(
         &mut self,
+        state_sync: &StateSync,
         data: ChainSyncData,
         partial_mmr: &mut PartialMmr,
     ) -> Result<SyncSummary, ClientError> {
@@ -196,10 +206,6 @@ where
                 data.block_from
             )));
         }
-
-        // The observers accumulated their state during the fetch, so the hooks below must run
-        // against the very same instances.
-        let state_sync = data.state_sync.clone();
 
         let state_sync_update = StateSync::build_update(data, partial_mmr)?;
 
@@ -251,9 +257,9 @@ where
     /// 1. Concurrently: the note transport fetch phase and [`Client::fetch_chain_updates`].
     /// 2. The block proofs of the blocks that committed the delivered notes, which are only known
     ///    once every transport page has been fetched.
-    /// 3. [`ChainSyncData::fetch_nullifiers`], covering the tracked notes *and* the ones the
-    ///    transport just delivered, so a note delivered and consumed in the same window is reported
-    ///    as consumed by this call.
+    /// 3. [`StateSync::fetch_nullifiers`], covering the tracked notes *and* the ones the transport
+    ///    just delivered, so a note delivered and consumed in the same window is reported as
+    ///    consumed by this call.
     /// 4. The writes: the transport update first, since a nullified delivered note is written by
     ///    the chain update as an update to the row the transport insert creates.
     ///
@@ -272,19 +278,20 @@ where
         self.ensure_genesis_in_place().await?;
         self.ensure_rpc_limits_in_place().await?;
 
-        let (mut transport_data, mut chain_data) =
+        let (mut transport_data, (state_sync, mut chain_data)) =
             futures::try_join!(self.fetch_note_transport_updates(), self.fetch_chain_updates())?;
 
         transport_data.blocks = self.fetch_note_block_proofs(&mut transport_data.imports).await?;
 
         let delivered_notes: Vec<InputNoteRecord> =
             transport_data.input_note_records().cloned().collect();
-        chain_data.fetch_nullifiers(delivered_notes).await?;
+        state_sync.fetch_nullifiers(&mut chain_data, delivered_notes).await?;
 
         let mut partial_mmr = self.get_current_partial_mmr().await?;
         let new_private_notes =
             self.apply_note_transport_updates(transport_data, &mut partial_mmr).await?;
-        let mut summary = self.apply_chain_updates(chain_data, &mut partial_mmr).await?;
+        let mut summary =
+            self.apply_chain_updates(&state_sync, chain_data, &mut partial_mmr).await?;
 
         // Cache MMR so pruning can reuse in-memory MMR.
         self.cache_partial_mmr(partial_mmr).await?;

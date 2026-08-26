@@ -28,7 +28,6 @@ comfy-table = { workspace = true }
 rand        = { workspace = true }
 rand_chacha = { workspace = true }
 tokio       = { workspace = true }
-tracing-subscriber = { default-features = true, workspace = true }
 
 [dev-dependencies]
 assert_cmd = { workspace = true }

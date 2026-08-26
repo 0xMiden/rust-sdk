@@ -52,8 +52,6 @@ enum Command {
     Import(ImportArgs),
     /// Export an account from the local store to a `.mac` file
     Export(ExportArgs),
-    /// Benchmark `sync_state` from genesis, optionally with note transport (requires node)
-    Sync(SyncArgs),
 }
 
 impl Command {
@@ -67,7 +65,7 @@ impl Command {
             Command::Deploy(_) | Command::Expand(_) | Command::Transaction(_) => {
                 StartupMode::Synced
             },
-            Command::Import(_) | Command::Export(_) | Command::Sync(_) => StartupMode::Unsynced,
+            Command::Import(_) | Command::Export(_) => StartupMode::Unsynced,
         }
     }
 }
@@ -99,32 +97,6 @@ struct TransactionArgs {
     /// When omitted, all entries are read in a single transaction.
     #[arg(short, long)]
     reads: Option<usize>,
-
-    /// Number of benchmark iterations
-    #[arg(short, long, default_value_t = DEFAULT_ITERATION_COUNT)]
-    iterations: usize,
-}
-
-/// `sync_state` benchmark options.
-#[derive(Args, Clone)]
-struct SyncArgs {
-    /// Account file to import into each iteration's store, repeatable. A stale account gives the
-    /// chain half real work: its transactions carry note references the sync then resolves.
-    #[arg(short = 'f', long = "account-file")]
-    account_files: Vec<PathBuf>,
-
-    /// Public account ID to track, repeatable (hex).
-    #[arg(short, long = "account-id")]
-    account_ids: Vec<String>,
-
-    /// Note tag to track, repeatable (decimal or 0x-hex u32).
-    #[arg(short, long = "tag")]
-    tags: Vec<String>,
-
-    /// Note transport endpoint. Without it `sync_state` skips its transport half entirely, so
-    /// pass this to measure anything involving the NTL.
-    #[arg(long)]
-    note_transport: Option<String>,
 
     /// Number of benchmark iterations
     #[arg(short, long, default_value_t = DEFAULT_ITERATION_COUNT)]
@@ -242,10 +214,6 @@ impl std::fmt::Display for Network {
 
 #[tokio::main]
 async fn main() {
-    // Honour RUST_LOG so the client's own tracing is visible, e.g.
-    //   RUST_LOG=miden_client=debug miden-bench ... sync ...
-    tracing_subscriber::fmt::init();
-
     let args = CliArgs::parse();
     let store_flag = if args.store == DEFAULT_STORE_DIR {
         String::new()
@@ -376,26 +344,6 @@ async fn dispatch_command(
 
             if let Err(e) = result {
                 panic!("Export failed: {e:?}");
-            }
-        },
-        Command::Sync(sync_args) => {
-            let start_time = std::time::Instant::now();
-            let config = config::BenchConfig::new(endpoint, sync_args.iterations, store_path);
-            let result = Box::pin(benchmarks::sync::run_sync_benchmarks(
-                &config,
-                sync_args.account_ids,
-                sync_args.tags,
-                sync_args.account_files,
-                None,
-                sync_args.note_transport.as_deref(),
-            ))
-            .await;
-
-            let total_duration = start_time.elapsed();
-
-            match result {
-                Ok(results) => report::print_results(&results, "Sync Benchmark", total_duration),
-                Err(e) => panic!("Sync benchmark failed: {e:?}"),
             }
         },
     }

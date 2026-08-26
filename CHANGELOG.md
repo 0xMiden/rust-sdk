@@ -69,6 +69,7 @@
 * [FIX][cli] `miden-client notes --show` now prints the note sender in the `Sender` row; it was printing the note tag there ([#2412](https://github.com/0xMiden/rust-sdk/pull/2412)).
 * [FIX][cli] `miden-client tags --add` and `--remove` now report what actually happened instead of always printing that the tag was added or removed ([#2416](https://github.com/0xMiden/rust-sdk/pull/2416)).
 * [FIX][cli] `miden-client account --default none` now reports whether a default account was actually removed instead of always printing that it was. Removing an absent setting also no longer panics in debug builds ([#2439](https://github.com/0xMiden/rust-sdk/pull/2439)).
+* [FIX][cli] `miden-client import` now rejects invocations without a file path instead of silently succeeding.
 * [FIX][cli] `miden-client address remove` now reports whether the address was actually removed instead of always printing that it was being removed.
 * [FIX][rust] `VerifyingRpcClient::get_account` now validates that the returned `AccountProof` belongs to the requested account ID, rejecting a mismatch with `RpcError::InvalidResponse` ([#2419](https://github.com/0xMiden/rust-sdk/pull/2419)).
 

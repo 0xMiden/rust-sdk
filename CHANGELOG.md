@@ -43,6 +43,7 @@
 
 * [FIX][cli] `miden-client init` now reports invalid remote prover endpoints instead of silently writing a local-prover config ([#2376](https://github.com/0xMiden/rust-sdk/pull/2376)).
 * [FIX][rust] Note import now skips notes whose inclusion proof claims a commit height beyond the synced view, instead of panicking while authenticating them ([#2400](https://github.com/0xMiden/rust-sdk/issues/2400)).
+* [FIX][rust] `VerifyingRpcClient::sync_notes` now validates that every returned note's inclusion proof claims the block the note was returned in, rejecting mismatches with `RpcError::InvalidResponse`. The two are independent fields of the response, so a node contradicting itself is caught before either sync path consumes the note ([#2400](https://github.com/0xMiden/rust-sdk/issues/2400)).
 * [FIX][rust] `VerifyingRpcClient::sync_transactions` now validates that every returned transaction record's account ID was actually requested, rejecting mismatches with `RpcError::InvalidResponse` ([#2372](https://github.com/0xMiden/rust-sdk/issues/2372)).
 * [FIX][rust] `Client::prove_transaction_with` now checks that the `TransactionProver` returned a proof of the transaction it was asked to prove, rejecting a mismatch with the new `ClientError::MismatchedProvenTransaction` ([#2391](https://github.com/0xMiden/rust-sdk/pull/2391)).
 

@@ -76,6 +76,29 @@ fn verify_note_tags(
     Ok(())
 }
 
+/// Returns [`RpcError::InvalidResponse`] if any note's inclusion proof claims a different commit
+/// height than the block it was returned in.
+///
+/// A note's commit height lives in its own inclusion proof, which the response carries separately
+/// from the enclosing block's header. Consumers authenticate the note against one and locate the
+/// block with the other, so the two disagreeing makes the response self-contradictory: with an
+/// honest node this should never trigger.
+fn verify_note_inclusion_blocks(blocks: &[SyncNotesBlock]) -> Result<(), RpcError> {
+    for block in blocks {
+        let block_num = block.block_header.block_num();
+        for (note_id, note) in &block.notes {
+            if note.block_num() != block_num {
+                return Err(RpcError::InvalidResponse(format!(
+                    "node returned note {note_id} in block {block_num} but its inclusion proof \
+                     claims block {}",
+                    note.block_num()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Returns [`RpcError::InvalidResponse`] if any update carries a nullifier whose prefix was not in
 /// `requested_prefixes`.
 fn verify_nullifier_prefixes(
@@ -138,7 +161,8 @@ fn verify_note_script_root(requested: Word, script: &NoteScript) -> Result<(), R
 ///   match the requested one.
 /// - [`get_notes_by_id`](NodeRpcClient::get_notes_by_id): every returned note's ID must have been
 ///   requested.
-/// - [`sync_notes`](NodeRpcClient::sync_notes): every returned note's tag must have been requested.
+/// - [`sync_notes`](NodeRpcClient::sync_notes): every returned note's tag must have been requested,
+///   and every note's inclusion proof must claim the block it was returned in.
 /// - [`sync_nullifiers`](NodeRpcClient::sync_nullifiers): every returned nullifier's prefix must
 ///   have been requested.
 /// - [`get_account`](NodeRpcClient::get_account): when the state at a specific block was requested,
@@ -246,6 +270,7 @@ impl<T: NodeRpcClient> NodeRpcClient for VerifyingRpcClient<T> {
             note_tags,
             blocks.iter().flat_map(|block| block.notes.values().map(CommittedNote::tag)),
         )?;
+        verify_note_inclusion_blocks(&blocks)?;
         Ok(blocks)
     }
 

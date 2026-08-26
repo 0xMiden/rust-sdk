@@ -1,6 +1,6 @@
 use std::env::temp_dir;
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -15,10 +15,13 @@ use miden_client::note_transport::{
 };
 use miden_client::rpc::{Endpoint, GrpcClient, VerifyingRpcClient};
 use miden_client::testing::common::{FilesystemKeyStore, TestClient, create_test_store_path};
+use miden_client::testing::fee::FeeFunder;
 use miden_client::{Felt, RemoteTransactionProver};
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
 use rand::RngExt;
 use uuid::Uuid;
+
+use super::fee_funding;
 
 const NETWORK_DEVNET: &str = "devnet";
 const NETWORK_TESTNET: &str = "testnet";
@@ -77,6 +80,10 @@ pub struct ClientConfig {
     /// Optional note transport endpoint. If set, the client will connect to a note transport
     /// service.
     pub note_transport_endpoint: Option<NoteTransportEndpoint>,
+    /// Funder the account-creating test helpers draw the native fee asset from. Shared by every
+    /// client built from this config and its clones, so consecutive payments from one wallet chain
+    /// off each other's nonce.
+    pub fee_funder: Option<Arc<dyn FeeFunder>>,
 }
 
 impl ClientConfig {
@@ -88,6 +95,7 @@ impl ClientConfig {
             store_config: create_test_store_path(),
             prover_endpoint: None,
             note_transport_endpoint: None,
+            fee_funder: None,
         }
     }
 
@@ -115,14 +123,28 @@ impl ClientConfig {
         self
     }
 
+    /// Sets the funder the account-creating test helpers draw the native fee asset from.
     #[allow(clippy::return_self_not_must_use)]
-    pub fn with_rpc_endpoint(mut self, rpc_endpoint: Endpoint) -> Self {
-        self.rpc_endpoint = rpc_endpoint;
+    pub fn with_fee_funder(mut self, fee_funder: Option<Arc<dyn FeeFunder>>) -> Self {
+        self.fee_funder = fee_funder;
         self
     }
 
-    pub fn rpc_endpoint(&self) -> Endpoint {
-        self.rpc_endpoint.clone()
+    /// Loads the pre-funded wallets at `funders`, one `.mac` account file or a directory of them,
+    /// as the fee funder. `None` leaves the config without one, which is all a fee-free chain
+    /// needs.
+    pub fn with_funders(self, funders: Option<&Path>) -> Result<Self> {
+        let fee_funder = fee_funding::load(&self, funders)?;
+        Ok(self.with_fee_funder(fee_funder))
+    }
+
+    /// Returns a config for another client on the same network: same endpoints and fee funder,
+    /// its own store and keystore.
+    #[allow(clippy::return_self_not_must_use)]
+    pub fn with_fresh_store(mut self) -> Self {
+        self.store_config = create_test_store_path();
+        self.auth_path = create_test_auth_path();
+        self
     }
 
     /// Creates a `TestClient` builder and keystore.
@@ -171,15 +193,26 @@ impl ClientConfig {
         Ok((builder, keystore))
     }
 
+    /// Creates a `TestClient` without syncing it, for tests that have to wait for the node first.
+    ///
+    /// Creates the client using the provided [`ClientConfig`]. The store uses a `SQLite` database
+    /// at a temporary location determined by the store config.
+    pub async fn into_unsynced_client(self) -> Result<(TestClient, FilesystemKeyStore)> {
+        let fee_funder = self.fee_funder.clone();
+        let (builder, keystore) = self.into_client_builder().await?;
+
+        let client = builder.build().await.with_context(|| "failed to build test client")?;
+
+        Ok((TestClient::from(client).with_fee_funder(fee_funder), keystore))
+    }
+
     /// Creates a `TestClient`.
     ///
     /// Creates the client using the provided [`ClientConfig`]. The store uses a `SQLite` database
     /// at a temporary location determined by the store config. The client is synced to the
     /// current state before being returned.
     pub async fn into_client(self) -> Result<(TestClient, FilesystemKeyStore)> {
-        let (builder, keystore) = self.into_client_builder().await?;
-
-        let mut client = builder.build().await.with_context(|| "failed to build test client")?;
+        let (mut client, keystore) = self.into_unsynced_client().await?;
 
         client.sync_state().await.with_context(|| "failed to sync client state")?;
 

@@ -25,10 +25,8 @@ pub async fn test_pswap_full_fill_onchain(client_config: ClientConfig) -> Result
 
     let (mut alice_client, alice_authenticator) = client_config.clone().into_client().await?;
     wait_for_node(&mut alice_client).await;
-    let (mut bob_client, bob_authenticator) = ClientConfig::default()
-        .with_rpc_endpoint(client_config.rpc_endpoint())
-        .into_client()
-        .await?;
+    let (mut bob_client, bob_authenticator) =
+        client_config.clone().with_fresh_store().into_client().await?;
 
     alice_client.sync_state().await?;
     bob_client.sync_state().await?;
@@ -171,10 +169,8 @@ pub async fn test_pswap_partial_fill_onchain(client_config: ClientConfig) -> Res
 
     let (mut alice_client, alice_authenticator) = client_config.clone().into_client().await?;
     wait_for_node(&mut alice_client).await;
-    let (mut bob_client, bob_authenticator) = ClientConfig::default()
-        .with_rpc_endpoint(client_config.rpc_endpoint())
-        .into_client()
-        .await?;
+    let (mut bob_client, bob_authenticator) =
+        client_config.clone().with_fresh_store().into_client().await?;
 
     alice_client.sync_state().await?;
     bob_client.sync_state().await?;

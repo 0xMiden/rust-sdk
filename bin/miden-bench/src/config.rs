@@ -12,6 +12,9 @@ use rand::RngExt;
 /// Default store directory name, created in the current working directory.
 pub const DEFAULT_STORE_DIR: &str = "miden-bench-store";
 
+/// RPC request timeout, in milliseconds.
+pub const RPC_TIMEOUT_MS: u64 = 30_000;
+
 /// Configuration for benchmark execution
 #[derive(Clone)]
 pub struct BenchConfig {
@@ -48,7 +51,7 @@ pub async fn create_client(
     let rng_coin = RandomCoin::new(coin_seed.map(Felt::new_unchecked).into());
 
     let client = ClientBuilder::new()
-        .rpc(Arc::new(VerifyingRpcClient::new(GrpcClient::new(endpoint, 30_000))))
+        .rpc(Arc::new(VerifyingRpcClient::new(GrpcClient::new(endpoint, RPC_TIMEOUT_MS))))
         .rng(Box::new(rng_coin))
         .sqlite_store(sqlite_path)
         .filesystem_keystore(keystore_path.to_str().expect("keystore path should be valid UTF-8"))?

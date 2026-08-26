@@ -11,21 +11,15 @@ use crate::tests::config::ClientConfig;
 // TESTS
 // ================================================================================================
 
-/// Test GER update flow.
-///
-/// If `AGGLAYER_ACCOUNTS_DIR` is set, loads pre-deployed accounts from `.mac` files (complete
-/// genesis mode). Otherwise, creates all accounts at runtime (empty genesis mode).
+/// Test GER update flow, against the pre-deployed accounts (see [`AgglayerConfig`]).
 pub async fn test_agglayer_update_ger(client_config: ClientConfig) -> Result<()> {
     let agglayer_config = AgglayerConfig::from_env()?;
+    let _agglayer_accounts = agglayer_config.claim()?;
     let (mut bridge_admin, mut ger_manager, mut user) =
         create_agglayer_clients(&client_config).await?;
-    let (_bridge_admin_id, ger_manager_id, bridge_id) = setup_core_accounts(
-        agglayer_config.as_ref(),
-        &mut bridge_admin,
-        &mut ger_manager,
-        &mut user,
-    )
-    .await?;
+    let (_bridge_admin_id, ger_manager_id, bridge_id) =
+        setup_core_accounts(&agglayer_config, &mut bridge_admin, &mut ger_manager, &mut user)
+            .await?;
 
     // CREATE UPDATE_GER NOTE
     // --------------------------------------------------------------------------------------------

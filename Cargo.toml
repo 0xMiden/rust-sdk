@@ -36,8 +36,9 @@ opt-level = 1
 
 [workspace.dependencies]
 # Workspace crates
-miden-client              = { default-features = false, path = "crates/rust-client", version = "0.16.0-rc.3" }
-miden-client-sqlite-store = { default-features = false, path = "crates/sqlite-store", version = "0.16.0-rc.3" }
+miden-client                   = { default-features = false, path = "crates/rust-client", version = "0.16.0-rc.3" }
+miden-client-integration-tests = { default-features = false, path = "bin/integration-tests", version = "0.16.0-rc.3" }
+miden-client-sqlite-store      = { default-features = false, path = "crates/sqlite-store", version = "0.16.0-rc.3" }
 
 # Miden protocol dependencies
 miden-agglayer  = { default-features = false, version = "0.16.0-rc.6" }

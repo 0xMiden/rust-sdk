@@ -8,7 +8,7 @@ use miden_client::account::{
     AccountType,
 };
 use miden_client::assembly::CodeBuilder;
-use miden_client::asset::{Asset, FungibleAsset};
+use miden_client::asset::{Asset, AssetAmount, FungibleAsset};
 use miden_client::auth::{AuthSchemeId, NoAuth, TransactionAuthenticator};
 use miden_client::crypto::FeltRng;
 use miden_client::note::{
@@ -41,15 +41,9 @@ pub async fn test_pass_through(client_config: ClientConfig) -> Result<()> {
     let (mut client, authenticator_1) = client_config.clone().into_client().await?;
 
     // Workaround to show that importing the note into another client works
-    let mut client_config_2 = client_config.as_parts();
-    client_config_2.2 = create_test_store_path();
     let client_config_2 = ClientConfig {
-        rpc_endpoint: client_config_2.0,
-        rpc_timeout_ms: client_config_2.1,
-        store_config: client_config_2.2,
-        auth_path: client_config_2.3,
-        prover_endpoint: client_config.prover_endpoint.clone(),
-        note_transport_endpoint: client_config.note_transport_endpoint.clone(),
+        store_config: create_test_store_path(),
+        ..client_config.clone()
     };
     let (mut client_2, authenticator_2) = client_config_2.into_client().await?;
 
@@ -73,7 +67,15 @@ pub async fn test_pass_through(client_config: ClientConfig) -> Result<()> {
     )
     .await?;
 
+    // `NoAuth` pays the transaction fee out of the account's own vault like any other auth
+    // component, so on a fee-charging chain the pass-through account has to be funded before it can
+    // consume anything. Deploying it fee-free would be wrong, though: `NoAuth` only bumps the nonce
+    // when the account state changed, and an empty transaction changes nothing.
+    let charges_fees = client.chain_charges_fees().await?;
     let pass_through_account = create_pass_through_account(&mut client).await?;
+    if charges_fees {
+        client.deploy_account(pass_through_account.id()).await?;
+    }
 
     // Create client with faucets BTC faucet
     let (btc_faucet_account, ..) = insert_new_fungible_faucet(
@@ -179,10 +181,25 @@ pub async fn test_pass_through(client_config: ClientConfig) -> Result<()> {
         .await
         .expect("pass-through account should exist");
 
-    assert_eq!(
-        commitment_after_second_tx, commitment_before_second_tx,
-        "pass-through transaction should not change account commitment"
-    );
+    if charges_fees {
+        // Paying the fee withdraws from the vault, which is a state change, so the commitment
+        // cannot stay put. What the pass-through still guarantees is that the account keeps
+        // none of the asset it forwarded.
+        let retained = client
+            .account_reader(pass_through_account.id())
+            .get_balance(btc_faucet_account.id())
+            .await?;
+        assert_eq!(
+            retained,
+            AssetAmount::ZERO,
+            "pass-through account should not retain the forwarded asset"
+        );
+    } else {
+        assert_eq!(
+            commitment_after_second_tx, commitment_before_second_tx,
+            "pass-through transaction should not change account commitment"
+        );
+    }
 
     Ok(())
 }

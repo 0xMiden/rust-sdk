@@ -18,11 +18,16 @@ WARNINGS=RUSTDOCFLAGS="-D warnings"
 
 TEST_MIDEN_NOTE_TRANSPORT_URL?=http://127.0.0.1:57292
 
-# Genesis `verification_base_fee` for the testing node. 0 disables fees; any other value makes
-# every transaction pay a fee out of its own account's vault.
-MIDEN_VERIFICATION_BASE_FEE?=0
-# Value used by the `*-with-fees` targets when MIDEN_VERIFICATION_BASE_FEE is left at its default.
-FEE_VALUE?=500
+# Genesis `verification_base_fee` for the testing node. 0 runs it fee-free.
+MIDEN_VERIFICATION_BASE_FEE?=500
+
+# Pre-funded wallets the integration tests draw transaction fees from, written here by
+# `start-test-node.sh`. Against a deployed network, point this at wallets funded out of band.
+MIDEN_FUNDER_ACCOUNTS?=$(CURDIR)/data/funders
+
+# Pre-deployed agglayer accounts the agglayer tests transact with, written here by
+# `start-test-node.sh`. Against a deployed network, point this at the accounts deployed there.
+AGGLAYER_ACCOUNTS_DIR?=$(CURDIR)/data
 
 # --- Linting -------------------------------------------------------------------------------------
 
@@ -96,21 +101,9 @@ test-docs: ## Run documentation tests
 start-node: ## Start the testing node in the foreground, streaming logs (Ctrl+C stops it)
 	MIDEN_VERIFICATION_BASE_FEE=$(MIDEN_VERIFICATION_BASE_FEE) ./scripts/start-test-node.sh
 
-.PHONY: start-node-agglayer
-start-node-agglayer: ## Start the testing node with agglayer genesis accounts
-	AGGLAYER_GENESIS=1 MIDEN_VERIFICATION_BASE_FEE=$(MIDEN_VERIFICATION_BASE_FEE) ./scripts/start-test-node.sh
-
 .PHONY: start-node-background
 start-node-background: ## Start the testing node in the background
 	MIDEN_VERIFICATION_BASE_FEE=$(MIDEN_VERIFICATION_BASE_FEE) ./scripts/start-test-node.sh --background
-
-.PHONY: start-node-with-fees
-start-node-with-fees: ## Start the testing node in the foreground with fees enabled (FEE_VALUE=500)
-	$(MAKE) start-node MIDEN_VERIFICATION_BASE_FEE=$(FEE_VALUE)
-
-.PHONY: start-node-background-with-fees
-start-node-background-with-fees: ## Start the testing node in the background with fees enabled (FEE_VALUE=500)
-	$(MAKE) start-node-background MIDEN_VERIFICATION_BASE_FEE=$(FEE_VALUE)
 
 .PHONY: stop-node
 stop-node: ## Stop the testing node
@@ -130,16 +123,16 @@ start-note-transport:
 
 .PHONY: integration-test
 integration-test: ## Run integration tests
-	cargo nextest run --workspace --release --test=integration
+	MIDEN_FUNDER_ACCOUNTS=$(MIDEN_FUNDER_ACCOUNTS) AGGLAYER_ACCOUNTS_DIR=$(AGGLAYER_ACCOUNTS_DIR) cargo nextest run --workspace --release --test=integration
 
 .PHONY: integration-test-full
 integration-test-full: ## Run the integration test binary with ignored tests included (requires note transport service)
-	TEST_MIDEN_NOTE_TRANSPORT_URL=$(TEST_MIDEN_NOTE_TRANSPORT_URL) cargo nextest run --workspace --release --test=integration
-	cargo nextest run --workspace --release --test=integration --run-ignored ignored-only -- import_genesis_accounts_can_be_used_for_transactions
+	TEST_MIDEN_NOTE_TRANSPORT_URL=$(TEST_MIDEN_NOTE_TRANSPORT_URL) MIDEN_FUNDER_ACCOUNTS=$(MIDEN_FUNDER_ACCOUNTS) AGGLAYER_ACCOUNTS_DIR=$(AGGLAYER_ACCOUNTS_DIR) cargo nextest run --workspace --release --test=integration
+	MIDEN_FUNDER_ACCOUNTS=$(MIDEN_FUNDER_ACCOUNTS) AGGLAYER_ACCOUNTS_DIR=$(AGGLAYER_ACCOUNTS_DIR) cargo nextest run --workspace --release --test=integration --run-ignored ignored-only -- import_genesis_accounts_can_be_used_for_transactions
 
 .PHONY: integration-test-miden-bench
 integration-test-miden-bench: install-bench ## Run miden-bench smoke tests
-	./scripts/test-miden-bench-smoke.sh
+	MIDEN_FUNDER_ACCOUNTS=$(MIDEN_FUNDER_ACCOUNTS) ./scripts/test-miden-bench-smoke.sh
 
 .PHONY: test-dev
 test-dev: ## Run tests with debug assertions enabled via test-dev profile
@@ -147,11 +140,11 @@ test-dev: ## Run tests with debug assertions enabled via test-dev profile
 
 .PHONY: integration-test-dev
 integration-test-dev: ## Run integration tests with debug assertions enabled via test-dev profile
-	cargo nextest run --workspace --cargo-profile test-dev --test=integration
+	MIDEN_FUNDER_ACCOUNTS=$(MIDEN_FUNDER_ACCOUNTS) AGGLAYER_ACCOUNTS_DIR=$(AGGLAYER_ACCOUNTS_DIR) cargo nextest run --workspace --cargo-profile test-dev --test=integration
 
 .PHONY: integration-test-binary
 integration-test-binary: ## Run the integration tests using the standalone binary (requires note transport service)
-	TEST_MIDEN_NOTE_TRANSPORT_URL=$(TEST_MIDEN_NOTE_TRANSPORT_URL) cargo run --package miden-client-integration-tests --release --locked
+	TEST_MIDEN_NOTE_TRANSPORT_URL=$(TEST_MIDEN_NOTE_TRANSPORT_URL) AGGLAYER_ACCOUNTS_DIR=$(AGGLAYER_ACCOUNTS_DIR) cargo run --package miden-client-integration-tests --release --locked -- --funders $(MIDEN_FUNDER_ACCOUNTS)
 
 # --- Installing ----------------------------------------------------------------------------------
 

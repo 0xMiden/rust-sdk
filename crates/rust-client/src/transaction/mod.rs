@@ -983,7 +983,7 @@ where
         validate_fee_conversion_info_support(transaction_request, account_code_interface)?;
 
         if account_code_interface.contains([FungibleFaucet::mint_and_send_root()]) {
-            // TODO(SantiagoPittella): Add faucet validations.
+            // TODO(#1266): Add faucet validations.
             Ok(())
         } else {
             let assets = self.account_reader(account_id).assets().await?;

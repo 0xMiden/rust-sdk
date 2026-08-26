@@ -12,7 +12,8 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::ToString;
 use alloc::vec::Vec;
 
-use miden_protocol::block::BlockNumber;
+use miden_protocol::block::{BlockHeader, BlockNumber};
+use miden_protocol::crypto::merkle::mmr::MmrProof;
 use miden_protocol::note::{
     Note,
     NoteAttachments,
@@ -22,6 +23,7 @@ use miden_protocol::note::{
     NoteInclusionProof,
     NoteMetadata,
     NoteTag,
+    Nullifier,
 };
 use miden_standards::note::NoteFile;
 use miden_tx::auth::TransactionAuthenticator;
@@ -33,16 +35,45 @@ use crate::store::{InputNoteRecord, InputNoteState, NoteFilter};
 use crate::sync::NoteTagRecord;
 use crate::{Client, ClientError};
 
-/// A note to import from its details: the previously stored record if there is one, the note's
-/// details, the block after which it is expected to be committed, its tag, and its metadata when
-/// the caller already knows it (see [`Client::import_notes_with_metadata`]).
-type DetailsImportRequest = (
-    Option<InputNoteRecord>,
-    NoteDetails,
-    BlockNumber,
-    Option<NoteTag>,
-    Option<NoteMetadata>,
-);
+/// An expected note to import: its details, the block after which it is expected to be committed,
+/// the tag it should be tracked under, and its metadata when the caller already knows it (see
+/// [`Client::import_notes_with_metadata`]).
+pub(crate) type ExpectedNoteRequest = (NoteDetails, BlockNumber, NoteTag, Option<NoteMetadata>);
+
+/// One expected note the import is about to write, together with what the chain said about it.
+///
+/// The stored record is deliberately not captured here. It is read when the plan is applied, so
+/// that a write landing between the planning and the applying — the chain half of a
+/// [`Client::sync_state`] does exactly that — is built on rather than overwritten.
+struct PlannedNote {
+    request: ExpectedNoteRequest,
+    /// What the commitment scan found for this note, if it found it at all.
+    committed: Option<SyncedNote>,
+}
+
+/// Everything an expected-note import needs from the network, fetched before anything is written.
+///
+/// Splitting the fetching from the writing is what lets [`Client::sync_state`] overlap the note
+/// import with the chain fetch: the planning is read-only and can run inside the join, and
+/// applying the plan touches only the store.
+pub(crate) struct ExpectedNoteImportPlan {
+    notes: Vec<PlannedNote>,
+    /// Header and MMR proof for every block a planned note was committed in.
+    blocks: BTreeMap<BlockNumber, (BlockHeader, MmrProof)>,
+    /// Commit height of every nullifier the plan asked about and found spent.
+    spent: BTreeMap<Nullifier, BlockNumber>,
+}
+
+impl ExpectedNoteImportPlan {
+    /// A plan with nothing to import.
+    pub(crate) fn empty() -> Self {
+        Self {
+            notes: Vec::new(),
+            blocks: BTreeMap::new(),
+            spent: BTreeMap::new(),
+        }
+    }
+}
 
 /// Note importing methods.
 impl<AUTH> Client<AUTH>
@@ -105,19 +136,22 @@ where
         // entries (`ExpectedNote`/`Committed`) are keyed by their details commitment, since
         // they may have no note ID of their own.
         let mut ids = BTreeSet::new();
-        let mut files_by_commitment = BTreeMap::new();
+        let mut expected_by_commitment = BTreeMap::new();
+        let mut committed_by_commitment = BTreeMap::new();
         for (note_file, metadata) in note_files {
             match note_file {
                 NoteFile::NoteId(id) => {
                     ids.insert(*id);
                 },
-                NoteFile::ExpectedNote { details, .. } => {
-                    files_by_commitment
-                        .insert(details.commitment(), (note_file.clone(), *metadata));
+                NoteFile::ExpectedNote { details, sync_hint } => {
+                    expected_by_commitment.insert(
+                        details.commitment(),
+                        (details.clone(), sync_hint.after_block_num(), sync_hint.tag(), *metadata),
+                    );
                 },
-                NoteFile::Committed { note, .. } => {
-                    files_by_commitment
-                        .insert(note.details_commitment(), (note_file.clone(), *metadata));
+                NoteFile::Committed { note, proof } => {
+                    committed_by_commitment
+                        .insert(note.details_commitment(), (note.clone(), proof.clone()));
                 },
             }
         }
@@ -132,17 +166,16 @@ where
             .collect();
         let previous_by_commitment: BTreeMap<NoteDetailsCommitment, InputNoteRecord> = self
             .get_input_notes(NoteFilter::DetailsCommitments(
-                files_by_commitment.keys().copied().collect(),
+                committed_by_commitment.keys().copied().collect(),
             ))
             .await?
             .into_iter()
             .map(|note| (note.details_commitment(), note))
             .collect();
 
-        // Pair each deduplicated file with its previously stored version (if any), bucketed by
-        // variant. A note that is currently being processed can't be overwritten.
+        // Pair each deduplicated file with its previously stored version (if any). A note that is
+        // currently being processed can't be overwritten.
         let mut requests_by_id = BTreeMap::new();
-        let mut requests_by_details = vec![];
         let mut requests_by_proof = vec![];
 
         for id in ids {
@@ -151,26 +184,10 @@ where
             requests_by_id.insert(id, previous_note);
         }
 
-        for (commitment, (note_file, metadata)) in files_by_commitment {
+        for (commitment, (note, proof)) in committed_by_commitment {
             let previous_note = previous_by_commitment.get(&commitment).cloned();
             ensure_not_processing(previous_note.as_ref())?;
-            match note_file {
-                NoteFile::ExpectedNote { details, sync_hint } => {
-                    requests_by_details.push((
-                        previous_note,
-                        details,
-                        sync_hint.after_block_num(),
-                        Some(sync_hint.tag()),
-                        metadata,
-                    ));
-                },
-                NoteFile::Committed { note, proof } => {
-                    requests_by_proof.push((previous_note, note, proof));
-                },
-                NoteFile::NoteId(_) => {
-                    unreachable!("files_by_commitment only holds detail-carrying note files")
-                },
-            }
+            requests_by_proof.push((previous_note, note, proof));
         }
 
         let mut imported_notes = vec![];
@@ -179,20 +196,34 @@ where
             imported_notes.extend(notes_by_id);
         }
 
-        if !requests_by_details.is_empty() {
-            let notes_by_details = self.import_note_records_by_details(requests_by_details).await?;
-            imported_notes.extend(notes_by_details);
-        }
-
         if !requests_by_proof.is_empty() {
             let notes_by_proof = self.import_note_records_by_proof(requests_by_proof).await?;
             imported_notes.extend(notes_by_proof);
         }
 
-        self.mark_externally_consumed(&mut imported_notes).await?;
+        let mut imported_commitments = self.store_imported_notes(imported_notes).await?;
 
-        let mut imported_commitments = Vec::with_capacity(imported_notes.len());
-        for note in imported_notes {
+        // Expected notes go through the plan/apply pair, so that this path and the sync path share
+        // one implementation. Scanning up to the sync height keeps a standalone import from
+        // reporting a note as committed in a block the caller has not synced to yet.
+        if !expected_by_commitment.is_empty() {
+            let requests: Vec<ExpectedNoteRequest> = expected_by_commitment.into_values().collect();
+            let scan_to = self.get_sync_height().await?;
+            let plan = self.plan_expected_note_import(&requests, scan_to).await?;
+            imported_commitments.extend(self.apply_expected_note_import(plan).await?);
+        }
+
+        Ok(imported_commitments)
+    }
+
+    /// Registers the expected-note tag of every record that still needs one, upserts the records,
+    /// and returns their details commitments.
+    async fn store_imported_notes(
+        &mut self,
+        notes: Vec<InputNoteRecord>,
+    ) -> Result<Vec<NoteDetailsCommitment>, ClientError> {
+        let mut imported_commitments = Vec::with_capacity(notes.len());
+        for note in notes {
             let details_commitment = note.details_commitment();
             if let InputNoteState::Expected(ExpectedNoteState { tag: Some(tag), .. }) = note.state()
             {
@@ -306,9 +337,19 @@ where
             }
         }
 
+        let current_block_num = self.get_sync_height().await?;
+        // Search all the way to the chain tip, not just to the sync height. Every note here
+        // arrives with an inclusion proof, so the caller is asking what state it is really in;
+        // answering "not spent" for a spend the client simply has not synced past yet would hand
+        // back a note that looks consumable and is not.
+        let (chain_tip, _) = self.rpc_api.get_block_header_by_number(None, false).await?;
         let nullifier_commit_heights = self
             .rpc_api
-            .get_nullifier_commit_heights(nullifier_requests, lowest_block_height)
+            .get_nullifier_commit_heights(
+                nullifier_requests,
+                lowest_block_height,
+                chain_tip.block_num(),
+            )
             .await?;
         let mut partial_mmr = self.get_current_partial_mmr().await?;
 
@@ -335,8 +376,6 @@ where
                 }
             } else {
                 let block_height = inclusion_proof.location().block_num();
-                let current_block_num = self.get_sync_height().await?;
-
                 let tag = metadata.tag();
                 let mut note_changed =
                     note_record.inclusion_proof_received(inclusion_proof, metadata)?;
@@ -369,173 +408,219 @@ where
         Ok(note_records)
     }
 
-    /// Marks every note in `notes` that was already spent at or below the client's sync height as
-    /// consumed externally.
+    /// Plans the import of expected notes: asks the chain which of them are committed at or below
+    /// `scan_to`, and fetches everything applying the plan will need — the authentication data for
+    /// each commitment block, and the nullifier state of every note that turned out to be
+    /// committed.
     ///
-    /// This covers the one gap the chain sync structurally cannot: its nullifier search only ever
-    /// looks above the checkpoint, while a note's commitment can be discovered arbitrarily far
-    /// below it, from a sender's block hint or the import's own backward scan. Searching from the
-    /// earliest block the note could have been committed in gives spend discovery the same reach
-    /// as commitment discovery.
+    /// Touches the network only, never the store, so this can run concurrently with other
+    /// fetching (see [`Client::sync_state`]) and nothing it produces can go stale against a write
+    /// that lands before the plan is applied.
     ///
-    /// Spends above the sync height are deliberately left alone. The forward nullifier sync still
-    /// reaches those, and it can attribute the consuming account when that account is tracked,
-    /// which this call has no way to determine.
-    ///
-    /// A nullifier is derived from the note's details *and* its metadata, so notes still lacking
-    /// metadata are skipped here and left for a later sync to resolve and check.
-    async fn mark_externally_consumed(
+    /// `scan_to` bounds both the commitment scan and the nullifier search, and the caller picks
+    /// it: it is the highest block the store will have synced to by the time the plan is applied,
+    /// which is both how far an answer can be acted on and how far the partial MMR will be able to
+    /// authenticate.
+    pub(crate) async fn plan_expected_note_import(
         &self,
-        notes: &mut [InputNoteRecord],
-    ) -> Result<(), ClientError> {
-        let sync_height = self.get_sync_height().await?;
+        requests: &[ExpectedNoteRequest],
+        scan_to: BlockNumber,
+    ) -> Result<ExpectedNoteImportPlan, ClientError> {
+        let mut lowest_request_block: BlockNumber = u32::MAX.into();
+        let mut scan_requests = Vec::with_capacity(requests.len());
+        for (details, after_block_num, tag, _) in requests {
+            scan_requests.push((details.commitment(), *tag));
+            lowest_request_block = lowest_request_block.min(*after_block_num);
+        }
+        let mut committed_notes =
+            self.sync_expected_notes(lowest_request_block, scan_to, scan_requests).await?;
 
+        let mut notes = Vec::with_capacity(requests.len());
+        // Authentication data is per block, not per note: several notes can share one.
+        let mut commitment_blocks = BTreeSet::new();
         let mut nullifier_requests = BTreeSet::new();
-        let mut lowest_nullifier_block: BlockNumber = u32::MAX.into();
+        let mut lowest_commitment_block: BlockNumber = u32::MAX.into();
 
-        for note in notes.iter() {
-            let Some(nullifier) = note.nullifier() else {
-                continue;
-            };
-
-            // Earliest block the note could have been committed in, which bounds the search.
-            let from_block = match note.state() {
-                InputNoteState::Expected(state) => Some(state.after_block_num),
-                _ => note.inclusion_proof().map(|proof| proof.location().block_num()),
-            };
-            // A note that cannot have been committed at or below the sync height cannot have been
-            // spent there either, so there is nothing here to find for it.
-            let Some(from_block) = from_block.filter(|block| *block <= sync_height) else {
-                continue;
-            };
-
-            nullifier_requests.insert(nullifier);
-            lowest_nullifier_block = lowest_nullifier_block.min(from_block);
-        }
-
-        if nullifier_requests.is_empty() {
-            return Ok(());
-        }
-
-        let nullifier_commit_heights = self
-            .rpc_api
-            .get_nullifier_commit_heights(nullifier_requests, lowest_nullifier_block)
-            .await?;
-
-        for note in notes.iter_mut() {
-            if let Some(nullifier) = note.nullifier()
-                && let Some(block_height) =
-                    nullifier_commit_heights.get(&nullifier).and_then(|height| *height)
-                && block_height <= sync_height
-            {
-                note.consumed_externally(nullifier, block_height, None)?;
+        for request in requests {
+            let (details, ..) = request;
+            let committed = committed_notes.remove(&details.commitment());
+            if let Some(synced) = &committed {
+                let block_num = synced.committed.block_num();
+                commitment_blocks.insert(block_num);
+                nullifier_requests.insert(Nullifier::from_details_and_metadata(
+                    details,
+                    synced.committed.metadata(),
+                ));
+                lowest_commitment_block = lowest_commitment_block.min(block_num);
             }
+
+            notes.push(PlannedNote { request: request.clone(), committed });
         }
 
-        Ok(())
+        let mut blocks = BTreeMap::new();
+        for block_num in commitment_blocks {
+            blocks.insert(block_num, self.rpc_api.get_block_header_with_proof(block_num).await?);
+        }
+
+        // Only committed notes are asked about. A note that is not committed cannot have been
+        // spent, and a spend cannot precede its commitment, so the earliest commitment among them
+        // is the tightest lower bound the batch can share — and the bound is shared, so taking it
+        // from anything looser (a sender's block hint, or the import's lookback floor) would drag
+        // the search back towards genesis for every note in the batch.
+        let spent = if nullifier_requests.is_empty() {
+            BTreeMap::new()
+        } else {
+            self.rpc_api
+                .get_nullifier_commit_heights(nullifier_requests, lowest_commitment_block, scan_to)
+                .await?
+                .into_iter()
+                .filter_map(|(nullifier, height)| height.map(|height| (nullifier, height)))
+                .collect()
+        };
+
+        Ok(ExpectedNoteImportPlan { notes, blocks, spent })
     }
 
-    /// Builds a note record list from note details. If a note with the same ID was already stored
-    /// it is passed via `previous_note` so it can be updated.
+    /// Writes a planned expected-note import: applies the state transitions the plan's fetched
+    /// data implies, authenticates each commitment block against the partial MMR, clears the
+    /// expected-note tag of the notes that settled, and upserts the records.
     ///
-    /// Only records that need to be stored are returned: notes the node has not reported as
-    /// committed keep (or get) their expected record, while committed notes are returned only if
-    /// the new information changed them.
-    async fn import_note_records_by_details(
+    /// Returns the details commitments of the notes that were stored. Notes the chain has not
+    /// reported as committed keep their expected record; committed ones are stored only when the
+    /// new information changed them.
+    ///
+    /// This writes to the store and must not run concurrently with anything else that does. It
+    /// reaches the network only when a prefetched MMR proof predates the forest the store is now
+    /// at, in which case that one block's proof is fetched again.
+    pub(crate) async fn apply_expected_note_import(
         &mut self,
-        requested_notes: Vec<DetailsImportRequest>,
-    ) -> Result<Vec<InputNoteRecord>, ClientError> {
-        let mut lowest_request_block: BlockNumber = u32::MAX.into();
-        let mut note_requests = vec![];
-        for (_, details, after_block_num, tag, _) in &requested_notes {
-            if let Some(tag) = tag {
-                note_requests.push((details.commitment(), *tag));
-                lowest_request_block = lowest_request_block.min(*after_block_num);
-            }
+        plan: ExpectedNoteImportPlan,
+    ) -> Result<Vec<NoteDetailsCommitment>, ClientError> {
+        let ExpectedNoteImportPlan { notes, blocks, spent } = plan;
+        if notes.is_empty() {
+            return Ok(Vec::new());
         }
-        let mut committed_notes_data =
-            self.sync_expected_notes(lowest_request_block, note_requests).await?;
+
+        // Read what is stored now rather than what was stored when the plan was made: anything
+        // written in between has to be built on, not replaced. Matching by details commitment also
+        // matches metadata-less records, whose `note_id` is NULL.
+        let previous: BTreeMap<NoteDetailsCommitment, InputNoteRecord> = self
+            .get_input_notes(NoteFilter::DetailsCommitments(
+                notes.iter().map(|planned| planned.request.0.commitment()).collect(),
+            ))
+            .await?
+            .into_iter()
+            .map(|note| (note.details_commitment(), note))
+            .collect();
 
         let mut note_records = vec![];
         let mut partial_mmr = self.get_current_partial_mmr().await?;
+        let sync_height = self.get_sync_height().await?;
 
-        for (previous_note, details, after_block_num, tag, metadata) in requested_notes {
-            let mut note_record = previous_note.unwrap_or_else(|| {
+        for PlannedNote { request, committed } in notes {
+            let (details, after_block_num, tag, metadata) = request;
+
+            let previous_note = previous.get(&details.commitment()).cloned();
+            // A note a local transaction is currently consuming can't be overwritten.
+            ensure_not_processing(previous_note.as_ref())?;
+
+            let mut record = previous_note.unwrap_or_else(|| {
                 InputNoteRecord::new(
                     details,
                     NoteAttachments::empty(),
                     self.store.get_current_timestamp(),
-                    ExpectedNoteState { metadata, after_block_num, tag }.into(),
+                    ExpectedNoteState {
+                        metadata,
+                        after_block_num,
+                        tag: Some(tag),
+                    }
+                    .into(),
                 )
             });
-
-            // Notes the node has not reported as committed keep their expected record untouched.
-            let Some(SyncedNote { committed: committed_note, content }) =
-                committed_notes_data.remove(&note_record.details_commitment())
-            else {
-                note_records.push(note_record);
+            // Notes the chain has not reported as committed keep their expected record untouched.
+            let Some(SyncedNote { committed: committed_note, content }) = committed else {
+                note_records.push(record);
                 continue;
             };
+
+            // The plan's scan bound is read concurrently with the chain sync's own tip lookup, so
+            // it can land a block or two above where the store ended up. The partial MMR cannot
+            // authenticate a block it does not reach yet, so such a note stays expected and is
+            // settled by the next sync rather than verified against a forest that predates it.
+            if committed_note.block_num() > sync_height {
+                note_records.push(record);
+                continue;
+            }
 
             let attachments = content
                 .map(ResolvedNoteContent::into_attachments)
                 .filter(|attachments| !attachments.is_empty());
 
+            let block_num = committed_note.block_num();
             let block_header = self
-                .get_and_store_authenticated_block(committed_note.block_num(), &mut partial_mmr)
+                .store_authenticated_block(block_num, blocks.get(&block_num), &mut partial_mmr)
                 .await?;
 
             let metadata = *committed_note.metadata();
-            let mut note_changed = note_record
+            let mut note_changed = record
                 .inclusion_proof_received(committed_note.inclusion_proof().clone(), metadata)?;
 
             if let Some(attachments) = attachments {
-                note_changed |= note_record.attachments_received(attachments);
+                note_changed |= record.attachments_received(attachments);
             }
 
             // `block_header_received` transitions the record's state, so it must always run.
-            note_changed |= note_record.block_header_received(&block_header)?;
+            note_changed |= record.block_header_received(&block_header)?;
 
             // Once committed, the note no longer needs its expected-note tag.
             if note_changed {
                 self.store
                     .remove_note_tag(NoteTagRecord::with_note_source(
                         metadata.tag(),
-                        note_record.details_commitment(),
+                        record.details_commitment(),
                     ))
                     .await?;
             }
 
+            // A note the chain has already spent is recorded as consumed rather than left looking
+            // consumable. Only the plan can tell: the forward nullifier sync searches above the
+            // client's checkpoint, and a commitment found by the backward scan can sit below it.
+            if let Some(nullifier) = record.nullifier()
+                && let Some(block_height) = spent.get(&nullifier)
+            {
+                note_changed |= record.consumed_externally(nullifier, *block_height, None)?;
+            }
+
             if note_changed {
-                note_records.push(note_record);
+                note_records.push(record);
             }
         }
         self.cache_partial_mmr(partial_mmr).await?;
 
-        Ok(note_records)
+        self.store_imported_notes(note_records).await
     }
 
     /// Checks whether the expected notes (identified by their details commitments and tags) have
-    /// been committed on chain between `request_block_num` and the current block, returning the
-    /// matching synced notes keyed by details commitment.
+    /// been committed on chain between `request_block_num` and `scan_to`, returning the matching
+    /// synced notes keyed by details commitment.
     ///
     /// Expected notes have no metadata and thus no `NoteId`, so each committed note is matched by
     /// reconstructing the id from the committed metadata: `NoteId::new(details_commitment,
     /// metadata)`.
     async fn sync_expected_notes(
-        &mut self,
+        &self,
         request_block_num: BlockNumber,
+        scan_to: BlockNumber,
         // Expected notes' details commitments with their tags.
         expected_notes: Vec<(NoteDetailsCommitment, NoteTag)>,
     ) -> Result<BTreeMap<NoteDetailsCommitment, SyncedNote>, ClientError> {
         let sync_tags: BTreeSet<NoteTag> = expected_notes.iter().map(|(_, tag)| *tag).collect();
 
         let mut matched_notes = BTreeMap::new();
-        let current_block_num = self.get_sync_height().await?;
 
-        // Notes expected only after a block we have not reached can't be committed within our
-        // synced view yet: skip the lookup and let them stay expected until a future sync.
-        if request_block_num > current_block_num {
+        // Notes expected only after a block the scan does not reach can't be committed within its
+        // range: skip the lookup and let them stay expected until a future sync.
+        if request_block_num > scan_to {
             return Ok(matched_notes);
         }
 
@@ -543,7 +628,7 @@ where
             .rpc_api
             .sync_notes_with_content(
                 request_block_num,
-                current_block_num,
+                scan_to,
                 &sync_tags,
                 NoteContentFetch::AttachmentsOnly,
             )
@@ -551,7 +636,7 @@ where
             .map_err(ClientError::RpcError)?;
 
         for block in blocks {
-            if block.block_header.block_num() > current_block_num {
+            if block.block_header.block_num() > scan_to {
                 break;
             }
 

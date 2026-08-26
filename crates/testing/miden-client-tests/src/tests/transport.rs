@@ -1243,3 +1243,51 @@ async fn ntl_note_already_consumed_on_chain_is_consumed_in_one_sync() {
         note.state(),
     );
 }
+
+/// The nullifier search that settles an NTL-imported note starts at the note's commitment block,
+/// not at the block the sender pointed the client at.
+///
+/// The bound is shared by the whole batch and the node pages through the range, so taking it from
+/// a sender's hint — or from the import's lookback floor, which is genesis on a young chain — turns
+/// every sync that imports a note into a walk over the chain. A note that is not committed cannot
+/// have been spent, and a spend cannot precede the commitment, so the commitment block is both the
+/// tightest and the only bound that is needed.
+#[tokio::test]
+async fn ntl_spent_check_starts_at_the_commitment_block() {
+    // Note committed at block 1, chain at block 5.
+    let (mut client, private_note, mock_transport_node, rpc_api) =
+        unsynced_private_note_recipient(4, false, false).await;
+    client.sync_state().await.unwrap();
+
+    // Delivered with a hint at genesis: the loosest bound a sender can give.
+    mock_transport_node.write().add_note_after(
+        *private_note.header(),
+        NoteDetails::from(private_note.clone()).to_bytes(),
+        Some(BlockNumber::from(0)),
+    );
+
+    let queries_before = rpc_api.nullifier_queries().len();
+    client.sync_state().await.unwrap();
+
+    let note = client
+        .get_input_notes(NoteFilter::Committed)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|note| note.id() == Some(private_note.id()))
+        .expect("the transport note should have been committed");
+    let commitment_block = note.inclusion_proof().unwrap().location().block_num();
+
+    // Order-independent: the chain half issues a nullifier search of its own, concurrently.
+    let queries = rpc_api.nullifier_queries();
+    let import_queries = &queries[queries_before..];
+    assert!(
+        import_queries.iter().any(|(from, _)| *from == commitment_block),
+        "expected a nullifier search starting at the note's commitment block \
+         ({commitment_block}), got {import_queries:?}"
+    );
+    assert!(
+        !import_queries.iter().any(|(from, _)| *from == BlockNumber::from(0)),
+        "no nullifier search should start at genesis, got {import_queries:?}"
+    );
+}

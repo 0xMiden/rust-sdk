@@ -488,21 +488,22 @@ pub trait NodeRpcClient: Send + Sync {
 
     /// Fetches the commit height where the nullifier was consumed. If the nullifier isn't found,
     /// then `None` is returned.
-    /// The `block_num` parameter is the block number to start the search from (inclusive).
     ///
-    /// The default implementation of this method makes two RPC requests: one to
-    /// [`NodeRpcClient::get_block_header_by_number`] to resolve the chain tip, and one to
-    /// [`NodeRpcClient::sync_nullifiers`] to search up to that tip.
+    /// `block_from` and `block_to` bound the search, both inclusive. The caller supplies the upper
+    /// bound rather than having it resolved here, because the block range decides how many pages
+    /// [`NodeRpcClient::sync_nullifiers`] has to walk, and the caller is the one that knows how far
+    /// it can act on an answer.
+    ///
+    /// The default implementation of this method is one [`NodeRpcClient::sync_nullifiers`] call.
     async fn get_nullifier_commit_heights(
         &self,
         requested_nullifiers: BTreeSet<Nullifier>,
         block_from: BlockNumber,
+        block_to: BlockNumber,
     ) -> Result<BTreeMap<Nullifier, Option<BlockNumber>>, RpcError> {
         let prefixes: Vec<u16> =
             requested_nullifiers.iter().map(crate::note::Nullifier::prefix).collect();
-        let (chain_tip, _) = self.get_block_header_by_number(None, false).await?;
-        let retrieved_nullifiers =
-            self.sync_nullifiers(&prefixes, block_from, chain_tip.block_num()).await?;
+        let retrieved_nullifiers = self.sync_nullifiers(&prefixes, block_from, block_to).await?;
 
         let mut nullifiers_height = BTreeMap::new();
         for nullifier in requested_nullifiers {

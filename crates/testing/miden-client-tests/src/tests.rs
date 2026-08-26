@@ -920,6 +920,7 @@ async fn import_note_validation() {
             .get_nullifier_commit_heights(
                 BTreeSet::from([public_note.nullifier()]),
                 note.inclusion_proof().location().block_num(),
+                rpc_api.get_chain_tip_block_num(),
             )
             .await
             .unwrap();

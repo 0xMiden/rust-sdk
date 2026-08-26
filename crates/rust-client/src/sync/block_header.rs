@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::hash::rpo::Rpo256;
 use miden_protocol::crypto::merkle::MerklePath;
-use miden_protocol::crypto::merkle::mmr::{Forest, InOrderIndex, PartialMmr};
+use miden_protocol::crypto::merkle::mmr::{Forest, InOrderIndex, MmrProof, PartialMmr};
 use miden_protocol::{Felt, Word};
 use tracing::warn;
 
@@ -137,6 +137,23 @@ impl<AUTH> Client<AUTH> {
         block_num: BlockNumber,
         current_partial_mmr: &mut PartialMmr,
     ) -> Result<BlockHeader, ClientError> {
+        self.store_authenticated_block(block_num, None, current_partial_mmr).await
+    }
+
+    /// As [`Self::get_and_store_authenticated_block`], but reusing authentication data the caller
+    /// already fetched.
+    ///
+    /// `prefetched` is usable only when its proof was taken against a forest at least as large as
+    /// the one `current_partial_mmr` is at: a Merkle path can be shortened for a smaller forest,
+    /// never extended for a larger one. A proof that comes up short — the chain advanced between
+    /// the prefetch and here — is fetched again, so passing a stale one costs a round trip rather
+    /// than failing.
+    pub(crate) async fn store_authenticated_block(
+        &self,
+        block_num: BlockNumber,
+        prefetched: Option<&(BlockHeader, MmrProof)>,
+        current_partial_mmr: &mut PartialMmr,
+    ) -> Result<BlockHeader, ClientError> {
         if current_partial_mmr.is_tracked(block_num.as_usize()) {
             warn!("Current partial MMR already contains the requested data");
             let (block_header, _) = self
@@ -147,9 +164,26 @@ impl<AUTH> Client<AUTH> {
             return Ok(block_header);
         }
 
-        // Fetch the block header and MMR proof from the node
-        let (block_header, path_nodes) =
-            fetch_block_header(self.rpc_api.clone(), block_num, current_partial_mmr).await?;
+        let target_forest = current_partial_mmr.forest();
+        let usable = prefetched
+            .filter(|(_, proof)| proof.path().with_forest(target_forest).is_ok())
+            .cloned();
+
+        let (block_header, path_nodes) = match usable {
+            Some((block_header, proof)) => {
+                let path_nodes = track_block_in_mmr(
+                    current_partial_mmr,
+                    block_num,
+                    block_header.commitment(),
+                    proof.merkle_path(),
+                )?;
+                (block_header, path_nodes)
+            },
+            // Fetch the block header and MMR proof from the node
+            None => {
+                fetch_block_header(self.rpc_api.clone(), block_num, current_partial_mmr).await?
+            },
+        };
         let tracked_nodes = authenticated_block_nodes(&block_header, path_nodes);
 
         // Insert header and MMR nodes atomically
@@ -368,6 +402,33 @@ mod tests {
             small_forest,
         );
         assert_eq!(adjusted.len(), expected_depth);
+    }
+
+    #[test]
+    fn a_proof_from_a_smaller_forest_cannot_be_reused_for_a_larger_one() {
+        // `store_authenticated_block` reuses a prefetched proof only when it can be expressed for
+        // the forest the store is at by then. This is the rule that decision rests on: a path can
+        // be shortened for a smaller forest but never extended for a larger one, so a proof taken
+        // before the chain advanced has to be fetched again rather than adjusted.
+        let mut mmr = Mmr::new();
+        for value in 0u64..8 {
+            mmr.add(word(value)).expect("test MMR append should succeed");
+        }
+        let leaf_pos = 2usize;
+        let smaller = Forest::new(5).expect("valid forest");
+        let larger = Forest::new(8).expect("valid forest");
+
+        let stale = mmr.open_at(leaf_pos, smaller).expect("valid proof");
+        assert!(
+            stale.path().with_forest(larger).is_err(),
+            "a proof taken against a smaller forest must be rejected, not stretched"
+        );
+
+        let fresh = mmr.open_at(leaf_pos, larger).expect("valid proof");
+        assert!(
+            fresh.path().with_forest(smaller).is_ok(),
+            "a proof taken against a larger forest must still be usable"
+        );
     }
 
     #[test]

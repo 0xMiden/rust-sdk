@@ -22,7 +22,6 @@ use miden_protocol::note::{
     NoteTag,
 };
 use miden_protocol::utils::serde::Serializable;
-use miden_standards::note::{NoteFile, NoteSyncHint};
 use miden_tx::auth::TransactionAuthenticator;
 use miden_tx::utils::serde::{
     ByteReader,
@@ -33,6 +32,7 @@ use miden_tx::utils::serde::{
 };
 
 pub use self::errors::NoteTransportError;
+use crate::note::import::ExpectedNoteImportPlan;
 use crate::sync::NoteTagSource;
 use crate::{Client, ClientError};
 
@@ -364,14 +364,21 @@ where
         let lookback_floor = self.transport_lookback_floor().await?;
 
         let (notes, new_cursor) = self.fetch_transport_batch(cursor, &note_tags).await?;
-        self.import_transport_notes(notes, lookback_floor).await?;
+        // A standalone fetch writes before the client syncs any further, so the scan can only be
+        // trusted up to the height the store is already at.
+        let mut scan_tip = Some(self.get_sync_height().await?);
+        let mut ids_by_commitment = BTreeMap::new();
+        let plan = self
+            .plan_transport_notes(notes, lookback_floor, &mut scan_tip, &mut ids_by_commitment)
+            .await?;
+        self.apply_expected_note_import(plan).await?;
         self.store.update_note_transport_cursor(new_cursor).await?;
 
         Ok(())
     }
 
-    /// Fetches everything the Note Transport Layer holds for the tracked tags, without writing
-    /// anything to the store.
+    /// Fetches everything the Note Transport Layer holds for the tracked tags and plans the import
+    /// of what it found, without writing anything to the store.
     ///
     /// Split from [`Client::apply_transport_update`] so it can run concurrently with the chain
     /// fetch in [`Client::sync_state`]. Being read-only is what makes that safe: neither half can
@@ -390,6 +397,9 @@ where
         // the tip. Reading the floor there would place it above notes committed inside this
         // sync's own window, so it is captured here instead.
         let lookback_floor = self.transport_lookback_floor().await?;
+        // Resolved at most once, and only if there is something to plan, so a sync with no new
+        // notes costs no extra round trip.
+        let mut scan_tip = None;
 
         // Recover historical private notes for any tag added after the global cursor advanced.
         // Each newly tracked tag is drained from the start, fetching only that tag's own history.
@@ -401,6 +411,8 @@ where
         let covered_tags: BTreeSet<NoteTag> = loaded.intersection(&candidates).copied().collect();
         let covered_tags_shrank = covered_tags.len() != loaded.len();
 
+        let mut ids_by_commitment = BTreeMap::new();
+
         // At most `MAX_BACKFILL_TAGS_PER_SYNC` tags per call; any remainder stays uncovered and is
         // picked up on the next sync.
         let mut backfills = Vec::new();
@@ -409,12 +421,19 @@ where
             .copied()
             .take(Self::MAX_BACKFILL_TAGS_PER_SYNC)
         {
-            backfills.push((tag, self.fetch_backfill_pages(tag).await?));
+            let notes = self.fetch_backfill_pages(tag).await?;
+            let plan = self
+                .plan_transport_notes(notes, lookback_floor, &mut scan_tip, &mut ids_by_commitment)
+                .await?;
+            backfills.push((tag, plan));
         }
 
         let cursor = self.store.get_note_transport_cursor().await?;
         let note_tags: Vec<_> = self.store.get_unique_note_tags().await?.into_iter().collect();
-        let (batch, new_cursor) = self.fetch_transport_batch(cursor, &note_tags).await?;
+        let (notes, new_cursor) = self.fetch_transport_batch(cursor, &note_tags).await?;
+        let batch = self
+            .plan_transport_notes(notes, lookback_floor, &mut scan_tip, &mut ids_by_commitment)
+            .await?;
 
         Ok(Some(TransportUpdate {
             backfills,
@@ -422,12 +441,12 @@ where
             new_cursor,
             covered_tags,
             covered_tags_shrank,
-            lookback_floor,
+            ids_by_commitment,
         }))
     }
 
-    /// Writes a fetched transport update to the store: imports the notes and advances the
-    /// bookkeeping that records what has already been fetched.
+    /// Writes a fetched transport update to the store: applies the planned imports and advances
+    /// the bookkeeping that records what has already been fetched.
     ///
     /// Returns the IDs of the notes imported here.
     pub(crate) async fn apply_transport_update(
@@ -440,7 +459,7 @@ where
             new_cursor,
             mut covered_tags,
             covered_tags_shrank,
-            lookback_floor,
+            ids_by_commitment,
         } = update;
 
         // Drain any private notes whose previous relay attempt failed. A flush error is logged,
@@ -454,9 +473,9 @@ where
             self.save_covered_tags(&covered_tags).await?;
         }
 
-        let mut imported_ids = Vec::new();
-        for (tag, notes) in backfills {
-            imported_ids.extend(self.import_transport_notes(notes, lookback_floor).await?);
+        let mut imported_commitments = Vec::new();
+        for (tag, plan) in backfills {
+            imported_commitments.extend(self.apply_expected_note_import(plan).await?);
             covered_tags.insert(tag);
             // Persist after each tag so a crash mid-backfill keeps completed tags covered. A redo
             // is harmless because imports dedupe; the dangerous direction (marking covered before
@@ -464,14 +483,63 @@ where
             self.save_covered_tags(&covered_tags).await?;
         }
 
-        imported_ids.extend(self.import_transport_notes(batch, lookback_floor).await?);
+        imported_commitments.extend(self.apply_expected_note_import(batch).await?);
         // The cursor moves only once the batch is stored, so a failed import refetches it.
         self.store.update_note_transport_cursor(new_cursor).await?;
 
+        let mut imported_ids: Vec<NoteId> = imported_commitments
+            .into_iter()
+            .filter_map(|commitment| ids_by_commitment.get(&commitment).copied())
+            .collect();
         imported_ids.sort_unstable();
         imported_ids.dedup();
 
         Ok(imported_ids)
+    }
+
+    /// Plans the import of notes the transport delivered, recording each one's on-chain id against
+    /// its details commitment so the applied import can be reported by id.
+    ///
+    /// `scan_tip` caches the chain tip across calls: the import runs after the chain update is
+    /// applied, so the tip is the highest block the store will have reached by then, and bounding
+    /// the commitment scan there is what lets a note committed inside this sync's own window
+    /// settle in the same call.
+    async fn plan_transport_notes(
+        &self,
+        notes: Vec<FetchedTransportNote>,
+        lookback_floor: BlockNumber,
+        scan_tip: &mut Option<BlockNumber>,
+        ids_by_commitment: &mut BTreeMap<NoteDetailsCommitment, NoteId>,
+    ) -> Result<ExpectedNoteImportPlan, ClientError> {
+        if notes.is_empty() {
+            return Ok(ExpectedNoteImportPlan::empty());
+        }
+
+        let mut requests = Vec::with_capacity(notes.len());
+        for note in notes {
+            ids_by_commitment.insert(note.details.commitment(), note.note_id);
+            // Prefer the sender-provided hint, falling back to the lookback window when absent.
+            let after_block_num = note.block_hint.unwrap_or(lookback_floor);
+            // The transport delivered the metadata alongside the details, so the import does not
+            // need to recover it from the chain before it can compute the note's nullifier or
+            // consume the note locally.
+            requests.push((
+                note.details,
+                after_block_num,
+                note.metadata.tag(),
+                Some(note.metadata),
+            ));
+        }
+
+        let scan_to = if let Some(tip) = *scan_tip {
+            tip
+        } else {
+            let (chain_tip, _) = self.rpc_api.get_block_header_by_number(None, false).await?;
+            *scan_tip = Some(chain_tip.block_num());
+            chain_tip.block_num()
+        };
+
+        self.plan_expected_note_import(&requests, scan_to).await
     }
 
     /// Block the commitment scan starts from for a note the transport delivered without a block
@@ -551,45 +619,6 @@ where
 
         Ok((notes, rcursor))
     }
-
-    /// Imports notes fetched from the transport, returning the IDs of those that were imported or
-    /// updated.
-    ///
-    /// `lookback_floor` is the block the commitment scan starts from for notes that arrived
-    /// without a sender-provided block hint.
-    async fn import_transport_notes(
-        &mut self,
-        notes: Vec<FetchedTransportNote>,
-        lookback_floor: BlockNumber,
-    ) -> Result<Vec<NoteId>, ClientError> {
-        if notes.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        // TODO: perhaps we should not need to map received IDs with details commitments, and
-        // instead we may allow `InputNoteRecord` to optionally keep NoteIds. Then within
-        // `import_note` we could match everything by ID and remove this map check
-        let mut id_by_commitment: BTreeMap<NoteDetailsCommitment, NoteId> = BTreeMap::new();
-        let mut note_requests = Vec::with_capacity(notes.len());
-        for note in notes {
-            id_by_commitment.insert(note.details.commitment(), note.note_id);
-            // Prefer the sender-provided hint, falling back to the lookback window when absent.
-            let after_block_num = note.block_hint.unwrap_or(lookback_floor);
-            let note_file = NoteFile::ExpectedNote {
-                details: note.details,
-                sync_hint: NoteSyncHint::new(after_block_num, note.metadata.tag()),
-            };
-            // The transport delivered the metadata alongside the details, so the import does not
-            // need to recover it from the chain to compute the note's nullifier.
-            note_requests.push((note_file, Some(note.metadata)));
-        }
-
-        let imported_commitments = self.import_notes_with_metadata(&note_requests).await?;
-        Ok(imported_commitments
-            .into_iter()
-            .filter_map(|commitment| id_by_commitment.get(&commitment).copied())
-            .collect())
-    }
 }
 
 /// A note as the note transport delivered it, ready to import.
@@ -609,19 +638,21 @@ pub(crate) struct FetchedTransportNote {
 /// What [`Client::fetch_transport_update`] read from the Note Transport Layer, before any of it
 /// is written to the store.
 pub(crate) struct TransportUpdate {
-    /// Per-tag backfill batches. A tag is marked covered only once its notes are imported.
-    backfills: Vec<(NoteTag, Vec<FetchedTransportNote>)>,
-    /// Steady-state batch fetched with the stored cursor.
-    batch: Vec<FetchedTransportNote>,
-    /// Cursor to persist once `batch` is imported.
+    /// Per-tag backfill imports, planned but not yet written. A tag is marked covered only once
+    /// its plan is applied.
+    backfills: Vec<(NoteTag, ExpectedNoteImportPlan)>,
+    /// Planned import of the steady-state batch fetched with the stored cursor.
+    batch: ExpectedNoteImportPlan,
+    /// Cursor to persist once `batch` is applied.
     new_cursor: NoteTransportCursor,
     /// Covered-tag set reconciled against the currently tracked tags.
     covered_tags: BTreeSet<NoteTag>,
     /// Whether reconciling dropped any tag, in which case the set needs persisting even if no
     /// backfill runs.
     covered_tags_shrank: bool,
-    /// Commitment-scan floor for hintless notes, captured before any of this sync's writes.
-    lookback_floor: BlockNumber,
+    /// On-chain note id per details commitment, so the applied import can be reported by id. The
+    /// ids come from the note headers: the details alone do not determine them.
+    ids_by_commitment: BTreeMap<NoteDetailsCommitment, NoteId>,
 }
 
 /// Note transport cursor

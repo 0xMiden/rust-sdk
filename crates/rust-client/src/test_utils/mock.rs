@@ -74,6 +74,10 @@ pub struct MockRpcApi {
     private_note_attachments: Arc<RwLock<BTreeMap<NoteId, NoteAttachments>>>,
     /// Test overrides for the MMR paths returned by `sync_notes`, keyed by block number.
     sync_notes_mmr_path_overrides: Arc<RwLock<BTreeMap<BlockNumber, MerklePath>>>,
+    /// Block range of every `sync_nullifiers` call, so tests can assert how far back a nullifier
+    /// search reached. The range decides how many pages a real node has to walk, so it is worth
+    /// pinning rather than inferring.
+    nullifier_queries: Arc<RwLock<Vec<(BlockNumber, BlockNumber)>>>,
 }
 
 impl Default for MockRpcApi {
@@ -96,7 +100,13 @@ impl MockRpcApi {
             erased_notes: Arc::new(RwLock::new(Vec::new())),
             private_note_attachments: Arc::new(RwLock::new(BTreeMap::new())),
             sync_notes_mmr_path_overrides: Arc::new(RwLock::new(BTreeMap::new())),
+            nullifier_queries: Arc::new(RwLock::new(Vec::new())),
         }
+    }
+
+    /// Returns the block range of every `sync_nullifiers` call made so far, in call order.
+    pub fn nullifier_queries(&self) -> Vec<(BlockNumber, BlockNumber)> {
+        self.nullifier_queries.read().clone()
     }
 
     /// Registers the attachment content for a private note so that subsequent `get_notes_by_id`
@@ -637,6 +647,7 @@ impl NodeRpcClient for MockRpcApi {
         block_from: BlockNumber,
         block_to: BlockNumber,
     ) -> Result<Vec<NullifierUpdate>, RpcError> {
+        self.nullifier_queries.write().push((block_from, block_to));
         let nullifiers = self
             .mock_chain
             .read()

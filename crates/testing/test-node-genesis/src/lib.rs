@@ -47,14 +47,19 @@ pub const GENESIS_FAUCET_FILE: &str = "tst_faucet.mac";
 /// `too_many_assets` account as `.mac` files referenced by `[[account]]` entries in
 /// `genesis.toml`, which the node loads verbatim.
 ///
-/// The native faucet is left unset, so the node mints the default `MIDEN` faucet for fees. With
+/// The native faucet is left unset, so the node mints the default `MIDEN` faucet for fees. At
 /// `verification_base_fee = 0` fees are never charged, so the native faucet's identity does not
-/// affect tests.
+/// affect tests; any other value makes every transaction pay a fee out of its own account vault,
+/// denominated in the generated `MIDEN` faucet's asset.
 ///
 /// When `include_agglayer` is set, the agglayer genesis accounts (bridge admin, GER manager,
 /// bridge, and faucet) are also emitted and included in genesis; integration tests load their
 /// `.mac` files via the `AGGLAYER_ACCOUNTS_DIR` env var.
-pub fn write_genesis_config(output_dir: &Path, include_agglayer: bool) -> Result<()> {
+pub fn write_genesis_config(
+    output_dir: &Path,
+    include_agglayer: bool,
+    verification_base_fee: u32,
+) -> Result<()> {
     std::fs::create_dir_all(output_dir).with_context(|| {
         format!("failed to create genesis output directory {}", output_dir.display())
     })?;
@@ -106,7 +111,7 @@ pub fn write_genesis_config(output_dir: &Path, include_agglayer: bool) -> Result
     // there alongside the matching signing key.
     let mut toml = format!(
         "version = 1\ntimestamp = {timestamp}\n\n\
-         [fee_parameters]\nverification_base_fee = 0\n"
+         [fee_parameters]\nverification_base_fee = {verification_base_fee}\n"
     );
     for file_name in &account_files {
         write!(toml, "\n[[account]]\npath = \"{file_name}\"\n")

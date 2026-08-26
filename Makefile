@@ -21,6 +21,11 @@ TEST_MIDEN_NOTE_TRANSPORT_URL?=http://127.0.0.1:57292
 # Sizes the SQL store scaling benchmark sweeps over. Kept small enough to run on every PR, and
 # overridable for a deeper local run.
 STORE_BENCH_ARGS?=--notes 1000,10000 --accounts 100,1000 --iterations 5
+# Genesis `verification_base_fee` for the testing node. 0 disables fees; any other value makes
+# every transaction pay a fee out of its own account's vault.
+MIDEN_VERIFICATION_BASE_FEE?=0
+# Value used by the `*-with-fees` targets when MIDEN_VERIFICATION_BASE_FEE is left at its default.
+FEE_VALUE?=500
 
 # --- Linting -------------------------------------------------------------------------------------
 
@@ -98,15 +103,23 @@ bench-store: ## Run the SQL store scaling benchmark (no node needed)
 
 .PHONY: start-node
 start-node: ## Start the testing node in the foreground, streaming logs (Ctrl+C stops it)
-	./scripts/start-test-node.sh
+	MIDEN_VERIFICATION_BASE_FEE=$(MIDEN_VERIFICATION_BASE_FEE) ./scripts/start-test-node.sh
 
 .PHONY: start-node-agglayer
 start-node-agglayer: ## Start the testing node with agglayer genesis accounts
-	AGGLAYER_GENESIS=1 ./scripts/start-test-node.sh
+	AGGLAYER_GENESIS=1 MIDEN_VERIFICATION_BASE_FEE=$(MIDEN_VERIFICATION_BASE_FEE) ./scripts/start-test-node.sh
 
 .PHONY: start-node-background
 start-node-background: ## Start the testing node in the background
-	./scripts/start-test-node.sh --background
+	MIDEN_VERIFICATION_BASE_FEE=$(MIDEN_VERIFICATION_BASE_FEE) ./scripts/start-test-node.sh --background
+
+.PHONY: start-node-with-fees
+start-node-with-fees: ## Start the testing node in the foreground with fees enabled (FEE_VALUE=500)
+	$(MAKE) start-node MIDEN_VERIFICATION_BASE_FEE=$(FEE_VALUE)
+
+.PHONY: start-node-background-with-fees
+start-node-background-with-fees: ## Start the testing node in the background with fees enabled (FEE_VALUE=500)
+	$(MAKE) start-node-background MIDEN_VERIFICATION_BASE_FEE=$(FEE_VALUE)
 
 .PHONY: stop-node
 stop-node: ## Stop the testing node

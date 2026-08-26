@@ -9,6 +9,9 @@
 #   --background     return once the node's RPC is ready, leaving it running (used by CI)
 #   --install-only   install the node binaries and exit (used by the CI build job)
 #   --print-rev      print the pinned node rev or version (CI cache key) and exit
+#
+# Env vars:
+#   MIDEN_VERIFICATION_BASE_FEE  genesis `verification_base_fee` (default 0, i.e. fees disabled)
 
 set -euo pipefail
 
@@ -38,6 +41,9 @@ PROVER="127.0.0.1:$PROVER_PORT"
 # Shared secret authorizing the ntx-builder to submit network transactions; the sequencer rejects
 # them unless both sides agree on it.
 NETWORK_TX_AUTH="${MIDEN_NETWORK_TX_AUTH:-miden-client-testing-ntx-secret}"
+# Genesis `verification_base_fee`. At 0 the chain never charges fees; any other value makes every
+# transaction pay out of its own account's vault in the node-generated MIDEN native asset.
+VERIFICATION_BASE_FEE="${MIDEN_VERIFICATION_BASE_FEE:-0}"
 
 NODE_BINS=(miden-validator miden-node miden-ntx-builder miden-remote-prover)
 
@@ -115,11 +121,11 @@ fi
 echo "==> building gen-genesis"
 cargo build --release -p test-node-genesis --bin gen-genesis
 
-echo "==> generating genesis + bootstrapping"
+echo "==> generating genesis + bootstrapping (verification_base_fee = $VERIFICATION_BASE_FEE)"
 rm -rf "$DATA"
 # Each component opens its SQLite DB directly under its data dir and does not create it.
 mkdir -p "$LOG_DIR" "$DATA/validator" "$DATA/node" "$DATA/ntx-builder"
-"$GEN_GENESIS" "$DATA/genesis-config"
+MIDEN_VERIFICATION_BASE_FEE="$VERIFICATION_BASE_FEE" "$GEN_GENESIS" "$DATA/genesis-config"
 mkdir -p "$ROOT/data"
 cp "$DATA/genesis-config/tst_faucet.mac" "$ROOT/data/account.mac"
 # With AGGLAYER_GENESIS set, gen-genesis also emits the agglayer account files; expose them under

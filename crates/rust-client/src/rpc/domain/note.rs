@@ -302,7 +302,7 @@ impl TryFrom<proto::rpc::sync_notes_response::NoteSyncBlock> for SyncNotesBlock 
     fn try_from(
         block: proto::rpc::sync_notes_response::NoteSyncBlock,
     ) -> Result<Self, Self::Error> {
-        let block_header = block
+        let block_header: BlockHeader = block
             .block_header
             .ok_or(proto::rpc::SyncNotesResponse::missing_field(stringify!(blocks.block_header)))?
             .try_into()?;
@@ -320,6 +320,21 @@ impl TryFrom<proto::rpc::sync_notes_response::NoteSyncBlock> for SyncNotesBlock 
                 Ok((*note.note_id(), note))
             })
             .collect::<Result<_, RpcConversionError>>()?;
+
+        // A note's commit height comes from its own inclusion proof, which the response carries
+        // separately from the block header above. Consumers authenticate the note against one and
+        // locate its block with the other, so the two disagreeing makes the block
+        // self-contradictory: with an honest node this should never trigger.
+        let block_num = block_header.block_num();
+        for (note_id, note) in &notes {
+            if note.block_num() != block_num {
+                return Err(RpcError::InvalidResponse(format!(
+                    "sync_notes returned note {note_id} in block {block_num} but its inclusion \
+                     proof claims block {}",
+                    note.block_num()
+                )));
+            }
+        }
 
         Ok(SyncNotesBlock { block_header, mmr_path, notes })
     }
@@ -658,6 +673,8 @@ impl TryFrom<proto::note::NoteScript> for NoteScript {
 #[cfg(test)]
 mod tests {
     use miden_protocol::account::{AccountIdVersion, AccountType, AssetCallbackFlag};
+    use miden_protocol::crypto::merkle::SparseMerklePath;
+    use miden_protocol::transaction::TransactionKernel;
 
     use super::*;
 
@@ -703,6 +720,43 @@ mod tests {
             tag: 7,
             attachments,
         }
+    }
+
+    /// Builds a `NoteSyncBlock` whose single note claims `proof_block` as its commit height while
+    /// the block header says `header_block`.
+    fn sync_notes_block(
+        header_block: u32,
+        proof_block: u32,
+    ) -> proto::rpc::sync_notes_response::NoteSyncBlock {
+        let header =
+            BlockHeader::mock(header_block, None, None, &[], TransactionKernel.to_commitment());
+        let path = SparseMerklePath::from_parts(0, Vec::new()).unwrap();
+
+        proto::rpc::sync_notes_response::NoteSyncBlock {
+            block_header: Some(header.into()),
+            mmr_path: Some(proto::primitives::MerklePath::default()),
+            notes: vec![proto::note::NoteSyncRecord {
+                metadata: Some(sync_metadata(Vec::new())),
+                inclusion_proof: Some(proto::note::NoteInclusionInBlockProof {
+                    note_id: Some(NoteId::from_raw(Word::empty()).into()),
+                    block_num: proof_block,
+                    note_index_in_block: 0,
+                    inclusion_path: Some(path.into()),
+                }),
+            }],
+        }
+    }
+
+    #[test]
+    fn sync_notes_block_accepts_a_note_committed_in_its_own_block() {
+        SyncNotesBlock::try_from(sync_notes_block(3, 3)).unwrap();
+    }
+
+    #[test]
+    fn sync_notes_block_rejects_a_note_claiming_another_block() {
+        let err = SyncNotesBlock::try_from(sync_notes_block(3, 4)).unwrap_err();
+
+        assert!(matches!(err, RpcError::InvalidResponse(_)), "got {err:?}");
     }
 
     #[test]

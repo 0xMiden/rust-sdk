@@ -104,13 +104,9 @@ fn proven_block(block_num: u32) -> ProvenBlock {
 }
 
 fn inclusion_proof() -> NoteInclusionProof {
-    inclusion_proof_at(BlockNumber::GENESIS)
-}
-
-fn inclusion_proof_at(block_num: BlockNumber) -> NoteInclusionProof {
     let path =
         SparseMerklePath::from_parts(0, Vec::new()).expect("empty SparseMerklePath is valid");
-    NoteInclusionProof::new(block_num, 0, path)
+    NoteInclusionProof::new(BlockNumber::GENESIS, 0, path)
         .expect("zero index is well below the per-block notes ceiling")
 }
 
@@ -139,10 +135,7 @@ fn sync_notes_block(block_num: u32, tags: &[NoteTag]) -> SyncNotesBlock {
         .enumerate()
         .map(|(index, tag)| {
             let id = note_id(u32::try_from(index).expect("test note count fits in a u32"));
-            (
-                id,
-                CommittedNote::new(id, note_metadata(*tag), inclusion_proof_at(block_num.into())),
-            )
+            (id, CommittedNote::new(id, note_metadata(*tag), inclusion_proof()))
         })
         .collect();
 
@@ -518,30 +511,6 @@ async fn sync_notes_verifies_note_tags() {
         .sync_notes(BlockNumber::GENESIS, BlockNumber::from(2u32), &requested_tags)
         .await
         .expect_err("an unrequested tag must be rejected");
-    assert!(matches!(err, RpcError::InvalidResponse(_)));
-}
-
-#[tokio::test]
-async fn sync_notes_verifies_note_inclusion_blocks() {
-    let tag = NoteTag::new(1);
-    let requested_tags = BTreeSet::from([tag]);
-
-    // The note sits in block 1 but its inclusion proof claims block 2.
-    let mut block = sync_notes_block(1, &[tag]);
-    let (note_id, note) = block.notes.pop_first().expect("the fixture holds one note");
-    block.notes.insert(
-        note_id,
-        CommittedNote::new(note_id, *note.metadata(), inclusion_proof_at(2u32.into())),
-    );
-
-    let client = VerifyingRpcClient::new(CannedTransport {
-        sync_notes: Some(vec![block]),
-        ..Default::default()
-    });
-    let err = client
-        .sync_notes(BlockNumber::GENESIS, BlockNumber::from(2u32), &requested_tags)
-        .await
-        .expect_err("a note whose inclusion proof disagrees with its block must be rejected");
     assert!(matches!(err, RpcError::InvalidResponse(_)));
 }
 

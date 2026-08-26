@@ -77,7 +77,7 @@ where
     // TODO: Validations need to be added to the import workflows. For example, when adding a block
     // header for a note we need to check the chain root validity, etc.
     pub async fn import_notes(
-        &self,
+        &mut self,
         note_files: &[NoteFile],
     ) -> Result<Vec<NoteDetailsCommitment>, ClientError> {
         let note_files: Vec<_> = note_files.iter().map(|file| (file.clone(), None)).collect();
@@ -91,11 +91,11 @@ where
     /// recover it from the chain. That recovery is bounded by the client's sync height, so a note
     /// committed above it stays metadata-less — and without metadata there is no nullifier to
     /// check, leaving an already-consumed note looking unspent. Supplying the metadata here skips
-    /// the recovery and lets the nullifier check below cover the note in the same call.
+    /// the recovery and lets [`Client::mark_externally_consumed`] cover the note in the same call.
     ///
     /// The metadata is ignored for variants that carry their own.
     pub(crate) async fn import_notes_with_metadata(
-        &self,
+        &mut self,
         note_files: &[(NoteFile, Option<NoteMetadata>)],
     ) -> Result<Vec<NoteDetailsCommitment>, ClientError> {
         self.ensure_genesis_in_place().await?;
@@ -173,14 +173,6 @@ where
             }
         }
 
-        tracing::debug!(
-            by_id = requests_by_id.len(),
-            by_details = requests_by_details.len(),
-            by_proof = requests_by_proof.len(),
-            with_metadata = requests_by_details.iter().filter(|r| r.4.is_some()).count(),
-            "Importing notes."
-        );
-
         let mut imported_notes = vec![];
         if !requests_by_id.is_empty() {
             let notes_by_id = self.import_note_records_by_id(requests_by_id).await?;
@@ -228,7 +220,7 @@ where
     /// - If a note doesn't exist on the node.
     /// - If a note exists but is private.
     async fn import_note_records_by_id(
-        &self,
+        &mut self,
         notes: BTreeMap<NoteId, Option<InputNoteRecord>>,
     ) -> Result<Vec<InputNoteRecord>, ClientError> {
         let note_ids = notes.keys().copied().collect::<Vec<_>>();
@@ -293,7 +285,7 @@ where
     ///
     /// Only records that changed as a result of the import are returned.
     pub(crate) async fn import_note_records_by_proof(
-        &self,
+        &mut self,
         requested_notes: Vec<(Option<InputNoteRecord>, Note, NoteInclusionProof)>,
     ) -> Result<Vec<InputNoteRecord>, ClientError> {
         // TODO: iterating twice over requested notes
@@ -377,14 +369,18 @@ where
         Ok(note_records)
     }
 
-    /// Builds a note record list from note details. If a note with the same ID was already stored
-    /// it is passed via `previous_note` so it can be updated.
+    /// Marks every note in `notes` that was already spent at or below the client's sync height as
+    /// consumed externally.
     ///
-    /// Only records that need to be stored are returned: notes the node has not reported as
-    /// committed keep (or get) their expected record, while committed notes are returned only if
-    /// the new information changed them.
-    /// Marks every note in `notes` whose nullifier is already committed on chain as consumed
-    /// externally.
+    /// This covers the one gap the chain sync structurally cannot: its nullifier search only ever
+    /// looks above the checkpoint, while a note's commitment can be discovered arbitrarily far
+    /// below it, from a sender's block hint or the import's own backward scan. Searching from the
+    /// earliest block the note could have been committed in gives spend discovery the same reach
+    /// as commitment discovery.
+    ///
+    /// Spends above the sync height are deliberately left alone. The forward nullifier sync still
+    /// reaches those, and it can attribute the consuming account when that account is tracked,
+    /// which this call has no way to determine.
     ///
     /// A nullifier is derived from the note's details *and* its metadata, so notes still lacking
     /// metadata are skipped here and left for a later sync to resolve and check.
@@ -392,6 +388,8 @@ where
         &self,
         notes: &mut [InputNoteRecord],
     ) -> Result<(), ClientError> {
+        let sync_height = self.get_sync_height().await?;
+
         let mut nullifier_requests = BTreeSet::new();
         let mut lowest_nullifier_block: BlockNumber = u32::MAX.into();
 
@@ -405,21 +403,15 @@ where
                 InputNoteState::Expected(state) => Some(state.after_block_num),
                 _ => note.inclusion_proof().map(|proof| proof.location().block_num()),
             };
-            let Some(from_block) = from_block else {
+            // A note that cannot have been committed at or below the sync height cannot have been
+            // spent there either, so there is nothing here to find for it.
+            let Some(from_block) = from_block.filter(|block| *block <= sync_height) else {
                 continue;
             };
 
             nullifier_requests.insert(nullifier);
             lowest_nullifier_block = lowest_nullifier_block.min(from_block);
         }
-
-        tracing::debug!(
-            notes = notes.len(),
-            requested = nullifier_requests.len(),
-            skipped_no_nullifier = notes.len() - nullifier_requests.len(),
-            from_block = %lowest_nullifier_block,
-            "Checking imported notes for on-chain nullifiers."
-        );
 
         if nullifier_requests.is_empty() {
             return Ok(());
@@ -430,24 +422,27 @@ where
             .get_nullifier_commit_heights(nullifier_requests, lowest_nullifier_block)
             .await?;
 
-        let mut consumed = 0usize;
         for note in notes.iter_mut() {
             if let Some(nullifier) = note.nullifier()
                 && let Some(block_height) =
                     nullifier_commit_heights.get(&nullifier).and_then(|height| *height)
+                && block_height <= sync_height
             {
                 note.consumed_externally(nullifier, block_height, None)?;
-                consumed += 1;
             }
         }
-
-        tracing::debug!(consumed, "Marked imported notes consumed externally.");
 
         Ok(())
     }
 
+    /// Builds a note record list from note details. If a note with the same ID was already stored
+    /// it is passed via `previous_note` so it can be updated.
+    ///
+    /// Only records that need to be stored are returned: notes the node has not reported as
+    /// committed keep (or get) their expected record, while committed notes are returned only if
+    /// the new information changed them.
     async fn import_note_records_by_details(
-        &self,
+        &mut self,
         requested_notes: Vec<DetailsImportRequest>,
     ) -> Result<Vec<InputNoteRecord>, ClientError> {
         let mut lowest_request_block: BlockNumber = u32::MAX.into();
@@ -528,7 +523,7 @@ where
     /// reconstructing the id from the committed metadata: `NoteId::new(details_commitment,
     /// metadata)`.
     async fn sync_expected_notes(
-        &self,
+        &mut self,
         request_block_num: BlockNumber,
         // Expected notes' details commitments with their tags.
         expected_notes: Vec<(NoteDetailsCommitment, NoteTag)>,
@@ -541,12 +536,6 @@ where
         // Notes expected only after a block we have not reached can't be committed within our
         // synced view yet: skip the lookup and let them stay expected until a future sync.
         if request_block_num > current_block_num {
-            tracing::debug!(
-                %request_block_num,
-                %current_block_num,
-                notes = expected_notes.len(),
-                "Expected notes are above the synced height; skipping the chain lookup."
-            );
             return Ok(matched_notes);
         }
 
@@ -577,14 +566,6 @@ where
                 matched_notes.insert(*commitment, sync_note);
             }
         }
-
-        tracing::debug!(
-            requested = expected_notes.len(),
-            matched = matched_notes.len(),
-            %request_block_num,
-            %current_block_num,
-            "Resolved expected notes against the chain."
-        );
 
         Ok(matched_notes)
     }

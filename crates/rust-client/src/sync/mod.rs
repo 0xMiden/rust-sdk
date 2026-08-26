@@ -109,6 +109,15 @@ fn untrack_blocks(
         .collect()
 }
 
+/// What [`Client::fetch_chain_update`] read from the node, before any of it is written to the
+/// store.
+struct ChainUpdate {
+    /// The component that produced the update. Its note observers accumulate per-sync state while
+    /// screening, so the apply hooks have to run on this same instance and not on a fresh one.
+    state_sync: StateSync,
+    update: StateSyncUpdate,
+}
+
 /// Client synchronization methods.
 impl<AUTH> Client<AUTH>
 where
@@ -137,23 +146,31 @@ where
         self.ensure_rpc_limits_in_place().await?;
 
         let mut partial_mmr = self.get_current_partial_mmr().await?;
-        let update = self.fetch_chain_update(&mut partial_mmr).await?;
+        let chain_update = self.fetch_chain_update(&mut partial_mmr).await?;
 
-        self.apply_chain_update(update, partial_mmr).await
+        let sync_summary = self.apply_chain_update(chain_update, partial_mmr).await?;
+
+        self.maybe_untrack_and_prune_irrelevant_blocks().await?;
+
+        Ok(sync_summary)
     }
 
     /// Fetches the on-chain state update from the node, without writing anything to the store.
     ///
-    /// Split out of [`Client::sync_chain`] so it can run concurrently with
-    /// [`Client::sync_note_transport`]: it takes `&self`, and `partial_mmr` is owned by the
-    /// caller rather than read from the client's cache.
+    /// Split from [`Client::apply_chain_update`] so it can run concurrently with the note
+    /// transport fetch in [`Client::sync_state`]. It has to stay read-only: the two halves are
+    /// polled on one task and cannot observe each other's writes, and the loser of a failed join
+    /// is dropped mid-await, so a cancelled fetch must leave nothing behind.
+    ///
+    /// `partial_mmr` is advanced to the chain tip and must be handed to
+    /// [`Client::apply_chain_update`] together with the returned update.
     ///
     /// Assumes the genesis block and the RPC limits are already in place; [`Client::sync_chain`]
     /// and [`Client::sync_state`] both ensure that before calling this.
     async fn fetch_chain_update(
         &self,
         partial_mmr: &mut PartialMmr,
-    ) -> Result<StateSyncUpdate, ClientError> {
+    ) -> Result<ChainUpdate, ClientError> {
         // Each `NoteObserver` owns its own per-sync state; `with_note_observer` just attaches.
         let note_screener = self.note_screener();
         let state_sync =
@@ -162,27 +179,30 @@ where
         let input = self.build_sync_input().await?;
 
         // Get the sync update from the network
-        let state_sync_update = state_sync.sync_state(partial_mmr, input).await?;
+        let update = state_sync.sync_state(partial_mmr, input).await?;
 
-        // Post-sync observer hooks; run before persisting. Per-observer errors are logged, not
-        // propagated.
-        state_sync.run_apply_hooks(&state_sync_update).await?;
-
-        Ok(state_sync_update)
+        Ok(ChainUpdate { state_sync, update })
     }
 
-    /// Writes a fetched state update to the store, refreshes the cached partial MMR, and prunes
-    /// irrelevant blocks according to the configured cadence.
+    /// Writes a fetched chain update to the store and refreshes the cached partial MMR.
     ///
-    /// `partial_mmr` must be the one [`Client::fetch_chain_update`] advanced while producing
-    /// `update`.
+    /// `partial_mmr` must be the one [`Client::fetch_chain_update`] advanced while producing the
+    /// update. This has to run before anything else in the same sync writes to the store: the
+    /// update was computed against the store as it stood when the fetch began, and
+    /// `apply_state_sync` replaces whole note rows.
     async fn apply_chain_update(
         &mut self,
-        update: StateSyncUpdate,
+        chain_update: ChainUpdate,
         partial_mmr: PartialMmr,
     ) -> Result<SyncSummary, ClientError> {
+        let ChainUpdate { state_sync, update } = chain_update;
+
         let sync_summary: SyncSummary = (&update).into();
         debug!(sync_summary = ?sync_summary, "Sync summary computed");
+
+        // Post-sync observer hooks; run before persisting. Per-observer errors are logged, not
+        // propagated. They write to the store, so they belong here rather than in the fetch.
+        state_sync.run_apply_hooks(&update).await?;
 
         info!("Applying changes to the store.");
 
@@ -192,8 +212,6 @@ where
         // Cache MMR so pruning can reuse in-memory MMR.
         self.cache_partial_mmr(partial_mmr).await?;
 
-        self.maybe_untrack_and_prune_irrelevant_blocks().await?;
-
         Ok(sync_summary)
     }
 
@@ -201,81 +219,57 @@ where
     ///
     /// Returns the IDs of notes imported in this call. No-op (returns an empty vec) if note
     /// transport is disabled.
-    pub async fn sync_note_transport(&self) -> Result<Vec<NoteId>, ClientError> {
-        if !self.is_note_transport_enabled() {
-            debug!("Note transport disabled, skipping transport sync.");
+    pub async fn sync_note_transport(&mut self) -> Result<Vec<NoteId>, ClientError> {
+        let Some(update) = self.fetch_transport_update().await? else {
             return Ok(Vec::new());
-        }
+        };
 
-        // Drain any private notes whose previous relay attempt failed. A flush
-        // error is logged, not propagated: a failing relay must not block the
-        // sync, and the entries stay durable for the next attempt.
-        if let Err(err) = self.flush_relay_outbox().await {
-            tracing::warn!(?err, "relay outbox flush failed during sync; entries retained");
-        }
-
-        // Recover historical private notes for any tag added after the global cursor advanced.
-        // This drains each newly tracked tag from the start, fetching only that tag's own history.
-        let mut imported_ids = self.backfill_new_tags().await?;
-
-        let backfilled = imported_ids.len();
-
-        let cursor = self.store.get_note_transport_cursor().await?;
-        let note_tags: Vec<_> = self.store.get_unique_note_tags().await?.into_iter().collect();
-        let (ids, new_cursor) = self.fetch_transport_notes(cursor, &note_tags).await?;
-        self.store.update_note_transport_cursor(new_cursor).await?;
-        let streamed = ids.len();
-        imported_ids.extend(ids);
-
-        imported_ids.sort_unstable();
-        imported_ids.dedup();
-
-        debug!(
-            backfilled,
-            streamed,
-            total = imported_ids.len(),
-            tags = note_tags.len(),
-            cursor_from = cursor.value(),
-            cursor_to = new_cursor.value(),
-            "Transport sync finished."
-        );
-
-        Ok(imported_ids)
+        self.apply_transport_update(update).await
     }
 
     /// Runs the full client sync.
     ///
     /// Fetches private notes from the Note Transport Layer (see
     /// [`Client::sync_note_transport`]) concurrently with the on-chain state fetch from the Miden
-    /// node (see [`Client::sync_chain`]), then applies the chain update. The two halves talk to
-    /// different endpoints, so overlapping them saves a round trip; they are polled on this task
-    /// rather than spawned, so nothing here requires the futures to be `Send`. If note transport
-    /// is disabled, this is equivalent to [`Client::sync_chain`].
+    /// node (see [`Client::sync_chain`]), then writes both to the store. The two fetches are
+    /// polled on this task rather than spawned, so nothing here requires the futures to be
+    /// `Send`. If note transport is disabled, this is equivalent to [`Client::sync_chain`].
     ///
     /// Fails fast on the first error.
     ///
-    /// A private note delivered over NTL does not depend on this call's chain sync to learn that
-    /// it was already consumed: [`Client::import_notes`] checks the nullifiers of the notes it
-    /// imports. The chain sync reads its input set concurrently with that import, so a note
-    /// imported here is picked up by the *next* chain sync.
+    /// Neither half sees the other's writes, so the ordering of the writes is what keeps them
+    /// consistent: the chain update is applied first, and the note import runs against the store
+    /// it leaves behind. That is also what lets a note delivered over NTL settle in this same
+    /// call — the import resolves its own notes, scanning from the sender's block hint (or the
+    /// lookback window) up to the new chain tip, and checks their nullifiers itself, instead of
+    /// waiting for a chain sync that has already read its input set.
     pub async fn sync_state(&mut self) -> Result<SyncSummary, ClientError> {
-        // Hoisted out of the join: both are read-then-write-if-absent against shared state, and
-        // `import_notes` needs the genesis block in place as well.
+        // Kept out of the join: both are read-then-write-if-absent against shared state, and the
+        // note import needs the genesis block in place as well.
         self.ensure_genesis_in_place().await?;
         self.ensure_rpc_limits_in_place().await?;
 
         let mut partial_mmr = self.get_current_partial_mmr().await?;
 
-        // Both halves borrow `&self`; `partial_mmr` is a local, so advancing it does not conflict.
-        let (new_private_notes, update) = futures::try_join!(
-            self.sync_note_transport(),
+        // Both halves borrow `&self` and only read from the store; `partial_mmr` is a local, so
+        // advancing it conflicts with nothing.
+        let (transport_update, chain_update) = futures::try_join!(
+            self.fetch_transport_update(),
             self.fetch_chain_update(&mut partial_mmr),
         )?;
 
-        // The store write is kept out of the join: `apply_state_sync` opens an `Immediate`
-        // transaction and holds the write lock for its whole duration.
-        let mut summary = self.apply_chain_update(update, partial_mmr).await?;
-        summary.new_private_notes = new_private_notes;
+        // Every store write happens below, in one order. The chain update goes first because it
+        // was computed against the store as it stood when the fetch began; the import that
+        // follows re-reads the note records and the partial MMR, so it builds on top of it.
+        let mut summary = self.apply_chain_update(chain_update, partial_mmr).await?;
+
+        if let Some(transport_update) = transport_update {
+            summary.new_private_notes = self.apply_transport_update(transport_update).await?;
+        }
+
+        // Runs once both halves have been written, so it prunes against the final note set.
+        self.maybe_untrack_and_prune_irrelevant_blocks().await?;
+
         Ok(summary)
     }
 
@@ -398,7 +392,7 @@ where
 
     /// Ensures that the RPC limits are set in the RPC client. If not already cached,
     /// fetches them from the node and persists them in the store.
-    pub async fn ensure_rpc_limits_in_place(&self) -> Result<(), ClientError> {
+    pub async fn ensure_rpc_limits_in_place(&mut self) -> Result<(), ClientError> {
         if self.rpc_api.has_rpc_limits().is_some() {
             return Ok(());
         }

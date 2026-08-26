@@ -1,3 +1,4 @@
+use alloc::collections::BTreeSet;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
@@ -29,7 +30,7 @@ impl<AUTH> Client<AUTH> {
     /// Ensures that the genesis block is available. If the genesis commitment is already
     /// cached in the RPC client, returns early. Otherwise, fetches the genesis block from
     /// the node, stores it, and sets the commitment in the RPC client.
-    pub async fn ensure_genesis_in_place(&self) -> Result<(), ClientError> {
+    pub async fn ensure_genesis_in_place(&mut self) -> Result<(), ClientError> {
         if self.rpc_api.has_genesis_commitment().is_some() {
             return Ok(());
         }
@@ -68,22 +69,20 @@ impl<AUTH> Client<AUTH> {
         Ok(())
     }
 
-    /// Returns the cached [`PartialMmr`] if in-memory caching is enabled and its fingerprint
-    /// matches the current store state, otherwise rebuilds from the store.
+    /// Returns the cached [`PartialMmr`] if in-memory caching is enabled, its fingerprint matches
+    /// the current store state and it holds every block the store tracks; otherwise rebuilds from
+    /// the store.
     pub async fn get_current_partial_mmr(&self) -> Result<PartialMmr, ClientError> {
-        if self.cache_partial_mmr_in_memory {
-            // Copy the fingerprint out and release the guard on this statement: no lock may be
-            // held across the `await`s below, since a concurrent `sync_state` half can take it.
-            let fingerprint = self
-                .partial_mmr
-                .read()
-                .as_ref()
-                .map(|cached| (cached.store_peaks_hash, cached.tracked_blocks_hash));
-
-            if let Some((store_peaks_hash, tracked_blocks_hash)) = fingerprint
-                && store_peaks_hash == self.current_store_peaks_hash().await?
-                && tracked_blocks_hash == self.current_tracked_blocks_hash().await?
-                && let Some(ref cached) = *self.partial_mmr.read()
+        if self.cache_partial_mmr_in_memory
+            && let Some(ref cached) = self.partial_mmr
+            && cached.store_peaks_hash == self.current_store_peaks_hash().await?
+        {
+            let tracked = self.store.get_tracked_block_header_numbers().await?;
+            // The fingerprint records what the store looked like when the entry was written, not
+            // what the entry holds, so the contents are checked too: an MMR that is missing the
+            // authentication path of a block the store tracks gets rebuilt rather than trusted.
+            if cached.tracked_blocks_hash == tracked_blocks_hash(&tracked)
+                && tracked.iter().all(|&block_pos| cached.mmr.is_tracked(block_pos))
             {
                 return Ok(cached.mmr.clone());
             }
@@ -94,14 +93,17 @@ impl<AUTH> Client<AUTH> {
     /// Stores the MMR in the cache if in-memory caching is enabled, capturing the current store
     /// fingerprint. Must run after any store mutation that may have changed the sync-height peaks
     /// or the tracked block set.
-    pub(crate) async fn cache_partial_mmr(&self, mmr: PartialMmr) -> Result<(), ClientError> {
+    ///
+    /// The fingerprint describes the store, not the MMR being cached; whether the two agree is
+    /// checked on the read side by [`Client::get_current_partial_mmr`].
+    pub(crate) async fn cache_partial_mmr(&mut self, mmr: PartialMmr) -> Result<(), ClientError> {
         if !self.cache_partial_mmr_in_memory {
             return Ok(());
         }
 
         let store_peaks_hash = self.current_store_peaks_hash().await?;
         let tracked_blocks_hash = self.current_tracked_blocks_hash().await?;
-        *self.partial_mmr.write() = Some(CachedPartialMmr {
+        self.partial_mmr = Some(CachedPartialMmr {
             store_peaks_hash,
             tracked_blocks_hash,
             mmr,
@@ -115,16 +117,11 @@ impl<AUTH> Client<AUTH> {
         Ok(self.store.get_current_blockchain_peaks().await?.hash_peaks())
     }
 
-    /// Hashes the store's tracked block numbers (sorted). Used as the cache freshness
-    /// fingerprint to detect tracked-set drift without rebuilding the MMR.
+    /// Hashes the store's tracked block numbers. Used as the cache freshness fingerprint to
+    /// detect tracked-set drift without rebuilding the MMR.
     async fn current_tracked_blocks_hash(&self) -> Result<Word, ClientError> {
-        // BTreeSet iterates in sorted order, so the hash is deterministic.
         let tracked = self.store.get_tracked_block_header_numbers().await?;
-        let elements: Vec<Felt> = tracked
-            .iter()
-            .map(|&n| Felt::from(u32::try_from(n).expect("block number fits in u32")))
-            .collect();
-        Ok(Rpo256::hash_elements(&elements))
+        Ok(tracked_blocks_hash(&tracked))
     }
 
     // HELPERS
@@ -164,6 +161,16 @@ impl<AUTH> Client<AUTH> {
 
 // UTILS
 // --------------------------------------------------------------------------------------------
+
+/// Hashes a set of tracked block numbers. `BTreeSet` iterates in sorted order, so the result is
+/// deterministic.
+fn tracked_blocks_hash(tracked: &BTreeSet<usize>) -> Word {
+    let elements: Vec<Felt> = tracked
+        .iter()
+        .map(|&n| Felt::from(u32::try_from(n).expect("block number fits in u32")))
+        .collect();
+    Rpo256::hash_elements(&elements)
+}
 
 /// Returns a merkle path nodes for a specific block adjusted for a defined forest size.
 /// This function trims the merkle path to include only the nodes that are relevant for

@@ -196,7 +196,7 @@ async fn input_notes_round_trip() {
 #[tokio::test]
 async fn get_input_note() {
     // generate test client with a random store name
-    let (client, rpc_api, _) = Box::pin(create_test_client()).await;
+    let (mut client, rpc_api, _) = Box::pin(create_test_client()).await;
     // Get note from mocked RPC backend since any note works here
     let original_note = rpc_api.get_available_notes()[0].note().unwrap().clone();
 
@@ -907,7 +907,7 @@ async fn mint_transaction() {
 #[tokio::test]
 async fn import_note_validation() {
     // generate test client
-    let (client, rpc_api, _) = Box::pin(create_test_client()).await;
+    let (mut client, rpc_api, _) = Box::pin(create_test_client()).await;
 
     // generate deterministic test data
     let available_notes = rpc_api.get_available_notes();

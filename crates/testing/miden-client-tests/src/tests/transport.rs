@@ -179,7 +179,7 @@ async fn unavailable_attachments_do_not_fail_sync() {
     // The helper tracks the note's tag and syncs to the tip, so it already exercises the sync
     // path: the note advertises attachment content the node cannot serve, and the sync succeeds
     // by skipping the note.
-    let (client, private_note, mock_transport_node) =
+    let (mut client, private_note, mock_transport_node) =
         committed_private_note_recipient(0, true).await;
     assert!(client.get_input_notes(NoteFilter::All).await.unwrap().is_empty());
 
@@ -937,17 +937,40 @@ fn private_note_with_tag(account: AccountId, tag: NoteTag, seed: u64) -> Note {
     .unwrap()
 }
 
-/// Build a chain with a private note (tag 0) committed at block 1, advance
-/// `blocks_past_commitment` blocks beyond it, then create a recipient client synced to the tip
-/// with an (initially empty) note transport. Returns the client, the committed note, and the
-/// shared mock transport node so a test can deliver the note over the NTL afterwards.
-///
-/// With `with_unserved_attachment` the note's metadata advertises an attachment whose content is
-/// never registered with the mock node, so any content fetch for the note comes back empty.
+/// Same as [`unsynced_private_note_recipient`], with the client already synced to the chain tip.
 async fn committed_private_note_recipient(
     blocks_past_commitment: u32,
     with_unserved_attachment: bool,
 ) -> (MockClient<FilesystemKeyStore>, Note, Arc<RwLock<MockNoteTransportNode>>) {
+    let (mut client, private_note, mock_transport_node, _) =
+        unsynced_private_note_recipient(blocks_past_commitment, with_unserved_attachment, false)
+            .await;
+
+    // The NTL is empty at this point, so no transport notes are imported.
+    client.sync_state().await.unwrap();
+
+    (client, private_note, mock_transport_node)
+}
+
+/// Build a chain with a private note (tag 0) committed at block 1, advance
+/// `blocks_past_commitment` blocks beyond it, then create a recipient client that tracks tag 0
+/// but has not synced yet, with an (initially empty) note transport. Returns the client, the
+/// committed note, the shared mock transport node so a test can deliver the note over the NTL,
+/// and the RPC api so a test can run the chain further ahead.
+///
+/// With `with_unserved_attachment` the note's metadata advertises an attachment whose content is
+/// never registered with the mock node, so any content fetch for the note comes back empty.
+/// With `cache_partial_mmr` the client keeps its partial MMR in memory between operations.
+async fn unsynced_private_note_recipient(
+    blocks_past_commitment: u32,
+    with_unserved_attachment: bool,
+    cache_partial_mmr: bool,
+) -> (
+    MockClient<FilesystemKeyStore>,
+    Note,
+    Arc<RwLock<MockNoteTransportNode>>,
+    Arc<MockRpcApi>,
+) {
     let mut mock_chain_builder = MockChainBuilder::new();
     let mock_account = mock_chain_builder
         .add_existing_mock_account(miden_testing::Auth::IncrNonce)
@@ -1003,32 +1026,140 @@ async fn committed_private_note_recipient(
     let keystore = FilesystemKeyStore::new(keystore_path.clone()).unwrap();
 
     let builder: ClientBuilder<FilesystemKeyStore> = ClientBuilder::new()
-        .rpc(arc_rpc_api)
+        .rpc(arc_rpc_api.clone())
         .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore))
         .tx_discard_delta(None)
+        .cache_partial_mmr_in_memory(cache_partial_mmr)
         .note_transport(Arc::new(transport_client));
 
     let mut client = builder.build().await.unwrap();
     client.ensure_genesis_in_place().await.unwrap();
     seed_mock_transaction_encryption_key(&mut client).await;
 
-    // Register tag 0 so chain sync sees the note's block, then sync to the tip. The NTL is empty,
-    // so no transport notes are imported yet.
+    // Register tag 0 so chain sync sees the note's block.
     client.add_note_tag(NoteTag::new(0)).await.unwrap();
+
+    (client, private_note, mock_transport_node, arc_rpc_api)
+}
+
+/// A private note whose commitment lands inside this sync's own window must come out committed.
+///
+/// The chain half reads its input set before the transport half's notes reach the store, so it
+/// cannot settle a note it does not yet track — and a private note gives it nothing to insert on
+/// its own either. What settles the note is the import running after the chain update is applied:
+/// its backward scan then reaches from the lookback floor up to the new tip, which is where the
+/// commitment is.
+#[tokio::test]
+async fn ntl_note_committed_within_the_sync_window_is_committed() {
+    // The note is committed at block 1 and the chain runs to block 6. The client has never
+    // synced, so this sync's window covers the commitment.
+    let (mut client, private_note, mock_transport_node, _rpc_api) =
+        unsynced_private_note_recipient(5, false, false).await;
+    assert_eq!(client.get_sync_height().await.unwrap(), BlockNumber::from(0));
+
+    // Delivered without a block hint, so the import has to rely on its own lookback floor.
+    mock_transport_node
+        .write()
+        .add_note(*private_note.header(), NoteDetails::from(private_note.clone()).to_bytes());
+
+    let summary = client.sync_state().await.unwrap();
+
+    assert!(
+        summary.new_private_notes.contains(&private_note.id()),
+        "summary should report the NTL-imported note in new_private_notes"
+    );
+    let committed = client.get_input_notes(NoteFilter::Committed).await.unwrap();
+    assert!(
+        committed.iter().any(|note| note.id() == Some(private_note.id())),
+        "a note committed inside the sync window should be committed after one sync"
+    );
+}
+
+/// A hintless private note committed below the client's checkpoint stays reachable even when the
+/// chain has run far ahead since.
+///
+/// The commitment scan for a note that arrives without a sender block hint starts a fixed window
+/// below the sync height. That height is read before the chain update is applied; reading it
+/// afterwards would start the scan near the new tip and step over the note.
+#[tokio::test]
+async fn ntl_hintless_note_below_checkpoint_survives_a_long_catch_up() {
+    // Note committed at block 1, client synced to block 2.
+    let (mut client, private_note, mock_transport_node, rpc_api) =
+        unsynced_private_note_recipient(1, false, false).await;
     client.sync_state().await.unwrap();
 
-    (client, private_note, mock_transport_node)
+    // Run the chain far enough ahead that a scan floored at the new tip would start above the
+    // note's commitment block.
+    rpc_api.advance_blocks(40);
+
+    mock_transport_node
+        .write()
+        .add_note(*private_note.header(), NoteDetails::from(private_note.clone()).to_bytes());
+
+    client.sync_state().await.unwrap();
+
+    let committed = client.get_input_notes(NoteFilter::Committed).await.unwrap();
+    let note = committed
+        .iter()
+        .find(|note| note.id() == Some(private_note.id()))
+        .expect("a note committed below the checkpoint should be found from the pre-sync floor");
+
+    let note_block = note.inclusion_proof().unwrap().location().block_num();
+    assert!(
+        client.get_sync_height().await.unwrap().as_u32() > note_block.as_u32() + 20,
+        "the chain has to run far enough ahead that a floor taken at the new tip would miss the \
+         note, otherwise this test proves nothing"
+    );
+}
+
+/// With the partial MMR cached in memory, what the client hands back must still agree with the
+/// store on the syncs where the note import authenticates a block of its own.
+///
+/// The import authenticates the block of every note it settles, and the chain update carries a
+/// partial MMR of its own. Applying the chain update first leaves a single lineage for the import
+/// to build on, so the cache cannot end up describing a store state it does not hold.
+#[tokio::test]
+async fn sync_state_partial_mmr_cache_agrees_with_the_store_after_an_import() {
+    // Note committed at block 1, chain at block 4, client synced to the tip.
+    let (mut client, private_note, mock_transport_node, _rpc_api) =
+        unsynced_private_note_recipient(3, false, true).await;
+    client.sync_state().await.unwrap();
+    assert!(client.test_has_cached_partial_mmr());
+
+    mock_transport_node
+        .write()
+        .add_note(*private_note.header(), NoteDetails::from(private_note.clone()).to_bytes());
+
+    // This sync imports the note, which authenticates the block it was committed in.
+    client.sync_state().await.unwrap();
+
+    let note = client
+        .get_input_notes(NoteFilter::Committed)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|note| note.id() == Some(private_note.id()))
+        .expect("the transport note should have been committed");
+    let note_block = note.inclusion_proof().unwrap().location().block_num();
+
+    let cached = client.get_current_partial_mmr().await.unwrap();
+    let stored = client.test_store().get_current_partial_mmr().await.unwrap();
+    assert_eq!(cached, stored, "the cached partial MMR should match the store's");
+    assert!(
+        cached.is_tracked(note_block.as_usize()),
+        "the block the import authenticated should stay tracked"
+    );
 }
 
 /// A private note that arrives over the NTL while already consumed on-chain lands as consumed in
 /// a single `sync_state`.
 ///
-/// `sync_state` fetches from the transport and from the node concurrently, so the chain sync reads
-/// its input set without seeing this note. What makes the note come out consumed anyway is
-/// `import_notes` checking the nullifiers of what it imports. If that check is lost, the note ends
-/// up merely committed here and stays that way until a second sync.
+/// The chain sync reads its input set before this note is imported and only ever searches for
+/// nullifiers above its checkpoint, so it cannot report the note as spent. What makes the note
+/// come out consumed anyway is the import checking the nullifiers of what it imports, searching
+/// from the earliest block the note could have been committed in.
 #[tokio::test]
 async fn ntl_note_already_consumed_on_chain_is_consumed_in_one_sync() {
     let mut mock_chain_builder = MockChainBuilder::new();

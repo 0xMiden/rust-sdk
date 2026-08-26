@@ -17,6 +17,8 @@ use miden_tx::utils::sync::RwLock;
 use tonic::{Request, Streaming};
 use tonic_health::pb::HealthCheckRequest;
 use tonic_health::pb::health_client::HealthClient;
+#[cfg(target_arch = "wasm32")]
+use {core::time::Duration, tonic_web_wasm_client::options::FetchOptions};
 #[cfg(not(target_arch = "wasm32"))]
 use {
     std::time::Duration,
@@ -43,7 +45,7 @@ type Service = tonic_web_wasm_client::Client;
 async fn connect_channel(
     endpoint: &str,
     timeout_ms: u64,
-) -> Result<(MidenNoteTransportClient<Service>, HealthClient<Service>), NoteTransportError> {
+) -> Result<ConnectedClient, NoteTransportError> {
     let endpoint = tonic::transport::Endpoint::try_from(String::from(endpoint))
         .map_err(|e| NoteTransportError::Connection(Box::new(e)))?
         .timeout(Duration::from_millis(timeout_ms));
@@ -54,31 +56,40 @@ async fn connect_channel(
         .connect()
         .await
         .map_err(|e| NoteTransportError::Connection(Box::new(e)))?;
-    Ok((MidenNoteTransportClient::new(channel.clone()), HealthClient::new(channel)))
+    Ok(ConnectedClient {
+        client: MidenNoteTransportClient::new(channel.clone()),
+        streaming_client: MidenNoteTransportClient::new(channel.clone()),
+        health_client: HealthClient::new(channel),
+    })
 }
 
 /// Establishes a connection to the note transport service, returning the gRPC clients.
-///
-/// Note: `timeout_ms` is currently ignored on WASM as `tonic_web_wasm_client::Client` does not
-/// support timeout configuration.
-// TODO: refactor `connect_channel` so that WASM doesn't accept a timeout parameter.
 #[cfg(target_arch = "wasm32")]
 #[allow(clippy::unused_async)]
 async fn connect_channel(
     endpoint: &str,
-    _timeout_ms: u64,
-) -> Result<(MidenNoteTransportClient<Service>, HealthClient<Service>), NoteTransportError> {
-    let wasm_client = tonic_web_wasm_client::Client::new(String::from(endpoint));
-    Ok((
-        MidenNoteTransportClient::new(wasm_client.clone()),
-        HealthClient::new(wasm_client),
-    ))
+    timeout_ms: u64,
+) -> Result<ConnectedClient, NoteTransportError> {
+    let fetch_options = FetchOptions::new().timeout(Duration::from_millis(timeout_ms));
+    let wasm_client =
+        tonic_web_wasm_client::Client::new_with_options(String::from(endpoint), fetch_options);
+    // Unlike the native channel timeout, which only bounds the time until the response arrives,
+    // the fetch-level timeout aborts the whole fetch `timeout_ms` after the request starts —
+    // including a response body that is still streaming. Long-lived note streams therefore go
+    // through a client without the timeout.
+    let streaming_wasm_client = tonic_web_wasm_client::Client::new(String::from(endpoint));
+    Ok(ConnectedClient {
+        client: MidenNoteTransportClient::new(wasm_client.clone()),
+        streaming_client: MidenNoteTransportClient::new(streaming_wasm_client),
+        health_client: HealthClient::new(wasm_client),
+    })
 }
 
 /// Inner state holding the connected gRPC clients.
 #[derive(Clone)]
 struct ConnectedClient {
     client: MidenNoteTransportClient<Service>,
+    streaming_client: MidenNoteTransportClient<Service>,
     health_client: HealthClient<Service>,
 }
 
@@ -108,8 +119,7 @@ impl GrpcNoteTransportClient {
             return Ok(connected.clone());
         }
 
-        let (client, health_client) = connect_channel(&self.endpoint, self.timeout_ms).await?;
-        let connected = ConnectedClient { client, health_client };
+        let connected = connect_channel(&self.endpoint, self.timeout_ms).await?;
         *self.inner.write() = Some(connected.clone());
         Ok(connected)
     }
@@ -117,6 +127,14 @@ impl GrpcNoteTransportClient {
     /// Get a clone of the main client, connecting if needed.
     async fn api(&self) -> Result<MidenNoteTransportClient<Service>, NoteTransportError> {
         Ok(self.ensure_connected().await?.client)
+    }
+
+    /// Get a clone of the streaming client, connecting if needed.
+    ///
+    /// On WASM this client carries no request timeout, so long-lived note streams are not
+    /// aborted by the fetch-level deadline that bounds unary requests.
+    async fn streaming_api(&self) -> Result<MidenNoteTransportClient<Service>, NoteTransportError> {
+        Ok(self.ensure_connected().await?.streaming_client)
     }
 
     /// Get a clone of the health client, connecting if needed.
@@ -223,7 +241,7 @@ impl GrpcNoteTransportClient {
         };
 
         let response = self
-            .api()
+            .streaming_api()
             .await?
             .stream_notes(request)
             .await

@@ -83,8 +83,10 @@ use miden_protocol::note::{
 use miden_protocol::transaction::{AccountInputs, PartialBlockchain};
 use miden_protocol::vm::MIN_STACK_DEPTH;
 use miden_protocol::{Felt, Word};
+use miden_standards::account::auth::FeeConversionInfo;
 use miden_standards::account::faucets::FungibleFaucet;
-use miden_standards::account::interface::AccountInterfaceExt;
+use miden_standards::account::interface::{AccountComponentInterfaceExt, AccountInterfaceExt};
+use miden_standards::note::TxFeeNote;
 use miden_tx::{DataStore, NoteConsumptionChecker, TransactionExecutor};
 use tracing::info;
 
@@ -191,6 +193,14 @@ pub use miden_tx::{
     TransactionProverError,
 };
 pub use result::TransactionResult;
+
+// CONSTANTS
+// ================================================================================================
+
+/// Salt the client commits native fee conversion info under.
+///
+/// See [`attach_native_fee_conversion_info`] for why this is a constant.
+const NATIVE_FEE_CONVERSION_SALT: Word = Word::empty();
 
 /// Transaction management methods
 impl<AUTH> Client<AUTH>
@@ -578,7 +588,7 @@ where
     pub(crate) async fn prepare_transaction(
         &self,
         account_code_interface: AccountCodeInterface,
-        transaction_request: TransactionRequest,
+        mut transaction_request: TransactionRequest,
         anchor: Option<&ChainAnchor>,
     ) -> Result<PreparedTransaction, ClientError> {
         if anchor.is_none() {
@@ -645,6 +655,22 @@ where
             self.retrieve_foreign_account_inputs(foreign_accounts, block_num).await?;
 
         let ignore_invalid_notes = transaction_request.ignore_invalid_input_notes();
+
+        let reference_header = match anchor {
+            Some(anchor) => anchor.header().clone(),
+            None => {
+                self.store
+                    .get_block_header_by_num(block_num)
+                    .await?
+                    .ok_or(StoreError::BlockHeaderNotFound(block_num))?
+                    .0
+            },
+        };
+        attach_native_fee_conversion_info(
+            &mut transaction_request,
+            &account_code_interface,
+            &reference_header,
+        );
 
         let tx_args = transaction_request.into_transaction_args(tx_script);
 
@@ -1218,6 +1244,14 @@ where
         let output_note_relevances = note_screener.get_batch_consumability(&output_notes).await?;
 
         for note in output_notes {
+            // The fee note is a bearer note meant for whoever builds the batch, so the screener
+            // wrongly reports it as consumable here. Tracking it would also register its tag, and
+            // all TX_FEE notes share one chain-wide tag, so every later sync would pull in every
+            // fee note the chain has produced.
+            if note.script().root() == TxFeeNote::script_root() {
+                continue;
+            }
+
             if output_note_relevances.contains_key(&note.id()) {
                 let metadata = *note.metadata();
                 let tag = metadata.tag();
@@ -1387,6 +1421,52 @@ pub(super) fn validate_account_request(
     } else {
         validate_basic_account_request(transaction_request, account)
     }
+}
+
+/// Commits fee conversion info paying the transaction fee in the chain's native fee asset at rate
+/// 1/1, unless the request already declares its own or the account cannot read it.
+///
+/// Signature-based auth components abort when a non-zero `verification_base_fee` meets auth args
+/// carrying no conversion info, so a request built without one is unexecutable rather than merely
+/// suboptimal. Components that ignore the auth args settle their fee some other way and are left
+/// alone (see [`validate_fee_conversion_info_support`]).
+///
+/// The salt is fixed because the signed transaction summary covers the auth args, and a random salt
+/// would change the summary on every execution, breaking flows that reproduce one to verify a
+/// signature over it. `AuthMultisig` is excluded for the mirror-image reason: there the salt *is*
+/// the replay guard, so a fixed one would eventually collide, and such a caller must pick its own
+/// with [`TransactionRequestBuilder::fee_conversion_info`].
+fn attach_native_fee_conversion_info(
+    transaction_request: &mut TransactionRequest,
+    account_code_interface: &AccountCodeInterface,
+    reference_header: &BlockHeader,
+) {
+    let fee_parameters = reference_header.fee_parameters();
+    if fee_parameters.verification_base_fee() == 0 {
+        return;
+    }
+
+    // An auth arg the caller set is the caller's business: it may already commit conversion info
+    // for a non-native asset, or carry something else entirely.
+    if transaction_request.auth_arg().is_some() {
+        return;
+    }
+
+    // `AccountInterface::new` requires exactly one recognized auth component and panics otherwise,
+    // which accounts carrying a custom auth component do not satisfy, so the component list is
+    // inspected directly.
+    let procedures: Vec<_> = account_code_interface.procedures().iter().copied().collect();
+    let takes_a_fixed_salt = AccountComponentInterface::from_procedures(&procedures)
+        .iter()
+        .any(|component| matches!(component, AccountComponentInterface::AuthSingleSig));
+    if !takes_a_fixed_salt {
+        return;
+    }
+
+    transaction_request.set_fee_conversion_info(
+        FeeConversionInfo::one_to_one(fee_parameters.fee_faucet_id()),
+        NATIVE_FEE_CONVERSION_SALT,
+    );
 }
 
 /// Verifies that the account can consume fee conversion info passed through the auth args.
@@ -1607,23 +1687,37 @@ mod tests {
     use miden_protocol::account::auth::AuthSecretKey;
     use miden_protocol::account::{AccountBuilder, AccountComponent, AccountId, AccountType};
     use miden_protocol::asset::FungibleAsset;
+    use miden_protocol::block::{BlockHeader, BlockNumber, FeeParameters};
     use miden_protocol::crypto::rand::RandomCoin;
     use miden_protocol::note::{Note, NoteType};
     use miden_protocol::testing::account_id::{
         ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET,
+        ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET,
         ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE,
         ACCOUNT_ID_SENDER,
     };
+    use miden_protocol::testing::validator_keys::random_validator_set;
     use miden_standards::account::AccountBuilderSchemaCommitmentExt;
-    use miden_standards::account::auth::{Approver, AuthSingleSig, FeeConversionInfo, NoAuth};
+    use miden_standards::account::auth::{
+        Approver,
+        ApproverSet,
+        AuthMultisig,
+        AuthMultisigConfig,
+        AuthSingleSig,
+        FeeConversionInfo,
+        NoAuth,
+        commit_fee_conversion_info,
+    };
     use miden_standards::account::wallets::BasicWallet;
     use miden_standards::note::P2idNote;
 
     use super::{
         Account,
         AccountComponentInterface,
+        NATIVE_FEE_CONVERSION_SALT,
         TransactionRequest,
         TransactionRequestBuilder,
+        attach_native_fee_conversion_info,
         validate_fee_conversion_info_support,
         validate_output_note_senders,
     };
@@ -1753,5 +1847,118 @@ mod tests {
             &account_with_auth(NoAuth),
         )
         .unwrap();
+    }
+
+    // NATIVE FEE CONVERSION INFO INJECTION
+    // --------------------------------------------------------------------------------------------
+
+    /// Fee faucet the headers below name, distinct from the faucet
+    /// [`fee_conversion_request`] pays in so the two can be told apart.
+    const NATIVE_FEE_FAUCET: u128 = ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET;
+
+    /// Builds a block header whose fee parameters charge `verification_base_fee` in
+    /// [`NATIVE_FEE_FAUCET`]'s asset.
+    fn header_with_base_fee(verification_base_fee: u32) -> BlockHeader {
+        let fee_parameters = FeeParameters::new(
+            AccountId::try_from(NATIVE_FEE_FAUCET).unwrap(),
+            verification_base_fee,
+        );
+        let (_, validator_keys) = random_validator_set(1);
+
+        BlockHeader::new(
+            1,
+            Word::empty(),
+            BlockNumber::from(1u32),
+            Word::empty(),
+            Word::empty(),
+            Word::empty(),
+            Word::empty(),
+            Word::empty(),
+            Word::empty(),
+            validator_keys,
+            fee_parameters,
+            0,
+        )
+    }
+
+    /// Returns the auth arg a request carries once the native conversion info has been attached
+    /// against a header charging `verification_base_fee`.
+    fn injected_auth_arg(
+        mut request: TransactionRequest,
+        account: &Account,
+        verification_base_fee: u32,
+    ) -> Option<Word> {
+        attach_native_fee_conversion_info(
+            &mut request,
+            &account.code_interface(),
+            &header_with_base_fee(verification_base_fee),
+        );
+        *request.auth_arg()
+    }
+
+    fn singlesig_account() -> Account {
+        let key = AuthSecretKey::new_falcon512_poseidon2();
+        account_with_auth(AuthSingleSig::new(Approver::new(
+            key.public_key().to_commitment(),
+            AuthSchemeId::Falcon512Poseidon2,
+        )))
+    }
+
+    #[test]
+    fn native_fee_conversion_info_is_attached_on_a_fee_charging_chain() {
+        let auth_arg = injected_auth_arg(
+            TransactionRequestBuilder::new().build().unwrap(),
+            &singlesig_account(),
+            500,
+        )
+        .expect("a fee-charging chain should get conversion info attached");
+
+        let (expected, _) = commit_fee_conversion_info(
+            FeeConversionInfo::one_to_one(AccountId::try_from(NATIVE_FEE_FAUCET).unwrap()),
+            NATIVE_FEE_CONVERSION_SALT,
+        );
+        assert_eq!(auth_arg, expected, "the fee should be paid in the native asset at rate 1/1");
+    }
+
+    #[test]
+    fn an_explicit_auth_arg_is_not_overwritten() {
+        // The caller's own conversion info names a different faucet, so an overwrite would show.
+        let request = fee_conversion_request();
+        let declared = *request.auth_arg();
+
+        assert_eq!(
+            injected_auth_arg(request, &singlesig_account(), 500),
+            declared,
+            "a request that declares its own auth arg keeps it"
+        );
+    }
+
+    #[test]
+    fn nothing_is_attached_where_it_is_not_needed_or_not_readable() {
+        let approvers = ApproverSet::new(
+            vec![Approver::new(
+                AuthSecretKey::new_falcon512_poseidon2().public_key().to_commitment(),
+                AuthSchemeId::Falcon512Poseidon2,
+            )],
+            1,
+        )
+        .unwrap();
+        let multisig = AuthMultisig::new(AuthMultisigConfig::new(approvers)).unwrap();
+
+        for (case, account, base_fee) in [
+            ("a zero base fee charges nothing", singlesig_account(), 0),
+            ("NoAuth never reads the auth args", account_with_auth(NoAuth), 500),
+            ("a multisig salt is its own replay guard", account_with_auth(multisig), 500),
+        ] {
+            assert_eq!(
+                injected_auth_arg(
+                    TransactionRequestBuilder::new().build().unwrap(),
+                    &account,
+                    base_fee
+                ),
+                None,
+                "{case}"
+            );
+        }
     }
 }

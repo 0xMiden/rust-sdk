@@ -2,8 +2,10 @@ use std::boxed::Box;
 use std::env::temp_dir;
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::string::ToString;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::vec::Vec;
 
@@ -37,6 +39,7 @@ use crate::note::{Note, NoteConsumability, P2idNote};
 use crate::rpc::RpcError;
 use crate::store::{InputNoteRecord, NoteFilter, TransactionFilter};
 use crate::sync::SyncSummary;
+use crate::test_utils::fee::FeeFunder;
 use crate::transaction::{
     NoteArgs,
     TransactionRequest,
@@ -46,7 +49,56 @@ use crate::transaction::{
 };
 use crate::{Client, ClientError};
 
-pub type TestClient = Client<FilesystemKeyStore>;
+// TEST CLIENT
+// ================================================================================================
+
+/// A [`Client`] wired for the test helpers, carrying the [`FeeFunder`] the account-creating helpers
+/// pay deploys from when the chain charges transaction fees.
+///
+/// Dereferences to the wrapped [`Client`], so it is used exactly like one.
+pub struct TestClient {
+    client: Client<FilesystemKeyStore>,
+    fee_funder: Option<Arc<dyn FeeFunder>>,
+}
+
+impl TestClient {
+    /// Wraps `client` with no fee funder, which is all a fee-free chain needs.
+    pub fn new(client: Client<FilesystemKeyStore>) -> Self {
+        Self { client, fee_funder: None }
+    }
+
+    /// Sets the funder the account-creating helpers draw the native fee asset from.
+    #[must_use]
+    pub fn with_fee_funder(mut self, fee_funder: Option<Arc<dyn FeeFunder>>) -> Self {
+        self.fee_funder = fee_funder;
+        self
+    }
+
+    /// Returns the fee funder, if one is set.
+    pub fn fee_funder(&self) -> Option<&Arc<dyn FeeFunder>> {
+        self.fee_funder.as_ref()
+    }
+}
+
+impl From<Client<FilesystemKeyStore>> for TestClient {
+    fn from(client: Client<FilesystemKeyStore>) -> Self {
+        Self::new(client)
+    }
+}
+
+impl Deref for TestClient {
+    type Target = Client<FilesystemKeyStore>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.client
+    }
+}
+
+impl DerefMut for TestClient {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.client
+    }
+}
 
 // CONSTANTS
 // ================================================================================================
@@ -68,7 +120,7 @@ pub async fn insert_new_wallet(
     visibility: AccountType,
     keystore: &FilesystemKeyStore,
     auth_scheme: AuthSchemeId,
-) -> Result<(Account, AuthSecretKey), ClientError> {
+) -> Result<(Account, AuthSecretKey)> {
     let mut init_seed = [0u8; 32];
     client.rng().fill_bytes(&mut init_seed);
 
@@ -82,7 +134,7 @@ pub async fn insert_new_wallet_with_seed(
     keystore: &FilesystemKeyStore,
     init_seed: [u8; 32],
     auth_scheme: AuthSchemeId,
-) -> Result<(Account, AuthSecretKey), ClientError> {
+) -> Result<(Account, AuthSecretKey)> {
     let key_pair = match auth_scheme {
         AuthSchemeId::Falcon512Poseidon2 => AuthSecretKey::new_falcon512_poseidon2(),
         AuthSchemeId::EcdsaK256Keccak => AuthSecretKey::new_ecdsa_k256_keccak(),
@@ -104,16 +156,21 @@ pub async fn insert_new_wallet_with_seed(
 
     info!(account_id = %account.id(), ?visibility, "Inserted new wallet");
 
+    client.fund_and_deploy_if_needed(account.id()).await?;
+
     Ok((account, key_pair))
 }
 
 /// Inserts a new fungible faucet account into the client and into the keystore.
+///
+/// A [`BasicWallet`] rides along for its `receive_asset` procedure, which `FungibleFaucet` does not
+/// export, so a P2ID note can fund the faucet's own minting fees. Minting is unaffected.
 pub async fn insert_new_fungible_faucet(
     client: &mut TestClient,
     visibility: AccountType,
     keystore: &FilesystemKeyStore,
     auth_scheme: AuthSchemeId,
-) -> Result<(Account, AuthSecretKey), ClientError> {
+) -> Result<(Account, AuthSecretKey)> {
     let key_pair = match auth_scheme {
         AuthSchemeId::Falcon512Poseidon2 => AuthSecretKey::new_falcon512_poseidon2(),
         AuthSchemeId::EcdsaK256Keccak => AuthSecretKey::new_ecdsa_k256_keccak(),
@@ -150,6 +207,7 @@ pub async fn insert_new_fungible_faucet(
         .account_type(visibility)
         .with_component(auth_component)
         .with_component(faucet)
+        .with_component(BasicWallet)
         .with_components(policy_manager)
         .build_with_schema_commitment()
         .unwrap();
@@ -159,6 +217,8 @@ pub async fn insert_new_fungible_faucet(
     client.add_account(&account, false).await?;
 
     info!(account_id = %account.id(), ?visibility, "Inserted new fungible faucet");
+
+    client.fund_and_deploy_if_needed(account.id()).await?;
 
     Ok((account, key_pair))
 }
@@ -615,7 +675,7 @@ pub async fn insert_account_with_custom_component(
     storage_slots: Vec<StorageSlot>,
     visibility: AccountType,
     keystore: &FilesystemKeyStore,
-) -> Result<(Account, AuthSecretKey), ClientError> {
+) -> Result<(Account, AuthSecretKey)> {
     let component_code = CodeBuilder::default()
         .compile_component_code("custom::component", custom_code)
         .map_err(|err| ClientError::TransactionRequestError(err.into()))?;
@@ -645,6 +705,8 @@ pub async fn insert_account_with_custom_component(
 
     keystore.add_key(&key_pair, account.id()).await.unwrap();
     client.add_account(&account, false).await?;
+
+    client.fund_and_deploy_if_needed(account.id()).await?;
 
     Ok((account, key_pair))
 }

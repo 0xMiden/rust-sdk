@@ -15,7 +15,7 @@ use miden_client::note::{
 };
 use miden_client::note_transport::NoteTransportClient;
 use miden_client::store::NoteFilter;
-use miden_client::testing::common::create_test_store_path;
+use miden_client::testing::common::{TestClient, create_test_store_path};
 use miden_client::testing::mock::{MockClient, MockRpcApi};
 use miden_client::testing::note_transport::{
     FaultyNoteTransportApi,
@@ -562,7 +562,7 @@ async fn fetch_private_notes_finds_note_committed_at_sync_height() {
         .tx_discard_delta(None)
         .note_transport(Arc::new(transport_client));
 
-    let mut client = builder.build().await.unwrap();
+    let mut client = TestClient::from(builder.build().await.unwrap());
     client.ensure_genesis_in_place().await.unwrap();
     seed_mock_transaction_encryption_key(&mut client).await;
 
@@ -894,12 +894,12 @@ fn dummy_asset() -> Asset {
 
 pub async fn create_test_client_transport(
     mock_node: Arc<RwLock<MockNoteTransportNode>>,
-) -> (MockClient<FilesystemKeyStore>, FilesystemKeyStore) {
+) -> (TestClient, FilesystemKeyStore) {
     let (builder, _, keystore) = create_test_client_builder().await;
     let transport_client = MockNoteTransportApi::new(mock_node);
     let builder_w_transport = builder.note_transport(Arc::new(transport_client));
 
-    let mut client = builder_w_transport.build().await.unwrap();
+    let mut client = TestClient::from(builder_w_transport.build().await.unwrap());
     client.ensure_genesis_in_place().await.unwrap();
     seed_mock_transaction_encryption_key(&mut client).await;
 
@@ -908,7 +908,7 @@ pub async fn create_test_client_transport(
 
 pub async fn create_test_user_transport(
     mock_node: Arc<RwLock<MockNoteTransportNode>>,
-) -> (MockClient<FilesystemKeyStore>, Account) {
+) -> (TestClient, Account) {
     let (mut client, keystore) = Box::pin(create_test_client_transport(mock_node.clone())).await;
     let account = insert_new_wallet(&mut client, AccountType::Private, &keystore).await.unwrap();
     (client, account)
@@ -916,9 +916,9 @@ pub async fn create_test_user_transport(
 
 pub async fn create_test_client_with_transport(
     transport: Arc<dyn NoteTransportClient>,
-) -> (MockClient<FilesystemKeyStore>, FilesystemKeyStore) {
+) -> (TestClient, FilesystemKeyStore) {
     let (builder, _, keystore) = create_test_client_builder().await;
-    let mut client = builder.note_transport(transport).build().await.unwrap();
+    let mut client = TestClient::from(builder.note_transport(transport).build().await.unwrap());
     client.ensure_genesis_in_place().await.unwrap();
     seed_mock_transaction_encryption_key(&mut client).await;
     (client, keystore)
@@ -926,7 +926,7 @@ pub async fn create_test_client_with_transport(
 
 pub async fn create_test_user_with_transport(
     transport: Arc<dyn NoteTransportClient>,
-) -> (MockClient<FilesystemKeyStore>, Account) {
+) -> (TestClient, Account) {
     let (mut client, keystore) = Box::pin(create_test_client_with_transport(transport)).await;
     let account = insert_new_wallet(&mut client, AccountType::Private, &keystore).await.unwrap();
     (client, account)
@@ -966,7 +966,7 @@ fn multi_word_attachment() -> NoteAttachment {
 async fn committed_private_note_recipient(
     blocks_past_commitment: u32,
     with_unserved_attachment: bool,
-) -> (MockClient<FilesystemKeyStore>, Note, Arc<RwLock<MockNoteTransportNode>>) {
+) -> (TestClient, Note, Arc<RwLock<MockNoteTransportNode>>) {
     let mut mock_chain_builder = MockChainBuilder::new();
     let mock_account = mock_chain_builder
         .add_existing_mock_account(miden_testing::Auth::IncrNonce)
@@ -1027,7 +1027,7 @@ async fn committed_private_note_recipient(
         .tx_discard_delta(None)
         .note_transport(Arc::new(transport_client));
 
-    let mut client = builder.build().await.unwrap();
+    let mut client = TestClient::from(builder.build().await.unwrap());
     client.ensure_genesis_in_place().await.unwrap();
     seed_mock_transaction_encryption_key(&mut client).await;
 

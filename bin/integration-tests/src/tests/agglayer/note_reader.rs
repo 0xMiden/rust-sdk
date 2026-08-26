@@ -22,15 +22,12 @@ pub async fn test_agglayer_note_reader_reads_consumed_notes(
     client_config: ClientConfig,
 ) -> Result<()> {
     let agglayer_config = AgglayerConfig::from_env()?;
+    let _agglayer_accounts = agglayer_config.claim()?;
     let (mut bridge_admin, mut ger_manager, mut user) =
         create_agglayer_clients(&client_config).await?;
-    let (_bridge_admin_id, ger_manager_id, bridge_id) = setup_core_accounts(
-        agglayer_config.as_ref(),
-        &mut bridge_admin,
-        &mut ger_manager,
-        &mut user,
-    )
-    .await?;
+    let (_bridge_admin_id, ger_manager_id, bridge_id) =
+        setup_core_accounts(&agglayer_config, &mut bridge_admin, &mut ger_manager, &mut user)
+            .await?;
 
     const NOTE_COUNT: usize = 3;
     const MAX_POLL_BLOCKS: usize = 30;

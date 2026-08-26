@@ -32,6 +32,7 @@ clap               = { features = ["derive", "env"], workspace = true }
 num_cpus           = { version = "1.0" }
 rand               = { workspace = true }
 regex              = { workspace = true }
+rustix             = { features = ["fs"], version = "1.1" }
 serde              = { workspace = true }
 serde_json         = { features = ["arbitrary_precision"], workspace = true }
 tokio              = { workspace = true }

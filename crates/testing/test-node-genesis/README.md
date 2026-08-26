@@ -15,11 +15,12 @@ gen-genesis [OUTPUT_DIR]   # defaults to ./genesis
 
 Writes, into `OUTPUT_DIR`:
 
-- `tst_faucet.mac` — the TST genesis faucet, written **with** its secret key so tests can mint.
-- `test_account_NNNN.mac` — the test faucets and the `too_many_assets` account (read-only
+- `native_faucet.mac`: the native fee faucet, written **with** its secret key.
+- `tst_faucet.mac`: the TST genesis faucet, written **with** its secret key so tests can mint.
+- `test_account_NNNN.mac`: the test faucets and the `too_many_assets` account (read-only
   fixtures, no secret keys).
-- `genesis.toml` — references every `.mac` file via `[[account]]` entries, with
-  `verification_base_fee = 0`.
+- `genesis.toml`: points at the native faucet via `native_faucet`, references the rest via
+  `[[account]]` entries, and declares the `verification_base_fee` and the funder wallets.
 
 The node is then bootstrapped with:
 
@@ -27,18 +28,29 @@ The node is then bootstrapped with:
 miden-validator bootstrap --genesis-config-file OUTPUT_DIR/genesis.toml ...
 ```
 
+## Fees and funding
+
+Every transaction settles its fee out of the vault of the account it runs against, so the native
+faucet is generated here rather than by the node: its ID has to be known while the other accounts
+are built, or their vaults could not reference it. `MIDEN_VERIFICATION_BASE_FEE` overrides the base
+fee (`0` gives a fee-free chain) and `MIDEN_NUM_FUNDER_WALLETS` how many funders are declared.
+
+Seeded with the native asset: the `[[wallet]]` funders, which the node writes as
+`wallet_<index>.mac` and `start-test-node.sh` copies to `./data/funders/`, and every genesis account
+that transacts, which nothing can top up afterwards.
+
 ## AggLayer genesis
 
-Setting the `AGGLAYER_GENESIS` env var additionally emits the pre-deployed AggLayer accounts:
+The pre-deployed AggLayer accounts are always emitted:
 
-- `bridge_admin.mac` — bridge admin wallet (with secret key)
-- `ger_manager.mac` — GER manager wallet (with secret key)
-- `bridge.mac` — AggLayer bridge account (unconfigured; configured at test time)
-- `agglayer_faucet.mac` — AggLayer faucet (token symbol "AGG")
+- `bridge_admin.mac`: bridge admin wallet (with secret key)
+- `ger_manager.mac`: GER manager wallet (with secret key)
+- `bridge.mac`: AggLayer bridge account (unconfigured, configured at test time)
+- `agglayer_faucet.mac`: AggLayer faucet (token symbol "AGG")
 
-The `start-node-agglayer` Make target starts the node this way, and
-`scripts/start-test-node.sh` copies the files into `./data/` so the integration tests can load
-them via `AGGLAYER_ACCOUNTS_DIR=./data`.
+`start-test-node.sh` copies these into `./data/`, where the tests load them via
+`AGGLAYER_ACCOUNTS_DIR`. Genesis always carries them because the bridge and faucet are network
+accounts, which no client transaction can deploy.
 
 ## Why a TOML manifest
 

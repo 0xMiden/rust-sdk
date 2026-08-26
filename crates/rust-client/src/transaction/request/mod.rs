@@ -32,6 +32,7 @@ use miden_protocol::note::{
 };
 use miden_protocol::transaction::{InputNote, InputNotes, TransactionArgs, TransactionScript};
 use miden_protocol::vm::AdviceMap;
+use miden_standards::account::auth::{FeeConversionInfo, commit_fee_conversion_info};
 use miden_standards::errors::CodeBuilderError;
 use miden_standards::tx_script::{SendNotesTransactionScript, SendNotesTransactionScriptError};
 use miden_tx::utils::serde::{
@@ -245,6 +246,25 @@ impl TransactionRequest {
     /// Returns the expected NTX scripts that the node's NTX builder will need in its registry.
     pub fn expected_ntx_scripts(&self) -> &[NoteScript] {
         &self.expected_ntx_scripts
+    }
+
+    // STATE MUTATORS
+    // --------------------------------------------------------------------------------------------
+
+    /// Commits `conversion_info` under `salt` through the auth args, the way
+    /// [`TransactionRequestBuilder::fee_conversion_info`] does.
+    ///
+    /// This overwrites any auth arg the request already carries, so callers must only reach for it
+    /// when the request declares none.
+    pub(crate) fn set_fee_conversion_info(
+        &mut self,
+        conversion_info: FeeConversionInfo,
+        salt: Word,
+    ) {
+        let (auth_arg, preimage) = commit_fee_conversion_info(conversion_info, salt);
+        self.advice_map.insert(auth_arg, preimage);
+        self.auth_arg = Some(auth_arg);
+        self.declares_fee_conversion_info = true;
     }
 
     /// Builds the [`InputNotes`] needed for the transaction execution.

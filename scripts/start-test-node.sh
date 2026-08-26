@@ -11,7 +11,8 @@
 #   --print-rev      print the pinned node rev or version (CI cache key) and exit
 #
 # Env vars:
-#   MIDEN_VERIFICATION_BASE_FEE  genesis `verification_base_fee` (default 0, i.e. fees disabled)
+#   MIDEN_VERIFICATION_BASE_FEE  genesis `verification_base_fee` (default 500; 0 disables fees)
+#   MIDEN_NUM_FUNDER_WALLETS     number of funder wallets a fee-charging genesis declares
 
 set -euo pipefail
 
@@ -41,9 +42,9 @@ PROVER="127.0.0.1:$PROVER_PORT"
 # Shared secret authorizing the ntx-builder to submit network transactions; the sequencer rejects
 # them unless both sides agree on it.
 NETWORK_TX_AUTH="${MIDEN_NETWORK_TX_AUTH:-miden-client-testing-ntx-secret}"
-# Genesis `verification_base_fee`. At 0 the chain never charges fees; any other value makes every
-# transaction pay out of its own account's vault in the node-generated MIDEN native asset.
-VERIFICATION_BASE_FEE="${MIDEN_VERIFICATION_BASE_FEE:-0}"
+# Genesis `verification_base_fee`. Every transaction pays out of its own account's vault, as on a
+# real chain. At 0 fees are never charged.
+VERIFICATION_BASE_FEE="${MIDEN_VERIFICATION_BASE_FEE:-500}"
 
 NODE_BINS=(miden-validator miden-node miden-ntx-builder miden-remote-prover)
 
@@ -126,14 +127,14 @@ rm -rf "$DATA"
 # Each component opens its SQLite DB directly under its data dir and does not create it.
 mkdir -p "$LOG_DIR" "$DATA/validator" "$DATA/node" "$DATA/ntx-builder"
 MIDEN_VERIFICATION_BASE_FEE="$VERIFICATION_BASE_FEE" "$GEN_GENESIS" "$DATA/genesis-config"
+# Cleared up front so a fee-free run cannot leave a previous run's funders behind, and re-exposed
+# below once `miden-validator genesis` has generated them.
+rm -rf "$ROOT/data/funders"
 mkdir -p "$ROOT/data"
 cp "$DATA/genesis-config/tst_faucet.mac" "$ROOT/data/account.mac"
-# With AGGLAYER_GENESIS set, gen-genesis also emits the agglayer account files; expose them under
-# ./data so tests can load them via AGGLAYER_ACCOUNTS_DIR=./data.
+# Expose the agglayer accounts under ./data, where the tests read them via AGGLAYER_ACCOUNTS_DIR.
 for mac in bridge_admin.mac ger_manager.mac bridge.mac agglayer_faucet.mac; do
-    if [ -f "$DATA/genesis-config/$mac" ]; then
-        cp "$DATA/genesis-config/$mac" "$ROOT/data/$mac"
-    fi
+    cp "$DATA/genesis-config/$mac" "$ROOT/data/$mac"
 done
 
 # The validator's signing key and the set's shared transaction encryption key are passed on the
@@ -166,6 +167,14 @@ done
     "$BIN/miden-ntx-builder" bootstrap --data-directory "$DATA/ntx-builder" \
         --genesis "$DATA/genesis/genesis.dat"
 } >"$LOG_DIR/bootstrap.log" 2>&1
+
+# Expose the wallets the node generated from the genesis `[[wallet]]` entries under ./data/funders,
+# where the tests read them via MIDEN_FUNDER_ACCOUNTS. A fee-free genesis declares none.
+if compgen -G "$DATA/accounts/wallet_*.mac" >/dev/null; then
+    mkdir -p "$ROOT/data/funders"
+    cp "$DATA"/accounts/wallet_*.mac "$ROOT/data/funders/"
+    echo "==> exposed $(ls "$ROOT/data/funders" | wc -l | tr -d ' ') funder wallets in $ROOT/data/funders"
+fi
 
 echo "==> starting components"
 : > "$PID_FILE"

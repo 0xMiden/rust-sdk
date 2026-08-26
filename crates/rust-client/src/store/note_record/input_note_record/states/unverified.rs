@@ -56,16 +56,22 @@ impl NoteStateHandler for UnverifiedNoteState {
         note_id: NoteId,
         block_header: &BlockHeader,
     ) -> Result<Option<InputNoteState>, NoteRecordError> {
-        if self
-            .inclusion_proof
-            .note_path()
-            .verify(
-                self.inclusion_proof.location().block_note_tree_index().into(),
-                note_id.as_word(),
-                &block_header.note_root(),
-            )
-            .is_ok()
-        {
+        // The proof authenticates the note against the note root of the block it names, so a
+        // header for any other block cannot confirm it, however well the path verifies: with an
+        // honest node this should never trigger.
+        let proof_authenticates_note = self.inclusion_proof.location().block_num()
+            == block_header.block_num()
+            && self
+                .inclusion_proof
+                .note_path()
+                .verify(
+                    self.inclusion_proof.location().block_note_tree_index().into(),
+                    note_id.as_word(),
+                    &block_header.note_root(),
+                )
+                .is_ok();
+
+        if proof_authenticates_note {
             Ok(Some(
                 CommittedNoteState {
                     inclusion_proof: self.inclusion_proof.clone(),
@@ -153,5 +159,75 @@ impl miden_tx::utils::serde::Deserializable for UnverifiedNoteState {
 impl From<UnverifiedNoteState> for InputNoteState {
     fn from(state: UnverifiedNoteState) -> Self {
         InputNoteState::Unverified(state)
+    }
+}
+
+// TESTS
+// ================================================================================================
+
+#[cfg(test)]
+mod tests {
+    use miden_protocol::Word;
+    use miden_protocol::account::{AccountIdVersion, AccountType, AssetCallbackFlag};
+    use miden_protocol::crypto::merkle::SparseMerklePath;
+    use miden_protocol::note::{NoteAttachments, NoteTag, NoteType, PartialNoteMetadata};
+    use miden_protocol::transaction::TransactionKernel;
+
+    use super::*;
+
+    /// An unverified note whose empty path authenticates it against a note root equal to the
+    /// note's own ID, in the block the proof names.
+    fn unverified_note(proof_block: u32) -> (NoteId, UnverifiedNoteState) {
+        let note_id = NoteId::from_raw(Word::from([1u32, 2, 3, 4]));
+        let sender = AccountId::dummy(
+            [1; 15],
+            AccountIdVersion::Version1,
+            AccountType::Public,
+            AssetCallbackFlag::Disabled,
+        );
+        let metadata = NoteMetadata::new(
+            PartialNoteMetadata::new(sender, NoteType::Private).with_tag(NoteTag::new(7)),
+            &NoteAttachments::empty(),
+        );
+        let inclusion_proof = NoteInclusionProof::new(
+            proof_block.into(),
+            0,
+            SparseMerklePath::from_parts(0, alloc::vec::Vec::new()).unwrap(),
+        )
+        .unwrap();
+
+        (note_id, UnverifiedNoteState { metadata, inclusion_proof })
+    }
+
+    /// A header for `block_num` whose note root is `note_root`, so the same root can be placed in
+    /// more than one block.
+    fn header(block_num: u32, note_root: Word) -> BlockHeader {
+        BlockHeader::mock(block_num, None, Some(note_root), &[], TransactionKernel.to_commitment())
+    }
+
+    #[test]
+    fn header_for_the_named_block_commits_the_note() {
+        let (note_id, state) = unverified_note(4);
+
+        let committed = state
+            .block_header_received(note_id, &header(4, note_id.as_word()))
+            .unwrap()
+            .unwrap();
+
+        assert!(matches!(committed, InputNoteState::Committed(_)), "got {committed:?}");
+    }
+
+    #[test]
+    fn header_for_another_block_invalidates_the_note_despite_a_matching_note_root() {
+        let (note_id, state) = unverified_note(4);
+
+        // The path still verifies against this header, since its note root is the same. Only the
+        // block the proof names sets the two apart.
+        let invalid = state
+            .block_header_received(note_id, &header(9, note_id.as_word()))
+            .unwrap()
+            .unwrap();
+
+        assert!(matches!(invalid, InputNoteState::Invalid(_)), "got {invalid:?}");
     }
 }

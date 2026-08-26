@@ -12,7 +12,8 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::ToString;
 use alloc::vec::Vec;
 
-use miden_protocol::block::BlockNumber;
+use miden_protocol::block::{BlockHeader, BlockNumber};
+use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::note::{
     Note,
     NoteAttachments,
@@ -28,7 +29,7 @@ use miden_tx::auth::TransactionAuthenticator;
 use crate::rpc::domain::note::{FetchedNote, ResolvedNoteContent, SyncedNote};
 use crate::rpc::{NoteContentFetch, RpcError};
 use crate::store::input_note_states::ExpectedNoteState;
-use crate::store::{InputNoteRecord, InputNoteState, NoteFilter};
+use crate::store::{InputNoteRecord, InputNoteState, NoteFilter, StoreError};
 use crate::sync::NoteTagRecord;
 use crate::{Client, ClientError};
 
@@ -422,7 +423,7 @@ where
     /// reconstructing the id from the committed metadata: `NoteId::new(details_commitment,
     /// metadata)`.
     async fn sync_expected_notes(
-        &mut self,
+        &self,
         request_block_num: BlockNumber,
         // Expected notes' details commitments with their tags.
         expected_notes: Vec<(NoteDetailsCommitment, NoteTag)>,
@@ -467,6 +468,257 @@ where
         }
 
         Ok(matched_notes)
+    }
+}
+
+/// Fetch-only expected-note import.
+///
+/// These methods are the counterpart of the [`NoteFile::ExpectedNote`] path in
+/// [`Client::import_notes`], split so every network call happens before the first write:
+/// `fetch_expected_note_imports` and `fetch_note_block_proofs` only read and fetch,
+/// `apply_expected_note_import` only writes. Used by the note transport sync, which needs its
+/// network phase to overlap with the chain sync's.
+impl<AUTH> Client<AUTH>
+where
+    AUTH: TransactionAuthenticator + Sync + 'static,
+{
+    /// Builds the records for a batch of expected notes without writing anything.
+    ///
+    /// Each request is a note's details, the block from which its commitment should be looked for,
+    /// and the tag to track it under. Records for notes the node has not committed are final.
+    /// Records for committed notes come back pending, since their state transition also needs the
+    /// header of the block that committed them — [`Client::fetch_note_block_proofs`] fetches those
+    /// and finishes the records.
+    ///
+    /// # Errors
+    ///
+    /// - If a note being imported is currently being processed by a local transaction.
+    pub(crate) async fn fetch_expected_note_imports(
+        &self,
+        requests: &[(NoteDetails, BlockNumber, NoteTag)],
+    ) -> Result<ExpectedNoteImport, ClientError> {
+        let mut import = ExpectedNoteImport::default();
+        if requests.is_empty() {
+            return Ok(import);
+        }
+
+        // Deduplicate by details commitment, keeping the last request for each note.
+        let mut requests_by_commitment = BTreeMap::new();
+        for (details, after_block_num, tag) in requests {
+            requests_by_commitment
+                .insert(details.commitment(), (details.clone(), *after_block_num, *tag));
+        }
+
+        let previous_by_commitment: BTreeMap<NoteDetailsCommitment, InputNoteRecord> = self
+            .get_input_notes(NoteFilter::DetailsCommitments(
+                requests_by_commitment.keys().copied().collect(),
+            ))
+            .await?
+            .into_iter()
+            .map(|note| (note.details_commitment(), note))
+            .collect();
+
+        // Validate before building anything, so a single in-flight note aborts the whole import.
+        for previous_note in previous_by_commitment.values() {
+            ensure_not_processing(Some(previous_note))?;
+        }
+
+        let mut lowest_request_block: BlockNumber = u32::MAX.into();
+        let mut note_requests = Vec::with_capacity(requests_by_commitment.len());
+        for (commitment, (_, after_block_num, tag)) in &requests_by_commitment {
+            note_requests.push((*commitment, *tag));
+            lowest_request_block = lowest_request_block.min(*after_block_num);
+        }
+        let mut committed_notes_data =
+            self.sync_expected_notes(lowest_request_block, note_requests).await?;
+
+        for (commitment, (details, after_block_num, tag)) in requests_by_commitment {
+            let mut note_record =
+                previous_by_commitment.get(&commitment).cloned().unwrap_or_else(|| {
+                    InputNoteRecord::new(
+                        details,
+                        NoteAttachments::empty(),
+                        self.store.get_current_timestamp(),
+                        ExpectedNoteState {
+                            metadata: None,
+                            after_block_num,
+                            tag: Some(tag),
+                        }
+                        .into(),
+                    )
+                });
+
+            // Notes the node has not reported as committed keep their expected record untouched.
+            let Some(SyncedNote { committed: committed_note, content }) =
+                committed_notes_data.remove(&commitment)
+            else {
+                import.notes.push(note_record);
+                continue;
+            };
+
+            let attachments = content
+                .map(ResolvedNoteContent::into_attachments)
+                .filter(|attachments| !attachments.is_empty());
+
+            let metadata = *committed_note.metadata();
+            let mut changed = note_record
+                .inclusion_proof_received(committed_note.inclusion_proof().clone(), metadata)?;
+
+            if let Some(attachments) = attachments {
+                changed |= note_record.attachments_received(attachments);
+            }
+
+            import.pending.push(PendingBlockHeaderNote {
+                record: note_record,
+                block_num: committed_note.block_num(),
+                committed_tag: metadata.tag(),
+                changed,
+            });
+        }
+
+        Ok(import)
+    }
+
+    /// Fetches the header and MMR proof of every block that committed one of the notes in
+    /// `imports`, then finishes the records waiting on them.
+    ///
+    /// Each block is fetched once even when it committed several notes, in one page or across
+    /// pages. A block the client's partial MMR already tracks has its header read from the store
+    /// and needs no insert, so it is absent from the returned map.
+    ///
+    /// Nothing is written and the MMR is not modified: tracking the returned headers and inserting
+    /// them is [`Client::apply_blocks`]'s job, so the proof paths are verified against the peaks
+    /// only once, next to the writes they authenticate.
+    pub(crate) async fn fetch_note_block_proofs(
+        &self,
+        imports: &mut [ExpectedNoteImport],
+    ) -> Result<BTreeMap<BlockNumber, (BlockHeader, MerklePath)>, ClientError> {
+        let requested_blocks: BTreeSet<BlockNumber> = imports
+            .iter()
+            .flat_map(|import| import.pending.iter().map(|note| note.block_num))
+            .collect();
+
+        if requested_blocks.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+
+        let partial_mmr = self.get_current_partial_mmr().await?;
+
+        let mut headers = BTreeMap::new();
+        let mut blocks_to_insert = BTreeMap::new();
+        for block_num in requested_blocks {
+            if partial_mmr.is_tracked(block_num.as_usize()) {
+                let (block_header, _) = self
+                    .store
+                    .get_block_header_by_num(block_num)
+                    .await?
+                    .ok_or(StoreError::BlockHeaderNotFound(block_num))?;
+                headers.insert(block_num, block_header);
+                continue;
+            }
+
+            let (block_header, mmr_proof) =
+                self.rpc_api.get_block_header_with_proof(block_num).await?;
+            headers.insert(block_num, block_header.clone());
+            blocks_to_insert.insert(block_num, (block_header, mmr_proof.merkle_path().clone()));
+        }
+
+        for import in imports {
+            for mut pending in core::mem::take(&mut import.pending) {
+                let block_header = headers
+                    .get(&pending.block_num)
+                    .expect("every pending note's block was fetched above");
+
+                // `block_header_received` transitions the record's state, so it must always run.
+                let changed =
+                    pending.changed | pending.record.block_header_received(block_header)?;
+
+                if changed {
+                    // Once committed, the note no longer needs its expected-note tag.
+                    import.tags_to_remove.push(NoteTagRecord::with_note_source(
+                        pending.committed_tag,
+                        pending.record.details_commitment(),
+                    ));
+                    import.notes.push(pending.record);
+                }
+            }
+        }
+
+        Ok(blocks_to_insert)
+    }
+
+    /// Writes an [`ExpectedNoteImport`], returning the details commitments of the written records.
+    ///
+    /// Block headers are not written here: [`Client::apply_blocks`] must run first so a record is
+    /// never persisted as committed before the header proving its inclusion.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the import still has records waiting on a block header.
+    pub(crate) async fn apply_expected_note_import(
+        &mut self,
+        import: ExpectedNoteImport,
+    ) -> Result<Vec<NoteDetailsCommitment>, ClientError> {
+        assert!(
+            import.pending.is_empty(),
+            "block proofs must be fetched before an expected-note import is applied"
+        );
+
+        for tag in import.tags_to_remove {
+            self.store.remove_note_tag(tag).await?;
+        }
+
+        let mut written = Vec::with_capacity(import.notes.len());
+        for note in import.notes {
+            let details_commitment = note.details_commitment();
+            if let InputNoteState::Expected(ExpectedNoteState { tag: Some(tag), .. }) = note.state()
+            {
+                self.store
+                    .add_note_tag(NoteTagRecord::with_note_source(*tag, details_commitment))
+                    .await?;
+            }
+            self.store.upsert_input_notes(&[note]).await?;
+            written.push(details_commitment);
+        }
+
+        Ok(written)
+    }
+}
+
+// EXPECTED NOTE IMPORT
+// ================================================================================================
+
+/// A record whose inclusion proof and attachments have been applied, waiting for the header of the
+/// block that committed it.
+struct PendingBlockHeaderNote {
+    /// The record, with every transition but the block header already applied.
+    record: InputNoteRecord,
+    /// Block that committed the note.
+    block_num: BlockNumber,
+    /// Note-source tag to drop once the record is committed.
+    committed_tag: NoteTag,
+    /// Whether the inclusion-proof and attachment transitions already changed the record.
+    changed: bool,
+}
+
+/// Everything an expected-note import needs to write, with nothing written yet.
+///
+/// Built by [`Client::fetch_expected_note_imports`], completed by
+/// [`Client::fetch_note_block_proofs`] and written by [`Client::apply_expected_note_import`].
+#[derive(Default)]
+pub(crate) struct ExpectedNoteImport {
+    /// Records ready to write.
+    notes: Vec<InputNoteRecord>,
+    /// Records waiting on a block header.
+    pending: Vec<PendingBlockHeaderNote>,
+    /// Note-source tags to remove.
+    tags_to_remove: Vec<NoteTagRecord>,
+}
+
+impl ExpectedNoteImport {
+    /// The records this import is about to write.
+    pub(crate) fn input_note_records(&self) -> impl Iterator<Item = &InputNoteRecord> {
+        self.notes.iter()
     }
 }
 

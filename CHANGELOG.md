@@ -71,6 +71,7 @@
 * [FIX][cli] `miden-client account --default none` now reports whether a default account was actually removed instead of always printing that it was. Removing an absent setting also no longer panics in debug builds ([#2439](https://github.com/0xMiden/rust-sdk/pull/2439)).
 * [FIX][cli] `miden-client address remove` now reports whether the address was actually removed instead of always printing that it was being removed.
 * [FIX][rust] `VerifyingRpcClient::get_account` now validates that the returned `AccountProof` belongs to the requested account ID, rejecting a mismatch with `RpcError::InvalidResponse` ([#2419](https://github.com/0xMiden/rust-sdk/pull/2419)).
+* [FIX][rust] On wasm32 the node RPC and note transport gRPC clients now apply the configured request timeout instead of silently ignoring it, so a request whose response never arrives fails with `deadline_exceeded` rather than hanging forever. Long-lived note streams are exempt, as the fetch-level timeout would abort a stream that is still delivering updates ([#2452](https://github.com/0xMiden/rust-sdk/pull/2452)).
 
 ## 0.16.0-alpha.1 (2026-07-17)
 

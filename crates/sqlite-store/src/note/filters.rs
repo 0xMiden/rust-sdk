@@ -119,16 +119,6 @@ const INPUT_NOTES_BASE_QUERY: &str = "SELECT
                 LEFT OUTER JOIN notes_scripts AS script
                     ON note.script_root = script.script_root";
 
-/// State discriminants of the input notes that haven't been nullified yet. Invalid notes are left
-/// out because they can't be consumed.
-pub(super) const UNSPENT_INPUT_NOTE_STATES: [u8; 5] = [
-    InputNoteState::STATE_EXPECTED,
-    InputNoteState::STATE_UNVERIFIED,
-    InputNoteState::STATE_COMMITTED,
-    InputNoteState::STATE_PROCESSING_AUTHENTICATED,
-    InputNoteState::STATE_PROCESSING_UNAUTHENTICATED,
-];
-
 pub(super) fn note_filter_to_query_input_notes(filter: &NoteFilter) -> (String, NoteQueryParams) {
     let (condition, params) = note_filter_input_notes_condition(filter);
     let query = if matches!(filter, NoteFilter::Consumed) {
@@ -274,7 +264,7 @@ pub(super) fn note_filter_input_notes_condition(filter: &NoteFilter) -> (String,
             format!("(state_discriminant = {})", InputNoteState::STATE_UNVERIFIED)
         },
         NoteFilter::Unspent => {
-            let states = UNSPENT_INPUT_NOTE_STATES.map(|state| state.to_string()).join(", ");
+            let states = InputNoteState::UNSPENT_STATES.map(|state| state.to_string()).join(", ");
             format!("(state_discriminant in ({states}))")
         },
     };

@@ -46,7 +46,6 @@ use miden_protocol::testing::account_id::{
 use miden_protocol::transaction::TransactionId;
 use miden_standards::note::StandardNote;
 
-use crate::note::filters::UNSPENT_INPUT_NOTE_STATES;
 use crate::tests::create_test_store;
 
 // HELPERS
@@ -868,7 +867,7 @@ fn unspent_states_classify_every_note_state() {
         }
 
         assert!(
-            UNSPENT_INPUT_NOTE_STATES.contains(&discriminant)
+            InputNoteState::UNSPENT_STATES.contains(&discriminant)
                 != SPENT_OR_UNCONSUMABLE.contains(&discriminant),
             "note state {discriminant} is in neither list or in both"
         );

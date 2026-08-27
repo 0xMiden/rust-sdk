@@ -361,6 +361,14 @@ impl From<&TransactionRequestError> for Option<ErrorHint> {
                           Add at least one fungible or non-fungible asset to the note.".to_string(),
                 docs_url: Some(TROUBLESHOOTING_DOC),
             }),
+            TransactionRequestError::SwapNoteWithZeroAsset(side) => Some(ErrorHint {
+                message: format!(
+                    "A swap note exchanges the offered asset for the requested one, and its \
+                     payback is a P2ID note carrying the requested asset. A zero {side} asset \
+                     leaves one side of that exchange empty. Set a non-zero amount."
+                ),
+                docs_url: Some(TROUBLESHOOTING_DOC),
+            }),
             TransactionRequestError::OutputNoteSenderMismatch { expected, actual } => {
                 Some(ErrorHint {
                     message: format!(

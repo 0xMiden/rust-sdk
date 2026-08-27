@@ -558,6 +558,8 @@ pub enum TransactionRequestError {
     NoteArgError(#[source] NoteError),
     #[error("pay-to-ID note must contain at least one asset to transfer")]
     P2IDNoteWithoutAsset,
+    #[error("swap note assets must be non-zero: a zero {0} asset makes the exchange one-sided")]
+    SwapNoteWithZeroAsset(&'static str),
     #[error(
         "non-fungible asset issued by faucet {0} is not available in the account vault or incoming notes"
     )]

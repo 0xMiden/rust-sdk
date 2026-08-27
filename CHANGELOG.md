@@ -29,6 +29,7 @@
 * [BREAKING][removal][rust] `miden_client::agglayer::create_bridge_account` and `miden_client::agglayer::create_agglayer_faucet` are removed. Build the accounts with `AggLayerBridge::account_builder` and `AggLayerFaucet::account_builder`, which return an `AccountBuilder` and take the account's `FeePolicyManager` explicitly; its active policy must be a `BasicConstantFeePolicy` scheduling every root in the account's `allowed_notes()`. The faucet builder additionally takes the initial token supply and the account seeding its `ADMIN` role.
 * [BREAKING][rust] `Client::add_note_tag` and `Client::remove_note_tag` return `bool` instead of `()`, reporting whether the tag was actually added or removed. Both used to swallow that outcome and only log it ([#2416](https://github.com/0xMiden/rust-sdk/pull/2416)).
 * [BREAKING][rust] `Client::remove_setting` and `Store::remove_setting` return `bool` instead of `()`, reporting whether the key had a value set.
+* [BREAKING][type][rust] Added the `TransactionRequestError::SwapNoteWithZeroAsset` variant, so exhaustive matches on `TransactionRequestError` must handle it ([#2459](https://github.com/0xMiden/rust-sdk/pull/2459)).
 * [BREAKING][rust] `Client::remove_address` and `Store::remove_address` return `bool` instead of `()`, reporting whether the address was tracked. When it wasn't, `Client::remove_address` now leaves the derived note tag in place instead of running its cleanup.
 * [BREAKING][type][rust] Added the `TransactionRequestError::ForeignProcedureInputsTooLong` variant ([#2187](https://github.com/0xMiden/rust-sdk/pull/2187)).
 
@@ -75,6 +76,7 @@
 * [FIX][cli] `miden-client address remove` now reports whether the address was actually removed instead of always printing that it was being removed.
 * [FIX][rust] `VerifyingRpcClient::get_account` now validates that the returned `AccountProof` belongs to the requested account ID, rejecting a mismatch with `RpcError::InvalidResponse` ([#2419](https://github.com/0xMiden/rust-sdk/pull/2419)).
 * [FIX][rust] `TransactionRequestBuilder::build_mint_fungible_asset` now rejects a zero-amount asset with `TransactionRequestError::P2IDNoteWithoutAsset`, matching `build_pay_to_id`; both emit a P2ID note, and minting nothing produced one the target could draw nothing from ([#2457](https://github.com/0xMiden/rust-sdk/pull/2457)).
+* [FIX][rust] `TransactionRequestBuilder::build_swap` and `build_pswap_create` now reject a zero-amount asset on either side of the exchange. A zero requested asset produced a payback P2ID note carrying nothing, and a zero offered asset produced a note whose consumer pays and receives nothing ([#2459](https://github.com/0xMiden/rust-sdk/pull/2459)).
 
 ## 0.16.0-alpha.1 (2026-07-17)
 

@@ -395,7 +395,8 @@ impl TransactionRequestBuilder {
     /// note. This request must be executed against the wallet sender account.
     ///
     /// - `swap_data` is the data for the swap transaction that contains the sender account ID, the
-    ///   offered asset, and the requested asset.
+    ///   offered asset, and the requested asset. Neither asset may be a zero-amount fungible asset:
+    ///   the SWAP note holds the offered one and its payback note holds the requested one.
     /// - `note_type` determines the visibility of the note to be created.
     /// - `payback_note_type` determines the visibility of the payback note.
     /// - `rng` is the random number generator used to generate the serial number for the created
@@ -409,6 +410,16 @@ impl TransactionRequestBuilder {
         payback_note_type: NoteType,
         rng: &mut ClientRng,
     ) -> Result<TransactionRequest, TransactionRequestError> {
+        // Both sides carry value: the SWAP note holds the offered asset, and filling it emits a
+        // P2ID payback carrying the requested one. A zero amount on either side leaves one of
+        // those two notes empty.
+        if is_zero_fungible(&swap_data.offered_asset()) {
+            return Err(TransactionRequestError::SwapNoteWithZeroAsset("offered"));
+        }
+        if is_zero_fungible(&swap_data.requested_asset()) {
+            return Err(TransactionRequestError::SwapNoteWithZeroAsset("requested"));
+        }
+
         // The created note is the one that we need as the output of the tx, the other one is the
         // one that we expect to receive and consume eventually.
         let swap_note = SwapNote::builder()
@@ -486,6 +497,14 @@ impl TransactionRequestBuilder {
         note_attachment: Option<NoteAttachment>,
         rng: &mut ClientRng,
     ) -> Result<TransactionRequest, TransactionRequestError> {
+        // Same exchange invariant as build_swap; PSWAP is fungible on both sides.
+        if pswap_data.offered_asset().amount() == AssetAmount::ZERO {
+            return Err(TransactionRequestError::SwapNoteWithZeroAsset("offered"));
+        }
+        if pswap_data.requested_asset().amount() == AssetAmount::ZERO {
+            return Err(TransactionRequestError::SwapNoteWithZeroAsset("requested"));
+        }
+
         let storage = PswapNoteStorage::builder()
             .min_requested_asset(pswap_data.requested_asset())
             .creator_account_id(pswap_data.creator_account_id())
@@ -646,6 +665,12 @@ impl TransactionRequestBuilder {
             expected_ntx_scripts: self.expected_ntx_scripts,
         })
     }
+}
+
+/// Returns `true` when `asset` is a fungible asset carrying no value. Non-fungible assets always
+/// carry value, so they are never zero.
+fn is_zero_fungible(asset: &Asset) -> bool {
+    asset.is_fungible() && asset.unwrap_fungible().amount() == AssetAmount::ZERO
 }
 
 // PAYMENT NOTE DESCRIPTION

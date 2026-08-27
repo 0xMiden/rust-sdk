@@ -76,12 +76,6 @@ pub use builder::ClientBuilderSqliteExt;
 
 /// `SQLite`-backed [`Store`] implementation.
 ///
-/// # Single accessor
-///
-/// A database file must be reached through at most one live `SqliteStore` at a time, across every
-/// process. The instance keeps account SMT state in memory and only rebuilds it at construction, so
-/// another accessor's writes stay invisible to this one and its cached roots go stale.
-///
 /// Current table definitions can be found at `store.sql` migration file.
 pub struct SqliteStore {
     pub(crate) pool: Pool,
@@ -108,16 +102,12 @@ impl SqliteStore {
             .build()
             .map_err(|e| StoreError::DatabaseError(e.to_string()))?;
 
-        // Scoped so the connection returns to the pool before the SMT forest initialization below
-        // reaches for it, keeping construction to one connection at a time.
-        {
-            let conn = pool.get().await.map_err(|e| StoreError::DatabaseError(e.to_string()))?;
+        let conn = pool.get().await.map_err(|e| StoreError::DatabaseError(e.to_string()))?;
 
-            conn.interact(apply_migrations)
-                .await
-                .map_err(|e| StoreError::DatabaseError(e.to_string()))?
-                .map_err(|e| StoreError::DatabaseError(e.to_string()))?;
-        }
+        conn.interact(apply_migrations)
+            .await
+            .map_err(|e| StoreError::DatabaseError(e.to_string()))?
+            .map_err(|e| StoreError::DatabaseError(e.to_string()))?;
 
         // Account SMT data is persisted in the forest tables and read on demand, so no state
         // needs to be rebuilt here.

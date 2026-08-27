@@ -80,10 +80,6 @@ impl SqlitePoolManager {
         // Enable foreign key checks.
         conn.pragma_update(None, "foreign_keys", "ON")?;
 
-        // Concurrent writers race to upgrade their transactions to write locks; wait for the
-        // other writer instead of failing immediately with SQLITE_BUSY.
-        conn.busy_timeout(std::time::Duration::from_secs(5))?;
-
         Ok(conn)
     }
 }
@@ -124,50 +120,12 @@ impl Manager for SqlitePoolManager {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
-    use miden_client::EMPTY_WORD;
-    use miden_client::account::component::{AccountComponent, BasicWallet};
-    use miden_client::account::{
-        Account,
-        AccountBuilder,
-        AccountBuilderSchemaCommitmentExt,
-        AccountType,
-        Address,
-    };
-    use miden_client::auth::{AuthSchemeId, AuthSingleSig, PublicKeyCommitment};
-    use miden_client::store::{ClientAccountType, Store};
+    use miden_client::store::Store;
     use miden_client::testing::common::create_test_store_path;
-    use miden_protocol::account::AccountComponentMetadata;
-    use miden_standards::account::auth::Approver;
 
     use crate::SqliteStore;
     use crate::sql_error::SqlResultExt;
     use crate::tests::create_test_store;
-
-    /// A construction that hangs means the pool is being acquired twice, so bound it rather than
-    /// let it burn the whole nextest slow-timeout budget.
-    const OPEN_TIMEOUT: Duration = Duration::from_secs(30);
-
-    /// Builds a minimal account that can be inserted into a store.
-    fn test_account(init_seed: [u8; 32]) -> anyhow::Result<Account> {
-        let component = AccountComponent::new(
-            BasicWallet::code().clone(),
-            vec![],
-            AccountComponentMetadata::new("miden::testing::dummy_component"),
-        )?;
-
-        // The auth component has to be added first, because `AccountCode` takes its first
-        // component as the authentication one.
-        Ok(AccountBuilder::new(init_seed)
-            .account_type(AccountType::Private)
-            .with_component(AuthSingleSig::new(Approver::new(
-                PublicKeyCommitment::from(EMPTY_WORD),
-                AuthSchemeId::Falcon512Poseidon2,
-            )))
-            .with_component(component)
-            .build_with_schema_commitment()?)
-    }
 
     #[tokio::test]
     async fn connection_pragmas_are_applied() -> anyhow::Result<()> {
@@ -199,29 +157,6 @@ mod tests {
         assert_eq!(synchronous, 1);
         assert_eq!(busy_timeout, 5_000);
         assert_eq!(foreign_keys, 1);
-
-        Ok(())
-    }
-
-    /// `SqliteStore::new` acquires a connection twice on a database that already holds accounts:
-    /// once for the migrations and again for the SMT forest initialization. It has to release the
-    /// first before taking the second, so that construction never needs two connections at once
-    /// and cannot exhaust the pool.
-    #[tokio::test]
-    async fn new_does_not_deadlock_on_a_populated_database() -> anyhow::Result<()> {
-        let path = create_test_store_path();
-
-        let account = test_account([0; 32])?;
-        {
-            let store =
-                tokio::time::timeout(OPEN_TIMEOUT, SqliteStore::new(path.clone())).await??;
-            store
-                .insert_account(&account, Address::new(account.id()), ClientAccountType::Native)
-                .await?;
-        }
-
-        let store = tokio::time::timeout(OPEN_TIMEOUT, SqliteStore::new(path)).await??;
-        assert_eq!(store.get_account_ids().await?, vec![account.id()]);
 
         Ok(())
     }
@@ -267,8 +202,8 @@ mod tests {
         Ok(())
     }
 
-    /// Overlapping accessors are unsupported (see [`SqliteStore`]), but they must degrade to
-    /// waiting on each other's write locks rather than failing with `SQLITE_BUSY`.
+    /// Two stores open on the same file must wait on each other's write locks rather than fail
+    /// with `SQLITE_BUSY`.
     #[tokio::test]
     async fn overlapping_accessors_wait_instead_of_failing() -> anyhow::Result<()> {
         let path = create_test_store_path();

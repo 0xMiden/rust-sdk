@@ -113,6 +113,24 @@ impl Deserializable for FaucetMetadata {
     }
 }
 
+/// Decodes a fungible faucet token config slot value into display metadata.
+///
+/// Returns `None` when the value does not describe a fungible faucet config the protocol would
+/// accept: the symbol must decode as a [`TokenSymbol`], and the decimals must be within
+/// [`FungibleFaucet::MAX_DECIMALS`], which is what [`FungibleFaucet`] enforces when the component
+/// is built.
+fn faucet_metadata_from_token_config(token_config: [Felt; 4]) -> Option<FaucetMetadata> {
+    let [_token_supply, _max_supply, decimals, symbol] = token_config;
+
+    let symbol = TokenSymbol::try_from(symbol).ok()?;
+    let decimals = u8::try_from(decimals.as_canonical_u64()).ok()?;
+    if decimals > FungibleFaucet::MAX_DECIMALS {
+        return None;
+    }
+
+    Some(FaucetMetadata { symbol: symbol.to_string(), decimals })
+}
+
 mod account_reader;
 pub use account_reader::AccountReader;
 /// Raw access to `miden-standards` account modules for items not curated by `miden-client`.
@@ -448,14 +466,7 @@ impl<AUTH> Client<AUTH> {
             return Ok(None);
         };
 
-        let [_token_supply, _max_supply, decimals, symbol] = *slot_header.value();
-        let Ok(symbol) = TokenSymbol::try_from(symbol) else {
-            return Ok(None);
-        };
-        let Ok(decimals) = u8::try_from(decimals.as_canonical_u64()) else {
-            return Ok(None);
-        };
-        Ok(Some(FaucetMetadata { symbol: symbol.to_string(), decimals }))
+        Ok(faucet_metadata_from_token_config(*slot_header.value()))
     }
 
     /// Adds an [`Address`] to the associated [`AccountId`], alongside its derived [`NoteTag`]. If
@@ -707,5 +718,59 @@ mod schema_commitment_tests {
             .get_item(AccountSchemaCommitment::schema_commitment_slot())
             .expect("schema commitment slot");
         assert_ne!(commitment, EMPTY_WORD);
+    }
+}
+
+#[cfg(test)]
+mod faucet_metadata_tests {
+    use miden_protocol::Felt;
+
+    use super::{FungibleFaucet, TokenSymbol, faucet_metadata_from_token_config};
+
+    /// Builds a token config slot value carrying the given decimals and the symbol "TST".
+    fn token_config(decimals: u32) -> [Felt; 4] {
+        [
+            Felt::from(0u32),
+            Felt::from(0u32),
+            Felt::from(decimals),
+            TokenSymbol::new("TST").unwrap().as_element(),
+        ]
+    }
+
+    #[test]
+    fn decodes_a_config_within_the_protocol_bounds() {
+        let metadata = faucet_metadata_from_token_config(token_config(8)).unwrap();
+
+        assert_eq!(metadata.symbol, "TST");
+        assert_eq!(metadata.decimals, 8);
+    }
+
+    #[test]
+    fn accepts_the_maximum_supported_decimals() {
+        let max = u32::from(FungibleFaucet::MAX_DECIMALS);
+        let metadata = faucet_metadata_from_token_config(token_config(max)).unwrap();
+
+        assert_eq!(metadata.decimals, FungibleFaucet::MAX_DECIMALS);
+    }
+
+    #[test]
+    fn rejects_decimals_above_the_maximum() {
+        let above_max = u32::from(FungibleFaucet::MAX_DECIMALS) + 1;
+
+        assert!(faucet_metadata_from_token_config(token_config(above_max)).is_none());
+        assert!(faucet_metadata_from_token_config(token_config(200)).is_none());
+    }
+
+    #[test]
+    fn rejects_decimals_that_do_not_fit_a_u8() {
+        assert!(faucet_metadata_from_token_config(token_config(300)).is_none());
+    }
+
+    #[test]
+    fn rejects_a_symbol_that_is_not_a_token_symbol() {
+        let mut config = token_config(8);
+        config[3] = Felt::from(0u32);
+
+        assert!(faucet_metadata_from_token_config(config).is_none());
     }
 }

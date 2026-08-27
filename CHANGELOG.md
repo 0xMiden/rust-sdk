@@ -74,6 +74,7 @@
 * [FIX][cli] `miden-client account --default none` now reports whether a default account was actually removed instead of always printing that it was. Removing an absent setting also no longer panics in debug builds ([#2439](https://github.com/0xMiden/rust-sdk/pull/2439)).
 * [FIX][cli] `miden-client address remove` now reports whether the address was actually removed instead of always printing that it was being removed.
 * [FIX][rust] `VerifyingRpcClient::get_account` now validates that the returned `AccountProof` belongs to the requested account ID, rejecting a mismatch with `RpcError::InvalidResponse` ([#2419](https://github.com/0xMiden/rust-sdk/pull/2419)).
+* [FIX][rust] `Client::fetch_remote_token_metadata` now rejects a faucet whose token config reports more decimals than `FungibleFaucet::MAX_DECIMALS`, instead of caching the out-of-range value and rendering every balance for that faucet with it ([#2423](https://github.com/0xMiden/rust-sdk/pull/2423)).
 
 ## 0.16.0-alpha.1 (2026-07-17)
 

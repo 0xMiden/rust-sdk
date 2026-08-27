@@ -437,16 +437,18 @@ inputs = [ { key = "0x0000000000000000000000000000000000000000000000000000001000
 
 #### `call`
 
-Call a procedure on an account tracked by the client and show what it returns, along with the state changes the call would produce.
+Call a procedure on an account and show what it returns, along with the state changes the call would produce.
 
-Usage: `miden-client call <ACCOUNT_ID>:<PROCEDURE> [ARGS]... --package <PACKAGE>`
+Usage: `miden-client call <ACCOUNT_ID>:<PROCEDURE> [ARGS]... [--package <PACKAGE>]`
 
 | Flag                          | Description                                                   | Aliases |
 | ----------------------------- | ------------------------------------------------------------- | ------- |
-| `--package <PACKAGE>`         | Path to the `.masp` package that exports the procedure.       | `-p`    |
+| `--package <PACKAGE>`         | The `.masp` package that exports the procedure, as a path or a name resolved in the packages directory. Optional. | `-p`    |
 | `--inputs-path <INPUTS_PATH>` | Path to a TOML file with advice map entries.                  | `-i`    |
 
-The target is a single argument of the form `<ACCOUNT_ID>:<PROCEDURE>`. The account ID may be given as a partial ID. The procedure name is matched against the package's exports with `_` and `-` treated as equivalent, so it can be written in either snake_case or kebab-case (`get_count` matches the export `get-count`).
+The target is a single argument of the form `<ACCOUNT_ID>:<PROCEDURE>`. For an account tracked by the client, the ID may be given as a partial ID; an account that isn't tracked has to be named by its full hex ID or its bech32 address, since a prefix is resolved against the local store. The procedure name is matched against the package's exports with `_` and `-` treated as equivalent, so it can be written in either snake_case or kebab-case (`get_count` matches the export `get-count`).
+
+`--package` takes either a path to a `.masp` file or a bare name, which is looked up in the configured packages directory. It is optional: without it, `<PROCEDURE>` must be the procedure's hex digest instead of its name, and the output stack is printed as raw field elements since there is no manifest to read the signature from.
 
 Arguments are passed positionally after the target. Each one is a `u64` field element, and they are pushed onto the stack so that the first argument ends up on top. Their number is checked against the procedure's signature in the package manifest. If the package does not record a signature, the check is skipped and a warning is printed, in which case passing the wrong number of arguments may fail or produce a wrong result.
 
@@ -487,6 +489,30 @@ Nonce incremented by: 1.
 
 :::note
 The call is executed locally. No proof is generated, nothing is submitted to the network, and the account's stored state is left unchanged.
+:::
+
+##### Calling an account that isn't tracked locally
+
+If the target account is not in the local store, the client reads its state from the network and runs the call from one of your own accounts — the default account if one is set, otherwise the first usable one. That account only runs the call; nothing about it changes.
+
+This requires the target account's state to be public, so the node can serve it, and it requires at least one of your own accounts to run the call from (accounts whose local state is out of sync with the node are skipped). Such calls can only read the account: the transaction kernel rejects any procedure that would mutate an account other than the one running the transaction, so only the return values are printed. No state delta is shown either — the only account a delta could describe is the one running the call, whose changes come from its own authentication and nonce rather than from the procedure. The account has to be named by its full hex ID or its bech32 address — a partial ID is resolved against the local store, which by definition does not have this account.
+
+```sh
+miden-client call 0x4614b8bf575eab71455e97bd394e90:get-count --package target/miden/dev/counter-contract.masp
+```
+
+```sh
+Account 0x4614b8bf575eab71455e97bd394e90 isn't tracked locally; reading its state from the network and running the call from your account 0x8fa1c2....
+
+Raw Signature: extern "fast" fn() -> felt
+
+Result: 1
+
+A call on an account read from the network can only read it; no state delta.
+```
+
+:::note
+The account state read this way comes from the transaction's reference block, which the wallet running the call picks. It is not revalidated against the account's current on-chain state, so run `miden-client sync` first if you need a recent value.
 :::
 
 ### `note-transport`

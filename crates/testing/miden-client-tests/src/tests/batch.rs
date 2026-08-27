@@ -2,17 +2,21 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use miden_client::ClientError;
-use miden_client::account::AccountType;
+use miden_client::account::{AccountBuilderSchemaCommitmentExt, AccountType};
+use miden_client::assembly::CodeBuilder;
 use miden_client::asset::{Asset, AssetAmount, FungibleAsset};
-use miden_client::auth::RPO_FALCON_SCHEME_ID;
+use miden_client::auth::{AuthSchemeId, AuthSecretKey, AuthSingleSig, RPO_FALCON_SCHEME_ID};
 use miden_client::builder::ClientBuilder;
-use miden_client::keystore::FilesystemKeyStore;
+use miden_client::keystore::{FilesystemKeyStore, Keystore};
 use miden_client::note::{NoteType, NoteUpdateTracker};
 use miden_client::rpc::NodeRpcClient;
 use miden_client::store::{StoreError, TransactionFilter};
 use miden_client::testing::common::{
     MINT_AMOUNT,
+    TRANSFER_AMOUNT,
     create_test_store_path,
+    insert_new_fungible_faucet,
+    insert_new_wallet,
     mint_and_consume,
     mint_note,
     setup_two_wallets_and_faucet,
@@ -26,9 +30,21 @@ use miden_client::transaction::{
     TransactionStoreUpdate,
 };
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
-use miden_protocol::Felt;
+use miden_protocol::account::{
+    AccountBuilder,
+    AccountComponent,
+    AccountComponentMetadata,
+    StorageMap,
+    StorageMapKey,
+    StorageSlot,
+    StorageSlotName,
+};
 use miden_protocol::crypto::rand::RandomCoin;
+use miden_protocol::{Felt, Word};
+use miden_standards::account::auth::Approver;
+use miden_standards::account::wallets::BasicWallet;
 use miden_testing::{Auth, MockChainBuilder, MockTransactionInput};
+use rand::Rng;
 
 use crate::tests::{create_test_client, seed_mock_transaction_encryption_key};
 
@@ -115,14 +131,10 @@ async fn batch_builder_submits_two_txs_on_one_account() {
     let req2 = TransactionRequestBuilder::new().build().unwrap();
 
     let block_num = Box::pin(async {
-        client
-            .new_transaction_batch()
-            .push(account_id, req1)
-            .await?
-            .push(account_id, req2)
-            .await?
-            .submit()
-            .await
+        let mut batch = client.new_transaction_batch();
+        batch.push(account_id, req1).await?;
+        batch.push(account_id, req2).await?;
+        batch.submit().await
     })
     .await
     .expect("batch submit should succeed");
@@ -250,10 +262,10 @@ async fn apply_transaction_batch_rolls_back_on_mid_batch_failure() {
         .expect("update_account on A must succeed after the failed batch was rolled back");
 }
 
-/// `BatchBuilder::push` must validate each transaction against the in-batch (stacked)
-/// account state, not the persisted pre-batch state — otherwise a tx that depends on
-/// state created by a prior push in the same batch is wrongly rejected at validation
-/// time even though the executor would accept it.
+/// `BatchBuilder::push` must execute each transaction against the in-batch (stacked)
+/// account state, not the persisted pre-batch state — otherwise a transaction that
+/// depends on state created by a prior push in the same batch fails even though the
+/// stacked state satisfies it.
 ///
 /// Setup: A starts with `MINT_AMOUNT` (consumed, also puts A on-chain). A second
 /// mint note also worth `MINT_AMOUNT` is left UNCONSUMED.
@@ -310,17 +322,215 @@ async fn batch_builder_push_succeeds_when_balance_depends_on_prior_push() {
         .unwrap();
 
     let block_num = Box::pin(async {
-        client
-            .new_transaction_batch()
-            .push(from_account_id, push1)
-            .await?
-            .push(from_account_id, push2)
-            .await?
-            .submit()
-            .await
+        let mut batch = client.new_transaction_batch();
+        batch.push(from_account_id, push1).await?;
+        batch.push(from_account_id, push2).await?;
+        batch.submit().await
     })
     .await
-    .expect("submit should succeed because validation uses in-batch state");
+    .expect("submit should succeed because execution uses in-batch state");
+
+    assert!(block_num.as_u32() > 0);
+}
+
+/// MASM component code with a single account procedure that bumps the value stored under
+/// `{map_key}` in the `{slot_name}` map slot. Parameterized so two independent components (each
+/// owning its own map slot) can be installed on the same account.
+const BATCH_BUMP_MAP_CODE: &str = r#"
+    use miden::core::word
+
+    const MAP_SLOT = word("{slot_name}")
+
+    @account_procedure
+    pub proc bump_map_item
+        # map key
+        push.{map_key}
+
+        # push slot_id_prefix, slot_id_suffix for the map slot
+        push.MAP_SLOT[0..2]
+
+        exec.::miden::protocol::active_account::get_map_item
+        add.1
+        push.{map_key}
+
+        # push slot_id_prefix, slot_id_suffix for the map slot
+        push.MAP_SLOT[0..2]
+        exec.::miden::protocol::native_account::set_map_item
+        dropw
+    end"#;
+
+const BATCH_MAP_MODULE: &str = "miden::testing::batch_bump";
+const BATCH_MAP_SLOT: &str = "miden::testing::batch_bump::map";
+const BATCH_MAP_KEY: [Felt; 4] = [
+    Felt::new_unchecked(7),
+    Felt::new_unchecked(7),
+    Felt::new_unchecked(7),
+    Felt::new_unchecked(7),
+];
+
+/// Renders [`BATCH_BUMP_MAP_CODE`] for the test's map slot and key.
+fn batch_bump_map_code() -> String {
+    BATCH_BUMP_MAP_CODE
+        .replace("{slot_name}", BATCH_MAP_SLOT)
+        .replace("{map_key}", &Word::from(BATCH_MAP_KEY).to_hex())
+}
+
+/// Builds a component owning [`BATCH_MAP_SLOT`] (a map seeded with [`BATCH_MAP_KEY`]) and a
+/// `bump_map_item` procedure operating on it.
+fn batch_bump_map_component() -> AccountComponent {
+    let mut storage_map = StorageMap::new();
+    storage_map
+        .insert(
+            StorageMapKey::new(BATCH_MAP_KEY.into()),
+            [Felt::from(0u32), Felt::from(0u32), Felt::from(0u32), Felt::from(1u32)].into(),
+        )
+        .unwrap();
+
+    let component_code = CodeBuilder::default()
+        .compile_component_code(BATCH_MAP_MODULE, batch_bump_map_code())
+        .unwrap();
+    let map_slot =
+        StorageSlot::with_map(StorageSlotName::new(BATCH_MAP_SLOT).unwrap(), storage_map);
+
+    AccountComponent::new(
+        component_code,
+        vec![map_slot],
+        AccountComponentMetadata::new(BATCH_MAP_MODULE),
+    )
+    .unwrap()
+}
+
+/// Builds a transaction request whose script calls the component's `bump_map_item` procedure.
+fn batch_bump_map_request() -> TransactionRequestBuilder {
+    let proc_module = BATCH_MAP_MODULE.rsplit("::").next().unwrap();
+    let script_module = format!("external_contract::{proc_module}");
+    let tx_script = CodeBuilder::new()
+        .with_linked_module(script_module.as_str(), batch_bump_map_code())
+        .unwrap()
+        .compile_tx_script(format!(
+            "use {script_module}
+            @transaction_script
+            pub proc main
+                call.{proc_module}::bump_map_item
+            end"
+        ))
+        .unwrap();
+
+    TransactionRequestBuilder::new().custom_script(tx_script)
+}
+
+/// Every in-batch witness is built by anchoring the key with its committed-state proof and
+/// replaying the batch's accumulated writes. This covers both cases that has to handle, for the
+/// vault and for a storage map:
+///
+/// - Push 1 consumes a note → writes only the consumed faucet's vault key.
+/// - Push 2 sends the held asset → that faucet's vault key was never written in-batch, yet the
+///   vault is already ahead of its committed root, so the witness needs the committed proof
+///   replayed with push 1's write.
+/// - Push 3 bumps the map → the map is still at its committed root.
+/// - Push 4 bumps the same key again → now the key is one the batch has already written, and it
+///   must be opened at a root that differs from the committed one.
+#[allow(clippy::too_many_lines)]
+#[tokio::test]
+async fn batch_builder_serves_witnesses_for_state_untouched_by_prior_push() {
+    let (mut client, rpc_api, authenticator) = Box::pin(create_test_client()).await;
+
+    // The executing account: a wallet that also owns a storage map.
+    let map_component = batch_bump_map_component();
+
+    let key_pair = AuthSecretKey::new_falcon512_poseidon2();
+    let pub_key = key_pair.public_key();
+
+    let mut init_seed = [0u8; 32];
+    client.rng().fill_bytes(&mut init_seed);
+
+    let from_account = AccountBuilder::new(init_seed)
+        .account_type(AccountType::Private)
+        .with_component(AuthSingleSig::new(Approver::new(
+            pub_key.to_commitment(),
+            AuthSchemeId::Falcon512Poseidon2,
+        )))
+        .with_component(BasicWallet)
+        .with_component(map_component)
+        .build_with_schema_commitment()
+        .unwrap();
+    let from_id = from_account.id();
+
+    authenticator.add_key(&key_pair, from_id).await.unwrap();
+    client.add_account(&from_account, false).await.unwrap();
+
+    let (to_account, _) =
+        insert_new_wallet(&mut client, AccountType::Private, &authenticator, RPO_FALCON_SCHEME_ID)
+            .await
+            .unwrap();
+    let to_id = to_account.id();
+
+    let (consumed_faucet, _) = insert_new_fungible_faucet(
+        &mut client,
+        AccountType::Private,
+        &authenticator,
+        RPO_FALCON_SCHEME_ID,
+    )
+    .await
+    .unwrap();
+    let consumed_faucet_id = consumed_faucet.id();
+
+    // A second, independent faucet whose balance `from` holds but never touches in push 1.
+    let (held_faucet, _) = insert_new_fungible_faucet(
+        &mut client,
+        AccountType::Private,
+        &authenticator,
+        RPO_FALCON_SCHEME_ID,
+    )
+    .await
+    .unwrap();
+    let held_faucet_id = held_faucet.id();
+    client.sync_state().await.unwrap();
+
+    // Give `from` a committed balance of the held faucet (this also puts it on-chain with
+    // nonce > 0, so batch pushes run against committed partial state instead of the full-state
+    // new-account path). The balance is part of the committed vault but is NOT touched by the
+    // first in-batch transaction.
+    mint_and_consume(&mut client, from_id, held_faucet_id, NoteType::Private).await;
+    rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+
+    // Mint a note from the consumed faucet for `from`, left UNCONSUMED so push 1 can claim it.
+    let (_mint_tx_id, consumed_note) =
+        mint_note(&mut client, from_id, consumed_faucet_id, NoteType::Private).await;
+    rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+
+    // Push 1 consumes the note → touches only the consumed faucet's vault key.
+    let push1 = TransactionRequestBuilder::new()
+        .build_consume_notes(vec![consumed_note])
+        .unwrap();
+
+    // Push 2 sends the held asset to `to` → writes a vault key no earlier push wrote, on a vault
+    // push 1 already changed.
+    let held_asset = FungibleAsset::new(held_faucet_id, TRANSFER_AMOUNT).unwrap();
+    let push2 = TransactionRequestBuilder::new()
+        .build_pay_to_id(
+            PaymentNoteDescription::new(vec![Asset::Fungible(held_asset)], from_id, to_id),
+            NoteType::Private,
+            client.rng(),
+        )
+        .unwrap();
+
+    // Pushes 3 and 4 exercise the storage-map paths (see the doc comment).
+    let push3 = batch_bump_map_request().build().unwrap();
+    let push4 = batch_bump_map_request().build().unwrap();
+
+    let block_num = Box::pin(async {
+        let mut batch = client.new_transaction_batch();
+        batch.push(from_id, push1).await?;
+        batch.push(from_id, push2).await?;
+        batch.push(from_id, push3).await?;
+        batch.push(from_id, push4).await?;
+        batch.submit().await
+    })
+    .await
+    .expect("submit should succeed: in-batch vault and map witnesses are served from the store");
 
     assert!(block_num.as_u32() > 0);
 }
@@ -355,7 +565,8 @@ async fn batch_builder_empty_submit_returns_empty_error() {
 }
 
 /// Verify that pushing two transactions that consume the same input note in one batch
-/// fails the second push with `BatchBuilderError::DuplicateInputNote(note_id)`.
+/// fails the second push with `BatchBuilderError::DuplicateInputNote(note_id)`, and that the
+/// rejected push leaves the batch intact so it still submits the transaction pushed before it.
 #[tokio::test]
 async fn batch_builder_push_rejects_duplicate_input_note() {
     let (mut client, rpc_api, authenticator) = Box::pin(create_test_client()).await;
@@ -393,16 +604,10 @@ async fn batch_builder_push_rejects_duplicate_input_note() {
     let req2 = TransactionRequestBuilder::new().build_consume_notes(vec![note]).unwrap();
 
     // First push must succeed; second must fail with DuplicateInputNote(note_id).
-    let result = Box::pin(async {
-        client
-            .new_transaction_batch()
-            .push(from_account_id, req1)
-            .await?
-            .push(from_account_id, req2)
-            .await
-    })
-    .await;
+    let mut batch = client.new_transaction_batch();
+    batch.push(from_account_id, req1).await.expect("first push should succeed");
 
+    let result = batch.push(from_account_id, req2).await.map(|_| ());
     match result {
         Err(ClientError::BatchBuilder(BatchBuilderError::DuplicateInputNote(id))) => {
             assert_eq!(id, note_id, "DuplicateInputNote should carry the duplicated note id");
@@ -410,10 +615,16 @@ async fn batch_builder_push_rejects_duplicate_input_note() {
         Err(other) => {
             panic!("expected BatchBuilderError::DuplicateInputNote({note_id}), got {other:?}")
         },
-        Ok(_) => {
+        Ok(()) => {
             panic!("expected BatchBuilderError::DuplicateInputNote({note_id}), got Ok(_)")
         },
     }
+
+    // The rejected push must leave the batch exactly as it was, so the transaction pushed
+    // before it is still there and the batch still submits.
+    assert_eq!(batch.len(), 1, "a rejected push must not drop the accumulated transaction");
+    let block_num = batch.submit().await.expect("batch must submit after a rejected push");
+    assert!(block_num.as_u32() > 0);
 }
 
 /// Build a 2-account batch (1 tx per account, both pushing trivial no-op `TransactionRequests`)
@@ -455,14 +666,10 @@ async fn batch_builder_submits_txs_across_multiple_accounts() {
     let req_b = TransactionRequestBuilder::new().build().unwrap();
 
     let block_num = Box::pin(async {
-        client
-            .new_transaction_batch()
-            .push(account_id_a, req_a)
-            .await?
-            .push(account_id_b, req_b)
-            .await?
-            .submit()
-            .await
+        let mut batch = client.new_transaction_batch();
+        batch.push(account_id_a, req_a).await?;
+        batch.push(account_id_b, req_b).await?;
+        batch.submit().await
     })
     .await
     .expect("multi-account batch submit should succeed");
@@ -506,7 +713,8 @@ async fn batch_builder_push_for_unknown_account_returns_error() {
     // Build a no-op request; we never get to submission — the push itself must fail.
     let req = TransactionRequestBuilder::new().build().unwrap();
 
-    match client.new_transaction_batch().push(account_id, req).await {
+    let mut batch = client.new_transaction_batch();
+    match batch.push(account_id, req).await {
         Err(ClientError::AccountDataNotFound(id)) => {
             assert_eq!(id, account_id, "AccountDataNotFound should carry the requested id");
         },
@@ -570,14 +778,10 @@ async fn batch_builder_cross_account_note_flow() {
         .unwrap();
 
     let block_num = Box::pin(async {
-        client
-            .new_transaction_batch()
-            .push(account_id_a, req_send)
-            .await?
-            .push(account_id_b, req_consume)
-            .await?
-            .submit()
-            .await
+        let mut batch = client.new_transaction_batch();
+        batch.push(account_id_a, req_send).await?;
+        batch.push(account_id_b, req_consume).await?;
+        batch.submit().await
     })
     .await
     .expect("cross-account in-batch note flow should succeed");
@@ -653,12 +857,10 @@ async fn batch_builder_dedup_rejects_duplicate_input_note_across_accounts() {
     let req_b = TransactionRequestBuilder::new().build_consume_notes(vec![note]).unwrap();
 
     let result = Box::pin(async {
-        client
-            .new_transaction_batch()
-            .push(account_id_a, req_a)
-            .await?
-            .push(account_id_b, req_b)
-            .await
+        let mut batch = client.new_transaction_batch();
+        batch.push(account_id_a, req_a).await?;
+        batch.push(account_id_b, req_b).await?;
+        Ok(())
     })
     .await;
 

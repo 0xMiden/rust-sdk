@@ -115,7 +115,7 @@ pub fn load_faucet_metadata_resolver() -> Result<FaucetMetadataResolver, CliErro
 /// Prints the effects of an executed transaction: input notes, output notes, storage value
 /// changes, storage map changes, vault changes, and the nonce change.
 pub async fn print_executed_transaction<AUTH>(
-    client: &mut Client<AUTH>,
+    client: &Client<AUTH>,
     executed_tx: &ExecutedTransaction,
 ) -> Result<(), CliError> {
     println!("The transaction will have the following effects:\n");
@@ -360,7 +360,7 @@ impl FaucetMetadataResolver {
     /// On RPC success, the result is persisted to the settings store.
     pub async fn resolve<AUTH>(
         &self,
-        client: &mut Client<AUTH>,
+        client: &Client<AUTH>,
         faucet_id: AccountId,
     ) -> Result<Option<FaucetMetadata>, CliError> {
         // 1) & 2) local sources (TOML + settings store)
@@ -391,7 +391,7 @@ impl FaucetMetadataResolver {
     /// `(<bech32 faucet address>, <base-unit amount>)`.
     pub async fn format_fungible_asset<AUTH>(
         &self,
-        client: &mut Client<AUTH>,
+        client: &Client<AUTH>,
         asset: &FungibleAsset,
     ) -> Result<(String, String), CliError> {
         if let Some(meta) = self.resolve(client, asset.faucet_id()).await? {

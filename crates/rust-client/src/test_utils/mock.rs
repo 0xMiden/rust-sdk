@@ -35,6 +35,7 @@ use crate::rpc::domain::account::{
     StorageMapEntries,
     StorageMapEntry,
     StorageMapFetch,
+    VaultFetch,
 };
 use crate::rpc::domain::account_vault::AccountVaultInfo;
 use crate::rpc::domain::note::{CommittedNote, FetchedNote, SyncNotesBlock};
@@ -593,9 +594,18 @@ impl NodeRpcClient for MockRpcApi {
                 map_details,
             };
 
+            // Mirror the node: `Skip` sends no assets, and `IfChangedFrom` omits them when the
+            // account's vault root already equals the sent commitment.
+            let include_assets = match request.vault {
+                VaultFetch::Skip => false,
+                VaultFetch::Always => true,
+                VaultFetch::IfChangedFrom(root) => root != account.vault().root(),
+            };
             let mut assets = vec![];
-            for asset in account.vault().assets() {
-                assets.push(asset);
+            if include_assets {
+                for asset in account.vault().assets() {
+                    assets.push(asset);
+                }
             }
             let vault_details = AccountVaultDetails {
                 too_many_assets: assets.len() > self.oversize_threshold,

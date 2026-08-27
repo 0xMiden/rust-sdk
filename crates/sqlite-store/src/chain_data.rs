@@ -366,12 +366,16 @@ fn parse_partial_blockchain_nodes_columns(
 fn parse_partial_blockchain_nodes(
     serialized_partial_blockchain_node_parts: &SerializedPartialBlockchainNodeParts,
 ) -> Result<(InOrderIndex, Word), StoreError> {
+    let raw_id = serialized_partial_blockchain_node_parts.id;
     let id = InOrderIndex::new(
-        NonZeroUsize::new(
-            usize::try_from(serialized_partial_blockchain_node_parts.id)
-                .expect("id is u64, should not fail"),
-        )
-        .unwrap(),
+        NonZeroUsize::new(usize::try_from(raw_id).expect("id is u64, should not fail")).ok_or_else(
+            || {
+                StoreError::ParsingError(format!(
+                    "partial_blockchain_nodes.id must be non-zero (0 is never a valid \
+                     InOrderIndex), got {raw_id}"
+                ))
+            },
+        )?,
     );
     let node: Word = Word::read_from_bytes(&serialized_partial_blockchain_node_parts.node)?;
     Ok((id, node))
@@ -408,6 +412,21 @@ mod test {
 
     use crate::SqliteStore;
     use crate::tests::create_test_store;
+
+    #[test]
+    fn parse_partial_blockchain_nodes_rejects_zero_id_instead_of_panicking() {
+        // id=0 is never a valid InOrderIndex (its constructor requires NonZeroUsize, and
+        // from_leaf_pos's minimum output is 1), so a row with id=0 can only come from a
+        // corrupted or externally-tampered-with local database. This must surface as a
+        // StoreError, not panic the client.
+        let parts = super::SerializedPartialBlockchainNodeParts {
+            id: 0,
+            node: Word::default().to_bytes(),
+        };
+
+        let result = super::parse_partial_blockchain_nodes(&parts);
+        assert!(matches!(result, Err(miden_client::store::StoreError::ParsingError(_))));
+    }
 
     async fn insert_dummy_block_headers(store: &mut SqliteStore) -> Vec<BlockHeader> {
         let block_headers: Vec<BlockHeader> = (0..5)

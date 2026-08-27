@@ -36,7 +36,12 @@ use crate::note::NoteScreenerError;
 use crate::note_transport::NoteTransportError;
 use crate::rpc::RpcError;
 use crate::store::{NoteRecordError, StoreError};
-use crate::transaction::{BatchBuilderError, TransactionRequestError, TransactionStoreUpdateError};
+use crate::transaction::{
+    BatchBuilderError,
+    ChainAnchorError,
+    TransactionRequestError,
+    TransactionStoreUpdateError,
+};
 
 // ACTIONABLE HINTS
 // ================================================================================================
@@ -105,6 +110,8 @@ pub enum ClientError {
     AccountDataNotFound(AccountId),
     #[error(transparent)]
     BatchBuilder(#[from] BatchBuilderError),
+    #[error("chain anchor error")]
+    ChainAnchorError(#[from] ChainAnchorError),
     #[error("data store error")]
     DataStoreError(#[from] DataStoreError),
     #[error("failed to construct the partial blockchain")]

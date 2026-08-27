@@ -1,15 +1,28 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+use std::slice;
 
 use clap::Parser;
+use miden_client::account::AccountId;
 use miden_client::assembly::CodeBuilder;
 use miden_client::keystore::Keystore;
-use miden_client::transaction::{AdviceInputs, TransactionRequestBuilder, TransactionScript};
-use miden_client::vm::{Package, PackageExport};
-use miden_client::{Client, Deserializable, Felt, Word};
+use miden_client::rpc::domain::account::AccountStorageRequirements;
+use miden_client::transaction::{
+    AdviceInputs,
+    ForeignAccount,
+    TransactionRequestBuilder,
+    TransactionRequestError,
+    TransactionScript,
+    build_fpi_script,
+};
+use miden_client::vm::{MIN_STACK_DEPTH, Package, PackageExport};
+use miden_client::{Client, Felt, Word};
 
 use crate::advice_inputs::load_advice_map_from_file;
+use crate::commands::account::DEFAULT_ACCOUNT_ID_KEY;
+use crate::commands::new_account::load_packages;
+use crate::config::CliConfig;
 use crate::errors::CliError;
 use crate::utils::{
     parse_account_id,
@@ -22,7 +35,10 @@ use crate::utils::{
 // ================================================================================================
 
 #[derive(Debug, Clone, Parser)]
-#[command(about = "Call a procedure on a local account and display the result and state delta")]
+#[command(
+    about = "Call a procedure on an account and display the result and state delta. Accounts \
+             that aren't tracked locally are read from the network and the call is read-only."
+)]
 pub struct CallCmd {
     /// Account and procedure in the form `<ACCOUNT_ID>:<PROCEDURE>`.
     #[arg(
@@ -38,9 +54,10 @@ pub struct CallCmd {
     #[arg(value_name = "args")]
     args: Vec<String>,
 
-    /// Path to the package (.masp) file containing the procedure.
+    /// Path to the package (.masp) file containing the procedure. If omitted, `<PROCEDURE>` must
+    /// be a hex digest and the output stack is shown as raw felts.
     #[arg(long, short)]
-    package: PathBuf,
+    package: Option<PathBuf>,
 
     /// Path to a TOML file with advice map entries, in the same format as the `exec` command.
     #[arg(long, short, long_help = crate::advice_inputs::INPUTS_PATH_LONG_HELP)]
@@ -50,7 +67,7 @@ pub struct CallCmd {
 impl CallCmd {
     pub async fn execute<AUTH: Keystore + Sync + 'static>(
         &self,
-        mut client: Client<AUTH>,
+        client: Client<AUTH>,
     ) -> Result<(), CliError> {
         if client.get_sync_height().await? == 0.into() {
             return Err(CliError::InvalidArgument(
@@ -58,6 +75,7 @@ impl CallCmd {
             ));
         }
 
+        let cli_config = CliConfig::load()?;
         let (account_str, procedure) = split_procedure_target(&self.target);
         let procedure = procedure.ok_or_else(|| {
             CliError::InvalidArgument(format!(
@@ -66,99 +84,295 @@ impl CallCmd {
             ))
         })?;
 
-        let account_id = parse_account_id(&client, account_str).await?;
-        client.try_get_account(account_id).await?;
-
-        let package = load_package(&self.package)?;
-
-        let digest = resolve_procedure_digest(&package, procedure)?;
-        let ProcedureSignature { param_felts, result_felts } =
-            print_manifest_signature(&package, procedure);
-
+        let target_id = parse_account_id(&client, account_str).await?;
         let args = parse_args(&self.args)?;
+        let call_code = self.resolve_call_code(&client, &cli_config, procedure, &args)?;
 
         let advice_entries = match &self.inputs_path {
             Some(path) => load_advice_map_from_file(path)?,
             None => vec![],
         };
 
-        match param_felts {
-            Some(expected) if args.len() != expected => {
+        let call_target = resolve_call_target(&client, target_id).await?;
+
+        match call_target {
+            CallTarget::Local(account_id) => {
+                run_local_call(&client, account_id, call_code, &args, advice_entries).await
+            },
+            CallTarget::Remote { target_id, executor_id, foreign_account } => {
+                run_remote_call(
+                    &client,
+                    target_id,
+                    executor_id,
+                    foreign_account,
+                    call_code,
+                    &args,
+                    advice_entries,
+                )
+                .await
+            },
+        }
+    }
+
+    /// Resolves the procedure digest and code builder either from `--package` (calling by name)
+    /// or from a hex digest when no package is given.
+    fn resolve_call_code<AUTH: Keystore + Sync + 'static>(
+        &self,
+        client: &Client<AUTH>,
+        cli_config: &CliConfig,
+        procedure: &str,
+        args: &[Felt],
+    ) -> Result<CallCode, CliError> {
+        // A procedure only sees the top MIN_STACK_DEPTH felts of the stack.
+        if args.len() > MIN_STACK_DEPTH {
+            return Err(CliError::InvalidArgument(format!(
+                "A procedure takes at most {MIN_STACK_DEPTH} input values; got {}.",
+                args.len()
+            )));
+        }
+
+        if let Some(pkg_path) = &self.package {
+            let package = load_packages(cli_config, slice::from_ref(pkg_path))?
+                .pop()
+                .expect("load_packages returns one package per path");
+            let digest = resolve_procedure_digest(&package, procedure)?;
+            let ProcedureSignature { param_felts, result_felts } =
+                print_manifest_signature(&package, procedure);
+
+            match param_felts {
+                Some(expected) if args.len() != expected => {
+                    return Err(CliError::InvalidArgument(format!(
+                        "Procedure '{procedure}' expects {expected} value(s), got {}. Types wider \
+                         than one field element are passed as one value per element, as shown in \
+                         the signature above.",
+                        args.len()
+                    )));
+                },
+                None => {
+                    println!(
+                        "Warning: no type info for procedure '{procedure}'. Skipping argument \
+                         count check. Passing a wrong number of arguments may cause errors or \
+                         wrong results."
+                    );
+                },
+                _ => {},
+            }
+
+            // The output stack only holds MIN_STACK_DEPTH felts.
+            if let Some(n) = result_felts
+                && n > MIN_STACK_DEPTH
+            {
                 return Err(CliError::InvalidArgument(format!(
-                    "Procedure '{procedure}' expects {expected} value(s), got {}. Types wider \
-                     than one field element are passed as one value per element, as shown in the \
-                     signature above.",
-                    args.len()
+                    "Procedure '{procedure}' returns {n} values; only up to {MIN_STACK_DEPTH} \
+                     can be read from the output stack."
                 )));
-            },
-            None => {
-                println!(
-                    "Warning: no type info for procedure '{procedure}'. Skipping argument \
-                     count check. Passing a wrong number of arguments may cause errors or \
-                     wrong results."
-                );
-            },
-            _ => {},
-        }
+            }
 
-        // The account's code is loaded into the from the client's store in th VM runtime, so we
-        // don't need the library into the compiled script. But the assembler still needs
-        // it at compile time to resolve `call.<digest>` to a known procedure — otherwise it
-        // emits a "phantom target" warning. Dynamic linking provides that resolution without
-        // embedding the library bytes in the script.
-        let linked_builder = client.code_builder().with_dynamically_linked_package(&package)?;
-
-        // 1) Read-only execution to get return values. If `result_felts` is unknown we skip
-        // the drop sequence and let `print_output_stack` auto-detect results from the stack.
-        let read_tx_script =
-            generate_tx_script(linked_builder.clone(), &digest, &args, result_felts)?;
-
-        let advice_inputs = AdviceInputs::default().with_map(advice_entries.clone());
-
-        let output_stack = client
-            .execute_program(account_id, read_tx_script, advice_inputs, BTreeMap::new())
-            .await?;
-
-        print_executed_program_stack(&output_stack, result_felts);
-
-        // 2) Transaction execution to get state delta.
-        let delta_tx_script = generate_tx_script(linked_builder, &digest, &args, Some(0))?;
-
-        let tx_request = TransactionRequestBuilder::new()
-            .custom_script(delta_tx_script)
-            .extend_advice_map(advice_entries)
-            .build()
-            .map_err(|err| {
-                CliError::Transaction(err.into(), "Failed to build transaction".to_string())
+            // The account's code is loaded from the client's store at VM runtime, so the library
+            // doesn't need to be embedded in the script. The assembler still needs it at compile
+            // time to resolve `call.<digest>` to a known procedure — otherwise it emits a
+            // "phantom target" warning. Dynamic linking provides that resolution without
+            // embedding the library bytes.
+            let builder = client.code_builder().with_dynamically_linked_package(&package)?;
+            Ok(CallCode { builder, digest, result_felts })
+        } else {
+            let digest = Word::try_from(procedure).map_err(|_| {
+                CliError::InvalidArgument(format!(
+                    "'{procedure}' is not a hex digest. Pass `--package <FILE>.masp` to \
+                     call a procedure by name, or give its hex digest to call without a \
+                     package."
+                ))
             })?;
-
-        match client.execute_transaction(account_id, tx_request).await {
-            Ok(tx_result) => {
-                print_executed_transaction(&mut client, tx_result.executed_transaction()).await?;
-            },
-            Err(e) => {
-                println!("\n(Could not compute state delta: {e})");
-            },
+            println!(
+                "No `--package` provided; output will be raw felts. Pass \
+                 `--package <FILE>.masp` for typed output."
+            );
+            Ok(CallCode {
+                builder: client.code_builder(),
+                digest,
+                result_felts: None,
+            })
         }
-
-        Ok(())
     }
 }
 
 // HELPERS
 // ================================================================================================
 
-fn load_package(path: &Path) -> Result<Package, CliError> {
-    if !path.exists() {
-        return Err(CliError::InvalidArgument(format!(
-            "Package file not found: {}",
-            path.display()
-        )));
+/// Resolved call code: the linked builder, the procedure digest, and the stack width of the
+/// results when known.
+struct CallCode {
+    builder: CodeBuilder,
+    digest: Word,
+    result_felts: Option<usize>,
+}
+
+/// Runs a remote call via FPI. FPI cannot mutate the foreign account, so there is no state delta
+/// to compute — only the read phase runs.
+async fn run_remote_call<AUTH: Keystore + Sync + 'static>(
+    client: &Client<AUTH>,
+    target_id: AccountId,
+    executor_id: AccountId,
+    foreign_account: Box<ForeignAccount>,
+    call_code: CallCode,
+    args: &[Felt],
+    advice_entries: Vec<(Word, Vec<Felt>)>,
+) -> Result<(), CliError> {
+    let CallCode { builder, digest, result_felts } = call_code;
+    let tx_script =
+        build_fpi_script(builder, target_id, digest, args).map_err(|err| match err {
+            TransactionRequestError::ForeignProcedureInputsTooLong { max, actual } => {
+                CliError::InvalidArgument(format!(
+                    "A call on an account read from the network takes at most {max} input felts; \
+                     got {actual}"
+                ))
+            },
+            other => {
+                CliError::Transaction(other.into(), "Failed to build the call script".to_string())
+            },
+        })?;
+
+    let output_stack = client
+        .execute_program(
+            executor_id,
+            tx_script,
+            AdviceInputs::default().with_map(advice_entries),
+            BTreeMap::from([(target_id, *foreign_account)]),
+        )
+        .await?;
+
+    print_executed_program_stack(&output_stack, result_felts);
+
+    println!("\nA call on an account read from the network can only read it; no state delta.");
+    Ok(())
+}
+
+/// Runs a local call: a read phase for the return values, then a transaction for the state delta.
+/// The account runs the call itself, so the procedure may mutate it.
+async fn run_local_call<AUTH: Keystore + Sync + 'static>(
+    client: &Client<AUTH>,
+    account_id: AccountId,
+    call_code: CallCode,
+    args: &[Felt],
+    advice_entries: Vec<(Word, Vec<Felt>)>,
+) -> Result<(), CliError> {
+    let CallCode { builder, digest, result_felts } = call_code;
+    let tx_script = generate_tx_script(builder, &digest, args)?;
+
+    // 1) Read-only execution to get return values.
+    let output_stack = client
+        .execute_program(
+            account_id,
+            tx_script.clone(),
+            AdviceInputs::default().with_map(advice_entries.clone()),
+            BTreeMap::new(),
+        )
+        .await?;
+    print_executed_program_stack(&output_stack, result_felts);
+
+    // 2) Transaction execution to get the state delta.
+    let tx_request = TransactionRequestBuilder::new()
+        .custom_script(tx_script)
+        .extend_advice_map(advice_entries)
+        .build()
+        .map_err(|err| {
+            CliError::Transaction(err.into(), "Failed to build transaction".to_string())
+        })?;
+
+    match client.execute_transaction(account_id, tx_request).await {
+        Ok(tx_result) => {
+            print_executed_transaction(client, tx_result.executed_transaction()).await?;
+        },
+        Err(e) => println!("\n(Could not compute state delta: {e})"),
     }
-    let bytes = std::fs::read(path)?;
-    Package::read_from_bytes(&bytes).map_err(|e| {
-        CliError::Parse(Box::new(e), format!("Failed to deserialize package: {}", path.display()))
+    Ok(())
+}
+
+/// Resolved call target.
+enum CallTarget {
+    /// The account is tracked locally, so it runs the call itself and may be mutated by it.
+    Local(AccountId),
+    /// The account is read from the network and the call runs from a local account.
+    Remote {
+        target_id: AccountId,
+        executor_id: AccountId,
+        foreign_account: Box<ForeignAccount>,
+    },
+}
+
+async fn resolve_call_target<AUTH: Keystore + Sync + 'static>(
+    client: &Client<AUTH>,
+    target_id: AccountId,
+) -> Result<CallTarget, CliError> {
+    if let Some((_, status)) = client.get_account_header(target_id).await? {
+        // A locked account holds outdated state and is always private, so it can't be read from
+        // the network either.
+        if status.is_locked() {
+            return Err(CliError::InvalidArgument(format!(
+                "Account {target_id} is locked: its local state doesn't match the network's, so \
+                 the call can't run on it."
+            )));
+        }
+
+        return Ok(CallTarget::Local(target_id));
+    }
+
+    let foreign_account = ForeignAccount::public(target_id, AccountStorageRequirements::default())
+        .map_err(|err| match err {
+            TransactionRequestError::InvalidForeignAccountId(_) => {
+                CliError::InvalidArgument(format!(
+                    "Account {target_id} isn't tracked locally and its state isn't public, so it \
+                     can't be read from the network."
+                ))
+            },
+            other => CliError::InvalidArgument(format!(
+                "Account {target_id} can't be read from the network: {other}"
+            )),
+        })?;
+
+    let executor_id = pick_local_executor(client).await?;
+
+    println!(
+        "Account {target_id} isn't tracked locally; reading its state from the network and \
+         running the call from your account {executor_id}."
+    );
+
+    Ok(CallTarget::Remote {
+        target_id,
+        executor_id,
+        foreign_account: Box::new(foreign_account),
     })
+}
+
+/// Picks the local account the FPI call runs from, preferring the default account.
+///
+/// Any account works: the script calls the foreign procedure, not the native account's code.
+/// Locked accounts are skipped because their local state doesn't match the node's.
+async fn pick_local_executor<AUTH: Keystore + Sync + 'static>(
+    client: &Client<AUTH>,
+) -> Result<AccountId, CliError> {
+    let default_id: Option<AccountId> =
+        client.get_setting(DEFAULT_ACCOUNT_ID_KEY.to_string()).await?;
+    if let Some(default_id) = default_id
+        && let Some((_, status)) = client.get_account_header(default_id).await?
+        && !status.is_locked()
+    {
+        return Ok(default_id);
+    }
+
+    let local_accounts = client.get_account_headers().await?;
+    local_accounts
+        .iter()
+        .find(|(_, status)| !status.is_locked())
+        .map(|(header, _)| header.id())
+        .ok_or_else(|| {
+            CliError::InvalidArgument(
+                "Calling an account that isn't tracked locally needs one of your own accounts to \
+                 run the call from, and none is usable. Create one with `miden-client new-wallet` \
+                 and re-run."
+                    .to_string(),
+            )
+        })
 }
 
 fn resolve_procedure_digest(package: &Package, procedure_name: &str) -> Result<Word, CliError> {
@@ -268,29 +482,16 @@ fn print_manifest_signature(package: &Package, procedure_name: &str) -> Procedur
     UNKNOWN
 }
 
-/// Builds a transaction script that pushes `args`, calls the procedure at `digest`, and optionally
-/// drops the pushed args from under the results. `Some(n)` keeps the top `n` values; `None` skips
-/// drops.
+/// Builds a transaction script that pushes `args` and calls the procedure at `digest`.
+///
+/// Only the top results are read back, and `truncate_stack` restores the 16-element exit
+/// invariant, so anything left below the results can stay there.
 fn generate_tx_script(
     code_builder: CodeBuilder,
     digest: &Word,
     args: &[Felt],
-    result_count: Option<usize>,
 ) -> Result<TransactionScript, CliError> {
-    // MASM `movup.n` only works for n in 2..=15. The VM stack exposes only the top
-    // 16 elements; anything deeper lives in the overflow table and cannot be reached
-    // by `movup`. So we can't drop args from under more than 15 results.
-    // See miden-vm/docs/src/user_docs/assembly/instruction_reference.md (movup row)
-    // and miden-vm/docs/src/design/stack/stack_ops.md (MOVUP/MOVDN sections).
-    if let Some(n) = result_count
-        && n > 15
-    {
-        return Err(CliError::InvalidArgument(format!(
-            "Procedure returns {n} values; only up to 15 are supported."
-        )));
-    }
-
-    let mut script = String::from("@transaction_script\npub proc main\n");
+    let mut script = String::from("use miden::core::sys\n\n@transaction_script\npub proc main\n");
 
     // Push args in reverse so the first arg ends up on top.
     for arg in args.iter().rev() {
@@ -299,28 +500,7 @@ fn generate_tx_script(
 
     writeln!(script, "    call.{}", digest.to_hex()).unwrap();
 
-    let to_drop = args.len();
-    if to_drop > 0 {
-        match result_count {
-            Some(0) => {
-                for _ in 0..to_drop {
-                    script.push_str("    drop\n");
-                }
-            },
-            Some(1) => {
-                for _ in 0..to_drop {
-                    script.push_str("    swap drop\n");
-                }
-            },
-            Some(n) => {
-                for _ in 0..to_drop {
-                    writeln!(script, "    movup.{n} drop").unwrap();
-                }
-            },
-            None => {},
-        }
-    }
-
+    script.push_str("    exec.sys::truncate_stack\n");
     script.push_str("end\n");
     Ok(code_builder.compile_tx_script(&script)?)
 }

@@ -1040,11 +1040,11 @@ mod tests {
     use miden_protocol::{Felt, ONE, ZERO};
 
     use super::*;
-    use crate::db_management::utils::apply_migrations;
+    use crate::db_management::migration::SqliteMigrator;
 
     fn setup_conn() -> Connection {
         let mut conn = Connection::open_in_memory().unwrap();
-        apply_migrations(&mut conn).unwrap();
+        SqliteMigrator::client().apply(&mut conn).unwrap();
         conn
     }
 

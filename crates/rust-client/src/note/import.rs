@@ -456,6 +456,15 @@ where
 
             for sync_note in block.notes.into_values() {
                 let committed = &sync_note.committed;
+
+                // The note carries its own commit height in its inclusion proof, which is a
+                // separate field from the block header checked above. Authenticating the note
+                // later looks that height up in the partial MMR, so a height beyond our synced
+                // view has to be dropped here rather than trusted.
+                if committed.block_num() > current_block_num {
+                    continue;
+                }
+
                 let Some((commitment, _)) = expected_notes.iter().find(|(commitment, _)| {
                     NoteId::new(*commitment, committed.metadata()) == *committed.note_id()
                 }) else {

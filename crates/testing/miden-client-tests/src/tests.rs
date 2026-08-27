@@ -839,6 +839,20 @@ async fn sync_state_tags() {
 }
 
 #[tokio::test]
+async fn get_latest_block_header_tracks_sync_height() {
+    let (mut client, _rpc_api, _) = Box::pin(create_test_client()).await;
+
+    client.sync_state().await.unwrap();
+
+    let header = client
+        .get_latest_block_header()
+        .await
+        .expect("a header should be stored at the sync height");
+
+    assert_eq!(header.block_num(), client.get_sync_height().await.unwrap());
+}
+
+#[tokio::test]
 async fn tags() {
     // generate test client with a random store name
     let (mut client, _rpc_api, _) = Box::pin(create_test_client()).await;
@@ -849,27 +863,27 @@ async fn tags() {
     // add a tag
     let tag_1: NoteTag = 1.into();
     let tag_2: NoteTag = 2.into();
-    client.add_note_tag(tag_1).await.unwrap();
-    client.add_note_tag(tag_2).await.unwrap();
+    assert!(client.add_note_tag(tag_1).await.unwrap());
+    assert!(client.add_note_tag(tag_2).await.unwrap());
 
     // verify that the tag is being tracked
     assert_eq!(client.get_note_tags().await.unwrap(), vec![tag_1, tag_2]);
 
     // attempt to add the same tag again
-    client.add_note_tag(tag_1).await.unwrap();
+    assert!(!client.add_note_tag(tag_1).await.unwrap());
 
     // verify that the tag is still being tracked only once
     assert_eq!(client.get_note_tags().await.unwrap(), vec![tag_1, tag_2]);
 
     // Try removing non-existent tag
     let tag_4: NoteTag = 4.into();
-    client.remove_note_tag(tag_4).await.unwrap();
+    assert!(!client.remove_note_tag(tag_4).await.unwrap());
 
     // verify that the tracked tags are unchanged
     assert_eq!(client.get_note_tags().await.unwrap(), vec![tag_1, tag_2]);
 
     // remove second tag
-    client.remove_note_tag(tag_1).await.unwrap();
+    assert!(client.remove_note_tag(tag_1).await.unwrap());
 
     // verify that tag_1 is not tracked anymore
     assert_eq!(client.get_note_tags().await.unwrap(), vec![tag_2]);
@@ -4219,16 +4233,19 @@ async fn account_add_address_after_creation() {
     assert!(client.add_address(basic_wallet_address.clone(), account.id()).await.is_ok());
 
     // We can remove the default address and the note tag is still present
-    assert!(client.remove_address(default_address.clone(), account.id()).await.is_ok());
+    assert!(client.remove_address(default_address.clone(), account.id()).await.unwrap());
     let derived_note_tag = default_address.to_note_tag();
     let note_tag_record = NoteTagRecord::with_account_source(derived_note_tag, account.id());
     let note_tags = client.get_note_tags().await.unwrap();
     assert!(note_tags.contains(&note_tag_record));
 
     // If we remove all addresses, note tag should be removed
-    assert!(client.remove_address(basic_wallet_address.clone(), account.id()).await.is_ok());
+    assert!(client.remove_address(basic_wallet_address.clone(), account.id()).await.unwrap());
     let note_tags = client.get_note_tags().await.unwrap();
     assert!(!note_tags.contains(&note_tag_record));
+
+    // Removing an address that isn't tracked reports that nothing was removed
+    assert!(!client.remove_address(basic_wallet_address, account.id()).await.unwrap());
 
     // Then add it again
     assert!(client.add_address(default_address, account.id()).await.is_ok());

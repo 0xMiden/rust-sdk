@@ -1,0 +1,34 @@
+# Checks that already released SQL migrations are not edited.
+# Lives in its own workflow so that adding or removing the "no migration check" label re-evaluates
+# the check without re-running the whole lint suite.
+
+name: migrations
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "${{ github.workflow }} @ ${{ github.event.pull_request.head.label || github.head_ref || github.ref }}"
+  cancel-in-progress: true
+
+jobs:
+  migrations:
+    name: Migrations are append-only
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check that no released migration was modified
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          NO_MIGRATION_CHECK_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'no migration check') }}
+        run: ./scripts/check-migrations.sh
+        shell: bash

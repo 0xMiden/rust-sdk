@@ -449,8 +449,8 @@ pub struct AccountStorageMapDetails {
 }
 
 impl AccountStorageMapDetails {
-    /// The maximum number of keys the node will cover with a single partial map. The node counts this across all slots of a
-    /// request, so honouring it per slot is a conservative bound.
+    /// The maximum number of keys the node will cover with a single partial map. The node counts
+    /// this across all slots of a request, so honouring it per slot is a conservative bound.
     pub const MAX_PARTIAL_MAP_KEYS: usize = 64;
 
     /// Returns `true` when the node reported that this slot has more entries than it will return

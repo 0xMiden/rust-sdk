@@ -133,7 +133,8 @@ rm -rf "$ROOT/data/funders"
 mkdir -p "$ROOT/data"
 cp "$DATA/genesis-config/tst_faucet.mac" "$ROOT/data/account.mac"
 # Expose the agglayer accounts under ./data, where the tests read them via AGGLAYER_ACCOUNTS_DIR.
-for mac in bridge_admin.mac ger_manager.mac bridge.mac agglayer_faucet.mac; do
+for mac in bridge_admin.mac ger_manager.mac bridge.mac agglayer_faucet.mac \
+           native_faucet.mac faucet_operator.mac; do
     cp "$DATA/genesis-config/$mac" "$ROOT/data/$mac"
 done
 
@@ -167,6 +168,8 @@ done
     "$BIN/miden-ntx-builder" bootstrap --data-directory "$DATA/ntx-builder" \
         --genesis "$DATA/genesis/genesis.dat"
 } >"$LOG_DIR/bootstrap.log" 2>&1
+NATIVE_FAUCET_ID="$(sed -n 's/^Native faucet account id: //p' "$LOG_DIR/bootstrap.log")"
+echo "==> native faucet $NATIVE_FAUCET_ID, operator wallet in $ROOT/data/faucet_operator.mac"
 
 # Expose the wallets the node generated from the genesis `[[wallet]]` entries under ./data/funders,
 # where the tests read them via MIDEN_FUNDER_ACCOUNTS. A fee-free genesis declares none.

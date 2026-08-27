@@ -15,7 +15,10 @@ gen-genesis [OUTPUT_DIR]   # defaults to ./genesis
 
 Writes, into `OUTPUT_DIR`:
 
-- `native_faucet.mac`: the native fee faucet, written **with** its secret key.
+- `native_faucet.mac`: the native fee faucet, a network account owned by the operator below (no
+  secret key of its own).
+- `faucet_operator.mac`: the wallet owning the native faucet, written **with** its secret key. It
+  is what `miden-faucet init --import` takes to run a faucet dispensing the native asset.
 - `tst_faucet.mac`: the TST genesis faucet, written **with** its secret key so tests can mint.
 - `test_account_NNNN.mac`: the test faucets and the `too_many_assets` account (read-only
   fixtures, no secret keys).

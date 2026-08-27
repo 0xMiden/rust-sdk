@@ -17,20 +17,30 @@ use miden_protocol::account::{
     AccountComponent,
     AccountComponentMetadata,
     AccountFile,
+    AccountId,
     AccountType,
     StorageMap,
     StorageMapKey,
 };
 use miden_protocol::asset::{Asset, AssetAmount, FungibleAsset, TokenSymbol};
 use miden_protocol::{ONE, Word};
+use miden_standards::account::access::AccessControl;
 use miden_standards::account::auth::{Approver, AuthSingleSig};
 use miden_standards::account::faucets::{
     FungibleFaucet,
     TokenName,
+    create_network_fungible_faucet,
     create_singlesig_user_fungible_faucet,
 };
-use miden_standards::account::policies::{BurnPolicy, MintPolicy, TokenPolicyManager};
-use miden_standards::account::wallets::BasicWallet;
+use miden_standards::account::fees::{BasicConstantFeePolicy, FeePolicyManager};
+use miden_standards::account::policies::{
+    BurnPolicy,
+    MintPolicy,
+    TokenPolicyManager,
+    TransferPolicy,
+};
+use miden_standards::account::wallets::{BasicWallet, create_basic_wallet};
+use miden_standards::note::{BurnNote, MintNote};
 use rand_chacha::ChaCha20Rng;
 use rand_chacha::rand_core::SeedableRng;
 
@@ -52,6 +62,10 @@ const FUNDER_WALLET_BALANCE: u64 = 1_000_000_000;
 
 /// Native fee faucet file name. Carries the secret key, matching the other generated faucets.
 pub const NATIVE_FAUCET_FILE: &str = "native_faucet.mac";
+
+/// File name of the wallet owning the native fee faucet, written with its secret key. It is the
+/// account `miden-faucet init --import` takes to dispense the native asset on this chain.
+pub const FAUCET_OPERATOR_FILE: &str = "faucet_operator.mac";
 
 /// Token symbol, decimals and max supply of the native fee faucet, matching what the node would
 /// generate for it if genesis left it unset.
@@ -93,18 +107,24 @@ pub fn write_genesis_config(
         format!("failed to create genesis output directory {}", output_dir.display())
     })?;
 
-    // Generated before anything else so that the accounts below can hold its asset. It needs no
-    // balance of its own, since nothing mints the native asset in tests.
-    let (native_faucet, native_secret) =
-        generate_faucet(NATIVE_FAUCET_SYMBOL, NATIVE_FAUCET_DECIMALS, NATIVE_FAUCET_MAX_SUPPLY)
-            .context("failed to create the native fee faucet")?;
+    let mut account_files = Vec::new();
+
+    // Generated before anything else so that the accounts below can hold its asset. The faucet
+    // commits to its operator's ID, so the operator is built first, and both get their balance
+    // only once the faucet's ID exists.
+    let (operator, operator_secret) =
+        generate_faucet_operator().context("failed to create the native faucet operator")?;
+    let native_faucet =
+        generate_native_faucet(operator.id()).context("failed to create the native fee faucet")?;
     let fee_balance: Asset =
         FungibleAsset::new(native_faucet.id(), GENESIS_ACCOUNT_FEE_BALANCE)?.into();
-    AccountFile::new(native_faucet, vec![native_secret])
+    AccountFile::new(into_genesis_account(native_faucet, fee_balance)?, vec![])
         .write(output_dir.join(NATIVE_FAUCET_FILE))
         .with_context(|| format!("failed to write {NATIVE_FAUCET_FILE}"))?;
-
-    let mut account_files = Vec::new();
+    AccountFile::new(into_genesis_account(operator, fee_balance)?, vec![operator_secret])
+        .write(output_dir.join(FAUCET_OPERATOR_FILE))
+        .with_context(|| format!("failed to write {FAUCET_OPERATOR_FILE}"))?;
+    account_files.push(FAUCET_OPERATOR_FILE.to_string());
 
     // Genesis faucet (TST), with its secret key so it can sign minting transactions and the fee
     // balance those settle from.
@@ -205,6 +225,61 @@ fn generate_faucet(
     )?;
 
     Ok((account, secret))
+}
+
+/// Builds the public wallet owning the native fee faucet, with the key that signs for it.
+fn generate_faucet_operator() -> anyhow::Result<(Account, AuthSecretKey)> {
+    let mut rng = ChaCha20Rng::from_seed(random());
+    let secret = AuthSecretKey::new_falcon512_poseidon2_with_rng(&mut rng);
+    let approver =
+        Approver::new(secret.public_key().to_commitment(), AuthScheme::Falcon512Poseidon2);
+    let operator = create_basic_wallet(rng.random(), approver, AccountType::Public)?;
+
+    Ok((operator, secret))
+}
+
+/// Builds the native fee faucet as a network account owned by `operator_id`, mirroring the faucet
+/// the node generates when a genesis leaves `native_faucet` unset.
+fn generate_native_faucet(operator_id: AccountId) -> anyhow::Result<Account> {
+    let mut rng = ChaCha20Rng::from_seed(random());
+
+    let symbol =
+        TokenSymbol::try_from(NATIVE_FAUCET_SYMBOL).expect("faucet symbol should be valid");
+    let name = TokenName::new(&symbol.to_string()).expect("token symbol is a valid token name");
+    let faucet = FungibleFaucet::builder()
+        .name(name)
+        .symbol(symbol)
+        .decimals(NATIVE_FAUCET_DECIMALS)
+        .max_supply(AssetAmount::new(NATIVE_FAUCET_MAX_SUPPLY)?)
+        .build()?;
+
+    let token_policies = TokenPolicyManager::builder()
+        .active_mint_policy(MintPolicy::owner_only())
+        .active_burn_policy(BurnPolicy::allow_all())
+        .active_send_policy(TransferPolicy::allow_all())
+        .active_receive_policy(TransferPolicy::allow_all())
+        .build();
+
+    let fee_policy = BasicConstantFeePolicy::new()
+        .with_fees([
+            (MintNote::script_root(), AssetAmount::ZERO),
+            (BurnNote::script_root(), AssetAmount::ZERO),
+        ])
+        .into();
+    let fee_policies = FeePolicyManager::builder()
+        .fee_faucet_id(operator_id)
+        .active_fee_policy(fee_policy)
+        .build();
+
+    let faucet = create_network_fungible_faucet(
+        rng.random(),
+        faucet,
+        AccessControl::Ownable2Step { owner: operator_id },
+        token_policies,
+        fee_policies,
+    )?;
+
+    Ok(faucet)
 }
 
 /// Marks `account` as deployed at genesis and gives it a balance of the native fee asset.

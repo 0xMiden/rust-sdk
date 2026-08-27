@@ -835,8 +835,7 @@ impl StateSync {
         // If a private account commitment differs between the node and local then we verify the
         // commitment from the node before flagging the account as mismatched.
         let diverging_private_accounts: Vec<&AccountHeader> = private_accounts
-            .iter()
-            .copied()
+            .into_iter()
             .filter(|header| {
                 let local_commitment = header.to_commitment();
                 account_commitment_updates

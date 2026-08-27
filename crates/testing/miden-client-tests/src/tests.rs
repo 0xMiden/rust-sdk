@@ -1150,6 +1150,18 @@ async fn note_without_asset() {
         .unwrap_err();
 
     assert!(matches!(error, TransactionRequestError::P2IDNoteWithoutAsset));
+
+    // Minting emits a P2ID note as well, so a zero-amount mint is turned away the same way.
+    let error = TransactionRequestBuilder::new()
+        .build_mint_fungible_asset(
+            FungibleAsset::new(faucet.id(), 0).unwrap(),
+            wallet.id(),
+            NoteType::Public,
+            client.rng(),
+        )
+        .unwrap_err();
+
+    assert!(matches!(error, TransactionRequestError::P2IDNoteWithoutAsset));
 }
 
 #[tokio::test]

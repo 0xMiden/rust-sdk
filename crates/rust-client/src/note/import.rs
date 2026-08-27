@@ -186,13 +186,13 @@ where
     /// # Errors
     ///
     /// - If a note being imported is currently being processed by a local transaction.
-    pub(crate) async fn fetch_expected_note_imports(
+    pub(crate) async fn fetch_expected_note_updates(
         &self,
         requests: &[(NoteDetails, BlockNumber, NoteTag)],
-    ) -> Result<ExpectedNoteImport, ClientError> {
-        let mut import = ExpectedNoteImport::default();
+    ) -> Result<ExpectedNoteUpdates, ClientError> {
+        let mut note_updates = ExpectedNoteUpdates::default();
         if requests.is_empty() {
-            return Ok(import);
+            return Ok(note_updates);
         }
 
         // Deduplicate by details commitment, keeping the last request for each note.
@@ -245,7 +245,7 @@ where
             let Some(SyncedNote { committed: committed_note, content }) =
                 committed_notes_data.remove(&commitment)
             else {
-                import.notes.push(note_record);
+                note_updates.notes_to_write.push(note_record);
                 continue;
             };
 
@@ -261,15 +261,15 @@ where
                 changed |= note_record.attachments_received(attachments);
             }
 
-            import.pending.push(PendingBlockHeaderNote {
-                record: note_record,
+            note_updates.committed_notes_awaiting_blocks.push(CommittedNoteAwaitingBlock {
+                note_record,
                 block_num: committed_note.block_num(),
                 committed_tag: metadata.tag(),
                 changed,
             });
         }
 
-        Ok(import)
+        Ok(note_updates)
     }
 
     /// Fetches and stores the header of every block that committed one of the notes in `imports`,
@@ -280,11 +280,13 @@ where
     /// fetched from the node and stored with their authentication nodes.
     pub(crate) async fn get_and_store_note_blocks(
         &mut self,
-        imports: &mut [ExpectedNoteImport],
+        note_updates: &mut [ExpectedNoteUpdates],
     ) -> Result<(), ClientError> {
-        let requested_blocks: BTreeSet<BlockNumber> = imports
+        let requested_blocks: BTreeSet<BlockNumber> = note_updates
             .iter()
-            .flat_map(|import| import.pending.iter().map(|note| note.block_num))
+            .flat_map(|page_updates| {
+                page_updates.committed_notes_awaiting_blocks.iter().map(|note| note.block_num)
+            })
             .collect();
 
         if requested_blocks.is_empty() {
@@ -302,23 +304,26 @@ where
 
         self.cache_partial_mmr(partial_mmr).await?;
 
-        for import in imports {
-            for mut pending in core::mem::take(&mut import.pending) {
+        for page_updates in note_updates {
+            for mut note_awaiting_block in
+                core::mem::take(&mut page_updates.committed_notes_awaiting_blocks)
+            {
                 let block_header = headers
-                    .get(&pending.block_num)
-                    .expect("every pending note's block was resolved above");
+                    .get(&note_awaiting_block.block_num)
+                    .expect("every committed note's block was resolved above");
 
                 // `block_header_received` transitions the record's state, so it must always run.
-                let changed =
-                    pending.changed | pending.record.block_header_received(block_header)?;
+                note_awaiting_block.changed |=
+                    note_awaiting_block.note_record.block_header_received(block_header)?;
 
-                if changed {
+                // A record the block header left unchanged has nothing to write.
+                if note_awaiting_block.changed {
                     // Once committed, the note no longer needs its expected-note tag.
-                    import.tags_to_remove.push(NoteTagRecord::with_note_source(
-                        pending.committed_tag,
-                        pending.record.details_commitment(),
+                    page_updates.tags_to_remove.push(NoteTagRecord::with_note_source(
+                        note_awaiting_block.committed_tag,
+                        note_awaiting_block.note_record.details_commitment(),
                     ));
-                    import.notes.push(pending.record);
+                    page_updates.notes_to_write.push(note_awaiting_block.note_record);
                 }
             }
         }
@@ -326,31 +331,33 @@ where
         Ok(())
     }
 
-    /// Writes an [`ExpectedNoteImport`], returning the details commitments of the written records.
+    /// Writes an [`ExpectedNoteUpdates`], returning the details commitments of the written
+    /// records.
     ///
-    /// Block headers are not written here: [`Client::get_and_store_note_blocks`] must run
-    /// first, so a record is never persisted as committed before the header proving its
-    /// inclusion.
+    /// Block headers are not written here: [`Client::get_and_store_note_blocks`] must run first,
+    /// so a record is never persisted as committed before the header proving its inclusion.
     ///
     /// # Panics
     ///
-    /// Panics if the import still has records waiting on a block header.
-    pub(crate) async fn apply_expected_note_import(
+    /// Panics if any committed note is still awaiting its block.
+    pub(crate) async fn apply_expected_note_updates(
         &mut self,
-        import: ExpectedNoteImport,
+        note_updates: ExpectedNoteUpdates,
     ) -> Result<Vec<NoteDetailsCommitment>, ClientError> {
         assert!(
-            import.pending.is_empty(),
-            "block proofs must be fetched before an expected-note import is applied"
+            note_updates.committed_notes_awaiting_blocks.is_empty(),
+            "note blocks must be stored before the committed notes that need them"
         );
 
-        for tag in import.tags_to_remove {
+        for tag in note_updates.tags_to_remove {
             self.store.remove_note_tag(tag).await?;
         }
 
-        let mut written = Vec::with_capacity(import.notes.len());
-        for note in import.notes {
+        let mut written = Vec::with_capacity(note_updates.notes_to_write.len());
+        for note in note_updates.notes_to_write {
             let details_commitment = note.details_commitment();
+            // A record still expected needs its tag tracked so a later sync finds it. A committed
+            // one is no longer in that state, so it is skipped here.
             if let InputNoteState::Expected(ExpectedNoteState { tag: Some(tag), .. }) = note.state()
             {
                 self.store
@@ -665,41 +672,51 @@ where
 // EXPECTED NOTE IMPORT
 // ================================================================================================
 
-/// A record whose inclusion proof and attachments have been applied, waiting for the header of the
-/// block that committed it.
-struct PendingBlockHeaderNote {
-    /// The record, with every transition but the block header already applied.
-    record: InputNoteRecord,
+/// An expected note the node reported as committed, with its inclusion proof and attachments
+/// already applied.
+///
+/// Until [`Client::get_and_store_note_blocks`] resolves the block that committed it, the record is
+/// missing the block-header transition, so it cannot be written yet.
+struct CommittedNoteAwaitingBlock {
+    /// The record. Carries every transition but the block header until the block is resolved.
+    note_record: InputNoteRecord,
     /// Block that committed the note.
     block_num: BlockNumber,
-    /// Note-source tag to drop once the record is committed.
+    /// Note-source tag to drop, since a committed note no longer needs to be watched for.
     committed_tag: NoteTag,
     /// Whether the inclusion-proof and attachment transitions already changed the record.
     changed: bool,
 }
 
-/// Everything an expected-note import needs to write, with nothing written yet.
+/// A batch of expected notes split by whether the node has committed them, with nothing written
+/// yet.
 ///
 /// The counterpart of the [`NoteFile::ExpectedNote`] path in [`Client::import_notes`], split so
 /// the network work happens before the note records are written: built by
-/// [`Client::fetch_expected_note_imports`], completed by
+/// [`Client::fetch_expected_note_updates`], completed by
 /// [`Client::get_and_store_note_blocks`], and written by
-/// [`Client::apply_expected_note_import`]. Used by the note transport sync, which needs its
+/// [`Client::apply_expected_note_updates`]. Used by the note transport sync, which needs its
 /// network phase to overlap with the chain sync's.
 #[derive(Default)]
-pub(crate) struct ExpectedNoteImport {
-    /// Records ready to write.
-    notes: Vec<InputNoteRecord>,
-    /// Records waiting on a block header.
-    pending: Vec<PendingBlockHeaderNote>,
-    /// Note-source tags to remove.
+pub(crate) struct ExpectedNoteUpdates {
+    /// Records ready to write: the notes the node has not committed, plus the committed ones
+    /// once [`Client::get_and_store_note_blocks`] has resolved their blocks.
+    notes_to_write: Vec<InputNoteRecord>,
+    /// Notes the node has committed, each with the block that must be inserted before its record
+    /// can be. [`Client::get_and_store_note_blocks`] drains these into `notes_to_write`, dropping
+    /// the ones the block header leaves unchanged.
+    committed_notes_awaiting_blocks: Vec<CommittedNoteAwaitingBlock>,
+    /// Note-source tags to remove, one per committed note.
     tags_to_remove: Vec<NoteTagRecord>,
 }
 
-impl ExpectedNoteImport {
-    /// The records this import is about to write.
+impl ExpectedNoteUpdates {
+    /// The records this batch is about to write.
+    ///
+    /// Only complete once [`Client::get_and_store_note_blocks`] has run: before that, the
+    /// committed notes are still awaiting their blocks and are not included.
     pub(crate) fn input_note_records(&self) -> impl Iterator<Item = &InputNoteRecord> {
-        self.notes.iter()
+        self.notes_to_write.iter()
     }
 }
 

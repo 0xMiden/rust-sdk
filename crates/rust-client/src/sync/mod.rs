@@ -238,7 +238,7 @@ where
         self.ensure_genesis_in_place().await?;
 
         let mut data = self.fetch_note_transport_updates().await?;
-        self.get_and_store_note_blocks(&mut data.imports).await?;
+        self.get_and_store_note_blocks(&mut data.note_updates).await?;
 
         self.apply_note_transport_updates(data).await
     }
@@ -279,7 +279,7 @@ where
         let (mut transport_data, (state_sync, mut chain_data)) =
             futures::try_join!(self.fetch_note_transport_updates(), self.fetch_chain_updates())?;
 
-        self.get_and_store_note_blocks(&mut transport_data.imports).await?;
+        self.get_and_store_note_blocks(&mut transport_data.note_updates).await?;
 
         let delivered_notes: Vec<InputNoteRecord> =
             transport_data.input_note_records().cloned().collect();

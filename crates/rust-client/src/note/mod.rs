@@ -69,7 +69,7 @@ use crate::store::{InputNoteRecord, NoteFilter, OutputNoteRecord};
 use crate::{Client, ClientError, IdPrefixFetchError};
 
 mod import;
-pub(crate) use import::ExpectedNoteUpdates;
+pub(crate) use import::{ExpectedNoteUpdates, NoteBlockToInsert};
 mod note_reader;
 mod note_screener;
 mod note_update_tracker;

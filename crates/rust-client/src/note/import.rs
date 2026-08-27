@@ -12,7 +12,8 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::ToString;
 use alloc::vec::Vec;
 
-use miden_protocol::block::BlockNumber;
+use miden_protocol::block::{BlockHeader, BlockNumber};
+use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::note::{
     Note,
     NoteAttachments,
@@ -28,7 +29,7 @@ use miden_tx::auth::TransactionAuthenticator;
 use crate::rpc::domain::note::{FetchedNote, ResolvedNoteContent, SyncedNote};
 use crate::rpc::{NoteContentFetch, RpcError};
 use crate::store::input_note_states::ExpectedNoteState;
-use crate::store::{InputNoteRecord, InputNoteState, NoteFilter};
+use crate::store::{InputNoteRecord, InputNoteState, NoteFilter, StoreError};
 use crate::sync::NoteTagRecord;
 use crate::{Client, ClientError};
 
@@ -180,7 +181,7 @@ where
     /// Each request is a note's details, the block from which its commitment should be looked for,
     /// and the tag to track it under. Records for notes the node has not committed are final.
     /// Records for committed notes come back pending, since their state transition also needs the
-    /// header of the block that committed them — [`Client::get_and_store_note_blocks`]
+    /// header of the block that committed them — [`Client::fetch_note_blocks`]
     /// resolves those and finishes the records.
     ///
     /// # Errors
@@ -272,14 +273,18 @@ where
         Ok(note_updates)
     }
 
-    /// Fetches and stores the header of every block that committed one of the notes in `imports`,
-    /// then finishes the records that were waiting on them.
+    /// Fetches the header and MMR proof of every block that committed one of the notes in
+    /// `note_updates`, then finishes the records that were waiting on them.
     ///
-    /// Each block is resolved once even when it committed several notes. A block the client's
-    /// partial MMR already tracks is read from the store; the rest are fetched from the node and
-    /// stored with their authentication nodes.
-    pub(crate) async fn get_and_store_note_blocks(
-        &mut self,
+    /// Each block is fetched once even when it committed several notes. A block the client's
+    /// partial MMR already tracks has its header read from the store and needs no insert, so it is
+    /// absent from `blocks_to_insert`.
+    ///
+    /// Writes nothing and does not modify the MMR: tracking the fetched headers and storing them
+    /// is [`Client::insert_note_blocks`]'s job, so the proof paths are verified against the peaks
+    /// once, next to the writes they authenticate.
+    pub(crate) async fn fetch_note_blocks(
+        &self,
         note_updates: &mut ExpectedNoteUpdates,
     ) -> Result<(), ClientError> {
         let requested_blocks: BTreeSet<BlockNumber> = note_updates
@@ -292,23 +297,38 @@ where
             return Ok(());
         }
 
-        let mut partial_mmr = self.get_current_partial_mmr().await?;
+        let partial_mmr = self.get_current_partial_mmr().await?;
 
-        let mut headers = BTreeMap::new();
+        let mut block_headers = BTreeMap::new();
         for block_num in requested_blocks {
-            let block_header =
-                self.get_and_store_authenticated_block(block_num, &mut partial_mmr).await?;
-            headers.insert(block_num, block_header);
-        }
+            if partial_mmr.is_tracked(block_num.as_usize()) {
+                let (block_header, _) = self
+                    .store
+                    .get_block_header_by_num(block_num)
+                    .await?
+                    .ok_or(StoreError::BlockHeaderNotFound(block_num))?;
+                block_headers.insert(block_num, block_header);
+                continue;
+            }
 
-        self.cache_partial_mmr(partial_mmr).await?;
+            let (block_header, mmr_proof) =
+                self.rpc_api.get_block_header_with_proof(block_num).await?;
+            block_headers.insert(block_num, block_header.clone());
+            note_updates.blocks_to_insert.insert(
+                block_num,
+                NoteBlockToInsert {
+                    block_header,
+                    mmr_path: mmr_proof.merkle_path().clone(),
+                },
+            );
+        }
 
         for mut note_awaiting_block in
             core::mem::take(&mut note_updates.committed_notes_awaiting_blocks)
         {
-            let block_header = headers
+            let block_header = block_headers
                 .get(&note_awaiting_block.block_num)
-                .expect("every committed note's block was resolved above");
+                .expect("every committed note's block was fetched above");
 
             // `block_header_received` transitions the record's state, so it must always run.
             note_awaiting_block.changed |=
@@ -331,20 +351,27 @@ where
     /// Writes an [`ExpectedNoteUpdates`], returning the details commitments of the written
     /// records.
     ///
-    /// Block headers are not written here: [`Client::get_and_store_note_blocks`] must run first,
-    /// so a record is never persisted as committed before the header proving its inclusion.
+    /// The block headers go in first, so a record is never persisted as committed before the
+    /// header proving its inclusion. Caching the partial MMR is part of that, since the inserts
+    /// change the tracked block set.
     ///
     /// # Panics
     ///
-    /// Panics if any committed note is still awaiting its block.
+    /// Panics if any committed note is still awaiting its block, i.e. if
+    /// [`Client::fetch_note_blocks`] has not run.
     pub(crate) async fn apply_expected_note_updates(
         &mut self,
         note_updates: ExpectedNoteUpdates,
     ) -> Result<Vec<NoteDetailsCommitment>, ClientError> {
         assert!(
             note_updates.committed_notes_awaiting_blocks.is_empty(),
-            "note blocks must be stored before the committed notes that need them"
+            "note blocks must be fetched before the committed notes that need them are written"
         );
+
+        let mut partial_mmr = self.get_current_partial_mmr().await?;
+        self.insert_note_blocks(note_updates.blocks_to_insert, &mut partial_mmr).await?;
+        // Cache MMR so pruning can reuse in-memory MMR.
+        self.cache_partial_mmr(partial_mmr).await?;
 
         for tag in note_updates.tags_to_remove {
             self.store.remove_note_tag(tag).await?;
@@ -672,7 +699,7 @@ where
 /// An expected note the node reported as committed, with its inclusion proof and attachments
 /// already applied.
 ///
-/// Until [`Client::get_and_store_note_blocks`] resolves the block that committed it, the record is
+/// Until [`Client::fetch_note_blocks`] resolves the block that committed it, the record is
 /// missing the block-header transition, so it cannot be written yet.
 struct CommittedNoteAwaitingBlock {
     /// The record. Carries every transition but the block header until the block is resolved.
@@ -691,20 +718,33 @@ struct CommittedNoteAwaitingBlock {
 /// The counterpart of the [`NoteFile::ExpectedNote`] path in [`Client::import_notes`], split so
 /// the network work happens before the note records are written: built by
 /// [`Client::fetch_expected_note_updates`], completed by
-/// [`Client::get_and_store_note_blocks`], and written by
+/// [`Client::fetch_note_blocks`], and written by
 /// [`Client::apply_expected_note_updates`]. Used by the note transport sync, which needs its
 /// network phase to overlap with the chain sync's.
 #[derive(Default)]
 pub(crate) struct ExpectedNoteUpdates {
     /// Records ready to write: the notes the node has not committed, plus the committed ones
-    /// once [`Client::get_and_store_note_blocks`] has resolved their blocks.
+    /// once [`Client::fetch_note_blocks`] has resolved their blocks.
     notes_to_write: Vec<InputNoteRecord>,
-    /// Notes the node has committed, each with the block that must be inserted before its record
-    /// can be. [`Client::get_and_store_note_blocks`] drains these into `notes_to_write`, dropping
-    /// the ones the block header leaves unchanged.
+    /// Notes the node has committed, each waiting on the block that committed it.
+    /// [`Client::fetch_note_blocks`] drains these into `notes_to_write`, dropping the ones the
+    /// block header leaves unchanged, so this is empty by the time the batch is written.
     committed_notes_awaiting_blocks: Vec<CommittedNoteAwaitingBlock>,
+    /// Blocks that must be tracked and stored before the committed notes that need them, keyed by
+    /// block number so a block committing several notes is stored once. Filled by
+    /// [`Client::fetch_note_blocks`]; blocks the client already tracks are absent.
+    blocks_to_insert: BTreeMap<BlockNumber, NoteBlockToInsert>,
     /// Note-source tags to remove, one per committed note.
     tags_to_remove: Vec<NoteTagRecord>,
+}
+
+/// A block header and the MMR proof path the node returned with it, as received.
+///
+/// The path is verified against the client's peaks when the block is tracked, in
+/// [`Client::insert_note_blocks`].
+pub(crate) struct NoteBlockToInsert {
+    pub(crate) block_header: BlockHeader,
+    pub(crate) mmr_path: MerklePath,
 }
 
 impl ExpectedNoteUpdates {
@@ -716,12 +756,13 @@ impl ExpectedNoteUpdates {
         self.notes_to_write.extend(other.notes_to_write);
         self.committed_notes_awaiting_blocks
             .extend(other.committed_notes_awaiting_blocks);
+        self.blocks_to_insert.extend(other.blocks_to_insert);
         self.tags_to_remove.extend(other.tags_to_remove);
     }
 
     /// The records this batch is about to write.
     ///
-    /// Only complete once [`Client::get_and_store_note_blocks`] has run: before that, the
+    /// Only complete once [`Client::fetch_note_blocks`] has run: before that, the
     /// committed notes are still awaiting their blocks and are not included.
     pub(crate) fn input_note_records(&self) -> impl Iterator<Item = &InputNoteRecord> {
         self.notes_to_write.iter()

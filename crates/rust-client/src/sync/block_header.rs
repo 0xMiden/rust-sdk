@@ -1,3 +1,4 @@
+use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
@@ -8,6 +9,7 @@ use miden_protocol::crypto::merkle::mmr::{Forest, InOrderIndex, PartialMmr};
 use miden_protocol::{Felt, Word};
 use tracing::warn;
 
+use crate::note::NoteBlockToInsert;
 use crate::rpc::NodeRpcClient;
 use crate::store::{BlockRelevance, StoreError};
 #[cfg(feature = "testing")]
@@ -115,6 +117,44 @@ impl<AUTH> Client<AUTH> {
             .map(|&n| Felt::from(u32::try_from(n).expect("block number fits in u32")))
             .collect();
         Ok(Rpo256::hash_elements(&elements))
+    }
+
+    /// Tracks each fetched note block in `partial_mmr` and stores its header together with the
+    /// authentication nodes that tracking produced.
+    ///
+    /// Tracking is what verifies the node's proof path against the current peaks, so every block is
+    /// tracked before the first insert: a path that does not verify fails with nothing written.
+    /// Blocks already tracked are skipped, which covers a block the client picked up in an earlier
+    /// sync.
+    ///
+    /// The caller loads the MMR and caches it afterwards, since the inserts change the tracked
+    /// block set.
+    pub(crate) async fn insert_note_blocks(
+        &mut self,
+        blocks: BTreeMap<BlockNumber, NoteBlockToInsert>,
+        partial_mmr: &mut PartialMmr,
+    ) -> Result<(), ClientError> {
+        let mut authenticated_blocks = Vec::with_capacity(blocks.len());
+        for (block_num, block) in blocks {
+            if partial_mmr.is_tracked(block_num.as_usize()) {
+                continue;
+            }
+
+            let path_nodes = track_block_in_mmr(
+                partial_mmr,
+                block_num,
+                block.block_header.commitment(),
+                &block.mmr_path,
+            )?;
+            authenticated_blocks.push((block.block_header, path_nodes));
+        }
+
+        for (block_header, path_nodes) in authenticated_blocks {
+            let nodes = authenticated_block_nodes(&block_header, path_nodes);
+            self.store.insert_block_header(&block_header, &nodes, true).await?;
+        }
+
+        Ok(())
     }
 
     // HELPERS

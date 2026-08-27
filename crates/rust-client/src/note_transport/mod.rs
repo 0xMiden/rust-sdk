@@ -358,7 +358,7 @@ where
         let mut id_by_commitment = BTreeMap::new();
         let (mut note_updates, new_cursor) =
             self.fetch_transport_page(cursor, &note_tags, &mut id_by_commitment).await?;
-        self.get_and_store_note_blocks(&mut note_updates).await?;
+        self.fetch_note_blocks(&mut note_updates).await?;
 
         self.apply_expected_note_updates(note_updates).await?;
         self.store.update_note_transport_cursor(new_cursor).await?;
@@ -507,9 +507,9 @@ where
     /// outbox setting and is safe to redo, so it does not affect what a failure part way through
     /// leaves behind for the notes, tags and cursor.
     ///
-    /// The block headers of the notes the node reports as committed are not resolved here: that is
-    /// a second pass over this result (see [`Client::get_and_store_note_blocks`]), because the
-    /// blocks involved are only known once every page has been fetched.
+    /// The block headers of the notes the node reports as committed are fetched at the end, once
+    /// every page is in and the set of blocks involved is known. Storing them is the apply
+    /// phase's.
     ///
     /// Returns empty data when note transport is not configured.
     pub(crate) async fn fetch_note_transport_updates(
@@ -550,6 +550,10 @@ where
         data.note_updates.merge(note_updates);
         data.cursor = Some(new_cursor);
 
+        // Every page is in, so the blocks that committed the delivered notes are now known. This
+        // finishes their records and leaves the blocks for the apply phase to store.
+        self.fetch_note_blocks(&mut data.note_updates).await?;
+
         Ok(data)
     }
 
@@ -559,10 +563,8 @@ where
     /// The notes are written before the covered-tag set and the cursor, so a crash between them
     /// re-fetches instead of skipping notes that were never written.
     ///
-    /// Neither the relay outbox nor the block headers are written here: the outbox is persisted by
-    /// [`Client::flush_relay_outbox`] during the fetch, and the headers by
-    /// [`Client::get_and_store_note_blocks`], which must have run on `data` first — otherwise
-    /// the committed notes are written without the block-header transition that proves them.
+    /// The relay outbox is not written here: [`Client::flush_relay_outbox`] persists it during the
+    /// fetch. The block headers are, ahead of the notes that need them.
     pub(crate) async fn apply_note_transport_updates(
         &mut self,
         data: NoteTransportSyncData,

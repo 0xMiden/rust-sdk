@@ -132,9 +132,9 @@ where
     /// separately.
     ///
     /// Fetches everything from the node first ([`Client::fetch_chain_updates`] and
-    /// [`StateSync::fetch_nullifiers`]), then applies the result
-    /// ([`Client::apply_chain_updates`]), caches the partial MMR, and prunes irrelevant blocks
-    /// according to the configured cadence.
+    /// [`StateSync::fetch_nullifiers`]), then applies the result with
+    /// [`Client::apply_chain_updates`], which also caches the partial MMR and prunes irrelevant
+    /// blocks according to the configured cadence.
     pub async fn sync_chain(&mut self) -> Result<SyncSummary, ClientError> {
         self.ensure_genesis_in_place().await?;
         self.ensure_rpc_limits_in_place().await?;
@@ -143,15 +143,7 @@ where
         // No other sync path ran, so there are no externally delivered notes to cover.
         state_sync.fetch_nullifiers(&mut data, Vec::new()).await?;
 
-        let mut partial_mmr = self.get_current_partial_mmr().await?;
-        let sync_summary = self.apply_chain_updates(&state_sync, data, &mut partial_mmr).await?;
-
-        // Cache MMR so pruning can reuse in-memory MMR.
-        self.cache_partial_mmr(partial_mmr).await?;
-
-        self.maybe_untrack_and_prune_irrelevant_blocks().await?;
-
-        Ok(sync_summary)
+        self.apply_chain_updates(&state_sync, data).await
     }
 
     /// Fetches the node's view of everything that changed since the client's chain tip, without
@@ -186,20 +178,21 @@ where
     /// `state_sync` must be the one that produced `data`: its note observers hold the state they
     /// accumulated during the fetch, and their apply hooks run here.
     ///
-    /// `partial_mmr` is loaded and cached by the caller, so one MMR can be shared with the note
-    /// transport sync's apply phase; it is left advanced to the chain tip.
+    /// Also caches the partial MMR and prunes irrelevant blocks according to the configured
+    /// cadence, in that order: pruning reuses the cached MMR.
     ///
     /// # Errors
     ///
-    /// Returns an error if `partial_mmr` no longer starts where the data was fetched from, which
+    /// Returns an error if the client no longer starts where the data was fetched from, which
     /// means another sync advanced the store in between and the data is stale.
     pub async fn apply_chain_updates(
         &mut self,
         state_sync: &StateSync,
         data: ChainSyncData,
-        partial_mmr: &mut PartialMmr,
     ) -> Result<SyncSummary, ClientError> {
-        let block_from = block_num_from_forest(partial_mmr)?;
+        let mut partial_mmr = self.get_current_partial_mmr().await?;
+
+        let block_from = block_num_from_forest(&partial_mmr)?;
         if block_from != data.block_from {
             return Err(ClientError::ChainValidationError(format!(
                 "chain sync data starts at block {} but the client is at block {block_from}",
@@ -207,7 +200,7 @@ where
             )));
         }
 
-        let state_sync_update = StateSync::build_update(data, partial_mmr)?;
+        let state_sync_update = StateSync::build_update(data, &mut partial_mmr)?;
 
         let sync_summary: SyncSummary = (&state_sync_update).into();
         debug!(sync_summary = ?sync_summary, "Sync summary computed");
@@ -223,6 +216,11 @@ where
             .apply_state_sync(state_sync_update)
             .await
             .map_err(ClientError::StoreError)?;
+
+        // Cache MMR so pruning can reuse in-memory MMR.
+        self.cache_partial_mmr(partial_mmr).await?;
+
+        self.maybe_untrack_and_prune_irrelevant_blocks().await?;
 
         Ok(sync_summary)
     }
@@ -286,15 +284,7 @@ where
         state_sync.fetch_nullifiers(&mut chain_data, delivered_notes).await?;
 
         let new_private_notes = self.apply_note_transport_updates(transport_data).await?;
-
-        let mut partial_mmr = self.get_current_partial_mmr().await?;
-        let mut summary =
-            self.apply_chain_updates(&state_sync, chain_data, &mut partial_mmr).await?;
-
-        // Cache MMR so pruning can reuse in-memory MMR.
-        self.cache_partial_mmr(partial_mmr).await?;
-
-        self.maybe_untrack_and_prune_irrelevant_blocks().await?;
+        let mut summary = self.apply_chain_updates(&state_sync, chain_data).await?;
 
         summary.new_private_notes = new_private_notes;
         Ok(summary)

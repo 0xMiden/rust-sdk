@@ -275,18 +275,17 @@ where
     /// Fetches and stores the header of every block that committed one of the notes in `imports`,
     /// then finishes the records that were waiting on them.
     ///
-    /// Each block is resolved once even when it committed several notes, in one page or across
-    /// pages. A block the client's partial MMR already tracks is read from the store; the rest are
-    /// fetched from the node and stored with their authentication nodes.
+    /// Each block is resolved once even when it committed several notes. A block the client's
+    /// partial MMR already tracks is read from the store; the rest are fetched from the node and
+    /// stored with their authentication nodes.
     pub(crate) async fn get_and_store_note_blocks(
         &mut self,
-        note_updates: &mut [ExpectedNoteUpdates],
+        note_updates: &mut ExpectedNoteUpdates,
     ) -> Result<(), ClientError> {
         let requested_blocks: BTreeSet<BlockNumber> = note_updates
+            .committed_notes_awaiting_blocks
             .iter()
-            .flat_map(|page_updates| {
-                page_updates.committed_notes_awaiting_blocks.iter().map(|note| note.block_num)
-            })
+            .map(|note| note.block_num)
             .collect();
 
         if requested_blocks.is_empty() {
@@ -304,27 +303,25 @@ where
 
         self.cache_partial_mmr(partial_mmr).await?;
 
-        for page_updates in note_updates {
-            for mut note_awaiting_block in
-                core::mem::take(&mut page_updates.committed_notes_awaiting_blocks)
-            {
-                let block_header = headers
-                    .get(&note_awaiting_block.block_num)
-                    .expect("every committed note's block was resolved above");
+        for mut note_awaiting_block in
+            core::mem::take(&mut note_updates.committed_notes_awaiting_blocks)
+        {
+            let block_header = headers
+                .get(&note_awaiting_block.block_num)
+                .expect("every committed note's block was resolved above");
 
-                // `block_header_received` transitions the record's state, so it must always run.
-                note_awaiting_block.changed |=
-                    note_awaiting_block.note_record.block_header_received(block_header)?;
+            // `block_header_received` transitions the record's state, so it must always run.
+            note_awaiting_block.changed |=
+                note_awaiting_block.note_record.block_header_received(block_header)?;
 
-                // A record the block header left unchanged has nothing to write.
-                if note_awaiting_block.changed {
-                    // Once committed, the note no longer needs its expected-note tag.
-                    page_updates.tags_to_remove.push(NoteTagRecord::with_note_source(
-                        note_awaiting_block.committed_tag,
-                        note_awaiting_block.note_record.details_commitment(),
-                    ));
-                    page_updates.notes_to_write.push(note_awaiting_block.note_record);
-                }
+            // A record the block header left unchanged has nothing to write.
+            if note_awaiting_block.changed {
+                // Once committed, the note no longer needs its expected-note tag.
+                note_updates.tags_to_remove.push(NoteTagRecord::with_note_source(
+                    note_awaiting_block.committed_tag,
+                    note_awaiting_block.note_record.details_commitment(),
+                ));
+                note_updates.notes_to_write.push(note_awaiting_block.note_record);
             }
         }
 
@@ -711,6 +708,17 @@ pub(crate) struct ExpectedNoteUpdates {
 }
 
 impl ExpectedNoteUpdates {
+    /// Appends another batch to this one.
+    ///
+    /// Order is preserved, which is what makes a note returned by more than one transport page
+    /// resolve to the version fetched last.
+    pub(crate) fn merge(&mut self, other: Self) {
+        self.notes_to_write.extend(other.notes_to_write);
+        self.committed_notes_awaiting_blocks
+            .extend(other.committed_notes_awaiting_blocks);
+        self.tags_to_remove.extend(other.tags_to_remove);
+    }
+
     /// The records this batch is about to write.
     ///
     /// Only complete once [`Client::get_and_store_note_blocks`] has run: before that, the

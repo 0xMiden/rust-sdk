@@ -8,7 +8,6 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::slice;
 
 use futures::Stream;
 use miden_protocol::address::Address;
@@ -359,7 +358,7 @@ where
         let mut id_by_commitment = BTreeMap::new();
         let (mut note_updates, new_cursor) =
             self.fetch_transport_page(cursor, &note_tags, &mut id_by_commitment).await?;
-        self.get_and_store_note_blocks(slice::from_mut(&mut note_updates)).await?;
+        self.get_and_store_note_blocks(&mut note_updates).await?;
 
         self.apply_expected_note_updates(note_updates).await?;
         self.store.update_note_transport_cursor(new_cursor).await?;
@@ -406,19 +405,19 @@ where
 
     /// Drain a single tag's full history from the transport, paging until the cursor stops
     /// advancing. Uses a local cursor and never touches the global one, so it cannot regress
-    /// steady-state progress. Returns one batch of updates per fetched page, none of them
-    /// written.
+    /// steady-state progress. Returns the updates from every fetched page, merged in page order
+    /// and none of them written.
     async fn backfill_tag(
         &self,
         tag: NoteTag,
         id_by_commitment: &mut BTreeMap<NoteDetailsCommitment, NoteId>,
-    ) -> Result<Vec<ExpectedNoteUpdates>, ClientError> {
-        let mut note_updates = Vec::new();
+    ) -> Result<ExpectedNoteUpdates, ClientError> {
+        let mut note_updates = ExpectedNoteUpdates::default();
         let mut cursor = NoteTransportCursor::init();
         for _ in 0..Self::MAX_BACKFILL_ITERATIONS {
             let (page_updates, new_cursor) =
                 self.fetch_transport_page(cursor, &[tag], id_by_commitment).await?;
-            note_updates.push(page_updates);
+            note_updates.merge(page_updates);
             // Terminate on any lack of forward progress. A well-behaved server returns
             // `new_cursor == cursor` when there are no new notes for this tag (since
             // `rcursor = max(cursor, max_seq_returned)`); using `<=` also handles implementations
@@ -535,7 +534,7 @@ where
         let backfilled = !new_tags.is_empty();
         for tag in new_tags {
             data.note_updates
-                .extend(self.backfill_tag(tag, &mut data.id_by_commitment).await?);
+                .merge(self.backfill_tag(tag, &mut data.id_by_commitment).await?);
             covered.insert(tag);
         }
         if pruned || backfilled {
@@ -548,7 +547,7 @@ where
         let (note_updates, new_cursor) = self
             .fetch_transport_page(cursor, &note_tags, &mut data.id_by_commitment)
             .await?;
-        data.note_updates.push(note_updates);
+        data.note_updates.merge(note_updates);
         data.cursor = Some(new_cursor);
 
         Ok(data)
@@ -575,15 +574,11 @@ where
             cursor,
         } = data;
 
-        let mut imported_ids = Vec::new();
-        for page_updates in note_updates {
-            let written = self.apply_expected_note_updates(page_updates).await?;
-            imported_ids.extend(
-                written
-                    .into_iter()
-                    .filter_map(|commitment| id_by_commitment.get(&commitment).copied()),
-            );
-        }
+        let written = self.apply_expected_note_updates(note_updates).await?;
+        let mut imported_ids: Vec<NoteId> = written
+            .into_iter()
+            .filter_map(|commitment| id_by_commitment.get(&commitment).copied())
+            .collect();
 
         if let Some(covered_tags) = covered_tags {
             self.save_covered_tags(&covered_tags).await?;
@@ -612,8 +607,8 @@ where
 pub(crate) struct NoteTransportSyncData {
     /// Covered-tag set to persist, `None` when it did not change.
     covered_tags: Option<BTreeSet<NoteTag>>,
-    /// One batch per fetched page, in fetch order.
-    pub(crate) note_updates: Vec<ExpectedNoteUpdates>,
+    /// Every fetched page's updates, merged in fetch order.
+    pub(crate) note_updates: ExpectedNoteUpdates,
     /// Note ids by details commitment, taken from the note headers the transport returned. Used
     /// to resolve the written records back to ids.
     id_by_commitment: BTreeMap<NoteDetailsCommitment, NoteId>,
@@ -627,7 +622,7 @@ impl NoteTransportSyncData {
     /// Used to extend the chain sync's nullifier check to the notes the transport just delivered,
     /// which are not in the store yet.
     pub(crate) fn input_note_records(&self) -> impl Iterator<Item = &InputNoteRecord> {
-        self.note_updates.iter().flat_map(ExpectedNoteUpdates::input_note_records)
+        self.note_updates.input_note_records()
     }
 }
 

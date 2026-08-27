@@ -249,7 +249,8 @@ impl<AUTH> Client<AUTH> {
     async fn save_relay_outbox(&self, entries: Vec<NoteInfo>) -> Result<(), ClientError> {
         let key = String::from(NOTE_TRANSPORT_OUTBOX_KEY);
         if entries.is_empty() {
-            return self.store.remove_setting(key).await.map_err(ClientError::StoreError);
+            self.store.remove_setting(key).await.map_err(ClientError::StoreError)?;
+            return Ok(());
         }
         let bytes = entries.to_bytes();
         self.store.set_setting(key, bytes).await.map_err(ClientError::StoreError)
@@ -309,7 +310,8 @@ impl<AUTH> Client<AUTH> {
     async fn save_covered_tags(&self, tags: &BTreeSet<NoteTag>) -> Result<(), ClientError> {
         let key = String::from(NOTE_TRANSPORT_COVERED_TAGS_KEY);
         if tags.is_empty() {
-            return self.store.remove_setting(key).await.map_err(ClientError::StoreError);
+            self.store.remove_setting(key).await.map_err(ClientError::StoreError)?;
+            return Ok(());
         }
         self.store
             .set_setting(key, tags.to_bytes())

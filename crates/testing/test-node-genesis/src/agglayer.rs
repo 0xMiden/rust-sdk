@@ -5,7 +5,8 @@ use std::collections::BTreeSet;
 
 use ::rand::{RngExt, random};
 use anyhow::{Context, Result};
-use miden_agglayer::{BridgeRoles, create_agglayer_faucet, create_bridge_account};
+use miden_agglayer::testing::zero_fee_policy_manager;
+use miden_agglayer::{AggLayerBridge, AggLayerFaucet, BridgeRoles};
 use miden_protocol::account::auth::{AuthScheme, AuthSecretKey};
 use miden_protocol::account::{
     Account,
@@ -76,15 +77,33 @@ pub fn create_agglayer_genesis_accounts() -> Result<AgglayerGenesisAccounts> {
         BTreeSet::from([ger_account.id()]),
     )
     .context("failed to build bridge roles")?;
-    let bridge = create_bridge_account(bridge_seed, admin_account.id(), roles, MIDEN_NETWORK_ID);
+    let bridge = AggLayerBridge::account_builder(
+        bridge_seed,
+        admin_account.id(),
+        roles,
+        MIDEN_NETWORK_ID,
+        zero_fee_policy_manager(AggLayerBridge::allowed_notes()),
+    )
+    .build()
+    .context("failed to build bridge account")?;
     let bridge = set_nonce_to_one(bridge);
 
     // 4. Create and deploy the Faucet. In protocol 0.15 the faucet no longer stores conversion
     // metadata (origin token address, network, scale, metadata hash); that data lives on the
     // bridge's `faucet_metadata_map` and is written by the CONFIG_AGG_BRIDGE note at test time.
     let faucet_seed: Word = rng.random::<[u32; 4]>().map(Felt::from).into();
-    let faucet =
-        create_agglayer_faucet(faucet_seed, "AGG", 12, Felt::from(1_000_000_000u32), bridge.id());
+    let faucet = AggLayerFaucet::account_builder(
+        faucet_seed,
+        "AGG",
+        12,
+        Felt::from(1_000_000_000u32),
+        Felt::ZERO,
+        admin_account.id(),
+        bridge.id(),
+        zero_fee_policy_manager(AggLayerFaucet::allowed_notes()),
+    )
+    .build()
+    .context("failed to build agglayer faucet account")?;
     let faucet = set_nonce_to_one(faucet);
 
     let admin_file = AccountFile::new(admin_account, vec![admin_secret]);

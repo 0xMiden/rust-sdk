@@ -272,6 +272,13 @@ impl<T: NodeRpcClient> NodeRpcClient for VerifyingRpcClient<T> {
         };
         let (block_num, proof) = self.0.get_account(account_id, request).await?;
         verify_block_num(requested, block_num)?;
+        if proof.account_id() != account_id {
+            return Err(RpcError::InvalidResponse(format!(
+                "node returned proof for account {} but {} was requested",
+                proof.account_id(),
+                account_id,
+            )));
+        }
         Ok((block_num, proof))
     }
 

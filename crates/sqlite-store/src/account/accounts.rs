@@ -419,16 +419,19 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// Returns `true` if a row was deleted, `false` if the address wasn't tracked.
     pub(crate) fn remove_address(
         conn: &mut Connection,
         address: &Address,
-    ) -> Result<(), StoreError> {
+    ) -> Result<bool, StoreError> {
         let tx = conn.transaction().into_store_error()?;
         let serialized_address = address.to_bytes();
         const DELETE_QUERY: &str = "DELETE FROM addresses WHERE address = ?";
-        tx.execute(DELETE_QUERY, params![serialized_address]).into_store_error()?;
+        let count = tx.execute(DELETE_QUERY, params![serialized_address]).into_store_error()?;
 
-        tx.commit().into_store_error()
+        tx.commit().into_store_error()?;
+
+        Ok(count > 0)
     }
 
     /// Inserts an [`AccountCode`].

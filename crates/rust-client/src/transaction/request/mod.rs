@@ -52,8 +52,8 @@ pub use builder::{
 };
 
 mod foreign;
-pub use foreign::ForeignAccount;
 pub(crate) use foreign::account_proof_into_inputs;
+pub use foreign::{ForeignAccount, build_fpi_script};
 
 use crate::store::InputNoteRecord;
 
@@ -568,6 +568,8 @@ pub enum TransactionRequestError {
     CodeBuilderError(#[from] CodeBuilderError),
     #[error("transaction script template error: {0}")]
     ScriptTemplateError(String),
+    #[error("foreign procedure takes at most {max} input felts, got {actual}")]
+    ForeignProcedureInputsTooLong { max: usize, actual: usize },
     #[error("storage slot {0} not found in account ID {1}")]
     StorageSlotNotFound(u8, AccountId),
     #[error("error while building the input notes")]

@@ -134,14 +134,10 @@ pub async fn test_multiple_tx_on_same_block(client_config: ClientConfig) -> Resu
     info!(from = %from_account_id, to = %to_account_id, "Submitting 2-tx P2ID batch");
 
     // Submit both requests as a single proven batch via the node's `SubmitProvenBatch` path.
-    let block_num = client
-        .new_transaction_batch()
-        .push(from_account_id, tx_request_1)
-        .await?
-        .push(from_account_id, tx_request_2)
-        .await?
-        .submit()
-        .await?;
+    let mut batch = client.new_transaction_batch();
+    batch.push(from_account_id, tx_request_1).await?;
+    batch.push(from_account_id, tx_request_2).await?;
+    let block_num = batch.submit().await?;
 
     info!(
         submitted_at = block_num.as_u32(),

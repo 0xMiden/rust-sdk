@@ -80,7 +80,7 @@ use miden_protocol::note::{
     NoteScript,
     NoteTag,
 };
-use miden_protocol::transaction::AccountInputs;
+use miden_protocol::transaction::{AccountInputs, PartialBlockchain};
 use miden_protocol::vm::MIN_STACK_DEPTH;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::faucets::FungibleFaucet;
@@ -99,7 +99,7 @@ use crate::rpc::domain::account::{
 };
 use crate::rpc::encryption::{TransactionEncryptionKey, seal_transaction_inputs};
 use crate::rpc::{AccountStateAt, NodeRpcClient, RpcError};
-use crate::store::data_store::ClientDataStore;
+use crate::store::data_store::{ClientDataStore, build_partial_mmr_with_paths};
 use crate::store::input_note_states::ExpectedNoteState;
 use crate::store::{
     AccountRecord,
@@ -117,6 +117,9 @@ use crate::transaction::batch::InMemoryBatchDataStore;
 
 pub mod batch;
 pub use batch::{BatchBuilder, BatchBuilderError};
+
+mod chain_anchor;
+pub use chain_anchor::{ChainAnchor, ChainAnchorError};
 
 #[cfg(feature = "dap")]
 mod dap_executor;
@@ -146,6 +149,7 @@ pub use request::{
     TransactionRequestBuilder,
     TransactionRequestError,
     TransactionScriptTemplate,
+    build_fpi_script,
 };
 
 mod observer;
@@ -315,7 +319,7 @@ where
     /// - Returns a [`ClientError::TransactionExecutorError`] if the execution fails.
     /// - Returns a [`ClientError::TransactionRequestError`] if the request is invalid.
     pub async fn execute_transaction(
-        &mut self,
+        &self,
         account_id: AccountId,
         transaction_request: TransactionRequest,
     ) -> Result<TransactionResult, ClientError> {
@@ -323,8 +327,149 @@ where
             account_id,
             transaction_request,
             TransactionExecutionMode::Standard,
+            None,
         )
         .await
+    }
+
+    /// Creates and executes a transaction specified by the request against the specified account,
+    /// using the provided [`ChainAnchor`] as the reference block instead of the current sync
+    /// height. Like [`Self::execute_transaction`], it doesn't change the local database.
+    ///
+    /// Since protocol 0.16 the signed transaction summary binds the reference block commitment,
+    /// so signatures collected over a summary only authorize an execution whose reference block
+    /// is the one the summary was built at. This method makes such an execution reproducible on
+    /// any client, regardless of its sync height: the anchor supplies the reference block header
+    /// and a consistent [`PartialBlockchain`], typically captured by the transaction's original
+    /// proposer via [`Self::chain_anchor_for_request`] and shipped alongside the signed data.
+    ///
+    /// Callers holding an anchor from an untrusted source should first compare
+    /// [`ChainAnchor::block_commitment`] against an independently trusted value (e.g. the block
+    /// commitment bound into the signed transaction summary).
+    ///
+    /// Foreign account proofs are fetched at the anchor's block, so requests with foreign
+    /// accounts additionally require the node to serve account state at that block.
+    ///
+    /// # Errors
+    ///
+    /// In addition to the [`Self::execute_transaction`] errors:
+    /// - Returns [`ClientError::ChainAnchorError`] if an authenticated input note's creation block
+    ///   is not tracked by the anchor.
+    /// - Returns a [`ClientError::TransactionExecutorError`] if an input note was created after the
+    ///   anchored reference block.
+    /// - Returns [`ChainAnchorError::AnchoredTransactionExpired`] if the executed transaction's
+    ///   expiration block has already been reached, which the network would reject.
+    pub async fn execute_transaction_at(
+        &mut self,
+        account_id: AccountId,
+        transaction_request: TransactionRequest,
+        anchor: ChainAnchor,
+    ) -> Result<TransactionResult, ClientError> {
+        let result = self
+            .execute_transaction_with_mode(
+                account_id,
+                transaction_request,
+                TransactionExecutionMode::Standard,
+                Some(Box::new(anchor)),
+            )
+            .await?;
+
+        // The expiration delta counts from the anchored reference block, so a stale anchor can
+        // yield an already-expired transaction, which the network would only reject after the
+        // caller has paid for proving. The sync height never runs ahead of the real tip, so this
+        // fires only on transactions that are certainly too late.
+        let expiration = result.executed_transaction().expiration_block_num();
+        let sync_height = self.store.get_sync_height().await?;
+        if expiration <= sync_height {
+            return Err(
+                ChainAnchorError::AnchoredTransactionExpired { expiration, sync_height }.into()
+            );
+        }
+
+        Ok(result)
+    }
+
+    /// Captures a [`ChainAnchor`] at the client's current sync height, tracking the blocks in
+    /// `tracked_blocks` (in addition to the reference block itself, which needs no tracking) so
+    /// that transactions consuming authenticated notes created in those blocks can later execute
+    /// against the anchor.
+    async fn chain_anchor_at_tip(
+        &self,
+        tracked_blocks: BTreeSet<BlockNumber>,
+    ) -> Result<ChainAnchor, ClientError> {
+        let sync_height = self.store.get_sync_height().await?;
+
+        let (header, _had_notes) = self
+            .store
+            .get_block_header_by_num(sync_height)
+            .await?
+            .ok_or(StoreError::BlockHeaderNotFound(sync_height))?;
+
+        let mut tracked_blocks = tracked_blocks;
+        // The kernel extends the MMR with the reference block itself, so it needs no path.
+        tracked_blocks.remove(&sync_height);
+
+        let block_headers: Vec<BlockHeader> = self
+            .store
+            .get_block_headers(&tracked_blocks)
+            .await?
+            .into_iter()
+            .map(|(header, _has_notes)| header)
+            .collect();
+
+        // `Store::get_block_headers` may silently omit missing headers, so verify each requested
+        // block is present rather than comparing lengths.
+        let fetched_nums: BTreeSet<BlockNumber> =
+            block_headers.iter().map(BlockHeader::block_num).collect();
+        if let Some(&missing) = tracked_blocks.difference(&fetched_nums).next() {
+            return Err(StoreError::BlockHeaderNotFound(missing).into());
+        }
+
+        let peaks = self.store.get_current_blockchain_peaks().await?;
+        let partial_mmr = build_partial_mmr_with_paths(&self.store, peaks, &block_headers).await?;
+
+        let chain = PartialBlockchain::new(partial_mmr, block_headers)?;
+
+        Ok(ChainAnchor::new(header, chain)?)
+    }
+
+    /// Captures a [`ChainAnchor`] at the client's current sync height, tracking the creation
+    /// blocks of the request's authenticated input notes so that the request can later execute
+    /// against the anchor.
+    ///
+    /// This is the capture entry point for flows that never see a successful execution result at
+    /// capture time — e.g. multisig proposal flows, where execution intentionally fails with
+    /// [`TransactionExecutorError::Unauthorized`] to surface the transaction summary for signing.
+    /// Capture the anchor first, execute the request with [`Self::execute_transaction_at`], and
+    /// ship the anchor alongside the summary; the same anchor then reproduces the summary during
+    /// later verification and execution.
+    ///
+    /// # Errors
+    ///
+    /// - Returns [`ClientError::StoreError`] if a header for the sync height or a tracked block is
+    ///   not present in the store.
+    /// - Returns [`ChainAnchorError::TooManyTrackedBlocks`] if the request's authenticated input
+    ///   notes were created across more blocks than a transaction can reference.
+    pub async fn chain_anchor_for_request(
+        &self,
+        transaction_request: &TransactionRequest,
+    ) -> Result<ChainAnchor, ClientError> {
+        let input_note_ids: Vec<NoteId> = transaction_request.input_note_ids().collect();
+
+        let tracked_blocks: BTreeSet<BlockNumber> = if input_note_ids.is_empty() {
+            BTreeSet::new()
+        } else {
+            self.store
+                .get_input_notes(NoteFilter::List(input_note_ids))
+                .await?
+                .iter()
+                .filter(|record| record.is_authenticated())
+                .filter_map(|record| record.inclusion_proof())
+                .map(|proof| proof.location().block_num())
+                .collect()
+        };
+
+        self.chain_anchor_at_tip(tracked_blocks).await
     }
 
     /// Executes `transaction_request` (e.g. consuming a note) through the DAP program executor,
@@ -342,7 +487,7 @@ where
     /// [`Self::execute_transaction`], and returns the corresponding [`ClientError`] on failure.
     #[cfg(feature = "dap")]
     pub async fn execute_transaction_with_dap(
-        &mut self,
+        &self,
         account_id: AccountId,
         transaction_request: TransactionRequest,
     ) -> Result<TransactionResult, ClientError> {
@@ -350,6 +495,7 @@ where
             account_id,
             transaction_request,
             TransactionExecutionMode::Dap,
+            None,
         )
         .await
     }
@@ -358,17 +504,23 @@ where
     /// preparation, data-store population, note filtering, and result validation identical across
     /// execution modes.
     async fn execute_transaction_with_mode(
-        &mut self,
+        &self,
         account_id: AccountId,
         transaction_request: TransactionRequest,
         execution_mode: TransactionExecutionMode,
+        anchor: Option<Box<ChainAnchor>>,
     ) -> Result<TransactionResult, ClientError> {
         let account: Account = self.get_native_account_record(account_id).await?.try_into()?;
 
         validate_account_request(&transaction_request, &account)?;
-        let prep = self.prepare_transaction(account.code_interface(), transaction_request).await?;
+        let prep = self
+            .prepare_transaction(account.code_interface(), transaction_request, anchor.as_deref())
+            .await?;
 
-        let data_store = ClientDataStore::new(self.store.clone(), self.rpc_api.clone());
+        let mut data_store = ClientDataStore::new(self.store.clone(), self.rpc_api.clone());
+        if let Some(anchor) = anchor {
+            data_store = data_store.with_chain_anchor(*anchor);
+        }
         data_store.register_note_scripts(prep.output_note_scripts());
         for fpi_account in &prep.foreign_account_inputs {
             data_store.mast_store().load_account_code(fpi_account.code());
@@ -380,7 +532,13 @@ where
         let mut notes = prep.notes;
         if prep.ignore_invalid_notes {
             notes = self
-                .get_valid_input_notes(&data_store, account.id(), notes, prep.tx_args.clone())
+                .get_valid_input_notes(
+                    &data_store,
+                    account.id(),
+                    prep.block_num,
+                    notes,
+                    prep.tx_args.clone(),
+                )
                 .await?;
         }
 
@@ -413,12 +571,19 @@ where
     /// full [`Account`] (see [`validate_account_request`]). Batch execution only has the in-batch
     /// [`miden_protocol::account::PartialAccount`] and so skips it; the executor still rejects an
     /// unsatisfiable request.
+    ///
+    /// When `anchor` is provided, the reference block is the anchor's block instead of the
+    /// current sync height, and the recency check is skipped — anchored execution deliberately
+    /// references a block older than the tip.
     pub(crate) async fn prepare_transaction(
         &self,
         account_code_interface: AccountCodeInterface,
         transaction_request: TransactionRequest,
+        anchor: Option<&ChainAnchor>,
     ) -> Result<PreparedTransaction, ClientError> {
-        self.validate_recency().await?;
+        if anchor.is_none() {
+            self.validate_recency().await?;
+        }
 
         // Retrieve all input notes from the store.
         let mut stored_note_records = self
@@ -443,6 +608,22 @@ where
 
         let notes = transaction_request.build_input_notes(stored_note_records)?;
 
+        // Each authenticated note's creation block must be tracked by the anchor; fail with a
+        // typed error so callers can recapture a wider anchor. Notes newer than the anchor are
+        // left for the executor to reject.
+        if let Some(anchor) = anchor {
+            for note in notes.iter() {
+                if let Some(location) = note.location() {
+                    let block_num = location.block_num();
+                    if block_num < anchor.block_num()
+                        && !anchor.partial_blockchain().contains_block(block_num)
+                    {
+                        return Err(ChainAnchorError::BlockNotTracked { block_num }.into());
+                    }
+                }
+            }
+        }
+
         let output_recipients =
             transaction_request.expected_output_recipients().cloned().collect::<Vec<_>>();
 
@@ -453,16 +634,17 @@ where
 
         let foreign_accounts = transaction_request.foreign_accounts().clone();
 
-        let (fpi_block_num, foreign_account_inputs) =
-            self.retrieve_foreign_account_inputs(foreign_accounts).await?;
+        // The reference block: the anchor's block when pinned, the sync height otherwise.
+        // Foreign account proofs are fetched at this block to stay consistent with it.
+        let block_num = match anchor {
+            Some(anchor) => anchor.block_num(),
+            None => self.store.get_sync_height().await?,
+        };
+
+        let foreign_account_inputs =
+            self.retrieve_foreign_account_inputs(foreign_accounts, block_num).await?;
 
         let ignore_invalid_notes = transaction_request.ignore_invalid_input_notes();
-
-        let block_num = if let Some(block_num) = fpi_block_num {
-            block_num
-        } else {
-            self.store.get_sync_height().await?
-        };
 
         let tx_args = transaction_request.into_transaction_args(tx_script);
 
@@ -702,7 +884,7 @@ where
     ///
     /// The transaction will use the current sync height as the block reference.
     pub async fn execute_program(
-        &mut self,
+        &self,
         account_id: AccountId,
         tx_script: TransactionScript,
         advice_inputs: AdviceInputs,
@@ -721,7 +903,7 @@ where
     /// connections, allowing interactive debugging via any DAP-compatible client.
     #[cfg(feature = "dap")]
     pub async fn execute_program_with_dap(
-        &mut self,
+        &self,
         account_id: AccountId,
         tx_script: TransactionScript,
         advice_inputs: AdviceInputs,
@@ -831,21 +1013,27 @@ where
 
     /// Filters the provided input notes down to the subset that can be consumed by the account.
     ///
-    /// `output_recipients` are the request's expected output recipients; their scripts are
-    /// registered on the consumption-check data store so output note creation can resolve them
-    /// without them being present in the store.
+    /// The trial runs against `data_store` at `block_ref`, which must match the reference block
+    /// the actual execution will use.
     pub(crate) async fn get_valid_input_notes<STORE: DataStore + Sync>(
         &self,
         data_store: &STORE,
         account_id: AccountId,
+        block_ref: BlockNumber,
         mut input_notes: InputNotes<InputNote>,
         tx_args: TransactionArgs,
     ) -> Result<InputNotes<InputNote>, ClientError> {
         loop {
+            // The consumption checker rejects a zero-note call; the set can be empty because the
+            // request carried no notes or because screening removed them all.
+            if input_notes.is_empty() {
+                break;
+            }
+
             let execution = NoteConsumptionChecker::new(&self.build_executor(data_store)?)
                 .check_notes_consumability(
                     account_id,
-                    self.store.get_sync_height().await?,
+                    block_ref,
                     input_notes.iter().map(|n| n.clone().into_note()).collect(),
                     tx_args.clone(),
                 )
@@ -872,7 +1060,9 @@ where
     }
 
     /// Returns foreign account inputs for the required foreign accounts specified by the
-    /// transaction request.
+    /// transaction request, with proofs anchored at `block_num` — the transaction's reference
+    /// block, so that the fetched state is consistent with the block the transaction executes
+    /// against.
     ///
     /// For any [`ForeignAccount::Public`] in `foreign_accounts`, these pieces of data are retrieved
     /// from the network. For any [`ForeignAccount::Private`] account, inner data is used and only
@@ -880,12 +1070,12 @@ where
     async fn retrieve_foreign_account_inputs(
         &self,
         foreign_accounts: BTreeMap<AccountId, ForeignAccount>,
-    ) -> Result<(Option<BlockNumber>, Vec<AccountInputs>), ClientError> {
+        block_num: BlockNumber,
+    ) -> Result<Vec<AccountInputs>, ClientError> {
         if foreign_accounts.is_empty() {
-            return Ok((None, Vec::new()));
+            return Ok(Vec::new());
         }
 
-        let block_num = self.store.get_sync_height().await?;
         let mut return_foreign_account_inputs = Vec::with_capacity(foreign_accounts.len());
 
         for foreign_account in foreign_accounts.into_values() {
@@ -917,25 +1107,21 @@ where
             return_foreign_account_inputs.push(foreign_account_inputs);
         }
 
-        Ok((Some(block_num), return_foreign_account_inputs))
+        Ok(return_foreign_account_inputs)
     }
 
     /// Prepares the data store and block reference for program execution.
     ///
     /// This is shared setup for both `execute_program` and `execute_program_with_dap`.
     async fn prepare_program_execution(
-        &mut self,
+        &self,
         account_id: AccountId,
         foreign_accounts: BTreeMap<AccountId, ForeignAccount>,
     ) -> Result<(ClientDataStore, BlockNumber), ClientError> {
-        let (fpi_block_number, foreign_account_inputs) =
-            self.retrieve_foreign_account_inputs(foreign_accounts).await?;
+        let block_ref = self.get_sync_height().await?;
 
-        let block_ref = if let Some(block_number) = fpi_block_number {
-            block_number
-        } else {
-            self.get_sync_height().await?
-        };
+        let foreign_account_inputs =
+            self.retrieve_foreign_account_inputs(foreign_accounts, block_ref).await?;
 
         let account_code = self
             .store

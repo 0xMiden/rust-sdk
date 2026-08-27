@@ -296,7 +296,7 @@ mod tests {
     use rusqlite::Connection;
 
     use super::{SqliteStore, upsert_transaction_record};
-    use crate::db_management::utils::apply_migrations;
+    use crate::db_management::migration::SqliteMigrator;
 
     /// Builds a script-less transaction record with the given status.
     fn create_transaction_record(index: u64, status: TransactionStatus) -> TransactionRecord {
@@ -323,7 +323,7 @@ mod tests {
 
     fn create_test_connection(records: &[TransactionRecord]) -> Connection {
         let mut conn = Connection::open_in_memory().unwrap();
-        apply_migrations(&mut conn).unwrap();
+        SqliteMigrator::client().apply(&mut conn).unwrap();
 
         let db_tx = conn.transaction().unwrap();
         for record in records {

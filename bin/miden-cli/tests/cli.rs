@@ -7,9 +7,18 @@ use std::sync::Arc;
 use anyhow::Result;
 use assert_cmd::Command;
 use assert_cmd::cargo::cargo_bin_cmd;
-use miden_client::account::component::FungibleFaucet;
-use miden_client::account::{AccountId, AccountType, FaucetMetadata};
+use miden_client::account::component::{
+    AccountComponentMetadata,
+    FeltSchema,
+    FungibleFaucet,
+    StorageSchema,
+    StorageSlotSchema,
+    ValueSlotSchema,
+    WordSchema,
+};
+use miden_client::account::{AccountId, AccountType, FaucetMetadata, StorageSlotName};
 use miden_client::address::{Address, NetworkId};
+use miden_client::assembly::CodeBuilder;
 use miden_client::auth::TransactionAuthenticator;
 use miden_client::builder::ClientBuilder;
 use miden_client::crypto::RandomCoin;
@@ -24,10 +33,20 @@ use miden_client::testing::common::{
     create_test_store_path,
 };
 use miden_client::utils::Serializable;
-use miden_client::{self, Client, Felt};
+use miden_client::vm::{
+    Package,
+    PackageExport,
+    ProcedureExport,
+    QualifiedProcedureName,
+    Section,
+    SectionId,
+    TargetType,
+};
+use miden_client::{self, Client, Deserializable, Felt};
 use miden_client_cli::MIDEN_DIR;
 use miden_client_cli::config::Network;
 use miden_client_sqlite_store::SqliteStore;
+use midenc_hir_type::{CallConv, FunctionType, Type};
 use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
 use rand::RngExt;
@@ -1721,11 +1740,8 @@ fn call_nonexistent_procedure() {
 
 /// Helper: builds the `call-test` package (arithmetic + storage procedures) at runtime and
 /// writes the serialized `.masp` to `out_path`.
-fn call_test_exports(package: &miden_client::vm::Package) -> Vec<miden_client::vm::PackageExport> {
-    use miden_client::vm::{PackageExport, ProcedureExport, QualifiedProcedureName};
-    use midenc_hir_type::{CallConv, FunctionType, Type};
-
-    let signature_overrides: [(&str, FunctionType); 3] = [
+fn call_test_exports(package: &Package) -> Vec<PackageExport> {
+    let signature_overrides: [(&str, FunctionType); 4] = [
         (
             "add",
             FunctionType::new(CallConv::ComponentModel, [Type::Felt, Type::Felt], [Type::Felt]),
@@ -1739,6 +1755,11 @@ fn call_test_exports(package: &miden_client::vm::Package) -> Vec<miden_client::v
             ),
         ),
         ("read_advice", FunctionType::new(CallConv::ComponentModel, [], [Type::Felt])),
+        // Wider than the 16-felt output stack, so the call is rejected before it runs.
+        (
+            "wide_result",
+            FunctionType::new(CallConv::ComponentModel, [], vec![Type::Felt; 17]),
+        ),
     ];
 
     let mut exports = Vec::new();
@@ -1764,18 +1785,6 @@ fn call_test_exports(package: &miden_client::vm::Package) -> Vec<miden_client::v
 }
 
 fn build_call_test_masp(out_path: &Path) {
-    use miden_client::account::StorageSlotName;
-    use miden_client::account::component::{
-        AccountComponentMetadata,
-        FeltSchema,
-        StorageSchema,
-        StorageSlotSchema,
-        ValueSlotSchema,
-        WordSchema,
-    };
-    use miden_client::assembly::CodeBuilder;
-    use miden_client::vm::{Package, Section, SectionId, TargetType};
-
     let call_test_code = r#"
         use miden::protocol::native_account
         use miden::core::word
@@ -1793,6 +1802,11 @@ fn build_call_test_masp(out_path: &Path) {
             push.STORED_VALUE[0..2]
             exec.native_account::set_item
             dropw
+            exec.sys::truncate_stack
+        end
+
+        @account_procedure
+        pub proc wide_result
             exec.sys::truncate_stack
         end
 
@@ -1908,6 +1922,74 @@ fn setup_call_test_account() -> (PathBuf, String, PathBuf) {
     sync_cli(&temp_dir);
 
     (temp_dir, account_id, masp_dst)
+}
+
+/// Helper: reads the hex digest of `procedure` from a `.masp`, for calling without the package.
+/// Picks the `ComponentModel` export, since the same name is also exported as a `C`-ABI lowering.
+fn procedure_digest_hex(masp_path: &Path, procedure: &str) -> String {
+    let bytes = fs::read(masp_path).expect("failed to read call-test package");
+    let package = Package::read_from_bytes(&bytes).expect("failed to parse call-test package");
+
+    package
+        .manifest
+        .exports()
+        .find_map(|export| match export {
+            PackageExport::Procedure(proc)
+                if export.name() == procedure
+                    && proc
+                        .signature
+                        .as_ref()
+                        .is_some_and(|sig| sig.abi.is_wasm_canonical_abi()) =>
+            {
+                Some(proc.digest.to_hex())
+            },
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no ComponentModel export named '{procedure}'"))
+}
+
+/// Tests calling a procedure by its hex digest with no `--package`. With no manifest to read the
+/// signature from, the stack is printed as raw felts.
+#[test]
+fn call_by_digest_without_package() {
+    let (temp_dir, account_id, masp_path) = setup_call_test_account();
+    let digest = procedure_digest_hex(&masp_path, "add");
+
+    let mut cmd = cargo_bin_cmd!("miden-client");
+    cmd.args(["call", &format!("{account_id}:{digest}"), "3", "7"]);
+
+    let output = cmd.current_dir(&temp_dir).output().unwrap();
+    assert!(
+        output.status.success(),
+        "Call by digest failed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("No `--package` provided; output will be raw felts."),
+        "Expected the raw-felts notice in output:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("\nResult: 10\n"),
+        "Expected `add(3, 7)` to leave 10 on top of the stack:\n{stdout}"
+    );
+}
+
+/// Tests that a procedure name is rejected without `--package`, as there is no manifest to
+/// resolve it against.
+#[test]
+fn call_without_package_rejects_procedure_name() {
+    let (temp_dir, account_id, _masp_path) = setup_call_test_account();
+
+    let mut cmd = cargo_bin_cmd!("miden-client");
+    cmd.args(["call", &format!("{account_id}:add"), "3", "7"]);
+
+    cmd.current_dir(&temp_dir)
+        .assert()
+        .failure()
+        .stderr(contains("'add' is not a hex digest"));
 }
 
 /// Tests calling a procedure by name (add) with felt arguments.
@@ -2060,6 +2142,215 @@ fn call_rejects_wrong_arg_count() {
         stderr.contains("expects 2 value") && stderr.contains("got 3"),
         "Unexpected stderr:\n{stderr}"
     );
+}
+
+/// Tests passing more arguments than a procedure can be given.
+#[test]
+fn call_rejects_more_args_than_stack_window() {
+    let (temp_dir, account_id, masp_path) = setup_call_test_account();
+
+    // Called by digest, so that the manifest's argument check doesn't run first.
+    let digest = procedure_digest_hex(&masp_path, "add");
+    let mut args = vec!["call".to_string(), format!("{account_id}:{digest}")];
+    args.extend((0..17).map(|value| value.to_string()));
+
+    let mut cmd = cargo_bin_cmd!("miden-client");
+    cmd.args(&args);
+
+    cmd.current_dir(&temp_dir)
+        .assert()
+        .failure()
+        .stderr(contains("takes at most 16 input values; got 17"));
+}
+
+/// Tests calling a procedure whose manifest declares more result values than the output stack
+/// holds. They could not be read back, so the call must fail.
+#[test]
+fn call_rejects_results_wider_than_stack_window() {
+    let (temp_dir, account_id, masp_path) = setup_call_test_account();
+
+    let mut cmd = cargo_bin_cmd!("miden-client");
+    cmd.args([
+        "call",
+        &format!("{account_id}:wide_result"),
+        "--package",
+        masp_path.to_str().unwrap(),
+    ]);
+
+    cmd.current_dir(&temp_dir)
+        .assert()
+        .failure()
+        .stderr(contains("returns 17 values"));
+}
+
+/// Helper: sets up two isolated clients. The first owns a public `call-test` account deployed
+/// on-chain; the second has only a local wallet to act as the FPI executor. Returns the second
+/// client's (`caller_dir`, `account_id`, `masp_path`).
+fn setup_remote_call_test() -> (PathBuf, String, PathBuf) {
+    // Client A: owns and deploys the call-test account.
+    let target_dir = init_cli().1;
+
+    let masp_path = target_dir.join("call_test.masp");
+    build_call_test_masp(&masp_path);
+
+    let init_toml = r#"
+"miden::testing::call_test::stored_value" = "0x0000000000000000000000000000000000000000000000000000000000000000"
+"#;
+    let init_path = target_dir.join("call_test_init.toml");
+    fs::write(&init_path, init_toml).unwrap();
+
+    sync_cli(&target_dir);
+
+    // `--deploy` submits a transaction that commits the public account on-chain, which is what
+    // makes it readable from another client via FPI.
+    let mut create_cmd = cargo_bin_cmd!("miden-client");
+    create_cmd.args([
+        "new-account",
+        "-t",
+        "public",
+        "-p",
+        "auth/no-auth",
+        "-p",
+        masp_path.to_str().unwrap(),
+        "-i",
+        init_path.to_str().unwrap(),
+        "--deploy",
+    ]);
+
+    let output = create_cmd.current_dir(&target_dir).output().unwrap();
+    assert!(
+        output.status.success(),
+        "Failed to create and deploy account: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let account_id = stdout
+        .split_whitespace()
+        .skip_while(|&w| w != "-s")
+        .nth(1)
+        .expect("Could not parse account ID from new-account output")
+        .to_string();
+
+    // Wait for the deploy transaction to commit before the account can be read remotely.
+    sync_until_committed_transaction(&target_dir);
+
+    // Client B: only a local wallet, used as the FPI executor.
+    let caller_dir = init_cli().1;
+    new_wallet_cli(&caller_dir, AccountType::Private);
+    sync_cli(&caller_dir);
+
+    (caller_dir, account_id, masp_path)
+}
+
+/// Tests calling a procedure on a public account that is not in the caller's local store. The
+/// call is routed through FPI using the caller's local wallet as the executor.
+#[test]
+fn call_remote_account_via_fpi() {
+    let (caller_dir, account_id, masp_path) = setup_remote_call_test();
+
+    let mut cmd = cargo_bin_cmd!("miden-client");
+    cmd.args([
+        "call",
+        &format!("{account_id}:add"),
+        "3",
+        "7",
+        "--package",
+        masp_path.to_str().unwrap(),
+    ]);
+
+    let output = cmd.current_dir(&caller_dir).output().unwrap();
+    assert!(
+        output.status.success(),
+        "Remote call failed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("reading its state from the network"),
+        "Expected the network-read message in output:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Result: 10"),
+        "Expected `add(3, 7)` result in output:\n{stdout}"
+    );
+}
+
+/// Tests calling a procedure that writes to storage on an account read from the network. The
+/// kernel only allows writes to the account running the transaction, so the call must fail.
+#[test]
+fn call_remote_account_rejects_state_change() {
+    let (caller_dir, account_id, masp_path) = setup_remote_call_test();
+
+    let mut cmd = cargo_bin_cmd!("miden-client");
+    cmd.args([
+        "call",
+        &format!("{account_id}:set_value"),
+        "42",
+        "0",
+        "0",
+        "0",
+        "--package",
+        masp_path.to_str().unwrap(),
+    ]);
+
+    // The kernel rejects this with ERR_ACCOUNT_IS_NOT_NATIVE. Its text is matched instead of
+    // the constant name, which is printed only when the kernel source is rendered.
+    cmd.current_dir(&caller_dir)
+        .assert()
+        .failure()
+        .stderr(contains("the active account is not"));
+}
+
+/// Tests calling a private account that isn't tracked locally. The node cannot serve its state,
+/// so the call must fail.
+#[test]
+fn call_rejects_untracked_private_account() {
+    let owner_dir = init_cli().1;
+    let target_id = new_wallet_cli(&owner_dir, AccountType::Private);
+
+    // A second client that never saw that account.
+    let caller_dir = init_cli().1;
+    new_wallet_cli(&caller_dir, AccountType::Private);
+    sync_cli(&caller_dir);
+
+    // The digest is only parsed, never resolved, because the call fails on the account first.
+    let digest = format!("0x{}", "0".repeat(64));
+    let mut cmd = cargo_bin_cmd!("miden-client");
+    cmd.args(["call", &format!("{target_id}:{digest}")]);
+
+    cmd.current_dir(&caller_dir)
+        .assert()
+        .failure()
+        .stderr(contains("its state isn't public"));
+}
+
+/// Tests calling an account that isn't tracked locally from a client with no accounts of its
+/// own. There is nothing to run the call from, so it must fail.
+#[test]
+fn call_remote_account_requires_local_executor() {
+    let (_caller_dir, account_id, masp_path) = setup_remote_call_test();
+
+    // A client with no accounts at all.
+    let empty_dir = init_cli().1;
+    sync_cli(&empty_dir);
+
+    let mut cmd = cargo_bin_cmd!("miden-client");
+    cmd.args([
+        "call",
+        &format!("{account_id}:add"),
+        "3",
+        "7",
+        "--package",
+        masp_path.to_str().unwrap(),
+    ]);
+
+    cmd.current_dir(&empty_dir)
+        .assert()
+        .failure()
+        .stderr(contains("of your own accounts to run the call from"));
 }
 
 // AUTH COMPONENT TESTS

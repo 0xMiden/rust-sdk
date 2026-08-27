@@ -366,18 +366,18 @@ fn schema_built_by_a_hook_is_covered_by_the_fingerprint() {
     let without_hook = fixture_migration_with_v3(None, FIXTURE_V3_HASH);
     let latest = migration.latest_version();
 
-    // A version that builds anything other than the fingerprint it is pinned to is rejected, so
-    // applying both is what establishes that each pin is the fingerprint its own version builds.
-    // They differ, so the index the hook creates is part of the fingerprint.
+    let mut hooked_db = open_memory_db();
+    let mut plain_db = open_memory_db();
     without_hook
-        .apply(&mut open_memory_db())
+        .apply(&mut plain_db)
         .expect("the migration without a hook should apply");
     migration
-        .apply(&mut open_memory_db())
+        .apply(&mut hooked_db)
         .expect("the migration with the indexing hook should apply");
+
     assert_ne!(
-        migration.expected_hash(latest),
-        without_hook.expected_hash(latest),
+        SchemaHash::of(&hooked_db).expect("schema hash should compute"),
+        SchemaHash::of(&plain_db).expect("schema hash should compute"),
         "the index the hook creates should be part of the version's fingerprint"
     );
 

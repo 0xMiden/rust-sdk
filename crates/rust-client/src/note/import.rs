@@ -281,8 +281,7 @@ where
     /// absent from `blocks_to_insert`.
     ///
     /// Writes nothing and does not modify the MMR: tracking the fetched headers and storing them
-    /// is [`Client::insert_note_blocks`]'s job, so the proof paths are verified against the peaks
-    /// once, next to the writes they authenticate.
+    /// is [`Client::insert_note_blocks`]'s job.
     pub(crate) async fn fetch_note_blocks(
         &self,
         note_updates: &mut ExpectedNoteUpdates,
@@ -352,8 +351,7 @@ where
     /// records.
     ///
     /// The block headers go in first, so a record is never persisted as committed before the
-    /// header proving its inclusion. Caching the partial MMR is part of that, since the inserts
-    /// change the tracked block set.
+    /// header proving its inclusion.
     ///
     /// # Panics
     ///
@@ -716,11 +714,9 @@ struct CommittedNoteAwaitingBlock {
 /// yet.
 ///
 /// The counterpart of the [`NoteFile::ExpectedNote`] path in [`Client::import_notes`], split so
-/// the network work happens before the note records are written: built by
-/// [`Client::fetch_expected_note_updates`], completed by
-/// [`Client::fetch_note_blocks`], and written by
-/// [`Client::apply_expected_note_updates`]. Used by the note transport sync, which needs its
-/// network phase to overlap with the chain sync's.
+/// the network work happens before the writes: built by
+/// [`Client::fetch_expected_note_updates`], completed by [`Client::fetch_note_blocks`], written by
+/// [`Client::apply_expected_note_updates`].
 #[derive(Default)]
 pub(crate) struct ExpectedNoteUpdates {
     /// Records ready to write: the notes the node has not committed, plus the committed ones

@@ -502,14 +502,10 @@ where
     /// [`Client::apply_note_transport_updates`]. Takes `&self` so it can run concurrently with the
     /// chain sync's fetch phase.
     ///
-    /// The outbox flush is the exception to this being a read-only phase: it persists its own
-    /// remaining entries rather than handing them to the apply phase. That write touches only the
-    /// outbox setting and is safe to redo, so it does not affect what a failure part way through
-    /// leaves behind for the notes, tags and cursor.
-    ///
-    /// The block headers of the notes the node reports as committed are fetched at the end, once
-    /// every page is in and the set of blocks involved is known. Storing them is the apply
-    /// phase's.
+    /// The one write it performs is the relay outbox, which [`Client::flush_relay_outbox`]
+    /// persists itself and which is safe to redo. Block headers for the notes the node reports as
+    /// committed are fetched at the end, once every page is in and the blocks involved are known;
+    /// storing them is the apply phase's.
     ///
     /// Returns empty data when note transport is not configured.
     pub(crate) async fn fetch_note_transport_updates(
@@ -563,8 +559,8 @@ where
     /// The notes are written before the covered-tag set and the cursor, so a crash between them
     /// re-fetches instead of skipping notes that were never written.
     ///
-    /// The relay outbox is not written here: [`Client::flush_relay_outbox`] persists it during the
-    /// fetch. The block headers are, ahead of the notes that need them.
+    /// The block headers go in ahead of the notes that need them. The relay outbox does not:
+    /// [`Client::flush_relay_outbox`] persists it during the fetch.
     pub(crate) async fn apply_note_transport_updates(
         &mut self,
         data: NoteTransportSyncData,

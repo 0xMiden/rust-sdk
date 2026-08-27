@@ -391,7 +391,7 @@ impl StateSync {
     /// Verifies the fetched chain data against `partial_mmr` and turns it into the update to
     /// persist.
     ///
-    /// This is the only step that mutates the MMR: it applies the node's delta, checks the
+    /// This is the chain sync's only MMR mutation: it applies the node's delta, checks the
     /// resulting peaks against the chain tip header's chain commitment, and tracks the screened
     /// note blocks that still hold an unspent note. It performs no I/O, so every check runs before
     /// the caller's first write, and a failure leaves `partial_mmr` to be discarded by the caller.

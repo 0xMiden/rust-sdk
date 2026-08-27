@@ -173,7 +173,8 @@ where
         Ok((state_sync, data))
     }
 
-    /// Verifies fetched chain data against `partial_mmr` and writes the resulting update.
+    /// Verifies fetched chain data against the client's partial MMR and writes the resulting
+    /// update.
     ///
     /// `state_sync` must be the one that produced `data`: its note observers hold the state they
     /// accumulated during the fetch, and their apply hooks run here.
@@ -244,29 +245,22 @@ where
     /// on-chain state with the Miden node.
     ///
     /// The two are fetched concurrently, since the transport pages and the node's sync data are
-    /// independent. Everything that touches the MMR or the store runs sequentially afterwards, so
-    /// the network round trips of one sync overlap with the other's while the writes stay ordered:
+    /// independent, and everything that writes runs sequentially afterwards:
     ///
-    /// 1. Concurrently: the note transport fetch phase and [`Client::fetch_chain_updates`].
-    /// 2. The block headers of the delivered notes the node reports as committed, which are only
-    ///    known once every transport page has been fetched.
-    /// 3. [`StateSync::fetch_nullifiers`], covering the tracked notes *and* the ones the transport
+    /// 1. Concurrently: the note transport fetch and [`Client::fetch_chain_updates`].
+    /// 2. [`StateSync::fetch_nullifiers`], covering the tracked notes *and* the ones the transport
     ///    just delivered, so a note delivered and consumed in the same window is reported as
     ///    consumed by this call.
-    /// 4. The note, tag and cursor writes: the transport update first, since a nullified delivered
-    ///    note is written by the chain update as an update to the row the transport insert creates.
+    /// 3. The writes: the transport update first, since a nullified delivered note is written by
+    ///    the chain update as an update to the row the transport insert creates.
     ///
-    /// Fails fast on the first error, with the note records, tags, cursor and chain update all
-    /// still unwritten. Two writes happen before that point, both safe to redo: the relay outbox,
-    /// which [`Client::flush_relay_outbox`] persists during the fetch — a re-send that already
-    /// went out stays in the outbox and is retried on the next sync, which the receiver dedupes by
-    /// note id — and the block headers from step 2, which are authenticated and idempotent to
-    /// insert.
+    /// Fails fast on the first error, with nothing written but the relay outbox, which
+    /// [`Client::flush_relay_outbox`] persists during the fetch and the next sync retries.
     ///
-    /// Note that the chain sync's input set is read before the delivered notes are written, so a
-    /// note tag registered by this call's transport import is not part of this call's `sync_notes`
-    /// query. The transport path queries the node for exactly those notes itself, so only other
-    /// notes sharing that tag wait for the next sync.
+    /// The chain sync's note tags are read before the delivered notes are written, so a note first
+    /// tagged by this call's transport import is not covered by this call's `sync_notes` query. If
+    /// its commitment falls in the range this sync advances through, the record stays expected and
+    /// no later query revisits that range.
     pub async fn sync_state(&mut self) -> Result<SyncSummary, ClientError> {
         // Both fetch phases need genesis in place, and connecting here means the two concurrent
         // futures never race on the RPC client's lazy connect.

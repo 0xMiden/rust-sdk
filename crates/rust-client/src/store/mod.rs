@@ -1045,3 +1045,21 @@ pub enum AccountStorageFilter {
     /// (e.g. when applying a delta to a large account).
     SlotNames(Vec<StorageSlotName>),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{SettingDomain, SettingScope, StoreError};
+
+    /// The `settings` table rejects an empty domain, so the constructor has to reject it first.
+    #[test]
+    fn empty_domain_is_rejected() {
+        assert!(matches!(SettingDomain::new(""), Err(StoreError::EmptySettingDomain)));
+    }
+
+    /// Whatever a user builds is user-scoped, never the client's.
+    #[test]
+    fn built_domains_are_user_scoped() {
+        assert_eq!(SettingDomain::new("app").unwrap().scope(), SettingScope::User);
+        assert_eq!(SettingDomain::client("rpc").scope(), SettingScope::Client);
+    }
+}

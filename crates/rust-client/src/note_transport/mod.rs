@@ -12,9 +12,7 @@ use core::slice;
 
 use futures::Stream;
 use miden_protocol::address::Address;
-use miden_protocol::block::{BlockHeader, BlockNumber};
-use miden_protocol::crypto::merkle::MerklePath;
-use miden_protocol::crypto::merkle::mmr::PartialMmr;
+use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{Note, NoteDetails, NoteDetailsCommitment, NoteHeader, NoteId, NoteTag};
 use miden_protocol::utils::serde::Serializable;
 use miden_tx::auth::TransactionAuthenticator;
@@ -361,13 +359,9 @@ where
         let mut id_by_commitment = BTreeMap::new();
         let (mut import, new_cursor) =
             self.fetch_transport_page(cursor, &note_tags, &mut id_by_commitment).await?;
-        let blocks = self.fetch_note_block_proofs(slice::from_mut(&mut import)).await?;
+        self.get_and_store_note_blocks(slice::from_mut(&mut import)).await?;
 
-        let mut partial_mmr = self.get_current_partial_mmr().await?;
-        self.apply_blocks(blocks, &mut partial_mmr).await?;
         self.apply_expected_note_import(import).await?;
-        self.cache_partial_mmr(partial_mmr).await?;
-
         self.store.update_note_transport_cursor(new_cursor).await?;
 
         Ok(())
@@ -513,9 +507,9 @@ where
     /// outbox setting and is safe to redo, so it does not affect what a failure part way through
     /// leaves behind for the notes, tags and cursor.
     ///
-    /// The block proofs of the notes reported as committed are *not* fetched here: they are a
-    /// second network pass over this result (see [`Client::fetch_note_block_proofs`]), because the
-    /// blocks to prove are only known once every page has been fetched.
+    /// The block headers of the notes the node reports as committed are not resolved here: that is
+    /// a second pass over this result (see [`Client::get_and_store_note_blocks`]), because the
+    /// blocks involved are only known once every page has been fetched.
     ///
     /// Returns empty data when note transport is not configured.
     pub(crate) async fn fetch_note_transport_updates(
@@ -562,28 +556,22 @@ where
     /// the imported notes.
     ///
     /// The notes are written before the covered-tag set and the cursor, so a crash between them
-    /// re-fetches instead of skipping notes that were never written. `partial_mmr` is loaded and
-    /// cached by the caller, so one MMR can be shared with the chain sync's apply phase.
+    /// re-fetches instead of skipping notes that were never written.
     ///
-    /// The relay outbox is not written here: [`Client::flush_relay_outbox`] persists it itself,
-    /// during the fetch phase.
-    ///
-    /// [`Client::fetch_note_block_proofs`] must have run on `data` first, otherwise the records
-    /// waiting on a block header are still pending and the import panics.
+    /// Neither the relay outbox nor the block headers are written here: the outbox is persisted by
+    /// [`Client::flush_relay_outbox`] during the fetch, and the headers by
+    /// [`Client::get_and_store_note_blocks`], which must have run on `data` first.
+    /// Otherwise the records waiting on a block header are still pending and the import panics.
     pub(crate) async fn apply_note_transport_updates(
         &mut self,
         data: NoteTransportSyncData,
-        partial_mmr: &mut PartialMmr,
     ) -> Result<Vec<NoteId>, ClientError> {
         let NoteTransportSyncData {
             covered_tags,
             imports,
-            blocks,
             id_by_commitment,
             cursor,
         } = data;
-
-        self.apply_blocks(blocks, partial_mmr).await?;
 
         let mut imported_ids = Vec::new();
         for import in imports {
@@ -616,7 +604,7 @@ where
 /// Everything the note transport sync is about to write, with nothing written yet.
 ///
 /// Built by [`Client::fetch_note_transport_updates`], completed by
-/// [`Client::fetch_note_block_proofs`] and written by
+/// [`Client::get_and_store_note_blocks`] and written by
 /// [`Client::apply_note_transport_updates`].
 #[derive(Default)]
 pub(crate) struct NoteTransportSyncData {
@@ -624,9 +612,6 @@ pub(crate) struct NoteTransportSyncData {
     covered_tags: Option<BTreeSet<NoteTag>>,
     /// One entry per fetched page, in fetch order.
     pub(crate) imports: Vec<ExpectedNoteImport>,
-    /// Headers of the blocks that committed the fetched notes, with the MMR proof paths the node
-    /// returned. Filled by [`Client::fetch_note_block_proofs`].
-    pub(crate) blocks: BTreeMap<BlockNumber, (BlockHeader, MerklePath)>,
     /// Note ids by details commitment, taken from the note headers the transport returned. Used
     /// to resolve the written records back to ids.
     id_by_commitment: BTreeMap<NoteDetailsCommitment, NoteId>,

@@ -238,13 +238,9 @@ where
         self.ensure_genesis_in_place().await?;
 
         let mut data = self.fetch_note_transport_updates().await?;
-        data.blocks = self.fetch_note_block_proofs(&mut data.imports).await?;
+        self.get_and_store_note_blocks(&mut data.imports).await?;
 
-        let mut partial_mmr = self.get_current_partial_mmr().await?;
-        let imported_ids = self.apply_note_transport_updates(data, &mut partial_mmr).await?;
-        self.cache_partial_mmr(partial_mmr).await?;
-
-        Ok(imported_ids)
+        self.apply_note_transport_updates(data).await
     }
 
     /// Runs the full client sync: private notes from the Note Transport Layer and the client's
@@ -255,23 +251,25 @@ where
     /// the network round trips of one sync overlap with the other's while the writes stay ordered:
     ///
     /// 1. Concurrently: the note transport fetch phase and [`Client::fetch_chain_updates`].
-    /// 2. The block proofs of the blocks that committed the delivered notes, which are only known
-    ///    once every transport page has been fetched.
+    /// 2. The block headers of the delivered notes the node reports as committed, which are only
+    ///    known once every transport page has been fetched.
     /// 3. [`StateSync::fetch_nullifiers`], covering the tracked notes *and* the ones the transport
     ///    just delivered, so a note delivered and consumed in the same window is reported as
     ///    consumed by this call.
-    /// 4. The writes: the transport update first, since a nullified delivered note is written by
-    ///    the chain update as an update to the row the transport insert creates.
+    /// 4. The note, tag and cursor writes: the transport update first, since a nullified delivered
+    ///    note is written by the chain update as an update to the row the transport insert creates.
     ///
-    /// Fails fast on the first error: the concurrent fetch drops the other side, and neither has
-    /// written anything the sync depends on. The one exception is the relay outbox, which
-    /// [`Client::flush_relay_outbox`] persists during the fetch; a re-send that already went out
-    /// stays in the outbox and is retried on the next sync, which the receiver dedupes by note id.
+    /// Fails fast on the first error, with the note records, tags, cursor and chain update all
+    /// still unwritten. Two writes happen before that point, both safe to redo: the relay outbox,
+    /// which [`Client::flush_relay_outbox`] persists during the fetch — a re-send that already
+    /// went out stays in the outbox and is retried on the next sync, which the receiver dedupes by
+    /// note id — and the block headers from step 2, which are authenticated and idempotent to
+    /// insert.
     ///
-    /// Unlike the previous sequential behavior, the chain sync's input set is read before the
-    /// delivered notes are written, so a note tag registered by this call's transport import is
-    /// not part of this call's `sync_notes` query. The transport path queries the node for exactly
-    /// those notes itself, so only other notes sharing that tag wait for the next sync.
+    /// Note that the chain sync's input set is read before the delivered notes are written, so a
+    /// note tag registered by this call's transport import is not part of this call's `sync_notes`
+    /// query. The transport path queries the node for exactly those notes itself, so only other
+    /// notes sharing that tag wait for the next sync.
     pub async fn sync_state(&mut self) -> Result<SyncSummary, ClientError> {
         // Both fetch phases need genesis in place, and connecting here means the two concurrent
         // futures never race on the RPC client's lazy connect.
@@ -281,15 +279,15 @@ where
         let (mut transport_data, (state_sync, mut chain_data)) =
             futures::try_join!(self.fetch_note_transport_updates(), self.fetch_chain_updates())?;
 
-        transport_data.blocks = self.fetch_note_block_proofs(&mut transport_data.imports).await?;
+        self.get_and_store_note_blocks(&mut transport_data.imports).await?;
 
         let delivered_notes: Vec<InputNoteRecord> =
             transport_data.input_note_records().cloned().collect();
         state_sync.fetch_nullifiers(&mut chain_data, delivered_notes).await?;
 
+        let new_private_notes = self.apply_note_transport_updates(transport_data).await?;
+
         let mut partial_mmr = self.get_current_partial_mmr().await?;
-        let new_private_notes =
-            self.apply_note_transport_updates(transport_data, &mut partial_mmr).await?;
         let mut summary =
             self.apply_chain_updates(&state_sync, chain_data, &mut partial_mmr).await?;
 

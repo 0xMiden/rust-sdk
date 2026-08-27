@@ -12,8 +12,7 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::ToString;
 use alloc::vec::Vec;
 
-use miden_protocol::block::{BlockHeader, BlockNumber};
-use miden_protocol::crypto::merkle::MerklePath;
+use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{
     Note,
     NoteAttachments,
@@ -29,7 +28,7 @@ use miden_tx::auth::TransactionAuthenticator;
 use crate::rpc::domain::note::{FetchedNote, ResolvedNoteContent, SyncedNote};
 use crate::rpc::{NoteContentFetch, RpcError};
 use crate::store::input_note_states::ExpectedNoteState;
-use crate::store::{InputNoteRecord, InputNoteState, NoteFilter, StoreError};
+use crate::store::{InputNoteRecord, InputNoteState, NoteFilter};
 use crate::sync::NoteTagRecord;
 use crate::{Client, ClientError};
 
@@ -181,8 +180,8 @@ where
     /// Each request is a note's details, the block from which its commitment should be looked for,
     /// and the tag to track it under. Records for notes the node has not committed are final.
     /// Records for committed notes come back pending, since their state transition also needs the
-    /// header of the block that committed them — [`Client::fetch_note_block_proofs`] fetches those
-    /// and finishes the records.
+    /// header of the block that committed them — [`Client::get_and_store_note_blocks`]
+    /// resolves those and finishes the records.
     ///
     /// # Errors
     ///
@@ -273,55 +272,41 @@ where
         Ok(import)
     }
 
-    /// Fetches the header and MMR proof of every block that committed one of the notes in
-    /// `imports`, then finishes the records waiting on them.
+    /// Fetches and stores the header of every block that committed one of the notes in `imports`,
+    /// then finishes the records that were waiting on them.
     ///
-    /// Each block is fetched once even when it committed several notes, in one page or across
-    /// pages. A block the client's partial MMR already tracks has its header read from the store
-    /// and needs no insert, so it is absent from the returned map.
-    ///
-    /// Nothing is written and the MMR is not modified: tracking the returned headers and inserting
-    /// them is [`Client::apply_blocks`]'s job, so the proof paths are verified against the peaks
-    /// only once, next to the writes they authenticate.
-    pub(crate) async fn fetch_note_block_proofs(
-        &self,
+    /// Each block is resolved once even when it committed several notes, in one page or across
+    /// pages. A block the client's partial MMR already tracks is read from the store; the rest are
+    /// fetched from the node and stored with their authentication nodes.
+    pub(crate) async fn get_and_store_note_blocks(
+        &mut self,
         imports: &mut [ExpectedNoteImport],
-    ) -> Result<BTreeMap<BlockNumber, (BlockHeader, MerklePath)>, ClientError> {
+    ) -> Result<(), ClientError> {
         let requested_blocks: BTreeSet<BlockNumber> = imports
             .iter()
             .flat_map(|import| import.pending.iter().map(|note| note.block_num))
             .collect();
 
         if requested_blocks.is_empty() {
-            return Ok(BTreeMap::new());
+            return Ok(());
         }
 
-        let partial_mmr = self.get_current_partial_mmr().await?;
+        let mut partial_mmr = self.get_current_partial_mmr().await?;
 
         let mut headers = BTreeMap::new();
-        let mut blocks_to_insert = BTreeMap::new();
         for block_num in requested_blocks {
-            if partial_mmr.is_tracked(block_num.as_usize()) {
-                let (block_header, _) = self
-                    .store
-                    .get_block_header_by_num(block_num)
-                    .await?
-                    .ok_or(StoreError::BlockHeaderNotFound(block_num))?;
-                headers.insert(block_num, block_header);
-                continue;
-            }
-
-            let (block_header, mmr_proof) =
-                self.rpc_api.get_block_header_with_proof(block_num).await?;
-            headers.insert(block_num, block_header.clone());
-            blocks_to_insert.insert(block_num, (block_header, mmr_proof.merkle_path().clone()));
+            let block_header =
+                self.get_and_store_authenticated_block(block_num, &mut partial_mmr).await?;
+            headers.insert(block_num, block_header);
         }
+
+        self.cache_partial_mmr(partial_mmr).await?;
 
         for import in imports {
             for mut pending in core::mem::take(&mut import.pending) {
                 let block_header = headers
                     .get(&pending.block_num)
-                    .expect("every pending note's block was fetched above");
+                    .expect("every pending note's block was resolved above");
 
                 // `block_header_received` transitions the record's state, so it must always run.
                 let changed =
@@ -338,13 +323,14 @@ where
             }
         }
 
-        Ok(blocks_to_insert)
+        Ok(())
     }
 
     /// Writes an [`ExpectedNoteImport`], returning the details commitments of the written records.
     ///
-    /// Block headers are not written here: [`Client::apply_blocks`] must run first so a record is
-    /// never persisted as committed before the header proving its inclusion.
+    /// Block headers are not written here: [`Client::get_and_store_note_blocks`] must run
+    /// first, so a record is never persisted as committed before the header proving its
+    /// inclusion.
     ///
     /// # Panics
     ///
@@ -694,10 +680,10 @@ struct PendingBlockHeaderNote {
 
 /// Everything an expected-note import needs to write, with nothing written yet.
 ///
-/// The fetch-only counterpart of the [`NoteFile::ExpectedNote`] path in
-/// [`Client::import_notes`], split so every network call happens before the first write: built by
-/// [`Client::fetch_expected_note_imports`] and completed by
-/// [`Client::fetch_note_block_proofs`], which only read and fetch, then written by
+/// The counterpart of the [`NoteFile::ExpectedNote`] path in [`Client::import_notes`], split so
+/// the network work happens before the note records are written: built by
+/// [`Client::fetch_expected_note_imports`], completed by
+/// [`Client::get_and_store_note_blocks`], and written by
 /// [`Client::apply_expected_note_import`]. Used by the note transport sync, which needs its
 /// network phase to overlap with the chain sync's.
 #[derive(Default)]

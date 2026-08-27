@@ -497,40 +497,12 @@ impl StateSync {
             "Syncing state.",
         );
 
-        // Step 2: sync notes and fetch full note bodies for public notes (and attachment content
-        // for private notes that carry attachments), paginating with the same chain tip so MMR
-        // paths are opened at a consistent forest. With no tracked tags there's nothing the node
-        // could match, so skip the RPC entirely.
-        let note_blocks_fut = async {
-            if note_tags.is_empty() {
-                Ok(Vec::new())
-            } else {
-                self.rpc_api
-                    .sync_notes_with_content(
-                        current_block_num + 1,
-                        chain_tip,
-                        note_tags.as_ref(),
-                        NoteContentFetch::PublicDetailsAndAttachments,
-                    )
-                    .await
-            }
-        };
-
-        // Step 3: sync transactions for tracked accounts over the full range. With no tracked
-        // accounts there's nothing the node could match, so skip the RPC entirely.
-        let transactions_fut = async {
-            if account_ids.is_empty() {
-                Ok(Vec::new())
-            } else {
-                self.rpc_api
-                    .sync_transactions(current_block_num + 1, chain_tip, account_ids.to_vec())
-                    .await
-            }
-        };
-
-        // Fetch notes and transaction records concurrently
-        let (note_blocks, transaction_records) =
-            futures::try_join!(note_blocks_fut, transactions_fut)?;
+        // Steps 2 and 3: note inclusions and transaction records are independent given the chain
+        // tip, so both are driven concurrently and the first failure aborts the pass.
+        let (note_blocks, transaction_records) = futures::try_join!(
+            self.fetch_note_blocks(current_block_num + 1, chain_tip, note_tags),
+            self.fetch_transactions(current_block_num + 1, chain_tip, account_ids),
+        )?;
 
         // Validate every returned note block falls in (current_block_num, chain_tip].
         Self::validate_note_blocks_range(&note_blocks, current_block_num, chain_tip)?;
@@ -558,6 +530,46 @@ impl StateSync {
 
     // HELPERS
     // --------------------------------------------------------------------------------------------
+
+    /// Syncs the note inclusions matching `note_tags` over `[block_from, block_to]`, resolving the
+    /// body of every public note and the attachment content of every note that carries attachments.
+    async fn fetch_note_blocks(
+        &self,
+        block_from: BlockNumber,
+        block_to: BlockNumber,
+        note_tags: &BTreeSet<NoteTag>,
+    ) -> Result<Vec<ResolvedSyncNotesBlock>, ClientError> {
+        if note_tags.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        self.rpc_api
+            .sync_notes_with_content(
+                block_from,
+                block_to,
+                note_tags,
+                NoteContentFetch::PublicDetailsAndAttachments,
+            )
+            .await
+            .map_err(ClientError::RpcError)
+    }
+
+    /// Syncs the transaction records of `account_ids` over `[block_from, block_to]`.
+    async fn fetch_transactions(
+        &self,
+        block_from: BlockNumber,
+        block_to: BlockNumber,
+        account_ids: &[AccountId],
+    ) -> Result<Vec<RpcTransactionRecord>, ClientError> {
+        if account_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        self.rpc_api
+            .sync_transactions(block_from, block_to, account_ids.to_vec())
+            .await
+            .map_err(ClientError::RpcError)
+    }
 
     /// Validates that a `sync_chain_mmr` response covers the requested range.
     fn validate_chain_mmr_response(

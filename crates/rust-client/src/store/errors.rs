@@ -66,6 +66,8 @@ pub enum StoreError {
     DataDeserializationError(#[from] DeserializationError),
     #[error("database-related non-query error: {0}")]
     DatabaseError(String),
+    #[error("setting domain cannot be empty")]
+    EmptySettingDomain,
     #[error("failed to parse hex value")]
     HexParseError(#[from] HexParseError),
     #[error("integer conversion failed")]

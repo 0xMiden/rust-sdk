@@ -56,9 +56,13 @@ use miden_protocol::transaction::TransactionId;
 use miden_protocol::{Felt, Word};
 use miden_tx::utils::serde::{Deserializable, Serializable};
 
-use crate::note_transport::{NOTE_TRANSPORT_CURSOR_STORE_SETTING, NoteTransportCursor};
-use crate::rpc::encryption::{TRANSACTION_ENCRYPTION_KEY_STORE_SETTING, TransactionEncryptionKey};
-use crate::rpc::{RPC_LIMITS_STORE_SETTING, RpcLimits};
+use crate::note_transport::{
+    NOTE_TRANSPORT_CURSOR_SETTING,
+    NOTE_TRANSPORT_SETTING_DOMAIN,
+    NoteTransportCursor,
+};
+use crate::rpc::encryption::{TRANSACTION_ENCRYPTION_KEY_SETTING, TransactionEncryptionKey};
+use crate::rpc::{RPC_LIMITS_SETTING, RPC_SETTING_DOMAIN, RpcLimits};
 use crate::sync::{NoteTagRecord, StateSyncUpdate};
 use crate::transaction::{TransactionRecord, TransactionStatusVariant, TransactionStoreUpdate};
 
@@ -97,11 +101,79 @@ pub use note_record::{
     input_note_states,
 };
 
+// SETTING DOMAIN
+// ================================================================================================
+
+/// Which side of the client/user boundary a settings domain belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingScope {
+    /// Owned by the client itself. A store implementation persists these rows but the public
+    /// settings API can neither name nor reach them.
+    Client,
+    /// Owned by the user of the client.
+    User,
+}
+
+impl SettingScope {
+    /// Returns the value this scope is stored as.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Client => "client",
+            Self::User => "user",
+        }
+    }
+}
+
+/// A namespace for `settings` keys, so the same key name can be used by more than one owner.
+///
+/// Every domain built through [`SettingDomain::new`] is [`SettingScope::User`]. The client reserves
+/// a separate set of domains for its own state, which only this crate can build, so a user can
+/// neither read nor overwrite it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettingDomain {
+    scope: SettingScope,
+    name: String,
+}
+
+impl SettingDomain {
+    /// Builds a domain owned by the user of the client.
+    ///
+    /// # Errors
+    /// Returns [`StoreError::EmptySettingDomain`] if `name` is empty, which the `settings` table
+    /// rejects.
+    pub fn new(name: impl Into<String>) -> Result<Self, StoreError> {
+        let name = name.into();
+        if name.is_empty() {
+            return Err(StoreError::EmptySettingDomain);
+        }
+
+        Ok(Self { scope: SettingScope::User, name })
+    }
+
+    /// Builds a domain owned by the client.
+    pub(crate) fn client(name: &'static str) -> Self {
+        Self {
+            scope: SettingScope::Client,
+            name: name.into(),
+        }
+    }
+
+    /// Returns the scope this domain belongs to.
+    pub fn scope(&self) -> SettingScope {
+        self.scope
+    }
+
+    /// Returns the domain's name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+}
+
 // SETTING MUTATION
 // ================================================================================================
 
 /// A single mutation against the `settings` KV store, applied as part of an atomic batch via
-/// [`Store::apply_settings_mutations`].
+/// [`Store::apply_settings_mutations`], which supplies the domain the batch applies to.
 #[derive(Debug, Clone)]
 pub enum SettingMutation {
     /// Insert or overwrite `key` with `value`.
@@ -474,22 +546,39 @@ pub trait Store: Send + Sync {
     // SETTINGS
     // --------------------------------------------------------------------------------------------
 
-    /// Adds a value to the `settings` table.
-    async fn set_setting(&self, key: String, value: Vec<u8>) -> Result<(), StoreError>;
+    /// Adds a value to `domain` in the `settings` table.
+    async fn set_setting(
+        &self,
+        domain: &SettingDomain,
+        key: String,
+        value: Vec<u8>,
+    ) -> Result<(), StoreError>;
 
-    /// Retrieves a value from the `settings` table.
-    async fn get_setting(&self, key: String) -> Result<Option<Vec<u8>>, StoreError>;
+    /// Retrieves a value from `domain` in the `settings` table.
+    async fn get_setting(
+        &self,
+        domain: &SettingDomain,
+        key: String,
+    ) -> Result<Option<Vec<u8>>, StoreError>;
 
-    /// Deletes a value from the `settings` table. Returns `true` if the key was present.
-    async fn remove_setting(&self, key: String) -> Result<bool, StoreError>;
+    /// Deletes a value from `domain` in the `settings` table. Returns `true` if the key was
+    /// present.
+    async fn remove_setting(&self, domain: &SettingDomain, key: String)
+    -> Result<bool, StoreError>;
 
-    /// Returns all the keys from the `settings` table.
-    async fn list_setting_keys(&self) -> Result<Vec<String>, StoreError>;
+    /// Returns the keys held by `domain`.
+    async fn list_setting_keys(&self, domain: &SettingDomain) -> Result<Vec<String>, StoreError>;
 
-    /// Applies a batch of [`SettingMutation`]s. Use this when several `settings` entries must stay
-    /// mutually consistent (e.g. a record and its secondary index).
+    /// Returns the names of the user-owned domains that hold at least one key.
+    ///
+    /// Client-owned domains are never listed.
+    async fn list_user_setting_domains(&self) -> Result<Vec<String>, StoreError>;
+
+    /// Applies a batch of [`SettingMutation`]s against `domain`. Use this when several `settings`
+    /// entries must stay mutually consistent (e.g. a record and its secondary index).
     async fn apply_settings_mutations(
         &self,
+        domain: &SettingDomain,
         mutations: Vec<SettingMutation>,
     ) -> Result<(), StoreError>;
 
@@ -542,14 +631,15 @@ pub trait Store: Send + Sync {
     /// This is used to reduce the number of fetched notes from the note transport network.
     /// If no cursor exists, initializes it to 0.
     async fn get_note_transport_cursor(&self) -> Result<NoteTransportCursor, StoreError> {
+        let domain = SettingDomain::client(NOTE_TRANSPORT_SETTING_DOMAIN);
         let cursor_bytes = if let Some(bytes) =
-            self.get_setting(NOTE_TRANSPORT_CURSOR_STORE_SETTING.into()).await?
+            self.get_setting(&domain, NOTE_TRANSPORT_CURSOR_SETTING.into()).await?
         {
             bytes
         } else {
             // Lazy initialization: create cursor if not present
             let initial = 0u64.to_be_bytes().to_vec();
-            self.set_setting(NOTE_TRANSPORT_CURSOR_STORE_SETTING.into(), initial.clone())
+            self.set_setting(&domain, NOTE_TRANSPORT_CURSOR_SETTING.into(), initial.clone())
                 .await?;
             initial
         };
@@ -569,8 +659,9 @@ pub trait Store: Send + Sync {
         &self,
         cursor: NoteTransportCursor,
     ) -> Result<(), StoreError> {
+        let domain = SettingDomain::client(NOTE_TRANSPORT_SETTING_DOMAIN);
         let cursor_bytes = cursor.value().to_be_bytes().to_vec();
-        self.set_setting(NOTE_TRANSPORT_CURSOR_STORE_SETTING.into(), cursor_bytes)
+        self.set_setting(&domain, NOTE_TRANSPORT_CURSOR_SETTING.into(), cursor_bytes)
             .await?;
         Ok(())
     }
@@ -580,7 +671,8 @@ pub trait Store: Send + Sync {
 
     /// Gets persisted RPC limits. Returns `None` if not stored.
     async fn get_rpc_limits(&self) -> Result<Option<RpcLimits>, StoreError> {
-        let Some(bytes) = self.get_setting(RPC_LIMITS_STORE_SETTING.into()).await? else {
+        let domain = SettingDomain::client(RPC_SETTING_DOMAIN);
+        let Some(bytes) = self.get_setting(&domain, RPC_LIMITS_SETTING.into()).await? else {
             return Ok(None);
         };
         let limits = RpcLimits::read_from_bytes(&bytes)?;
@@ -589,7 +681,8 @@ pub trait Store: Send + Sync {
 
     /// Persists RPC limits to the store.
     async fn set_rpc_limits(&self, limits: RpcLimits) -> Result<(), StoreError> {
-        self.set_setting(RPC_LIMITS_STORE_SETTING.into(), limits.to_bytes()).await
+        let domain = SettingDomain::client(RPC_SETTING_DOMAIN);
+        self.set_setting(&domain, RPC_LIMITS_SETTING.into(), limits.to_bytes()).await
     }
 
     // TRANSACTION ENCRYPTION KEY
@@ -602,7 +695,9 @@ pub trait Store: Send + Sync {
     async fn get_transaction_encryption_key(
         &self,
     ) -> Result<Option<TransactionEncryptionKey>, StoreError> {
-        let Some(bytes) = self.get_setting(TRANSACTION_ENCRYPTION_KEY_STORE_SETTING.into()).await?
+        let domain = SettingDomain::client(RPC_SETTING_DOMAIN);
+        let Some(bytes) =
+            self.get_setting(&domain, TRANSACTION_ENCRYPTION_KEY_SETTING.into()).await?
         else {
             return Ok(None);
         };
@@ -615,14 +710,16 @@ pub trait Store: Send + Sync {
         &self,
         key: &TransactionEncryptionKey,
     ) -> Result<(), StoreError> {
-        self.set_setting(TRANSACTION_ENCRYPTION_KEY_STORE_SETTING.into(), key.to_bytes())
+        let domain = SettingDomain::client(RPC_SETTING_DOMAIN);
+        self.set_setting(&domain, TRANSACTION_ENCRYPTION_KEY_SETTING.into(), key.to_bytes())
             .await
     }
 
     /// Removes the cached transaction encryption key, so the next submission fetches and verifies
     /// a fresh one. Used when the node rejects a submission sealed against a retired key.
     async fn remove_transaction_encryption_key(&self) -> Result<(), StoreError> {
-        self.remove_setting(TRANSACTION_ENCRYPTION_KEY_STORE_SETTING.into()).await?;
+        let domain = SettingDomain::client(RPC_SETTING_DOMAIN);
+        self.remove_setting(&domain, TRANSACTION_ENCRYPTION_KEY_SETTING.into()).await?;
         Ok(())
     }
 

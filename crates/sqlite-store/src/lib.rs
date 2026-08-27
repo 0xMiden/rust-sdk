@@ -40,6 +40,7 @@ use miden_client::store::{
     NoteFilter,
     OutputNoteRecord,
     PartialBlockchainFilter,
+    SettingDomain,
     SettingMutation,
     Store,
     StoreError,
@@ -439,41 +440,65 @@ impl Store for SqliteStore {
         .await
     }
 
-    async fn set_setting(&self, key: String, value: Vec<u8>) -> Result<(), StoreError> {
+    async fn set_setting(
+        &self,
+        domain: &SettingDomain,
+        key: String,
+        value: Vec<u8>,
+    ) -> Result<(), StoreError> {
+        let domain = domain.clone();
         self.interact_with_connection(move |conn| {
-            SqliteStore::set_setting(conn, &key, &value).into_store_error()
+            SqliteStore::set_setting(conn, &domain, &key, &value).into_store_error()
         })
         .await
     }
 
-    async fn get_setting(&self, key: String) -> Result<Option<Vec<u8>>, StoreError> {
-        self.interact_with_connection(move |conn| SqliteStore::get_setting(conn, &key))
+    async fn get_setting(
+        &self,
+        domain: &SettingDomain,
+        key: String,
+    ) -> Result<Option<Vec<u8>>, StoreError> {
+        let domain = domain.clone();
+        self.interact_with_connection(move |conn| SqliteStore::get_setting(conn, &domain, &key))
             .await
     }
 
-    async fn remove_setting(&self, key: String) -> Result<bool, StoreError> {
-        self.interact_with_connection(move |conn| SqliteStore::remove_setting(conn, &key))
+    async fn remove_setting(
+        &self,
+        domain: &SettingDomain,
+        key: String,
+    ) -> Result<bool, StoreError> {
+        let domain = domain.clone();
+        self.interact_with_connection(move |conn| SqliteStore::remove_setting(conn, &domain, &key))
             .await
     }
 
-    async fn list_setting_keys(&self) -> Result<Vec<String>, StoreError> {
-        self.interact_with_connection(move |conn| SqliteStore::list_setting_keys(conn))
+    async fn list_setting_keys(&self, domain: &SettingDomain) -> Result<Vec<String>, StoreError> {
+        let domain = domain.clone();
+        self.interact_with_connection(move |conn| SqliteStore::list_setting_keys(conn, &domain))
+            .await
+    }
+
+    async fn list_user_setting_domains(&self) -> Result<Vec<String>, StoreError> {
+        self.interact_with_connection(move |conn| SqliteStore::list_user_setting_domains(conn))
             .await
     }
 
     async fn apply_settings_mutations(
         &self,
+        domain: &SettingDomain,
         mutations: Vec<SettingMutation>,
     ) -> Result<(), StoreError> {
+        let domain = domain.clone();
         self.interact_with_connection(move |conn| {
             let tx = conn.transaction().into_store_error()?;
             for mutation in &mutations {
                 match mutation {
                     SettingMutation::Set { key, value } => {
-                        SqliteStore::set_setting(&tx, key, value).into_store_error()?;
+                        SqliteStore::set_setting(&tx, &domain, key, value).into_store_error()?;
                     },
                     SettingMutation::Remove { key } => {
-                        SqliteStore::remove_setting(&tx, key)?;
+                        SqliteStore::remove_setting(&tx, &domain, key)?;
                     },
                 }
             }

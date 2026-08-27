@@ -1,9 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::sync::LazyLock;
 
 use miden_client::account::{AccountId, FaucetMetadata};
 use miden_client::address::{Address, AddressId};
 use miden_client::asset::{Asset, FungibleAsset};
+use miden_client::store::SettingDomain;
 use miden_client::transaction::{ExecutedTransaction, InputNote};
 use miden_client::utils::{base_units_to_tokens, tokens_to_base_units};
 use miden_client::vm::MIN_STACK_DEPTH;
@@ -33,7 +35,7 @@ pub(crate) async fn get_input_acc_id_by_prefix_or_default<AUTH>(
         account_id_prefix
     } else {
         client
-            .get_setting(DEFAULT_ACCOUNT_ID_KEY.to_string())
+            .get_setting(&CLI_SETTING_DOMAIN, DEFAULT_ACCOUNT_ID_KEY.to_string())
             .await?
             .map(AccountId::to_hex)
             .ok_or(CliError::Input("No input account ID nor default account defined".to_string()))?
@@ -352,8 +354,9 @@ impl FaucetMetadataResolver {
             return Ok(Some(FaucetMetadata { symbol, decimals }));
         }
         // 2) settings store
-        let setting_key = faucet_metadata_setting_key(faucet_id);
-        Ok(client.get_setting::<FaucetMetadata>(setting_key).await?)
+        Ok(client
+            .get_setting::<FaucetMetadata>(&FAUCET_METADATA_SETTING_DOMAIN, faucet_id.to_hex())
+            .await?)
     }
 
     /// Looks up `(symbol, decimals)` for a faucet, walking TOML → settings store → RPC fetch.
@@ -368,10 +371,12 @@ impl FaucetMetadataResolver {
             return Ok(Some(meta));
         }
         // 3) RPC fetch
-        let setting_key = faucet_metadata_setting_key(faucet_id);
         match client.fetch_remote_token_metadata(faucet_id).await {
             Ok(Some(meta)) => {
-                if let Err(err) = client.set_setting(setting_key, meta.clone()).await {
+                if let Err(err) = client
+                    .set_setting(&FAUCET_METADATA_SETTING_DOMAIN, faucet_id.to_hex(), meta.clone())
+                    .await
+                {
                     tracing::warn!(
                         "failed to persist faucet metadata for {}: {err}",
                         faucet_id.to_hex(),
@@ -458,13 +463,14 @@ impl FaucetMetadataResolver {
     }
 }
 
-/// Settings key prefix under which faucet display metadata is persisted.
-const FAUCET_METADATA_SETTING_PREFIX: &str = "faucet_metadata:";
+/// Settings domain the CLI persists its own state in.
+pub(crate) static CLI_SETTING_DOMAIN: LazyLock<SettingDomain> =
+    LazyLock::new(|| SettingDomain::new("cli").expect("the CLI settings domain is not empty"));
 
-/// Returns the settings-store key under which the metadata for `faucet_id` is persisted.
-fn faucet_metadata_setting_key(faucet_id: AccountId) -> String {
-    format!("{FAUCET_METADATA_SETTING_PREFIX}{}", faucet_id.to_hex())
-}
+/// Settings domain holding cached faucet display metadata, keyed by the faucet's hex ID.
+pub(crate) static FAUCET_METADATA_SETTING_DOMAIN: LazyLock<SettingDomain> = LazyLock::new(|| {
+    SettingDomain::new("faucet_metadata").expect("the faucet metadata domain is not empty")
+});
 
 /// Parses a bech32 address from the token symbol map.
 fn parse_address(address_str: &str) -> Result<AccountId, String> {

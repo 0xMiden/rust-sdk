@@ -10,6 +10,7 @@ use miden_client::store::NoteFilter;
 use super::config::CliConfig;
 use crate::commands::account::DEFAULT_ACCOUNT_ID_KEY;
 use crate::errors::CliError;
+use crate::utils::CLI_SETTING_DOMAIN;
 
 pub async fn print_client_info<AUTH: Keystore + Sync + 'static>(
     client: &Client<AUTH>,
@@ -51,7 +52,7 @@ async fn print_client_stats<AUTH: Keystore + Sync + 'static>(
     println!(
         "Default account: {}",
         client
-            .get_setting(DEFAULT_ACCOUNT_ID_KEY.to_string())
+            .get_setting(&CLI_SETTING_DOMAIN, DEFAULT_ACCOUNT_ID_KEY.to_string())
             .await?
             .map_or("-".to_string(), AccountId::to_hex)
     );

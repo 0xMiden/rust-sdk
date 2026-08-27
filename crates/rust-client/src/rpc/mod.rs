@@ -90,7 +90,11 @@ mod errors;
 pub use errors::*;
 
 mod endpoint;
-pub(crate) use domain::limits::RPC_LIMITS_STORE_SETTING;
+pub(crate) use domain::limits::RPC_LIMITS_SETTING;
+
+/// Settings domain holding the RPC layer's persisted state.
+pub(crate) const RPC_SETTING_DOMAIN: &str = "rpc";
+
 pub use domain::limits::RpcLimits;
 pub use domain::status::{NetworkNoteStatus, NetworkNoteStatusInfo, RpcStatusInfo};
 pub use endpoint::Endpoint;

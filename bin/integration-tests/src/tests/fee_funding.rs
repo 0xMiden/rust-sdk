@@ -16,10 +16,10 @@ use miden_client::account::{AccountFile, AccountId};
 use miden_client::asset::FungibleAsset;
 use miden_client::block::BlockNumber;
 use miden_client::keystore::Keystore;
-use miden_client::note::{Note, NoteType};
+use miden_client::note::{Note, NoteType, P2idNote};
 use miden_client::testing::common::{TestClient, wait_for_node};
 use miden_client::testing::fee::FeeFunder;
-use miden_client::transaction::{PaymentNoteDescription, TransactionRequestBuilder};
+use miden_client::transaction::TransactionRequestBuilder;
 use rand::RngExt;
 use rustix::fs::{FlockOperation, flock};
 use rustix::io::Errno;
@@ -176,13 +176,18 @@ impl Funder {
         Ok(client)
     }
 
-    /// Pays `target` from `wallet_id` and returns the note carrying the funds.
+    /// Pays every account in `targets` from `wallet_id` in a single transaction, returning each
+    /// target paired with the note carrying its funds.
+    ///
+    /// One transaction rather than one per target: the funder pays a fee and waits for a proof
+    /// per transaction, so a test setting up several accounts pays that once instead of once per
+    /// account.
     async fn pay(
         &self,
         client: &mut TestClient,
         wallet_id: AccountId,
-        target: AccountId,
-    ) -> Result<Note> {
+        targets: &[AccountId],
+    ) -> Result<Vec<(AccountId, Note)>> {
         client
             .import_account_by_id(wallet_id)
             .await
@@ -199,44 +204,67 @@ impl Funder {
         let asset = FungibleAsset::new(fee_faucet_id, FUNDING_AMOUNT)
             .context("failed to build the native fee asset")?;
 
+        // Built here rather than through `build_pay_to_id`, which describes a single payment. Each
+        // note stays paired with the target it was built for, so the caller never has to match
+        // notes back to accounts by position.
+        let funded = targets
+            .iter()
+            .map(|target| {
+                let note: Note = P2idNote::builder()
+                    .sender(wallet_id)
+                    .target(*target)
+                    .asset(asset)
+                    .note_type(NoteType::Private)
+                    .generate_serial_number(client.rng())
+                    .build()
+                    .context("failed to build a funding note")?
+                    .into();
+
+                Ok((*target, note))
+            })
+            .collect::<Result<Vec<(AccountId, Note)>>>()?;
+
         let request = TransactionRequestBuilder::new()
-            .build_pay_to_id(
-                PaymentNoteDescription::new(vec![asset.into()], wallet_id, target),
-                NoteType::Private,
-                client.rng(),
-            )
+            .own_output_notes(funded.iter().map(|(_, note)| note.clone()))
+            .build()
             .context("failed to build the funding transaction request")?;
-        let note = request
-            .expected_output_own_notes()
-            .pop()
-            .expect("a pay-to-id request creates exactly one output note");
 
         Box::pin(client.submit_new_transaction(wallet_id, request))
             .await
-            .with_context(|| format!("funder {wallet_id} failed to pay account {target}"))?;
+            .with_context(|| {
+                format!("funder {wallet_id} failed to pay {} accounts", targets.len())
+            })?;
 
-        Ok(note)
+        Ok(funded)
     }
 }
 
 #[async_trait::async_trait(?Send)]
 impl FeeFunder for Funder {
-    async fn fund_and_deploy(&self, client: &mut TestClient, account_id: AccountId) -> Result<()> {
+    async fn fund_and_deploy(
+        &self,
+        client: &mut TestClient,
+        account_ids: &[AccountId],
+    ) -> Result<()> {
+        if account_ids.is_empty() {
+            return Ok(());
+        }
+
         let lock = self.claim()?;
 
-        let note = {
+        let funded = {
             let mut guard = self.client.lock().await;
             if guard.is_none() {
                 *guard = Some(self.build_client().await?);
             }
             let funder_client = guard.as_mut().expect("the funder client was just built");
 
-            // Released before the deploy, which runs on the account's own client, the only one
-            // holding its key.
-            self.pay(funder_client, lock.account_id(), account_id).await?
+            // Released before the deploys, which run on the accounts' own client, the only one
+            // holding their keys.
+            self.pay(funder_client, lock.account_id(), account_ids).await?
         };
 
-        let deployed = client.deploy_by_consuming(account_id, note).await;
+        let deployed = client.deploy_by_consuming(&funded).await;
 
         // The payment has landed, so another process may now read this wallet's nonce.
         drop(lock);

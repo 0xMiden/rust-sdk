@@ -222,6 +222,12 @@ The `insert_new_*` helpers pay each account they create and deploy it by consumi
 settles the deploy's own fee. `miden_client::testing::fee::deploy_account` does the same for an
 account a test builds itself.
 
+A funding transaction costs a fee and a proof, so accounts are funded in batches wherever a test
+creates more than one: the `setup_*` helpers create their accounts with the `insert_new_*_unfunded`
+variants and then pass the whole set to `TestClient::fund_and_deploy_if_needed`, which pays them
+from one transaction and waits for their deploys together. A test creating several accounts of its
+own should do the same rather than calling the funding `insert_new_*` helpers in a row.
+
 Funders must be **public** and carry their secret key: a public funder's state is re-read from the
 chain before every payment, which is what makes sharing one between test processes safe.
 

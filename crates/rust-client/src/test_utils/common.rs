@@ -135,6 +135,39 @@ pub async fn insert_new_wallet_with_seed(
     init_seed: [u8; 32],
     auth_scheme: AuthSchemeId,
 ) -> Result<(Account, AuthSecretKey)> {
+    let (account, key_pair) =
+        insert_new_wallet_with_seed_unfunded(client, visibility, keystore, init_seed, auth_scheme)
+            .await?;
+    client.fund_and_deploy_if_needed(&[account.id()]).await?;
+
+    Ok((account, key_pair))
+}
+
+/// Inserts a new wallet account without funding or deploying it.
+///
+/// Callers creating several accounts at once should use this and fund them together with a single
+/// [`TestClient::fund_and_deploy_if_needed`], which costs one funding transaction instead of one
+/// per account.
+pub async fn insert_new_wallet_unfunded(
+    client: &mut TestClient,
+    visibility: AccountType,
+    keystore: &FilesystemKeyStore,
+    auth_scheme: AuthSchemeId,
+) -> Result<(Account, AuthSecretKey)> {
+    let mut init_seed = [0u8; 32];
+    client.rng().fill_bytes(&mut init_seed);
+
+    insert_new_wallet_with_seed_unfunded(client, visibility, keystore, init_seed, auth_scheme).await
+}
+
+/// Inserts a new wallet account built with the provided seed, without funding or deploying it.
+pub async fn insert_new_wallet_with_seed_unfunded(
+    client: &mut TestClient,
+    visibility: AccountType,
+    keystore: &FilesystemKeyStore,
+    init_seed: [u8; 32],
+    auth_scheme: AuthSchemeId,
+) -> Result<(Account, AuthSecretKey)> {
     let key_pair = match auth_scheme {
         AuthSchemeId::Falcon512Poseidon2 => AuthSecretKey::new_falcon512_poseidon2(),
         AuthSchemeId::EcdsaK256Keccak => AuthSecretKey::new_ecdsa_k256_keccak(),
@@ -156,8 +189,6 @@ pub async fn insert_new_wallet_with_seed(
 
     info!(account_id = %account.id(), ?visibility, "Inserted new wallet");
 
-    client.fund_and_deploy_if_needed(account.id()).await?;
-
     Ok((account, key_pair))
 }
 
@@ -166,6 +197,22 @@ pub async fn insert_new_wallet_with_seed(
 /// A [`BasicWallet`] rides along for its `receive_asset` procedure, which `FungibleFaucet` does not
 /// export, so a P2ID note can fund the faucet's own minting fees. Minting is unaffected.
 pub async fn insert_new_fungible_faucet(
+    client: &mut TestClient,
+    visibility: AccountType,
+    keystore: &FilesystemKeyStore,
+    auth_scheme: AuthSchemeId,
+) -> Result<(Account, AuthSecretKey)> {
+    let (account, key_pair) =
+        insert_new_fungible_faucet_unfunded(client, visibility, keystore, auth_scheme).await?;
+    client.fund_and_deploy_if_needed(&[account.id()]).await?;
+
+    Ok((account, key_pair))
+}
+
+/// Inserts a new fungible faucet account without funding or deploying it.
+///
+/// See [`insert_new_wallet_unfunded`] for when to prefer this.
+pub async fn insert_new_fungible_faucet_unfunded(
     client: &mut TestClient,
     visibility: AccountType,
     keystore: &FilesystemKeyStore,
@@ -217,8 +264,6 @@ pub async fn insert_new_fungible_faucet(
     client.add_account(&account, false).await?;
 
     info!(account_id = %account.id(), ?visibility, "Inserted new fungible faucet");
-
-    client.fund_and_deploy_if_needed(account.id()).await?;
 
     Ok((account, key_pair))
 }
@@ -465,20 +510,31 @@ pub async fn setup_two_wallets_and_faucet(
 
     // Create faucet account
     let (faucet_account, _) =
-        insert_new_fungible_faucet(client, account_visibility, keystore, auth_scheme)
+        insert_new_fungible_faucet_unfunded(client, account_visibility, keystore, auth_scheme)
             .await
             .with_context(|| "failed to insert new fungible faucet account")?;
 
     // Create regular accounts
     let (first_basic_account, ..) =
-        insert_new_wallet(client, account_visibility, keystore, auth_scheme)
+        insert_new_wallet_unfunded(client, account_visibility, keystore, auth_scheme)
             .await
             .with_context(|| "failed to insert first basic wallet account")?;
 
     let (second_basic_account, ..) =
-        insert_new_wallet(client, account_visibility, keystore, auth_scheme)
+        insert_new_wallet_unfunded(client, account_visibility, keystore, auth_scheme)
             .await
             .with_context(|| "failed to insert second basic wallet account")?;
+
+    // All three at once: one funding transaction covers the set, and their deploys share a single
+    // round of waiting.
+    client
+        .fund_and_deploy_if_needed(&[
+            faucet_account.id(),
+            first_basic_account.id(),
+            second_basic_account.id(),
+        ])
+        .await
+        .with_context(|| "failed to fund and deploy the created accounts")?;
 
     info!(
         faucet_id = %faucet_account.id(),
@@ -499,13 +555,21 @@ pub async fn setup_wallet_and_faucet(
     auth_scheme: AuthSchemeId,
 ) -> Result<(Account, Account)> {
     let (faucet_account, _) =
-        insert_new_fungible_faucet(client, account_visibility, keystore, auth_scheme)
+        insert_new_fungible_faucet_unfunded(client, account_visibility, keystore, auth_scheme)
             .await
             .with_context(|| "failed to insert new fungible faucet account")?;
 
-    let (basic_account, ..) = insert_new_wallet(client, account_visibility, keystore, auth_scheme)
+    let (basic_account, ..) =
+        insert_new_wallet_unfunded(client, account_visibility, keystore, auth_scheme)
+            .await
+            .with_context(|| "failed to insert new wallet account")?;
+
+    // Both at once: one funding transaction covers the pair, and their deploys share a single
+    // round of waiting.
+    client
+        .fund_and_deploy_if_needed(&[faucet_account.id(), basic_account.id()])
         .await
-        .with_context(|| "failed to insert new wallet account")?;
+        .with_context(|| "failed to fund and deploy the created accounts")?;
 
     Ok((basic_account, faucet_account))
 }
@@ -706,7 +770,7 @@ pub async fn insert_account_with_custom_component(
     keystore.add_key(&key_pair, account.id()).await.unwrap();
     client.add_account(&account, false).await?;
 
-    client.fund_and_deploy_if_needed(account.id()).await?;
+    client.fund_and_deploy_if_needed(&[account.id()]).await?;
 
     Ok((account, key_pair))
 }

@@ -5,10 +5,12 @@ retries        = { backoff = "exponential", count = 2, delay = "1s", jitter = tr
 slow-timeout   = { period = "3m", terminate-after = 2 }
 status-level   = "skip"
 
-# The integration tests all share a node instance, so cap concurrency to reduce
-# pressure on the node until the node-side contention issue is resolved.
+# The integration tests all share a node instance, so concurrency is capped to bound the
+# pressure on it. Every test also proves its transactions locally, so this doubles as the cap on
+# concurrent provers; raising it past the runner's core count trades node contention for CPU
+# contention and slows the suite down instead.
 [test-groups.integration]
-max-threads = 2
+max-threads = 4
 
 [[profile.default.overrides]]
 filter           = "package(miden-client-unit-tests)"

@@ -239,7 +239,7 @@ where
 
         let note_transport_data = self.fetch_note_transport_sync_data().await?;
 
-        self.apply_note_transport_updates(note_transport_data).await
+        self.apply_note_transport_sync_data(note_transport_data).await
     }
 
     /// Runs the full client sync: private notes from the Note Transport Layer and the client's
@@ -281,7 +281,7 @@ where
         // These must be in the store before the chain data is screened: the screener
         // recognises a note by looking it up there, and a private note it cannot find is discarded
         // for good, since the chain's note query never revisits a block range.
-        let new_private_notes = self.apply_note_transport_updates(note_transport_data).await?;
+        let new_private_notes = self.apply_note_transport_sync_data(note_transport_data).await?;
 
         state_sync
             .process_fetched_state(&mut chain_sync_data, transport_delivered_notes)

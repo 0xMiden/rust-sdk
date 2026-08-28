@@ -362,7 +362,7 @@ where
         self.fetch_note_blocks(&mut note_updates).await?;
         self.fetch_note_nullifiers(&mut note_updates).await?;
 
-        self.apply_expected_note_updates(note_updates).await?;
+        self.apply_note_transport_updates(note_updates).await?;
         self.store.update_note_transport_cursor(new_cursor).await?;
 
         Ok(())
@@ -501,8 +501,8 @@ where
     ///
     /// Runs the relay-outbox flush, the per-tag history backfill and the steady-state page, and
     /// returns the latter two as a [`NoteTransportSyncData`] for
-    /// [`Client::apply_note_transport_updates`]. Takes `&self` so it can run concurrently with the
-    /// chain sync's fetch phase.
+    /// [`Client::apply_note_transport_sync_data`]. Takes `&self` so it can run concurrently with
+    /// the chain sync's fetch phase.
     ///
     /// The one write it performs is the relay outbox, which [`Client::flush_relay_outbox`]
     /// persists itself and which is safe to redo.
@@ -572,7 +572,7 @@ where
     ///
     /// The block headers go in ahead of the notes that need them. The relay outbox does not:
     /// [`Client::flush_relay_outbox`] persists it during the fetch.
-    pub(crate) async fn apply_note_transport_updates(
+    pub(crate) async fn apply_note_transport_sync_data(
         &mut self,
         note_transport_data: NoteTransportSyncData,
     ) -> Result<Vec<NoteId>, ClientError> {
@@ -583,7 +583,7 @@ where
             cursor,
         } = note_transport_data;
 
-        let written = self.apply_expected_note_updates(note_updates).await?;
+        let written = self.apply_note_transport_updates(note_updates).await?;
         let mut imported_ids: Vec<NoteId> = written
             .into_iter()
             .filter_map(|commitment| id_by_commitment.get(&commitment).copied())
@@ -611,7 +611,7 @@ where
 ///
 /// Built by [`Client::fetch_note_transport_sync_data`], which also completes it with
 /// [`Client::fetch_note_blocks`] and [`Client::fetch_note_nullifiers`], and written by
-/// [`Client::apply_note_transport_updates`].
+/// [`Client::apply_note_transport_sync_data`].
 #[derive(Default)]
 pub(crate) struct NoteTransportSyncData {
     /// Covered-tag set to persist, `None` when it did not change.

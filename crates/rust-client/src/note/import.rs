@@ -413,7 +413,7 @@ where
     ///
     /// Panics if any committed note is still awaiting its block, i.e. if
     /// [`Client::fetch_note_blocks`] has not run.
-    pub(crate) async fn apply_expected_note_updates(
+    pub(crate) async fn apply_note_transport_updates(
         &mut self,
         note_updates: TransportNoteUpdates,
     ) -> Result<Vec<NoteDetailsCommitment>, ClientError> {
@@ -772,7 +772,7 @@ struct CommittedNoteAwaitingBlock {
 /// The counterpart of the [`NoteFile::ExpectedNote`] path in [`Client::import_notes`], split so
 /// the network work happens before the writes: built by
 /// [`Client::fetch_transport_notes_onchain_state`], completed by [`Client::fetch_note_blocks`] and
-/// [`Client::fetch_note_nullifiers`], written by [`Client::apply_expected_note_updates`].
+/// [`Client::fetch_note_nullifiers`], written by [`Client::apply_note_transport_updates`].
 #[derive(Default)]
 pub(crate) struct TransportNoteUpdates {
     /// Records ready to write: the notes the node has not committed, plus the committed ones

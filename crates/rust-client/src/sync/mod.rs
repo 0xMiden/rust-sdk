@@ -140,8 +140,9 @@ where
         self.ensure_rpc_limits_in_place().await?;
 
         let (state_sync, mut data) = self.fetch_chain_updates().await?;
-        // No other sync path ran, so there are no externally delivered notes to cover.
-        state_sync.fetch_nullifiers(&mut data, Vec::new()).await?;
+        // No other sync path ran, so there are no externally delivered notes to take on.
+        state_sync.process_fetched_state(&mut data, Vec::new()).await?;
+        state_sync.fetch_nullifiers(&mut data).await?;
 
         self.apply_chain_updates(&state_sync, data).await
     }
@@ -247,20 +248,23 @@ where
     /// The two are fetched concurrently, since the transport pages and the node's sync data are
     /// independent, and everything that writes runs sequentially afterwards:
     ///
-    /// 1. Concurrently: the note transport fetch and [`Client::fetch_chain_updates`].
-    /// 2. [`StateSync::fetch_nullifiers`], covering the tracked notes *and* the ones the transport
-    ///    just delivered, so a note delivered and consumed in the same window is reported as
-    ///    consumed by this call.
-    /// 3. The writes: the transport update first, since a nullified delivered note is written by
-    ///    the chain update as an update to the row the transport insert creates.
+    /// 1. Concurrently: the note transport fetch and [`Client::fetch_chain_updates`]. Only node and
+    ///    NTL calls happen here, which is all that benefits from overlapping.
+    /// 2. The transport writes.
+    /// 3. [`StateSync::process_fetched_state`], which screens the node's notes against the store —
+    ///    hence after step 2, so a delivered note is recognised rather than discarded — and takes
+    ///    on the delivered records so a commitment reported this sync is applied to them.
+    /// 4. [`StateSync::fetch_nullifiers`], covering the tracked notes *and* the delivered ones, so
+    ///    a note delivered and consumed in the same window is reported as consumed by this call.
+    /// 5. The chain update, written last: a nullified delivered note is persisted as an update to
+    ///    the row step 2 inserts.
     ///
-    /// Fails fast on the first error, with nothing written but the relay outbox, which
+    /// Fails fast on the first error. Before step 2 nothing is written but the relay outbox, which
     /// [`Client::flush_relay_outbox`] persists during the fetch and the next sync retries.
     ///
-    /// The chain sync's note tags are read before the delivered notes are written, so a note first
-    /// tagged by this call's transport import is not covered by this call's `sync_notes` query. If
-    /// its commitment falls in the range this sync advances through, the record stays expected and
-    /// no later query revisits that range.
+    /// One gap remains: the chain sync's note tags are read in step 1, so a tag *first* registered
+    /// by this call's transport import is not part of this call's `sync_notes` query. Notes under
+    /// such a tag are picked up by the next sync.
     pub async fn sync_state(&mut self) -> Result<SyncSummary, ClientError> {
         // Both fetch phases need genesis in place, and connecting here means the two concurrent
         // futures never race on the RPC client's lazy connect.
@@ -272,9 +276,15 @@ where
 
         let delivered_notes: Vec<InputNoteRecord> =
             transport_data.input_note_records().cloned().collect();
-        state_sync.fetch_nullifiers(&mut chain_data, delivered_notes).await?;
 
+        // The delivered notes must be in the store before the chain data is screened: the screener
+        // recognises a note by looking it up there, and a private note it cannot find is discarded
+        // for good, since the chain's note query never revisits a block range.
         let new_private_notes = self.apply_note_transport_updates(transport_data).await?;
+
+        state_sync.process_fetched_state(&mut chain_data, delivered_notes).await?;
+        state_sync.fetch_nullifiers(&mut chain_data).await?;
+
         let mut summary = self.apply_chain_updates(&state_sync, chain_data).await?;
 
         summary.new_private_notes = new_private_notes;

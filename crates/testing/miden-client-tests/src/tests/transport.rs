@@ -587,6 +587,114 @@ async fn fetch_private_notes_finds_note_committed_at_sync_height() {
     );
 }
 
+/// A private note delivered over the NTL must be committed by the same `sync_state` call that
+/// advances past its commitment block.
+///
+/// The commitment is learned from two independent sources that only combine through the store:
+/// the NTL supplies the note's details, which the transport half writes as an `Expected` record,
+/// and the node reports the commitment for the note's tag, which the chain half screens with
+/// `NoteScreener::on_note_received`. That screening is a store lookup — a private note carries no
+/// details from the node, so a record it cannot find is discarded — which makes the order
+/// load-bearing: the transport half must write before the chain half screens.
+///
+/// This is the case the lookback in `fetch_private_notes_finds_note_committed_at_sync_height`
+/// does not cover. Here the note commits *above* the client's sync height, so the transport half's
+/// own commitment check (capped at the stored sync height) cannot see it and the chain half is the
+/// only thing that can. The chain sync's note query is a forward-moving window, so a commitment
+/// discarded here is never revisited: the record would stay `Expected` forever.
+#[tokio::test]
+async fn ntl_note_committed_within_the_sync_window_is_committed_by_that_sync() {
+    // 1. Commit a private note at block 1, then advance the chain past it.
+    let mut mock_chain_builder = MockChainBuilder::new();
+    let mock_account = mock_chain_builder
+        .add_existing_mock_account(miden_testing::Auth::IncrNonce)
+        .unwrap();
+
+    let private_note = NoteBuilder::new(
+        mock_account.id(),
+        RandomCoin::new([9, 8, 7, 6].map(Felt::new_unchecked).into()),
+    )
+    .note_type(ProtocolNoteType::Private)
+    .tag(NoteTag::new(0).into())
+    .build()
+    .unwrap();
+
+    let spawn_note =
+        mock_chain_builder.add_spawn_note(std::slice::from_ref(&private_note)).unwrap();
+    let mut mock_chain = mock_chain_builder.build().unwrap();
+
+    let tx = Box::pin(
+        mock_chain
+            .build_transaction(MockTransactionInput::AccountId(mock_account.id()))
+            .unauthenticated_input_note(spawn_note)
+            .expected_output_notes(vec![RawOutputNote::Full(private_note.clone())])
+            .build()
+            .unwrap()
+            .execute(),
+    )
+    .await
+    .unwrap();
+    mock_chain.add_pending_executed_transaction(&tx).unwrap();
+    mock_chain.prove_next_block().unwrap();
+
+    for _ in 0..5 {
+        mock_chain.prove_next_block().unwrap();
+    }
+
+    // 2. Build a client that has never synced, so its sync height sits below the note's block.
+    let mock_transport_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
+
+    let rpc_api = Arc::new(MockRpcApi::new(mock_chain));
+    let transport_client = MockNoteTransportApi::new(mock_transport_node.clone());
+
+    let mut rng = rand::rng();
+    let coin_seed: [u64; 4] = rng.random();
+    let rng = RandomCoin::new(coin_seed.map(|v| Felt::new_unchecked(v >> 1)).into());
+
+    let keystore = FilesystemKeyStore::new(temp_dir()).unwrap();
+
+    let builder: ClientBuilder<FilesystemKeyStore> = ClientBuilder::new()
+        .rpc(rpc_api)
+        .rng(Box::new(rng))
+        .sqlite_store(create_test_store_path())
+        .authenticator(Arc::new(keystore))
+        .tx_discard_delta(None)
+        .note_transport(Arc::new(transport_client));
+
+    let mut client = builder.build().await.unwrap();
+    client.ensure_genesis_in_place().await.unwrap();
+    seed_mock_transaction_encryption_key(&mut client).await;
+
+    client.add_note_tag(NoteTag::new(0)).await.unwrap();
+
+    let sync_height_before = client.get_sync_height().await.unwrap();
+    assert_eq!(
+        sync_height_before,
+        BlockNumber::GENESIS,
+        "the note must commit above the sync height for this test to exercise the chain half"
+    );
+
+    // 3. Deliver the note over the NTL before that first sync.
+    let details_bytes = NoteDetails::from(private_note.clone()).to_bytes();
+    mock_transport_node.write().add_note(*private_note.header(), details_bytes);
+
+    // 4. One sync: the transport half receives the details, the chain half reports the commitment
+    //    at block 1, and the window (genesis, tip] is consumed.
+    client.sync_state().await.unwrap();
+
+    assert!(
+        client.get_sync_height().await.unwrap() > BlockNumber::from(1),
+        "the sync must have advanced past the note's commitment block"
+    );
+
+    let committed_notes = client.get_input_notes(NoteFilter::Committed).await.unwrap();
+    assert!(
+        committed_notes.iter().any(|note| note.id() == Some(private_note.id())),
+        "a delivered note committed inside the synced window must be committed by that sync; \
+         leaving it expected strands it, because the chain sync never revisits that block range"
+    );
+}
+
 /// A private note must reach the recipient even when the sender's first relay
 /// attempt fails, provided the transport later recovers.
 ///

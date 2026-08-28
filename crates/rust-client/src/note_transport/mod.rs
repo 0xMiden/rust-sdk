@@ -356,8 +356,9 @@ where
         let cursor = self.store.get_note_transport_cursor().await?;
 
         let mut id_by_commitment = BTreeMap::new();
-        let (mut note_updates, new_cursor) =
-            self.fetch_transport_page(cursor, &note_tags, &mut id_by_commitment).await?;
+        let (mut note_updates, new_cursor) = self
+            .fetch_note_transport_updates(cursor, &note_tags, &mut id_by_commitment)
+            .await?;
         self.fetch_note_blocks(&mut note_updates).await?;
         self.fetch_note_nullifiers(&mut note_updates).await?;
 
@@ -417,7 +418,7 @@ where
         let mut cursor = NoteTransportCursor::init();
         for _ in 0..Self::MAX_BACKFILL_ITERATIONS {
             let (page_updates, new_cursor) =
-                self.fetch_transport_page(cursor, &[tag], id_by_commitment).await?;
+                self.fetch_note_transport_updates(cursor, &[tag], id_by_commitment).await?;
             note_updates.merge(page_updates);
             // Terminate on any lack of forward progress. A well-behaved server returns
             // `new_cursor == cursor` when there are no new notes for this tag (since
@@ -448,7 +449,7 @@ where
     /// written records back to note ids once the final record set is known. Persistence of the
     /// returned cursor is left to the caller so that drain loops can guard against regression of
     /// an already-advanced stored cursor.
-    async fn fetch_transport_page(
+    async fn fetch_note_transport_updates(
         &self,
         cursor: NoteTransportCursor,
         tags: &[NoteTag],
@@ -491,7 +492,7 @@ where
             requests.push((NoteDetails::from(note), after_block_num, tag));
         }
 
-        let note_updates = self.fetch_expected_note_updates(&requests).await?;
+        let note_updates = self.fetch_transport_notes_onchain_state(&requests).await?;
 
         Ok((note_updates, rcursor))
     }
@@ -512,7 +513,7 @@ where
     /// produce is the apply phase's.
     ///
     /// Returns empty data when note transport is not configured.
-    pub(crate) async fn fetch_note_transport_updates(
+    pub(crate) async fn fetch_note_transport_sync_data(
         &self,
     ) -> Result<NoteTransportSyncData, ClientError> {
         let mut note_transport_data = NoteTransportSyncData::default();
@@ -546,7 +547,11 @@ where
         let note_tags: Vec<NoteTag> =
             self.store.get_unique_note_tags().await?.into_iter().collect();
         let (note_updates, new_cursor) = self
-            .fetch_transport_page(cursor, &note_tags, &mut note_transport_data.id_by_commitment)
+            .fetch_note_transport_updates(
+                cursor,
+                &note_tags,
+                &mut note_transport_data.id_by_commitment,
+            )
             .await?;
         note_transport_data.note_updates.merge(note_updates);
         note_transport_data.cursor = Some(new_cursor);
@@ -559,7 +564,7 @@ where
         Ok(note_transport_data)
     }
 
-    /// Writes everything [`Client::fetch_note_transport_updates`] fetched, returning the ids of
+    /// Writes everything [`Client::fetch_note_transport_sync_data`] fetched, returning the ids of
     /// the imported notes.
     ///
     /// The notes are written before the covered-tag set and the cursor, so a crash between them
@@ -604,7 +609,7 @@ where
 
 /// Everything the note transport sync is about to write, with nothing written yet.
 ///
-/// Built by [`Client::fetch_note_transport_updates`], which also completes it with
+/// Built by [`Client::fetch_note_transport_sync_data`], which also completes it with
 /// [`Client::fetch_note_blocks`] and [`Client::fetch_note_nullifiers`], and written by
 /// [`Client::apply_note_transport_updates`].
 #[derive(Default)]

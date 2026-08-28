@@ -173,21 +173,22 @@ where
         Ok(imported_commitments)
     }
 
-    // FETCH-ONLY EXPECTED NOTE IMPORT
+    // TRANSPORT-DELIVERED NOTE IMPORT
     // --------------------------------------------------------------------------------------------
 
-    /// Builds the records for a batch of expected notes without writing anything.
+    /// Asks the node whether a batch of transport-delivered notes is already on chain, and builds
+    /// their records, without writing anything.
     ///
     /// Each request is a note's details, the block from which its commitment should be looked for,
     /// and the tag to track it under. Records for notes the node has not committed are final.
     /// Records for committed notes come back pending, since their state transition also needs the
-    /// header of the block that committed them — [`Client::fetch_note_blocks`]
-    /// resolves those and finishes the records.
+    /// header of the block that committed them — [`Client::fetch_note_blocks`] resolves those and
+    /// finishes the records.
     ///
     /// # Errors
     ///
     /// - If a note being imported is currently being processed by a local transaction.
-    pub(crate) async fn fetch_expected_note_updates(
+    pub(crate) async fn fetch_transport_notes_onchain_state(
         &self,
         requests: &[(NoteDetails, BlockNumber, NoteTag)],
     ) -> Result<TransportNoteUpdates, ClientError> {
@@ -769,9 +770,9 @@ struct CommittedNoteAwaitingBlock {
 /// committed them, with nothing written yet.
 ///
 /// The counterpart of the [`NoteFile::ExpectedNote`] path in [`Client::import_notes`], split so
-/// the network work happens before the writes: built by [`Client::fetch_expected_note_updates`],
-/// completed by [`Client::fetch_note_blocks`] and [`Client::fetch_note_nullifiers`], written by
-/// [`Client::apply_expected_note_updates`].
+/// the network work happens before the writes: built by
+/// [`Client::fetch_transport_notes_onchain_state`], completed by [`Client::fetch_note_blocks`] and
+/// [`Client::fetch_note_nullifiers`], written by [`Client::apply_expected_note_updates`].
 #[derive(Default)]
 pub(crate) struct TransportNoteUpdates {
     /// Records ready to write: the notes the node has not committed, plus the committed ones

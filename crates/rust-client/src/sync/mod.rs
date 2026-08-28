@@ -237,7 +237,7 @@ where
         }
         self.ensure_genesis_in_place().await?;
 
-        let note_transport_data = self.fetch_note_transport_updates().await?;
+        let note_transport_data = self.fetch_note_transport_sync_data().await?;
 
         self.apply_note_transport_updates(note_transport_data).await
     }
@@ -273,7 +273,7 @@ where
         self.ensure_rpc_limits_in_place().await?;
 
         let (note_transport_data, (state_sync, mut chain_sync_data)) =
-            futures::try_join!(self.fetch_note_transport_updates(), self.fetch_chain_updates())?;
+            futures::try_join!(self.fetch_note_transport_sync_data(), self.fetch_chain_updates())?;
 
         let transport_delivered_notes: Vec<InputNoteRecord> =
             note_transport_data.input_note_records().cloned().collect();

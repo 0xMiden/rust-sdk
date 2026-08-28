@@ -176,14 +176,13 @@ where
     // TRANSPORT-DELIVERED NOTE IMPORT
     // --------------------------------------------------------------------------------------------
 
-    /// Asks the node whether a batch of transport-delivered notes is already on chain, and builds
-    /// their records, without writing anything.
+    /// Fetches the state of transport-delivered notes from the RPC, and returns a
+    /// [`TransportNoteUpdates`] containing the expected notes that are ready to write to the
+    /// store, along with the committed notes that wait for [`Client::fetch_note_blocks`] to
+    /// resolve their blocks.
     ///
-    /// Each request is a note's details, the block from which its commitment should be looked for,
-    /// and the tag to track it under. Records for notes the node has not committed are final.
-    /// Records for committed notes come back pending, since their state transition also needs the
-    /// header of the block that committed them — [`Client::fetch_note_blocks`] resolves those and
-    /// finishes the records.
+    /// The `requests` parameter contains, for each transport-delivered note, the note details,
+    /// the block from which its commitment should be looked for, and the tag to track it under.
     ///
     /// # Errors
     ///
@@ -349,20 +348,11 @@ where
         Ok(())
     }
 
-    /// Marks as consumed any note in `note_updates` that was already spent when its commitment was
-    /// found.
+    /// Fetches the nullifier commit heights of the notes in `note_updates`, marking those already
+    /// spent as consumed.
     ///
     /// Must run after [`Client::fetch_note_blocks`]: a note only has a nullifier once it is
     /// committed, so before that there is nothing to ask about.
-    ///
-    /// The sync's own nullifier check only looks *forward*, from the sync height to the chain tip,
-    /// and the sync height only rises. A note committed at or below the sync height — the only
-    /// kind resolved here — may have been spent down there too, in a region nothing else ever
-    /// queries. Left unchecked it stays committed and is offered as consumable forever
-    /// (0xMiden/rust-sdk#2422).
-    ///
-    /// The query runs from the earliest commitment block in the batch, the tightest bound they can
-    /// share: a note cannot be spent before it exists.
     pub(crate) async fn fetch_note_nullifiers(
         &self,
         note_updates: &mut TransportNoteUpdates,
@@ -403,8 +393,8 @@ where
         Ok(())
     }
 
-    /// Writes a [`TransportNoteUpdates`], returning the details commitments of the written
-    /// records.
+    /// Applies the changes from `note_updates` to the store, returning the details commitments
+    /// of the written records.
     ///
     /// The block headers go in first, so a record is never persisted as committed before the
     /// header proving its inclusion.
@@ -766,13 +756,9 @@ struct CommittedNoteAwaitingBlock {
     changed: bool,
 }
 
-/// A batch of notes fetched from the Note Transport Layer, split by whether the node has
-/// committed them, with nothing written yet.
-///
-/// The counterpart of the [`NoteFile::ExpectedNote`] path in [`Client::import_notes`], split so
-/// the network work happens before the writes: built by
-/// [`Client::fetch_transport_notes_onchain_state`], completed by [`Client::fetch_note_blocks`] and
-/// [`Client::fetch_note_nullifiers`], written by [`Client::apply_note_transport_updates`].
+/// Notes fetched from the Note Transport Layer, split by whether the node has
+/// committed them, along with note tags to remove, and the blocks that must be
+/// stored before their corresponding committed notes.
 #[derive(Default)]
 pub(crate) struct TransportNoteUpdates {
     /// Records ready to write: the notes the node has not committed, plus the committed ones

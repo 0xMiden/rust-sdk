@@ -10,7 +10,7 @@ use miden_protocol::asset::{Asset, AssetVault};
 use miden_protocol::block::BlockNumber;
 use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::crypto::merkle::SparseMerklePath;
-use miden_protocol::crypto::merkle::smt::SmtProof;
+use miden_protocol::crypto::merkle::smt::PartialSmt;
 use miden_protocol::{EMPTY_WORD, Word};
 use miden_tx::utils::ToHex;
 use miden_tx::utils::serde::{Deserializable, Serializable};
@@ -153,9 +153,13 @@ impl proto::rpc::account_response::AccountDetails {
     /// `known_account_codes` to fill in the missing code. If a required code cannot be found in
     /// the response or `known_account_codes`, an error is returned.
     ///
+    /// `storage_requirements` is the request this response answers, used to check that each
+    /// partial map covers exactly the keys that were asked for.
+    ///
     /// # Errors
     /// - If account code is missing both on `self` and `known_account_codes`
     /// - If data cannot be correctly deserialized
+    /// - If a partial map does not cover exactly the keys requested for its slot
     pub fn into_domain(
         self,
         known_account_codes: &BTreeMap<Word, AccountCode>,
@@ -180,35 +184,7 @@ impl proto::rpc::account_response::AccountDetails {
             )))?
             .try_into()?;
 
-        // Validate that the returned proofs match the originally requested keys.
-        // The node returns hashed SMT keys, so we hash the raw keys and check
-        // they are present in the corresponding proofs.
-        for map_detail in &storage_details.map_details {
-            let requested_keys = storage_requirements
-                .inner()
-                .get(&map_detail.slot_name)
-                .map(Vec::as_slice)
-                .unwrap_or_default();
-
-            if let StorageMapEntries::EntriesWithProofs(proofs) = &map_detail.entries {
-                if proofs.len() != requested_keys.len() {
-                    return Err(RpcError::InvalidResponse(format!(
-                        "expected {} proofs for storage map slot '{}', got {}",
-                        requested_keys.len(),
-                        map_detail.slot_name,
-                        proofs.len(),
-                    )));
-                }
-                for (proof, raw_key) in proofs.iter().zip(requested_keys.iter()) {
-                    if proof.get(&raw_key.hash().as_word()).is_none() {
-                        return Err(RpcError::InvalidResponse(format!(
-                            "proof for storage map key {} does not match the requested key",
-                            raw_key.to_hex(),
-                        )));
-                    }
-                }
-            }
-        }
+        storage_details.validate_against_request(storage_requirements)?;
 
         // If an account code was received, it means the previously known account code is no longer
         // valid. If it was not, it means we sent a code commitment that matched and so our code
@@ -264,8 +240,8 @@ impl TryFrom<&AccountDetails> for Account {
     /// Builds an [`Account`] from [`AccountDetails`].
     ///
     /// This conversion fails if the account details are incomplete, i.e., when the account's
-    /// storage maps or vault exceed the node's size threshold (`too_many_entries` or
-    /// `too_many_assets` flags are set).
+    /// storage maps or vault exceed the node's size threshold, or when only specific map keys
+    /// were requested.
     fn try_from(details: &AccountDetails) -> Result<Self, Self::Error> {
         if details.vault_details.too_many_assets {
             return Err(RpcError::ExpectedDataMissing(
@@ -277,7 +253,7 @@ impl TryFrom<&AccountDetails> for Account {
             .storage_details
             .map_details
             .iter()
-            .find(|m| m.too_many_entries)
+            .find(|m| m.is_limit_exceeded())
             .map(|m| &m.slot_name)
         {
             return Err(RpcError::ExpectedDataMissing(format!(
@@ -311,10 +287,11 @@ impl TryFrom<&AccountDetails> for Account {
                         .clone()
                         .into_storage_map()
                         .ok_or_else(|| {
-                            RpcError::ExpectedDataMissing(
-                                "expected AllEntries for full account fetch, got EntriesWithProofs"
-                                    .into(),
-                            )
+                            RpcError::ExpectedDataMissing(format!(
+                                "slot '{}' did not come back with all its entries, so the full \
+                                 account cannot be built",
+                                slot_header.name(),
+                            ))
                         })?
                         .map_err(|err| {
                             RpcError::InvalidResponse(format!(
@@ -370,13 +347,48 @@ impl AccountStorageDetails {
     pub fn find_map_details(&self, target: &StorageSlotName) -> Option<&AccountStorageMapDetails> {
         self.map_details.iter().find(|map_detail| map_detail.slot_name == *target)
     }
+
+    /// Checks that every partial map covers exactly the keys that were requested for its slot.
+    ///
+    /// # Errors
+    /// - If a partial map covers a different number of keys than were requested for its slot.
+    /// - If a partial map covers a key that was not requested.
+    pub fn validate_against_request(
+        &self,
+        storage_requirements: &AccountStorageRequirements,
+    ) -> Result<(), RpcError> {
+        for map_detail in &self.map_details {
+            let StorageMapEntries::PartialMap { map_keys, .. } = &map_detail.entries else {
+                continue;
+            };
+
+            let requested_keys = storage_requirements.keys_for_slot(&map_detail.slot_name);
+            if map_keys.len() != requested_keys.len() {
+                return Err(RpcError::InvalidResponse(format!(
+                    "expected {} keys for storage map slot '{}', got {}",
+                    requested_keys.len(),
+                    map_detail.slot_name,
+                    map_keys.len(),
+                )));
+            }
+            if let Some(key) = map_keys.iter().find(|key| !requested_keys.contains(key)) {
+                return Err(RpcError::InvalidResponse(format!(
+                    "partial storage map for slot '{}' covers key {}, which was not requested",
+                    map_detail.slot_name,
+                    key.to_hex(),
+                )));
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl TryFrom<proto::rpc::AccountStorageDetails> for AccountStorageDetails {
     type Error = RpcError;
 
     fn try_from(value: proto::rpc::AccountStorageDetails) -> Result<Self, Self::Error> {
-        let header = value
+        let header: AccountStorageHeader = value
             .header
             .ok_or(proto::account::AccountStorageHeader::missing_field(stringify!(header)))?
             .try_into()?;
@@ -385,6 +397,41 @@ impl TryFrom<proto::rpc::AccountStorageDetails> for AccountStorageDetails {
             .into_iter()
             .map(core::convert::TryInto::try_into)
             .collect::<Result<Vec<AccountStorageMapDetails>, RpcError>>()?;
+
+        // A partial map is only worth anything if it is anchored to the slot root the account
+        // commitment covers. Without this check the node could serve a self-consistent tree of
+        // its own making.
+        for map_detail in &map_details {
+            let StorageMapEntries::PartialMap { partial_smt, .. } = &map_detail.entries else {
+                continue;
+            };
+
+            let slot = header
+                .slots()
+                .find(|slot| *slot.name() == map_detail.slot_name)
+                .ok_or_else(|| {
+                    RpcError::InvalidResponse(format!(
+                        "partial storage map references slot '{}', which is absent from the \
+                         storage header",
+                        map_detail.slot_name,
+                    ))
+                })?;
+            if slot.slot_type() != StorageSlotType::Map {
+                return Err(RpcError::InvalidResponse(format!(
+                    "partial storage map references slot '{}', which is not a map",
+                    map_detail.slot_name,
+                )));
+            }
+            if partial_smt.root() != slot.value() {
+                return Err(RpcError::InvalidResponse(format!(
+                    "partial storage map for slot '{}' has root {} but the storage header reports \
+                     {}",
+                    map_detail.slot_name,
+                    partial_smt.root(),
+                    slot.value(),
+                )));
+            }
+        }
 
         Ok(Self { header, map_details })
     }
@@ -397,13 +444,21 @@ impl TryFrom<proto::rpc::AccountStorageDetails> for AccountStorageDetails {
 pub struct AccountStorageMapDetails {
     /// Storage slot name of the storage map.
     pub slot_name: StorageSlotName,
-    /// A flag that is set to `true` if the number of to-be-returned entries in the
-    /// storage map would exceed a threshold. This indicates to the user that `SyncStorageMaps`
-    /// endpoint should be used to get all storage map data.
-    pub too_many_entries: bool,
-    /// Storage map entries - either all entries (for small/full maps) or entries with proofs
-    /// (for partial maps).
+    /// The map data the node returned for this slot. The variants are mutually exclusive.
     pub entries: StorageMapEntries,
+}
+
+impl AccountStorageMapDetails {
+    /// The maximum number of keys the node will cover with a single partial map. The node counts
+    /// this across all slots of a request, so honouring it per slot is a conservative bound.
+    pub const MAX_PARTIAL_MAP_KEYS: usize = 64;
+
+    /// Returns `true` when the node reported that this slot has more entries than it will return
+    /// in a single response, meaning the entries have to be fetched through
+    /// [`crate::rpc::NodeRpcClient::sync_storage_maps`] instead.
+    pub fn is_limit_exceeded(&self) -> bool {
+        matches!(self.entries, StorageMapEntries::LimitExceeded)
+    }
 }
 
 impl TryFrom<proto::rpc::account_storage_details::AccountStorageMapDetails>
@@ -414,14 +469,19 @@ impl TryFrom<proto::rpc::account_storage_details::AccountStorageMapDetails>
     fn try_from(
         value: proto::rpc::account_storage_details::AccountStorageMapDetails,
     ) -> Result<Self, Self::Error> {
-        use proto::rpc::account_storage_details::account_storage_map_details::Entries;
+        use proto::rpc::account_storage_details::account_storage_map_details::Result as ProtoResult;
 
         let slot_name = StorageSlotName::new(value.slot_name)
             .map_err(|err| RpcError::ExpectedDataMissing(err.to_string()))?;
-        let too_many_entries = value.too_many_entries;
 
-        let entries = match value.entries {
-            Some(Entries::AllEntries(all_entries)) => {
+        let entries = match value.result {
+            Some(ProtoResult::TooManyEntries(true)) => StorageMapEntries::LimitExceeded,
+            Some(ProtoResult::TooManyEntries(false)) => {
+                return Err(RpcError::InvalidResponse(
+                    "too_many_entries must be true when set".into(),
+                ));
+            },
+            Some(ProtoResult::AllEntries(all_entries)) => {
                 let entries = all_entries
                     .entries
                     .into_iter()
@@ -429,25 +489,67 @@ impl TryFrom<proto::rpc::account_storage_details::AccountStorageMapDetails>
                     .collect::<Result<Vec<StorageMapEntry>, RpcError>>()?;
                 StorageMapEntries::AllEntries(entries)
             },
-            Some(Entries::EntriesWithProofs(entries_with_proofs)) => {
-                let proofs = entries_with_proofs
-                    .entries
+            Some(ProtoResult::PartialMap(partial_map)) => {
+                if partial_map.map_keys.len() > Self::MAX_PARTIAL_MAP_KEYS {
+                    return Err(RpcError::InvalidResponse(format!(
+                        "partial storage map for slot '{slot_name}' contains {} keys, exceeding \
+                         the limit of {}",
+                        partial_map.map_keys.len(),
+                        Self::MAX_PARTIAL_MAP_KEYS,
+                    )));
+                }
+
+                let map_keys = partial_map
+                    .map_keys
                     .into_iter()
-                    .map(|entry| {
-                        let proof: SmtProof = entry
-                            .proof
-                            .ok_or(RpcError::ExpectedDataMissing("proof".into()))?
-                            .try_into()?;
-                        Ok(proof)
-                    })
-                    .collect::<Result<Vec<SmtProof>, RpcError>>()?;
-                StorageMapEntries::EntriesWithProofs(proofs)
+                    .map(|key| Word::try_from(key).map(StorageMapKey::new))
+                    .collect::<Result<Vec<_>, _>>()?;
+                if let Some(key) = first_duplicate_key(&map_keys) {
+                    return Err(RpcError::InvalidResponse(format!(
+                        "partial storage map for slot '{slot_name}' repeats key {}",
+                        key.to_hex(),
+                    )));
+                }
+
+                let partial_smt: PartialSmt = partial_map
+                    .partial_smt
+                    .ok_or(proto::rpc::account_storage_details::account_storage_map_details::PartialStorageMap::missing_field(
+                        stringify!(partial_smt),
+                    ))?
+                    .try_into()?;
+
+                // The response sends the values only inside the tree, so a key the tree does not
+                // track carries no value at all and would fail later, at read time.
+                for key in &map_keys {
+                    partial_smt.get_value(&key.hash().as_word()).map_err(|_| {
+                        RpcError::InvalidResponse(format!(
+                            "partial storage map for slot '{slot_name}' does not track key {}",
+                            key.to_hex(),
+                        ))
+                    })?;
+                }
+
+                StorageMapEntries::PartialMap { map_keys, partial_smt }
             },
-            None => StorageMapEntries::AllEntries(Vec::new()),
+            None => {
+                return Err(RpcError::InvalidResponse(format!(
+                    "storage map details for slot '{slot_name}' carry no result",
+                )));
+            },
         };
 
-        Ok(Self { slot_name, too_many_entries, entries })
+        Ok(Self { slot_name, entries })
     }
+}
+
+/// Returns the first key that appears more than once, if any.
+///
+/// The key lists this guards are bounded by [`AccountStorageMapDetails::MAX_PARTIAL_MAP_KEYS`],
+/// so the quadratic scan avoids allocating a set.
+fn first_duplicate_key(keys: &[StorageMapKey]) -> Option<&StorageMapKey> {
+    keys.iter()
+        .enumerate()
+        .find_map(|(index, key)| keys[..index].contains(key).then_some(key))
 }
 
 // STORAGE MAP ENTRY
@@ -476,21 +578,33 @@ impl TryFrom<proto::rpc::account_storage_details::account_storage_map_details::a
 // STORAGE MAP ENTRIES
 // ================================================================================================
 
-/// Storage map entries, either all entries (for small/full maps) or raw SMT proofs
-/// (for specific key queries).
+/// The map data a `/GetAccount` response carries for one storage map slot. The variants are
+/// mutually exclusive, mirroring the node's response.
 #[derive(Clone, Debug)]
 pub enum StorageMapEntries {
+    /// The slot has more entries than the node returns in a single response. No entries are
+    /// carried; fetch them with [`crate::rpc::NodeRpcClient::sync_storage_maps`].
+    LimitExceeded,
     /// All entries in the storage map (no proofs needed as the full map is available).
     AllEntries(Vec<StorageMapEntry>),
-    /// Specific entries with their SMT proofs (for partial maps).
-    EntriesWithProofs(Vec<SmtProof>),
+    /// The specific keys that were requested, covered by a single partial SMT.
+    ///
+    /// The values are carried only inside `partial_smt`: read one by hashing its raw key and
+    /// calling [`PartialSmt::get_value`]. Every key in `map_keys` is guaranteed to be tracked by
+    /// `partial_smt`, so such a read cannot fail.
+    PartialMap {
+        /// The original, unhashed keys covered by `partial_smt`.
+        map_keys: Vec<StorageMapKey>,
+        /// The partial SMT proving the value of every key in `map_keys`.
+        partial_smt: PartialSmt,
+    },
 }
 
 impl StorageMapEntries {
     /// Converts the entries into a [`StorageMap`].
     ///
-    /// Returns `None` for the [`EntriesWithProofs`](Self::EntriesWithProofs) variant because it
-    /// contains partial data (SMT proofs) that cannot produce a complete [`StorageMap`].
+    /// Returns `None` for every variant other than [`AllEntries`](Self::AllEntries), since only
+    /// that one carries the whole map.
     pub fn into_storage_map(
         self,
     ) -> Option<Result<StorageMap, miden_protocol::errors::StorageMapError>> {
@@ -498,7 +612,7 @@ impl StorageMapEntries {
             StorageMapEntries::AllEntries(entries) => {
                 Some(StorageMap::with_entries(entries.into_iter().map(|e| (e.key, e.value))))
             },
-            StorageMapEntries::EntriesWithProofs(_) => None,
+            StorageMapEntries::LimitExceeded | StorageMapEntries::PartialMap { .. } => None,
         }
     }
 }
@@ -711,14 +825,17 @@ impl TryFrom<proto::account::AccountWitness> for AccountWitness {
 /// Per-slot map data to include in a `/GetAccount` response. Slots absent here are omitted
 /// from `map_details` (the storage header still lists every slot).
 ///
-/// - Empty key list: all entries, no proofs. May come back flagged `too_many_entries`.
-/// - Non-empty key list: just those entries, each with its SMT inclusion proof.
+/// - Empty key list: all entries, no proof. May come back as [`StorageMapEntries::LimitExceeded`].
+/// - Non-empty key list: just those keys, covered by one partial SMT.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct AccountStorageRequirements(BTreeMap<StorageSlotName, Vec<StorageMapKey>>);
 
 impl AccountStorageRequirements {
-    /// Requests the specified keys per slot, each returned with an SMT inclusion proof. An
-    /// empty key iterator for a slot behaves like [`Self::all_entries`].
+    /// Requests the specified keys per slot, covered by one partial SMT per slot. An empty key
+    /// iterator for a slot behaves like [`Self::all_entries`].
+    ///
+    /// Repeated keys within a slot are collapsed, since the node rejects a request that names the
+    /// same key twice.
     pub fn new<'a>(
         slots_and_keys: impl IntoIterator<
             Item = (StorageSlotName, impl IntoIterator<Item = &'a StorageMapKey>),
@@ -727,7 +844,12 @@ impl AccountStorageRequirements {
         let map = slots_and_keys
             .into_iter()
             .map(|(slot_name, keys_iter)| {
-                let keys_vec: Vec<StorageMapKey> = keys_iter.into_iter().copied().collect();
+                let mut keys_vec: Vec<StorageMapKey> = Vec::new();
+                for key in keys_iter {
+                    if !keys_vec.contains(key) {
+                        keys_vec.push(*key);
+                    }
+                }
                 (slot_name, keys_vec)
             })
             .collect();
@@ -735,8 +857,8 @@ impl AccountStorageRequirements {
         AccountStorageRequirements(map)
     }
 
-    /// Requests every entry of each given slot, without proofs. Oversize maps come back
-    /// flagged `too_many_entries`.
+    /// Requests every entry of each given slot, without a proof. Oversize maps come back as
+    /// [`StorageMapEntries::LimitExceeded`].
     pub fn all_entries(slot_names: &[StorageSlotName]) -> Self {
         AccountStorageRequirements(
             slot_names.iter().map(|name| (name.clone(), Vec::new())).collect(),
@@ -830,7 +952,7 @@ pub enum StorageMapFetch {
     #[default]
     Skip,
     /// Request entries for every storage map slot, without naming the slots in advance. Oversize
-    /// maps come back flagged `too_many_entries`, to be resolved via
+    /// maps come back as [`StorageMapEntries::LimitExceeded`], to be resolved via
     /// [`crate::rpc::NodeRpcClient::sync_storage_maps`].
     All,
     /// Request entries only for the explicitly named slots. See [`AccountStorageRequirements`]

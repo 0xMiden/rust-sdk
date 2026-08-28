@@ -6,12 +6,14 @@
 
 use std::boxed::Box;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::string::{String, ToString};
+use std::time::Duration;
 use std::vec::Vec;
 
 use db_management::migration::SqliteMigrator;
 use db_management::pool_manager::{Pool, SqlitePoolManager};
+use deadpool::Runtime;
 use miden_client::Word;
 use miden_client::account::{
     Account,
@@ -69,14 +71,13 @@ pub use builder::ClientBuilderSqliteExt;
 // SQLITE STORE
 // ================================================================================================
 
-/// Represents a pool of connections with an `SQLite` database. The pool is used to interact
-/// concurrently with the underlying database in a safe and efficient manner.
+/// `SQLite`-backed [`Store`] implementation.
 ///
 /// Current table definitions are the result of applying every migration under `migrations/` in
 /// order.
 pub struct SqliteStore {
     pub(crate) pool: Pool,
-    database_filepath: String,
+    database_filepath: PathBuf,
 }
 
 impl SqliteStore {
@@ -85,18 +86,30 @@ impl SqliteStore {
 
     /// Returns a new instance of [Store] instantiated with the specified configuration options.
     pub async fn new(database_filepath: PathBuf) -> Result<Self, StoreError> {
-        let database_filepath_str = database_filepath.to_string_lossy().into_owned();
+        if database_filepath.to_str().is_none() {
+            return Err(database_error(format!(
+                "database path is not valid UTF-8: {}",
+                database_filepath.display()
+            )));
+        }
+
         let sqlite_pool_manager = SqlitePoolManager::new(database_filepath.clone());
-        let pool = Pool::builder(sqlite_pool_manager).build().map_err(database_error)?;
+        let pool = Pool::builder(sqlite_pool_manager)
+            .wait_timeout(Some(Duration::from_secs(30)))
+            .runtime(Runtime::Tokio1)
+            .build()
+            .map_err(database_error)?;
 
         Self::migrate(&pool, SqliteMigrator::client()).await?;
 
         // Account SMT data is persisted in the forest tables and read on demand, so no state
         // needs to be rebuilt here.
-        Ok(SqliteStore {
-            pool,
-            database_filepath: database_filepath_str,
-        })
+        Ok(SqliteStore { pool, database_filepath })
+    }
+
+    /// Returns the path of the database file backing this store.
+    pub fn database_filepath(&self) -> &Path {
+        &self.database_filepath
     }
 
     /// Brings the database in `pool` up to the latest version of the schema `migration` builds.
@@ -140,7 +153,9 @@ impl SqliteStore {
 #[async_trait::async_trait]
 impl Store for SqliteStore {
     fn identifier(&self) -> &str {
-        &self.database_filepath
+        self.database_filepath
+            .to_str()
+            .expect("rejected by SqliteStore::new when not UTF-8")
     }
 
     fn get_current_timestamp(&self) -> Option<u64> {

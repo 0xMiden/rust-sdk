@@ -29,7 +29,7 @@ use miden_client::{Felt, ZERO};
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
-use miden_protocol::note::{NoteDetails, NoteScript};
+use miden_protocol::note::{NoteAttachment, NoteAttachmentScheme, NoteDetails, NoteScript};
 use miden_protocol::testing::account_id::{
     ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET,
     ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE,
@@ -517,4 +517,53 @@ async fn output_notes_never_match_script_root_filter() {
         .await
         .unwrap();
     assert!(notes.is_empty());
+}
+
+/// Attachment content is resolved during sync, after the record may already be stored, so a
+/// state-only update has to persist it too. Attachments feed the note id, so a record that keeps
+/// a stale set reconstructs to a different note than the on-chain one and becomes unconsumable.
+#[tokio::test]
+async fn input_note_state_update_persists_attachments() {
+    let store = create_test_store().await;
+
+    let note = create_expected_input_note(0);
+    assert!(note.attachments().is_empty(), "the fixture starts without attachments");
+    store.upsert_input_notes(std::slice::from_ref(&note)).await.unwrap();
+
+    // The same note, now carrying the attachments a sync resolved for it. Attachments are not part
+    // of `NoteDetails`, so the details commitment (the update key) is unchanged.
+    let attachments = NoteAttachments::new(vec![NoteAttachment::with_word(
+        NoteAttachmentScheme::new(42).unwrap(),
+        Word::from([1u32, 2, 3, 4]),
+    )])
+    .unwrap();
+    let updated = InputNoteRecord::new(
+        note.details().clone(),
+        attachments.clone(),
+        Some(0),
+        ExpectedNoteState {
+            metadata: None,
+            after_block_num: BlockNumber::from(0u32),
+            tag: None,
+        }
+        .into(),
+    );
+    assert_eq!(updated.details_commitment(), note.details_commitment());
+
+    let state_sync_update = StateSyncUpdate::from_parts(
+        BlockNumber::from(0u32),
+        PartialBlockchainUpdates::default(),
+        NoteUpdateTracker::for_transaction_updates([], [updated], []),
+        TransactionUpdateTracker::default(),
+        AccountUpdates::default(),
+    );
+    store.apply_state_sync(state_sync_update).await.unwrap();
+
+    let stored = store.get_input_notes(NoteFilter::All).await.unwrap();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(
+        stored[0].attachments(),
+        &attachments,
+        "a state update must persist the attachments resolved for the note"
+    );
 }

@@ -130,11 +130,30 @@ for mac in bridge_admin.mac ger_manager.mac bridge.mac agglayer_faucet.mac; do
     fi
 done
 
+# The validator's signing key and the set's shared transaction encryption key are passed on the
+# command line. The genesis header commits to the signing key's public half, so the key-pair has to
+# exist before the genesis block is built. A fresh pair per run is fine because `$DATA` is wiped
+# above, so no earlier chain state depends on the previous one.
+VALIDATOR_KEYS="$("$BIN/miden-validator" keygen)"
+validator_key() {
+    printf '%s\n' "$VALIDATOR_KEYS" | awk -v field="$1:" '$1 == field { print $2; exit }'
+}
+SIGNING_KEY="$(validator_key signing-key)"
+VALIDATOR_PUBLIC_KEY="$(validator_key validator-key)"
+ENCRYPTION_KEY="$(validator_key encryption-key)"
+for key in SIGNING_KEY VALIDATOR_PUBLIC_KEY ENCRYPTION_KEY; do
+    [ -n "${!key}" ] || {
+        echo "error: miden-validator keygen did not report a $key" >&2
+        exit 1
+    }
+done
+
 {
     # Genesis generation is separate from bootstrap: `genesis` builds the block once, then every
     # component seeds its database from the resulting file.
     "$BIN/miden-validator" genesis --genesis-block-directory "$DATA/genesis" \
-        --accounts-directory "$DATA/accounts" --config "$DATA/genesis-config/genesis.toml"
+        --accounts-directory "$DATA/accounts" --config "$DATA/genesis-config/genesis.toml" \
+        --validator.key "$VALIDATOR_PUBLIC_KEY"
     "$BIN/miden-validator" bootstrap --data-directory "$DATA/validator" \
         --genesis "$DATA/genesis/genesis.dat"
     "$BIN/miden-node" bootstrap --data-directory "$DATA/node" --genesis "$DATA/genesis/genesis.dat"
@@ -166,6 +185,8 @@ trap 'echo; cleanup; exit 0' INT TERM
 # threshold storage-key material to start and ships no generator for it.
 STORAGE_KEY_DIR="$ROOT/scripts/testdata/insecure-golden-storage-key"
 start validator   "$BIN/miden-validator" start --listen "$VALIDATOR" --data-directory "$DATA/validator" \
+    --signing-key.hex "$SIGNING_KEY" \
+    --encryption-key.hex "$ENCRYPTION_KEY" \
     --storage-key.epoch "0909090909090909090909090909090909090909090909090909090909090909" \
     --storage-key.setup-context "$STORAGE_KEY_DIR/setup-context.wire" \
     --storage-key.public-key-set "$STORAGE_KEY_DIR/public-key-set.wire" \
@@ -175,8 +196,7 @@ sleep 2
 start sequencer   "$BIN/miden-node" sequencer --rpc.listen "$RPC" --data-directory "$DATA/node" \
     --validator.url "http://$VALIDATOR" --ntx-builder.url "http://$NTX" \
     --rpc.network-tx-auth-header-value "$NETWORK_TX_AUTH" \
-    --block.interval 3s --batch.interval 1s \
-    --rpc.rate-limit.burst-size 10000 --rpc.rate-limit.replenish-per-second 10000
+    --block.interval 3s --batch.interval 1s
 start prover      "$BIN/miden-remote-prover" --kind=transaction --port="$PROVER_PORT"
 # Let the sequencer bind its RPC before the ntx-builder dials it.
 sleep 2

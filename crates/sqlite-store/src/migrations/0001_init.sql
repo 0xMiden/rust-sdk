@@ -30,9 +30,6 @@ CREATE TABLE latest_account_headers (
     PRIMARY KEY (id),
     FOREIGN KEY (code_commitment) REFERENCES account_code(commitment)
 );
--- SQLite does not index foreign key child columns automatically. Without this, account code garbage
--- collection scans the whole table once per candidate commitment.
-CREATE INDEX idx_latest_account_headers_code_commitment ON latest_account_headers(code_commitment);
 
 -- Historical account headers: stores old headers that were replaced by newer states.
 -- Each row represents a previous account state that was superseded at replaced_at_nonce.
@@ -52,7 +49,6 @@ CREATE TABLE historical_account_headers (
     CONSTRAINT check_seed_nonzero CHECK (NOT (nonce = 0 AND account_seed IS NULL))
 );
 CREATE INDEX idx_historical_account_headers_id_replaced_at ON historical_account_headers(id, replaced_at_nonce DESC);
-CREATE INDEX idx_historical_account_headers_code_commitment ON historical_account_headers(code_commitment);
 
 -- ── Account storage (latest + historical) ────────────────────────────────
 
@@ -123,7 +119,6 @@ CREATE TABLE foreign_account_code(
     PRIMARY KEY (account_id),
     FOREIGN KEY (code_commitment) REFERENCES account_code(commitment)
 );
-CREATE INDEX idx_foreign_account_code_code_commitment ON foreign_account_code(code_commitment);
 
 -- ── Transactions ─────────────────────────────────────────────────────────
 
@@ -131,13 +126,13 @@ CREATE TABLE transactions (
     id BLOB NOT NULL,                                -- Transaction ID (commitment of various components)
     details BLOB NOT NULL,                           -- Serialized transaction details
     script_root BLOB,                                -- Transaction script root
+    block_num UNSIGNED BIG INT,                      -- Block number for the block against which the transaction was executed.
     status_variant INT NOT NULL,                     -- Status variant identifier
     status BLOB NOT NULL,                            -- Serialized transaction status
     FOREIGN KEY (script_root) REFERENCES transaction_scripts(script_root),
     PRIMARY KEY (id)
 ) WITHOUT ROWID;
--- Only pending transactions (status 0) are ever filtered by status, so the index covers just those rows.
-CREATE INDEX idx_transactions_pending ON transactions(status_variant) WHERE status_variant = 0;
+CREATE INDEX idx_transactions_uncommitted ON transactions(status_variant);
 
 
 CREATE TABLE transaction_scripts (
@@ -168,12 +163,10 @@ CREATE TABLE input_notes (
     PRIMARY KEY (details_commitment),
     FOREIGN KEY (script_root) REFERENCES notes_scripts(script_root)
 ) WITHOUT ROWID;
--- `nullifier` is the second column so the unspent nullifier query reads this index alone, and
--- `state_discriminant` stays first so the other state filters still match on the prefix.
-CREATE INDEX idx_input_notes_state ON input_notes(state_discriminant, nullifier);
+CREATE INDEX idx_input_notes_state ON input_notes(state_discriminant);
 CREATE INDEX idx_input_notes_nullifier ON input_notes(nullifier);
 CREATE INDEX idx_input_notes_note_id ON input_notes(note_id);
-CREATE INDEX idx_input_notes_consumption ON input_notes(consumer_account_id, consumed_block_height, consumed_tx_order);
+CREATE INDEX idx_input_notes_consumption ON input_notes(consumed_block_height, consumed_tx_order);
 CREATE INDEX idx_input_notes_script_root ON input_notes(script_root);
 
 CREATE TABLE output_notes (

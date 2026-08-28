@@ -281,7 +281,8 @@ where
     /// absent from `blocks_to_insert`.
     ///
     /// Writes nothing and does not modify the MMR: tracking the fetched headers and storing them
-    /// is [`Client::insert_note_blocks`]'s job.
+    /// is [`Client::insert_note_blocks`]'s job. Whether the notes it commits have already been
+    /// spent is [`Client::fetch_note_nullifiers`]'s.
     pub(crate) async fn fetch_note_blocks(
         &self,
         note_updates: &mut ExpectedNoteUpdates,
@@ -341,6 +342,60 @@ where
                     note_awaiting_block.note_record.details_commitment(),
                 ));
                 note_updates.notes_to_write.push(note_awaiting_block.note_record);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Marks as consumed any note in `note_updates` that was already spent when its commitment was
+    /// found.
+    ///
+    /// Must run after [`Client::fetch_note_blocks`]: a note only has a nullifier once it is
+    /// committed, so before that there is nothing to ask about.
+    ///
+    /// The sync's own nullifier check only looks *forward*, from the sync height to the chain tip,
+    /// and the sync height only rises. A note committed at or below the sync height — the only
+    /// kind resolved here — may have been spent down there too, in a region nothing else ever
+    /// queries. Left unchecked it stays committed and is offered as consumable forever
+    /// (0xMiden/rust-sdk#2422).
+    ///
+    /// The query runs from the earliest commitment block in the batch, the tightest bound they can
+    /// share: a note cannot be spent before it exists.
+    pub(crate) async fn fetch_note_nullifiers(
+        &self,
+        note_updates: &mut ExpectedNoteUpdates,
+    ) -> Result<(), ClientError> {
+        // A record here carries a nullifier only if this batch just committed it: one that was
+        // already committed is dropped by `fetch_note_blocks` as unchanged.
+        let mut nullifiers = BTreeSet::new();
+        let mut lowest_commitment_block: BlockNumber = u32::MAX.into();
+        for note_record in &note_updates.notes_to_write {
+            let (Some(nullifier), Some(inclusion_proof)) =
+                (note_record.nullifier(), note_record.inclusion_proof())
+            else {
+                continue;
+            };
+            nullifiers.insert(nullifier);
+            lowest_commitment_block =
+                lowest_commitment_block.min(inclusion_proof.location().block_num());
+        }
+
+        if nullifiers.is_empty() {
+            return Ok(());
+        }
+
+        let spent_heights = self
+            .rpc_api
+            .get_nullifier_commit_heights(nullifiers, lowest_commitment_block)
+            .await?;
+
+        for note_record in &mut note_updates.notes_to_write {
+            let Some(nullifier) = note_record.nullifier() else {
+                continue;
+            };
+            if let Some(Some(spent_at)) = spent_heights.get(&nullifier) {
+                note_record.consumed_externally(nullifier, *spent_at, None)?;
             }
         }
 

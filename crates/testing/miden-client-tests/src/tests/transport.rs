@@ -35,6 +35,7 @@ use miden_protocol::asset::{Asset, FungibleAsset};
 use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::rand::RandomCoin;
 use miden_protocol::note::NoteType as ProtocolNoteType;
+use miden_protocol::testing::account_id::{ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET, ACCOUNT_ID_SENDER};
 use miden_protocol::transaction::RawOutputNote;
 use miden_protocol::utils::serde::Serializable;
 use miden_standards::note::P2idNote;
@@ -692,6 +693,100 @@ async fn ntl_note_committed_within_the_sync_window_is_committed_by_that_sync() {
         committed_notes.iter().any(|note| note.id() == Some(private_note.id())),
         "a delivered note committed inside the synced window must be committed by that sync; \
          leaving it expected strands it, because the chain sync never revisits that block range"
+    );
+}
+
+/// A note delivered over the NTL whose nullifier is already on chain must not land consumable.
+///
+/// Probe for 0xMiden/rust-sdk#2422. Commitment discovery and spend discovery have opposite time
+/// orientations: the transport import looks *backwards* from the sync height for the commitment
+/// (`sync_expected_notes`, plus the sender's block hint), while spend discovery only ever looks
+/// *forwards*, `sync_nullifiers(prefixes, checkpoint + 1, tip)`. A note spent below the checkpoint
+/// therefore imports as `Committed` and nothing later corrects it.
+///
+/// The scenario is a seed restore: the transport re-serves its whole backlog to a cursor-0 client
+/// whose checkpoint is already at the tip.
+#[tokio::test]
+async fn ntl_note_already_spent_below_the_checkpoint_is_not_left_committed() {
+    let sender_id: AccountId = ACCOUNT_ID_SENDER.try_into().unwrap();
+    let faucet_id: AccountId = ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET.try_into().unwrap();
+
+    // 1. Commit a private note to the account, then spend it — both far below the eventual tip.
+    let mut builder = MockChainBuilder::new();
+    let account = builder.add_existing_mock_account(Auth::IncrNonce).unwrap();
+    let asset = Asset::Fungible(FungibleAsset::new(faucet_id, 100u64).unwrap());
+    let note = builder
+        .add_p2id_note(sender_id, account.id(), &[asset], ProtocolNoteType::Private)
+        .unwrap();
+
+    let mut mock_chain = builder.build().unwrap();
+    mock_chain.prove_next_block().unwrap(); // block 1: the note is committed
+
+    let consume_tx = Box::pin(
+        mock_chain
+            .build_transaction(MockTransactionInput::Account(account.clone()))
+            .unauthenticated_input_note(note.clone())
+            .build()
+            .unwrap()
+            .execute(),
+    )
+    .await
+    .unwrap();
+    mock_chain.add_pending_executed_transaction(&consume_tx).unwrap();
+    mock_chain.prove_next_block().unwrap(); // block 2: the nullifier is on chain
+
+    for _ in 0..5 {
+        mock_chain.prove_next_block().unwrap();
+    }
+
+    // 2. A freshly restored client, tracking the note's tag, synced to the tip.
+    let mock_transport_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
+    let rpc_api = Arc::new(MockRpcApi::new(mock_chain));
+    let transport_client = MockNoteTransportApi::new(mock_transport_node.clone());
+
+    let mut rng = rand::rng();
+    let coin_seed: [u64; 4] = rng.random();
+    let rng = RandomCoin::new(coin_seed.map(|v| Felt::new_unchecked(v >> 1)).into());
+    let keystore = FilesystemKeyStore::new(temp_dir()).unwrap();
+
+    let builder: ClientBuilder<FilesystemKeyStore> = ClientBuilder::new()
+        .rpc(rpc_api)
+        .rng(Box::new(rng))
+        .sqlite_store(create_test_store_path())
+        .authenticator(Arc::new(keystore))
+        .tx_discard_delta(None)
+        .note_transport(Arc::new(transport_client));
+
+    let mut client = builder.build().await.unwrap();
+    client.ensure_genesis_in_place().await.unwrap();
+    seed_mock_transaction_encryption_key(&mut client).await;
+    client.add_note_tag(note.metadata().tag()).await.unwrap();
+
+    client.sync_state().await.unwrap();
+    let checkpoint = client.get_sync_height().await.unwrap();
+    assert!(
+        checkpoint > BlockNumber::from(2),
+        "the spend must sit below the checkpoint for this test to exercise the gap"
+    );
+
+    // 3. The transport now re-serves the note, as it does for a cursor-0 client.
+    let details_bytes = NoteDetails::from(note.clone()).to_bytes();
+    mock_transport_node.write().add_note(*note.header(), details_bytes);
+
+    client.sync_state().await.unwrap();
+
+    // The import must have happened, otherwise the assertion below passes for the wrong reason.
+    let all_notes = client.get_input_notes(NoteFilter::All).await.unwrap();
+    assert!(
+        all_notes.iter().any(|n| n.details_commitment() == note.details_commitment()),
+        "the delivered note should have been imported"
+    );
+
+    let committed = client.get_input_notes(NoteFilter::Committed).await.unwrap();
+    assert!(
+        !committed.iter().any(|n| n.id() == Some(note.id())),
+        "a note whose nullifier is already on chain must not be imported as committed: \
+         the forward-only nullifier query never revisits the block that spent it"
     );
 }
 

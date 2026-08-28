@@ -359,6 +359,7 @@ where
         let (mut note_updates, new_cursor) =
             self.fetch_transport_page(cursor, &note_tags, &mut id_by_commitment).await?;
         self.fetch_note_blocks(&mut note_updates).await?;
+        self.fetch_note_nullifiers(&mut note_updates).await?;
 
         self.apply_expected_note_updates(note_updates).await?;
         self.store.update_note_transport_cursor(new_cursor).await?;
@@ -549,6 +550,7 @@ where
         // Every page is in, so the blocks that committed the delivered notes are now known. This
         // finishes their records and leaves the blocks for the apply phase to store.
         self.fetch_note_blocks(&mut data.note_updates).await?;
+        self.fetch_note_nullifiers(&mut data.note_updates).await?;
 
         Ok(data)
     }

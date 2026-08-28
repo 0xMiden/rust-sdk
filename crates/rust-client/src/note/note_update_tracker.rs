@@ -377,7 +377,7 @@ impl NoteUpdateTracker {
             })
     }
 
-    /// Tracks additional already-persisted input notes as unmodified context.
+    /// Tracks additional already-persisted input notes.
     ///
     /// Used to extend a sync's nullifier check to notes that are about to be written by another
     /// path (e.g. the note transport sync) and are therefore absent from the store snapshot this

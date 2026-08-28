@@ -696,16 +696,9 @@ async fn ntl_note_committed_within_the_sync_window_is_committed_by_that_sync() {
     );
 }
 
-/// A note delivered over the NTL whose nullifier is already on chain must not land consumable.
+/// A note delivered over the NTL whose nullifier is already on chain must be stored as consumed.
 ///
-/// Probe for 0xMiden/rust-sdk#2422. Commitment discovery and spend discovery have opposite time
-/// orientations: the transport import looks *backwards* from the sync height for the commitment
-/// (`sync_expected_notes`, plus the sender's block hint), while spend discovery only ever looks
-/// *forwards*, `sync_nullifiers(prefixes, checkpoint + 1, tip)`. A note spent below the checkpoint
-/// therefore imports as `Committed` and nothing later corrects it.
-///
-/// The scenario is a seed restore: the transport re-serves its whole backlog to a cursor-0 client
-/// whose checkpoint is already at the tip.
+/// Probe for 0xMiden/rust-sdk#2422.
 #[tokio::test]
 async fn ntl_note_already_spent_below_the_checkpoint_is_not_left_committed() {
     let sender_id: AccountId = ACCOUNT_ID_SENDER.try_into().unwrap();

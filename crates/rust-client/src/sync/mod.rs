@@ -153,12 +153,6 @@ where
     /// Builds the default sync input and runs [`StateSync::fetch_state`]. The nullifier check is
     /// not part of this: run [`StateSync::fetch_nullifiers`] on the result before applying it, so
     /// it can also cover transport-delivered notes another sync path fetched in the same call.
-    ///
-    /// The [`StateSync`] is returned with the data because it must stay in scope until the update
-    /// is applied: its note observers accumulate per-note state during the fetch and drain it in
-    /// their apply hook, so [`Client::apply_chain_updates`] has to run against the same instances.
-    ///
-    /// Takes `&self` so it can run concurrently with the note transport sync's fetch phase.
     pub async fn fetch_chain_updates(&self) -> Result<(StateSync, ChainSyncData), ClientError> {
         // Each `NoteObserver` owns its own per-sync state; `with_note_observer` just attaches.
         let note_screener = self.note_screener();
@@ -175,13 +169,9 @@ where
     }
 
     /// Verifies fetched chain data against the client's partial MMR and writes the resulting
-    /// update.
+    /// update to the store.
     ///
-    /// `state_sync` must be the one that produced `chain_sync_data`: its note observers hold the
-    /// state they accumulated during the fetch, and their apply hooks run here.
-    ///
-    /// Also caches the partial MMR and prunes irrelevant blocks according to the configured
-    /// cadence, in that order: pruning reuses the cached MMR.
+    /// Also caches the partial MMR and prunes irrelevant blocks.
     ///
     /// # Errors
     ///
@@ -245,8 +235,8 @@ where
     /// Runs the full client sync: private notes from the Note Transport Layer and the client's
     /// on-chain state with the Miden node.
     ///
-    /// The two are fetched concurrently, since the transport pages and the node's sync data are
-    /// independent, and everything that writes runs sequentially afterwards:
+    /// The NTL and the node are fetched concurrently, and everything that writes runs sequentially
+    /// afterwards:
     ///
     /// 1. Concurrently: the note transport fetch and [`Client::fetch_chain_updates`]. Only node and
     ///    NTL calls happen here, which is all that benefits from overlapping.

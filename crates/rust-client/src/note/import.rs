@@ -397,21 +397,12 @@ where
     /// of the written records.
     ///
     /// The block headers go in first, so a record is never persisted as committed before the
-    /// header proving its inclusion.
-    ///
-    /// # Panics
-    ///
-    /// Panics if any committed note is still awaiting its block, i.e. if
-    /// [`Client::fetch_note_blocks`] has not run.
+    /// header proving its inclusion. [`Client::fetch_note_blocks`] must have run beforehand: a
+    /// note still awaiting its block is not written.
     pub(crate) async fn apply_note_transport_updates(
         &mut self,
         note_updates: TransportNoteUpdates,
     ) -> Result<Vec<NoteDetailsCommitment>, ClientError> {
-        assert!(
-            note_updates.committed_notes_awaiting_blocks.is_empty(),
-            "note blocks must be fetched before the committed notes that need them are written"
-        );
-
         let mut partial_mmr = self.get_current_partial_mmr().await?;
         self.insert_note_blocks(note_updates.blocks_to_insert, &mut partial_mmr).await?;
         // Cache MMR so pruning can reuse in-memory MMR.

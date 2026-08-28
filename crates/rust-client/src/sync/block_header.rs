@@ -121,14 +121,6 @@ impl<AUTH> Client<AUTH> {
 
     /// Tracks each fetched note block in `partial_mmr` and stores its header together with the
     /// authentication nodes that tracking produced.
-    ///
-    /// Tracking is what verifies the node's proof path against the current peaks, so every block is
-    /// tracked before the first insert: a path that does not verify fails with nothing written.
-    /// Blocks already tracked are skipped, which covers a block the client picked up in an earlier
-    /// sync.
-    ///
-    /// The caller loads the MMR and caches it afterwards, since the inserts change the tracked
-    /// block set.
     pub(crate) async fn insert_note_blocks(
         &mut self,
         blocks: BTreeMap<BlockNumber, NoteBlockToInsert>,

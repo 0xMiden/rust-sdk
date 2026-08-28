@@ -24,7 +24,7 @@ use miden_tx::utils::serde::{
 };
 
 pub use self::errors::NoteTransportError;
-use crate::note::ExpectedNoteUpdates;
+use crate::note::TransportNoteUpdates;
 use crate::store::InputNoteRecord;
 use crate::sync::NoteTagSource;
 use crate::{Client, ClientError};
@@ -412,8 +412,8 @@ where
         &self,
         tag: NoteTag,
         id_by_commitment: &mut BTreeMap<NoteDetailsCommitment, NoteId>,
-    ) -> Result<ExpectedNoteUpdates, ClientError> {
-        let mut note_updates = ExpectedNoteUpdates::default();
+    ) -> Result<TransportNoteUpdates, ClientError> {
+        let mut note_updates = TransportNoteUpdates::default();
         let mut cursor = NoteTransportCursor::init();
         for _ in 0..Self::MAX_BACKFILL_ITERATIONS {
             let (page_updates, new_cursor) =
@@ -453,7 +453,7 @@ where
         cursor: NoteTransportCursor,
         tags: &[NoteTag],
         id_by_commitment: &mut BTreeMap<NoteDetailsCommitment, NoteId>,
-    ) -> Result<(ExpectedNoteUpdates, NoteTransportCursor), ClientError> {
+    ) -> Result<(TransportNoteUpdates, NoteTransportCursor), ClientError> {
         // Fallback lookback window, in blocks, used only for notes the transport delivered
         // without a sender-provided block hint. Scanning back from sync height handles
         // the race where a note is committed on-chain just before the NTL delivers its data.
@@ -504,17 +504,20 @@ where
     /// chain sync's fetch phase.
     ///
     /// The one write it performs is the relay outbox, which [`Client::flush_relay_outbox`]
-    /// persists itself and which is safe to redo. Block headers for the notes the node reports as
-    /// committed are fetched at the end, once every page is in and the blocks involved are known;
-    /// storing them is the apply phase's.
+    /// persists itself and which is safe to redo.
+    ///
+    /// Two steps run at the end, once every page is in and the notes the node reports as committed
+    /// are known: [`Client::fetch_note_blocks`] resolves the blocks that committed them, and
+    /// [`Client::fetch_note_nullifiers`] checks whether any was already spent. Storing what they
+    /// produce is the apply phase's.
     ///
     /// Returns empty data when note transport is not configured.
     pub(crate) async fn fetch_note_transport_updates(
         &self,
     ) -> Result<NoteTransportSyncData, ClientError> {
-        let mut data = NoteTransportSyncData::default();
+        let mut note_transport_data = NoteTransportSyncData::default();
         if !self.is_note_transport_enabled() {
-            return Ok(data);
+            return Ok(note_transport_data);
         }
 
         // Drain any private notes whose previous relay attempt failed. A flush error is logged,
@@ -530,29 +533,30 @@ where
         let (mut covered, pruned, new_tags) = self.plan_backfill().await?;
         let backfilled = !new_tags.is_empty();
         for tag in new_tags {
-            data.note_updates
-                .merge(self.backfill_tag(tag, &mut data.id_by_commitment).await?);
+            note_transport_data
+                .note_updates
+                .merge(self.backfill_tag(tag, &mut note_transport_data.id_by_commitment).await?);
             covered.insert(tag);
         }
         if pruned || backfilled {
-            data.covered_tags = Some(covered);
+            note_transport_data.covered_tags = Some(covered);
         }
 
         let cursor = self.store.get_note_transport_cursor().await?;
         let note_tags: Vec<NoteTag> =
             self.store.get_unique_note_tags().await?.into_iter().collect();
         let (note_updates, new_cursor) = self
-            .fetch_transport_page(cursor, &note_tags, &mut data.id_by_commitment)
+            .fetch_transport_page(cursor, &note_tags, &mut note_transport_data.id_by_commitment)
             .await?;
-        data.note_updates.merge(note_updates);
-        data.cursor = Some(new_cursor);
+        note_transport_data.note_updates.merge(note_updates);
+        note_transport_data.cursor = Some(new_cursor);
 
-        // Every page is in, so the blocks that committed the delivered notes are now known. This
+        // Every page is in, so the blocks that committed these notes are now known. This
         // finishes their records and leaves the blocks for the apply phase to store.
-        self.fetch_note_blocks(&mut data.note_updates).await?;
-        self.fetch_note_nullifiers(&mut data.note_updates).await?;
+        self.fetch_note_blocks(&mut note_transport_data.note_updates).await?;
+        self.fetch_note_nullifiers(&mut note_transport_data.note_updates).await?;
 
-        Ok(data)
+        Ok(note_transport_data)
     }
 
     /// Writes everything [`Client::fetch_note_transport_updates`] fetched, returning the ids of
@@ -565,14 +569,14 @@ where
     /// [`Client::flush_relay_outbox`] persists it during the fetch.
     pub(crate) async fn apply_note_transport_updates(
         &mut self,
-        data: NoteTransportSyncData,
+        note_transport_data: NoteTransportSyncData,
     ) -> Result<Vec<NoteId>, ClientError> {
         let NoteTransportSyncData {
             covered_tags,
             note_updates,
             id_by_commitment,
             cursor,
-        } = data;
+        } = note_transport_data;
 
         let written = self.apply_expected_note_updates(note_updates).await?;
         let mut imported_ids: Vec<NoteId> = written
@@ -600,15 +604,15 @@ where
 
 /// Everything the note transport sync is about to write, with nothing written yet.
 ///
-/// Built by [`Client::fetch_note_transport_updates`], completed by
-/// [`Client::get_and_store_note_blocks`] and written by
+/// Built by [`Client::fetch_note_transport_updates`], which also completes it with
+/// [`Client::fetch_note_blocks`] and [`Client::fetch_note_nullifiers`], and written by
 /// [`Client::apply_note_transport_updates`].
 #[derive(Default)]
 pub(crate) struct NoteTransportSyncData {
     /// Covered-tag set to persist, `None` when it did not change.
     covered_tags: Option<BTreeSet<NoteTag>>,
     /// Every fetched page's updates, merged in fetch order.
-    pub(crate) note_updates: ExpectedNoteUpdates,
+    pub(crate) note_updates: TransportNoteUpdates,
     /// Note ids by details commitment, taken from the note headers the transport returned. Used
     /// to resolve the written records back to ids.
     id_by_commitment: BTreeMap<NoteDetailsCommitment, NoteId>,
@@ -619,7 +623,7 @@ pub(crate) struct NoteTransportSyncData {
 impl NoteTransportSyncData {
     /// The records this sync is about to write.
     ///
-    /// Used to extend the chain sync's nullifier check to the notes the transport just delivered,
+    /// Used to extend the chain sync's nullifier check to the transport-delivered notes,
     /// which are not in the store yet.
     pub(crate) fn input_note_records(&self) -> impl Iterator<Item = &InputNoteRecord> {
         self.note_updates.input_note_records()

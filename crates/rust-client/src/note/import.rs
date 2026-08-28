@@ -190,8 +190,8 @@ where
     pub(crate) async fn fetch_expected_note_updates(
         &self,
         requests: &[(NoteDetails, BlockNumber, NoteTag)],
-    ) -> Result<ExpectedNoteUpdates, ClientError> {
-        let mut note_updates = ExpectedNoteUpdates::default();
+    ) -> Result<TransportNoteUpdates, ClientError> {
+        let mut note_updates = TransportNoteUpdates::default();
         if requests.is_empty() {
             return Ok(note_updates);
         }
@@ -285,7 +285,7 @@ where
     /// spent is [`Client::fetch_note_nullifiers`]'s.
     pub(crate) async fn fetch_note_blocks(
         &self,
-        note_updates: &mut ExpectedNoteUpdates,
+        note_updates: &mut TransportNoteUpdates,
     ) -> Result<(), ClientError> {
         let requested_blocks: BTreeSet<BlockNumber> = note_updates
             .committed_notes_awaiting_blocks
@@ -364,7 +364,7 @@ where
     /// share: a note cannot be spent before it exists.
     pub(crate) async fn fetch_note_nullifiers(
         &self,
-        note_updates: &mut ExpectedNoteUpdates,
+        note_updates: &mut TransportNoteUpdates,
     ) -> Result<(), ClientError> {
         // A record here carries a nullifier only if this batch just committed it: one that was
         // already committed is dropped by `fetch_note_blocks` as unchanged.
@@ -402,7 +402,7 @@ where
         Ok(())
     }
 
-    /// Writes an [`ExpectedNoteUpdates`], returning the details commitments of the written
+    /// Writes a [`TransportNoteUpdates`], returning the details commitments of the written
     /// records.
     ///
     /// The block headers go in first, so a record is never persisted as committed before the
@@ -414,7 +414,7 @@ where
     /// [`Client::fetch_note_blocks`] has not run.
     pub(crate) async fn apply_expected_note_updates(
         &mut self,
-        note_updates: ExpectedNoteUpdates,
+        note_updates: TransportNoteUpdates,
     ) -> Result<Vec<NoteDetailsCommitment>, ClientError> {
         assert!(
             note_updates.committed_notes_awaiting_blocks.is_empty(),
@@ -765,15 +765,15 @@ struct CommittedNoteAwaitingBlock {
     changed: bool,
 }
 
-/// A batch of expected notes split by whether the node has committed them, with nothing written
-/// yet.
+/// A batch of notes fetched from the Note Transport Layer, split by whether the node has
+/// committed them, with nothing written yet.
 ///
 /// The counterpart of the [`NoteFile::ExpectedNote`] path in [`Client::import_notes`], split so
-/// the network work happens before the writes: built by
-/// [`Client::fetch_expected_note_updates`], completed by [`Client::fetch_note_blocks`], written by
+/// the network work happens before the writes: built by [`Client::fetch_expected_note_updates`],
+/// completed by [`Client::fetch_note_blocks`] and [`Client::fetch_note_nullifiers`], written by
 /// [`Client::apply_expected_note_updates`].
 #[derive(Default)]
-pub(crate) struct ExpectedNoteUpdates {
+pub(crate) struct TransportNoteUpdates {
     /// Records ready to write: the notes the node has not committed, plus the committed ones
     /// once [`Client::fetch_note_blocks`] has resolved their blocks.
     notes_to_write: Vec<InputNoteRecord>,
@@ -798,7 +798,7 @@ pub(crate) struct NoteBlockToInsert {
     pub(crate) mmr_path: MerklePath,
 }
 
-impl ExpectedNoteUpdates {
+impl TransportNoteUpdates {
     /// Appends another batch to this one.
     ///
     /// Order is preserved, which is what makes a note returned by more than one transport page

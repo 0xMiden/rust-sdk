@@ -284,13 +284,13 @@ impl StateSync {
     ) -> Result<StateSyncUpdate, ClientError> {
         let block_num = block_num_from_forest(current_partial_mmr)?;
 
-        let mut data = self.fetch_state(block_num, input).await?;
-        self.process_fetched_state(&mut data, Vec::new()).await?;
-        self.fetch_nullifiers(&mut data).await?;
+        let mut chain_sync_data = self.fetch_state(block_num, input).await?;
+        self.process_fetched_state(&mut chain_sync_data, Vec::new()).await?;
+        self.fetch_nullifiers(&mut chain_sync_data).await?;
 
         // Work on a clone so any validation failure leaves `current_partial_mmr` untouched.
         let mut working_mmr = current_partial_mmr.clone();
-        let update = Self::build_update(data, &mut working_mmr)?;
+        let update = Self::build_update(chain_sync_data, &mut working_mmr)?;
         *current_partial_mmr = working_mmr;
 
         Ok(update)
@@ -383,44 +383,49 @@ impl StateSync {
     /// store reads and local execution, which is why this is split from [`Self::fetch_state`] and
     /// runs afterwards rather than concurrently.
     ///
-    /// `delivered_notes` are notes another sync path fetched in the same call and has already
-    /// written — the private notes delivered over the note transport layer. They are tracked here
-    /// so the screener's verdict has a record to apply itself to, exactly as if they had been in
-    /// the store when the sync input was built.
+    /// `transport_delivered_notes` are the notes another sync path fetched from the Note Transport
+    /// Layer in the same call and has already written. They are tracked here so the screener's
+    /// verdict has a record to apply itself to, exactly as if they had been in the store when the
+    /// sync input was built.
     ///
     /// # Ordering
     ///
-    /// The caller must have written `delivered_notes` to the store first.
+    /// The caller must have written `transport_delivered_notes` to the store first.
     /// [`NoteScreener::on_note_received`](crate::note::NoteScreener) recognises a note by looking
     /// it up in the store, and a private note it cannot find is discarded — permanently, since the
     /// chain's note query never revisits a block range.
     pub async fn process_fetched_state(
         &self,
-        data: &mut ChainSyncData,
-        delivered_notes: Vec<InputNoteRecord>,
+        chain_sync_data: &mut ChainSyncData,
+        transport_delivered_notes: Vec<InputNoteRecord>,
     ) -> Result<(), ClientError> {
-        let Some(advance) = data.advance.as_mut() else {
+        let Some(advance) = chain_sync_data.advance.as_mut() else {
             return Ok(());
         };
 
-        data.note_updates.track_existing_input_notes(delivered_notes);
+        chain_sync_data
+            .note_updates
+            .track_existing_input_notes(transport_delivered_notes);
 
         advance.relevant_note_blocks = self
             .screen_note_blocks(
                 core::mem::take(&mut advance.note_blocks_awaiting_screening),
-                &mut data.note_updates,
+                &mut chain_sync_data.note_updates,
             )
             .await?;
 
         self.apply_transactions_and_nullifiers(
             &advance.chain_tip_header,
             &advance.transactions,
-            &mut data.note_updates,
-            &mut data.transaction_updates,
+            &mut chain_sync_data.note_updates,
+            &mut chain_sync_data.transaction_updates,
         )?;
 
-        self.recover_consumed_public_notes(&mut data.note_updates, &advance.transactions)
-            .await?;
+        self.recover_consumed_public_notes(
+            &mut chain_sync_data.note_updates,
+            &advance.transactions,
+        )
+        .await?;
 
         Ok(())
     }
@@ -433,7 +438,7 @@ impl StateSync {
     /// note blocks that still hold an unspent note. It performs no I/O, so every check runs before
     /// the caller's first write, and a failure leaves `partial_mmr` to be discarded by the caller.
     pub fn build_update(
-        data: ChainSyncData,
+        chain_sync_data: ChainSyncData,
         partial_mmr: &mut PartialMmr,
     ) -> Result<StateSyncUpdate, ClientError> {
         let ChainSyncData {
@@ -443,7 +448,7 @@ impl StateSync {
             transaction_updates,
             account_updates,
             ..
-        } = data;
+        } = chain_sync_data;
 
         let mut partial_blockchain_updates = PartialBlockchainUpdates::default();
 
@@ -497,30 +502,35 @@ impl StateSync {
         ))
     }
 
-    /// Checks the node for nullifiers of every note `data` could have consumed.
+    /// Checks the node for nullifiers of every note `chain_sync_data` could have consumed.
     ///
     /// The query covers every note the sync tracks, including the ones
-    /// [`Self::process_fetched_state`] took from another sync path — so a note delivered and
+    /// [`Self::process_fetched_state`] took from another sync path — so a transport-delivered note
     /// consumed within one sync is reported as consumed by that same sync.
     ///
     /// No-op when the nullifier sync is disabled (see [`Self::disable_nullifier_sync`]) or when
     /// the node reported no progress, since there is no block range to query.
-    pub async fn fetch_nullifiers(&self, data: &mut ChainSyncData) -> Result<(), ClientError> {
+    pub async fn fetch_nullifiers(
+        &self,
+        chain_sync_data: &mut ChainSyncData,
+    ) -> Result<(), ClientError> {
         if !self.sync_nullifiers {
             return Ok(());
         }
 
-        let Some(chain_tip) =
-            data.advance.as_ref().map(|advance| advance.chain_tip_header.block_num())
+        let Some(chain_tip) = chain_sync_data
+            .advance
+            .as_ref()
+            .map(|advance| advance.chain_tip_header.block_num())
         else {
             return Ok(());
         };
 
         self.nullifiers_state_sync(
-            &mut data.note_updates,
-            &mut data.transaction_updates,
+            &mut chain_sync_data.note_updates,
+            &mut chain_sync_data.transaction_updates,
             chain_tip,
-            data.block_from,
+            chain_sync_data.block_from,
         )
         .await
     }

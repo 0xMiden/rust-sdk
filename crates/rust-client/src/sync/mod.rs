@@ -139,12 +139,12 @@ where
         self.ensure_genesis_in_place().await?;
         self.ensure_rpc_limits_in_place().await?;
 
-        let (state_sync, mut data) = self.fetch_chain_updates().await?;
-        // No other sync path ran, so there are no externally delivered notes to take on.
-        state_sync.process_fetched_state(&mut data, Vec::new()).await?;
-        state_sync.fetch_nullifiers(&mut data).await?;
+        let (state_sync, mut chain_sync_data) = self.fetch_chain_updates().await?;
+        // No other sync path ran, so there are no transport-delivered notes to take on.
+        state_sync.process_fetched_state(&mut chain_sync_data, Vec::new()).await?;
+        state_sync.fetch_nullifiers(&mut chain_sync_data).await?;
 
-        self.apply_chain_updates(&state_sync, data).await
+        self.apply_chain_updates(&state_sync, chain_sync_data).await
     }
 
     /// Fetches the node's view of everything that changed since the client's chain tip, without
@@ -152,7 +152,7 @@ where
     ///
     /// Builds the default sync input and runs [`StateSync::fetch_state`]. The nullifier check is
     /// not part of this: run [`StateSync::fetch_nullifiers`] on the result before applying it, so
-    /// it can also cover notes another sync path delivered in the same call.
+    /// it can also cover transport-delivered notes another sync path fetched in the same call.
     ///
     /// The [`StateSync`] is returned with the data because it must stay in scope until the update
     /// is applied: its note observers accumulate per-note state during the fetch and drain it in
@@ -169,16 +169,16 @@ where
         let input = self.build_sync_input().await?;
         let block_from = block_num_from_forest(&self.get_current_partial_mmr().await?)?;
 
-        let data = state_sync.fetch_state(block_from, input).await?;
+        let chain_sync_data = state_sync.fetch_state(block_from, input).await?;
 
-        Ok((state_sync, data))
+        Ok((state_sync, chain_sync_data))
     }
 
     /// Verifies fetched chain data against the client's partial MMR and writes the resulting
     /// update.
     ///
-    /// `state_sync` must be the one that produced `data`: its note observers hold the state they
-    /// accumulated during the fetch, and their apply hooks run here.
+    /// `state_sync` must be the one that produced `chain_sync_data`: its note observers hold the
+    /// state they accumulated during the fetch, and their apply hooks run here.
     ///
     /// Also caches the partial MMR and prunes irrelevant blocks according to the configured
     /// cadence, in that order: pruning reuses the cached MMR.
@@ -190,19 +190,19 @@ where
     pub async fn apply_chain_updates(
         &mut self,
         state_sync: &StateSync,
-        data: ChainSyncData,
+        chain_sync_data: ChainSyncData,
     ) -> Result<SyncSummary, ClientError> {
         let mut partial_mmr = self.get_current_partial_mmr().await?;
 
         let block_from = block_num_from_forest(&partial_mmr)?;
-        if block_from != data.block_from {
+        if block_from != chain_sync_data.block_from {
             return Err(ClientError::ChainValidationError(format!(
-                "chain sync data starts at block {} but the client is at block {block_from}",
-                data.block_from
+                "chain sync chain_sync_data starts at block {} but the client is at block {block_from}",
+                chain_sync_data.block_from
             )));
         }
 
-        let state_sync_update = StateSync::build_update(data, &mut partial_mmr)?;
+        let state_sync_update = StateSync::build_update(chain_sync_data, &mut partial_mmr)?;
 
         let sync_summary: SyncSummary = (&state_sync_update).into();
         debug!(sync_summary = ?sync_summary, "Sync summary computed");
@@ -237,9 +237,9 @@ where
         }
         self.ensure_genesis_in_place().await?;
 
-        let data = self.fetch_note_transport_updates().await?;
+        let note_transport_data = self.fetch_note_transport_updates().await?;
 
-        self.apply_note_transport_updates(data).await
+        self.apply_note_transport_updates(note_transport_data).await
     }
 
     /// Runs the full client sync: private notes from the Note Transport Layer and the client's
@@ -252,12 +252,13 @@ where
     ///    NTL calls happen here, which is all that benefits from overlapping.
     /// 2. The transport writes.
     /// 3. [`StateSync::process_fetched_state`], which screens the node's notes against the store —
-    ///    hence after step 2, so a delivered note is recognised rather than discarded — and takes
-    ///    on the delivered records so a commitment reported this sync is applied to them.
-    /// 4. [`StateSync::fetch_nullifiers`], covering the tracked notes *and* the delivered ones, so
-    ///    a note delivered and consumed in the same window is reported as consumed by this call.
-    /// 5. The chain update, written last: a nullified delivered note is persisted as an update to
-    ///    the row step 2 inserts.
+    ///    hence after step 2, so a transport-delivered note is recognised rather than discarded —
+    ///    and takes on those records so a commitment reported this sync is applied to them.
+    /// 4. [`StateSync::fetch_nullifiers`], covering the tracked notes *and* the transport-delivered
+    ///    ones, so a note delivered and consumed in the same window is reported as consumed by this
+    ///    call.
+    /// 5. The chain update, written last: a nullified transport-delivered note is persisted as an
+    ///    update to the row step 2 inserts.
     ///
     /// Fails fast on the first error. Before step 2 nothing is written but the relay outbox, which
     /// [`Client::flush_relay_outbox`] persists during the fetch and the next sync retries.
@@ -271,21 +272,23 @@ where
         self.ensure_genesis_in_place().await?;
         self.ensure_rpc_limits_in_place().await?;
 
-        let (transport_data, (state_sync, mut chain_data)) =
+        let (note_transport_data, (state_sync, mut chain_sync_data)) =
             futures::try_join!(self.fetch_note_transport_updates(), self.fetch_chain_updates())?;
 
-        let delivered_notes: Vec<InputNoteRecord> =
-            transport_data.input_note_records().cloned().collect();
+        let transport_delivered_notes: Vec<InputNoteRecord> =
+            note_transport_data.input_note_records().cloned().collect();
 
-        // The delivered notes must be in the store before the chain data is screened: the screener
+        // These must be in the store before the chain data is screened: the screener
         // recognises a note by looking it up there, and a private note it cannot find is discarded
         // for good, since the chain's note query never revisits a block range.
-        let new_private_notes = self.apply_note_transport_updates(transport_data).await?;
+        let new_private_notes = self.apply_note_transport_updates(note_transport_data).await?;
 
-        state_sync.process_fetched_state(&mut chain_data, delivered_notes).await?;
-        state_sync.fetch_nullifiers(&mut chain_data).await?;
+        state_sync
+            .process_fetched_state(&mut chain_sync_data, transport_delivered_notes)
+            .await?;
+        state_sync.fetch_nullifiers(&mut chain_sync_data).await?;
 
-        let mut summary = self.apply_chain_updates(&state_sync, chain_data).await?;
+        let mut summary = self.apply_chain_updates(&state_sync, chain_sync_data).await?;
 
         summary.new_private_notes = new_private_notes;
         Ok(summary)

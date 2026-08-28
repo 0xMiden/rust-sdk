@@ -114,6 +114,7 @@ struct SerializedInputNoteStateUpdate {
     pub details_commitment: Vec<u8>,
     pub state_discriminant: u8,
     pub state: Vec<u8>,
+    pub attachments: Vec<u8>,
     pub consumed_block_height: Option<u32>,
     pub consumed_tx_order: Option<u32>,
     pub consumer_account_id: Option<Vec<u8>>,
@@ -513,6 +514,7 @@ fn serialize_input_note_state(note: &InputNoteRecord) -> SerializedInputNoteStat
         details_commitment: note.details_commitment().to_bytes(),
         state_discriminant: note.state().discriminant(),
         state: note.state().to_bytes(),
+        attachments: note.attachments().to_bytes(),
         consumed_block_height,
         consumed_tx_order,
         consumer_account_id,
@@ -708,7 +710,7 @@ fn batch_update_input_note_states(
 
     let mut stmt = tx
         .prepare_cached(
-            "UPDATE `input_notes` SET state_discriminant = ?, state = ?, \
+            "UPDATE `input_notes` SET state_discriminant = ?, state = ?, attachments = ?, \
              consumed_block_height = ?, consumed_tx_order = ?, consumer_account_id = ? \
              WHERE details_commitment = ?",
         )
@@ -718,6 +720,7 @@ fn batch_update_input_note_states(
         stmt.execute(params![
             update.state_discriminant,
             update.state,
+            update.attachments,
             update.consumed_block_height,
             update.consumed_tx_order,
             update.consumer_account_id,

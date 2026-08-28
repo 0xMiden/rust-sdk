@@ -24,7 +24,6 @@ use miden_client::testing::note_transport::{
 };
 use miden_client::utils::RwLock;
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
-use miden_protocol::Felt;
 use miden_protocol::account::{
     AccountId,
     AccountIdVersion,
@@ -34,9 +33,10 @@ use miden_protocol::account::{
 use miden_protocol::asset::{Asset, FungibleAsset};
 use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::rand::RandomCoin;
-use miden_protocol::note::NoteType as ProtocolNoteType;
+use miden_protocol::note::{NoteAttachment, NoteAttachmentScheme, NoteType as ProtocolNoteType};
 use miden_protocol::transaction::RawOutputNote;
 use miden_protocol::utils::serde::Serializable;
+use miden_protocol::{Felt, Word};
 use miden_standards::note::P2idNote;
 use miden_standards::testing::note::NoteBuilder;
 use miden_testing::{Auth, MockChainBuilder, MockTransactionInput};
@@ -98,7 +98,8 @@ async fn transport_basic() {
     assert_eq!(notes.len(), 0);
 }
 
-/// Recovers attachments from the node for notes received over NTL.
+/// Recovers attachments for notes received over NTL. The single-word attachment rides the
+/// `SyncNotes` response, so it is recovered with no `GetNotesById` request.
 #[tokio::test]
 async fn transport_recovers_attachments() {
     let mut mock_chain_builder = MockChainBuilder::new();
@@ -134,8 +135,9 @@ async fn transport_recovers_attachments() {
     mock_chain.add_pending_executed_transaction(&tx).unwrap();
     mock_chain.prove_next_block().unwrap();
 
+    // Deliberately not registered on the mock: a single-word attachment reaches the client
+    // through the sync record, so a node that withholds it changes nothing.
     let rpc_api = Arc::new(MockRpcApi::new(mock_chain));
-    rpc_api.register_private_note_attachments(private_note.id(), attachments.clone());
 
     let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
     let keystore = FilesystemKeyStore::new(temp_dir()).unwrap();
@@ -167,13 +169,20 @@ async fn transport_recovers_attachments() {
     assert_eq!(
         notes[0].attachments(),
         &attachments,
-        "note transport recipient should recover attachments via get_notes_by_id",
+        "note transport recipient should recover attachments from the sync record",
+    );
+    assert_eq!(
+        rpc_api.get_notes_by_id_call_count(),
+        0,
+        "attachments carried by the sync record need no GetNotesById request",
     );
 }
 
-/// A committed note that advertises attachments the node cannot serve must not fail syncing or
-/// NTL fetching: the note is skipped per-note, and an NTL-delivered record stays expected (never
-/// committed without its attachment content) so a later re-import can retry the fetch.
+/// A multi-word attachment arrives as a commitment only, so its content must still be fetched. A
+/// note whose content the node cannot serve must not fail syncing or NTL fetching.
+///
+/// The note is skipped per-note, and an NTL-delivered record stays expected rather than being
+/// committed without its content, so a later re-import can retry the fetch.
 #[tokio::test]
 async fn unavailable_attachments_do_not_fail_sync() {
     // The helper tracks the note's tag and syncs to the tip, so it already exercises the sync
@@ -937,13 +946,23 @@ fn private_note_with_tag(account: AccountId, tag: NoteTag, seed: u64) -> Note {
     .unwrap()
 }
 
+/// An attachment spanning more than one word, which a `SyncNotes` response reports as a
+/// commitment only, so its content has to be fetched and a node can withhold it.
+fn multi_word_attachment() -> NoteAttachment {
+    NoteAttachment::with_words(
+        NoteAttachmentScheme::new(100).unwrap(),
+        vec![Word::from([1u32, 2, 3, 4]), Word::from([5u32, 6, 7, 8])],
+    )
+    .unwrap()
+}
+
 /// Build a chain with a private note (tag 0) committed at block 1, advance
 /// `blocks_past_commitment` blocks beyond it, then create a recipient client synced to the tip
 /// with an (initially empty) note transport. Returns the client, the committed note, and the
 /// shared mock transport node so a test can deliver the note over the NTL afterwards.
 ///
-/// With `with_unserved_attachment` the note's metadata advertises an attachment whose content is
-/// never registered with the mock node, so any content fetch for the note comes back empty.
+/// With `with_unserved_attachment` the note carries a multi-word attachment the mock node never
+/// serves. It has to be multi-word, since the node sends a single-word one on the sync record.
 async fn committed_private_note_recipient(
     blocks_past_commitment: u32,
     with_unserved_attachment: bool,
@@ -960,9 +979,7 @@ async fn committed_private_note_recipient(
     .note_type(ProtocolNoteType::Private)
     .tag(NoteTag::new(0).into());
     if with_unserved_attachment {
-        let ntx_target =
-            NetworkAccountTarget::new(mock_account.id(), NoteExecutionHint::Always).unwrap();
-        note_builder = note_builder.attachment(ntx_target);
+        note_builder = note_builder.attachment(multi_word_attachment());
     }
     let private_note = note_builder.build().unwrap();
 

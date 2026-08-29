@@ -72,6 +72,7 @@
 
 ### Fixes
 
+* [FIX][cli] `export --account` now writes the exported `.mac` file (which carries the account's `auth_secret_keys`) with `0600` permissions on Unix from the moment of creation, and forces them to `0600` again afterwards in case a file already existed at that path with looser permissions - the same file-permission gap #1833 fixed for the filesystem keystore and the SQLite database, but not for this CLI export path ([#2469](https://github.com/0xMiden/rust-sdk/pull/2469)).
 * [FIX][rust] `ChainAnchor` deserialization no longer panics on crafted input: a partial blockchain whose tracked leaf is missing an ancestor sibling, or whose block-map key disagrees with its header, is rejected as an invalid value, and anchors tracking more blocks than a transaction can reference are rejected early with the new `ChainAnchorError::TooManyTrackedBlocks` ([#2421](https://github.com/0xMiden/rust-sdk/pull/2421)).
 * [FIX][rust] `Client::execute_transaction_at` now fails with the new `ChainAnchorError::AnchoredTransactionExpired` when the executed transaction's expiration block has already been reached, instead of handing back a transaction the network would reject after proving ([#2421](https://github.com/0xMiden/rust-sdk/pull/2421)).
 * [FIX][rust] A request that sets `ignore_invalid_input_notes` but carries no input notes, or whose notes are all screened out, no longer fails with an out-of-range note-count error from the consumption checker ([#2421](https://github.com/0xMiden/rust-sdk/pull/2421)).

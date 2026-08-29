@@ -106,8 +106,10 @@ async fn export_account<AUTH>(
     };
 
     info!("Writing file to {}", file_path.to_string_lossy());
-    let mut file = File::create(file_path)?;
+    let mut file = create_secret_data_file(&file_path)?;
     account_data.write_into(&mut file);
+    #[cfg(unix)]
+    restrict_secret_data_file_permissions(&file_path)?;
 
     println!("Successfully exported account {account_id}");
     Ok(file)
@@ -150,4 +152,75 @@ async fn export_note<AUTH: Keystore + Sync>(
 
     println!("Successfully exported note {note_id}");
     Ok(file)
+}
+
+// HELPERS
+// ================================================================================================
+
+/// Creates a file for writing account secret data (the exported `.mac` file's `auth_secret_keys`),
+/// restricted to owner-only access (`0600`) on Unix from the moment of creation.
+fn create_secret_data_file(path: &std::path::Path) -> std::io::Result<File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path)
+    }
+    #[cfg(not(unix))]
+    {
+        File::create(path)
+    }
+}
+
+/// Forces `path` to owner-only (`0600`) permissions on Unix, in case a file already existed at
+/// that path with looser permissions before this export - `OpenOptions::mode` only applies when
+/// a file is newly created, not when an existing one is truncated and reopened for writing.
+#[cfg(unix)]
+fn restrict_secret_data_file_permissions(path: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::{create_secret_data_file, restrict_secret_data_file_permissions};
+
+    fn unique_temp_path(label: &str) -> std::path::PathBuf {
+        std::env::temp_dir()
+            .join(format!("miden-cli-export-test-{label}-{}", std::process::id()))
+    }
+
+    /// A freshly created export file must be `0600` from the start.
+    #[test]
+    fn newly_created_secret_data_file_is_0600() {
+        let path = unique_temp_path("new");
+        let _ = std::fs::remove_file(&path);
+
+        let file = create_secret_data_file(&path).expect("failed to create file");
+        let mode = file.metadata().unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "expected 0600 on creation, got {mode:o}");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Overwriting a pre-existing, loosely-permissioned export file must still end up `0600`
+    /// - `OpenOptions::mode` alone (as used by `create_secret_data_file`) would silently leave a
+    /// pre-existing file's looser permissions in place, which is exactly why `export_account`
+    /// also calls `restrict_secret_data_file_permissions` afterwards.
+    #[test]
+    fn overwriting_an_existing_export_file_still_ends_up_0600() {
+        let path = unique_temp_path("overwrite");
+        std::fs::write(&path, b"stale contents").expect("failed to pre-create file");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+            .expect("failed to set initial permissions");
+
+        let _file = create_secret_data_file(&path).expect("failed to open file");
+        restrict_secret_data_file_permissions(&path).expect("failed to restrict permissions");
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "expected 0600 after overwrite, got {mode:o}");
+
+        let _ = std::fs::remove_file(&path);
+    }
 }

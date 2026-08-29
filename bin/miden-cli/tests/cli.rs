@@ -1705,7 +1705,7 @@ async fn fund_cli_account(
 ) -> Result<()> {
     let mut client = cli_funding_client(cli_path, store_path, endpoint).await?;
 
-    client.fund_and_deploy_if_needed(&[AccountId::from_hex(account_id)?]).await
+    client.fund_if_needed(&[AccountId::from_hex(account_id)?]).await
 }
 
 /// Builds a client over the CLI's own store and keystore, with a fee funder attached so it can pay

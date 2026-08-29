@@ -1,6 +1,7 @@
 //! Funding support for running the test helpers against a fee-charging chain.
 
 use alloc::boxed::Box;
+use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt;
@@ -16,29 +17,39 @@ use crate::transaction::{TransactionId, TransactionRequestBuilder};
 /// Makes accounts able to pay their own transaction fees.
 #[async_trait::async_trait(?Send)]
 pub trait FeeFunder: Send + Sync + fmt::Debug {
-    /// Gives every account in `account_ids` enough of the chain's native fee asset to pay for its
-    /// own transactions, and deploys them on-chain.
+    /// Pays every account in `account_ids` enough of the chain's native fee asset to cover its own
+    /// transactions, returning each account paired with the note carrying its funds.
     ///
     /// Takes the accounts together rather than one at a time so that a funder can pay them all in
-    /// one transaction.
-    ///
-    /// `client` is the client tracking the accounts, and is the one that must submit the deploys.
-    async fn fund_and_deploy(
-        &self,
-        client: &mut TestClient,
-        account_ids: &[AccountId],
-    ) -> Result<()>;
+    /// one transaction. The notes are returned rather than consumed: an account's own next
+    /// transaction consumes its note, so the funding costs no transaction of its own.
+    async fn fund(&self, account_ids: &[AccountId]) -> Result<Vec<(AccountId, Note)>>;
 }
 
 impl TestClient {
-    /// Funds and deploys `account_ids` if the chain charges fees. On a fee-free chain it does
-    /// nothing, leaving the accounts undeployed until the test transacts with them.
-    pub async fn fund_and_deploy_if_needed(&mut self, account_ids: &[AccountId]) -> Result<()> {
+    /// Pays `account_ids` what they need to cover their own fees, if the chain charges any.
+    ///
+    /// Costs no transaction of its own beyond the funder's single payment: each account's funding
+    /// note is held until that account's next transaction, which consumes it and is thereby also
+    /// the account's deploy. On a fee-free chain this does nothing at all.
+    pub async fn fund_if_needed(&mut self, account_ids: &[AccountId]) -> Result<()> {
         if !self.chain_charges_fees().await? {
             return Ok(());
         }
 
-        self.deploy_accounts(account_ids).await
+        let funded = self.funder()?.fund(account_ids).await?;
+        self.stash_funding(funded);
+
+        Ok(())
+    }
+
+    /// Returns the funder, or an error naming what to supply when the chain needs one.
+    fn funder(&self) -> Result<Arc<dyn FeeFunder>> {
+        self.fee_funder().cloned().context(
+            "this chain charges a transaction fee, so every account a test creates has to be \
+             funded before it can transact, but this client has no fee funder. Supply the funder \
+             wallets to draw from (see the integration tests' `--funders` argument)",
+        )
     }
 
     /// Deploys `account_id` on-chain, whether or not the chain charges fees.
@@ -67,12 +78,17 @@ impl TestClient {
         }
 
         if self.chain_charges_fees().await? {
-            let funder = self.fee_funder().cloned().context(
-                "this chain charges a transaction fee, so every account a test creates has to be \
-                 funded before it can transact, but this client has no fee funder. Supply the \
-                 funder wallets to draw from (see the integration tests' `--funders` argument)",
-            )?;
-            return funder.fund_and_deploy(self, &undeployed).await;
+            // Deploying on demand means there is no later transaction to fold the funding into,
+            // so the notes are consumed here.
+            let mut funded = Vec::with_capacity(undeployed.len());
+            for account_id in &undeployed {
+                match self.take_funding(*account_id) {
+                    Some(note) => funded.push((*account_id, note)),
+                    None => funded.extend(self.funder()?.fund(&[*account_id]).await?),
+                }
+            }
+
+            return self.deploy_by_consuming(&funded).await;
         }
 
         let mut tx_ids = Vec::with_capacity(undeployed.len());

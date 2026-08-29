@@ -1,4 +1,5 @@
 use std::boxed::Box;
+use std::collections::BTreeMap;
 use std::env::temp_dir;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -59,12 +60,75 @@ use crate::{Client, ClientError};
 pub struct TestClient {
     client: Client<FilesystemKeyStore>,
     fee_funder: Option<Arc<dyn FeeFunder>>,
+    /// Funding notes paid to accounts that have not spent them yet, keyed by the account they are
+    /// addressed to.
+    ///
+    /// An account's first transaction consumes its note rather than a dedicated deploy doing it:
+    /// the note's assets reach the vault before the fee is withdrawn, so that one transaction
+    /// deploys the account, funds it and does the test's work. [`Self::submit_new_transaction`]
+    /// and [`Self::push_to_batch`] fold the note in.
+    pending_funding: BTreeMap<AccountId, Note>,
 }
 
 impl TestClient {
     /// Wraps `client` with no fee funder, which is all a fee-free chain needs.
     pub fn new(client: Client<FilesystemKeyStore>) -> Self {
-        Self { client, fee_funder: None }
+        Self {
+            client,
+            fee_funder: None,
+            pending_funding: BTreeMap::new(),
+        }
+    }
+
+    /// Records funding notes for the accounts they are addressed to, to be folded into each
+    /// account's next transaction.
+    pub(crate) fn stash_funding(&mut self, funded: impl IntoIterator<Item = (AccountId, Note)>) {
+        self.pending_funding.extend(funded);
+    }
+
+    /// Takes `account_id`'s funding note, if it has one that is still unspent.
+    ///
+    /// Taking the note opts the account out of the automatic folding done by
+    /// [`Self::submit_new_transaction`] and [`Self::fund_request`]: the caller now owns it and
+    /// must consume it in some transaction, or the account is left unable to pay a fee. Worth
+    /// doing when a test needs the funding to land somewhere specific — for instance one asserting
+    /// on the notes or transactions a sync reports, which would otherwise see the funding note
+    /// appear in a transaction it did not put it in.
+    pub fn take_funding(&mut self, account_id: AccountId) -> Option<Note> {
+        self.pending_funding.remove(&account_id)
+    }
+
+    /// Submits a transaction for `account_id`, folding in its funding note when it has one.
+    ///
+    /// Shadows [`Client::submit_new_transaction`], which the wrapped client still exposes through
+    /// [`Deref`] for callers that deliberately want the unfunded path.
+    pub async fn submit_new_transaction(
+        &mut self,
+        account_id: AccountId,
+        transaction_request: TransactionRequest,
+    ) -> Result<TransactionId, ClientError> {
+        let transaction_request = self.fund_request(account_id, transaction_request);
+
+        Box::pin(self.client.submit_new_transaction(account_id, transaction_request)).await
+    }
+
+    /// Returns `transaction_request` with `account_id`'s funding note folded in, when it has one
+    /// that is still unspent.
+    ///
+    /// [`Self::submit_new_transaction`] does this itself. Call it directly for a request going
+    /// somewhere else — notably a batch, which borrows the client for as long as it lives, so the
+    /// note has to be taken out before the batch is created.
+    #[must_use]
+    pub fn fund_request(
+        &mut self,
+        account_id: AccountId,
+        mut transaction_request: TransactionRequest,
+    ) -> TransactionRequest {
+        if let Some(note) = self.take_funding(account_id) {
+            transaction_request.add_unauthenticated_input_note(note);
+        }
+
+        transaction_request
     }
 
     /// Sets the funder the account-creating helpers draw the native fee asset from.
@@ -138,7 +202,7 @@ pub async fn insert_new_wallet_with_seed(
     let (account, key_pair) =
         insert_new_wallet_with_seed_unfunded(client, visibility, keystore, init_seed, auth_scheme)
             .await?;
-    client.fund_and_deploy_if_needed(&[account.id()]).await?;
+    client.fund_if_needed(&[account.id()]).await?;
 
     Ok((account, key_pair))
 }
@@ -146,7 +210,7 @@ pub async fn insert_new_wallet_with_seed(
 /// Inserts a new wallet account without funding or deploying it.
 ///
 /// Callers creating several accounts at once should use this and fund them together with a single
-/// [`TestClient::fund_and_deploy_if_needed`], which costs one funding transaction instead of one
+/// [`TestClient::fund_if_needed`], which costs one funding transaction instead of one
 /// per account.
 pub async fn insert_new_wallet_unfunded(
     client: &mut TestClient,
@@ -204,7 +268,7 @@ pub async fn insert_new_fungible_faucet(
 ) -> Result<(Account, AuthSecretKey)> {
     let (account, key_pair) =
         insert_new_fungible_faucet_unfunded(client, visibility, keystore, auth_scheme).await?;
-    client.fund_and_deploy_if_needed(&[account.id()]).await?;
+    client.fund_if_needed(&[account.id()]).await?;
 
     Ok((account, key_pair))
 }
@@ -525,14 +589,9 @@ pub async fn setup_two_wallets_and_faucet(
             .await
             .with_context(|| "failed to insert second basic wallet account")?;
 
-    // All three at once: one funding transaction covers the set, and their deploys share a single
-    // round of waiting.
+    // All three at once, so one funding transaction covers the set.
     client
-        .fund_and_deploy_if_needed(&[
-            faucet_account.id(),
-            first_basic_account.id(),
-            second_basic_account.id(),
-        ])
+        .fund_if_needed(&[faucet_account.id(), first_basic_account.id(), second_basic_account.id()])
         .await
         .with_context(|| "failed to fund and deploy the created accounts")?;
 
@@ -564,10 +623,9 @@ pub async fn setup_wallet_and_faucet(
             .await
             .with_context(|| "failed to insert new wallet account")?;
 
-    // Both at once: one funding transaction covers the pair, and their deploys share a single
-    // round of waiting.
+    // Both at once, so one funding transaction covers the pair.
     client
-        .fund_and_deploy_if_needed(&[faucet_account.id(), basic_account.id()])
+        .fund_if_needed(&[faucet_account.id(), basic_account.id()])
         .await
         .with_context(|| "failed to fund and deploy the created accounts")?;
 
@@ -770,7 +828,7 @@ pub async fn insert_account_with_custom_component(
     keystore.add_key(&key_pair, account.id()).await.unwrap();
     client.add_account(&account, false).await?;
 
-    client.fund_and_deploy_if_needed(&[account.id()]).await?;
+    client.fund_if_needed(&[account.id()]).await?;
 
     Ok((account, key_pair))
 }

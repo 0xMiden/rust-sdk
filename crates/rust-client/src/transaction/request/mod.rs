@@ -256,6 +256,16 @@ impl TransactionRequest {
     ///
     /// This overwrites any auth arg the request already carries, so callers must only reach for it
     /// when the request declares none.
+    /// Adds `note` to the notes this request consumes, as an unauthenticated input.
+    ///
+    /// Used to fold a funding note into the transaction an account was going to run anyway: the
+    /// note's assets land in the vault before the fee is withdrawn, so one transaction can deploy
+    /// the account, fund it and do its work.
+    pub(crate) fn add_unauthenticated_input_note(&mut self, note: Note) {
+        self.input_notes_args.push((note.id(), None));
+        self.input_notes.push(note);
+    }
+
     pub(crate) fn set_fee_conversion_info(
         &mut self,
         conversion_info: FeeConversionInfo,

@@ -241,35 +241,22 @@ impl Funder {
 
 #[async_trait::async_trait(?Send)]
 impl FeeFunder for Funder {
-    async fn fund_and_deploy(
-        &self,
-        client: &mut TestClient,
-        account_ids: &[AccountId],
-    ) -> Result<()> {
+    async fn fund(&self, account_ids: &[AccountId]) -> Result<Vec<(AccountId, Note)>> {
         if account_ids.is_empty() {
-            return Ok(());
+            return Ok(Vec::new());
         }
 
-        let lock = self.claim()?;
+        // Held across the payment only. The notes are spent later, by the funded accounts
+        // themselves on their own client, which never touches this wallet.
+        let _lock = self.claim()?;
 
-        let funded = {
-            let mut guard = self.client.lock().await;
-            if guard.is_none() {
-                *guard = Some(self.build_client().await?);
-            }
-            let funder_client = guard.as_mut().expect("the funder client was just built");
+        let mut guard = self.client.lock().await;
+        if guard.is_none() {
+            *guard = Some(self.build_client().await?);
+        }
+        let funder_client = guard.as_mut().expect("the funder client was just built");
 
-            // Released before the deploys, which run on the accounts' own client, the only one
-            // holding their keys.
-            self.pay(funder_client, lock.account_id(), account_ids).await?
-        };
-
-        let deployed = client.deploy_by_consuming(&funded).await;
-
-        // The payment has landed, so another process may now read this wallet's nonce.
-        drop(lock);
-
-        deployed
+        self.pay(funder_client, _lock.account_id(), account_ids).await
     }
 }
 

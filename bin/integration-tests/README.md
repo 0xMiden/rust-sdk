@@ -224,9 +224,17 @@ account a test builds itself.
 
 A funding transaction costs a fee and a proof, so accounts are funded in batches wherever a test
 creates more than one: the `setup_*` helpers create their accounts with the `insert_new_*_unfunded`
-variants and then pass the whole set to `TestClient::fund_and_deploy_if_needed`, which pays them
-from one transaction and waits for their deploys together. A test creating several accounts of its
-own should do the same rather than calling the funding `insert_new_*` helpers in a row.
+variants and then pass the whole set to `TestClient::fund_if_needed`, which pays them all from one
+transaction. A test creating several accounts of its own should do the same rather than calling the
+funding `insert_new_*` helpers in a row.
+
+Funding costs no transaction of its own beyond that payment. Each account's note is held until the
+account's next transaction and folded into it, so that one transaction deploys the account, funds
+it and does the test's work. `TestClient::submit_new_transaction` does the folding; a request going
+somewhere else needs `TestClient::fund_request` first, notably a batch, which borrows the client
+for as long as it lives. A test that needs the funding to land in a particular transaction — one
+asserting on what a sync reports, say — should call `TestClient::take_funding` and consume the note
+itself.
 
 Funders must be **public** and carry their secret key: a public funder's state is re-read from the
 chain before every payment, which is what makes sharing one between test processes safe.

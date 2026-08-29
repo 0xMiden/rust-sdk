@@ -598,13 +598,22 @@ pub async fn test_consumed_note_ordering(client_config: ClientConfig) -> Result<
     }
     client.sync_state().await?;
 
-    // Build a consume request per minted note and submit them as a single proven batch.
+    // Build a consume request per minted note and submit them as a single proven batch. The
+    // requests are built before the batch borrows the client, so any funding note the wallet is
+    // still holding can be folded into the first of them.
+    let requests: Vec<_> = minted_notes
+        .iter()
+        .map(|note| {
+            let tx_request = TransactionRequestBuilder::new()
+                .build_consume_notes(vec![note.clone()])
+                .unwrap();
+            client.fund_request(wallet_account.id(), tx_request)
+        })
+        .collect();
+
     let mut batch = client.new_transaction_batch();
-    for (i, note) in minted_notes.iter().enumerate() {
-        let tx_request = TransactionRequestBuilder::new()
-            .build_consume_notes(vec![note.clone()])
-            .unwrap();
-        info!(note_id = %note.id(), index = i, "Pushing consume tx into batch");
+    for (i, tx_request) in requests.into_iter().enumerate() {
+        info!(index = i, "Pushing consume tx into batch");
         batch.push(wallet_account.id(), tx_request).await?;
     }
     let submission_tip = batch.submit().await?;

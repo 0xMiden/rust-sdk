@@ -141,7 +141,6 @@ where
             }
         }
 
-        let mut imported_commitments = vec![];
         let mut imported_notes = vec![];
         if !requests_by_id.is_empty() {
             let notes_by_id = self.import_note_records_by_id(requests_by_id).await?;
@@ -149,8 +148,8 @@ where
         }
 
         if !requests_by_details.is_empty() {
-            let commitments = self.import_note_records_by_details(requests_by_details).await?;
-            imported_commitments.extend(commitments);
+            let notes_by_details = self.import_note_records_by_details(requests_by_details).await?;
+            imported_notes.extend(notes_by_details);
         }
 
         if !requests_by_proof.is_empty() {
@@ -158,7 +157,7 @@ where
             imported_notes.extend(notes_by_proof);
         }
 
-        imported_commitments.reserve(imported_notes.len());
+        let mut imported_commitments = Vec::with_capacity(imported_notes.len());
         for note in imported_notes {
             let details_commitment = note.details_commitment();
             if let InputNoteState::Expected(ExpectedNoteState { tag: Some(tag), .. }) = note.state()
@@ -336,20 +335,29 @@ where
         Ok(note_records)
     }
 
-    /// Imports notes from their details, storing the resulting records.
+    /// Builds a note record list from note details. If a note with the same ID was already stored
+    /// it is passed via `previous_note` so it can be updated.
     ///
-    /// Notes the node has not reported as committed get (or keep) their expected record; the rest
-    /// are stored as committed, together with the blocks proving their inclusion.
-    ///
-    /// The `requested_notes` parameter carries, for each note, its details, the block from which
-    /// its commitment should be looked for, and the tag to track it under.
+    /// Only records that need to be stored are returned: notes the node has not reported as
+    /// committed keep (or get) their expected record, while committed notes are returned only if
+    /// the new information changed them.
     async fn import_note_records_by_details(
         &mut self,
         requested_notes: Vec<(Option<InputNoteRecord>, NoteDetails, BlockNumber, NoteTag)>,
-    ) -> Result<Vec<NoteDetailsCommitment>, ClientError> {
+    ) -> Result<Vec<InputNoteRecord>, ClientError> {
         let mut note_updates = self.fetch_transport_notes_onchain_state(requested_notes).await?;
         self.fetch_note_blocks(&mut note_updates).await?;
-        self.apply_note_transport_updates(note_updates).await
+
+        let mut partial_mmr = self.get_current_partial_mmr().await?;
+        self.insert_note_blocks(note_updates.blocks_to_insert, &mut partial_mmr).await?;
+        // Cache MMR so pruning can reuse in-memory MMR.
+        self.cache_partial_mmr(partial_mmr).await?;
+
+        for tag in note_updates.tags_to_remove {
+            self.store.remove_note_tag(tag).await?;
+        }
+
+        Ok(note_updates.notes_to_write)
     }
 
     // TRANSPORT-DELIVERED NOTE IMPORT

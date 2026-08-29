@@ -831,7 +831,7 @@ impl TryFrom<proto::account::AccountWitness> for AccountWitness {
 pub struct AccountStorageRequirements(BTreeMap<StorageSlotName, Vec<StorageMapKey>>);
 
 impl AccountStorageRequirements {
-    /// Requests the specified keys per slot, covered by one partial SMT per slot. An empty key
+    /// Requests the specified ke ys per slot, covered by one partial SMT per slot. An empty key
     /// iterator for a slot behaves like [`Self::all_entries`].
     ///
     /// Repeated keys within a slot are collapsed, since the node rejects a request that names the

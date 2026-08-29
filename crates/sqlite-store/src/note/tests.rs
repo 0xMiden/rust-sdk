@@ -18,13 +18,22 @@ use miden_client::store::input_note_states::{
     ExpectedNoteState,
     NoteSubmissionData,
 };
-use miden_client::store::{InputNoteRecord, NoteFilter, OutputNoteRecord, OutputNoteState, Store};
+use miden_client::store::{
+    InputNoteCursor,
+    InputNoteRecord,
+    InputNoteState,
+    NoteFilter,
+    OutputNoteRecord,
+    OutputNoteState,
+    Store,
+};
 use miden_client::sync::{
     AccountUpdates,
     PartialBlockchainUpdates,
     StateSyncUpdate,
     TransactionUpdateTracker,
 };
+use miden_client::utils::{Deserializable, DeserializationError, Serializable};
 use miden_client::{Felt, ZERO};
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
@@ -42,11 +51,20 @@ use crate::tests::create_test_store;
 // HELPERS
 // ================================================================================================
 
-/// Helper to create a consumed-external input note with an optional consumer account.
+/// Helper to build the metadata of a note sent by the given account.
+fn create_note_metadata(sender: AccountId, index: u32) -> NoteMetadata {
+    let partial_metadata =
+        PartialNoteMetadata::new(sender, NoteType::Public).with_tag(NoteTag::from(index));
+    NoteMetadata::new(partial_metadata, &NoteAttachments::empty())
+}
+
+/// Helper to create a consumed-external input note with an optional consumer account. A note
+/// without metadata has no nullifier, so its column is NULL.
 fn create_consumed_external_input_note(
     index: u32,
     block_height: u32,
     consumer_account: Option<AccountId>,
+    metadata: Option<NoteMetadata>,
 ) -> InputNoteRecord {
     let serial_number: Word =
         [Felt::new_unchecked(u64::from(index) + 2000), ZERO, ZERO, ZERO].into();
@@ -62,7 +80,7 @@ fn create_consumed_external_input_note(
         nullifier_block_height: BlockNumber::from(block_height),
         consumer_account,
         consumed_tx_order: None,
-        metadata: None,
+        metadata,
     };
 
     InputNoteRecord::new(details, NoteAttachments::empty(), Some(0), state.into())
@@ -90,6 +108,30 @@ fn create_expected_input_note_with_script(index: u32, script: NoteScript) -> Inp
     InputNoteRecord::new(details, NoteAttachments::empty(), Some(0), state.into())
 }
 
+/// Helper to create an expected (non-consumed) input note that carries metadata, so it has a
+/// known nullifier.
+fn create_expected_input_note_with_metadata(index: u32) -> InputNoteRecord {
+    let serial_number: Word =
+        [Felt::new_unchecked(u64::from(index) + 9000), ZERO, ZERO, ZERO].into();
+    let assets = NoteAssets::new(vec![]).unwrap();
+    let recipient = NoteRecipient::new(
+        serial_number,
+        StandardNote::SWAP.script(),
+        NoteStorage::new(vec![]).unwrap(),
+    );
+    let details = NoteDetails::new(assets, recipient);
+
+    let sender = AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE).unwrap();
+
+    let state = ExpectedNoteState {
+        metadata: Some(create_note_metadata(sender, index)),
+        after_block_num: BlockNumber::from(0u32),
+        tag: None,
+    };
+
+    InputNoteRecord::new(details, NoteAttachments::empty(), Some(0), state.into())
+}
+
 /// Helper to create an expected output note with a specific script.
 fn create_expected_output_note_with_script(index: u32, script: NoteScript) -> OutputNoteRecord {
     let serial_number: Word =
@@ -97,14 +139,10 @@ fn create_expected_output_note_with_script(index: u32, script: NoteScript) -> Ou
     let recipient = NoteRecipient::new(serial_number, script, NoteStorage::new(vec![]).unwrap());
     let sender = AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE).unwrap();
 
-    let partial_metadata =
-        PartialNoteMetadata::new(sender, NoteType::Public).with_tag(NoteTag::from(index));
-    let metadata = NoteMetadata::new(partial_metadata, &NoteAttachments::empty());
-
     OutputNoteRecord::new(
         recipient.digest(),
         NoteAssets::new(vec![]).unwrap(),
-        metadata,
+        create_note_metadata(sender, index),
         OutputNoteState::ExpectedFull { recipient },
         BlockNumber::from(0u32),
         NoteAttachments::empty(),
@@ -128,12 +166,8 @@ fn create_consumed_input_note_with_consumer(
     );
     let details = NoteDetails::new(assets, recipient);
 
-    let partial_metadata =
-        PartialNoteMetadata::new(consumer, NoteType::Public).with_tag(NoteTag::from(index));
-    let metadata = NoteMetadata::new(partial_metadata, &NoteAttachments::empty());
-
     let state = ConsumedUnauthenticatedLocalNoteState {
-        metadata,
+        metadata: create_note_metadata(consumer, index),
         nullifier_block_height: BlockNumber::from(block_height),
         submission_data: NoteSubmissionData {
             submitted_at: Some(0),
@@ -144,6 +178,25 @@ fn create_consumed_input_note_with_consumer(
     };
 
     InputNoteRecord::new(details, NoteAttachments::empty(), Some(0), state.into())
+}
+
+/// Returns the key that the per-account consumption order sorts by: consumption block height,
+/// transaction order within that block and, as the tie-break, the details commitment.
+fn consumption_key(note: &InputNoteRecord) -> (u32, u32, Vec<u8>) {
+    (
+        note.state().consumed_block_height().expect("note is consumed").as_u32(),
+        note.state().consumed_tx_order().expect("note has a consumption order"),
+        note.details_commitment().to_bytes(),
+    )
+}
+
+/// Drains `reader`, returning the consumption key of every note it yields.
+async fn walk(reader: &mut InputNoteReader) -> Vec<(u32, u32, Vec<u8>)> {
+    let mut collected = Vec::new();
+    while let Some(note) = reader.next().await.unwrap() {
+        collected.push(consumption_key(&note));
+    }
+    collected
 }
 
 // INPUT NOTE READER TESTS
@@ -335,10 +388,10 @@ async fn input_note_reader_finds_externally_consumed_notes() {
     let store = create_test_store().await;
     let consumer = AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE).unwrap();
 
-    let mut tracked_note = create_consumed_external_input_note(0, 1, Some(consumer));
+    let mut tracked_note = create_consumed_external_input_note(0, 1, Some(consumer), None);
     tracked_note.set_consumed_tx_order(Some(0));
 
-    let mut untracked_note = create_consumed_external_input_note(1, 2, None);
+    let mut untracked_note = create_consumed_external_input_note(1, 2, None, None);
     untracked_note.set_consumed_tx_order(Some(0));
 
     store
@@ -368,6 +421,187 @@ async fn input_note_reader_finds_externally_consumed_notes() {
     assert_eq!(collected[0].consumer_account(), Some(consumer));
 }
 
+#[tokio::test]
+async fn input_note_reader_separates_notes_consumed_by_the_same_transaction() {
+    let store = create_test_store().await;
+    let consumer = AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE).unwrap();
+
+    // Externally-consumed notes without metadata have no note id, and all three share a block
+    // height and tx order, so only the details commitment separates them.
+    let notes: Vec<_> = (0..3u32)
+        .map(|index| {
+            let mut note = create_consumed_external_input_note(index, 1, Some(consumer), None);
+            note.set_consumed_tx_order(Some(0));
+            note
+        })
+        .collect();
+    store.upsert_input_notes(&notes).await.unwrap();
+
+    let store: Arc<dyn Store> = Arc::new(store);
+    let mut reader = InputNoteReader::new(store, consumer);
+
+    let mut collected = Vec::new();
+    while let Some(note) = reader.next().await.unwrap() {
+        collected.push(note.details_commitment());
+    }
+
+    let mut expected: Vec<_> = notes.iter().map(InputNoteRecord::details_commitment).collect();
+    expected.sort_by_key(Serializable::to_bytes);
+
+    assert_eq!(collected, expected);
+}
+
+#[tokio::test]
+async fn input_note_reader_reset_restarts_the_iteration() {
+    let store = create_test_store().await;
+    let consumer = AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE).unwrap();
+
+    let notes: Vec<_> = (0..3u32)
+        .map(|index| create_consumed_input_note_with_consumer(consumer, index, index, 0))
+        .collect();
+    store.upsert_input_notes(&notes).await.unwrap();
+
+    let store: Arc<dyn Store> = Arc::new(store);
+    let mut reader = InputNoteReader::new(store, consumer);
+
+    let mut first_pass = Vec::new();
+    while let Some(note) = reader.next().await.unwrap() {
+        first_pass.push(note.details_commitment());
+    }
+    assert_eq!(first_pass.len(), 3);
+
+    reader.reset();
+
+    let mut second_pass = Vec::new();
+    while let Some(note) = reader.next().await.unwrap() {
+        second_pass.push(note.details_commitment());
+    }
+
+    assert_eq!(first_pass, second_pass);
+}
+
+#[test]
+fn input_note_cursor_is_none_for_a_note_that_is_not_consumed() {
+    assert!(InputNoteCursor::from_record(&create_expected_input_note(0)).is_none());
+}
+
+#[tokio::test]
+async fn input_note_after_ignores_a_cursor_before_the_block_range() {
+    let store = create_test_store().await;
+    let consumer = AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE).unwrap();
+
+    let note_at_1 = create_consumed_input_note_with_consumer(consumer, 0, 1, 0);
+    // Follows the cursor but falls outside the range, so it must not be returned.
+    let note_at_3 = create_consumed_input_note_with_consumer(consumer, 1, 3, 0);
+    let note_at_5 = create_consumed_input_note_with_consumer(consumer, 2, 5, 0);
+    store
+        .upsert_input_notes(&[note_at_1.clone(), note_at_3, note_at_5.clone()])
+        .await
+        .unwrap();
+
+    // A cursor before `block_start` selects nothing that the range does not already exclude, so
+    // the first note in the range is returned.
+    let cursor = InputNoteCursor::from_record(&note_at_1).unwrap();
+    let note = store
+        .get_input_note_after(
+            NoteFilter::Consumed,
+            consumer,
+            Some(BlockNumber::from(5u32)),
+            None,
+            Some(cursor),
+        )
+        .await
+        .unwrap()
+        .expect("the range holds a note following the cursor");
+
+    assert_eq!(note.details_commitment(), note_at_5.details_commitment());
+}
+
+#[tokio::test]
+async fn input_note_reader_walks_every_note_of_a_long_history() {
+    const BLOCKS: u32 = 8;
+    const TXS_PER_BLOCK: u32 = 5;
+
+    let store = create_test_store().await;
+    let consumer = AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE).unwrap();
+
+    let mut notes = Vec::new();
+    for block in 1..=BLOCKS {
+        for tx_order in 0..TXS_PER_BLOCK {
+            let index = block * TXS_PER_BLOCK + tx_order;
+            notes.push(create_consumed_input_note_with_consumer(consumer, index, block, tx_order));
+        }
+    }
+
+    // Insert from the last note backwards, so a walk that leaned on insertion order would fail.
+    let mut inserted = notes.clone();
+    inserted.reverse();
+    store.upsert_input_notes(&inserted).await.unwrap();
+
+    let store: Arc<dyn Store> = Arc::new(store);
+    let mut reader = InputNoteReader::new(store, consumer);
+
+    let mut expected: Vec<_> = notes.iter().map(consumption_key).collect();
+    expected.sort();
+    assert_eq!(expected.len(), usize::try_from(BLOCKS * TXS_PER_BLOCK).unwrap());
+
+    // Equality against the full expected sequence rules out both a skipped and a repeated note.
+    assert_eq!(walk(&mut reader).await, expected);
+}
+
+#[tokio::test]
+async fn input_note_reader_only_returns_mid_iteration_inserts_after_the_cursor() {
+    let store = create_test_store().await;
+    let consumer = AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE).unwrap();
+
+    let at_2 = create_consumed_input_note_with_consumer(consumer, 60, 2, 0);
+    store.upsert_input_notes(std::slice::from_ref(&at_2)).await.unwrap();
+
+    let store: Arc<dyn Store> = Arc::new(store);
+    let mut reader = InputNoteReader::new(store.clone(), consumer);
+
+    let first = reader.next().await.unwrap().expect("the store holds one consumed note");
+    assert_eq!(consumption_key(&first), consumption_key(&at_2));
+
+    // One note lands before the cursor and one after it.
+    let at_1 = create_consumed_input_note_with_consumer(consumer, 61, 1, 0);
+    let at_3 = create_consumed_input_note_with_consumer(consumer, 62, 3, 0);
+    store.upsert_input_notes(&[at_1, at_3.clone()]).await.unwrap();
+
+    assert_eq!(walk(&mut reader).await, vec![consumption_key(&at_3)]);
+}
+
+#[tokio::test]
+async fn input_note_after_keeps_a_cursor_at_the_start_of_the_block_range() {
+    let store = create_test_store().await;
+    let consumer = AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE).unwrap();
+
+    let at_1 = create_consumed_input_note_with_consumer(consumer, 71, 1, 0);
+    let first_at_3 = create_consumed_input_note_with_consumer(consumer, 72, 3, 0);
+    let second_at_3 = create_consumed_input_note_with_consumer(consumer, 73, 3, 1);
+    store
+        .upsert_input_notes(&[at_1, first_at_3.clone(), second_at_3.clone()])
+        .await
+        .unwrap();
+
+    // The cursor sits exactly at `block_start`, so it is the tighter bound: dropping it in favour
+    // of the range would return the note the cursor points at all over again.
+    let cursor = InputNoteCursor::from_record(&first_at_3).unwrap();
+    let note = store
+        .get_input_note_after(
+            NoteFilter::Consumed,
+            consumer,
+            Some(BlockNumber::from(3u32)),
+            None,
+            Some(cursor),
+        )
+        .await
+        .unwrap()
+        .expect("the second note of block 3 follows the cursor");
+
+    assert_eq!(note.details_commitment(), second_at_3.details_commitment());
+}
+
 // ORDERING TESTS (INPUT NOTES)
 // ================================================================================================
 
@@ -376,9 +610,9 @@ async fn consumed_input_notes_ordered_by_block_height_then_tx_order() {
     let store = create_test_store().await;
 
     // Create consumed notes at different block heights with tx_order set.
-    let mut note_block3 = create_consumed_external_input_note(0, 3, None);
-    let mut note_block1 = create_consumed_external_input_note(1, 1, None);
-    let mut note_block2 = create_consumed_external_input_note(2, 2, None);
+    let mut note_block3 = create_consumed_external_input_note(0, 3, None, None);
+    let mut note_block1 = create_consumed_external_input_note(1, 1, None, None);
+    let mut note_block2 = create_consumed_external_input_note(2, 2, None, None);
     note_block3.set_consumed_tx_order(Some(0));
     note_block1.set_consumed_tx_order(Some(1));
     note_block2.set_consumed_tx_order(Some(0));
@@ -402,9 +636,9 @@ async fn consumed_input_notes_same_block_ordered_by_tx_order() {
     let store = create_test_store().await;
 
     // All notes consumed at the same block height, different tx_order.
-    let mut note_tx2 = create_consumed_external_input_note(10, 5, None);
-    let mut note_tx0 = create_consumed_external_input_note(11, 5, None);
-    let mut note_tx1 = create_consumed_external_input_note(12, 5, None);
+    let mut note_tx2 = create_consumed_external_input_note(10, 5, None, None);
+    let mut note_tx0 = create_consumed_external_input_note(11, 5, None, None);
+    let mut note_tx1 = create_consumed_external_input_note(12, 5, None, None);
     note_tx2.set_consumed_tx_order(Some(2));
     note_tx0.set_consumed_tx_order(Some(0));
     note_tx1.set_consumed_tx_order(Some(1));
@@ -426,8 +660,8 @@ async fn consumed_input_notes_null_tx_order_sort_last_within_block() {
     let store = create_test_store().await;
 
     // Two notes at the same block: one with tx_order, one without (external consumption).
-    let mut note_with_order = create_consumed_external_input_note(20, 5, None);
-    let note_without_order = create_consumed_external_input_note(21, 5, None);
+    let mut note_with_order = create_consumed_external_input_note(20, 5, None, None);
+    let note_without_order = create_consumed_external_input_note(21, 5, None, None);
     note_with_order.set_consumed_tx_order(Some(0));
 
     store
@@ -517,6 +751,127 @@ async fn output_notes_never_match_script_root_filter() {
         .await
         .unwrap();
     assert!(notes.is_empty());
+}
+
+// BATCH SCRIPT TESTS
+// ================================================================================================
+
+#[tokio::test]
+async fn state_sync_stores_scripts_of_new_input_notes() {
+    let store = create_test_store().await;
+
+    // Two notes share the SWAP script, so the batch holds one entry per distinct root rather than
+    // one per note. The multi-row upsert relies on that dedup: a root repeated inside a single
+    // VALUES list would make ON CONFLICT DO UPDATE fail at runtime.
+    let swap_a = create_expected_input_note_with_script(0, StandardNote::SWAP.script());
+    let swap_b = create_expected_input_note_with_script(1, StandardNote::SWAP.script());
+    let p2id = create_expected_input_note_with_script(2, StandardNote::P2ID.script());
+
+    let notes = [swap_a, swap_b, p2id];
+
+    // Applying the same update twice takes the insert branch and then the DO UPDATE branch.
+    for _ in 0..2 {
+        let state_sync_update = StateSyncUpdate::from_parts(
+            BlockNumber::from(0u32),
+            PartialBlockchainUpdates::default(),
+            NoteUpdateTracker::for_transaction_updates(notes.clone(), [], []),
+            TransactionUpdateTracker::default(),
+            AccountUpdates::default(),
+        );
+        store.apply_state_sync(state_sync_update).await.unwrap();
+
+        let swap_notes = store
+            .get_input_notes(NoteFilter::ScriptRoots(vec![StandardNote::SWAP.script().root()]))
+            .await
+            .unwrap();
+        assert_eq!(swap_notes.len(), 2);
+
+        let p2id_notes = store
+            .get_input_notes(NoteFilter::ScriptRoots(vec![StandardNote::P2ID.script().root()]))
+            .await
+            .unwrap();
+        assert_eq!(p2id_notes.len(), 1);
+        assert_eq!(p2id_notes[0].details().script().root(), StandardNote::P2ID.script().root());
+    }
+}
+
+// UNSPENT NULLIFIER TESTS
+// ================================================================================================
+
+#[tokio::test]
+async fn unspent_nullifiers_skip_notes_without_metadata() {
+    let store = create_test_store().await;
+
+    // An expected note without metadata has no nullifier, so its column is NULL.
+    let without_metadata = create_expected_input_note(0);
+    let with_metadata = create_expected_input_note_with_metadata(1);
+    assert!(without_metadata.nullifier().is_none());
+
+    store
+        .upsert_input_notes(&[without_metadata, with_metadata.clone()])
+        .await
+        .unwrap();
+
+    let nullifiers = store.get_unspent_input_note_nullifiers().await.unwrap();
+    assert_eq!(nullifiers, vec![with_metadata.nullifier().unwrap()]);
+}
+
+#[tokio::test]
+async fn unspent_nullifiers_exclude_consumed_notes() {
+    let store = create_test_store().await;
+
+    let consumer = AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE).unwrap();
+    let consumed_local = create_consumed_input_note_with_consumer(consumer, 0, 1, 0);
+    let consumed_external = create_consumed_external_input_note(
+        1,
+        1,
+        Some(consumer),
+        Some(create_note_metadata(consumer, 1)),
+    );
+    let unspent = create_expected_input_note_with_metadata(2);
+
+    // Both consumed notes carry a nullifier, so only the state filter can exclude them.
+    assert!(consumed_local.nullifier().is_some());
+    assert!(consumed_external.nullifier().is_some());
+
+    store
+        .upsert_input_notes(&[consumed_local, consumed_external, unspent.clone()])
+        .await
+        .unwrap();
+
+    let nullifiers = store.get_unspent_input_note_nullifiers().await.unwrap();
+    assert_eq!(nullifiers, vec![unspent.nullifier().unwrap()]);
+}
+
+#[test]
+fn unspent_states_classify_every_note_state() {
+    // Invalid notes sit here because they can't be consumed, so they are not offered as unspent
+    // either.
+    const SPENT_OR_UNCONSUMABLE: [u8; 4] = [
+        InputNoteState::STATE_INVALID,
+        InputNoteState::STATE_CONSUMED_AUTHENTICATED_LOCAL,
+        InputNoteState::STATE_CONSUMED_UNAUTHENTICATED_LOCAL,
+        InputNoteState::STATE_CONSUMED_EXTERNAL,
+    ];
+
+    for discriminant in 0..=u8::MAX {
+        // The deserializer decides which bytes are real discriminants: an unused one hits the
+        // catch-all arm and returns `InvalidValue`, while a real one gets past the discriminant
+        // match and fails later on the payload a one-byte input doesn't carry. A new state whose
+        // payload also reports `InvalidValue` would be skipped here instead of checked.
+        if matches!(
+            InputNoteState::read_from_bytes(&[discriminant]),
+            Err(DeserializationError::InvalidValue(_))
+        ) {
+            continue;
+        }
+
+        assert!(
+            InputNoteState::UNSPENT_STATES.contains(&discriminant)
+                != SPENT_OR_UNCONSUMABLE.contains(&discriminant),
+            "note state {discriminant} is in neither list or in both"
+        );
+    }
 }
 
 /// Attachment content is resolved during sync, after the record may already be stored, so a

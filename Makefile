@@ -18,6 +18,10 @@ WARNINGS=RUSTDOCFLAGS="-D warnings"
 
 TEST_MIDEN_NOTE_TRANSPORT_URL?=http://127.0.0.1:57292
 
+# Sizes the SQL store scaling benchmark sweeps over. Kept small enough to run on every PR, and
+# overridable for a deeper local run.
+STORE_BENCH_ARGS?=--notes 1000,10000 --accounts 100,1000 --iterations 5
+
 # --- Linting -------------------------------------------------------------------------------------
 
 .PHONY: clippy
@@ -83,6 +87,12 @@ test-miden-bench: ## Run miden-bench CLI tests
 .PHONY: test-docs
 test-docs: ## Run documentation tests
 	cargo test --doc $(FEATURES_CLIENT)
+
+# --- Benchmarking --------------------------------------------------------------------------------
+
+.PHONY: bench-store
+bench-store: ## Run the SQL store scaling benchmark (no node needed)
+	cargo run --package miden-client-bench --release --locked -- store $(STORE_BENCH_ARGS)
 
 # --- Integration testing -------------------------------------------------------------------------
 

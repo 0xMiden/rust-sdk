@@ -35,6 +35,7 @@ use miden_client::store::{
     AccountStorageFilter,
     BlockRelevance,
     ClientAccountType,
+    InputNoteCursor,
     InputNoteRecord,
     NoteFilter,
     OutputNoteRecord,
@@ -232,22 +233,22 @@ impl Store for SqliteStore {
             .await
     }
 
-    async fn get_input_note_by_offset(
+    async fn get_input_note_after(
         &self,
         filter: NoteFilter,
         consumer: AccountId,
         block_start: Option<BlockNumber>,
         block_end: Option<BlockNumber>,
-        offset: u32,
+        cursor: Option<InputNoteCursor>,
     ) -> Result<Option<InputNoteRecord>, StoreError> {
         self.interact_with_connection(move |conn| {
-            SqliteStore::get_input_note_by_offset(
+            SqliteStore::get_input_note_after(
                 conn,
                 &filter,
                 consumer,
                 block_start,
                 block_end,
-                offset,
+                cursor,
             )
         })
         .await

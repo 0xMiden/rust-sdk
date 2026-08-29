@@ -5,12 +5,13 @@ retries        = { backoff = "exponential", count = 2, delay = "1s", jitter = tr
 slow-timeout   = { period = "3m", terminate-after = 2 }
 status-level   = "skip"
 
-# The integration tests all share a node instance, so concurrency is capped to bound the
-# pressure on it. Every test also proves its transactions locally, so this doubles as the cap on
-# concurrent provers; raising it past the runner's core count trades node contention for CPU
-# contention and slows the suite down instead.
+# The integration tests all share a node instance, so concurrency is capped to bound the pressure
+# on it. Every test also proves its transactions locally with rayon-parallel proving, so this is
+# equally the cap on concurrent provers competing for the runner's cores with the node's own
+# validator, sequencer and ntx-builder. At 4 the per-test durations inflate by ~1.65x and the
+# network-transaction tests start failing, so the useful ceiling is low.
 [test-groups.integration]
-max-threads = 4
+max-threads = 3
 
 [[profile.default.overrides]]
 filter           = "package(miden-client-unit-tests)"

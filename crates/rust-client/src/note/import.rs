@@ -126,6 +126,7 @@ where
             match note_file {
                 NoteFile::ExpectedNote { details, sync_hint } => {
                     requests_by_details.push((
+                        previous_note,
                         details,
                         sync_hint.after_block_num(),
                         sync_hint.tag(),
@@ -344,9 +345,9 @@ where
     /// its commitment should be looked for, and the tag to track it under.
     async fn import_note_records_by_details(
         &mut self,
-        requested_notes: Vec<(NoteDetails, BlockNumber, NoteTag)>,
+        requested_notes: Vec<(Option<InputNoteRecord>, NoteDetails, BlockNumber, NoteTag)>,
     ) -> Result<Vec<NoteDetailsCommitment>, ClientError> {
-        let mut note_updates = self.fetch_transport_notes_onchain_state(&requested_notes).await?;
+        let mut note_updates = self.fetch_transport_notes_onchain_state(requested_notes).await?;
         self.fetch_note_blocks(&mut note_updates).await?;
         self.apply_note_transport_updates(note_updates).await
     }
@@ -354,75 +355,45 @@ where
     // TRANSPORT-DELIVERED NOTE IMPORT
     // --------------------------------------------------------------------------------------------
 
-    /// Fetches the state of transport-delivered notes from the RPC, and returns a
-    /// [`TransportNoteUpdates`] containing the expected notes that are ready to write to the
-    /// store, along with the committed notes that wait for [`Client::fetch_note_blocks`] to
-    /// resolve their blocks.
+    /// Fetches the on-chain state of transport-delivered notes, returning the records to write
+    /// and the blocks that still have to be resolved by [`Client::fetch_note_blocks`].
     ///
-    /// The `requests` parameter contains, for each transport-delivered note, the note details,
-    /// the block from which its commitment should be looked for, and the tag to track it under.
-    ///
-    /// # Errors
-    ///
-    /// - If a note being imported is currently being processed by a local transaction.
+    /// A note with a stored version is passed via `previous_note` so it can be updated. Notes the
+    /// node has not reported as committed keep (or get) their expected record; the rest are left
+    /// `Unverified`, carrying the inclusion proof but not the header that verifies it.
     pub(crate) async fn fetch_transport_notes_onchain_state(
         &self,
-        requests: &[(NoteDetails, BlockNumber, NoteTag)],
+        requested_notes: Vec<(Option<InputNoteRecord>, NoteDetails, BlockNumber, NoteTag)>,
     ) -> Result<TransportNoteUpdates, ClientError> {
-        let mut note_updates = TransportNoteUpdates::default();
-        if requests.is_empty() {
-            return Ok(note_updates);
-        }
-
-        // Deduplicate by details commitment, keeping the last request for each note.
-        let mut requests_by_commitment = BTreeMap::new();
-        for (details, after_block_num, tag) in requests {
-            requests_by_commitment
-                .insert(details.commitment(), (details.clone(), *after_block_num, *tag));
-        }
-
-        let previous_by_commitment: BTreeMap<NoteDetailsCommitment, InputNoteRecord> = self
-            .get_input_notes(NoteFilter::DetailsCommitments(
-                requests_by_commitment.keys().copied().collect(),
-            ))
-            .await?
-            .into_iter()
-            .map(|note| (note.details_commitment(), note))
-            .collect();
-
-        // Validate before building anything, so a single in-flight note aborts the whole import.
-        for previous_note in previous_by_commitment.values() {
-            ensure_not_processing(Some(previous_note))?;
-        }
-
         let mut lowest_request_block: BlockNumber = u32::MAX.into();
-        let mut note_requests = Vec::with_capacity(requests_by_commitment.len());
-        for (commitment, (_, after_block_num, tag)) in &requests_by_commitment {
-            note_requests.push((*commitment, *tag));
+        let mut note_requests = vec![];
+        for (_, details, after_block_num, tag) in &requested_notes {
+            note_requests.push((details.commitment(), *tag));
             lowest_request_block = lowest_request_block.min(*after_block_num);
         }
         let mut committed_notes_data =
             self.sync_expected_notes(lowest_request_block, note_requests).await?;
 
-        for (commitment, (details, after_block_num, tag)) in requests_by_commitment {
-            let mut note_record =
-                previous_by_commitment.get(&commitment).cloned().unwrap_or_else(|| {
-                    InputNoteRecord::new(
-                        details,
-                        NoteAttachments::empty(),
-                        self.store.get_current_timestamp(),
-                        ExpectedNoteState {
-                            metadata: None,
-                            after_block_num,
-                            tag: Some(tag),
-                        }
-                        .into(),
-                    )
-                });
+        let mut note_updates = TransportNoteUpdates::default();
+
+        for (previous_note, details, after_block_num, tag) in requested_notes {
+            let mut note_record = previous_note.unwrap_or_else(|| {
+                InputNoteRecord::new(
+                    details,
+                    NoteAttachments::empty(),
+                    self.store.get_current_timestamp(),
+                    ExpectedNoteState {
+                        metadata: None,
+                        after_block_num,
+                        tag: Some(tag),
+                    }
+                    .into(),
+                )
+            });
 
             // Notes the node has not reported as committed keep their expected record untouched.
             let Some(SyncedNote { committed: committed_note, content }) =
-                committed_notes_data.remove(&commitment)
+                committed_notes_data.remove(&note_record.details_commitment())
             else {
                 note_updates.notes_to_write.push(note_record);
                 continue;
@@ -721,7 +692,9 @@ fn awaiting_block_header(note_record: &InputNoteRecord) -> Option<BlockNumber> {
 
 /// Returns an error if the already-stored note is currently being processed by a local
 /// transaction, since an in-flight note can't be overwritten by an import.
-fn ensure_not_processing(previous_note: Option<&InputNoteRecord>) -> Result<(), ClientError> {
+pub(crate) fn ensure_not_processing(
+    previous_note: Option<&InputNoteRecord>,
+) -> Result<(), ClientError> {
     if let Some(note) = previous_note
         && note.is_processing()
     {

@@ -24,8 +24,8 @@ use miden_tx::utils::serde::{
 };
 
 pub use self::errors::NoteTransportError;
-use crate::note::TransportNoteUpdates;
-use crate::store::InputNoteRecord;
+use crate::note::{TransportNoteUpdates, ensure_not_processing};
+use crate::store::{InputNoteRecord, NoteFilter};
 use crate::sync::NoteTagSource;
 use crate::{Client, ClientError};
 
@@ -484,15 +484,33 @@ where
         let fallback_after_block_num =
             BlockNumber::from(sync_height.as_u32().saturating_sub(NOTE_LOOKBACK_BLOCKS));
 
-        let mut requests = Vec::with_capacity(notes.len());
+        // Deduplicate by details commitment, so a note delivered twice is requested once.
+        let mut requests_by_commitment = BTreeMap::new();
         for (note, block_hint) in notes {
             let tag = note.metadata().tag();
             // Prefer the sender-provided hint, falling back to the lookback window when absent.
             let after_block_num = block_hint.unwrap_or(fallback_after_block_num);
-            requests.push((NoteDetails::from(note), after_block_num, tag));
+            let details = NoteDetails::from(note);
+            requests_by_commitment.insert(details.commitment(), (details, after_block_num, tag));
         }
 
-        let note_updates = self.fetch_transport_notes_onchain_state(&requests).await?;
+        let mut previous_by_commitment: BTreeMap<NoteDetailsCommitment, InputNoteRecord> = self
+            .get_input_notes(NoteFilter::DetailsCommitments(
+                requests_by_commitment.keys().copied().collect(),
+            ))
+            .await?
+            .into_iter()
+            .map(|note| (note.details_commitment(), note))
+            .collect();
+
+        let mut requests = Vec::with_capacity(requests_by_commitment.len());
+        for (commitment, (details, after_block_num, tag)) in requests_by_commitment {
+            let previous_note = previous_by_commitment.remove(&commitment);
+            ensure_not_processing(previous_note.as_ref())?;
+            requests.push((previous_note, details, after_block_num, tag));
+        }
+
+        let note_updates = self.fetch_transport_notes_onchain_state(requests).await?;
 
         Ok((note_updates, rcursor))
     }

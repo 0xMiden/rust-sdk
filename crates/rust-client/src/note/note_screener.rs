@@ -4,8 +4,11 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use async_trait::async_trait;
+use miden_protocol::Word;
 use miden_protocol::account::{AccountCode, AccountId};
+use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{Note, NoteId};
+use miden_standards::account::auth::commit_fee_conversion_info;
 use miden_standards::note::NoteConsumptionStatus;
 use miden_tx::{
     NoteCheckerError,
@@ -21,7 +24,14 @@ use crate::rpc::domain::note::CommittedNote;
 use crate::store::data_store::ClientDataStore;
 use crate::store::{InputNoteRecord, NoteFilter, Store, StoreError};
 use crate::sync::{NoteUpdateAction, OnNoteReceived};
-use crate::transaction::{AdviceMap, InputNote, TransactionArgs, TransactionRequestError};
+use crate::transaction::{
+    AdviceMap,
+    InputNote,
+    NATIVE_FEE_CONVERSION_SALT,
+    TransactionArgs,
+    TransactionRequestError,
+    native_fee_conversion_info,
+};
 
 /// Represents the consumability of a note by a specific account.
 ///
@@ -149,13 +159,22 @@ impl NoteScreener {
             let account_code = self.get_account_code(account_id).await?;
             data_store.mast_store().load_account_code(&account_code);
 
+            let account_tx_args = self
+                .with_native_fee_conversion_info(
+                    tx_args.clone(),
+                    account_id,
+                    &account_code,
+                    block_ref,
+                )
+                .await?;
+
             for note in notes {
                 let consumption_status = consumption_checker
                     .can_consume(
                         account_id,
                         block_ref,
                         InputNote::unauthenticated(note.clone()),
-                        tx_args.clone(),
+                        account_tx_args.clone(),
                     )
                     .await?;
 
@@ -183,8 +202,10 @@ impl NoteScreener {
         notes: Vec<Note>,
     ) -> Result<NoteConsumptionInfo, NoteScreenerError> {
         let block_ref = self.store.get_sync_height().await?;
-        let tx_args = self.tx_args();
         let account_code = self.get_account_code(account_id).await?;
+        let tx_args = self
+            .with_native_fee_conversion_info(self.tx_args(), account_id, &account_code, block_ref)
+            .await?;
 
         let data_store = ClientDataStore::new(self.store.clone(), self.rpc_api.clone())
             .with_execution_input_cache();
@@ -199,6 +220,51 @@ impl NoteScreener {
             .await?;
 
         Ok(note_consumption_info)
+    }
+
+    /// Returns `tx_args` carrying the auth arg the account needs to settle its fee, when the
+    /// chain at `block_ref` charges one.
+    ///
+    /// Screening executes the full transaction kernel, auth procedure included, so on a
+    /// fee-charging chain `fee::pay_fee` aborts when a non-zero fee meets auth args with no
+    /// conversion info. [`NoteConsumptionChecker`] reports that abort as
+    /// [`NoteConsumptionStatus::UnconsumableConditions`], which would drop the note from the sync.
+    /// Standard notes are unaffected — they are answered without executing anything — so this
+    /// matters for notes carrying a custom script.
+    ///
+    /// The info comes from [`native_fee_conversion_info`], the same source the execution path
+    /// uses, so a note is measured against the fee the transaction it stands in for would pay.
+    async fn with_native_fee_conversion_info(
+        &self,
+        tx_args: TransactionArgs,
+        account_id: AccountId,
+        account_code: &AccountCode,
+        block_ref: BlockNumber,
+    ) -> Result<TransactionArgs, NoteScreenerError> {
+        // Auth args the caller set are the caller's business, as on the execution path.
+        if tx_args.auth_args() != Word::empty() {
+            return Ok(tx_args);
+        }
+
+        // A missing header is left to the trial execution, which reads the same one through the
+        // data store and reports its absence with a more specific error than this could.
+        let Some((header, _)) = self.store.get_block_header_by_num(block_ref).await? else {
+            return Ok(tx_args);
+        };
+
+        let Some(conversion_info) = native_fee_conversion_info(
+            &account_code.interface(account_id),
+            header.fee_parameters(),
+        ) else {
+            return Ok(tx_args);
+        };
+
+        let (auth_arg, preimage) =
+            commit_fee_conversion_info(conversion_info, NATIVE_FEE_CONVERSION_SALT);
+        let mut tx_args = tx_args.with_auth_args(auth_arg);
+        tx_args.extend_advice_map([(auth_arg, preimage)]);
+
+        Ok(tx_args)
     }
 
     async fn get_account_code(

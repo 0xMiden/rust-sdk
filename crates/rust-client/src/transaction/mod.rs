@@ -69,7 +69,7 @@ use alloc::vec::Vec;
 
 use miden_protocol::account::{Account, AccountCode, AccountCodeInterface, AccountId};
 use miden_protocol::asset::{Asset, NonFungibleAsset};
-use miden_protocol::block::{BlockHeader, BlockNumber};
+use miden_protocol::block::{BlockHeader, BlockNumber, FeeParameters};
 use miden_protocol::errors::AssetError;
 use miden_protocol::note::{
     Note,
@@ -200,7 +200,7 @@ pub use result::TransactionResult;
 /// Salt the client commits native fee conversion info under.
 ///
 /// See [`attach_native_fee_conversion_info`] for why this is a constant.
-const NATIVE_FEE_CONVERSION_SALT: Word = Word::empty();
+pub(crate) const NATIVE_FEE_CONVERSION_SALT: Word = Word::empty();
 
 /// Transaction management methods
 impl<AUTH> Client<AUTH>
@@ -1441,15 +1441,35 @@ fn attach_native_fee_conversion_info(
     account_code_interface: &AccountCodeInterface,
     reference_header: &BlockHeader,
 ) {
-    let fee_parameters = reference_header.fee_parameters();
-    if fee_parameters.verification_base_fee() == 0 {
-        return;
-    }
-
     // An auth arg the caller set is the caller's business: it may already commit conversion info
     // for a non-native asset, or carry something else entirely.
     if transaction_request.auth_arg().is_some() {
         return;
+    }
+
+    let Some(conversion_info) =
+        native_fee_conversion_info(account_code_interface, reference_header.fee_parameters())
+    else {
+        return;
+    };
+
+    transaction_request.set_fee_conversion_info(conversion_info, NATIVE_FEE_CONVERSION_SALT);
+}
+
+/// Returns the conversion info an account should commit to settle its fee in the chain's native
+/// asset at rate 1/1, or `None` when the chain charges nothing or the account pays its fee some
+/// other way.
+///
+/// Shared with note screening, which runs the full kernel — auth procedure included — so a note is
+/// measured against the auth arg the transaction it stands in for would actually carry. Answering
+/// this in one place is what keeps the two from drifting apart and screening a note as consumable
+/// that execution would then reject.
+pub(crate) fn native_fee_conversion_info(
+    account_code_interface: &AccountCodeInterface,
+    fee_parameters: &FeeParameters,
+) -> Option<FeeConversionInfo> {
+    if fee_parameters.verification_base_fee() == 0 {
+        return None;
     }
 
     // `AccountInterface::new` requires exactly one recognized auth component and panics otherwise,
@@ -1460,13 +1480,10 @@ fn attach_native_fee_conversion_info(
         .iter()
         .any(|component| matches!(component, AccountComponentInterface::AuthSingleSig));
     if !takes_a_fixed_salt {
-        return;
+        return None;
     }
 
-    transaction_request.set_fee_conversion_info(
-        FeeConversionInfo::one_to_one(fee_parameters.fee_faucet_id()),
-        NATIVE_FEE_CONVERSION_SALT,
-    );
+    Some(FeeConversionInfo::one_to_one(fee_parameters.fee_faucet_id()))
 }
 
 /// Verifies that the account can consume fee conversion info passed through the auth args.

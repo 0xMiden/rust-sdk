@@ -254,20 +254,18 @@ where
                 .map(ResolvedNoteContent::into_attachments)
                 .filter(|attachments| !attachments.is_empty());
 
-            let metadata = *committed_note.metadata();
-            let mut changed = note_record
-                .inclusion_proof_received(committed_note.inclusion_proof().clone(), metadata)?;
+            // Leaves the record `Unverified`: it now carries the inclusion proof and metadata but
+            // not the block header that verifies them. `fetch_note_blocks` finishes it.
+            note_record.inclusion_proof_received(
+                committed_note.inclusion_proof().clone(),
+                *committed_note.metadata(),
+            )?;
 
             if let Some(attachments) = attachments {
-                changed |= note_record.attachments_received(attachments);
+                note_record.attachments_received(attachments);
             }
 
-            note_updates.committed_notes_awaiting_blocks.push(CommittedNoteAwaitingBlock {
-                note_record,
-                block_num: committed_note.block_num(),
-                committed_tag: metadata.tag(),
-                changed,
-            });
+            note_updates.notes_to_write.push(note_record);
         }
 
         Ok(note_updates)
@@ -287,11 +285,10 @@ where
         &self,
         note_updates: &mut TransportNoteUpdates,
     ) -> Result<(), ClientError> {
-        let requested_blocks: BTreeSet<BlockNumber> = note_updates
-            .committed_notes_awaiting_blocks
-            .iter()
-            .map(|note| note.block_num)
-            .collect();
+        // A record left `Unverified` by `fetch_transport_notes_onchain_state` is one the node
+        // reported as committed: it holds the inclusion proof but not the header verifying it.
+        let requested_blocks: BTreeSet<BlockNumber> =
+            note_updates.notes_to_write.iter().filter_map(awaiting_block_header).collect();
 
         if requested_blocks.is_empty() {
             return Ok(());
@@ -323,25 +320,26 @@ where
             );
         }
 
-        for mut note_awaiting_block in
-            core::mem::take(&mut note_updates.committed_notes_awaiting_blocks)
-        {
+        for note_record in &mut note_updates.notes_to_write {
+            let Some(block_num) = awaiting_block_header(note_record) else {
+                continue;
+            };
             let block_header = block_headers
-                .get(&note_awaiting_block.block_num)
+                .get(&block_num)
                 .expect("every committed note's block was fetched above");
 
-            // `block_header_received` transitions the record's state, so it must always run.
-            note_awaiting_block.changed |=
-                note_awaiting_block.note_record.block_header_received(block_header)?;
+            // Read before the transition, which moves the record out of the state holding these.
+            let committed_tag = note_record
+                .metadata()
+                .expect("a note awaiting its block header carries metadata")
+                .tag();
+            let details_commitment = note_record.details_commitment();
 
-            // A record the block header left unchanged has nothing to write.
-            if note_awaiting_block.changed {
-                // Once committed, the note no longer needs its expected-note tag.
-                note_updates.tags_to_remove.push(NoteTagRecord::with_note_source(
-                    note_awaiting_block.committed_tag,
-                    note_awaiting_block.note_record.details_commitment(),
-                ));
-                note_updates.notes_to_write.push(note_awaiting_block.note_record);
+            // Once committed, the note no longer needs its expected-note tag.
+            if note_record.block_header_received(block_header)? {
+                note_updates
+                    .tags_to_remove
+                    .push(NoteTagRecord::with_note_source(committed_tag, details_commitment));
             }
         }
 
@@ -731,34 +729,13 @@ where
 // EXPECTED NOTE IMPORT
 // ================================================================================================
 
-/// An expected note the node reported as committed, with its inclusion proof and attachments
-/// already applied.
-///
-/// Until [`Client::fetch_note_blocks`] resolves the block that committed it, the record is
-/// missing the block-header transition, so it cannot be written yet.
-struct CommittedNoteAwaitingBlock {
-    /// The record. Carries every transition but the block header until the block is resolved.
-    note_record: InputNoteRecord,
-    /// Block that committed the note.
-    block_num: BlockNumber,
-    /// Note-source tag to drop, since a committed note no longer needs to be watched for.
-    committed_tag: NoteTag,
-    /// Whether the inclusion-proof and attachment transitions already changed the record.
-    changed: bool,
-}
-
-/// Notes fetched from the Note Transport Layer, split by whether the node has
-/// committed them, along with note tags to remove, and the blocks that must be
-/// stored before their corresponding committed notes.
+/// Notes fetched from the Note Transport Layer, along with note tags to remove, and the blocks
+/// that must be stored before their corresponding committed notes.
 #[derive(Default)]
 pub(crate) struct TransportNoteUpdates {
-    /// Records ready to write: the notes the node has not committed, plus the committed ones
-    /// once [`Client::fetch_note_blocks`] has resolved their blocks.
+    /// The records to write. A note the node has not committed stays `Expected`; one it has
+    /// committed is `Unverified` until [`Client::fetch_note_blocks`] supplies its block header.
     notes_to_write: Vec<InputNoteRecord>,
-    /// Notes the node has committed, each waiting on the block that committed it.
-    /// [`Client::fetch_note_blocks`] drains these into `notes_to_write`, dropping the ones the
-    /// block header leaves unchanged, so this is empty by the time the batch is written.
-    committed_notes_awaiting_blocks: Vec<CommittedNoteAwaitingBlock>,
     /// Blocks that must be tracked and stored before the committed notes that need them, keyed by
     /// block number so a block committing several notes is stored once. Filled by
     /// [`Client::fetch_note_blocks`]; blocks the client already tracks are absent.
@@ -783,8 +760,6 @@ impl TransportNoteUpdates {
     /// resolve to the version fetched last.
     pub(crate) fn merge(&mut self, other: Self) {
         self.notes_to_write.extend(other.notes_to_write);
-        self.committed_notes_awaiting_blocks
-            .extend(other.committed_notes_awaiting_blocks);
         self.blocks_to_insert.extend(other.blocks_to_insert);
         self.tags_to_remove.extend(other.tags_to_remove);
     }
@@ -800,6 +775,15 @@ impl TransportNoteUpdates {
 
 // HELPERS
 // ================================================================================================
+
+/// The block that committed a note whose record is still awaiting its header, or `None` for any
+/// other record.
+fn awaiting_block_header(note_record: &InputNoteRecord) -> Option<BlockNumber> {
+    match note_record.state() {
+        InputNoteState::Unverified(state) => Some(state.inclusion_proof.location().block_num()),
+        _ => None,
+    }
+}
 
 /// Returns an error if the already-stored note is currently being processed by a local
 /// transaction, since an in-flight note can't be overwritten by an import.

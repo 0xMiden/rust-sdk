@@ -40,7 +40,7 @@ type Service = Channel;
 #[cfg(target_arch = "wasm32")]
 type Service = tonic_web_wasm_client::Client;
 
-/// Establishes a connection to the note transport service, returning the gRPC clients.
+/// Establishes a connection to the note transport service with the configured channel timeout.
 #[cfg(not(target_arch = "wasm32"))]
 async fn connect_channel(
     endpoint: &str,
@@ -63,7 +63,9 @@ async fn connect_channel(
     })
 }
 
-/// Establishes a connection to the note transport service, returning the gRPC clients.
+/// Establishes note transport clients with timed unary requests and untimed streams.
+///
+/// Fetch timeouts include response bodies and would otherwise terminate long-lived streams.
 #[cfg(target_arch = "wasm32")]
 #[allow(clippy::unused_async)]
 async fn connect_channel(
@@ -73,10 +75,6 @@ async fn connect_channel(
     let fetch_options = FetchOptions::new().timeout(Duration::from_millis(timeout_ms));
     let wasm_client =
         tonic_web_wasm_client::Client::new_with_options(String::from(endpoint), fetch_options);
-    // Unlike the native channel timeout, which only bounds the time until the response arrives,
-    // the fetch-level timeout aborts the whole fetch `timeout_ms` after the request starts —
-    // including a response body that is still streaming. Long-lived note streams therefore go
-    // through a client without the timeout.
     let streaming_wasm_client = tonic_web_wasm_client::Client::new(String::from(endpoint));
     Ok(ConnectedClient {
         client: MidenNoteTransportClient::new(wasm_client.clone()),
@@ -129,10 +127,7 @@ impl GrpcNoteTransportClient {
         Ok(self.ensure_connected().await?.client)
     }
 
-    /// Get a clone of the streaming client, connecting if needed.
-    ///
-    /// On WASM this client carries no request timeout, so long-lived note streams are not
-    /// aborted by the fetch-level deadline that bounds unary requests.
+    /// Gets a clone of the streaming client, connecting if needed.
     async fn streaming_api(&self) -> Result<MidenNoteTransportClient<Service>, NoteTransportError> {
         Ok(self.ensure_connected().await?.streaming_client)
     }

@@ -275,6 +275,19 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "forest includes block number")]
+    fn adjust_merkle_path_panics_for_block_beyond_forest() {
+        // Forest 5 covers leaves 0..=4, so a claimed commit height of 5 has no corresponding
+        // tree and the depth lookup has nothing to return. Notes whose inclusion proof claims a
+        // height past the synced view must be dropped before reaching this point.
+        let forest = Forest::new(5).expect("valid forest");
+        let block_num = BlockNumber::from(5u32);
+        let path = MerklePath::new(vec![word(1), word(2), word(3)]);
+
+        adjust_merkle_path_for_forest(&path, block_num, forest);
+    }
+
+    #[test]
     fn adjust_merkle_path_keeps_proof_valid_for_smaller_forest() {
         // Build a proof in a larger forest and ensure truncation does not keep siblings from a
         // different tree in the smaller forest, which would invalidate the proof.

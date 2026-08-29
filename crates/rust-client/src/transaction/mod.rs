@@ -1542,7 +1542,7 @@ pub(crate) async fn fetch_public_account_inputs(
         )
         .await?;
 
-    let account_inputs = request::account_proof_into_inputs(account_proof, &storage_requirements)?;
+    let account_inputs = request::account_proof_into_inputs(account_proof)?;
 
     let _ = store
         .upsert_foreign_account_code(account_id, account_inputs.code().clone())

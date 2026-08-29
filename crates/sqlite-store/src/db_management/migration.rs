@@ -12,8 +12,10 @@ use super::schema::SchemaHash;
 // ================================================================================================
 
 /// The migrations that build the store schema, in the order they are applied.
-pub(crate) const CLIENT_MIGRATIONS: [SqliteMigration; 1] =
-    [SqliteMigration::new(include_str!("../migrations/0001_init.sql"))];
+pub(crate) const CLIENT_MIGRATIONS: [SqliteMigration; 2] = [
+    SqliteMigration::new(include_str!("../migrations/0001_init.sql")),
+    SqliteMigration::new(include_str!("../migrations/0002_index_tuning.sql")),
+];
 
 /// The migrations this client ships.
 ///
@@ -323,8 +325,10 @@ pub(crate) mod tests {
     use super::{CLIENT_MIGRATIONS, SqliteMigration, SqliteMigrator};
     use crate::db_management::errors::SqliteStoreError;
 
-    const PINNED_SCHEMA_HASHES: [&str; CLIENT_MIGRATIONS.len()] =
-        ["0xd02b6d09378d300dd92bfc44a2ce15f5852d76eec336b204f87e0d3a916cfa08"];
+    const PINNED_SCHEMA_HASHES: [&str; CLIENT_MIGRATIONS.len()] = [
+        "0xd02b6d09378d300dd92bfc44a2ce15f5852d76eec336b204f87e0d3a916cfa08",
+        "0x1c1fa140dd21f5477d5d7dc2879d9f6b87ca0860d871c835bf975242876e031b",
+    ];
 
     // FIXTURES
     // --------------------------------------------------------------------------------------------

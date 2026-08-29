@@ -338,10 +338,18 @@ fn key_file_path(keys_directory: &Path, pub_key_commitment: PublicKeyCommitment)
 }
 
 /// Writes an [`AuthSecretKey`] into a file with restrictive permissions (0600 on Unix).
+///
+/// `OpenOptions::mode` only applies the given mode when the file is newly created by this
+/// call - on POSIX, the `mode` argument to `open()` is ignored if the file already exists, so
+/// truncating and rewriting a file that was previously created with looser permissions (e.g.
+/// restored from a backup, or written by a client predating this restriction) would silently
+/// leave those looser permissions in place. `set_permissions` is called explicitly afterwards
+/// so this file ends up `0600` unconditionally, regardless of what permissions it may have had
+/// before this call.
 #[cfg(unix)]
 fn write_secret_key_file(file_path: &Path, key: &AuthSecretKey) -> Result<(), KeyStoreError> {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     let mut file = fs::OpenOptions::new()
         .write(true)
         .create(true)
@@ -350,7 +358,9 @@ fn write_secret_key_file(file_path: &Path, key: &AuthSecretKey) -> Result<(), Ke
         .open(file_path)
         .map_err(keystore_error("error writing secret key file"))?;
     file.write_all(&key.to_bytes())
-        .map_err(keystore_error("error writing secret key file"))
+        .map_err(keystore_error("error writing secret key file"))?;
+    file.set_permissions(fs::Permissions::from_mode(0o600))
+        .map_err(keystore_error("error setting secret key file permissions"))
 }
 
 /// Writes an [`AuthSecretKey`] into a file.
@@ -362,4 +372,40 @@ fn write_secret_key_file(file_path: &Path, key: &AuthSecretKey) -> Result<(), Ke
 
 fn keystore_error(context: &str) -> impl FnOnce(std::io::Error) -> KeyStoreError {
     move |err| KeyStoreError::StorageError(format!("{context}: {err:?}"))
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+
+    use miden_protocol::account::auth::AuthSecretKey;
+
+    use super::write_secret_key_file;
+
+    /// `OpenOptions::mode(0o600)` only applies when the file is newly created - if a file at
+    /// the target path already exists with looser permissions (e.g. restored from a backup, or
+    /// left over from a client version predating this restriction), truncating and rewriting it
+    /// must still leave it at `0600`, not silently keep the pre-existing, looser permissions.
+    #[test]
+    fn overwriting_an_existing_key_file_still_ends_up_0600() {
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+        let file_path = dir.path().join("existing-key");
+
+        // Pre-create the file with permissions looser than 0600.
+        fs::write(&file_path, b"stale contents").expect("failed to pre-create file");
+        fs::set_permissions(&file_path, fs::Permissions::from_mode(0o644))
+            .expect("failed to set initial permissions");
+        assert_eq!(
+            fs::metadata(&file_path).unwrap().permissions().mode() & 0o777,
+            0o644,
+            "sanity check: file should start at 0644"
+        );
+
+        let key = AuthSecretKey::new_falcon512_poseidon2();
+        write_secret_key_file(&file_path, &key).expect("failed to write secret key file");
+
+        let mode = fs::metadata(&file_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "expected 0600 after overwrite, got {mode:o}");
+    }
 }

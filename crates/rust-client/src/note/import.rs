@@ -349,8 +349,9 @@ where
     /// Fetches the nullifier commit heights of the notes in `note_updates`, marking those already
     /// spent as consumed.
     ///
-    /// Must run after [`Client::fetch_note_blocks`]: a note only has a nullifier once it is
-    /// committed, so before that there is nothing to ask about.
+    /// Must run after [`Client::fetch_note_blocks`]: only a note the node reported as committed
+    /// has the metadata a nullifier is derived from, so before that there is nothing to ask
+    /// about.
     pub(crate) async fn fetch_note_nullifiers(
         &self,
         note_updates: &mut TransportNoteUpdates,
@@ -395,8 +396,8 @@ where
     /// of the written records.
     ///
     /// The block headers go in first, so a record is never persisted as committed before the
-    /// header proving its inclusion. [`Client::fetch_note_blocks`] must have run beforehand: a
-    /// note still awaiting its block is not written.
+    /// header proving its inclusion. [`Client::fetch_note_blocks`] must have run beforehand, or a
+    /// note the node committed is written as unverified and stays that way until a later sync.
     pub(crate) async fn apply_note_transport_updates(
         &mut self,
         note_updates: TransportNoteUpdates,
@@ -764,10 +765,7 @@ impl TransportNoteUpdates {
         self.tags_to_remove.extend(other.tags_to_remove);
     }
 
-    /// The records this batch is about to write.
-    ///
-    /// Only complete once [`Client::fetch_note_blocks`] has run: before that, the
-    /// committed notes are still awaiting their blocks and are not included.
+    /// The records this batch is about to write, whatever state each is in.
     pub(crate) fn input_note_records(&self) -> impl Iterator<Item = &InputNoteRecord> {
         self.notes_to_write.iter()
     }

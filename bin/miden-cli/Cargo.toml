@@ -37,7 +37,7 @@ rand               = { workspace = true }
 serde              = { workspace = true }
 thiserror          = { workspace = true }
 tokio              = { workspace = true }
-toml               = { version = "0.9" }
+toml               = { workspace = true }
 tracing            = { workspace = true }
 tracing-subscriber = { default-features = true, workspace = true }
 

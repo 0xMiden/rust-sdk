@@ -279,13 +279,17 @@ where
         let (new_private_notes, transport_delivered_notes) =
             self.apply_note_transport_sync_data(note_transport_data).await?;
 
-        // The chain tracker was built from a store snapshot taken before those writes, so the
-        // records the screener is about to vote on have to be added to it explicitly.
+        // Merge the NTL notes into the chain `note_updates`, so a commitment the chain reported
+        // for one of them is applied to its record. The tracker was built before the writes
+        // above, so without this the screener's verdict would have no record to apply to.
         chain_sync_data
             .note_updates
             .track_existing_input_notes(transport_delivered_notes);
 
         state_sync.derive_note_and_transaction_updates(&mut chain_sync_data).await?;
+
+        // Now that the NTL notes are tracked, the nullifier check covers them too: one delivered
+        // and consumed within this window is reported as consumed by this same sync.
         state_sync.fetch_nullifiers(&mut chain_sync_data).await?;
 
         let mut summary = self.apply_chain_updates(&state_sync, chain_sync_data).await?;

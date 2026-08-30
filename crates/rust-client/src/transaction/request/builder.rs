@@ -269,9 +269,24 @@ impl TransactionRequestBuilder {
 
     /// Sets an optional [`Word`] that will be pushed to the stack for the authentication
     /// procedure during transaction execution.
+    ///
+    /// `AuthSingleSig`, `AuthMultisig` and `AuthGuardedMultisig` read this word as a commitment to
+    /// fee conversion info, so on a chain that charges a fee it is not a free-form slot for them: a
+    /// non-empty word suppresses both the commitment the client would make for an `AuthSingleSig`
+    /// account and the check that would reject an `AuthMultisig` or `AuthGuardedMultisig` request
+    /// declaring none, and `fee::pay_fee` then aborts for want of conversion info. Use
+    /// [`Self::fee_conversion_info`] for those accounts. An empty word commits nothing and is
+    /// treated as no arg at all, so the client still attaches the native conversion info an
+    /// `AuthSingleSig` account needs. `AuthMultisig` and `AuthGuardedMultisig` go on to reuse the
+    /// word as their transaction summary salt; `AuthMultisigSmart` reads it as that salt and
+    /// nothing else, and `AuthNoAuth` and `AuthNetworkAccount` discard it.
+    ///
+    /// A raw word is not a conversion info commitment, so this also undeclares any conversion info
+    /// [`Self::fee_conversion_info`] committed: whichever is called last decides both.
     #[must_use]
     pub fn auth_arg(mut self, auth_arg: Word) -> Self {
         self.auth_arg = Some(auth_arg);
+        self.declares_fee_conversion_info = false;
         self
     }
 
@@ -279,15 +294,33 @@ impl TransactionRequestBuilder {
     /// native fee into it.
     ///
     /// The info is committed to through the transaction's auth args, so it only has an effect on
-    /// accounts whose auth component reads them: [`AuthSingleSig`](crate::auth::AuthSingleSig) and
-    /// [`AuthMultisig`](crate::auth::AuthMultisig). Executing
-    /// such a request against an account with any other auth component is rejected before execution
-    /// with [`TransactionRequestError::FeeConversionInfoUnsupported`].
+    /// accounts whose auth component reads them: [`AuthSingleSig`](crate::auth::AuthSingleSig),
+    /// [`AuthMultisig`](crate::auth::AuthMultisig) and
+    /// [`AuthGuardedMultisig`](crate::auth::AuthGuardedMultisig). Executing such a request against
+    /// an account with any other auth component is rejected before execution with
+    /// [`TransactionRequestError::FeeConversionInfoUnsupported`].
+    ///
+    /// Setting this is optional for an [`AuthSingleSig`](crate::auth::AuthSingleSig) account, which
+    /// the client commits the chain's native asset for when a request declares nothing, and
+    /// required for [`AuthMultisig`](crate::auth::AuthMultisig) and
+    /// [`AuthGuardedMultisig`](crate::auth::AuthGuardedMultisig) on a chain that charges a fee:
+    /// there the commitment doubles as the transaction summary salt, and the account's replay
+    /// protection rejects a summary it has already recorded, so the salt has to be the caller's to
+    /// choose. A request that declares none is rejected with
+    /// [`TransactionRequestError::FeeConversionInfoRequired`].
+    ///
+    /// For those two components `salt` must therefore be drawn afresh for every transaction, and
+    /// unpredictably: the commitment it produces IS the replay guard, `record_and_assert_new_tx`
+    /// records it permanently, and a salt reused across two otherwise-identical transactions makes
+    /// the second unexecutable for good. Only an [`AuthSingleSig`](crate::auth::AuthSingleSig)
+    /// account can take a constant, its replay guard being the account nonce instead.
     #[must_use]
-    pub fn fee_conversion_info(mut self, conversion_info: FeeConversionInfo, salt: Word) -> Self {
+    pub fn fee_conversion_info(self, conversion_info: FeeConversionInfo, salt: Word) -> Self {
         let (auth_arg, preimage) = commit_fee_conversion_info(conversion_info, salt);
-        self.declares_fee_conversion_info = true;
-        self.auth_arg(auth_arg).extend_advice_map([(auth_arg, preimage)])
+        // Declared after `auth_arg`, which undeclares whatever was committed before it.
+        let mut builder = self.auth_arg(auth_arg).extend_advice_map([(auth_arg, preimage)]);
+        builder.declares_fee_conversion_info = true;
+        builder
     }
 
     /// Specifies note scripts that the node's network transaction (NTX) builder will need in

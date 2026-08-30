@@ -251,11 +251,34 @@ impl TransactionRequest {
     // STATE MUTATORS
     // --------------------------------------------------------------------------------------------
 
+    /// Returns this request carrying `auth_arg` as its auth argument.
+    ///
+    /// The plain counterpart of [`TransactionRequestBuilder::fee_conversion_info`]: it attaches
+    /// the word as an opaque commitment and undeclares any fee conversion info the request
+    /// already committed, just as [`TransactionRequestBuilder::auth_arg`] does.
+    ///
+    /// That distinction is the point. A request FLAGGED as declaring conversion info makes the
+    /// client classify the account's auth component before executing, and an account whose
+    /// component is built from MASM the client cannot match — a guarded multisig assembled by
+    /// the JS package, whose procedure roots differ from `miden_standards`' — is rejected
+    /// outright. Callers that have computed a commitment themselves need to attach it without
+    /// that classification, exactly as the multisig client's typed proposals do.
+    ///
+    /// Overwrites any existing auth arg, so reach for it only on a request that carries none
+    /// that commits anything. The preimage still has to reach the advice map: pair this with
+    /// [`Self::advice_map_mut`].
+    #[must_use]
+    pub fn with_auth_arg(mut self, auth_arg: Word) -> Self {
+        self.auth_arg = Some(auth_arg);
+        self.declares_fee_conversion_info = false;
+        self
+    }
+
     /// Commits `conversion_info` under `salt` through the auth args, the way
     /// [`TransactionRequestBuilder::fee_conversion_info`] does.
     ///
     /// This overwrites any auth arg the request already carries, so callers must only reach for it
-    /// when the request declares none.
+    /// when the request carries none that commits anything — either no arg at all or an empty one.
     pub(crate) fn set_fee_conversion_info(
         &mut self,
         conversion_info: FeeConversionInfo,
@@ -467,6 +490,29 @@ impl Deserializable for TransactionRequest {
         let script_arg = Option::<Word>::read_from(source)?;
         let auth_arg = Option::<Word>::read_from(source)?;
         let declares_fee_conversion_info = source.read_u8()? == 1;
+        // The flag qualifies the auth arg, so it cannot stand on its own. A payload claiming
+        // conversion info without an arg to carry it would make `validate_request` reject accounts
+        // over a commitment that is not there, so it is refused at the boundary instead.
+        if declares_fee_conversion_info && auth_arg.is_none_or(|auth_arg| auth_arg == Word::empty())
+        {
+            return Err(DeserializationError::InvalidValue(
+                "transaction request declares fee conversion info without an auth arg to carry it"
+                    .into(),
+            ));
+        }
+        // The commitment is only resolvable through its preimage: `fee::load_conversion_info`
+        // reads the advice map and yields the empty word when the entry is absent, which
+        // `fee::pay_fee` then aborts on. Every in-crate producer writes the two together, so a
+        // payload carrying one without the other is refused rather than left to fail in the VM.
+        if declares_fee_conversion_info
+            && auth_arg.is_some_and(|auth_arg| advice_map.get(&auth_arg).is_none())
+        {
+            return Err(DeserializationError::InvalidValue(
+                "transaction request declares fee conversion info whose preimage is not in the \
+                 advice map"
+                    .into(),
+            ));
+        }
         let expected_ntx_scripts = Vec::<NoteScript>::read_from(source)?;
 
         Ok(TransactionRequest {
@@ -560,6 +606,12 @@ pub enum TransactionRequestError {
         "the request declares fee conversion info but the account's auth component {0} does not read it"
     )]
     FeeConversionInfoUnsupported(String),
+    #[error(
+        "the account's auth component {0} pays the fee in an asset the request has to name, so on \
+         a chain that charges a fee the request must declare fee conversion info; set it with \
+         TransactionRequestBuilder::fee_conversion_info"
+    )]
+    FeeConversionInfoRequired(String),
     #[error("invalid transaction script")]
     InvalidTransactionScript(#[from] TransactionScriptError),
     #[error("merkle proof error")]
@@ -629,12 +681,12 @@ mod tests {
         ACCOUNT_ID_SENDER,
     };
     use miden_protocol::{EMPTY_WORD, Felt, Word};
-    use miden_standards::account::auth::{Approver, AuthSingleSig};
+    use miden_standards::account::auth::{Approver, AuthSingleSig, FeeConversionInfo};
     use miden_standards::note::P2idNote;
     use miden_standards::testing::account_component::MockAccountComponent;
     use miden_tx::utils::serde::{Deserializable, Serializable};
 
-    use super::{TransactionRequest, TransactionRequestBuilder};
+    use super::{AdviceMap, TransactionRequest, TransactionRequestBuilder};
     use crate::rpc::domain::account::AccountStorageRequirements;
     use crate::transaction::ForeignAccount;
 
@@ -717,15 +769,71 @@ mod tests {
             ])
             .own_output_notes(vec![notes.pop().unwrap(), notes.pop().unwrap()])
             .script_arg(rng.draw_word())
-            .auth_arg(rng.draw_word())
+            // Sets the auth arg the way a fee-paying caller does, so the flag that records the arg
+            // as conversion info is carried through the round trip rather than left at its default.
+            .fee_conversion_info(FeeConversionInfo::one_to_one(faucet_id), rng.draw_word())
             .expected_ntx_scripts(vec![notes.first().unwrap().recipient().script().clone()])
             .build()
             .unwrap();
+        assert!(tx_request.declares_fee_conversion_info());
 
         let mut buffer = Vec::new();
         tx_request.write_into(&mut buffer);
 
         let deserialized_tx_request = TransactionRequest::read_from_bytes(&buffer).unwrap();
         assert_eq!(tx_request, deserialized_tx_request);
+        assert!(deserialized_tx_request.declares_fee_conversion_info());
+    }
+
+    /// The flag asserts two things a reader cannot reconstruct: an auth arg carrying the
+    /// commitment, and the preimage that resolves it. A round trip can never produce a payload
+    /// missing either, so the cases the boundary check exists for are built by hand.
+    #[test]
+    fn a_declared_conversion_info_missing_its_arg_or_preimage_is_refused() {
+        let faucet_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
+        let request = TransactionRequestBuilder::new()
+            .fee_conversion_info(
+                FeeConversionInfo::one_to_one(faucet_id),
+                Word::from([1u32, 2, 3, 4]),
+            )
+            .build()
+            .unwrap();
+        TransactionRequest::read_from_bytes(&request.to_bytes())
+            .expect("the intact request round trips");
+
+        let mut without_arg = request.clone();
+        without_arg.auth_arg = None;
+        TransactionRequest::read_from_bytes(&without_arg.to_bytes())
+            .expect_err("a declared commitment with no auth arg to carry it is refused");
+
+        let mut with_empty_arg = request.clone();
+        with_empty_arg.auth_arg = Some(Word::empty());
+        TransactionRequest::read_from_bytes(&with_empty_arg.to_bytes())
+            .expect_err("an empty auth arg commits nothing, so it cannot carry a declaration");
+
+        let mut without_preimage = request;
+        without_preimage.advice_map = AdviceMap::default();
+        TransactionRequest::read_from_bytes(&without_preimage.to_bytes())
+            .expect_err("a commitment whose preimage is absent would abort in `fee::pay_fee`");
+    }
+
+    /// `with_auth_arg` attaches an opaque word, so it has to undeclare a commitment the request
+    /// already carried; left declared, the request would serialize into a payload its own reader
+    /// refuses, and make `validate_request` classify the account over a commitment that is gone.
+    #[test]
+    fn a_raw_auth_arg_undeclares_conversion_info_on_the_request() {
+        let faucet_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
+        let request = TransactionRequestBuilder::new()
+            .fee_conversion_info(
+                FeeConversionInfo::one_to_one(faucet_id),
+                Word::from([1u32, 2, 3, 4]),
+            )
+            .build()
+            .unwrap()
+            .with_auth_arg(Word::from([5u32, 6, 7, 8]));
+
+        assert!(!request.declares_fee_conversion_info());
+        TransactionRequest::read_from_bytes(&request.to_bytes())
+            .expect("an undeclared raw auth arg round trips");
     }
 }

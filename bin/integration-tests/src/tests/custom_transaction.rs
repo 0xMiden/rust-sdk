@@ -70,6 +70,10 @@ pub async fn test_transaction_request(client_config: ClientConfig) -> Result<()>
     )
     .await?;
 
+    // The custom transaction below cannot double as the account's deploy, so the funding note is
+    // spent here instead.
+    client.deploy_account(regular_account.id()).await?;
+
     // Execute mint transaction in order to create custom note
     let note = mint_custom_note(&mut client, fungible_faucet.id(), regular_account.id()).await?;
     client.sync_state().await?;

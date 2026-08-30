@@ -46,6 +46,7 @@ use crate::transaction::{
     TransactionRequest,
     TransactionRequestBuilder,
     TransactionRequestError,
+    TransactionResult,
     TransactionStatus,
 };
 use crate::{Client, ClientError};
@@ -110,6 +111,21 @@ impl TestClient {
         let transaction_request = self.fund_request(account_id, transaction_request);
 
         Box::pin(self.client.submit_new_transaction(account_id, transaction_request)).await
+    }
+
+    /// Executes a transaction for `account_id`, folding in its funding note when it has one.
+    ///
+    /// Shadows [`Client::execute_transaction`] for the same reason
+    /// [`Self::submit_new_transaction`] shadows its counterpart. Takes `&mut self` where the
+    /// wrapped method takes `&self`, since taking the note is a mutation.
+    pub async fn execute_transaction(
+        &mut self,
+        account_id: AccountId,
+        transaction_request: TransactionRequest,
+    ) -> Result<TransactionResult, ClientError> {
+        let transaction_request = self.fund_request(account_id, transaction_request);
+
+        Box::pin(self.client.execute_transaction(account_id, transaction_request)).await
     }
 
     /// Returns `transaction_request` with `account_id`'s funding note folded in, when it has one

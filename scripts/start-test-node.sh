@@ -2,13 +2,28 @@
 #
 # Starts a self-contained testing node (validator, sequencer, ntx-builder, and tx prover) from
 # the standalone node executables, installed with `cargo install` at the node source pinned in
-# Cargo.lock.
+# Cargo.lock -- unless MIDEN_TEST_NODE_USE_INSTALLED says otherwise, see Environment below.
 #
 # Modes:
 #   (no args)        start the node and stream its logs; Ctrl+C stops it
 #   --background     return once the node's RPC is ready, leaving it running (used by CI)
 #   --install-only   install the node binaries and exit (used by the CI build job)
 #   --print-rev      print the pinned node rev or version (CI cache key) and exit
+#
+# Environment:
+#   MIDEN_TEST_NODE_VERIFICATION_BASE_FEE  a non-zero u32 makes the chain charge that fee and puts
+#                                          funder wallets in genesis; unset or 0 leaves fees off,
+#                                          and anything else aborts before the previous chain is
+#                                          wiped. See
+#                                          crates/testing/test-node-genesis/README.md
+#   MIDEN_TEST_NODE_USE_INSTALLED          any non-empty value (0 included) runs whatever is
+#                                          already installed instead of the pinned node
+#   AGGLAYER_GENESIS                       any value, empty included, adds the agglayer accounts
+#                                          to genesis and exports them to ./data
+#   MIDEN_NETWORK_TX_AUTH                  shared ntx-builder/sequencer secret; defaults below
+#   RUST_LOG                               log level for the components; defaults to info
+#   CARGO_TARGET_DIR                       where gen-genesis is built and looked up. The node
+#                                          install ignores it, always using target/test-node/build
 
 set -euo pipefail
 
@@ -66,13 +81,17 @@ if [ "$MODE" = "print-rev" ]; then
     exit 0
 fi
 
+# `-f` as well as `-x`, because a directory is executable and would otherwise pass for the binary it
+# is named after.
+have_binary() { [ -f "$BIN/$1" ] && [ -x "$BIN/$1" ]; }
+
 node_binaries_installed() {
     local metadata="$CACHE/install/.crates.toml"
     [ -f "$metadata" ] || return 1
 
     # `.crates.toml` records each install as `"<bin> <version> (<source>)"`.
     for bin in "${NODE_BINS[@]}"; do
-        [ -x "$BIN/$bin" ] || return 1
+        have_binary "$bin" || return 1
         if [ "$NODE_SOURCE" = "git" ]; then
             grep -F "\"$bin " "$metadata" | grep -Fq "#$NODE_REV)" || return 1
         else
@@ -81,7 +100,51 @@ node_binaries_installed() {
     done
 }
 
-if node_binaries_installed; then
+# Escape hatch for running against a node built from source. Testing an unreleased protocol change
+# means the node has to carry it too: a guarded account assembled from a patched miden-standards
+# calls procedure roots a published node cannot resolve, and it rejects the transaction at
+# `submit_proven_transaction` with "procedure with root digest ... could not be found".
+# `[patch.crates-io]` cannot fix that here, because a registry or git `cargo install` ignores the
+# patch section entirely -- the binaries have to be `cargo install --path`-ed from a patched
+# checkout. Those record a `path+file://` source, which the pin check above (correctly) rejects, so
+# without this the next run silently reinstalls the published node over them.
+#
+# A binary this cannot find is fatal rather than a fall-through to the install below: reinstalling
+# the pin is never what this variable asked for, and doing it would overwrite the very binaries the
+# variable exists to protect.
+use_installed_binaries() {
+    local missing=""
+    for bin in "${NODE_BINS[@]}"; do
+        have_binary "$bin" || missing="$missing $bin"
+    done
+    if [ -n "$missing" ]; then
+        echo "error: MIDEN_TEST_NODE_USE_INSTALLED is set, but these are not executable in" \
+            "$BIN:$missing" >&2
+        echo "       build them from a node checkout first, e.g." >&2
+        echo "       cargo install --path <node-checkout>/bin/validator --root $CACHE/install" >&2
+        echo "       or unset the variable to install the $NODE_DESC pin" >&2
+        exit 1
+    fi
+
+    echo "==> MIDEN_TEST_NODE_USE_INSTALLED: using $BIN as-is, not checking it against $NODE_DESC"
+    # Cargo's inventory of the packages it tracks in this install root. It is bookkeeping, not
+    # provenance: it omits a binary placed here by other means, and it still describes one that was
+    # installed and later overwritten. So it is labelled as what it is rather than presented as the
+    # provenance of what is about to run, and the header is skipped when it lists nothing.
+    local listing=""
+    if [ -f "$CACHE/install/.crates.toml" ]; then
+        listing="$(sed -n 's/^"\([A-Za-z0-9_-]*\) \([^ ]*\) (\([a-z-]*\)+.*/        \1 \2 (\3)/p' \
+            "$CACHE/install/.crates.toml")"
+    fi
+    if [ -n "$listing" ]; then
+        echo "    cargo last installed here:"
+        printf '%s\n' "$listing"
+    fi
+}
+
+if [ -n "${MIDEN_TEST_NODE_USE_INSTALLED:-}" ]; then
+    use_installed_binaries
+elif node_binaries_installed; then
     echo "==> using cached node binaries ($NODE_DESC)"
 else
     echo "==> installing node binaries ($NODE_DESC)"
@@ -102,7 +165,11 @@ else
 fi
 
 if [ "$MODE" = "install-only" ]; then
-    echo "==> install-only: node binaries ready in $BIN"
+    if [ -n "${MIDEN_TEST_NODE_USE_INSTALLED:-}" ]; then
+        echo "==> install-only: using the binaries already in $BIN; nothing was installed"
+    else
+        echo "==> install-only: node binaries ready in $BIN"
+    fi
     exit 0
 fi
 
@@ -115,20 +182,27 @@ fi
 echo "==> building gen-genesis"
 cargo build --release -p test-node-genesis --bin gen-genesis
 
+# Ask gen-genesis to check the environment before the cleanup below destroys the previous chain. It
+# applies the same rules when it runs for real, so this only moves the diagnosis earlier: a typo in
+# MIDEN_TEST_NODE_VERIFICATION_BASE_FEE costs nothing instead of costing a chain that was working.
+"$GEN_GENESIS" --check-env
+
 echo "==> generating genesis + bootstrapping"
+AGGLAYER_MACS=(bridge_admin.mac ger_manager.mac bridge.mac agglayer_faucet.mac)
+# ./data outlives a run, unlike $DATA, so everything this script exports there describes the chain
+# about to be wiped. Drop all of it, and drop it before $DATA: a removal that fails then stops the
+# run with the old chain still whole, rather than with $DATA already gone. The export block after
+# bootstrap explains why nothing is written back until the new chain exists.
+mkdir -p "$ROOT/data"
+rm -f "$ROOT/data/account.mac"
+rm -f "$ROOT/data"/wallet_*.mac
+for mac in "${AGGLAYER_MACS[@]}"; do
+    rm -f "$ROOT/data/$mac"
+done
 rm -rf "$DATA"
 # Each component opens its SQLite DB directly under its data dir and does not create it.
 mkdir -p "$LOG_DIR" "$DATA/validator" "$DATA/node" "$DATA/ntx-builder"
 "$GEN_GENESIS" "$DATA/genesis-config"
-mkdir -p "$ROOT/data"
-cp "$DATA/genesis-config/tst_faucet.mac" "$ROOT/data/account.mac"
-# With AGGLAYER_GENESIS set, gen-genesis also emits the agglayer account files; expose them under
-# ./data so tests can load them via AGGLAYER_ACCOUNTS_DIR=./data.
-for mac in bridge_admin.mac ger_manager.mac bridge.mac agglayer_faucet.mac; do
-    if [ -f "$DATA/genesis-config/$mac" ]; then
-        cp "$DATA/genesis-config/$mac" "$ROOT/data/$mac"
-    fi
-done
 
 # The validator's signing key and the set's shared transaction encryption key are passed on the
 # command line. The genesis header commits to the signing key's public half, so the key-pair has to
@@ -148,18 +222,82 @@ for key in SIGNING_KEY VALIDATOR_PUBLIC_KEY ENCRYPTION_KEY; do
     }
 done
 
+# Chained on `&&` rather than run as plain statements because the group sits on the left of an
+# `||`, which suspends `set -e` inside it; without the chaining a failed genesis would go on to
+# bootstrap components against a block that was never built. The whole group's output goes to a
+# file, so the failure branch is the only thing that can tell an operator where to look.
 {
     # Genesis generation is separate from bootstrap: `genesis` builds the block once, then every
     # component seeds its database from the resulting file.
     "$BIN/miden-validator" genesis --genesis-block-directory "$DATA/genesis" \
         --accounts-directory "$DATA/accounts" --config "$DATA/genesis-config/genesis.toml" \
-        --validator.key "$VALIDATOR_PUBLIC_KEY"
+        --validator.key "$VALIDATOR_PUBLIC_KEY" &&
     "$BIN/miden-validator" bootstrap --data-directory "$DATA/validator" \
-        --genesis "$DATA/genesis/genesis.dat"
-    "$BIN/miden-node" bootstrap --data-directory "$DATA/node" --genesis "$DATA/genesis/genesis.dat"
+        --genesis "$DATA/genesis/genesis.dat" &&
+    "$BIN/miden-node" bootstrap --data-directory "$DATA/node" \
+        --genesis "$DATA/genesis/genesis.dat" &&
     "$BIN/miden-ntx-builder" bootstrap --data-directory "$DATA/ntx-builder" \
         --genesis "$DATA/genesis/genesis.dat"
-} >"$LOG_DIR/bootstrap.log" 2>&1
+} >"$LOG_DIR/bootstrap.log" 2>&1 || {
+    STATUS=$?
+    echo "error: node genesis/bootstrap failed (exit $STATUS); see $LOG_DIR/bootstrap.log" >&2
+    # `set -e` is live on this side of the `||`, so nothing here may fail: a log the redirection
+    # never managed to create is skipped by the `-s` test, and a tail that fails anyway (an
+    # unreadable log) must not kill the script before it reports the status it came here to report.
+    if [ -s "$LOG_DIR/bootstrap.log" ]; then
+        echo "       last 40 lines:" >&2
+        tail -n 40 "$LOG_DIR/bootstrap.log" >&2 || true
+    fi
+    exit "$STATUS"
+}
+
+# With a non-zero MIDEN_TEST_NODE_VERIFICATION_BASE_FEE, genesis carries MIDEN-funded funder
+# wallets. The node generates them, so only it knows their ids and keys; it writes them to the
+# accounts directory above.
+#
+# Counting the manifest's wallet entries pins the expectation to what the node was actually asked
+# for, so a rename of the files it writes is caught here; a fee-charging chain whose funders never
+# reached ./data would otherwise surface as an unexplained failure once a test went looking.
+# grep exits 1 on no matches, which is a legitimate count of zero; any other status is a failure.
+EXPECTED_FUNDERS="$(grep -c '^\[\[wallet\]\]' "$DATA/genesis-config/genesis.toml" || [ $? -eq 1 ])"
+FUNDERS=0
+for mac in "$DATA/accounts"/wallet_*.mac; do
+    if [ -f "$mac" ]; then
+        FUNDERS=$((FUNDERS + 1))
+    fi
+done
+if [ "$FUNDERS" -ne "$EXPECTED_FUNDERS" ]; then
+    echo "error: genesis.toml declares $EXPECTED_FUNDERS funder wallet(s) but $FUNDERS matched" \
+        "wallet_*.mac in $DATA/accounts" >&2
+    # The glob encodes the pinned node's naming, so a node that names them otherwise lands here with
+    # a count of zero. Show what it did write rather than only what failed to match.
+    echo "       that directory holds:" >&2
+    ls -1 "$DATA/accounts" >&2 || true
+    exit 1
+fi
+
+# Every export into ./data happens here, past everything that can fail on the way to a chain: it is
+# built, and the funder set is the one genesis asked for. So a run that fails between the ./data
+# clear above and this point leaves ./data exactly as that clear left it -- empty of accounts for a
+# chain that was never built -- rather than holding a subset written before the failure. A `cp`
+# failing inside this block does leave a partial set; staging and publishing atomically is not
+# worth it for a disk that filled at the last step of an otherwise successful bootstrap.
+cp "$DATA/genesis-config/tst_faucet.mac" "$ROOT/data/account.mac"
+# With AGGLAYER_GENESIS set, gen-genesis also emits the agglayer account files; expose them under
+# ./data so tests can load them via AGGLAYER_ACCOUNTS_DIR=./data.
+for mac in "${AGGLAYER_MACS[@]}"; do
+    if [ -f "$DATA/genesis-config/$mac" ]; then
+        cp "$DATA/genesis-config/$mac" "$ROOT/data/$mac"
+    fi
+done
+for mac in "$DATA/accounts"/wallet_*.mac; do
+    if [ -f "$mac" ]; then
+        cp "$mac" "$ROOT/data/"
+    fi
+done
+if [ "$FUNDERS" -gt 0 ]; then
+    echo "==> exported $FUNDERS funder wallet(s) to ./data"
+fi
 
 echo "==> starting components"
 : > "$PID_FILE"

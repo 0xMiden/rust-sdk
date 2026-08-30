@@ -41,7 +41,7 @@ use miden_client::testing::common::{
     RECALL_HEIGHT_DELTA,
     TRANSFER_AMOUNT,
     TestClient,
-    assert_account_has_single_asset,
+    assert_account_balance,
     assert_note_cannot_be_consumed_twice,
     consume_notes,
     create_test_store_path,
@@ -1316,7 +1316,7 @@ async fn p2id_transfer() {
     mock_rpc_api.prove_block();
     client.sync_state().await.unwrap();
 
-    assert_account_has_single_asset(&client, from_account_id, faucet_account_id, MINT_AMOUNT).await;
+    assert_account_balance(&client, from_account_id, faucet_account_id, MINT_AMOUNT).await;
 
     // Do a transfer from first account to second account
     let asset = FungibleAsset::new(faucet_account_id, TRANSFER_AMOUNT).unwrap();
@@ -1828,7 +1828,7 @@ async fn p2ide_transfer_consumed_by_target() {
     mock_rpc_api.prove_block();
     client.sync_state().await.unwrap();
 
-    assert_account_has_single_asset(&client, from_account_id, faucet_account_id, MINT_AMOUNT).await;
+    assert_account_balance(&client, from_account_id, faucet_account_id, MINT_AMOUNT).await;
 
     // Check that the note is consumed by the target account
     let input_note = client.get_input_note(note.id()).await.unwrap().unwrap();

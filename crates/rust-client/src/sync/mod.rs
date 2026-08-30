@@ -141,8 +141,7 @@ where
 
         let state_sync = self.state_sync();
         let mut chain_sync_data = self.fetch_chain_updates(&state_sync).await?;
-        // No other sync path ran, so there are no transport-delivered notes to take on.
-        state_sync.screen_fetched_notes(&mut chain_sync_data, Vec::new()).await?;
+        state_sync.derive_note_and_transaction_updates(&mut chain_sync_data).await?;
         state_sync.fetch_nullifiers(&mut chain_sync_data).await?;
 
         self.apply_chain_updates(&state_sync, chain_sync_data).await
@@ -246,10 +245,10 @@ where
     ///
     /// 1. Concurrently: the note transport fetch and [`Client::fetch_chain_updates`]. Only node and
     ///    NTL calls happen here, which is all that benefits from overlapping.
-    /// 2. The transport writes.
-    /// 3. [`StateSync::screen_fetched_notes`], which screens the node's notes against the store —
-    ///    hence after step 2, so a transport-delivered note is recognised rather than discarded —
-    ///    and takes on those records so a commitment reported this sync is applied to them.
+    /// 2. The transport writes, whose records are then tracked in the chain sync's note updates.
+    /// 3. [`StateSync::derive_note_and_transaction_updates`], which screens the node's notes
+    ///    against the store — hence after step 2, so a transport-delivered note is recognised
+    ///    rather than discarded — and applies a commitment reported this sync to those records.
     /// 4. [`StateSync::fetch_nullifiers`], covering the tracked notes *and* the transport-delivered
     ///    ones, so a note delivered and consumed in the same window is reported as consumed by this
     ///    call.
@@ -274,15 +273,19 @@ where
             self.fetch_chain_updates(&state_sync)
         )?;
 
-        // These must be in the store before the chain data is screened: the screener
-        // recognises a note by looking it up there, and a private note it cannot find is discarded
-        // for good, since the chain's note query never revisits a block range.
+        // The NTL notes must be in the store before the chain data is screened: the screener
+        // recognises a note by looking it up in the store, and the updates for private notes
+        // it cannot find are discarded.
         let (new_private_notes, transport_delivered_notes) =
             self.apply_note_transport_sync_data(note_transport_data).await?;
 
-        state_sync
-            .screen_fetched_notes(&mut chain_sync_data, transport_delivered_notes)
-            .await?;
+        // The chain tracker was built from a store snapshot taken before those writes, so the
+        // records the screener is about to vote on have to be added to it explicitly.
+        chain_sync_data
+            .note_updates
+            .track_existing_input_notes(transport_delivered_notes);
+
+        state_sync.derive_note_and_transaction_updates(&mut chain_sync_data).await?;
         state_sync.fetch_nullifiers(&mut chain_sync_data).await?;
 
         let mut summary = self.apply_chain_updates(&state_sync, chain_sync_data).await?;

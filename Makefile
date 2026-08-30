@@ -133,16 +133,16 @@ start-note-transport:
 
 .PHONY: integration-test
 integration-test: ## Run integration tests
-	MIDEN_FUNDER_ACCOUNTS=$(MIDEN_FUNDER_ACCOUNTS) AGGLAYER_ACCOUNTS_DIR=$(AGGLAYER_ACCOUNTS_DIR) cargo nextest run --workspace --release --test=integration
+	MIDEN_FUNDER_ACCOUNTS="$(MIDEN_FUNDER_ACCOUNTS)" AGGLAYER_ACCOUNTS_DIR="$(AGGLAYER_ACCOUNTS_DIR)" cargo nextest run --workspace --release --test=integration
 
 .PHONY: integration-test-full
 integration-test-full: ## Run the integration test binary with ignored tests included (requires note transport service)
-	TEST_MIDEN_NOTE_TRANSPORT_URL=$(TEST_MIDEN_NOTE_TRANSPORT_URL) MIDEN_FUNDER_ACCOUNTS=$(MIDEN_FUNDER_ACCOUNTS) AGGLAYER_ACCOUNTS_DIR=$(AGGLAYER_ACCOUNTS_DIR) cargo nextest run --workspace --release --test=integration
-	MIDEN_FUNDER_ACCOUNTS=$(MIDEN_FUNDER_ACCOUNTS) AGGLAYER_ACCOUNTS_DIR=$(AGGLAYER_ACCOUNTS_DIR) cargo nextest run --workspace --release --test=integration --run-ignored ignored-only -- import_genesis_accounts_can_be_used_for_transactions
+	TEST_MIDEN_NOTE_TRANSPORT_URL="$(TEST_MIDEN_NOTE_TRANSPORT_URL)" MIDEN_FUNDER_ACCOUNTS="$(MIDEN_FUNDER_ACCOUNTS)" AGGLAYER_ACCOUNTS_DIR="$(AGGLAYER_ACCOUNTS_DIR)" cargo nextest run --workspace --release --test=integration
+	MIDEN_FUNDER_ACCOUNTS="$(MIDEN_FUNDER_ACCOUNTS)" AGGLAYER_ACCOUNTS_DIR="$(AGGLAYER_ACCOUNTS_DIR)" cargo nextest run --workspace --release --test=integration --run-ignored ignored-only -- import_genesis_accounts_can_be_used_for_transactions
 
 .PHONY: integration-test-miden-bench
 integration-test-miden-bench: install-bench ## Run miden-bench smoke tests
-	MIDEN_FUNDER_ACCOUNTS=$(MIDEN_FUNDER_ACCOUNTS) ./scripts/test-miden-bench-smoke.sh
+	MIDEN_FUNDER_ACCOUNTS="$(MIDEN_FUNDER_ACCOUNTS)" ./scripts/test-miden-bench-smoke.sh
 
 .PHONY: test-dev
 test-dev: ## Run tests with debug assertions enabled via test-dev profile
@@ -150,11 +150,11 @@ test-dev: ## Run tests with debug assertions enabled via test-dev profile
 
 .PHONY: integration-test-dev
 integration-test-dev: ## Run integration tests with debug assertions enabled via test-dev profile
-	MIDEN_FUNDER_ACCOUNTS=$(MIDEN_FUNDER_ACCOUNTS) AGGLAYER_ACCOUNTS_DIR=$(AGGLAYER_ACCOUNTS_DIR) cargo nextest run --workspace --cargo-profile test-dev --test=integration
+	MIDEN_FUNDER_ACCOUNTS="$(MIDEN_FUNDER_ACCOUNTS)" AGGLAYER_ACCOUNTS_DIR="$(AGGLAYER_ACCOUNTS_DIR)" cargo nextest run --workspace --cargo-profile test-dev --test=integration
 
 .PHONY: integration-test-binary
 integration-test-binary: ## Run the integration tests using the standalone binary (requires note transport service)
-	TEST_MIDEN_NOTE_TRANSPORT_URL=$(TEST_MIDEN_NOTE_TRANSPORT_URL) AGGLAYER_ACCOUNTS_DIR=$(AGGLAYER_ACCOUNTS_DIR) cargo run --package miden-client-integration-tests --release --locked -- --funders $(MIDEN_FUNDER_ACCOUNTS)
+	TEST_MIDEN_NOTE_TRANSPORT_URL="$(TEST_MIDEN_NOTE_TRANSPORT_URL)" AGGLAYER_ACCOUNTS_DIR="$(AGGLAYER_ACCOUNTS_DIR)" cargo run --package miden-client-integration-tests --release --locked -- --funders "$(MIDEN_FUNDER_ACCOUNTS)"
 
 # --- Installing ----------------------------------------------------------------------------------
 

@@ -52,8 +52,9 @@ pub const GENESIS_FAUCET_FILE: &str = "tst_faucet.mac";
 
 /// Number of funder wallets a fee-charging genesis declares when no count is given.
 ///
-/// Each integration test claims one funder for itself, so this must stay at or above the number of
-/// integration tests. The surplus is headroom for tests added without regenerating this constant.
+/// The pool sizes concurrency, not correctness: a wallet is held for one fund-and-deploy, and a
+/// claim finding every wallet busy waits for one rather than failing. Roughly one wallet per
+/// integration test is enough that a parallel run rarely waits.
 pub const DEFAULT_NUM_FUNDER_WALLETS: u32 = 80;
 
 /// Balance, in base units of the native fee asset, each funder wallet holds at genesis. Covers the
@@ -78,6 +79,12 @@ const TST_FAUCET_DECIMALS: u8 = 12;
 const TST_FAUCET_MAX_SUPPLY: u64 = 1_000_000_000_000;
 
 /// Balance, in base units of the native fee asset, held by every genesis account that transacts.
+///
+/// The node derives the native faucet's recorded issuance from the `[[wallet]]` entries alone, so
+/// these balances, which it loads verbatim from `.mac` files, are not counted into it. The chain
+/// therefore holds slightly more of the asset than the faucet records having issued. Nothing
+/// reconciles the two, and the only check that reads issuance is the burn/max-supply guard, which
+/// [`NATIVE_FAUCET_MAX_SUPPLY`] clears by eight orders of magnitude.
 const GENESIS_ACCOUNT_FEE_BALANCE: u64 = 1_000_000_000;
 
 /// Writes the genesis fixtures into `output_dir` so the node can be bootstrapped with
@@ -106,24 +113,36 @@ pub fn write_genesis_config(
     std::fs::create_dir_all(output_dir).with_context(|| {
         format!("failed to create genesis output directory {}", output_dir.display())
     })?;
+    // Closed before any key is written: the account files are restricted after their contents land,
+    // so an owner-only directory is what keeps another user out in between.
+    restrict_dir_to_owner(output_dir).with_context(|| {
+        format!("failed to restrict access to genesis output directory {}", output_dir.display())
+    })?;
 
     let mut account_files = Vec::new();
 
     // Generated before anything else so that the accounts below can hold its asset. The faucet
-    // commits to its operator's ID, so the operator is built first, and both get their balance
-    // only once the faucet's ID exists.
+    // commits to its operator's ID, so the operator is built first, and is seeded only once the
+    // faucet's ID exists to denominate the balance.
     let (operator, operator_secret) =
         generate_faucet_operator().context("failed to create the native faucet operator")?;
     let native_faucet =
         generate_native_faucet(operator.id()).context("failed to create the native fee faucet")?;
     let fee_balance: Asset =
         FungibleAsset::new(native_faucet.id(), GENESIS_ACCOUNT_FEE_BALANCE)?.into();
-    AccountFile::new(into_genesis_account(native_faucet, fee_balance)?, vec![])
-        .write(output_dir.join(NATIVE_FAUCET_FILE))
-        .with_context(|| format!("failed to write {NATIVE_FAUCET_FILE}"))?;
-    AccountFile::new(into_genesis_account(operator, fee_balance)?, vec![operator_secret])
-        .write(output_dir.join(FAUCET_OPERATOR_FILE))
-        .with_context(|| format!("failed to write {FAUCET_OPERATOR_FILE}"))?;
+    // The faucet gets no balance of its own asset: every entry in its fee policy is zero, so it
+    // never spends, and a holding nothing issued would only widen the gap noted on
+    // [`GENESIS_ACCOUNT_FEE_BALANCE`].
+    write_account_file(
+        &AccountFile::new(deployed_at_genesis(native_faucet)?, vec![]),
+        output_dir,
+        NATIVE_FAUCET_FILE,
+    )?;
+    write_account_file(
+        &AccountFile::new(into_genesis_account(operator, fee_balance)?, vec![operator_secret]),
+        output_dir,
+        FAUCET_OPERATOR_FILE,
+    )?;
     account_files.push(FAUCET_OPERATOR_FILE.to_string());
 
     // Genesis faucet (TST), with its secret key so it can sign minting transactions and the fee
@@ -131,9 +150,11 @@ pub fn write_genesis_config(
     let (tst_faucet, tst_secret) =
         generate_faucet("TST", TST_FAUCET_DECIMALS, TST_FAUCET_MAX_SUPPLY)
             .context("failed to create genesis faucet account")?;
-    AccountFile::new(into_genesis_account(tst_faucet, fee_balance)?, vec![tst_secret])
-        .write(output_dir.join(GENESIS_FAUCET_FILE))
-        .with_context(|| format!("failed to write {GENESIS_FAUCET_FILE}"))?;
+    write_account_file(
+        &AccountFile::new(into_genesis_account(tst_faucet, fee_balance)?, vec![tst_secret]),
+        output_dir,
+        GENESIS_FAUCET_FILE,
+    )?;
     account_files.push(GENESIS_FAUCET_FILE.to_string());
 
     // Test faucets and the `too_many_assets` account. These are read-only fixtures, so their
@@ -142,9 +163,7 @@ pub fn write_genesis_config(
         build_test_faucets_and_account().context("failed to build test faucets and account")?;
     for (index, account) in test_accounts.into_iter().enumerate() {
         let file_name = format!("test_account_{index:04}.mac");
-        AccountFile::new(account, vec![])
-            .write(output_dir.join(&file_name))
-            .with_context(|| format!("failed to write {file_name}"))?;
+        write_account_file(&AccountFile::new(account, vec![]), output_dir, &file_name)?;
         account_files.push(file_name);
     }
 
@@ -153,9 +172,7 @@ pub fn write_genesis_config(
     let agglayer_accounts = agglayer::create_agglayer_genesis_accounts(fee_balance)
         .context("failed to create agglayer genesis accounts")?;
     for (file_name, account_file) in agglayer_accounts {
-        account_file
-            .write(output_dir.join(file_name))
-            .with_context(|| format!("failed to write {file_name}"))?;
+        write_account_file(&account_file, output_dir, file_name)?;
         account_files.push(file_name.to_string());
     }
 
@@ -253,6 +270,11 @@ fn generate_native_faucet(operator_id: AccountId) -> anyhow::Result<Account> {
         .max_supply(AssetAmount::new(NATIVE_FAUCET_MAX_SUPPLY)?)
         .build()?;
 
+    // Registering transfer policies installs the asset-callback slots and forces the faucet's ID to
+    // `AssetCallbackFlag::Enabled`, which is why the test faucets below register none. Here it is
+    // deliberate: the node's own native faucet registers exactly these, and this account exists to
+    // be indistinguishable from it. Dropping them would give the chain a fee asset that behaves
+    // unlike the one every real chain charges in.
     let token_policies = TokenPolicyManager::builder()
         .active_mint_policy(MintPolicy::owner_only())
         .active_burn_policy(BurnPolicy::allow_all())
@@ -266,6 +288,10 @@ fn generate_native_faucet(operator_id: AccountId) -> anyhow::Result<Account> {
             (BurnNote::script_root(), AssetAmount::ZERO),
         ])
         .into();
+    // The faucet ought to charge in its own asset, but its ID is derived from the storage that
+    // would have to hold it, so it cannot be known here. The node's own native faucet resolves
+    // this the same way, and the substitution survives only while every fee above is zero:
+    // raising one makes this account charge in an asset no faucet can issue.
     let fee_policies = FeePolicyManager::builder()
         .fee_faucet_id(operator_id)
         .active_fee_policy(fee_policy)
@@ -282,15 +308,65 @@ fn generate_native_faucet(operator_id: AccountId) -> anyhow::Result<Account> {
     Ok(faucet)
 }
 
+/// Writes `account_file` into `output_dir` under `file_name`, readable only by its owner.
+///
+/// Most of these files carry the secret key that signs for the account, and the genesis directory
+/// sits inside the working tree, so the default mode would hand those keys to every user on the
+/// machine. The chain is disposable, but the node reads the same files back and a foreign write
+/// would let another user pick the accounts a test run transacts with.
+fn write_account_file(
+    account_file: &AccountFile,
+    output_dir: &Path,
+    file_name: &str,
+) -> Result<()> {
+    let path = output_dir.join(file_name);
+    account_file
+        .write(&path)
+        .with_context(|| format!("failed to write {file_name}"))?;
+    restrict_to_owner(&path).with_context(|| format!("failed to restrict access to {file_name}"))
+}
+
+#[cfg(unix)]
+fn restrict_to_owner(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+}
+
+#[cfg(not(unix))]
+fn restrict_to_owner(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn restrict_dir_to_owner(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+}
+
+#[cfg(not(unix))]
+fn restrict_dir_to_owner(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
 /// Marks `account` as deployed at genesis and gives it a balance of the native fee asset.
 ///
-/// A nonce of zero marks an undeployed account, and genesis deploys without transactions, so the
-/// nonce is bumped by hand. The balance is what lets the account pay for its own transactions.
+/// The balance is what lets the account pay for its own transactions.
 pub(crate) fn into_genesis_account(mut account: Account, fee_balance: Asset) -> Result<Account> {
     account
         .vault_mut()
         .add_asset(fee_balance)
         .context("failed to seed an account's native fee balance")?;
+
+    deployed_at_genesis(account)
+}
+
+/// Marks `account` as deployed at genesis.
+///
+/// A nonce of zero marks an undeployed account, and genesis deploys without transactions, so the
+/// nonce is bumped by hand.
+fn deployed_at_genesis(mut account: Account) -> Result<Account> {
     account
         .set_nonce(ONE)
         .context("failed to mark an account as deployed at genesis")?;

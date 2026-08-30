@@ -288,8 +288,7 @@ where
 
         state_sync.derive_note_and_transaction_updates(&mut chain_sync_data).await?;
 
-        // Now that the NTL notes are tracked, the nullifier check covers them too: one delivered
-        // and consumed within this window is reported as consumed by this same sync.
+        // Checks nullifiers both for notes fetched from the chain and from the NTL
         state_sync.fetch_nullifiers(&mut chain_sync_data).await?;
 
         let mut summary = self.apply_chain_updates(&state_sync, chain_sync_data).await?;

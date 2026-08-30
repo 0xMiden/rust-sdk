@@ -551,8 +551,11 @@ pub async fn consume_notes(
     tx_id
 }
 
-/// Asserts that the account has a single asset with the expected amount.
-pub async fn assert_account_has_single_asset(
+/// Asserts that the account's balance of `faucet_id`'s asset is `expected_amount`.
+///
+/// Says nothing about the rest of the vault: on a fee-charging chain every account also holds the
+/// native fee asset.
+pub async fn assert_account_balance(
     client: &TestClient,
     account_id: AccountId,
     faucet_id: AccountId,

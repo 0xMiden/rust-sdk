@@ -127,6 +127,12 @@ The following environment variables configure both the standalone binary and the
 - `TEST_MIDEN_NOTE_TRANSPORT_URL` - Overrides note transport: `devnet`, `testnet`, or a custom URL (default: derived from network)
 - `MIDEN_TEST_TIMEOUT` - Test timeout in milliseconds (default: `10000`)
 
+Read when the local node is started — by `scripts/start-test-node.sh` and the `gen-genesis` it runs — and not by the tests; setting these alongside a test command has no effect:
+
+- `MIDEN_TEST_NODE_VERIFICATION_BASE_FEE` - A non-zero value makes the local chain charge that fee and puts two funder wallets holding MIDEN in genesis; the script copies them into `./data` as `wallet_<n>.mac`, secret keys included. See `crates/testing/test-node-genesis/README.md` for what that switch does and does not yet make possible
+- `AGGLAYER_GENESIS` - Any value, empty included, adds the AggLayer accounts to genesis and exports them to `./data`, where `AGGLAYER_ACCOUNTS_DIR=./data` picks them up
+- `MIDEN_TEST_NODE_USE_INSTALLED` - Any non-empty value runs the node binaries already installed under `target/test-node/install` instead of checking them against the pinned rev, aborting rather than falling back to the pin if one of them is missing
+
 ### Network Presets
 
 | Network | RPC | Prover | Note Transport |

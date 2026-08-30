@@ -1697,6 +1697,10 @@ fn block_on<F: std::future::Future>(future: F) -> F::Output {
 
 /// Gives an account the CLI just created enough of the native fee asset to pay for its own
 /// transactions, and deploys it.
+///
+/// Deploys rather than leaving the funding note for the account's next transaction to consume: the
+/// CLI runs as its own process against its own client, which knows nothing of a note this one is
+/// holding, so the funds have to be in the vault before the CLI transacts.
 async fn fund_cli_account(
     cli_path: &Path,
     store_path: &Path,
@@ -1705,7 +1709,7 @@ async fn fund_cli_account(
 ) -> Result<()> {
     let mut client = cli_funding_client(cli_path, store_path, endpoint).await?;
 
-    client.fund_if_needed(&[AccountId::from_hex(account_id)?]).await
+    client.deploy_account(AccountId::from_hex(account_id)?).await
 }
 
 /// Builds a client over the CLI's own store and keystore, with a fee funder attached so it can pay

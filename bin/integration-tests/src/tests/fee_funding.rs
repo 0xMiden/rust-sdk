@@ -17,7 +17,7 @@ use miden_client::asset::FungibleAsset;
 use miden_client::block::BlockNumber;
 use miden_client::keystore::Keystore;
 use miden_client::note::{Note, NoteType, P2idNote};
-use miden_client::testing::common::{TestClient, wait_for_node};
+use miden_client::testing::common::{TestClient, wait_for_node, wait_for_tx};
 use miden_client::testing::fee::FeeFunder;
 use miden_client::transaction::TransactionRequestBuilder;
 use rand::RngExt;
@@ -188,10 +188,14 @@ impl Funder {
         wallet_id: AccountId,
         targets: &[AccountId],
     ) -> Result<Vec<(AccountId, Note)>> {
-        client
-            .import_account_by_id(wallet_id)
-            .await
-            .with_context(|| format!("failed to import funder {wallet_id}"))?;
+        // Imported once per client. A re-import of a wallet this client has already paid from
+        // fails, because its local nonce is ahead of the chain's until that payment commits.
+        if client.try_get_account(wallet_id).await.is_err() {
+            client
+                .import_account_by_id(wallet_id)
+                .await
+                .with_context(|| format!("failed to import funder {wallet_id}"))?;
+        }
 
         let (genesis, _) = client
             .get_block_header_by_num(BlockNumber::GENESIS)
@@ -229,11 +233,16 @@ impl Funder {
             .build()
             .context("failed to build the funding transaction request")?;
 
-        Box::pin(client.submit_new_transaction(wallet_id, request))
+        let tx_id =
+            Box::pin(client.submit_new_transaction(wallet_id, request)).await.with_context(
+                || format!("funder {wallet_id} failed to pay {} accounts", targets.len()),
+            )?;
+
+        // Waited on before the wallet is released: another process claiming it reads its state
+        // from the chain, which does not carry this payment until it commits.
+        wait_for_tx(client, tx_id)
             .await
-            .with_context(|| {
-                format!("funder {wallet_id} failed to pay {} accounts", targets.len())
-            })?;
+            .with_context(|| format!("the payment from funder {wallet_id} never committed"))?;
 
         Ok(funded)
     }

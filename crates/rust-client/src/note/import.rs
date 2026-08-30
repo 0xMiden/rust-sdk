@@ -549,8 +549,7 @@ where
         Ok(())
     }
 
-    /// Applies the changes from `note_updates` to the store, returning the details commitments
-    /// of the written records.
+    /// Applies the changes from `note_updates` to the store, returning the written records.
     ///
     /// The block headers go in first, so a record is never persisted as committed before the
     /// header proving its inclusion. [`Client::fetch_note_blocks`] must have run beforehand, or a
@@ -558,7 +557,7 @@ where
     pub(crate) async fn apply_note_transport_updates(
         &mut self,
         note_updates: TransportNoteUpdates,
-    ) -> Result<Vec<NoteDetailsCommitment>, ClientError> {
+    ) -> Result<Vec<InputNoteRecord>, ClientError> {
         let mut partial_mmr = self.get_current_partial_mmr().await?;
         self.insert_note_blocks(note_updates.blocks_to_insert, &mut partial_mmr).await?;
         // Cache MMR so pruning can reuse in-memory MMR.
@@ -568,22 +567,19 @@ where
             self.store.remove_note_tag(tag).await?;
         }
 
-        let mut written = Vec::with_capacity(note_updates.notes_to_write.len());
-        for note in note_updates.notes_to_write {
-            let details_commitment = note.details_commitment();
+        for note in &note_updates.notes_to_write {
             // A record still expected needs its tag tracked so a later sync finds it. A committed
             // one is no longer in that state, so it is skipped here.
             if let InputNoteState::Expected(ExpectedNoteState { tag: Some(tag), .. }) = note.state()
             {
                 self.store
-                    .add_note_tag(NoteTagRecord::with_note_source(*tag, details_commitment))
+                    .add_note_tag(NoteTagRecord::with_note_source(*tag, note.details_commitment()))
                     .await?;
             }
-            self.store.upsert_input_notes(&[note]).await?;
-            written.push(details_commitment);
         }
+        self.store.upsert_input_notes(&note_updates.notes_to_write).await?;
 
-        Ok(written)
+        Ok(note_updates.notes_to_write)
     }
 
     /// Checks whether the expected notes (identified by their details commitments and tags) have
@@ -678,11 +674,6 @@ impl TransportNoteUpdates {
         self.notes_to_write.extend(other.notes_to_write);
         self.blocks_to_insert.extend(other.blocks_to_insert);
         self.tags_to_remove.extend(other.tags_to_remove);
-    }
-
-    /// The records this batch is about to write, whatever state each is in.
-    pub(crate) fn input_note_records(&self) -> impl Iterator<Item = &InputNoteRecord> {
-        self.notes_to_write.iter()
     }
 }
 

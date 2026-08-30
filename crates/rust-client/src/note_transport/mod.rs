@@ -583,7 +583,10 @@ where
     }
 
     /// Writes everything [`Client::fetch_note_transport_sync_data`] fetched, returning the ids of
-    /// the imported notes.
+    /// the imported notes and the records it wrote.
+    ///
+    /// The records are returned so the chain sync can track them: they are in the store now, but
+    /// not in the snapshot its tracker was built from.
     ///
     /// The notes are written before the covered-tag set and the cursor, so a crash between them
     /// re-fetches instead of skipping notes that were never written.
@@ -593,7 +596,7 @@ where
     pub(crate) async fn apply_note_transport_sync_data(
         &mut self,
         note_transport_data: NoteTransportSyncData,
-    ) -> Result<Vec<NoteId>, ClientError> {
+    ) -> Result<(Vec<NoteId>, Vec<InputNoteRecord>), ClientError> {
         let NoteTransportSyncData {
             covered_tags,
             note_updates,
@@ -603,8 +606,8 @@ where
 
         let written = self.apply_note_transport_updates(note_updates).await?;
         let mut imported_ids: Vec<NoteId> = written
-            .into_iter()
-            .filter_map(|commitment| id_by_commitment.get(&commitment).copied())
+            .iter()
+            .filter_map(|note| id_by_commitment.get(&note.details_commitment()).copied())
             .collect();
 
         if let Some(covered_tags) = covered_tags {
@@ -618,7 +621,7 @@ where
         imported_ids.sort_unstable();
         imported_ids.dedup();
 
-        Ok(imported_ids)
+        Ok((imported_ids, written))
     }
 }
 
@@ -641,16 +644,6 @@ pub(crate) struct NoteTransportSyncData {
     id_by_commitment: BTreeMap<NoteDetailsCommitment, NoteId>,
     /// New global cursor, from the steady-state page. `None` when no page was fetched.
     cursor: Option<NoteTransportCursor>,
-}
-
-impl NoteTransportSyncData {
-    /// The records this sync is about to write.
-    ///
-    /// Used to extend the chain sync's nullifier check to the transport-delivered notes,
-    /// which are not in the store yet.
-    pub(crate) fn input_note_records(&self) -> impl Iterator<Item = &InputNoteRecord> {
-        self.note_updates.input_note_records()
-    }
 }
 
 /// Note transport cursor

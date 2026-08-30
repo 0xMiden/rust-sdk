@@ -72,7 +72,7 @@ use miden_tx::utils::serde::{Deserializable, DeserializationError, Serializable}
 use tracing::{debug, info};
 
 use crate::pswap::PswapChainObserver;
-use crate::store::{InputNoteRecord, NoteFilter, TransactionFilter};
+use crate::store::{NoteFilter, TransactionFilter};
 use crate::{Client, ClientError};
 mod block_header;
 
@@ -139,9 +139,10 @@ where
         self.ensure_genesis_in_place().await?;
         self.ensure_rpc_limits_in_place().await?;
 
-        let (state_sync, mut chain_sync_data) = self.fetch_chain_updates().await?;
+        let state_sync = self.state_sync();
+        let mut chain_sync_data = self.fetch_chain_updates(&state_sync).await?;
         // No other sync path ran, so there are no transport-delivered notes to take on.
-        state_sync.process_fetched_state(&mut chain_sync_data, Vec::new()).await?;
+        state_sync.screen_fetched_notes(&mut chain_sync_data, Vec::new()).await?;
         state_sync.fetch_nullifiers(&mut chain_sync_data).await?;
 
         self.apply_chain_updates(&state_sync, chain_sync_data).await
@@ -153,19 +154,23 @@ where
     /// Builds the default sync input and runs [`StateSync::fetch_state`]. The nullifier check is
     /// not part of this: run [`StateSync::fetch_nullifiers`] on the result before applying it, so
     /// it can also cover transport-delivered notes another sync path fetched in the same call.
-    pub async fn fetch_chain_updates(&self) -> Result<(StateSync, ChainSyncData), ClientError> {
-        // Each `NoteObserver` owns its own per-sync state; `with_note_observer` just attaches.
-        let note_screener = self.note_screener();
-        let state_sync =
-            StateSync::new(self.rpc_api.clone(), Arc::new(note_screener), self.tx_discard_delta)
-                .with_note_observer(Arc::new(PswapChainObserver::new(self.store.clone())));
-
+    pub async fn fetch_chain_updates(
+        &self,
+        state_sync: &StateSync,
+    ) -> Result<ChainSyncData, ClientError> {
         let input = self.build_sync_input().await?;
         let block_from = block_num_from_forest(&self.get_current_partial_mmr().await?)?;
 
-        let chain_sync_data = state_sync.fetch_state(block_from, input).await?;
+        state_sync.fetch_state(block_from, input).await
+    }
 
-        Ok((state_sync, chain_sync_data))
+    /// Builds the [`StateSync`] driving one chain sync.
+    ///
+    /// Each `NoteObserver` owns its own per-sync state, so this must be called once per sync
+    /// rather than shared; `with_note_observer` just attaches it.
+    fn state_sync(&self) -> StateSync {
+        StateSync::new(self.rpc_api.clone(), Arc::new(self.note_screener()), self.tx_discard_delta)
+            .with_note_observer(Arc::new(PswapChainObserver::new(self.store.clone())))
     }
 
     /// Verifies fetched chain data against the client's partial MMR and writes the resulting
@@ -229,7 +234,8 @@ where
 
         let note_transport_data = self.fetch_note_transport_sync_data().await?;
 
-        self.apply_note_transport_sync_data(note_transport_data).await
+        let (imported_ids, _) = self.apply_note_transport_sync_data(note_transport_data).await?;
+        Ok(imported_ids)
     }
 
     /// Runs the full client sync: private notes from the Note Transport Layer and the client's
@@ -241,7 +247,7 @@ where
     /// 1. Concurrently: the note transport fetch and [`Client::fetch_chain_updates`]. Only node and
     ///    NTL calls happen here, which is all that benefits from overlapping.
     /// 2. The transport writes.
-    /// 3. [`StateSync::process_fetched_state`], which screens the node's notes against the store —
+    /// 3. [`StateSync::screen_fetched_notes`], which screens the node's notes against the store —
     ///    hence after step 2, so a transport-delivered note is recognised rather than discarded —
     ///    and takes on those records so a commitment reported this sync is applied to them.
     /// 4. [`StateSync::fetch_nullifiers`], covering the tracked notes *and* the transport-delivered
@@ -262,19 +268,20 @@ where
         self.ensure_genesis_in_place().await?;
         self.ensure_rpc_limits_in_place().await?;
 
-        let (note_transport_data, (state_sync, mut chain_sync_data)) =
-            futures::try_join!(self.fetch_note_transport_sync_data(), self.fetch_chain_updates())?;
-
-        let transport_delivered_notes: Vec<InputNoteRecord> =
-            note_transport_data.input_note_records().cloned().collect();
+        let state_sync = self.state_sync();
+        let (note_transport_data, mut chain_sync_data) = futures::try_join!(
+            self.fetch_note_transport_sync_data(),
+            self.fetch_chain_updates(&state_sync)
+        )?;
 
         // These must be in the store before the chain data is screened: the screener
         // recognises a note by looking it up there, and a private note it cannot find is discarded
         // for good, since the chain's note query never revisits a block range.
-        let new_private_notes = self.apply_note_transport_sync_data(note_transport_data).await?;
+        let (new_private_notes, transport_delivered_notes) =
+            self.apply_note_transport_sync_data(note_transport_data).await?;
 
         state_sync
-            .process_fetched_state(&mut chain_sync_data, transport_delivered_notes)
+            .screen_fetched_notes(&mut chain_sync_data, transport_delivered_notes)
             .await?;
         state_sync.fetch_nullifiers(&mut chain_sync_data).await?;
 

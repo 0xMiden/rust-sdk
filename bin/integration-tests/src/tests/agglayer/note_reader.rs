@@ -30,7 +30,9 @@ pub async fn test_agglayer_note_reader_reads_consumed_notes(
             .await?;
 
     const NOTE_COUNT: usize = 3;
-    const MAX_POLL_BLOCKS: usize = 30;
+    // The bridge consumes each note in a network transaction the node builds on its own schedule,
+    // which stretches with whatever else the node is serving, so the budget is generous.
+    const MAX_POLL_BLOCKS: usize = 60;
 
     // Submit one UPDATE_GER note at a time. After each, wait until the reader returns exactly the
     // notes submitted so far, in order, before submitting the next, so they are consumed in

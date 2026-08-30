@@ -37,25 +37,36 @@ pub async fn test_agglayer_update_ger(client_config: ClientConfig) -> Result<()>
 
     // WAIT FOR NETWORK ACCOUNT TO PROCESS UPDATE_GER NOTE
     // --------------------------------------------------------------------------------------------
-    wait_for_blocks(&mut ger_manager.client, 5).await;
+    // Polled rather than waited out: the note is consumed by a network transaction the node builds
+    // on its own schedule, and how long that takes depends on what else the node is doing.
+    const MAX_POLL_BLOCKS: usize = 60;
 
-    // VERIFY GER HASH WAS STORED IN MAP
-    // --------------------------------------------------------------------------------------------
     let ger_elements = ger.to_elements();
     let ger_lower: Word = ger_elements[0..4].try_into().expect("to_elements returns 8 felts");
     let ger_upper: Word = ger_elements[4..8].try_into().expect("to_elements returns 8 felts");
     let ger_key = Hasher::merge(&[ger_lower, ger_upper]);
 
-    let stored_value = ger_manager
-        .client
-        .account_reader(bridge_id)
-        .get_storage_map_item(
-            AggLayerBridge::ger_map_slot_name().clone(),
-            StorageMapKey::new(ger_key),
-        )
-        .await?;
+    let mut is_registered = false;
+    for _ in 0..MAX_POLL_BLOCKS {
+        let stored_value = ger_manager
+            .client
+            .account_reader(bridge_id)
+            .get_storage_map_item(
+                AggLayerBridge::ger_map_slot_name().clone(),
+                StorageMapKey::new(ger_key),
+            )
+            .await?;
 
-    let is_registered = stored_value == Word::new([ONE, ZERO, ZERO, ZERO]);
+        is_registered = stored_value == Word::new([ONE, ZERO, ZERO, ZERO]);
+        if is_registered {
+            break;
+        }
+
+        wait_for_blocks(&mut ger_manager.client, 1).await;
+    }
+
+    // VERIFY GER HASH WAS STORED IN MAP
+    // --------------------------------------------------------------------------------------------
     println!("GER registered: {is_registered}");
 
     assert!(is_registered, "GER was not registered in the bridge account");

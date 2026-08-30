@@ -823,6 +823,11 @@ pub async fn test_ntx_mint_produces_public_note_with_non_standard_script(
             .await?;
 
     let faucet = deploy_network_fungible_faucet(&mut client, alice.id()).await?;
+
+    // Deployed on its own rather than letting the mint below double as Alice's deploy: folding her
+    // funding note into that mint fails the fee withdrawal. Deploying either side of the faucet
+    // works, so it is the mint specifically that cannot also be her first transaction.
+    client.deploy_account(alice.id()).await?;
     let amount = Felt::new_unchecked(100);
 
     // Registered case: pre-register a non-standard output script via `expected_ntx_scripts` on a

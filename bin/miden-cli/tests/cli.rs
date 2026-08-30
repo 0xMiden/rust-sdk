@@ -1324,11 +1324,19 @@ async fn new_wallet_with_deploy_flag() -> Result<()> {
     // `--deploy` fuses creating the account with submitting its deploy, so the deploy is the
     // account's first transaction.
     {
-        let (client, _) = create_rust_client_with_store_path(&store_path, endpoint.clone()).await?;
+        let (mut client, _) =
+            create_rust_client_with_store_path(&store_path, endpoint.clone()).await?;
         if client.chain_charges_fees().await? {
+            let stderr = String::from_utf8_lossy(&output.stderr);
             assert!(
                 !output.status.success(),
                 "`--deploy` cannot pay for the transaction it submits on a fee-charging chain"
+            );
+            // The exit status alone would also be satisfied by a usage error, which would make this
+            // pass for a reason that has nothing to do with fees.
+            assert!(
+                !stderr.contains("Usage:"),
+                "the deploy should fail while transacting, not on its arguments: {stderr}"
             );
 
             // The wallet is stored before the deploy is attempted, so it outlives the failure.
@@ -1568,6 +1576,8 @@ fn new_faucet_cli(cli_path: &Path, visibility: AccountType) -> String {
     let file_path = cli_path.join(INIT_DATA_FILENAME);
     fs::write(&file_path, init_storage_data_toml).unwrap();
 
+    // `basic-wallet` is what lets the faucet consume a note, which on a fee-charging chain is the
+    // only way it can be given the native asset its own transactions pay with.
     create_faucet_cmd.args([
         "new-account",
         "-t",

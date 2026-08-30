@@ -61,7 +61,7 @@ use miden_client::store::{InputNoteState, NoteFilter};
 use miden_client::sync::NoteTagSource;
 use miden_client::testing::common::{
     TestClient,
-    assert_account_has_single_asset,
+    assert_account_balance,
     consume_notes,
     execute_tx_and_sync,
     insert_new_wallet,
@@ -875,8 +875,7 @@ pub async fn test_ntx_mint_produces_public_note_with_non_standard_script(
     let consume_tx_id = consume_notes(&mut client_2, bob.id(), &[note]).await;
     wait_for_tx(&mut client_2, consume_tx_id).await?;
 
-    assert_account_has_single_asset(&client_2, bob.id(), faucet.id(), amount.as_canonical_u64())
-        .await;
+    assert_account_balance(&client_2, bob.id(), faucet.id(), amount.as_canonical_u64()).await;
 
     // Unregistered case: mint a note whose public output uses a different non-standard script
     // that is never registered. The NTX builder cannot build the public output note, so it

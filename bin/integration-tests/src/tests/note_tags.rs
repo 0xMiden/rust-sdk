@@ -98,8 +98,7 @@ pub async fn test_output_notes_do_not_register_tags(client_config: ClientConfig)
     let tx_id =
         consume_notes(&mut client_2, basic_wallet.id(), &[received_note.note().clone()]).await;
     wait_for_tx(&mut client_2, tx_id).await?;
-    assert_account_has_single_asset(&client_2, basic_wallet.id(), faucet_account.id(), MINT_AMOUNT)
-        .await;
+    assert_account_balance(&client_2, basic_wallet.id(), faucet_account.id(), MINT_AMOUNT).await;
 
     Ok(())
 }

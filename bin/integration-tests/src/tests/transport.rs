@@ -7,7 +7,7 @@ use miden_client::block::BlockNumber;
 use miden_client::note::NoteType;
 use miden_client::store::{InputNoteState, NoteFilter};
 use miden_client::testing::common::{
-    assert_account_has_single_asset,
+    assert_account_balance,
     consume_notes,
     execute_tx_and_sync,
     insert_new_fungible_faucet,
@@ -124,8 +124,7 @@ pub async fn test_transport_note_inclusion_proof_and_consumption(
     wait_for_tx(&mut recipient, tx_id).await?;
 
     // Verify balance
-    assert_account_has_single_asset(&recipient, recipient_account.id(), faucet_account.id(), 100)
-        .await;
+    assert_account_balance(&recipient, recipient_account.id(), faucet_account.id(), 100).await;
 
     Ok(())
 }
@@ -274,8 +273,7 @@ pub async fn test_transport_multiple_notes_different_blocks(
     wait_for_tx(&mut recipient, tx_id).await?;
 
     // Verify total balance (10 + 20 + 30 = 60)
-    assert_account_has_single_asset(&recipient, recipient_account.id(), faucet_account.id(), 60)
-        .await;
+    assert_account_balance(&recipient, recipient_account.id(), faucet_account.id(), 60).await;
 
     Ok(())
 }
@@ -395,8 +393,7 @@ pub async fn test_transport_note_not_yet_committed(client_config: ClientConfig) 
     let tx_id = consume_notes(&mut recipient, recipient_account.id(), &[note]).await;
     wait_for_tx(&mut recipient, tx_id).await?;
 
-    assert_account_has_single_asset(&recipient, recipient_account.id(), faucet_account.id(), 100)
-        .await;
+    assert_account_balance(&recipient, recipient_account.id(), faucet_account.id(), 100).await;
 
     Ok(())
 }

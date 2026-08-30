@@ -7,8 +7,8 @@
 //! The generated files are included via `include!()` macro to keep them out of the source tree.
 //! Test functions are discovered by looking for functions named `test_*`.
 
-use std::collections::HashSet;
-use std::path::Path;
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 use std::{env, fs};
 
 const TEST_PREFIX: &str = "test_";
@@ -142,18 +142,68 @@ fn collect_test_cases() -> Vec<TestCaseInfo> {
 }
 
 /// Recursively scans directories for test functions.
+///
+/// Entries are sorted so the generated sources depend only on the directory's contents, not on the
+/// order the filesystem happens to report them in.
 fn collect_test_cases_recursive(current_dir: &Path, test_cases: &mut Vec<TestCaseInfo>) {
-    for entry in fs::read_dir(current_dir).unwrap() {
-        let entry = entry.unwrap();
-        let path = entry.path();
+    let mut entries: Vec<PathBuf> =
+        fs::read_dir(current_dir).unwrap().map(|entry| entry.unwrap().path()).collect();
+    entries.sort();
 
+    for path in entries {
         if path.is_dir() {
             collect_test_cases_recursive(&path, test_cases);
         } else if path.extension().and_then(|s| s.to_str()) == Some("rs") {
             let mut file_test_cases = collect_test_cases_from_file(&path);
+            if !file_test_cases.is_empty() {
+                assert_declared_publicly_in_parent_module(&path);
+            }
             test_cases.append(&mut file_test_cases);
         }
     }
+}
+
+/// Fails the build if `path` is not publicly declared in its parent `mod.rs`.
+///
+/// The generated registry reaches the tests it discovered through the crate's public path, derived
+/// from the file's location. A file that is undeclared, or declared privately, cannot be reached
+/// that way, and the import fails to resolve in generated code the author never wrote; reporting it
+/// against the file itself is what makes the mistake findable. Only files that contribute tests are
+/// held to this — a helper module beside them is free to stay private.
+fn assert_declared_publicly_in_parent_module(path: &Path) {
+    let Some(module) = path.file_stem().and_then(|stem| stem.to_str()) else {
+        return;
+    };
+    if module == "mod" {
+        return;
+    }
+
+    let parent_module = path.with_file_name("mod.rs");
+    let declarations = fs::read_to_string(&parent_module).unwrap_or_default();
+    let declared = declarations.lines().any(|line| declares_module(line, module));
+
+    assert!(
+        declared,
+        "{} defines a test module that {} does not declare. Add `pub mod {};` there, or delete \
+         the file if it is not meant to be part of the suite.",
+        path.display(),
+        parent_module.display(),
+        module,
+    );
+}
+
+/// Whether `line` declares `module` publicly.
+///
+/// The generated wrappers import each module as `miden_client_integration_tests::tests::<module>`,
+/// an out-of-crate path, so only a bare `pub` makes the tests reachable: `pub(crate)` and friends
+/// compile here and fail there. Attributes ahead of the keyword are tolerated, since a one-line
+/// `#[cfg(...)] pub mod foo;` declares it just as well.
+fn declares_module(line: &str, module: &str) -> bool {
+    let Some((_, after_pub)) = line.split_once("pub") else {
+        return false;
+    };
+
+    after_pub.split_whitespace().collect::<Vec<_>>() == ["mod", &format!("{module};")]
 }
 
 /// Extracts test case information from a single Rust source file.
@@ -298,12 +348,10 @@ fn parse_test_function_name(line: &str) -> Option<String> {
 
     let tokens: Vec<&str> = s.split_whitespace().collect();
     // Look for public function patterns
-    let fn_pos = if tokens[0] == "pub" && tokens[1] == "async" && tokens[2] == "fn" {
-        2 // pub async fn 
-    } else if tokens[0] == "pub" && tokens[1] == "fn" {
-        1 // pub fn 
-    } else {
-        return None;
+    let fn_pos = match tokens.as_slice() {
+        ["pub", "async", "fn", ..] => 2,
+        ["pub", "fn", ..] => 1,
+        _ => return None,
     };
 
     let name_token = tokens.get(fn_pos + 1)?;
@@ -380,7 +428,7 @@ fn generate_integration_tests(test_cases: &[TestCaseInfo]) -> String {
     result.push('\n');
 
     // Collect unique imports for test modules
-    let mut modules = HashSet::new();
+    let mut modules = BTreeSet::new();
     for test_case in test_cases {
         let module_path = &test_case.module_path;
         modules.insert(module_path);
@@ -461,7 +509,7 @@ fn generate_test_case_vector(test_cases: &[TestCaseInfo]) -> String {
     result.push('\n');
 
     // Collect unique imports
-    let mut modules = HashSet::new();
+    let mut modules = BTreeSet::new();
     for test_case in test_cases {
         let module_path = &test_case.module_path;
         modules.insert(module_path);

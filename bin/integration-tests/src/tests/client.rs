@@ -210,7 +210,7 @@ pub async fn test_import_expected_notes(client_config: ClientConfig) -> Result<(
     )
     .await?;
 
-    let (mut client_2, authenticator_2) = client_config.into_client().await?;
+    let (mut client_2, authenticator_2) = client_config.with_fresh_store().into_client().await?;
     let (client_2_account, _) = insert_new_wallet(
         &mut client_2,
         AccountType::Private,
@@ -898,13 +898,7 @@ pub async fn test_consume_multiple_expected_notes(client_config: ClientConfig) -
 
     // Validate the final asset amounts in each account
     for (client, account_id) in [(client, to_account_ids[0]), (unauth_client, to_account_ids[1])] {
-        assert_account_has_single_asset(
-            &client,
-            account_id,
-            faucet_account_id,
-            TRANSFER_AMOUNT * 2,
-        )
-        .await;
+        assert_account_balance(&client, account_id, faucet_account_id, TRANSFER_AMOUNT * 2).await;
     }
     Ok(())
 }
@@ -1641,8 +1635,8 @@ pub async fn test_ignore_invalid_notes(client_config: ClientConfig) -> Result<()
     execute_tx_and_sync(&mut client, account_id, tx_request).await?;
 
     let consumed_notes = client.get_input_notes(NoteFilter::Consumed).await.unwrap();
-    // Counting is no longer enough: on a fee-charging chain the account also consumed its funding
-    // note, so each note is checked by ID.
+    // On a fee-charging chain the account also consumed its funding note, so each note is checked
+    // by ID rather than by counting them.
     let consumed = |id| consumed_notes.iter().any(|note| note.id() == Some(id));
     assert!(
         consumed(note_1.id()) && consumed(note_2.id()),
@@ -1867,6 +1861,10 @@ pub async fn test_get_account_returns_vault_details(client_config: ClientConfig)
     let tx_id = mint_and_consume(&mut client, wallet.id(), faucet.id(), NoteType::Public).await;
     wait_for_tx(&mut client, tx_id).await?;
 
+    // Read before the RPC handle borrows the client for the rest of the test.
+    let charges_fees = client.chain_charges_fees().await?;
+    let fee_faucet_id = client.native_fee_faucet_id().await?;
+
     let rpc = client.test_rpc_api();
 
     // Query 1: VaultFetch::Always — always fetches vault data
@@ -1884,13 +1882,30 @@ pub async fn test_get_account_returns_vault_details(client_config: ClientConfig)
     let details = details.context("expected account details for public account")?;
     let vault_root = details.header.vault_root();
 
-    // The vault also holds the native fee asset where the chain charges one, so this checks for
-    // the minted token rather than for it alone.
+    // The wallet was funded with the native fee asset where the chain charges one, so the vault
+    // holds that alongside the minted token. Asserting the count too keeps this the check that an
+    // over-populated `VaultFetch::Always` response would fail, which the queries below cannot do.
     let minted = Asset::Fungible(FungibleAsset::new(faucet.id(), MINT_AMOUNT).unwrap());
+    let expected_assets = if charges_fees { 2 } else { 1 };
     assert!(
         details.vault_details.assets.contains(&minted),
         "expected the minted token in the vault"
     );
+    assert_eq!(
+        details.vault_details.assets.len(),
+        expected_assets,
+        "expected only the minted token and, on a fee-charging chain, the native fee asset"
+    );
+    if charges_fees {
+        assert!(
+            details
+                .vault_details
+                .assets
+                .iter()
+                .any(|asset| asset.faucet_id() == fee_faucet_id),
+            "expected the second asset to be the native fee asset rather than any other token"
+        );
+    }
 
     // Query 2: VaultFetch::IfChangedFrom(actual_root) — commitment matches, node returns empty
     // assets

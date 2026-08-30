@@ -97,13 +97,7 @@ pub async fn test_onchain_notes_flow(client_config: ClientConfig) -> Result<()> 
     let tx_id =
         consume_notes(&mut client_2, basic_wallet_1.id(), &[received_note.note().clone()]).await;
     wait_for_tx(&mut client_2, tx_id).await?;
-    assert_account_has_single_asset(
-        &client_2,
-        basic_wallet_1.id(),
-        faucet_account.id(),
-        MINT_AMOUNT,
-    )
-    .await;
+    assert_account_balance(&client_2, basic_wallet_1.id(), faucet_account.id(), MINT_AMOUNT).await;
 
     let p2id_asset = FungibleAsset::new(faucet_account.id(), TRANSFER_AMOUNT)?;
     let tx_request = TransactionRequestBuilder::new().build_pay_to_id(
@@ -162,13 +156,8 @@ pub async fn test_onchain_notes_flow(client_config: ClientConfig) -> Result<()> 
 
     let tx_id = consume_notes(&mut client_3, basic_wallet_2.id(), &[note]).await;
     wait_for_tx(&mut client_3, tx_id).await?;
-    assert_account_has_single_asset(
-        &client_3,
-        basic_wallet_2.id(),
-        faucet_account.id(),
-        TRANSFER_AMOUNT,
-    )
-    .await;
+    assert_account_balance(&client_3, basic_wallet_2.id(), faucet_account.id(), TRANSFER_AMOUNT)
+        .await;
     Ok(())
 }
 
@@ -242,12 +231,11 @@ pub async fn test_onchain_accounts(client_config: ClientConfig) -> Result<()> {
     info!(account_id = %target_account_id, "Consuming note on first client");
     let tx_id = consume_notes(&mut client_1, target_account_id, &[note]).await;
     wait_for_tx(&mut client_1, tx_id).await?;
-    assert_account_has_single_asset(&client_1, target_account_id, faucet_account_id, MINT_AMOUNT)
-        .await;
+    assert_account_balance(&client_1, target_account_id, faucet_account_id, MINT_AMOUNT).await;
     let tx_id =
         consume_notes(&mut client_2, second_client_target_account_id, &[second_client_note]).await;
     wait_for_tx(&mut client_2, tx_id).await?;
-    assert_account_has_single_asset(
+    assert_account_balance(
         &client_2,
         second_client_target_account_id,
         faucet_account_id,
@@ -414,13 +402,7 @@ pub async fn test_import_account_by_id(client_config: ClientConfig) -> Result<()
     client_2.sync_state().await?;
     let tx_id = consume_notes(&mut client_2, target_account_id, &[note]).await;
     wait_for_tx(&mut client_2, tx_id).await?;
-    assert_account_has_single_asset(
-        &client_2,
-        target_account_id,
-        faucet_account_id,
-        MINT_AMOUNT * 2,
-    )
-    .await;
+    assert_account_balance(&client_2, target_account_id, faucet_account_id, MINT_AMOUNT * 2).await;
     Ok(())
 }
 
@@ -885,8 +867,7 @@ pub async fn test_sync_note_with_attachment(client_config: ClientConfig) -> Resu
     let tx_id = consume_notes(&mut client_2, wallet.id(), &received_notes).await;
     wait_for_tx(&mut client_2, tx_id).await?;
 
-    assert_account_has_single_asset(&client_2, wallet.id(), faucet_account.id(), MINT_AMOUNT * 2)
-        .await;
+    assert_account_balance(&client_2, wallet.id(), faucet_account.id(), MINT_AMOUNT * 2).await;
 
     Ok(())
 }

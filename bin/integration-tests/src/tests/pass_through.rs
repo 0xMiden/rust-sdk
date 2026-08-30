@@ -41,11 +41,8 @@ pub async fn test_pass_through(client_config: ClientConfig) -> Result<()> {
     let (mut client, authenticator_1) = client_config.clone().into_client().await?;
 
     // Workaround to show that importing the note into another client works
-    let client_config_2 = ClientConfig {
-        store_config: create_test_store_path(),
-        ..client_config.clone()
-    };
-    let (mut client_2, authenticator_2) = client_config_2.into_client().await?;
+    let (mut client_2, authenticator_2) =
+        client_config.clone().with_fresh_store().into_client().await?;
 
     wait_for_node(&mut client).await;
     client.sync_state().await?;
@@ -151,6 +148,13 @@ pub async fn test_pass_through(client_config: ClientConfig) -> Result<()> {
         .commitment()
         .await
         .expect("pass-through account should exist");
+    // Held separately because a fee-charging chain moves the overall commitment, leaving storage
+    // as the part the pass-through still has to leave alone.
+    let storage_commitment_before_second_tx = client
+        .account_reader(pass_through_account.id())
+        .storage_commitment()
+        .await
+        .expect("pass-through account should exist");
 
     // now try another transaction against the pass-through account
     let tx_request = TransactionRequestBuilder::new()
@@ -182,17 +186,20 @@ pub async fn test_pass_through(client_config: ClientConfig) -> Result<()> {
         .expect("pass-through account should exist");
 
     if charges_fees {
-        // Paying the fee withdraws from the vault, which is a state change, so the commitment
-        // cannot stay put. What the pass-through still guarantees is that the account keeps
-        // none of the asset it forwarded.
-        let retained = client
-            .account_reader(pass_through_account.id())
-            .get_balance(btc_faucet_account.id())
-            .await?;
+        // Paying the fee withdraws from the vault, so the account commitment necessarily moves.
+        // What pass-through actually promises is asserted directly instead: the forwarded asset is
+        // not retained, and storage is untouched.
+        let reader = client.account_reader(pass_through_account.id());
+        let retained = reader.get_balance(btc_faucet_account.id()).await?;
         assert_eq!(
             retained,
             AssetAmount::ZERO,
             "pass-through account should not retain the forwarded asset"
+        );
+        assert_eq!(
+            reader.storage_commitment().await?,
+            storage_commitment_before_second_tx,
+            "a pass-through transaction should not touch account storage"
         );
     } else {
         assert_eq!(
@@ -213,9 +220,10 @@ async fn create_pass_through_account<AUTH: TransactionAuthenticator>(
     let mut init_seed = [0u8; 32];
     client.rng().fill_bytes(&mut init_seed);
 
-    // The pass-through consumption must not change the account commitment: the note moves the
-    // asset straight back out, and `NoAuth` only bumps the nonce when the account state differs
-    // at the end of the transaction.
+    // The pass-through consumption must not change the account commitment on a fee-free chain: the
+    // note moves the asset straight back out, and `NoAuth` only bumps the nonce when the account
+    // state differs at the end of the transaction. Where a fee is charged, paying it withdraws
+    // from the vault, so only storage stays put.
     let account = AccountBuilder::new(init_seed)
         .account_type(AccountType::Private)
         .with_component(NoAuth)

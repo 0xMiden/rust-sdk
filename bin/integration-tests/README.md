@@ -206,8 +206,9 @@ The testing node charges a fee for every transaction, as a real chain does: its 
 MIDEN_VERIFICATION_BASE_FEE=0 make start-node-background
 ```
 
-The suite never mints. It draws the native asset from pre-funded basic wallets named by `--funders`
-(or `MIDEN_FUNDER_ACCOUNTS`), either one `.mac` file or a directory of them.
+The suite never mints the native fee asset. It draws that from pre-funded basic wallets named by
+`--funders` (or `MIDEN_FUNDER_ACCOUNTS`), either one `.mac` file or a directory of them. A path that
+does not exist is treated as no funders, which is what a fee-free genesis leaves behind.
 
 ```bash
 # Local node: its genesis pre-funds the wallets and start-test-node.sh writes them here.
@@ -219,8 +220,8 @@ miden-client-integration-tests --network testnet --funders ./testnet-funders
 ```
 
 The `insert_new_*` helpers pay each account they create and deploy it by consuming that note, which
-settles the deploy's own fee. `miden_client::testing::fee::deploy_account` does the same for an
-account a test builds itself.
+settles the deploy's own fee. `TestClient::deploy_account` does the same for an account a test
+builds itself.
 
 Funders must be **public** and carry their secret key: a public funder's state is re-read from the
 chain before every payment, which is what makes sharing one between test processes safe.

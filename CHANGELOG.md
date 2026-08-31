@@ -69,6 +69,7 @@
 * [FEATURE][rust] Added `Client::get_account_header`, which reads a single account's header and status from the store instead of loading every tracked account's ([#2187](https://github.com/0xMiden/rust-sdk/pull/2187)).
 * [FEATURE][cli] `call` now works on public accounts that aren't tracked locally: the account is read from the network via a foreign procedure invocation, run from one of the client's own accounts (the default account when set). Such calls are read-only, so no state delta is shown. `--package` (`-p`) is now optional; if not set, `<PROCEDURE>` must be a hex digest and the output stack is printed as raw felts ([#2187](https://github.com/0xMiden/rust-sdk/pull/2187)).
 * [rust] `Client::execute_transaction`, `Client::execute_transaction_with_dap`, `Client::execute_program`, `Client::execute_program_with_dap`, `Client::set_setting` and `Client::remove_setting` now take `&self` instead of `&mut self`; none of them mutate the client ([#2187](https://github.com/0xMiden/rust-sdk/pull/2187)).
+* [store] Each SQL migration now carries the fingerprint of the schema it builds. Opening a store checks every version it applies against that version's own pin, so a migration edited to build a different schema is rejected even when creating a fresh database ([#2445](https://github.com/0xMiden/rust-sdk/pull/2445)).
 
 ### Fixes
 

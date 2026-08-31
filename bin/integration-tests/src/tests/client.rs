@@ -1703,7 +1703,9 @@ pub async fn test_output_only_note(client_config: ClientConfig) -> Result<()> {
 ///
 /// Creates a public account with a map slot containing 2 entries, then verifies:
 /// - Requesting with empty keys returns `AllEntries` with both entries.
-/// - Requesting with one specific key returns `EntriesWithProofs` with just that entry's proof.
+/// - Requesting with one specific key returns `PartialMap` covering just that key.
+/// - Requesting several keys, one of them absent from the map, returns a single `PartialMap`
+///   covering all of them, proving the absent one holds no value.
 pub async fn test_get_account_storage_map_key_filtering(client_config: ClientConfig) -> Result<()> {
     let (mut client, keystore) = client_config.into_client().await?;
     wait_for_node(&mut client).await;
@@ -1802,14 +1804,56 @@ pub async fn test_get_account_storage_map_key_filtering(client_config: ClientCon
         .context("expected storage map details")?;
 
     match &map_one.entries {
-        StorageMapEntries::EntriesWithProofs(proofs) => {
-            assert_eq!(proofs.len(), 1, "expected 1 proof");
-            let hashed_key = map_key_1.hash().as_word();
-            let value = proofs[0].get(&hashed_key);
-            assert!(value.is_some(), "proof should contain the requested key");
-            assert_eq!(value.unwrap(), map_value_1, "value should match the requested key's value");
+        StorageMapEntries::PartialMap { map_keys, partial_smt } => {
+            assert_eq!(map_keys, &[map_key_1], "expected only the requested key");
+            let value = partial_smt.get_value(&map_key_1.hash().as_word())?;
+            assert_eq!(value, map_value_1, "value should match the requested key's value");
         },
-        other => anyhow::bail!("expected EntriesWithProofs, got {:?}", other),
+        other => anyhow::bail!("expected PartialMap, got {:?}", other),
+    }
+
+    // Request both keys plus one that is absent from the map. All three must be covered by a
+    // single partial SMT anchored at the slot's root.
+    let absent_key = StorageMapKey::new(
+        [Felt::from(77u32), Felt::from(77u32), Felt::from(77u32), Felt::from(77u32)].into(),
+    );
+    let requirements_batch = AccountStorageRequirements::new([(
+        map_slot_name.clone(),
+        [&map_key_1, &map_key_2, &absent_key],
+    )]);
+    let (_, proof_batch) = rpc
+        .get_account(
+            account_id,
+            GetAccountRequest {
+                storage: StorageMapFetch::Slots(requirements_batch),
+                ..Default::default()
+            },
+        )
+        .await?;
+    let map_batch = proof_batch
+        .find_map_details(&map_slot_name)
+        .context("expected storage map details")?;
+
+    match &map_batch.entries {
+        StorageMapEntries::PartialMap { map_keys, partial_smt } => {
+            assert_eq!(map_keys.len(), 3, "expected all three requested keys");
+            assert_eq!(
+                partial_smt.get_value(&map_key_1.hash().as_word())?,
+                map_value_1,
+                "the first key's value must be readable from the batched tree"
+            );
+            assert_eq!(
+                partial_smt.get_value(&map_key_2.hash().as_word())?,
+                map_value_2,
+                "the second key's value must be readable from the batched tree"
+            );
+            assert_eq!(
+                partial_smt.get_value(&absent_key.hash().as_word())?,
+                Word::empty(),
+                "a key absent from the map must be proven absent"
+            );
+        },
+        other => anyhow::bail!("expected PartialMap, got {:?}", other),
     }
 
     Ok(())

@@ -26,6 +26,17 @@ impl<AUTH> Client<AUTH> {
         self.store.get_block_header_by_num(block_num).await.map_err(Into::into)
     }
 
+    /// Retrieves the block header at the current sync height from the store.
+    pub async fn get_latest_block_header(&self) -> Result<BlockHeader, ClientError> {
+        let sync_height = self.store.get_sync_height().await?;
+        let Some((block_header, _)) = self.get_block_header_by_num(sync_height).await? else {
+            return Err(ClientError::DataStoreError(miden_tx::DataStoreError::BlockNotFound(
+                sync_height,
+            )));
+        };
+        Ok(block_header)
+    }
+
     /// Ensures that the genesis block is available. If the genesis commitment is already
     /// cached in the RPC client, returns early. Otherwise, fetches the genesis block from
     /// the node, stores it, and sets the commitment in the RPC client.
@@ -261,6 +272,19 @@ mod tests {
         let adjusted = adjust_merkle_path_for_forest(&path, block_num, forest);
         // Block 4 conforms a single leaf tree so it should be empty
         assert!(adjusted.is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "forest includes block number")]
+    fn adjust_merkle_path_panics_for_block_beyond_forest() {
+        // Forest 5 covers leaves 0..=4, so a claimed commit height of 5 has no corresponding
+        // tree and the depth lookup has nothing to return. Notes whose inclusion proof claims a
+        // height past the synced view must be dropped before reaching this point.
+        let forest = Forest::new(5).expect("valid forest");
+        let block_num = BlockNumber::from(5u32);
+        let path = MerklePath::new(vec![word(1), word(2), word(3)]);
+
+        adjust_merkle_path_for_forest(&path, block_num, forest);
     }
 
     #[test]

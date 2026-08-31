@@ -2,12 +2,14 @@ use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use miden_protocol::Word;
 use miden_protocol::account::{
     AccountId,
     AccountUpdateDetails,
     AccountVaultPatch,
+    StorageMapKey,
     StorageMapPatchEntries,
     StorageSlot,
     StorageSlotContent,
@@ -19,6 +21,7 @@ use miden_protocol::batch::{ProposedBatch, ProvenBatch};
 use miden_protocol::block::{BlockHeader, BlockNumber, ProvenBlock};
 use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::crypto::merkle::mmr::{Forest, Mmr, MmrProof};
+use miden_protocol::crypto::merkle::smt::PartialSmt;
 use miden_protocol::note::{NoteAttachments, NoteHeader, NoteId, NoteScript, NoteTag};
 use miden_protocol::transaction::{OutputNote, ProvenTransaction};
 use miden_testing::{MockChain, MockChainNote};
@@ -68,12 +71,15 @@ pub struct MockRpcApi {
     oversize_threshold: usize,
     /// Note headers to report as erased in sync transaction responses.
     erased_notes: Arc<RwLock<Vec<NoteHeader>>>,
-    /// Attachment content for private notes, keyed by note ID. The [`MockChain`] stores private
-    /// notes without their attachment content (only metadata), so tests that need
-    /// `get_notes_by_id` to return private-note attachments register them here.
+    /// Attachment content `get_notes_by_id` serves for private notes, populated by
+    /// `submit_proven_transaction` and by `register_private_note_attachments`. A note absent here
+    /// is served with empty attachments, which is how a test simulates a withholding node.
     private_note_attachments: Arc<RwLock<BTreeMap<NoteId, NoteAttachments>>>,
     /// Test overrides for the MMR paths returned by `sync_notes`, keyed by block number.
     sync_notes_mmr_path_overrides: Arc<RwLock<BTreeMap<BlockNumber, MerklePath>>>,
+    /// Number of `get_notes_by_id` requests served, so a test can assert that a flow avoided the
+    /// round trip.
+    get_notes_by_id_calls: Arc<AtomicUsize>,
 }
 
 impl Default for MockRpcApi {
@@ -96,6 +102,7 @@ impl MockRpcApi {
             erased_notes: Arc::new(RwLock::new(Vec::new())),
             private_note_attachments: Arc::new(RwLock::new(BTreeMap::new())),
             sync_notes_mmr_path_overrides: Arc::new(RwLock::new(BTreeMap::new())),
+            get_notes_by_id_calls: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -105,14 +112,19 @@ impl MockRpcApi {
         self.private_note_attachments.write().insert(note_id, attachments);
     }
 
+    /// Returns how many `get_notes_by_id` requests this API has served.
+    pub fn get_notes_by_id_call_count(&self) -> usize {
+        self.get_notes_by_id_calls.load(Ordering::Relaxed)
+    }
+
     /// Overrides the MMR path returned by `sync_notes` for the specified block.
     pub fn set_sync_notes_mmr_path(&self, block_num: BlockNumber, path: MerklePath) {
         self.sync_notes_mmr_path_overrides.write().insert(block_num, path);
     }
 
-    /// Sets the oversize threshold for `get_account`. Any storage map with more entries than
-    /// this threshold, or a vault with more assets, will have the `too_many_entries` /
-    /// `too_many_assets` flags set in the response.
+    /// Sets the oversize threshold for `get_account`. A storage map whose entries were requested
+    /// in full comes back as `StorageMapEntries::LimitExceeded` past this threshold, and a vault
+    /// with more assets than it comes back with the `too_many_assets` flag set.
     #[must_use]
     pub fn with_oversize_threshold(mut self, threshold: usize) -> Self {
         self.oversize_threshold = threshold;
@@ -350,8 +362,16 @@ impl NodeRpcClient for MockRpcApi {
                 && note_block >= block_from
                 && note_block <= block_to
             {
-                let committed =
+                let mut committed =
                     CommittedNote::new(note.id(), *note.metadata(), note.inclusion_proof().clone());
+                // Mirror the node: a single-word attachment is sent verbatim and the record is
+                // complete. A larger one is sent as a commitment only.
+                let attachments = note.attachments();
+                if attachments.iter().all(|attachment| attachment.num_words() == 1) {
+                    committed = committed
+                        .with_attachments(attachments.clone())
+                        .expect("the note's own attachments match its commitment");
+                }
                 blocks_with_notes.entry(note_block).or_default().insert(note.id(), committed);
             }
         }
@@ -428,6 +448,8 @@ impl NodeRpcClient for MockRpcApi {
 
     /// Returns the node's tracked notes that match the provided note IDs.
     async fn get_notes_by_id(&self, note_ids: &[NoteId]) -> Result<Vec<FetchedNote>, RpcError> {
+        self.get_notes_by_id_calls.fetch_add(1, Ordering::Relaxed);
+
         // assume all public notes for now
         let notes = self.mock_chain.read().committed_notes().clone();
 
@@ -552,38 +574,55 @@ impl NodeRpcClient for MockRpcApi {
 
             // `All` enumerates the account's map slots directly — the mock can introspect the
             // account, so it simulates the (not-yet-on-the-wire) "all storage maps" request.
-            let requested_slots: Vec<_> = match &request.storage {
+            // A slot maps to the keys requested for it, empty meaning "every entry".
+            let requested_slots: Vec<(StorageSlotName, Vec<StorageMapKey>)> = match &request.storage
+            {
                 StorageMapFetch::Skip => Vec::new(),
-                StorageMapFetch::Slots(reqs) => reqs.inner().keys().cloned().collect(),
+                StorageMapFetch::Slots(reqs) => {
+                    reqs.inner().iter().map(|(name, keys)| (name.clone(), keys.clone())).collect()
+                },
                 StorageMapFetch::All => account
                     .storage()
                     .to_header()
                     .slots()
                     .filter(|slot| slot.slot_type() == StorageSlotType::Map)
-                    .map(|slot| slot.name().clone())
+                    .map(|slot| (slot.name().clone(), Vec::new()))
                     .collect(),
             };
 
             let mut map_details = vec![];
-            for slot_name in &requested_slots {
+            for (slot_name, requested_keys) in &requested_slots {
                 if let Some(StorageSlotContent::Map(storage_map)) =
                     account.storage().get(slot_name).map(StorageSlot::content)
                 {
-                    let entries: Vec<StorageMapEntry> = storage_map
-                        .entries()
-                        .map(|(key, value)| StorageMapEntry { key: *key, value: *value })
-                        .collect();
+                    // Mirror the node: named keys come back as one partial SMT covering them,
+                    // and an empty key list comes back as the whole map, or as `LimitExceeded`
+                    // once it grows past the threshold.
+                    let entries = if requested_keys.is_empty() {
+                        let entries: Vec<StorageMapEntry> = storage_map
+                            .entries()
+                            .map(|(key, value)| StorageMapEntry { key: *key, value: *value })
+                            .collect();
 
-                    // NOTE: The mock returns all entries even when too_many_entries is set.
-                    // In production, the node would return partial data for oversized maps.
-                    let too_many_entries = entries.len() > self.oversize_threshold;
-                    let account_storage_map_detail = AccountStorageMapDetails {
-                        slot_name: slot_name.clone(),
-                        too_many_entries,
-                        entries: StorageMapEntries::AllEntries(entries),
+                        if entries.len() > self.oversize_threshold {
+                            StorageMapEntries::LimitExceeded
+                        } else {
+                            StorageMapEntries::AllEntries(entries)
+                        }
+                    } else {
+                        let partial_smt = PartialSmt::from_proofs(
+                            requested_keys.iter().map(|key| storage_map.open(key).into()),
+                        )
+                        .expect("proofs from one map share a root");
+
+                        StorageMapEntries::PartialMap {
+                            map_keys: requested_keys.clone(),
+                            partial_smt,
+                        }
                     };
 
-                    map_details.push(account_storage_map_detail);
+                    map_details
+                        .push(AccountStorageMapDetails { slot_name: slot_name.clone(), entries });
                 } else {
                     panic!("Storage slot {slot_name} is not a map");
                 }

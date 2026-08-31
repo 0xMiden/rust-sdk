@@ -11,14 +11,20 @@ use super::schema::SchemaHash;
 // CLIENT MIGRATIONS
 // ================================================================================================
 
-/// The migrations that build the store schema, in the order they are applied.
-pub(crate) const CLIENT_MIGRATIONS: [SqliteMigration; 1] =
-    [SqliteMigration::new(include_str!("../migrations/0001_init.sql"))];
+/// The migrations that build the store schema, in the order they are applied, each pinned to the
+/// fingerprint the schema has once it has been applied.
+pub(crate) const CLIENT_MIGRATIONS: [SqliteMigration; 2] = [
+    SqliteMigration::new(
+        include_str!("../migrations/0001_init.sql"),
+        "0x347b0fb1649dd574524aa6c7bfd44cb739a23c144327f023ac9ff41db7b8ab30",
+    ),
+    SqliteMigration::new(
+        include_str!("../migrations/0002_index_tuning.sql"),
+        "0x0397ac92f829a31c940e875357bc52bfdea51f8e64eb239ee42729720197a111",
+    ),
+];
 
 /// The migrations this client ships.
-///
-/// Building this replays every migration to derive the fingerprint each version produces, so it is
-/// built once per process rather than once per store.
 static CLIENT_MIGRATOR: LazyLock<SqliteMigrator> =
     LazyLock::new(|| SqliteMigrator::new(&CLIENT_MIGRATIONS));
 
@@ -36,26 +42,31 @@ pub(crate) type MigrationHook = fn(&Transaction<'_>) -> HookResult;
 /// [`SqliteMigrator::apply`].
 type RejectionReport = Arc<Mutex<Option<SqliteStoreError>>>;
 
-/// One schema version: the SQL that builds it and, optionally, the Rust code that moves data the
-/// SQL cannot.
+/// One schema version: the SQL that builds it, optionally the Rust code that moves data the SQL
+/// cannot, and the fingerprint the schema is defined to have once both have run.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SqliteMigration {
     /// The SQL that takes the schema to this version.
     sql: &'static str,
     /// Rust code applied on top of the SQL.
     hook: Option<MigrationHook>,
+    /// The fingerprint the schema has once this migration has been applied, as [`SchemaHash`]
+    /// renders it.
+    expected_hash: &'static str,
 }
 
 impl SqliteMigration {
     // CONSTRUCTORS
     // --------------------------------------------------------------------------------------------
 
-    /// Builds a migration that is applied by running `sql`.
-    pub(crate) const fn new(sql: &'static str) -> Self {
-        Self { sql, hook: None }
+    /// Builds a migration that is applied by running `sql`, and that is defined to leave a schema
+    /// fingerprinting to `expected_hash`.
+    pub(crate) const fn new(sql: &'static str, expected_hash: &'static str) -> Self {
+        Self { sql, hook: None, expected_hash }
     }
 
-    /// Builds a migration that runs `sql` and then `hook`.
+    /// Builds a migration that runs `sql` and then `hook`, and that is defined to leave a schema
+    /// fingerprinting to `expected_hash`.
     ///
     /// `hook` receives the transaction the whole upgrade commits at the end, which has two
     /// consequences. Returning an error rolls back every migration the upgrade is applying, not
@@ -63,17 +74,20 @@ impl SqliteMigration {
     /// itself are not covered by that check and it has to leave the database referentially whole on
     /// its own.
     #[cfg_attr(not(test), expect(dead_code, reason = "no shipped migration needs a hook yet"))]
-    pub(crate) const fn with_hook(sql: &'static str, hook: MigrationHook) -> Self {
-        Self { sql, hook: Some(hook) }
+    pub(crate) const fn with_hook(
+        sql: &'static str,
+        hook: MigrationHook,
+        expected_hash: &'static str,
+    ) -> Self {
+        Self { sql, hook: Some(hook), expected_hash }
     }
 
     // CONVERSIONS
     // --------------------------------------------------------------------------------------------
 
-    /// Returns this migration in the form the migration library applies.
-    ///
-    /// It runs `SQLite`'s foreign key check inside the transaction it is applied in, so a migration
-    /// whose SQL orphans a row fails instead of committing.
+    /// Returns this migration in the form the migration library applies, without the fingerprint
+    /// check [`SqliteMigrator::apply`] wraps it in.
+    #[cfg(test)]
     fn to_library_migration(self) -> M<'static> {
         match self.hook {
             Some(hook) => M::up_with_hook(self.sql, hook),
@@ -86,14 +100,11 @@ impl SqliteMigration {
 // SQLITE MIGRATOR
 // ================================================================================================
 
-/// An ordered set of migrations that build a store schema, paired with the fingerprint the schema
-/// has once each of them has been applied.
+/// An ordered set of migrations that build a store schema.
 #[derive(Debug)]
 pub(crate) struct SqliteMigrator {
     /// The migrations in the order they are applied, the one for version `v` at index `v - 1`.
     migrations: Vec<SqliteMigration>,
-    /// The fingerprint the schema has once a migration has been applied.
-    expected_schema_hashes: Vec<SchemaHash>,
 }
 
 impl SqliteMigrator {
@@ -105,33 +116,9 @@ impl SqliteMigrator {
         &CLIENT_MIGRATOR
     }
 
-    /// Builds the migrator for `migrations`, deriving the fingerprint each version produces by
-    /// replaying them rather than by trusting a recorded value.
+    /// Builds the migrator that applies `migrations`, in the order they are given.
     pub(crate) fn new(migrations: &[SqliteMigration]) -> Self {
-        let expected_schema_hashes = Self::replay_schema_hashes(migrations);
-
-        Self::with_expected_hashes(migrations, expected_schema_hashes)
-    }
-
-    /// Pairs `migrations` with the fingerprint each of their versions builds.
-    ///
-    /// # Panics
-    /// If there is not one fingerprint per migration, since every fingerprint is looked up by the
-    /// version whose index it sits at.
-    fn with_expected_hashes(
-        migrations: &[SqliteMigration],
-        expected_schema_hashes: Vec<SchemaHash>,
-    ) -> Self {
-        assert_eq!(
-            migrations.len(),
-            expected_schema_hashes.len(),
-            "every migration needs the fingerprint of the schema it builds"
-        );
-
-        Self {
-            migrations: migrations.to_vec(),
-            expected_schema_hashes,
-        }
+        Self { migrations: migrations.to_vec() }
     }
 
     // ACCESSORS
@@ -139,13 +126,12 @@ impl SqliteMigrator {
 
     /// Returns the highest schema version these migrations build.
     pub(crate) fn latest_version(&self) -> usize {
-        self.expected_schema_hashes.len()
+        self.migrations.len()
     }
 
-    /// Returns the fingerprint each version is defined to build, version `v` at index `v - 1`.
-    #[cfg(test)]
-    pub(crate) fn expected_schema_hashes(&self) -> &[SchemaHash] {
-        &self.expected_schema_hashes
+    /// Returns the fingerprint `version` is defined to build.
+    pub(crate) fn expected_hash(&self, version: usize) -> &'static str {
+        self.migrations[version - 1].expected_hash
     }
 
     // MIGRATION
@@ -210,6 +196,7 @@ impl SqliteMigrator {
     // --------------------------------------------------------------------------------------------
 
     /// Builds `migrations` in the form the migration library applies.
+    #[cfg(test)]
     fn library_migrations(migrations: &[SqliteMigration]) -> Migrations<'static> {
         Migrations::new(
             migrations.iter().copied().map(SqliteMigration::to_library_migration).collect(),
@@ -222,11 +209,11 @@ impl SqliteMigrator {
         let migrations = self
             .migrations
             .iter()
-            .zip(&self.expected_schema_hashes)
             .enumerate()
-            .map(|(index, (migration, &expected))| {
+            .map(|(index, migration)| {
                 let version = index + 1;
                 let hook = migration.hook;
+                let expected = migration.expected_hash;
                 let rejection = Arc::clone(rejection);
 
                 M::up_with_hook(migration.sql, move |tx: &Transaction<'_>| {
@@ -234,15 +221,15 @@ impl SqliteMigrator {
                         hook(tx)?;
                     }
 
-                    let actual = SchemaHash::of(tx).map_err(|err| hook_error(&err))?;
+                    let actual = SchemaHash::of(tx).map_err(|err| hook_error(&err))?.to_string();
                     if actual == expected {
                         return Ok(());
                     }
 
                     let mismatch = SqliteStoreError::MigratedSchemaMismatch {
                         version,
-                        expected: expected.to_string(),
-                        actual: actual.to_string(),
+                        expected: expected.to_owned(),
+                        actual,
                     };
                     let message = mismatch.to_string();
                     *rejection.lock().expect("rejection lock not poisoned") = Some(mismatch);
@@ -256,25 +243,6 @@ impl SqliteMigrator {
         Migrations::new(migrations)
     }
 
-    /// Computes the fingerprint each version produces by replaying `migrations` on an in-memory
-    /// database.
-    fn replay_schema_hashes(migrations: &[SqliteMigration]) -> Vec<SchemaHash> {
-        let library_migrations = Self::library_migrations(migrations);
-        let mut conn =
-            Connection::open_in_memory().expect("in-memory database creation should not fail");
-        conn.pragma_update(None, "foreign_keys", "ON")
-            .expect("enabling foreign keys on the reference database should not fail");
-
-        (1..=migrations.len())
-            .map(|version| {
-                library_migrations
-                    .to_version(&mut conn, version)
-                    .expect("replaying a migration on the reference database should not fail");
-                SchemaHash::of(&conn).expect("hashing the reference schema should not fail")
-            })
-            .collect()
-    }
-
     /// Returns the fingerprint version `version` is defined to build and the one `conn` holds,
     /// rendered for reporting, when the two differ.
     fn schema_mismatch_at(
@@ -282,10 +250,10 @@ impl SqliteMigrator {
         conn: &Connection,
         version: usize,
     ) -> Result<Option<(String, String)>, SqliteStoreError> {
-        let expected = self.expected_schema_hashes[version - 1];
-        let actual = SchemaHash::of(conn)?;
+        let expected = self.expected_hash(version);
+        let actual = SchemaHash::of(conn)?.to_string();
 
-        Ok((actual != expected).then(|| (expected.to_string(), actual.to_string())))
+        Ok((actual != expected).then(|| (expected.to_owned(), actual)))
     }
 
     /// Returns whether the database holds no objects of its own.
@@ -323,26 +291,21 @@ pub(crate) mod tests {
     use super::{CLIENT_MIGRATIONS, SqliteMigration, SqliteMigrator};
     use crate::db_management::errors::SqliteStoreError;
 
-    const PINNED_SCHEMA_HASHES: [&str; CLIENT_MIGRATIONS.len()] =
-        ["0xd02b6d09378d300dd92bfc44a2ce15f5852d76eec336b204f87e0d3a916cfa08"];
-
     // FIXTURES
     // --------------------------------------------------------------------------------------------
 
-    /// The migrations this client ships with one more appended that drops `input_notes`, recorded
-    /// as building the schema of the version before it.
+    /// The migrations this client ships with one more appended that drops `input_notes`, pinned to
+    /// the fingerprint of the version before it.
     ///
     /// Applying it drops the table and is then rejected by the fingerprint check, which is the
     /// shape every failure the rollback has to undo takes.
     pub(crate) fn damaging_migration() -> SqliteMigrator {
+        let last = *CLIENT_MIGRATIONS.last().expect("the client ships at least one migration");
+
         let mut migrations = CLIENT_MIGRATIONS.to_vec();
-        migrations.push(SqliteMigration::new("DROP TABLE input_notes;"));
+        migrations.push(SqliteMigration::new("DROP TABLE input_notes;", last.expected_hash));
 
-        let mut expected_schema_hashes = SqliteMigrator::client().expected_schema_hashes.clone();
-        expected_schema_hashes
-            .push(*expected_schema_hashes.last().expect("the client ships at least one migration"));
-
-        SqliteMigrator::with_expected_hashes(&migrations, expected_schema_hashes)
+        SqliteMigrator::new(&migrations)
     }
 
     // TESTS
@@ -381,18 +344,14 @@ pub(crate) mod tests {
 
     #[test]
     fn migration_schema_hashes_are_stable() {
-        let replayed = SqliteMigrator::client()
-            .expected_schema_hashes()
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>();
-        let pinned = PINNED_SCHEMA_HASHES.map(str::to_string).to_vec();
+        let mut conn = Connection::open_in_memory().unwrap();
 
-        assert_eq!(
-            replayed, pinned,
-            "a released migration builds a different schema than it did when it was pinned. \
-             Append a new migration instead of editing an existing one. If this is a new \
-             migration, append its hash rather than rewriting the entries before it."
-        );
+        if let Err(err) = SqliteMigrator::client().apply(&mut conn) {
+            panic!(
+                "a migration builds a different schema than the one it is pinned to. Append a new \
+                 migration instead of editing an existing one. If this is a new migration, pin the \
+                 hash reported below as `found` and leave the ones before it alone. {err}"
+            );
+        }
     }
 }

@@ -177,17 +177,29 @@ pub async fn setup_core_accounts(
             .await?;
     }
 
-    // These accounts are deployed out of band and imported, so nothing has ever given them
-    // the native asset. On a fee-charging chain every transaction they sign is withdrawn from
-    // their own vault, and an empty vault aborts it — which surfaces far from here as a note
-    // that was never consumed or a GER that was never registered, not as a fee error. A no-op
-    // on a fee-free chain, so this is safe for both.
+    // NOT FUNDED HERE, AND IT CANNOT BE. These accounts are deployed out of band and
+    // imported, so nothing has ever given them the native asset. On a fee-charging chain
+    // every transaction they sign withdraws the fee from their own vault, and an empty
+    // vault aborts it — surfacing far from here as a note that was never consumed or a GER
+    // that was never registered, never as a fee error.
     //
-    // The bridge is imported into all three clients but funded through one: the funding is a
-    // transaction against the bridge, and running it three times would just pay three fees.
-    bridge_admin.client.fund_and_deploy_if_needed(config.bridge_admin_id()).await?;
-    ger_manager.client.fund_and_deploy_if_needed(config.ger_manager_id()).await?;
-    bridge_admin.client.fund_and_deploy_if_needed(config.bridge_id()).await?;
+    // `fund_and_deploy_if_needed` LOOKS like the fix and is a silent no-op: it routes to
+    // `deploy_account`, which returns early for any account whose locally tracked nonce is
+    // non-zero, and these are non-zero the moment they are imported. It was tried; the
+    // tests failed identically.
+    //
+    // Nor can they be funded after the fact. Since protocol 0.16 the fee is withdrawn in
+    // the auth procedure, BEFORE the transaction body runs, so a zero-balance account
+    // cannot even consume a P2ID note that would fund it — it cannot pay for the
+    // transaction that would accept the money. A zero-balance out-of-band account on a
+    // fee-charging chain is permanently unable to transact.
+    //
+    // The fix belongs in genesis: these accounts must hold the native asset from the first
+    // block. That is currently impossible — a `[[account]]` genesis entry carries only
+    // `path`, and only `[[wallet]]` entries can declare `assets`, which generates a fresh
+    // wallet rather than adopting a pre-built .mac. Fixing this needs the node's genesis
+    // schema to accept assets on `[[account]]`, or the agglayer accounts to be built with a
+    // pre-populated vault (which needs the fee faucet's id before genesis creates it).
 
     Ok((config.bridge_admin_id(), config.ger_manager_id(), config.bridge_id()))
 }

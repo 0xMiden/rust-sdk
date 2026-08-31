@@ -72,6 +72,7 @@
 
 ### Fixes
 
+* [FIX][build] Raised the declared minimum supported Rust version to 1.96.1, matching the locked Miden dependencies and restoring the nightly MSRV check ([#2471](https://github.com/0xMiden/rust-sdk/issues/2471)).
 * [FIX][rust] `ChainAnchor` deserialization no longer panics on crafted input: a partial blockchain whose tracked leaf is missing an ancestor sibling, or whose block-map key disagrees with its header, is rejected as an invalid value, and anchors tracking more blocks than a transaction can reference are rejected early with the new `ChainAnchorError::TooManyTrackedBlocks` ([#2421](https://github.com/0xMiden/rust-sdk/pull/2421)).
 * [FIX][rust] `Client::execute_transaction_at` now fails with the new `ChainAnchorError::AnchoredTransactionExpired` when the executed transaction's expiration block has already been reached, instead of handing back a transaction the network would reject after proving ([#2421](https://github.com/0xMiden/rust-sdk/pull/2421)).
 * [FIX][rust] A request that sets `ignore_invalid_input_notes` but carries no input notes, or whose notes are all screened out, no longer fails with an out-of-range note-count error from the consumption checker ([#2421](https://github.com/0xMiden/rust-sdk/pull/2421)).

@@ -53,7 +53,7 @@ make install-tools
 ## Code Style
 
 ### Rust
-- Edition 2024, MSRV 1.96
+- Edition 2024, MSRV 1.96.1
 - Use section headers for major code sections:
   ```rust
   // SECTION NAME

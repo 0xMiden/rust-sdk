@@ -226,28 +226,25 @@ impl ClientDataStore {
                 ))
             })?;
 
-        let proof = match map_detail.entries {
-            StorageMapEntries::EntriesWithProofs(proofs) => {
-                // We requested a single key, so we expect a single proof.
-                proofs.into_iter().next().ok_or_else(|| {
-                    DataStoreError::other("RPC returned no proofs for the requested key")
-                })?
-            },
-            StorageMapEntries::AllEntries(_) => {
-                return Err(DataStoreError::other(
-                    "unexpected AllEntries response; specific keys were requested",
-                ));
-            },
+        let StorageMapEntries::PartialMap { partial_smt, .. } = map_detail.entries else {
+            return Err(DataStoreError::other(
+                "expected a partial storage map in response to a specific-key request",
+            ));
         };
 
-        // Reject a wrong-root proof here rather than as an opaque merkle error inside the VM.
-        let proof_root = proof.compute_root();
-        if proof_root != map_root {
+        // Reject a wrong-root response here rather than as an opaque merkle error inside the VM.
+        // The whole tree shares one root, so this covers every opening taken from it.
+        let map_detail_root = partial_smt.root();
+        if map_detail_root != map_root {
             return Err(DataStoreError::other(format!(
-                "storage map proof fetched for account {account_id} verifies against root \
-                 {proof_root} but the executor requires root {map_root}"
+                "storage map fetched for account {account_id} verifies against root \
+                 {map_detail_root} but the executor requires root {map_root}"
             )));
         }
+
+        let proof = partial_smt.open(&map_key.hash().as_word()).map_err(|err| {
+            DataStoreError::other_with_source("failed to open the requested storage map key", err)
+        })?;
 
         let witness = StorageMapWitness::new(proof, [map_key]).map_err(|err| {
             DataStoreError::other_with_source("failed to create storage map witness", err)

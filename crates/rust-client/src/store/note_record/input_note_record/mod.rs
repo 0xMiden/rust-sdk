@@ -203,6 +203,12 @@ impl InputNoteRecord {
         )
     }
 
+    /// Returns true if the note hasn't been nullified on chain and can still be consumed.
+    /// `Invalid` notes count as neither unspent nor consumed.
+    pub fn is_unspent(&self) -> bool {
+        self.state.is_unspent()
+    }
+
     /// Returns true if the note has been nullified on chain.
     pub fn is_consumed(&self) -> bool {
         matches!(

@@ -66,6 +66,11 @@ const TEST_L1_DESTINATION: &str = "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd";
 /// Everything but the destination account is pre-deployed and imported (see [`AgglayerConfig`]).
 /// The destination is created fresh on every run, so a claim always targets an account that has
 /// never claimed before.
+///
+/// Excluded from the agglayer CI run, see `make integration-test-agglayer`: the closing B2AGG note
+/// produces a network transaction the node cannot prove inside the ntx-builder's deadline, leaving
+/// the bridge retrying it for ~15 minutes and starving whatever runs next. The bridge-out step
+/// below also asserts nothing, so that failure never surfaces here.
 pub async fn test_agglayer_bridge_in_out(client_config: ClientConfig) -> Result<()> {
     let agglayer_config = AgglayerConfig::from_env()?;
     let _agglayer_accounts = agglayer_config.claim()?;

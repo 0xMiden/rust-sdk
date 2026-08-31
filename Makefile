@@ -140,9 +140,14 @@ integration-test-non-agglayer: ## Run every integration test except the agglayer
 	TEST_MIDEN_NOTE_TRANSPORT_URL=$(TEST_MIDEN_NOTE_TRANSPORT_URL) MIDEN_FUNDER_ACCOUNTS_DIR=$(MIDEN_FUNDER_ACCOUNTS_DIR) cargo nextest run --workspace --release --test=integration -E 'not test(/agglayer/)'
 	MIDEN_FUNDER_ACCOUNTS_DIR=$(MIDEN_FUNDER_ACCOUNTS_DIR) cargo nextest run --workspace --release --test=integration --run-ignored ignored-only -- import_genesis_accounts_can_be_used_for_transactions
 
+# `agglayer_bridge_in_out` is excluded: its closing B2AGG note produces a network transaction the
+# node cannot prove inside the ntx-builder's deadline, and the builder then retries it for ~15
+# minutes. The test itself passes — it never asserts the note was consumed — but the bridge is
+# occupied throughout, so the agglayer tests that run afterwards never get their notes consumed.
+# TODO: restore once the bridge-out proof fits the deadline, and make the test assert on it.
 .PHONY: integration-test-agglayer
 integration-test-agglayer: ## Run only the agglayer integration tests
-	MIDEN_FUNDER_ACCOUNTS_DIR=$(MIDEN_FUNDER_ACCOUNTS_DIR) AGGLAYER_ACCOUNTS_DIR=$(AGGLAYER_ACCOUNTS_DIR) cargo nextest run --workspace --release --test=integration -E 'test(/agglayer/)'
+	MIDEN_FUNDER_ACCOUNTS_DIR=$(MIDEN_FUNDER_ACCOUNTS_DIR) AGGLAYER_ACCOUNTS_DIR=$(AGGLAYER_ACCOUNTS_DIR) cargo nextest run --workspace --release --test=integration -E 'test(/agglayer/) - test(=agglayer_bridge_in_out)'
 
 .PHONY: integration-test-miden-bench
 integration-test-miden-bench: install-bench ## Run miden-bench smoke tests

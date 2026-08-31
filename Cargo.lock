@@ -2551,6 +2551,7 @@ dependencies = [
  "rusqlite_migration",
  "thiserror",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

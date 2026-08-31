@@ -1,7 +1,6 @@
 #![allow(clippy::items_after_statements)]
 
 use std::collections::BTreeMap;
-use std::rc::Rc;
 use std::string::ToString;
 use std::vec::Vec;
 
@@ -20,6 +19,7 @@ use miden_client::note::{
     Nullifier,
 };
 use miden_client::store::{
+    InputNoteCursor,
     InputNoteRecord,
     InputNoteState,
     NoteFilter,
@@ -34,7 +34,11 @@ use rusqlite::{Connection, Transaction, params, params_from_iter};
 
 use super::SqliteStore;
 use crate::chain_data::set_block_header_has_client_notes;
-use crate::note::filters::{note_filter_to_query_input_notes, note_filter_to_query_output_notes};
+use crate::note::filters::{
+    note_filter_input_notes_condition,
+    note_filter_to_query_input_notes,
+    note_filter_to_query_output_notes,
+};
 use crate::sql_error::SqlResultExt;
 use crate::{insert_sql, subst};
 
@@ -44,10 +48,21 @@ mod filters;
 // ================================================================================================
 
 // SQLite limits statements to 999 parameters. Each batch size is chosen to stay under that
-// limit: input notes: 13 columns × 50 = 650, output notes: 8 × 80 = 640, scripts: 2 × 200 = 400.
+// limit: input notes: 14 columns × 50 = 700, output notes: 10 × 80 = 800, scripts: 2 × 200 = 400.
 const INPUT_NOTE_BATCH_SIZE: usize = 50;
 const OUTPUT_NOTE_BATCH_SIZE: usize = 80;
 const SCRIPT_BATCH_SIZE: usize = 200;
+
+// NOTE SCRIPT UPSERT
+// ================================================================================================
+
+// `input_notes.script_root` references `notes_scripts.script_root`, so replacing a script row
+// deletes the parent and forces a foreign key check against every referencing note. Updating the
+// row in place keeps the parent alive, so no check runs at all.
+const UPSERT_NOTE_SCRIPT_QUERY: &str = "INSERT INTO `notes_scripts` \
+     (`script_root`, `serialized_note_script`) VALUES (?, ?) \
+     ON CONFLICT(`script_root`) DO UPDATE SET \
+     `serialized_note_script` = excluded.`serialized_note_script`";
 
 #[cfg(test)]
 mod tests;
@@ -169,25 +184,25 @@ impl SqliteStore {
         Ok(notes)
     }
 
-    /// Retrieves a single input note at the given offset from the filtered set, restricted to a
-    /// consumer account and optionally to a block range.
-    pub(crate) fn get_input_note_by_offset(
+    /// Retrieves the input note following `cursor` in the filtered set, restricted to a consumer
+    /// account and optionally to a block range.
+    pub(crate) fn get_input_note_after(
         conn: &mut Connection,
         filter: &NoteFilter,
         consumer: AccountId,
         block_start: Option<BlockNumber>,
         block_end: Option<BlockNumber>,
-        offset: u32,
+        cursor: Option<InputNoteCursor>,
     ) -> Result<Option<InputNoteRecord>, StoreError> {
-        let (query, params) = filters::note_filter_to_query_input_note_by_offset(
+        let (query, params) = filters::note_filter_to_query_input_note_after(
             filter,
             consumer,
             block_start,
             block_end,
-            offset,
+            cursor,
         );
         let note = conn
-            .prepare(&query)
+            .prepare_cached(&query)
             .into_store_error()?
             .query_map(params_from_iter(params), parse_input_note_columns)
             .expect("no binding parameters used in query")
@@ -223,16 +238,14 @@ impl SqliteStore {
     pub(crate) fn get_unspent_input_note_nullifiers(
         conn: &mut Connection,
     ) -> Result<Vec<Nullifier>, StoreError> {
-        const QUERY: &str =
-            "SELECT nullifier FROM input_notes WHERE state_discriminant NOT IN rarray(?)";
-        let unspent_filters = Rc::new(vec![
-            Value::from(InputNoteState::STATE_CONSUMED_AUTHENTICATED_LOCAL),
-            Value::from(InputNoteState::STATE_CONSUMED_UNAUTHENTICATED_LOCAL),
-            Value::from(InputNoteState::STATE_CONSUMED_EXTERNAL),
-        ]);
-        conn.prepare(QUERY)
+        let (unspent_condition, _) = note_filter_input_notes_condition(&NoteFilter::Unspent);
+        let query = format!(
+            "SELECT nullifier FROM input_notes \
+             WHERE {unspent_condition} AND nullifier IS NOT NULL"
+        );
+        conn.prepare(&query)
             .into_store_error()?
-            .query_map([unspent_filters], |row| row.get(0))
+            .query_map([], |row| row.get(0))
             .expect("no binding parameters used in query")
             .map(|result| {
                 result
@@ -303,9 +316,7 @@ pub(super) fn upsert_input_note_tx(
         consumer_account_id,
     } = serialize_input_note(note);
 
-    const SCRIPT_QUERY: &str =
-        insert_sql!(notes_scripts { script_root, serialized_note_script } | REPLACE);
-    tx.prepare_cached(SCRIPT_QUERY)
+    tx.prepare_cached(UPSERT_NOTE_SCRIPT_QUERY)
         .into_store_error()?
         .execute(params![script_root, script])
         .into_store_error()?;
@@ -612,7 +623,7 @@ pub(crate) fn apply_note_updates_tx(
     Ok(())
 }
 
-/// Batch-insert note scripts using multi-row INSERT OR REPLACE.
+/// Batch-upsert note scripts using a multi-row insert.
 /// Multi-row inserts reduce per-statement overhead and show faster insertion times than
 /// individual inserts.
 fn batch_upsert_scripts(
@@ -627,8 +638,10 @@ fn batch_upsert_scripts(
     for chunk in entries.chunks(SCRIPT_BATCH_SIZE) {
         let placeholders = vec!["(?, ?)"; chunk.len()].join(", ");
         let query = format!(
-            "INSERT OR REPLACE INTO `notes_scripts` (`script_root`, `serialized_note_script`) \
-             VALUES {placeholders}"
+            "INSERT INTO `notes_scripts` (`script_root`, `serialized_note_script`) \
+             VALUES {placeholders} \
+             ON CONFLICT(`script_root`) DO UPDATE SET \
+             `serialized_note_script` = excluded.`serialized_note_script`"
         );
         let mut param_values: Vec<Value> = Vec::with_capacity(chunk.len() * 2);
         for (root, script) in chunk {
@@ -795,14 +808,12 @@ fn batch_update_output_note_states(
 }
 
 /// Inserts the provided note script into the database, if the script already exists, it will be
-/// replaced.
+/// updated.
 pub(super) fn upsert_note_script_tx(
     tx: &Transaction<'_>,
     note_script: &NoteScript,
 ) -> Result<(), StoreError> {
-    const QUERY: &str =
-        insert_sql!(notes_scripts { script_root, serialized_note_script } | REPLACE);
-    tx.prepare_cached(QUERY)
+    tx.prepare_cached(UPSERT_NOTE_SCRIPT_QUERY)
         .into_store_error()?
         .execute(params![note_script.root().to_bytes(), note_script.to_bytes()])
         .into_store_error()?;

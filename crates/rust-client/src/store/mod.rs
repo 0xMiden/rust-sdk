@@ -109,6 +109,46 @@ pub enum SettingMutation {
     Remove { key: String },
 }
 
+// INPUT NOTE CURSOR
+// ================================================================================================
+
+/// Identifies a position in the per-account consumption order of input notes.
+///
+/// Obtained from a record returned by [`Store::get_input_note_after`] and passed back to fetch
+/// the note that follows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct InputNoteCursor {
+    consumed_block_height: BlockNumber,
+    consumed_tx_order: u32,
+    details_commitment: NoteDetailsCommitment,
+}
+
+impl InputNoteCursor {
+    /// Returns the cursor pointing at `record`, or `None` if the note is not consumed.
+    pub fn from_record(record: &InputNoteRecord) -> Option<Self> {
+        Some(Self {
+            consumed_block_height: record.state().consumed_block_height()?,
+            consumed_tx_order: record.state().consumed_tx_order()?,
+            details_commitment: record.details_commitment(),
+        })
+    }
+
+    /// Returns the block height at which the note was consumed.
+    pub fn consumed_block_height(&self) -> BlockNumber {
+        self.consumed_block_height
+    }
+
+    /// Returns the per-account position of the consuming transaction within the block.
+    pub fn consumed_tx_order(&self) -> u32 {
+        self.consumed_tx_order
+    }
+
+    /// Returns the commitment to the note's details.
+    pub fn details_commitment(&self) -> NoteDetailsCommitment {
+        self.details_commitment
+    }
+}
+
 // STORE TRAIT
 // ================================================================================================
 
@@ -190,20 +230,26 @@ pub trait Store: Send + Sync {
         filter: NoteFilter,
     ) -> Result<Vec<OutputNoteRecord>, StoreError>;
 
-    /// Retrieves a single input note at the given offset from the filtered set for the given
-    /// consumer account. Optionally restricts to a block range via `block_start` and
-    /// `block_end`. Returns `None` when the offset is past the end of the matching notes.
+    /// Retrieves the input note following `cursor` in the filtered set for the given consumer
+    /// account, or the first matching note when `cursor` is `None`. Optionally restricts to a
+    /// block range via `block_start` and `block_end`. Returns `None` when no matching note
+    /// follows the cursor.
+    ///
+    /// Build the cursor for the next call from the returned record with
+    /// [`InputNoteCursor::from_record`].
     ///
     /// # Ordering
     ///
-    /// Notes are sorted by their per-account on-chain execution order.
-    async fn get_input_note_by_offset(
+    /// Notes are sorted by their per-account on-chain execution order: block number, then
+    /// per-account transaction order within the block. Notes consumed by the same transaction
+    /// are ordered deterministically and consistently across calls.
+    async fn get_input_note_after(
         &self,
         filter: NoteFilter,
         consumer: AccountId,
         block_start: Option<BlockNumber>,
         block_end: Option<BlockNumber>,
-        offset: u32,
+        cursor: Option<InputNoteCursor>,
     ) -> Result<Option<InputNoteRecord>, StoreError>;
 
     /// Returns the nullifiers of all unspent input notes.
@@ -477,7 +523,7 @@ pub trait Store: Send + Sync {
     /// - Updating the corresponding tracked input/output notes. Consumed notes carry consumption
     ///   metadata — `consumed_block_height`, `consumed_tx_order`, and `consumer_account_id` — in
     ///   their note state. Implementations must persist these fields so that ordered queries (see
-    ///   [`Store::get_input_note_by_offset`]) work correctly.
+    ///   [`Store::get_input_note_after`]) work correctly.
     /// - Removing note tags that are no longer relevant.
     /// - Updating transactions in the store, marking as `committed` or `discarded`.
     ///   - In turn, validating private account's state transitions. If a private account's
@@ -747,13 +793,6 @@ pub enum TransactionFilter {
     Uncommitted,
     /// Return a list of the transaction that matches the provided [`TransactionId`]s.
     Ids(Vec<TransactionId>),
-    /// Return a list of the expired transactions that were executed before the provided
-    /// [`BlockNumber`]. Transactions created after the provided block number are not
-    /// considered.
-    ///
-    /// A transaction is considered expired if is uncommitted and the transaction's block number
-    /// is less than the provided block number.
-    ExpiredBefore(BlockNumber),
 }
 
 // TRANSACTIONS FILTER HELPERS
@@ -773,14 +812,6 @@ impl TransactionFilter {
             TransactionFilter::Ids(_) => {
                 // Use SQLite's array parameter binding
                 format!("{QUERY} WHERE tx.id IN rarray(?)")
-            },
-            TransactionFilter::ExpiredBefore(block_num) => {
-                format!(
-                    "{QUERY} WHERE tx.block_num < {} AND tx.status_variant != {} AND tx.status_variant != {}",
-                    block_num.as_u32(),
-                    TransactionStatusVariant::Discarded as u8,
-                    TransactionStatusVariant::Committed as u8
-                )
             },
         }
     }

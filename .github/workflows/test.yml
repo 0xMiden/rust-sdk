@@ -203,6 +203,8 @@ jobs:
           save-if: false
       - name: Run miden-bench CLI tests
         run: make test-miden-bench
+      - name: Run the SQL store scaling benchmark
+        run: make bench-store
       - name: Fetch test node binaries
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:

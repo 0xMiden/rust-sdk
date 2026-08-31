@@ -25,12 +25,7 @@ use miden_protocol::note::{
 use miden_standards::note::NoteFile;
 use miden_tx::auth::TransactionAuthenticator;
 
-use crate::rpc::domain::note::{
-    FetchedNote,
-    ResolvedNoteContent,
-    ResolvedSyncNotesBlock,
-    SyncedNote,
-};
+use crate::rpc::domain::note::{FetchedNote, ResolvedSyncNotesBlock, SyncedNote};
 use crate::rpc::{NoteContentFetch, RpcError};
 use crate::store::input_note_states::ExpectedNoteState;
 use crate::store::{InputNoteRecord, InputNoteState, NoteFilter};
@@ -430,16 +425,19 @@ where
             });
 
             // Notes the node has not reported as committed keep their expected record untouched.
-            let Some((SyncedNote { committed: committed_note, content }, block_header)) =
-                committed_notes_data.remove(&note_record.details_commitment())
+            let Some((
+                SyncedNote {
+                    committed: committed_note, attachments, ..
+                },
+                block_header,
+            )) = committed_notes_data.remove(&note_record.details_commitment())
             else {
                 note_updates.notes_to_write.push(note_record);
                 continue;
             };
 
-            let attachments = content
-                .map(ResolvedNoteContent::into_attachments)
-                .filter(|attachments| !attachments.is_empty());
+            // A note that carries no attachments has nothing to apply to the record.
+            let attachments = (!attachments.is_empty()).then_some(attachments);
 
             let metadata = *committed_note.metadata();
             let mut note_changed = note_record
@@ -576,7 +574,21 @@ where
             .await
             .map_err(ClientError::RpcError)?;
 
-        blocks.retain(|block| block.block_header.block_num() <= current_block_num);
+        blocks.retain_mut(|block| {
+            if block.block_header.block_num() > current_block_num {
+                return false;
+            }
+
+            // A note carries its own commit height in its inclusion proof, which is a separate
+            // field from the block header checked above. Authenticating the note later looks that
+            // height up in the partial MMR, so a height beyond our synced view has to be dropped
+            // here rather than trusted.
+            block
+                .notes
+                .retain(|_, sync_note| sync_note.committed.block_num() <= current_block_num);
+
+            !block.notes.is_empty()
+        });
 
         Ok(blocks)
     }

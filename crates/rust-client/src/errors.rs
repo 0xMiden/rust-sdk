@@ -126,6 +126,10 @@ pub enum ClientError {
         "cannot recover consumed note {0}: its nullifier has no position in the sync's transaction execution order"
     )]
     MissingConsumedNoteOrder(NoteId),
+    #[error(
+        "cannot continue iterating consumed notes: the store returned the note with details commitment {0}, which carries no consumption position"
+    )]
+    MissingNoteConsumptionPosition(Word),
     #[error("note with id {0} not found on chain")]
     NoteNotFoundOnChain(NoteId),
     #[error("failed to parse hex string")]

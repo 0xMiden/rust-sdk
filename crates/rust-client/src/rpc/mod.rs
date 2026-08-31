@@ -51,19 +51,14 @@ use core::fmt;
 use domain::account::{
     AccountDetails,
     AccountProof,
+    AccountStorageMapDetails,
     GetAccountRequest,
     StorageMapEntries,
     StorageMapEntry,
     StorageMapFetch,
     VaultFetch,
 };
-use domain::note::{
-    FetchedNote,
-    ResolvedNoteContent,
-    ResolvedSyncNotesBlock,
-    SyncNotesBlock,
-    SyncedNote,
-};
+use domain::note::{FetchedNote, ResolvedSyncNotesBlock, SyncNotesBlock, SyncedNote};
 use domain::nullifier::NullifierUpdate;
 use domain::sync::{ChainMmrInfo, SyncTarget};
 use encryption::{AttestedTransactionEncryptionKey, SealedTransactionInputs};
@@ -73,7 +68,15 @@ use miden_protocol::address::NetworkId;
 use miden_protocol::batch::{ProposedBatch, ProvenBatch};
 use miden_protocol::block::{BlockHeader, BlockNumber, ProvenBlock};
 use miden_protocol::crypto::merkle::mmr::MmrProof;
-use miden_protocol::note::{NoteDetails, NoteId, NoteScript, NoteTag, NoteType, Nullifier};
+use miden_protocol::note::{
+    NoteAttachments,
+    NoteDetails,
+    NoteId,
+    NoteScript,
+    NoteTag,
+    NoteType,
+    Nullifier,
+};
 use miden_protocol::transaction::ProvenTransaction;
 
 use crate::rpc::domain::storage_map::StorageMapInfo;
@@ -285,9 +288,8 @@ pub trait NodeRpcClient: Send + Sync {
     /// - `block_to`: The ending block number for the range (inclusive).
     /// - `note_tags` is the set of tags used to filter the notes the client is interested in.
     ///
-    /// Notes with attachments will have header-only metadata after this call; use
-    /// [`NodeRpcClient::sync_notes_with_content`] to also resolve their full metadata and
-    /// fetch public note bodies in a single follow-up call.
+    /// Every returned note carries its full metadata, and its attachment content when the response
+    /// carried it. Use [`NodeRpcClient::sync_notes_with_content`] to resolve the rest.
     ///
     /// Returned notes are not verified to carry one of the requested `note_tags`;
     /// [`VerifyingRpcClient`] performs that check.
@@ -299,24 +301,21 @@ pub trait NodeRpcClient: Send + Sync {
     ) -> Result<Vec<SyncNotesBlock>, RpcError>;
 
     /// Calls [`NodeRpcClient::sync_notes`] for the requested range, then makes a single
-    /// [`NodeRpcClient::get_notes_by_id`] call to resolve note content according to `fetch`,
-    /// folding it into each note.
+    /// [`NodeRpcClient::get_notes_by_id`] call to resolve the note content the sync response did
+    /// not already carry, according to `fetch`, folding it into each note.
     ///
-    /// Notes whose metadata advertises attachments always have their attachment content fetched.
+    /// A note whose attachments the sync response already carried needs no request: only notes
+    /// reporting `needs_attachment_fetch` have theirs fetched.
+    ///
     /// With [`NoteContentFetch::PublicDetailsAndAttachments`], all public notes in the range are
-    /// additionally fetched (regardless of which ones the client tracks) so the request does not
-    /// reveal the client's interest set.
+    /// additionally fetched so the request does not reveal the client's interest set. Narrowing it
+    /// reveals nothing either, since the omissions follow the node's own sync records.
     ///
     /// Returns one [`ResolvedSyncNotesBlock`] per matching block, each note carrying its inclusion
-    /// data alongside the fetched content.
+    /// data alongside its content.
     ///
-    /// A note whose fetched content is inconsistent with its sync record — mismatched note type,
-    /// attachment content that does not hash to the metadata's attachments commitment, or
-    /// advertised attachments the node did not return — is dropped from the response with a
-    /// warning instead of failing the call. Content availability is attacker-influenced (anyone
-    /// can commit a note that advertises attachment content without providing it to the network),
-    /// so a per-note hard error would let a single such note permanently wedge every sync that
-    /// scans its block range.
+    /// A note whose resolved content contradicts its sync record is dropped with a warning rather
+    /// than failing the call, since anyone can commit a note whose content they never publish.
     async fn sync_notes_with_content(
         &self,
         block_from: BlockNumber,
@@ -330,35 +329,33 @@ pub trait NodeRpcClient: Send + Sync {
             .flat_map(|block| block.notes.values())
             .filter(|note| match fetch {
                 NoteContentFetch::PublicDetailsAndAttachments => {
-                    note.note_type() == NoteType::Public || note.has_attachments()
+                    note.note_type() == NoteType::Public || note.needs_attachment_fetch()
                 },
-                NoteContentFetch::AttachmentsOnly => note.has_attachments(),
+                NoteContentFetch::AttachmentsOnly => note.needs_attachment_fetch(),
             })
             .map(|note| *note.note_id())
             .collect();
 
-        let mut resolved_content: BTreeMap<NoteId, ResolvedNoteContent> = BTreeMap::new();
+        let mut fetched_content: BTreeMap<NoteId, (Option<NoteDetails>, Option<NoteAttachments>)> =
+            BTreeMap::new();
         if !note_ids.is_empty() {
             for fetched_note in self.get_notes_by_id(&note_ids).await? {
-                match fetched_note {
+                let (note_id, details, attachments) = match fetched_note {
                     FetchedNote::Public(note, _) => {
                         let note_id = note.id();
                         let (assets, _, recipient, attachments) = note.into_parts();
-                        resolved_content.insert(
-                            note_id,
-                            ResolvedNoteContent::Public {
-                                details: NoteDetails::new(assets, recipient),
-                                attachments,
-                            },
-                        );
+                        (note_id, Some(NoteDetails::new(assets, recipient)), attachments)
                     },
                     FetchedNote::Private(note_id, _, attachments, _) => {
-                        if !attachments.is_empty() {
-                            resolved_content
-                                .insert(note_id, ResolvedNoteContent::Private { attachments });
-                        }
+                        (note_id, None, attachments)
                     },
-                }
+                };
+
+                // An empty set carries nothing, so it is recorded as absent rather than as
+                // content: keeping it would shadow the attachments the note's own sync record may
+                // already have carried, for a public note as much as for a private one.
+                let attachments = (!attachments.is_empty()).then_some(attachments);
+                fetched_content.insert(note_id, (details, attachments));
             }
         }
 
@@ -372,8 +369,16 @@ pub trait NodeRpcClient: Send + Sync {
         for block in blocks {
             let mut notes = BTreeMap::new();
             for (note_id, committed) in block.notes {
-                let content = resolved_content.remove(&note_id);
-                match SyncedNote::new(committed, content) {
+                // Fetched attachments win when the response actually carried some: a public note's
+                // attachments are bound to the requested id, which `VerifyingRpcClient` checks.
+                // The sync record is the fallback, and a note reporting neither has none.
+                let (details, fetched_attachments) =
+                    fetched_content.remove(&note_id).unwrap_or_default();
+                let attachments = fetched_attachments
+                    .or_else(|| committed.attachments().cloned())
+                    .unwrap_or_else(NoteAttachments::empty);
+
+                match SyncedNote::new(committed, details, attachments) {
                     Ok(synced_note) => {
                         notes.insert(note_id, synced_note);
                     },
@@ -450,21 +455,26 @@ pub trait NodeRpcClient: Send + Sync {
         Ok(())
     }
 
-    /// Fills in the entries of any storage map flagged `too_many_entries`, by querying
-    /// [`NodeRpcClient::sync_storage_maps`] over `[GENESIS, block_to]`. No-op when no map
-    /// has the flag set.
+    /// Fills in the entries of any storage map the node reported as oversize, by querying
+    /// [`NodeRpcClient::sync_storage_maps`] over `[GENESIS, block_to]`. No-op when no map is
+    /// oversize.
     async fn resolve_oversize_storage_maps(
         &self,
         account_id: AccountId,
         block_to: BlockNumber,
         details: &mut AccountDetails,
     ) -> Result<(), RpcError> {
-        if !details.storage_details.map_details.iter().any(|m| m.too_many_entries) {
+        if !details
+            .storage_details
+            .map_details
+            .iter()
+            .any(AccountStorageMapDetails::is_limit_exceeded)
+        {
             return Ok(());
         }
         let info = self.sync_storage_maps(BlockNumber::GENESIS, block_to, account_id).await?;
         for map_details in &mut details.storage_details.map_details {
-            if !map_details.too_many_entries {
+            if !map_details.is_limit_exceeded() {
                 continue;
             }
             // Syncing from genesis merges the full history of each slot into its absolute
@@ -480,7 +490,6 @@ pub trait NodeRpcClient: Send + Sync {
                         .collect()
                 })
                 .unwrap_or_default();
-            map_details.too_many_entries = false;
             map_details.entries = StorageMapEntries::AllEntries(entries);
         }
         Ok(())
@@ -663,13 +672,14 @@ pub trait NodeRpcClient: Send + Sync {
 /// `AttachmentsOnly` can be used. One example of this is when importing notes through
 /// `NoteDetails`.
 ///
-/// Attachment content is always fetched for notes whose metadata advertises attachments,
-/// regardless of the selected policy.
+/// Neither policy requests attachment content the sync response already carried in full, so a note
+/// whose attachments all fit in a single word is never fetched for its attachments alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoteContentFetch {
-    /// Fetch the full body of every public note in the range, plus attachment content.
+    /// Fetch the full body of every public note in the range, plus any attachment content still
+    /// missing.
     PublicDetailsAndAttachments,
-    /// Fetch only attachment content.
+    /// Fetch only the attachment content still missing.
     AttachmentsOnly,
 }
 

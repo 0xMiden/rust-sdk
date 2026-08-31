@@ -24,3 +24,14 @@ test-group = "integration"
 [[profile.default.overrides]]
 filter  = "test(import_genesis_accounts_can_be_used_for_transactions)"
 retries = 0
+
+# The agglayer tests wait on network transactions the node builds on its own schedule, so they are
+# long and mostly idle. Running them one at a time keeps them from stretching each other out, and
+# the timeout is raised because even alone they outlast the default.
+[test-groups.agglayer]
+max-threads = 1
+
+[[profile.default.overrides]]
+filter       = "test(/agglayer/)"
+slow-timeout = { period = "3m", terminate-after = 4 }
+test-group   = "agglayer"

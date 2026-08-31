@@ -33,8 +33,8 @@ pub async fn test_transport_note_inclusion_proof_and_consumption(
         return Ok(());
     }
 
-    let sender_config = client_config.clone().with_fresh_store();
-    let recipient_config = client_config.with_fresh_store();
+    let sender_config = client_config.clone();
+    let recipient_config = client_config;
 
     let (mut sender, sender_keystore) =
         sender_config.into_unsynced_client().await.context("failed to build sender")?;
@@ -141,8 +141,8 @@ pub async fn test_transport_multiple_notes_different_blocks(
         return Ok(());
     }
 
-    let sender_config = client_config.clone().with_fresh_store();
-    let recipient_config = client_config.with_fresh_store();
+    let sender_config = client_config.clone();
+    let recipient_config = client_config;
 
     let (mut sender, sender_keystore) =
         sender_config.into_unsynced_client().await.context("failed to build sender")?;
@@ -290,8 +290,8 @@ pub async fn test_transport_note_not_yet_committed(client_config: ClientConfig) 
         return Ok(());
     }
 
-    let sender_config = client_config.clone().with_fresh_store();
-    let recipient_config = client_config.with_fresh_store();
+    let sender_config = client_config.clone();
+    let recipient_config = client_config;
 
     let (mut sender, sender_keystore) =
         sender_config.into_unsynced_client().await.context("failed to build sender")?;

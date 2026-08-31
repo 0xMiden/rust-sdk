@@ -38,9 +38,9 @@ pub async fn test_onchain_notes_flow(client_config: ClientConfig) -> Result<()> 
     // Client 1 is an private faucet which will mint an onchain note for client 2
     let (mut client_1, keystore_1) = client_config.clone().into_client().await?;
     // Client 2 is an private account which will consume the note that it will sync from the node
-    let (mut client_2, keystore_2) = client_config.clone().with_fresh_store().into_client().await?;
+    let (mut client_2, keystore_2) = client_config.clone().into_client().await?;
     // Client 3 will be transferred part of the assets by client 2's account
-    let (mut client_3, keystore_3) = client_config.clone().with_fresh_store().into_client().await?;
+    let (mut client_3, keystore_3) = client_config.clone().into_client().await?;
     wait_for_node(&mut client_3).await;
 
     // Create faucet account
@@ -173,7 +173,7 @@ pub async fn test_onchain_notes_flow(client_config: ClientConfig) -> Result<()> 
 
 pub async fn test_onchain_accounts(client_config: ClientConfig) -> Result<()> {
     let (mut client_1, keystore_1) = client_config.clone().into_client().await?;
-    let (mut client_2, keystore_2) = client_config.clone().with_fresh_store().into_client().await?;
+    let (mut client_2, keystore_2) = client_config.clone().into_client().await?;
     wait_for_node(&mut client_2).await;
 
     let (faucet_account_header, secret_key) = insert_new_fungible_faucet(
@@ -348,7 +348,7 @@ pub async fn test_onchain_accounts(client_config: ClientConfig) -> Result<()> {
 
 pub async fn test_import_account_by_id(client_config: ClientConfig) -> Result<()> {
     let (mut client_1, keystore_1) = client_config.clone().into_client().await?;
-    let (mut client_2, keystore_2) = client_config.clone().with_fresh_store().into_client().await?;
+    let (mut client_2, keystore_2) = client_config.clone().into_client().await?;
     wait_for_node(&mut client_1).await;
 
     let mut user_seed = [0u8; 32];
@@ -431,8 +431,7 @@ pub async fn test_import_account_by_id(client_config: ClientConfig) -> Result<()
 ///     txs (watched accounts track on-chain state, not their note outputs).
 pub async fn test_import_watched_account_by_id(client_config: ClientConfig) -> Result<()> {
     let (mut client_1, keystore_1) = client_config.clone().into_client().await?;
-    let (mut client_2, _keystore_2) =
-        client_config.clone().with_fresh_store().into_client().await?;
+    let (mut client_2, _keystore_2) = client_config.clone().into_client().await?;
     wait_for_node(&mut client_1).await;
 
     let (faucet_account, _) = insert_new_fungible_faucet(
@@ -723,8 +722,7 @@ pub async fn test_watched_account_recovers_consumed_public_note(
     client_config: ClientConfig,
 ) -> Result<()> {
     let (mut client_a, keystore_a) = client_config.clone().into_client().await?;
-    let (mut client_b, _keystore_b) =
-        client_config.clone().with_fresh_store().into_client().await?;
+    let (mut client_b, _keystore_b) = client_config.clone().into_client().await?;
     wait_for_node(&mut client_a).await;
 
     let (faucet, _) = insert_new_fungible_faucet(
@@ -795,7 +793,7 @@ pub async fn test_watched_account_recovers_consumed_public_note(
 /// 4. Client 2 consumes both notes.
 pub async fn test_sync_note_with_attachment(client_config: ClientConfig) -> Result<()> {
     let (mut client_1, keystore_1) = client_config.clone().into_client().await?;
-    let (mut client_2, keystore_2) = client_config.clone().with_fresh_store().into_client().await?;
+    let (mut client_2, keystore_2) = client_config.clone().into_client().await?;
     wait_for_node(&mut client_1).await;
 
     // Create faucet in client 1

@@ -1454,8 +1454,8 @@ fn attach_native_fee_conversion_info(
         return Ok(());
     }
 
-    match fee_auth_component(account_code_interface) {
-        Some(FeeAuth::NativeConversionInfo) => {
+    match FeeAuth::of(account_code_interface) {
+        FeeAuth::FixedSalt => {
             transaction_request.set_fee_conversion_info(
                 FeeConversionInfo::one_to_one(fee_parameters.fee_faucet_id()),
                 NATIVE_FEE_CONVERSION_SALT,
@@ -1464,41 +1464,72 @@ fn attach_native_fee_conversion_info(
         },
         // The salt cannot be chosen here: it is the account's replay guard, and the signed summary
         // covers it, so re-deriving it would invalidate signatures collected against the summary.
-        Some(FeeAuth::CallerChosenSalt(component)) => Err(ClientError::TransactionRequestError(
+        FeeAuth::CallerChosenSalt(component) => Err(ClientError::TransactionRequestError(
             TransactionRequestError::FeeConversionInfoRequired(component),
         )),
-        None => Ok(()),
+        FeeAuth::Ignored(_) => Ok(()),
     }
 }
 
 /// How an account's auth component treats the transaction's auth argument where a fee is charged.
 enum FeeAuth {
     /// Reads it as fee conversion info under a fixed salt, so the client can supply it.
-    NativeConversionInfo,
+    FixedSalt,
     /// Reads it as conversion info too, but reuses the salt as a replay guard the caller must
     /// choose. Carries the component's name for the error.
     CallerChosenSalt(String),
+    /// Does not read it as conversion info, so anything written there is ignored and the fee is
+    /// settled some other way. Carries the auth component's name, or `"unrecognized"` when the
+    /// client recognizes no auth component at all.
+    Ignored(String),
 }
 
-/// Classifies the account's auth component, or `None` when the client cannot tell.
-///
-/// `None` covers components that ignore the auth argument and ones the client cannot recognize at
-/// all. Neither is guessed at: writing an argument an unknown component may read for its own
-/// purposes is worse than leaving it alone. `AccountInterface::new` is avoided because it panics
-/// on exactly those unrecognized components.
-fn fee_auth_component(account_code_interface: &AccountCodeInterface) -> Option<FeeAuth> {
-    let procedures: Vec<_> = account_code_interface.procedures().iter().copied().collect();
+impl FeeAuth {
+    /// Classifies the account's auth component.
+    ///
+    /// A single-sig component decides the answer wherever it sits in the component list, so the
+    /// classification does not depend on the order components come back in.
+    ///
+    /// An unrecognized component is [`FeeAuth::Ignored`] and left alone: writing an argument such
+    /// a component may read for its own purposes is worse than writing nothing. The component list
+    /// is inspected directly because `AccountInterface::new` panics on exactly those components.
+    fn of(account_code_interface: &AccountCodeInterface) -> Self {
+        let procedures: Vec<_> = account_code_interface.procedures().iter().copied().collect();
+        let components = AccountComponentInterface::from_procedures(&procedures);
 
-    AccountComponentInterface::from_procedures(&procedures)
-        .iter()
-        .find_map(|component| match component {
-            AccountComponentInterface::AuthSingleSig => Some(FeeAuth::NativeConversionInfo),
+        if components
+            .iter()
+            .any(|component| matches!(component, AccountComponentInterface::AuthSingleSig))
+        {
+            return Self::FixedSalt;
+        }
+
+        // `AuthMultisigSmart` is absent deliberately: it reads the auth argument as a summary salt
+        // and nothing else, so conversion info committed there is never read.
+        let caller_chosen_salt = components.iter().find_map(|component| match component {
             AccountComponentInterface::AuthMultisig
             | AccountComponentInterface::AuthGuardedMultisig => {
-                Some(FeeAuth::CallerChosenSalt(component.name()))
+                Some(Self::CallerChosenSalt(component.name()))
             },
             _ => None,
+        });
+
+        caller_chosen_salt.unwrap_or_else(|| {
+            let name = components
+                .iter()
+                .find(|component| {
+                    matches!(
+                        component,
+                        AccountComponentInterface::AuthMultisigSmart
+                            | AccountComponentInterface::AuthNoAuth
+                            | AccountComponentInterface::AuthNetworkAccount
+                    )
+                })
+                .map_or_else(|| "unrecognized".into(), AccountComponentInterface::name);
+
+            Self::Ignored(name)
         })
+    }
 }
 
 /// Returns the conversion info an account should commit to settle its fee in the native asset at
@@ -1513,18 +1544,12 @@ pub(crate) fn native_fee_conversion_info(
         return None;
     }
 
-    // `AccountInterface::new` requires exactly one recognized auth component and panics otherwise,
-    // which accounts carrying a custom auth component do not satisfy, so the component list is
-    // inspected directly.
-    let procedures: Vec<_> = account_code_interface.procedures().iter().copied().collect();
-    let takes_a_fixed_salt = AccountComponentInterface::from_procedures(&procedures)
-        .iter()
-        .any(|component| matches!(component, AccountComponentInterface::AuthSingleSig));
-    if !takes_a_fixed_salt {
-        return None;
+    // Only a fixed salt can be paired with this info by anyone other than the caller: where the
+    // salt is the account's replay guard, the caller is the one who has to choose it.
+    match FeeAuth::of(account_code_interface) {
+        FeeAuth::FixedSalt => Some(FeeConversionInfo::one_to_one(fee_parameters.fee_faucet_id())),
+        FeeAuth::CallerChosenSalt(_) | FeeAuth::Ignored(_) => None,
     }
-
-    Some(FeeConversionInfo::one_to_one(fee_parameters.fee_faucet_id()))
 }
 
 /// Verifies that the account can consume fee conversion info passed through the auth args.
@@ -1541,44 +1566,13 @@ fn validate_fee_conversion_info_support(
         return Ok(());
     }
 
-    // Inspected through the component list because `AccountInterface::from_account` panics on the
-    // user-defined components this has to reject.
-    let procedures: Vec<_> =
-        account.code().interface(account.id()).procedures().iter().copied().collect();
-    let components = AccountComponentInterface::from_procedures(&procedures);
-
-    // `AuthMultisigSmart` is absent deliberately: it reads the auth argument as a summary salt and
-    // nothing else, so conversion info committed there is never read.
-    let reads_conversion_info = components.iter().any(|component| {
-        matches!(
-            component,
-            AccountComponentInterface::AuthSingleSig
-                | AccountComponentInterface::AuthMultisig
-                | AccountComponentInterface::AuthGuardedMultisig
-        )
-    });
-    if reads_conversion_info {
-        return Ok(());
+    let account_code_interface = account.code().interface(account.id());
+    match FeeAuth::of(&account_code_interface) {
+        FeeAuth::FixedSalt | FeeAuth::CallerChosenSalt(_) => Ok(()),
+        FeeAuth::Ignored(auth_component) => Err(ClientError::TransactionRequestError(
+            TransactionRequestError::FeeConversionInfoUnsupported(auth_component),
+        )),
     }
-
-    let auth_component = components
-        .iter()
-        .find(|component| {
-            matches!(
-                component,
-                AccountComponentInterface::AuthSingleSig
-                    | AccountComponentInterface::AuthMultisig
-                    | AccountComponentInterface::AuthMultisigSmart
-                    | AccountComponentInterface::AuthGuardedMultisig
-                    | AccountComponentInterface::AuthNoAuth
-                    | AccountComponentInterface::AuthNetworkAccount
-            )
-        })
-        .map_or_else(|| "unrecognized".into(), AccountComponentInterface::name);
-
-    Err(ClientError::TransactionRequestError(
-        TransactionRequestError::FeeConversionInfoUnsupported(auth_component),
-    ))
 }
 
 /// Verifies that every output note emitted directly by the transaction declares `account_id` as

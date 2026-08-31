@@ -33,7 +33,7 @@ async fn {TEST_FUNCTION_NAME}() -> Result<()> {{
     // TEST_MIDEN_PROVER_URL, TEST_MIDEN_NOTE_TRANSPORT_URL, and MIDEN_TEST_TIMEOUT.
     // Note transport is cleared here to avoid eager gRPC connections for every test;
     // transport tests configure their own transport via TEST_MIDEN_NOTE_TRANSPORT_URL.
-    // The funder wallets come from MIDEN_FUNDER_ACCOUNTS, since a `#[tokio::test]` wrapper has
+    // The funder wallets come from MIDEN_FUNDER_ACCOUNTS_DIR, since a `#[tokio::test]` wrapper has
     // no arguments of its own to read.
     let client_config = ClientConfig::default()
         .with_note_transport_endpoint(None)

@@ -172,7 +172,7 @@ NATIVE_FAUCET_ID="$(sed -n 's/^Native faucet account id: //p' "$LOG_DIR/bootstra
 echo "==> native faucet $NATIVE_FAUCET_ID, operator wallet in $ROOT/data/faucet_operator.mac"
 
 # Expose the wallets the node generated from the genesis `[[wallet]]` entries under ./data/funders,
-# where the tests read them via MIDEN_FUNDER_ACCOUNTS. A fee-free genesis declares none.
+# where the tests read them via MIDEN_FUNDER_ACCOUNTS_DIR. A fee-free genesis declares none.
 if compgen -G "$DATA/accounts/wallet_*.mac" >/dev/null; then
     mkdir -p "$ROOT/data/funders"
     cp "$DATA"/accounts/wallet_*.mac "$ROOT/data/funders/"

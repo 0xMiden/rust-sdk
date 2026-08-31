@@ -70,7 +70,7 @@ pub async fn test_network_fpi(client_config: ClientConfig) -> Result<()> {
 
     client.sync_state().await?;
 
-    let (mut client2, keystore2) = client_config.with_fresh_store().into_client().await?;
+    let (mut client2, keystore2) = client_config.into_client().await?;
 
     // NOTE: Syncing the client is important because the client needs to be beyond the account
     // creation block

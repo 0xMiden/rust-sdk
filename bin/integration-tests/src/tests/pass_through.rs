@@ -40,11 +40,7 @@ pub async fn test_pass_through(client_config: ClientConfig) -> Result<()> {
     let (mut client, authenticator_1) = client_config.clone().into_client().await?;
 
     // Workaround to show that importing the note into another client works
-    let client_config_2 = ClientConfig {
-        store_config: create_test_store_path(),
-        ..client_config.clone()
-    };
-    let (mut client_2, authenticator_2) = client_config_2.into_client().await?;
+    let (mut client_2, authenticator_2) = client_config.clone().into_client().await?;
 
     wait_for_node(&mut client).await;
     client.sync_state().await?;

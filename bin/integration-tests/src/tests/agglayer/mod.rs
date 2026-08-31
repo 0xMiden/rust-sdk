@@ -137,11 +137,11 @@ pub async fn create_agglayer_clients(
     println!("[setup] Bridge admin client initialized");
     let bridge_admin = ClientPair { client, keystore };
 
-    let (client, keystore) = client_config.clone().with_fresh_store().into_client().await?;
+    let (client, keystore) = client_config.clone().into_client().await?;
     println!("[setup] GER manager client initialized");
     let ger_manager = ClientPair { client, keystore };
 
-    let (client, keystore) = client_config.clone().with_fresh_store().into_client().await?;
+    let (client, keystore) = client_config.clone().into_client().await?;
     println!("[setup] User client initialized");
     let user = ClientPair { client, keystore };
 

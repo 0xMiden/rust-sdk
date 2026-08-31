@@ -311,8 +311,8 @@ jobs:
         run: make start-node-background
       - name: Start note transport
         run: ./scripts/start-ci-service.sh miden-note-transport-node 57292 target/release/miden-note-transport-node
-      - name: Run integration tests
-        run: make integration-test-full
+      - name: Run non-agglayer integration tests
+        run: make integration-test-non-agglayer
       - name: Stop test node
         if: always()
         run: make stop-node

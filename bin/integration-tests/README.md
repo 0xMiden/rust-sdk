@@ -207,12 +207,12 @@ MIDEN_VERIFICATION_BASE_FEE=0 make start-node-background
 ```
 
 The suite never mints. It draws the native asset from pre-funded basic wallets named by `--funders`
-(or `MIDEN_FUNDER_ACCOUNTS`), either one `.mac` file or a directory of them.
+(or `MIDEN_FUNDER_ACCOUNTS_DIR`), either one `.mac` file or a directory of them.
 
 ```bash
 # Local node: its genesis pre-funds the wallets and start-test-node.sh writes them here.
 # The Makefile targets pass this for you.
-MIDEN_FUNDER_ACCOUNTS=$PWD/data/funders cargo nextest run --workspace --release --test=integration
+MIDEN_FUNDER_ACCOUNTS_DIR=$PWD/data/funders cargo nextest run --workspace --release --test=integration
 
 # Deployed network: supply wallets funded out of band, since nothing can be minted there.
 miden-client-integration-tests --network testnet --funders ./testnet-funders
@@ -241,7 +241,7 @@ chain before every payment, which is what makes sharing one between test process
 
 ### Environment variables
 
-- `MIDEN_FUNDER_ACCOUNTS` - funder `.mac` file or directory, same as `--funders`
+- `MIDEN_FUNDER_ACCOUNTS_DIR` - funder `.mac` file or directory, same as `--funders`
 - `MIDEN_VERIFICATION_BASE_FEE` - genesis `verification_base_fee` for the testing node (default
   `500`; `0` runs the node fee-free and declares no funder wallets)
 - `MIDEN_TEST_PROVER_THREADS` - threads a test process gives its prover in the agglayer run

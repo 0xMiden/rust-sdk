@@ -6,4 +6,4 @@
 pub mod config;
 pub mod fee_funding;
 
-pub use config::{ClientConfig, NoteTransportEndpoint};
+pub use config::{ClientConfig, NoteTransportEndpoint, create_test_auth_path};

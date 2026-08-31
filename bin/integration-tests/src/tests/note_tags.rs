@@ -31,12 +31,8 @@ pub async fn test_output_notes_do_not_register_tags(client_config: ClientConfig)
     // Client 1 runs the faucet; client 2 tracks the recipient wallet, so from client 1's
     // perspective the minted note goes to an external account.
     let (mut client_1, keystore_1) = client_config.clone().into_client().await?;
-    let (mut client_2, keystore_2) = client_config
-        .clone()
-        .with_fresh_store()
-        .with_note_transport_endpoint(None)
-        .into_client()
-        .await?;
+    let (mut client_2, keystore_2) =
+        client_config.clone().with_note_transport_endpoint(None).into_client().await?;
     wait_for_node(&mut client_2).await;
 
     let (faucet_account, _) = insert_new_fungible_faucet(
@@ -107,12 +103,8 @@ pub async fn test_output_notes_do_not_register_tags(client_config: ClientConfig)
 /// a self-directed transfer and for an expected note imported by details.
 pub async fn test_input_note_tag_lifecycle(client_config: ClientConfig) -> Result<()> {
     let (mut client_1, keystore_1) = client_config.clone().into_client().await?;
-    let (mut client_2, keystore_2) = client_config
-        .clone()
-        .with_fresh_store()
-        .with_note_transport_endpoint(None)
-        .into_client()
-        .await?;
+    let (mut client_2, keystore_2) =
+        client_config.clone().with_note_transport_endpoint(None).into_client().await?;
     wait_for_node(&mut client_1).await;
 
     let (faucet_account, _) = insert_new_fungible_faucet(

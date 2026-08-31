@@ -31,7 +31,7 @@ use crate::config::ClientConfig;
 // ================================================================================================
 
 /// Env var naming the funder account file or directory, mirroring the `--funders` argument.
-pub const FUNDER_ACCOUNTS_ENV: &str = "MIDEN_FUNDER_ACCOUNTS";
+pub const FUNDER_ACCOUNTS_ENV: &str = "MIDEN_FUNDER_ACCOUNTS_DIR";
 
 /// Amount of the native fee asset, in base units, each funded account receives. A fee runs a few
 /// tens of thousands of base units, so this covers far more than any one test spends.
@@ -115,8 +115,7 @@ fn load_funders(path: &Path) -> Result<Vec<AccountFile>> {
 
 /// The pool of pre-funded wallets a run was given, paying out of whichever one is free.
 struct Funder {
-    /// What the funder client is built from: the test's endpoints, its own store and keystore, and
-    /// no funder of its own.
+    /// What the funder client is built from: the test's endpoints, and no funder of its own.
     client_config: ClientConfig,
     wallets: Vec<AccountFile>,
     /// Where this test starts scanning, so concurrent tests do not all try the same wallet first.
@@ -131,7 +130,6 @@ impl Funder {
         Self {
             client_config: client_config
                 .clone()
-                .with_fresh_store()
                 .with_fee_funder(None)
                 .with_note_transport_endpoint(None),
             wallets,

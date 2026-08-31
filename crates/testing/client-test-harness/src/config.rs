@@ -72,8 +72,6 @@ impl fmt::Display for NoteTransportEndpoint {
 pub struct ClientConfig {
     pub rpc_endpoint: Endpoint,
     pub rpc_timeout_ms: u64,
-    pub store_config: PathBuf,
-    pub auth_path: PathBuf,
     /// Optional remote prover endpoint. If set, the client will use a remote prover instead of the
     /// default local prover.
     pub prover_endpoint: Option<String>,
@@ -91,21 +89,10 @@ impl ClientConfig {
         Self {
             rpc_endpoint,
             rpc_timeout_ms,
-            auth_path: create_test_auth_path(),
-            store_config: create_test_store_path(),
             prover_endpoint: None,
             note_transport_endpoint: None,
             fee_funder: None,
         }
-    }
-
-    pub fn as_parts(&self) -> (Endpoint, u64, PathBuf, PathBuf) {
-        (
-            self.rpc_endpoint.clone(),
-            self.rpc_timeout_ms,
-            self.store_config.clone(),
-            self.auth_path.clone(),
-        )
     }
 
     #[allow(clippy::return_self_not_must_use)]
@@ -138,23 +125,16 @@ impl ClientConfig {
         Ok(self.with_fee_funder(fee_funder))
     }
 
-    /// Returns a config for another client on the same network: same endpoints and fee funder,
-    /// its own store and keystore.
-    #[allow(clippy::return_self_not_must_use)]
-    pub fn with_fresh_store(mut self) -> Self {
-        self.store_config = create_test_store_path();
-        self.auth_path = create_test_auth_path();
-        self
-    }
-
     /// Creates a `TestClient` builder and keystore.
     ///
-    /// Creates the client builder using the provided `ClientConfig`. The store uses a `SQLite`
-    /// database at a temporary location determined by the store config.
+    /// The store is a `SQLite` database at a temporary location, and the keystore a temporary
+    /// directory, both created here rather than held on the config, so every client this is called
+    /// on gets its own.
     pub fn into_client_builder(
         self,
     ) -> Result<(ClientBuilder<FilesystemKeyStore>, FilesystemKeyStore)> {
-        let (rpc_endpoint, rpc_timeout, store_config, auth_path) = self.as_parts();
+        let store_config = create_test_store_path();
+        let auth_path = create_test_auth_path();
 
         let mut rng = rand::rng();
         let coin_seed: [u64; 4] = rng.random();
@@ -165,8 +145,10 @@ impl ClientConfig {
             format!("failed to create keystore at path: {}", auth_path.to_string_lossy())
         })?;
 
-        let rpc_client =
-            Arc::new(VerifyingRpcClient::new(GrpcClient::new(&rpc_endpoint, rpc_timeout)));
+        let rpc_client = Arc::new(VerifyingRpcClient::new(GrpcClient::new(
+            &self.rpc_endpoint,
+            self.rpc_timeout_ms,
+        )));
 
         let mut builder = ClientBuilder::new()
             .rpc(rpc_client)
@@ -195,8 +177,7 @@ impl ClientConfig {
 
     /// Creates a `TestClient` without syncing it, for tests that have to wait for the node first.
     ///
-    /// Creates the client using the provided [`ClientConfig`]. The store uses a `SQLite` database
-    /// at a temporary location determined by the store config.
+    /// The client gets its own store and keystore.
     pub async fn into_unsynced_client(self) -> Result<(TestClient, FilesystemKeyStore)> {
         let fee_funder = self.fee_funder.clone();
         let (builder, keystore) = self.into_client_builder()?;
@@ -208,9 +189,8 @@ impl ClientConfig {
 
     /// Creates a `TestClient`.
     ///
-    /// Creates the client using the provided [`ClientConfig`]. The store uses a `SQLite` database
-    /// at a temporary location determined by the store config. The client is synced to the
-    /// current state before being returned.
+    /// The client gets its own store and keystore, and is synced to the current state before being
+    /// returned.
     pub async fn into_client(self) -> Result<(TestClient, FilesystemKeyStore)> {
         let (mut client, keystore) = self.into_unsynced_client().await?;
 
@@ -292,7 +272,8 @@ impl Default for ClientConfig {
     }
 }
 
-pub(crate) fn create_test_auth_path() -> PathBuf {
+/// Creates a fresh keystore directory, for a test building a client without a [`ClientConfig`].
+pub fn create_test_auth_path() -> PathBuf {
     let auth_path = temp_dir().join(format!("keystore-{}", Uuid::new_v4()));
     std::fs::create_dir_all(&auth_path).unwrap();
     auth_path

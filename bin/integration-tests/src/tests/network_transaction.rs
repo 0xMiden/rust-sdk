@@ -731,7 +731,7 @@ pub async fn test_network_note_consumed_by_ntx(client_config: ClientConfig) -> R
 /// note flow.
 pub async fn test_ntx_mint_produces_public_p2id(client_config: ClientConfig) -> Result<()> {
     let (mut client, keystore) = client_config.clone().into_client().await?;
-    let (mut client_2, keystore_2) = client_config.clone().with_fresh_store().into_client().await?;
+    let (mut client_2, keystore_2) = client_config.clone().into_client().await?;
 
     let (alice, ..) =
         insert_new_wallet(&mut client, AccountType::Public, &keystore, RPO_FALCON_SCHEME_ID)
@@ -812,7 +812,7 @@ pub async fn test_ntx_mint_produces_public_note_with_non_standard_script(
     client_config: ClientConfig,
 ) -> Result<()> {
     let (mut client, keystore) = client_config.clone().into_client().await?;
-    let (mut client_2, keystore_2) = client_config.clone().with_fresh_store().into_client().await?;
+    let (mut client_2, keystore_2) = client_config.clone().into_client().await?;
 
     let (alice, ..) =
         insert_new_wallet(&mut client, AccountType::Public, &keystore, RPO_FALCON_SCHEME_ID)
@@ -975,8 +975,7 @@ pub async fn test_watch_network_account(client_config: ClientConfig) -> Result<(
     const BUMP_NOTE_NUMBER: u64 = 3;
 
     let (mut client_1, keystore_1) = client_config.clone().into_client().await?;
-    let (mut client_2, _keystore_2) =
-        client_config.clone().with_fresh_store().into_client().await?;
+    let (mut client_2, _keystore_2) = client_config.clone().into_client().await?;
     client_1.sync_state().await?;
 
     let incr_note_root = note_script_root(INCR_NOTE_SCRIPT_CODE, client_1.source_manager())?;

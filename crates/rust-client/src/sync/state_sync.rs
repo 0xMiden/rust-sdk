@@ -273,11 +273,20 @@ impl StateSync {
     /// mutable reference so callers can keep it in memory across syncs; it is only modified once
     /// every check has passed.
     ///
-    /// Runs the four phases in order, each of which can also be driven separately:
-    /// 1. [`Self::fetch_state`] — every node call but the nullifier check.
-    /// 2. [`Self::derive_note_and_transaction_updates`] — screen the notes, apply the transactions.
-    /// 3. [`Self::fetch_nullifiers`] — the nullifier check.
-    /// 4. [`Self::build_update`] — verify against the MMR and assemble the update.
+    /// During the sync process, the following steps are performed:
+    /// 1. Fetch sync data from the node (MMR delta, note inclusions, transactions).
+    /// 2. Update account states (fetch updated public accounts, flag mismatched private ones).
+    /// 3. Screen note inclusions via the configured [`OnNoteReceived`] callback.
+    /// 4. Process transaction inclusions (commit local txs, record external consumers, discard
+    ///    stale/expired txs, commit output notes).
+    /// 5. Recover the public notes a tracked account consumed but the client never tracked.
+    /// 6. Detect consumed notes via nullifier sync (optional, see
+    ///    [`Self::disable_nullifier_sync`]).
+    /// 7. Advance the partial MMR to the chain tip and track the screened blocks that still hold an
+    ///    unspent note.
+    ///
+    /// Steps 1-2 are [`Self::fetch_state`], 3-5 [`Self::derive_note_and_transaction_updates`], 6
+    /// [`Self::fetch_nullifiers`] and 7 [`Self::build_update`]; each can be driven separately.
     pub async fn sync_state(
         &self,
         current_partial_mmr: &mut PartialMmr,
@@ -298,7 +307,7 @@ impl StateSync {
     }
 
     /// Fetches the node's view of everything that changed since `block_from`, without verifying it
-    /// against the client's MMR or writing anything.
+    /// against the client's MMR or applying any change to the store.
     ///
     /// Covers the two node calls that depend on nothing but the sync input:
     /// 1. Fetch sync data from the node (MMR delta, note inclusions, transactions).
@@ -378,21 +387,10 @@ impl StateSync {
         })
     }
 
-    /// Turns the node's raw response into note and transaction updates.
+    /// Receives a `ChainSyncData` and derives the note and transaction updates.
     ///
     /// Screens the received notes for relevance, applies the transaction inclusions, and recovers
-    /// the public notes the tracked accounts consumed. Only the last of those makes a node call;
-    /// the rest is store reads and local execution, which is why this is split from
-    /// [`Self::fetch_state`] and runs afterwards rather than concurrently.
-    ///
-    /// # Ordering
-    ///
-    /// A note another sync path wrote in the same call must be in the store *and* in
-    /// `chain_sync_data`'s note updates before this runs.
-    /// [`NoteScreener::on_note_received`](crate::note::NoteScreener) recognises a note by looking
-    /// it up in the store — a private note it cannot find is discarded, permanently, since the
-    /// chain's note query never revisits a block range — and its verdict is then applied to the
-    /// tracked record, which the store lookup does not provide.
+    /// the public notes the tracked accounts consumed, fetching the notes by ID from the RPC.
     pub async fn derive_note_and_transaction_updates(
         &self,
         chain_sync_data: &mut ChainSyncData,
@@ -425,12 +423,10 @@ impl StateSync {
     }
 
     /// Verifies the fetched chain data against `partial_mmr` and turns it into the update to
-    /// persist.
+    /// apply to the store.
     ///
-    /// This is the chain sync's only MMR mutation: it applies the node's delta, checks the
-    /// resulting peaks against the chain tip header's chain commitment, and tracks the screened
-    /// note blocks that still hold an unspent note. It performs no I/O, so every check runs before
-    /// the caller's first write, and a failure leaves `partial_mmr` to be discarded by the caller.
+    /// It applies the node's delta, checks the resulting peaks against the chain tip header's
+    /// chain commitment, and tracks the screened note blocks that still hold an unspent note.
     pub fn build_update(
         chain_sync_data: ChainSyncData,
         partial_mmr: &mut PartialMmr,
@@ -1409,12 +1405,10 @@ impl StateSync {
 // ================================================================================================
 
 /// The chain data a sync fetched from the node, before any of it has been verified against the
-/// client's MMR or written.
+/// client's MMR or to the store.
 ///
 /// Built by [`StateSync::fetch_state`], extended by [`StateSync::fetch_nullifiers`] and turned
-/// into a [`StateSyncUpdate`] by [`StateSync::build_update`]. Carries no behavior of its own: the
-/// [`StateSync`] that produced it has to stay in scope until the update is applied, because the
-/// note observers accumulate per-note state during the fetch and drain it in their apply hook.
+/// into a [`StateSyncUpdate`] by [`StateSync::build_update`].
 pub struct ChainSyncData {
     /// The chain tip the sync started from.
     pub(crate) block_from: BlockNumber,

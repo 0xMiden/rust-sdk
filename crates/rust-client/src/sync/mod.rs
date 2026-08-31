@@ -148,7 +148,7 @@ where
     }
 
     /// Fetches the node's view of everything that changed since the client's chain tip, without
-    /// writing anything or modifying the partial MMR.
+    /// storing anything or modifying the partial MMR.
     ///
     /// Builds the default sync input and runs [`StateSync::fetch_state`]. The nullifier check is
     /// not part of this: run [`StateSync::fetch_nullifiers`] on the result before applying it, so
@@ -172,7 +172,7 @@ where
             .with_note_observer(Arc::new(PswapChainObserver::new(self.store.clone())))
     }
 
-    /// Verifies fetched chain data against the client's partial MMR and writes the resulting
+    /// Verifies fetched chain data against the client's partial MMR and saves the resulting
     /// update to the store.
     ///
     /// Also caches the partial MMR and prunes irrelevant blocks.
@@ -257,10 +257,6 @@ where
     ///
     /// Fails fast on the first error. Before step 2 nothing is written but the relay outbox, which
     /// [`Client::flush_relay_outbox`] persists during the fetch and the next sync retries.
-    ///
-    /// One gap remains: the chain sync's note tags are read in step 1, so a tag *first* registered
-    /// by this call's transport import is not part of this call's `sync_notes` query. Notes under
-    /// such a tag are picked up by the next sync.
     pub async fn sync_state(&mut self) -> Result<SyncSummary, ClientError> {
         // Both fetch phases need genesis in place, and connecting here means the two concurrent
         // futures never race on the RPC client's lazy connect.

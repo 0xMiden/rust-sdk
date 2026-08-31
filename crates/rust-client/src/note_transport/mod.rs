@@ -434,8 +434,8 @@ where
         )))
     }
 
-    /// Fetch one batch of notes from the note transport network for the provided tags and build
-    /// the records they imply, without writing anything.
+    /// Fetches and returns one batch of notes from the note transport layer for the provided tags
+    /// without applying any update to the store.
     ///
     /// The server paginates; this method issues one RPC and returns the updates together with the
     /// new cursor. The returned cursor equals the input cursor when the batch was empty (i.e. no
@@ -514,19 +514,10 @@ where
         Ok((note_updates, rcursor))
     }
 
-    /// Fetches what the note transport sync is about to write, writing only the relay outbox.
+    /// Fetches everything the note transport sync will store.
     ///
-    /// Runs the relay-outbox flush, the per-tag history backfill and the steady-state page, and
-    /// returns the latter two as a [`NoteTransportSyncData`] for
-    /// [`Client::apply_note_transport_sync_data`]. Takes `&self` so it can run concurrently with
-    /// the chain sync's fetch phase.
-    ///
-    /// The one write it performs is the relay outbox, which [`Client::flush_relay_outbox`]
-    /// persists itself and which is safe to redo.
-    ///
-    /// One step runs at the end, once every page is in and the notes the node reports as
-    /// committed are known: [`Client::fetch_note_nullifiers`] checks whether any was already
-    /// spent. Storing what it produces is the apply phase's.
+    /// Runs the per-tag backfill, fetches a page of notes from the Note Transport Layer,
+    /// and checks the nullifiers for the returned notes.
     ///
     /// Returns empty data when note transport is not configured.
     pub(crate) async fn fetch_note_transport_sync_data(
@@ -579,17 +570,13 @@ where
         Ok(note_transport_data)
     }
 
-    /// Writes everything [`Client::fetch_note_transport_sync_data`] fetched, returning the ids of
-    /// the imported notes and the records it wrote.
-    ///
-    /// The records are returned so the chain sync can track them: they are in the store now, but
-    /// not in the snapshot its tracker was built from.
+    /// Saves to the storage everything [`Client::fetch_note_transport_sync_data`] fetched,
+    /// returning the ids of the imported notes and the records it stored.
     ///
     /// The notes are written before the covered-tag set and the cursor, so a crash between them
     /// re-fetches instead of skipping notes that were never written.
     ///
-    /// The block headers go in ahead of the notes that need them. The relay outbox does not:
-    /// [`Client::flush_relay_outbox`] persists it during the fetch.
+    /// The block headers are stored before the committed notes that need them.
     pub(crate) async fn apply_note_transport_sync_data(
         &mut self,
         note_transport_data: NoteTransportSyncData,
@@ -625,11 +612,9 @@ where
 // NOTE TRANSPORT SYNC DATA
 // ================================================================================================
 
-/// Everything the note transport sync is about to write, with nothing written yet.
+/// Everything the note transport sync is about to save to the storage.
 ///
-/// Built by [`Client::fetch_note_transport_sync_data`], which also completes it with
-/// [`Client::fetch_note_nullifiers`], and written by
-/// [`Client::apply_note_transport_sync_data`].
+/// Built by [`Client::fetch_note_transport_sync_data`].
 #[derive(Default)]
 pub(crate) struct NoteTransportSyncData {
     /// Covered-tag set to persist, `None` when it did not change.

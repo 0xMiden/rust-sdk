@@ -206,11 +206,14 @@ pub async fn setup_core_accounts(
         funder.fund_and_deploy(client, account_id).await
     }
 
+    // Only the two accounts that execute transactions. The bridge is imported into all three
+    // clients so each can reference it, but nothing in these tests submits a transaction with
+    // the bridge as the executing account, so it never pays a fee and needs no balance. It
+    // could not be funded this way regardless: funding delivers a P2ID note, and the bridge is
+    // a custom contract with no wallet component to consume one — the attempt fails in the
+    // kernel with `account procedure ... is not in the account procedure set`.
     fund_for_fees(&mut bridge_admin.client, config.bridge_admin_id()).await?;
     fund_for_fees(&mut ger_manager.client, config.ger_manager_id()).await?;
-    // The bridge is imported into all three clients but funded through one: funding is a
-    // transaction against the bridge, and repeating it would just pay more fees.
-    fund_for_fees(&mut bridge_admin.client, config.bridge_id()).await?;
 
     Ok((config.bridge_admin_id(), config.ger_manager_id(), config.bridge_id()))
 }

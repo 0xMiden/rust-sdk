@@ -224,10 +224,16 @@ impl NoteScreener {
 
     /// Returns `tx_args` carrying the auth arg the account needs to settle its fee.
     ///
-    /// Screening runs the full kernel, so without conversion info `fee::pay_fee` aborts and the
-    /// note is reported unconsumable and dropped from the sync. Only custom-script notes reach
-    /// execution; standard ones are answered without it. The info comes from
-    /// [`native_fee_conversion_info`], so screening measures the fee execution would pay.
+    /// Screening runs the full kernel, so a fee it cannot pay aborts the trial execution, and
+    /// [`NoteConsumptionChecker`] reports that as [`NoteConsumptionStatus::UnconsumableConditions`]
+    /// — which [`is_relevant`] drops from the sync. Only custom-script notes reach execution;
+    /// standard ones are answered without it. The info comes from [`native_fee_conversion_info`],
+    /// so screening measures the fee execution would pay.
+    ///
+    /// TODO: remove once the checker can report a note as consumable-but-unaffordable, which would
+    /// make the fee irrelevant to screening rather than something to satisfy:
+    /// <https://github.com/0xMiden/protocol/issues/3710>. That would also cover the case this
+    /// cannot: an account whose vault is too empty to pay even with the info attached.
     async fn with_native_fee_conversion_info(
         &self,
         tx_args: TransactionArgs,

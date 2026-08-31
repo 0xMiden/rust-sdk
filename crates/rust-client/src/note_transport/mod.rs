@@ -434,6 +434,46 @@ where
         )))
     }
 
+    /// Screens the transport-delivered notes, dropping the notes that no tracked account can
+    /// consume. The notes whose tags the client tracks explicitly are kept without being
+    /// screened.
+    async fn screen_transport_notes(
+        &self,
+        notes: &mut Vec<(Note, Option<BlockNumber>)>,
+    ) -> Result<(), ClientError> {
+        let explicitly_tracked = self.explicitly_tracked_tags().await?;
+
+        let notes_to_screen: Vec<Note> = notes
+            .iter()
+            .filter(|(note, _)| !explicitly_tracked.contains(&note.metadata().tag()))
+            .map(|(note, _)| note.clone())
+            .collect();
+        let consumable_notes =
+            self.note_screener().get_batch_consumability(&notes_to_screen).await?;
+
+        notes.retain(|(note, _)| {
+            explicitly_tracked.contains(&note.metadata().tag())
+                || consumable_notes.contains_key(&note.id())
+        });
+
+        Ok(())
+    }
+
+    /// Returns the note tags tracked by the client with source `User` or `Subscription`.
+    async fn explicitly_tracked_tags(&self) -> Result<BTreeSet<NoteTag>, ClientError> {
+        let tags = self
+            .store
+            .get_note_tags()
+            .await?
+            .into_iter()
+            .filter(|record| {
+                matches!(record.source, NoteTagSource::User | NoteTagSource::Subscription(_))
+            })
+            .map(|record| record.tag)
+            .collect();
+        Ok(tags)
+    }
+
     /// Fetches and returns one batch of notes from the note transport layer for the provided tags
     /// without applying any update to the store.
     ///
@@ -479,14 +519,9 @@ where
             notes.push((note, note_info.block_hint));
         }
 
-        // The transport routes by tag alone, and an account-target tag is only the 14 most
-        // significant bits of the account id prefix, so a page can carry notes addressed to
-        // accounts this client does not track. Discard the ones no tracked account can consume.
-        // This must run here: screening needs the note metadata, which the `NoteDetails`
-        // conversion below drops.
-        let screened: Vec<Note> = notes.iter().map(|(note, _)| note.clone()).collect();
-        let consumable = self.note_screener().get_batch_consumability(&screened).await?;
-        notes.retain(|(note, _)| consumable.contains_key(&note.id()));
+        // Screen the transport-delivered notes to discard the ones that are not relevant to the
+        // accounts tracked by the client.
+        self.screen_transport_notes(&mut notes).await?;
 
         let sync_height = self.get_sync_height().await?;
         let fallback_after_block_num =

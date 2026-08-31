@@ -149,7 +149,7 @@ async fn transport_recovers_attachments() {
         .rpc(rpc_api.clone())
         .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
-        .authenticator(Arc::new(keystore.clone()))
+        .authenticator(Arc::new(keystore))
         .note_transport(Arc::new(MockNoteTransportApi::new(mock_node.clone())))
         .tx_discard_delta(None)
         .build()
@@ -157,9 +157,6 @@ async fn transport_recovers_attachments() {
         .unwrap();
     client.ensure_genesis_in_place().await.unwrap();
     seed_mock_transaction_encryption_key(&mut client).await;
-    // The transport fetch screens what it downloads, so the client needs an account that can
-    // consume the note for it to be stored at all.
-    insert_new_wallet(&mut client, AccountType::Private, &keystore).await.unwrap();
     client.sync_state().await.unwrap();
 
     client.add_note_tag(private_note.metadata().tag()).await.unwrap();
@@ -563,16 +560,13 @@ async fn fetch_private_notes_finds_note_committed_at_sync_height() {
         .rpc(arc_rpc_api)
         .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
-        .authenticator(Arc::new(keystore.clone()))
+        .authenticator(Arc::new(keystore))
         .tx_discard_delta(None)
         .note_transport(Arc::new(transport_client));
 
     let mut client = builder.build().await.unwrap();
     client.ensure_genesis_in_place().await.unwrap();
     seed_mock_transaction_encryption_key(&mut client).await;
-    // The transport fetch screens what it downloads, so the client needs an account that can
-    // consume the note for it to be stored at all.
-    insert_new_wallet(&mut client, AccountType::Private, &keystore).await.unwrap();
 
     // 3. Register tag 0 so chain sync sees the note's block.
     client.add_note_tag(NoteTag::new(0)).await.unwrap();
@@ -674,16 +668,13 @@ async fn ntl_note_committed_within_the_sync_window_is_committed_by_that_sync() {
         .rpc(rpc_api)
         .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
-        .authenticator(Arc::new(keystore.clone()))
+        .authenticator(Arc::new(keystore))
         .tx_discard_delta(None)
         .note_transport(Arc::new(transport_client));
 
     let mut client = builder.build().await.unwrap();
     client.ensure_genesis_in_place().await.unwrap();
     seed_mock_transaction_encryption_key(&mut client).await;
-    // The transport fetch screens what it downloads, so the client needs an account that can
-    // consume the note for it to be stored at all.
-    insert_new_wallet(&mut client, AccountType::Private, &keystore).await.unwrap();
 
     client.add_note_tag(NoteTag::new(0)).await.unwrap();
 
@@ -765,16 +756,13 @@ async fn ntl_note_already_spent_below_the_checkpoint_is_not_left_committed() {
         .rpc(rpc_api)
         .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
-        .authenticator(Arc::new(keystore.clone()))
+        .authenticator(Arc::new(keystore))
         .tx_discard_delta(None)
         .note_transport(Arc::new(transport_client));
 
     let mut client = builder.build().await.unwrap();
     client.ensure_genesis_in_place().await.unwrap();
     seed_mock_transaction_encryption_key(&mut client).await;
-    // The transport fetch screens what it downloads, so the note's target account must be tracked
-    // for the delivered note to be stored at all.
-    client.add_account(&account, false).await.unwrap();
     client.add_note_tag(note.metadata().tag()).await.unwrap();
 
     client.sync_state().await.unwrap();
@@ -1311,17 +1299,13 @@ async fn committed_private_note_recipient(
         .rpc(arc_rpc_api)
         .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
-        .authenticator(Arc::new(keystore.clone()))
+        .authenticator(Arc::new(keystore))
         .tx_discard_delta(None)
         .note_transport(Arc::new(transport_client));
 
     let mut client = builder.build().await.unwrap();
     client.ensure_genesis_in_place().await.unwrap();
     seed_mock_transaction_encryption_key(&mut client).await;
-
-    // The transport fetch screens what it downloads, so the client needs an account that can
-    // consume the note for it to be stored at all.
-    insert_new_wallet(&mut client, AccountType::Private, &keystore).await.unwrap();
 
     // Register tag 0 so chain sync sees the note's block, then sync to the tip. The NTL is empty,
     // so no transport notes are imported yet.

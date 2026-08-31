@@ -285,7 +285,9 @@ impl TransactionRequest {
     ///
     /// Used to fold a funding note into the transaction an account was going to run anyway: the
     /// note's assets land in the vault before the fee is withdrawn, so one transaction can deploy
-    /// the account, fund it and do its work.
+    /// the account, fund it and do its work. Building a request that consumes the note is the
+    /// public way to do this; the harness needs it on a request a test already built.
+    #[cfg(feature = "testing")]
     pub(crate) fn add_unauthenticated_input_note(&mut self, note: Note) {
         self.input_notes_args.push((note.id(), None));
         self.input_notes.push(note);

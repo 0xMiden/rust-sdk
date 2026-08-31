@@ -177,29 +177,40 @@ pub async fn setup_core_accounts(
             .await?;
     }
 
-    // NOT FUNDED HERE, AND IT CANNOT BE. These accounts are deployed out of band and
-    // imported, so nothing has ever given them the native asset. On a fee-charging chain
-    // every transaction they sign withdraws the fee from their own vault, and an empty
-    // vault aborts it — surfacing far from here as a note that was never consumed or a GER
-    // that was never registered, never as a fee error.
+    // These accounts are deployed out of band and imported, so nothing has ever given them
+    // the native asset. On a fee-charging chain every transaction they sign withdraws the fee
+    // from their own vault, and an empty vault aborts it — surfacing far from here as a note
+    // that was never consumed or a GER that was never registered, never as a fee error.
     //
-    // `fund_and_deploy_if_needed` LOOKS like the fix and is a silent no-op: it routes to
-    // `deploy_account`, which returns early for any account whose locally tracked nonce is
-    // non-zero, and these are non-zero the moment they are imported. It was tried; the
-    // tests failed identically.
+    // Funded through the funder DIRECTLY rather than `fund_and_deploy_if_needed`, which is a
+    // silent no-op here: it routes to `deploy_account`, which returns early for any account
+    // whose locally tracked nonce is non-zero — true the moment these are imported. Calling
+    // the funder skips that gate; `deploy_by_consuming` underneath has no such guard and a
+    // consume against an already-deployed account is just an ordinary transaction.
     //
-    // Nor can they be funded after the fact. Since protocol 0.16 the fee is withdrawn in
-    // the auth procedure, BEFORE the transaction body runs, so a zero-balance account
-    // cannot even consume a P2ID note that would fund it — it cannot pay for the
-    // transaction that would accept the money. A zero-balance out-of-band account on a
-    // fee-charging chain is permanently unable to transact.
-    //
-    // The fix belongs in genesis: these accounts must hold the native asset from the first
-    // block. That is currently impossible — a `[[account]]` genesis entry carries only
-    // `path`, and only `[[wallet]]` entries can declare `assets`, which generates a fresh
-    // wallet rather than adopting a pre-built .mac. Fixing this needs the node's genesis
-    // schema to accept assets on `[[account]]`, or the agglayer accounts to be built with a
-    // pre-populated vault (which needs the fee faucet's id before genesis creates it).
+    // This works on an empty vault because the fee is charged in the EPILOGUE, after note
+    // processing: the kernel runs prologue -> notes -> tx script -> epilogue, and the auth
+    // procedure that calls `fee::pay_fee` is epilogue-only (the kernel even errors with
+    // "auth procedure has been called from outside the epilogue"). So the account receives
+    // the funding note's assets first and pays its fee out of them in the same transaction.
+    // Two borrows of `bridge_admin.client` cannot be live at once, so this is a closure
+    // applied per account rather than a table of (client, id) pairs.
+    async fn fund_for_fees(client: &mut TestClient, account_id: AccountId) -> Result<()> {
+        if !client.chain_charges_fees().await? {
+            return Ok(());
+        }
+        let funder = client.fee_funder().cloned().context(
+            "the agglayer accounts need fee funding on this chain, but the client has no fee \
+             funder; point MIDEN_FUNDER_ACCOUNTS at the pre-funded wallets",
+        )?;
+        funder.fund_and_deploy(client, account_id).await
+    }
+
+    fund_for_fees(&mut bridge_admin.client, config.bridge_admin_id()).await?;
+    fund_for_fees(&mut ger_manager.client, config.ger_manager_id()).await?;
+    // The bridge is imported into all three clients but funded through one: funding is a
+    // transaction against the bridge, and repeating it would just pay more fees.
+    fund_for_fees(&mut bridge_admin.client, config.bridge_id()).await?;
 
     Ok((config.bridge_admin_id(), config.ger_manager_id(), config.bridge_id()))
 }

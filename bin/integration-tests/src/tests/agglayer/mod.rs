@@ -177,5 +177,17 @@ pub async fn setup_core_accounts(
             .await?;
     }
 
+    // These accounts are deployed out of band and imported, so nothing has ever given them
+    // the native asset. On a fee-charging chain every transaction they sign is withdrawn from
+    // their own vault, and an empty vault aborts it — which surfaces far from here as a note
+    // that was never consumed or a GER that was never registered, not as a fee error. A no-op
+    // on a fee-free chain, so this is safe for both.
+    //
+    // The bridge is imported into all three clients but funded through one: the funding is a
+    // transaction against the bridge, and running it three times would just pay three fees.
+    bridge_admin.client.fund_and_deploy_if_needed(config.bridge_admin_id()).await?;
+    ger_manager.client.fund_and_deploy_if_needed(config.ger_manager_id()).await?;
+    bridge_admin.client.fund_and_deploy_if_needed(config.bridge_id()).await?;
+
     Ok((config.bridge_admin_id(), config.ger_manager_id(), config.bridge_id()))
 }

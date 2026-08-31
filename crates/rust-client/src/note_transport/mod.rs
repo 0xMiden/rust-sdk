@@ -479,6 +479,15 @@ where
             notes.push((note, note_info.block_hint));
         }
 
+        // The transport routes by tag alone, and an account-target tag is only the 14 most
+        // significant bits of the account id prefix, so a page can carry notes addressed to
+        // accounts this client does not track. Discard the ones no tracked account can consume.
+        // This must run here: screening needs the note metadata, which the `NoteDetails`
+        // conversion below drops.
+        let screened: Vec<Note> = notes.iter().map(|(note, _)| note.clone()).collect();
+        let consumable = self.note_screener().get_batch_consumability(&screened).await?;
+        notes.retain(|(note, _)| consumable.contains_key(&note.id()));
+
         let sync_height = self.get_sync_height().await?;
         let fallback_after_block_num =
             BlockNumber::from(sync_height.as_u32().saturating_sub(NOTE_LOOKBACK_BLOCKS));

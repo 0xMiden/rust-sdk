@@ -12,6 +12,7 @@ use miden_client::note::{
     NoteExecutionHint,
     NoteTag,
     NoteType,
+    PartialNoteMetadata,
 };
 use miden_client::note_transport::NoteTransportClient;
 use miden_client::store::NoteFilter;
@@ -148,7 +149,7 @@ async fn transport_recovers_attachments() {
         .rpc(rpc_api.clone())
         .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
-        .authenticator(Arc::new(keystore))
+        .authenticator(Arc::new(keystore.clone()))
         .note_transport(Arc::new(MockNoteTransportApi::new(mock_node.clone())))
         .tx_discard_delta(None)
         .build()
@@ -156,6 +157,9 @@ async fn transport_recovers_attachments() {
         .unwrap();
     client.ensure_genesis_in_place().await.unwrap();
     seed_mock_transaction_encryption_key(&mut client).await;
+    // The transport fetch screens what it downloads, so the client needs an account that can
+    // consume the note for it to be stored at all.
+    insert_new_wallet(&mut client, AccountType::Private, &keystore).await.unwrap();
     client.sync_state().await.unwrap();
 
     client.add_note_tag(private_note.metadata().tag()).await.unwrap();
@@ -559,13 +563,16 @@ async fn fetch_private_notes_finds_note_committed_at_sync_height() {
         .rpc(arc_rpc_api)
         .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
-        .authenticator(Arc::new(keystore))
+        .authenticator(Arc::new(keystore.clone()))
         .tx_discard_delta(None)
         .note_transport(Arc::new(transport_client));
 
     let mut client = builder.build().await.unwrap();
     client.ensure_genesis_in_place().await.unwrap();
     seed_mock_transaction_encryption_key(&mut client).await;
+    // The transport fetch screens what it downloads, so the client needs an account that can
+    // consume the note for it to be stored at all.
+    insert_new_wallet(&mut client, AccountType::Private, &keystore).await.unwrap();
 
     // 3. Register tag 0 so chain sync sees the note's block.
     client.add_note_tag(NoteTag::new(0)).await.unwrap();
@@ -667,13 +674,16 @@ async fn ntl_note_committed_within_the_sync_window_is_committed_by_that_sync() {
         .rpc(rpc_api)
         .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
-        .authenticator(Arc::new(keystore))
+        .authenticator(Arc::new(keystore.clone()))
         .tx_discard_delta(None)
         .note_transport(Arc::new(transport_client));
 
     let mut client = builder.build().await.unwrap();
     client.ensure_genesis_in_place().await.unwrap();
     seed_mock_transaction_encryption_key(&mut client).await;
+    // The transport fetch screens what it downloads, so the client needs an account that can
+    // consume the note for it to be stored at all.
+    insert_new_wallet(&mut client, AccountType::Private, &keystore).await.unwrap();
 
     client.add_note_tag(NoteTag::new(0)).await.unwrap();
 
@@ -755,13 +765,16 @@ async fn ntl_note_already_spent_below_the_checkpoint_is_not_left_committed() {
         .rpc(rpc_api)
         .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
-        .authenticator(Arc::new(keystore))
+        .authenticator(Arc::new(keystore.clone()))
         .tx_discard_delta(None)
         .note_transport(Arc::new(transport_client));
 
     let mut client = builder.build().await.unwrap();
     client.ensure_genesis_in_place().await.unwrap();
     seed_mock_transaction_encryption_key(&mut client).await;
+    // The transport fetch screens what it downloads, so the note's target account must be tracked
+    // for the delivered note to be stored at all.
+    client.add_account(&account, false).await.unwrap();
     client.add_note_tag(note.metadata().tag()).await.unwrap();
 
     client.sync_state().await.unwrap();
@@ -931,6 +944,85 @@ async fn flush_relay_outbox_retries_failed_relay_without_full_sync() {
         attempts_after_first_flush,
         "outbox should be empty after a successful flush; second flush must not re-send",
     );
+}
+
+/// A note is routed by the tag in its own metadata, not by who can consume it, and an
+/// account-target tag only covers the 14 most significant bits of the account id prefix. The
+/// transport fetch screens what a tag match delivers, so a client that is offered a note paying
+/// someone else discards it instead of storing it.
+#[tokio::test]
+async fn note_delivered_by_tag_match_is_discarded_when_no_tracked_account_can_consume_it() {
+    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
+    let (mut sender, sender_account) = create_test_user_transport(mock_node.clone()).await;
+    let (mut client_a, account_a) = create_test_user_transport(mock_node.clone()).await;
+    let (mut client_b, account_b) = create_test_user_transport(mock_node.clone()).await;
+
+    // A P2ID note only B can consume. `From<P2idNote> for Note` tags it for B, so rebuild it
+    // with A's tag, keeping the recipient so B stays the only account that can consume it.
+    let note: Note = P2idNote::builder()
+        .sender(sender_account.id())
+        .target(account_b.id())
+        .asset(dummy_asset())
+        .note_type(NoteType::Private)
+        .generate_serial_number(sender.rng())
+        .build()
+        .unwrap()
+        .into();
+
+    let (assets, _, recipient, attachments) = note.into_parts();
+    let metadata = PartialNoteMetadata::new(sender_account.id(), NoteType::Private)
+        .with_tag(NoteTag::with_account_target(account_a.id()));
+    let note = Note::with_attachments(assets, metadata, recipient, attachments);
+
+    // The address is not what routes the note: the relay keys off the tag in its header.
+    let address_a = Address::new(account_a.id())
+        .with_routing_parameters(RoutingParameters::new(AddressInterface::BasicWallet));
+    sender
+        .send_private_note_with_block_hint(note, &address_a, BlockNumber::from(0))
+        .await
+        .unwrap();
+
+    // A is offered the note because it tracks the tag, but only B can consume it.
+    client_a.sync_state().await.unwrap();
+    let notes = client_a.get_input_notes(NoteFilter::All).await.unwrap();
+    assert!(notes.is_empty(), "a note no tracked account can consume must not be stored");
+
+    client_b.sync_state().await.unwrap();
+    let notes = client_b.get_input_notes(NoteFilter::All).await.unwrap();
+    assert!(
+        notes.is_empty(),
+        "the note's target tracks a different tag, so the relay never offers it the note"
+    );
+}
+
+/// The screening filter must not discard a note the client can actually consume: same delivery
+/// path as the test above, with the note targeting the account that tracks the tag.
+#[tokio::test]
+async fn note_delivered_by_tag_match_is_kept_when_a_tracked_account_can_consume_it() {
+    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
+    let (mut sender, sender_account) = create_test_user_transport(mock_node.clone()).await;
+    let (mut client_a, account_a) = create_test_user_transport(mock_node.clone()).await;
+
+    let note: Note = P2idNote::builder()
+        .sender(sender_account.id())
+        .target(account_a.id())
+        .asset(dummy_asset())
+        .note_type(NoteType::Private)
+        .generate_serial_number(sender.rng())
+        .build()
+        .unwrap()
+        .into();
+
+    let address_a = Address::new(account_a.id())
+        .with_routing_parameters(RoutingParameters::new(AddressInterface::BasicWallet));
+    sender
+        .send_private_note_with_block_hint(note, &address_a, BlockNumber::from(0))
+        .await
+        .unwrap();
+
+    client_a.sync_state().await.unwrap();
+    let notes = client_a.get_input_notes(NoteFilter::All).await.unwrap();
+    assert_eq!(notes.len(), 1, "a note the tracked account can consume must be stored");
 }
 
 /// A relay that keeps failing must not block `sync_state`. The outbox flush
@@ -1219,13 +1311,17 @@ async fn committed_private_note_recipient(
         .rpc(arc_rpc_api)
         .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
-        .authenticator(Arc::new(keystore))
+        .authenticator(Arc::new(keystore.clone()))
         .tx_discard_delta(None)
         .note_transport(Arc::new(transport_client));
 
     let mut client = builder.build().await.unwrap();
     client.ensure_genesis_in_place().await.unwrap();
     seed_mock_transaction_encryption_key(&mut client).await;
+
+    // The transport fetch screens what it downloads, so the client needs an account that can
+    // consume the note for it to be stored at all.
+    insert_new_wallet(&mut client, AccountType::Private, &keystore).await.unwrap();
 
     // Register tag 0 so chain sync sees the note's block, then sync to the tip. The NTL is empty,
     // so no transport notes are imported yet.

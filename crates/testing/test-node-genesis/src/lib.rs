@@ -52,9 +52,9 @@ pub const GENESIS_FAUCET_FILE: &str = "tst_faucet.mac";
 
 /// Number of funder wallets a fee-charging genesis declares when no count is given.
 ///
-/// Each integration test claims one funder for itself, so this must stay at or above the number of
-/// integration tests. The surplus is headroom for tests added without regenerating this constant.
-pub const DEFAULT_NUM_FUNDER_WALLETS: u32 = 80;
+/// A wallet is claimed only for the length of one payment, so this covers the payments in flight
+/// at once, which the test runner's thread cap bounds to a handful.
+pub const DEFAULT_NUM_FUNDER_WALLETS: u32 = 16;
 
 /// Balance, in base units of the native fee asset, each funder wallet holds at genesis. Covers the
 /// funder's own fees plus a handout to every account a single test creates.

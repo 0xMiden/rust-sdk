@@ -57,9 +57,8 @@ use miden_client::transaction::{
 };
 use miden_client::{ClientError, Felt, Word};
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
+use miden_client_test_harness::ClientConfig;
 use tracing::info;
-
-use crate::tests::config::ClientConfig;
 
 pub async fn test_client_builder_initializes_client_with_endpoint(
     client_config: ClientConfig,
@@ -139,6 +138,8 @@ pub async fn test_multiple_tx_on_same_block(client_config: ClientConfig) -> Resu
     info!(from = %from_account_id, to = %to_account_id, "Submitting 2-tx P2ID batch");
 
     // Submit both requests as a single proven batch via the node's `SubmitProvenBatch` path.
+    let tx_request_1 = client.fund_request(from_account_id, tx_request_1);
+    let tx_request_2 = client.fund_request(from_account_id, tx_request_2);
     let mut batch = client.new_transaction_batch();
     batch.push(from_account_id, tx_request_1).await?;
     batch.push(from_account_id, tx_request_2).await?;
@@ -621,6 +622,9 @@ pub async fn test_sync_transactions_chunks_when_exceeding_limits(
         RPO_FALCON_SCHEME_ID,
     )
     .await?;
+
+    // A mint cannot double as the account's deploy.
+    client.deploy_account(faucet.id()).await?;
 
     let fungible_asset = FungibleAsset::new(faucet.id(), MINT_AMOUNT)?;
     let tx_request = TransactionRequestBuilder::new().build_mint_fungible_asset(
@@ -1641,8 +1645,8 @@ pub async fn test_ignore_invalid_notes(client_config: ClientConfig) -> Result<()
     execute_tx_and_sync(&mut client, account_id, tx_request).await?;
 
     let consumed_notes = client.get_input_notes(NoteFilter::Consumed).await.unwrap();
-    // Counting is no longer enough: on a fee-charging chain the account also consumed its funding
-    // note, so each note is checked by ID.
+    // Checked by ID rather than by count: on a fee-charging chain the account also consumed its
+    // funding note.
     let consumed = |id| consumed_notes.iter().any(|note| note.id() == Some(id));
     assert!(
         consumed(note_1.id()) && consumed(note_2.id()),

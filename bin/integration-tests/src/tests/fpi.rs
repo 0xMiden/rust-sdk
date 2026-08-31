@@ -30,9 +30,8 @@ use miden_client::rpc::domain::account::AccountStorageRequirements;
 use miden_client::testing::common::*;
 use miden_client::transaction::{AdviceInputs, ForeignAccount, TransactionRequestBuilder};
 use miden_client::{Felt, Word};
+use miden_client_test_harness::ClientConfig;
 use tracing::info;
-
-use crate::tests::config::ClientConfig;
 
 // FPI TESTS
 // ================================================================================================

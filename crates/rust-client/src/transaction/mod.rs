@@ -64,12 +64,13 @@
 
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use miden_protocol::account::{Account, AccountCode, AccountCodeInterface, AccountId};
 use miden_protocol::asset::{Asset, NonFungibleAsset};
-use miden_protocol::block::{BlockHeader, BlockNumber};
+use miden_protocol::block::{BlockHeader, BlockNumber, FeeParameters};
 use miden_protocol::errors::AssetError;
 use miden_protocol::note::{
     Note,
@@ -85,7 +86,7 @@ use miden_protocol::vm::MIN_STACK_DEPTH;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::auth::FeeConversionInfo;
 use miden_standards::account::faucets::FungibleFaucet;
-use miden_standards::account::interface::{AccountComponentInterfaceExt, AccountInterfaceExt};
+use miden_standards::account::interface::AccountComponentInterfaceExt;
 use miden_standards::note::TxFeeNote;
 use miden_tx::{DataStore, NoteConsumptionChecker, TransactionExecutor};
 use tracing::info;
@@ -200,7 +201,7 @@ pub use result::TransactionResult;
 /// Salt the client commits native fee conversion info under.
 ///
 /// See [`attach_native_fee_conversion_info`] for why this is a constant.
-const NATIVE_FEE_CONVERSION_SALT: Word = Word::empty();
+pub(crate) const NATIVE_FEE_CONVERSION_SALT: Word = Word::empty();
 
 /// Transaction management methods
 impl<AUTH> Client<AUTH>
@@ -670,7 +671,7 @@ where
             &mut transaction_request,
             &account_code_interface,
             &reference_header,
-        );
+        )?;
 
         let tx_args = transaction_request.into_transaction_args(tx_script);
 
@@ -1440,16 +1441,76 @@ fn attach_native_fee_conversion_info(
     transaction_request: &mut TransactionRequest,
     account_code_interface: &AccountCodeInterface,
     reference_header: &BlockHeader,
-) {
-    let fee_parameters = reference_header.fee_parameters();
-    if fee_parameters.verification_base_fee() == 0 {
-        return;
+) -> Result<(), ClientError> {
+    // An auth arg the caller set is the caller's business: it may already commit conversion info
+    // for a non-native asset, or carry something else entirely. An empty word commits nothing, so
+    // it does not count.
+    if transaction_request.has_auth_arg() {
+        return Ok(());
     }
 
-    // An auth arg the caller set is the caller's business: it may already commit conversion info
-    // for a non-native asset, or carry something else entirely.
-    if transaction_request.auth_arg().is_some() {
-        return;
+    let fee_parameters = reference_header.fee_parameters();
+    if fee_parameters.verification_base_fee() == 0 {
+        return Ok(());
+    }
+
+    match fee_auth_component(account_code_interface) {
+        Some(FeeAuth::NativeConversionInfo) => {
+            transaction_request.set_fee_conversion_info(
+                FeeConversionInfo::one_to_one(fee_parameters.fee_faucet_id()),
+                NATIVE_FEE_CONVERSION_SALT,
+            );
+            Ok(())
+        },
+        // The salt cannot be chosen here: it is the account's replay guard, and the signed summary
+        // covers it, so re-deriving it would invalidate signatures collected against the summary.
+        Some(FeeAuth::CallerChosenSalt(component)) => Err(ClientError::TransactionRequestError(
+            TransactionRequestError::FeeConversionInfoRequired(component),
+        )),
+        None => Ok(()),
+    }
+}
+
+/// How an account's auth component treats the transaction's auth argument where a fee is charged.
+enum FeeAuth {
+    /// Reads it as fee conversion info under a fixed salt, so the client can supply it.
+    NativeConversionInfo,
+    /// Reads it as conversion info too, but reuses the salt as a replay guard the caller must
+    /// choose. Carries the component's name for the error.
+    CallerChosenSalt(String),
+}
+
+/// Classifies the account's auth component, or `None` when the client cannot tell.
+///
+/// `None` covers components that ignore the auth argument and ones the client cannot recognize at
+/// all. Neither is guessed at: writing an argument an unknown component may read for its own
+/// purposes is worse than leaving it alone. `AccountInterface::new` is avoided because it panics
+/// on exactly those unrecognized components.
+fn fee_auth_component(account_code_interface: &AccountCodeInterface) -> Option<FeeAuth> {
+    let procedures: Vec<_> = account_code_interface.procedures().iter().copied().collect();
+
+    AccountComponentInterface::from_procedures(&procedures)
+        .iter()
+        .find_map(|component| match component {
+            AccountComponentInterface::AuthSingleSig => Some(FeeAuth::NativeConversionInfo),
+            AccountComponentInterface::AuthMultisig
+            | AccountComponentInterface::AuthGuardedMultisig => {
+                Some(FeeAuth::CallerChosenSalt(component.name()))
+            },
+            _ => None,
+        })
+}
+
+/// Returns the conversion info an account should commit to settle its fee in the native asset at
+/// rate 1/1, or `None` when the account pays its fee some other way.
+///
+/// Shared with note screening so the two cannot disagree about what an account needs.
+pub(crate) fn native_fee_conversion_info(
+    account_code_interface: &AccountCodeInterface,
+    fee_parameters: &FeeParameters,
+) -> Option<FeeConversionInfo> {
+    if fee_parameters.verification_base_fee() == 0 {
+        return None;
     }
 
     // `AccountInterface::new` requires exactly one recognized auth component and panics otherwise,
@@ -1460,13 +1521,10 @@ fn attach_native_fee_conversion_info(
         .iter()
         .any(|component| matches!(component, AccountComponentInterface::AuthSingleSig));
     if !takes_a_fixed_salt {
-        return;
+        return None;
     }
 
-    transaction_request.set_fee_conversion_info(
-        FeeConversionInfo::one_to_one(fee_parameters.fee_faucet_id()),
-        NATIVE_FEE_CONVERSION_SALT,
-    );
+    Some(FeeConversionInfo::one_to_one(fee_parameters.fee_faucet_id()))
 }
 
 /// Verifies that the account can consume fee conversion info passed through the auth args.
@@ -1483,17 +1541,43 @@ fn validate_fee_conversion_info_support(
         return Ok(());
     }
 
-    let interface = AccountInterface::from_account(account);
-    let auth_component = interface.auth_component();
-    if matches!(
-        auth_component,
-        AccountComponentInterface::AuthSingleSig | AccountComponentInterface::AuthMultisig
-    ) {
+    // Inspected through the component list because `AccountInterface::from_account` panics on the
+    // user-defined components this has to reject.
+    let procedures: Vec<_> =
+        account.code().interface(account.id()).procedures().iter().copied().collect();
+    let components = AccountComponentInterface::from_procedures(&procedures);
+
+    // `AuthMultisigSmart` is absent deliberately: it reads the auth argument as a summary salt and
+    // nothing else, so conversion info committed there is never read.
+    let reads_conversion_info = components.iter().any(|component| {
+        matches!(
+            component,
+            AccountComponentInterface::AuthSingleSig
+                | AccountComponentInterface::AuthMultisig
+                | AccountComponentInterface::AuthGuardedMultisig
+        )
+    });
+    if reads_conversion_info {
         return Ok(());
     }
 
+    let auth_component = components
+        .iter()
+        .find(|component| {
+            matches!(
+                component,
+                AccountComponentInterface::AuthSingleSig
+                    | AccountComponentInterface::AuthMultisig
+                    | AccountComponentInterface::AuthMultisigSmart
+                    | AccountComponentInterface::AuthGuardedMultisig
+                    | AccountComponentInterface::AuthNoAuth
+                    | AccountComponentInterface::AuthNetworkAccount
+            )
+        })
+        .map_or_else(|| "unrecognized".into(), AccountComponentInterface::name);
+
     Err(ClientError::TransactionRequestError(
-        TransactionRequestError::FeeConversionInfoUnsupported(auth_component.name()),
+        TransactionRequestError::FeeConversionInfoUnsupported(auth_component),
     ))
 }
 
@@ -1888,7 +1972,7 @@ mod tests {
         account: &Account,
         verification_base_fee: u32,
     ) -> Option<Word> {
-        attach_native_fee_conversion_info(
+        let _ = attach_native_fee_conversion_info(
             &mut request,
             &account.code_interface(),
             &header_with_base_fee(verification_base_fee),

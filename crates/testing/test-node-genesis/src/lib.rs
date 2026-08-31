@@ -4,7 +4,6 @@
 
 pub mod agglayer;
 
-use std::fmt::Write as _;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -43,6 +42,7 @@ use miden_standards::account::wallets::{BasicWallet, create_basic_wallet};
 use miden_standards::note::{BurnNote, MintNote};
 use rand_chacha::ChaCha20Rng;
 use rand_chacha::rand_core::SeedableRng;
+use serde::Serialize;
 
 // GENESIS CONFIG GENERATION
 // ================================================================================================
@@ -52,15 +52,16 @@ pub const GENESIS_FAUCET_FILE: &str = "tst_faucet.mac";
 
 /// Number of funder wallets a fee-charging genesis declares when no count is given.
 ///
-/// Each integration test claims one funder for itself, so this must stay at or above the number of
-/// integration tests. The surplus is headroom for tests added without regenerating this constant.
-pub const DEFAULT_NUM_FUNDER_WALLETS: u32 = 80;
+/// A wallet is claimed only for the length of one payment, so this covers the payments in flight
+/// at once, which the test runner's thread cap bounds to a handful.
+pub const DEFAULT_NUM_FUNDER_WALLETS: u32 = 16;
 
 /// Balance, in base units of the native fee asset, each funder wallet holds at genesis. Covers the
 /// funder's own fees plus a handout to every account a single test creates.
 const FUNDER_WALLET_BALANCE: u64 = 1_000_000_000;
 
-/// Native fee faucet file name. Carries the secret key, matching the other generated faucets.
+/// Native fee faucet file name. Carries no secret key: the faucet is signed for by its operator,
+/// whose key is in [`FAUCET_OPERATOR_FILE`].
 pub const NATIVE_FAUCET_FILE: &str = "native_faucet.mac";
 
 /// File name of the wallet owning the native fee faucet, written with its secret key. It is the
@@ -169,28 +170,73 @@ pub fn write_genesis_config(
     // The validator set is not part of this config: `miden-validator genesis` takes the set's
     // public keys on the command line, and `start-test-node.sh` generates the key-pair it passes
     // there alongside the matching signing key.
-    let mut toml = format!(
-        "version = 1\ntimestamp = {timestamp}\n\
-         native_faucet = \"{NATIVE_FAUCET_FILE}\"\n\n\
-         [fee_parameters]\nverification_base_fee = {verification_base_fee}\n"
-    );
-    for file_name in &account_files {
-        write!(toml, "\n[[account]]\npath = \"{file_name}\"\n")
-            .expect("writing to a String cannot fail");
-    }
-    for _ in 0..num_funder_wallets {
-        write!(
-            toml,
-            "\n[[wallet]]\naccount_type = \"public\"\n\
-             assets = [{{ amount = {FUNDER_WALLET_BALANCE}, symbol = \"{NATIVE_FAUCET_SYMBOL}\" }}]\n"
-        )
-        .expect("writing to a String cannot fail");
-    }
+    let config = GenesisConfig {
+        version: 1,
+        timestamp,
+        native_faucet: NATIVE_FAUCET_FILE.to_string(),
+        fee_parameters: FeeParametersEntry { verification_base_fee },
+        accounts: account_files.into_iter().map(|path| AccountEntry { path }).collect(),
+        wallets: (0..num_funder_wallets)
+            .map(|_| WalletEntry {
+                account_type: "public".to_string(),
+                assets: vec![AssetEntry {
+                    amount: FUNDER_WALLET_BALANCE,
+                    symbol: NATIVE_FAUCET_SYMBOL.to_string(),
+                }],
+            })
+            .collect(),
+    };
 
+    let toml = toml::to_string(&config).context("failed to serialize genesis.toml")?;
     std::fs::write(output_dir.join("genesis.toml"), toml)
         .with_context(|| "failed to write genesis.toml")?;
 
     Ok(())
+}
+
+// GENESIS CONFIG
+// ================================================================================================
+
+/// The `genesis.toml` the node bootstraps from.
+///
+/// Field order is the serialized order, and TOML requires a table's own values before any nested
+/// table, so the scalars have to stay above `fee_parameters` and the two arrays of tables.
+#[derive(Serialize)]
+struct GenesisConfig {
+    version: u32,
+    timestamp: u32,
+    /// File name of the faucet whose asset the chain charges fees in.
+    native_faucet: String,
+    fee_parameters: FeeParametersEntry,
+    /// Rendered as `[[account]]` entries, each naming a `.mac` file the node loads verbatim.
+    #[serde(rename = "account")]
+    accounts: Vec<AccountEntry>,
+    /// Rendered as `[[wallet]]` entries the node creates and writes out as `wallet_<index>.mac`.
+    #[serde(rename = "wallet")]
+    wallets: Vec<WalletEntry>,
+}
+
+#[derive(Serialize)]
+struct FeeParametersEntry {
+    verification_base_fee: u32,
+}
+
+#[derive(Serialize)]
+struct AccountEntry {
+    path: String,
+}
+
+#[derive(Serialize)]
+struct WalletEntry {
+    account_type: String,
+    assets: Vec<AssetEntry>,
+}
+
+/// A balance the node gives a generated wallet, naming the faucet by token symbol.
+#[derive(Serialize)]
+struct AssetEntry {
+    amount: u64,
+    symbol: String,
 }
 
 // GENESIS ACCOUNTS

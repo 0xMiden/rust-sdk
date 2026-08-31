@@ -16,16 +16,16 @@ use miden_client::account::{AccountFile, AccountId};
 use miden_client::asset::FungibleAsset;
 use miden_client::block::BlockNumber;
 use miden_client::keystore::Keystore;
-use miden_client::note::{Note, NoteType};
-use miden_client::testing::common::{TestClient, wait_for_node};
+use miden_client::note::{Note, NoteType, P2idNote};
+use miden_client::testing::common::{TestClient, wait_for_node, wait_for_tx};
 use miden_client::testing::fee::FeeFunder;
-use miden_client::transaction::{PaymentNoteDescription, TransactionRequestBuilder};
+use miden_client::transaction::TransactionRequestBuilder;
 use rand::RngExt;
 use rustix::fs::{FlockOperation, flock};
 use rustix::io::Errno;
 use tokio::sync::Mutex;
 
-use super::config::ClientConfig;
+use crate::config::ClientConfig;
 
 // CONSTANTS
 // ================================================================================================
@@ -176,17 +176,24 @@ impl Funder {
         Ok(client)
     }
 
-    /// Pays `target` from `wallet_id` and returns the note carrying the funds.
+    /// Pays every account in `targets` from `wallet_id` in a single transaction, returning each
+    /// target paired with the note carrying its funds.
+    ///
+    /// One transaction rather than one per target: each costs a fee and a proof.
     async fn pay(
         &self,
         client: &mut TestClient,
         wallet_id: AccountId,
-        target: AccountId,
-    ) -> Result<Note> {
-        client
-            .import_account_by_id(wallet_id)
-            .await
-            .with_context(|| format!("failed to import funder {wallet_id}"))?;
+        targets: &[AccountId],
+    ) -> Result<Vec<(AccountId, Note)>> {
+        // Imported once per client. A re-import of a wallet this client has already paid from
+        // fails, because its local nonce is ahead of the chain's until that payment commits.
+        if client.try_get_account(wallet_id).await.is_err() {
+            client
+                .import_account_by_id(wallet_id)
+                .await
+                .with_context(|| format!("failed to import funder {wallet_id}"))?;
+        }
 
         let (genesis, _) = client
             .get_block_header_by_num(BlockNumber::GENESIS)
@@ -199,49 +206,63 @@ impl Funder {
         let asset = FungibleAsset::new(fee_faucet_id, FUNDING_AMOUNT)
             .context("failed to build the native fee asset")?;
 
+        // Built here rather than through `build_pay_to_id`, which describes a single payment.
+        // Notes stay paired with their target, so nothing matches them back by position.
+        let funded = targets
+            .iter()
+            .map(|target| {
+                let note: Note = P2idNote::builder()
+                    .sender(wallet_id)
+                    .target(*target)
+                    .asset(asset)
+                    .note_type(NoteType::Private)
+                    .generate_serial_number(client.rng())
+                    .build()
+                    .context("failed to build a funding note")?
+                    .into();
+
+                Ok((*target, note))
+            })
+            .collect::<Result<Vec<(AccountId, Note)>>>()?;
+
         let request = TransactionRequestBuilder::new()
-            .build_pay_to_id(
-                PaymentNoteDescription::new(vec![asset.into()], wallet_id, target),
-                NoteType::Private,
-                client.rng(),
-            )
+            .own_output_notes(funded.iter().map(|(_, note)| note.clone()))
+            .build()
             .context("failed to build the funding transaction request")?;
-        let note = request
-            .expected_output_own_notes()
-            .pop()
-            .expect("a pay-to-id request creates exactly one output note");
 
-        Box::pin(client.submit_new_transaction(wallet_id, request))
+        let tx_id =
+            Box::pin(client.submit_new_transaction(wallet_id, request)).await.with_context(
+                || format!("funder {wallet_id} failed to pay {} accounts", targets.len()),
+            )?;
+
+        // Waited on before the wallet is released: another process claiming it reads its state
+        // from the chain, which does not carry this payment until it commits.
+        wait_for_tx(client, tx_id)
             .await
-            .with_context(|| format!("funder {wallet_id} failed to pay account {target}"))?;
+            .with_context(|| format!("the payment from funder {wallet_id} never committed"))?;
 
-        Ok(note)
+        Ok(funded)
     }
 }
 
 #[async_trait::async_trait(?Send)]
 impl FeeFunder for Funder {
-    async fn fund_and_deploy(&self, client: &mut TestClient, account_id: AccountId) -> Result<()> {
-        let lock = self.claim()?;
+    async fn fund(&self, account_ids: &[AccountId]) -> Result<Vec<(AccountId, Note)>> {
+        if account_ids.is_empty() {
+            return Ok(Vec::new());
+        }
 
-        let note = {
-            let mut guard = self.client.lock().await;
-            if guard.is_none() {
-                *guard = Some(self.build_client().await?);
-            }
-            let funder_client = guard.as_mut().expect("the funder client was just built");
+        // Held across the payment only. The notes are spent later, by the funded accounts
+        // themselves on their own client, which never touches this wallet.
+        let _lock = self.claim()?;
 
-            // Released before the deploy, which runs on the account's own client, the only one
-            // holding its key.
-            self.pay(funder_client, lock.account_id(), account_id).await?
-        };
+        let mut guard = self.client.lock().await;
+        if guard.is_none() {
+            *guard = Some(self.build_client().await?);
+        }
+        let funder_client = guard.as_mut().expect("the funder client was just built");
 
-        let deployed = client.deploy_by_consuming(account_id, note).await;
-
-        // The payment has landed, so another process may now read this wallet's nonce.
-        drop(lock);
-
-        deployed
+        self.pay(funder_client, _lock.account_id(), account_ids).await
     }
 }
 

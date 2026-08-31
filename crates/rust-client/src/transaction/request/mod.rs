@@ -243,6 +243,29 @@ impl TransactionRequest {
         self.declares_fee_conversion_info
     }
 
+    /// Returns whether the request carries an auth arg that commits anything.
+    ///
+    /// An empty word counts as no arg: otherwise it would suppress the conversion info the client
+    /// attaches, leaving `fee::pay_fee` nothing to read.
+    pub fn has_auth_arg(&self) -> bool {
+        self.auth_arg.is_some_and(|auth_arg| auth_arg != Word::empty())
+    }
+
+    /// Returns this request carrying `auth_arg` as an opaque auth argument.
+    ///
+    /// Unlike [`TransactionRequestBuilder::fee_conversion_info`] it does not mark the request as
+    /// declaring conversion info, so the account's auth component is not classified — which is how
+    /// a caller attaches its own commitment against a component assembled outside
+    /// `miden_standards`.
+    ///
+    /// Overwrites any existing auth arg. Pair it with [`Self::advice_map_mut`] for the preimage.
+    #[must_use]
+    pub fn with_auth_arg(mut self, auth_arg: Word) -> Self {
+        self.auth_arg = Some(auth_arg);
+        self.declares_fee_conversion_info = false;
+        self
+    }
+
     /// Returns the expected NTX scripts that the node's NTX builder will need in its registry.
     pub fn expected_ntx_scripts(&self) -> &[NoteScript] {
         &self.expected_ntx_scripts
@@ -256,6 +279,16 @@ impl TransactionRequest {
     ///
     /// This overwrites any auth arg the request already carries, so callers must only reach for it
     /// when the request declares none.
+    /// Adds `note` to the notes this request consumes, as an unauthenticated input.
+    ///
+    /// Building a request that consumes the note is the public way to do this; the harness needs
+    /// it on a request a test already built.
+    #[cfg(feature = "testing")]
+    pub(crate) fn add_unauthenticated_input_note(&mut self, note: Note) {
+        self.input_notes_args.push((note.id(), None));
+        self.input_notes.push(note);
+    }
+
     pub(crate) fn set_fee_conversion_info(
         &mut self,
         conversion_info: FeeConversionInfo,
@@ -560,6 +593,12 @@ pub enum TransactionRequestError {
         "the request declares fee conversion info but the account's auth component {0} does not read it"
     )]
     FeeConversionInfoUnsupported(String),
+    #[error(
+        "account's `{0}` component reads the auth argument as a transaction summary salt, so the \
+         fee conversion info and its salt must be declared with \
+         `TransactionRequestBuilder::fee_conversion_info`"
+    )]
+    FeeConversionInfoRequired(String),
     #[error("invalid transaction script")]
     InvalidTransactionScript(#[from] TransactionScriptError),
     #[error("merkle proof error")]

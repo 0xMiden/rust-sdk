@@ -18,11 +18,9 @@ WARNINGS=RUSTDOCFLAGS="-D warnings"
 
 TEST_MIDEN_NOTE_TRANSPORT_URL?=http://127.0.0.1:57292
 
-# Genesis `verification_base_fee` for the testing node. 0 runs it fee-free.
-MIDEN_VERIFICATION_BASE_FEE?=500
-
-# Pre-funded wallets the integration tests draw transaction fees from, written here by
-# `start-test-node.sh`. Against a deployed network, point this at wallets funded out of band.
+# Pre-funded wallets the integration tests draw transaction fees from, either one `.mac` file or a
+# directory of them, written here by `start-test-node.sh`. Against a deployed network, point this at
+# wallets funded out of band. Unused on a fee-free chain, where no account needs funding.
 MIDEN_FUNDER_ACCOUNTS?=$(CURDIR)/data/funders
 
 # Pre-deployed agglayer accounts the agglayer tests transact with, written here by
@@ -99,11 +97,11 @@ test-docs: ## Run documentation tests
 
 .PHONY: start-node
 start-node: ## Start the testing node in the foreground, streaming logs (Ctrl+C stops it)
-	MIDEN_VERIFICATION_BASE_FEE=$(MIDEN_VERIFICATION_BASE_FEE) ./scripts/start-test-node.sh
+	./scripts/start-test-node.sh
 
 .PHONY: start-node-background
 start-node-background: ## Start the testing node in the background
-	MIDEN_VERIFICATION_BASE_FEE=$(MIDEN_VERIFICATION_BASE_FEE) ./scripts/start-test-node.sh --background
+	./scripts/start-test-node.sh --background
 
 .PHONY: stop-node
 stop-node: ## Stop the testing node
@@ -125,10 +123,16 @@ start-note-transport:
 integration-test: ## Run integration tests
 	MIDEN_FUNDER_ACCOUNTS=$(MIDEN_FUNDER_ACCOUNTS) AGGLAYER_ACCOUNTS_DIR=$(AGGLAYER_ACCOUNTS_DIR) cargo nextest run --workspace --release --test=integration
 
+# The agglayer tests run in their own job against their own node: they spend most of their time
+# waiting on network transactions, so sharing a node with the rest only stretches everyone out.
 .PHONY: integration-test-full
 integration-test-full: ## Run the integration test binary with ignored tests included (requires note transport service)
-	TEST_MIDEN_NOTE_TRANSPORT_URL=$(TEST_MIDEN_NOTE_TRANSPORT_URL) MIDEN_FUNDER_ACCOUNTS=$(MIDEN_FUNDER_ACCOUNTS) AGGLAYER_ACCOUNTS_DIR=$(AGGLAYER_ACCOUNTS_DIR) cargo nextest run --workspace --release --test=integration
+	TEST_MIDEN_NOTE_TRANSPORT_URL=$(TEST_MIDEN_NOTE_TRANSPORT_URL) MIDEN_FUNDER_ACCOUNTS=$(MIDEN_FUNDER_ACCOUNTS) AGGLAYER_ACCOUNTS_DIR=$(AGGLAYER_ACCOUNTS_DIR) cargo nextest run --workspace --release --test=integration -E 'not test(/agglayer/)'
 	MIDEN_FUNDER_ACCOUNTS=$(MIDEN_FUNDER_ACCOUNTS) AGGLAYER_ACCOUNTS_DIR=$(AGGLAYER_ACCOUNTS_DIR) cargo nextest run --workspace --release --test=integration --run-ignored ignored-only -- import_genesis_accounts_can_be_used_for_transactions
+
+.PHONY: integration-test-agglayer
+integration-test-agglayer: ## Run only the agglayer integration tests
+	MIDEN_FUNDER_ACCOUNTS=$(MIDEN_FUNDER_ACCOUNTS) AGGLAYER_ACCOUNTS_DIR=$(AGGLAYER_ACCOUNTS_DIR) cargo nextest run --workspace --release --test=integration -E 'test(/agglayer/)'
 
 .PHONY: integration-test-miden-bench
 integration-test-miden-bench: install-bench ## Run miden-bench smoke tests

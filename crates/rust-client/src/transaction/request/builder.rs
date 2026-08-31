@@ -272,6 +272,7 @@ impl TransactionRequestBuilder {
     #[must_use]
     pub fn auth_arg(mut self, auth_arg: Word) -> Self {
         self.auth_arg = Some(auth_arg);
+        self.declares_fee_conversion_info = false;
         self
     }
 
@@ -287,7 +288,9 @@ impl TransactionRequestBuilder {
     pub fn fee_conversion_info(mut self, conversion_info: FeeConversionInfo, salt: Word) -> Self {
         let (auth_arg, preimage) = commit_fee_conversion_info(conversion_info, salt);
         self.declares_fee_conversion_info = true;
-        self.auth_arg(auth_arg).extend_advice_map([(auth_arg, preimage)])
+        let mut builder = self.auth_arg(auth_arg).extend_advice_map([(auth_arg, preimage)]);
+        builder.declares_fee_conversion_info = true;
+        builder
     }
 
     /// Specifies note scripts that the node's network transaction (NTX) builder will need in

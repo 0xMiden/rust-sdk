@@ -43,10 +43,10 @@ use miden_client::testing::common::{
     wait_for_tx,
 };
 use miden_client::transaction::TransactionRequestBuilder;
+use miden_client_test_harness::ClientConfig;
 
 use super::agglayer_test_utils::generate_claim_data_for_account;
 use super::{AgglayerConfig, create_agglayer_clients, setup_core_accounts};
-use crate::tests::config::ClientConfig;
 
 /// Amount of tokens to bridge out in the bridge-out phase of the test.
 const BRIDGE_OUT_AMOUNT: u64 = 1000;
@@ -202,7 +202,7 @@ pub async fn test_agglayer_bridge_in_out(client_config: ClientConfig) -> Result<
         // which is far more load-sensitive than a directly submitted transaction, so it is set
         // well above the ~5 blocks that round trip normally takes.
         let consumable_notes =
-            wait_for_consumable_notes(&mut user.client, destination_account.id(), 60).await;
+            wait_for_consumable_notes(&mut user.client, destination_account.id(), 120).await;
         println!(
             "[bridge_in_out] Round {round}: found {} consumable notes for destination",
             consumable_notes.len()

@@ -70,9 +70,8 @@ use miden_client::testing::common::{
 };
 use miden_client::transaction::TransactionRequestBuilder;
 use miden_client::{Felt, Word, ZERO};
+use miden_client_test_harness::ClientConfig;
 use rand::{Rng, RngExt};
-
-use crate::tests::config::ClientConfig;
 
 // HELPERS
 // ================================================================================================
@@ -823,6 +822,9 @@ pub async fn test_ntx_mint_produces_public_note_with_non_standard_script(
             .await?;
 
     let faucet = deploy_network_fungible_faucet(&mut client, alice.id()).await?;
+
+    // A mint cannot double as the account's deploy.
+    client.deploy_account(alice.id()).await?;
     let amount = Felt::new_unchecked(100);
 
     // Registered case: pre-register a non-standard output script via `expected_ntx_scripts` on a

@@ -4,6 +4,7 @@ use miden_client::auth::RPO_FALCON_SCHEME_ID;
 use miden_client::testing::common::{execute_tx_and_sync, insert_new_wallet, wait_for_blocks};
 use miden_client::transaction::TransactionRequestBuilder;
 use miden_client::{Felt, Word, ZERO};
+use miden_client_test_harness::ClientConfig;
 
 use super::fpi::{FPI_STORAGE_VALUE, MAP_KEY, MAP_SLOT_NAME, deploy_foreign_account};
 use super::network_transaction::{
@@ -12,7 +13,6 @@ use super::network_transaction::{
     get_network_note_with_script,
     note_script_root,
 };
-use crate::tests::config::ClientConfig;
 
 // TESTS
 // ================================================================================================

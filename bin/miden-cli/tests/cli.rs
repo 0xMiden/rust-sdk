@@ -46,9 +46,8 @@ use miden_client::vm::{
 use miden_client::{self, Deserializable, Felt};
 use miden_client_cli::MIDEN_DIR;
 use miden_client_cli::config::{KEYSTORE_DIRECTORY, Network};
-use miden_client_integration_tests::tests::config::ClientConfig;
-use miden_client_integration_tests::tests::fee_funding;
 use miden_client_sqlite_store::SqliteStore;
+use miden_client_test_harness::{ClientConfig, fee_funding};
 use midenc_hir_type::{CallConv, FunctionType, Type};
 use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
@@ -1697,6 +1696,9 @@ fn block_on<F: std::future::Future>(future: F) -> F::Output {
 
 /// Gives an account the CLI just created enough of the native fee asset to pay for its own
 /// transactions, and deploys it.
+///
+/// Deploys rather than holding the funding note: the CLI runs in its own process, so the funds
+/// have to be in the vault before it transacts.
 async fn fund_cli_account(
     cli_path: &Path,
     store_path: &Path,
@@ -1705,7 +1707,7 @@ async fn fund_cli_account(
 ) -> Result<()> {
     let mut client = cli_funding_client(cli_path, store_path, endpoint).await?;
 
-    client.fund_and_deploy_if_needed(AccountId::from_hex(account_id)?).await
+    client.deploy_account(AccountId::from_hex(account_id)?).await
 }
 
 /// Builds a client over the CLI's own store and keystore, with a fee funder attached so it can pay

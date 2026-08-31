@@ -215,7 +215,10 @@ start sequencer   "$BIN/miden-node" sequencer --rpc.listen "$RPC" --data-directo
     --validator.url "http://$VALIDATOR" --ntx-builder.url "http://$NTX" \
     --rpc.network-tx-auth-header-value "$NETWORK_TX_AUTH" \
     --block.interval 3s --batch.interval 1s
-start prover      "$BIN/miden-remote-prover" --kind=transaction --port="$PROVER_PORT"
+# A network transaction's proof runs well past the 60s default on a shared CI runner, and the
+# default capacity of 1 rejects the ntx-builder's retry outright, so it never converges.
+start prover      "$BIN/miden-remote-prover" --kind=transaction --port="$PROVER_PORT" \
+    --timeout 300s --capacity 8
 # Let the sequencer bind its RPC before the ntx-builder dials it.
 sleep 2
 start ntx-builder "$BIN/miden-ntx-builder" start --listen "$NTX" --rpc.url "http://$RPC" \

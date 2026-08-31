@@ -22,8 +22,7 @@ use miden_client::transaction::{
 };
 use miden_client::utils::{Deserializable, Serializable};
 use miden_client::{Felt, Word, ZERO};
-
-use crate::tests::config::ClientConfig;
+use miden_client_test_harness::ClientConfig;
 
 // CUSTOM TRANSACTION REQUEST
 // ================================================================================================
@@ -69,6 +68,9 @@ pub async fn test_transaction_request(client_config: ClientConfig) -> Result<()>
         RPO_FALCON_SCHEME_ID,
     )
     .await?;
+
+    // The transaction below cannot double as the account's deploy.
+    client.deploy_account(regular_account.id()).await?;
 
     // Execute mint transaction in order to create custom note
     let note = mint_custom_note(&mut client, fungible_faucet.id(), regular_account.id()).await?;

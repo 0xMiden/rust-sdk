@@ -27,10 +27,9 @@ use miden_client::transaction::{
     TransactionStatus,
 };
 use miden_client::{ClientError, EMPTY_WORD, Word};
+use miden_client_test_harness::ClientConfig;
 use rand::Rng;
 use tracing::info;
-
-use crate::tests::config::ClientConfig;
 
 // TESTS
 // ================================================================================================
@@ -598,13 +597,21 @@ pub async fn test_consumed_note_ordering(client_config: ClientConfig) -> Result<
     }
     client.sync_state().await?;
 
-    // Build a consume request per minted note and submit them as a single proven batch.
+    // Requests are built before the batch borrows the client, so a funding note can still be
+    // folded in.
+    let requests: Vec<_> = minted_notes
+        .iter()
+        .map(|note| {
+            let tx_request = TransactionRequestBuilder::new()
+                .build_consume_notes(vec![note.clone()])
+                .unwrap();
+            client.fund_request(wallet_account.id(), tx_request)
+        })
+        .collect();
+
     let mut batch = client.new_transaction_batch();
-    for (i, note) in minted_notes.iter().enumerate() {
-        let tx_request = TransactionRequestBuilder::new()
-            .build_consume_notes(vec![note.clone()])
-            .unwrap();
-        info!(note_id = %note.id(), index = i, "Pushing consume tx into batch");
+    for (i, tx_request) in requests.into_iter().enumerate() {
+        info!(index = i, "Pushing consume tx into batch");
         batch.push(wallet_account.id(), tx_request).await?;
     }
     let submission_tip = batch.submit().await?;

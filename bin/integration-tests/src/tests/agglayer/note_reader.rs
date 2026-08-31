@@ -2,9 +2,9 @@ use anyhow::Result;
 use miden_agglayer::{ExitRoot, UpdateGerNote};
 use miden_client::testing::common::{wait_for_blocks, wait_for_tx};
 use miden_client::transaction::TransactionRequestBuilder;
+use miden_client_test_harness::ClientConfig;
 
 use super::{AgglayerConfig, create_agglayer_clients, setup_core_accounts};
-use crate::tests::config::ClientConfig;
 
 // TESTS
 // ================================================================================================
@@ -30,7 +30,8 @@ pub async fn test_agglayer_note_reader_reads_consumed_notes(
             .await?;
 
     const NOTE_COUNT: usize = 3;
-    const MAX_POLL_BLOCKS: usize = 30;
+    // The node builds each network transaction on its own schedule, which stretches with load.
+    const MAX_POLL_BLOCKS: usize = 60;
 
     // Submit one UPDATE_GER note at a time. After each, wait until the reader returns exactly the
     // notes submitted so far, in order, before submitting the next, so they are consumed in

@@ -218,6 +218,52 @@ jobs:
         if: always()
         run: make stop-node
 
+  agglayer-tests:
+    name: AggLayer tests
+    runs-on: warp-ubuntu-latest-x64-8x
+    needs: [build-test-node]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Cleanup large tools for build space
+        uses: ./.github/actions/cleanup-runner
+      - name: Install Rust
+        run: rustup update --no-self-update
+      - uses: taiki-e/install-action@055f5df8c3f65ea01cd41e9dc855becd88953486 # v2.75.18
+        with:
+          tool: nextest@0.9.122
+      - name: Add Rust Cache
+        uses: WarpBuilds/rust-cache@9d0cc3090d9c87de74ea67617b246e978735b1a1 # v2.9.1
+        with:
+          shared-key: rust-release
+          prefix-key: ${{ env.RUST_CACHE_KEY }}
+          save-if: false
+      - name: Fetch test node binaries
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: test-node-artifact
+          path: target/test-node/install
+      - name: Restore test node permissions
+        run: chmod +x target/test-node/install/bin/*
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
+      - name: Start test node
+        run: make start-node-background
+      - name: Run agglayer tests
+        run: make integration-test-agglayer
+      - name: Stop test node
+        if: always()
+        run: make stop-node
+      - name: Upload node logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: agglayer-node-logs
+          path: target/test-node/data/logs
+          if-no-files-found: warn
+          retention-days: 7
+
   integration-tests:
     name: Integration tests
     runs-on: warp-ubuntu-latest-x64-8x
@@ -268,6 +314,16 @@ jobs:
       - name: Stop test node
         if: always()
         run: make stop-node
+      # A failing test reports only what the client saw; the node's own logs are what say why it
+      # refused a transaction or never built one.
+      - name: Upload node logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: node-logs
+          path: target/test-node/data/logs
+          if-no-files-found: warn
+          retention-days: 7
       - name: Stop note transport
         if: always()
         run: make stop-note-transport

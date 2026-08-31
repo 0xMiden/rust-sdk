@@ -18,8 +18,7 @@ mod metrics;
 mod report;
 
 use config::{BenchConfig, DEFAULT_STORE_DIR, RPC_TIMEOUT_MS};
-use miden_client_integration_tests::tests::config::ClientConfig;
-use miden_client_integration_tests::tests::fee_funding;
+use miden_client_test_harness::{ClientConfig, fee_funding};
 
 const DEFAULT_ITERATION_COUNT: usize = 5;
 

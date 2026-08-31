@@ -5,7 +5,6 @@ use std::collections::BTreeSet;
 
 use ::rand::{RngExt, random};
 use anyhow::{Context, Result};
-use miden_agglayer::testing::zero_fee_policy_manager;
 use miden_agglayer::{AggLayerBridge, AggLayerFaucet, BridgeRoles};
 use miden_protocol::account::auth::{AuthScheme, AuthSecretKey};
 use miden_protocol::account::{
@@ -14,11 +13,14 @@ use miden_protocol::account::{
     AccountComponent,
     AccountComponentMetadata,
     AccountFile,
+    AccountId,
     AccountType,
 };
-use miden_protocol::asset::Asset;
+use miden_protocol::asset::{Asset, AssetAmount};
+use miden_protocol::note::NoteScriptRoot;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::auth::{Approver, AuthSingleSig};
+use miden_standards::account::fees::{BasicConstantFeePolicy, FeePolicy, FeePolicyManager};
 use miden_standards::account::wallets::BasicWallet;
 use rand_chacha::ChaCha20Rng;
 use rand_chacha::rand_core::SeedableRng;
@@ -86,7 +88,7 @@ pub fn create_agglayer_genesis_accounts(fee_balance: Asset) -> Result<AgglayerGe
         admin_account.id(),
         roles,
         MIDEN_NETWORK_ID,
-        zero_fee_policy_manager(AggLayerBridge::allowed_notes()),
+        zero_fee_policy_manager(fee_balance.faucet_id(), AggLayerBridge::allowed_notes()),
     )
     .build()
     .context("failed to build bridge account")?;
@@ -104,7 +106,7 @@ pub fn create_agglayer_genesis_accounts(fee_balance: Asset) -> Result<AgglayerGe
         Felt::ZERO,
         admin_account.id(),
         bridge.id(),
-        zero_fee_policy_manager(AggLayerFaucet::allowed_notes()),
+        zero_fee_policy_manager(fee_balance.faucet_id(), AggLayerFaucet::allowed_notes()),
     )
     .build()
     .context("failed to build agglayer faucet account")?;
@@ -121,6 +123,30 @@ pub fn create_agglayer_genesis_accounts(fee_balance: Asset) -> Result<AgglayerGe
         (BRIDGE_ACCOUNT_FILE, bridge_file),
         (AGGLAYER_FAUCET_ACCOUNT_FILE, faucet_file),
     ])
+}
+
+/// Builds a fee policy charging nothing for every note the account accepts, denominated in
+/// `fee_faucet_id`.
+///
+/// `fee_faucet_id` must be the faucet the chain charges fees in, as named by the genesis header's
+/// fee parameters. A network account settles its fee against the faucet its own policy names, so a
+/// policy pointing anywhere else leaves the ntx-builder unable to execute the account's
+/// transactions at all, and its notes sit unconsumed.
+///
+/// Every allowlisted script needs an entry, including a zero one: a script root missing from the
+/// schedule aborts fee estimation rather than defaulting to free.
+fn zero_fee_policy_manager(
+    fee_faucet_id: AccountId,
+    allowed_notes: BTreeSet<NoteScriptRoot>,
+) -> FeePolicyManager {
+    let fee_policy: FeePolicy = BasicConstantFeePolicy::new()
+        .with_fees(allowed_notes.into_iter().map(|root| (root, AssetAmount::ZERO)))
+        .into();
+
+    FeePolicyManager::builder()
+        .fee_faucet_id(fee_faucet_id)
+        .active_fee_policy(fee_policy)
+        .build()
 }
 
 fn build_wallet_account(rng: &mut ChaCha20Rng, secret: &AuthSecretKey) -> Result<Account> {

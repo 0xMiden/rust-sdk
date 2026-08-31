@@ -867,8 +867,8 @@ pub async fn test_sync_note_with_attachment(client_config: ClientConfig) -> Resu
         }])
         .await?;
 
-    // Client 2 syncs and should discover both notes. sync_notes carries full metadata for both;
-    // get_notes_by_id then resolves the public note body and the private note's attachment content.
+    // Client 2 syncs and should discover both notes. Both attachments are single words, so the
+    // sync response carries them and only the public note's body needs `get_notes_by_id`.
     info!("Syncing client 2 to discover notes with attachments");
     client_2.sync_state().await?;
 

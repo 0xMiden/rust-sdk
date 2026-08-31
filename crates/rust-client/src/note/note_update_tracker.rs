@@ -412,11 +412,12 @@ impl NoteUpdateTracker {
         &mut self,
         committed_note: &CommittedNote,
         block_header: &BlockHeader,
-        attachments: Option<&NoteAttachments>,
+        attachments: &NoteAttachments,
     ) -> Result<bool, ClientError> {
         let inclusion_proof = committed_note.inclusion_proof().clone();
         let metadata = *committed_note.metadata();
         let note_id = *committed_note.note_id();
+        let attachments = (!attachments.is_empty()).then_some(attachments);
 
         let is_tracked_as_input_note = if let Some(input_note_record) =
             self.get_input_note_by_id(note_id)

@@ -5,11 +5,16 @@ use std::rc::Rc;
 
 use miden_client::account::AccountId;
 use miden_client::note::BlockNumber;
-use miden_client::store::{InputNoteState, NoteFilter, OutputNoteState};
+use miden_client::store::{InputNoteCursor, InputNoteState, NoteFilter, OutputNoteState};
 use miden_client::utils::Serializable;
-use rusqlite::types::Value;
+use rusqlite::types::{ToSqlOutput, Value};
 
-type NoteQueryParams = Vec<Rc<Vec<Value>>>;
+type NoteQueryParams = Vec<ToSqlOutput<'static>>;
+
+/// Wraps a value list as an `rarray` pointer parameter.
+fn array_param(values: Vec<Value>) -> ToSqlOutput<'static> {
+    ToSqlOutput::Array(Rc::new(values))
+}
 
 /// Returns the output notes query for a specific `NoteFilter`
 pub(super) fn note_filter_to_query_output_notes(filter: &NoteFilter) -> (String, NoteQueryParams) {
@@ -55,7 +60,7 @@ pub(super) fn note_filter_output_notes_condition(filter: &NoteFilter) -> (String
         },
         NoteFilter::Unique(note_id) => {
             let note_ids_list = vec![Value::Blob(note_id.as_word().to_bytes())];
-            params.push(Rc::new(note_ids_list));
+            params.push(array_param(note_ids_list));
             "note.note_id IN rarray(?)".to_string()
         },
         NoteFilter::List(note_ids) => {
@@ -64,7 +69,7 @@ pub(super) fn note_filter_output_notes_condition(filter: &NoteFilter) -> (String
                 .map(|note_id| Value::Blob(note_id.as_word().to_bytes()))
                 .collect::<Vec<Value>>();
 
-            params.push(Rc::new(note_ids_list));
+            params.push(array_param(note_ids_list));
             "note.note_id IN rarray(?)".to_string()
         },
         NoteFilter::DetailsCommitments(commitments) => {
@@ -73,7 +78,7 @@ pub(super) fn note_filter_output_notes_condition(filter: &NoteFilter) -> (String
                 .map(|commitment| Value::Blob(commitment.to_bytes()))
                 .collect::<Vec<Value>>();
 
-            params.push(Rc::new(commitments_list));
+            params.push(array_param(commitments_list));
             "note.details_commitment IN rarray(?)".to_string()
         },
         NoteFilter::Nullifiers(nullifiers) => {
@@ -82,7 +87,7 @@ pub(super) fn note_filter_output_notes_condition(filter: &NoteFilter) -> (String
                 .map(|nullifier| Value::Blob(nullifier.to_bytes()))
                 .collect::<Vec<Value>>();
 
-            params.push(Rc::new(nullifiers_list));
+            params.push(array_param(nullifiers_list));
             "note.nullifier IN rarray(?)".to_string()
         },
         NoteFilter::Unspent => {
@@ -121,7 +126,7 @@ pub(super) fn note_filter_to_query_input_notes(filter: &NoteFilter) -> (String, 
             "{INPUT_NOTES_BASE_QUERY} WHERE {condition} \
              ORDER BY note.consumed_block_height ASC, \
                       note.consumed_tx_order IS NULL, note.consumed_tx_order ASC, \
-                      note.note_id ASC"
+                      note.details_commitment ASC"
         )
     } else {
         format!("{INPUT_NOTES_BASE_QUERY} WHERE {condition}")
@@ -130,33 +135,59 @@ pub(super) fn note_filter_to_query_input_notes(filter: &NoteFilter) -> (String, 
     (query, params)
 }
 
-/// Returns a query that fetches a single input note at the given offset from the filtered set,
-/// restricted to a consumer account and optionally to a block range.
-pub(super) fn note_filter_to_query_input_note_by_offset(
+/// Returns a query that fetches the input note following `cursor` in the filtered set, restricted
+/// to a consumer account and optionally to a block range.
+pub(super) fn note_filter_to_query_input_note_after(
     filter: &NoteFilter,
     consumer: AccountId,
     block_start: Option<BlockNumber>,
     block_end: Option<BlockNumber>,
-    offset: u32,
+    cursor: Option<InputNoteCursor>,
 ) -> (String, NoteQueryParams) {
-    use core::fmt::Write;
     let (mut condition, mut params) = note_filter_input_notes_condition(filter);
 
-    params.push(Rc::new(vec![Value::Blob(consumer.to_bytes())]));
-    condition.push_str(" AND note.consumer_account_id IN rarray(?)");
+    // `consumer_account_id` is the first column of `idx_input_notes_consumption`. The equality
+    // avoids a full sort for the ORDER BY.
+    params.push(ToSqlOutput::from(consumer.to_bytes()));
+    condition.push_str(" AND note.consumer_account_id = ?");
     condition.push_str(" AND note.consumed_tx_order IS NOT NULL");
 
-    if let Some(start) = block_start {
-        let _ = write!(condition, " AND note.consumed_block_height >= {}", start.as_u32());
-    }
-    if let Some(end) = block_end {
-        let _ = write!(condition, " AND note.consumed_block_height <= {}", end.as_u32());
+    // A cursor at or after `block_start` is the tighter lower bound, and emitting both makes
+    // SQLite abandon the row-value seek over `idx_input_notes_consumption`. A cursor before
+    // `block_start` excludes nothing that `block_start` does not, so it is dropped.
+    let cursor = cursor
+        .filter(|cursor| block_start.is_none_or(|start| cursor.consumed_block_height() >= start));
+
+    match cursor {
+        Some(cursor) => {
+            condition.push_str(
+                " AND (note.consumed_block_height, note.consumed_tx_order, \
+                 note.details_commitment) > (?, ?, ?)",
+            );
+            params.push(ToSqlOutput::from(cursor.consumed_block_height().as_u32()));
+            params.push(ToSqlOutput::from(cursor.consumed_tx_order()));
+            params.push(ToSqlOutput::from(cursor.details_commitment().to_bytes()));
+        },
+        None => {
+            if let Some(start) = block_start {
+                condition.push_str(" AND note.consumed_block_height >= ?");
+                params.push(ToSqlOutput::from(start.as_u32()));
+            }
+        },
     }
 
+    if let Some(end) = block_end {
+        condition.push_str(" AND note.consumed_block_height <= ?");
+        params.push(ToSqlOutput::from(end.as_u32()));
+    }
+
+    // `details_commitment` is the primary key of the `WITHOUT ROWID` table, so it trails every
+    // index on it. Ordering by it makes the order total and keeps the seek index-served.
     let query = format!(
         "{INPUT_NOTES_BASE_QUERY} WHERE {condition} \
-         ORDER BY note.consumed_block_height ASC, note.consumed_tx_order ASC, note.note_id ASC \
-         LIMIT 1 OFFSET {offset}"
+         ORDER BY note.consumed_block_height ASC, note.consumed_tx_order ASC, \
+                  note.details_commitment ASC \
+         LIMIT 1"
     );
 
     (query, params)
@@ -190,7 +221,7 @@ pub(super) fn note_filter_input_notes_condition(filter: &NoteFilter) -> (String,
         },
         NoteFilter::Unique(note_id) => {
             let note_ids_list = vec![Value::Blob(note_id.as_word().to_bytes())];
-            params.push(Rc::new(note_ids_list));
+            params.push(array_param(note_ids_list));
             "(note.note_id IN rarray(?))".to_string()
         },
         NoteFilter::List(note_ids) => {
@@ -199,7 +230,7 @@ pub(super) fn note_filter_input_notes_condition(filter: &NoteFilter) -> (String,
                 .map(|note_id| Value::Blob(note_id.as_word().to_bytes()))
                 .collect::<Vec<Value>>();
 
-            params.push(Rc::new(note_ids_list));
+            params.push(array_param(note_ids_list));
             "(note.note_id IN rarray(?))".to_string()
         },
         NoteFilter::DetailsCommitments(commitments) => {
@@ -208,7 +239,7 @@ pub(super) fn note_filter_input_notes_condition(filter: &NoteFilter) -> (String,
                 .map(|commitment| Value::Blob(commitment.to_bytes()))
                 .collect::<Vec<Value>>();
 
-            params.push(Rc::new(commitments_list));
+            params.push(array_param(commitments_list));
             "(note.details_commitment IN rarray(?))".to_string()
         },
         NoteFilter::Nullifiers(nullifiers) => {
@@ -217,7 +248,7 @@ pub(super) fn note_filter_input_notes_condition(filter: &NoteFilter) -> (String,
                 .map(|nullifier| Value::Blob(nullifier.to_bytes()))
                 .collect::<Vec<Value>>();
 
-            params.push(Rc::new(nullifiers_list));
+            params.push(array_param(nullifiers_list));
             "(note.nullifier IN rarray(?))".to_string()
         },
         NoteFilter::ScriptRoots(script_roots) => {
@@ -226,21 +257,15 @@ pub(super) fn note_filter_input_notes_condition(filter: &NoteFilter) -> (String,
                 .map(|script_root| Value::Blob(script_root.to_bytes()))
                 .collect::<Vec<Value>>();
 
-            params.push(Rc::new(script_roots_list));
+            params.push(array_param(script_roots_list));
             "(note.script_root IN rarray(?))".to_string()
         },
         NoteFilter::Unverified => {
             format!("(state_discriminant = {})", InputNoteState::STATE_UNVERIFIED)
         },
         NoteFilter::Unspent => {
-            format!(
-                "(state_discriminant in ({}, {}, {}, {}, {}))",
-                InputNoteState::STATE_EXPECTED,
-                InputNoteState::STATE_PROCESSING_AUTHENTICATED,
-                InputNoteState::STATE_PROCESSING_UNAUTHENTICATED,
-                InputNoteState::STATE_UNVERIFIED,
-                InputNoteState::STATE_COMMITTED
-            )
+            let states = InputNoteState::UNSPENT_STATES.map(|state| state.to_string()).join(", ");
+            format!("(state_discriminant in ({states}))")
         },
     };
 

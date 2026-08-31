@@ -1,6 +1,6 @@
 # miden-bench
 
-Benchmarking tool for the Miden client library. This binary measures performance of transactions to establish baselines and identify optimization opportunities.
+Benchmarking tool for the Miden client library. This binary measures performance of transactions and of the `SQLite` store to establish baselines and identify optimization opportunities.
 
 ## Installation
 
@@ -64,6 +64,39 @@ The number of storage maps is auto-detected from the account.
 
 ```bash
 miden-bench --network localhost transaction --account-id 0x...
+```
+
+### `store`
+
+Benchmarks the `SQLite` store as the database grows.
+
+```bash
+miden-bench store --notes 1000,10000 --accounts 100,1000 --iterations 5
+```
+
+Two tables come out of a run, one per sweep. Each row is a store method, each column a size, and the last column the growth from the first size to the last. That growth is the number to read: a method served by an index stays near `1.00x` while the database grows, and one that falls back to a scan grows with it.
+
+The note sweep seeds three quarters of the notes as consumed by a single account, spread over blocks and transaction orders, and the rest as unspent notes carrying a nullifier. It measures:
+
+- `get_input_notes` for the `Unspent`, `Consumed`, `List`, `Nullifiers` and `ScriptRoots` filters
+- `get_unspent_input_note_nullifiers` and `get_tracked_block_headers`
+- `get_input_note_after` seeded with a cursor near the end of the account's history
+- a full `InputNoteReader` walk, reported as a total and per note
+- `upsert_input_notes` and `apply_state_sync` for a fixed batch of new notes
+
+The account sweep seeds wallets that share one account code, and measures `SqliteStore::new` (which rebuilds the SMT forest on open), `get_account_headers`, `get_account_header` and `prune_account_history`.
+
+Reads run before writes within a size, so every read measures exactly the seeded database.
+
+```bash
+# A deeper sweep. Seeding is linear in the sizes, so the run time is too.
+miden-bench store --notes 10000,100000 --accounts 1000,10000
+```
+
+`make bench-store` runs the same sweep CI does. Override `STORE_BENCH_ARGS` to change the sizes:
+
+```bash
+make bench-store STORE_BENCH_ARGS="--notes 5000,50000 --accounts 500,5000"
 ```
 
 ### `import`
@@ -195,6 +228,12 @@ miden-bench deploy --maps 3
 - `-a, --account-id <ID>` - Public account ID to benchmark against (required, hex format)
 - `-r, --reads <N>` - Maximum storage reads per transaction. When total entries exceed this limit, reads are split across multiple transactions per benchmark iteration. Each iteration's time is the sum across all transactions. When omitted, all entries are read in a single transaction.
 - `-i, --iterations <N>` - Number of benchmark iterations (default: 5)
+
+#### Store
+
+- `--notes <N[,N...]>` - Note counts to sweep over (default: `1000,10000`)
+- `--accounts <M[,M...]>` - Account counts to sweep over (default: `100,1000`)
+- `-i, --iterations <N>` - Number of benchmark iterations per measurement (default: 5)
 
 #### Import
 

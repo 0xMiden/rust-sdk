@@ -327,7 +327,8 @@ impl TransactionRequestBuilder {
     /// Consumes the builder and returns a [`TransactionRequest`] for a transaction to mint fungible
     /// assets. This request must be executed against a fungible faucet account.
     ///
-    /// - `asset` is the fungible asset to be minted.
+    /// - `asset` is the fungible asset to be minted. The amount must be non-zero: minting nothing
+    ///   would emit a P2ID note the target cannot draw anything from.
     /// - `target_id` is the account ID of the account to receive the minted asset.
     /// - `note_type` determines the visibility of the note to be created.
     /// - `rng` is the random number generator used to generate the serial number for the created
@@ -341,6 +342,13 @@ impl TransactionRequestBuilder {
         note_type: NoteType,
         rng: &mut ClientRng,
     ) -> Result<TransactionRequest, TransactionRequestError> {
+        // Minting emits a P2ID note, and a P2ID note carrying nothing is rejected on the transfer
+        // path for the same reason: it costs a transaction and leaves the target a note with
+        // nothing to consume.
+        if asset.amount() == AssetAmount::ZERO {
+            return Err(TransactionRequestError::P2IDNoteWithoutAsset);
+        }
+
         let created_note = P2idNote::builder()
             .sender(asset.faucet_id())
             .target(target_id)

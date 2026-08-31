@@ -1,12 +1,11 @@
 # SQLite Store
 
 SQLite-backed `Store` implementation for the Miden client. This crate provides a production‑ready
-persistence layer for std environments using SQLite (via `rusqlite`) with a small in‑memory
-`AccountSmtForest` cache for fast proof queries.
+persistence layer for std environments using SQLite (via `rusqlite`).
 
-- Persists accounts, notes, transactions, block headers, and MMR nodes
+- Persists accounts, notes, transactions, block headers, MMR nodes, and the account SMT forest
 - Atomic updates on transaction and state sync paths
-- Connection pooling (Deadpool) and bundled SQLite for reproducible builds
+- WAL journaling and bundled SQLite for reproducible builds
 
 ## Quick Start
 

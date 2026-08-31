@@ -88,6 +88,8 @@ use miden_protocol::crypto::rand::{FeltRng, RandomCoin};
 use miden_protocol::note::{
     Note,
     NoteAssets,
+    NoteAttachment,
+    NoteAttachmentScheme,
     NoteAttachments,
     NoteRecipient,
     NoteStorage,
@@ -148,8 +150,8 @@ const NUM_STORAGE_MAP_ENTRIES_LARGE_ACCOUNT: u64 = 2001;
 const NUM_FAUCETS_LARGE_ACCOUNT: u64 = 10;
 
 /// Oversize threshold used for the mock RPC in large-account tests.
-/// Both storage map entries and vault assets must exceed this to trigger
-/// the `too_many_entries` / `too_many_assets` flags.
+/// Both storage map entries and vault assets must exceed this, so the maps come back as
+/// `StorageMapEntries::LimitExceeded` and the vault with the `too_many_assets` flag set.
 const OVERSIZE_THRESHOLD: usize = 5;
 
 // TESTS
@@ -837,6 +839,20 @@ async fn sync_state_tags() {
 }
 
 #[tokio::test]
+async fn get_latest_block_header_tracks_sync_height() {
+    let (mut client, _rpc_api, _) = Box::pin(create_test_client()).await;
+
+    client.sync_state().await.unwrap();
+
+    let header = client
+        .get_latest_block_header()
+        .await
+        .expect("a header should be stored at the sync height");
+
+    assert_eq!(header.block_num(), client.get_sync_height().await.unwrap());
+}
+
+#[tokio::test]
 async fn tags() {
     // generate test client with a random store name
     let (mut client, _rpc_api, _) = Box::pin(create_test_client()).await;
@@ -1130,6 +1146,18 @@ async fn note_without_asset() {
                 faucet.id(),
                 wallet.id(),
             ),
+            NoteType::Public,
+            client.rng(),
+        )
+        .unwrap_err();
+
+    assert!(matches!(error, TransactionRequestError::P2IDNoteWithoutAsset));
+
+    // Minting emits a P2ID note as well, so a zero-amount mint is turned away the same way.
+    let error = TransactionRequestBuilder::new()
+        .build_mint_fungible_asset(
+            FungibleAsset::new(faucet.id(), 0).unwrap(),
+            wallet.id(),
             NoteType::Public,
             client.rng(),
         )
@@ -3331,8 +3359,8 @@ async fn create_pswap_test_client(
 
 /// Two-client mock-chain test: Alice creates a PSWAP, Bob partial-fills, Alice reclaims the
 /// remainder and consumes the payback. Runs as `#[rstest]` cases for `NoteType::Public` and
-/// `NoteType::Private`; for the private case the test pre-registers Bob's payback + remainder
-/// attachments on the mock RPC (a real node returns them automatically).
+/// `NoteType::Private`. PSWAP attachments are single words, so they reach both clients on the sync
+/// window itself.
 #[rstest]
 #[case::public_pswap(NoteType::Public)]
 #[case::private_pswap(NoteType::Private)]
@@ -3411,29 +3439,8 @@ async fn pswap_chain_tracking_test(#[case] note_type: NoteType) {
     assert_eq!(lineage.remaining_offered.as_u64(), offered_amount);
     assert_eq!(lineage.remaining_requested.as_u64(), requested_amount);
 
-    // Private-only: pre-register payback + remainder attachments on the mock (a real node
-    // returns them via RPC).
-    if note_type == NoteType::Private {
-        let fill_amount = AssetAmount::new(25).unwrap();
-        let payout_amount = AssetAmount::new(50).unwrap();
-        let new_offered = AssetAmount::new(50).unwrap();
-        let new_requested = AssetAmount::new(25).unwrap();
-        let payback_attachment = PswapNoteAttachment::new(fill_amount, order_id, 1);
-        let remainder_attachment = PswapNoteAttachment::new(payout_amount, order_id, 1);
-        let expected_payback =
-            pswap_typed.payback_note(bob_wallet.id(), &payback_attachment).unwrap();
-        let expected_remainder = pswap_typed
-            .remainder_note(bob_wallet.id(), &remainder_attachment, new_offered, new_requested)
-            .unwrap();
-        mock_rpc_api.register_private_note_attachments(
-            expected_payback.id(),
-            expected_payback.attachments().clone(),
-        );
-        mock_rpc_api.register_private_note_attachments(
-            expected_remainder.id(),
-            expected_remainder.attachments().clone(),
-        );
-    }
+    // A PSWAP attachment is a single word, so payback and remainder notes carry theirs on the
+    // sync window. Nothing needs pre-registering on the mock.
 
     // ── Bob partial-fills: 25 ETH → 50 BTC payout, leaving 50 BTC / 25 ETH. ──
     let consume_request = TransactionRequestBuilder::new()
@@ -3590,19 +3597,6 @@ async fn pswap_full_fill_chain_tracking_test(#[case] note_type: NoteType) {
         let pswap_tag = PswapNote::create_tag(note_type, &offered_asset, &requested_asset);
         bob_client.add_note_tag(pswap_tag).await.unwrap();
         bob_client.sync_state().await.unwrap();
-    }
-
-    // Private-only: pre-register payback attachment (full fill emits no remainder, so only
-    // one attachment to register).
-    if note_type == NoteType::Private {
-        let fill_amount = AssetAmount::new(requested_amount).unwrap();
-        let payback_attachment = PswapNoteAttachment::new(fill_amount, order_id, 1);
-        let expected_payback =
-            pswap_typed.payback_note(bob_wallet.id(), &payback_attachment).unwrap();
-        mock_rpc_api.register_private_note_attachments(
-            expected_payback.id(),
-            expected_payback.attachments().clone(),
-        );
     }
 
     // Bob full-fills: consumes the entire 50 ETH side → only a payback note is emitted.
@@ -4528,15 +4522,14 @@ async fn sync_storage_maps_pagination_from_middle() {
 // PRIVATE NOTE ATTACHMENT SYNC TESTS
 // ================================================================================================
 
-/// A private note carries its [`NoteAttachments`] on-chain: they feed the metadata commitment and
-/// thus the note ID. This test verifies that when such a note commits during a regular state sync,
-/// the client fetches the attachments via `GetNotesById` and stores them on the resulting
-/// [`InputNoteRecord`], so the note can be reconstructed with the same ID it has on-chain (and is
-/// therefore consumable).
-#[tokio::test]
-async fn sync_stores_private_note_attachments() {
-    // 1. Build a mock chain with a sender and a public target account (the attachment target must
-    //    be public).
+/// Commits a PRIVATE note carrying `build_attachments`, tracks it as expected, then syncs.
+/// Returns the record, the on-chain note, and the `GetNotesById` count.
+async fn sync_committed_private_note_with_attachments(
+    build_attachments: impl FnOnce(AccountId) -> NoteAttachments,
+    serve_attachments: bool,
+) -> (InputNoteRecord, Note, usize) {
+    // 1. Build a mock chain with a sender and a public target account (an attachment target must be
+    //    public).
     let mut mock_chain_builder = MockChainBuilder::new();
     let faucet_id = AccountId::dummy(
         [7u8; 15],
@@ -4550,11 +4543,10 @@ async fn sync_stores_private_note_attachments() {
         .unwrap();
     let target = mock_chain_builder.add_existing_wallet(miden_testing::Auth::IncrNonce).unwrap();
 
-    // 2. Build a PRIVATE P2ID note carrying a NetworkAccountTarget attachment.
-    let ntx_target = NetworkAccountTarget::new(target.id(), NoteExecutionHint::Always).unwrap();
-    let attachments = NoteAttachments::new(vec![ntx_target.into()]).unwrap();
+    // 2. Build a PRIVATE P2ID note carrying the attachments.
+    let attachments = build_attachments(target.id());
     let mut note_rng = RandomCoin::new([1, 2, 3, 4].map(Felt::new_unchecked).into());
-    let private_note = P2idNote::builder()
+    let private_note: Note = P2idNote::builder()
         .sender(sender.id())
         .target(target.id())
         .asset(note_asset)
@@ -4588,17 +4580,17 @@ async fn sync_stores_private_note_attachments() {
         mock_chain.prove_next_block().unwrap();
     }
 
-    // 4. Build a client backed by this chain. A fixed node returns private-note attachments via
-    //    `get_notes_by_id`, but the MockChain stores private notes without their attachment
-    //    content, so register them on the mock RPC explicitly.
+    // 4. Build a client backed by this chain.
     let rpc_api = Arc::new(MockRpcApi::new(mock_chain));
-    rpc_api.register_private_note_attachments(private_note.id(), attachments.clone());
+    if serve_attachments {
+        rpc_api.register_private_note_attachments(private_note.id(), attachments.clone());
+    }
 
     let rng =
         RandomCoin::new(rand::random::<[u64; 4]>().map(|v| Felt::new_unchecked(v >> 1)).into());
     let keystore = FilesystemKeyStore::new(std::env::temp_dir()).unwrap();
     let mut client = ClientBuilder::new()
-        .rpc(rpc_api)
+        .rpc(rpc_api.clone())
         .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore))
@@ -4633,12 +4625,10 @@ async fn sync_stores_private_note_attachments() {
         "imported expected note should start with empty attachments"
     );
 
-    // 6. Sync: the note commits via the regular note-state sync path, which fetches the attachments
-    //    and stores them on the record.
+    // 6. Sync: the note commits via the regular note-state sync path, which resolves the
+    //    attachments and stores them on the record.
     client.sync_state().await.unwrap();
 
-    // 7. The committed record should carry the original attachments and reconstruct to the same
-    //    note ID as the on-chain note.
     let committed = client
         .get_input_notes(NoteFilter::Committed)
         .await
@@ -4647,10 +4637,68 @@ async fn sync_stores_private_note_attachments() {
         .find(|n| n.id() == Some(private_note.id()))
         .expect("private note should be committed after sync");
 
+    (committed, private_note, rpc_api.get_notes_by_id_call_count())
+}
+
+/// A single-word attachment is carried verbatim by the `SyncNotes` response, so the client must
+/// reconstruct it locally, with no `GetNotesById` request and no help from the node.
+#[tokio::test]
+async fn sync_stores_private_note_attachments_carried_by_the_sync_response() {
+    let (committed, private_note, get_notes_by_id_calls) =
+        sync_committed_private_note_with_attachments(
+            |target_id| {
+                let ntx_target =
+                    NetworkAccountTarget::new(target_id, NoteExecutionHint::Always).unwrap();
+                NoteAttachments::new(vec![ntx_target.into()]).unwrap()
+            },
+            false,
+        )
+        .await;
+
     assert_eq!(
         committed.attachments(),
-        &attachments,
+        private_note.attachments(),
         "sync should store the private note's attachments on the record"
+    );
+    assert_eq!(
+        get_notes_by_id_calls, 0,
+        "a single-word attachment arrives with the sync record, so no note has to be fetched"
+    );
+
+    let reconstructed: Note = (&committed).try_into().unwrap();
+    assert_eq!(
+        reconstructed.id(),
+        private_note.id(),
+        "reconstructed note must match the on-chain note ID (attachments feed the ID)"
+    );
+}
+
+/// An attachment spanning more than one word reaches the client as a commitment only, so its
+/// content still has to be fetched via `GetNotesById` before the note can be stored.
+#[tokio::test]
+async fn sync_fetches_private_note_attachments_sent_as_a_commitment() {
+    let (committed, private_note, get_notes_by_id_calls) =
+        sync_committed_private_note_with_attachments(
+            |_| {
+                let attachment = NoteAttachment::with_words(
+                    NoteAttachmentScheme::new(100).unwrap(),
+                    vec![Word::from([1u32, 2, 3, 4]), Word::from([5u32, 6, 7, 8])],
+                )
+                .unwrap();
+                NoteAttachments::new(vec![attachment]).unwrap()
+            },
+            true,
+        )
+        .await;
+
+    assert_eq!(
+        committed.attachments(),
+        private_note.attachments(),
+        "sync should store the fetched attachments on the record"
+    );
+    assert_eq!(
+        get_notes_by_id_calls, 1,
+        "a multi-word attachment has to be fetched, since the sync record only commits to it"
     );
 
     let reconstructed: Note = (&committed).try_into().unwrap();
@@ -4730,8 +4778,8 @@ async fn sync_large_public_account() {
     mock_chain.add_pending_executed_transaction(&tx).unwrap();
     mock_chain.prove_next_block().unwrap();
 
-    // 3. Create MockRpcApi with a low oversize threshold so both the storage map
-    // and vault trigger the `too_many_entries` / `too_many_assets` flags.
+    // 3. Create MockRpcApi with a low oversize threshold so the storage map comes back as
+    // `LimitExceeded` and the vault with the `too_many_assets` flag set.
     let rpc_api = MockRpcApi::new(mock_chain).with_oversize_threshold(OVERSIZE_THRESHOLD);
     let arc_rpc_api = Arc::new(rpc_api.clone());
 

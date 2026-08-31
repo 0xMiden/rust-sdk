@@ -243,6 +243,31 @@ impl TransactionRequest {
         self.declares_fee_conversion_info
     }
 
+    /// Returns whether the request carries an auth arg that commits anything.
+    ///
+    /// An empty word commits nothing, so it counts as no arg at all — otherwise it would suppress
+    /// the conversion info the client attaches and leave `fee::pay_fee` with nothing to read.
+    pub fn has_auth_arg(&self) -> bool {
+        self.auth_arg.is_some_and(|auth_arg| auth_arg != Word::empty())
+    }
+
+    /// Returns this request carrying `auth_arg` as an opaque auth argument.
+    ///
+    /// Unlike [`TransactionRequestBuilder::fee_conversion_info`] this does not mark the request as
+    /// declaring conversion info, so the client does not classify the account's auth component
+    /// before executing. That is what lets a caller attach a commitment it computed itself against
+    /// an account the client cannot classify — a component assembled outside `miden_standards`,
+    /// whose procedure roots do not match.
+    ///
+    /// Overwrites any existing auth arg. The preimage still has to reach the advice map; pair this
+    /// with [`Self::advice_map_mut`].
+    #[must_use]
+    pub fn with_auth_arg(mut self, auth_arg: Word) -> Self {
+        self.auth_arg = Some(auth_arg);
+        self.declares_fee_conversion_info = false;
+        self
+    }
+
     /// Returns the expected NTX scripts that the node's NTX builder will need in its registry.
     pub fn expected_ntx_scripts(&self) -> &[NoteScript] {
         &self.expected_ntx_scripts
@@ -570,6 +595,12 @@ pub enum TransactionRequestError {
         "the request declares fee conversion info but the account's auth component {0} does not read it"
     )]
     FeeConversionInfoUnsupported(String),
+    #[error(
+        "account's `{0}` component reads the auth argument as a transaction summary salt, so the \
+         fee conversion info and its salt must be declared with \
+         `TransactionRequestBuilder::fee_conversion_info`"
+    )]
+    FeeConversionInfoRequired(String),
     #[error("invalid transaction script")]
     InvalidTransactionScript(#[from] TransactionScriptError),
     #[error("merkle proof error")]

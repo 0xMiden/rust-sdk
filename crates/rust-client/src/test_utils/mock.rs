@@ -337,12 +337,17 @@ impl MockRpcApi {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl NodeRpcClient for MockRpcApi {
+    /// Always reports the commitment as unset, unlike a real client.
+    ///
+    /// A real client's RPC connection is its own, so whoever set the commitment also stored the
+    /// header. Tests share one mock across clients with separate stores, where a commitment set by
+    /// the first would stop every later client from storing genesis at all.
     fn has_genesis_commitment(&self) -> Option<Word> {
         None
     }
 
     async fn set_genesis_commitment(&self, _commitment: Word) -> Result<(), RpcError> {
-        // The mock client doesn't use accept headers, so we don't need to do anything here.
+        // The mock sends no request headers, so there is nothing to pin the commitment to.
         Ok(())
     }
 

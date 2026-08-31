@@ -41,7 +41,6 @@ const FUNDING_AMOUNT: u64 = 10_000_000;
 // ================================================================================================
 
 /// Returns the funder path named by [`FUNDER_ACCOUNTS_ENV`], for runners that take no arguments.
-#[allow(dead_code)]
 pub fn funders_path_from_env() -> Option<PathBuf> {
     std::env::var_os(FUNDER_ACCOUNTS_ENV)
         .map(PathBuf::from)

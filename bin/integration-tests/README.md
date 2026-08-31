@@ -218,9 +218,10 @@ MIDEN_FUNDER_ACCOUNTS_DIR=$PWD/data/funders cargo nextest run --workspace --rele
 miden-client-integration-tests --network testnet --funders ./testnet-funders
 ```
 
-The `insert_new_*` helpers pay each account they create and deploy it by consuming that note, which
-settles the deploy's own fee. `miden_client::testing::fee::deploy_account` does the same for an
-account a test builds itself.
+The `insert_new_*` helpers pay each account they create. The account is deployed by whichever
+transaction first consumes that note, as described below. An account a test builds itself can be
+funded and deployed on the spot with `TestClient::deploy_account`, whose deploy transaction
+consumes the funding note and thereby settles its own fee.
 
 A funding transaction costs a fee and a proof, so accounts are funded in batches wherever a test
 creates more than one: the `setup_*` helpers create their accounts with the `insert_new_*_unfunded`

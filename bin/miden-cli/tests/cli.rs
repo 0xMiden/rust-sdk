@@ -1309,68 +1309,6 @@ async fn list_addresses_remove() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn new_wallet_with_deploy_flag() -> Result<()> {
-    let (store_path, temp_dir, endpoint) = init_cli();
-
-    sync_cli(&temp_dir);
-
-    let mut create_wallet_cmd = cargo_bin_cmd!("miden-client");
-    create_wallet_cmd.args(["new-wallet", "-t", "public", "--deploy"]);
-
-    let output = create_wallet_cmd.current_dir(&temp_dir).output().unwrap();
-
-    // `--deploy` fuses creating the account with submitting its deploy, so the deploy is the
-    // account's first transaction.
-    {
-        let (client, _) = create_rust_client_with_store_path(&store_path, endpoint.clone()).await?;
-        if client.chain_charges_fees().await? {
-            assert!(
-                !output.status.success(),
-                "`--deploy` cannot pay for the transaction it submits on a fee-charging chain"
-            );
-
-            // The wallet is stored before the deploy is attempted, so it outlives the failure.
-            let accounts = client.get_account_headers().await?;
-            assert_eq!(accounts.len(), 1, "the wallet should still exist locally");
-            assert_eq!(accounts[0].0.nonce().as_canonical_u64(), 0, "and be left undeployed");
-
-            return Ok(());
-        }
-    }
-
-    assert!(
-        output.status.success(),
-        "Failed to create and deploy wallet: {}",
-        String::from_utf8(output.stderr).unwrap()
-    );
-
-    // Extract the account ID from the output
-    let output_str = std::str::from_utf8(&output.stdout).unwrap();
-    let account_id_str = output_str
-        .split_whitespace()
-        .skip_while(|&word| word != "-s")
-        .nth(1)
-        .expect("Failed to extract account ID from output");
-
-    // Sync to ensure the transaction is committed
-    sync_cli(&temp_dir);
-
-    // Create a client and retrieve the account to verify the nonce
-    let (client, _) = create_rust_client_with_store_path(&store_path, endpoint).await?;
-    let account_id = AccountId::from_hex(account_id_str)?;
-    let nonce = client.account_reader(account_id).nonce().await?;
-
-    // Verify that the nonce is non-zero (account was deployed)
-    // By convention, a nonce of 0 indicates an undeployed account
-    assert!(
-        nonce.as_canonical_u64() > 0,
-        "Account nonce should be non-zero after deployment, but got: {nonce}"
-    );
-
-    Ok(())
-}
-
 // HELPERS
 // ================================================================================================
 

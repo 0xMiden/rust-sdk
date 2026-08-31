@@ -5,11 +5,7 @@ retries        = { backoff = "exponential", count = 2, delay = "1s", jitter = tr
 slow-timeout   = { period = "3m", terminate-after = 2 }
 status-level   = "skip"
 
-# The integration tests all share a node instance, so concurrency is capped to bound the pressure
-# on it. Every test also proves its transactions locally with rayon-parallel proving, so this is
-# equally the cap on concurrent provers competing for the runner's cores with the node's own
-# validator, sequencer and ntx-builder. At 4 the per-test durations inflate by ~1.65x and the
-# network-transaction tests start failing, so the useful ceiling is low.
+# The integration tests share a node instance and prove locally, so concurrency is kept low.
 [test-groups.integration]
 max-threads = 3
 
@@ -17,9 +13,7 @@ max-threads = 3
 filter           = "package(miden-client-unit-tests)"
 threads-required = 3
 
-# The agglayer tests wait on network transactions the node builds on its own schedule, so they are
-# long and mostly idle. Running them one at a time keeps them from stretching each other out, and
-# the timeout is raised because even alone they outlast the default.
+# The agglayer tests wait on network transactions, so they run one at a time with a raised timeout.
 [test-groups.agglayer]
 max-threads = 1
 

@@ -359,7 +359,6 @@ where
         let (mut note_updates, new_cursor) = self
             .fetch_note_transport_updates(cursor, &note_tags, &mut id_by_commitment)
             .await?;
-        self.fetch_note_blocks(&mut note_updates).await?;
         self.fetch_note_nullifiers(&mut note_updates).await?;
 
         self.apply_note_transport_updates(note_updates).await?;
@@ -525,10 +524,9 @@ where
     /// The one write it performs is the relay outbox, which [`Client::flush_relay_outbox`]
     /// persists itself and which is safe to redo.
     ///
-    /// Two steps run at the end, once every page is in and the notes the node reports as committed
-    /// are known: [`Client::fetch_note_blocks`] resolves the blocks that committed them, and
-    /// [`Client::fetch_note_nullifiers`] checks whether any was already spent. Storing what they
-    /// produce is the apply phase's.
+    /// One step runs at the end, once every page is in and the notes the node reports as
+    /// committed are known: [`Client::fetch_note_nullifiers`] checks whether any was already
+    /// spent. Storing what it produces is the apply phase's.
     ///
     /// Returns empty data when note transport is not configured.
     pub(crate) async fn fetch_note_transport_sync_data(
@@ -576,7 +574,6 @@ where
 
         // Every page is in, so the blocks that committed these notes are now known. This
         // finishes their records and leaves the blocks for the apply phase to store.
-        self.fetch_note_blocks(&mut note_transport_data.note_updates).await?;
         self.fetch_note_nullifiers(&mut note_transport_data.note_updates).await?;
 
         Ok(note_transport_data)
@@ -631,7 +628,7 @@ where
 /// Everything the note transport sync is about to write, with nothing written yet.
 ///
 /// Built by [`Client::fetch_note_transport_sync_data`], which also completes it with
-/// [`Client::fetch_note_blocks`] and [`Client::fetch_note_nullifiers`], and written by
+/// [`Client::fetch_note_nullifiers`], and written by
 /// [`Client::apply_note_transport_sync_data`].
 #[derive(Default)]
 pub(crate) struct NoteTransportSyncData {

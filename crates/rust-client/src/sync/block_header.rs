@@ -1,4 +1,3 @@
-use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
@@ -9,8 +8,8 @@ use miden_protocol::crypto::merkle::mmr::{Forest, InOrderIndex, PartialMmr};
 use miden_protocol::{Felt, Word};
 use tracing::warn;
 
-use crate::note::NoteBlockToInsert;
 use crate::rpc::NodeRpcClient;
+use crate::rpc::domain::note::ResolvedSyncNotesBlock;
 use crate::store::{BlockRelevance, StoreError};
 #[cfg(feature = "testing")]
 use crate::test_utils::mock::MockRpcApi;
@@ -123,11 +122,14 @@ impl<AUTH> Client<AUTH> {
     /// authentication nodes that tracking produced.
     pub(crate) async fn insert_note_blocks(
         &mut self,
-        blocks: BTreeMap<BlockNumber, NoteBlockToInsert>,
+        blocks: Vec<ResolvedSyncNotesBlock>,
         partial_mmr: &mut PartialMmr,
     ) -> Result<(), ClientError> {
         let mut authenticated_blocks = Vec::with_capacity(blocks.len());
-        for (block_num, block) in blocks {
+        for block in blocks {
+            let block_num = block.block_header.block_num();
+            // Also skips a block the loop itself just tracked, so one returned twice is stored
+            // once.
             if partial_mmr.is_tracked(block_num.as_usize()) {
                 continue;
             }

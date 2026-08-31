@@ -120,12 +120,18 @@ impl Manager for SqlitePoolManager {
 
 #[cfg(test)]
 mod tests {
-    use miden_client::store::Store;
+    use miden_client::store::{SettingDomain, Store};
     use miden_client::testing::common::create_test_store_path;
 
     use crate::SqliteStore;
     use crate::sql_error::SqlResultExt;
     use crate::tests::create_test_store;
+
+    /// The domain these tests write their settings under. Any user domain will do; the settings
+    /// table is only used here as a table that is cheap to write to and read back.
+    fn test_domain() -> SettingDomain {
+        SettingDomain::new("pool-manager").unwrap()
+    }
 
     #[tokio::test]
     async fn connection_pragmas_are_applied() -> anyhow::Result<()> {
@@ -174,8 +180,12 @@ mod tests {
             .await;
         assert!(panicked.is_err());
 
-        store.set_setting("after-panic".to_string(), b"value".to_vec()).await?;
-        assert_eq!(store.get_setting("after-panic".to_string()).await?, Some(b"value".to_vec()));
+        let domain = test_domain();
+        store.set_setting(&domain, "after-panic".to_string(), b"value".to_vec()).await?;
+        assert_eq!(
+            store.get_setting(&domain, "after-panic".to_string()).await?,
+            Some(b"value".to_vec())
+        );
 
         Ok(())
     }
@@ -189,15 +199,18 @@ mod tests {
         store
             .interact_with_connection(|conn| {
                 conn.execute_batch("BEGIN").into_store_error()?;
-                conn.execute_batch("INSERT INTO settings (name, value) VALUES ('leaked', X'00')")
-                    .into_store_error()?;
+                conn.execute_batch(
+                    "INSERT INTO settings (scope, domain, name, value)
+                     VALUES ('user', 'pool-manager', 'leaked', X'00')",
+                )
+                .into_store_error()?;
                 Ok(())
             })
             .await?;
 
         let autocommit = store.interact_with_connection(|conn| Ok(conn.is_autocommit())).await?;
         assert!(autocommit, "the leaked transaction was not rolled back");
-        assert_eq!(store.get_setting("leaked".to_string()).await?, None);
+        assert_eq!(store.get_setting(&test_domain(), "leaked".to_string()).await?, None);
 
         Ok(())
     }
@@ -210,11 +223,18 @@ mod tests {
         let first = SqliteStore::new(path.clone()).await?;
         let second = SqliteStore::new(path).await?;
 
-        first.set_setting("from-first".to_string(), b"1".to_vec()).await?;
-        second.set_setting("from-second".to_string(), b"2".to_vec()).await?;
+        let domain = test_domain();
+        first.set_setting(&domain, "from-first".to_string(), b"1".to_vec()).await?;
+        second.set_setting(&domain, "from-second".to_string(), b"2".to_vec()).await?;
 
-        assert_eq!(second.get_setting("from-first".to_string()).await?, Some(b"1".to_vec()));
-        assert_eq!(first.get_setting("from-second".to_string()).await?, Some(b"2".to_vec()));
+        assert_eq!(
+            second.get_setting(&domain, "from-first".to_string()).await?,
+            Some(b"1".to_vec())
+        );
+        assert_eq!(
+            first.get_setting(&domain, "from-second".to_string()).await?,
+            Some(b"2".to_vec())
+        );
 
         Ok(())
     }

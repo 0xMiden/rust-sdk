@@ -16,11 +16,11 @@ use super::schema::SchemaHash;
 pub(crate) const CLIENT_MIGRATIONS: [SqliteMigration; 2] = [
     SqliteMigration::new(
         include_str!("../migrations/0001_init.sql"),
-        "0x9136978ffbd23552c6a3865f3959cebf2ba1c94ef887db10d5ac300ee8db44dc",
+        "0xecbcf0a1cf0697c411ac433acab4d5955ccdb228b87d33d678dcd6ccee3c4d8b",
     ),
     SqliteMigration::new(
         include_str!("../migrations/0002_index_tuning.sql"),
-        "0xaf627f4dcb3146d2cdd38642eff90735f6b4722ad445cbc09068f4f40f7835dc",
+        "0x55683aec69d037d87c31e0c660e74a2ab9e998d4aab1857703605e20320b2fa1",
     ),
 ];
 

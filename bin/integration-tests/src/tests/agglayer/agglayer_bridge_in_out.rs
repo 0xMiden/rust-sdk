@@ -202,7 +202,9 @@ pub async fn test_agglayer_bridge_in_out(client_config: ClientConfig) -> Result<
         // which is far more load-sensitive than a directly submitted transaction, so it is set
         // well above the ~5 blocks that round trip normally takes.
         let consumable_notes =
-            wait_for_consumable_notes(&mut user.client, destination_account.id(), 60).await;
+            // The bridge mints through a network transaction the node builds on its own schedule,
+            // so the budget is generous.
+            wait_for_consumable_notes(&mut user.client, destination_account.id(), 120).await;
         println!(
             "[bridge_in_out] Round {round}: found {} consumable notes for destination",
             consumable_notes.len()

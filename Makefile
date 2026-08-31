@@ -18,11 +18,6 @@ WARNINGS=RUSTDOCFLAGS="-D warnings"
 
 TEST_MIDEN_NOTE_TRANSPORT_URL?=http://127.0.0.1:57292
 
-# Threads a test process gives its prover in the agglayer run. `miden-client` proves with rayon,
-# which otherwise takes every core, starving the node's own prover — the one building the network
-# transactions those tests wait on.
-MIDEN_TEST_PROVER_THREADS?=2
-
 # Pre-funded wallets the integration tests draw transaction fees from, either one `.mac` file or a
 # directory of them, written here by `start-test-node.sh`. Against a deployed network, point this at
 # wallets funded out of band. Unused on a fee-free chain, where no account needs funding.
@@ -147,7 +142,7 @@ integration-test-non-agglayer: ## Run every integration test except the agglayer
 
 .PHONY: integration-test-agglayer
 integration-test-agglayer: ## Run only the agglayer integration tests
-	MIDEN_FUNDER_ACCOUNTS_DIR=$(MIDEN_FUNDER_ACCOUNTS_DIR) AGGLAYER_ACCOUNTS_DIR=$(AGGLAYER_ACCOUNTS_DIR) RAYON_NUM_THREADS=$(MIDEN_TEST_PROVER_THREADS) cargo nextest run --workspace --release --test=integration -E 'test(/agglayer/)'
+	MIDEN_FUNDER_ACCOUNTS_DIR=$(MIDEN_FUNDER_ACCOUNTS_DIR) AGGLAYER_ACCOUNTS_DIR=$(AGGLAYER_ACCOUNTS_DIR) cargo nextest run --workspace --release --test=integration -E 'test(/agglayer/)'
 
 .PHONY: integration-test-miden-bench
 integration-test-miden-bench: install-bench ## Run miden-bench smoke tests

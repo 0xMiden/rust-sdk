@@ -342,9 +342,9 @@ where
     /// Builds a note record list from note details. If a note with the same ID was already stored
     /// it is passed via `previous_note` so it can be updated.
     ///
-    /// The records are returned for the caller to store. The blocks proving the inclusion of the
-    /// committed ones are written here, so no record can be stored as committed before the header
-    /// that verifies it.
+    /// Only records that need to be stored are returned: notes the node has not reported as
+    /// committed keep (or get) their expected record, while committed notes are returned only if
+    /// the new information changed them.
     async fn import_note_records_by_details(
         &mut self,
         requested_notes: Vec<(Option<InputNoteRecord>, NoteDetails, BlockNumber, NoteTag)>,
@@ -371,7 +371,8 @@ where
     ///
     /// A note with a stored version is passed via `previous_note` so it can be updated. Notes the
     /// node has not reported as committed keep (or get) their expected record; the rest become
-    /// `Committed`, since the response carries the block header that verifies their inclusion.
+    /// `Committed`, since the response carries the block header that verifies their inclusion,
+    /// and are returned only if the new information changed them.
     pub(crate) async fn fetch_transport_notes_onchain_state(
         &self,
         requested_notes: Vec<(Option<InputNoteRecord>, NoteDetails, BlockNumber, NoteTag)>,
@@ -440,25 +441,28 @@ where
                 .map(ResolvedNoteContent::into_attachments)
                 .filter(|attachments| !attachments.is_empty());
 
-            let committed_tag = committed_note.metadata().tag();
-            note_record.inclusion_proof_received(
-                committed_note.inclusion_proof().clone(),
-                *committed_note.metadata(),
-            )?;
+            let metadata = *committed_note.metadata();
+            let mut note_changed = note_record
+                .inclusion_proof_received(committed_note.inclusion_proof().clone(), metadata)?;
 
             if let Some(attachments) = attachments {
-                note_record.attachments_received(attachments);
+                note_changed |= note_record.attachments_received(attachments);
             }
 
+            // `block_header_received` transitions the record's state, so it must always run.
+            note_changed |= note_record.block_header_received(&block_header)?;
+
             // Once committed, the note no longer needs its expected-note tag.
-            if note_record.block_header_received(&block_header)? {
+            if note_changed {
                 note_updates.tags_to_remove.push(NoteTagRecord::with_note_source(
-                    committed_tag,
+                    metadata.tag(),
                     note_record.details_commitment(),
                 ));
             }
 
-            note_updates.notes_to_write.push(note_record);
+            if note_changed {
+                note_updates.notes_to_write.push(note_record);
+            }
         }
 
         Ok(note_updates)

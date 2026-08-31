@@ -60,7 +60,8 @@ pub const DEFAULT_NUM_FUNDER_WALLETS: u32 = 80;
 /// funder's own fees plus a handout to every account a single test creates.
 const FUNDER_WALLET_BALANCE: u64 = 1_000_000_000;
 
-/// Native fee faucet file name. Carries the secret key, matching the other generated faucets.
+/// Native fee faucet file name. Carries no secret key: the faucet is signed for by its operator,
+/// whose key is in [`FAUCET_OPERATOR_FILE`].
 pub const NATIVE_FAUCET_FILE: &str = "native_faucet.mac";
 
 /// File name of the wallet owning the native fee faucet, written with its secret key. It is the

@@ -2475,8 +2475,8 @@ dependencies = [
  "clap",
  "comfy-table",
  "miden-client",
- "miden-client-integration-tests",
  "miden-client-sqlite-store",
+ "miden-client-test-harness",
  "predicates",
  "rand 0.10.1",
  "rand_chacha 0.10.0",
@@ -2494,8 +2494,8 @@ dependencies = [
  "dirs",
  "figment",
  "miden-client",
- "miden-client-integration-tests",
  "miden-client-sqlite-store",
+ "miden-client-test-harness",
  "miden-debug",
  "miden-mast-package",
  "midenc-hir-type",
@@ -2523,6 +2523,7 @@ dependencies = [
  "miden-agglayer",
  "miden-client",
  "miden-client-sqlite-store",
+ "miden-client-test-harness",
  "miden-protocol",
  "num_cpus",
  "rand 0.10.1",
@@ -2552,6 +2553,20 @@ dependencies = [
  "rusqlite_migration",
  "thiserror",
  "tokio",
+]
+
+[[package]]
+name = "miden-client-test-harness"
+version = "0.16.0-rc.3"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "miden-client",
+ "miden-client-sqlite-store",
+ "rand 0.10.1",
+ "rustix",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

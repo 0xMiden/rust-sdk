@@ -70,9 +70,8 @@ use miden_client::testing::common::{
 };
 use miden_client::transaction::TransactionRequestBuilder;
 use miden_client::{Felt, Word, ZERO};
+use miden_client_test_harness::ClientConfig;
 use rand::{Rng, RngExt};
-
-use crate::tests::config::ClientConfig;
 
 // HELPERS
 // ================================================================================================

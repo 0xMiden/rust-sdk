@@ -21,7 +21,7 @@ use miden_client_sqlite_store::ClientBuilderSqliteExt;
 use rand::RngExt;
 use uuid::Uuid;
 
-use super::fee_funding;
+use crate::fee_funding;
 
 const NETWORK_DEVNET: &str = "devnet";
 const NETWORK_TESTNET: &str = "testnet";
@@ -61,8 +61,8 @@ impl FromStr for NoteTransportEndpoint {
 impl fmt::Display for NoteTransportEndpoint {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Devnet => write!(f, "devnet ({})", NOTE_TRANSPORT_DEVNET_ENDPOINT),
-            Self::Testnet => write!(f, "testnet ({})", NOTE_TRANSPORT_TESTNET_ENDPOINT),
+            Self::Devnet => write!(f, "devnet ({NOTE_TRANSPORT_DEVNET_ENDPOINT})"),
+            Self::Testnet => write!(f, "testnet ({NOTE_TRANSPORT_TESTNET_ENDPOINT})"),
             Self::Custom(url) => write!(f, "{url}"),
         }
     }
@@ -151,7 +151,7 @@ impl ClientConfig {
     ///
     /// Creates the client builder using the provided `ClientConfig`. The store uses a `SQLite`
     /// database at a temporary location determined by the store config.
-    pub async fn into_client_builder(
+    pub fn into_client_builder(
         self,
     ) -> Result<(ClientBuilder<FilesystemKeyStore>, FilesystemKeyStore)> {
         let (rpc_endpoint, rpc_timeout, store_config, auth_path) = self.as_parts();
@@ -199,7 +199,7 @@ impl ClientConfig {
     /// at a temporary location determined by the store config.
     pub async fn into_unsynced_client(self) -> Result<(TestClient, FilesystemKeyStore)> {
         let fee_funder = self.fee_funder.clone();
-        let (builder, keystore) = self.into_client_builder().await?;
+        let (builder, keystore) = self.into_client_builder()?;
 
         let client = builder.build().await.with_context(|| "failed to build test client")?;
 

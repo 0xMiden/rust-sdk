@@ -46,9 +46,8 @@ use miden_client::vm::{
 use miden_client::{self, Deserializable, Felt};
 use miden_client_cli::MIDEN_DIR;
 use miden_client_cli::config::{KEYSTORE_DIRECTORY, Network};
-use miden_client_integration_tests::tests::config::ClientConfig;
-use miden_client_integration_tests::tests::fee_funding;
 use miden_client_sqlite_store::SqliteStore;
+use miden_client_test_harness::{ClientConfig, fee_funding};
 use midenc_hir_type::{CallConv, FunctionType, Type};
 use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;

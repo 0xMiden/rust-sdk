@@ -5,9 +5,8 @@ use miden_client::auth::RPO_FALCON_SCHEME_ID;
 use miden_client::note::{Note, NoteType, PswapNote};
 use miden_client::testing::common::*;
 use miden_client::transaction::{PswapTransactionData, TransactionRequestBuilder};
+use miden_client_test_harness::ClientConfig;
 use tracing::info;
-
-use crate::tests::config::ClientConfig;
 
 // PSWAP FULL FILL ONCHAIN
 // ================================================================================================

@@ -57,9 +57,8 @@ use miden_client::transaction::{
 };
 use miden_client::{ClientError, Felt, Word};
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
+use miden_client_test_harness::ClientConfig;
 use tracing::info;
-
-use crate::tests::config::ClientConfig;
 
 pub async fn test_client_builder_initializes_client_with_endpoint(
     client_config: ClientConfig,
@@ -1646,8 +1645,8 @@ pub async fn test_ignore_invalid_notes(client_config: ClientConfig) -> Result<()
     execute_tx_and_sync(&mut client, account_id, tx_request).await?;
 
     let consumed_notes = client.get_input_notes(NoteFilter::Consumed).await.unwrap();
-    // Counting is no longer enough: on a fee-charging chain the account also consumed its funding
-    // note, so each note is checked by ID.
+    // Checked by ID rather than by count: on a fee-charging chain the account also consumed its
+    // funding note.
     let consumed = |id| consumed_notes.iter().any(|note| note.id() == Some(id));
     assert!(
         consumed(note_1.id()) && consumed(note_2.id()),

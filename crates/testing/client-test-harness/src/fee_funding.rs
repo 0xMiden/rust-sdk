@@ -25,7 +25,7 @@ use rustix::fs::{FlockOperation, flock};
 use rustix::io::Errno;
 use tokio::sync::Mutex;
 
-use super::config::ClientConfig;
+use crate::config::ClientConfig;
 
 // CONSTANTS
 // ================================================================================================

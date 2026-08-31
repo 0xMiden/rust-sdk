@@ -124,10 +124,10 @@ pub struct TransactionRequest {
     /// Optional [`Word`] that will be pushed to the stack for the authentication procedure
     /// during transaction execution.
     auth_arg: Option<Word>,
-    /// Whether the auth arg carries fee conversion info set through
-    /// [`TransactionRequestBuilder::fee_conversion_info`], which only accounts with a
-    /// fee-conversion-aware auth component can consume.
-    declares_fee_conversion_info: bool,
+    /// Salt the native fee conversion info is committed under when the transaction is prepared,
+    /// set through [`TransactionRequestBuilder::fee_conversion_salt`]. `None` leaves the client
+    /// to use its fixed default salt.
+    fee_conversion_salt: Option<Word>,
     /// Note scripts that the node's NTX builder will need in its script registry.
     ///
     /// See [`TransactionRequestBuilder::expected_ntx_scripts`] for details.
@@ -237,10 +237,11 @@ impl TransactionRequest {
         &self.auth_arg
     }
 
-    /// Returns whether the auth arg carries fee conversion info set through
-    /// [`TransactionRequestBuilder::fee_conversion_info`].
-    pub fn declares_fee_conversion_info(&self) -> bool {
-        self.declares_fee_conversion_info
+    /// Returns the caller-declared salt for the native fee conversion info the client commits
+    /// when preparing the transaction, set through
+    /// [`TransactionRequestBuilder::fee_conversion_salt`].
+    pub fn fee_conversion_salt(&self) -> Option<Word> {
+        self.fee_conversion_salt
     }
 
     /// Returns whether the request carries an auth arg that commits anything.
@@ -251,21 +252,6 @@ impl TransactionRequest {
         self.auth_arg.is_some_and(|auth_arg| auth_arg != Word::empty())
     }
 
-    /// Returns this request carrying `auth_arg` as an opaque auth argument.
-    ///
-    /// Unlike [`TransactionRequestBuilder::fee_conversion_info`] it does not mark the request as
-    /// declaring conversion info, so the account's auth component is not classified — which is how
-    /// a caller attaches its own commitment against a component assembled outside
-    /// `miden_standards`.
-    ///
-    /// Overwrites any existing auth arg. Pair it with [`Self::advice_map_mut`] for the preimage.
-    #[must_use]
-    pub fn with_auth_arg(mut self, auth_arg: Word) -> Self {
-        self.auth_arg = Some(auth_arg);
-        self.declares_fee_conversion_info = false;
-        self
-    }
-
     /// Returns the expected NTX scripts that the node's NTX builder will need in its registry.
     pub fn expected_ntx_scripts(&self) -> &[NoteScript] {
         &self.expected_ntx_scripts
@@ -274,14 +260,9 @@ impl TransactionRequest {
     // STATE MUTATORS
     // --------------------------------------------------------------------------------------------
 
-    /// Commits `conversion_info` under `salt` through the auth args, the way
-    /// [`TransactionRequestBuilder::fee_conversion_info`] does.
-    ///
-    /// This overwrites any auth arg the request already carries, so callers must only reach for it
-    /// when the request declares none.
     /// Adds `note` to the notes this request consumes, as an unauthenticated input.
     ///
-    /// Building a request that consumes the note is the public way to do this; the harness needs
+    /// Building a request that consumes the note is the public way to do this. The harness needs
     /// it on a request a test already built.
     #[cfg(feature = "testing")]
     pub(crate) fn add_unauthenticated_input_note(&mut self, note: Note) {
@@ -289,15 +270,17 @@ impl TransactionRequest {
         self.input_notes.push(note);
     }
 
-    pub(crate) fn set_fee_conversion_info(
+    /// Commits fee conversion info paying the fee in `fee_faucet_id`'s asset at rate 1/1 under
+    /// `salt`, through the auth args.
+    pub(crate) fn commit_native_fee_conversion_info(
         &mut self,
-        conversion_info: FeeConversionInfo,
+        fee_faucet_id: AccountId,
         salt: Word,
     ) {
-        let (auth_arg, preimage) = commit_fee_conversion_info(conversion_info, salt);
+        let (auth_arg, preimage) =
+            commit_fee_conversion_info(FeeConversionInfo::one_to_one(fee_faucet_id), salt);
         self.advice_map.insert(auth_arg, preimage);
         self.auth_arg = Some(auth_arg);
-        self.declares_fee_conversion_info = true;
     }
 
     /// Builds the [`InputNotes`] needed for the transaction execution.
@@ -458,7 +441,7 @@ impl Serializable for TransactionRequest {
         target.write_u8(u8::from(self.ignore_invalid_input_notes));
         self.script_arg.write_into(target);
         self.auth_arg.write_into(target);
-        target.write_u8(u8::from(self.declares_fee_conversion_info));
+        self.fee_conversion_salt.write_into(target);
         self.expected_ntx_scripts.write_into(target);
     }
 }
@@ -499,7 +482,7 @@ impl Deserializable for TransactionRequest {
         let ignore_invalid_input_notes = source.read_u8()? == 1;
         let script_arg = Option::<Word>::read_from(source)?;
         let auth_arg = Option::<Word>::read_from(source)?;
-        let declares_fee_conversion_info = source.read_u8()? == 1;
+        let fee_conversion_salt = Option::<Word>::read_from(source)?;
         let expected_ntx_scripts = Vec::<NoteScript>::read_from(source)?;
 
         Ok(TransactionRequest {
@@ -515,7 +498,7 @@ impl Deserializable for TransactionRequest {
             ignore_invalid_input_notes,
             script_arg,
             auth_arg,
-            declares_fee_conversion_info,
+            fee_conversion_salt,
             expected_ntx_scripts,
         })
     }
@@ -590,13 +573,13 @@ pub enum TransactionRequestError {
     )]
     OutputNoteSenderMismatch { expected: AccountId, actual: AccountId },
     #[error(
-        "the request declares fee conversion info but the account's auth component {0} does not read it"
+        "the request declares a fee conversion salt but the account's auth component {0} does not \
+         read the auth args as fee conversion info"
     )]
     FeeConversionInfoUnsupported(String),
     #[error(
-        "account's `{0}` component reads the auth argument as a transaction summary salt, so the \
-         fee conversion info and its salt must be declared with \
-         `TransactionRequestBuilder::fee_conversion_info`"
+        "account's `{0}` component reuses the fee conversion salt as a replay guard, so the \
+         caller must declare a fresh one with `TransactionRequestBuilder::fee_conversion_salt`"
     )]
     FeeConversionInfoRequired(String),
     #[error("invalid transaction script")]

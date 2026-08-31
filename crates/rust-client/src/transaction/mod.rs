@@ -198,7 +198,7 @@ pub use result::TransactionResult;
 // CONSTANTS
 // ================================================================================================
 
-/// Salt the client commits native fee conversion info under.
+/// Salt the client commits native fee conversion info under when the request declares none.
 ///
 /// See [`attach_native_fee_conversion_info`] for why this is a constant.
 pub(crate) const NATIVE_FEE_CONVERSION_SALT: Word = Word::empty();
@@ -1425,55 +1425,70 @@ pub(super) fn validate_account_request(
 }
 
 /// Commits fee conversion info paying the transaction fee in the chain's native fee asset at rate
-/// 1/1, unless the request already declares its own or the account cannot read it.
+/// 1/1, unless the account cannot read it.
 ///
 /// Signature-based auth components abort when a non-zero `verification_base_fee` meets auth args
 /// carrying no conversion info, so a request built without one is unexecutable rather than merely
 /// suboptimal. Components that ignore the auth args settle their fee some other way and are left
-/// alone (see [`validate_fee_conversion_info_support`]).
+/// alone, unless the request declares a salt such a component can never read (see
+/// [`validate_fee_conversion_info_support`]).
 ///
-/// The salt is fixed because the signed transaction summary covers the auth args, and a random salt
-/// would change the summary on every execution, breaking flows that reproduce one to verify a
-/// signature over it. `AuthMultisig` is excluded for the mirror-image reason: there the salt *is*
-/// the replay guard, so a fixed one would eventually collide, and such a caller must pick its own
-/// with [`TransactionRequestBuilder::fee_conversion_info`].
+/// The default salt is fixed because the signed transaction summary covers the auth args, and a
+/// random salt would change the summary on every execution, breaking flows that reproduce one to
+/// verify a signature over it. `AuthMultisig` is the mirror image: there the salt *is* the replay
+/// guard, so the fixed one would eventually collide, and such a caller must declare a fresh one
+/// with [`TransactionRequestBuilder::fee_conversion_salt`].
 fn attach_native_fee_conversion_info(
     transaction_request: &mut TransactionRequest,
     account_code_interface: &AccountCodeInterface,
     reference_header: &BlockHeader,
 ) -> Result<(), ClientError> {
-    // An auth arg the caller set is the caller's business: it may already commit conversion info
-    // for a non-native asset, or carry something else entirely. An empty word commits nothing, so
-    // it does not count.
+    // An auth arg the caller set is the caller's business: it may carry a commitment the caller
+    // computed itself, or something else entirely. An empty word commits nothing, so it does not
+    // count.
     if transaction_request.has_auth_arg() {
         return Ok(());
     }
 
     let fee_parameters = reference_header.fee_parameters();
-    if fee_parameters.verification_base_fee() == 0 {
+    let declared_salt = transaction_request.fee_conversion_salt();
+    if fee_parameters.verification_base_fee() == 0 && declared_salt.is_none() {
         return Ok(());
     }
 
     match FeeAuth::of(account_code_interface) {
         FeeAuth::FixedSalt => {
-            transaction_request.set_fee_conversion_info(
-                FeeConversionInfo::one_to_one(fee_parameters.fee_faucet_id()),
-                NATIVE_FEE_CONVERSION_SALT,
+            transaction_request.commit_native_fee_conversion_info(
+                fee_parameters.fee_faucet_id(),
+                declared_salt.unwrap_or(NATIVE_FEE_CONVERSION_SALT),
             );
             Ok(())
         },
-        // The salt cannot be chosen here: it is the account's replay guard, and the signed summary
-        // covers it, so re-deriving it would invalidate signatures collected against the summary.
-        FeeAuth::CallerChosenSalt(component) => Err(ClientError::TransactionRequestError(
-            TransactionRequestError::FeeConversionInfoRequired(component),
-        )),
-        FeeAuth::Ignored(_) => Ok(()),
+        FeeAuth::CallerChosenSalt(component) => match declared_salt {
+            Some(salt) => {
+                transaction_request
+                    .commit_native_fee_conversion_info(fee_parameters.fee_faucet_id(), salt);
+                Ok(())
+            },
+            None => Err(ClientError::TransactionRequestError(
+                TransactionRequestError::FeeConversionInfoRequired(component),
+            )),
+        },
+        FeeAuth::Ignored(component) => match declared_salt {
+            // Batch execution skips `validate_account_request`, so the mismatch is caught here
+            // too rather than silently dropping the declared salt.
+            Some(_) => Err(ClientError::TransactionRequestError(
+                TransactionRequestError::FeeConversionInfoUnsupported(component),
+            )),
+            None => Ok(()),
+        },
     }
 }
 
 /// How an account's auth component treats the transaction's auth argument where a fee is charged.
 enum FeeAuth {
-    /// Reads it as fee conversion info under a fixed salt, so the client can supply it.
+    /// Reads it as fee conversion info without constraining the salt, so the client's fixed
+    /// default salt works where the caller declares none.
     FixedSalt,
     /// Reads it as conversion info too, but reuses the salt as a replay guard the caller must
     /// choose. Carries the component's name for the error.
@@ -1555,14 +1570,13 @@ pub(crate) fn native_fee_conversion_info(
 /// Verifies that the account can consume fee conversion info passed through the auth args.
 ///
 /// Only the signature-based auth components read the auth args as conversion info (through
-/// `miden::standards::fee`). On any other auth component the declared asset and rate would be
-/// silently ignored and the fee paid in the chain's native asset, so the request is rejected here
-/// instead.
+/// `miden::standards::fee`). On any other auth component the declared salt would go unread and no
+/// conversion info would be committed, so the request is rejected here instead.
 fn validate_fee_conversion_info_support(
     transaction_request: &TransactionRequest,
     account: &Account,
 ) -> Result<(), ClientError> {
-    if !transaction_request.declares_fee_conversion_info() {
+    if transaction_request.fee_conversion_salt().is_none() {
         return Ok(());
     }
 
@@ -1883,10 +1897,8 @@ mod tests {
     }
 
     fn fee_conversion_request() -> TransactionRequest {
-        let faucet_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
-
         TransactionRequestBuilder::new()
-            .fee_conversion_info(FeeConversionInfo::one_to_one(faucet_id), Word::default())
+            .fee_conversion_salt(Word::from([13u32, 14, 15, 16]))
             .build()
             .unwrap()
     }
@@ -2000,19 +2012,37 @@ mod tests {
 
     #[test]
     fn an_explicit_auth_arg_is_not_overwritten() {
-        // The caller's own conversion info names a different faucet, so an overwrite would show.
-        let request = fee_conversion_request();
-        let declared = *request.auth_arg();
+        let auth_arg = Word::from([21u32, 22, 23, 24]);
+        let request = TransactionRequestBuilder::new().auth_arg(auth_arg).build().unwrap();
 
         assert_eq!(
             injected_auth_arg(request, &singlesig_account(), 500),
-            declared,
+            Some(auth_arg),
             "a request that declares its own auth arg keeps it"
         );
     }
 
+    /// Expected commitment for the native 1/1 conversion info under `salt`.
+    fn native_commitment(salt: Word) -> Word {
+        let (auth_arg, _) = commit_fee_conversion_info(
+            FeeConversionInfo::one_to_one(AccountId::try_from(NATIVE_FEE_FAUCET).unwrap()),
+            salt,
+        );
+        auth_arg
+    }
+
     #[test]
-    fn nothing_is_attached_where_it_is_not_needed_or_not_readable() {
+    fn a_declared_salt_is_used_for_the_native_commitment() {
+        let salt = Word::from([17u32, 18, 19, 20]);
+        let request = TransactionRequestBuilder::new().fee_conversion_salt(salt).build().unwrap();
+
+        let auth_arg = injected_auth_arg(request, &singlesig_account(), 500)
+            .expect("a declared salt should still get native conversion info attached");
+
+        assert_eq!(auth_arg, native_commitment(salt));
+    }
+
+    fn multisig_account() -> Account {
         let approvers = ApproverSet::new(
             vec![Approver::new(
                 AuthSecretKey::new_falcon512_poseidon2().public_key().to_commitment(),
@@ -2021,12 +2051,16 @@ mod tests {
             1,
         )
         .unwrap();
-        let multisig = AuthMultisig::new(AuthMultisigConfig::new(approvers)).unwrap();
 
+        account_with_auth(AuthMultisig::new(AuthMultisigConfig::new(approvers)).unwrap())
+    }
+
+    #[test]
+    fn nothing_is_attached_where_it_is_not_needed_or_not_readable() {
         for (case, account, base_fee) in [
             ("a zero base fee charges nothing", singlesig_account(), 0),
             ("NoAuth never reads the auth args", account_with_auth(NoAuth), 500),
-            ("a multisig salt is its own replay guard", account_with_auth(multisig), 500),
+            ("a multisig salt is its own replay guard", multisig_account(), 500),
         ] {
             assert_eq!(
                 injected_auth_arg(

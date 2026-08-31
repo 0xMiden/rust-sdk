@@ -3,10 +3,9 @@
 use alloc::boxed::Box;
 
 use async_trait::async_trait;
-use miden_protocol::note::NoteAttachments;
 
 use crate::ClientError;
-use crate::rpc::domain::note::CommittedNote;
+use crate::rpc::domain::note::SyncedNote;
 use crate::sync::StateSyncUpdate;
 
 /// Per-note + post-sync side-channel into [`crate::sync::StateSync`].
@@ -18,15 +17,13 @@ pub trait NoteObserver {
     fn name(&self) -> &'static str;
 
     /// Per-note hook. Runs before the screener verdict, so before the note's id is recomputed and
-    /// its inclusion proof verified. `attachments` is empty for a note that carries none.
+    /// its inclusion proof verified. `note` carries the note's identity, metadata and inclusion
+    /// proof from the sync record, its resolved attachments (empty for a note without any) and,
+    /// for a fetched public note, its body.
     ///
     /// Returns `true` to mark the enclosing block as relevant even if the screener discards it,
     /// so sync persists its header.
-    async fn observe(
-        &self,
-        committed_note: &CommittedNote,
-        attachments: &NoteAttachments,
-    ) -> Result<bool, ClientError>;
+    async fn observe(&self, note: &SyncedNote) -> Result<bool, ClientError>;
 
     /// Post-sync hook, invoked once after the sync window closes.
     /// Default impl is a no-op for observers that only need `observe()`.

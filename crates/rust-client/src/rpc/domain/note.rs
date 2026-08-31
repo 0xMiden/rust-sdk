@@ -149,6 +149,26 @@ impl SequentialCommit for AttachmentCommitments<'_> {
     }
 }
 
+/// A single attachment as a `SyncNotes` record reports it: verbatim when the node sent its
+/// content, commitment-only otherwise.
+#[derive(Debug)]
+enum ReportedAttachment {
+    /// The attachment arrived verbatim, so its content is known.
+    Full(NoteAttachment),
+    /// The attachment arrived as its commitment only.
+    Commitment(Word),
+}
+
+impl ReportedAttachment {
+    /// Returns the attachment's commitment.
+    fn to_commitment(&self) -> Word {
+        match self {
+            Self::Full(attachment) => attachment.to_commitment(),
+            Self::Commitment(commitment) => *commitment,
+        }
+    }
+}
+
 /// The attachments of a note as a `SyncNotes` record reports them. Both variants determine the
 /// note's attachments commitment exactly, but only one carries the content.
 #[derive(Debug)]
@@ -161,6 +181,31 @@ enum ReportedAttachments {
 }
 
 impl ReportedAttachments {
+    /// Aggregates the per-attachment reports of one record. The content is reconstructible only
+    /// as a whole set, so a single commitment-only attachment demotes the entire report to
+    /// commitments.
+    fn from_reports(reports: Vec<ReportedAttachment>) -> Result<Self, RpcConversionError> {
+        let commitments: Vec<Word> =
+            reports.iter().map(ReportedAttachment::to_commitment).collect();
+        let contents: Option<Vec<NoteAttachment>> = reports
+            .into_iter()
+            .map(|report| match report {
+                ReportedAttachment::Full(attachment) => Some(attachment),
+                ReportedAttachment::Commitment(_) => None,
+            })
+            .collect();
+
+        match contents {
+            Some(contents) => {
+                let attachments = NoteAttachments::new(contents).map_err(|err| {
+                    RpcConversionError::InvalidField(format!("attachments: {err}"))
+                })?;
+                Ok(Self::Full(attachments))
+            },
+            None => Ok(Self::Commitments(commitments)),
+        }
+    }
+
     /// Returns the note's attachments commitment.
     fn to_commitment(&self) -> Word {
         match self {
@@ -208,10 +253,7 @@ impl TryFrom<proto::note::NoteSyncMetadata> for SyncNoteMetadata {
         }
 
         let mut attachment_headers = [NoteAttachmentHeader::absent(); NoteAttachments::MAX_COUNT];
-        let mut commitments = Vec::with_capacity(value.attachments.len());
-        // Stays `Some` until an attachment arrives as a commitment only, since the content can be
-        // rebuilt only as a whole set.
-        let mut contents = Some(Vec::with_capacity(value.attachments.len()));
+        let mut reports = Vec::with_capacity(value.attachments.len());
 
         for (slot, attachment) in value.attachments.into_iter().enumerate() {
             let raw_scheme = u16::try_from(attachment.scheme).map_err(|_| {
@@ -232,29 +274,21 @@ impl TryFrom<proto::note::NoteSyncMetadata> for SyncNoteMetadata {
             // full. A larger one is sent as a commitment to keep the sync response bounded. The
             // node may send a commitment even for a single-word one, so the choice is read off the
             // payload variant and never inferred from a word count.
-            match payload {
+            let report = match payload {
                 proto::note::note_sync_attachment::Payload::Value(value) => {
-                    let attachment = NoteAttachment::with_word(scheme, Word::try_from(value)?);
-                    commitments.push(attachment.to_commitment());
-                    if let Some(contents) = contents.as_mut() {
-                        contents.push(attachment);
-                    }
+                    ReportedAttachment::Full(NoteAttachment::with_word(
+                        scheme,
+                        Word::try_from(value)?,
+                    ))
                 },
                 proto::note::note_sync_attachment::Payload::Commitment(commitment) => {
-                    commitments.push(Word::try_from(commitment)?);
-                    contents = None;
+                    ReportedAttachment::Commitment(Word::try_from(commitment)?)
                 },
-            }
+            };
+            reports.push(report);
         }
 
-        let attachments = match contents {
-            Some(contents) => {
-                ReportedAttachments::Full(NoteAttachments::new(contents).map_err(|err| {
-                    RpcConversionError::InvalidField(format!("attachments: {err}"))
-                })?)
-            },
-            None => ReportedAttachments::Commitments(commitments),
-        };
+        let attachments = ReportedAttachments::from_reports(reports)?;
 
         Ok(SyncNoteMetadata {
             metadata: NoteMetadata::from_parts(
@@ -400,8 +434,12 @@ pub struct ResolvedSyncNotesBlock {
 /// when it was fetched via `GetNotesById`.
 #[derive(Debug, Clone)]
 pub struct SyncedNote {
-    /// Note identity, metadata, and inclusion proof, as reported by `SyncNotes`.
-    pub committed: CommittedNote,
+    /// Note ID of the synced note, as reported by `SyncNotes`.
+    pub note_id: NoteId,
+    /// The note's full metadata, as reported by `SyncNotes`.
+    pub metadata: NoteMetadata,
+    /// Inclusion proof for the note in the block, as reported by `SyncNotes`.
+    pub inclusion_proof: NoteInclusionProof,
     /// The public note's body, fetched via `GetNotesById`. `None` for a private note, and for a
     /// public note whose body was not requested or not returned.
     pub details: Option<NoteDetails>,
@@ -446,7 +484,25 @@ impl SyncedNote {
             )));
         }
 
-        Ok(Self { committed, details, attachments })
+        let CommittedNote {
+            note_id,
+            metadata,
+            inclusion_proof,
+            attachments: _,
+        } = committed;
+
+        Ok(Self {
+            note_id,
+            metadata,
+            inclusion_proof,
+            details,
+            attachments,
+        })
+    }
+
+    /// Returns the number of the block in which the note was committed.
+    pub fn block_num(&self) -> BlockNumber {
+        self.inclusion_proof.location().block_num()
     }
 }
 

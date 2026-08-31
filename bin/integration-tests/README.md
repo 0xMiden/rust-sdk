@@ -244,8 +244,8 @@ chain before every payment, which is what makes sharing one between test process
 - `MIDEN_FUNDER_ACCOUNTS` - funder `.mac` file or directory, same as `--funders`
 - `MIDEN_VERIFICATION_BASE_FEE` - genesis `verification_base_fee` for the testing node (default
   `500`; `0` runs the node fee-free and declares no funder wallets)
-- `MIDEN_TEST_PROVER_THREADS` - threads each test process gives its prover (default `2`); the
-  node's own prover needs cores too
+- `MIDEN_TEST_PROVER_THREADS` - threads a test process gives its prover in the agglayer run
+  (default `2`), leaving cores for the node's own prover
 - `MIDEN_NUM_FUNDER_WALLETS` - number of wallets a fee-charging genesis pre-funds (default `16`)
 
 ## Test Case Generation

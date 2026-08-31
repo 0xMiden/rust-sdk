@@ -17,21 +17,19 @@ use crate::transaction::{TransactionId, TransactionRequestBuilder};
 /// Makes accounts able to pay their own transaction fees.
 #[async_trait::async_trait(?Send)]
 pub trait FeeFunder: Send + Sync + fmt::Debug {
-    /// Pays every account in `account_ids` enough of the chain's native fee asset to cover its own
-    /// transactions, returning each account paired with the note carrying its funds.
+    /// Pays every account in `account_ids` enough to cover its own fees, returning each paired
+    /// with the note carrying its funds.
     ///
-    /// Takes the accounts together rather than one at a time so that a funder can pay them all in
-    /// one transaction. The notes are returned rather than consumed: an account's own next
-    /// transaction consumes its note, so the funding costs no transaction of its own.
+    /// Taken together so one transaction can pay them all; returned rather than consumed so each
+    /// account's own next transaction spends its note.
     async fn fund(&self, account_ids: &[AccountId]) -> Result<Vec<(AccountId, Note)>>;
 }
 
 impl TestClient {
     /// Pays `account_ids` what they need to cover their own fees, if the chain charges any.
     ///
-    /// Costs no transaction of its own beyond the funder's single payment: each account's funding
-    /// note is held until that account's next transaction, which consumes it and is thereby also
-    /// the account's deploy. On a fee-free chain this does nothing at all.
+    /// Each note is held until the account's next transaction, which consumes it and is thereby
+    /// also its deploy. Does nothing on a fee-free chain.
     pub async fn fund_if_needed(&mut self, account_ids: &[AccountId]) -> Result<()> {
         if !self.chain_charges_fees().await? {
             return Ok(());
@@ -58,10 +56,9 @@ impl TestClient {
     }
 
     /// Deploys `account_ids` on-chain, whether or not the chain charges fees. Already-deployed
-    /// accounts are left alone, so a test need not know whether its creating helper deployed them.
+    /// accounts are left alone.
     ///
-    /// Deploying several accounts at once is what lets the funder pay for them in one transaction,
-    /// and lets their deploys share a single round of waiting for commitment.
+    /// Taken together so the funder pays once and the deploys share a single wait.
     pub async fn deploy_accounts(&mut self, account_ids: &[AccountId]) -> Result<()> {
         let mut undeployed = Vec::with_capacity(account_ids.len());
         for account_id in account_ids.iter().copied() {
@@ -131,11 +128,8 @@ impl TestClient {
         self.wait_for_deploys(&tx_ids).await
     }
 
-    /// Waits for every deploy transaction to commit.
-    ///
-    /// Waiting keeps funding invisible to the test that follows: otherwise its next `sync_state`
-    /// would report the deploys and the funding notes as its own, which sync-summary assertions
-    /// pick up. It also tells a shared funder its payment landed before it releases the wallet.
+    /// Waits for every deploy transaction to commit, so the test that follows does not see the
+    /// deploys and funding notes in its own sync.
     async fn wait_for_deploys(&mut self, tx_ids: &[(AccountId, TransactionId)]) -> Result<()> {
         for (account_id, tx_id) in tx_ids.iter().copied() {
             wait_for_tx(self, tx_id).await.with_context(|| {

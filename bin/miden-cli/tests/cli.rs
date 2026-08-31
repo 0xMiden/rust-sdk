@@ -1697,9 +1697,8 @@ fn block_on<F: std::future::Future>(future: F) -> F::Output {
 /// Gives an account the CLI just created enough of the native fee asset to pay for its own
 /// transactions, and deploys it.
 ///
-/// Deploys rather than leaving the funding note for the account's next transaction to consume: the
-/// CLI runs as its own process against its own client, which knows nothing of a note this one is
-/// holding, so the funds have to be in the vault before the CLI transacts.
+/// Deploys rather than holding the funding note: the CLI runs in its own process, so the funds
+/// have to be in the vault before it transacts.
 async fn fund_cli_account(
     cli_path: &Path,
     store_path: &Path,

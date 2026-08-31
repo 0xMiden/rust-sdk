@@ -597,9 +597,8 @@ pub async fn test_consumed_note_ordering(client_config: ClientConfig) -> Result<
     }
     client.sync_state().await?;
 
-    // Build a consume request per minted note and submit them as a single proven batch. The
-    // requests are built before the batch borrows the client, so any funding note the wallet is
-    // still holding can be folded into the first of them.
+    // Requests are built before the batch borrows the client, so a funding note can still be
+    // folded in.
     let requests: Vec<_> = minted_notes
         .iter()
         .map(|note| {

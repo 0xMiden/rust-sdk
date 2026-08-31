@@ -623,7 +623,7 @@ pub async fn test_sync_transactions_chunks_when_exceeding_limits(
     )
     .await?;
 
-    // A mint cannot double as the account's deploy, so the funding note is spent here instead.
+    // A mint cannot double as the account's deploy.
     client.deploy_account(faucet.id()).await?;
 
     let fungible_asset = FungibleAsset::new(faucet.id(), MINT_AMOUNT)?;

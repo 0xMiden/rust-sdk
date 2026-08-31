@@ -179,9 +179,7 @@ impl Funder {
     /// Pays every account in `targets` from `wallet_id` in a single transaction, returning each
     /// target paired with the note carrying its funds.
     ///
-    /// One transaction rather than one per target: the funder pays a fee and waits for a proof
-    /// per transaction, so a test setting up several accounts pays that once instead of once per
-    /// account.
+    /// One transaction rather than one per target: each costs a fee and a proof.
     async fn pay(
         &self,
         client: &mut TestClient,
@@ -208,9 +206,8 @@ impl Funder {
         let asset = FungibleAsset::new(fee_faucet_id, FUNDING_AMOUNT)
             .context("failed to build the native fee asset")?;
 
-        // Built here rather than through `build_pay_to_id`, which describes a single payment. Each
-        // note stays paired with the target it was built for, so the caller never has to match
-        // notes back to accounts by position.
+        // Built here rather than through `build_pay_to_id`, which describes a single payment.
+        // Notes stay paired with their target, so nothing matches them back by position.
         let funded = targets
             .iter()
             .map(|target| {

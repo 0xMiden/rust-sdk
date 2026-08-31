@@ -37,8 +37,8 @@ pub async fn test_agglayer_update_ger(client_config: ClientConfig) -> Result<()>
 
     // WAIT FOR NETWORK ACCOUNT TO PROCESS UPDATE_GER NOTE
     // --------------------------------------------------------------------------------------------
-    // Polled rather than waited out: the note is consumed by a network transaction the node builds
-    // on its own schedule, and how long that takes depends on what else the node is doing.
+    // Polled rather than waited out: the node builds the network transaction on its own
+    // schedule, which stretches with load.
     const MAX_POLL_BLOCKS: usize = 60;
 
     let ger_elements = ger.to_elements();

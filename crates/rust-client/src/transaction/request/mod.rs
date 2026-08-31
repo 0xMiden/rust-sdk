@@ -245,22 +245,20 @@ impl TransactionRequest {
 
     /// Returns whether the request carries an auth arg that commits anything.
     ///
-    /// An empty word commits nothing, so it counts as no arg at all — otherwise it would suppress
-    /// the conversion info the client attaches and leave `fee::pay_fee` with nothing to read.
+    /// An empty word counts as no arg: otherwise it would suppress the conversion info the client
+    /// attaches, leaving `fee::pay_fee` nothing to read.
     pub fn has_auth_arg(&self) -> bool {
         self.auth_arg.is_some_and(|auth_arg| auth_arg != Word::empty())
     }
 
     /// Returns this request carrying `auth_arg` as an opaque auth argument.
     ///
-    /// Unlike [`TransactionRequestBuilder::fee_conversion_info`] this does not mark the request as
-    /// declaring conversion info, so the client does not classify the account's auth component
-    /// before executing. That is what lets a caller attach a commitment it computed itself against
-    /// an account the client cannot classify — a component assembled outside `miden_standards`,
-    /// whose procedure roots do not match.
+    /// Unlike [`TransactionRequestBuilder::fee_conversion_info`] it does not mark the request as
+    /// declaring conversion info, so the account's auth component is not classified — which is how
+    /// a caller attaches its own commitment against a component assembled outside
+    /// `miden_standards`.
     ///
-    /// Overwrites any existing auth arg. The preimage still has to reach the advice map; pair this
-    /// with [`Self::advice_map_mut`].
+    /// Overwrites any existing auth arg. Pair it with [`Self::advice_map_mut`] for the preimage.
     #[must_use]
     pub fn with_auth_arg(mut self, auth_arg: Word) -> Self {
         self.auth_arg = Some(auth_arg);
@@ -283,10 +281,8 @@ impl TransactionRequest {
     /// when the request declares none.
     /// Adds `note` to the notes this request consumes, as an unauthenticated input.
     ///
-    /// Used to fold a funding note into the transaction an account was going to run anyway: the
-    /// note's assets land in the vault before the fee is withdrawn, so one transaction can deploy
-    /// the account, fund it and do its work. Building a request that consumes the note is the
-    /// public way to do this; the harness needs it on a request a test already built.
+    /// Building a request that consumes the note is the public way to do this; the harness needs
+    /// it on a request a test already built.
     #[cfg(feature = "testing")]
     pub(crate) fn add_unauthenticated_input_note(&mut self, note: Note) {
         self.input_notes_args.push((note.id(), None));

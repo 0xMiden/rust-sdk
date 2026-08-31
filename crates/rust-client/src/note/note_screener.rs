@@ -222,18 +222,12 @@ impl NoteScreener {
         Ok(note_consumption_info)
     }
 
-    /// Returns `tx_args` carrying the auth arg the account needs to settle its fee, when the
-    /// chain at `block_ref` charges one.
+    /// Returns `tx_args` carrying the auth arg the account needs to settle its fee.
     ///
-    /// Screening executes the full transaction kernel, auth procedure included, so on a
-    /// fee-charging chain `fee::pay_fee` aborts when a non-zero fee meets auth args with no
-    /// conversion info. [`NoteConsumptionChecker`] reports that abort as
-    /// [`NoteConsumptionStatus::UnconsumableConditions`], which would drop the note from the sync.
-    /// Standard notes are unaffected — they are answered without executing anything — so this
-    /// matters for notes carrying a custom script.
-    ///
-    /// The info comes from [`native_fee_conversion_info`], the same source the execution path
-    /// uses, so a note is measured against the fee the transaction it stands in for would pay.
+    /// Screening runs the full kernel, so without conversion info `fee::pay_fee` aborts and the
+    /// note is reported unconsumable and dropped from the sync. Only custom-script notes reach
+    /// execution; standard ones are answered without it. The info comes from
+    /// [`native_fee_conversion_info`], so screening measures the fee execution would pay.
     async fn with_native_fee_conversion_info(
         &self,
         tx_args: TransactionArgs,
@@ -246,8 +240,7 @@ impl NoteScreener {
             return Ok(tx_args);
         }
 
-        // A missing header is left to the trial execution, which reads the same one through the
-        // data store and reports its absence with a more specific error than this could.
+        // A missing header is left to the trial execution, which reports it more specifically.
         let Some((header, _)) = self.store.get_block_header_by_num(block_ref).await? else {
             return Ok(tx_args);
         };

@@ -1482,13 +1482,10 @@ enum FeeAuth {
 
 /// Classifies the account's auth component, or `None` when the client cannot tell.
 ///
-/// `None` covers both components known to ignore the auth argument and components the client
-/// cannot recognize at all — a user-defined one, whose procedure roots match nothing in
-/// `miden_standards`. Neither is guessed at: writing an auth argument an unknown component may
-/// read for its own purposes is worse than leaving it as the caller left it.
-///
-/// `AccountInterface::new` is not used here because it requires exactly one recognized auth
-/// component and panics otherwise, which is precisely the case this has to handle.
+/// `None` covers components that ignore the auth argument and ones the client cannot recognize at
+/// all. Neither is guessed at: writing an argument an unknown component may read for its own
+/// purposes is worse than leaving it alone. `AccountInterface::new` is avoided because it panics
+/// on exactly those unrecognized components.
 fn fee_auth_component(account_code_interface: &AccountCodeInterface) -> Option<FeeAuth> {
     let procedures: Vec<_> = account_code_interface.procedures().iter().copied().collect();
 
@@ -1504,14 +1501,10 @@ fn fee_auth_component(account_code_interface: &AccountCodeInterface) -> Option<F
         })
 }
 
-/// Returns the conversion info an account should commit to settle its fee in the chain's native
-/// asset at rate 1/1, or `None` when the chain charges nothing or the account pays its fee some
-/// other way.
+/// Returns the conversion info an account should commit to settle its fee in the native asset at
+/// rate 1/1, or `None` when the account pays its fee some other way.
 ///
-/// Shared with note screening, which runs the full kernel — auth procedure included — so a note is
-/// measured against the auth arg the transaction it stands in for would actually carry. Answering
-/// this in one place is what keeps the two from drifting apart and screening a note as consumable
-/// that execution would then reject.
+/// Shared with note screening so the two cannot disagree about what an account needs.
 pub(crate) fn native_fee_conversion_info(
     account_code_interface: &AccountCodeInterface,
     fee_parameters: &FeeParameters,
@@ -1548,9 +1541,8 @@ fn validate_fee_conversion_info_support(
         return Ok(());
     }
 
-    // Inspected through the component list rather than `AccountInterface::from_account`, which
-    // requires exactly one recognized auth component and panics on anything else — including the
-    // user-defined components this has to reject rather than crash on.
+    // Inspected through the component list because `AccountInterface::from_account` panics on the
+    // user-defined components this has to reject.
     let procedures: Vec<_> =
         account.code().interface(account.id()).procedures().iter().copied().collect();
     let components = AccountComponentInterface::from_procedures(&procedures);

@@ -823,7 +823,7 @@ pub async fn test_ntx_mint_produces_public_note_with_non_standard_script(
 
     let faucet = deploy_network_fungible_faucet(&mut client, alice.id()).await?;
 
-    // A mint cannot double as the account's deploy, so the funding note is spent here instead.
+    // A mint cannot double as the account's deploy.
     client.deploy_account(alice.id()).await?;
     let amount = Felt::new_unchecked(100);
 

@@ -61,13 +61,10 @@ use crate::{Client, ClientError};
 pub struct TestClient {
     client: Client<FilesystemKeyStore>,
     fee_funder: Option<Arc<dyn FeeFunder>>,
-    /// Funding notes paid to accounts that have not spent them yet, keyed by the account they are
-    /// addressed to.
+    /// Funding notes paid to accounts that have not spent them yet.
     ///
-    /// An account's first transaction consumes its note rather than a dedicated deploy doing it:
-    /// the note's assets reach the vault before the fee is withdrawn, so that one transaction
-    /// deploys the account, funds it and does the test's work. [`Self::submit_new_transaction`]
-    /// and [`Self::push_to_batch`] fold the note in.
+    /// A note's assets reach the vault before the fee is withdrawn, so folding one into an
+    /// account's next transaction makes that transaction its deploy as well.
     pending_funding: BTreeMap<AccountId, Note>,
 }
 
@@ -81,28 +78,24 @@ impl TestClient {
         }
     }
 
-    /// Records funding notes for the accounts they are addressed to, to be folded into each
-    /// account's next transaction.
+    /// Records funding notes, to be folded into each account's next transaction.
     pub(crate) fn stash_funding(&mut self, funded: impl IntoIterator<Item = (AccountId, Note)>) {
         self.pending_funding.extend(funded);
     }
 
-    /// Takes `account_id`'s funding note, if it has one that is still unspent.
+    /// Takes `account_id`'s funding note, opting it out of automatic folding.
     ///
-    /// Taking the note opts the account out of the automatic folding done by
-    /// [`Self::submit_new_transaction`] and [`Self::fund_request`]: the caller now owns it and
-    /// must consume it in some transaction, or the account is left unable to pay a fee. Worth
-    /// doing when a test needs the funding to land somewhere specific — for instance one asserting
-    /// on the notes or transactions a sync reports, which would otherwise see the funding note
-    /// appear in a transaction it did not put it in.
+    /// The caller must then consume it somewhere, or the account cannot pay a fee. Use it when a
+    /// test needs the funding in a particular transaction — one asserting on what a sync reports,
+    /// say.
     pub fn take_funding(&mut self, account_id: AccountId) -> Option<Note> {
         self.pending_funding.remove(&account_id)
     }
 
     /// Submits a transaction for `account_id`, folding in its funding note when it has one.
     ///
-    /// Shadows [`Client::submit_new_transaction`], which the wrapped client still exposes through
-    /// [`Deref`] for callers that deliberately want the unfunded path.
+    /// Shadows [`Client::submit_new_transaction`], still reachable through [`Deref`] for callers
+    /// that want the unfunded path.
     pub async fn submit_new_transaction(
         &mut self,
         account_id: AccountId,
@@ -115,9 +108,7 @@ impl TestClient {
 
     /// Executes a transaction for `account_id`, folding in its funding note when it has one.
     ///
-    /// Shadows [`Client::execute_transaction`] for the same reason
-    /// [`Self::submit_new_transaction`] shadows its counterpart. Takes `&mut self` where the
-    /// wrapped method takes `&self`, since taking the note is a mutation.
+    /// Takes `&mut self` where the wrapped method takes `&self`, since taking the note mutates.
     pub async fn execute_transaction(
         &mut self,
         account_id: AccountId,
@@ -128,12 +119,10 @@ impl TestClient {
         Box::pin(self.client.execute_transaction(account_id, transaction_request)).await
     }
 
-    /// Returns `transaction_request` with `account_id`'s funding note folded in, when it has one
-    /// that is still unspent.
+    /// Returns `transaction_request` with `account_id`'s funding note folded in.
     ///
-    /// [`Self::submit_new_transaction`] does this itself. Call it directly for a request going
-    /// somewhere else — notably a batch, which borrows the client for as long as it lives, so the
-    /// note has to be taken out before the batch is created.
+    /// Only needed for requests not going through [`Self::submit_new_transaction`] — notably a
+    /// batch, which borrows the client, so the note must be taken before the batch is created.
     #[must_use]
     pub fn fund_request(
         &mut self,

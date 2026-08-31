@@ -69,8 +69,7 @@ pub async fn test_transaction_request(client_config: ClientConfig) -> Result<()>
     )
     .await?;
 
-    // The custom transaction below cannot double as the account's deploy, so the funding note is
-    // spent here instead.
+    // The transaction below cannot double as the account's deploy.
     client.deploy_account(regular_account.id()).await?;
 
     // Execute mint transaction in order to create custom note

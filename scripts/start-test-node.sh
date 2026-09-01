@@ -9,6 +9,10 @@
 #   --background     return once the node's RPC is ready, leaving it running (used by CI)
 #   --install-only   install the node binaries and exit (used by the CI build job)
 #   --print-rev      print the pinned node rev or version (CI cache key) and exit
+#
+# Env vars:
+#   MIDEN_VERIFICATION_BASE_FEE  genesis `verification_base_fee` (default 500; 0 disables fees)
+#   MIDEN_NUM_FUNDER_WALLETS     number of funder wallets a fee-charging genesis declares
 
 set -euo pipefail
 
@@ -38,6 +42,9 @@ PROVER="127.0.0.1:$PROVER_PORT"
 # Shared secret authorizing the ntx-builder to submit network transactions; the sequencer rejects
 # them unless both sides agree on it.
 NETWORK_TX_AUTH="${MIDEN_NETWORK_TX_AUTH:-miden-client-testing-ntx-secret}"
+# Genesis `verification_base_fee`. Every transaction pays out of its own account's vault, as on a
+# real chain. At 0 fees are never charged.
+VERIFICATION_BASE_FEE="${MIDEN_VERIFICATION_BASE_FEE:-500}"
 
 NODE_BINS=(miden-validator miden-node miden-ntx-builder miden-remote-prover)
 
@@ -115,19 +122,20 @@ fi
 echo "==> building gen-genesis"
 cargo build --release -p test-node-genesis --bin gen-genesis
 
-echo "==> generating genesis + bootstrapping"
+echo "==> generating genesis + bootstrapping (verification_base_fee = $VERIFICATION_BASE_FEE)"
 rm -rf "$DATA"
 # Each component opens its SQLite DB directly under its data dir and does not create it.
 mkdir -p "$LOG_DIR" "$DATA/validator" "$DATA/node" "$DATA/ntx-builder"
-"$GEN_GENESIS" "$DATA/genesis-config"
+MIDEN_VERIFICATION_BASE_FEE="$VERIFICATION_BASE_FEE" "$GEN_GENESIS" "$DATA/genesis-config"
+# Cleared up front so a fee-free run cannot leave a previous run's funders behind, and re-exposed
+# below once `miden-validator genesis` has generated them.
+rm -rf "$ROOT/data/funders"
 mkdir -p "$ROOT/data"
 cp "$DATA/genesis-config/tst_faucet.mac" "$ROOT/data/account.mac"
-# With AGGLAYER_GENESIS set, gen-genesis also emits the agglayer account files; expose them under
-# ./data so tests can load them via AGGLAYER_ACCOUNTS_DIR=./data.
-for mac in bridge_admin.mac ger_manager.mac bridge.mac agglayer_faucet.mac; do
-    if [ -f "$DATA/genesis-config/$mac" ]; then
-        cp "$DATA/genesis-config/$mac" "$ROOT/data/$mac"
-    fi
+# Expose the agglayer accounts under ./data, where the tests read them via AGGLAYER_ACCOUNTS_DIR.
+for mac in bridge_admin.mac ger_manager.mac bridge.mac agglayer_faucet.mac \
+           native_faucet.mac faucet_operator.mac; do
+    cp "$DATA/genesis-config/$mac" "$ROOT/data/$mac"
 done
 
 # The validator's signing key and the set's shared transaction encryption key are passed on the
@@ -160,6 +168,16 @@ done
     "$BIN/miden-ntx-builder" bootstrap --data-directory "$DATA/ntx-builder" \
         --genesis "$DATA/genesis/genesis.dat"
 } >"$LOG_DIR/bootstrap.log" 2>&1
+NATIVE_FAUCET_ID="$(sed -n 's/^Native faucet account id: //p' "$LOG_DIR/bootstrap.log")"
+echo "==> native faucet $NATIVE_FAUCET_ID, operator wallet in $ROOT/data/faucet_operator.mac"
+
+# Expose the wallets the node generated from the genesis `[[wallet]]` entries under ./data/funders,
+# where the tests read them via MIDEN_FUNDER_ACCOUNTS_DIR. A fee-free genesis declares none.
+if compgen -G "$DATA/accounts/wallet_*.mac" >/dev/null; then
+    mkdir -p "$ROOT/data/funders"
+    cp "$DATA"/accounts/wallet_*.mac "$ROOT/data/funders/"
+    echo "==> exposed $(ls "$ROOT/data/funders" | wc -l | tr -d ' ') funder wallets in $ROOT/data/funders"
+fi
 
 echo "==> starting components"
 : > "$PID_FILE"
@@ -197,7 +215,10 @@ start sequencer   "$BIN/miden-node" sequencer --rpc.listen "$RPC" --data-directo
     --validator.url "http://$VALIDATOR" --ntx-builder.url "http://$NTX" \
     --rpc.network-tx-auth-header-value "$NETWORK_TX_AUTH" \
     --block.interval 3s --batch.interval 1s
-start prover      "$BIN/miden-remote-prover" --kind=transaction --port="$PROVER_PORT"
+# A network transaction's proof runs well past the 60s default on a shared CI runner, and the
+# default capacity of 1 rejects the ntx-builder's retry outright, so it never converges.
+start prover      "$BIN/miden-remote-prover" --kind=transaction --port="$PROVER_PORT" \
+    --timeout 300s --capacity 8
 # Let the sequencer bind its RPC before the ntx-builder dials it.
 sleep 2
 start ntx-builder "$BIN/miden-ntx-builder" start --listen "$NTX" --rpc.url "http://$RPC" \

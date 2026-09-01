@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use clap::{Args, Parser, Subcommand};
 use miden_client::rpc::Endpoint;
+use miden_client::testing::common::TestClient;
 
 mod benchmarks;
 mod config;
@@ -16,7 +17,8 @@ mod masm;
 mod metrics;
 mod report;
 
-use config::{BenchConfig, DEFAULT_STORE_DIR};
+use config::{BenchConfig, DEFAULT_STORE_DIR, RPC_TIMEOUT_MS};
+use miden_client_test_harness::{ClientConfig, fee_funding};
 
 const DEFAULT_ITERATION_COUNT: usize = 5;
 
@@ -38,6 +40,11 @@ struct CliArgs {
     /// for the `SQLite` database and filesystem keystore.
     #[arg(long, global = true, default_value = DEFAULT_STORE_DIR)]
     store: String,
+
+    /// Path to pre-funded basic wallets to draw transaction fees from: either one `.mac` account
+    /// file or a directory of them.
+    #[arg(long, global = true, env = fee_funding::FUNDER_ACCOUNTS_ENV)]
+    funders: Option<PathBuf>,
 }
 
 #[derive(Subcommand, Clone)]
@@ -248,9 +255,16 @@ async fn main() {
     println!("Network: {endpoint}");
     println!("Store directory: {}", store_path.display());
 
-    let mut client = config::create_client(&endpoint, &store_path)
+    let client = config::create_client(&endpoint, &store_path)
         .await
         .expect("Failed to create client");
+
+    let fee_funder = fee_funding::load(
+        &ClientConfig::new(endpoint.clone(), RPC_TIMEOUT_MS),
+        args.funders.as_deref(),
+    )
+    .expect("Failed to load the funder wallets");
+    let mut client = TestClient::from(client).with_fee_funder(fee_funder);
 
     match args.command.startup_mode() {
         StartupMode::Synced => {
@@ -267,7 +281,7 @@ async fn main() {
 
 async fn dispatch_command(
     command: Command,
-    client: &mut miden_client::Client<miden_client::keystore::FilesystemKeyStore>,
+    client: &mut TestClient,
     store_path: PathBuf,
     endpoint: Endpoint,
     store_flag: &str,

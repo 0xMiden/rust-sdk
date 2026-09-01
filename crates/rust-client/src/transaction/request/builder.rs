@@ -28,7 +28,6 @@ use miden_protocol::note::{
 use miden_protocol::transaction::TransactionScript;
 use miden_protocol::vm::AdviceMap;
 use miden_protocol::{Felt, Word};
-use miden_standards::account::auth::{FeeConversionInfo, commit_fee_conversion_info};
 use miden_standards::note::{P2idNote, P2ideNote, PswapNote, PswapNoteStorage, SwapNote};
 
 use super::{
@@ -90,10 +89,10 @@ pub struct TransactionRequestBuilder {
     /// Optional [`Word`] that will be pushed to the stack for the authentication procedure
     /// during transaction execution.
     auth_arg: Option<Word>,
-    /// Whether the auth arg carries fee conversion info set through
-    /// [`TransactionRequestBuilder::fee_conversion_info`], which only accounts with a
-    /// fee-conversion-aware auth component can consume.
-    declares_fee_conversion_info: bool,
+    /// Salt the native fee conversion info is committed under when the transaction is prepared,
+    /// set through [`TransactionRequestBuilder::fee_conversion_salt`]. `None` leaves the client
+    /// to use its fixed default salt.
+    fee_conversion_salt: Option<Word>,
     /// Note scripts that the node's NTX builder will need in its script registry.
     ///
     /// See [`TransactionRequestBuilder::expected_ntx_scripts`] for details.
@@ -120,7 +119,7 @@ impl TransactionRequestBuilder {
             ignore_invalid_input_notes: false,
             script_arg: None,
             auth_arg: None,
-            declares_fee_conversion_info: false,
+            fee_conversion_salt: None,
             expected_ntx_scripts: vec![],
         }
     }
@@ -272,22 +271,20 @@ impl TransactionRequestBuilder {
     #[must_use]
     pub fn auth_arg(mut self, auth_arg: Word) -> Self {
         self.auth_arg = Some(auth_arg);
+        self.fee_conversion_salt = None;
         self
     }
 
-    /// Declares the asset the transaction fee is paid in, and the rate converting the chain's
-    /// native fee into it.
+    /// Declares the salt the fee conversion info is committed under.
     ///
-    /// The info is committed to through the transaction's auth args, so it only has an effect on
-    /// accounts whose auth component reads them: [`AuthSingleSig`](crate::auth::AuthSingleSig) and
-    /// [`AuthMultisig`](crate::auth::AuthMultisig). Executing
-    /// such a request against an account with any other auth component is rejected before execution
-    /// with [`TransactionRequestError::FeeConversionInfoUnsupported`].
+    /// Fees are always settled in the chain's native fee asset at rate 1/1. The client commits
+    /// that info through the transaction's auth args when preparing the transaction, under a
+    /// fixed default salt.
     #[must_use]
-    pub fn fee_conversion_info(mut self, conversion_info: FeeConversionInfo, salt: Word) -> Self {
-        let (auth_arg, preimage) = commit_fee_conversion_info(conversion_info, salt);
-        self.declares_fee_conversion_info = true;
-        self.auth_arg(auth_arg).extend_advice_map([(auth_arg, preimage)])
+    pub fn fee_conversion_salt(mut self, salt: Word) -> Self {
+        self.fee_conversion_salt = Some(salt);
+        self.auth_arg = None;
+        self
     }
 
     /// Specifies note scripts that the node's network transaction (NTX) builder will need in
@@ -642,7 +639,7 @@ impl TransactionRequestBuilder {
             ignore_invalid_input_notes: self.ignore_invalid_input_notes,
             script_arg: self.script_arg,
             auth_arg: self.auth_arg,
-            declares_fee_conversion_info: self.declares_fee_conversion_info,
+            fee_conversion_salt: self.fee_conversion_salt,
             expected_ntx_scripts: self.expected_ntx_scripts,
         })
     }

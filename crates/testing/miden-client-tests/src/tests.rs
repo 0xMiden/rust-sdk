@@ -439,7 +439,8 @@ async fn sync_state() {
 #[tokio::test]
 async fn sync_state_mmr() {
     let (builder, rpc_api, keystore) = Box::pin(create_test_client_builder()).await;
-    let mut client = builder.irrelevant_block_prune_interval(None).build().await.unwrap();
+    let mut client =
+        TestClient::from(builder.irrelevant_block_prune_interval(None).build().await.unwrap());
     client.ensure_genesis_in_place().await.unwrap();
     // Import note and create wallet so that synced notes do not get discarded (due to being
     // irrelevant)
@@ -528,7 +529,8 @@ async fn sync_state_mmr() {
 #[tokio::test]
 async fn sync_state_rejects_tampered_path_for_same_sync_consumed_note() {
     let (builder, rpc_api, keystore) = Box::pin(create_test_client_builder()).await;
-    let mut client = builder.irrelevant_block_prune_interval(None).build().await.unwrap();
+    let mut client =
+        TestClient::from(builder.irrelevant_block_prune_interval(None).build().await.unwrap());
     client.ensure_genesis_in_place().await.unwrap();
     insert_new_wallet(&mut client, AccountType::Private, &keystore).await.unwrap();
 
@@ -562,7 +564,8 @@ async fn sync_state_rejects_tampered_path_for_same_sync_consumed_note() {
 #[tokio::test]
 async fn sync_state_mmr_with_in_memory_cache() {
     let (builder, rpc_api, keystore) = Box::pin(create_test_client_builder()).await;
-    let mut client = builder.cache_partial_mmr_in_memory(true).build().await.unwrap();
+    let mut client =
+        TestClient::from(builder.cache_partial_mmr_in_memory(true).build().await.unwrap());
     client.ensure_genesis_in_place().await.unwrap();
     seed_mock_transaction_encryption_key(&mut client).await;
 
@@ -590,7 +593,8 @@ async fn sync_state_mmr_with_in_memory_cache() {
 #[tokio::test]
 async fn stale_cached_partial_mmr_is_rebuilt_from_store() {
     let (builder, rpc_api, keystore) = Box::pin(create_test_client_builder()).await;
-    let mut client = builder.cache_partial_mmr_in_memory(true).build().await.unwrap();
+    let mut client =
+        TestClient::from(builder.cache_partial_mmr_in_memory(true).build().await.unwrap());
     client.ensure_genesis_in_place().await.unwrap();
     seed_mock_transaction_encryption_key(&mut client).await;
     insert_new_wallet(&mut client, AccountType::Private, &keystore).await.unwrap();
@@ -1589,7 +1593,7 @@ async fn import_by_id_already_consumed_note_is_findable_by_id() {
 /// make block 4 irrelevant on demand.
 async fn setup_prunable_block_scenario(
     prune_interval: Option<u32>,
-) -> (MockClient<FilesystemKeyStore>, MockRpcApi, AccountId, Note) {
+) -> (TestClient, MockRpcApi, AccountId, Note) {
     let mut builder = MockChainBuilder::new();
     let mock_account = builder.add_existing_mock_account(miden_testing::Auth::IncrNonce).unwrap();
 
@@ -1676,7 +1680,7 @@ async fn setup_prunable_block_scenario(
         "setup precondition: two relevant blocks tracked",
     );
 
-    (client, mock_rpc, mock_account.id(), note_second)
+    (TestClient::from(client), mock_rpc, mock_account.id(), note_second)
 }
 
 /// Consumes `note` against `account_id` on the mocked chain and proves the resulting block, so the
@@ -2481,7 +2485,8 @@ async fn get_output_notes() {
 async fn account_rollback() {
     let (builder, mock_rpc_api, authenticator) = Box::pin(create_test_client_builder()).await;
 
-    let mut client = builder.tx_discard_delta(Some(TX_DISCARD_DELTA)).build().await.unwrap();
+    let mut client =
+        TestClient::from(builder.tx_discard_delta(Some(TX_DISCARD_DELTA)).build().await.unwrap());
 
     client.sync_state().await.unwrap();
     seed_mock_transaction_encryption_key(&mut client).await;
@@ -3333,9 +3338,7 @@ async fn pswap_cancel_test() {
 // keystore. This is what lets the PSWAP lineage test model Alice and Bob as two
 // genuinely separate clients (as they are in production), rather than two
 // accounts colocated on one store.
-async fn create_pswap_test_client(
-    mock_rpc_api: &MockRpcApi,
-) -> (MockClient<FilesystemKeyStore>, FilesystemKeyStore) {
+async fn create_pswap_test_client(mock_rpc_api: &MockRpcApi) -> (TestClient, FilesystemKeyStore) {
     let mut seed_rng = rand::rng();
     let coin_seed: [u64; 4] = seed_rng.random();
     let rng = RandomCoin::new(coin_seed.map(|v| Felt::new_unchecked(v >> 1)).into());
@@ -3354,7 +3357,7 @@ async fn create_pswap_test_client(
     client.ensure_genesis_in_place().await.unwrap();
     seed_mock_transaction_encryption_key(&mut client).await;
 
-    (client, keystore)
+    (TestClient::from(client), keystore)
 }
 
 /// Two-client mock-chain test: Alice creates a PSWAP, Bob partial-fills, Alice reclaims the
@@ -3900,7 +3903,7 @@ async fn pswap_asset_pair_tag_isolated_per_order() {
         &FungibleAsset::new(btc_faucet.id(), 40).unwrap(),
         &FungibleAsset::new(eth_faucet.id(), 20).unwrap(),
     );
-    let pair_subscriptions = async |client: &MockClient<FilesystemKeyStore>| -> usize {
+    let pair_subscriptions = async |client: &TestClient| -> usize {
         client
             .get_note_tags()
             .await
@@ -4890,10 +4893,9 @@ async fn prepare_offline_bootstrap_inserts_mock_chain_genesis() {
 // HELPERS
 // ================================================================================================
 
-pub async fn create_test_client() -> (MockClient<FilesystemKeyStore>, MockRpcApi, FilesystemKeyStore)
-{
+pub async fn create_test_client() -> (TestClient, MockRpcApi, FilesystemKeyStore) {
     let (builder, rpc_api, keystore) = Box::pin(create_test_client_builder()).await;
-    let mut client = builder.build().await.unwrap();
+    let mut client = TestClient::from(builder.build().await.unwrap());
     client.ensure_genesis_in_place().await.unwrap();
     seed_mock_transaction_encryption_key(&mut client).await;
 

@@ -5,14 +5,22 @@ retries        = { backoff = "exponential", count = 2, delay = "1s", jitter = tr
 slow-timeout   = { period = "3m", terminate-after = 2 }
 status-level   = "skip"
 
-# The integration tests all share a node instance, so cap concurrency to reduce
-# pressure on the node until the node-side contention issue is resolved.
+# The integration tests share a node instance and prove locally, so concurrency is kept low.
 [test-groups.integration]
-max-threads = 2
+max-threads = 3
 
 [[profile.default.overrides]]
 filter           = "package(miden-client-unit-tests)"
 threads-required = 3
+
+# The agglayer tests wait on network transactions, so they run one at a time with a raised timeout.
+[test-groups.agglayer]
+max-threads = 1
+
+[[profile.default.overrides]]
+filter       = "test(/agglayer/)"
+slow-timeout = { period = "3m", terminate-after = 4 }
+test-group   = "agglayer"
 
 [[profile.default.overrides]]
 filter     = "binary(integration)"

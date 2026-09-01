@@ -18,6 +18,15 @@ WARNINGS=RUSTDOCFLAGS="-D warnings"
 
 TEST_MIDEN_NOTE_TRANSPORT_URL?=http://127.0.0.1:57292
 
+# Pre-funded wallets the integration tests draw transaction fees from, either one `.mac` file or a
+# directory of them, written here by `start-test-node.sh`. Against a deployed network, point this at
+# wallets funded out of band. Unused on a fee-free chain, where no account needs funding.
+MIDEN_FUNDER_ACCOUNTS_DIR?=$(CURDIR)/data/funders
+
+# Pre-deployed agglayer accounts the agglayer tests transact with, written here by
+# `start-test-node.sh`. Against a deployed network, point this at the accounts deployed there.
+AGGLAYER_ACCOUNTS_DIR?=$(CURDIR)/data
+
 # Sizes the SQL store scaling benchmark sweeps over. Kept small enough to run on every PR, and
 # overridable for a deeper local run.
 STORE_BENCH_ARGS?=--notes 1000,10000 --accounts 100,1000 --iterations 5
@@ -100,10 +109,6 @@ bench-store: ## Run the SQL store scaling benchmark (no node needed)
 start-node: ## Start the testing node in the foreground, streaming logs (Ctrl+C stops it)
 	./scripts/start-test-node.sh
 
-.PHONY: start-node-agglayer
-start-node-agglayer: ## Start the testing node with agglayer genesis accounts
-	AGGLAYER_GENESIS=1 ./scripts/start-test-node.sh
-
 .PHONY: start-node-background
 start-node-background: ## Start the testing node in the background
 	./scripts/start-test-node.sh --background
@@ -126,16 +131,27 @@ start-note-transport:
 
 .PHONY: integration-test
 integration-test: ## Run integration tests
-	cargo nextest run --workspace --release --test=integration
+	MIDEN_FUNDER_ACCOUNTS_DIR=$(MIDEN_FUNDER_ACCOUNTS_DIR) AGGLAYER_ACCOUNTS_DIR=$(AGGLAYER_ACCOUNTS_DIR) cargo nextest run --workspace --release --test=integration
 
-.PHONY: integration-test-full
-integration-test-full: ## Run the integration test binary with ignored tests included (requires note transport service)
-	TEST_MIDEN_NOTE_TRANSPORT_URL=$(TEST_MIDEN_NOTE_TRANSPORT_URL) cargo nextest run --workspace --release --test=integration
-	cargo nextest run --workspace --release --test=integration --run-ignored ignored-only -- import_genesis_accounts_can_be_used_for_transactions
+# The agglayer tests run in their own job against their own node: they spend most of their time
+# waiting on network transactions, so sharing a node with the rest only stretches everyone out.
+.PHONY: integration-test-non-agglayer
+integration-test-non-agglayer: ## Run every integration test except the agglayer ones, ignored tests included (requires note transport service)
+	TEST_MIDEN_NOTE_TRANSPORT_URL=$(TEST_MIDEN_NOTE_TRANSPORT_URL) MIDEN_FUNDER_ACCOUNTS_DIR=$(MIDEN_FUNDER_ACCOUNTS_DIR) cargo nextest run --workspace --release --test=integration -E 'not test(/agglayer/)'
+	MIDEN_FUNDER_ACCOUNTS_DIR=$(MIDEN_FUNDER_ACCOUNTS_DIR) cargo nextest run --workspace --release --test=integration --run-ignored ignored-only -- import_genesis_accounts_can_be_used_for_transactions
+
+# `agglayer_bridge_in_out` is excluded: its closing B2AGG note produces a network transaction the
+# node cannot prove inside the ntx-builder's deadline, and the builder then retries it for ~15
+# minutes. The test itself passes — it never asserts the note was consumed — but the bridge is
+# occupied throughout, so the agglayer tests that run afterwards never get their notes consumed.
+# TODO: restore once the bridge-out proof fits the deadline, and make the test assert on it.
+.PHONY: integration-test-agglayer
+integration-test-agglayer: ## Run only the agglayer integration tests
+	MIDEN_FUNDER_ACCOUNTS_DIR=$(MIDEN_FUNDER_ACCOUNTS_DIR) AGGLAYER_ACCOUNTS_DIR=$(AGGLAYER_ACCOUNTS_DIR) cargo nextest run --workspace --release --test=integration -E 'test(/agglayer/) - test(=agglayer_bridge_in_out)'
 
 .PHONY: integration-test-miden-bench
 integration-test-miden-bench: install-bench ## Run miden-bench smoke tests
-	./scripts/test-miden-bench-smoke.sh
+	MIDEN_FUNDER_ACCOUNTS_DIR=$(MIDEN_FUNDER_ACCOUNTS_DIR) ./scripts/test-miden-bench-smoke.sh
 
 .PHONY: test-dev
 test-dev: ## Run tests with debug assertions enabled via test-dev profile
@@ -143,11 +159,11 @@ test-dev: ## Run tests with debug assertions enabled via test-dev profile
 
 .PHONY: integration-test-dev
 integration-test-dev: ## Run integration tests with debug assertions enabled via test-dev profile
-	cargo nextest run --workspace --cargo-profile test-dev --test=integration
+	MIDEN_FUNDER_ACCOUNTS_DIR=$(MIDEN_FUNDER_ACCOUNTS_DIR) AGGLAYER_ACCOUNTS_DIR=$(AGGLAYER_ACCOUNTS_DIR) cargo nextest run --workspace --cargo-profile test-dev --test=integration
 
 .PHONY: integration-test-binary
 integration-test-binary: ## Run the integration tests using the standalone binary (requires note transport service)
-	TEST_MIDEN_NOTE_TRANSPORT_URL=$(TEST_MIDEN_NOTE_TRANSPORT_URL) cargo run --package miden-client-integration-tests --release --locked
+	TEST_MIDEN_NOTE_TRANSPORT_URL=$(TEST_MIDEN_NOTE_TRANSPORT_URL) AGGLAYER_ACCOUNTS_DIR=$(AGGLAYER_ACCOUNTS_DIR) cargo run --package miden-client-integration-tests --release --locked -- --funders $(MIDEN_FUNDER_ACCOUNTS_DIR)
 
 # --- Installing ----------------------------------------------------------------------------------
 

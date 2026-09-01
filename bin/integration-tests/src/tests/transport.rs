@@ -16,8 +16,7 @@ use miden_client::testing::common::{
     wait_for_tx,
 };
 use miden_client::transaction::TransactionRequestBuilder;
-
-use crate::tests::config::ClientConfig;
+use miden_client_test_harness::ClientConfig;
 
 // TRANSPORT NOTE INCLUSION PROOF AND CONSUMPTION TESTS
 // ================================================================================================
@@ -34,22 +33,15 @@ pub async fn test_transport_note_inclusion_proof_and_consumption(
         return Ok(());
     }
 
-    let (rpc_endpoint, rpc_timeout, ..) = client_config.as_parts();
-    let sender_config = ClientConfig::new(rpc_endpoint.clone(), rpc_timeout)
-        .with_note_transport_endpoint(client_config.note_transport_endpoint.clone());
-    let recipient_config = ClientConfig::new(rpc_endpoint, rpc_timeout)
-        .with_note_transport_endpoint(client_config.note_transport_endpoint);
+    let sender_config = client_config.clone();
+    let recipient_config = client_config;
 
-    let (sender_builder, sender_keystore) = sender_config
-        .into_client_builder()
+    let (mut sender, sender_keystore) =
+        sender_config.into_unsynced_client().await.context("failed to build sender")?;
+    let (mut recipient, recipient_keystore) = recipient_config
+        .into_unsynced_client()
         .await
-        .context("failed to get sender builder")?;
-    let mut sender = sender_builder.build().await.context("failed to build sender")?;
-    let (recipient_builder, recipient_keystore) = recipient_config
-        .into_client_builder()
-        .await
-        .context("failed to get recipient builder")?;
-    let mut recipient = recipient_builder.build().await.context("failed to build recipient")?;
+        .context("failed to build recipient")?;
 
     wait_for_node(&mut sender).await;
 
@@ -149,22 +141,15 @@ pub async fn test_transport_multiple_notes_different_blocks(
         return Ok(());
     }
 
-    let (rpc_endpoint, rpc_timeout, ..) = client_config.as_parts();
-    let sender_config = ClientConfig::new(rpc_endpoint.clone(), rpc_timeout)
-        .with_note_transport_endpoint(client_config.note_transport_endpoint.clone());
-    let recipient_config = ClientConfig::new(rpc_endpoint, rpc_timeout)
-        .with_note_transport_endpoint(client_config.note_transport_endpoint);
+    let sender_config = client_config.clone();
+    let recipient_config = client_config;
 
-    let (sender_builder, sender_keystore) = sender_config
-        .into_client_builder()
+    let (mut sender, sender_keystore) =
+        sender_config.into_unsynced_client().await.context("failed to build sender")?;
+    let (mut recipient, recipient_keystore) = recipient_config
+        .into_unsynced_client()
         .await
-        .context("failed to get sender builder")?;
-    let mut sender = sender_builder.build().await.context("failed to build sender")?;
-    let (recipient_builder, recipient_keystore) = recipient_config
-        .into_client_builder()
-        .await
-        .context("failed to get recipient builder")?;
-    let mut recipient = recipient_builder.build().await.context("failed to build recipient")?;
+        .context("failed to build recipient")?;
 
     wait_for_node(&mut sender).await;
 
@@ -305,22 +290,15 @@ pub async fn test_transport_note_not_yet_committed(client_config: ClientConfig) 
         return Ok(());
     }
 
-    let (rpc_endpoint, rpc_timeout, ..) = client_config.as_parts();
-    let sender_config = ClientConfig::new(rpc_endpoint.clone(), rpc_timeout)
-        .with_note_transport_endpoint(client_config.note_transport_endpoint.clone());
-    let recipient_config = ClientConfig::new(rpc_endpoint, rpc_timeout)
-        .with_note_transport_endpoint(client_config.note_transport_endpoint);
+    let sender_config = client_config.clone();
+    let recipient_config = client_config;
 
-    let (sender_builder, sender_keystore) = sender_config
-        .into_client_builder()
+    let (mut sender, sender_keystore) =
+        sender_config.into_unsynced_client().await.context("failed to build sender")?;
+    let (mut recipient, recipient_keystore) = recipient_config
+        .into_unsynced_client()
         .await
-        .context("failed to get sender builder")?;
-    let mut sender = sender_builder.build().await.context("failed to build sender")?;
-    let (recipient_builder, recipient_keystore) = recipient_config
-        .into_client_builder()
-        .await
-        .context("failed to get recipient builder")?;
-    let mut recipient = recipient_builder.build().await.context("failed to build recipient")?;
+        .context("failed to build recipient")?;
 
     wait_for_node(&mut sender).await;
 

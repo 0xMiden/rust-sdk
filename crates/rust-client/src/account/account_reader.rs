@@ -121,6 +121,18 @@ impl AccountReader {
     // VAULT ACCESS
     // --------------------------------------------------------------------------------------------
 
+    /// Retrieves all assets in the account's vault as a plain list, without building the vault's
+    /// Merkle tree.
+    ///
+    /// To load the entire vault, use
+    /// [`Client::get_account_vault`](crate::Client::get_account_vault).
+    pub async fn assets(&self) -> Result<Vec<Asset>, ClientError> {
+        self.store
+            .get_account_assets(self.account_id)
+            .await
+            .map_err(ClientError::StoreError)
+    }
+
     /// Retrieves the balance of a fungible asset in the account's vault.
     ///
     /// Returns [`AssetAmount::ZERO`] if the asset is not present in the vault or if the asset is

@@ -23,7 +23,8 @@ const INTEGRATION_TESTS_HEADER: &str = r#"// Auto-generated integration tests
 "#;
 
 const INTEGRATION_TESTS_IMPORTS: &str = r#"use anyhow::Result;
-use miden_client_integration_tests::tests::config::ClientConfig;"#;
+use miden_client_test_harness::ClientConfig;
+use miden_client_test_harness::fee_funding;"#;
 
 const TOKIO_TEST_WRAPPER: &str = r#"/// Auto-generated tokio test wrapper for {ORIGINAL_FUNCTION_NAME}
 #[tokio::test]
@@ -32,8 +33,11 @@ async fn {TEST_FUNCTION_NAME}() -> Result<()> {{
     // TEST_MIDEN_PROVER_URL, TEST_MIDEN_NOTE_TRANSPORT_URL, and MIDEN_TEST_TIMEOUT.
     // Note transport is cleared here to avoid eager gRPC connections for every test;
     // transport tests configure their own transport via TEST_MIDEN_NOTE_TRANSPORT_URL.
+    // The funder wallets come from MIDEN_FUNDER_ACCOUNTS_DIR, since a `#[tokio::test]` wrapper has
+    // no arguments of its own to read.
     let client_config = ClientConfig::default()
-        .with_note_transport_endpoint(None);
+        .with_note_transport_endpoint(None)
+        .with_funders(fee_funding::funders_path_from_env().as_deref())?;
     {ORIGINAL_FUNCTION_NAME}(client_config).await
 }}"#;
 
@@ -341,8 +345,7 @@ fn parse_test_function_name(line: &str) -> Option<String> {
 /// ```rust
 /// // File header and imports
 /// use anyhow::Result;
-///
-/// use crate::tests::config::ClientConfig;
+/// use miden_client_test_harness::ClientConfig;
 /// // ... other imports
 ///
 /// /// Auto-generated tokio test wrapper for my_test

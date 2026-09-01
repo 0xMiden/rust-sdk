@@ -4,6 +4,7 @@ use miden_client::auth::RPO_FALCON_SCHEME_ID;
 use miden_client::testing::common::{execute_tx_and_sync, insert_new_wallet, wait_for_blocks};
 use miden_client::transaction::TransactionRequestBuilder;
 use miden_client::{Felt, Word, ZERO};
+use miden_client_test_harness::ClientConfig;
 
 use super::fpi::{FPI_STORAGE_VALUE, MAP_KEY, MAP_SLOT_NAME, deploy_foreign_account};
 use super::network_transaction::{
@@ -12,7 +13,6 @@ use super::network_transaction::{
     get_network_note_with_script,
     note_script_root,
 };
-use crate::tests::config::ClientConfig;
 
 // TESTS
 // ================================================================================================
@@ -70,10 +70,7 @@ pub async fn test_network_fpi(client_config: ClientConfig) -> Result<()> {
 
     client.sync_state().await?;
 
-    let (mut client2, keystore2) =
-        ClientConfig::new(client_config.rpc_endpoint, client_config.rpc_timeout_ms)
-            .into_client()
-            .await?;
+    let (mut client2, keystore2) = client_config.into_client().await?;
 
     // NOTE: Syncing the client is important because the client needs to be beyond the account
     // creation block

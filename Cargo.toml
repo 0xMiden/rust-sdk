@@ -7,6 +7,7 @@ members = [
   "bin/miden-cli",
   "crates/rust-client",
   "crates/sqlite-store",
+  "crates/testing/client-test-harness",
   "crates/testing/miden-client-tests",
   "crates/testing/test-node-genesis",
 ]
@@ -38,6 +39,7 @@ opt-level = 1
 # Workspace crates
 miden-client              = { default-features = false, path = "crates/rust-client", version = "0.16.0-rc.3" }
 miden-client-sqlite-store = { default-features = false, path = "crates/sqlite-store", version = "0.16.0-rc.3" }
+miden-client-test-harness = { default-features = false, path = "crates/testing/client-test-harness", version = "0.16.0-rc.3" }
 
 # Miden protocol dependencies
 miden-agglayer  = { default-features = false, version = "0.16.0-rc.6" }
@@ -70,11 +72,13 @@ rand               = { version = "0.10" }
 rand_chacha        = { version = "0.10" }
 regex              = { version = "1.0" }
 rstest             = { version = "0.25" }
+rustix             = { features = ["fs"], version = "1.1" }
 serde              = { features = ["derive"], version = "1.0" }
 serde_json         = { version = "1.0" }
 tempfile           = { version = "3.0" }
 thiserror          = { default-features = false, version = "2.0" }
 tokio              = { features = ["macros", "rt-multi-thread"], version = "1.48" }
+toml               = { version = "0.9" }
 tonic              = { default-features = false, version = "0.14" }
 tracing            = { version = "0.1" }
 tracing-subscriber = { default-features = false, version = "0.3" }

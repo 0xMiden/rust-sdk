@@ -41,27 +41,26 @@ fn fee_charging_chain(balance: u64) -> (MockChain, Account, AccountId) {
     (chain, account, fee_faucet_id)
 }
 
-/// `TransactionRequestBuilder::fee_conversion_info` produces an auth arg and advice map entry the
-/// auth procedure accepts, and the resulting transaction emits the fee note.
+/// The native conversion info commitment, salted with a caller-declared salt the way
+/// `TransactionRequestBuilder::fee_conversion_salt` declares one, is accepted by the auth
+/// procedure, and the resulting transaction emits the fee note.
 #[tokio::test]
 async fn fee_conversion_info_pays_the_transaction_fee() {
     let (chain, account, fee_faucet_id) = fee_charging_chain(FEE_ASSET_BALANCE);
     let salt = Word::from([1u32, 2, 3, 4]);
-    let conversion_info = FeeConversionInfo::one_to_one(fee_faucet_id);
 
-    let request = TransactionRequestBuilder::new()
-        .fee_conversion_info(conversion_info, salt)
-        .build()
-        .unwrap();
-
-    // The builder commits the conversion info rather than storing it verbatim, so the auth arg is
-    // the commitment and the advice map holds its preimage.
-    let (expected_auth_arg, preimage) = commit_fee_conversion_info(conversion_info, salt);
+    // The builder records the declared salt only. The client commits the native conversion info
+    // under it when preparing the transaction, which is reproduced by hand here because the
+    // `MockChain` executes without a `Client`.
+    let request = TransactionRequestBuilder::new().fee_conversion_salt(salt).build().unwrap();
     assert_eq!(
-        *request.auth_arg(),
-        Some(expected_auth_arg),
-        "the request should carry the conversion info commitment as its auth arg"
+        request.fee_conversion_salt(),
+        Some(salt),
+        "the request should carry the declared salt for the client to commit under"
     );
+
+    let (expected_auth_arg, preimage) =
+        commit_fee_conversion_info(FeeConversionInfo::one_to_one(fee_faucet_id), salt);
 
     let executed = Box::pin(
         chain
@@ -84,8 +83,8 @@ async fn fee_conversion_info_pays_the_transaction_fee() {
 }
 
 /// Without committed conversion info the auth procedure aborts, so a request that omits it cannot
-/// be executed on a fee-charging chain. This is why `fee_conversion_info` is mandatory rather than
-/// optional once a chain charges anything.
+/// be executed on a fee-charging chain. This is why the client commits it when preparing every
+/// transaction once a chain charges anything.
 #[tokio::test]
 async fn transaction_without_fee_conversion_info_is_rejected() {
     let (chain, account, _) = fee_charging_chain(FEE_ASSET_BALANCE);

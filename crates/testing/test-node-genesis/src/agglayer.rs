@@ -5,7 +5,6 @@ use std::collections::BTreeSet;
 
 use ::rand::{RngExt, random};
 use anyhow::{Context, Result};
-use miden_agglayer::testing::zero_fee_policy_manager;
 use miden_agglayer::{AggLayerBridge, AggLayerFaucet, BridgeRoles};
 use miden_protocol::account::auth::{AuthScheme, AuthSecretKey};
 use miden_protocol::account::{
@@ -14,13 +13,19 @@ use miden_protocol::account::{
     AccountComponent,
     AccountComponentMetadata,
     AccountFile,
+    AccountId,
     AccountType,
 };
-use miden_protocol::{Felt, ONE, Word};
+use miden_protocol::asset::{Asset, AssetAmount};
+use miden_protocol::note::NoteScriptRoot;
+use miden_protocol::{Felt, Word};
 use miden_standards::account::auth::{Approver, AuthSingleSig};
+use miden_standards::account::fees::{BasicConstantFeePolicy, FeePolicy, FeePolicyManager};
 use miden_standards::account::wallets::BasicWallet;
 use rand_chacha::ChaCha20Rng;
 use rand_chacha::rand_core::SeedableRng;
+
+use crate::into_genesis_account;
 
 /// The `AggLayer` network ID assigned to the Miden chain.
 ///
@@ -45,29 +50,30 @@ pub type AgglayerGenesisAccounts = Vec<(&'static str, AccountFile)>;
 /// 3. Bridge - `AuthNetworkAccount` network account
 /// 4. Faucet - `AuthNetworkAccount` network account for bridged tokens
 ///
-/// All accounts have their nonce set to ONE (genesis convention), i.e. they are deployed.
+/// All four are deployed at genesis and hold `fee_balance` of the native fee asset, so each can
+/// settle the fee of its own transactions.
 ///
-/// In protocol 0.15 the bridge and faucet use `AuthNetworkAccount`, which rejects any
-/// client-submitted transaction (the auth procedure forbids tx scripts, and the miden-client
-/// always attaches one). They therefore cannot be deployed by a client transaction; they must be
-/// deployed at genesis (here). The bridge is left **unconfigured** - the faucet is registered at
+/// The bridge and faucet use `AuthNetworkAccount`, which rejects any input note whose script is not
+/// in the account's allowlist. Theirs holds only the agglayer protocol's own notes, none of which
+/// is a payment, so there is no way to hand them the fee asset once genesis is sealed and their
+/// balance has to be seeded here. The bridge is left **unconfigured** - the faucet is registered at
 /// test time by submitting a `CONFIG_AGG_BRIDGE` note, which the node processes as a network
 /// transaction (the only path allowed to mutate an `AuthNetworkAccount`). This keeps the genesis
 /// faucet/bridge state consistent with the foundry-generated CLAIM leaf the test uses.
-pub fn create_agglayer_genesis_accounts() -> Result<AgglayerGenesisAccounts> {
+pub fn create_agglayer_genesis_accounts(fee_balance: Asset) -> Result<AgglayerGenesisAccounts> {
     let mut rng = ChaCha20Rng::from_seed(random());
 
     // 1. Create Bridge Admin
     let admin_secret = AuthSecretKey::new_falcon512_poseidon2_with_rng(&mut rng);
     let admin_account = build_wallet_account(&mut rng, &admin_secret)
         .context("failed to create bridge admin account")?;
-    let admin_account = set_nonce_to_one(admin_account);
+    let admin_account = into_genesis_account(admin_account, fee_balance)?;
 
     // 2. Create GER Manager
     let ger_secret = AuthSecretKey::new_falcon512_poseidon2_with_rng(&mut rng);
     let ger_account = build_wallet_account(&mut rng, &ger_secret)
         .context("failed to create GER manager account")?;
-    let ger_account = set_nonce_to_one(ger_account);
+    let ger_account = into_genesis_account(ger_account, fee_balance)?;
 
     // 3. Create and deploy the Bridge account (unconfigured; configured at test time).
     let bridge_seed: Word = rng.random::<[u32; 4]>().map(Felt::from).into();
@@ -82,11 +88,11 @@ pub fn create_agglayer_genesis_accounts() -> Result<AgglayerGenesisAccounts> {
         admin_account.id(),
         roles,
         MIDEN_NETWORK_ID,
-        zero_fee_policy_manager(AggLayerBridge::allowed_notes()),
+        zero_fee_policy_manager(fee_balance.faucet_id(), AggLayerBridge::allowed_notes()),
     )
     .build()
     .context("failed to build bridge account")?;
-    let bridge = set_nonce_to_one(bridge);
+    let bridge = into_genesis_account(bridge, fee_balance)?;
 
     // 4. Create and deploy the Faucet. In protocol 0.15 the faucet no longer stores conversion
     // metadata (origin token address, network, scale, metadata hash); that data lives on the
@@ -100,11 +106,11 @@ pub fn create_agglayer_genesis_accounts() -> Result<AgglayerGenesisAccounts> {
         Felt::ZERO,
         admin_account.id(),
         bridge.id(),
-        zero_fee_policy_manager(AggLayerFaucet::allowed_notes()),
+        zero_fee_policy_manager(fee_balance.faucet_id(), AggLayerFaucet::allowed_notes()),
     )
     .build()
     .context("failed to build agglayer faucet account")?;
-    let faucet = set_nonce_to_one(faucet);
+    let faucet = into_genesis_account(faucet, fee_balance)?;
 
     let admin_file = AccountFile::new(admin_account, vec![admin_secret]);
     let ger_file = AccountFile::new(ger_account, vec![ger_secret]);
@@ -119,9 +125,28 @@ pub fn create_agglayer_genesis_accounts() -> Result<AgglayerGenesisAccounts> {
     ])
 }
 
-fn set_nonce_to_one(account: Account) -> Account {
-    let (id, vault, storage, code, ..) = account.into_parts();
-    Account::new_unchecked(id, vault, storage, code, ONE, None)
+/// Builds a fee policy charging nothing for every note the account accepts, denominated in
+/// `fee_faucet_id`.
+///
+/// `fee_faucet_id` must be the faucet the chain charges fees in, as named by the genesis header's
+/// fee parameters. A network account settles its fee against the faucet its own policy names, so a
+/// policy pointing anywhere else leaves the ntx-builder unable to execute the account's
+/// transactions at all, and its notes sit unconsumed.
+///
+/// Every allowlisted script needs an entry, including a zero one: a script root missing from the
+/// schedule aborts fee estimation rather than defaulting to free.
+fn zero_fee_policy_manager(
+    fee_faucet_id: AccountId,
+    allowed_notes: BTreeSet<NoteScriptRoot>,
+) -> FeePolicyManager {
+    let fee_policy: FeePolicy = BasicConstantFeePolicy::new()
+        .with_fees(allowed_notes.into_iter().map(|root| (root, AssetAmount::ZERO)))
+        .into();
+
+    FeePolicyManager::builder()
+        .fee_faucet_id(fee_faucet_id)
+        .active_fee_policy(fee_policy)
+        .build()
 }
 
 fn build_wallet_account(rng: &mut ChaCha20Rng, secret: &AuthSecretKey) -> Result<Account> {

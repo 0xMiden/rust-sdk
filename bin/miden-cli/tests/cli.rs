@@ -30,6 +30,7 @@ use miden_client::testing::account_id::ACCOUNT_ID_PRIVATE_SENDER;
 use miden_client::testing::common::{
     ACCOUNT_ID_REGULAR,
     FilesystemKeyStore,
+    TestClient,
     create_test_store_path,
 };
 use miden_client::utils::Serializable;
@@ -42,10 +43,11 @@ use miden_client::vm::{
     SectionId,
     TargetType,
 };
-use miden_client::{self, Client, Deserializable, Felt};
+use miden_client::{self, Deserializable, Felt};
 use miden_client_cli::MIDEN_DIR;
-use miden_client_cli::config::Network;
+use miden_client_cli::config::{KEYSTORE_DIRECTORY, Network};
 use miden_client_sqlite_store::SqliteStore;
+use miden_client_test_harness::{ClientConfig, fee_funding};
 use midenc_hir_type::{CallConv, FunctionType, Type};
 use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
@@ -334,10 +336,11 @@ fn silent_initialization_does_not_override_existing_config() {
 /// This test tries to run a mint TX using the CLI for an account that isn't tracked.
 #[tokio::test]
 async fn mint_with_untracked_account() -> Result<()> {
-    let temp_dir = init_cli().1;
+    let (store_path, temp_dir, endpoint) = init_cli();
 
     // Create faucet account
     let fungible_faucet_account_id = new_faucet_cli(&temp_dir, AccountType::Private);
+    fund_cli_account(&temp_dir, &store_path, &endpoint, &fungible_faucet_account_id).await?;
 
     sync_cli(&temp_dir);
 
@@ -362,6 +365,7 @@ async fn token_symbol_mapping() -> Result<()> {
 
     // Create faucet account
     let fungible_faucet_account_id = new_faucet_cli(&temp_dir, AccountType::Private);
+    fund_cli_account(&temp_dir, &store_path, &endpoint, &fungible_faucet_account_id).await?;
 
     // Encode the faucet ID as bech32 using the same NetworkId the CLI derives from its
     // configured endpoint. The token symbol map's `address` field accepts bech32 only.
@@ -433,6 +437,7 @@ async fn public_faucet_metadata_is_fetched_and_persisted() -> Result<()> {
 
     let wallet_account_id = new_wallet_cli(&temp_dir, AccountType::Public);
     let fungible_faucet_account_id = new_faucet_cli(&temp_dir, AccountType::Public);
+    fund_cli_account(&temp_dir, &store_path, &endpoint, &fungible_faucet_account_id).await?;
 
     // Deliberately do NOT write a token_symbol_map.toml — the TOML path must miss so the
     // resolver falls through to the settings store and then to RPC.
@@ -517,8 +522,9 @@ async fn public_faucet_metadata_is_fetched_and_persisted() -> Result<()> {
 #[tokio::test]
 async fn show_untracked_public_account() -> Result<()> {
     // First client: creates a public fungible faucet and commits it to the node via a mint.
-    let (_store_path_a, temp_dir_a, endpoint) = init_cli();
+    let (store_path_a, temp_dir_a, endpoint) = init_cli();
     let fungible_faucet_account_id = new_faucet_cli(&temp_dir_a, AccountType::Public);
+    fund_cli_account(&temp_dir_a, &store_path_a, &endpoint, &fungible_faucet_account_id).await?;
     sync_cli(&temp_dir_a);
 
     mint_cli(
@@ -780,14 +786,16 @@ async fn import_genesis_accounts_can_be_used_for_transactions() -> Result<()> {
 async fn cli_export_import_note() -> Result<()> {
     const NOTE_FILENAME: &str = "test_note.mno";
 
-    let temp_dir_1 = init_cli().1;
-    let temp_dir_2 = init_cli().1;
+    let (store_path_1, temp_dir_1, endpoint_1) = init_cli();
+    let (store_path_2, temp_dir_2, endpoint_2) = init_cli();
 
     // Create wallet account
     let first_basic_account_id = new_wallet_cli(&temp_dir_2, AccountType::Private);
+    fund_cli_account(&temp_dir_2, &store_path_2, &endpoint_2, &first_basic_account_id).await?;
 
     // Create faucet account
     let fungible_faucet_account_id = new_faucet_cli(&temp_dir_1, AccountType::Private);
+    fund_cli_account(&temp_dir_1, &store_path_1, &endpoint_1, &fungible_faucet_account_id).await?;
 
     sync_cli(&temp_dir_1);
 
@@ -848,14 +856,16 @@ async fn cli_export_import_account() -> Result<()> {
     const FAUCET_FILENAME: &str = "test_faucet.mac";
     const WALLET_FILENAME: &str = "test_wallet.wal";
 
-    let (_, temp_dir_1, _) = init_cli();
+    let (store_path_1, temp_dir_1, endpoint_1) = init_cli();
     let (store_path_2, temp_dir_2, endpoint_2) = init_cli();
 
     // Create faucet account
     let faucet_id = new_faucet_cli(&temp_dir_1, AccountType::Private);
+    fund_cli_account(&temp_dir_1, &store_path_1, &endpoint_1, &faucet_id).await?;
 
     // Create wallet account
     let wallet_id = new_wallet_cli(&temp_dir_1, AccountType::Private);
+    fund_cli_account(&temp_dir_1, &store_path_1, &endpoint_1, &wallet_id).await?;
 
     // Export the accounts
     let mut export_cmd = cargo_bin_cmd!("miden-client");
@@ -1075,13 +1085,15 @@ fn pswap_cli_invalid_args() {
 
 #[tokio::test]
 async fn consume_unauthenticated_note() -> Result<()> {
-    let temp_dir = init_cli().1;
+    let (store_path, temp_dir, endpoint) = init_cli();
 
     // Create wallet account
     let wallet_account_id = new_wallet_cli(&temp_dir, AccountType::Public);
+    fund_cli_account(&temp_dir, &store_path, &endpoint, &wallet_account_id).await?;
 
     // Create faucet account
     let fungible_faucet_account_id = new_faucet_cli(&temp_dir, AccountType::Public);
+    fund_cli_account(&temp_dir, &store_path, &endpoint, &fungible_faucet_account_id).await?;
 
     sync_cli(&temp_dir);
 
@@ -1297,48 +1309,6 @@ async fn list_addresses_remove() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn new_wallet_with_deploy_flag() -> Result<()> {
-    let (store_path, temp_dir, endpoint) = init_cli();
-
-    sync_cli(&temp_dir);
-
-    let mut create_wallet_cmd = cargo_bin_cmd!("miden-client");
-    create_wallet_cmd.args(["new-wallet", "-t", "public", "--deploy"]);
-
-    let output = create_wallet_cmd.current_dir(&temp_dir).output().unwrap();
-    assert!(
-        output.status.success(),
-        "Failed to create and deploy wallet: {}",
-        String::from_utf8(output.stderr).unwrap()
-    );
-
-    // Extract the account ID from the output
-    let output_str = std::str::from_utf8(&output.stdout).unwrap();
-    let account_id_str = output_str
-        .split_whitespace()
-        .skip_while(|&word| word != "-s")
-        .nth(1)
-        .expect("Failed to extract account ID from output");
-
-    // Sync to ensure the transaction is committed
-    sync_cli(&temp_dir);
-
-    // Create a client and retrieve the account to verify the nonce
-    let (client, _) = create_rust_client_with_store_path(&store_path, endpoint).await?;
-    let account_id = AccountId::from_hex(account_id_str)?;
-    let nonce = client.account_reader(account_id).nonce().await?;
-
-    // Verify that the nonce is non-zero (account was deployed)
-    // By convention, a nonce of 0 indicates an undeployed account
-    assert!(
-        nonce.as_canonical_u64() > 0,
-        "Account nonce should be non-zero after deployment, but got: {nonce}"
-    );
-
-    Ok(())
-}
-
 // HELPERS
 // ================================================================================================
 
@@ -1541,6 +1511,8 @@ fn new_faucet_cli(cli_path: &Path, visibility: AccountType) -> String {
         visibility.to_string().as_str(),
         "-p",
         "basic-fungible-faucet",
+        "-p",
+        "basic-wallet",
         "-i",
         INIT_DATA_FILENAME,
     ]);
@@ -1605,11 +1577,28 @@ fn encode_address_cli(
     String::from_utf8(output.stdout).unwrap().trim().to_string()
 }
 
-pub type TestClient = Client<FilesystemKeyStore>;
-
-/// Creates a new [`Client`] with a given store. Also returns the keystore associated with it.
+/// Creates a new [`TestClient`] with a given store. Also returns the keystore associated with it.
 async fn create_rust_client_with_store_path(
     store_path: &Path,
+    endpoint: Endpoint,
+) -> Result<(TestClient, FilesystemKeyStore)> {
+    create_rust_client(store_path, &temp_dir(), endpoint).await
+}
+
+/// Creates a new [`Client`] over both the store and the keystore of the CLI running in `cli_path`,
+/// so it can sign for the accounts the CLI created.
+async fn create_rust_client_with_cli_keystore(
+    store_path: &Path,
+    cli_path: &Path,
+    endpoint: Endpoint,
+) -> Result<(TestClient, FilesystemKeyStore)> {
+    let keystore_dir = cli_path.join(MIDEN_DIR).join(KEYSTORE_DIRECTORY);
+    create_rust_client(store_path, &keystore_dir, endpoint).await
+}
+
+async fn create_rust_client(
+    store_path: &Path,
+    keystore_path: &Path,
     endpoint: Endpoint,
 ) -> Result<(TestClient, FilesystemKeyStore)> {
     let store = {
@@ -1622,7 +1611,7 @@ async fn create_rust_client_with_store_path(
 
     let rng = Box::new(RandomCoin::new(coin_seed.map(Felt::new_unchecked).into()));
 
-    let keystore = FilesystemKeyStore::new(temp_dir())?;
+    let keystore = FilesystemKeyStore::new(keystore_path.to_path_buf())?;
 
     let client = ClientBuilder::new()
         .grpc_client(&endpoint, Some(10_000))
@@ -1632,7 +1621,51 @@ async fn create_rust_client_with_store_path(
         .build()
         .await?;
 
-    Ok((client, keystore))
+    Ok((TestClient::from(client), keystore))
+}
+
+/// Runs `future` to completion on a private runtime, so the synchronous CLI tests can reach the
+/// async client helpers without having to become async themselves.
+fn block_on<F: std::future::Future>(future: F) -> F::Output {
+    tokio::runtime::Runtime::new()
+        .expect("failed to build a runtime")
+        .block_on(future)
+}
+
+/// Gives an account the CLI just created enough of the native fee asset to pay for its own
+/// transactions, and deploys it.
+///
+/// Deploys rather than holding the funding note: the CLI runs in its own process, so the funds
+/// have to be in the vault before it transacts.
+async fn fund_cli_account(
+    cli_path: &Path,
+    store_path: &Path,
+    endpoint: &Endpoint,
+    account_id: &str,
+) -> Result<()> {
+    let mut client = cli_funding_client(cli_path, store_path, endpoint).await?;
+
+    client.deploy_account(AccountId::from_hex(account_id)?).await
+}
+
+/// Builds a client over the CLI's own store and keystore, with a fee funder attached so it can pay
+/// on behalf of the accounts the CLI created there.
+async fn cli_funding_client(
+    cli_path: &Path,
+    store_path: &Path,
+    endpoint: &Endpoint,
+) -> Result<TestClient> {
+    let fee_funder = fee_funding::load(
+        &ClientConfig::new(endpoint.clone(), 10_000),
+        fee_funding::funders_path_from_env().as_deref(),
+    )?;
+
+    let (client, _) =
+        create_rust_client_with_cli_keystore(store_path, cli_path, endpoint.clone()).await?;
+    let mut client = client.with_fee_funder(fee_funder);
+    client.sync_state().await?;
+
+    Ok(client)
 }
 
 /// Executes a command and asserts that it fails but does not panic.
@@ -1876,7 +1909,7 @@ fn build_call_test_masp(out_path: &Path) {
 /// Helper: creates an account with the `call-test.masp` package and returns (`temp_dir`,
 /// `account_id`, `masp_path`).
 fn setup_call_test_account() -> (PathBuf, String, PathBuf) {
-    let temp_dir = init_cli().1;
+    let (store_path, temp_dir, endpoint) = init_cli();
 
     // Generate the call-test .masp directly in the temp dir
     let masp_dst = temp_dir.join("call_test.masp");
@@ -1891,12 +1924,16 @@ fn setup_call_test_account() -> (PathBuf, String, PathBuf) {
 
     // Create account with the custom package
     let mut create_cmd = cargo_bin_cmd!("miden-client");
+    // `basic-wallet` rides along for its `receive_asset` procedure, without which the account
+    // cannot be handed the native asset it needs to pay for the `call` transactions below.
     create_cmd.args([
         "new-account",
         "-t",
         "public",
         "-p",
         "auth/no-auth",
+        "-p",
+        "basic-wallet",
         "-p",
         masp_dst.to_str().unwrap(),
         "-i",
@@ -1920,6 +1957,9 @@ fn setup_call_test_account() -> (PathBuf, String, PathBuf) {
         .to_string();
 
     sync_cli(&temp_dir);
+
+    block_on(fund_cli_account(&temp_dir, &store_path, &endpoint, &account_id))
+        .expect("failed to fund the call-test account");
 
     (temp_dir, account_id, masp_dst)
 }
@@ -2188,7 +2228,7 @@ fn call_rejects_results_wider_than_stack_window() {
 /// client's (`caller_dir`, `account_id`, `masp_path`).
 fn setup_remote_call_test() -> (PathBuf, String, PathBuf) {
     // Client A: owns and deploys the call-test account.
-    let target_dir = init_cli().1;
+    let (target_store_path, target_dir, endpoint) = init_cli();
 
     let masp_path = target_dir.join("call_test.masp");
     build_call_test_masp(&masp_path);
@@ -2201,8 +2241,6 @@ fn setup_remote_call_test() -> (PathBuf, String, PathBuf) {
 
     sync_cli(&target_dir);
 
-    // `--deploy` submits a transaction that commits the public account on-chain, which is what
-    // makes it readable from another client via FPI.
     let mut create_cmd = cargo_bin_cmd!("miden-client");
     create_cmd.args([
         "new-account",
@@ -2211,16 +2249,17 @@ fn setup_remote_call_test() -> (PathBuf, String, PathBuf) {
         "-p",
         "auth/no-auth",
         "-p",
+        "basic-wallet",
+        "-p",
         masp_path.to_str().unwrap(),
         "-i",
         init_path.to_str().unwrap(),
-        "--deploy",
     ]);
 
     let output = create_cmd.current_dir(&target_dir).output().unwrap();
     assert!(
         output.status.success(),
-        "Failed to create and deploy account: {}",
+        "Failed to create account: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 
@@ -2232,8 +2271,16 @@ fn setup_remote_call_test() -> (PathBuf, String, PathBuf) {
         .expect("Could not parse account ID from new-account output")
         .to_string();
 
-    // Wait for the deploy transaction to commit before the account can be read remotely.
-    sync_until_committed_transaction(&target_dir);
+    // Deploying submits a transaction that commits the public account on-chain, which is what makes
+    // it readable from another client via FPI.
+    // `deploy_account` rather than `fund_cli_account`, since this one has to be committed on-chain
+    // on a fee-free chain too.
+    block_on(async {
+        let mut client = cli_funding_client(&target_dir, &target_store_path, &endpoint).await?;
+        client.deploy_account(AccountId::from_hex(&account_id)?).await
+    })
+    .expect("failed to deploy the call-test account");
+    sync_cli(&target_dir);
 
     // Client B: only a local wallet, used as the FPI executor.
     let caller_dir = init_cli().1;

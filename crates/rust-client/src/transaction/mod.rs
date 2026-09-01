@@ -70,6 +70,7 @@ use alloc::vec::Vec;
 
 use miden_protocol::account::{AccountCode, AccountCodeInterface, AccountId, PartialAccount};
 use miden_protocol::asset::{Asset, NonFungibleAsset};
+use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::block::{BlockHeader, BlockNumber, FeeParameters};
 use miden_protocol::errors::AssetError;
 use miden_protocol::note::{
@@ -1175,15 +1176,11 @@ where
                     .await?
                 },
                 ForeignAccount::Private(partial_account) => {
-                    let account_id = partial_account.id();
-                    let (_, account_proof) = self
-                        .rpc_api
-                        .get_account(
-                            account_id,
-                            GetAccountRequest::new().at(AccountStateAt::Block(block_num)),
-                        )
-                        .await?;
-                    let (witness, _) = account_proof.into_parts();
+                    // The caller already supplied the account data, so the witness is all that is
+                    // missing.
+                    let witness =
+                        self.get_account_witness_at(partial_account.id(), block_num).await?;
+
                     AccountInputs::new(partial_account, witness)
                 },
             };
@@ -1192,6 +1189,30 @@ where
         }
 
         Ok(return_foreign_account_inputs)
+    }
+
+    /// Returns the account's witness at `block_num`, from the store when a witness cached for that
+    /// block is available and from the node otherwise.
+    ///
+    /// A cached witness only serves the block it was fetched at, since that is the account root it
+    /// opens under. See [`Client::track_account_witness`] for how one gets cached.
+    async fn get_account_witness_at(
+        &self,
+        account_id: AccountId,
+        block_num: BlockNumber,
+    ) -> Result<AccountWitness, ClientError> {
+        if let Some((witness, cached_at)) = self.store.get_account_witness(account_id).await?
+            && cached_at == block_num
+        {
+            return Ok(witness);
+        }
+
+        let (_, account_proof) = self
+            .rpc_api
+            .get_account(account_id, GetAccountRequest::new().at(AccountStateAt::Block(block_num)))
+            .await?;
+
+        Ok(account_proof.into_parts().0)
     }
 
     /// Prepares the data store and block reference for program execution.

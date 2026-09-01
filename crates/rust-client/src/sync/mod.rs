@@ -62,15 +62,17 @@ use alloc::vec::Vec;
 use core::cmp::max;
 
 use miden_protocol::account::AccountId;
-use miden_protocol::block::BlockNumber;
+use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::merkle::mmr::{InOrderIndex, PartialMmr};
 use miden_protocol::note::NoteId;
 use miden_protocol::transaction::TransactionId;
 use miden_tx::auth::TransactionAuthenticator;
 use miden_tx::utils::serde::{Deserializable, DeserializationError, Serializable};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::pswap::PswapChainObserver;
+use crate::rpc::AccountStateAt;
+use crate::rpc::domain::account::GetAccountRequest;
 use crate::store::{NoteFilter, TransactionFilter};
 use crate::{Client, ClientError};
 mod block_header;
@@ -82,6 +84,7 @@ mod note_observer;
 pub use note_observer::NoteObserver;
 
 mod state_sync;
+pub(crate) use state_sync::validate_account_witness;
 pub use state_sync::{NoteUpdateAction, OnNoteReceived, StateSync, StateSyncInput};
 
 mod state_sync_update;
@@ -166,9 +169,75 @@ where
         // Cache MMR so pruning can reuse in-memory MMR.
         self.cache_partial_mmr(partial_mmr).await?;
 
+        self.refresh_account_witnesses().await;
+
         self.maybe_untrack_and_prune_irrelevant_blocks().await?;
 
         Ok(sync_summary)
+    }
+
+    /// Refreshes the account witness of every account registered via
+    /// [`Client::track_account_witness`].
+    ///
+    /// Requests each witness at the new sync height, which is the reference block transactions
+    /// will execute against. Every registered account is refreshed whether or not its own state
+    /// changed, since a witness breaks when any other account in the tree moves.
+    ///
+    /// A failed refresh is logged and skipped rather than failing the sync: the stale entry stays,
+    /// and the read path rejects it by its block number.
+    async fn refresh_account_witnesses(&self) {
+        let account_ids = match self.store.tracked_account_witnesses().await {
+            Ok(account_ids) if account_ids.is_empty() => return,
+            Ok(account_ids) => account_ids,
+            Err(err) => {
+                warn!(%err, "failed to read the tracked account witness registry");
+                return;
+            },
+        };
+
+        let chain_tip_header = match self.get_latest_block_header().await {
+            Ok(header) => header,
+            Err(err) => {
+                warn!(%err, "failed to read the synced block header; skipping witness refresh");
+                return;
+            },
+        };
+
+        for account_id in account_ids {
+            if let Err(err) =
+                self.fetch_and_cache_account_witness(account_id, &chain_tip_header).await
+            {
+                warn!(%account_id, %err, "failed to refresh the cached account witness");
+            }
+        }
+    }
+
+    /// Fetches and stores a single account's witness at `chain_tip_header`'s block.
+    async fn fetch_and_cache_account_witness(
+        &self,
+        account_id: AccountId,
+        chain_tip_header: &BlockHeader,
+    ) -> Result<(), ClientError> {
+        let chain_tip = chain_tip_header.block_num();
+
+        // The minimal request: no vault, no storage map entries, only the witness is wanted.
+        let (proof_block_num, proof) = self
+            .rpc_api
+            .get_account(account_id, GetAccountRequest::new().at(AccountStateAt::Block(chain_tip)))
+            .await?;
+
+        if proof_block_num != chain_tip {
+            return Err(ClientError::ChainValidationError(format!(
+                "get_account returned a proof at block {proof_block_num}, expected {chain_tip}"
+            )));
+        }
+
+        let (witness, _) = proof.into_parts();
+        validate_account_witness(&witness, account_id, chain_tip_header)?;
+
+        self.store.update_account_witness(account_id, &witness, chain_tip).await?;
+
+        Ok(())
     }
 
     /// Fetches private notes from the Note Transport Layer for the tracked note tags.

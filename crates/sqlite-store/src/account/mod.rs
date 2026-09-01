@@ -6,6 +6,7 @@ mod accounts;
 pub(crate) mod helpers;
 mod storage;
 mod vault;
+mod witnesses;
 
 #[cfg(test)]
 mod tests;

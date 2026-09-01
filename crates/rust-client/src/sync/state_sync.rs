@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use futures::{StreamExt, TryStreamExt};
 use miden_protocol::Word;
 use miden_protocol::account::{Account, AccountHeader, AccountId, StorageSlotType};
-use miden_protocol::block::account_tree::AccountIdKey;
+use miden_protocol::block::account_tree::{AccountIdKey, AccountWitness};
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrDelta, PartialMmr};
@@ -1092,25 +1092,7 @@ impl StateSync {
 
         let (witness, details) = proof.into_parts();
 
-        // The witness is internally consistent but not yet tied to the account we requested.
-        if witness.id() != account_id {
-            return Err(ClientError::ChainValidationError(format!(
-                "get_account returned account {} but {account_id} was requested",
-                witness.id()
-            )));
-        }
-
-        let account_key = AccountIdKey::from(account_id).as_word();
-        let state_commitment = witness.state_commitment();
-        witness
-            .into_proof()
-            .verify_presence(&account_key, &state_commitment, &chain_tip_header.account_root())
-            .map_err(|err| {
-                ClientError::ChainValidationError(format!(
-                    "get_account witness for account {account_id} does not open under block \
-                     {target_block_num} account root: {err}"
-                ))
-            })?;
+        validate_account_witness(&witness, account_id, chain_tip_header)?;
 
         Ok(details.expect("node returned no details for a public account"))
     }
@@ -1299,6 +1281,43 @@ impl StateSync {
 
 // HELPERS
 // ================================================================================================
+
+/// Checks that an [`AccountWitness`] is for `account_id` and opens under `chain_tip_header`'s
+/// account root.
+///
+/// Every path that accepts a witness from the node must run this before using or persisting it.
+///
+/// # Errors
+///
+/// Returns [`ClientError::ChainValidationError`] if the witness is for a different account, or if
+/// it does not open under the header's account root.
+pub(crate) fn validate_account_witness(
+    witness: &AccountWitness,
+    account_id: AccountId,
+    chain_tip_header: &BlockHeader,
+) -> Result<(), ClientError> {
+    // The witness is internally consistent but not yet tied to the account we requested.
+    if witness.id() != account_id {
+        return Err(ClientError::ChainValidationError(format!(
+            "get_account returned account {} but {account_id} was requested",
+            witness.id()
+        )));
+    }
+
+    let account_key = AccountIdKey::from(account_id).as_word();
+    let state_commitment = witness.state_commitment();
+    witness
+        .clone()
+        .into_proof()
+        .verify_presence(&account_key, &state_commitment, &chain_tip_header.account_root())
+        .map_err(|err| {
+            ClientError::ChainValidationError(format!(
+                "get_account witness for account {account_id} does not open under block {} \
+                 account root: {err}",
+                chain_tip_header.block_num()
+            ))
+        })
+}
 
 /// Groups transaction records by `(account_id, block_num)`.
 fn group_txs_by_account_block(

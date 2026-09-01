@@ -26,7 +26,7 @@ use miden_client::account::{
     StorageSlotName,
 };
 use miden_client::asset::{Asset, AssetVault, AssetWitness};
-use miden_client::block::BlockHeader;
+use miden_client::block::{AccountWitness, BlockHeader};
 use miden_client::crypto::{InOrderIndex, MmrPeaks};
 use miden_client::note::{BlockNumber, NoteScript, NoteTag, Nullifier};
 use miden_client::store::{
@@ -435,6 +435,47 @@ impl Store for SqliteStore {
     ) -> Result<BTreeMap<AccountId, AccountCode>, StoreError> {
         self.interact_with_connection(move |conn| {
             SqliteStore::get_foreign_account_code(conn, account_ids)
+        })
+        .await
+    }
+
+    async fn track_account_witness(&self, account_id: AccountId) -> Result<(), StoreError> {
+        self.interact_with_connection(move |conn| {
+            SqliteStore::track_account_witness(conn, account_id)
+        })
+        .await
+    }
+
+    async fn untrack_account_witness(&self, account_id: AccountId) -> Result<bool, StoreError> {
+        self.interact_with_connection(move |conn| {
+            SqliteStore::untrack_account_witness(conn, account_id)
+        })
+        .await
+    }
+
+    async fn tracked_account_witnesses(&self) -> Result<Vec<AccountId>, StoreError> {
+        self.interact_with_connection(SqliteStore::tracked_account_witnesses).await
+    }
+
+    async fn get_account_witness(
+        &self,
+        account_id: AccountId,
+    ) -> Result<Option<(AccountWitness, BlockNumber)>, StoreError> {
+        self.interact_with_connection(move |conn| {
+            SqliteStore::get_account_witness(conn, account_id)
+        })
+        .await
+    }
+
+    async fn update_account_witness(
+        &self,
+        account_id: AccountId,
+        witness: &AccountWitness,
+        block_num: BlockNumber,
+    ) -> Result<bool, StoreError> {
+        let witness = witness.clone();
+        self.interact_with_connection(move |conn| {
+            SqliteStore::update_account_witness(conn, account_id, &witness, block_num)
         })
         .await
     }

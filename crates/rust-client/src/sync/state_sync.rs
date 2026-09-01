@@ -5,6 +5,7 @@ use alloc::vec::Vec;
 use core::cmp::Ordering;
 
 use async_trait::async_trait;
+use futures::{StreamExt, TryStreamExt};
 use miden_protocol::Word;
 use miden_protocol::account::{Account, AccountHeader, AccountId, StorageSlotType};
 use miden_protocol::block::account_tree::AccountIdKey;
@@ -39,6 +40,9 @@ use crate::rpc::{AccountStateAt, NodeRpcClient, NoteContentFetch, RpcError};
 use crate::store::input_note_states::UnverifiedNoteState;
 use crate::store::{InputNoteRecord, OutputNoteRecord, StoreError};
 use crate::transaction::TransactionRecord;
+
+/// Maximum number of `get_account` requests kept in flight while syncing the state.
+const MAX_CONCURRENT_ACCOUNT_FETCHES: usize = 4;
 
 // STATE UPDATE DATA
 // ================================================================================================
@@ -489,22 +493,12 @@ impl StateSync {
             "Syncing state.",
         );
 
-        // Step 2: sync notes and fetch full note bodies for public notes, plus any attachment
-        // content the sync response did not carry, paginating with the same chain tip so MMR
-        // paths are opened at a consistent forest. With no tracked tags there's nothing the node
-        // could match, so skip the RPC entirely.
-        let note_blocks = if note_tags.is_empty() {
-            Vec::new()
-        } else {
-            self.rpc_api
-                .sync_notes_with_content(
-                    current_block_num + 1,
-                    chain_tip,
-                    note_tags.as_ref(),
-                    NoteContentFetch::PublicDetailsAndAttachments,
-                )
-                .await?
-        };
+        // Steps 2 and 3: note inclusions and transaction records are independent given the chain
+        // tip, so both are driven concurrently and the first failure aborts the pass.
+        let (note_blocks, transaction_records) = futures::try_join!(
+            self.fetch_note_blocks(current_block_num + 1, chain_tip, note_tags),
+            self.fetch_transactions(current_block_num + 1, chain_tip, account_ids),
+        )?;
 
         // Validate every returned note block falls in (current_block_num, chain_tip].
         Self::validate_note_blocks_range(&note_blocks, current_block_num, chain_tip)?;
@@ -515,16 +509,6 @@ impl StateSync {
             notes = note_count,
             "Fetched note sync data.",
         );
-
-        // Step 3: sync transactions for tracked accounts over the full range. With no tracked
-        // accounts there's nothing the node could match, so skip the RPC entirely.
-        let transaction_records = if account_ids.is_empty() {
-            Vec::new()
-        } else {
-            self.rpc_api
-                .sync_transactions(current_block_num + 1, chain_tip, account_ids.to_vec())
-                .await?
-        };
 
         Self::validate_transaction_records_range(
             &transaction_records,
@@ -542,6 +526,46 @@ impl StateSync {
 
     // HELPERS
     // --------------------------------------------------------------------------------------------
+
+    /// Syncs the note inclusions matching `note_tags` over `[block_from, block_to]`, resolving the
+    /// body of every public note and the attachment content of every note that carries attachments.
+    async fn fetch_note_blocks(
+        &self,
+        block_from: BlockNumber,
+        block_to: BlockNumber,
+        note_tags: &BTreeSet<NoteTag>,
+    ) -> Result<Vec<ResolvedSyncNotesBlock>, ClientError> {
+        if note_tags.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        self.rpc_api
+            .sync_notes_with_content(
+                block_from,
+                block_to,
+                note_tags,
+                NoteContentFetch::PublicDetailsAndAttachments,
+            )
+            .await
+            .map_err(ClientError::RpcError)
+    }
+
+    /// Syncs the transaction records of `account_ids` over `[block_from, block_to]`.
+    async fn fetch_transactions(
+        &self,
+        block_from: BlockNumber,
+        block_to: BlockNumber,
+        account_ids: &[AccountId],
+    ) -> Result<Vec<RpcTransactionRecord>, ClientError> {
+        if account_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        self.rpc_api
+            .sync_transactions(block_from, block_to, account_ids.to_vec())
+            .await
+            .map_err(ClientError::RpcError)
+    }
 
     /// Validates that a `sync_chain_mmr` response covers the requested range.
     fn validate_chain_mmr_response(
@@ -818,24 +842,35 @@ impl StateSync {
 
         // If a private account commitment differs between the node and local then we verify the
         // commitment from the node before flagging the account as mismatched.
-        let mut mismatched_private_accounts = Vec::new();
-        for header in &private_accounts {
-            let account_id = header.id();
-            let local_commitment = header.to_commitment();
-            let record_diverges = account_commitment_updates
-                .iter()
-                .any(|(id, digest)| *id == account_id && *digest != local_commitment);
-            if !record_diverges {
-                continue;
-            }
+        let diverging_private_accounts: Vec<&AccountHeader> = private_accounts
+            .into_iter()
+            .filter(|header| {
+                let local_commitment = header.to_commitment();
+                account_commitment_updates
+                    .iter()
+                    .any(|(id, digest)| *id == header.id() && *digest != local_commitment)
+            })
+            .collect();
 
-            if let Some(proven_commitment) = self
-                .verify_private_account_mismatch(account_id, local_commitment, chain_tip_header)
-                .await?
-            {
-                mismatched_private_accounts.push((account_id, proven_commitment));
-            }
-        }
+        let proven_commitments: Vec<Option<Word>> =
+            futures::stream::iter(diverging_private_accounts.iter().map(|header| {
+                self.verify_private_account_mismatch(
+                    header.id(),
+                    header.to_commitment(),
+                    chain_tip_header,
+                )
+            }))
+            .buffered(MAX_CONCURRENT_ACCOUNT_FETCHES)
+            .try_collect()
+            .await?;
+
+        let mismatched_private_accounts: Vec<(AccountId, Word)> = diverging_private_accounts
+            .iter()
+            .zip(proven_commitments)
+            .filter_map(|(header, proven_commitment)| {
+                proven_commitment.map(|commitment| (header.id(), commitment))
+            })
+            .collect();
 
         account_updates.extend(AccountUpdates::new(Vec::new(), mismatched_private_accounts));
 
@@ -911,21 +946,31 @@ impl StateSync {
     ) -> Result<Vec<Word>, ClientError> {
         let local_headers: BTreeMap<AccountId, &AccountHeader> =
             current_public_accounts.iter().map(|header| (header.id(), *header)).collect();
+
+        // Tracked accounts whose local commitment diverges from the network's. `commitment_updates`
+        // holds at most one entry per account, so no account is fetched twice.
+        let diverging_accounts: Vec<(AccountId, &AccountHeader)> = commitment_updates
+            .iter()
+            .filter_map(|(id, commitment)| {
+                let local_header = local_headers.get(id).copied()?;
+                (local_header.to_commitment() != *commitment).then_some((*id, local_header))
+            })
+            .collect();
+
+        // Ordered fan-out: responses are folded in `commitment_updates` order regardless of
+        // completion order, so the resulting updates do not depend on response timing.
+        let synced_accounts: Vec<PublicAccountSync> =
+            futures::stream::iter(diverging_accounts.iter().map(|(id, local_header)| {
+                self.sync_public_account(*id, local_header, block_from, chain_tip_header)
+            }))
+            .buffered(MAX_CONCURRENT_ACCOUNT_FETCHES)
+            .try_collect()
+            .await?;
+
         // Local states that lost a same-nonce race; their transactions must be discarded.
         let mut superseded_states = Vec::new();
-        for (id, commitment) in commitment_updates {
-            let Some(local_header) = local_headers.get(id).copied() else {
-                continue;
-            };
-
-            if local_header.to_commitment() == *commitment {
-                continue;
-            }
-
-            match self
-                .sync_public_account(*id, local_header, block_from, chain_tip_header)
-                .await?
-            {
+        for ((_, local_header), synced_account) in diverging_accounts.iter().zip(synced_accounts) {
+            match synced_account {
                 PublicAccountSync::Apply(public_update) => {
                     account_updates.extend(AccountUpdates::new(vec![*public_update], Vec::new()));
                 },

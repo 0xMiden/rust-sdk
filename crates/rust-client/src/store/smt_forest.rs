@@ -235,6 +235,32 @@ impl<B: BackendReader> AccountSmtForest<B> {
         Ok((asset, witness))
     }
 
+    /// Retrieves vault asset witnesses for the given vault keys.
+    ///
+    /// Unlike [`Self::get_asset_and_witness`], keys absent from the vault are served too: their
+    /// witness is an emptiness proof, which the executor needs when an asset is being added to
+    /// the vault.
+    ///
+    /// The proofs are opened against the latest tree of the account's vault lineage, after
+    /// verifying that its root matches `expected_vault_root`.
+    pub fn open_vault_asset_witnesses(
+        &self,
+        account_id: AccountId,
+        expected_vault_root: Word,
+        asset_ids: impl IntoIterator<Item = AssetId>,
+    ) -> Result<Vec<AssetWitness>, StoreError> {
+        let lineage = vault_lineage_id(account_id);
+        let tree = self.verified_latest_tree(lineage, expected_vault_root)?;
+
+        asset_ids
+            .into_iter()
+            .map(|asset_id| {
+                let proof = self.forest.open(tree, asset_id.hash().into()).map_err(forest_error)?;
+                Ok(AssetWitness::new(proof, [asset_id])?)
+            })
+            .collect()
+    }
+
     /// Retrieves the storage map witness for a specific map item.
     ///
     /// The proof is opened against the latest tree of the map's lineage, after verifying that

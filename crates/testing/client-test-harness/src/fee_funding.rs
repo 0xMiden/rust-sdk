@@ -185,7 +185,7 @@ impl Funder {
     ) -> Result<Vec<(AccountId, Note)>> {
         // Imported once per client. A re-import of a wallet this client has already paid from
         // fails, because its local nonce is ahead of the chain's until that payment commits.
-        if client.try_get_account(wallet_id).await.is_err() {
+        if client.account_reader(wallet_id).nonce().await.is_err() {
             client
                 .import_account_by_id(wallet_id)
                 .await

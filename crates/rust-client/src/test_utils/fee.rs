@@ -7,6 +7,7 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use anyhow::{Context, Result};
+use miden_protocol::Felt;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
 
@@ -62,11 +63,13 @@ impl TestClient {
     pub async fn deploy_accounts(&mut self, account_ids: &[AccountId]) -> Result<()> {
         let mut undeployed = Vec::with_capacity(account_ids.len());
         for account_id in account_ids.iter().copied() {
-            let account = self
-                .try_get_account(account_id)
-                .await
-                .with_context(|| format!("account {account_id} is not tracked by the client"))?;
-            if account.is_new() {
+            // A zero nonce is what marks an account as never having transacted, so it reads the
+            // nonce alone rather than reconstructing the account.
+            let nonce =
+                self.account_reader(account_id).nonce().await.with_context(|| {
+                    format!("account {account_id} is not tracked by the client")
+                })?;
+            if nonce == Felt::ZERO {
                 undeployed.push(account_id);
             }
         }

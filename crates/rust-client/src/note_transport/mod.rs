@@ -16,11 +16,7 @@ use miden_protocol::note::{Note, NoteDetails, NoteDetailsCommitment, NoteHeader,
 use miden_protocol::utils::serde::Serializable;
 use miden_tx::auth::TransactionAuthenticator;
 use miden_tx::utils::serde::{
-    ByteReader,
-    ByteWriter,
-    Deserializable,
-    DeserializationError,
-    SliceReader,
+    ByteReader, ByteWriter, Deserializable, DeserializationError, SliceReader,
 };
 
 pub use self::errors::NoteTransportError;
@@ -434,41 +430,38 @@ where
         )))
     }
 
-    /// Screens the transport-delivered notes, dropping the notes that no tracked account can
-    /// consume. The notes whose tags the client tracks explicitly are kept without being
-    /// screened.
+    /// Screens the transport-delivered notes carrying a tag derived from a tracked account,
+    /// discarding those that no tracked account can consume. Notes carrying any other tag are kept
+    /// as delivered.
     async fn screen_transport_notes(
         &self,
         notes: &mut Vec<(Note, Option<BlockNumber>)>,
     ) -> Result<(), ClientError> {
-        let explicitly_tracked = self.explicitly_tracked_tags().await?;
+        let account_tags = self.tracked_account_tags().await?;
 
         let notes_to_screen: Vec<Note> = notes
             .iter()
-            .filter(|(note, _)| !explicitly_tracked.contains(&note.metadata().tag()))
+            .filter(|(note, _)| account_tags.contains(&note.metadata().tag()))
             .map(|(note, _)| note.clone())
             .collect();
-        let consumable_notes =
-            self.note_screener().get_batch_consumability(&notes_to_screen).await?;
+        let consumable = self.note_screener().get_batch_consumability(&notes_to_screen).await?;
 
+        // Discard the notes whose tag match the tracked accounts but are not consumable.
         notes.retain(|(note, _)| {
-            explicitly_tracked.contains(&note.metadata().tag())
-                || consumable_notes.contains_key(&note.id())
+            !account_tags.contains(&note.metadata().tag()) || consumable.contains_key(&note.id())
         });
 
         Ok(())
     }
 
-    /// Returns the note tags tracked by the client with source `User` or `Subscription`.
-    async fn explicitly_tracked_tags(&self) -> Result<BTreeSet<NoteTag>, ClientError> {
+    /// Returns the tracked tags that were registered for an account, i.e. derived from its id.
+    async fn tracked_account_tags(&self) -> Result<BTreeSet<NoteTag>, ClientError> {
         let tags = self
             .store
             .get_note_tags()
             .await?
             .into_iter()
-            .filter(|record| {
-                matches!(record.source, NoteTagSource::User | NoteTagSource::Subscription(_))
-            })
+            .filter(|record| matches!(record.source, NoteTagSource::Account(_)))
             .map(|record| record.tag)
             .collect();
         Ok(tags)

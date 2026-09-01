@@ -404,13 +404,14 @@ impl<AUTH> Client<AUTH> {
     /// transactions using it as a foreign account resolve the witness locally. This trades one
     /// request per transaction for one per sync.
     ///
-    /// Only worth doing for an account used as a
-    /// [`ForeignAccount::Private`](crate::transaction::ForeignAccount): a public one is fetched
-    /// with its code, storage and vault in a request that carries the witness anyway, so
-    /// registering it costs a request per sync and saves none.
+    /// A [`ForeignAccount::Private`](crate::transaction::ForeignAccount) needs nothing else, since
+    /// the caller supplies the account data. A
+    /// [`ForeignAccount::Public`](crate::transaction::ForeignAccount) additionally has to be
+    /// tracked by this client, so that its code, storage and vault come from the store as well;
+    /// registering an untracked public account costs a request per sync and saves none.
     ///
-    /// The account need not be tracked, and is not validated against the network here. Registering
-    /// an already registered account is a no-op and keeps any cached witness.
+    /// The account is not validated against the network here. Registering an already registered
+    /// account is a no-op and keeps any cached witness.
     pub async fn track_account_witness(&self, account_id: AccountId) -> Result<(), ClientError> {
         self.store.track_account_witness(account_id).await.map_err(Into::into)
     }

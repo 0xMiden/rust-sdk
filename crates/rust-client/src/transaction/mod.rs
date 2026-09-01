@@ -1201,9 +1201,7 @@ where
         account_id: AccountId,
         block_num: BlockNumber,
     ) -> Result<AccountWitness, ClientError> {
-        if let Some((witness, cached_at)) = self.store.get_account_witness(account_id).await?
-            && cached_at == block_num
-        {
+        if let Some(witness) = cached_witness_at(&self.store, account_id, block_num).await? {
             return Ok(witness);
         }
 
@@ -1737,6 +1735,46 @@ fn validate_basic_account_request(
 /// # Errors
 /// Fails if the account is private: the RPC does not return account details for them, causing
 /// [`TransactionRequestError::ForeignAccountDataMissing`].
+/// Builds a foreign account's [`AccountInputs`] entirely from the store, or returns `None` when it
+/// cannot.
+///
+/// Storage maps and vault assets are carried root-only, and resolve against the store during
+/// execution.
+///
+/// Requires the local header to hash to the commitment the witness proves. Otherwise the local
+/// state is not the one the chain committed at that block, and the kernel would reject it.
+async fn local_account_inputs(
+    store: &Arc<dyn Store>,
+    account_id: AccountId,
+    account_state_at: AccountStateAt,
+) -> Result<Option<AccountInputs>, ClientError> {
+    if let AccountStateAt::Block(block_num) = account_state_at
+        && let Some(witness) = cached_witness_at(store, account_id, block_num).await?
+        && let Some((header, ..)) = store.get_account_header(account_id).await?
+        && header.to_commitment() == witness.state_commitment()
+        && let Some(record) = store.get_minimal_partial_account(account_id).await?
+    {
+        return Ok(Some(AccountInputs::new(record.try_into()?, witness)));
+    }
+
+    Ok(None)
+}
+
+/// Returns the witness cached for `account_id`, if there is one and it was fetched at `block_num`.
+///
+/// A witness opens under one block's account root, so one cached at any other block cannot serve a
+/// transaction executing against `block_num`.
+async fn cached_witness_at(
+    store: &Arc<dyn Store>,
+    account_id: AccountId,
+    block_num: BlockNumber,
+) -> Result<Option<AccountWitness>, ClientError> {
+    Ok(store
+        .get_account_witness(account_id)
+        .await?
+        .and_then(|(witness, cached_at)| (cached_at == block_num).then_some(witness)))
+}
+
 pub(crate) async fn fetch_public_account_inputs(
     store: &Arc<dyn Store>,
     rpc_api: &Arc<dyn NodeRpcClient>,
@@ -1744,6 +1782,10 @@ pub(crate) async fn fetch_public_account_inputs(
     storage_requirements: AccountStorageRequirements,
     account_state_at: AccountStateAt,
 ) -> Result<AccountInputs, ClientError> {
+    if let Some(inputs) = local_account_inputs(store, account_id, account_state_at).await? {
+        return Ok(inputs);
+    }
+
     let known_code: Option<AccountCode> =
         store.get_foreign_account_code(vec![account_id]).await?.into_values().next();
 

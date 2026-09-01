@@ -42,7 +42,7 @@ use crate::store::{InputNoteRecord, OutputNoteRecord, StoreError};
 use crate::transaction::TransactionRecord;
 
 /// Maximum number of `get_account` requests kept in flight while syncing the state.
-const MAX_CONCURRENT_ACCOUNT_FETCHES: usize = 4;
+pub(crate) const MAX_CONCURRENT_ACCOUNT_FETCHES: usize = 4;
 
 // STATE UPDATE DATA
 // ================================================================================================

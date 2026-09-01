@@ -61,6 +61,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::cmp::max;
 
+use futures::StreamExt;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::merkle::mmr::{InOrderIndex, PartialMmr};
@@ -84,7 +85,7 @@ mod note_observer;
 pub use note_observer::NoteObserver;
 
 mod state_sync;
-pub(crate) use state_sync::validate_account_witness;
+pub(crate) use state_sync::{MAX_CONCURRENT_ACCOUNT_FETCHES, validate_account_witness};
 pub use state_sync::{NoteUpdateAction, OnNoteReceived, StateSync, StateSyncInput};
 
 mod state_sync_update;
@@ -203,13 +204,20 @@ where
             },
         };
 
-        for account_id in account_ids {
-            if let Err(err) =
-                self.fetch_and_cache_account_witness(account_id, &chain_tip_header).await
-            {
-                warn!(%account_id, %err, "failed to refresh the cached account witness");
-            }
-        }
+        // Bounded fan-out, under the same limit the sync uses for its own `get_account` requests.
+        // Each future resolves to a `Result` so that one failure does not cancel the others.
+        let header = &chain_tip_header;
+        futures::stream::iter(account_ids)
+            .map(|account_id| async move {
+                (account_id, self.fetch_and_cache_account_witness(account_id, header).await)
+            })
+            .buffered(MAX_CONCURRENT_ACCOUNT_FETCHES)
+            .for_each(|(account_id, result)| async move {
+                if let Err(err) = result {
+                    warn!(%account_id, %err, "failed to refresh the cached account witness");
+                }
+            })
+            .await;
     }
 
     /// Fetches and stores a single account's witness at `chain_tip_header`'s block.

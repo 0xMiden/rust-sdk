@@ -8,6 +8,7 @@ use miden_client::assembly::CodeBuilder;
 use miden_client::auth::{AuthSchemeId, AuthSecretKey, AuthSingleSig, RPO_FALCON_SCHEME_ID};
 use miden_client::keystore::{FilesystemKeyStore, Keystore};
 use miden_client::note::{Note, P2idNote};
+use miden_client::rpc::domain::account::AccountStorageRequirements;
 use miden_client::store::{NoteFilter, TransactionFilter};
 use miden_client::testing::common::TestClient;
 use miden_client::testing::mock::MockRpcApi;
@@ -594,24 +595,27 @@ async fn lazy_foreign_account_loading() {
 // ACCOUNT WITNESS PREFETCHING TESTS
 // ================================================================================================
 
-/// Everything a private-FPI transaction needs: the deployed foreign account, a local wallet to
-/// execute against, and the transaction script that invokes the foreign procedure.
-struct PrivateFpiSetup {
+/// Everything an FPI transaction needs: the deployed foreign account, a local wallet to execute
+/// against, and the transaction script that invokes the foreign procedure.
+struct FpiSetup {
     foreign_account: Account,
     local_wallet_id: AccountId,
     tx_script: TransactionScript,
+    map_slot_name: StorageSlotName,
+    map_key: StorageMapKey,
 }
 
-/// Deploys a private foreign account exposing a procedure that reads one of its storage map
-/// entries, and builds the FPI script that calls it.
+/// Deploys a foreign account exposing a procedure that reads one of its storage map entries, and
+/// builds the FPI script that calls it.
 ///
-/// The account is private, so a transaction reading it supplies its data as a `PartialAccount` and
-/// the account witness is the only input left to resolve.
-async fn deploy_private_fpi_account(
+/// The account is tracked by the client either way, so both storage modes have their code, storage
+/// and vault available locally; what differs is how a transaction declares them.
+async fn deploy_fpi_account(
     client: &mut TestClient,
     rpc_api: &MockRpcApi,
     keystore: &FilesystemKeyStore,
-) -> PrivateFpiSetup {
+    account_type: AccountType,
+) -> FpiSetup {
     // Sentinels the FPI script asserts on. The value must be non-zero: an absent map key reads as
     // an empty word, so a zero value would let a failed read pass the assertion.
     let map_key: Word = [Felt::from(7u32); 4].into();
@@ -621,7 +625,7 @@ async fn deploy_private_fpi_account(
     // A one-entry map slot, and a procedure that reads that entry and leaves it on the stack.
     let mut storage_map = StorageMap::new();
     storage_map.insert(StorageMapKey::new(map_key), map_value).unwrap();
-    let map_slot = StorageSlot::with_map(map_slot_name, storage_map);
+    let map_slot = StorageSlot::with_map(map_slot_name.clone(), storage_map);
 
     let component_code = CodeBuilder::default()
         .compile_component_code(
@@ -650,7 +654,7 @@ async fn deploy_private_fpi_account(
     // The key is stored so the account can sign its own deploy transaction.
     let secret_key = AuthSecretKey::new_falcon512_poseidon2();
     let foreign_account = AccountBuilder::new(Default::default())
-        .account_type(AccountType::Private)
+        .account_type(account_type)
         .with_component(fpi_component)
         .with_component(AuthSingleSig::new(Approver::new(
             secret_key.public_key().to_commitment(),
@@ -698,29 +702,41 @@ async fn deploy_private_fpi_account(
     // witness does not prove, and the kernel rejects that.
     let foreign_account = client.get_account(foreign_account_id).await.unwrap().unwrap();
 
-    PrivateFpiSetup {
+    FpiSetup {
         foreign_account,
         local_wallet_id: local_wallet.id(),
         tx_script,
+        map_slot_name,
+        map_key: StorageMapKey::new(map_key),
     }
 }
 
-/// Builds the FPI request, supplying the foreign account's data as a [`ForeignAccount::Private`].
-fn private_fpi_request(setup: &PrivateFpiSetup) -> TransactionRequest {
-    let (id, _vault, storage, code, nonce, seed) = setup.foreign_account.clone().into_parts();
-    let partial_account = PartialAccount::new(
-        id,
-        nonce,
-        code,
-        PartialStorage::new_full(storage),
-        PartialVault::default(),
-        seed,
-    )
-    .unwrap();
+/// Builds the FPI request, declaring the foreign account the way its storage mode requires:
+/// `Public` carries only the ID, `Private` carries the account data.
+fn fpi_request(setup: &FpiSetup) -> TransactionRequest {
+    let foreign_account = if setup.foreign_account.id().is_public() {
+        let requirements = AccountStorageRequirements::new([(
+            setup.map_slot_name.clone(),
+            core::slice::from_ref(&setup.map_key),
+        )]);
+        ForeignAccount::public(setup.foreign_account.id(), requirements).unwrap()
+    } else {
+        let (id, _vault, storage, code, nonce, seed) = setup.foreign_account.clone().into_parts();
+        let partial_account = PartialAccount::new(
+            id,
+            nonce,
+            code,
+            PartialStorage::new_full(storage),
+            PartialVault::default(),
+            seed,
+        )
+        .unwrap();
+        ForeignAccount::private(partial_account).unwrap()
+    };
 
     TransactionRequestBuilder::new()
         .custom_script(setup.tx_script.clone())
-        .foreign_accounts([ForeignAccount::private(partial_account).unwrap()])
+        .foreign_accounts([foreign_account])
         .build()
         .unwrap()
 }
@@ -730,7 +746,8 @@ fn private_fpi_request(setup: &PrivateFpiSetup) -> TransactionRequest {
 #[tokio::test]
 async fn tracked_account_witness_is_served_from_the_store() {
     let (mut client, rpc_api, keystore) = Box::pin(create_test_client()).await;
-    let setup = Box::pin(deploy_private_fpi_account(&mut client, &rpc_api, &keystore)).await;
+    let setup =
+        Box::pin(deploy_fpi_account(&mut client, &rpc_api, &keystore, AccountType::Private)).await;
     let foreign_account_id = setup.foreign_account.id();
 
     client.track_account_witness(foreign_account_id).await.unwrap();
@@ -752,7 +769,7 @@ async fn tracked_account_witness_is_served_from_the_store() {
     // The actual subject: a transaction at that same height issues no request for the witness.
     // Counted from after the sync so the refresh's own request is not attributed to it.
     let calls_before = rpc_api.get_account_call_count();
-    Box::pin(client.execute_transaction(setup.local_wallet_id, private_fpi_request(&setup)))
+    Box::pin(client.execute_transaction(setup.local_wallet_id, fpi_request(&setup)))
         .await
         .unwrap();
 
@@ -768,7 +785,8 @@ async fn tracked_account_witness_is_served_from_the_store() {
 #[tokio::test]
 async fn untracked_account_witness_is_fetched_from_the_node() {
     let (mut client, rpc_api, keystore) = Box::pin(create_test_client()).await;
-    let setup = Box::pin(deploy_private_fpi_account(&mut client, &rpc_api, &keystore)).await;
+    let setup =
+        Box::pin(deploy_fpi_account(&mut client, &rpc_api, &keystore, AccountType::Private)).await;
     let foreign_account_id = setup.foreign_account.id();
 
     // No call to `track_account_witness`, so the sync has nothing to prefetch.
@@ -785,7 +803,7 @@ async fn untracked_account_witness_is_fetched_from_the_node() {
     );
 
     let calls_before = rpc_api.get_account_call_count();
-    Box::pin(client.execute_transaction(setup.local_wallet_id, private_fpi_request(&setup)))
+    Box::pin(client.execute_transaction(setup.local_wallet_id, fpi_request(&setup)))
         .await
         .unwrap();
 
@@ -800,7 +818,8 @@ async fn untracked_account_witness_is_fetched_from_the_node() {
 #[tokio::test]
 async fn stale_account_witness_falls_back_to_the_node() {
     let (mut client, rpc_api, keystore) = Box::pin(create_test_client()).await;
-    let setup = Box::pin(deploy_private_fpi_account(&mut client, &rpc_api, &keystore)).await;
+    let setup =
+        Box::pin(deploy_fpi_account(&mut client, &rpc_api, &keystore, AccountType::Private)).await;
     let foreign_account_id = setup.foreign_account.id();
 
     // Registered and cached at the current sync height.
@@ -827,7 +846,7 @@ async fn stale_account_witness_falls_back_to_the_node() {
 
     // The transaction still executes against `sync_height`, so the entry cannot serve it.
     let calls_before = rpc_api.get_account_call_count();
-    Box::pin(client.execute_transaction(setup.local_wallet_id, private_fpi_request(&setup)))
+    Box::pin(client.execute_transaction(setup.local_wallet_id, fpi_request(&setup)))
         .await
         .unwrap();
 
@@ -835,6 +854,53 @@ async fn stale_account_witness_falls_back_to_the_node() {
         rpc_api.get_account_call_count(),
         calls_before + 1,
         "a witness from another block must be ignored and refetched"
+    );
+}
+
+/// A public foreign account the client tracks already has its code, storage and vault in the store,
+/// so a cached witness completes its inputs and the transaction reaches the node zero times.
+#[tokio::test]
+async fn tracked_public_account_inputs_are_built_from_the_store() {
+    let (mut client, rpc_api, keystore) = Box::pin(create_test_client()).await;
+    let setup =
+        Box::pin(deploy_fpi_account(&mut client, &rpc_api, &keystore, AccountType::Public)).await;
+    let foreign_account_id = setup.foreign_account.id();
+
+    client.track_account_witness(foreign_account_id).await.unwrap();
+    client.sync_state().await.unwrap();
+
+    let calls_before = rpc_api.get_account_call_count();
+    Box::pin(client.execute_transaction(setup.local_wallet_id, fpi_request(&setup)))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        rpc_api.get_account_call_count(),
+        calls_before,
+        "a tracked account with a cached witness must not reach the node"
+    );
+}
+
+/// Without a cached witness the inputs cannot be built locally, so the account is fetched with its
+/// details. Isolates the witness as the one piece the store cannot supply on its own.
+#[tokio::test]
+async fn public_account_without_a_cached_witness_reaches_the_node() {
+    let (mut client, rpc_api, keystore) = Box::pin(create_test_client()).await;
+    let setup =
+        Box::pin(deploy_fpi_account(&mut client, &rpc_api, &keystore, AccountType::Public)).await;
+
+    // Tracked, but never registered for witness prefetching.
+    client.sync_state().await.unwrap();
+
+    let calls_before = rpc_api.get_account_call_count();
+    Box::pin(client.execute_transaction(setup.local_wallet_id, fpi_request(&setup)))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        rpc_api.get_account_call_count(),
+        calls_before + 1,
+        "without a cached witness the account must be fetched from the node"
     );
 }
 

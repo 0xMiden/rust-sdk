@@ -4,13 +4,13 @@ use std::collections::BTreeMap;
 use std::string::ToString;
 use std::vec::Vec;
 
-use miden_client::Word;
 use miden_client::account::AccountId;
 use miden_client::note::{
     BlockNumber,
     NoteAssets,
     NoteAttachments,
     NoteDetails,
+    NoteInclusionProof,
     NoteMetadata,
     NoteRecipient,
     NoteScript,
@@ -27,7 +27,8 @@ use miden_client::store::{
     OutputNoteState,
     StoreError,
 };
-use miden_client::utils::{Deserializable, Serializable};
+use miden_client::utils::{Deserializable, DeserializationError, Serializable};
+use miden_client::{SliceReader, Word};
 use miden_protocol::note::NoteStorage;
 use rusqlite::types::Value;
 use rusqlite::{Connection, Transaction, params, params_from_iter};
@@ -124,6 +125,7 @@ struct SerializedOutputNoteParts {
     pub expected_height: u32,
     pub state: Vec<u8>,
     pub attachments: Vec<u8>,
+    pub script: Option<Vec<u8>>,
 }
 
 /// Represents the fields needed to update an existing input note's state.
@@ -477,6 +479,7 @@ fn parse_output_note_columns(
     let expected_height: u32 = row.get(3)?;
     let state: Vec<u8> = row.get(4)?;
     let attachments: Vec<u8> = row.get(5)?;
+    let script: Option<Vec<u8>> = row.get(6)?;
 
     Ok(SerializedOutputNoteParts {
         assets,
@@ -485,6 +488,7 @@ fn parse_output_note_columns(
         expected_height,
         state,
         attachments,
+        script,
     })
 }
 
@@ -499,12 +503,14 @@ fn parse_output_note(
         expected_height,
         state,
         attachments,
+        script,
     } = serialized_output_note_parts;
 
     let recipient_digest = Word::read_from_bytes(&recipient_digest)?;
     let assets = NoteAssets::read_from_bytes(&assets)?;
     let metadata = NoteMetadata::read_from_bytes(&metadata)?;
-    let state = OutputNoteState::read_from_bytes(&state)?;
+    let script = script.map(|script| NoteScript::read_from_bytes(&script)).transpose()?;
+    let state = decode_output_note_state(&state, script)?;
     let attachments = NoteAttachments::read_from_bytes(&attachments)?;
 
     Ok(OutputNoteRecord::new(
@@ -539,7 +545,7 @@ fn serialize_output_note_state(note: &OutputNoteRecord) -> SerializedOutputNoteS
     SerializedOutputNoteStateUpdate {
         details_commitment: note.details_commitment().to_bytes(),
         state_discriminant: note.state().discriminant(),
-        state: note.state().to_bytes(),
+        state: encode_output_note_state(note.state()),
     }
 }
 
@@ -559,7 +565,7 @@ fn serialize_output_note(note: &OutputNoteRecord) -> SerializedOutputNoteData {
     let script = note.recipient().map(|recipient| recipient.script().to_bytes());
 
     let state_discriminant = note.state().discriminant();
-    let state = note.state().to_bytes();
+    let state = encode_output_note_state(note.state());
 
     let attachments = note.attachments().to_bytes();
 
@@ -577,6 +583,92 @@ fn serialize_output_note(note: &OutputNoteRecord) -> SerializedOutputNoteData {
         state,
         attachments,
     }
+}
+
+// OUTPUT NOTE STATE CODEC
+// ================================================================================================
+
+/// Serializes an output note state for storage, leaving the recipient's script out.
+///
+/// The script lives in the shared `notes_scripts` table, referenced by the row's `script_root`
+/// column.
+fn encode_output_note_state(state: &OutputNoteState) -> Vec<u8> {
+    let mut target = Vec::new();
+    state.discriminant().write_into(&mut target);
+    match state {
+        OutputNoteState::ExpectedPartial => {},
+        OutputNoteState::ExpectedFull { recipient } => {
+            write_recipient_without_script(recipient, &mut target);
+        },
+        OutputNoteState::CommittedPartial { inclusion_proof } => {
+            inclusion_proof.write_into(&mut target);
+        },
+        OutputNoteState::CommittedFull { recipient, inclusion_proof } => {
+            write_recipient_without_script(recipient, &mut target);
+            inclusion_proof.write_into(&mut target);
+        },
+        OutputNoteState::Consumed { block_height, recipient } => {
+            block_height.write_into(&mut target);
+            write_recipient_without_script(recipient, &mut target);
+        },
+    }
+    target
+}
+
+/// Deserializes an output note state written by [`encode_output_note_state`], completing the
+/// recipient with the script read from the `notes_scripts` table.
+fn decode_output_note_state(
+    bytes: &[u8],
+    script: Option<NoteScript>,
+) -> Result<OutputNoteState, StoreError> {
+    let mut source = SliceReader::new(bytes);
+    let state = match u8::read_from(&mut source)? {
+        OutputNoteState::STATE_EXPECTED_PARTIAL => OutputNoteState::ExpectedPartial,
+        OutputNoteState::STATE_EXPECTED_FULL => OutputNoteState::ExpectedFull {
+            recipient: read_recipient_with_script(&mut source, script)?,
+        },
+        OutputNoteState::STATE_COMMITTED_PARTIAL => OutputNoteState::CommittedPartial {
+            inclusion_proof: NoteInclusionProof::read_from(&mut source)?,
+        },
+        OutputNoteState::STATE_COMMITTED_FULL => {
+            let recipient = read_recipient_with_script(&mut source, script)?;
+            let inclusion_proof = NoteInclusionProof::read_from(&mut source)?;
+            OutputNoteState::CommittedFull { recipient, inclusion_proof }
+        },
+        OutputNoteState::STATE_CONSUMED => {
+            let block_height = BlockNumber::read_from(&mut source)?;
+            let recipient = read_recipient_with_script(&mut source, script)?;
+            OutputNoteState::Consumed { block_height, recipient }
+        },
+        discriminant => {
+            return Err(DeserializationError::InvalidValue(format!(
+                "unknown output note state discriminant {discriminant}"
+            ))
+            .into());
+        },
+    };
+
+    Ok(state)
+}
+
+/// Writes the parts of a recipient that the state blob carries: everything except the script.
+fn write_recipient_without_script(recipient: &NoteRecipient, target: &mut Vec<u8>) {
+    recipient.serial_num().write_into(target);
+    recipient.storage().write_into(target);
+}
+
+/// Reads a recipient written by [`write_recipient_without_script`], completing it with `script`.
+fn read_recipient_with_script(
+    source: &mut SliceReader<'_>,
+    script: Option<NoteScript>,
+) -> Result<NoteRecipient, StoreError> {
+    let serial_num = Word::read_from(source)?;
+    let storage = NoteStorage::read_from(source)?;
+    let script = script.ok_or_else(|| {
+        StoreError::DatabaseError("output note state has a recipient but no script row".into())
+    })?;
+
+    Ok(NoteRecipient::new(serial_num, script, storage))
 }
 
 pub(crate) fn apply_note_updates_tx(

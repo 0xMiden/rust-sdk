@@ -26,6 +26,7 @@ use miden_client::store::{
     OutputNoteRecord,
     OutputNoteState,
     Store,
+    StoreError,
 };
 use miden_client::sync::{
     AccountUpdates,
@@ -169,6 +170,26 @@ fn create_expected_partial_output_note(index: u32) -> OutputNoteRecord {
         NoteAssets::new(vec![]).unwrap(),
         metadata,
         OutputNoteState::ExpectedPartial,
+        BlockNumber::from(0u32),
+        NoteAttachments::empty(),
+    )
+}
+
+/// Helper to create a consumed output note with a specific script.
+fn create_consumed_output_note_with_script(index: u32, script: NoteScript) -> OutputNoteRecord {
+    let serial_number: Word =
+        [Felt::new_unchecked(u64::from(index) + 9000), ZERO, ZERO, ZERO].into();
+    let recipient = NoteRecipient::new(serial_number, script, NoteStorage::new(vec![]).unwrap());
+    let sender = AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE).unwrap();
+
+    OutputNoteRecord::new(
+        recipient.digest(),
+        NoteAssets::new(vec![]).unwrap(),
+        create_note_metadata(sender, index),
+        OutputNoteState::Consumed {
+            block_height: BlockNumber::from(1u32),
+            recipient,
+        },
         BlockNumber::from(0u32),
         NoteAttachments::empty(),
     )
@@ -792,6 +813,57 @@ async fn output_notes_filtered_by_script_root() {
         .await
         .unwrap();
     assert!(notes.is_empty());
+}
+
+#[tokio::test]
+async fn output_note_state_blob_does_not_embed_script() {
+    let store = create_test_store().await;
+
+    let note = create_expected_output_note_with_script(0, StandardNote::SWAP.script());
+    let state_sync_update = StateSyncUpdate::from_parts(
+        BlockNumber::from(0u32),
+        PartialBlockchainUpdates::default(),
+        NoteUpdateTracker::for_transaction_updates([], [], [note.clone()]),
+        TransactionUpdateTracker::default(),
+        AccountUpdates::default(),
+    );
+    store.apply_state_sync(state_sync_update).await.unwrap();
+
+    // The record round-trips whole: the recipient's script is joined back in from the shared
+    // `notes_scripts` table when the note is read.
+    let notes = store.get_output_notes(NoteFilter::All).await.unwrap();
+    assert_eq!(notes, vec![note]);
+
+    // The stored state blob carries the recipient without its script.
+    let script_bytes = StandardNote::SWAP.script().to_bytes();
+    let state_blob = store
+        .interact_with_connection(|conn| {
+            conn.query_row("SELECT state FROM output_notes", [], |row| row.get::<_, Vec<u8>>(0))
+                .map_err(|err| StoreError::DatabaseError(err.to_string()))
+        })
+        .await
+        .unwrap();
+    assert!(!state_blob.windows(script_bytes.len()).any(|window| window == script_bytes));
+}
+
+#[tokio::test]
+async fn consumed_output_note_round_trips() {
+    let store = create_test_store().await;
+
+    // `Consumed` is the other recipient-carrying state that is written directly (transitions
+    // preserve the recipient), so its script must round-trip through the scripts table too.
+    let note = create_consumed_output_note_with_script(0, StandardNote::P2ID.script());
+    let state_sync_update = StateSyncUpdate::from_parts(
+        BlockNumber::from(0u32),
+        PartialBlockchainUpdates::default(),
+        NoteUpdateTracker::for_transaction_updates([], [], [note.clone()]),
+        TransactionUpdateTracker::default(),
+        AccountUpdates::default(),
+    );
+    store.apply_state_sync(state_sync_update).await.unwrap();
+
+    let notes = store.get_output_notes(NoteFilter::Consumed).await.unwrap();
+    assert_eq!(notes, vec![note]);
 }
 
 // BATCH SCRIPT TESTS

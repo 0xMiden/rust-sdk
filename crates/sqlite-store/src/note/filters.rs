@@ -24,8 +24,11 @@ pub(super) fn note_filter_to_query_output_notes(filter: &NoteFilter) -> (String,
                     note.metadata,
                     note.expected_height,
                     note.state,
-                    note.attachments
-                    from output_notes AS note";
+                    note.attachments,
+                    script.serialized_note_script
+                    from output_notes AS note
+                    LEFT OUTER JOIN notes_scripts AS script
+                        ON note.script_root = script.script_root";
 
     let (condition, params) = note_filter_output_notes_condition(filter);
     let query = format!("{base} WHERE {condition}");

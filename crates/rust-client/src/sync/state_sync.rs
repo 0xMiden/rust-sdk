@@ -284,7 +284,7 @@ impl StateSync {
     /// 7. Advance the partial MMR to the chain tip and track the screened blocks that still hold an
     ///    unspent note.
     ///
-    /// Steps 1-2 are [`Self::fetch_state`], 3-5 [`Self::derive_note_and_transaction_updates`], 6
+    /// Steps 1-2 are [`Self::fetch_state`], 3-5 [`Self::derive_state_updates`], 6
     /// [`Self::fetch_nullifiers`] and 7 [`Self::build_update`]; each can be driven separately.
     pub async fn sync_state(
         &self,
@@ -294,7 +294,7 @@ impl StateSync {
         let block_num = block_num_from_forest(current_partial_mmr)?;
 
         let mut chain_sync_data = self.fetch_state(block_num, input).await?;
-        self.derive_note_and_transaction_updates(&mut chain_sync_data).await?;
+        self.derive_state_updates(&mut chain_sync_data).await?;
         self.fetch_nullifiers(&mut chain_sync_data).await?;
 
         // Work on a clone so any validation failure leaves `current_partial_mmr` untouched.
@@ -305,17 +305,14 @@ impl StateSync {
         Ok(update)
     }
 
-    /// Fetches the node's view of everything that changed since `block_from`, without verifying it
-    /// against the client's MMR or applying any change to the store.
+    /// Fetches the node's view of everything that changed since `block_from`: the MMR delta, the
+    /// note inclusions, the transactions, and the account states.
     ///
-    /// Covers the two node calls that depend on nothing but the sync input:
-    /// 1. Fetch sync data from the node (MMR delta, note inclusions, transactions).
-    /// 2. Update account states (fetch updated public accounts, flag mismatched private ones).
-    ///
-    /// Interpreting the response is [`Self::derive_note_and_transaction_updates`]'s, and the
-    /// nullifier check [`Self::fetch_nullifiers`]'s. Both run afterwards so a caller syncing
-    /// more than one source can write the other source first, and check nullifiers once across
-    /// all of them.
+    /// Every node call that does not depend on note screening happens here, so a caller can run
+    /// this concurrently with another sync's fetch. Interpreting the response is
+    /// [`Self::derive_state_updates`]'s, and the nullifier check [`Self::fetch_nullifiers`]'s.
+    /// Both run afterwards so a caller syncing more than one source can write the other source
+    /// first, and check nullifiers once across all of them.
     pub async fn fetch_state(
         &self,
         block_from: BlockNumber,
@@ -333,7 +330,7 @@ impl StateSync {
         let account_ids: Vec<AccountId> = accounts.iter().map(AccountHeader::id).collect();
 
         let note_updates = NoteUpdateTracker::new(input_notes, output_notes);
-        let mut transaction_updates = TransactionUpdateTracker::new(uncommitted_transactions);
+        let transaction_updates = TransactionUpdateTracker::new(uncommitted_transactions);
         let mut account_updates = AccountUpdates::default();
 
         let Some(sync_data) = self.fetch_sync_data(block_from, &account_ids, &note_tags).await?
@@ -342,6 +339,7 @@ impl StateSync {
             return Ok(ChainSyncData {
                 block_from,
                 advance: None,
+                superseded_states: Vec::new(),
                 note_updates,
                 transaction_updates,
                 account_updates,
@@ -366,11 +364,6 @@ impl StateSync {
             )
             .await?;
 
-        // Discard the local transactions whose result lost a same-nonce race against the network.
-        for superseded_state in superseded_states {
-            transaction_updates.apply_superseded_account_state(superseded_state);
-        }
-
         Ok(ChainSyncData {
             block_from,
             advance: Some(ChainAdvance {
@@ -380,43 +373,54 @@ impl StateSync {
                 transactions,
                 relevant_note_blocks: Vec::new(),
             }),
+            superseded_states,
             note_updates,
             transaction_updates,
             account_updates,
         })
     }
 
-    /// Receives a `ChainSyncData` and derives the note and transaction updates.
+    /// Turns the node's raw response into note and transaction updates.
     ///
-    /// Screens the received notes for relevance, applies the transaction inclusions, and recovers
-    /// the public notes the tracked accounts consumed, fetching the notes by ID from the RPC.
-    pub async fn derive_note_and_transaction_updates(
+    /// Discards the local transactions the node superseded, screens the received notes for
+    /// relevance, applies the transaction inclusions, and recovers the public notes the tracked
+    /// accounts consumed, fetching those by id.
+    pub async fn derive_state_updates(
         &self,
         chain_sync_data: &mut ChainSyncData,
     ) -> Result<(), ClientError> {
-        let Some(advance) = chain_sync_data.advance.as_mut() else {
+        let ChainSyncData {
+            advance,
+            superseded_states,
+            note_updates,
+            transaction_updates,
+            ..
+        } = chain_sync_data;
+
+        let Some(advance) = advance.as_mut() else {
             return Ok(());
         };
+
+        // Discard the local transactions whose result lost a same-nonce race against the network.
+        for superseded_state in core::mem::take(superseded_states) {
+            transaction_updates.apply_superseded_account_state(superseded_state);
+        }
 
         advance.relevant_note_blocks = self
             .screen_note_blocks(
                 core::mem::take(&mut advance.note_blocks_awaiting_screening),
-                &mut chain_sync_data.note_updates,
+                note_updates,
             )
             .await?;
 
         self.apply_transactions_and_nullifiers(
             &advance.chain_tip_header,
             &advance.transactions,
-            &mut chain_sync_data.note_updates,
-            &mut chain_sync_data.transaction_updates,
+            note_updates,
+            transaction_updates,
         )?;
 
-        self.recover_consumed_public_notes(
-            &mut chain_sync_data.note_updates,
-            &advance.transactions,
-        )
-        .await?;
+        self.recover_consumed_public_notes(note_updates, &advance.transactions).await?;
 
         Ok(())
     }
@@ -1444,6 +1448,8 @@ pub struct ChainSyncData {
     /// What the node reported beyond `block_from`, or `None` when the client was already at the
     /// chain tip.
     advance: Option<ChainAdvance>,
+    /// Account states the node superseded, to be applied to the transaction updates.
+    superseded_states: Vec<Word>,
     /// Notes as the sync found them. A caller that wrote notes of its own after the sync input
     /// was built has to track them here, or this sync's verdicts have no record to apply to.
     pub(crate) note_updates: NoteUpdateTracker,
@@ -1457,12 +1463,12 @@ struct ChainAdvance {
     chain_tip_header: BlockHeader,
     /// MMR delta from `block_from` to the chain tip, excluding the chain-tip leaf.
     mmr_delta: MmrDelta,
-    /// Note blocks as the node returned them. [`StateSync::derive_note_and_transaction_updates`]
+    /// Note blocks as the node returned them. [`StateSync::derive_state_updates`]
     /// drains these into `relevant_note_blocks`, so this is empty by the time the update is
     /// built.
     note_blocks_awaiting_screening: Vec<ResolvedSyncNotesBlock>,
     /// Transaction records as the node returned them, read by
-    /// [`StateSync::derive_note_and_transaction_updates`].
+    /// [`StateSync::derive_state_updates`].
     transactions: Vec<RpcTransactionRecord>,
     /// Screened blocks holding a client-relevant note, each with its `sync_notes` MMR path.
     relevant_note_blocks: Vec<RelevantNoteBlock>,

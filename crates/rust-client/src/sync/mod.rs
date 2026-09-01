@@ -141,7 +141,7 @@ where
 
         let state_sync = self.state_sync();
         let mut chain_sync_data = self.fetch_chain_updates(&state_sync).await?;
-        state_sync.derive_note_and_transaction_updates(&mut chain_sync_data).await?;
+        state_sync.derive_state_updates(&mut chain_sync_data).await?;
         state_sync.fetch_nullifiers(&mut chain_sync_data).await?;
 
         self.apply_chain_updates(&state_sync, chain_sync_data).await
@@ -150,7 +150,8 @@ where
     /// Fetches the node's view of everything that changed since the client's chain tip, without
     /// storing anything or modifying the partial MMR.
     ///
-    /// Builds the default sync input and runs [`StateSync::fetch_state`]. The nullifier check is
+    /// Builds the default sync input and runs [`StateSync::fetch_state`]. The state updates must
+    /// be derived with [`StateSync::derive_state_updates`]. The nullifier check is
     /// not part of this: run [`StateSync::fetch_nullifiers`] on the result before applying it, so
     /// it can also cover transport-delivered notes another sync path fetched in the same call.
     pub async fn fetch_chain_updates(
@@ -175,7 +176,8 @@ where
     /// Verifies fetched chain data against the client's partial MMR and saves the resulting
     /// update to the store.
     ///
-    /// Also caches the partial MMR and prunes irrelevant blocks.
+    /// [`StateSync::derive_state_updates`] and [`StateSync::fetch_nullifiers`] must have run on
+    /// the data first. Also caches the partial MMR and prunes irrelevant blocks.
     ///
     /// # Errors
     ///
@@ -246,13 +248,13 @@ where
     /// 1. Concurrently: the note transport fetch and [`Client::fetch_chain_updates`]. Only node and
     ///    NTL calls happen here, which is all that benefits from overlapping.
     /// 2. The transport writes, whose records are then tracked in the chain sync's note updates.
-    /// 3. [`StateSync::derive_note_and_transaction_updates`], which screens the node's notes
-    ///    against the store — hence after step 2, so a transport-delivered note is recognised
-    ///    rather than discarded — and applies a commitment reported this sync to those records.
+    /// 3. [`StateSync::derive_state_updates`], which screens the node's notes against the store —
+    ///    hence after step 2, so a transport-delivered note is recognised rather than discarded —
+    ///    and applies a commitment reported this sync to those records.
     /// 4. [`StateSync::fetch_nullifiers`], covering the tracked notes *and* the transport-delivered
     ///    ones, so a note delivered and consumed in the same window is reported as consumed by this
     ///    call.
-    /// 5. The chain update, written last: a nullified transport-delivered note is persisted as an
+    /// 5. The chain update, written last: a nullified transport-delivered note is saved as an
     ///    update to the row step 2 inserts.
     ///
     /// Fails fast on the first error. Before step 2 nothing is written but the relay outbox, which
@@ -282,7 +284,7 @@ where
             .note_updates
             .track_existing_input_notes(transport_delivered_notes);
 
-        state_sync.derive_note_and_transaction_updates(&mut chain_sync_data).await?;
+        state_sync.derive_state_updates(&mut chain_sync_data).await?;
 
         // Checks nullifiers both for notes fetched from the chain and from the NTL
         state_sync.fetch_nullifiers(&mut chain_sync_data).await?;

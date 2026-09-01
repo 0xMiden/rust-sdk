@@ -434,6 +434,43 @@ where
         )))
     }
 
+    /// Screens the transport-delivered notes carrying a tag derived from a tracked account,
+    /// discarding those that no tracked account can consume. Notes carrying any other tag are kept
+    /// as delivered.
+    async fn screen_transport_notes(
+        &self,
+        notes: &mut Vec<(Note, Option<BlockNumber>)>,
+    ) -> Result<(), ClientError> {
+        let account_tags = self.tracked_account_tags().await?;
+
+        let notes_to_screen: Vec<Note> = notes
+            .iter()
+            .filter(|(note, _)| account_tags.contains(&note.metadata().tag()))
+            .map(|(note, _)| note.clone())
+            .collect();
+        let consumable = self.note_screener().get_batch_consumability(&notes_to_screen).await?;
+
+        // Discard the notes whose tag match the tracked accounts but are not consumable.
+        notes.retain(|(note, _)| {
+            !account_tags.contains(&note.metadata().tag()) || consumable.contains_key(&note.id())
+        });
+
+        Ok(())
+    }
+
+    /// Returns the tracked tags that were registered for an account, i.e. derived from its id.
+    async fn tracked_account_tags(&self) -> Result<BTreeSet<NoteTag>, ClientError> {
+        let tags = self
+            .store
+            .get_note_tags()
+            .await?
+            .into_iter()
+            .filter(|record| matches!(record.source, NoteTagSource::Account(_)))
+            .map(|record| record.tag)
+            .collect();
+        Ok(tags)
+    }
+
     /// Fetches and returns one batch of notes from the note transport layer for the provided tags
     /// without applying any update to the store.
     ///
@@ -478,6 +515,12 @@ where
             id_by_commitment.insert(note.details_commitment(), note_info.header.id());
             notes.push((note, note_info.block_hint));
         }
+
+        // Screen the transport-delivered notes to discard the ones that are not relevant to the
+        // accounts tracked by the client.
+        // Boxed to avoid a `clippy::large_futures` warning, since the sync future is already close
+        // to the size limit.
+        Box::pin(self.screen_transport_notes(&mut notes)).await?;
 
         let sync_height = self.get_sync_height().await?;
         let fallback_after_block_num =

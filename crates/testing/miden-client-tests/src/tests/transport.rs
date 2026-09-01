@@ -12,6 +12,7 @@ use miden_client::note::{
     NoteExecutionHint,
     NoteTag,
     NoteType,
+    PartialNoteMetadata,
 };
 use miden_client::note_transport::NoteTransportClient;
 use miden_client::store::NoteFilter;
@@ -931,6 +932,81 @@ async fn flush_relay_outbox_retries_failed_relay_without_full_sync() {
         attempts_after_first_flush,
         "outbox should be empty after a successful flush; second flush must not re-send",
     );
+}
+
+/// A note is routed by the tag in its own metadata, not by who can consume it, and an
+/// account-target tag only covers the 14 most significant bits of the account id prefix. The
+/// transport fetch screens what a tag match delivers, so a client that is offered a note paying
+/// someone else discards it instead of storing it.
+#[tokio::test]
+async fn note_delivered_by_tag_match_is_discarded_when_no_tracked_account_can_consume_it() {
+    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
+    let (mut sender, sender_account) = create_test_user_transport(mock_node.clone()).await;
+    let (mut client, account) = create_test_user_transport(mock_node.clone()).await;
+
+    // Any account that the client does not track serves as the note's target.
+    let unrelated_account: AccountId = ACCOUNT_ID_SENDER.try_into().unwrap();
+
+    // A P2ID note only the unrelated account can consume, but carrying the client's account tag.
+    let note: Note = P2idNote::builder()
+        .sender(sender_account.id())
+        .target(unrelated_account)
+        .asset(dummy_asset())
+        .note_type(NoteType::Private)
+        .generate_serial_number(sender.rng())
+        .build()
+        .unwrap()
+        .into();
+    // By default the P2ID note is tagged for the target account, so here we manually
+    // override the note with the client's account tag.
+    let (assets, _, recipient, attachments) = note.into_parts();
+    let metadata = PartialNoteMetadata::new(sender_account.id(), NoteType::Private)
+        .with_tag(NoteTag::with_account_target(account.id()));
+    let note = Note::with_attachments(assets, metadata, recipient, attachments);
+
+    // The address is not what routes the note: the relay keys off the tag in its header.
+    let address = Address::new(account.id())
+        .with_routing_parameters(RoutingParameters::new(AddressInterface::BasicWallet));
+    sender
+        .send_private_note_with_block_hint(note, &address, BlockNumber::from(0))
+        .await
+        .unwrap();
+
+    // During the sync, the client retrieves the note from the NTL (since the tag matches its
+    // account), but the note is discarded because its account cannot consume it.
+    client.sync_state().await.unwrap();
+    let notes = client.get_input_notes(NoteFilter::All).await.unwrap();
+    assert!(notes.is_empty(), "a note no tracked account can consume must not be stored");
+}
+
+/// The screening filter must not discard a note the client can actually consume: same delivery
+/// path as the test above, with the note targeting the account that tracks the tag.
+#[tokio::test]
+async fn note_delivered_by_tag_match_is_kept_when_a_tracked_account_can_consume_it() {
+    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
+    let (mut sender, sender_account) = create_test_user_transport(mock_node.clone()).await;
+    let (mut recipient, recipient_account) = create_test_user_transport(mock_node.clone()).await;
+
+    let note: Note = P2idNote::builder()
+        .sender(sender_account.id())
+        .target(recipient_account.id())
+        .asset(dummy_asset())
+        .note_type(NoteType::Private)
+        .generate_serial_number(sender.rng())
+        .build()
+        .unwrap()
+        .into();
+
+    let recipient_address = Address::new(recipient_account.id())
+        .with_routing_parameters(RoutingParameters::new(AddressInterface::BasicWallet));
+    sender
+        .send_private_note_with_block_hint(note, &recipient_address, BlockNumber::from(0))
+        .await
+        .unwrap();
+
+    recipient.sync_state().await.unwrap();
+    let notes = recipient.get_input_notes(NoteFilter::All).await.unwrap();
+    assert_eq!(notes.len(), 1, "a note the tracked account can consume must be stored");
 }
 
 /// A relay that keeps failing must not block `sync_state`. The outbox flush

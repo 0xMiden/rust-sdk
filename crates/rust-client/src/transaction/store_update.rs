@@ -160,8 +160,8 @@ mod tests {
         .await
         .unwrap();
 
-        // Build non-trivial `note_updates` and `new_tags` so that the round-trip covers all fields
-        // that were previously dropped.
+        // Build non-trivial `note_updates` and `new_tags` so that the round-trip covers every
+        // field.
         let input_note = InputNoteRecord::from(note.clone());
         let note_updates = NoteUpdateTracker::for_transaction_updates([input_note], [], []);
 

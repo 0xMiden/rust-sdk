@@ -271,10 +271,8 @@ impl Keystore for FilesystemKeyStore {
     ) -> Result<(), KeyStoreError> {
         let pub_key_commitment = key.public_key().to_commitment();
 
-        // Write the key file
         self.add_key_without_account(key)?;
 
-        // Update the index
         {
             let mut index = self.index.write();
             index.add_mapping(&account_id, pub_key_commitment);

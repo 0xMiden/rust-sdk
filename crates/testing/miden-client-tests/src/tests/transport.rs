@@ -577,9 +577,9 @@ async fn fetch_private_notes_finds_note_committed_at_sync_height() {
     let details_bytes = details.to_bytes();
     mock_transport_node.write().add_note(*private_note.header(), details_bytes);
 
-    // 6. Second sync_state: fetch_transport_notes imports the note, then chain sync runs.
-    // Without the fix, after_block_num = sync_height, scan misses the note at block 1.
-    // With the fix, lookback window catches it.
+    // 6. Second sync_state: fetch_transport_notes imports the note, then chain sync runs. The
+    // chain scan starts from a lookback window rather than from the sync height, so it still sees
+    // the note at block 1.
     let summary = client.sync_state().await.unwrap();
     assert!(
         summary.new_private_notes.contains(&private_note.id()),
@@ -597,15 +597,12 @@ async fn fetch_private_notes_finds_note_committed_at_sync_height() {
 /// A private note must reach the recipient even when the sender's first relay
 /// attempt fails, provided the transport later recovers.
 ///
-/// Without the durable outbox, `send_private_note` relays the payload exactly
-/// once; if that call fails the payload is dropped (no retry, no persistence)
-/// and the recipient never learns about the note. The outbox makes the relay
-/// retriable, so a transient transport failure no longer loses the note.
+/// `send_private_note` persists the payload in a durable outbox, so a relay that fails is retried
+/// instead of dropped. Without persistence the recipient would never learn about the note.
 ///
-/// The test doesn't constrain the fix's shape (inline retry, retry on
-/// `sync_state`, or an explicit `flush_relay_outbox`): it polls by alternating
-/// sender/recipient `sync_state` calls until the note arrives or the budget is
-/// exhausted.
+/// The test does not constrain where the retry happens (inline, on `sync_state`, or through an
+/// explicit `flush_relay_outbox`): it polls by alternating sender and recipient `sync_state` calls
+/// until the note arrives or the budget is exhausted.
 #[tokio::test]
 async fn private_note_relay_recovers_after_transient_ntl_failure() {
     let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
@@ -655,11 +652,11 @@ async fn private_note_relay_recovers_after_transient_ntl_failure() {
         faulty.send_attempts()
     );
 
-    // The fix must actually retry the relay — a single attempt that succeeded by chance is not
+    // The relay must actually be retried — a single attempt that succeeded by chance is not
     // durability.
     assert!(
         faulty.send_attempts() >= 2,
-        "fix must retry the relay; observed only {} send_note attempt(s)",
+        "the relay must be retried; observed only {} send_note attempt(s)",
         faulty.send_attempts()
     );
 }

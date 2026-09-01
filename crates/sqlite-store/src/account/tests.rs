@@ -217,8 +217,7 @@ async fn apply_account_patch_additions() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Regression test: applying a fungible vault patch must preserve the asset's
-/// [`AssetCallbackFlag`].
+/// Applying a fungible vault patch must preserve the asset's [`AssetCallbackFlag`].
 ///
 /// The callback flag is part of an asset's vault key *and* value encoding, so if the store
 /// drops it while applying a patch, the locally recomputed vault root diverges from the one
@@ -226,9 +225,9 @@ async fn apply_account_patch_additions() -> anyhow::Result<()> {
 /// `MerkleStoreError`/`ConflictingRoots` when `apply_account_vault_patch` compares the
 /// recomputed root against `final_account_state.vault_root()`.
 ///
-/// Callback-bearing fungible assets are produced by agglayer faucets (B2AGG), so this path
-/// is exercised when a wallet consumes an agglayer-minted note. Ordinary assets use the
-/// disabled flag, where preserving it is a no-op — which is why only agglayer hit the bug.
+/// Callback-bearing fungible assets are produced by agglayer faucets (B2AGG), so this path is
+/// exercised when a wallet consumes an agglayer-minted note. Ordinary assets use the disabled flag,
+/// where preserving it is a no-op, so only agglayer assets can observe the divergence.
 #[tokio::test]
 async fn apply_account_patch_preserves_fungible_callback_flag() -> anyhow::Result<()> {
     let store = create_test_store().await;

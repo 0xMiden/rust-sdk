@@ -774,9 +774,9 @@ async fn sync_state_no_redundant_get_account_calls() {
             .expect("prebuilt mock chain should have a public account")
     };
 
-    // Create an AccountHeader with stale state (nonce 0, dummy commitments). This ensures every
-    // sync step's reported commitment differs from our local header, which would trigger a fetch in
-    // every step without the fix.
+    // Create an AccountHeader with stale state (nonce 0, dummy commitments). Every sync step then
+    // reports a commitment that differs from the local header, which is the case that must not
+    // trigger a fetch per step.
     let account_header =
         AccountHeader::new(account_id, Felt::from(0u32), EMPTY_WORD, EMPTY_WORD, EMPTY_WORD);
 
@@ -3078,8 +3078,7 @@ async fn partial_output_note_receives_inclusion_proof_after_sync() {
         .unwrap();
 
     // Before the block is proven and synced, the payback note should be tracked as ExpectedPartial.
-    // The fix in filters.rs ensures NoteFilter::Unspent includes ExpectedPartial notes; without it
-    // this query would return an empty list for partial notes.
+    // `NoteFilter::Unspent` includes ExpectedPartial notes, so the query must report it.
     let unspent_before_sync = client.get_output_notes(NoteFilter::Unspent).await.unwrap();
     let expected_partial_count = unspent_before_sync
         .iter()
@@ -3093,9 +3092,9 @@ async fn partial_output_note_receives_inclusion_proof_after_sync() {
     // Prove the block (commits wallet B's transaction with the partial payback note).
     mock_rpc_api.prove_block();
 
-    // Sync to receive inclusion proofs. With the fix, the ExpectedPartial output note is included
-    // in the NoteFilter::Unspent query used by sync, so it receives an inclusion proof and
-    // transitions to CommittedPartial.
+    // Sync to receive inclusion proofs. The ExpectedPartial output note is included in the
+    // NoteFilter::Unspent query used by sync, so it receives an inclusion proof and transitions to
+    // CommittedPartial.
     client.sync_state().await.unwrap();
 
     // After sync, the partial note should have an inclusion proof (CommittedPartial) and still
@@ -3745,9 +3744,8 @@ async fn pswap_multi_round_chain_tracking_test() {
     assert_eq!(lineage.remaining_offered.as_u64(), 50);
     assert_eq!(lineage.remaining_requested.as_u64(), 25);
 
-    // Bob's round-1 remainder must be tracked as a consumable note in his own store — this is
-    // exactly what the fix enables. Previously it was a proofless `expected_future_notes` duplicate
-    // that could never be consumed, blocking round 2.
+    // Bob's round-1 remainder must be tracked as a consumable note in his own store. A proofless
+    // `expected_future_notes` duplicate could never be consumed and would block round 2.
     let bob_consumable = bob_client.get_consumable_notes(Some(bob_wallet.id())).await.unwrap();
     let remainder_r1 = bob_consumable
         .iter()

@@ -395,7 +395,6 @@ impl DataStore for ClientDataStore {
 
             let current_peaks = self.store.get_current_blockchain_peaks().await?;
 
-            // Get header data
             let (block_header, _had_notes) = self
                 .store
                 .get_block_header_by_num(ref_block)
@@ -687,7 +686,6 @@ async fn get_authentication_path_for_blocks(
         }
     }
 
-    // Get all MMR nodes based on collected indices
     let node_indices: Vec<InOrderIndex> = node_indices.into_iter().collect();
 
     let filter = PartialBlockchainFilter::List(node_indices);

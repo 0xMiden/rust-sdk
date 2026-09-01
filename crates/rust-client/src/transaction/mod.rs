@@ -916,8 +916,8 @@ where
         &self,
         tx_update: TransactionStoreUpdate,
     ) -> Result<(), ClientError> {
-        // Transaction was proven and submitted to the node correctly, persist note details and
-        // update account
+        // The transaction was proven and submitted to the node, so its note details and account
+        // update can be persisted.
         info!("Applying transaction to the local store...");
 
         let executed_transaction = tx_update.executed_transaction();
@@ -1442,7 +1442,6 @@ impl PreparedTransaction {
 fn get_outgoing_assets(
     transaction_request: &TransactionRequest,
 ) -> (BTreeMap<AccountId, u64>, Vec<NonFungibleAsset>) {
-    // Get own notes assets
     let mut own_notes_assets = match transaction_request.script_template() {
         Some(TransactionScriptTemplate::SendNotes(notes)) => notes
             .iter()
@@ -1450,7 +1449,6 @@ fn get_outgoing_assets(
             .collect::<BTreeMap<_, _>>(),
         _ => BTreeMap::default(),
     };
-    // Get transaction output notes assets
     let mut output_notes_assets = transaction_request
         .expected_output_own_notes()
         .into_iter()
@@ -1661,10 +1659,7 @@ fn validate_basic_account_request(
     transaction_request: &TransactionRequest,
     vault_assets: &[Asset],
 ) -> Result<(), ClientError> {
-    // Get outgoing assets
     let (fungible_balance_map, non_fungible_set) = get_outgoing_assets(transaction_request);
-
-    // Get incoming assets
     let (incoming_fungible_balance_map, incoming_non_fungible_balance_set) =
         transaction_request.incoming_assets();
 

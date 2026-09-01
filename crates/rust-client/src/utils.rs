@@ -79,10 +79,9 @@ pub fn tokens_to_base_units(
         part.parse::<u64>().map_err(TokenParseError::ParseU64)?;
     }
 
-    // Get the integer part
     let integer_part = parts[0];
 
-    // Get the fractional part; remove trailing zeros
+    // Trailing zeros carry no value and would change the decimal count.
     let mut fractional_part = if parts.len() > 1 {
         parts[1].trim_end_matches('0').to_string()
     } else {

@@ -989,12 +989,10 @@ impl NodeRpcClient for GrpcClient {
     }
 
     async fn get_rpc_limits(&self) -> Result<RpcLimits, RpcError> {
-        // Return cached limits if available
         if let Some(limits) = *self.limits.read() {
             return Ok(limits);
         }
 
-        // Fetch limits from the node
         let response = self
             .call_with_retry(RpcEndpoint::GetLimits, |mut rpc_api| {
                 Box::pin(async move { rpc_api.get_limits(()).await })

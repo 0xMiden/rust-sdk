@@ -928,7 +928,8 @@ mod tests {
         assert!(update.remainder.is_none());
     }
 
-    /// 0-candidate consumption → `Reclaimed`, both `remaining_*` zeroed. Regression guard.
+    /// A 0-candidate consumption marks the lineage `Reclaimed` and zeroes both `remaining_*`
+    /// amounts.
     #[test]
     fn build_round_update_zero_outputs_marks_reclaimed_with_remaining_zero() {
         let (_sender, _creator, offered_faucet, requested_faucet) = fixed_account_ids();
@@ -949,8 +950,7 @@ mod tests {
 
         assert_eq!(update.state, PswapLineageState::Reclaimed);
         assert_eq!(update.remaining_offered, AssetAmount::ZERO);
-        // Regression: reclaim used to leak the pre-reclaim `remaining_requested` into the terminal
-        // record.
+        // A reclaim must not carry the pre-reclaim `remaining_requested` into the terminal record.
         assert_eq!(update.remaining_requested, AssetAmount::ZERO);
         assert!(update.payback.is_none());
     }

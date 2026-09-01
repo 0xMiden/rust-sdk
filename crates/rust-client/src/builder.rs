@@ -481,11 +481,9 @@ where
             Box::new(RandomCoin::new(coin_seed.map(Felt::new_unchecked).into()))
         };
 
-        // Set default prover if not provided
         let tx_prover: Arc<dyn TransactionProver + Send + Sync> =
             self.tx_prover.unwrap_or_else(|| Arc::new(LocalTransactionProver::default()));
 
-        // Use the provided source manager, or create a default one.
         let source_manager: Arc<dyn SourceManagerSync> =
             self.source_manager.unwrap_or_else(|| Arc::new(DefaultSourceManager::default()));
 

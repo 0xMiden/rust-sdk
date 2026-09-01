@@ -145,7 +145,6 @@ where
 
         let mut partial_mmr = self.get_current_partial_mmr().await?;
 
-        // Get the sync update from the network
         let state_sync_update = state_sync.sync_state(&mut partial_mmr, input).await?;
 
         let sync_summary: SyncSummary = (&state_sync_update).into();

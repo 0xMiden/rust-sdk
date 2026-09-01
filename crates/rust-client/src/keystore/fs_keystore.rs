@@ -227,6 +227,9 @@ impl TransactionAuthenticator for FilesystemKeyStore {
     /// # Errors
     /// If the public key isn't found in the store, [`AuthenticationError::UnknownPublicKey`] is
     /// returned.
+    // The trait declares this method as async; this implementation signs from local state and has
+    // nothing to await.
+    #[allow(clippy::unused_async_trait_impl, reason = "the trait signature is async")]
     async fn get_signature(
         &self,
         pub_key: PublicKeyCommitment,

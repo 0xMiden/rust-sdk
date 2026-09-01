@@ -959,7 +959,7 @@ impl StateSync {
 
         // Ordered fan-out: responses are folded in `commitment_updates` order regardless of
         // completion order, so the resulting updates do not depend on response timing.
-        let synced_accounts: Vec<PublicAccountSync> =
+        let synced_accounts: Vec<(AccountWitness, PublicAccountSync)> =
             futures::stream::iter(diverging_accounts.iter().map(|(id, local_header)| {
                 self.sync_public_account(*id, local_header, block_from, chain_tip_header)
             }))
@@ -969,7 +969,12 @@ impl StateSync {
 
         // Local states that lost a same-nonce race; their transactions must be discarded.
         let mut superseded_states = Vec::new();
-        for ((_, local_header), synced_account) in diverging_accounts.iter().zip(synced_accounts) {
+        let mut account_witnesses = Vec::with_capacity(synced_accounts.len());
+        for ((account_id, local_header), (witness, synced_account)) in
+            diverging_accounts.iter().zip(synced_accounts)
+        {
+            account_witnesses.push((*account_id, witness));
+
             match synced_account {
                 PublicAccountSync::Apply(public_update) => {
                     account_updates.extend(AccountUpdates::new(vec![*public_update], Vec::new()));
@@ -981,14 +986,18 @@ impl StateSync {
             }
         }
 
+        account_updates.extend(AccountUpdates::default().with_account_witnesses(account_witnesses));
+
         Ok(superseded_states)
     }
 
     // SYNC PUBLIC ACCOUNTS HELPERS
     // --------------------------------------------------------------------------------------------
 
-    /// Fetches an updated snapshot for a single public account and decides how to reconcile it
-    /// against the local state.
+    /// Fetches a single public account at the sync target, returning the witness that proves it
+    /// and how its state should be reconciled against the local one.
+    ///
+    /// The witness holds in every outcome, including the ones that leave the local state alone.
     ///
     /// Must only be called when the local commitment for the account is known to differ from the
     /// network's, so an equal nonce always means a genuine fork.
@@ -1003,7 +1012,7 @@ impl StateSync {
         local_header: &AccountHeader,
         block_from: BlockNumber,
         chain_tip_header: &BlockHeader,
-    ) -> Result<PublicAccountSync, ClientError> {
+    ) -> Result<(AccountWitness, PublicAccountSync), ClientError> {
         let target_block_num = chain_tip_header.block_num();
 
         // A single request fetches the full snapshot: every storage map's entries plus the vault,
@@ -1020,7 +1029,7 @@ impl StateSync {
             .await
             .map_err(ClientError::RpcError)?;
 
-        let details =
+        let (witness, details) =
             Self::validate_account_proof(proof, proof_block_num, account_id, chain_tip_header)?;
 
         match details
@@ -1031,9 +1040,9 @@ impl StateSync {
         {
             // Node is behind us: our own transaction was committed yet (will expire naturally
             // eventually).
-            Ordering::Less => return Ok(PublicAccountSync::Ignore),
+            Ordering::Less => return Ok((witness, PublicAccountSync::Ignore)),
             // Same height but different state: our transaction definitively lost, drop it.
-            Ordering::Equal => return Ok(PublicAccountSync::Superseded),
+            Ordering::Equal => return Ok((witness, PublicAccountSync::Superseded)),
             // Node moved past us: adopt its state, built below.
             Ordering::Greater => {},
         }
@@ -1058,12 +1067,12 @@ impl StateSync {
             PublicAccountUpdate::Full(account)
         };
 
-        Ok(PublicAccountSync::Apply(Box::new(public_update)))
+        Ok((witness, PublicAccountSync::Apply(Box::new(public_update))))
     }
 
     /// Validates that a `get_account` proof is bound to the sync target `chain_tip_header`: it must
     /// be for the requested `account_id`, at the target block, and its witness must open under the
-    /// target header's account root. Returns the account details on success.
+    /// target header's account root. Returns the witness and the account details on success.
     ///
     /// # Errors
     ///
@@ -1081,7 +1090,7 @@ impl StateSync {
         proof_block_num: BlockNumber,
         account_id: AccountId,
         chain_tip_header: &BlockHeader,
-    ) -> Result<AccountDetails, ClientError> {
+    ) -> Result<(AccountWitness, AccountDetails), ClientError> {
         let target_block_num = chain_tip_header.block_num();
 
         if proof_block_num != target_block_num {
@@ -1094,7 +1103,7 @@ impl StateSync {
 
         validate_account_witness(&witness, account_id, chain_tip_header)?;
 
-        Ok(details.expect("node returned no details for a public account"))
+        Ok((witness, details.expect("node returned no details for a public account")))
     }
 
     /// Builds a [`PublicAccountUpdate::Patch`] by fetching incremental storage map and vault
@@ -1285,7 +1294,7 @@ impl StateSync {
 /// Checks that an [`AccountWitness`] is for `account_id` and opens under `chain_tip_header`'s
 /// account root.
 ///
-/// Every path that accepts a witness from the node must run this before using or persisting it.
+/// Run before a witness fetched from the node is used or persisted.
 ///
 /// # Errors
 ///

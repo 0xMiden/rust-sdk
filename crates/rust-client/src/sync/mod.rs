@@ -177,12 +177,11 @@ where
         Ok(sync_summary)
     }
 
-    /// Refreshes the account witness of every account registered via
-    /// [`Client::track_account_witness`].
+    /// Refreshes the account witness of every registered account.
     ///
     /// Requests each witness at the new sync height, which is the reference block transactions
-    /// will execute against. Every registered account is refreshed whether or not its own state
-    /// changed, since a witness breaks when any other account in the tree moves.
+    /// will execute against. Every account is refreshed whether or not its own state changed,
+    /// since a witness breaks when any other account in the tree moves.
     ///
     /// A failed refresh is logged and skipped rather than failing the sync: the stale entry stays,
     /// and the read path rejects it by its block number.
@@ -221,12 +220,21 @@ where
     }
 
     /// Fetches and stores a single account's witness at `chain_tip_header`'s block.
+    ///
+    /// Returns without a request when the applied sync update already left a witness at that
+    /// block, which it does for every public account it had to query for its state.
     async fn fetch_and_cache_account_witness(
         &self,
         account_id: AccountId,
         chain_tip_header: &BlockHeader,
     ) -> Result<(), ClientError> {
         let chain_tip = chain_tip_header.block_num();
+
+        if let Some((_, cached_at)) = self.store.get_account_witness(account_id).await?
+            && cached_at == chain_tip
+        {
+            return Ok(());
+        }
 
         // The minimal request: no vault, no storage map entries, only the witness is wanted.
         let (proof_block_num, proof) = self

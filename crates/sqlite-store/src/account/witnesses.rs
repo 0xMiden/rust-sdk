@@ -7,7 +7,7 @@ use miden_client::account::AccountId;
 use miden_client::block::{AccountWitness, BlockNumber};
 use miden_client::store::StoreError;
 use miden_client::utils::{Deserializable, Serializable};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use crate::sql_error::SqlResultExt;
 use crate::{SqliteStore, insert_sql, subst};
@@ -64,7 +64,8 @@ impl SqliteStore {
         conn: &mut Connection,
         account_id: AccountId,
     ) -> Result<Option<(AccountWitness, BlockNumber)>, StoreError> {
-        const QUERY: &str = "SELECT witness, block_num FROM account_witnesses WHERE account_id = ? AND witness IS NOT NULL";
+        const QUERY: &str = "SELECT witness, block_num FROM account_witnesses \
+                             WHERE account_id = ? AND witness IS NOT NULL";
 
         let row: Option<(Vec<u8>, u32)> = conn
             .prepare_cached(QUERY)
@@ -87,12 +88,27 @@ impl SqliteStore {
         witness: &AccountWitness,
         block_num: BlockNumber,
     ) -> Result<bool, StoreError> {
+        let tx = conn.transaction().into_store_error()?;
+        let updated = Self::update_account_witness_tx(&tx, account_id, witness, block_num)?;
+        tx.commit().into_store_error()?;
+
+        Ok(updated)
+    }
+
+    /// Caches a witness inside an open transaction, so that the sync can persist the witnesses it
+    /// already validated together with the account states they belong to.
+    pub(crate) fn update_account_witness_tx(
+        tx: &Transaction<'_>,
+        account_id: AccountId,
+        witness: &AccountWitness,
+        block_num: BlockNumber,
+    ) -> Result<bool, StoreError> {
         // UPDATE rather than an upsert: the row must already exist, since only
         // `track_account_witness` registers an account.
         const QUERY: &str =
             "UPDATE account_witnesses SET witness = ?, block_num = ? WHERE account_id = ?";
 
-        let updated = conn
+        let updated = tx
             .prepare_cached(QUERY)
             .into_store_error()?
             .execute(params![witness.to_bytes(), block_num.as_u32(), account_id.to_bytes()])

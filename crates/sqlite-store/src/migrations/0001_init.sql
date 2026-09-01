@@ -191,7 +191,7 @@ CREATE INDEX idx_output_notes_note_id ON output_notes(note_id);
 
 CREATE TABLE notes_scripts (
     script_root BLOB NOT NULL,                       -- Note script root
-    serialized_note_script BLOB,                     -- NoteScript, serialized
+    serialized_note_script BLOB NOT NULL,            -- NoteScript, serialized
 
     PRIMARY KEY (script_root)
 ) STRICT;

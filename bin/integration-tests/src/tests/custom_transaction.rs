@@ -243,8 +243,8 @@ pub async fn test_merkle_store(client_config: ClientConfig) -> Result<()> {
 pub async fn test_onchain_notes_sync_with_tag(client_config: ClientConfig) -> Result<()> {
     // Client 1 has an private faucet which will mint an onchain note for client 2
     let (mut client_1, keystore_1) = client_config.clone().into_client().await?;
-    // Client 2 will be used to sync and check that by adding the tag we can still fetch notes
-    // whose tag doesn't necessarily match any of its accounts
+    // Client 2 will be used to sync and check that by adding the tag we can still fetch notes whose
+    // tag doesn't necessarily match any of its accounts
     let (mut client_2, keystore_2) = client_config.clone().into_client().await?;
     // Client 3 will be the control client. We won't add any tags and expect the note not to be
     // fetched

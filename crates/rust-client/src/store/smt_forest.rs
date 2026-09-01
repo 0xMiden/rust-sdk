@@ -46,8 +46,8 @@ fn storage_map_lineage_id(account_id: AccountId, slot_name: &StorageSlotName) ->
     let mut bytes = Vec::new();
     bytes.extend_from_slice(b"miden-client:storage-map");
     bytes.extend_from_slice(&account_id.to_bytes());
-    // Length-prefix the variable-sized slot name so distinct (id, name) pairs cannot produce
-    // the same preimage. The fixed-width u64 keeps the identifier platform-independent.
+    // Length-prefix the variable-sized slot name so distinct (id, name) pairs cannot produce the
+    // same preimage. The fixed-width u64 keeps the identifier platform-independent.
     bytes.extend_from_slice(&(slot_name.as_str().len() as u64).to_le_bytes());
     bytes.extend_from_slice(slot_name.as_str().as_bytes());
     LineageId::new(Hasher::hash(&bytes).as_bytes())
@@ -64,8 +64,8 @@ struct LineageOps {
     /// When set, keys absent from `pairs` are removed, so the tree ends up holding exactly the
     /// recorded pairs.
     exhaustive: bool,
-    /// Key-value pairs in recording order. An empty-word value is a removal, and a later pair
-    /// for the same key supersedes an earlier one.
+    /// Key-value pairs in recording order. An empty-word value is a removal, and a later pair for
+    /// the same key supersedes an earlier one.
     pairs: Vec<(Word, Word)>,
 }
 
@@ -194,14 +194,14 @@ impl<B: BackendReader> AccountSmtForest<B> {
     // READERS
     // --------------------------------------------------------------------------------------------
 
-    /// Returns the latest root of the account's asset vault SMT, or `None` if the forest does
-    /// not track the account.
+    /// Returns the latest root of the account's asset vault SMT, or `None` if the forest does not
+    /// track the account.
     pub fn vault_root(&self, account_id: AccountId) -> Option<Word> {
         self.forest.latest_root(vault_lineage_id(account_id))
     }
 
-    /// Returns the latest root of the account's storage map SMT in the given slot, or `None` if
-    /// the forest does not track that slot.
+    /// Returns the latest root of the account's storage map SMT in the given slot, or `None` if the
+    /// forest does not track that slot.
     pub fn map_root(&self, account_id: AccountId, slot_name: &StorageSlotName) -> Option<Word> {
         self.forest.latest_root(storage_map_lineage_id(account_id, slot_name))
     }
@@ -381,8 +381,8 @@ impl<B: BackendReader> AccountSmtForest<B> {
         Ok(TreeId::new(lineage, version))
     }
 
-    /// Returns the SMT keys currently stored in a lineage, or an empty list if the forest does
-    /// not track it yet.
+    /// Returns the SMT keys currently stored in a lineage, or an empty list if the forest does not
+    /// track it yet.
     fn lineage_entry_keys(&self, lineage: LineageId) -> Result<Vec<Word>, StoreError> {
         let Some(version) = self.forest.latest_version(lineage) else {
             return Ok(Vec::new());
@@ -457,8 +457,8 @@ mod tests {
         assert_eq!(forest.vault_root(account_a()), None);
     }
 
-    /// Colliding lineages would silently serve one account's witnesses from another's tree, so
-    /// the derivation must separate accounts, slots, and the vault/map domains.
+    /// Colliding lineages would silently serve one account's witnesses from another's tree, so the
+    /// derivation must separate accounts, slots, and the vault/map domains.
     #[test]
     fn lineage_ids_are_distinct() {
         assert_ne!(vault_lineage_id(account_a()), vault_lineage_id(account_b()));

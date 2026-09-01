@@ -12,8 +12,8 @@ use crate::generators::{random_word, slot_rng};
 use crate::masm::{generate_expansion_component_code, generate_expansion_tx_script};
 use crate::report::format_size;
 
-/// Maximum entries per expansion transaction. Determined empirically to stay
-/// within Miden VM instruction limits per transaction.
+/// Maximum entries per expansion transaction. Determined empirically to stay within Miden VM
+/// instruction limits per transaction.
 const MAX_ENTRIES_PER_EXPANSION_TX: usize = 280;
 
 /// Generates deterministic storage map entries for the given map index and range.
@@ -26,8 +26,8 @@ fn generate_entries(map_idx: usize, offset: usize, count: usize) -> Vec<([Felt; 
     let seed = map_idx as u32;
     let mut rng = slot_rng(seed);
 
-    // Advance the RNG past entries [0..offset) so we produce the same values
-    // regardless of which offset we start from.
+    // Advance the RNG past entries [0..offset) so we produce the same values regardless of which
+    // offset we start from.
     for _ in 0..offset {
         random_word(&mut rng);
     }
@@ -42,8 +42,8 @@ fn generate_entries(map_idx: usize, offset: usize, count: usize) -> Vec<([Felt; 
         .collect()
 }
 
-/// Detects the number of bench map slots in an imported account by counting
-/// storage slots whose names match `miden::bench::map_slot_*`.
+/// Detects the number of bench map slots in an imported account by counting storage slots whose
+/// names match `miden::bench::map_slot_*`.
 async fn detect_num_maps(
     client: &Client<FilesystemKeyStore>,
     account_id: AccountId,

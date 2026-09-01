@@ -39,12 +39,11 @@ pub const NOTE_TRANSPORT_CURSOR_STORE_SETTING: &str = "note_transport_cursor";
 /// avoids a Store-trait schema change while surviving process restarts.
 pub const NOTE_TRANSPORT_COVERED_TAGS_KEY: &str = "note_transport_covered_tags";
 
-/// Settings key for the durable relay outbox: a serialized `Vec<NoteInfo>` of
-/// private notes whose transport delivery has not yet succeeded.
-/// `send_private_note` appends (replacing any entry with the same note id)
-/// before relaying; [`Client::flush_relay_outbox`] drains entries that re-send
-/// successfully. Reusing the settings k/v avoids a Store-trait schema change
-/// while surviving process restarts.
+/// Settings key for the durable relay outbox: a serialized `Vec<NoteInfo>` of private notes whose
+/// transport delivery has not yet succeeded. `send_private_note` appends (replacing any entry with
+/// the same note id) before relaying; [`Client::flush_relay_outbox`] drains entries that re-send
+/// successfully. Reusing the settings k/v avoids a Store-trait schema change while surviving
+/// process restarts.
 pub const NOTE_TRANSPORT_OUTBOX_KEY: &str = "note_transport_outbox";
 
 /// Client note transport methods.
@@ -123,21 +122,19 @@ impl<AUTH> Client<AUTH> {
         let note_id = header.id();
         let details = NoteDetails::from(note);
         let details_bytes = details.to_bytes();
-        // e2ee impl hint:
-        // address.key().encrypt(details_bytes)
+        // e2ee impl hint: address.key().encrypt(details_bytes)
 
-        // Persist the payload before the network call so a failed or
-        // interrupted `send_note` leaves a recoverable record rather than
-        // losing the only copy with the call frame. The hint travels with the
-        // entry so a retried send relays the same value.
+        // Persist the payload before the network call so a failed or interrupted `send_note` leaves
+        // a recoverable record rather than losing the only copy with the call frame. The hint
+        // travels with the entry so a retried send relays the same value.
         let entry = NoteInfo {
             header,
             details_bytes: details_bytes.clone(),
             block_hint,
         };
         let mut outbox = self.load_relay_outbox().await?;
-        // Replace any existing entry for this note id so the latest payload
-        // wins when a still-pending note is re-sent.
+        // Replace any existing entry for this note id so the latest payload wins when a
+        // still-pending note is re-sent.
         outbox.retain(|e| e.header.id() != note_id);
         outbox.push(entry);
         self.save_relay_outbox(outbox).await?;
@@ -153,9 +150,8 @@ impl<AUTH> Client<AUTH> {
             },
         }
 
-        // Relay succeeded — drop the entry. A failed store write here is
-        // tolerable: the next flush re-sends and the receiver dedupes by note
-        // id, so a stale entry never causes loss.
+        // Relay succeeded — drop the entry. A failed store write here is tolerable: the next flush
+        // re-sends and the receiver dedupes by note id, so a stale entry never causes loss.
         let mut outbox = self.load_relay_outbox().await?;
         outbox.retain(|e| e.header.id() != note_id);
         self.save_relay_outbox(outbox).await?;
@@ -180,9 +176,9 @@ impl<AUTH> Client<AUTH> {
             return Ok(());
         }
 
-        // Attempt every entry independently so a single persistently-failing
-        // note can't block the rest. The outbox holds only the caller's own
-        // failed sends, so it stays small and this is not a meaningful burst.
+        // Attempt every entry independently so a single persistently-failing note can't block the
+        // rest. The outbox holds only the caller's own failed sends, so it stays small and this is
+        // not a meaningful burst.
         let mut remaining = Vec::new();
         let mut last_err: Option<NoteTransportError> = None;
 
@@ -244,8 +240,8 @@ impl<AUTH> Client<AUTH> {
         }
     }
 
-    /// Persist the relay outbox, removing the key entirely when empty so the
-    /// settings table doesn't accumulate empty-vec blobs.
+    /// Persist the relay outbox, removing the key entirely when empty so the settings table doesn't
+    /// accumulate empty-vec blobs.
     async fn save_relay_outbox(&self, entries: Vec<NoteInfo>) -> Result<(), ClientError> {
         let key = String::from(NOTE_TRANSPORT_OUTBOX_KEY);
         if entries.is_empty() {
@@ -406,10 +402,10 @@ where
         for _ in 0..Self::MAX_BACKFILL_ITERATIONS {
             let (ids, new_cursor) = self.fetch_transport_notes(cursor, &[tag]).await?;
             imported_ids.extend(ids);
-            // Terminate on any lack of forward progress. A well-behaved server returns
-            // `new_cursor == cursor` when there are no new notes for this tag (since
-            // `rcursor = max(cursor, max_seq_returned)`); using `<=` also handles implementations
-            // that return an `init()` cursor on empty batches (see the in-tree mock transport).
+            // Terminate on any lack of forward progress. A well-behaved server returns `new_cursor
+            // == cursor` when there are no new notes for this tag (since `rcursor = max(cursor,
+            // max_seq_returned)`); using `<=` also handles implementations that return an `init()`
+            // cursor on empty batches (see the in-tree mock transport).
             if new_cursor <= cursor {
                 return Ok(imported_ids);
             }
@@ -438,11 +434,11 @@ where
         cursor: NoteTransportCursor,
         tags: &[NoteTag],
     ) -> Result<(Vec<NoteId>, NoteTransportCursor), ClientError> {
-        // Fallback lookback window, in blocks, used only for notes the transport delivered
-        // without a sender-provided block hint. Scanning back from sync height handles
-        // the race where a note is committed on-chain just before the NTL delivers its data.
-        // Without it, check_expected_notes would scan from sync_height forward and miss the
-        // already-committed note. A sender-provided hint is deterministic and always preferred.
+        // Fallback lookback window, in blocks, used only for notes the transport delivered without
+        // a sender-provided block hint. Scanning back from sync height handles the race where a
+        // note is committed on-chain just before the NTL delivers its data. Without it,
+        // check_expected_notes would scan from sync_height forward and miss the already-committed
+        // note. A sender-provided hint is deterministic and always preferred.
         const NOTE_LOOKBACK_BLOCKS: u32 = 20;
 
         let mut notes = Vec::new();
@@ -453,8 +449,7 @@ where
         let (note_infos, rcursor) =
             self.get_note_transport_api()?.fetch_notes(tags, cursor).await?;
         for note_info in &note_infos {
-            // e2ee impl hint:
-            // for key in self.store.decryption_keys() try
+            // e2ee impl hint: for key in self.store.decryption_keys() try
             // key.decrypt(details_bytes_encrypted)
             let note = rejoin_note(&note_info.header, &note_info.details_bytes)?;
 
@@ -581,9 +576,9 @@ pub struct NoteInfo {
     pub header: NoteHeader,
     /// Note details, can be encrypted
     pub details_bytes: Vec<u8>,
-    /// Sender-provided block hint: the block from which the recipient should start scanning for
-    /// the note's on-chain commitment, instead of applying its default lookback window. `None`
-    /// when the sender did not provide a hint.
+    /// Sender-provided block hint: the block from which the recipient should start scanning for the
+    /// note's on-chain commitment, instead of applying its default lookback window. `None` when the
+    /// sender did not provide a hint.
     pub block_hint: Option<BlockNumber>,
 }
 
@@ -633,8 +628,8 @@ fn rejoin_note(header: &NoteHeader, details_bytes: &[u8]) -> Result<Note, Deseri
     let mut reader = SliceReader::new(details_bytes);
     let details = NoteDetails::read_from(&mut reader)?;
     // The transport wire format only carries `NoteHeader` + serialized `NoteDetails`, not the
-    // attachments collection. We rejoin with empty attachments; this matches the original note
-    // only when it had no attachments in the first place.
+    // attachments collection. We rejoin with empty attachments; this matches the original note only
+    // when it had no attachments in the first place.
     let partial_metadata = *header.metadata().partial_metadata();
     Ok(Note::new(
         details.assets().clone(),

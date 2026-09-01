@@ -164,9 +164,9 @@ impl SqliteStore {
 
         let storage_values = query_storage_values(conn, account_id)?;
 
-        // Storage maps are always minimal here (just roots, no entries).
-        // New accounts that need full storage data are handled by the DataStore layer,
-        // which fetches the full account via `get_account()` when nonce == 0.
+        // Storage maps are always minimal here (just roots, no entries). New accounts that need
+        // full storage data are handled by the DataStore layer, which fetches the full account via
+        // `get_account()` when nonce == 0.
         for (slot_name, (slot_type, value)) in storage_values {
             storage_header.push(StorageSlotHeader::new(slot_name.clone(), slot_type, value));
             if slot_type == StorageSlotType::Map {
@@ -473,10 +473,10 @@ impl SqliteStore {
     ) -> Result<(), StoreError> {
         let account_id = final_account_state.id();
 
-        // Reject patches for accounts the store does not track (forest updates for unknown
-        // accounts would silently create partial state from empty trees), and stale or replayed
-        // patches whose initial state does not match the stored latest state (they would
-        // overwrite newer state and archive incorrect history).
+        // Reject patches for accounts the store does not track (forest updates for unknown accounts
+        // would silently create partial state from empty trees), and stale or replayed patches
+        // whose initial state does not match the stored latest state (they would overwrite newer
+        // state and archive incorrect history).
         let stored_header = Self::require_latest_account_header(tx, account_id)?;
         if stored_header.to_commitment() != init_account_state.to_commitment() {
             return Err(StoreError::DatabaseError(format!(
@@ -493,8 +493,8 @@ impl SqliteStore {
 
         Self::apply_account_vault_patch(tx, account_id, final_account_state, patch.vault())?;
 
-        // Build one forest update covering the vault and every changed map slot, and apply it at
-        // a freshly allocated revision.
+        // Build one forest update covering the vault and every changed map slot, and apply it at a
+        // freshly allocated revision.
         let mut update = AccountUpdate::new();
         update.vault_patch(account_id, patch.vault(), final_account_state.vault_root());
         update.storage_patch(account_id, patch.storage());
@@ -656,8 +656,8 @@ impl SqliteStore {
                 .collect::<Vec<_>>(),
         );
 
-        // Step 1: Resolve (account_id, nonce) pairs from both latest and historical headers.
-        // The most recent discarded state is in latest, older ones are in historical.
+        // Step 1: Resolve (account_id, nonce) pairs from both latest and historical headers. The
+        // most recent discarded state is in latest, older ones are in historical.
         let mut id_nonce_pairs: Vec<(Vec<u8>, u64)> = Vec::new();
         for query in [
             "SELECT id, nonce FROM latest_account_headers WHERE account_commitment IN rarray(?)",
@@ -676,10 +676,9 @@ impl SqliteStore {
             );
         }
 
-        // Step 2: Group nonces by account, sort descending (undo most recent first).
-        // Descending order is needed because each nonce's old value is the state before
-        // that nonce — processing most recent first lets earlier nonces overwrite with
-        // the correct final value.
+        // Step 2: Group nonces by account, sort descending (undo most recent first). Descending
+        // order is needed because each nonce's old value is the state before that nonce —
+        // processing most recent first lets earlier nonces overwrite with the correct final value.
         let mut nonces_by_account: BTreeMap<Vec<u8>, Vec<u64>> = BTreeMap::new();
         for (id, nonce) in &id_nonce_pairs {
             nonces_by_account.entry(id.clone()).or_default().push(*nonce);
@@ -714,8 +713,8 @@ impl SqliteStore {
         Ok(())
     }
 
-    /// Undoes all nonces for a single account: restores old values, restores old header,
-    /// and cleans up consumed historical entries.
+    /// Undoes all nonces for a single account: restores old values, restores old header, and cleans
+    /// up consumed historical entries.
     fn undo_account_nonces(
         tx: &Transaction<'_>,
         account_id_bytes: &[u8],
@@ -728,9 +727,9 @@ impl SqliteStore {
         }
 
         // Step 4: Restore old header from the earliest discarded nonce
-        // SAFETY: `nonces` is non-empty because `undo_account_nonces` is only called for
-        // accounts that appear in `nonces_by_account`, which only contains entries built
-        // from at least one nonce being pushed — so the slice is guaranteed non-empty here.
+        // SAFETY: `nonces` is non-empty because `undo_account_nonces` is only called for accounts
+        // that appear in `nonces_by_account`, which only contains entries built from at least one
+        // nonce being pushed — so the slice is guaranteed non-empty here.
         let min_nonce = *nonces.last().unwrap();
         let min_nonce_val = u64_to_value(min_nonce);
 
@@ -745,9 +744,9 @@ impl SqliteStore {
             > 0;
 
         if old_header_exists {
-            // `watched` is not carried in historical_account_headers, so this restore resets
-            // it to the column default (FALSE). This is safe because undo only fires for discarded
-            // local transactions, and watched accounts have none.
+            // `watched` is not carried in historical_account_headers, so this restore resets it to
+            // the column default (FALSE). This is safe because undo only fires for discarded local
+            // transactions, and watched accounts have none.
             tx.execute(
                 "INSERT OR REPLACE INTO latest_account_headers \
                  (id, account_commitment, code_commitment, storage_commitment, \
@@ -796,8 +795,8 @@ impl SqliteStore {
         Ok(())
     }
 
-    /// Restores old values from historical entries for a given nonce.
-    /// Non-NULL old values overwrite latest, NULL old values (new entries) are deleted.
+    /// Restores old values from historical entries for a given nonce. Non-NULL old values overwrite
+    /// latest, NULL old values (new entries) are deleted.
     fn restore_old_values_for_nonce(
         tx: &Transaction<'_>,
         account_id_bytes: &[u8],
@@ -962,8 +961,8 @@ impl SqliteStore {
         Self::insert_storage_slots(tx, account_id, new_account_state.storage().slots().iter())?;
         Self::insert_assets(tx, account_id, new_account_state.vault().assets())?;
 
-        // Write NULL historical entries for genuinely new entries that didn't exist
-        // in the old state (INSERT OR IGNORE skips entries already archived above)
+        // Write NULL historical entries for genuinely new entries that didn't exist in the old
+        // state (INSERT OR IGNORE skips entries already archived above)
         tx.execute(
             "INSERT OR IGNORE INTO historical_account_storage \
              (account_id, replaced_at_nonce, slot_name, old_slot_value, slot_type) \
@@ -1028,9 +1027,9 @@ impl SqliteStore {
         account_id: &AccountId,
         mismatched_digest: &Word,
     ) -> Result<(), StoreError> {
-        // Mismatched digests may be due to stale network data. If the mismatched digest is
-        // tracked in the db and corresponds to the mismatched account, it means we
-        // got a past update and shouldn't lock the account.
+        // Mismatched digests may be due to stale network data. If the mismatched digest is tracked
+        // in the db and corresponds to the mismatched account, it means we got a past update and
+        // shouldn't lock the account.
         const LOCK_CONDITION: &str = "WHERE id = :account_id AND NOT EXISTS (SELECT 1 FROM historical_account_headers WHERE id = :account_id AND account_commitment = :digest)";
         let account_id_bytes = account_id.to_bytes();
         let digest_bytes = mismatched_digest.to_bytes();
@@ -1250,8 +1249,8 @@ impl SqliteStore {
             )
             .into_store_error()?;
 
-        // Delete orphaned code: only check commitments from the deleted headers,
-        // and only if they are not referenced by any remaining header or foreign code.
+        // Delete orphaned code: only check commitments from the deleted headers, and only if they
+        // are not referenced by any remaining header or foreign code.
         for commitment in &candidate_code_commitments {
             let still_referenced: bool = tx
                 .query_row(

@@ -291,8 +291,8 @@ pub async fn test_import_expected_notes(client_config: ClientConfig) -> Result<(
         }])
         .await
         .unwrap();
-    // Look up by details commitment: an `Expected` note has no metadata yet, so its `note_id`
-    // is unset and it cannot be resolved via `get_input_note`.
+    // Look up by details commitment: an `Expected` note has no metadata yet, so its `note_id` is
+    // unset and it cannot be resolved via `get_input_note`.
     let input_note = client_2
         .get_input_notes(NoteFilter::DetailsCommitments(vec![note.details_commitment()]))
         .await?
@@ -653,8 +653,8 @@ pub async fn test_sync_transactions_chunks_when_exceeding_limits(
     Ok(())
 }
 
-/// This test runs 3 mint transactions that get included in different blocks so that once we sync
-/// we can check that each transaction gets marked as committed in the corresponding block.
+/// This test runs 3 mint transactions that get included in different blocks so that once we sync we
+/// can check that each transaction gets marked as committed in the corresponding block.
 pub async fn test_multiple_transactions_can_be_committed_in_different_blocks_without_sync(
     client_config: ClientConfig,
 ) -> Result<()> {
@@ -1423,8 +1423,8 @@ pub async fn test_expired_transaction_fails(client_config: ClientConfig) -> Resu
     Ok(())
 }
 
-/// Tests that RPC methods that are not directly related to the client logic
-/// (like GetBlockByNumber) work correctly
+/// Tests that RPC methods that are not directly related to the client logic (like GetBlockByNumber)
+/// work correctly
 pub async fn test_unused_rpc_api(client_config: ClientConfig) -> Result<()> {
     let (mut client, keystore) = client_config.into_client().await?;
 
@@ -1463,8 +1463,8 @@ pub async fn test_unused_rpc_api(client_config: ClientConfig) -> Result<()> {
     assert_eq!(account_proof.account_id(), first_basic_account.id());
     assert!(account_proof.account_header().is_some());
 
-    // The witness's merkle path should resolve to the account root committed
-    // in the block header for `proof_block_num`.
+    // The witness's merkle path should resolve to the account root committed in the block header
+    // for `proof_block_num`.
     let (proof_block_header, _) = client
         .test_rpc_api()
         .get_block_header_by_number(Some(proof_block_num), false)
@@ -1797,8 +1797,8 @@ pub async fn test_get_account_storage_map_key_filtering(client_config: ClientCon
         other => anyhow::bail!("expected PartialMap, got {:?}", other),
     }
 
-    // Request both keys plus one that is absent from the map. All three must be covered by a
-    // single partial SMT anchored at the slot's root.
+    // Request both keys plus one that is absent from the map. All three must be covered by a single
+    // partial SMT anchored at the slot's root.
     let absent_key = StorageMapKey::new(
         [Felt::from(77u32), Felt::from(77u32), Felt::from(77u32), Felt::from(77u32)].into(),
     );
@@ -1881,8 +1881,8 @@ pub async fn test_get_account_returns_vault_details(client_config: ClientConfig)
     let details = details.context("expected account details for public account")?;
     let vault_root = details.header.vault_root();
 
-    // The vault also holds the native fee asset where the chain charges one, so this checks for
-    // the minted token rather than for it alone.
+    // The vault also holds the native fee asset where the chain charges one, so this checks for the
+    // minted token rather than for it alone.
     let minted = Asset::Fungible(FungibleAsset::new(faucet.id(), MINT_AMOUNT).unwrap());
     assert!(
         details.vault_details.assets.contains(&minted),
@@ -1923,10 +1923,10 @@ pub async fn test_get_account_returns_vault_details(client_config: ClientConfig)
     Ok(())
 }
 
-/// Tests that pruning account history removes old committed states without affecting
-/// the current account state. Sets up a faucet, mints twice to build up history,
-/// then verifies that `prune_account_history` deletes intermediate states while
-/// keeping the account readable and unchanged.
+/// Tests that pruning account history removes old committed states without affecting the current
+/// account state. Sets up a faucet, mints twice to build up history, then verifies that
+/// `prune_account_history` deletes intermediate states while keeping the account readable and
+/// unchanged.
 pub async fn test_prune_account_history(client_config: ClientConfig) -> Result<()> {
     let (mut client, authenticator) = client_config.into_client().await?;
     wait_for_node(&mut client).await;

@@ -22,8 +22,8 @@ pub struct BenchConfig {
     pub network: Endpoint,
     /// Number of benchmark iterations
     pub iterations: usize,
-    /// Persistent store directory. Deploy saves the account and keystore here;
-    /// transaction and expand commands reuse the same directory.
+    /// Persistent store directory. Deploy saves the account and keystore here; transaction and
+    /// expand commands reuse the same directory.
     pub store_path: PathBuf,
 }
 

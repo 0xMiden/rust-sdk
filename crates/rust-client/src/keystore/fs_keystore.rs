@@ -82,8 +82,8 @@ impl KeyIndex {
             KeyStoreError::StorageError(format!("error serializing index: {err:?}"))
         })?;
 
-        // Create the temp file in the same directory as the index so the subsequent atomic
-        // rename stays on the same filesystem.
+        // Create the temp file in the same directory as the index so the subsequent atomic rename
+        // stays on the same filesystem.
         let mut temp_file = tempfile::NamedTempFile::new_in(keys_directory)
             .map_err(keystore_error("error creating temp index file"))?;
         temp_file

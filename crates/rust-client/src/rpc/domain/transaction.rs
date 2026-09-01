@@ -58,15 +58,16 @@ pub struct TransactionRecord {
     pub block_num: BlockNumber,
     /// A transaction header.
     pub transaction_header: TransactionHeader,
-    /// Output notes with inclusion proofs, as returned by the node's `SyncTransactions`
-    /// response. Does not include erased notes.
+    /// Output notes with inclusion proofs, as returned by the node's `SyncTransactions` response.
+    /// Does not include erased notes.
     pub output_notes: Vec<CommittedNote>,
     /// Output notes that were erased by same-batch note erasure.
     pub erased_output_notes: Vec<NoteHeader>,
     /// Maps each consumed input note's nullifier to its note id, for public notes the node could
     /// resolve. Lets a client recover, by id, a consumed note it never tracked. Empty for
     /// private/unresolvable inputs.
-    // TODO: perhaps we might want to rename this field (see https://github.com/0xMiden/node/pull/2304#discussion_r3511308376)
+    // TODO: perhaps we might want to rename this field (see
+    // https://github.com/0xMiden/node/pull/2304#discussion_r3511308376)
     pub(crate) consumed_note_refs: Vec<(Nullifier, NoteId)>,
 }
 

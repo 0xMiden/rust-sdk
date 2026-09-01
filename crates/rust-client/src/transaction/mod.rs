@@ -266,8 +266,8 @@ where
         transaction_request: TransactionRequest,
         tx_prover: Arc<dyn TransactionProver>,
     ) -> Result<TransactionId, ClientError> {
-        // Register any missing NTX scripts before the main transaction.
-        // The registration path contains its own full execute -> prove -> submit pipeline.
+        // Register any missing NTX scripts before the main transaction. The registration path
+        // contains its own full execute -> prove -> submit pipeline.
         if !transaction_request.expected_ntx_scripts().is_empty() {
             Box::pin(self.ensure_ntx_scripts_registered(
                 account_id,
@@ -645,9 +645,9 @@ where
 
         let notes = transaction_request.build_input_notes(stored_note_records)?;
 
-        // Each authenticated note's creation block must be tracked by the anchor; fail with a
-        // typed error so callers can recapture a wider anchor. Notes newer than the anchor are
-        // left for the executor to reject.
+        // Each authenticated note's creation block must be tracked by the anchor; fail with a typed
+        // error so callers can recapture a wider anchor. Notes newer than the anchor are left for
+        // the executor to reject.
         if let Some(anchor) = anchor {
             for note in notes.iter() {
                 if let Some(location) = note.location() {
@@ -671,8 +671,8 @@ where
 
         let foreign_accounts = transaction_request.foreign_accounts().clone();
 
-        // The reference block: the anchor's block when pinned, the sync height otherwise.
-        // Foreign account proofs are fetched at this block to stay consistent with it.
+        // The reference block: the anchor's block when pinned, the sync height otherwise. Foreign
+        // account proofs are fetched at this block to stay consistent with it.
         let block_num = match anchor {
             Some(anchor) => anchor.block_num(),
             None => self.store.get_sync_height().await?,
@@ -861,8 +861,8 @@ where
     ) -> Result<TransactionStoreUpdate, TransactionStoreUpdateError> {
         let note_updates = self.get_note_updates(submission_height, tx_result).await?;
 
-        // Only expected input notes need tags; output notes are committed (with proofs)
-        // via account-matched transaction sync.
+        // Only expected input notes need tags; output notes are committed (with proofs) via
+        // account-matched transaction sync.
         let new_tags: Vec<NoteTagRecord> = note_updates
             .updated_input_notes()
             .filter_map(|note| {
@@ -887,8 +887,8 @@ where
         ))
     }
 
-    /// Persists the effects of a submitted transaction into the local store,
-    /// updating account data, note metadata, and future note tracking.
+    /// Persists the effects of a submitted transaction into the local store, updating account data,
+    /// note metadata, and future note tracking.
     pub async fn apply_transaction(
         &self,
         tx_result: &TransactionResult,
@@ -952,8 +952,8 @@ where
             .await?)
     }
 
-    /// Executes the provided transaction script with a DAP debug adapter listening for
-    /// connections, allowing interactive debugging via any DAP-compatible client.
+    /// Executes the provided transaction script with a DAP debug adapter listening for connections,
+    /// allowing interactive debugging via any DAP-compatible client.
     #[cfg(feature = "dap")]
     pub async fn execute_program_with_dap(
         &self,
@@ -1227,8 +1227,8 @@ where
         Ok((data_store, block_ref))
     }
 
-    /// Creates a transaction executor configured with the client's runtime options,
-    /// authenticator, and source manager.
+    /// Creates a transaction executor configured with the client's runtime options, authenticator,
+    /// and source manager.
     pub(crate) fn build_executor<'store, 'auth, STORE: DataStore + Sync>(
         &'auth self,
         data_store: &'store STORE,
@@ -1243,8 +1243,8 @@ where
     }
 
     /// Loads a minimal partial [`AccountRecord`] for an account that must be usable as a
-    /// transaction's native account. Errors out if the account is not tracked or if it is
-    /// watched. The full account state is never loaded: the executor reads it lazily through the
+    /// transaction's native account. Errors out if the account is not tracked or if it is watched.
+    /// The full account state is never loaded: the executor reads it lazily through the
     /// [`DataStore`].
     async fn get_native_account_record(
         &self,
@@ -1347,9 +1347,9 @@ where
         }));
 
         // Locally consumed notes. Notes already tracked by the store only need their state
-        // advanced; the rest (the request's unauthenticated notes, which are not persisted
-        // before the transaction succeeds) are tracked from this point on, so records for them
-        // are built from the executed transaction's inputs.
+        // advanced; the rest (the request's unauthenticated notes, which are not persisted before
+        // the transaction succeeds) are tracked from this point on, so records for them are built
+        // from the executed transaction's inputs.
         let consumed_note_ids =
             executed_tx.tx_inputs().input_notes().iter().map(InputNote::id).collect();
 
@@ -1394,8 +1394,8 @@ where
 // TRANSACTION STORE UPDATE ERROR
 // ================================================================================================
 
-/// Error returned by [`Client::get_transaction_store_update`] when building the store update
-/// for a submitted transaction fails.
+/// Error returned by [`Client::get_transaction_store_update`] when building the store update for a
+/// submitted transaction fails.
 #[derive(Debug, thiserror::Error)]
 pub enum TransactionStoreUpdateError {
     #[error("store error")]
@@ -1428,8 +1428,8 @@ pub(crate) struct PreparedTransaction {
 }
 
 impl PreparedTransaction {
-    /// Returns the scripts of the request's expected output notes. These must be registered on
-    /// the executor's data store so output note creation can resolve them during execution.
+    /// Returns the scripts of the request's expected output notes. These must be registered on the
+    /// executor's data store so output note creation can resolve them during execution.
     pub(crate) fn output_note_scripts(&self) -> impl Iterator<Item = NoteScript> + '_ {
         self.output_recipients.iter().map(|recipient| recipient.script().clone())
     }
@@ -1517,8 +1517,8 @@ fn attach_native_fee_conversion_info(
             )),
         },
         FeeAuth::Ignored(component) => match declared_salt {
-            // Batch execution skips `validate_account_request`, so the mismatch is caught here
-            // too rather than silently dropping the declared salt.
+            // Batch execution skips `validate_account_request`, so the mismatch is caught here too
+            // rather than silently dropping the declared salt.
             Some(_) => Err(ClientError::TransactionRequestError(
                 TransactionRequestError::FeeConversionInfoUnsupported(component),
             )),
@@ -1529,8 +1529,8 @@ fn attach_native_fee_conversion_info(
 
 /// How an account's auth component treats the transaction's auth argument where a fee is charged.
 enum FeeAuth {
-    /// Reads it as fee conversion info without constraining the salt, so the client's fixed
-    /// default salt works where the caller declares none.
+    /// Reads it as fee conversion info without constraining the salt, so the client's fixed default
+    /// salt works where the caller declares none.
     FixedSalt,
     /// Reads it as conversion info too, but reuses the salt as a replay guard the caller must
     /// choose. Carries the component's name for the error.
@@ -1655,8 +1655,8 @@ fn validate_output_note_senders(
     Ok(())
 }
 
-/// Ensures a transaction request is compatible with the account's committed vault assets,
-/// primarily by checking asset balances against the requested transfers.
+/// Ensures a transaction request is compatible with the account's committed vault assets, primarily
+/// by checking asset balances against the requested transfers.
 fn validate_basic_account_request(
     transaction_request: &TransactionRequest,
     vault_assets: &[Asset],
@@ -1678,8 +1678,8 @@ fn validate_basic_account_request(
         }
     }
 
-    // Check if the account balance plus incoming assets is greater than or equal to the
-    // outgoing fungible assets
+    // Check if the account balance plus incoming assets is greater than or equal to the outgoing
+    // fungible assets
     for (faucet_id, amount) in fungible_balance_map {
         let account_asset_amount = available_fungible.get(&faucet_id).copied().unwrap_or(0);
         let incoming_balance = incoming_fungible_balance_map.get(&faucet_id).unwrap_or(&0);
@@ -1691,8 +1691,8 @@ fn validate_basic_account_request(
         }
     }
 
-    // Check if the account balance plus incoming assets is greater than or equal to the
-    // outgoing non fungible assets
+    // Check if the account balance plus incoming assets is greater than or equal to the outgoing
+    // non fungible assets
     for non_fungible in &non_fungible_set {
         let held = vault_assets
             .iter()
@@ -1726,8 +1726,8 @@ pub(crate) async fn fetch_public_account_inputs(
     let known_code: Option<AccountCode> =
         store.get_foreign_account_code(vec![account_id]).await?.into_values().next();
 
-    // Tracked accounts skip the asset list when unchanged; untracked accounts fetch it in full
-    // so asset reads need no execution-time RPC.
+    // Tracked accounts skip the asset list when unchanged; untracked accounts fetch it in full so
+    // asset reads need no execution-time RPC.
     let vault = store
         .get_account_header(account_id)
         .await?
@@ -1985,8 +1985,8 @@ mod tests {
     // NATIVE FEE CONVERSION INFO INJECTION
     // --------------------------------------------------------------------------------------------
 
-    /// Fee faucet the headers below name, distinct from the faucet
-    /// [`fee_conversion_request`] pays in so the two can be told apart.
+    /// Fee faucet the headers below name, distinct from the faucet [`fee_conversion_request`] pays
+    /// in so the two can be told apart.
     const NATIVE_FEE_FAUCET: u128 = ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET;
 
     /// Builds a block header whose fee parameters charge `verification_base_fee` in

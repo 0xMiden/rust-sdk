@@ -91,9 +91,9 @@ impl AccountCmd {
                 let (id, procedure) = split_procedure_target(target);
                 let account_id = parse_account_id(&client, id).await?;
 
-                // Explicit `--package` files take precedence over the configured packages
-                // directory (on a duplicate MAST root the first package wins), but both are
-                // consulted so default names still resolve alongside the passed packages.
+                // Explicit `--package` files take precedence over the configured packages directory
+                // (on a duplicate MAST root the first package wins), but both are consulted so
+                // default names still resolve alongside the passed packages.
                 let mut packages = load_packages(&cli_config, &self.package)?;
                 packages.extend(load_packages_from_directory(&cli_config.package_directory)?);
 

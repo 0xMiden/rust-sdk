@@ -18,8 +18,8 @@ use crate::utils::{ByteReader, ByteWriter, Deserializable, DeserializationError,
 // PSWAP LINEAGE STATE
 // ================================================================================================
 
-/// Lifecycle state of a PSWAP order. Discriminants are part of the
-/// serialized encoding — do not renumber.
+/// Lifecycle state of a PSWAP order. Discriminants are part of the serialized encoding — do not
+/// renumber.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum PswapLineageState {
@@ -36,8 +36,7 @@ impl PswapLineageState {
         self as u8
     }
 
-    /// Errors on unknown discriminants — guards against forward-
-    /// incompatible serialized encodings.
+    /// Errors on unknown discriminants — guards against forward- incompatible serialized encodings.
     pub fn try_from_u8(value: u8) -> Result<Self, PswapLineageError> {
         match value {
             0 => Ok(Self::Active),
@@ -51,32 +50,30 @@ impl PswapLineageState {
 // PSWAP LINEAGE RECORD
 // ================================================================================================
 
-/// Persistent record of one PSWAP order's chain state. The order id and creator
-/// are mirrored here so the common read paths — keying, filtering — stay
-/// lookup-free. Only the remaining *amounts* are stored; the asset pair's faucets,
-/// the script/recipient, and the `note_type` all live on the depth-0 note, fetched
-/// on demand from `output_notes` by `original_note_id` (see
-/// `store::get_original_pswap`) when reconstruction, a depth-0 reclaim, or
-/// asset-pair-tag derivation needs them.
+/// Persistent record of one PSWAP order's chain state. The order id and creator are mirrored here
+/// so the common read paths — keying, filtering — stay lookup-free. Only the remaining *amounts*
+/// are stored; the asset pair's faucets, the script/recipient, and the `note_type` all live on the
+/// depth-0 note, fetched on demand from `output_notes` by `original_note_id` (see
+/// `store::get_original_pswap`) when reconstruction, a depth-0 reclaim, or asset-pair-tag
+/// derivation needs them.
 #[derive(Debug, Clone)]
 pub struct PswapLineageRecord {
-    /// Fetch handle for the depth-0 PSWAP note in `output_notes`. Stable for the
-    /// order's lifetime; distinct from `current_tip_note_id`, which advances
-    /// each round.
+    /// Fetch handle for the depth-0 PSWAP note in `output_notes`. Stable for the order's lifetime;
+    /// distinct from `current_tip_note_id`, which advances each round.
     pub original_note_id: NoteId,
 
-    // Immutable order facts, mirrored from the depth-0 note so keying and
-    // filtering need no store lookup.
+    // Immutable order facts, mirrored from the depth-0 note so keying and filtering need no store
+    // lookup.
     order_id: Felt,
     creator_account_id: AccountId,
 
-    /// Current tip's note id. Equals `original_note_id` at depth 0; otherwise a
-    /// remainder we didn't originate.
+    /// Current tip's note id. Equals `original_note_id` at depth 0; otherwise a remainder we didn't
+    /// originate.
     pub current_tip_note_id: NoteId,
     /// 0 for the original tip; +1 per round. Matches `PswapNoteAttachment::depth()`.
     pub current_depth: u32,
-    /// Remaining offered amount. The order's offered faucet is chain-invariant and
-    /// recovered from the depth-0 note when needed (e.g. for tag derivation).
+    /// Remaining offered amount. The order's offered faucet is chain-invariant and recovered from
+    /// the depth-0 note when needed (e.g. for tag derivation).
     pub remaining_offered: AssetAmount,
     /// Remaining requested amount (requested faucet recovered the same way).
     pub remaining_requested: AssetAmount,
@@ -84,10 +81,9 @@ pub struct PswapLineageRecord {
 }
 
 impl PswapLineageRecord {
-    /// Builds the depth-0 record for a PSWAP the wallet has just emitted. Mirrors
-    /// the order id and creator off the note and seeds the mutable tip state: the
-    /// tip is the original note, depth is 0, and `remaining_*` equal the initial
-    /// offered/requested amounts.
+    /// Builds the depth-0 record for a PSWAP the wallet has just emitted. Mirrors the order id and
+    /// creator off the note and seeds the mutable tip state: the tip is the original note, depth is
+    /// 0, and `remaining_*` equal the initial offered/requested amounts.
     pub fn new_depth_zero(original_note_id: NoteId, pswap: &PswapNote) -> Self {
         Self {
             original_note_id,
@@ -101,8 +97,7 @@ impl PswapLineageRecord {
         }
     }
 
-    /// Stable identifier (== the depth-0 note's `serial[1]`) shared by every
-    /// note in the chain.
+    /// Stable identifier (== the depth-0 note's `serial[1]`) shared by every note in the chain.
     pub fn order_id(&self) -> Felt {
         self.order_id
     }
@@ -116,8 +111,8 @@ impl PswapLineageRecord {
 // PSWAP LINEAGE ROUND UPDATE
 // ================================================================================================
 
-/// One round's transition. Fill = payback + remainder (≤1 each); reclaim
-/// = no outputs. Applied atomically by `apply_round`.
+/// One round's transition. Fill = payback + remainder (≤1 each); reclaim = no outputs. Applied
+/// atomically by `apply_round`.
 #[derive(Debug, Clone)]
 pub(crate) struct PswapLineageRoundUpdate {
     pub order_id: Felt,
@@ -128,24 +123,22 @@ pub(crate) struct PswapLineageRoundUpdate {
     pub state: PswapLineageState,
     /// New tip; `None` for terminal rounds.
     pub tip_note_id: Option<NoteId>,
-    /// Commit block's note root, used by `apply_round` to insert payback/remainder as
-    /// `Committed`. `None` on reclaim rounds (no note to insert) and in store-tier fixtures.
+    /// Commit block's note root, used by `apply_round` to insert payback/remainder as `Committed`.
+    /// `None` on reclaim rounds (no note to insert) and in store-tier fixtures.
     pub at_block_note_root: Option<Word>,
-    /// Reconstructed payback and its inclusion proof. `None` only on
-    /// reclaim. The note and proof are always observed together in the
-    /// same sync window, so they live or die as a pair.
+    /// Reconstructed payback and its inclusion proof. `None` only on reclaim. The note and proof
+    /// are always observed together in the same sync window, so they live or die as a pair.
     pub payback: Option<(Note, NoteInclusionProof)>,
-    /// Reconstructed remainder and its inclusion proof. `None` on terminal
-    /// rounds (full fill / reclaim). Paired for the same reason as `payback`.
+    /// Reconstructed remainder and its inclusion proof. `None` on terminal rounds (full fill /
+    /// reclaim). Paired for the same reason as `payback`.
     pub remainder: Option<(Note, NoteInclusionProof)>,
 }
 
 // OBSERVED CHAIN NOTE
 // ================================================================================================
 
-/// Observed PSWAP-attachment note. The typed attachment carries
-/// `order_id`, `depth`, and amount (fill on payback, payout on remainder)
-/// — role distinguished by [`Self::tag`].
+/// Observed PSWAP-attachment note. The typed attachment carries `order_id`, `depth`, and amount
+/// (fill on payback, payout on remainder) — role distinguished by [`Self::tag`].
 #[derive(Debug, Clone)]
 pub(crate) struct ObservedPswapNote {
     pub note_id: NoteId,
@@ -191,8 +184,8 @@ impl PswapLineageRecord {
         let payback_tag = pswap.storage().payback_note_tag();
 
         // The genuine payback anchors the round; forged candidates reconstruct to a different id
-        // and fall away. More than one genuine payback at a depth is impossible (one tip →
-        // one fill), so the first match is the one.
+        // and fall away. More than one genuine payback at a depth is impossible (one tip → one
+        // fill), so the first match is the one.
         let Some((observed_payback, payback_note)) = notes
             .iter()
             .copied()
@@ -370,8 +363,8 @@ fn saturating_sub(total: AssetAmount, used: AssetAmount) -> AssetAmount {
 // PSWAP LINEAGE FILTER
 // ================================================================================================
 
-/// Client-side filter for `crate::pswap::store::list_lineages`. Applied in
-/// Rust after a prefix-scan of the `settings` KV — not a store-trait concept.
+/// Client-side filter for `crate::pswap::store::list_lineages`. Applied in Rust after a prefix-scan
+/// of the `settings` KV — not a store-trait concept.
 #[derive(Debug, Clone)]
 pub(crate) enum PswapLineageFilter {
     All,
@@ -382,9 +375,9 @@ pub(crate) enum PswapLineageFilter {
 // SERDE HELPERS
 // ================================================================================================
 
-/// Builds a [`PswapLineageRecord`] from its decoded fields. Lives here (not
-/// in a store backend) so alternative backends can reuse it. The only validation
-/// is decoding the `state_byte` into a known [`PswapLineageState`].
+/// Builds a [`PswapLineageRecord`] from its decoded fields. Lives here (not in a store backend) so
+/// alternative backends can reuse it. The only validation is decoding the `state_byte` into a known
+/// [`PswapLineageState`].
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_record_from_fields(
     original_note_id: NoteId,
@@ -468,9 +461,8 @@ pub(crate) mod test_helpers {
     };
     use miden_standards::note::{PswapNote, PswapNoteStorage};
 
-    /// Returns `(sender, creator, offered_faucet, requested_faucet)` —
-    /// four distinct testing `AccountId`s chosen to satisfy PSWAP's
-    /// faucet-distinctness invariant.
+    /// Returns `(sender, creator, offered_faucet, requested_faucet)` — four distinct testing
+    /// `AccountId`s chosen to satisfy PSWAP's faucet-distinctness invariant.
     pub fn fixed_account_ids() -> (AccountId, AccountId, AccountId, AccountId) {
         (
             AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE).unwrap(),
@@ -480,9 +472,8 @@ pub(crate) mod test_helpers {
         )
     }
 
-    /// Builds a fully-formed [`PswapNote`] for use in tests. Defaults:
-    /// public note type, 100-unit offered, 50-unit requested, serial
-    /// number `[1, 2, 3, 4]`. Override via the params.
+    /// Builds a fully-formed [`PswapNote`] for use in tests. Defaults: public note type, 100-unit
+    /// offered, 50-unit requested, serial number `[1, 2, 3, 4]`. Override via the params.
     pub fn build_test_pswap(
         sender: AccountId,
         creator: AccountId,
@@ -524,9 +515,9 @@ mod tests {
     use super::test_helpers::{build_test_pswap, fixed_account_ids};
     use super::*;
 
-    /// Builds a record from a test `PswapNote`, mirroring the immutable scalars
-    /// the observer would extract. Keeps the codec/accessor tests focused on the
-    /// fields they exercise instead of the new wide constructor signature.
+    /// Builds a record from a test `PswapNote`, mirroring the immutable scalars the observer would
+    /// extract. Keeps the codec/accessor tests focused on the fields they exercise instead of the
+    /// new wide constructor signature.
     fn record_from_test_pswap(
         pswap: &PswapNote,
         current_tip_note_id: NoteId,
@@ -548,9 +539,8 @@ mod tests {
         )
     }
 
-    /// Stable byte encoding of `PswapLineageState`. The values are
-    /// persisted in the serialized lineage record; reordering
-    /// would silently corrupt existing stores.
+    /// Stable byte encoding of `PswapLineageState`. The values are persisted in the serialized
+    /// lineage record; reordering would silently corrupt existing stores.
     #[test]
     fn state_byte_encoding_is_stable() {
         assert_eq!(PswapLineageState::Active.as_u8(), 0);
@@ -558,8 +548,8 @@ mod tests {
         assert_eq!(PswapLineageState::Reclaimed.as_u8(), 2);
     }
 
-    /// Round-trip every state via `try_from_u8`. Belt-and-suspenders
-    /// against a future renumbering breaking the serialized format.
+    /// Round-trip every state via `try_from_u8`. Belt-and-suspenders against a future renumbering
+    /// breaking the serialized format.
     #[test]
     fn state_try_from_u8_round_trips_known_variants() {
         for state in [
@@ -571,8 +561,8 @@ mod tests {
         }
     }
 
-    /// Unknown discriminants must error — defends against a future
-    /// store reading a forward-incompatible byte.
+    /// Unknown discriminants must error — defends against a future store reading a
+    /// forward-incompatible byte.
     #[test]
     fn state_try_from_u8_rejects_unknown() {
         match PswapLineageState::try_from_u8(99) {
@@ -709,8 +699,8 @@ mod tests {
         record
     }
 
-    /// `ObservedPswapNote` mirroring `note` (id + tag) so the
-    /// correlator's tag-based payback/remainder split works.
+    /// `ObservedPswapNote` mirroring `note` (id + tag) so the correlator's tag-based
+    /// payback/remainder split works.
     fn chain_update_from(
         note: &Note,
         attachment: PswapNoteAttachment,
@@ -811,9 +801,9 @@ mod tests {
         assert!(update.remainder.is_some());
     }
 
-    /// Note order within a round must not change classification: passing
-    /// `[remainder, payback]` (the reverse of the natural ordering) yields the
-    /// same result as `[payback, remainder]`. Covers the tag-split else-branch.
+    /// Note order within a round must not change classification: passing `[remainder, payback]`
+    /// (the reverse of the natural ordering) yields the same result as `[payback, remainder]`.
+    /// Covers the tag-split else-branch.
     #[test]
     fn build_round_update_partial_fill_classifies_regardless_of_note_order() {
         let (_sender, _creator, offered_faucet, requested_faucet) = fixed_account_ids();
@@ -884,8 +874,8 @@ mod tests {
         let record = initial_record(&pswap, 100, 50);
 
         // Carries the payback tag (so it reaches reconstruction) but a depth-0 attachment that
-        // makes `payback_note` fail — `validate_payback` returns `None` and the candidate
-        // is skipped.
+        // makes `payback_note` fail — `validate_payback` returns `None` and the candidate is
+        // skipped.
         let good_att = PswapNoteAttachment::new(AssetAmount::new(20).unwrap(), pswap.order_id(), 1);
         let payback = pswap.payback_note(consumer, &good_att).unwrap();
         let bad_att = PswapNoteAttachment::new(AssetAmount::new(20).unwrap(), pswap.order_id(), 0);
@@ -938,8 +928,7 @@ mod tests {
         assert!(update.remainder.is_none());
     }
 
-    /// 0-candidate consumption → `Reclaimed`, both `remaining_*` zeroed.
-    /// Regression guard.
+    /// 0-candidate consumption → `Reclaimed`, both `remaining_*` zeroed. Regression guard.
     #[test]
     fn build_round_update_zero_outputs_marks_reclaimed_with_remaining_zero() {
         let (_sender, _creator, offered_faucet, requested_faucet) = fixed_account_ids();
@@ -960,14 +949,14 @@ mod tests {
 
         assert_eq!(update.state, PswapLineageState::Reclaimed);
         assert_eq!(update.remaining_offered, AssetAmount::ZERO);
-        // Regression: reclaim used to leak the pre-reclaim
-        // `remaining_requested` into the terminal record.
+        // Regression: reclaim used to leak the pre-reclaim `remaining_requested` into the terminal
+        // record.
         assert_eq!(update.remaining_requested, AssetAmount::ZERO);
         assert!(update.payback.is_none());
     }
 
-    /// Same-block multi-fill: round 2 must build against round 1's
-    /// in-memory-advanced lineage, not the original.
+    /// Same-block multi-fill: round 2 must build against round 1's in-memory-advanced lineage, not
+    /// the original.
     #[test]
     fn advance_chains_correctly_for_multi_fill() {
         let (_sender, _creator, offered_faucet, requested_faucet) = fixed_account_ids();

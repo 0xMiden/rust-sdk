@@ -48,8 +48,8 @@ mod filters;
 // BATCH SIZE CONSTANTS
 // ================================================================================================
 
-// SQLite limits statements to 999 parameters. Each batch size is chosen to stay under that
-// limit: input notes: 14 columns × 50 = 700, output notes: 11 × 80 = 880, scripts: 2 × 200 = 400.
+// SQLite limits statements to 999 parameters. Each batch size is chosen to stay under that limit:
+// input notes: 14 columns × 50 = 700, output notes: 11 × 80 = 880, scripts: 2 × 200 = 400.
 const INPUT_NOTE_BATCH_SIZE: usize = 50;
 const OUTPUT_NOTE_BATCH_SIZE: usize = 80;
 const SCRIPT_BATCH_SIZE: usize = 200;
@@ -422,9 +422,9 @@ fn parse_input_note(
 /// Serialize the provided input note into database compatible types.
 fn serialize_input_note(note: &InputNoteRecord) -> SerializedInputNoteData {
     let details_commitment = note.details_commitment().to_bytes();
-    // `note_id` and `nullifier` require metadata, so they're only available when the record
-    // carries it. The columns are NULL-able and get populated once metadata arrives (via
-    // sync / inclusion proof).
+    // `note_id` and `nullifier` require metadata, so they're only available when the record carries
+    // it. The columns are NULL-able and get populated once metadata arrives (via sync / inclusion
+    // proof).
     let id = note.id().map(|id| id.as_word().to_bytes());
     let nullifier = note.metadata().map(|metadata| {
         miden_client::note::Nullifier::from_details_and_metadata(note.details(), metadata)
@@ -559,8 +559,8 @@ fn serialize_output_note(note: &OutputNoteRecord) -> SerializedOutputNoteData {
 
     let nullifier = note.nullifier().map(|nullifier| nullifier.to_bytes());
 
-    // The script is only known when the note's full details (recipient) are known. It is stored
-    // in the shared `notes_scripts` table, with the note row referencing it by root.
+    // The script is only known when the note's full details (recipient) are known. It is stored in
+    // the shared `notes_scripts` table, with the note row referencing it by root.
     let script_root = note.script_root().map(|root| root.to_bytes());
     let script = note.recipient().map(|recipient| recipient.script().to_bytes());
 
@@ -729,9 +729,8 @@ pub(crate) fn apply_note_updates_tx(
     Ok(())
 }
 
-/// Batch-upsert note scripts using a multi-row insert.
-/// Multi-row inserts reduce per-statement overhead and show faster insertion times than
-/// individual inserts.
+/// Batch-upsert note scripts using a multi-row insert. Multi-row inserts reduce per-statement
+/// overhead and show faster insertion times than individual inserts.
 fn batch_upsert_scripts(
     tx: &Transaction,
     scripts: &BTreeMap<Vec<u8>, Vec<u8>>,
@@ -936,9 +935,8 @@ pub(super) fn upsert_note_script_tx(
 fn parse_note_scripts_columns(
     row: &rusqlite::Row<'_>,
 ) -> Result<SerializedNoteScriptPars, rusqlite::Error> {
-    // The script root can be derived from the script itself.
-    // There's no need to retrieve it separately.
-    // let script_root = row.get(0)?;
+    // The script root can be derived from the script itself. There's no need to retrieve it
+    // separately. let script_root = row.get(0)?;
     let script = row.get(1)?;
 
     Ok(SerializedNoteScriptPars { script })

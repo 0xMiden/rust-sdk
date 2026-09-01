@@ -82,18 +82,18 @@ impl InputNoteRecord {
     // PUBLIC ACCESSORS
     // ================================================================================================
 
-    /// Returns the input note ID, computed by combining the details commitment with the
-    /// note metadata. Returns `None` when the current state has no metadata (e.g. an
-    /// expected note imported from bare `NoteFile::NoteDetails`, or a `ConsumedExternal`
-    /// note whose prior state carried no metadata). Use [`Self::details_commitment`] when a
-    /// stable identifier is needed in those cases.
+    /// Returns the input note ID, computed by combining the details commitment with the note
+    /// metadata. Returns `None` when the current state has no metadata (e.g. an expected note
+    /// imported from bare `NoteFile::NoteDetails`, or a `ConsumedExternal` note whose prior state
+    /// carried no metadata). Use [`Self::details_commitment`] when a stable identifier is needed in
+    /// those cases.
     pub fn id(&self) -> Option<NoteId> {
         let metadata = self.metadata()?;
         Some(NoteId::new(self.details.commitment(), metadata))
     }
 
-    /// Returns the commitment to the note's details (recipient + assets), independent of
-    /// note metadata.
+    /// Returns the commitment to the note's details (recipient + assets), independent of note
+    /// metadata.
     pub fn details_commitment(&self) -> NoteDetailsCommitment {
         self.details.commitment()
     }
@@ -163,8 +163,8 @@ impl InputNoteRecord {
         &self.details
     }
 
-    /// If the note was consumed locally, it returns the corresponding transaction ID.
-    /// Otherwise, returns `None`.
+    /// If the note was consumed locally, it returns the corresponding transaction ID. Otherwise,
+    /// returns `None`.
     pub fn consumer_transaction_id(&self) -> Option<&TransactionId> {
         self.state.consumer_transaction_id()
     }
@@ -192,8 +192,8 @@ impl InputNoteRecord {
         }
     }
 
-    /// Returns true if the note is authenticated, meaning that it has the necessary inclusion
-    /// proof and block header information to be considered valid.
+    /// Returns true if the note is authenticated, meaning that it has the necessary inclusion proof
+    /// and block header information to be considered valid.
     pub fn is_authenticated(&self) -> bool {
         matches!(
             self.state,
@@ -203,8 +203,8 @@ impl InputNoteRecord {
         )
     }
 
-    /// Returns true if the note hasn't been nullified on chain and can still be consumed.
-    /// `Invalid` notes count as neither unspent nor consumed.
+    /// Returns true if the note hasn't been nullified on chain and can still be consumed. `Invalid`
+    /// notes count as neither unspent nor consumed.
     pub fn is_unspent(&self) -> bool {
         self.state.is_unspent()
     }
@@ -240,8 +240,8 @@ impl InputNoteRecord {
         matches!(self.state, InputNoteState::Expected { .. } | InputNoteState::Unverified { .. })
     }
 
-    /// Sets the consumed transaction order on the inner note state. No-op if the note is not in
-    /// a consumed state.
+    /// Sets the consumed transaction order on the inner note state. No-op if the note is not in a
+    /// consumed state.
     pub fn set_consumed_tx_order(&mut self, order: Option<u32>) {
         self.state.set_consumed_tx_order(order);
     }
@@ -267,8 +267,8 @@ impl InputNoteRecord {
     }
 
     /// Modifies the state of the note record to reflect that the it has received a block header.
-    /// This will mark the note as verified or invalid, depending on the block header
-    /// information and inclusion proof. Returns `true` if the state was changed.
+    /// This will mark the note as verified or invalid, depending on the block header information
+    /// and inclusion proof. Returns `true` if the state was changed.
     pub(crate) fn block_header_received(
         &mut self,
         block_header: &BlockHeader,

@@ -115,9 +115,8 @@ impl SqliteStore {
         db_tx.commit().into_store_error()
     }
 
-    /// Applies a batch of [`TransactionStoreUpdate`]s atomically. Either every update in the
-    /// slice is persisted or none are. Executes in order inside a single
-    /// [`rusqlite::Transaction`].
+    /// Applies a batch of [`TransactionStoreUpdate`]s atomically. Either every update in the slice
+    /// is persisted or none are. Executes in order inside a single [`rusqlite::Transaction`].
     pub fn apply_transaction_batch(
         conn: &mut Connection,
         tx_updates: &[TransactionStoreUpdate],
@@ -372,8 +371,8 @@ mod tests {
         let query = TransactionFilter::Uncommitted.to_query();
         let plan = query_plan(&conn, &query).join("\n");
 
-        // Every entry of the partial index is a pending transaction, so the search never touches
-        // a committed or discarded row.
+        // Every entry of the partial index is a pending transaction, so the search never touches a
+        // committed or discarded row.
         assert!(
             plan.contains("SEARCH tx USING INDEX idx_transactions_pending (status_variant=?)"),
             "pending transactions must be read from the partial index: {plan}"

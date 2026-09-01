@@ -98,8 +98,8 @@ fn attachment_headers_from_proto(
 fn attachment_schemes_to_proto(
     headers: &[NoteAttachmentHeader; NoteAttachments::MAX_COUNT],
 ) -> Vec<u32> {
-    // Encode each header as the scheme value, with `0` meaning absent. Trailing absent slots
-    // are stripped to match the wire convention.
+    // Encode each header as the scheme value, with `0` meaning absent. Trailing absent slots are
+    // stripped to match the wire convention.
     let mut encoded: Vec<u32> = headers
         .iter()
         .map(|h| h.scheme().map_or(0, |s| u32::from(s.as_u16())))

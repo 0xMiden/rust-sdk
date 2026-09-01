@@ -353,10 +353,9 @@ enum Behavior {
         cli: Cli,
     },
 
-    /// Used when the Miden Client CLI is called under a different name, like
-    /// when it is called from [Midenup](https://github.com/0xMiden/midenup).
-    /// Vec<OsString> holds the "raw" arguments passed to the command line,
-    /// analogous to `argv`.
+    /// Used when the Miden Client CLI is called under a different name, like when it is called from
+    /// [Midenup](https://github.com/0xMiden/midenup). Vec<OsString> holds the "raw" arguments
+    /// passed to the command line, analogous to `argv`.
     #[command(external_subcommand)]
     External(Vec<OsString>),
 }
@@ -367,9 +366,8 @@ pub struct Cli {
     #[command(subcommand)]
     action: Command,
 
-    /// Indicates whether the client's CLI is being called directly, or
-    /// externally under an alias (like in the case of
-    /// [Midenup](https://github.com/0xMiden/midenup).
+    /// Indicates whether the client's CLI is being called directly, or externally under an alias
+    /// (like in the case of [Midenup](https://github.com/0xMiden/midenup).
     #[arg(skip)]
     #[allow(unused)]
     external: bool,

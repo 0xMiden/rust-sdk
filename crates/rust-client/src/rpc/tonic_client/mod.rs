@@ -169,9 +169,9 @@ pub struct GrpcClient {
     max_retries: u32,
     /// Fallback retry interval in milliseconds when no `retry-after` header is present.
     retry_interval_ms: u64,
-    /// Optional bearer token injected as `authorization: Bearer <token>` on every outbound
-    /// gRPC call, alongside the standard `accept` header. Used when talking to an
-    /// authenticating gateway in front of the node.
+    /// Optional bearer token injected as `authorization: Bearer <token>` on every outbound gRPC
+    /// call, alongside the standard `accept` header. Used when talking to an authenticating gateway
+    /// in front of the node.
     bearer_token: Option<String>,
     /// Maximum size (in bytes) of a decoded gRPC response the client will accept. Defaults to
     /// [`DEFAULT_MAX_RESPONSE_SIZE_BYTES`].
@@ -179,8 +179,8 @@ pub struct GrpcClient {
 }
 
 impl GrpcClient {
-    /// Returns a new instance of [`GrpcClient`] that'll do calls to the provided [`Endpoint`]
-    /// with the given timeout in milliseconds.
+    /// Returns a new instance of [`GrpcClient`] that'll do calls to the provided [`Endpoint`] with
+    /// the given timeout in milliseconds.
     pub fn new(endpoint: &Endpoint, timeout_ms: u64) -> GrpcClient {
         GrpcClient {
             client: RwLock::new(None),
@@ -203,8 +203,8 @@ impl GrpcClient {
         self
     }
 
-    /// Sets the fallback retry interval in milliseconds, used when the server does not provide
-    /// a `retry-after` header. Defaults to `100` ms.
+    /// Sets the fallback retry interval in milliseconds, used when the server does not provide a
+    /// `retry-after` header. Defaults to `100` ms.
     #[must_use]
     pub fn with_retry_interval_ms(mut self, retry_interval_ms: u64) -> Self {
         self.retry_interval_ms = retry_interval_ms;
@@ -366,8 +366,8 @@ impl NodeRpcClient for GrpcClient {
         // Store the commitment for future connections
         self.genesis_commitment.write().replace(commitment);
 
-        // If a client is already connected, update it to use the new genesis commitment.
-        // If not connected, the commitment will be used when connect() is called.
+        // If a client is already connected, update it to use the new genesis commitment. If not
+        // connected, the commitment will be used when connect() is called.
         let mut client_guard = self.client.write();
         if let Some(client) = client_guard.as_mut() {
             client.set_genesis_commitment(commitment);
@@ -1222,9 +1222,9 @@ mod tests {
 
     #[tokio::test]
     async fn with_bearer_auth_surfaces_invalid_ascii_value_at_connect_time() {
-        // Tokens containing control characters are rejected by `AsciiMetadataValue`. The
-        // fluent builder defers the check to connection time, so the error must surface as
-        // a `ConnectionError` on the first request — preventing CR/LF header-injection.
+        // Tokens containing control characters are rejected by `AsciiMetadataValue`. The fluent
+        // builder defers the check to connection time, so the error must surface as a
+        // `ConnectionError` on the first request — preventing CR/LF header-injection.
         let endpoint = &Endpoint::devnet();
         let client = GrpcClient::new(endpoint, 10000).with_bearer_auth("bad\nvalue".to_string());
 

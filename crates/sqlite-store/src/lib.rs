@@ -103,8 +103,8 @@ impl SqliteStore {
 
         Self::migrate(&pool, SqliteMigrator::client()).await?;
 
-        // Account SMT data is persisted in the forest tables and read on demand, so no state
-        // needs to be rebuilt here.
+        // Account SMT data is persisted in the forest tables and read on demand, so no state needs
+        // to be rebuilt here.
         Ok(SqliteStore { pool, database_filepath })
     }
 

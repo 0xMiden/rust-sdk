@@ -126,9 +126,9 @@ const INCR_NOTE_SCRIPT_CODE: &str = "
     end
 ";
 
-// Minimal no-op tx script: the faucet's `INCR_NONCE_AUTH_CODE` auth
-// procedure already increments the nonce, so the script itself needs
-// only to satisfy the builder's requirement that _some_ user code runs.
+// Minimal no-op tx script: the faucet's `INCR_NONCE_AUTH_CODE` auth procedure already increments
+// the nonce, so the script itself needs only to satisfy the builder's requirement that _some_ user
+// code runs.
 const NOOP_TX_SCRIPT: &str = "
     @transaction_script
     pub proc main
@@ -137,12 +137,12 @@ const NOOP_TX_SCRIPT: &str = "
 ";
 
 // A non-standard "claim to target" note script: it asserts the consuming account is the note's
-// target (read from the note's storage) and then moves all of the note's assets into that
-// account's vault. It is functionally similar to P2ID but hand-written, so its MAST root differs
-// from every standard note script — exactly the case the node's NTX builder cannot resolve without
-// the script being pre-registered. The `{nonce}` placeholder is replaced with a per-test value so
-// the compiled root is unique per run and can never collide with a previously registered script on
-// a shared node.
+// target (read from the note's storage) and then moves all of the note's assets into that account's
+// vault. It is functionally similar to P2ID but hand-written, so its MAST root differs from every
+// standard note script — exactly the case the node's NTX builder cannot resolve without the script
+// being pre-registered. The `{nonce}` placeholder is replaced with a per-test value so the compiled
+// root is unique per run and can never collide with a previously registered script on a shared
+// node.
 const NON_STANDARD_CLAIM_NOTE_SCRIPT: &str = r#"
     use miden::protocol::active_account
     use miden::protocol::account_id
@@ -584,9 +584,9 @@ pub async fn test_recall_note_before_ntx_consumes_it(client_config: ClientConfig
     Ok(())
 }
 
-/// After a network account consumes a note (potentially in the same batch it was created),
-/// the receiver's `InputNoteReader` should find it as consumed by that account. Validates
-/// the erased-notes detection flow end-to-end against a real node.
+/// After a network account consumes a note (potentially in the same batch it was created), the
+/// receiver's `InputNoteReader` should find it as consumed by that account. Validates the
+/// erased-notes detection flow end-to-end against a real node.
 pub async fn test_note_reader_finds_note_consumed_by_ntx(
     client_config: ClientConfig,
 ) -> Result<()> {
@@ -702,8 +702,8 @@ pub async fn test_network_note_consumed_by_ntx(client_config: ClientConfig) -> R
         wait_for_blocks(&mut client, 1).await;
     }
 
-    // The note is consumed via same-batch erasure, so the consumer is not derivable and the note
-    // is recorded as consumed with an unknown consumer. Poll until the client records it consumed.
+    // The note is consumed via same-batch erasure, so the consumer is not derivable and the note is
+    // recorded as consumed with an unknown consumer. Poll until the client records it consumed.
     let mut consumed = false;
     for _ in 0..10 {
         client.sync_state().await?;
@@ -828,10 +828,9 @@ pub async fn test_ntx_mint_produces_public_note_with_non_standard_script(
     let amount = Felt::new_unchecked(100);
 
     // Registered case: pre-register a non-standard output script via `expected_ntx_scripts` on a
-    // trivial no-op tx, then wait for the registration to commit. `execute_tx_and_sync` waits
-    // for the no-op tx (committed alongside the registration note) and the extra block adds
-    // an indexing margin, so the script is resolvable before the MINT's network transaction
-    // runs.
+    // trivial no-op tx, then wait for the registration to commit. `execute_tx_and_sync` waits for
+    // the no-op tx (committed alongside the registration note) and the extra block adds an indexing
+    // margin, so the script is resolvable before the MINT's network transaction runs.
     let registered_nonce: u32 = client.rng().random();
     let (registered_script, registered_mint, registered_output_commitment) =
         build_non_standard_mint(
@@ -880,9 +879,9 @@ pub async fn test_ntx_mint_produces_public_note_with_non_standard_script(
     assert_account_has_single_asset(&client_2, bob.id(), faucet.id(), amount.as_canonical_u64())
         .await;
 
-    // Unregistered case: mint a note whose public output uses a different non-standard script
-    // that is never registered. The NTX builder cannot build the public output note, so it
-    // never reaches `Committed` over a bounded window.
+    // Unregistered case: mint a note whose public output uses a different non-standard script that
+    // is never registered. The NTX builder cannot build the public output note, so it never reaches
+    // `Committed` over a bounded window.
     let unregistered_nonce: u32 = client.rng().random();
     let (_unregistered_script, unregistered_mint, unregistered_output_id) =
         build_non_standard_mint(
@@ -1011,8 +1010,8 @@ pub async fn test_watch_network_account(client_config: ClientConfig) -> Result<(
     let initial_watched_commitment =
         client_2.account_reader(network_account_id).commitment().await?;
 
-    // client_1 emits BUMP_NOTE_NUMBER network notes targeted at the counter; the node will
-    // consume them in subsequent blocks and bump the counter to BUMP_NOTE_NUMBER.
+    // client_1 emits BUMP_NOTE_NUMBER network notes targeted at the counter; the node will consume
+    // them in subsequent blocks and bump the counter to BUMP_NOTE_NUMBER.
     let (native_account, ..) =
         insert_new_wallet(&mut client_1, AccountType::Public, &keystore_1, RPO_FALCON_SCHEME_ID)
             .await?;

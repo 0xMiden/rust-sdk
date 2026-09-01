@@ -180,15 +180,15 @@ where
             return Ok(Vec::new());
         }
 
-        // Drain any private notes whose previous relay attempt failed. A flush
-        // error is logged, not propagated: a failing relay must not block the
-        // sync, and the entries stay durable for the next attempt.
+        // Drain any private notes whose previous relay attempt failed. A flush error is logged, not
+        // propagated: a failing relay must not block the sync, and the entries stay durable for the
+        // next attempt.
         if let Err(err) = self.flush_relay_outbox().await {
             tracing::warn!(?err, "relay outbox flush failed during sync; entries retained");
         }
 
-        // Recover historical private notes for any tag added after the global cursor advanced.
-        // This drains each newly tracked tag from the start, fetching only that tag's own history.
+        // Recover historical private notes for any tag added after the global cursor advanced. This
+        // drains each newly tracked tag from the start, fetching only that tag's own history.
         let mut imported_ids = self.backfill_new_tags().await?;
 
         let cursor = self.store.get_note_transport_cursor().await?;
@@ -323,8 +323,8 @@ where
             updated_partial_mmr = Some(partial_mmr);
         }
 
-        // Store deletes stale auth nodes, marks blocks as irrelevant, and removes irrelevant
-        // block headers. Old irrelevant tip headers may still need pruning.
+        // Store deletes stale auth nodes, marks blocks as irrelevant, and removes irrelevant block
+        // headers. Old irrelevant tip headers may still need pruning.
         self.store
             .untrack_and_prune_irrelevant_blocks(&blocks_to_untrack, &nodes_to_remove)
             .await?;
@@ -336,8 +336,8 @@ where
         Ok(())
     }
 
-    /// Ensures that the RPC limits are set in the RPC client. If not already cached,
-    /// fetches them from the node and persists them in the store.
+    /// Ensures that the RPC limits are set in the RPC client. If not already cached, fetches them
+    /// from the node and persists them in the store.
     pub async fn ensure_rpc_limits_in_place(&mut self) -> Result<(), ClientError> {
         if self.rpc_api.has_rpc_limits().is_some() {
             return Ok(());

@@ -38,8 +38,7 @@ static CLIENT_MIGRATOR: LazyLock<SqliteMigrator> =
 /// `Copy` and constructible in a `const`.
 pub(crate) type MigrationHook = fn(&Transaction<'_>) -> HookResult;
 
-/// Carries the rejection a verifying hook cannot return by value out to
-/// [`SqliteMigrator::apply`].
+/// Carries the rejection a verifying hook cannot return by value out to [`SqliteMigrator::apply`].
 type RejectionReport = Arc<Mutex<Option<SqliteStoreError>>>;
 
 /// One schema version: the SQL that builds it, optionally the Rust code that moves data the SQL

@@ -290,8 +290,8 @@ fn parse_test_function_name(line: &str) -> Option<String> {
     let s = line.trim();
 
     // Skip comments (both single-line and multi-line starts)
-    // FIXME: this technically could match with fn names on /* */ blocks
-    // but should be good enough for now
+    // FIXME: this technically could match with fn names on /* */ blocks but should be good enough
+    // for now
     if s.is_empty() || s.starts_with("//") || s.starts_with("/*") {
         return None;
     }
@@ -307,8 +307,8 @@ fn parse_test_function_name(line: &str) -> Option<String> {
     };
 
     let name_token = tokens.get(fn_pos + 1)?;
-    // Extract only valid identifier characters from the name token
-    // This stops at '(' for parameters, '<' for generics, etc.
+    // Extract only valid identifier characters from the name token This stops at '(' for
+    // parameters, '<' for generics, etc.
     let ident: String = name_token
         .chars()
         .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
@@ -394,8 +394,8 @@ fn generate_integration_tests(test_cases: &[TestCaseInfo]) -> String {
     // Generate tokio test wrappers for each test case
     for test_case in test_cases {
         // Strip test prefix
-        // SAFETY: ok to unwrap here because we collected these names based on the fact they
-        // had a "test_" prefix
+        // SAFETY: ok to unwrap here because we collected these names based on the fact they had a
+        // "test_" prefix
         let test_fn_name = test_case.function_name.strip_prefix(TEST_PREFIX).unwrap().to_string();
 
         // Use template and substitute placeholders

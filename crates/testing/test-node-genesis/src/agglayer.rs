@@ -1,5 +1,5 @@
-//! Builds the agglayer genesis accounts (bridge admin, GER manager, bridge, faucet) included in
-//! the genesis configuration when agglayer support is requested.
+//! Builds the agglayer genesis accounts (bridge admin, GER manager, bridge, faucet) included in the
+//! genesis configuration when agglayer support is requested.
 
 use std::collections::BTreeSet;
 
@@ -40,8 +40,8 @@ pub const GER_MANAGER_ACCOUNT_FILE: &str = "ger_manager.mac";
 pub const BRIDGE_ACCOUNT_FILE: &str = "bridge.mac";
 pub const AGGLAYER_FAUCET_ACCOUNT_FILE: &str = "agglayer_faucet.mac";
 
-/// Account files to include in genesis and save to disk (account + secret keys).
-/// Each entry is (filename, `AccountFile`).
+/// Account files to include in genesis and save to disk (account + secret keys). Each entry is
+/// (filename, `AccountFile`).
 pub type AgglayerGenesisAccounts = Vec<(&'static str, AccountFile)>;
 
 /// Creates all agglayer genesis accounts:

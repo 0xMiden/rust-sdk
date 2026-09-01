@@ -203,8 +203,7 @@ pub mod asset {
     };
 }
 
-/// Provides authentication-related types and functionalities for the Miden
-/// network.
+/// Provides authentication-related types and functionalities for the Miden network.
 pub mod auth {
     pub use miden_protocol::account::auth::{
         AuthScheme as AuthSchemeId,
@@ -233,9 +232,9 @@ pub mod block {
     pub use miden_protocol::block::{BlockHeader, BlockNumber, FeeParameters, ValidatorKeys};
 }
 
-/// Provides cryptographic types and utilities used within the Miden rollup
-/// network. It re-exports commonly used types and random number generators like `FeltRng` from
-/// the `miden_standards` crate.
+/// Provides cryptographic types and utilities used within the Miden rollup network. It re-exports
+/// commonly used types and random number generators like `FeltRng` from the `miden_standards`
+/// crate.
 pub mod crypto {
     pub mod ecdsa_k256_keccak {
         pub use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
@@ -339,20 +338,18 @@ pub use miden_tx::ExecutionOptions;
 #[cfg(feature = "tonic")]
 pub use remote_prover::RemoteTransactionProver;
 
-/// Provides test utilities for working with accounts and account IDs
-/// within the Miden network. This module is only available when the `testing` feature is
-/// enabled.
+/// Provides test utilities for working with accounts and account IDs within the Miden network. This
+/// module is only available when the `testing` feature is enabled.
 #[cfg(feature = "testing")]
 pub mod testing {
     pub use miden_protocol::testing::account_id;
-    /// Raw access to `miden-standards` testing modules for items not curated by
-    /// `miden-client`.
+    /// Raw access to `miden-standards` testing modules for items not curated by `miden-client`.
     pub use miden_standards::testing as standards;
     pub use miden_standards::testing::note::NoteBuilder;
     pub use miden_testing::*;
     /// The data store the executor reads from, along with the trait whose methods it serves.
-    /// Exposed here so that tests can exercise it on its own, without going through a
-    /// transaction or a note screening pass.
+    /// Exposed here so that tests can exercise it on its own, without going through a transaction
+    /// or a note screening pass.
     pub use miden_tx::DataStore;
 
     pub use crate::store::data_store::ClientDataStore;
@@ -387,17 +384,16 @@ use crate::transaction::TransactionProver;
 pub struct Client<AUTH> {
     /// The client's store, which provides a way to write and read entities to provide persistence.
     store: Arc<dyn Store>,
-    /// An instance of [`FeltRng`] which provides randomness tools for generating new keys,
-    /// serial numbers, etc.
+    /// An instance of [`FeltRng`] which provides randomness tools for generating new keys, serial
+    /// numbers, etc.
     rng: ClientRng,
-    /// An instance of [`NodeRpcClient`] which provides a way for the client to connect to the
-    /// Miden node.
+    /// An instance of [`NodeRpcClient`] which provides a way for the client to connect to the Miden
+    /// node.
     rpc_api: Arc<dyn NodeRpcClient>,
-    /// An instance of a [`TransactionProver`] which will be the default prover for the
-    /// client.
+    /// An instance of a [`TransactionProver`] which will be the default prover for the client.
     tx_prover: Arc<dyn TransactionProver + Send + Sync>,
-    /// An instance of a [`TransactionAuthenticator`] which will be used by the transaction
-    /// executor whenever a signature is requested from within the VM.
+    /// An instance of a [`TransactionAuthenticator`] which will be used by the transaction executor
+    /// whenever a signature is requested from within the VM.
     authenticator: Option<Arc<AUTH>>,
     /// Shared source manager used to retain MASM source information for assembled programs.
     source_manager: Arc<dyn SourceManagerSync>,
@@ -412,16 +408,15 @@ pub struct Client<AUTH> {
     /// Maximum number of blocks the client can be behind the network for transactions and account
     /// proofs to be considered valid.
     max_block_number_delta: Option<u32>,
-    /// An instance of [`NoteTransportClient`] which provides a way for the client to connect to
-    /// the Miden Note Transport network.
+    /// An instance of [`NoteTransportClient`] which provides a way for the client to connect to the
+    /// Miden Note Transport network.
     note_transport_api: Option<Arc<dyn NoteTransportClient>>,
     /// Whether the client should cache the current Partial MMR in memory.
     cache_partial_mmr_in_memory: bool,
     /// Cached [`PartialMmr`] for the chain's MMR. Lazily built from the store and kept in sync
     /// across sync/prune operations. `None` forces a rebuild on next access.
     partial_mmr: Option<CachedPartialMmr>,
-    /// Observers fired by `apply_transaction`. See
-    /// [`Client::with_transaction_observer`].
+    /// Observers fired by `apply_transaction`. See [`Client::with_transaction_observer`].
     transaction_observers: Vec<Arc<dyn transaction::TransactionObserver>>,
 }
 
@@ -559,8 +554,8 @@ impl<T> ClientFeltRng for T where T: FeltRng + Send + Sync {}
 /// Boxed RNG trait object used by the client.
 pub type ClientRngBox = Box<dyn ClientFeltRng>;
 
-/// A wrapper around a [`FeltRng`] that implements the [`TryRng`] trait.
-/// This allows the user to pass their own generic RNG so that it's used by the client.
+/// A wrapper around a [`FeltRng`] that implements the [`TryRng`] trait. This allows the user to
+/// pass their own generic RNG so that it's used by the client.
 pub struct ClientRng(ClientRngBox);
 
 impl ClientRng {

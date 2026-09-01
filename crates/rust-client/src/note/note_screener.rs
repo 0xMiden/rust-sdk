@@ -40,8 +40,8 @@ use crate::transaction::{
 pub type NoteConsumability = (AccountId, NoteConsumptionStatus);
 
 /// Returns `true` if the consumption status indicates that the note may be consumable by the
-/// account. A note is considered relevant unless it is permanently unconsumable (either due to
-/// a fundamental incompatibility or unconsumable conditions).
+/// account. A note is considered relevant unless it is permanently unconsumable (either due to a
+/// fundamental incompatibility or unconsumable conditions).
 fn is_relevant(consumption_status: &NoteConsumptionStatus) -> bool {
     !matches!(
         consumption_status,
@@ -70,8 +70,8 @@ impl NoteScreener {
         Self { store, tx_args: None, rpc_api }
     }
 
-    /// Sets the transaction arguments to use when checking note consumability.
-    /// If not set, a default `TransactionArgs` with an empty advice map is used.
+    /// Sets the transaction arguments to use when checking note consumability. If not set, a
+    /// default `TransactionArgs` with an empty advice map is used.
     #[must_use]
     pub fn with_transaction_args(mut self, tx_args: TransactionArgs) -> Self {
         self.tx_args = Some(tx_args);
@@ -145,12 +145,11 @@ impl NoteScreener {
 
         let data_store = ClientDataStore::new(self.store.clone(), self.rpc_api.clone())
             .with_execution_input_cache();
-        // Don't attach the real authenticator for consumability checks. The
-        // NoteConsumptionChecker gracefully handles a missing authenticator by
-        // returning `ConsumableWithAuthorization` instead of calling
-        // `get_signature()`. Attaching the real authenticator here causes the
-        // external signer (e.g. wallet extension) to be invoked during
-        // sync_state, producing unwanted confirmation popups on every sync.
+        // Don't attach the real authenticator for consumability checks. The NoteConsumptionChecker
+        // gracefully handles a missing authenticator by returning `ConsumableWithAuthorization`
+        // instead of calling `get_signature()`. Attaching the real authenticator here causes the
+        // external signer (e.g. wallet extension) to be invoked during sync_state, producing
+        // unwanted confirmation popups on every sync.
         let transaction_executor: TransactionExecutor<'_, '_, _, ()> =
             TransactionExecutor::new(&data_store);
         let consumption_checker = NoteConsumptionChecker::new(&transaction_executor);
@@ -284,8 +283,8 @@ impl NoteScreener {
 impl OnNoteReceived for NoteScreener {
     /// Default implementation of the [`OnNoteReceived`] callback. It queries the store for the
     /// committed note to check if it's relevant. If the note wasn't being tracked but it came in
-    /// the sync response it may be a new public note, in that case we use the [`NoteScreener`]
-    /// to check its relevance.
+    /// the sync response it may be a new public note, in that case we use the [`NoteScreener`] to
+    /// check its relevance.
     async fn on_note_received(
         &self,
         committed_note: CommittedNote,

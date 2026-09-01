@@ -81,8 +81,8 @@ use miden_protocol::transaction::ProvenTransaction;
 
 use crate::rpc::domain::storage_map::StorageMapInfo;
 
-/// Contains domain types related to RPC requests and responses, as well as utility functions
-/// for dealing with them.
+/// Contains domain types related to RPC requests and responses, as well as utility functions for
+/// dealing with them.
 pub mod domain;
 pub mod encryption;
 
@@ -135,9 +135,9 @@ pub enum AccountStateAt {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 pub trait NodeRpcClient: Send + Sync {
-    /// Sets the genesis commitment for the client and reconnects to the node providing the
-    /// genesis commitment in the request headers. If the genesis commitment is already set,
-    /// this method does nothing.
+    /// Sets the genesis commitment for the client and reconnects to the node providing the genesis
+    /// commitment in the request headers. If the genesis commitment is already set, this method
+    /// does nothing.
     async fn set_genesis_commitment(&self, commitment: Word) -> Result<(), RpcError>;
 
     /// Returns the genesis commitment if it has been set, without fetching from the node.
@@ -351,27 +351,27 @@ pub trait NodeRpcClient: Send + Sync {
                     },
                 };
 
-                // An empty set carries nothing, so it is recorded as absent rather than as
-                // content: keeping it would shadow the attachments the note's own sync record may
-                // already have carried, for a public note as much as for a private one.
+                // An empty set carries nothing, so it is recorded as absent rather than as content:
+                // keeping it would shadow the attachments the note's own sync record may already
+                // have carried, for a public note as much as for a private one.
                 let attachments = (!attachments.is_empty()).then_some(attachments);
                 fetched_content.insert(note_id, (details, attachments));
             }
         }
 
-        // Fold the resolved content into each note, keeping the per-block grouping so the
-        // inclusion data (header + MMR path) is carried once per block. `SyncedNote::new` rejects
-        // content that is inconsistent with its sync record (mismatched or missing attachment
-        // content); such notes are dropped rather than failing the sync, since a tracked record
-        // is never stored incomplete this way (it stays expected and can be retried by
-        // re-importing), while a hard error would wedge every sync scanning this block range.
+        // Fold the resolved content into each note, keeping the per-block grouping so the inclusion
+        // data (header + MMR path) is carried once per block. `SyncedNote::new` rejects content
+        // that is inconsistent with its sync record (mismatched or missing attachment content);
+        // such notes are dropped rather than failing the sync, since a tracked record is never
+        // stored incomplete this way (it stays expected and can be retried by re-importing), while
+        // a hard error would wedge every sync scanning this block range.
         let mut synced_blocks = Vec::with_capacity(blocks.len());
         for block in blocks {
             let mut notes = BTreeMap::new();
             for (note_id, committed) in block.notes {
                 // Fetched attachments win when the response actually carried some: a public note's
-                // attachments are bound to the requested id, which `VerifyingRpcClient` checks.
-                // The sync record is the fallback, and a note reporting neither has none.
+                // attachments are bound to the requested id, which `VerifyingRpcClient` checks. The
+                // sync record is the fallback, and a note reporting neither has none.
                 let (details, fetched_attachments) =
                     fetched_content.remove(&note_id).unwrap_or_default();
                 let attachments = fetched_attachments
@@ -434,9 +434,9 @@ pub trait NodeRpcClient: Send + Sync {
         request: GetAccountRequest,
     ) -> Result<(BlockNumber, AccountProof), RpcError>;
 
-    /// Fills in the asset list when the vault came back flagged `too_many_assets`, by
-    /// querying [`NodeRpcClient::sync_account_vault`] over `[GENESIS, block_to]`. No-op when
-    /// the flag isn't set.
+    /// Fills in the asset list when the vault came back flagged `too_many_assets`, by querying
+    /// [`NodeRpcClient::sync_account_vault`] over `[GENESIS, block_to]`. No-op when the flag isn't
+    /// set.
     async fn resolve_oversize_vault(
         &self,
         account_id: AccountId,
@@ -448,8 +448,8 @@ pub trait NodeRpcClient: Send + Sync {
         }
         let vault_info =
             self.sync_account_vault(BlockNumber::GENESIS, block_to, account_id).await?;
-        // Syncing from genesis merges the full vault history into an absolute patch, so its
-        // updated (non-removed) assets are the account's current vault contents.
+        // Syncing from genesis merges the full vault history into an absolute patch, so its updated
+        // (non-removed) assets are the account's current vault contents.
         details.vault_details.assets = vault_info.vault_patch.updated_assets().collect();
         details.vault_details.too_many_assets = false;
         Ok(())
@@ -477,8 +477,8 @@ pub trait NodeRpcClient: Send + Sync {
             if !map_details.is_limit_exceeded() {
                 continue;
             }
-            // Syncing from genesis merges the full history of each slot into its absolute
-            // current entries, so the result is the complete map content.
+            // Syncing from genesis merges the full history of each slot into its absolute current
+            // entries, so the result is the complete map content.
             let entries: Vec<StorageMapEntry> = info
                 .map_entries
                 .get(&map_details.slot_name)

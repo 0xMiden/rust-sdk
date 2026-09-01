@@ -60,8 +60,8 @@ pub struct NoteSeed {
     pub consumed: Vec<InputNoteRecord>,
     /// Notes that have not been consumed.
     pub unspent: Vec<InputNoteRecord>,
-    /// One header per block the consumed notes were consumed in, paired with the
-    /// `has_client_notes` flag it is stored under.
+    /// One header per block the consumed notes were consumed in, paired with the `has_client_notes`
+    /// flag it is stored under.
     pub block_headers: Vec<(BlockHeader, bool)>,
 }
 

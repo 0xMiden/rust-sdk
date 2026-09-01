@@ -115,8 +115,8 @@ fn init_tracing(verbose: bool) {
     version
 )]
 struct Args {
-    /// Network preset: sets defaults for all components (RPC, prover, note transport).
-    /// Options: `devnet`, `testnet`, `localhost`, or a custom RPC endpoint.
+    /// Network preset: sets defaults for all components (RPC, prover, note transport). Options:
+    /// `devnet`, `testnet`, `localhost`, or a custom RPC endpoint.
     #[arg(short, long, default_value = "localhost", env = "TEST_MIDEN_NETWORK")]
     network: Network,
 
@@ -152,18 +152,18 @@ struct Args {
     #[arg(long, default_value = "3")]
     retry_count: usize,
 
-    /// Remote prover endpoint. Accepts "devnet", "testnet", "localhost", or a custom URL.
-    /// If unset, defaults based on --network (testnet/devnet use remote provers).
+    /// Remote prover endpoint. Accepts "devnet", "testnet", "localhost", or a custom URL. If unset,
+    /// defaults based on --network (testnet/devnet use remote provers).
     #[arg(long, env = "TEST_MIDEN_PROVER_URL")]
     prover_url: Option<String>,
 
-    /// Note transport endpoint. Accepts "devnet", "testnet", or a custom URL.
-    /// If unset, defaults based on --network.
+    /// Note transport endpoint. Accepts "devnet", "testnet", or a custom URL. If unset, defaults
+    /// based on --network.
     #[arg(long, env = "TEST_MIDEN_NOTE_TRANSPORT_URL")]
     note_transport_url: Option<String>,
 
-    /// Path to the pre-funded basic wallets the tests draw transaction fees from: either one
-    /// `.mac` account file or a directory of them.
+    /// Path to the pre-funded basic wallets the tests draw transaction fees from: either one `.mac`
+    /// account file or a directory of them.
     #[arg(long, env = fee_funding::FUNDER_ACCOUNTS_ENV)]
     funders: Option<PathBuf>,
 
@@ -171,8 +171,8 @@ struct Args {
     #[arg(short, long)]
     verbose: bool,
 
-    /// Internal: run a single test by name and exit (hidden from help).
-    /// Used by the test runner to spawn subprocesses for parallel execution.
+    /// Internal: run a single test by name and exit (hidden from help). Used by the test runner to
+    /// spawn subprocesses for parallel execution.
     #[arg(long, hide = true)]
     internal_run_test: Option<String>,
 }
@@ -387,8 +387,8 @@ impl TestResult {
 // SUBPROCESS RESULT
 // ================================================================================================
 
-/// Result type serialized by subprocess and parsed by parent process.
-/// Uses f64 for duration (seconds) to avoid custom serde implementations.
+/// Result type serialized by subprocess and parsed by parent process. Uses f64 for duration
+/// (seconds) to avoid custom serde implementations.
 #[derive(Debug, Serialize, Deserialize)]
 struct SubprocessResult {
     name: String,
@@ -817,8 +817,7 @@ fn run_tests_parallel(
                         println!("            Error: {error}");
                     }
 
-                    // Show captured output in verbose mode for all tests, or
-                    // inline for failures
+                    // Show captured output in verbose mode for all tests, or inline for failures
                     if (verbose || !result.passed)
                         && let Some(ref output) = result.captured_output
                         && !output.trim().is_empty()

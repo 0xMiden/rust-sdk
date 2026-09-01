@@ -142,9 +142,9 @@ impl Deserializable for ChainAnchor {
         }
 
         for (block_num, header) in &blocks {
-            // The constructor re-derives each position from the header, so the key must agree
-            // with it — otherwise a crafted anchor could aim the `open` below at a harmless
-            // position while the constructor opens the dangerous one.
+            // The constructor re-derives each position from the header, so the key must agree with
+            // it — otherwise a crafted anchor could aim the `open` below at a harmless position
+            // while the constructor opens the dangerous one.
             if block_num != &header.block_num() {
                 return Err(DeserializationError::InvalidValue(format!(
                     "block map key {block_num} does not match the block number {} of the header it maps to",
@@ -340,8 +340,8 @@ mod tests {
         assert!(ChainAnchor::read_from_bytes(&bytes).is_err());
     }
 
-    /// A block-map key that disagrees with its header would let a crafted anchor aim the
-    /// pre-flight `open` at a harmless position, so deserialization must reject it.
+    /// A block-map key that disagrees with its header would let a crafted anchor aim the pre-flight
+    /// `open` at a harmless position, so deserialization must reject it.
     #[test]
     fn deserialization_rejects_a_block_key_that_disagrees_with_its_header() {
         use alloc::collections::BTreeMap;

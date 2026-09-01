@@ -1,5 +1,4 @@
-//! Provides various utilities that are commonly used throughout the Miden
-//! client library.
+//! Provides various utilities that are commonly used throughout the Miden client library.
 
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -42,8 +41,8 @@ pub fn base_units_to_tokens(units: AssetAmount, decimals: u8) -> String {
     }
 }
 
-/// Errors that can occur when parsing a token represented as a decimal number in
-/// a string into base units.
+/// Errors that can occur when parsing a token represented as a decimal number in a string into base
+/// units.
 #[derive(thiserror::Error, Debug)]
 pub enum TokenParseError {
     #[error("Number of decimals {0} must be less than or equal to {max_decimals}", max_decimals = FungibleFaucet::MAX_DECIMALS)]
@@ -58,8 +57,8 @@ pub enum TokenParseError {
     InvalidAmount(#[source] AssetError),
 }
 
-/// Converts a decimal number, represented as a string, into an integer by shifting
-/// the decimal point to the right by a specified number of decimal places.
+/// Converts a decimal number, represented as a string, into an integer by shifting the decimal
+/// point to the right by a specified number of decimal places.
 pub fn tokens_to_base_units(
     decimal_str: &str,
     n_decimals: u8,

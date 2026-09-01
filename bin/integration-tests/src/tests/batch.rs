@@ -100,9 +100,8 @@ pub async fn test_batch_builder_submits_two_p2id_on_one_account(
 
     assert!(block_num.as_u32() > 0, "expected a positive block number from batch submit");
 
-    // Poll until at least 3 sender-account transactions are committed (1 from
-    // mint-and-consume + 2 from the batch). Give the node a reasonable window
-    // to finalize the batch's block.
+    // Poll until at least 3 sender-account transactions are committed (1 from mint-and-consume + 2
+    // from the batch). Give the node a reasonable window to finalize the batch's block.
     let mut committed_count = 0;
     for attempt in 0..30 {
         wait_for_blocks(&mut client, 1).await;
@@ -179,8 +178,8 @@ pub async fn test_batch_builder_multiple_accounts(client_config: ClientConfig) -
     let account_id_b = second_regular_account.id();
     let faucet_account_id = faucet_account_header.id();
 
-    // Pre-batch: get BOTH A and B on-chain (each with MINT_AMOUNT) so their first batch-tx
-    // deltas are partial, not full-state. The batch apply path requires partial deltas.
+    // Pre-batch: get BOTH A and B on-chain (each with MINT_AMOUNT) so their first batch-tx deltas
+    // are partial, not full-state. The batch apply path requires partial deltas.
     let tx_id_a =
         mint_and_consume(&mut client, account_id_a, faucet_account_id, NoteType::Private).await;
     wait_for_tx(&mut client, tx_id_a).await?;
@@ -371,8 +370,8 @@ pub async fn test_batch_builder_interleaved_pushes(client_config: ClientConfig) 
     info!(block_num = block_num.as_u32(), "Interleaved batch submitted");
     assert!(block_num.as_u32() > 0, "expected a positive block number");
 
-    // Poll until both accounts have their batch txs committed (A: mint+consume + 2 batch = 3,
-    // B: mint+consume + 1 batch = 2).
+    // Poll until both accounts have their batch txs committed (A: mint+consume + 2 batch = 3, B:
+    // mint+consume + 1 batch = 2).
     let mut a_committed = 0;
     let mut b_committed = 0;
     for attempt in 0..30 {

@@ -118,8 +118,8 @@ impl Provider for CliConfig {
 /// For loading configuration from the filesystem, use [`CliConfig::load()`] instead.
 impl Default for CliConfig {
     fn default() -> Self {
-        // Create paths relative to the config file location (which is in .miden directory)
-        // These will be resolved relative to the .miden directory when the config is loaded
+        // Create paths relative to the config file location (which is in .miden directory) These
+        // will be resolved relative to the .miden directory when the config is loaded
         Self {
             config_dir: None,
             rpc: RpcConfig::default(),
@@ -366,8 +366,8 @@ impl CliConfig {
         // Try local first
         match Self::from_local_dir() {
             Ok(config) => Ok(config),
-            // Only fall back to global if the local config file was not found
-            // (not for parse errors or other issues)
+            // Only fall back to global if the local config file was not found (not for parse errors
+            // or other issues)
             Err(CliError::ConfigNotFound(_)) => {
                 // Fall back to global
                 Self::from_global_dir().map_err(|e| match e {
@@ -389,8 +389,8 @@ impl CliConfig {
         })
     }
 
-    /// Resolves a relative path against a base directory.
-    /// If the path is already absolute, it remains unchanged.
+    /// Resolves a relative path against a base directory. If the path is already absolute, it
+    /// remains unchanged.
     fn resolve_relative_path(path: &mut PathBuf, base_dir: &Path) {
         if path.is_relative() {
             *path = base_dir.join(&*path);

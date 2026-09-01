@@ -48,11 +48,11 @@ use rand::Rng;
 
 use crate::tests::{create_test_client, seed_mock_transaction_encryption_key};
 
-/// Exercises the mock `submit_proven_batch` path end-to-end: build a real
-/// `ProvenBatch` from a proven transaction produced against a `MockChain`, submit it via
-/// `MockRpcApi`, and verify the returned block number equals the chain tip. The mock
-/// ignores `proposed_batch` and `transaction_inputs`, so we pass a cloned
-/// `ProposedBatch` and an empty inputs vector — good enough to exercise the trait wiring.
+/// Exercises the mock `submit_proven_batch` path end-to-end: build a real `ProvenBatch` from a
+/// proven transaction produced against a `MockChain`, submit it via `MockRpcApi`, and verify the
+/// returned block number equals the chain tip. The mock ignores `proposed_batch` and
+/// `transaction_inputs`, so we pass a cloned `ProposedBatch` and an empty inputs vector — good
+/// enough to exercise the trait wiring.
 #[tokio::test]
 async fn submit_proven_batch_returns_chain_tip() {
     let (_client, rpc_api, _keystore) = Box::pin(create_test_client()).await;
@@ -79,9 +79,8 @@ async fn submit_proven_batch_returns_chain_tip() {
 
     let proven_tx = LocalTransactionProver::default().prove_dummy(executed_tx).unwrap();
 
-    // Wrap the proven transaction into a ProvenBatch using MockChain helpers.
-    // ProposedBatch is Clone, so we clone it before consuming the original to produce the
-    // ProvenBatch.
+    // Wrap the proven transaction into a ProvenBatch using MockChain helpers. ProposedBatch is
+    // Clone, so we clone it before consuming the original to produce the ProvenBatch.
     let (proven_batch, proposed_for_submit) = {
         let chain = rpc_api.mock_chain.read();
         let proposed_batch = chain.propose_transaction_batch(vec![proven_tx]).unwrap();
@@ -98,9 +97,9 @@ async fn submit_proven_batch_returns_chain_tip() {
     assert_eq!(returned, expected_tip);
 }
 
-/// Build a 2-tx batch on one local account through `Client::new_transaction_batch`,
-/// submit it and verify the returned block number matches the mock chain's tip and
-/// both transactions land in the local store.
+/// Build a 2-tx batch on one local account through `Client::new_transaction_batch`, submit it and
+/// verify the returned block number matches the mock chain's tip and both transactions land in the
+/// local store.
 #[tokio::test]
 async fn batch_builder_submits_two_txs_on_one_account() {
     let (mut client, rpc_api, _keystore) = Box::pin(create_test_client()).await;
@@ -124,8 +123,8 @@ async fn batch_builder_submits_two_txs_on_one_account() {
     // Sync so the client's store reflects the on-chain state.
     client.sync_state().await.unwrap();
 
-    // Build two minimal no-op TransactionRequests for the same account.
-    // The mock account uses IncrNonce auth which requires no signing key — a bare
+    // Build two minimal no-op TransactionRequests for the same account. The mock account uses
+    // IncrNonce auth which requires no signing key — a bare
     // TransactionRequestBuilder::new().build() is sufficient.
     let req1 = TransactionRequestBuilder::new().build().unwrap();
     let req2 = TransactionRequestBuilder::new().build().unwrap();
@@ -154,9 +153,9 @@ async fn batch_builder_submits_two_txs_on_one_account() {
     );
 }
 
-/// Verifies that `Store::apply_transaction_batch` is atomic across the account tables AND the
-/// SMT forest tables. If any per-tx update in the batch fails, no earlier update is persisted,
-/// and a follow-up `Store::update_account` on the affected account still works.
+/// Verifies that `Store::apply_transaction_batch` is atomic across the account tables AND the SMT
+/// forest tables. If any per-tx update in the batch fails, no earlier update is persisted, and a
+/// follow-up `Store::update_account` on the affected account still works.
 #[tokio::test]
 async fn apply_transaction_batch_rolls_back_on_mid_batch_failure() {
     // Build a fresh mock chain with two existing accounts.
@@ -184,14 +183,14 @@ async fn apply_transaction_batch_rolls_back_on_mid_batch_failure() {
     client.ensure_genesis_in_place().await.unwrap();
     seed_mock_transaction_encryption_key(&mut client).await;
 
-    // Register ONLY account A. Account B stays unknown to the client store, so applying its
-    // patch fails with `AccountDataNotFound` and poisons the batch.
+    // Register ONLY account A. Account B stays unknown to the client store, so applying its patch
+    // fails with `AccountDataNotFound` and poisons the batch.
     client.add_account(&account_a, false).await.unwrap();
 
-    // Execute a trivial transaction against A and another against B, both via the mock chain.
-    // Both produce valid `ExecutedTransaction`s; the failure happens only at store-apply time.
-    // Build each `TxContext` in its own statement so the mock-chain read guard is dropped
-    // before `.execute().await` is reached (otherwise clippy flags await_holding_lock).
+    // Execute a trivial transaction against A and another against B, both via the mock chain. Both
+    // produce valid `ExecutedTransaction`s; the failure happens only at store-apply time. Build
+    // each `TxContext` in its own statement so the mock-chain read guard is dropped before
+    // `.execute().await` is reached (otherwise clippy flags await_holding_lock).
     let tx_ctx_a = rpc_api
         .mock_chain
         .read()
@@ -244,8 +243,8 @@ async fn apply_transaction_batch_rolls_back_on_mid_batch_failure() {
         transactions.len()
     );
 
-    // Rollback check: A's commitment is still at the pre-batch value (update_a's final state
-    // was not applied).
+    // Rollback check: A's commitment is still at the pre-batch value (update_a's final state was
+    // not applied).
     let a_after = client.get_account(a_id).await.unwrap().expect("A still registered");
     assert_eq!(
         a_after.to_commitment(),
@@ -253,9 +252,9 @@ async fn apply_transaction_batch_rolls_back_on_mid_batch_failure() {
         "account A state must be unchanged after atomic rollback"
     );
 
-    // Forest rollback check. The failed batch's transaction was rolled back, so the forest
-    // tables must still match A's stored state; a full-state update reconciles against them
-    // and would fail on leftover partial writes.
+    // Forest rollback check. The failed batch's transaction was rolled back, so the forest tables
+    // must still match A's stored state; a full-state update reconciles against them and would fail
+    // on leftover partial writes.
     store
         .update_account(&account_a)
         .await
@@ -291,8 +290,8 @@ async fn batch_builder_push_succeeds_when_balance_depends_on_prior_push() {
     let to_account_id = second_regular_account.id();
     let faucet_account_id = faucet_account_header.id();
 
-    // Pre-batch: give A `MINT_AMOUNT` (also gets A on-chain so its first
-    // batch-tx delta is partial, not full-state).
+    // Pre-batch: give A `MINT_AMOUNT` (also gets A on-chain so its first batch-tx delta is partial,
+    // not full-state).
     mint_and_consume(&mut client, from_account_id, faucet_account_id, NoteType::Private).await;
     rpc_api.prove_block();
     client.sync_state().await.unwrap();
@@ -306,8 +305,8 @@ async fn batch_builder_push_succeeds_when_balance_depends_on_prior_push() {
     // Push 1 consumes the second note → in-batch balance = 2 * MINT_AMOUNT.
     let push1 = TransactionRequestBuilder::new().build_consume_notes(vec![second_note]).unwrap();
 
-    // Push 2 sends MINT_AMOUNT + 1 → exceeds pre-batch balance (MINT_AMOUNT)
-    // but valid against in-batch balance (2 * MINT_AMOUNT).
+    // Push 2 sends MINT_AMOUNT + 1 → exceeds pre-batch balance (MINT_AMOUNT) but valid against
+    // in-batch balance (2 * MINT_AMOUNT).
     let oversend = FungibleAsset::new(faucet_account_id, MINT_AMOUNT + 1).unwrap();
     let push2 = TransactionRequestBuilder::new()
         .build_pay_to_id(
@@ -487,10 +486,10 @@ async fn batch_builder_serves_witnesses_for_state_untouched_by_prior_push() {
     let held_faucet_id = held_faucet.id();
     client.sync_state().await.unwrap();
 
-    // Give `from` a committed balance of the held faucet (this also puts it on-chain with
-    // nonce > 0, so batch pushes run against committed partial state instead of the full-state
-    // new-account path). The balance is part of the committed vault but is NOT touched by the
-    // first in-batch transaction.
+    // Give `from` a committed balance of the held faucet (this also puts it on-chain with nonce >
+    // 0, so batch pushes run against committed partial state instead of the full-state new-account
+    // path). The balance is part of the committed vault but is NOT touched by the first in-batch
+    // transaction.
     mint_and_consume(&mut client, from_id, held_faucet_id, NoteType::Private).await;
     rpc_api.prove_block();
     client.sync_state().await.unwrap();
@@ -564,9 +563,9 @@ async fn batch_builder_empty_submit_returns_empty_error() {
     }
 }
 
-/// Verify that pushing two transactions that consume the same input note in one batch
-/// fails the second push with `BatchBuilderError::DuplicateInputNote(note_id)`, and that the
-/// rejected push leaves the batch intact so it still submits the transaction pushed before it.
+/// Verify that pushing two transactions that consume the same input note in one batch fails the
+/// second push with `BatchBuilderError::DuplicateInputNote(note_id)`, and that the rejected push
+/// leaves the batch intact so it still submits the transaction pushed before it.
 #[tokio::test]
 async fn batch_builder_push_rejects_duplicate_input_note() {
     let (mut client, rpc_api, authenticator) = Box::pin(create_test_client()).await;
@@ -620,20 +619,20 @@ async fn batch_builder_push_rejects_duplicate_input_note() {
         },
     }
 
-    // The rejected push must leave the batch exactly as it was, so the transaction pushed
-    // before it is still there and the batch still submits.
+    // The rejected push must leave the batch exactly as it was, so the transaction pushed before it
+    // is still there and the batch still submits.
     assert_eq!(batch.len(), 1, "a rejected push must not drop the accumulated transaction");
     let block_num = batch.submit().await.expect("batch must submit after a rejected push");
     assert!(block_num.as_u32() > 0);
 }
 
-/// Build a 2-account batch (1 tx per account, both pushing trivial no-op `TransactionRequests`)
-/// and verify both transactions reach the local store and the returned block number matches
-/// the mock chain's tip.
+/// Build a 2-account batch (1 tx per account, both pushing trivial no-op `TransactionRequests`) and
+/// verify both transactions reach the local store and the returned block number matches the mock
+/// chain's tip.
 #[tokio::test]
 async fn batch_builder_submits_txs_across_multiple_accounts() {
-    // Build a fresh mock chain with two existing IncrNonce accounts so we can execute a
-    // trivial transaction against each without needing signing keys.
+    // Build a fresh mock chain with two existing IncrNonce accounts so we can execute a trivial
+    // transaction against each without needing signing keys.
     let mut chain_builder = MockChainBuilder::new();
     let account_a = chain_builder.add_existing_mock_account(Auth::IncrNonce).unwrap();
     let account_b = chain_builder.add_existing_mock_account(Auth::IncrNonce).unwrap();
@@ -692,14 +691,14 @@ async fn batch_builder_submits_txs_across_multiple_accounts() {
     assert!(touched.contains(&account_id_b), "tx for account B not recorded");
 }
 
-/// Verify that pushing a transaction for an account that's not tracked by the client's store
-/// fails with `ClientError::AccountDataNotFound`.
+/// Verify that pushing a transaction for an account that's not tracked by the client's store fails
+/// with `ClientError::AccountDataNotFound`.
 #[tokio::test]
 async fn batch_builder_push_for_unknown_account_returns_error() {
     let (mut client, rpc_api, _keystore) = Box::pin(create_test_client()).await;
 
-    // Pick an account that EXISTS on the mock chain but is NOT registered with the client
-    // store (we never call `client.add_account` for it).
+    // Pick an account that EXISTS on the mock chain but is NOT registered with the client store (we
+    // never call `client.add_account` for it).
     let account_id = rpc_api
         .mock_chain
         .read()
@@ -727,9 +726,9 @@ async fn batch_builder_push_for_unknown_account_returns_error() {
     }
 }
 
-/// A tx in the batch can consume a note produced by an earlier tx in the same batch when
-/// each tx targets a different account. The expected output note is extracted from the
-/// producer's `TransactionRequest::expected_output_own_notes` before pushing.
+/// A tx in the batch can consume a note produced by an earlier tx in the same batch when each tx
+/// targets a different account. The expected output note is extracted from the producer's
+/// `TransactionRequest::expected_output_own_notes` before pushing.
 #[tokio::test]
 async fn batch_builder_cross_account_note_flow() {
     let (mut client, rpc_api, authenticator) = Box::pin(create_test_client()).await;
@@ -748,8 +747,8 @@ async fn batch_builder_cross_account_note_flow() {
     let account_id_b = second_regular_account.id();
     let faucet_account_id = faucet_account_header.id();
 
-    // Pre-batch: get both A and B on-chain (each with MINT_AMOUNT) so their first batch-tx
-    // deltas are partial, not full-state — the batch apply path requires partial deltas.
+    // Pre-batch: get both A and B on-chain (each with MINT_AMOUNT) so their first batch-tx deltas
+    // are partial, not full-state — the batch apply path requires partial deltas.
     mint_and_consume(&mut client, account_id_a, faucet_account_id, NoteType::Private).await;
     rpc_api.prove_block();
     client.sync_state().await.unwrap();
@@ -757,8 +756,8 @@ async fn batch_builder_cross_account_note_flow() {
     rpc_api.prove_block();
     client.sync_state().await.unwrap();
 
-    // tx1 (account A): send MINT_AMOUNT to B via P2ID. Pre-extract the note we expect to
-    // create so tx2 can consume it.
+    // tx1 (account A): send MINT_AMOUNT to B via P2ID. Pre-extract the note we expect to create so
+    // tx2 can consume it.
     let asset = FungibleAsset::new(faucet_account_id, MINT_AMOUNT).unwrap();
     let req_send = TransactionRequestBuilder::new()
         .build_pay_to_id(
@@ -796,8 +795,8 @@ async fn batch_builder_cross_account_note_flow() {
     assert!(touched.contains(&account_id_a), "send tx not recorded");
     assert!(touched.contains(&account_id_b), "consume tx not recorded");
 
-    // After the batch: A sent its MINT_AMOUNT → 0. B started with MINT_AMOUNT (pre-batch
-    // mint above) and received another MINT_AMOUNT from A → 2 * MINT_AMOUNT.
+    // After the batch: A sent its MINT_AMOUNT → 0. B started with MINT_AMOUNT (pre-batch mint
+    // above) and received another MINT_AMOUNT from A → 2 * MINT_AMOUNT.
     let a_balance = client
         .account_reader(account_id_a)
         .get_balance(faucet_account_id)
@@ -842,8 +841,8 @@ async fn batch_builder_dedup_rejects_duplicate_input_note_across_accounts() {
     rpc_api.prove_block();
     client.sync_state().await.unwrap();
 
-    // Mint a single shared note (created with A's recipient, but we'll try to feed the same
-    // note to both pushes).
+    // Mint a single shared note (created with A's recipient, but we'll try to feed the same note to
+    // both pushes).
     let (_mint_tx_id, note) =
         mint_note(&mut client, account_id_a, faucet_account_id, NoteType::Private).await;
     rpc_api.prove_block();

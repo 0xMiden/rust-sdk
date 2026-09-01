@@ -88,8 +88,8 @@ pub async fn test_pass_through(client_config: ClientConfig) -> Result<()> {
     let asset = FungibleAsset::new(btc_faucet_account.id(), ASSET_AMOUNT)?;
 
     // On a fee-charging chain each note also carries exactly the fee its consumption pays, so
-    // `pay_fee` withdraws precisely what the note deposited and the vault ends the transaction
-    // as it started.
+    // `pay_fee` withdraws precisely what the note deposited and the vault ends the transaction as
+    // it started.
     let fee_asset = pass_through_fee_asset(
         &mut client,
         sender.id(),
@@ -158,8 +158,8 @@ pub async fn test_pass_through(client_config: ClientConfig) -> Result<()> {
     );
 
     // The first consumption is also the account's on-chain creation, and `NoAuth` always bumps a
-    // new account's nonce, so the commitment moves here. The vault must still come out empty:
-    // the forwarded asset moved on and the fee asset was spent in full on the fee.
+    // new account's nonce, so the commitment moves here. The vault must still come out empty: the
+    // forwarded asset moved on and the fee asset was spent in full on the fee.
     let retained_btc = client
         .account_reader(pass_through_account.id())
         .get_balance(btc_faucet_account.id())
@@ -233,9 +233,9 @@ async fn create_pass_through_account<AUTH: TransactionAuthenticator>(
     let mut init_seed = [0u8; 32];
     client.rng().fill_bytes(&mut init_seed);
 
-    // The pass-through consumption must not change the account commitment: the note moves the
-    // asset straight back out, and `NoAuth` only bumps the nonce when the account state differs
-    // at the end of the transaction.
+    // The pass-through consumption must not change the account commitment: the note moves the asset
+    // straight back out, and `NoAuth` only bumps the nonce when the account state differs at the
+    // end of the transaction.
     let account = AccountBuilder::new(init_seed)
         .account_type(AccountType::Private)
         .with_component(NoAuth)
@@ -247,8 +247,8 @@ async fn create_pass_through_account<AUTH: TransactionAuthenticator>(
     Ok(account)
 }
 
-/// Returns the native fee asset each pass-through note must carry for its consumption to settle
-/// its own fee, or `None` on a fee-free chain.
+/// Returns the native fee asset each pass-through note must carry for its consumption to settle its
+/// own fee, or `None` on a fee-free chain.
 async fn pass_through_fee_asset<AUTH: TransactionAuthenticator + Sync + 'static>(
     client: &mut Client<AUTH>,
     sender: AccountId,
@@ -289,9 +289,8 @@ fn get_pass_through_note_script() -> NoteScript {
     CodeBuilder::new().compile_note_script(note_script_code).unwrap()
 }
 
-// Creates a note eventually meant for the target account.
-// First, the note is processed by the pass-through account.
-// The output note script guarantees the output of the processing is `target`.
+// Creates a note eventually meant for the target account. First, the note is processed by the
+// pass-through account. The output note script guarantees the output of the processing is `target`.
 // The optional `fee_asset` rides along so the consumption can settle its own fee.
 fn create_pass_through_note(
     sender: AccountId,

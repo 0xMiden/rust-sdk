@@ -187,8 +187,8 @@ impl proto::rpc::account_response::AccountDetails {
         storage_details.validate_against_request(storage_requirements)?;
 
         // If an account code was received, it means the previously known account code is no longer
-        // valid. If it was not, it means we sent a code commitment that matched and so our code
-        // is still valid
+        // valid. If it was not, it means we sent a code commitment that matched and so our code is
+        // still valid
         let code = {
             let received_code = code.map(|c| AccountCode::read_from_bytes(&c)).transpose()?;
             match received_code {
@@ -399,8 +399,8 @@ impl TryFrom<proto::rpc::AccountStorageDetails> for AccountStorageDetails {
             .collect::<Result<Vec<AccountStorageMapDetails>, RpcError>>()?;
 
         // A partial map is only worth anything if it is anchored to the slot root the account
-        // commitment covers. Without this check the node could serve a self-consistent tree of
-        // its own making.
+        // commitment covers. Without this check the node could serve a self-consistent tree of its
+        // own making.
         for map_detail in &map_details {
             let StorageMapEntries::PartialMap { partial_smt, .. } = &map_detail.entries else {
                 continue;
@@ -453,8 +453,8 @@ impl AccountStorageMapDetails {
     /// this across all slots of a request, so honouring it per slot is a conservative bound.
     pub const MAX_PARTIAL_MAP_KEYS: usize = 64;
 
-    /// Returns `true` when the node reported that this slot has more entries than it will return
-    /// in a single response, meaning the entries have to be fetched through
+    /// Returns `true` when the node reported that this slot has more entries than it will return in
+    /// a single response, meaning the entries have to be fetched through
     /// [`crate::rpc::NodeRpcClient::sync_storage_maps`] instead.
     pub fn is_limit_exceeded(&self) -> bool {
         matches!(self.entries, StorageMapEntries::LimitExceeded)
@@ -622,12 +622,10 @@ impl StorageMapEntries {
 
 #[derive(Clone, Debug)]
 pub struct AccountVaultDetails {
-    /// A flag that is set to true if the account contains too many assets. This indicates
-    /// to the user that `SyncAccountVault` endpoint should be used to retrieve the
-    /// account's assets
+    /// A flag that is set to true if the account contains too many assets. This indicates to the
+    /// user that `SyncAccountVault` endpoint should be used to retrieve the account's assets
     pub too_many_assets: bool,
-    /// When `too_many_assets` == false, this will contain the list of assets in the
-    /// account's vault
+    /// When `too_many_assets` == false, this will contain the list of assets in the account's vault
     pub assets: Vec<Asset>,
 }
 
@@ -955,8 +953,8 @@ pub enum StorageMapFetch {
     /// maps come back as [`StorageMapEntries::LimitExceeded`], to be resolved via
     /// [`crate::rpc::NodeRpcClient::sync_storage_maps`].
     All,
-    /// Request entries only for the explicitly named slots. See [`AccountStorageRequirements`]
-    /// for the per-slot semantics.
+    /// Request entries only for the explicitly named slots. See [`AccountStorageRequirements`] for
+    /// the per-slot semantics.
     Slots(AccountStorageRequirements),
 }
 
@@ -981,17 +979,17 @@ pub struct GetAccountRequest {
     pub storage: StorageMapFetch,
     /// Block at which to retrieve the proof.
     pub at: AccountStateAt,
-    /// Code commitment the client already has. When the on-chain commitment matches, the node
-    /// skips re-sending the code.
+    /// Code commitment the client already has. When the on-chain commitment matches, the node skips
+    /// re-sending the code.
     pub known_code: Option<AccountCode>,
     /// Vault data retrieval policy.
     pub vault: VaultFetch,
 }
 
 impl GetAccountRequest {
-    /// Creates a request for the minimal account data: the account commitment and storage header
-    /// at the chain tip, with no map entries, no known code, and no vault data. Opt into
-    /// additional data with the builder methods.
+    /// Creates a request for the minimal account data: the account commitment and storage header at
+    /// the chain tip, with no map entries, no known code, and no vault data. Opt into additional
+    /// data with the builder methods.
     #[must_use]
     pub fn new() -> Self {
         Self {

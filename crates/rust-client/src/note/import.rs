@@ -72,8 +72,8 @@ where
 
         // Deduplicate the incoming files, keeping note IDs and details commitments in separate
         // collections. `NoteFile::NoteId` entries are keyed by their note ID; detail-carrying
-        // entries (`ExpectedNote`/`Committed`) are keyed by their details commitment, since
-        // they may have no note ID of their own.
+        // entries (`ExpectedNote`/`Committed`) are keyed by their details commitment, since they
+        // may have no note ID of their own.
         let mut ids = BTreeSet::new();
         let mut files_by_commitment = BTreeMap::new();
         for note_file in note_files {
@@ -307,8 +307,8 @@ where
                     note_record.inclusion_proof_received(inclusion_proof, metadata)?;
 
                 if block_height <= current_block_num {
-                    // A note committed in the past needs its block header fetched and
-                    // authenticated to verify the inclusion proof.
+                    // A note committed in the past needs its block header fetched and authenticated
+                    // to verify the inclusion proof.
                     let block_header = self
                         .get_and_store_authenticated_block(block_height, &mut partial_mmr)
                         .await?;
@@ -458,9 +458,9 @@ where
                 let committed = &sync_note.committed;
 
                 // The note carries its own commit height in its inclusion proof, which is a
-                // separate field from the block header checked above. Authenticating the note
-                // later looks that height up in the partial MMR, so a height beyond our synced
-                // view has to be dropped here rather than trusted.
+                // separate field from the block header checked above. Authenticating the note later
+                // looks that height up in the partial MMR, so a height beyond our synced view has
+                // to be dropped here rather than trusted.
                 if committed.block_num() > current_block_num {
                     continue;
                 }
@@ -482,8 +482,8 @@ where
 // HELPERS
 // ================================================================================================
 
-/// Returns an error if the already-stored note is currently being processed by a local
-/// transaction, since an in-flight note can't be overwritten by an import.
+/// Returns an error if the already-stored note is currently being processed by a local transaction,
+/// since an in-flight note can't be overwritten by an import.
 fn ensure_not_processing(previous_note: Option<&InputNoteRecord>) -> Result<(), ClientError> {
     if let Some(note) = previous_note
         && note.is_processing()

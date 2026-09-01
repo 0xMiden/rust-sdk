@@ -226,9 +226,9 @@ async fn prune_account_history_with_pending_transaction() {
         .unwrap();
     Box::pin(client.submit_new_transaction(faucet_id, tx_request_2)).await.unwrap();
 
-    // Prune up to nonce 1 while tx2 is still pending.
-    // This should remove nonce-0 historical entries but must preserve nonce-1 entries
-    // (which tx2's undo would need if the transaction were discarded).
+    // Prune up to nonce 1 while tx2 is still pending. This should remove nonce-0 historical entries
+    // but must preserve nonce-1 entries (which tx2's undo would need if the transaction were
+    // discarded).
     let deleted = client.prune_account_history(faucet_id, Felt::from(1u32)).await.unwrap();
     assert!(deleted > 0, "Should have pruned nonce-0 historical entries");
 
@@ -287,8 +287,8 @@ const SLOTS_COMPONENT_MASM: &str = r#"
         end
     "#;
 
-/// Builds a custom account with three value slots (A, B, C) and MASM procedures
-/// to modify slots A and B individually. Returns the account and its ID.
+/// Builds a custom account with three value slots (A, B, C) and MASM procedures to modify slots A
+/// and B individually. Returns the account and its ID.
 async fn build_three_slot_account(
     client: &mut crate::tests::TestClient,
     keystore: &miden_client::keystore::FilesystemKeyStore,

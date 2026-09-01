@@ -101,8 +101,8 @@ pub struct GrpcNoteTransportClient {
 }
 
 impl GrpcNoteTransportClient {
-    /// Creates a new [`GrpcNoteTransportClient`] without establishing a connection.
-    /// The connection will be established lazily on the first request.
+    /// Creates a new [`GrpcNoteTransportClient`] without establishing a connection. The connection
+    /// will be established lazily on the first request.
     pub fn new(endpoint: String, timeout_ms: u64) -> Self {
         Self {
             inner: RwLock::new(None),

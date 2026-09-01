@@ -99,8 +99,8 @@ async fn collect_candidate_orders(
     Ok(candidate_orders)
 }
 
-/// Loads the `Active` lineage record for each candidate order, skipping orders
-/// with no tracked record or already in a terminal state.
+/// Loads the `Active` lineage record for each candidate order, skipping orders with no tracked
+/// record or already in a terminal state.
 async fn load_active_lineages(
     store: &Arc<dyn Store>,
     candidate_orders: BTreeSet<Felt>,
@@ -147,9 +147,9 @@ async fn advance_lineage(
     block_headers: &BTreeMap<BlockNumber, BlockHeader>,
 ) -> Vec<PswapLineageRoundUpdate> {
     let mut lineage_rounds: Vec<PswapLineageRoundUpdate> = Vec::new();
-    // The depth-0 note is immutable across rounds and only fills (not reclaim)
-    // need it to reconstruct outputs. Fetched lazily from `output_notes` on the
-    // first fill and cached for the rest of this lineage's rounds.
+    // The depth-0 note is immutable across rounds and only fills (not reclaim) need it to
+    // reconstruct outputs. Fetched lazily from `output_notes` on the first fill and cached for the
+    // rest of this lineage's rounds.
     let mut original_pswap: Option<PswapNote> = None;
 
     while lineage.state == PswapLineageState::Active {
@@ -163,8 +163,8 @@ async fn advance_lineage(
             break;
         }
 
-        // Fills (notes present) reconstruct payback/remainder from the original note;
-        // fetch it once. A reclaim round (no notes) needs nothing from the note.
+        // Fills (notes present) reconstruct payback/remainder from the original note; fetch it
+        // once. A reclaim round (no notes) needs nothing from the note.
         if !notes.is_empty() && original_pswap.is_none() {
             match store::get_original_pswap(store, lineage.original_note_id).await {
                 Ok(pswap) => original_pswap = Some(pswap),
@@ -207,9 +207,9 @@ async fn advance_lineage(
     }
 
     // Intermediate remainders are already spent on-chain; inserting them would leave stale
-    // Unverified notes whose consumption falls outside the next sync's window. Keep only the
-    // final (live) tip's remainder; drop the rest. Paybacks are all kept — each is a distinct
-    // consumable note for the creator.
+    // Unverified notes whose consumption falls outside the next sync's window. Keep only the final
+    // (live) tip's remainder; drop the rest. Paybacks are all kept — each is a distinct consumable
+    // note for the creator.
     if let Some((_, intermediate_rounds)) = lineage_rounds.split_last_mut() {
         for round in intermediate_rounds {
             round.remainder = None;

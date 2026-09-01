@@ -109,8 +109,8 @@ async fn apply_account_patch_additions() -> anyhow::Result<()> {
         StorageSlotName::new("miden::testing::sqlite_store::value").expect("valid slot name");
     let map_slot_name =
         StorageSlotName::new("miden::testing::sqlite_store::map").expect("valid slot name");
-    // Second map slot starts empty (same root as map_slot_name) to verify that
-    // modifying only one map slot doesn't corrupt the other when roots collide.
+    // Second map slot starts empty (same root as map_slot_name) to verify that modifying only one
+    // map slot doesn't corrupt the other when roots collide.
     let map_slot_b_name =
         StorageSlotName::new("miden::testing::sqlite_store::mapB").expect("valid slot name");
 
@@ -201,8 +201,8 @@ async fn apply_account_patch_additions() -> anyhow::Result<()> {
 
     assert_eq!(updated_account, account_after_patch);
 
-    // The untouched second map slot must still be empty despite sharing the same
-    // initial root as the modified map slot.
+    // The untouched second map slot must still be empty despite sharing the same initial root as
+    // the modified map slot.
     let map_b = updated_account
         .storage()
         .slots()
@@ -253,8 +253,8 @@ async fn apply_account_patch_preserves_fungible_callback_flag() -> anyhow::Resul
     )?
     .into();
 
-    // The account starts with an empty vault, so the absolute value of the added asset is the
-    // asset itself.
+    // The account starts with an empty vault, so the absolute value of the added asset is the asset
+    // itself.
     let mut vault_patch = AccountVaultPatch::default();
     vault_patch.insert_asset(callback_asset);
     let patch = AccountPatch::new(
@@ -278,8 +278,8 @@ async fn apply_account_patch_preserves_fungible_callback_flag() -> anyhow::Resul
             let tx = conn.transaction().into_store_error()?;
             let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
 
-            // Without preserving the callback flag this fails with a `ConflictingRoots`
-            // merkle store error (recomputed root != final_state.vault_root()).
+            // Without preserving the callback flag this fails with a `ConflictingRoots` merkle
+            // store error (recomputed root != final_state.vault_root()).
             SqliteStore::apply_account_patch(
                 &tx,
                 &mut smt_forest,
@@ -781,8 +781,8 @@ async fn prune_account_history_removes_old_committed_states() -> anyhow::Result<
     // Apply patch 2 (nonce 2 to 3)
     apply_single_entry_update(&store, &mut account, &map_slot_name, 3).await?;
 
-    // Before prune: 2 historical headers (nonce 1, 2).
-    // The latest state (nonce 3) is in latest_account_headers, not historical.
+    // Before prune: 2 historical headers (nonce 1, 2). The latest state (nonce 3) is in
+    // latest_account_headers, not historical.
     let m = get_storage_metrics(&store).await;
     assert_eq!(m.historical_account_headers, 2);
     assert!(m.historical_storage_map_entries > 0);
@@ -796,8 +796,8 @@ async fn prune_account_history_removes_old_committed_states() -> anyhow::Result<
 
     assert!(deleted > 0, "Should have deleted some rows");
 
-    // After prune: only 1 historical header remains (nonce 2, replaced_at_nonce = 3).
-    // Nonce 3 is in latest_account_headers (not historical).
+    // After prune: only 1 historical header remains (nonce 2, replaced_at_nonce = 3). Nonce 3 is in
+    // latest_account_headers (not historical).
     let m = get_storage_metrics(&store).await;
     assert_eq!(m.historical_account_headers, 1);
 
@@ -885,8 +885,8 @@ async fn prune_account_history_multiple_accounts() -> anyhow::Result<()> {
     let mut account_b_mut = account_b.clone();
     apply_single_entry_update(&store, &mut account_b_mut, &map_slot_name_b, 2).await?;
 
-    // Before prune: 2 headers for A (nonce 1, 2) + 1 for B (nonce 1) = 3.
-    // Latest states are in latest_account_headers, not historical.
+    // Before prune: 2 headers for A (nonce 1, 2) + 1 for B (nonce 1) = 3. Latest states are in
+    // latest_account_headers, not historical.
     let m = get_storage_metrics(&store).await;
     assert_eq!(m.historical_account_headers, 3);
 
@@ -920,16 +920,16 @@ async fn prune_removes_orphaned_account_code() -> anyhow::Result<()> {
     let store = create_test_store().await;
     let map_slot_name = StorageSlotName::new("test::prune_code::map").expect("valid slot name");
 
-    // Insert account with map entries (nonce 1), then apply a patch (nonce 1 to 2).
-    // The patch creates a historical header at nonce 1 whose code_commitment points
-    // to the original account code.
+    // Insert account with map entries (nonce 1), then apply a patch (nonce 1 to 2). The patch
+    // creates a historical header at nonce 1 whose code_commitment points to the original account
+    // code.
     let mut account = setup_account_with_map(&store, 2, &map_slot_name).await?;
     let account_id = account.id();
     apply_single_entry_update(&store, &mut account, &map_slot_name, 2).await?;
 
-    // Simulate the nonce-2 state having a different code commitment by updating
-    // the latest header's code_commitment directly. This makes the nonce-1
-    // historical header the only reference to the original code.
+    // Simulate the nonce-2 state having a different code commitment by updating the latest header's
+    // code_commitment directly. This makes the nonce-1 historical header the only reference to the
+    // original code.
     let original_code_commitment: Vec<u8> = store
         .interact_with_connection(move |conn| {
             conn.query_row(
@@ -941,8 +941,8 @@ async fn prune_removes_orphaned_account_code() -> anyhow::Result<()> {
         })
         .await?;
 
-    // Insert a fake code entry for the latest header so the original code becomes
-    // orphaned when we prune the historical header.
+    // Insert a fake code entry for the latest header so the original code becomes orphaned when we
+    // prune the historical header.
     store
         .interact_with_connection(move |conn| {
             let new_code_commitment = vec![1u8; 32];
@@ -967,8 +967,8 @@ async fn prune_removes_orphaned_account_code() -> anyhow::Result<()> {
         })
         .await?;
 
-    // Prune nonce-1 history: the historical header referencing original_code_commitment
-    // is deleted, and since no other header references it, the code should be removed.
+    // Prune nonce-1 history: the historical header referencing original_code_commitment is deleted,
+    // and since no other header references it, the code should be removed.
     let deleted = store
         .interact_with_connection(move |conn| {
             SqliteStore::prune_account_history(conn, account_id, Felt::from(2u32))
@@ -1056,8 +1056,8 @@ async fn get_storage_metrics(store: &SqliteStore) -> StorageMetrics {
         .unwrap()
 }
 
-/// Creates an account with a storage map of `map_size` entries, inserts it into the store,
-/// and returns the account. Uses `Store::insert_account` (public API).
+/// Creates an account with a storage map of `map_size` entries, inserts it into the store, and
+/// returns the account. Uses `Store::insert_account` (public API).
 async fn setup_account_with_map(
     store: &SqliteStore,
     map_size: u64,
@@ -1092,8 +1092,8 @@ async fn setup_account_with_map(
     Ok(account)
 }
 
-/// Applies a delta that changes a single map entry (key=1) and persists it.
-/// `target_nonce` must be strictly greater than the account's current nonce.
+/// Applies a delta that changes a single map entry (key=1) and persists it. `target_nonce` must be
+/// strictly greater than the account's current nonce.
 async fn apply_single_entry_update(
     store: &SqliteStore,
     account: &mut Account,
@@ -1166,8 +1166,8 @@ async fn undo_account_state_restores_previous_latest() -> anyhow::Result<()> {
         map_slot_name.clone(),
         StorageSlotPatch::Map(StorageMapPatch::Remove),
     )])?;
-    // The account starts with an empty vault, so the absolute value of the added asset is the
-    // asset itself.
+    // The account starts with an empty vault, so the absolute value of the added asset is the asset
+    // itself.
     let mut vault_patch = AccountVaultPatch::default();
     vault_patch.insert_asset(
         FungibleAsset::new(AccountId::try_from(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET)?, 100)?.into(),
@@ -1342,8 +1342,8 @@ async fn undo_account_state_deletes_account_entirely() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Verifies that `lock_account_on_unexpected_commitment` sets `locked = true` in both the
-/// latest and historical tables so that the lock survives undo/rebuild.
+/// Verifies that `lock_account_on_unexpected_commitment` sets `locked = true` in both the latest
+/// and historical tables so that the lock survives undo/rebuild.
 #[tokio::test]
 async fn lock_account_affects_latest_and_historical() -> anyhow::Result<()> {
     let store = create_test_store().await;
@@ -1363,8 +1363,8 @@ async fn lock_account_affects_latest_and_historical() -> anyhow::Result<()> {
         map_slot_name.clone(),
         StorageSlotPatch::Map(StorageMapPatch::Update { entries: map_entries }),
     )])?;
-    // The account starts with an empty vault, so the absolute value of the added asset is the
-    // asset itself.
+    // The account starts with an empty vault, so the absolute value of the added asset is the asset
+    // itself.
     let mut vault_patch = AccountVaultPatch::default();
     vault_patch.insert_asset(
         FungibleAsset::new(AccountId::try_from(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET)?, 100)?.into(),
@@ -1743,8 +1743,8 @@ async fn get_account_header_by_commitment_returns_historical() -> anyhow::Result
     assert_eq!(header.nonce().as_canonical_u64(), 1);
     assert_eq!(header.to_commitment(), initial_commitment);
 
-    // Look up the post-patch commitment: should NOT be in historical (it's the current
-    // latest state, not an old one that was replaced)
+    // Look up the post-patch commitment: should NOT be in historical (it's the current latest
+    // state, not an old one that was replaced)
     let lookup = post_patch_commitment;
     let result = store
         .interact_with_connection(move |conn| {
@@ -1794,8 +1794,8 @@ async fn undo_multiple_nonces_at_once() -> anyhow::Result<()> {
         StorageSlotPatch::Map(StorageMapPatch::Update { entries: map_entries_1 }),
     )])?;
     let asset_1 = FungibleAsset::new(faucet_id, 100)?;
-    // The account starts with an empty vault, so the absolute value of the added asset is the
-    // asset itself.
+    // The account starts with an empty vault, so the absolute value of the added asset is the asset
+    // itself.
     let mut vault_patch_1 = AccountVaultPatch::default();
     vault_patch_1.insert_asset(asset_1.into());
     let patch_1 = AccountPatch::new(
@@ -1974,9 +1974,8 @@ async fn undo_after_update_removes_genuinely_new_entries() -> anyhow::Result<()>
         StorageSlotPatch::Map(StorageMapPatch::Update { entries: map_entries_add }),
     )])?;
 
-    // Also add an asset so the vault root changes (avoids SMT root collision on undo).
-    // The account starts with an empty vault, so the absolute value of the added asset is the
-    // asset itself.
+    // Also add an asset so the vault root changes (avoids SMT root collision on undo). The account
+    // starts with an empty vault, so the absolute value of the added asset is the asset itself.
     let faucet_id = AccountId::try_from(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET)?;
     let asset = FungibleAsset::new(faucet_id, 100)?;
     let mut vault_patch_add = AccountVaultPatch::default();
@@ -2065,9 +2064,9 @@ async fn undo_after_update_removes_genuinely_new_entries() -> anyhow::Result<()>
 // SMT FOREST TRANSACTION ROLLBACK
 // ================================================================================================
 
-/// Builds a non-trivial patch over a freshly inserted account, with a value-slot write, a
-/// map-slot write, and a vault addition, so `apply_account_patch` produces SMT mutations on
-/// several lineages.
+/// Builds a non-trivial patch over a freshly inserted account, with a value-slot write, a map-slot
+/// write, and a vault addition, so `apply_account_patch` produces SMT mutations on several
+/// lineages.
 fn build_patch_for_forest_rollback_test(
     account: &Account,
     value_slot_name: StorageSlotName,
@@ -2089,8 +2088,8 @@ fn build_patch_for_forest_rollback_test(
         ),
     ])?;
 
-    // The account starts with an empty vault, so the absolute value of the added asset is the
-    // asset itself.
+    // The account starts with an empty vault, so the absolute value of the added asset is the asset
+    // itself.
     let mut vault_patch = AccountVaultPatch::default();
     vault_patch.insert_asset(
         FungibleAsset::new(AccountId::try_from(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET)?, 100)?.into(),
@@ -2312,8 +2311,8 @@ async fn storage_commitment_mismatch_rolls_back_account_and_forest() -> anyhow::
     Ok(())
 }
 
-/// A committed transaction must persist the forest mutations made through the
-/// transaction-scoped forest.
+/// A committed transaction must persist the forest mutations made through the transaction-scoped
+/// forest.
 #[tokio::test]
 async fn committed_transaction_persists_forest_tables() -> anyhow::Result<()> {
     let (store, account, value_slot_name, map_slot_name) =
@@ -2499,8 +2498,8 @@ async fn forest_persists_across_store_reopen() -> anyhow::Result<()> {
         bulk_before.push(store.get_account_map_item(account_id, map_slot_name.clone(), key).await?);
     }
 
-    // Reopen the store from the same database file. The forest must serve identical data
-    // from its persisted tables.
+    // Reopen the store from the same database file. The forest must serve identical data from its
+    // persisted tables.
     drop(store);
     let reopened = SqliteStore::new(store_path).await?;
 
@@ -2682,8 +2681,8 @@ async fn create_map_patch_replaces_existing_entries() -> anyhow::Result<()> {
     let account = setup_account_with_map(&store, 5, &map_slot_name).await?;
     let account_id = account.id();
 
-    // Create the map anew with a different entry set: key 1 changes value, key 6 is new,
-    // keys 2..=5 disappear.
+    // Create the map anew with a different entry set: key 1 changes value, key 6 is new, keys 2..=5
+    // disappear.
     let key1 = StorageMapKey::new([Felt::from(1u32), ZERO, ZERO, ZERO].into());
     let key6 = StorageMapKey::new([Felt::from(6u32), ZERO, ZERO, ZERO].into());
     let val1 = [Felt::from(999u32), ZERO, ZERO, ZERO].into();

@@ -84,9 +84,9 @@ pub(crate) struct PushedTx {
     pub(crate) tx_result: TransactionResult,
 }
 
-/// Accumulates transactions from one or more local accounts and submits them as one proven
-/// batch via the node's `SubmitProvenBatch` endpoint. See the module-level docs for the full
-/// usage and error semantics.
+/// Accumulates transactions from one or more local accounts and submits them as one proven batch
+/// via the node's `SubmitProvenBatch` endpoint. See the module-level docs for the full usage and
+/// error semantics.
 pub struct BatchBuilder<'c, AUTH> {
     pub(crate) client: &'c mut Client<AUTH>,
     pub(crate) data_store: InMemoryBatchDataStore,
@@ -177,8 +177,8 @@ where
             tx_results.push(pushed.tx_result);
         }
 
-        // TODO: field is left unused as of now because all txs in batch are already proven.
-        // This will be populated once a feature like remote proving in batches is implemented.
+        // TODO: field is left unused as of now because all txs in batch are already proven. This
+        // will be populated once a feature like remote proving in batches is implemented.
         let unauthenticated_note_proofs = BTreeMap::new();
         let proposed_batch = ProposedBatch::new(
             proven_txs,
@@ -285,8 +285,8 @@ where
     }
 }
 
-/// Executes a single transaction that is part of the batch to be sent to the node.
-/// The transaction runs against the current in-batch partial account state.
+/// Executes a single transaction that is part of the batch to be sent to the node. The transaction
+/// runs against the current in-batch partial account state.
 async fn execute_transaction_for_batch<AUTH>(
     client: &Client<AUTH>,
     data_store: &InMemoryBatchDataStore,

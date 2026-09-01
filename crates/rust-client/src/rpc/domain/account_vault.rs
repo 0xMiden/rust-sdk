@@ -67,8 +67,8 @@ impl TryFrom<proto::rpc::SyncAccountVaultResponse> for AccountVaultInfo {
             .collect::<Result<Vec<_>, _>>()?;
 
         // The node may report the same asset ID in more than one block, folding the updates in
-        // ascending block order lets the latest block win, with an absent asset (`None`) encoding
-        // a removal.
+        // ascending block order lets the latest block win, with an absent asset (`None`) encoding a
+        // removal.
         updates.sort_by_key(|(block_num, ..)| *block_num);
         let mut vault_patch = AccountVaultPatch::default();
         for (_, asset_id, asset) in updates {

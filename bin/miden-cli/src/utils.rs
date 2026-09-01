@@ -112,8 +112,8 @@ pub fn load_faucet_metadata_resolver() -> Result<FaucetMetadataResolver, CliErro
     FaucetMetadataResolver::new(config.token_symbol_map_filepath)
 }
 
-/// Prints the effects of an executed transaction: input notes, output notes, storage value
-/// changes, storage map changes, vault changes, and the nonce change.
+/// Prints the effects of an executed transaction: input notes, output notes, storage value changes,
+/// storage map changes, vault changes, and the nonce change.
 pub async fn print_executed_transaction<AUTH>(
     client: &Client<AUTH>,
     executed_tx: &ExecutedTransaction,
@@ -172,9 +172,8 @@ pub async fn print_executed_transaction<AUTH>(
         println!("{table}");
     }
 
-    // VAULT
-    // The patch carries the new absolute value of each changed asset, cleared entries are listed as
-    // removed.
+    // VAULT The patch carries the new absolute value of each changed asset, cleared entries are
+    // listed as removed.
     if patch.vault().is_empty() {
         println!("Account Vault will not be changed.");
     } else {
@@ -295,8 +294,8 @@ pub struct FaucetMetadataResolver {
 
 impl FaucetMetadataResolver {
     /// Creates a new instance of the [`FaucetMetadataResolver`] by loading the token symbol map
-    /// file from the specified `token_symbol_map_filepath`. If the file doesn't exist, an empty
-    /// map is created.
+    /// file from the specified `token_symbol_map_filepath`. If the file doesn't exist, an empty map
+    /// is created.
     pub fn new(token_symbol_map_filepath: PathBuf) -> Result<Self, CliError> {
         let raw: BTreeMap<String, RawFaucetEntry> =
             match std::fs::read_to_string(token_symbol_map_filepath) {
@@ -356,8 +355,8 @@ impl FaucetMetadataResolver {
         Ok(client.get_setting::<FaucetMetadata>(setting_key).await?)
     }
 
-    /// Looks up `(symbol, decimals)` for a faucet, walking TOML → settings store → RPC fetch.
-    /// On RPC success, the result is persisted to the settings store.
+    /// Looks up `(symbol, decimals)` for a faucet, walking TOML → settings store → RPC fetch. On
+    /// RPC success, the result is persisted to the settings store.
     pub async fn resolve<AUTH>(
         &self,
         client: &Client<AUTH>,
@@ -387,8 +386,8 @@ impl FaucetMetadataResolver {
         }
     }
 
-    /// Formats a fungible asset using [`Self::resolve`]. On miss, returns
-    /// `(<bech32 faucet address>, <base-unit amount>)`.
+    /// Formats a fungible asset using [`Self::resolve`]. On miss, returns `(<bech32 faucet
+    /// address>, <base-unit amount>)`.
     pub async fn format_fungible_asset<AUTH>(
         &self,
         client: &Client<AUTH>,

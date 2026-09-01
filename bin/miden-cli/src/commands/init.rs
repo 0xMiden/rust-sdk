@@ -111,10 +111,9 @@ pub struct InitCmd {
     #[arg(long)]
     store_path: Option<String>,
 
-    /// RPC endpoint for the remote prover. Required if proving mode is set to remote.
-    /// The endpoint must be in the form of "{protocol}://{hostname}:{port}", being the protocol
-    /// and port optional.
-    /// If the proving RPC isn't set, the proving mode will be set to local.
+    /// RPC endpoint for the remote prover. Required if proving mode is set to remote. The endpoint
+    /// must be in the form of "{protocol}://{hostname}:{port}", being the protocol and port
+    /// optional. If the proving RPC isn't set, the proving mode will be set to local.
     #[arg(long)]
     remote_prover_endpoint: Option<String>,
 
@@ -123,9 +122,8 @@ pub struct InitCmd {
     remote_prover_timeout_ms: Option<u64>,
 
     /// RPC endpoint for the note transport node. Required to use the note transport network to
-    /// exchange private notes.
-    /// The endpoint must be in the form of "{protocol}://{hostname}:{port}", being the protocol
-    /// and port optional.
+    /// exchange private notes. The endpoint must be in the form of
+    /// "{protocol}://{hostname}:{port}", being the protocol and port optional.
     #[arg(long)]
     note_transport_endpoint: Option<String>,
 

@@ -118,11 +118,11 @@ pub struct ClientBuilder<AUTH> {
     rng: Option<ClientRngBox>,
     /// The authenticator provided by the user.
     authenticator: Option<Arc<AUTH>>,
-    /// Number of blocks after which pending transactions are considered stale and discarded.
-    /// If `None`, there is no limit and transactions will be kept indefinitely.
+    /// Number of blocks after which pending transactions are considered stale and discarded. If
+    /// `None`, there is no limit and transactions will be kept indefinitely.
     tx_discard_delta: Option<u32>,
-    /// Number of synced blocks between automatic pruning runs for irrelevant block data.
-    /// If `None`, automatic irrelevant-block pruning is disabled.
+    /// Number of synced blocks between automatic pruning runs for irrelevant block data. If `None`,
+    /// automatic irrelevant-block pruning is disabled.
     irrelevant_block_prune_interval: Option<u32>,
     /// Whether the current Partial MMR should be cached in memory between sync-related operations.
     cache_partial_mmr_in_memory: bool,
@@ -366,8 +366,8 @@ where
         self
     }
 
-    /// Optionally set a maximum number of blocks that the client can be behind the network.
-    /// By default, there's no maximum.
+    /// Optionally set a maximum number of blocks that the client can be behind the network. By
+    /// default, there's no maximum.
     #[must_use]
     pub fn max_block_number_delta(mut self, delta: u32) -> Self {
         self.max_block_number_delta = Some(delta);
@@ -494,8 +494,8 @@ where
             rpc_api.set_genesis_commitment(genesis.commitment()).await?;
         }
 
-        // Set the RPC client with persisted limits if available.
-        // If not present, they will be fetched from the node during sync_state.
+        // Set the RPC client with persisted limits if available. If not present, they will be
+        // fetched from the node during sync_state.
         if let Some(limits) = store.get_rpc_limits().await? {
             rpc_api.set_rpc_limits(limits).await;
         }
@@ -513,9 +513,8 @@ where
             self.note_transport_api = Some(Arc::new(transport) as Arc<dyn NoteTransportClient>);
         }
 
-        // Built-in transaction observers fired by `apply_transaction`.
-        // Additional observers can be attached via
-        // `Client::with_transaction_observer`.
+        // Built-in transaction observers fired by `apply_transaction`. Additional observers can be
+        // attached via `Client::with_transaction_observer`.
         let transaction_observers: Vec<Arc<dyn TransactionObserver>> =
             vec![Arc::new(PswapTransactionObserver::new(store.clone()))];
 

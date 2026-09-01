@@ -82,8 +82,8 @@ impl SqliteStore {
         Ok(())
     }
 
-    /// Persists vault delta changes: archives old values from latest to historical,
-    /// then updates latest (deletes removed assets, inserts/updates changed assets).
+    /// Persists vault delta changes: archives old values from latest to historical, then updates
+    /// latest (deletes removed assets, inserts/updates changed assets).
     fn persist_vault_delta(
         tx: &Transaction<'_>,
         account_id_bytes: &[u8],

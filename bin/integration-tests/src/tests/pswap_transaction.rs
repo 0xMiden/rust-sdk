@@ -104,9 +104,9 @@ pub async fn test_pswap_full_fill_onchain(client_config: ClientConfig) -> Result
         AssetAmount::new(REQUESTED_AMOUNT).unwrap(),
         AssetAmount::ZERO,
     )?;
-    // The consumer tracks neither output note: the payback settles to the creator and the
-    // remainder is the order's next tip. Both are validated as the transaction's own outputs, but
-    // neither is registered as an expected future note in the consumer's store.
+    // The consumer tracks neither output note: the payback settles to the creator and the remainder
+    // is the order's next tip. Both are validated as the transaction's own outputs, but neither is
+    // registered as an expected future note in the consumer's store.
     assert!(
         consume_request.expected_future_notes().next().is_none(),
         "the consumer should not track any future notes"
@@ -244,10 +244,9 @@ pub async fn test_pswap_partial_fill_onchain(client_config: ClientConfig) -> Res
         AssetAmount::ZERO,
     )?;
 
-    // The consumer tracks neither output note. The payback settles to the creator and the
-    // remainder is the order's next tip; the consumer owns neither, so neither is registered as an
-    // expected future note. Following the remainder is the creator's lineage's job (asserted
-    // below).
+    // The consumer tracks neither output note. The payback settles to the creator and the remainder
+    // is the order's next tip; the consumer owns neither, so neither is registered as an expected
+    // future note. Following the remainder is the creator's lineage's job (asserted below).
     assert!(
         consume_request.expected_future_notes().next().is_none(),
         "the consumer should not track any future notes"
@@ -255,9 +254,9 @@ pub async fn test_pswap_partial_fill_onchain(client_config: ClientConfig) -> Res
 
     execute_tx_and_sync(&mut bob_client, bob_account.id(), consume_request).await?;
 
-    // Bob spent only ACCOUNT_FILL of ETH and received EXPECTED_PAYOUT of BTC (proportional, not
-    // the full offered amount). This is the assertion that catches a wrong NOTE_ARGS layout: a
-    // wrong layout would either fall through to the script's full-fill default or be rejected.
+    // Bob spent only ACCOUNT_FILL of ETH and received EXPECTED_PAYOUT of BTC (proportional, not the
+    // full offered amount). This is the assertion that catches a wrong NOTE_ARGS layout: a wrong
+    // layout would either fall through to the script's full-fill default or be rejected.
     let bob_account_reader = bob_client.account_reader(bob_account.id());
     assert_eq!(
         bob_account_reader.get_balance(btc_faucet_account.id()).await?,

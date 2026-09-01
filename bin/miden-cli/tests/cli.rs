@@ -164,8 +164,8 @@ fn silent_initialization_uses_default_values() {
         config_content.contains(NOTE_TRANSPORT_TESTNET_ENDPOINT),
         "Silent init should default note transport to the testnet endpoint"
     );
-    // Verify that the paths don't have the .miden prefix in the config
-    // (they're relative to the config file location now)
+    // Verify that the paths don't have the .miden prefix in the config (they're relative to the
+    // config file location now)
     assert!(
         !config_content.contains(&format!("{MIDEN_DIR}/store.sqlite3")),
         "Paths should be relative to config file, not include {MIDEN_DIR}/ prefix"
@@ -351,9 +351,9 @@ async fn mint_with_untracked_account() -> Result<()> {
         &fungible_faucet_account_id,
     );
 
-    // Wait until the faucet's mint transaction is committed on the node.
-    // We sync for a committed transaction (not note) because the target account is untracked,
-    // so the output note's tag won't be requested during sync and the note will never appear.
+    // Wait until the faucet's mint transaction is committed on the node. We sync for a committed
+    // transaction (not note) because the target account is untracked, so the output note's tag
+    // won't be requested during sync and the note will never appear.
     sync_until_committed_transaction(&temp_dir);
     Ok(())
 }
@@ -367,8 +367,8 @@ async fn token_symbol_mapping() -> Result<()> {
     let fungible_faucet_account_id = new_faucet_cli(&temp_dir, AccountType::Private);
     fund_cli_account(&temp_dir, &store_path, &endpoint, &fungible_faucet_account_id).await?;
 
-    // Encode the faucet ID as bech32 using the same NetworkId the CLI derives from its
-    // configured endpoint. The token symbol map's `address` field accepts bech32 only.
+    // Encode the faucet ID as bech32 using the same NetworkId the CLI derives from its configured
+    // endpoint. The token symbol map's `address` field accepts bech32 only.
     let faucet_id = AccountId::from_hex(&fungible_faucet_account_id).unwrap();
     let bech32_address = Address::new(faucet_id).encode(endpoint.to_network_id());
 
@@ -439,14 +439,14 @@ async fn public_faucet_metadata_is_fetched_and_persisted() -> Result<()> {
     let fungible_faucet_account_id = new_faucet_cli(&temp_dir, AccountType::Public);
     fund_cli_account(&temp_dir, &store_path, &endpoint, &fungible_faucet_account_id).await?;
 
-    // Deliberately do NOT write a token_symbol_map.toml — the TOML path must miss so the
-    // resolver falls through to the settings store and then to RPC.
+    // Deliberately do NOT write a token_symbol_map.toml — the TOML path must miss so the resolver
+    // falls through to the settings store and then to RPC.
 
     sync_cli(&temp_dir);
 
-    // Mint from the public faucet to the wallet. The mint stdout itself does NOT route the
-    // asset through the resolver (the faucet's vault delta is empty during a mint), so we
-    // only use this step to obtain a valid note id.
+    // Mint from the public faucet to the wallet. The mint stdout itself does NOT route the asset
+    // through the resolver (the faucet's vault delta is empty during a mint), so we only use this
+    // step to obtain a valid note id.
     let mut mint_cmd = cargo_bin_cmd!("miden-client");
     mint_cmd.args([
         "mint",
@@ -479,9 +479,9 @@ async fn public_faucet_metadata_is_fetched_and_persisted() -> Result<()> {
     // `get_account_details` once it has participated in a committed transaction.
     sync_until_committed_transaction(&temp_dir);
 
-    // Display the note. `notes -s` formats each fungible asset via the resolver; with the
-    // TOML empty and the settings store cold, the resolver must hit RPC to get ("BTC", 10) and
-    // persist the result back to the settings store.
+    // Display the note. `notes -s` formats each fungible asset via the resolver; with the TOML
+    // empty and the settings store cold, the resolver must hit RPC to get ("BTC", 10) and persist
+    // the result back to the settings store.
     let mut show_cmd = cargo_bin_cmd!("miden-client");
     show_cmd.args(["notes", "-s", &note_id]);
     let show_output = show_cmd.current_dir(&temp_dir).output().unwrap();
@@ -629,8 +629,8 @@ fn account_inspect_verbose_prints_disassembly() {
     );
 }
 
-/// When no package resolves a procedure's MAST root, the procedure is still listed by its bare
-/// root so it never silently disappears from the output.
+/// When no package resolves a procedure's MAST root, the procedure is still listed by its bare root
+/// so it never silently disappears from the output.
 #[test]
 fn account_inspect_without_packages_prints_roots() {
     let temp_dir = init_cli().1;
@@ -685,8 +685,8 @@ fn account_inspect_resolves_from_explicit_package() {
         .stdout(contains("Unresolved"));
 }
 
-/// `--verbose` and `--package` are only meaningful with `--inspect`, and clap must reject them
-/// on their own.
+/// `--verbose` and `--package` are only meaningful with `--inspect`, and clap must reject them on
+/// their own.
 #[test]
 fn account_inspect_flags_require_inspect() {
     let temp_dir = init_cli().1;
@@ -770,8 +770,8 @@ async fn import_genesis_accounts_can_be_used_for_transactions() -> Result<()> {
         &fungible_faucet_account_id,
     );
 
-    // Wait until the mint transaction is committed on the node.
-    // We sync for a committed transaction (not note) because the target account is untracked.
+    // Wait until the mint transaction is committed on the node. We sync for a committed transaction
+    // (not note) because the target account is untracked.
     sync_until_committed_transaction(&temp_dir);
     Ok(())
 }
@@ -909,9 +909,8 @@ async fn cli_export_import_account() -> Result<()> {
     // Consume the note
     consume_note_cli(&temp_dir_2, &wallet_id, &[&note_id]);
 
-    // Since importing keys should also store a mapping from
-    // the account id to its public key commitments, we should be able
-    // to retrieve them via the Keystore trait.
+    // Since importing keys should also store a mapping from the account id to its public key
+    // commitments, we should be able to retrieve them via the Keystore trait.
     let faucet_pks = cli_keystore
         .get_account_key_commitments(&AccountId::from_hex(&faucet_id)?)
         .await?;
@@ -1031,8 +1030,8 @@ fn pswap_cli_help_output() {
 fn pswap_cli_invalid_args() {
     let temp_dir = init_cli().1;
 
-    // Required flags missing (both --offered-asset and --requested-asset are required;
-    // omitting one must fail at clap parse time, before reaching `parse_fungible_asset`).
+    // Required flags missing (both --offered-asset and --requested-asset are required; omitting one
+    // must fail at clap parse time, before reaching `parse_fungible_asset`).
     let mut cmd = cargo_bin_cmd!("miden-client");
     assert_command_fails_but_does_not_panic(
         cmd.args([
@@ -1208,8 +1207,8 @@ async fn list_addresses_add() -> Result<()> {
     Ok(())
 }
 
-/// Verifies that `address add` rejects a bech32 address whose encoded account ID does not
-/// match the `<ACCOUNT_ID>` argument.
+/// Verifies that `address add` rejects a bech32 address whose encoded account ID does not match the
+/// `<ACCOUNT_ID>` argument.
 #[tokio::test]
 async fn address_add_rejects_mismatched_account() -> Result<()> {
     let temp_dir = init_cli().1;
@@ -1315,8 +1314,8 @@ async fn list_addresses_remove() -> Result<()> {
 /// Initializes a CLI with the network in the config file and returns the store path and the temp
 /// directory where the CLI is running.
 fn init_cli() -> (PathBuf, PathBuf, Endpoint) {
-    // Try to read from env first or default to localhost.
-    // Accepts "devnet", "testnet", "localhost", or a custom RPC endpoint string.
+    // Try to read from env first or default to localhost. Accepts "devnet", "testnet", "localhost",
+    // or a custom RPC endpoint string.
     let network: Network = std::env::var("TEST_MIDEN_NETWORK")
         .unwrap_or_else(|_| "localhost".to_string())
         .parse()
@@ -1328,8 +1327,8 @@ fn init_cli() -> (PathBuf, PathBuf, Endpoint) {
     (store_path, temp_dir, endpoint)
 }
 
-/// Initializes a CLI with the given network and store path and returns the temp directory where
-/// the CLI is running.
+/// Initializes a CLI with the given network and store path and returns the temp directory where the
+/// CLI is running.
 fn init_cli_with_store_path(store_path: &Path, endpoint: &Endpoint) -> PathBuf {
     let temp_dir = temp_dir().join(format!("cli-test-{}", rand::rng().random::<u64>()));
     std::fs::create_dir_all(&temp_dir).unwrap();
@@ -1349,14 +1348,14 @@ fn init_cli_with_store_path(store_path: &Path, endpoint: &Endpoint) -> PathBuf {
     temp_dir
 }
 
-/// Creates an isolated temporary directory and sets `MIDEN_CLIENT_HOME` to point to it.
-/// This prevents tests from touching the real `~/.miden` directory.
-/// Tests using this MUST use `#[serial_test::file_serial]`.
+/// Creates an isolated temporary directory and sets `MIDEN_CLIENT_HOME` to point to it. This
+/// prevents tests from touching the real `~/.miden` directory. Tests using this MUST use
+/// `#[serial_test::file_serial]`.
 fn set_isolated_miden_home() -> PathBuf {
     let path = temp_dir().join(format!("miden-home-{}", rand::rng().random::<u64>()));
     std::fs::create_dir_all(&path).unwrap();
-    // SAFETY: Tests using this are serialized via #[serial_test::file_serial]
-    // These don't need to be executed in parallel as they aren't a bottleneck at all.
+    // SAFETY: Tests using this are serialized via #[serial_test::file_serial] These don't need to
+    // be executed in parallel as they aren't a bottleneck at all.
     unsafe {
         env::set_var("MIDEN_CLIENT_HOME", &path);
     }
@@ -1435,8 +1434,8 @@ fn mint_cli(cli_path: &Path, target_account_id: &str, faucet_id: &str) -> String
         .to_string()
 }
 
-/// Shows note details using the cli and checks that the command runs
-/// successfully given account using the CLI given by `cli_path`.
+/// Shows note details using the cli and checks that the command runs successfully given account
+/// using the CLI given by `cli_path`.
 fn show_note_cli(cli_path: &Path, note_id: &str, should_fail: bool) {
     let mut show_note_cmd = cargo_bin_cmd!("miden-client");
     show_note_cmd.args(["notes", "--show", note_id]);
@@ -1771,8 +1770,8 @@ fn call_nonexistent_procedure() {
     cmd.current_dir(&temp_dir).assert().failure();
 }
 
-/// Helper: builds the `call-test` package (arithmetic + storage procedures) at runtime and
-/// writes the serialized `.masp` to `out_path`.
+/// Helper: builds the `call-test` package (arithmetic + storage procedures) at runtime and writes
+/// the serialized `.masp` to `out_path`.
 fn call_test_exports(package: &Package) -> Vec<PackageExport> {
     let signature_overrides: [(&str, FunctionType); 4] = [
         (
@@ -2017,8 +2016,8 @@ fn call_by_digest_without_package() {
     );
 }
 
-/// Tests that a procedure name is rejected without `--package`, as there is no manifest to
-/// resolve it against.
+/// Tests that a procedure name is rejected without `--package`, as there is no manifest to resolve
+/// it against.
 #[test]
 fn call_without_package_rejects_procedure_name() {
     let (temp_dir, account_id, _masp_path) = setup_call_test_account();
@@ -2272,9 +2271,8 @@ fn setup_remote_call_test() -> (PathBuf, String, PathBuf) {
         .to_string();
 
     // Deploying submits a transaction that commits the public account on-chain, which is what makes
-    // it readable from another client via FPI.
-    // `deploy_account` rather than `fund_cli_account`, since this one has to be committed on-chain
-    // on a fee-free chain too.
+    // it readable from another client via FPI. `deploy_account` rather than `fund_cli_account`,
+    // since this one has to be committed on-chain on a fee-free chain too.
     block_on(async {
         let mut client = cli_funding_client(&target_dir, &target_store_path, &endpoint).await?;
         client.deploy_account(AccountId::from_hex(&account_id)?).await
@@ -2290,8 +2288,8 @@ fn setup_remote_call_test() -> (PathBuf, String, PathBuf) {
     (caller_dir, account_id, masp_path)
 }
 
-/// Tests calling a procedure on a public account that is not in the caller's local store. The
-/// call is routed through FPI using the caller's local wallet as the executor.
+/// Tests calling a procedure on a public account that is not in the caller's local store. The call
+/// is routed through FPI using the caller's local wallet as the executor.
 #[test]
 fn call_remote_account_via_fpi() {
     let (caller_dir, account_id, masp_path) = setup_remote_call_test();
@@ -2325,8 +2323,8 @@ fn call_remote_account_via_fpi() {
     );
 }
 
-/// Tests calling a procedure that writes to storage on an account read from the network. The
-/// kernel only allows writes to the account running the transaction, so the call must fail.
+/// Tests calling a procedure that writes to storage on an account read from the network. The kernel
+/// only allows writes to the account running the transaction, so the call must fail.
 #[test]
 fn call_remote_account_rejects_state_change() {
     let (caller_dir, account_id, masp_path) = setup_remote_call_test();
@@ -2343,16 +2341,16 @@ fn call_remote_account_rejects_state_change() {
         masp_path.to_str().unwrap(),
     ]);
 
-    // The kernel rejects this with ERR_ACCOUNT_IS_NOT_NATIVE. Its text is matched instead of
-    // the constant name, which is printed only when the kernel source is rendered.
+    // The kernel rejects this with ERR_ACCOUNT_IS_NOT_NATIVE. Its text is matched instead of the
+    // constant name, which is printed only when the kernel source is rendered.
     cmd.current_dir(&caller_dir)
         .assert()
         .failure()
         .stderr(contains("the active account is not"));
 }
 
-/// Tests calling a private account that isn't tracked locally. The node cannot serve its state,
-/// so the call must fail.
+/// Tests calling a private account that isn't tracked locally. The node cannot serve its state, so
+/// the call must fail.
 #[test]
 fn call_rejects_untracked_private_account() {
     let owner_dir = init_cli().1;
@@ -2374,8 +2372,8 @@ fn call_rejects_untracked_private_account() {
         .stderr(contains("its state isn't public"));
 }
 
-/// Tests calling an account that isn't tracked locally from a client with no accounts of its
-/// own. There is nothing to run the call from, so it must fail.
+/// Tests calling an account that isn't tracked locally from a client with no accounts of its own.
+/// There is nothing to run the call from, so it must fail.
 #[test]
 fn call_remote_account_requires_local_executor() {
     let (_caller_dir, account_id, masp_path) = setup_remote_call_test();
@@ -2427,9 +2425,8 @@ fn create_account_with_no_auth() {
 fn create_account_with_multisig_auth() {
     let temp_dir = init_cli().1;
 
-    // Create init storage data file for multisig
-    // threshold_config is a value slot with [threshold, num_approvers, 0, 0]
-    // approver_public_keys and procedure_thresholds are map slots
+    // Create init storage data file for multisig threshold_config is a value slot with [threshold,
+    // num_approvers, 0, 0] approver_public_keys and procedure_thresholds are map slots
     let init_storage_data_toml = r#"
         "miden::standards::auth::multisig::threshold_config.threshold" = "2"
         "miden::standards::auth::multisig::threshold_config.num_approvers" = "3"
@@ -2500,8 +2497,8 @@ fn create_account_with_ecdsa_auth() {
 
 // CLICLIENT::NEW TESTS
 // ================================================================================================
-/// Tests that `CliClient::new()` successfully creates a client with the same
-/// configuration as the CLI tool when a local config exists.
+/// Tests that `CliClient::new()` successfully creates a client with the same configuration as the
+/// CLI tool when a local config exists.
 #[tokio::test]
 #[serial_test::file_serial]
 async fn test_new_with_local_config() -> Result<()> {
@@ -2528,8 +2525,8 @@ async fn test_new_with_local_config() -> Result<()> {
         client_result.err()
     );
 
-    // Verify that the local config was actually used by checking which store file was created.
-    // The local store should exist, indicating the local config was used.
+    // Verify that the local config was actually used by checking which store file was created. The
+    // local store should exist, indicating the local config was used.
     assert!(
         store_path.exists(),
         "Local store file should exist at {store_path:?}, indicating local config was used"
@@ -2538,8 +2535,8 @@ async fn test_new_with_local_config() -> Result<()> {
     Ok(())
 }
 
-/// Tests that `CliClient::new()` silently initializes with default config
-/// when no configuration exists.
+/// Tests that `CliClient::new()` silently initializes with default config when no configuration
+/// exists.
 #[tokio::test]
 #[serial_test::file_serial]
 async fn test_new_silent_init() -> Result<()> {

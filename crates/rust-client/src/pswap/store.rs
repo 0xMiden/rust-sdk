@@ -37,9 +37,8 @@ use crate::utils::{Deserializable, Serializable, bytes_to_hex_string};
 const ORDER_PREFIX: &str = "pswap/order/";
 const TIP_PREFIX: &str = "pswap/tip/";
 
-/// Stable primary key for an order's lineage record. Hex of the `order_id`
-/// canonical bytes — only uniqueness + stability matter; we never parse it
-/// back (the record carries its own `order_id`).
+/// Stable primary key for an order's lineage record. Hex of the `order_id` canonical bytes — only
+/// uniqueness + stability matter; we never parse it back (the record carries its own `order_id`).
 fn order_key(order_id: Felt) -> String {
     format!(
         "{ORDER_PREFIX}{}",
@@ -47,8 +46,8 @@ fn order_key(order_id: Felt) -> String {
     )
 }
 
-/// Secondary-index key for the current tip. Hex convention matches the note
-/// id encoding used elsewhere in the store layer.
+/// Secondary-index key for the current tip. Hex convention matches the note id encoding used
+/// elsewhere in the store layer.
 fn tip_key(tip: NoteId) -> String {
     format!("{TIP_PREFIX}{}", tip.as_word())
 }
@@ -56,9 +55,8 @@ fn tip_key(tip: NoteId) -> String {
 // READ / WRITE HELPERS
 // ================================================================================================
 
-/// Persists a lineage record and its tip index in one atomic batch, so the
-/// record and its tip index can never diverge. Used at creation and as the
-/// building block for [`apply_round`].
+/// Persists a lineage record and its tip index in one atomic batch, so the record and its tip index
+/// can never diverge. Used at creation and as the building block for [`apply_round`].
 pub(crate) async fn put_lineage(
     store: &Arc<dyn Store>,
     record: &PswapLineageRecord,
@@ -90,8 +88,8 @@ pub(crate) async fn get_lineage(
     Ok(Some(record))
 }
 
-/// Resolves a (possibly consumed) tip note id back to its `order_id` via the
-/// tip index. `None` when the note id is not a tracked tip.
+/// Resolves a (possibly consumed) tip note id back to its `order_id` via the tip index. `None` when
+/// the note id is not a tracked tip.
 pub(crate) async fn resolve_order_by_tip(
     store: &Arc<dyn Store>,
     tip: NoteId,
@@ -122,8 +120,8 @@ pub(crate) async fn get_original_pswap(
         .into_iter()
         .next()
         .ok_or(PswapLineageError::OriginalNoteUnavailable(original_note_id))?;
-    // `TryFrom<OutputNoteRecord> for Note` errors when the record carries no
-    // recipient (a `*Partial` state); our depth-0 notes are always `Full`.
+    // `TryFrom<OutputNoteRecord> for Note` errors when the record carries no recipient (a
+    // `*Partial` state); our depth-0 notes are always `Full`.
     let note: Note = record
         .try_into()
         .map_err(|_| PswapLineageError::OriginalNoteUnavailable(original_note_id))?;
@@ -131,9 +129,9 @@ pub(crate) async fn get_original_pswap(
         .map_err(|_| PswapLineageError::OriginalNoteUnavailable(original_note_id))
 }
 
-/// Prefix-scans the `pswap/order/` family and applies the (client-side)
-/// filter. `pswap/tip/` and non-PSWAP settings keys are excluded by the
-/// full-prefix check. Rare path (a client's own open orders).
+/// Prefix-scans the `pswap/order/` family and applies the (client-side) filter. `pswap/tip/` and
+/// non-PSWAP settings keys are excluded by the full-prefix check. Rare path (a client's own open
+/// orders).
 pub(crate) async fn list_lineages(
     store: &Arc<dyn Store>,
     filter: PswapLineageFilter,
@@ -177,9 +175,8 @@ pub(crate) async fn apply_round(
     store: &Arc<dyn Store>,
     update: &PswapLineageRoundUpdate,
 ) -> Result<(), StoreError> {
-    // Load the current record and enforce the monotonic-depth invariant before
-    // any write. The store is the last line of defense against correlator
-    // off-by-ones / duplicate deliveries.
+    // Load the current record and enforce the monotonic-depth invariant before any write. The store
+    // is the last line of defense against correlator off-by-ones / duplicate deliveries.
     let record = get_lineage(store, update.order_id).await?.ok_or_else(|| {
         StoreError::DatabaseError(format!(
             "apply_round: no lineage for order_id {}",
@@ -257,10 +254,10 @@ pub(crate) async fn apply_round(
     Ok(())
 }
 
-/// Inserts a reconstructed payback or remainder into `input_notes`. Skips if an
-/// entry already exists so we never downgrade an already-tracked note (e.g. a
-/// public payback the screener already inserted as `Committed` this same sync).
-/// With `at_block_note_root` the note lands as `Committed`, otherwise `Unverified`.
+/// Inserts a reconstructed payback or remainder into `input_notes`. Skips if an entry already
+/// exists so we never downgrade an already-tracked note (e.g. a public payback the screener already
+/// inserted as `Committed` this same sync). With `at_block_note_root` the note lands as
+/// `Committed`, otherwise `Unverified`.
 async fn upsert_round_note(
     store: &Arc<dyn Store>,
     note: &Note,
@@ -325,9 +322,9 @@ mod tests {
         assert!(tip_key(note_id(1)).starts_with(TIP_PREFIX));
     }
 
-    /// `list_lineages` skips `pswap/tip/` rows by prefix — but only while
-    /// neither family is a prefix of the other. Pin it so a future prefix tweak
-    /// that would leak tip rows into the order scan fails here, not silently.
+    /// `list_lineages` skips `pswap/tip/` rows by prefix — but only while neither family is a
+    /// prefix of the other. Pin it so a future prefix tweak that would leak tip rows into the order
+    /// scan fails here, not silently.
     #[test]
     fn key_families_are_prefix_isolated() {
         assert!(!TIP_PREFIX.starts_with(ORDER_PREFIX));
@@ -336,13 +333,12 @@ mod tests {
         assert!(!order_key(felt(1)).starts_with(TIP_PREFIX));
     }
 
-    /// Both key families must map each id to one stable, unique key — a
-    /// non-deterministic or colliding encoding would corrupt lookups. Pin
-    /// determinism + injectivity.
+    /// Both key families must map each id to one stable, unique key — a non-deterministic or
+    /// colliding encoding would corrupt lookups. Pin determinism + injectivity.
     #[test]
     fn keys_are_deterministic_and_injective() {
-        // Bind each construction separately so `clippy::eq_op` doesn't flag the
-        // determinism checks (identical call expressions as assert operands).
+        // Bind each construction separately so `clippy::eq_op` doesn't flag the determinism checks
+        // (identical call expressions as assert operands).
         let order_a = order_key(felt(7));
         let order_b = order_key(felt(7));
         assert_eq!(order_a, order_b);

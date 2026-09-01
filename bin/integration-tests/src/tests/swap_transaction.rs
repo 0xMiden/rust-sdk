@@ -74,8 +74,8 @@ pub async fn test_swap_fully_onchain(client_config: ClientConfig) -> Result<()> 
             .await;
     wait_for_tx(&mut client2, tx_id).await?;
 
-    // Create ONCHAIN swap note (clientA offers 1 BTC in exchange of 25 ETH)
-    // check that account now has 1 less BTC
+    // Create ONCHAIN swap note (clientA offers 1 BTC in exchange of 25 ETH) check that account now
+    // has 1 less BTC
     let offered_asset = FungibleAsset::new(btc_faucet_account.id(), OFFERED_ASSET_AMOUNT)?;
     let requested_asset = FungibleAsset::new(eth_faucet_account.id(), REQUESTED_ASSET_AMOUNT)?;
     info!(account_id = %account_a.id(), offered_amount = OFFERED_ASSET_AMOUNT, requested_amount = REQUESTED_ASSET_AMOUNT, "Creating swap note");
@@ -106,14 +106,13 @@ pub async fn test_swap_fully_onchain(client_config: ClientConfig) -> Result<()> 
         &Asset::Fungible(requested_asset),
     );
 
-    // add swap note's tag to client2
-    // we could technically avoid this step, but for the first iteration of swap notes we'll
-    // require to manually add tags
+    // add swap note's tag to client2 we could technically avoid this step, but for the first
+    // iteration of swap notes we'll require to manually add tags
     info!(tag = %swap_note_tag, "Adding swap note tag to client 2");
     client2.add_note_tag(swap_note_tag).await?;
 
-    // sync on client 2, we should get the swap note
-    // consume swap note with accountB, and check that the vault changed appropriately
+    // sync on client 2, we should get the swap note consume swap note with accountB, and check that
+    // the vault changed appropriately
     client2.sync_state().await?;
     info!(note_id = %expected_output_notes[0].id(), account_id = %account_b.id(), "Consuming swap note on client 2");
 
@@ -125,8 +124,8 @@ pub async fn test_swap_fully_onchain(client_config: ClientConfig) -> Result<()> 
     let tx_request = TransactionRequestBuilder::new().build_consume_notes(vec![note])?;
     execute_tx_and_sync(&mut client2, account_b.id(), tx_request).await?;
 
-    // sync on client 1, we should get the missing payback note details.
-    // try consuming the received note with accountA, it should now have 25 ETH
+    // sync on client 1, we should get the missing payback note details. try consuming the received
+    // note with accountA, it should now have 25 ETH
     client1.sync_state().await?;
     let payback_commitment = expected_payback_note_details[0].commitment();
     info!(payback_commitment = %payback_commitment.to_hex(), account_id = %account_a.id(), "Consuming swap payback note on client 1");
@@ -220,8 +219,8 @@ pub async fn test_swap_private(client_config: ClientConfig) -> Result<()> {
             .await;
     wait_for_tx(&mut client2, tx_id).await?;
 
-    // Create ONCHAIN swap note (clientA offers 1 BTC in exchange of 25 ETH)
-    // check that account now has 1 less BTC
+    // Create ONCHAIN swap note (clientA offers 1 BTC in exchange of 25 ETH) check that account now
+    // has 1 less BTC
     let offered_asset = FungibleAsset::new(btc_faucet_account.id(), OFFERED_ASSET_AMOUNT)?;
     let requested_asset = FungibleAsset::new(eth_faucet_account.id(), REQUESTED_ASSET_AMOUNT)?;
     info!(account_id = %account_a.id(), offered_amount = OFFERED_ASSET_AMOUNT, requested_amount = REQUESTED_ASSET_AMOUNT, "Creating swap note");
@@ -279,8 +278,8 @@ pub async fn test_swap_private(client_config: ClientConfig) -> Result<()> {
     let tx_request = TransactionRequestBuilder::new().build_consume_notes(vec![note])?;
     execute_tx_and_sync(&mut client2, account_b.id(), tx_request).await?;
 
-    // sync on client 1, we should get the missing payback note details.
-    // try consuming the received note with accountA, it should now have 25 ETH
+    // sync on client 1, we should get the missing payback note details. try consuming the received
+    // note with accountA, it should now have 25 ETH
     client1.sync_state().await?;
     let payback_commitment = expected_payback_note_details[0].commitment();
     info!(payback_commitment = %payback_commitment.to_hex(), account_id = %account_a.id(), "Consuming swap payback note on client 1");

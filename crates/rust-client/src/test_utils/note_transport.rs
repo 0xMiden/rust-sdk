@@ -34,9 +34,9 @@ use crate::note_transport::{
 #[derive(Clone)]
 pub struct MockNoteTransportNode {
     notes: BTreeMap<NoteTag, Vec<(NoteInfo, NoteTransportCursor)>>,
-    /// Optional per-response batch cap; if `Some(n)`, `get_notes` returns at
-    /// most `n` entries (total, across all tags) in one call. Used to exercise
-    /// client-side pagination drain loops. `None` = unbounded (legacy behavior).
+    /// Optional per-response batch cap; if `Some(n)`, `get_notes` returns at most `n` entries
+    /// (total, across all tags) in one call. Used to exercise client-side pagination drain loops.
+    /// `None` = unbounded (legacy behavior).
     max_batch: Option<usize>,
 }
 
@@ -79,9 +79,9 @@ impl MockNoteTransportNode {
         tags: &[NoteTag],
         cursor: NoteTransportCursor,
     ) -> (Vec<NoteInfo>, NoteTransportCursor) {
-        // Start `rcursor` at the input — matches the real server's contract
-        // (`rcursor = max(cursor, max_seq_returned)`), so an empty batch
-        // returns the caller's own cursor rather than `init()`.
+        // Start `rcursor` at the input — matches the real server's contract (`rcursor = max(cursor,
+        // max_seq_returned)`), so an empty batch returns the caller's own cursor rather than
+        // `init()`.
         let mut collected: Vec<(NoteInfo, NoteTransportCursor)> = vec![];
         for tag in tags {
             // Assumes stored notes are ordered by cursor
@@ -101,9 +101,9 @@ impl MockNoteTransportNode {
             collected.extend(tnotes);
         }
 
-        // Deterministic ordering across tags: sort by cursor ascending so the
-        // client sees notes in per-cursor order regardless of tag iteration
-        // order, matching the real server's `ORDER BY seq ASC`.
+        // Deterministic ordering across tags: sort by cursor ascending so the client sees notes in
+        // per-cursor order regardless of tag iteration order, matching the real server's `ORDER BY
+        // seq ASC`.
         collected.sort_by_key(|(_, c)| *c);
 
         // Apply the batch cap, if configured.
@@ -232,8 +232,8 @@ pub struct FaultyNoteTransportApi {
 }
 
 impl FaultyNoteTransportApi {
-    /// Create a faulty transport that fails the next `fail_next` `send_note`
-    /// calls before delegating to the inner mock.
+    /// Create a faulty transport that fails the next `fail_next` `send_note` calls before
+    /// delegating to the inner mock.
     pub fn new(mock_node: Arc<RwLock<MockNoteTransportNode>>, fail_next: usize) -> Self {
         Self {
             inner: MockNoteTransportApi::new(mock_node),
@@ -242,8 +242,8 @@ impl FaultyNoteTransportApi {
         }
     }
 
-    /// Reset the fail-counter to `n`; subsequent `send_note` calls fail until
-    /// the counter reaches zero.
+    /// Reset the fail-counter to `n`; subsequent `send_note` calls fail until the counter reaches
+    /// zero.
     pub fn fail_next_n(&self, n: usize) {
         self.fail_next.store(n, Ordering::SeqCst);
     }

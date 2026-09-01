@@ -10,6 +10,7 @@ members = [
   "crates/testing/client-test-harness",
   "crates/testing/miden-client-tests",
   "crates/testing/test-node-genesis",
+  "xtask",
 ]
 
 default-members = ["bin/miden-cli", "crates/rust-client"]

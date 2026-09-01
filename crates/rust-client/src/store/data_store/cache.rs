@@ -23,8 +23,8 @@ type AccountCache = BTreeMap<AccountId, PartialAccount>;
 /// account, so they are keyed and cached independently of it.
 type BlockchainCache = BTreeMap<BTreeSet<BlockNumber>, (BlockHeader, PartialBlockchain)>;
 
-/// Vault asset witnesses keyed by (vault root, asset ID). The vault root commits to the whole
-/// vault state, so the witness for an asset is the same no matter which account holds the vault.
+/// Vault asset witnesses keyed by (vault root, asset ID). The vault root commits to the whole vault
+/// state, so the witness for an asset is the same no matter which account holds the vault.
 type VaultWitnessCache = BTreeMap<(Word, AssetId), AssetWitness>;
 
 /// In-memory state that [`super::ClientDataStore`] serves to the executor without going through
@@ -39,12 +39,12 @@ pub(super) struct DataStoreCache {
     pub(super) mast_store: Arc<TransactionMastStore>,
     /// Foreign account inputs that should be returned to the executor on demand.
     foreign_account_inputs: RwLock<BTreeMap<AccountId, AccountInputs>>,
-    /// Note scripts known only to the in-flight transaction request (e.g. its expected output
-    /// note scripts): they must be resolvable while the transaction executes, but they are
-    /// persisted only as part of the store update applied after the transaction succeeds.
+    /// Note scripts known only to the in-flight transaction request (e.g. its expected output note
+    /// scripts): they must be resolvable while the transaction executes, but they are persisted
+    /// only as part of the store update applied after the transaction succeeds.
     note_scripts: RwLock<BTreeMap<Word, NoteScript>>,
-    /// Storage map witnesses, keyed by (`map_root`, `map_key`). Avoids redundant RPC calls when
-    /// the same map entry is accessed multiple times within a transaction.
+    /// Storage map witnesses, keyed by (`map_root`, `map_key`). Avoids redundant RPC calls when the
+    /// same map entry is accessed multiple times within a transaction.
     storage_map_witnesses: RwLock<BTreeMap<(Word, StorageMapKey), StorageMapWitness>>,
     /// Account states served to the executor. Entries are only inserted when the execution-input
     /// cache is enabled via [`super::ClientDataStore::with_execution_input_cache`], which the note
@@ -52,15 +52,15 @@ pub(super) struct DataStoreCache {
     /// pass. Otherwise this map stays empty, as during real transaction execution, whose account
     /// state evolves between executions.
     partial_accounts: RwLock<AccountCache>,
-    /// Reference block headers and partial blockchains served to the executor. Populated under
-    /// the same conditions as `partial_accounts`.
+    /// Reference block headers and partial blockchains served to the executor. Populated under the
+    /// same conditions as `partial_accounts`.
     blockchains: RwLock<BlockchainCache>,
     /// Vault asset witnesses served to the executor. The requested keys always include the fee
     /// asset key, so this memoizes the per-execution fee witness lookup across a screening batch.
     /// Populated under the same conditions as `partial_accounts`.
     vault_asset_witnesses: RwLock<VaultWitnessCache>,
-    /// Whether `partial_accounts`, `blockchains` and `vault_asset_witnesses` are used at all.
-    /// When unset, their getters miss and their setters do nothing, so the maps stay empty.
+    /// Whether `partial_accounts`, `blockchains` and `vault_asset_witnesses` are used at all. When
+    /// unset, their getters miss and their setters do nothing, so the maps stay empty.
     cache_execution_inputs: bool,
     /// The transaction reference block number.
     ref_block: RwLock<Option<BlockNumber>>,

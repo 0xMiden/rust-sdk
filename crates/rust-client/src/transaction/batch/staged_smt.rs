@@ -18,8 +18,8 @@ use miden_protocol::crypto::merkle::smt::{PartialSmt, SmtProof};
 /// removed map slot): there every key is implicitly provable and no proofs are needed at all.
 #[derive(Clone)]
 pub(crate) struct StagedSmt {
-    /// Committed-root proofs for every key an in-batch transaction has written so far. Its root
-    /// is the committed root the view is anchored at.
+    /// Committed-root proofs for every key an in-batch transaction has written so far. Its root is
+    /// the committed root the view is anchored at.
     committed: PartialSmt,
     /// Absolute leaf values written in-batch, keyed by hashed leaf key.
     entries: BTreeMap<Word, Word>,
@@ -71,9 +71,9 @@ impl StagedSmt {
     }
 
     /// Returns the in-batch tree: the committed view (plus any extra committed-root proofs, e.g.
-    /// for the key about to be opened) with all in-batch writes replayed. The returned tree's
-    /// root equals [`Self::current_root`], so witnesses opened from it are valid against the
-    /// in-batch state.
+    /// for the key about to be opened) with all in-batch writes replayed. The returned tree's root
+    /// equals [`Self::current_root`], so witnesses opened from it are valid against the in-batch
+    /// state.
     pub fn staged_view(
         &self,
         extra_committed_proofs: impl IntoIterator<Item = SmtProof>,

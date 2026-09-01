@@ -189,11 +189,10 @@ impl From<&StateSyncUpdate> for SyncSummary {
 /// Insert-only: entries are staged once known to be worth keeping, never revised or removed.
 #[derive(Debug, Clone, Default)]
 pub struct PartialBlockchainUpdates {
-    /// New block headers to be stored, keyed by block number. The value contains the block
-    /// header and a flag indicating whether the block is relevant and should remain tracked.
+    /// New block headers to be stored, keyed by block number. The value contains the block header
+    /// and a flag indicating whether the block is relevant and should remain tracked.
     block_headers: BTreeMap<BlockNumber, (BlockHeader, bool)>,
-    /// New authentication nodes that are meant to be stored in order to authenticate block
-    /// headers.
+    /// New authentication nodes that are meant to be stored in order to authenticate block headers.
     new_authentication_nodes: Vec<(InOrderIndex, Word)>,
     /// MMR peaks at the new sync height.
     pub new_peaks: MmrPeaks,
@@ -316,9 +315,9 @@ impl TransactionUpdateTracker {
             return;
         }
 
-        // Fallback for transactions with unauthenticated input notes: the node
-        // authenticates these notes during processing, which changes the transaction
-        // ID. Match by account ID and pre-transaction state instead.
+        // Fallback for transactions with unauthenticated input notes: the node authenticates these
+        // notes during processing, which changes the transaction ID. Match by account ID and
+        // pre-transaction state instead.
         if let Some(transaction) = self.transactions.values_mut().find(|tx| {
             tx.details.account_id == account_id
                 && tx.details.init_account_state == header.initial_state_commitment()
@@ -402,8 +401,8 @@ impl TransactionUpdateTracker {
         let mut new_invalid_account_states = vec![];
 
         for transaction in self.mutable_pending_transactions() {
-            // Discard transactions, and also push the invalid account state if the transaction
-            // got correctly discarded
+            // Discard transactions, and also push the invalid account state if the transaction got
+            // correctly discarded
             // NOTE: previous updates in a chain of state syncs could have committed a transaction,
             // so we need to check that `discard_transaction` returns `true` here (aka, it got
             // discarded from a valid state)

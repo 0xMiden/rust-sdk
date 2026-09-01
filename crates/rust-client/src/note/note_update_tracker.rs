@@ -36,8 +36,8 @@ pub struct NoteConsumption {
     /// The block number at which the note consumption was registered on chain.
     pub block_num: BlockNumber,
     /// The account ID of the consumer of the note. Will be set if the note was consumed by a
-    /// transaction submitted outside this client by an account that is tracked locally.
-    /// Otherwise, it will be `None`.
+    /// transaction submitted outside this client by an account that is tracked locally. Otherwise,
+    /// it will be `None`.
     pub external_consumer: Option<AccountId>,
 }
 
@@ -153,9 +153,9 @@ impl InputNoteUpdate {
         self.note.id()
     }
 
-    /// Returns the per-account position of the consuming transaction within the account's
-    /// execution chain for the block. `None` for non-consumed notes or when the order has not
-    /// been determined yet.
+    /// Returns the per-account position of the consuming transaction within the account's execution
+    /// chain for the block. `None` for non-consumed notes or when the order has not been determined
+    /// yet.
     pub fn consumed_tx_order(&self) -> Option<u32> {
         self.note.state().consumed_tx_order()
     }
@@ -233,8 +233,8 @@ impl OutputNoteUpdate {
 pub struct NoteUpdateTracker {
     /// All new and updated input note records to be upserted in the store, keyed by their details
     /// commitment. The details commitment is metadata-independent and therefore always available,
-    /// including for metadata-less notes (e.g. expected notes imported from bare details, or
-    /// future notes created by a transaction) that do not yet have a `NoteId`.
+    /// including for metadata-less notes (e.g. expected notes imported from bare details, or future
+    /// notes created by a transaction) that do not yet have a `NoteId`.
     input_notes: BTreeMap<NoteDetailsCommitment, InputNoteUpdate>,
     /// A map of updated output note records to be upserted in the store.
     output_notes: BTreeMap<NoteId, OutputNoteUpdate>,
@@ -248,8 +248,8 @@ pub struct NoteUpdateTracker {
     /// Fast lookup map from nullifier to output note id.
     output_notes_by_nullifier: BTreeMap<Nullifier, NoteId>,
     /// Map from nullifier to its per-account position in the consuming transaction order.
-    /// Nullifiers from the same account are in execution order; ordering across different
-    /// accounts is not guaranteed.
+    /// Nullifiers from the same account are in execution order; ordering across different accounts
+    /// is not guaranteed.
     nullifier_order: BTreeMap<Nullifier, u32>,
 }
 
@@ -419,46 +419,45 @@ impl NoteUpdateTracker {
         let note_id = *committed_note.note_id();
         let attachments = (!attachments.is_empty()).then_some(attachments);
 
-        let is_tracked_as_input_note = if let Some(input_note_record) =
-            self.get_input_note_by_id(note_id)
-        {
-            input_note_record.inclusion_proof_received(inclusion_proof.clone(), metadata)?;
-            input_note_record.block_header_received(block_header)?;
-            if let Some(attachments) = attachments {
-                input_note_record.attachments_received(attachments.clone());
-            }
-
-            true
-        } else if let Some(commitment) = self.expected_note_matching(note_id, &metadata) {
-            // A metadata-less note whose id, with the committed metadata, equals this note id:
-            // evolve it into a full record in place (its details commitment key is unchanged).
-            let nullifier = {
-                let update = self
-                    .input_notes
-                    .get_mut(&commitment)
-                    .expect("commitment was just matched against the tracked notes");
-                let record = &mut update.note;
-                record.inclusion_proof_received(inclusion_proof.clone(), metadata)?;
-                record.block_header_received(block_header)?;
+        let is_tracked_as_input_note =
+            if let Some(input_note_record) = self.get_input_note_by_id(note_id) {
+                input_note_record.inclusion_proof_received(inclusion_proof.clone(), metadata)?;
+                input_note_record.block_header_received(block_header)?;
                 if let Some(attachments) = attachments {
-                    record.attachments_received(attachments.clone());
+                    input_note_record.attachments_received(attachments.clone());
                 }
 
-                // `InsertCommitted` so the now-known `note_id`/`nullifier` columns are persisted
-                // (a full-row insert), while still being reported as a committed tracked note
-                // rather than a newly-discovered one.
-                update.update_type = NoteUpdateType::InsertCommitted;
-                record.nullifier().expect("note with an id has metadata")
+                true
+            } else if let Some(commitment) = self.expected_note_matching(note_id, &metadata) {
+                // A metadata-less note whose id, with the committed metadata, equals this note id:
+                // evolve it into a full record in place (its details commitment key is unchanged).
+                let nullifier = {
+                    let update = self
+                        .input_notes
+                        .get_mut(&commitment)
+                        .expect("commitment was just matched against the tracked notes");
+                    let record = &mut update.note;
+                    record.inclusion_proof_received(inclusion_proof.clone(), metadata)?;
+                    record.block_header_received(block_header)?;
+                    if let Some(attachments) = attachments {
+                        record.attachments_received(attachments.clone());
+                    }
+
+                    // `InsertCommitted` so the now-known `note_id`/`nullifier` columns are
+                    // persisted (a full-row insert), while still being reported as a committed
+                    // tracked note rather than a newly-discovered one.
+                    update.update_type = NoteUpdateType::InsertCommitted;
+                    record.nullifier().expect("note with an id has metadata")
+                };
+
+                // The note now has metadata, so register it in the id and nullifier indices.
+                self.input_notes_by_nullifier.insert(nullifier, commitment);
+                self.input_notes_by_id.insert(note_id, commitment);
+
+                true
+            } else {
+                false
             };
-
-            // The note now has metadata, so register it in the id and nullifier indices.
-            self.input_notes_by_nullifier.insert(nullifier, commitment);
-            self.input_notes_by_id.insert(note_id, commitment);
-
-            true
-        } else {
-            false
-        };
 
         self.try_commit_output_note(note_id, inclusion_proof)?;
 
@@ -547,9 +546,9 @@ impl NoteUpdateTracker {
             return Ok(());
         }
         let nullifier = note.nullifier();
-        // The consuming transaction belongs to this sync, so its nullifier must have a position
-        // in the execution order; storing the record without one would break the ordering
-        // guarantees of `InputNoteReader`.
+        // The consuming transaction belongs to this sync, so its nullifier must have a position in
+        // the execution order; storing the record without one would break the ordering guarantees
+        // of `InputNoteReader`.
         let order = self
             .get_nullifier_order(nullifier)
             .ok_or(ClientError::MissingConsumedNoteOrder(note_id))?;
@@ -592,8 +591,8 @@ impl NoteUpdateTracker {
         Ok(())
     }
 
-    /// If the note is tracked as an output note, transitions it to `Committed` with the
-    /// given inclusion proof. No-op if the note is not tracked.
+    /// If the note is tracked as an output note, transitions it to `Committed` with the given
+    /// inclusion proof. No-op if the note is not tracked.
     fn try_commit_output_note(
         &mut self,
         note_id: NoteId,
@@ -642,8 +641,8 @@ impl NoteUpdateTracker {
                         .transaction_committed(consumer_transaction.id, block_number)?;
                 }
             } else {
-                // The note was consumed by a transaction not submitted by this client.
-                // If the consuming account is tracked, external_consumer will be Some.
+                // The note was consumed by a transaction not submitted by this client. If the
+                // consuming account is tracked, external_consumer will be Some.
                 input_note_update.inner_mut().consumed_externally(
                     nullifier,
                     block_num,
@@ -670,8 +669,8 @@ impl NoteUpdateTracker {
     // PRIVATE HELPERS
     // --------------------------------------------------------------------------------------------
 
-    /// Returns the position of the given nullifier in the consuming transaction order, or `None`
-    /// if it is not present.
+    /// Returns the position of the given nullifier in the consuming transaction order, or `None` if
+    /// it is not present.
     fn get_nullifier_order(&self, nullifier: Nullifier) -> Option<u32> {
         self.nullifier_order.get(&nullifier).copied()
     }

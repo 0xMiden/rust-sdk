@@ -759,9 +759,9 @@ mod tests {
     /// Expected values produced by the validator's own implementation over these exact inputs
     /// (`miden_validator::attestation_commitment`, `0xMiden/node` rev `5066b383`, identical on
     /// `next` at `da261511`). The commitment layout is duplicated on both sides, so these vectors
-    /// are what ties them together: if either side changes its layout, this test fails rather
-    /// than every attestation quietly failing to verify. Regenerate by feeding the same inputs to
-    /// the node's function.
+    /// are what ties them together: if either side changes its layout, this test fails rather than
+    /// every attestation quietly failing to verify. Regenerate by feeding the same inputs to the
+    /// node's function.
     #[test]
     fn attestation_commitment_matches_the_validator_implementation() {
         let genesis = Word::from([101u32, 102, 103, 104]);

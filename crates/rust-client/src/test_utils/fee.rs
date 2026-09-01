@@ -78,8 +78,8 @@ impl TestClient {
         }
 
         if self.chain_charges_fees().await? {
-            // Deploying on demand means there is no later transaction to fold the funding into,
-            // so the notes are consumed here.
+            // Deploying on demand means there is no later transaction to fold the funding into, so
+            // the notes are consumed here.
             let mut funded = Vec::with_capacity(undeployed.len());
             for account_id in &undeployed {
                 match self.take_funding(*account_id) {

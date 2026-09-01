@@ -35,8 +35,8 @@ impl SqlitePoolManager {
     fn new_connection(&self) -> rusqlite::Result<Connection> {
         let conn = Connection::open(&self.database_path)?;
 
-        // Restrict database file permissions to owner-only on Unix.
-        // Also covers WAL and SHM journal files that SQLite may create.
+        // Restrict database file permissions to owner-only on Unix. Also covers WAL and SHM journal
+        // files that SQLite may create.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -57,9 +57,8 @@ impl SqlitePoolManager {
             }
         }
 
-        // Feature used to support `IN` and `NOT IN` queries. We need to load
-        // this module for every connection we create to the DB to support the
-        // queries we want to run
+        // Feature used to support `IN` and `NOT IN` queries. We need to load this module for every
+        // connection we create to the DB to support the queries we want to run
         array::load_module(&conn)?;
 
         conn.busy_timeout(Duration::from_secs(5))?;
@@ -202,8 +201,8 @@ mod tests {
         Ok(())
     }
 
-    /// Two stores open on the same file must wait on each other's write locks rather than fail
-    /// with `SQLITE_BUSY`.
+    /// Two stores open on the same file must wait on each other's write locks rather than fail with
+    /// `SQLITE_BUSY`.
     #[tokio::test]
     async fn overlapping_accessors_wait_instead_of_failing() -> anyhow::Result<()> {
         let path = create_test_store_path();

@@ -42,11 +42,13 @@ fix: ## Run Fix with configs
 	cargo fix --workspace --features "testing std" --all-targets --allow-staged --allow-dirty
 
 .PHONY: format
-format: ## Run format using nightly toolchain
+format: ## Reflow comments, then run format using nightly toolchain
+	cargo xtask fmt-comments --write
 	cargo +nightly fmt --all
 
 .PHONY: format-check
-format-check: ## Run format using nightly toolchain but only in check mode
+format-check: ## Run comment reflow and format checks without writing changes
+	cargo xtask fmt-comments --check
 	cargo +nightly fmt --all --check
 
 .PHONY: shear

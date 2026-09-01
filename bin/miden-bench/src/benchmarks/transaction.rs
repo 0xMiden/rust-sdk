@@ -107,9 +107,8 @@ pub async fn run_transaction_benchmarks(
         println!("Slots: {slot_summary}. Total reads: {total_reads}");
     }
 
-    // Measure proven transaction size upfront (execute + prove one tx).
-    // If the signing key is missing from the keystore, proving will fail and we
-    // fall back to execution-only benchmarks.
+    // Measure proven transaction size upfront (execute + prove one tx). If the signing key is
+    // missing from the keystore, proving will fail and we fall back to execution-only benchmarks.
     let can_prove = {
         let tx_request = build_chunk_tx_request(client, &chunks[0], &slot_infos)?;
         let tx_result = client.execute_transaction(account_id, tx_request).await?;
@@ -294,8 +293,8 @@ async fn benchmark_tx_full(
         let mut total_duration = Duration::ZERO;
 
         for (chunk_idx, chunk) in chunks.iter().enumerate() {
-            // Each chunk submission needs a fresh client with up-to-date state,
-            // because the previous submission changes the account nonce on the network.
+            // Each chunk submission needs a fresh client with up-to-date state, because the
+            // previous submission changes the account nonce on the network.
             let mut client = create_iteration_client(config).await?;
             client.sync_state().await?;
 
@@ -309,9 +308,9 @@ async fn benchmark_tx_full(
 
             total_duration += duration;
 
-            // Wait for the block to advance after every submission so the node
-            // has processed the transaction before the next chunk or iteration.
-            // Skip only after the very last submission of the entire benchmark.
+            // Wait for the block to advance after every submission so the node has processed the
+            // transaction before the next chunk or iteration. Skip only after the very last
+            // submission of the entire benchmark.
             let is_last = i == config.iterations - 1 && chunk_idx == num_chunks - 1;
             if !is_last {
                 wait_for_block_advancement(&mut client).await?;
@@ -374,8 +373,8 @@ fn build_slot_infos_from_storage(
     indexed.sort_by_key(|(idx, _)| *idx);
     let max_idx = indexed.last().unwrap().0;
 
-    // Build contiguous slot_infos [0..=max_idx] so procedure indices match the account's
-    // reader component. Slots missing from storage get empty key lists (no reads generated).
+    // Build contiguous slot_infos [0..=max_idx] so procedure indices match the account's reader
+    // component. Slots missing from storage get empty key lists (no reads generated).
     let mut keys_by_idx: Vec<Vec<StorageMapKey>> = vec![Vec::new(); max_idx + 1];
     for (idx, keys) in indexed {
         keys_by_idx[idx] = keys;

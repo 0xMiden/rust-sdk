@@ -87,10 +87,8 @@ pub async fn test_onchain_notes_flow(client_config: ClientConfig) -> Result<()> 
         .try_into()?;
     assert_eq!(received_note.note().id(), note.id());
 
-    // TODO: revisit this.
-    // The received note has the uri of the note stored in the node, so it may not match with the
-    // original note.
-    // assert_eq!(received_note.note(), &note);
+    // TODO: revisit this. The received note has the uri of the note stored in the node, so it may
+    // not match with the original note. assert_eq!(received_note.note(), &note);
 
     // consume the note
     let tx_id =
@@ -300,7 +298,7 @@ pub async fn test_onchain_accounts(client_config: ClientConfig) -> Result<()> {
     client_2.sync_state().await?;
     let notes = client_2.get_input_notes(NoteFilter::Committed).await?;
 
-    //Import the note on the first client so that we can later check its consumer account
+    // Import the note on the first client so that we can later check its consumer account
     let note_id = notes[0].id().expect("committed note has metadata so id() is Some");
     client_1.import_notes(&[NoteFile::NoteId(note_id)]).await?;
 
@@ -515,8 +513,8 @@ pub async fn test_import_watched_account_by_id(client_config: ClientConfig) -> R
         "expected AccountWatchedMismatch, got {err:?}",
     );
 
-    // Re-importing in the same mode is still a no-op overwrite, and the account stays
-    // watched with no per-account tag.
+    // Re-importing in the same mode is still a no-op overwrite, and the account stays watched with
+    // no per-account tag.
     client_2.import_watched_account_by_id(wallet_id).await?;
     let record = client_2
         .test_store()
@@ -541,8 +539,8 @@ pub async fn test_incorrect_genesis(client_config: ClientConfig) -> Result<()> {
     // Set an incorrect genesis commitment
     client.test_rpc_api().set_genesis_commitment(EMPTY_WORD).await?;
 
-    // This request would always be valid as it requests the chain tip. But it should fail
-    // because the genesis commitment in the request header does not match the one in the node.
+    // This request would always be valid as it requests the chain tip. But it should fail because
+    // the genesis commitment in the request header does not match the one in the node.
     let result = client.test_rpc_api().get_block_header_by_number(None, false).await;
 
     match result {
@@ -596,8 +594,8 @@ pub async fn test_consumed_note_ordering(client_config: ClientConfig) -> Result<
     }
     client.sync_state().await?;
 
-    // Requests are built before the batch borrows the client, so a funding note can still be
-    // folded in.
+    // Requests are built before the batch borrows the client, so a funding note can still be folded
+    // in.
     let requests: Vec<_> = minted_notes
         .iter()
         .map(|note| {
@@ -738,8 +736,8 @@ pub async fn test_watched_account_recovers_consumed_public_note(
     let consumer_id = consumer.id();
     let faucet_id = faucet.id();
 
-    // Put the consumer on-chain, then have B watch it. No per-account note tag is registered, so
-    // B can only learn about consumed notes from the consumer's transactions.
+    // Put the consumer on-chain, then have B watch it. No per-account note tag is registered, so B
+    // can only learn about consumed notes from the consumer's transactions.
     let bootstrap_tx =
         mint_and_consume(&mut client_a, consumer_id, faucet_id, NoteType::Public).await;
     wait_for_tx(&mut client_a, bootstrap_tx).await?;
@@ -858,8 +856,8 @@ pub async fn test_sync_note_with_attachment(client_config: ClientConfig) -> Resu
         }])
         .await?;
 
-    // Client 2 syncs and should discover both notes. Both attachments are single words, so the
-    // sync response carries them and only the public note's body needs `get_notes_by_id`.
+    // Client 2 syncs and should discover both notes. Both attachments are single words, so the sync
+    // response carries them and only the public note's body needs `get_notes_by_id`.
     info!("Syncing client 2 to discover notes with attachments");
     client_2.sync_state().await?;
 

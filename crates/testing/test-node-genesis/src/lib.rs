@@ -111,8 +111,8 @@ pub fn write_genesis_config(
     let mut account_files = Vec::new();
 
     // Generated before anything else so that the accounts below can hold its asset. The faucet
-    // commits to its operator's ID, so the operator is built first, and both get their balance
-    // only once the faucet's ID exists.
+    // commits to its operator's ID, so the operator is built first, and both get their balance only
+    // once the faucet's ID exists.
     let (operator, operator_secret) =
         generate_faucet_operator().context("failed to create the native faucet operator")?;
     let native_faucet =
@@ -137,8 +137,8 @@ pub fn write_genesis_config(
         .with_context(|| format!("failed to write {GENESIS_FAUCET_FILE}"))?;
     account_files.push(GENESIS_FAUCET_FILE.to_string());
 
-    // Test faucets and the `too_many_assets` account. These are read-only fixtures, so their
-    // `.mac` files omit secret keys (only the account is needed in genesis).
+    // Test faucets and the `too_many_assets` account. These are read-only fixtures, so their `.mac`
+    // files omit secret keys (only the account is needed in genesis).
     let test_accounts =
         build_test_faucets_and_account().context("failed to build test faucets and account")?;
     for (index, account) in test_accounts.into_iter().enumerate() {
@@ -357,17 +357,16 @@ const TEST_ACCOUNT_SEED: [u8; 32] = [0xa; 32];
 const NUM_TEST_FAUCETS: u128 = 1001;
 
 /// Number storage map entries to create. This should exceed the
-/// `AccountStorageMapDetails::MAX_RETURN_ENTRIES` limit defined in the node, so the slot comes
-/// back as `StorageMapEntries::LimitExceeded` during testing.
+/// `AccountStorageMapDetails::MAX_RETURN_ENTRIES` limit defined in the node, so the slot comes back
+/// as `StorageMapEntries::LimitExceeded` during testing.
 const NUM_STORAGE_MAP_ENTRIES: u32 = 1001;
 
 const FAUCET_DECIMALS: u8 = 12;
 const FAUCET_MAX_SUPPLY: u32 = 1 << 30;
 const ASSET_AMOUNT_PER_FAUCET: u64 = 75;
 
-/// Builds test faucets and an account that triggers the `too_many_assets` flag
-/// when requested from the node. This is used to test edge cases in account
-/// retrieval and asset handling.
+/// Builds test faucets and an account that triggers the `too_many_assets` flag when requested from
+/// the node. This is used to test edge cases in account retrieval and asset handling.
 fn build_test_faucets_and_account() -> anyhow::Result<Vec<Account>> {
     let mut rng = ChaCha20Rng::from_seed(random());
     let secret = AuthSecretKey::new_falcon512_poseidon2_with_rng(&mut rng);
@@ -385,9 +384,9 @@ fn build_test_faucets_and_account() -> anyhow::Result<Vec<Account>> {
     Ok([&faucets[..], &[account][..]].concat())
 }
 
-/// Creates multiple fungible faucets for testing purposes.
-/// Each faucet's index-derived seed gives it a distinct ID within a genesis, but IDs are not
-/// stable across runs: the shared auth key is randomly seeded and feeds ID derivation.
+/// Creates multiple fungible faucets for testing purposes. Each faucet's index-derived seed gives
+/// it a distinct ID within a genesis, but IDs are not stable across runs: the shared auth key is
+/// randomly seeded and feeds ID derivation.
 fn create_test_faucets(secret: &AuthSecretKey) -> anyhow::Result<Vec<Account>> {
     (0..NUM_TEST_FAUCETS)
         .map(|i| create_single_test_faucet(i, secret))
@@ -427,8 +426,8 @@ fn create_single_test_faucet(index: u128, secret: &AuthSecretKey) -> anyhow::Res
     Ok(Account::new_unchecked(id, vault, storage, code, ONE, None))
 }
 
-/// Creates a test account holding assets from all provided faucets.
-/// The account also includes a large storage map to test storage capacity limits.
+/// Creates a test account holding assets from all provided faucets. The account also includes a
+/// large storage map to test storage capacity limits.
 fn create_test_account_with_many_assets(faucets: &[Account]) -> anyhow::Result<Account> {
     let sk = AuthSecretKey::new_falcon512_poseidon2_with_rng(&mut ChaCha20Rng::from_seed(
         TEST_ACCOUNT_SEED,
@@ -463,11 +462,10 @@ fn create_test_account_with_many_assets(faucets: &[Account]) -> anyhow::Result<A
 }
 
 fn allow_all_policy_manager() -> TokenPolicyManager {
-    // Only mint/burn — registering transfer policies installs asset-callback slots on the
-    // faucet, which forces minted assets to carry `AssetCallbackFlag::Enabled`. Tests build
-    // assets via `FungibleAsset::new`, which defaults to `Disabled`, so adding transfer
-    // policies makes `mint_and_send` reject the mint with
-    // `ERR_FUNGIBLE_MINT_NOTE_ASSET_NOT_FROM_THIS_FAUCET`.
+    // Only mint/burn — registering transfer policies installs asset-callback slots on the faucet,
+    // which forces minted assets to carry `AssetCallbackFlag::Enabled`. Tests build assets via
+    // `FungibleAsset::new`, which defaults to `Disabled`, so adding transfer policies makes
+    // `mint_and_send` reject the mint with `ERR_FUNGIBLE_MINT_NOTE_ASSET_NOT_FROM_THIS_FAUCET`.
     TokenPolicyManager::builder()
         .active_mint_policy(MintPolicy::allow_all())
         .active_burn_policy(BurnPolicy::allow_all())

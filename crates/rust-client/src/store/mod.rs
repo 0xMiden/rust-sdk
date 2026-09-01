@@ -409,8 +409,8 @@ pub trait Store: Send + Sync {
     async fn get_account(&self, account_id: AccountId)
     -> Result<Option<AccountRecord>, StoreError>;
 
-    /// Retrieves the [`AccountCode`] for the specified account.
-    /// Returns `None` if the account is not found.
+    /// Retrieves the [`AccountCode`] for the specified account. Returns `None` if the account is
+    /// not found.
     async fn get_account_code(
         &self,
         account_id: AccountId,
@@ -619,8 +619,8 @@ pub trait Store: Send + Sync {
             .await
     }
 
-    /// Removes the cached transaction encryption key, so the next submission fetches and verifies
-    /// a fresh one. Used when the node rejects a submission sealed against a retired key.
+    /// Removes the cached transaction encryption key, so the next submission fetches and verifies a
+    /// fresh one. Used when the node rejects a submission sealed against a retired key.
     async fn remove_transaction_encryption_key(&self) -> Result<(), StoreError> {
         self.remove_setting(TRANSACTION_ENCRYPTION_KEY_STORE_SETTING.into()).await?;
         Ok(())
@@ -797,8 +797,8 @@ pub trait Store: Send + Sync {
     // PARTIAL ACCOUNTS
     // --------------------------------------------------------------------------------------------
 
-    /// Retrieves an [`AccountRecord`] object, this contains the account's latest partial
-    /// state along with its status. Returns `None` if the partial account is not found.
+    /// Retrieves an [`AccountRecord`] object, this contains the account's latest partial state
+    /// along with its status. Returns `None` if the partial account is not found.
     async fn get_minimal_partial_account(
         &self,
         account_id: AccountId,
@@ -867,8 +867,8 @@ pub enum NoteFilter {
     /// Return a list of committed notes ([`InputNoteRecord`] or [`OutputNoteRecord`]). These
     /// represent notes that the blockchain has included in a block.
     Committed,
-    /// Filter by consumed notes ([`InputNoteRecord`] or [`OutputNoteRecord`]). notes that have
-    /// been used as inputs in transactions.
+    /// Filter by consumed notes ([`InputNoteRecord`] or [`OutputNoteRecord`]). notes that have been
+    /// used as inputs in transactions.
     Consumed,
     /// Return a list of expected notes ([`InputNoteRecord`] or [`OutputNoteRecord`]). These
     /// represent notes for which the store doesn't have anchor data.
@@ -877,8 +877,8 @@ pub enum NoteFilter {
     List(Vec<NoteId>),
     /// Return a list containing any notes whose details commitment matches one of the provided
     /// [`NoteDetailsCommitment`] vector. Unlike [`NoteFilter::List`], this matches the
-    /// metadata-independent details commitment, so it also resolves metadata-less notes (which
-    /// have a NULL `note_id`).
+    /// metadata-independent details commitment, so it also resolves metadata-less notes (which have
+    /// a NULL `note_id`).
     DetailsCommitments(Vec<NoteDetailsCommitment>),
     /// Return a list containing any notes that match the provided [`Nullifier`] vector.
     Nullifiers(Vec<Nullifier>),
@@ -886,8 +886,7 @@ pub enum NoteFilter {
     /// output notes.
     Processing,
     /// Return a list containing any notes whose script root matches one of the provided
-    /// [`NoteScriptRoot`]s. Notes whose script isn't known (e.g. partial output notes) never
-    /// match.
+    /// [`NoteScriptRoot`]s. Notes whose script isn't known (e.g. partial output notes) never match.
     ScriptRoots(Vec<NoteScriptRoot>),
     /// Return a list containing the note that matches with the provided [`NoteId`]. The query will
     /// return an error if the note isn't found.
@@ -943,8 +942,8 @@ pub enum AccountStorageFilter {
     Root(Word),
     /// Return an [`AccountStorage`] with a single slot that matches the provided slot name.
     SlotName(StorageSlotName),
-    /// Return an [`AccountStorage`] containing only the slots whose names are in the provided
-    /// list. Useful to avoid loading the full storage when only a known subset of slots is needed
-    /// (e.g. when applying a delta to a large account).
+    /// Return an [`AccountStorage`] containing only the slots whose names are in the provided list.
+    /// Useful to avoid loading the full storage when only a known subset of slots is needed (e.g.
+    /// when applying a delta to a large account).
     SlotNames(Vec<StorageSlotName>),
 }

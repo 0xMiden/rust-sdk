@@ -143,8 +143,8 @@ async fn fee_can_be_paid_from_a_note_consumed_in_the_same_transaction() {
     );
 }
 
-/// An account that does not hold the fee asset cannot pay, even with correctly committed
-/// conversion info: `pay_fee` withdraws the fee from the account vault.
+/// An account that does not hold the fee asset cannot pay, even with correctly committed conversion
+/// info: `pay_fee` withdraws the fee from the account vault.
 #[tokio::test]
 async fn fee_payment_fails_without_fee_asset_balance() {
     let (chain, account, fee_faucet_id) = fee_charging_chain(0);

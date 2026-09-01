@@ -87,12 +87,12 @@ pub(crate) mod api_client_wrapper {
             })
         }
 
-        /// Returns a new `ApiClient` with an updated genesis commitment.
-        /// This creates a new client that shares the same underlying channel. Any
-        /// `bearer_token` passed to the constructor is preserved.
+        /// Returns a new `ApiClient` with an updated genesis commitment. This creates a new client
+        /// that shares the same underlying channel. Any `bearer_token` passed to the constructor is
+        /// preserved.
         pub fn set_genesis_commitment(&mut self, genesis_commitment: Word) -> &mut Self {
-            // The bearer token was validated at construction time; re-applying the same
-            // value here cannot fail.
+            // The bearer token was validated at construction time; re-applying the same value here
+            // cannot fail.
             let interceptor =
                 accept_header_interceptor(Some(genesis_commitment), self.bearer_token.as_deref())
                     .expect("bearer token already validated at construction time");
@@ -141,8 +141,8 @@ pub(crate) mod api_client_wrapper {
             bearer_token: Option<String>,
             max_decoding_message_size: usize,
         ) -> Result<ApiClient, RpcError> {
-            // Build the interceptor first so an invalid bearer token fails fast,
-            // before we attempt the network connection.
+            // Build the interceptor first so an invalid bearer token fails fast, before we attempt
+            // the network connection.
             let interceptor =
                 accept_header_interceptor(genesis_commitment, bearer_token.as_deref())?;
 
@@ -202,12 +202,12 @@ pub(crate) mod api_client_wrapper {
             })
         }
 
-        /// Returns a new `ApiClient` with an updated genesis commitment.
-        /// This creates a new client that shares the same underlying channel. Any
-        /// `bearer_token` passed to the constructor is preserved.
+        /// Returns a new `ApiClient` with an updated genesis commitment. This creates a new client
+        /// that shares the same underlying channel. Any `bearer_token` passed to the constructor is
+        /// preserved.
         pub fn set_genesis_commitment(&mut self, genesis_commitment: Word) -> &mut Self {
-            // The bearer token was validated at construction time; re-applying the same
-            // value here cannot fail.
+            // The bearer token was validated at construction time; re-applying the same value here
+            // cannot fail.
             let interceptor =
                 accept_header_interceptor(Some(genesis_commitment), self.bearer_token.as_deref())
                     .expect("bearer token already validated at construction time");
@@ -309,8 +309,8 @@ mod tests {
 
     #[test]
     fn interceptor_injects_bearer_token_onto_request() {
-        // Build the same interceptor that the native/WASM clients would use, with a caller
-        // bearer token in addition to the standard `accept`.
+        // Build the same interceptor that the native/WASM clients would use, with a caller bearer
+        // token in addition to the standard `accept`.
         let mut interceptor =
             accept_header_interceptor(None, Some("test-token")).expect("build interceptor");
 
@@ -343,8 +343,8 @@ mod tests {
 
     #[test]
     fn with_bearer_token_rejects_invalid_ascii_values() {
-        // Control characters are not valid ASCII metadata values; the builder must reject
-        // them rather than silently dropping the header.
+        // Control characters are not valid ASCII metadata values; the builder must reject them
+        // rather than silently dropping the header.
         match MetadataInterceptor::default().with_bearer_token(Some("bad\nvalue")) {
             Err(crate::rpc::RpcError::ConnectionError(_)) => {},
             Err(other) => panic!("expected ConnectionError, got {other:?}"),

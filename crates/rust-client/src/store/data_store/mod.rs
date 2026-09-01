@@ -253,10 +253,10 @@ impl ClientDataStore {
         Ok(witness)
     }
 
-    /// Fetches an account's full vault via RPC — anchored at the transaction reference block —
-    /// and verifies it against the vault root the executor requires. Fallback for vault reads
-    /// the local store cannot serve, typically foreign accounts whose [`AccountInputs`] carry
-    /// only their vault root.
+    /// Fetches an account's full vault via RPC — anchored at the transaction reference block — and
+    /// verifies it against the vault root the executor requires. Fallback for vault reads the local
+    /// store cannot serve, typically foreign accounts whose [`AccountInputs`] carry only their
+    /// vault root.
     async fn fetch_vault_via_rpc(
         &self,
         account_id: AccountId,
@@ -335,9 +335,9 @@ impl DataStore for ClientDataStore {
                     .await?
                     .ok_or(DataStoreError::AccountNotFound(account_id))?;
 
-                // New accounts (nonce == 0) need full storage maps as advice inputs for the
-                // kernel to validate during account creation. For these, fetch the full account
-                // and convert to PartialAccount (which includes full storage for new accounts).
+                // New accounts (nonce == 0) need full storage maps as advice inputs for the kernel
+                // to validate during account creation. For these, fetch the full account and
+                // convert to PartialAccount (which includes full storage for new accounts).
                 // Existing accounts use the minimal partial record directly.
                 let partial_account: PartialAccount = if partial_account_record.nonce() == ZERO {
                     let full_record = self
@@ -360,9 +360,9 @@ impl DataStore for ClientDataStore {
             };
 
         let (block_header, partial_blockchain) = if let Some(anchor) = &self.anchor {
-            // Anchored execution: serve the pinned chain data. The executor-derived reference
-            // block must match the anchor, and every other block in the set (input note creation
-            // blocks) must already be tracked by the anchor's partial blockchain.
+            // Anchored execution: serve the pinned chain data. The executor-derived reference block
+            // must match the anchor, and every other block in the set (input note creation blocks)
+            // must already be tracked by the anchor's partial blockchain.
             if ref_block != anchor.block_num() {
                 return Err(DataStoreError::other_with_source(
                     "anchored data store cannot serve the requested reference block",
@@ -388,8 +388,8 @@ impl DataStore for ClientDataStore {
         {
             (block_header, partial_blockchain)
         } else {
-            // The full set identifies the served blockchain, so keep it as the cache key before
-            // the reference block is removed from it below.
+            // The full set identifies the served blockchain, so keep it as the cache key before the
+            // reference block is removed from it below.
             let cache_key = block_refs.clone();
             block_refs.remove(&ref_block);
 
@@ -469,10 +469,9 @@ impl DataStore for ClientDataStore {
         Ok(asset_witnesses)
     }
 
-    /// Retrieves the [`StorageMapWitness`] requested from the store. Alternatively fetching it
-    /// from the RPC if not available locally. Witnesses fetched via RPC are cached in memory so
-    /// that repeated accesses to the same map entry within a transaction avoid additional RPC
-    /// calls.
+    /// Retrieves the [`StorageMapWitness`] requested from the store. Alternatively fetching it from
+    /// the RPC if not available locally. Witnesses fetched via RPC are cached in memory so that
+    /// repeated accesses to the same map entry within a transaction avoid additional RPC calls.
     async fn get_storage_map_witness(
         &self,
         account_id: AccountId,
@@ -601,14 +600,14 @@ impl MastForestStore for ClientDataStore {
 /// itself, or the parameters needed to fetch it via RPC.
 enum WitnessResolution {
     Witness(StorageMapWitness),
-    /// The [`AccountCode`] is not needed to build the witness: it is only sent along with the
-    /// RPC request so the node can omit the account code from its response.
+    /// The [`AccountCode`] is not needed to build the witness: it is only sent along with the RPC
+    /// request so the node can omit the account code from its response.
     FetchParams(StorageSlotName, AccountCode),
 }
 
-/// Tries to open the witness from the inputs' partial storage maps (this can miss if the
-/// account's storage is too big); on a miss, resolves the slot name and account code needed to
-/// fetch the witness via RPC.
+/// Tries to open the witness from the inputs' partial storage maps (this can miss if the account's
+/// storage is too big); on a miss, resolves the slot name and account code needed to fetch the
+/// witness via RPC.
 fn resolve_witness_from_inputs(
     inputs: &AccountInputs,
     map_root: Word,
@@ -711,9 +710,8 @@ async fn get_authentication_path_for_blocks(
     Ok(authentication_paths)
 }
 
-/// Calculates the merkle path length for an MMR of a specific forest and a leaf index
-/// `leaf_index` is a 0-indexed leaf number and `forest` is the total amount of leaves
-/// in the MMR at this point.
+/// Calculates the merkle path length for an MMR of a specific forest and a leaf index `leaf_index`
+/// is a 0-indexed leaf number and `forest` is the total amount of leaves in the MMR at this point.
 fn mmr_merkle_path_len(leaf_index: usize, forest: usize) -> usize {
     let before: usize = forest & leaf_index;
     let after = forest ^ before;

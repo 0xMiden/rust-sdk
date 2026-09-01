@@ -16,7 +16,11 @@ use miden_protocol::note::{Note, NoteDetails, NoteDetailsCommitment, NoteHeader,
 use miden_protocol::utils::serde::Serializable;
 use miden_tx::auth::TransactionAuthenticator;
 use miden_tx::utils::serde::{
-    ByteReader, ByteWriter, Deserializable, DeserializationError, SliceReader,
+    ByteReader,
+    ByteWriter,
+    Deserializable,
+    DeserializationError,
+    SliceReader,
 };
 
 pub use self::errors::NoteTransportError;
@@ -514,7 +518,9 @@ where
 
         // Screen the transport-delivered notes to discard the ones that are not relevant to the
         // accounts tracked by the client.
-        self.screen_transport_notes(&mut notes).await?;
+        // Boxed to avoid a `clippy::large_futures` warning, since the sync future is already close
+        // to the size limit.
+        Box::pin(self.screen_transport_notes(&mut notes)).await?;
 
         let sync_height = self.get_sync_height().await?;
         let fallback_after_block_num =

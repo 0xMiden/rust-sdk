@@ -1726,20 +1726,12 @@ fn validate_basic_account_request(
     Ok(())
 }
 
-/// Fetches a foreign account's proof and details from the network, converts them into
-/// [`AccountInputs`], and caches the returned code in the store for future requests.
-///
-/// Storage maps the node caps as oversized (returned truncated) are carried root-only in the
-/// inputs; reads from them resolve lazily as per-key witnesses during execution.
-///
-/// # Errors
-/// Fails if the account is private: the RPC does not return account details for them, causing
-/// [`TransactionRequestError::ForeignAccountDataMissing`].
 /// Builds a foreign account's [`AccountInputs`] entirely from the store, or returns `None` when it
 /// cannot.
 ///
 /// Storage maps and vault assets are carried root-only, and resolve against the store during
-/// execution.
+/// execution. A caller's [`AccountStorageRequirements`] therefore become per-key lookups against
+/// the store rather than one prefetched batch.
 ///
 /// Requires the local header to hash to the commitment the witness proves. Otherwise the local
 /// state is not the one the chain committed at that block, and the kernel would reject it.
@@ -1750,11 +1742,14 @@ async fn local_account_inputs(
 ) -> Result<Option<AccountInputs>, ClientError> {
     if let AccountStateAt::Block(block_num) = account_state_at
         && let Some(witness) = cached_witness_at(store, account_id, block_num).await?
-        && let Some((header, ..)) = store.get_account_header(account_id).await?
-        && header.to_commitment() == witness.state_commitment()
         && let Some(record) = store.get_minimal_partial_account(account_id).await?
     {
-        return Ok(Some(AccountInputs::new(record.try_into()?, witness)));
+        // Derived from the same read that gets handed to the kernel, so what is checked and what
+        // is used cannot drift apart.
+        let account: PartialAccount = record.try_into()?;
+        if account.to_commitment() == witness.state_commitment() {
+            return Ok(Some(AccountInputs::new(account, witness)));
+        }
     }
 
     Ok(None)
@@ -1775,6 +1770,16 @@ async fn cached_witness_at(
         .and_then(|(witness, cached_at)| (cached_at == block_num).then_some(witness)))
 }
 
+/// Builds a foreign account's [`AccountInputs`], from the store when
+/// [`local_account_inputs`] can serve them and from the network otherwise, caching the returned
+/// code in the store for future requests.
+///
+/// Storage maps the node caps as oversized (returned truncated) are carried root-only in the
+/// inputs; reads from them resolve lazily as per-key witnesses during execution.
+///
+/// # Errors
+/// Fails if the account is private and has to be fetched: the RPC does not return account details
+/// for them, causing [`TransactionRequestError::ForeignAccountDataMissing`].
 pub(crate) async fn fetch_public_account_inputs(
     store: &Arc<dyn Store>,
     rpc_api: &Arc<dyn NodeRpcClient>,

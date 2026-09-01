@@ -881,6 +881,34 @@ async fn tracked_public_account_inputs_are_built_from_the_store() {
     );
 }
 
+/// The witness is cached at the reference block, so only the commitment mismatch can reject it.
+#[tokio::test]
+async fn public_account_state_ahead_of_its_witness_reaches_the_node() {
+    let (mut client, rpc_api, keystore) = Box::pin(create_test_client()).await;
+    let setup =
+        Box::pin(deploy_fpi_account(&mut client, &rpc_api, &keystore, AccountType::Public)).await;
+    let foreign_account_id = setup.foreign_account.id();
+
+    client.track_account_witness(foreign_account_id).await.unwrap();
+    client.sync_state().await.unwrap();
+
+    // Advance the stored account without syncing, so the sync height and the cached witness's
+    // block stay put while the local state moves past the commitment the witness proves.
+    let bump = TransactionRequestBuilder::new().build().unwrap();
+    Box::pin(client.submit_new_transaction(foreign_account_id, bump)).await.unwrap();
+
+    let calls_before = rpc_api.get_account_call_count();
+    Box::pin(client.execute_transaction(setup.local_wallet_id, fpi_request(&setup)))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        rpc_api.get_account_call_count(),
+        calls_before + 1,
+        "a witness that does not prove the stored state must be ignored"
+    );
+}
+
 /// Without a cached witness the inputs cannot be built locally, so the account is fetched with its
 /// details. Isolates the witness as the one piece the store cannot supply on its own.
 #[tokio::test]

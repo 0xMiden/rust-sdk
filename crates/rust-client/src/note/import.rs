@@ -342,7 +342,7 @@ where
     /// the new information changed them.
     async fn import_note_records_by_details(
         &mut self,
-        requested_notes: Vec<(Option<InputNoteRecord>, NoteDetails, BlockNumber, NoteTag)>,
+        requested_notes: Vec<NoteImportRequest>,
     ) -> Result<Vec<InputNoteRecord>, ClientError> {
         let note_updates = self.fetch_transport_notes_onchain_state(requested_notes).await?;
 
@@ -370,7 +370,7 @@ where
     /// and are returned only if the new information changed them.
     pub(crate) async fn fetch_transport_notes_onchain_state(
         &self,
-        requested_notes: Vec<(Option<InputNoteRecord>, NoteDetails, BlockNumber, NoteTag)>,
+        requested_notes: Vec<NoteImportRequest>,
     ) -> Result<TransportNoteUpdates, ClientError> {
         let mut lowest_request_block: BlockNumber = u32::MAX.into();
         let mut sync_tags = BTreeSet::new();
@@ -596,6 +596,10 @@ where
 
 // EXPECTED NOTE IMPORT
 // ================================================================================================
+
+/// A note to import: the stored record it updates when there is one, its details, the block from
+/// which to look for its commitment, and the tag to track it under.
+pub(crate) type NoteImportRequest = (Option<InputNoteRecord>, NoteDetails, BlockNumber, NoteTag);
 
 /// Notes fetched from the Note Transport Layer, along with note tags to remove, and the blocks
 /// that must be stored before their corresponding committed notes.

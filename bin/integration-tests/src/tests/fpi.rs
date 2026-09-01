@@ -854,7 +854,10 @@ pub(crate) async fn deploy_foreign_account(
 
     // NOTE: We get the new account state here since the first transaction updates the nonce from
     // to 1
-    let foreign_account: Account = client.try_get_account(foreign_account_id).await?;
+    let foreign_account: Account = client
+        .get_account(foreign_account_id)
+        .await?
+        .with_context(|| format!("account {foreign_account_id} should be tracked"))?;
 
     Ok((foreign_account, proc_root))
 }

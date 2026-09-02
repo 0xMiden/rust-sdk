@@ -187,7 +187,7 @@ async fn encode_address<AUTH>(
     let routing_params = match tag_len {
         Some(tag_len) => RoutingParameters::new(interface)
             .with_note_tag_len(tag_len)
-            .map_err(|e| CliError::Address(e, String::new()))?,
+            .map_err(|e| CliError::Address(e, format!("tag_len {tag_len}")))?,
         None => RoutingParameters::new(interface),
     };
     let address = Address::new(account_id).with_routing_parameters(routing_params);

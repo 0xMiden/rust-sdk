@@ -49,14 +49,16 @@ use crate::ClientRng;
 /// scripts, and setting other transaction parameters.
 #[derive(Clone, Debug)]
 pub struct TransactionRequestBuilder {
-    /// Notes to be consumed by the transaction.
-    /// Notes whose inclusion proof is present in the store are will be consumed as authenticated;
-    /// the ones that do not have proofs will be consumed as unauthenticated.
+    /// Notes to be consumed by the transaction, in consumption order.
+    ///
+    /// A note with an entry in `explicit_input_notes` is consumed in the mode that entry pins.
+    /// The executing client infers the mode of every other note from its store.
     input_notes: Vec<Note>,
     /// Optional arguments of the Notes to be consumed by the transaction. This
     /// includes both authenticated and unauthenticated notes.
     input_notes_args: Vec<(NoteId, Option<NoteArgs>)>,
-    /// Explicit authentication mode for selected input notes.
+    /// Pinned consumption mode of selected input notes. `Some(proof)` pins the note as
+    /// authenticated with that proof. `None` pins it as unauthenticated.
     explicit_input_notes: BTreeMap<NoteId, Option<NoteInclusionProof>>,
     /// Notes to be created by the transaction. The full note data is needed internally
     /// to build the transaction script template.
@@ -129,6 +131,12 @@ impl TransactionRequestBuilder {
     }
 
     /// Adds the specified notes as input notes to the transaction request.
+    ///
+    /// The executing client decides how it consumes each of these notes. A note whose inclusion
+    /// proof is in the client's store is consumed as authenticated. Any other note is consumed as
+    /// unauthenticated. Two clients with different stores can therefore consume the same note in
+    /// different modes. Use [`Self::explicit_input_notes`] when the mode must not depend on the
+    /// executing client.
     #[must_use]
     pub fn input_notes(
         mut self,
@@ -141,9 +149,22 @@ impl TransactionRequestBuilder {
         self
     }
 
-    /// Adds input notes with an explicit authentication mode.
+    /// Adds the specified [`InputNote`]s as input notes to the transaction request. Each note is
+    /// consumed in the mode it carries.
     ///
-    /// The executing client will not infer their mode from its store.
+    /// An [`InputNote::Authenticated`] note is consumed as authenticated, with its proof. An
+    /// [`InputNote::Unauthenticated`] note is consumed as unauthenticated, even when the executing
+    /// client's store holds an inclusion proof for it. The executing client does not consult its
+    /// store to classify these notes. Every client that executes the request therefore commits to
+    /// the same input notes. Use this method for a request that is shared across clients to
+    /// collect signatures over a transaction summary. The input notes commitment covers the mode
+    /// of each note, so two clients that classify a note differently produce different summaries.
+    ///
+    /// The executing client must be able to serve the block header of the creation block of each
+    /// authenticated note. The header is available when the client has synced or imported the
+    /// note. It is also available when the request executes against a
+    /// [`ChainAnchor`](crate::transaction::ChainAnchor) that tracks the block. See
+    /// [`Client::chain_anchor_for_request`](crate::Client::chain_anchor_for_request).
     #[must_use]
     pub fn explicit_input_notes(
         mut self,

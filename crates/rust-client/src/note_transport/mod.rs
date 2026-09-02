@@ -25,30 +25,28 @@ use miden_tx::utils::serde::{
 };
 
 pub use self::errors::NoteTransportError;
-use crate::store::SettingDomain;
+use crate::store::SettingScope;
 use crate::sync::NoteTagSource;
 use crate::{Client, ClientError};
 
 pub const NOTE_TRANSPORT_TESTNET_ENDPOINT: &str = "https://transport.miden.io";
 pub const NOTE_TRANSPORT_DEVNET_ENDPOINT: &str = "https://transport.devnet.miden.io";
-
-/// Settings domain holding the note-transport layer's persisted state.
-pub(crate) const NOTE_TRANSPORT_SETTING_DOMAIN: &str = "note_transport";
-
-pub(crate) const NOTE_TRANSPORT_CURSOR_SETTING: &str = "cursor";
+pub const NOTE_TRANSPORT_CURSOR_STORE_SETTING: &str = "note_transport_cursor";
 
 /// Settings key for the note-transport backfill bookkeeping: a serialized `Vec<NoteTag>` of the
 /// `User`- and `Account`-source tags whose full history has already been fetched up to the global
 /// cursor. [`Client::sync_note_transport`] diffs the currently tracked tags against this set to
-/// find tags added after the cursor advanced, and backfills only those.
-const NOTE_TRANSPORT_COVERED_TAGS_SETTING: &str = "covered_tags";
+/// find tags added after the cursor advanced, and backfills only those. Reusing the settings k/v
+/// avoids a Store-trait schema change while surviving process restarts.
+pub const NOTE_TRANSPORT_COVERED_TAGS_KEY: &str = "note_transport_covered_tags";
 
 /// Settings key for the durable relay outbox: a serialized `Vec<NoteInfo>` of
 /// private notes whose transport delivery has not yet succeeded.
 /// `send_private_note` appends (replacing any entry with the same note id)
 /// before relaying; [`Client::flush_relay_outbox`] drains entries that re-send
-/// successfully. It survives process restarts.
-const NOTE_TRANSPORT_OUTBOX_SETTING: &str = "outbox";
+/// successfully. Reusing the settings k/v avoids a Store-trait schema change
+/// while surviving process restarts.
+pub const NOTE_TRANSPORT_OUTBOX_KEY: &str = "note_transport_outbox";
 
 /// Client note transport methods.
 impl<AUTH> Client<AUTH> {
@@ -226,10 +224,9 @@ impl<AUTH> Client<AUTH> {
     /// an empty `Vec` is returned — leaving unreadable bytes in place would
     /// block every subsequent relay because each sync would re-read them.
     async fn load_relay_outbox(&self) -> Result<Vec<NoteInfo>, ClientError> {
-        let domain = SettingDomain::client(NOTE_TRANSPORT_SETTING_DOMAIN);
         let bytes = self
             .store
-            .get_setting(&domain, String::from(NOTE_TRANSPORT_OUTBOX_SETTING))
+            .get_setting(SettingScope::Client, String::from(NOTE_TRANSPORT_OUTBOX_KEY))
             .await
             .map_err(ClientError::StoreError)?;
         let Some(bytes) = bytes else {
@@ -240,7 +237,7 @@ impl<AUTH> Client<AUTH> {
             Err(err) => {
                 tracing::warn!(?err, "dropping unreadable relay outbox; resetting to empty");
                 self.store
-                    .remove_setting(&domain, String::from(NOTE_TRANSPORT_OUTBOX_SETTING))
+                    .remove_setting(SettingScope::Client, String::from(NOTE_TRANSPORT_OUTBOX_KEY))
                     .await
                     .map_err(ClientError::StoreError)?;
                 Ok(Vec::new())
@@ -251,15 +248,17 @@ impl<AUTH> Client<AUTH> {
     /// Persist the relay outbox, removing the key entirely when empty so the
     /// settings table doesn't accumulate empty-vec blobs.
     async fn save_relay_outbox(&self, entries: Vec<NoteInfo>) -> Result<(), ClientError> {
-        let domain = SettingDomain::client(NOTE_TRANSPORT_SETTING_DOMAIN);
-        let key = String::from(NOTE_TRANSPORT_OUTBOX_SETTING);
+        let key = String::from(NOTE_TRANSPORT_OUTBOX_KEY);
         if entries.is_empty() {
-            self.store.remove_setting(&domain, key).await.map_err(ClientError::StoreError)?;
+            self.store
+                .remove_setting(SettingScope::Client, key)
+                .await
+                .map_err(ClientError::StoreError)?;
             return Ok(());
         }
         let bytes = entries.to_bytes();
         self.store
-            .set_setting(&domain, key, bytes)
+            .set_setting(SettingScope::Client, key, bytes)
             .await
             .map_err(ClientError::StoreError)
     }
@@ -292,10 +291,9 @@ impl<AUTH> Client<AUTH> {
     /// tracked tag as new only triggers a one-off backfill, which dedupes, whereas leaving
     /// unreadable bytes in place would fail every subsequent sync.
     async fn load_covered_tags(&self) -> Result<BTreeSet<NoteTag>, ClientError> {
-        let domain = SettingDomain::client(NOTE_TRANSPORT_SETTING_DOMAIN);
         let bytes = self
             .store
-            .get_setting(&domain, String::from(NOTE_TRANSPORT_COVERED_TAGS_SETTING))
+            .get_setting(SettingScope::Client, String::from(NOTE_TRANSPORT_COVERED_TAGS_KEY))
             .await
             .map_err(ClientError::StoreError)?;
         let Some(bytes) = bytes else {
@@ -306,7 +304,10 @@ impl<AUTH> Client<AUTH> {
             Err(err) => {
                 tracing::warn!(?err, "dropping unreadable covered-tags set; resetting to empty");
                 self.store
-                    .remove_setting(&domain, String::from(NOTE_TRANSPORT_COVERED_TAGS_SETTING))
+                    .remove_setting(
+                        SettingScope::Client,
+                        String::from(NOTE_TRANSPORT_COVERED_TAGS_KEY),
+                    )
                     .await
                     .map_err(ClientError::StoreError)?;
                 Ok(BTreeSet::new())
@@ -317,14 +318,16 @@ impl<AUTH> Client<AUTH> {
     /// Persist the covered-tags set, removing the key entirely when empty so the settings table
     /// doesn't accumulate empty-vec blobs.
     async fn save_covered_tags(&self, tags: &BTreeSet<NoteTag>) -> Result<(), ClientError> {
-        let domain = SettingDomain::client(NOTE_TRANSPORT_SETTING_DOMAIN);
-        let key = String::from(NOTE_TRANSPORT_COVERED_TAGS_SETTING);
+        let key = String::from(NOTE_TRANSPORT_COVERED_TAGS_KEY);
         if tags.is_empty() {
-            self.store.remove_setting(&domain, key).await.map_err(ClientError::StoreError)?;
+            self.store
+                .remove_setting(SettingScope::Client, key)
+                .await
+                .map_err(ClientError::StoreError)?;
             return Ok(());
         }
         self.store
-            .set_setting(&domain, key, tags.to_bytes())
+            .set_setting(SettingScope::Client, key, tags.to_bytes())
             .await
             .map_err(ClientError::StoreError)
     }
@@ -373,11 +376,11 @@ where
     /// The global transport cursor is shared across all tracked tags and only moves forward, so a
     /// tag that starts being tracked late never sees its notes that already sit below the cursor.
     /// This diffs the tracked `User`/`Account` tags (see [`Self::backfill_candidate_tags`]) against
-    /// the persisted covered set (see [`NOTE_TRANSPORT_COVERED_TAGS_SETTING`]) and drains each
-    /// newly tracked tag from the start, fetching only that tag's own history rather than
-    /// re-scanning everything. Tags no longer tracked are dropped from the covered set so a
-    /// later re-add backfills again instead of resuming from a stale mark. Imports dedupe, so
-    /// the overlap with the steady-state stream is harmless.
+    /// the persisted covered set (see [`NOTE_TRANSPORT_COVERED_TAGS_KEY`]) and drains each newly
+    /// tracked tag from the start, fetching only that tag's own history rather than re-scanning
+    /// everything. Tags no longer tracked are dropped from the covered set so a later re-add
+    /// backfills again instead of resuming from a stale mark. Imports dedupe, so the overlap with
+    /// the steady-state stream is harmless.
     ///
     /// At most [`Self::MAX_BACKFILL_TAGS_PER_SYNC`] tags are backfilled per call; any remainder
     /// stays uncovered and is picked up on the next sync. Returns the ids of notes imported here.

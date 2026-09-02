@@ -272,8 +272,8 @@ fn user_data_does_not_change_schema_hash() {
     assert_eq!(hash_before.to_string(), client.expected_hash(client.latest_version()));
 
     conn.execute(
-        "INSERT INTO settings (scope, domain, name, value) VALUES (?1, ?2, ?3, ?4)",
-        params![SettingScope::User.as_u8(), "test-domain", "test-setting", b"value"],
+        "INSERT INTO settings (scope, name, value) VALUES (?1, ?2, ?3)",
+        params![SettingScope::User.as_u8(), "test-setting", b"value"],
     )
     .expect("user data should insert");
 

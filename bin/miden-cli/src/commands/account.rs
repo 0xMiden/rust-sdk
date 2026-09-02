@@ -24,7 +24,7 @@ use miden_client::{Client, PrettyPrint, Word, ZERO};
 use crate::commands::new_account::load_packages;
 use crate::config::{CliConfig, RpcConfig};
 use crate::errors::CliError;
-use crate::utils::{CLI_SETTING_DOMAIN, parse_account_id, split_procedure_target};
+use crate::utils::{parse_account_id, split_procedure_target};
 use crate::{client_binary_name, create_dynamic_table};
 
 pub const DEFAULT_ACCOUNT_ID_KEY: &str = "default_account_id";
@@ -116,7 +116,7 @@ impl AccountCmd {
                 match id {
                     None => {
                         let default_account: AccountId = client
-                            .get_setting(&CLI_SETTING_DOMAIN, DEFAULT_ACCOUNT_ID_KEY.to_string())
+                            .get_setting(DEFAULT_ACCOUNT_ID_KEY.to_string())
                             .await?
                             .ok_or(CliError::Config(
                                 "Default account".to_string().into(),
@@ -125,9 +125,8 @@ impl AccountCmd {
                         println!("Current default account ID: {default_account}");
                     },
                     Some(id) if id == "none" => {
-                        let removed = client
-                            .remove_setting(&CLI_SETTING_DOMAIN, DEFAULT_ACCOUNT_ID_KEY.to_string())
-                            .await?;
+                        let removed =
+                            client.remove_setting(DEFAULT_ACCOUNT_ID_KEY.to_string()).await?;
 
                         if removed {
                             println!("Default account removed");
@@ -142,11 +141,7 @@ impl AccountCmd {
                         let (account, _) = client.account_reader(account_id).header().await?;
 
                         client
-                            .set_setting(
-                                &CLI_SETTING_DOMAIN,
-                                DEFAULT_ACCOUNT_ID_KEY.to_string(),
-                                account.id(),
-                            )
+                            .set_setting(DEFAULT_ACCOUNT_ID_KEY.to_string(), account.id())
                             .await?;
 
                         println!("Default account set to {}", account.id());
@@ -648,16 +643,14 @@ pub(crate) async fn set_default_account_if_unset<AUTH>(
     account_id: AccountId,
 ) -> Result<(), CliError> {
     if client
-        .get_setting::<AccountId>(&CLI_SETTING_DOMAIN, DEFAULT_ACCOUNT_ID_KEY.to_string())
+        .get_setting::<AccountId>(DEFAULT_ACCOUNT_ID_KEY.to_string())
         .await?
         .is_some()
     {
         return Ok(());
     }
 
-    client
-        .set_setting(&CLI_SETTING_DOMAIN, DEFAULT_ACCOUNT_ID_KEY.to_string(), account_id)
-        .await?;
+    client.set_setting(DEFAULT_ACCOUNT_ID_KEY.to_string(), account_id).await?;
 
     println!("Setting account {account_id} as the default account ID.");
     println!(

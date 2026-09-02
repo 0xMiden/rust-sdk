@@ -1,19 +1,15 @@
 -- Table for storing different settings in run-time, which need to persist over runs.
 --
--- `scope` separates the client's own state from the user's, and `domain` groups keys within a
--- scope, so the same name can be used in more than one domain. Rows are stored sorted by the
--- primary key, so both listings we need read a contiguous run of it: a domain's keys share the
--- `(scope, domain)` prefix, and a scope's domains share the `scope` prefix.
+-- `scope` separates the client's own state from the user's, so the same name in each addresses a
+-- different row. It leads the primary key, so listing one scope's keys reads a contiguous run.
 CREATE TABLE settings (
-    scope  INTEGER NOT NULL,  -- owner of the row (0 = Client, 1 = User)
-    domain TEXT NOT NULL,
-    name   TEXT NOT NULL,
-    value  BLOB NOT NULL,
+    scope INTEGER NOT NULL,  -- owner of the row (0 = Client, 1 = User)
+    name  TEXT NOT NULL,
+    value BLOB NOT NULL,
 
-    PRIMARY KEY (scope, domain, name),
-    CONSTRAINT setting_scope_is_valid      CHECK (scope IN (0, 1)),
-    CONSTRAINT setting_domain_is_not_empty CHECK (length(domain) > 0),
-    CONSTRAINT setting_name_is_not_empty   CHECK (length(name) > 0)
+    PRIMARY KEY (scope, name),
+    CONSTRAINT setting_scope_is_valid    CHECK (scope IN (0, 1)),
+    CONSTRAINT setting_name_is_not_empty CHECK (length(name) > 0)
 ) WITHOUT ROWID, STRICT;
 
 -- Create account_code table

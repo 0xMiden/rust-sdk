@@ -26,7 +26,6 @@ use miden_client::keystore::Keystore;
 use miden_client::note::NoteId;
 use miden_client::note_transport::NOTE_TRANSPORT_TESTNET_ENDPOINT;
 use miden_client::rpc::Endpoint;
-use miden_client::store::SettingDomain;
 use miden_client::testing::account_id::ACCOUNT_ID_PRIVATE_SENDER;
 use miden_client::testing::common::{
     ACCOUNT_ID_REGULAR,
@@ -502,8 +501,8 @@ async fn public_faucet_metadata_is_fetched_and_persisted() -> Result<()> {
     // Assert the resolver wrote the metadata into the settings store.
     let faucet_id = AccountId::from_hex(&fungible_faucet_account_id).unwrap();
     let (client, _) = create_rust_client_with_store_path(&store_path, endpoint).await?;
-    let domain = SettingDomain::new("faucet_metadata")?;
-    let stored: Option<FaucetMetadata> = client.get_setting(&domain, faucet_id.to_hex()).await?;
+    let setting_key = format!("faucet_metadata:{}", faucet_id.to_hex());
+    let stored: Option<FaucetMetadata> = client.get_setting(setting_key).await?;
     assert!(
         stored.is_some(),
         "expected settings store to contain metadata for {fungible_faucet_account_id} after notes -s",

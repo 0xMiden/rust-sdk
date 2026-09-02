@@ -1,9 +1,9 @@
 //! Client-side persistence for PSWAP lineages over the existing `settings`
-//! KV store, in the `pswap` domain, using two key families:
+//! KV store, using two key families:
 //!
 //! ```text
-//! order/{order_id_hex}    →  serialized PswapLineageRecord  (PRIMARY; stable, never re-keyed)
-//! tip/{tip_note_id_hex}   →  order_id (Felt, 8 bytes)       (SECONDARY INDEX; re-keyed each round)
+//! pswap/order/{order_id_hex}    →  serialized PswapLineageRecord  (PRIMARY; stable, never re-keyed)
+//! pswap/tip/{tip_note_id_hex}   →  order_id (Felt, 8 bytes)       (SECONDARY INDEX; re-keyed each round)
 //! ```
 //!
 //! The record lives under the stable `order_id`. The tip changes each round,
@@ -27,28 +27,15 @@ use super::lineage::{
     PswapLineageState,
 };
 use crate::store::input_note_states::{CommittedNoteState, UnverifiedNoteState};
-use crate::store::{
-    InputNoteRecord,
-    NoteFilter,
-    SettingDomain,
-    SettingMutation,
-    Store,
-    StoreError,
-};
+use crate::store::{InputNoteRecord, NoteFilter, SettingMutation, SettingScope, Store, StoreError};
 use crate::sync::{NoteTagRecord, NoteTagSource};
 use crate::utils::{Deserializable, Serializable, bytes_to_hex_string};
 
 // KEY SCHEME
 // ================================================================================================
 
-const PSWAP_SETTING_DOMAIN: &str = "pswap";
-
-const ORDER_PREFIX: &str = "order/";
-const TIP_PREFIX: &str = "tip/";
-
-fn domain() -> SettingDomain {
-    SettingDomain::client(PSWAP_SETTING_DOMAIN)
-}
+const ORDER_PREFIX: &str = "pswap/order/";
+const TIP_PREFIX: &str = "pswap/tip/";
 
 /// Stable primary key for an order's lineage record. Hex of the `order_id`
 /// canonical bytes — only uniqueness + stability matter; we never parse it
@@ -78,7 +65,7 @@ pub(crate) async fn put_lineage(
 ) -> Result<(), StoreError> {
     store
         .apply_settings_mutations(
-            &domain(),
+            SettingScope::Client,
             vec![
                 SettingMutation::Set {
                     key: order_key(record.order_id()),
@@ -98,7 +85,7 @@ pub(crate) async fn get_lineage(
     store: &Arc<dyn Store>,
     order_id: Felt,
 ) -> Result<Option<PswapLineageRecord>, StoreError> {
-    let Some(bytes) = store.get_setting(&domain(), order_key(order_id)).await? else {
+    let Some(bytes) = store.get_setting(SettingScope::Client, order_key(order_id)).await? else {
         return Ok(None);
     };
     let record = PswapLineageRecord::read_from_bytes(&bytes)
@@ -112,7 +99,7 @@ pub(crate) async fn resolve_order_by_tip(
     store: &Arc<dyn Store>,
     tip: NoteId,
 ) -> Result<Option<Felt>, StoreError> {
-    let Some(bytes) = store.get_setting(&domain(), tip_key(tip)).await? else {
+    let Some(bytes) = store.get_setting(SettingScope::Client, tip_key(tip)).await? else {
         return Ok(None);
     };
     let order_id = Felt::read_from_bytes(&bytes).map_err(StoreError::DataDeserializationError)?;
@@ -147,20 +134,19 @@ pub(crate) async fn get_original_pswap(
         .map_err(|_| PswapLineageError::OriginalNoteUnavailable(original_note_id))
 }
 
-/// Scans the domain's `order/` family and applies the (client-side) filter.
-/// The `tip/` family is excluded by the prefix check. Rare path (a client's
-/// own open orders).
+/// Prefix-scans the `pswap/order/` family and applies the (client-side)
+/// filter. `pswap/tip/` and non-PSWAP settings keys are excluded by the
+/// full-prefix check. Rare path (a client's own open orders).
 pub(crate) async fn list_lineages(
     store: &Arc<dyn Store>,
     filter: PswapLineageFilter,
 ) -> Result<Vec<PswapLineageRecord>, StoreError> {
-    let domain = domain();
     let mut out = Vec::new();
-    for key in store.list_setting_keys(&domain).await? {
+    for key in store.list_setting_keys(SettingScope::Client).await? {
         if !key.starts_with(ORDER_PREFIX) {
             continue;
         }
-        let Some(bytes) = store.get_setting(&domain, key).await? else {
+        let Some(bytes) = store.get_setting(SettingScope::Client, key).await? else {
             continue;
         };
         let record = PswapLineageRecord::read_from_bytes(&bytes)
@@ -244,7 +230,7 @@ pub(crate) async fn apply_round(
             value: update.order_id.to_bytes(),
         });
     }
-    store.apply_settings_mutations(&domain(), mutations).await?;
+    store.apply_settings_mutations(SettingScope::Client, mutations).await?;
 
     // 4. Terminal states no longer need the asset-pair subscription. The tag is re-derived from the
     //    depth-0 note (the record stores only amounts, not the faucets the tag needs) — one fetch,
@@ -342,7 +328,7 @@ mod tests {
         assert!(tip_key(note_id(1)).starts_with(TIP_PREFIX));
     }
 
-    /// `list_lineages` skips `tip/` rows by prefix — but only while
+    /// `list_lineages` skips `pswap/tip/` rows by prefix — but only while
     /// neither family is a prefix of the other. Pin it so a future prefix tweak
     /// that would leak tip rows into the order scan fails here, not silently.
     #[test]

@@ -41,6 +41,7 @@
 * [BREAKING][rust] `Client::remove_setting` and `Store::remove_setting` return `bool` instead of `()`, reporting whether the key had a value set.
 * [BREAKING][rust] `Client::remove_address` and `Store::remove_address` return `bool` instead of `()`, reporting whether the address was tracked. When it wasn't, `Client::remove_address` now leaves the derived note tag in place instead of running its cleanup.
 * [BREAKING][type][rust] Added the `TransactionRequestError::ForeignProcedureInputsTooLong` variant ([#2187](https://github.com/0xMiden/rust-sdk/pull/2187)).
+* [BREAKING][behavior][store] The `output_notes` table gained a nullable `script_root` column referencing `notes_scripts`, and note scripts are fully normalized: an output note's state blob no longer embeds the script, which is stored once in `notes_scripts` and joined back in on read. All tables are now `STRICT`, and the `tags` table stores its rows keyed by a `(tag, source)` primary key (`WITHOUT ROWID`) instead of carrying a separate unique index. This changes the schema fingerprint, so opening a database created before this change fails with `SchemaHashMismatch` and existing stores must be recreated.
 
 * [BREAKING][rust] Updated the protocol dependencies to `0.16.0-rc.9`, which raises the MSRV to 1.98. `guarded_multisig.masm` and `multisig_smart.masm` both call `fee::load_conversion_info` as of that release, so `AuthMultisigSmart` now reads the auth argument as fee conversion info rather than as a summary salt alone and, like the other multisig components, must declare its own salt on a fee-charging chain ([#2465](https://github.com/0xMiden/rust-sdk/pull/2465)).
 
@@ -55,6 +56,7 @@
 
 ### Enhancements
 
+* [FEATURE][rust] `ClientBuilder` accepts any `TransactionAuthenticator + 'static` as its authenticator. The `BuilderAuthenticator` bound no longer requires `Keystore` or `From<FilesystemKeyStore>`, so a signer that holds no secret key, such as a remote signing service, can be plugged into the builder without implementing key management.
 * [FEATURE][rust] Added `AuthGuardedMultisig`, `AuthGuardedMultisigConfig`, `GuardianConfig` and `ApproverSet` to `miden_client::auth`, which previously exposed only the single- and multisig components. Building a guarded multisig account no longer means reaching past the client into `miden_standards` ([#2465](https://github.com/0xMiden/rust-sdk/pull/2465)).
 * [FEATURE][rust] `Client::sync_state` now issues its independent gRPC calls concurrently instead of one after another, reducing the total time a sync takes. `NodeRpcClient::sync_notes_with_content` and `NodeRpcClient::sync_transactions` are now called concurrently rather than in sequence, and the per-account `NodeRpcClient::get_account` requests are issued in parallel instead of one at a time ([#2420](https://github.com/0xMiden/rust-sdk/pull/2420)).
 * [store] Added `SqliteStore::database_filepath`, which returns the backing database path losslessly as a `&Path` ([#2363](https://github.com/0xMiden/rust-sdk/pull/2363)).

@@ -7,6 +7,7 @@ use miden_protocol::assembly::{DefaultSourceManager, SourceManagerSync};
 use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::rand::RandomCoin;
 use miden_protocol::{Felt, MAX_TX_EXECUTION_CYCLES, MIN_TX_EXECUTION_CYCLES};
+use miden_tx::auth::TransactionAuthenticator;
 use miden_tx::{ExecutionOptions, LocalTransactionProver};
 use rand::RngExt;
 
@@ -14,7 +15,6 @@ use rand::RngExt;
 use crate::alloc::string::ToString;
 #[cfg(feature = "std")]
 use crate::keystore::FilesystemKeyStore;
-use crate::keystore::Keystore;
 use crate::note_transport::NoteTransportClient;
 use crate::pswap::PswapTransactionObserver;
 use crate::rpc::{Endpoint, NodeRpcClient};
@@ -89,9 +89,8 @@ pub trait StoreFactory {
 ///   generating keys, serial numbers, and other cryptographic operations. If not provided, a random
 ///   seed-based RNG is created automatically. Configure via [`rng()`](Self::rng).
 ///
-/// - **Authenticator** ([`TransactionAuthenticator`](miden_tx::auth::TransactionAuthenticator)):
-///   Handles transaction signing when signatures are requested from within the VM. Configure via
-///   [`authenticator()`](Self::authenticator).
+/// - **Authenticator** ([`TransactionAuthenticator`]): Handles transaction signing when signatures
+///   are requested from within the VM. Configure via [`authenticator()`](Self::authenticator).
 ///
 /// - **Transaction prover** ([`TransactionProver`]): Generates proofs for transactions. Defaults to
 ///   a local prover if not specified. Configure via [`prover()`](Self::prover).
@@ -546,20 +545,20 @@ where
     }
 }
 
-// FILESYSTEM KEYSTORE CONVENIENCE METHOD
+// BUILDER AUTHENTICATOR
 // ================================================================================================
 
-/// Marker trait to capture the bounds the builder requires for the authenticator type
-/// parameter.
-#[cfg(feature = "std")]
-pub trait BuilderAuthenticator: Keystore + From<FilesystemKeyStore> + 'static {}
-#[cfg(feature = "std")]
-impl<T> BuilderAuthenticator for T where T: Keystore + From<FilesystemKeyStore> + 'static {}
+/// Marker trait for the authenticator type parameter of [`ClientBuilder`].
+///
+/// The builder stores the authenticator and passes it to the client. The client uses it only to
+/// sign transactions, so any [`TransactionAuthenticator`] with a `'static` lifetime qualifies.
+/// Key management is not required. A signer that holds no secret key, such as a remote signing
+/// service, can be used without implementing [`Keystore`](crate::keystore::Keystore).
+pub trait BuilderAuthenticator: TransactionAuthenticator + 'static {}
+impl<T> BuilderAuthenticator for T where T: TransactionAuthenticator + 'static {}
 
-#[cfg(not(feature = "std"))]
-pub trait BuilderAuthenticator: Keystore + 'static {}
-#[cfg(not(feature = "std"))]
-impl<T> BuilderAuthenticator for T where T: Keystore + 'static {}
+// FILESYSTEM KEYSTORE CONVENIENCE METHOD
+// ================================================================================================
 
 /// Convenience method for [`ClientBuilder`] when using [`FilesystemKeyStore`] as the authenticator.
 #[cfg(feature = "std")]

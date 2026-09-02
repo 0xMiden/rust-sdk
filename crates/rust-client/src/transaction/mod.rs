@@ -1576,10 +1576,13 @@ impl FeeAuth {
             return Self::FixedSalt;
         }
 
-        // `AuthMultisigSmart` is absent deliberately: it reads the auth argument as a summary salt
-        // and nothing else, so conversion info committed there is never read.
+        // Every multisig flavour whose MASM calls `fee::load_conversion_info` belongs here.
+        // `multisig_smart.masm` and `guarded_multisig.masm` both `dupw` the auth argument, load the
+        // conversion info out of it and keep the copy as the summary salt, so the salt is the
+        // caller's replay guard in both.
         let caller_chosen_salt = components.iter().find_map(|component| match component {
             AccountComponentInterface::AuthMultisig
+            | AccountComponentInterface::AuthMultisigSmart
             | AccountComponentInterface::AuthGuardedMultisig => {
                 Some(Self::CallerChosenSalt(component.name()))
             },
@@ -1592,8 +1595,7 @@ impl FeeAuth {
                 .find(|component| {
                     matches!(
                         component,
-                        AccountComponentInterface::AuthMultisigSmart
-                            | AccountComponentInterface::AuthNoAuth
+                        AccountComponentInterface::AuthNoAuth
                             | AccountComponentInterface::AuthNetworkAccount
                     )
                 })
@@ -1851,6 +1853,8 @@ mod tests {
         AuthGuardedMultisigConfig,
         AuthMultisig,
         AuthMultisigConfig,
+        AuthMultisigSmart,
+        AuthMultisigSmartConfig,
         AuthSingleSig,
         FeeConversionInfo,
         GuardianConfig,
@@ -2219,6 +2223,74 @@ mod tests {
             try_injected_auth_arg(
                 TransactionRequestBuilder::new().build().unwrap(),
                 &guarded_multisig_account(),
+                0
+            )
+            .expect("a chain charging nothing needs no conversion info"),
+            None,
+        );
+    }
+
+    // SMART MULTISIG
+    // --------------------------------------------------------------------------------------------
+
+    fn smart_multisig_account() -> Account {
+        let approvers = ApproverSet::new(
+            vec![Approver::new(
+                AuthSecretKey::new_falcon512_poseidon2().public_key().to_commitment(),
+                AuthSchemeId::Falcon512Poseidon2,
+            )],
+            1,
+        )
+        .unwrap();
+
+        account_with_auth(AuthMultisigSmart::new(AuthMultisigSmartConfig::new(approvers)).unwrap())
+    }
+
+    /// As of `0.16.0-rc.9` `multisig_smart.masm` loads the conversion info out of the auth args and
+    /// pays the fee with it, exactly as `guarded_multisig.masm` does, so a declared asset and rate
+    /// are what the account pays with rather than something discarded and reinterpreted as the
+    /// summary salt.
+    #[test]
+    fn fee_conversion_info_is_accepted_by_a_smart_multisig_account() {
+        validate_fee_conversion_info_support(
+            &fee_conversion_request(),
+            &smart_multisig_account().code_interface(),
+        )
+        .expect("a smart multisig reads the auth args as conversion info");
+    }
+
+    /// `multisig_smart.masm` reuses the auth args as the summary salt after loading the conversion
+    /// info out of them, so the same reasoning as for the other multisig flavours applies: the salt
+    /// is the caller's replay guard and the client cannot pick it.
+    #[test]
+    fn a_smart_multisig_account_must_declare_its_own_fee_conversion_info() {
+        let err = try_injected_auth_arg(
+            TransactionRequestBuilder::new().build().unwrap(),
+            &smart_multisig_account(),
+            500,
+        )
+        .expect_err("a smart multisig account cannot inherit the fixed native salt");
+        match err {
+            ClientError::TransactionRequestError(
+                TransactionRequestError::FeeConversionInfoRequired(auth_component),
+            ) => {
+                assert_eq!(auth_component, AccountComponentInterface::AuthMultisigSmart.name());
+            },
+            other => panic!("expected FeeConversionInfoRequired, got {other:?}"),
+        }
+
+        let salt = Word::from([13u32, 14, 15, 16]);
+        assert_eq!(
+            try_injected_auth_arg(fee_conversion_request(), &smart_multisig_account(), 500)
+                .expect("a declared salt is accepted"),
+            Some(native_commitment(salt)),
+            "a smart multisig account that declares a salt commits the native conversion info"
+        );
+
+        assert_eq!(
+            try_injected_auth_arg(
+                TransactionRequestBuilder::new().build().unwrap(),
+                &smart_multisig_account(),
                 0
             )
             .expect("a chain charging nothing needs no conversion info"),

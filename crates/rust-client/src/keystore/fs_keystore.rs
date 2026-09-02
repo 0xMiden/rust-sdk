@@ -1,6 +1,7 @@
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;
+use core::future::Future;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -217,17 +218,13 @@ impl FilesystemKeyStore {
         let index = self.index.read();
         index.write_to_file(&self.keys_directory)
     }
-}
 
-impl TransactionAuthenticator for FilesystemKeyStore {
-    /// Gets a signature over a message, given a public key.
-    ///
-    /// The public key should correspond to one of the keys tracked by the keystore.
+    /// Signs `signing_info` with the secret key matching `pub_key`.
     ///
     /// # Errors
     /// If the public key isn't found in the store, [`AuthenticationError::UnknownPublicKey`] is
     /// returned.
-    async fn get_signature(
+    fn sign_sync(
         &self,
         pub_key: PublicKeyCommitment,
         signing_info: &SigningInputs,
@@ -241,9 +238,27 @@ impl TransactionAuthenticator for FilesystemKeyStore {
             })?
             .ok_or(AuthenticationError::UnknownPublicKey(pub_key))?;
 
-        let signature = secret_key.sign(message);
+        Ok(secret_key.sign(message))
+    }
+}
 
-        Ok(signature)
+impl TransactionAuthenticator for FilesystemKeyStore {
+    /// Gets a signature over a message, given a public key.
+    ///
+    /// The public key should correspond to one of the keys tracked by the keystore.
+    ///
+    /// # Errors
+    /// If the public key isn't found in the store, [`AuthenticationError::UnknownPublicKey`] is
+    /// returned.
+    fn get_signature(
+        &self,
+        pub_key: PublicKeyCommitment,
+        signing_info: &SigningInputs,
+    ) -> impl Future<Output = Result<Signature, AuthenticationError>> {
+        // The key is read synchronously, so the future is ready immediately. Spelled as
+        // `-> impl Future` rather than `async fn` because `clippy::unused_async_trait_impl`
+        // rejects an `async fn` trait impl body that never awaits.
+        core::future::ready(self.sign_sync(pub_key, signing_info))
     }
 
     /// Retrieves a public key for a specific public key commitment.

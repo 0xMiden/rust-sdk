@@ -156,6 +156,10 @@ impl NewWalletCmd {
 /// ```bash
 /// miden-client new-account -p basic-fungible-faucet -i init_data.toml
 /// ```
+///
+/// On a chain that charges a transaction fee, add `-p basic-wallet` as well: the faucet pays its
+/// own fees out of its vault, and without a component that can consume a note there is no way to
+/// put the fee asset there.
 #[derive(Debug, Parser, Clone)]
 pub struct NewAccountCmd {
     /// Account type (`private` or `public`).

@@ -354,6 +354,11 @@ where
     /// and a consistent [`PartialBlockchain`], typically captured by the transaction's original
     /// proposer via [`Self::chain_anchor_for_request`] and shipped alongside the signed data.
     ///
+    /// The anchor pins the reference block only. The mode each input note is consumed in also
+    /// enters the summary, so a request shared across clients should pin it through
+    /// [`TransactionRequestBuilder::explicit_input_notes`]. Otherwise each client classifies the
+    /// notes from its own store, and two clients can commit to different input notes.
+    ///
     /// Callers holding an anchor from an untrusted source should first compare
     /// [`ChainAnchor::block_commitment`] against an independently trusted value (e.g. the block
     /// commitment bound into the signed transaction summary).
@@ -446,7 +451,9 @@ where
 
     /// Captures a [`ChainAnchor`] at the client's current sync height, tracking the creation
     /// blocks of the request's authenticated input notes so that the request can later execute
-    /// against the anchor.
+    /// against the anchor. A note pinned through
+    /// [`TransactionRequestBuilder::explicit_input_notes`] contributes the block of the proof
+    /// it carries. The store's inclusion proof decides for every other note.
     ///
     /// This is the capture entry point for flows that never see a successful execution result at
     /// capture time — e.g. multisig proposal flows, where execution intentionally fails with

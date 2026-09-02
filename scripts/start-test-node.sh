@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
 # Starts a self-contained testing node (validator, sequencer, ntx-builder, and tx prover) from
-# the standalone node executables, installed with `cargo install`.
+# the standalone node executables, installed with `cargo install` at the node source pinned in
+# Cargo.lock.
 #
 # Modes:
 #   (no args)        start the node and stream its logs; Ctrl+C stops it
@@ -46,12 +47,9 @@ NETWORK_TX_AUTH="${MIDEN_NETWORK_TX_AUTH:-miden-client-testing-ntx-secret}"
 VERIFICATION_BASE_FEE="${MIDEN_VERIFICATION_BASE_FEE:-500}"
 
 NODE_BINS=(miden-validator miden-node miden-ntx-builder miden-remote-prover)
-# The standalone binaries are published separately from miden-node-proto-build. Keep this at the
-# newest release available for all entries in NODE_BINS.
-NODE_BIN_VERSION="0.16.0-rc.3"
 
-# A git pin in Cargo.lock takes precedence; otherwise install the latest standalone binary release
-# from crates.io.
+# Resolve the pinned node source from Cargo.lock: a git pin takes precedence, otherwise use the
+# crates.io version locked for `miden-node-proto-build`.
 SRC_LINE="$(grep -m1 'source = "git+https://github.com/0xMiden/node' "$ROOT/Cargo.lock" || true)"
 if [ -n "$SRC_LINE" ]; then
     NODE_SOURCE="git"
@@ -61,7 +59,11 @@ if [ -n "$SRC_LINE" ]; then
     NODE_DESC="$NODE_URL @ $NODE_REV"
 else
     NODE_SOURCE="registry"
-    NODE_VERSION="$NODE_BIN_VERSION"
+    NODE_VERSION="$(awk -F'"' '/^name = "miden-node-proto-build"$/ { getline; print $2; exit }' "$ROOT/Cargo.lock")"
+    [ -n "$NODE_VERSION" ] || {
+        echo "error: no 0xMiden/node git source and no miden-node-proto-build version in Cargo.lock" >&2
+        exit 1
+    }
     NODE_REV="v$NODE_VERSION"
     NODE_DESC="crates.io @ $NODE_VERSION"
 fi

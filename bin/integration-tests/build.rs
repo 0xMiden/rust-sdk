@@ -7,8 +7,8 @@
 //! The generated files are included via `include!()` macro to keep them out of the source tree.
 //! Test functions are discovered by looking for functions named `test_*`.
 
-use std::collections::HashSet;
-use std::path::Path;
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 use std::{env, fs};
 
 const TEST_PREFIX: &str = "test_";
@@ -142,11 +142,15 @@ fn collect_test_cases() -> Vec<TestCaseInfo> {
 }
 
 /// Recursively scans directories for test functions.
+///
+/// Entries are sorted so the generated sources depend only on the directory's contents, not on the
+/// order the filesystem happens to report them in.
 fn collect_test_cases_recursive(current_dir: &Path, test_cases: &mut Vec<TestCaseInfo>) {
-    for entry in fs::read_dir(current_dir).unwrap() {
-        let entry = entry.unwrap();
-        let path = entry.path();
+    let mut entries: Vec<PathBuf> =
+        fs::read_dir(current_dir).unwrap().map(|entry| entry.unwrap().path()).collect();
+    entries.sort();
 
+    for path in entries {
         if path.is_dir() {
             collect_test_cases_recursive(&path, test_cases);
         } else if path.extension().and_then(|s| s.to_str()) == Some("rs") {
@@ -379,7 +383,7 @@ fn generate_integration_tests(test_cases: &[TestCaseInfo]) -> String {
     result.push('\n');
 
     // Collect unique imports for test modules
-    let mut modules = HashSet::new();
+    let mut modules = BTreeSet::new();
     for test_case in test_cases {
         let module_path = &test_case.module_path;
         modules.insert(module_path);
@@ -460,7 +464,7 @@ fn generate_test_case_vector(test_cases: &[TestCaseInfo]) -> String {
     result.push('\n');
 
     // Collect unique imports
-    let mut modules = HashSet::new();
+    let mut modules = BTreeSet::new();
     for test_case in test_cases {
         let module_path = &test_case.module_path;
         modules.insert(module_path);

@@ -1,5 +1,6 @@
 use std::sync::LazyLock;
 
+use miden_client::store::SettingScope;
 use rusqlite::{Connection, Transaction, params};
 use rusqlite_migration::{HookError, HookResult};
 
@@ -272,7 +273,7 @@ fn user_data_does_not_change_schema_hash() {
 
     conn.execute(
         "INSERT INTO settings (scope, domain, name, value) VALUES (?1, ?2, ?3, ?4)",
-        params!["user", "test-domain", "test-setting", b"value"],
+        params![SettingScope::User.as_u8(), "test-domain", "test-setting", b"value"],
     )
     .expect("user data should insert");
 

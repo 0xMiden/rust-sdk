@@ -21,7 +21,7 @@ impl SqliteStore {
             .into_store_error()?
             .query_row(
                 "SELECT value FROM settings WHERE scope = $1 AND domain = $2 AND name = $3",
-                params![domain.scope().as_str(), domain.name(), name],
+                params![domain.scope().as_u8(), domain.name(), name],
                 |row| row.get(0),
             )
             .optional()
@@ -36,7 +36,7 @@ impl SqliteStore {
     ) -> rusqlite::Result<()> {
         let count = conn.execute(
             insert_sql!(settings { scope, domain, name, value } | REPLACE),
-            params![domain.scope().as_str(), domain.name(), name, value],
+            params![domain.scope().as_u8(), domain.name(), name, value],
         )?;
 
         debug_assert_eq!(count, 1);
@@ -53,7 +53,7 @@ impl SqliteStore {
         let count = conn
             .execute(
                 "DELETE FROM settings WHERE scope = $1 AND domain = $2 AND name = $3",
-                params![domain.scope().as_str(), domain.name(), name],
+                params![domain.scope().as_u8(), domain.name(), name],
             )
             .into_store_error()?;
 
@@ -68,7 +68,7 @@ impl SqliteStore {
             .prepare("SELECT name FROM settings WHERE scope = $1 AND domain = $2")
             .into_store_error()?;
 
-        stmt.query_map(params![domain.scope().as_str(), domain.name()], |row| {
+        stmt.query_map(params![domain.scope().as_u8(), domain.name()], |row| {
             row.get::<_, String>(0)
         })
         .into_store_error()?
@@ -81,7 +81,7 @@ impl SqliteStore {
             .prepare("SELECT DISTINCT domain FROM settings WHERE scope = $1")
             .into_store_error()?;
 
-        stmt.query_map(params![SettingScope::User.as_str()], |row| row.get::<_, String>(0))
+        stmt.query_map(params![SettingScope::User.as_u8()], |row| row.get::<_, String>(0))
             .into_store_error()?
             .collect::<Result<Vec<String>, _>>()
             .into_store_error()
@@ -90,7 +90,7 @@ impl SqliteStore {
 
 #[cfg(test)]
 mod tests {
-    use miden_client::store::{SettingDomain, Store};
+    use miden_client::store::{SettingDomain, SettingScope, Store};
     use rusqlite::{OptionalExtension, params};
 
     use super::SqliteStore;
@@ -106,8 +106,8 @@ mod tests {
         store
             .interact_with_connection(move |conn| {
                 conn.execute(
-                    "INSERT INTO settings (scope, domain, name, value) VALUES ('client', ?1, ?2, ?3)",
-                    params![domain, KEY, value],
+                    "INSERT INTO settings (scope, domain, name, value) VALUES (?1, ?2, ?3, ?4)",
+                    params![SettingScope::Client.as_u8(), domain, KEY, value],
                 )
                 .into_store_error()?;
                 Ok(())
@@ -122,8 +122,8 @@ mod tests {
         store
             .interact_with_connection(move |conn| {
                 conn.query_row(
-                    "SELECT value FROM settings WHERE scope = 'client' AND domain = ?1 AND name = ?2",
-                    params![domain, KEY],
+                    "SELECT value FROM settings WHERE scope = ?1 AND domain = ?2 AND name = ?3",
+                    params![SettingScope::Client.as_u8(), domain, KEY],
                     |row| row.get(0),
                 )
                 .optional()

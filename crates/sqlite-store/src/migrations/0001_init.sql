@@ -5,13 +5,13 @@
 -- primary key, so both listings we need read a contiguous run of it: a domain's keys share the
 -- `(scope, domain)` prefix, and a scope's domains share the `scope` prefix.
 CREATE TABLE settings (
-    scope  TEXT NOT NULL,
+    scope  INTEGER NOT NULL,  -- owner of the row (0 = Client, 1 = User)
     domain TEXT NOT NULL,
     name   TEXT NOT NULL,
     value  BLOB NOT NULL,
 
     PRIMARY KEY (scope, domain, name),
-    CONSTRAINT setting_scope_is_valid      CHECK (scope IN ('client', 'user')),
+    CONSTRAINT setting_scope_is_valid      CHECK (scope IN (0, 1)),
     CONSTRAINT setting_domain_is_not_empty CHECK (length(domain) > 0),
     CONSTRAINT setting_name_is_not_empty   CHECK (length(name) > 0)
 ) WITHOUT ROWID, STRICT;

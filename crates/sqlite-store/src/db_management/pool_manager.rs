@@ -120,8 +120,9 @@ impl Manager for SqlitePoolManager {
 
 #[cfg(test)]
 mod tests {
-    use miden_client::store::{SettingDomain, Store};
+    use miden_client::store::{SettingDomain, SettingScope, Store};
     use miden_client::testing::common::create_test_store_path;
+    use rusqlite::params;
 
     use crate::SqliteStore;
     use crate::sql_error::SqlResultExt;
@@ -199,9 +200,14 @@ mod tests {
         store
             .interact_with_connection(|conn| {
                 conn.execute_batch("BEGIN").into_store_error()?;
-                conn.execute_batch(
-                    "INSERT INTO settings (scope, domain, name, value)
-                     VALUES ('user', 'pool-manager', 'leaked', X'00')",
+                conn.execute(
+                    "INSERT INTO settings (scope, domain, name, value) VALUES (?1, ?2, ?3, ?4)",
+                    params![
+                        SettingScope::User.as_u8(),
+                        "pool-manager",
+                        "leaked",
+                        b"\x00".as_slice()
+                    ],
                 )
                 .into_store_error()?;
                 Ok(())

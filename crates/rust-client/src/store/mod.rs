@@ -105,22 +105,22 @@ pub use note_record::{
 // ================================================================================================
 
 /// Which side of the client/user boundary a settings domain belongs to.
+///
+/// The discriminants are what a store persists, so they are part of its schema.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
 pub enum SettingScope {
     /// Owned by the client itself. A store implementation persists these rows but the public
     /// settings API can neither name nor reach them.
-    Client,
+    Client = 0,
     /// Owned by the user of the client.
-    User,
+    User = 1,
 }
 
 impl SettingScope {
     /// Returns the value this scope is stored as.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Client => "client",
-            Self::User => "user",
-        }
+    pub fn as_u8(self) -> u8 {
+        self as u8
     }
 }
 

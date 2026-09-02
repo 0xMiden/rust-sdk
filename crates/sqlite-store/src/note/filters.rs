@@ -24,8 +24,11 @@ pub(super) fn note_filter_to_query_output_notes(filter: &NoteFilter) -> (String,
                     note.metadata,
                     note.expected_height,
                     note.state,
-                    note.attachments
-                    from output_notes AS note";
+                    note.attachments,
+                    script.serialized_note_script
+                    from output_notes AS note
+                    LEFT OUTER JOIN notes_scripts AS script
+                        ON note.script_root = script.script_root";
 
     let (condition, params) = note_filter_output_notes_condition(filter);
     let query = format!("{base} WHERE {condition}");
@@ -55,8 +58,16 @@ pub(super) fn note_filter_output_notes_condition(filter: &NoteFilter) -> (String
                 OutputNoteState::STATE_EXPECTED_FULL
             )
         },
-        NoteFilter::Processing | NoteFilter::ScriptRoots(_) | NoteFilter::Unverified => {
-            "1 = 0".to_string()
+        NoteFilter::Processing | NoteFilter::Unverified => "1 = 0".to_string(),
+        NoteFilter::ScriptRoots(script_roots) => {
+            let script_roots_list = script_roots
+                .iter()
+                .map(|script_root| Value::Blob(script_root.to_bytes()))
+                .collect::<Vec<Value>>();
+
+            params.push(array_param(script_roots_list));
+            // Notes without known details have a NULL script root and never match.
+            "note.script_root IN rarray(?)".to_string()
         },
         NoteFilter::Unique(note_id) => {
             let note_ids_list = vec![Value::Blob(note_id.as_word().to_bytes())];

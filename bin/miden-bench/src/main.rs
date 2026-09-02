@@ -42,8 +42,9 @@ struct CliArgs {
     store: String,
 
     /// Path to pre-funded basic wallets to draw transaction fees from: either one `.mac` account
-    /// file or a directory of them.
-    #[arg(long, global = true, env = fee_funding::FUNDER_ACCOUNTS_ENV)]
+    /// file or a directory of them. Defaults to `MIDEN_FUNDER_ACCOUNTS_DIR`. A path naming no such
+    /// file leaves the run without funders, which is all a fee-free chain needs.
+    #[arg(long, global = true)]
     funders: Option<PathBuf>,
 }
 
@@ -259,11 +260,10 @@ async fn main() {
         .await
         .expect("Failed to create client");
 
-    let fee_funder = fee_funding::load(
-        &ClientConfig::new(endpoint.clone(), RPC_TIMEOUT_MS),
-        args.funders.as_deref(),
-    )
-    .expect("Failed to load the funder wallets");
+    let funders = args.funders.or_else(fee_funding::funders_path_from_env);
+    let fee_funder =
+        fee_funding::load(&ClientConfig::new(endpoint.clone(), RPC_TIMEOUT_MS), funders.as_deref())
+            .expect("Failed to load the funder wallets");
     let mut client = TestClient::from(client).with_fee_funder(fee_funder);
 
     match args.command.startup_mode() {

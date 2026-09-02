@@ -1,7 +1,6 @@
 use anyhow::{Context, Result};
 use miden_client::account::{AccountId, AccountType};
 use miden_client::asset::FungibleAsset;
-use miden_client::auth::RPO_FALCON_SCHEME_ID;
 use miden_client::crypto::{FeltRng, MerkleStore, MerkleTree, NodeIndex, Poseidon2, RandomCoin};
 use miden_client::note::{
     Note,
@@ -52,22 +51,14 @@ const NOTE_ARGS: [Felt; 8] = [
 ];
 
 pub async fn test_transaction_request(client_config: ClientConfig) -> Result<()> {
-    let (mut client, authenticator) = client_config.into_client().await?;
-    wait_for_node(&mut client).await;
+    let mut client = client_config.into_client().await?;
+    client.wait_for_node().await;
 
     client.sync_state().await?;
     // Insert Account
-    let (regular_account, _) =
-        insert_new_wallet(&mut client, AccountType::Private, &authenticator, RPO_FALCON_SCHEME_ID)
-            .await?;
+    let regular_account = client.insert_wallet(AccountType::Private).await?;
 
-    let (fungible_faucet, _) = insert_new_fungible_faucet(
-        &mut client,
-        AccountType::Private,
-        &authenticator,
-        RPO_FALCON_SCHEME_ID,
-    )
-    .await?;
+    let fungible_faucet = client.insert_faucet(AccountType::Private).await?;
 
     // The transaction below cannot double as the account's deploy.
     client.deploy_account(regular_account.id()).await?;
@@ -144,7 +135,7 @@ pub async fn test_transaction_request(client_config: ClientConfig) -> Result<()>
             .any(|nullifier| nullifier == note.nullifier().as_word())
     );
 
-    wait_for_tx(&mut client, tx_id).await?;
+    client.wait_for_tx(tx_id).await?;
 
     // Assert that the note was consumed on chain
     let input_note = client
@@ -156,22 +147,14 @@ pub async fn test_transaction_request(client_config: ClientConfig) -> Result<()>
 }
 
 pub async fn test_merkle_store(client_config: ClientConfig) -> Result<()> {
-    let (mut client, authenticator) = client_config.into_client().await?;
-    wait_for_node(&mut client).await;
+    let mut client = client_config.into_client().await?;
+    client.wait_for_node().await;
 
     client.sync_state().await?;
     // Insert Account
-    let (regular_account, _) =
-        insert_new_wallet(&mut client, AccountType::Private, &authenticator, RPO_FALCON_SCHEME_ID)
-            .await?;
+    let regular_account = client.insert_wallet(AccountType::Private).await?;
 
-    let (fungible_faucet, _) = insert_new_fungible_faucet(
-        &mut client,
-        AccountType::Private,
-        &authenticator,
-        RPO_FALCON_SCHEME_ID,
-    )
-    .await?;
+    let fungible_faucet = client.insert_faucet(AccountType::Private).await?;
     // Execute mint transaction in order to increase nonce
     let note = mint_custom_note(&mut client, fungible_faucet.id(), regular_account.id()).await?;
     client.sync_state().await?;
@@ -234,7 +217,7 @@ pub async fn test_merkle_store(client_config: ClientConfig) -> Result<()> {
         .extend_merkle_store(merkle_store.inner_nodes())
         .build()?;
 
-    execute_tx_and_sync(&mut client, regular_account.id(), transaction_request).await?;
+    client.execute_tx_and_sync(regular_account.id(), transaction_request).await?;
 
     client.sync_state().await?;
     Ok(())
@@ -242,21 +225,18 @@ pub async fn test_merkle_store(client_config: ClientConfig) -> Result<()> {
 
 pub async fn test_onchain_notes_sync_with_tag(client_config: ClientConfig) -> Result<()> {
     // Client 1 has an private faucet which will mint an onchain note for client 2
-    let (mut client_1, keystore_1) = client_config.clone().into_client().await?;
+    let mut client_1 = client_config.clone().into_client().await?;
     // Client 2 will be used to sync and check that by adding the tag we can still fetch notes
     // whose tag doesn't necessarily match any of its accounts
-    let (mut client_2, keystore_2) = client_config.clone().into_client().await?;
+    let mut client_2 = client_config.clone().into_client().await?;
     // Client 3 will be the control client. We won't add any tags and expect the note not to be
     // fetched
-    let (mut client_3, ..) = client_config.clone().into_client().await?;
-    wait_for_node(&mut client_3).await;
+    let mut client_3 = client_config.clone().into_client().await?;
+    client_3.wait_for_node().await;
 
     // Create accounts
-    let (basic_account_1, ..) =
-        insert_new_wallet(&mut client_1, AccountType::Private, &keystore_1, RPO_FALCON_SCHEME_ID)
-            .await?;
-    insert_new_wallet(&mut client_2, AccountType::Private, &keystore_2, RPO_FALCON_SCHEME_ID)
-        .await?;
+    let basic_account_1 = client_1.insert_wallet(AccountType::Private).await?;
+    client_2.insert_wallet(AccountType::Private).await?;
 
     client_1.sync_state().await?;
     client_2.sync_state().await?;
@@ -288,7 +268,7 @@ pub async fn test_onchain_notes_sync_with_tag(client_config: ClientConfig) -> Re
         .pop()
         .with_context(|| "no expected output notes found in transaction request")?
         .clone();
-    execute_tx_and_sync(&mut client_1, basic_account_1.id(), tx_request).await?;
+    client_1.execute_tx_and_sync(basic_account_1.id(), tx_request).await?;
 
     // Load tag into client 2
     client_2
@@ -322,7 +302,7 @@ async fn mint_custom_note(
     let transaction_request =
         TransactionRequestBuilder::new().own_output_notes(vec![note.clone()]).build()?;
 
-    execute_tx_and_sync(client, faucet_account_id, transaction_request).await?;
+    client.execute_tx_and_sync(faucet_account_id, transaction_request).await?;
     Ok(note)
 }
 

@@ -17,7 +17,7 @@ use miden_client::asset::FungibleAsset;
 use miden_client::block::BlockNumber;
 use miden_client::keystore::Keystore;
 use miden_client::note::{Note, NoteType, P2idNote};
-use miden_client::testing::common::{TestClient, wait_for_node, wait_for_tx};
+use miden_client::testing::common::TestClient;
 use miden_client::testing::fee::FeeFunder;
 use miden_client::transaction::TransactionRequestBuilder;
 use rand::RngExt;
@@ -40,30 +40,36 @@ const FUNDING_AMOUNT: u64 = 10_000_000;
 // LOADING
 // ================================================================================================
 
-/// Returns the funder path named by [`FUNDER_ACCOUNTS_ENV`], for runners that take no arguments.
+/// Returns the funder path named by [`FUNDER_ACCOUNTS_ENV`], for runners that read it themselves
+/// rather than taking it as an argument. [`load`] decides what a path holding no funder means.
 pub fn funders_path_from_env() -> Option<PathBuf> {
-    std::env::var_os(FUNDER_ACCOUNTS_ENV)
-        .map(PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty())
+    std::env::var_os(FUNDER_ACCOUNTS_ENV).map(PathBuf::from)
 }
 
-/// Loads the wallets at `funders` as a [`FeeFunder`] paying out of whichever one is free. `None`
-/// yields no funder. The funder client is built from `client_config`'s endpoints.
+/// Loads the wallets at `funders` as a [`FeeFunder`] paying out of whichever one is free. The
+/// funder client is built from `client_config`'s endpoints.
+///
+/// Yields no funder when `funders` names no funder file. A file that is there but cannot be
+/// used as a funder is still an error.
 pub fn load(
     client_config: &ClientConfig,
     funders: Option<&Path>,
 ) -> Result<Option<Arc<dyn FeeFunder>>> {
-    let Some(path) = funders else {
+    let wallets = load_funders(funders)?;
+    if wallets.is_empty() {
         return Ok(None);
-    };
-
-    let wallets = load_funders(path)?;
+    }
 
     Ok(Some(Arc::new(Funder::new(client_config, wallets))))
 }
 
-/// Loads the funder wallets at `path`, which is either one `.mac` file or a directory of them.
-fn load_funders(path: &Path) -> Result<Vec<AccountFile>> {
+/// Loads the funder wallets at `path`, which is either one `.mac` file or a directory of them, and
+/// none at all when `path` names no such file.
+fn load_funders(path: Option<&Path>) -> Result<Vec<AccountFile>> {
+    let Some(path) = path.filter(|path| !path.as_os_str().is_empty()) else {
+        return Ok(Vec::new());
+    };
+
     let paths = if path.is_dir() {
         let mut mac_files: Vec<PathBuf> = std::fs::read_dir(path)
             .with_context(|| format!("failed to read funder directory {}", path.display()))?
@@ -77,13 +83,11 @@ fn load_funders(path: &Path) -> Result<Vec<AccountFile>> {
         // concurrent tests over distinct wallets.
         mac_files.sort();
         mac_files
-    } else {
+    } else if path.is_file() {
         vec![path.to_path_buf()]
+    } else {
+        Vec::new()
     };
-
-    if paths.is_empty() {
-        bail!("no `.mac` funder account files in {}", path.display());
-    }
 
     // A private funder's state lives only in the file, so sharing one across processes would build
     // every transaction from the same stale snapshot. A public one is re-read from the chain.
@@ -152,7 +156,7 @@ impl Funder {
     }
 
     async fn build_client(&self) -> Result<TestClient> {
-        let (mut client, keystore) = self
+        let mut client = self
             .client_config
             .clone()
             .into_unsynced_client()
@@ -160,13 +164,13 @@ impl Funder {
             .context("failed to build the funder client")?;
 
         // Some tests create their accounts before waiting for the node, so the wait happens here.
-        wait_for_node(&mut client).await;
+        client.wait_for_node().await;
         client.sync_state().await.context("failed to sync the funder client")?;
 
         for wallet in &self.wallets {
             let id = wallet.account.id();
             for key in &wallet.auth_secret_keys {
-                keystore.add_key(key, id).await.context("failed to add a funder key")?;
+                client.keystore().add_key(key, id).await.context("failed to add a funder key")?;
             }
         }
 
@@ -234,7 +238,8 @@ impl Funder {
 
         // Waited on before the wallet is released: another process claiming it reads its state
         // from the chain, which does not carry this payment until it commits.
-        wait_for_tx(client, tx_id)
+        client
+            .wait_for_tx(tx_id)
             .await
             .with_context(|| format!("the payment from funder {wallet_id} never committed"))?;
 

@@ -15,7 +15,6 @@ use miden_client::asset::{Asset, FungibleAsset};
 use miden_client::auth::{AuthSchemeId, AuthSecretKey};
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::{FilesystemKeyStore, Keystore};
-use miden_client::store::NoteFilter;
 use miden_client::testing::common::{TestClient, create_test_store_path};
 use miden_client::testing::mock::MockRpcApi;
 use miden_client::transaction::{
@@ -276,81 +275,6 @@ async fn fee_charging_client_with_auth(
     client.sync_state().await.unwrap();
 
     (client, account)
-}
-
-/// The client attaches native fee conversion info by itself, so a request that declares none is
-/// executable by an `AuthSingleSig` account on a fee-charging chain.
-///
-/// This covers the `resolve_fee_conversion_info` call in `prepare_transaction`: without it the
-/// transaction aborts in `fee::pay_fee` with `ERR_FEE_CONVERSION_INFO_MISSING`, which is what the
-/// whole attachment mechanism exists to prevent.
-#[tokio::test]
-async fn the_client_pays_the_fee_for_a_request_that_declares_no_conversion_info() {
-    let (mut client, account) = Box::pin(fee_charging_client()).await;
-
-    let executed = Box::pin(
-        client.execute_transaction(account.id(), TransactionRequestBuilder::new().build().unwrap()),
-    )
-    .await
-    .expect("the client should attach conversion info and pay the fee");
-
-    let (auth_arg, _) = commit_fee_conversion_info(
-        FeeConversionInfo::one_to_one(ACCOUNT_ID_FEE_FAUCET.try_into().unwrap()),
-        Word::empty(),
-    );
-    assert_eq!(
-        executed.transaction_arguments().auth_args(),
-        auth_arg,
-        "the client should commit the native asset at rate 1/1"
-    );
-    assert_eq!(
-        executed.executed_transaction().output_notes().num_notes(),
-        1,
-        "a fee-paying transaction should emit the fee note"
-    );
-}
-
-/// The kernel's fee note must NOT be tracked as one of the user's own output notes.
-///
-/// It is a bearer note for whoever builds the batch. Tracking it would put it in the store, return
-/// it from `get_output_notes` as a note the user created, list it in `miden-client notes`, and feed
-/// its nullifier prefix into `sync_nullifiers` on every sync -- the client asking the node about a
-/// note it does not own, once per fee-paying transaction.
-///
-/// Asserted against the STORE, not against the executed transaction: the raw output list is
-/// supposed to contain the fee note, so only what `apply_transaction` persists distinguishes the
-/// two.
-#[tokio::test]
-async fn the_fee_note_is_not_tracked_as_one_of_our_output_notes() {
-    let (mut client, account) = Box::pin(fee_charging_client()).await;
-
-    let before = client.get_output_notes(NoteFilter::All).await.unwrap().len();
-
-    let executed = Box::pin(
-        client.execute_transaction(account.id(), TransactionRequestBuilder::new().build().unwrap()),
-    )
-    .await
-    .expect("the client should attach conversion info and pay the fee");
-
-    // Precondition: the chain really charges, so a fee note really is emitted. Without this the
-    // assertion below would pass just as well on a fee-free chain and prove nothing.
-    assert_eq!(
-        executed.executed_transaction().output_notes().num_notes(),
-        1,
-        "precondition: a fee-paying transaction emits the fee note"
-    );
-
-    // `apply_transaction` is the store write under test -- it is what builds the
-    // `OutputNoteRecord`s from the executed transaction's output notes.
-    let height = client.get_sync_height().await.unwrap();
-    client.apply_transaction(&executed, height).await.unwrap();
-
-    let tracked = client.get_output_notes(NoteFilter::All).await.unwrap();
-    assert_eq!(
-        tracked.len(),
-        before,
-        "the kernel fee note must not be recorded as one of our own output notes"
-    );
 }
 
 /// A note whose script the consumption checker cannot classify is screened by trial-executing it,

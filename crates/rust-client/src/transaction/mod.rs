@@ -1287,24 +1287,9 @@ where
         let current_block_num = self.store.get_sync_height().await?;
 
         // New output notes
-        //
-        // The kernel's fee note is excluded. It is a bearer note for whoever builds the batch, so
-        // tracking it would return it from `get_output_notes(NoteFilter::All)` as a note the user
-        // created, list it in `miden-client notes`, and -- because `STATE_EXPECTED_FULL` is inside
-        // the `Unspent` filter -- feed its nullifier prefix into `sync_nullifiers` on every sync,
-        // making the client ask the node about a note it does not own once per fee-paying
-        // transaction. Nothing is lost by excluding it: the complete raw output list is already
-        // kept verbatim on the transaction record (`TransactionDetails.output_notes`).
-        //
-        // Same discriminator, same reason as the input-note loop below.
         let new_output_notes = executed_tx
             .output_notes()
             .iter()
-            .filter(|output_note| {
-                output_note
-                    .recipient()
-                    .is_none_or(|recipient| recipient.script().root() != TxFeeNote::script_root())
-            })
             .cloned()
             .filter_map(|output_note| {
                 OutputNoteRecord::try_from_output_note(output_note, submission_height).ok()

@@ -41,6 +41,7 @@ use miden_client::store::{
     OutputNoteRecord,
     PartialBlockchainFilter,
     SettingMutation,
+    SettingScope,
     Store,
     StoreError,
     TransactionFilter,
@@ -439,30 +440,40 @@ impl Store for SqliteStore {
         .await
     }
 
-    async fn set_setting(&self, key: String, value: Vec<u8>) -> Result<(), StoreError> {
+    async fn set_setting(
+        &self,
+        scope: SettingScope,
+        key: String,
+        value: Vec<u8>,
+    ) -> Result<(), StoreError> {
         self.interact_with_connection(move |conn| {
-            SqliteStore::set_setting(conn, &key, &value).into_store_error()
+            SqliteStore::set_setting(conn, scope, &key, &value).into_store_error()
         })
         .await
     }
 
-    async fn get_setting(&self, key: String) -> Result<Option<Vec<u8>>, StoreError> {
-        self.interact_with_connection(move |conn| SqliteStore::get_setting(conn, &key))
+    async fn get_setting(
+        &self,
+        scope: SettingScope,
+        key: String,
+    ) -> Result<Option<Vec<u8>>, StoreError> {
+        self.interact_with_connection(move |conn| SqliteStore::get_setting(conn, scope, &key))
             .await
     }
 
-    async fn remove_setting(&self, key: String) -> Result<bool, StoreError> {
-        self.interact_with_connection(move |conn| SqliteStore::remove_setting(conn, &key))
+    async fn remove_setting(&self, scope: SettingScope, key: String) -> Result<bool, StoreError> {
+        self.interact_with_connection(move |conn| SqliteStore::remove_setting(conn, scope, &key))
             .await
     }
 
-    async fn list_setting_keys(&self) -> Result<Vec<String>, StoreError> {
-        self.interact_with_connection(move |conn| SqliteStore::list_setting_keys(conn))
+    async fn list_setting_keys(&self, scope: SettingScope) -> Result<Vec<String>, StoreError> {
+        self.interact_with_connection(move |conn| SqliteStore::list_setting_keys(conn, scope))
             .await
     }
 
     async fn apply_settings_mutations(
         &self,
+        scope: SettingScope,
         mutations: Vec<SettingMutation>,
     ) -> Result<(), StoreError> {
         self.interact_with_connection(move |conn| {
@@ -470,10 +481,10 @@ impl Store for SqliteStore {
             for mutation in &mutations {
                 match mutation {
                     SettingMutation::Set { key, value } => {
-                        SqliteStore::set_setting(&tx, key, value).into_store_error()?;
+                        SqliteStore::set_setting(&tx, scope, key, value).into_store_error()?;
                     },
                     SettingMutation::Remove { key } => {
-                        SqliteStore::remove_setting(&tx, key)?;
+                        SqliteStore::remove_setting(&tx, scope, key)?;
                     },
                 }
             }

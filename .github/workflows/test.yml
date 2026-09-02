@@ -73,42 +73,33 @@ jobs:
   build-note-transport:
     name: Build note-transport
     runs-on: warp-ubuntu-latest-x64-8x
-    outputs:
-      note_transport_rev: ${{ steps.note-transport-rev.outputs.rev }}
+    env:
+      # Release of the `miden-note-transport-node-bin` crate to install from crates.io.
+      NOTE_TRANSPORT_VERSION: 0.5.0-rc.2
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
       - name: Cleanup large tools for build space
         uses: ./.github/actions/cleanup-runner
-      - name: Resolve note-transport revision
-        id: note-transport-rev
-        run: echo "rev=$(git ls-remote https://github.com/0xMiden/miden-note-transport HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
       - name: Restore note-transport binary
         id: cache-note-transport
         uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: ~/.cargo/bin/miden-note-transport-node
-          key: ${{ runner.os }}-note-transport-${{ steps.note-transport-rev.outputs.rev }}
+          key: ${{ runner.os }}-note-transport-${{ env.NOTE_TRANSPORT_VERSION }}
       - name: Install Rust
         if: steps.cache-note-transport.outputs.cache-hit != 'true'
         run: rustup update --no-self-update
       - name: Install note-transport
         if: steps.cache-note-transport.outputs.cache-hit != 'true'
-        env:
-          NOTE_TRANSPORT_REV: ${{ steps.note-transport-rev.outputs.rev }}
-        run: |
-          [[ "$NOTE_TRANSPORT_REV" =~ ^[0-9a-f]{40}$ ]] || {
-            echo "::error::Invalid note transport revision: $NOTE_TRANSPORT_REV"
-            exit 1
-          }
-          cargo install --git https://github.com/0xMiden/miden-note-transport --rev "$NOTE_TRANSPORT_REV" --locked
+        run: cargo install --locked "miden-note-transport-node-bin@$NOTE_TRANSPORT_VERSION"
       - name: Save note-transport binary
         if: steps.cache-note-transport.outputs.cache-hit != 'true' && github.event_name == 'push' && github.ref == 'refs/heads/next'
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: ~/.cargo/bin/miden-note-transport-node
-          key: ${{ runner.os }}-note-transport-${{ steps.note-transport-rev.outputs.rev }}
+          key: ${{ runner.os }}-note-transport-${{ env.NOTE_TRANSPORT_VERSION }}
       - name: Stage note-transport binary
         run: |
           mkdir -p target/release

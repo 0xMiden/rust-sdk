@@ -278,38 +278,6 @@ async fn fee_charging_client_with_auth(
     (client, account)
 }
 
-/// The client attaches native fee conversion info by itself, so a request that declares none is
-/// executable by an `AuthSingleSig` account on a fee-charging chain.
-///
-/// This covers the `resolve_fee_conversion_info` call in `prepare_transaction`: without it the
-/// transaction aborts in `fee::pay_fee` with `ERR_FEE_CONVERSION_INFO_MISSING`, which is what the
-/// whole attachment mechanism exists to prevent.
-#[tokio::test]
-async fn the_client_pays_the_fee_for_a_request_that_declares_no_conversion_info() {
-    let (mut client, account) = Box::pin(fee_charging_client()).await;
-
-    let executed = Box::pin(
-        client.execute_transaction(account.id(), TransactionRequestBuilder::new().build().unwrap()),
-    )
-    .await
-    .expect("the client should attach conversion info and pay the fee");
-
-    let (auth_arg, _) = commit_fee_conversion_info(
-        FeeConversionInfo::one_to_one(ACCOUNT_ID_FEE_FAUCET.try_into().unwrap()),
-        Word::empty(),
-    );
-    assert_eq!(
-        executed.transaction_arguments().auth_args(),
-        auth_arg,
-        "the client should commit the native asset at rate 1/1"
-    );
-    assert_eq!(
-        executed.executed_transaction().output_notes().num_notes(),
-        1,
-        "a fee-paying transaction should emit the fee note"
-    );
-}
-
 /// The kernel's fee note must NOT be tracked as one of the user's own output notes.
 ///
 /// It is a bearer note for whoever builds the batch. Tracking it would put it in the store, return

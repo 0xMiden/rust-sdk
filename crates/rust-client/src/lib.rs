@@ -220,6 +220,8 @@ pub mod auth {
         AuthGuardedMultisigConfig,
         AuthMultisig,
         AuthMultisigConfig,
+        AuthMultisigSmart,
+        AuthMultisigSmartConfig,
         AuthSingleSig,
         GuardianConfig,
         NoAuth,

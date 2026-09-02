@@ -163,8 +163,9 @@ struct Args {
     note_transport_url: Option<String>,
 
     /// Path to the pre-funded basic wallets the tests draw transaction fees from: either one
-    /// `.mac` account file or a directory of them.
-    #[arg(long, env = fee_funding::FUNDER_ACCOUNTS_ENV)]
+    /// `.mac` account file or a directory of them. Defaults to `MIDEN_FUNDER_ACCOUNTS_DIR`. A path
+    /// naming no such file leaves the run without funders.
+    #[arg(long)]
     funders: Option<PathBuf>,
 
     /// Enable verbose tracing output (info-level logs from tests and client).
@@ -236,12 +237,17 @@ impl TryFrom<Args> for BaseConfig {
             }
         };
 
+        let funders = args
+            .funders
+            .or_else(fee_funding::funders_path_from_env)
+            .filter(|path| !path.as_os_str().is_empty());
+
         Ok(BaseConfig {
             rpc_endpoint: endpoint,
             timeout: timeout_ms,
             prover_endpoint,
             note_transport_endpoint,
-            funders: args.funders,
+            funders,
             verbose: args.verbose,
         })
     }

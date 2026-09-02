@@ -20,7 +20,7 @@ TEST_MIDEN_NOTE_TRANSPORT_URL?=http://127.0.0.1:57292
 
 # Pre-funded wallets the integration tests draw transaction fees from, either one `.mac` file or a
 # directory of them, written here by `start-test-node.sh`. Against a deployed network, point this at
-# wallets funded out of band. Unused on a fee-free chain, where no account needs funding.
+# wallets funded out of band. A path naming no `.mac` file, means no funders.
 MIDEN_FUNDER_ACCOUNTS_DIR?=$(CURDIR)/data/funders
 
 # Pre-deployed agglayer accounts the agglayer tests transact with, written here by
@@ -163,7 +163,7 @@ integration-test-dev: ## Run integration tests with debug assertions enabled via
 
 .PHONY: integration-test-binary
 integration-test-binary: ## Run the integration tests using the standalone binary (requires note transport service)
-	TEST_MIDEN_NOTE_TRANSPORT_URL=$(TEST_MIDEN_NOTE_TRANSPORT_URL) AGGLAYER_ACCOUNTS_DIR=$(AGGLAYER_ACCOUNTS_DIR) cargo run --package miden-client-integration-tests --release --locked -- --funders $(MIDEN_FUNDER_ACCOUNTS_DIR)
+	TEST_MIDEN_NOTE_TRANSPORT_URL=$(TEST_MIDEN_NOTE_TRANSPORT_URL) MIDEN_FUNDER_ACCOUNTS_DIR=$(MIDEN_FUNDER_ACCOUNTS_DIR) AGGLAYER_ACCOUNTS_DIR=$(AGGLAYER_ACCOUNTS_DIR) cargo run --package miden-client-integration-tests --release --locked
 
 # --- Installing ----------------------------------------------------------------------------------
 

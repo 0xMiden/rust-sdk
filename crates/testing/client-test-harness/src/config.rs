@@ -118,8 +118,8 @@ impl ClientConfig {
     }
 
     /// Loads the pre-funded wallets at `funders`, one `.mac` account file or a directory of them,
-    /// as the fee funder. `None` leaves the config without one, which is all a fee-free chain
-    /// needs.
+    /// as the fee funder. A path naming no funder file leaves the config without one, which is all
+    /// a fee-free chain needs.
     pub fn with_funders(self, funders: Option<&Path>) -> Result<Self> {
         let fee_funder = fee_funding::load(&self, funders)?;
         Ok(self.with_fee_funder(fee_funder))

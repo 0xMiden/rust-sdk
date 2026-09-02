@@ -5,9 +5,8 @@ use miden_client::Deserializable;
 use miden_client::account::{AccountFile, AccountId};
 use miden_client::keystore::Keystore;
 use miden_client::testing::common::{FilesystemKeyStore, TestClient, wait_for_node};
-
-use crate::tests::config::ClientConfig;
-use crate::tests::fee_funding::AccountLock;
+use miden_client_test_harness::ClientConfig;
+use miden_client_test_harness::fee_funding::AccountLock;
 
 pub mod agglayer_bridge_in_out;
 mod agglayer_test_utils;
@@ -138,11 +137,11 @@ pub async fn create_agglayer_clients(
     println!("[setup] Bridge admin client initialized");
     let bridge_admin = ClientPair { client, keystore };
 
-    let (client, keystore) = client_config.clone().with_fresh_store().into_client().await?;
+    let (client, keystore) = client_config.clone().into_client().await?;
     println!("[setup] GER manager client initialized");
     let ger_manager = ClientPair { client, keystore };
 
-    let (client, keystore) = client_config.clone().with_fresh_store().into_client().await?;
+    let (client, keystore) = client_config.clone().into_client().await?;
     println!("[setup] User client initialized");
     let user = ClientPair { client, keystore };
 
@@ -176,44 +175,6 @@ pub async fn setup_core_accounts(
             .import_account(config.bridge_id(), &mut pair.client, &pair.keystore)
             .await?;
     }
-
-    // These accounts are deployed out of band and imported, so nothing has ever given them
-    // the native asset. On a fee-charging chain every transaction they sign withdraws the fee
-    // from their own vault, and an empty vault aborts it — surfacing far from here as a note
-    // that was never consumed or a GER that was never registered, never as a fee error.
-    //
-    // Funded through the funder DIRECTLY rather than `fund_and_deploy_if_needed`, which is a
-    // silent no-op here: it routes to `deploy_account`, which returns early for any account
-    // whose locally tracked nonce is non-zero — true the moment these are imported. Calling
-    // the funder skips that gate; `deploy_by_consuming` underneath has no such guard and a
-    // consume against an already-deployed account is just an ordinary transaction.
-    //
-    // This works on an empty vault because the fee is charged in the EPILOGUE, after note
-    // processing: the kernel runs prologue -> notes -> tx script -> epilogue, and the auth
-    // procedure that calls `fee::pay_fee` is epilogue-only (the kernel even errors with
-    // "auth procedure has been called from outside the epilogue"). So the account receives
-    // the funding note's assets first and pays its fee out of them in the same transaction.
-    // Two borrows of `bridge_admin.client` cannot be live at once, so this is a closure
-    // applied per account rather than a table of (client, id) pairs.
-    async fn fund_for_fees(client: &mut TestClient, account_id: AccountId) -> Result<()> {
-        if !client.chain_charges_fees().await? {
-            return Ok(());
-        }
-        let funder = client.fee_funder().cloned().context(
-            "the agglayer accounts need fee funding on this chain, but the client has no fee \
-             funder; point MIDEN_FUNDER_ACCOUNTS at the pre-funded wallets",
-        )?;
-        funder.fund_and_deploy(client, account_id).await
-    }
-
-    // Only the two accounts that execute transactions. The bridge is imported into all three
-    // clients so each can reference it, but nothing in these tests submits a transaction with
-    // the bridge as the executing account, so it never pays a fee and needs no balance. It
-    // could not be funded this way regardless: funding delivers a P2ID note, and the bridge is
-    // a custom contract with no wallet component to consume one — the attempt fails in the
-    // kernel with `account procedure ... is not in the account procedure set`.
-    fund_for_fees(&mut bridge_admin.client, config.bridge_admin_id()).await?;
-    fund_for_fees(&mut ger_manager.client, config.ger_manager_id()).await?;
 
     Ok((config.bridge_admin_id(), config.ger_manager_id(), config.bridge_id()))
 }

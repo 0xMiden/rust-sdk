@@ -43,10 +43,10 @@ use miden_client::testing::common::{
     wait_for_tx,
 };
 use miden_client::transaction::TransactionRequestBuilder;
+use miden_client_test_harness::ClientConfig;
 
 use super::agglayer_test_utils::generate_claim_data_for_account;
 use super::{AgglayerConfig, create_agglayer_clients, setup_core_accounts};
-use crate::tests::config::ClientConfig;
 
 /// Amount of tokens to bridge out in the bridge-out phase of the test.
 const BRIDGE_OUT_AMOUNT: u64 = 1000;
@@ -66,6 +66,11 @@ const TEST_L1_DESTINATION: &str = "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd";
 /// Everything but the destination account is pre-deployed and imported (see [`AgglayerConfig`]).
 /// The destination is created fresh on every run, so a claim always targets an account that has
 /// never claimed before.
+///
+/// Excluded from the agglayer CI run, see `make integration-test-agglayer`: the closing B2AGG note
+/// produces a network transaction the node cannot prove inside the ntx-builder's deadline, leaving
+/// the bridge retrying it for ~15 minutes and starving whatever runs next. The bridge-out step
+/// below also asserts nothing, so that failure never surfaces here.
 pub async fn test_agglayer_bridge_in_out(client_config: ClientConfig) -> Result<()> {
     let agglayer_config = AgglayerConfig::from_env()?;
     let _agglayer_accounts = agglayer_config.claim()?;
@@ -202,7 +207,7 @@ pub async fn test_agglayer_bridge_in_out(client_config: ClientConfig) -> Result<
         // which is far more load-sensitive than a directly submitted transaction, so it is set
         // well above the ~5 blocks that round trip normally takes.
         let consumable_notes =
-            wait_for_consumable_notes(&mut user.client, destination_account.id(), 60).await;
+            wait_for_consumable_notes(&mut user.client, destination_account.id(), 120).await;
         println!(
             "[bridge_in_out] Round {round}: found {} consumable notes for destination",
             consumable_notes.len()

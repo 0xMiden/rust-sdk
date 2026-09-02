@@ -206,32 +206,46 @@ The testing node charges a fee for every transaction, as a real chain does: its 
 MIDEN_VERIFICATION_BASE_FEE=0 make start-node-background
 ```
 
-The suite never mints the native fee asset. It draws that from pre-funded basic wallets named by
-`--funders` (or `MIDEN_FUNDER_ACCOUNTS`), either one `.mac` file or a directory of them. A path that
-does not exist is treated as no funders, which is what a fee-free genesis leaves behind.
+The suite never mints. It draws the native asset from pre-funded basic wallets named by `--funders`
+(or `MIDEN_FUNDER_ACCOUNTS_DIR`), either one `.mac` file or a directory of them.
 
 ```bash
 # Local node: its genesis pre-funds the wallets and start-test-node.sh writes them here.
 # The Makefile targets pass this for you.
-MIDEN_FUNDER_ACCOUNTS=$PWD/data/funders cargo nextest run --workspace --release --test=integration
+MIDEN_FUNDER_ACCOUNTS_DIR=$PWD/data/funders cargo nextest run --workspace --release --test=integration
 
 # Deployed network: supply wallets funded out of band, since nothing can be minted there.
 miden-client-integration-tests --network testnet --funders ./testnet-funders
 ```
 
-The `insert_new_*` helpers pay each account they create and deploy it by consuming that note, which
-settles the deploy's own fee. `TestClient::deploy_account` does the same for an account a test
-builds itself.
+The `insert_new_*` helpers pay each account they create. The account is deployed by whichever
+transaction first consumes that note, as described below. An account a test builds itself can be
+funded and deployed on the spot with `TestClient::deploy_account`, whose deploy transaction
+consumes the funding note and thereby settles its own fee.
+
+A funding transaction costs a fee and a proof, so accounts are funded in batches wherever a test
+creates more than one: the `setup_*` helpers create their accounts with the `insert_new_*_unfunded`
+variants and then pass the whole set to `TestClient::fund_if_needed`, which pays them all from one
+transaction. A test creating several accounts of its own should do the same rather than calling the
+funding `insert_new_*` helpers in a row.
+
+Funding costs no transaction of its own beyond that payment. Each account's note is held until the
+account's next transaction and folded into it, so that one transaction deploys the account, funds
+it and does the test's work. `TestClient::submit_new_transaction` does the folding; a request going
+somewhere else needs `TestClient::fund_request` first, notably a batch, which borrows the client
+for as long as it lives. A test that needs the funding to land in a particular transaction — one
+asserting on what a sync reports, say — should call `TestClient::take_funding` and consume the note
+itself.
 
 Funders must be **public** and carry their secret key: a public funder's state is re-read from the
 chain before every payment, which is what makes sharing one between test processes safe.
 
 ### Environment variables
 
-- `MIDEN_FUNDER_ACCOUNTS` - funder `.mac` file or directory, same as `--funders`
+- `MIDEN_FUNDER_ACCOUNTS_DIR` - funder `.mac` file or directory, same as `--funders`
 - `MIDEN_VERIFICATION_BASE_FEE` - genesis `verification_base_fee` for the testing node (default
   `500`; `0` runs the node fee-free and declares no funder wallets)
-- `MIDEN_NUM_FUNDER_WALLETS` - number of wallets a fee-charging genesis pre-funds (default `80`)
+- `MIDEN_NUM_FUNDER_WALLETS` - number of wallets a fee-charging genesis pre-funds (default `16`)
 
 ## Test Case Generation
 

@@ -7,7 +7,7 @@ use miden_client::block::BlockNumber;
 use miden_client::note::NoteType;
 use miden_client::store::{InputNoteState, NoteFilter};
 use miden_client::testing::common::{
-    assert_account_balance,
+    assert_account_has_single_asset,
     consume_notes,
     execute_tx_and_sync,
     insert_new_fungible_faucet,
@@ -16,8 +16,7 @@ use miden_client::testing::common::{
     wait_for_tx,
 };
 use miden_client::transaction::TransactionRequestBuilder;
-
-use crate::tests::config::ClientConfig;
+use miden_client_test_harness::ClientConfig;
 
 // TRANSPORT NOTE INCLUSION PROOF AND CONSUMPTION TESTS
 // ================================================================================================
@@ -34,8 +33,8 @@ pub async fn test_transport_note_inclusion_proof_and_consumption(
         return Ok(());
     }
 
-    let sender_config = client_config.clone().with_fresh_store();
-    let recipient_config = client_config.with_fresh_store();
+    let sender_config = client_config.clone();
+    let recipient_config = client_config;
 
     let (mut sender, sender_keystore) =
         sender_config.into_unsynced_client().await.context("failed to build sender")?;
@@ -124,7 +123,8 @@ pub async fn test_transport_note_inclusion_proof_and_consumption(
     wait_for_tx(&mut recipient, tx_id).await?;
 
     // Verify balance
-    assert_account_balance(&recipient, recipient_account.id(), faucet_account.id(), 100).await;
+    assert_account_has_single_asset(&recipient, recipient_account.id(), faucet_account.id(), 100)
+        .await;
 
     Ok(())
 }
@@ -141,8 +141,8 @@ pub async fn test_transport_multiple_notes_different_blocks(
         return Ok(());
     }
 
-    let sender_config = client_config.clone().with_fresh_store();
-    let recipient_config = client_config.with_fresh_store();
+    let sender_config = client_config.clone();
+    let recipient_config = client_config;
 
     let (mut sender, sender_keystore) =
         sender_config.into_unsynced_client().await.context("failed to build sender")?;
@@ -273,7 +273,8 @@ pub async fn test_transport_multiple_notes_different_blocks(
     wait_for_tx(&mut recipient, tx_id).await?;
 
     // Verify total balance (10 + 20 + 30 = 60)
-    assert_account_balance(&recipient, recipient_account.id(), faucet_account.id(), 60).await;
+    assert_account_has_single_asset(&recipient, recipient_account.id(), faucet_account.id(), 60)
+        .await;
 
     Ok(())
 }
@@ -289,8 +290,8 @@ pub async fn test_transport_note_not_yet_committed(client_config: ClientConfig) 
         return Ok(());
     }
 
-    let sender_config = client_config.clone().with_fresh_store();
-    let recipient_config = client_config.with_fresh_store();
+    let sender_config = client_config.clone();
+    let recipient_config = client_config;
 
     let (mut sender, sender_keystore) =
         sender_config.into_unsynced_client().await.context("failed to build sender")?;
@@ -393,7 +394,8 @@ pub async fn test_transport_note_not_yet_committed(client_config: ClientConfig) 
     let tx_id = consume_notes(&mut recipient, recipient_account.id(), &[note]).await;
     wait_for_tx(&mut recipient, tx_id).await?;
 
-    assert_account_balance(&recipient, recipient_account.id(), faucet_account.id(), 100).await;
+    assert_account_has_single_asset(&recipient, recipient_account.id(), faucet_account.id(), 100)
+        .await;
 
     Ok(())
 }

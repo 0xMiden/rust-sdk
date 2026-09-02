@@ -69,6 +69,141 @@ fn fee_charging_chain(balance: u64) -> (MockChain, Account, AccountId) {
     (chain, account, fee_faucet_id)
 }
 
+/// The native conversion info commitment, salted with a caller-declared salt the way
+/// `TransactionRequestBuilder::fee_conversion_salt` declares one, is accepted by the auth
+/// procedure, and the resulting transaction emits the fee note.
+#[tokio::test]
+async fn fee_conversion_info_pays_the_transaction_fee() {
+    let (chain, account, fee_faucet_id) = fee_charging_chain(FEE_ASSET_BALANCE);
+    let salt = Word::from([1u32, 2, 3, 4]);
+
+    // The builder records the declared salt only. The client commits the native conversion info
+    // under it when preparing the transaction, which is reproduced by hand here because the
+    // `MockChain` executes without a `Client`.
+    let request = TransactionRequestBuilder::new().fee_conversion_salt(salt).build().unwrap();
+    assert_eq!(
+        request.fee_conversion_salt(),
+        Some(salt),
+        "the request should carry the declared salt for the client to commit under"
+    );
+
+    let (expected_auth_arg, preimage) =
+        commit_fee_conversion_info(FeeConversionInfo::one_to_one(fee_faucet_id), salt);
+
+    let executed = Box::pin(
+        chain
+            .build_transaction(account.id())
+            .auth_args(expected_auth_arg)
+            .add_advice_map_entry(expected_auth_arg, preimage)
+            .build()
+            .unwrap()
+            .execute(),
+    )
+    .await
+    .unwrap();
+
+    // Paying a non-zero fee creates exactly one output note, the fee note, funded from the vault.
+    assert_eq!(
+        executed.output_notes().num_notes(),
+        1,
+        "a fee-paying transaction should emit the fee note"
+    );
+}
+
+/// Without committed conversion info the auth procedure aborts, so a request that omits it cannot
+/// be executed on a fee-charging chain. This is why the client commits it when preparing every
+/// transaction once a chain charges anything.
+#[tokio::test]
+async fn transaction_without_fee_conversion_info_is_rejected() {
+    let (chain, account, _) = fee_charging_chain(FEE_ASSET_BALANCE);
+
+    let result = Box::pin(chain.build_transaction(account.id()).build().unwrap().execute()).await;
+
+    let Err(err) = result else {
+        panic!("a fee-charging chain should reject an empty auth arg");
+    };
+    assert!(
+        format!("{err:?}").contains("conversion info"),
+        "expected a missing-conversion-info abort, got: {err:?}"
+    );
+}
+
+/// An account holding none of the fee asset can still pay, provided the transaction consumes a note
+/// carrying it: note scripts run before the authentication procedure, so the credit lands in the
+/// vault before `pay_fee` withdraws from it.
+///
+/// This is what makes a fee-charging chain usable without pre-funding vaults at genesis: a fresh
+/// account's first transaction can consume a mint note and settle its own fee from the proceeds.
+#[tokio::test]
+async fn fee_can_be_paid_from_a_note_consumed_in_the_same_transaction() {
+    let mut builder = MockChainBuilder::new().verification_base_fee(VERIFICATION_BASE_FEE);
+    // Deliberately no assets: the account starts unable to pay anything.
+    let account = builder
+        .add_existing_wallet(Auth::BasicAuth {
+            auth_scheme: AuthSchemeId::Falcon512Poseidon2,
+        })
+        .unwrap();
+    let funding_note = builder.add_p2id_note_with_fee(account.id(), FEE_ASSET_BALANCE).unwrap();
+    let chain = builder.build().unwrap();
+
+    let salt = Word::from([9u32, 10, 11, 12]);
+    let (auth_arg, preimage) =
+        commit_fee_conversion_info(FeeConversionInfo::one_to_one(chain.fee_faucet_id()), salt);
+
+    let executed = Box::pin(
+        chain
+            .build_transaction(account.id())
+            .authenticated_input_notes([funding_note.id()])
+            .auth_args(auth_arg)
+            .add_advice_map_entry(auth_arg, preimage)
+            .build()
+            .unwrap()
+            .execute(),
+    )
+    .await
+    .unwrap();
+
+    // One output note, the fee note, paid out of the funds the consumed note just delivered.
+    assert_eq!(
+        executed.output_notes().num_notes(),
+        1,
+        "the fee should be paid from the assets the consumed note delivered"
+    );
+}
+
+/// An account that does not hold the fee asset cannot pay, even with correctly committed
+/// conversion info: `pay_fee` withdraws the fee from the account vault.
+#[tokio::test]
+async fn fee_payment_fails_without_fee_asset_balance() {
+    let (chain, account, fee_faucet_id) = fee_charging_chain(0);
+    let salt = Word::from([5u32, 6, 7, 8]);
+    let (auth_arg, preimage) =
+        commit_fee_conversion_info(FeeConversionInfo::one_to_one(fee_faucet_id), salt);
+
+    let result = Box::pin(
+        chain
+            .build_transaction(account.id())
+            .auth_args(auth_arg)
+            .add_advice_map_entry(auth_arg, preimage)
+            .build()
+            .unwrap()
+            .execute(),
+    )
+    .await;
+
+    // The withdrawal aborts inside the vault, so the failure surfaces as a kernel assertion rather
+    // than as a client-side balance check.
+    let TransactionExecutorError::TransactionProgramExecutionFailed(err) = result.unwrap_err()
+    else {
+        panic!("expected the fee withdrawal to fail while executing the transaction program");
+    };
+    assert!(
+        format!("{err}")
+            .contains("amount of the asset in the vault is less than the amount to remove"),
+        "expected the vault withdrawal to abort, got: {err:?}"
+    );
+}
+
 /// Builds a fee-charging chain and a client that can transact on it as `account`.
 ///
 /// The account is built here rather than by the chain builder so that its key can be put in the
@@ -151,7 +286,7 @@ async fn fee_charging_client_with_auth(
 /// whole attachment mechanism exists to prevent.
 #[tokio::test]
 async fn the_client_pays_the_fee_for_a_request_that_declares_no_conversion_info() {
-    let (client, account) = Box::pin(fee_charging_client()).await;
+    let (mut client, account) = Box::pin(fee_charging_client()).await;
 
     let executed = Box::pin(
         client.execute_transaction(account.id(), TransactionRequestBuilder::new().build().unwrap()),
@@ -187,7 +322,7 @@ async fn the_client_pays_the_fee_for_a_request_that_declares_no_conversion_info(
 /// two.
 #[tokio::test]
 async fn the_fee_note_is_not_tracked_as_one_of_our_output_notes() {
-    let (client, account) = Box::pin(fee_charging_client()).await;
+    let (mut client, account) = Box::pin(fee_charging_client()).await;
 
     let before = client.get_output_notes(NoteFilter::All).await.unwrap().len();
 
@@ -299,7 +434,7 @@ async fn checking_note_consumability_pays_the_fee_on_a_fee_charging_chain() {
 /// caller of `execute_transaction` intact.
 #[tokio::test]
 async fn a_multisig_account_is_told_to_declare_its_own_conversion_info() {
-    let (client, account) = Box::pin(fee_charging_multisig_client()).await;
+    let (mut client, account) = Box::pin(fee_charging_multisig_client()).await;
 
     let err = Box::pin(
         client.execute_transaction(account.id(), TransactionRequestBuilder::new().build().unwrap()),
@@ -317,143 +452,4 @@ async fn a_multisig_account_is_told_to_declare_its_own_conversion_info() {
         ) => assert_eq!(auth_component, AccountComponentInterface::AuthMultisig.name()),
         other => panic!("expected FeeConversionInfoRequired(Multisig), got {other:?}"),
     }
-}
-
-/// `TransactionRequestBuilder::fee_conversion_info` produces an auth arg and advice map entry the
-/// auth procedure accepts, and the resulting transaction emits the fee note.
-#[tokio::test]
-async fn fee_conversion_info_pays_the_transaction_fee() {
-    let (chain, account, fee_faucet_id) = fee_charging_chain(FEE_ASSET_BALANCE);
-    let salt = Word::from([1u32, 2, 3, 4]);
-    let conversion_info = FeeConversionInfo::one_to_one(fee_faucet_id);
-
-    let request = TransactionRequestBuilder::new()
-        .fee_conversion_info(conversion_info, salt)
-        .build()
-        .unwrap();
-
-    // The builder commits the conversion info rather than storing it verbatim, so the auth arg is
-    // the commitment and the advice map holds its preimage.
-    let (expected_auth_arg, preimage) = commit_fee_conversion_info(conversion_info, salt);
-    assert_eq!(
-        *request.auth_arg(),
-        Some(expected_auth_arg),
-        "the request should carry the conversion info commitment as its auth arg"
-    );
-    assert_eq!(
-        request.advice_map().get(&expected_auth_arg).map(|preimage| preimage.to_vec()),
-        Some(preimage),
-        "the request should carry the preimage the VM resolves the commitment through"
-    );
-
-    // Executed from the request's own auth arg and advice map, so an execution that succeeds
-    // witnesses what the builder produced rather than what this test could supply by hand.
-    let auth_arg = request.auth_arg().unwrap();
-    let mut builder = chain.build_transaction(account.id()).auth_args(auth_arg);
-    for (key, value) in request.advice_map().clone() {
-        builder = builder.add_advice_map_entry(key, value.to_vec());
-    }
-
-    let executed = Box::pin(builder.build().unwrap().execute()).await.unwrap();
-
-    // Paying a non-zero fee creates exactly one output note, the fee note, funded from the vault.
-    assert_eq!(
-        executed.output_notes().num_notes(),
-        1,
-        "a fee-paying transaction should emit the fee note"
-    );
-}
-
-/// Without committed conversion info the auth procedure aborts, so a request that omits it cannot
-/// be executed on a fee-charging chain. This is why `fee_conversion_info` is mandatory rather than
-/// optional once a chain charges anything.
-#[tokio::test]
-async fn transaction_without_fee_conversion_info_is_rejected() {
-    let (chain, account, _) = fee_charging_chain(FEE_ASSET_BALANCE);
-
-    let result = Box::pin(chain.build_transaction(account.id()).build().unwrap().execute()).await;
-
-    let Err(err) = result else {
-        panic!("a fee-charging chain should reject an empty auth arg");
-    };
-    assert!(
-        format!("{err:?}").contains("conversion info"),
-        "expected a missing-conversion-info abort, got: {err:?}"
-    );
-}
-
-/// An account holding none of the fee asset can still pay, provided the transaction consumes a note
-/// carrying it: note scripts run before the authentication procedure, so the credit lands in the
-/// vault before `pay_fee` withdraws from it.
-///
-/// This is what makes a fee-charging chain usable without pre-funding vaults at genesis: a fresh
-/// account's first transaction can consume a mint note and settle its own fee from the proceeds.
-#[tokio::test]
-async fn fee_can_be_paid_from_a_note_consumed_in_the_same_transaction() {
-    let mut builder = MockChainBuilder::new().verification_base_fee(VERIFICATION_BASE_FEE);
-    // Deliberately no assets: the account starts unable to pay anything.
-    let account = builder
-        .add_existing_wallet(Auth::BasicAuth {
-            auth_scheme: AuthSchemeId::Falcon512Poseidon2,
-        })
-        .unwrap();
-    let funding_note = builder.add_p2id_note_with_fee(account.id(), FEE_ASSET_BALANCE).unwrap();
-    let chain = builder.build().unwrap();
-
-    let salt = Word::from([9u32, 10, 11, 12]);
-    let (auth_arg, preimage) =
-        commit_fee_conversion_info(FeeConversionInfo::one_to_one(chain.fee_faucet_id()), salt);
-
-    let executed = Box::pin(
-        chain
-            .build_transaction(account.id())
-            .authenticated_input_notes([funding_note.id()])
-            .auth_args(auth_arg)
-            .add_advice_map_entry(auth_arg, preimage)
-            .build()
-            .unwrap()
-            .execute(),
-    )
-    .await
-    .unwrap();
-
-    // One output note, the fee note, paid out of the funds the consumed note just delivered.
-    assert_eq!(
-        executed.output_notes().num_notes(),
-        1,
-        "the fee should be paid from the assets the consumed note delivered"
-    );
-}
-
-/// An account that does not hold the fee asset cannot pay, even with correctly committed
-/// conversion info: `pay_fee` withdraws the fee from the account vault.
-#[tokio::test]
-async fn fee_payment_fails_without_fee_asset_balance() {
-    let (chain, account, fee_faucet_id) = fee_charging_chain(0);
-    let salt = Word::from([5u32, 6, 7, 8]);
-    let (auth_arg, preimage) =
-        commit_fee_conversion_info(FeeConversionInfo::one_to_one(fee_faucet_id), salt);
-
-    let result = Box::pin(
-        chain
-            .build_transaction(account.id())
-            .auth_args(auth_arg)
-            .add_advice_map_entry(auth_arg, preimage)
-            .build()
-            .unwrap()
-            .execute(),
-    )
-    .await;
-
-    // The withdrawal aborts inside the vault, so the failure surfaces as a kernel assertion rather
-    // than as a client-side balance check.
-    let TransactionExecutorError::TransactionProgramExecutionFailed(err) = result.unwrap_err()
-    else {
-        panic!("expected the fee withdrawal to fail while executing the transaction program");
-    };
-    assert!(
-        format!("{err}")
-            .contains("amount of the asset in the vault is less than the amount to remove"),
-        "expected the vault withdrawal to abort, got: {err:?}"
-    );
 }

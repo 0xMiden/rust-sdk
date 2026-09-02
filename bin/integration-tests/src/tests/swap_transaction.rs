@@ -7,9 +7,8 @@ use miden_client::note::{Note, NoteDetails, NoteFile, NoteType, SwapNote};
 use miden_client::store::NoteFilter;
 use miden_client::testing::common::*;
 use miden_client::transaction::{SwapTransactionData, TransactionRequestBuilder};
+use miden_client_test_harness::ClientConfig;
 use tracing::info;
-
-use crate::tests::config::ClientConfig;
 
 // SWAP FULLY ONCHAIN
 // ================================================================================================
@@ -19,8 +18,7 @@ pub async fn test_swap_fully_onchain(client_config: ClientConfig) -> Result<()> 
     const REQUESTED_ASSET_AMOUNT: u64 = 25;
     let (mut client1, authenticator_1) = client_config.clone().into_client().await?;
     wait_for_node(&mut client1).await;
-    let (mut client2, authenticator_2) =
-        client_config.clone().with_fresh_store().into_client().await?;
+    let (mut client2, authenticator_2) = client_config.clone().into_client().await?;
 
     client1.sync_state().await?;
     client2.sync_state().await?;
@@ -169,8 +167,7 @@ pub async fn test_swap_private(client_config: ClientConfig) -> Result<()> {
     const REQUESTED_ASSET_AMOUNT: u64 = 25;
     let (mut client1, authenticator_1) = client_config.clone().into_client().await?;
     wait_for_node(&mut client1).await;
-    let (mut client2, authenticator_2) =
-        client_config.clone().with_fresh_store().into_client().await?;
+    let (mut client2, authenticator_2) = client_config.clone().into_client().await?;
 
     client1.sync_state().await?;
     client2.sync_state().await?;

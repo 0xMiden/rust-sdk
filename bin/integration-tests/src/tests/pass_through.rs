@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use miden_client::account::component::BasicWallet;
 use miden_client::account::{
     Account,
@@ -10,6 +10,7 @@ use miden_client::account::{
 use miden_client::assembly::CodeBuilder;
 use miden_client::asset::{Asset, AssetAmount, FungibleAsset};
 use miden_client::auth::{AuthSchemeId, NoAuth, TransactionAuthenticator};
+use miden_client::block::BlockNumber;
 use miden_client::crypto::FeltRng;
 use miden_client::note::{
     Note,
@@ -28,10 +29,11 @@ use miden_client::store::{InputNoteState, TransactionFilter};
 use miden_client::testing::common::*;
 use miden_client::transaction::TransactionRequestBuilder;
 use miden_client::{Client, ClientRng, Word};
+use miden_client_test_harness::ClientConfig;
+use miden_protocol::MAX_TX_EXECUTION_CYCLES;
+use miden_protocol::transaction::TransactionFee;
 use rand::Rng;
 use tracing::info;
-
-use crate::tests::config::ClientConfig;
 
 // PASS-THROUGH TRANSACTIONS (change sender from Alice -> Pass-through account)
 // ================================================================================================
@@ -41,8 +43,7 @@ pub async fn test_pass_through(client_config: ClientConfig) -> Result<()> {
     let (mut client, authenticator_1) = client_config.clone().into_client().await?;
 
     // Workaround to show that importing the note into another client works
-    let (mut client_2, authenticator_2) =
-        client_config.clone().with_fresh_store().into_client().await?;
+    let (mut client_2, authenticator_2) = client_config.clone().into_client().await?;
 
     wait_for_node(&mut client).await;
     client.sync_state().await?;
@@ -64,15 +65,7 @@ pub async fn test_pass_through(client_config: ClientConfig) -> Result<()> {
     )
     .await?;
 
-    // `NoAuth` pays the transaction fee out of the account's own vault like any other auth
-    // component, so on a fee-charging chain the pass-through account has to be funded before it can
-    // consume anything. Deploying it fee-free would be wrong, though: `NoAuth` only bumps the nonce
-    // when the account state changed, and an empty transaction changes nothing.
-    let charges_fees = client.chain_charges_fees().await?;
     let pass_through_account = create_pass_through_account(&mut client).await?;
-    if charges_fees {
-        client.deploy_account(pass_through_account.id()).await?;
-    }
 
     // Create client with faucets BTC faucet
     let (btc_faucet_account, ..) = insert_new_fungible_faucet(
@@ -94,11 +87,33 @@ pub async fn test_pass_through(client_config: ClientConfig) -> Result<()> {
     info!(sender_id = %sender.id(), target_id = %target.id(), "Creating pass-through note");
     let asset = FungibleAsset::new(btc_faucet_account.id(), ASSET_AMOUNT)?;
 
-    let (pass_through_note_1, pass_through_note_details_1) =
-        create_pass_through_note(sender.id(), target.id(), asset.into(), client.rng())?;
+    // On a fee-charging chain each note also carries exactly the fee its consumption pays, so
+    // `pay_fee` withdraws precisely what the note deposited and the vault ends the transaction
+    // as it started.
+    let fee_asset = pass_through_fee_asset(
+        &mut client,
+        sender.id(),
+        target.id(),
+        asset.into(),
+        pass_through_account.id(),
+    )
+    .await?;
 
-    let (pass_through_note_2, pass_through_note_details_2) =
-        create_pass_through_note(sender.id(), target.id(), asset.into(), client.rng())?;
+    let (pass_through_note_1, pass_through_note_details_1) = create_pass_through_note(
+        sender.id(),
+        target.id(),
+        asset.into(),
+        fee_asset.map(Into::into),
+        client.rng(),
+    )?;
+
+    let (pass_through_note_2, pass_through_note_details_2) = create_pass_through_note(
+        sender.id(),
+        target.id(),
+        asset.into(),
+        fee_asset.map(Into::into),
+        client.rng(),
+    )?;
 
     let tx_request = TransactionRequestBuilder::new()
         .own_output_notes(vec![pass_through_note_1.clone(), pass_through_note_2.clone()])
@@ -142,17 +157,33 @@ pub async fn test_pass_through(client_config: ClientConfig) -> Result<()> {
         pass_through_account.id()
     );
 
-    // Storing commitment to check later that (final_acc.commitment == initial_acc.commitment)
+    // The first consumption is also the account's on-chain creation, and `NoAuth` always bumps a
+    // new account's nonce, so the commitment moves here. The vault must still come out empty:
+    // the forwarded asset moved on and the fee asset was spent in full on the fee.
+    let retained_btc = client
+        .account_reader(pass_through_account.id())
+        .get_balance(btc_faucet_account.id())
+        .await?;
+    assert_eq!(
+        retained_btc,
+        AssetAmount::ZERO,
+        "pass-through account should not retain the forwarded asset"
+    );
+    if let Some(fee_asset) = fee_asset {
+        let retained_fee = client
+            .account_reader(pass_through_account.id())
+            .get_balance(fee_asset.faucet_id())
+            .await?;
+        assert_eq!(
+            retained_fee,
+            AssetAmount::ZERO,
+            "the note's fee asset should be spent in full on the fee"
+        );
+    }
+
     let commitment_before_second_tx = client
         .account_reader(pass_through_account.id())
         .commitment()
-        .await
-        .expect("pass-through account should exist");
-    // Held separately because a fee-charging chain moves the overall commitment, leaving storage
-    // as the part the pass-through still has to leave alone.
-    let storage_commitment_before_second_tx = client
-        .account_reader(pass_through_account.id())
-        .storage_commitment()
         .await
         .expect("pass-through account should exist");
 
@@ -185,28 +216,10 @@ pub async fn test_pass_through(client_config: ClientConfig) -> Result<()> {
         .await
         .expect("pass-through account should exist");
 
-    if charges_fees {
-        // Paying the fee withdraws from the vault, so the account commitment necessarily moves.
-        // What pass-through actually promises is asserted directly instead: the forwarded asset is
-        // not retained, and storage is untouched.
-        let reader = client.account_reader(pass_through_account.id());
-        let retained = reader.get_balance(btc_faucet_account.id()).await?;
-        assert_eq!(
-            retained,
-            AssetAmount::ZERO,
-            "pass-through account should not retain the forwarded asset"
-        );
-        assert_eq!(
-            reader.storage_commitment().await?,
-            storage_commitment_before_second_tx,
-            "a pass-through transaction should not touch account storage"
-        );
-    } else {
-        assert_eq!(
-            commitment_after_second_tx, commitment_before_second_tx,
-            "pass-through transaction should not change account commitment"
-        );
-    }
+    assert_eq!(
+        commitment_after_second_tx, commitment_before_second_tx,
+        "pass-through transaction should not change account commitment"
+    );
 
     Ok(())
 }
@@ -220,10 +233,9 @@ async fn create_pass_through_account<AUTH: TransactionAuthenticator>(
     let mut init_seed = [0u8; 32];
     client.rng().fill_bytes(&mut init_seed);
 
-    // The pass-through consumption must not change the account commitment on a fee-free chain: the
-    // note moves the asset straight back out, and `NoAuth` only bumps the nonce when the account
-    // state differs at the end of the transaction. Where a fee is charged, paying it withdraws
-    // from the vault, so only storage stays put.
+    // The pass-through consumption must not change the account commitment: the note moves the
+    // asset straight back out, and `NoAuth` only bumps the nonce when the account state differs
+    // at the end of the transaction.
     let account = AccountBuilder::new(init_seed)
         .account_type(AccountType::Private)
         .with_component(NoAuth)
@@ -235,6 +247,42 @@ async fn create_pass_through_account<AUTH: TransactionAuthenticator>(
     Ok(account)
 }
 
+/// Returns the native fee asset each pass-through note must carry for its consumption to settle
+/// its own fee, or `None` on a fee-free chain.
+async fn pass_through_fee_asset<AUTH: TransactionAuthenticator + Sync + 'static>(
+    client: &mut Client<AUTH>,
+    sender: AccountId,
+    target: AccountId,
+    asset: Asset,
+    pass_through_account_id: AccountId,
+) -> Result<Option<FungibleAsset>> {
+    let (genesis, _) = client
+        .get_block_header_by_num(BlockNumber::GENESIS)
+        .await?
+        .context("the genesis block header is not in the client's store")?;
+    let fee_parameters = genesis.fee_parameters();
+    if fee_parameters.verification_base_fee() == 0 {
+        return Ok(None);
+    }
+
+    let worst_case_fee =
+        TransactionFee::new(MAX_TX_EXECUTION_CYCLES)?.compute_fee(fee_parameters)?;
+    let funding = FungibleAsset::new(fee_parameters.fee_faucet_id(), worst_case_fee.as_u64())?;
+
+    let (probe_note, probe_details) =
+        create_pass_through_note(sender, target, asset, Some(funding.into()), client.rng())?;
+    let request = TransactionRequestBuilder::new()
+        .expected_output_recipients(vec![probe_details.recipient().clone()])
+        .build_consume_notes(vec![probe_note])?;
+    let fee = client
+        .execute_transaction(pass_through_account_id, request)
+        .await?
+        .executed_transaction()
+        .compute_fee();
+
+    Ok(Some(FungibleAsset::new(fee_parameters.fee_faucet_id(), fee.as_u64())?))
+}
+
 fn get_pass_through_note_script() -> NoteScript {
     let note_script_code = include_str!("../asm/PASS_THROUGH.masm");
 
@@ -244,10 +292,12 @@ fn get_pass_through_note_script() -> NoteScript {
 // Creates a note eventually meant for the target account.
 // First, the note is processed by the pass-through account.
 // The output note script guarantees the output of the processing is `target`.
+// The optional `fee_asset` rides along so the consumption can settle its own fee.
 fn create_pass_through_note(
     sender: AccountId,
     target: AccountId,
     asset: Asset,
+    fee_asset: Option<Asset>,
     rng: &mut ClientRng,
 ) -> Result<(Note, NoteDetails)> {
     let note_script = get_pass_through_note_script();
@@ -279,7 +329,9 @@ fn create_pass_through_note(
 
     let metadata = PartialNoteMetadata::new(sender, NoteType::Public)
         .with_tag(NoteTag::with_account_target(target));
-    let note = Note::new(NoteAssets::new(vec![asset])?, metadata, pass_through_recipient);
+    let mut note_assets = vec![asset];
+    note_assets.extend(fee_asset);
+    let note = Note::new(NoteAssets::new(note_assets)?, metadata, pass_through_recipient);
 
     let pass_through_note_details =
         NoteDetails::new(NoteAssets::new(vec![asset])?, target_recipient);

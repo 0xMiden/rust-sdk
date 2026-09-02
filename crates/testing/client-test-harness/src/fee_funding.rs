@@ -16,26 +16,22 @@ use miden_client::account::{AccountFile, AccountId};
 use miden_client::asset::FungibleAsset;
 use miden_client::block::BlockNumber;
 use miden_client::keystore::Keystore;
-use miden_client::note::{Note, NoteType};
+use miden_client::note::{Note, NoteType, P2idNote};
 use miden_client::testing::common::{TestClient, wait_for_node, wait_for_tx};
 use miden_client::testing::fee::FeeFunder;
-use miden_client::transaction::{
-    PaymentNoteDescription,
-    TransactionRequest,
-    TransactionRequestBuilder,
-};
+use miden_client::transaction::TransactionRequestBuilder;
 use rand::RngExt;
 use rustix::fs::{FlockOperation, flock};
 use rustix::io::Errno;
 use tokio::sync::Mutex;
 
-use super::config::ClientConfig;
+use crate::config::ClientConfig;
 
 // CONSTANTS
 // ================================================================================================
 
 /// Env var naming the funder account file or directory, mirroring the `--funders` argument.
-pub const FUNDER_ACCOUNTS_ENV: &str = "MIDEN_FUNDER_ACCOUNTS";
+pub const FUNDER_ACCOUNTS_ENV: &str = "MIDEN_FUNDER_ACCOUNTS_DIR";
 
 /// Amount of the native fee asset, in base units, each funded account receives. A fee runs a few
 /// tens of thousands of base units, so this covers far more than any one test spends.
@@ -45,7 +41,6 @@ const FUNDING_AMOUNT: u64 = 10_000_000;
 // ================================================================================================
 
 /// Returns the funder path named by [`FUNDER_ACCOUNTS_ENV`], for runners that take no arguments.
-#[allow(dead_code)]
 pub fn funders_path_from_env() -> Option<PathBuf> {
     std::env::var_os(FUNDER_ACCOUNTS_ENV)
         .map(PathBuf::from)
@@ -54,24 +49,15 @@ pub fn funders_path_from_env() -> Option<PathBuf> {
 
 /// Loads the wallets at `funders` as a [`FeeFunder`] paying out of whichever one is free. `None`
 /// yields no funder. The funder client is built from `client_config`'s endpoints.
-///
-/// A path that does not exist, or a directory holding no wallets, also yields no funder rather
-/// than an error: the runners point at the funder directory unconditionally, and a fee-free
-/// genesis declares no funders for `start-test-node.sh` to write there. A path given in error is
-/// still caught, by the account-creating helpers, which report the missing funder against the
-/// chain that actually needs one.
 pub fn load(
     client_config: &ClientConfig,
     funders: Option<&Path>,
 ) -> Result<Option<Arc<dyn FeeFunder>>> {
-    let Some(path) = funders.filter(|path| path.exists()) else {
+    let Some(path) = funders else {
         return Ok(None);
     };
 
     let wallets = load_funders(path)?;
-    if wallets.is_empty() {
-        return Ok(None);
-    }
 
     Ok(Some(Arc::new(Funder::new(client_config, wallets))))
 }
@@ -94,6 +80,10 @@ fn load_funders(path: &Path) -> Result<Vec<AccountFile>> {
     } else {
         vec![path.to_path_buf()]
     };
+
+    if paths.is_empty() {
+        bail!("no `.mac` funder account files in {}", path.display());
+    }
 
     // A private funder's state lives only in the file, so sharing one across processes would build
     // every transaction from the same stale snapshot. A public one is re-read from the chain.
@@ -124,8 +114,7 @@ fn load_funders(path: &Path) -> Result<Vec<AccountFile>> {
 
 /// The pool of pre-funded wallets a run was given, paying out of whichever one is free.
 struct Funder {
-    /// What the funder client is built from: the test's endpoints, its own store and keystore, and
-    /// no funder of its own.
+    /// What the funder client is built from: the test's endpoints, and no funder of its own.
     client_config: ClientConfig,
     wallets: Vec<AccountFile>,
     /// Where this test starts scanning, so concurrent tests do not all try the same wallet first.
@@ -140,7 +129,6 @@ impl Funder {
         Self {
             client_config: client_config
                 .clone()
-                .with_fresh_store()
                 .with_fee_funder(None)
                 .with_note_transport_endpoint(None),
             wallets,
@@ -172,8 +160,8 @@ impl Funder {
             .context("failed to build the funder client")?;
 
         // Some tests create their accounts before waiting for the node, so the wait happens here.
-        // It returns only once a sync has succeeded, which is the sync this client needs.
         wait_for_node(&mut client).await;
+        client.sync_state().await.context("failed to sync the funder client")?;
 
         for wallet in &self.wallets {
             let id = wallet.account.id();
@@ -185,22 +173,24 @@ impl Funder {
         Ok(client)
     }
 
-    /// Builds the transaction paying `target` from `wallet_id`, along with the note that will carry
-    /// the funds.
+    /// Pays every account in `targets` from `wallet_id` in a single transaction, returning each
+    /// target paired with the note carrying its funds.
     ///
-    /// Kept separate from submitting it so that the caller can tell the two apart: nothing here
-    /// moves the wallet's nonce, so a failure releases the wallet unharmed, while a failed
-    /// submission leaves the nonce in doubt.
-    async fn build_payment(
+    /// One transaction rather than one per target: each costs a fee and a proof.
+    async fn pay(
         &self,
         client: &mut TestClient,
         wallet_id: AccountId,
-        target: AccountId,
-    ) -> Result<(TransactionRequest, Note)> {
-        client
-            .import_account_by_id(wallet_id)
-            .await
-            .with_context(|| format!("failed to import funder {wallet_id}"))?;
+        targets: &[AccountId],
+    ) -> Result<Vec<(AccountId, Note)>> {
+        // Imported once per client. A re-import of a wallet this client has already paid from
+        // fails, because its local nonce is ahead of the chain's until that payment commits.
+        if client.account_reader(wallet_id).nonce().await.is_err() {
+            client
+                .import_account_by_id(wallet_id)
+                .await
+                .with_context(|| format!("failed to import funder {wallet_id}"))?;
+        }
 
         let (genesis, _) = client
             .get_block_header_by_num(BlockNumber::GENESIS)
@@ -213,83 +203,63 @@ impl Funder {
         let asset = FungibleAsset::new(fee_faucet_id, FUNDING_AMOUNT)
             .context("failed to build the native fee asset")?;
 
-        let request = TransactionRequestBuilder::new()
-            .build_pay_to_id(
-                PaymentNoteDescription::new(vec![asset.into()], wallet_id, target),
-                NoteType::Private,
-                client.rng(),
-            )
-            .context("failed to build the funding transaction request")?;
-        let note = request
-            .expected_output_own_notes()
-            .pop()
-            .expect("a pay-to-id request creates exactly one output note");
+        // Built here rather than through `build_pay_to_id`, which describes a single payment.
+        // Notes stay paired with their target, so nothing matches them back by position.
+        let funded = targets
+            .iter()
+            .map(|target| {
+                let note: Note = P2idNote::builder()
+                    .sender(wallet_id)
+                    .target(*target)
+                    .asset(asset)
+                    .note_type(NoteType::Private)
+                    .generate_serial_number(client.rng())
+                    .build()
+                    .context("failed to build a funding note")?
+                    .into();
 
-        Ok((request, note))
+                Ok((*target, note))
+            })
+            .collect::<Result<Vec<(AccountId, Note)>>>()?;
+
+        let request = TransactionRequestBuilder::new()
+            .own_output_notes(funded.iter().map(|(_, note)| note.clone()))
+            .build()
+            .context("failed to build the funding transaction request")?;
+
+        let tx_id =
+            Box::pin(client.submit_new_transaction(wallet_id, request)).await.with_context(
+                || format!("funder {wallet_id} failed to pay {} accounts", targets.len()),
+            )?;
+
+        // Waited on before the wallet is released: another process claiming it reads its state
+        // from the chain, which does not carry this payment until it commits.
+        wait_for_tx(client, tx_id)
+            .await
+            .with_context(|| format!("the payment from funder {wallet_id} never committed"))?;
+
+        Ok(funded)
     }
 }
 
 #[async_trait::async_trait(?Send)]
 impl FeeFunder for Funder {
-    async fn fund_and_deploy(&self, client: &mut TestClient, account_id: AccountId) -> Result<()> {
-        let lock = self.claim()?;
-
-        let paid = {
-            let mut guard = self.client.lock().await;
-            if guard.is_none() {
-                *guard = Some(self.build_client().await?);
-            }
-            let funder_client = guard.as_mut().expect("the funder client was just built");
-
-            // Scoped so the funder client is free again before the deploy, which runs on the
-            // account's own client, the only one holding its key. The wallet lock outlives this
-            // block: it guards the wallet's nonce, which is only settled once the payment has.
-            //
-            // Building the payment cannot move the wallet's nonce, so its failures propagate here
-            // and release the wallet on the way out rather than retiring it.
-            let (request, note) =
-                self.build_payment(funder_client, lock.account_id(), account_id).await?;
-
-            Box::pin(funder_client.submit_new_transaction(lock.account_id(), request))
-                .await
-                .map(|payment| (note, payment))
-                .with_context(|| {
-                    format!("funder {} failed to pay account {account_id}", lock.account_id())
-                })
-        };
-
-        let (note, payment) = match paid {
-            Ok(paid) => paid,
-            Err(err) => {
-                // Submission reports failure for a transaction the node accepted too — the local
-                // store update that follows it can fail on its own — so the wallet's nonce may
-                // still be about to move, with no transaction id to wait on.
-                lock.abandon();
-                return Err(err);
-            },
-        };
-
-        let deployed = client.deploy_by_consuming(account_id, note).await;
-
-        // A committed deploy consumed the payment unauthenticated, so the payment committed with
-        // it. A failed one says nothing about the payment, and the next claimant would read a nonce
-        // the still-pending payment is about to move, so the payment is settled first. Its own
-        // outcome is not the error worth reporting, but not knowing it retires the wallet: the wait
-        // gives up on a sync failure just as readily as on a discard.
-        if deployed.is_err() {
-            let settled = match self.client.lock().await.as_mut() {
-                Some(funder_client) => wait_for_tx(funder_client, payment).await.is_ok(),
-                None => false,
-            };
-            if !settled {
-                lock.abandon();
-                return deployed;
-            }
+    async fn fund(&self, account_ids: &[AccountId]) -> Result<Vec<(AccountId, Note)>> {
+        if account_ids.is_empty() {
+            return Ok(Vec::new());
         }
 
-        drop(lock);
+        // Held across the payment only. The notes are spent later, by the funded accounts
+        // themselves on their own client, which never touches this wallet.
+        let _lock = self.claim()?;
 
-        deployed
+        let mut guard = self.client.lock().await;
+        if guard.is_none() {
+            *guard = Some(self.build_client().await?);
+        }
+        let funder_client = guard.as_mut().expect("the funder client was just built");
+
+        self.pay(funder_client, _lock.account_id(), account_ids).await
     }
 }
 
@@ -339,16 +309,6 @@ impl AccountLock {
 
     pub fn account_id(&self) -> AccountId {
         self.account_id
-    }
-
-    /// Holds the lock for the rest of this process instead of releasing it.
-    ///
-    /// For when the account's on-chain state can no longer be predicted: a transaction may or may
-    /// not be about to move its nonce, so any claimant reading that nonce would build on a guess.
-    /// Retiring one account of the pool costs a run far less than a stuck claimant does, and the
-    /// kernel still releases the lock when the process exits, so the next run starts clean.
-    pub fn abandon(self) {
-        core::mem::forget(self);
     }
 
     fn open(account_id: AccountId) -> Result<File> {

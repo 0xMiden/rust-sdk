@@ -6,9 +6,9 @@ use alloc::vec::Vec;
 use async_trait::async_trait;
 use miden_protocol::Word;
 use miden_protocol::account::{AccountCode, AccountId};
-use miden_protocol::block::{BlockNumber, FeeParameters};
+use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{Note, NoteId};
-use miden_standards::account::auth::{FeeConversionInfo, commit_fee_conversion_info};
+use miden_standards::account::auth::commit_fee_conversion_info;
 use miden_standards::note::NoteConsumptionStatus;
 use miden_tx::{
     NoteCheckerError,
@@ -30,8 +30,7 @@ use crate::transaction::{
     NATIVE_FEE_CONVERSION_SALT,
     TransactionArgs,
     TransactionRequestError,
-    auth_component_of,
-    reads_auth_args_as_fee_conversion_info,
+    native_fee_conversion_info,
 };
 
 /// Represents the consumability of a note by a specific account.
@@ -73,10 +72,6 @@ impl NoteScreener {
 
     /// Sets the transaction arguments to use when checking note consumability.
     /// If not set, a default `TransactionArgs` with an empty advice map is used.
-    ///
-    /// On a chain that charges a fee, screening adds an auth arg committing the chain's native
-    /// asset at rate 1/1 for the accounts whose auth component reads it as fee conversion info,
-    /// since the trial execution pays the fee. Auth args set here are kept as they are.
     #[must_use]
     pub fn with_transaction_args(mut self, tx_args: TransactionArgs) -> Self {
         self.tx_args = Some(tx_args);
@@ -147,7 +142,6 @@ impl NoteScreener {
         let block_ref = self.store.get_sync_height().await?;
         let mut relevant_notes: BTreeMap<NoteId, Vec<NoteConsumability>> = BTreeMap::new();
         let tx_args = self.tx_args();
-        let fee_parameters = self.fee_parameters(block_ref).await?;
 
         let data_store = ClientDataStore::new(self.store.clone(), self.rpc_api.clone())
             .with_execution_input_cache();
@@ -165,12 +159,14 @@ impl NoteScreener {
             let account_code = self.get_account_code(account_id).await?;
             data_store.mast_store().load_account_code(&account_code);
 
-            let account_tx_args = with_native_fee_conversion_info(
-                tx_args.clone(),
-                account_id,
-                &account_code,
-                fee_parameters.as_ref(),
-            );
+            let account_tx_args = self
+                .with_native_fee_conversion_info(
+                    tx_args.clone(),
+                    account_id,
+                    &account_code,
+                    block_ref,
+                )
+                .await?;
 
             for note in notes {
                 let consumption_status = consumption_checker
@@ -207,12 +203,9 @@ impl NoteScreener {
     ) -> Result<NoteConsumptionInfo, NoteScreenerError> {
         let block_ref = self.store.get_sync_height().await?;
         let account_code = self.get_account_code(account_id).await?;
-        let tx_args = with_native_fee_conversion_info(
-            self.tx_args(),
-            account_id,
-            &account_code,
-            self.fee_parameters(block_ref).await?.as_ref(),
-        );
+        let tx_args = self
+            .with_native_fee_conversion_info(self.tx_args(), account_id, &account_code, block_ref)
+            .await?;
 
         let data_store = ClientDataStore::new(self.store.clone(), self.rpc_api.clone())
             .with_execution_input_cache();
@@ -229,21 +222,48 @@ impl NoteScreener {
         Ok(note_consumption_info)
     }
 
-    /// Returns the fee parameters in force at `block_ref`, or `None` when that header is not in
-    /// the store.
+    /// Returns `tx_args` carrying the auth arg the account needs to settle its fee.
     ///
-    /// The `None` is defensive: the trial execution below reads the same header through the data
-    /// store, so it would fail on its own were the header missing. Reporting it from here would
-    /// only replace that error with a less specific one.
-    async fn fee_parameters(
+    /// Screening runs the full kernel, so a fee it cannot pay aborts the trial execution, and
+    /// [`NoteConsumptionChecker`] reports that as [`NoteConsumptionStatus::UnconsumableConditions`]
+    /// — which [`is_relevant`] drops from the sync. Only custom-script notes reach execution;
+    /// standard ones are answered without it. The info comes from [`native_fee_conversion_info`],
+    /// so screening measures the fee execution would pay.
+    ///
+    /// TODO: remove once the checker can report a note as consumable-but-unaffordable, which would
+    /// make the fee irrelevant to screening rather than something to satisfy:
+    /// <https://github.com/0xMiden/protocol/issues/3710>. That would also cover the case this
+    /// cannot: an account whose vault is too empty to pay even with the info attached.
+    async fn with_native_fee_conversion_info(
         &self,
+        tx_args: TransactionArgs,
+        account_id: AccountId,
+        account_code: &AccountCode,
         block_ref: BlockNumber,
-    ) -> Result<Option<FeeParameters>, NoteScreenerError> {
-        Ok(self
-            .store
-            .get_block_header_by_num(block_ref)
-            .await?
-            .map(|(header, _)| header.fee_parameters().clone()))
+    ) -> Result<TransactionArgs, NoteScreenerError> {
+        // Auth args the caller set are the caller's business, as on the execution path.
+        if tx_args.auth_args() != Word::empty() {
+            return Ok(tx_args);
+        }
+
+        // A missing header is left to the trial execution, which reports it more specifically.
+        let Some((header, _)) = self.store.get_block_header_by_num(block_ref).await? else {
+            return Ok(tx_args);
+        };
+
+        let Some(conversion_info) = native_fee_conversion_info(
+            &account_code.interface(account_id),
+            header.fee_parameters(),
+        ) else {
+            return Ok(tx_args);
+        };
+
+        let (auth_arg, preimage) =
+            commit_fee_conversion_info(conversion_info, NATIVE_FEE_CONVERSION_SALT);
+        let mut tx_args = tx_args.with_auth_args(auth_arg);
+        tx_args.extend_advice_map([(auth_arg, preimage)]);
+
+        Ok(tx_args)
     }
 
     async fn get_account_code(
@@ -255,64 +275,6 @@ impl NoteScreener {
             .await?
             .ok_or(NoteScreenerError::AccountDataNotFound(account_id))
     }
-}
-
-// HELPER FUNCTIONS
-// ================================================================================================
-
-/// Commits the chain's native fee conversion info in the auth args when the account's auth
-/// component reads them as such.
-///
-/// Screening runs the account's auth procedure, and on a fee-charging chain
-/// `miden::standards::fee::pay_fee` aborts with `ERR_FEE_CONVERSION_INFO_MISSING` when a non-zero
-/// fee meets empty conversion info. [`NoteConsumptionChecker`] reports that abort as
-/// [`NoteConsumptionStatus::UnconsumableConditions`], which would make every note screen as
-/// irrelevant and drop it from the sync. Committing the same asset and rate the execution path
-/// attaches lets the check measure the note against the fee the real transaction would pay.
-///
-/// `AuthMultisig` and `AuthGuardedMultisig` get the native rate here even though
-/// [`Client::execute_transaction`](crate::Client::execute_transaction) makes their accounts declare
-/// their own: screening only asks whether the note could be consumed, and the native rate answers
-/// that far better than refusing to look. Both reuse the auth-arg word as their transaction summary
-/// salt, which is why a real send needs a salt only the caller can choose. The constant is safe
-/// here because the screening executor carries no authenticator, so the trial stops at the
-/// signature request inside `multisig::auth_tx` and never reaches
-/// `multisig::record_and_assert_new_tx`, which is what a reused salt would collide in.
-fn with_native_fee_conversion_info(
-    tx_args: TransactionArgs,
-    account_id: AccountId,
-    account_code: &AccountCode,
-    fee_parameters: Option<&FeeParameters>,
-) -> TransactionArgs {
-    let Some(fee_parameters) = fee_parameters else {
-        return tx_args;
-    };
-
-    if fee_parameters.verification_base_fee() == 0 {
-        return tx_args;
-    }
-
-    // Auth args the caller set are the caller's business, as on the execution path: they may
-    // already commit conversion info for a non-native asset, or carry something else entirely.
-    if tx_args.auth_args() != Word::empty() {
-        return tx_args;
-    }
-
-    if !auth_component_of(&account_code.interface(account_id))
-        .as_ref()
-        .is_some_and(reads_auth_args_as_fee_conversion_info)
-    {
-        return tx_args;
-    }
-
-    let (auth_arg, preimage) = commit_fee_conversion_info(
-        FeeConversionInfo::one_to_one(fee_parameters.fee_faucet_id()),
-        NATIVE_FEE_CONVERSION_SALT,
-    );
-
-    let mut tx_args = tx_args.with_auth_args(auth_arg);
-    tx_args.extend_advice_map([(auth_arg, preimage)]);
-    tx_args
 }
 
 // DEFAULT CALLBACK IMPLEMENTATIONS
@@ -406,236 +368,4 @@ pub enum NoteScreenerError {
     NoteCheckerError(#[from] NoteCheckerError),
     #[error("failed to build transaction request")]
     TransactionRequestError(#[from] TransactionRequestError),
-}
-
-// TESTS
-// ================================================================================================
-
-#[cfg(test)]
-mod tests {
-    use miden_protocol::account::{
-        Account,
-        AccountBuilder,
-        AccountComponent,
-        AccountId,
-        AccountType,
-    };
-    use miden_protocol::testing::account_id::ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET;
-    use miden_standards::account::AccountBuilderSchemaCommitmentExt;
-    use miden_standards::account::auth::{
-        Approver,
-        ApproverSet,
-        AuthGuardedMultisig,
-        AuthGuardedMultisigConfig,
-        AuthMultisig,
-        AuthMultisigConfig,
-        AuthMultisigSmart,
-        AuthMultisigSmartConfig,
-        AuthSingleSig,
-        GuardianConfig,
-        NoAuth,
-    };
-    use miden_standards::account::wallets::BasicWallet;
-
-    use super::*;
-    use crate::auth::{AuthSchemeId, AuthSecretKey};
-
-    const NATIVE_FEE_FAUCET: u128 = ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET;
-
-    fn native_fee_faucet_id() -> AccountId {
-        AccountId::try_from(NATIVE_FEE_FAUCET).unwrap()
-    }
-
-    fn fee_parameters(verification_base_fee: u32) -> FeeParameters {
-        FeeParameters::new(native_fee_faucet_id(), verification_base_fee)
-    }
-
-    fn account_with_auth(auth_component: impl Into<AccountComponent>) -> Account {
-        AccountBuilder::new([7u8; 32])
-            .account_type(AccountType::Public)
-            .with_component(auth_component)
-            .with_component(BasicWallet)
-            .build_with_schema_commitment()
-            .expect("account creation failed")
-    }
-
-    fn singlesig_account() -> Account {
-        let key = AuthSecretKey::new_falcon512_poseidon2();
-        account_with_auth(AuthSingleSig::new(Approver::new(
-            key.public_key().to_commitment(),
-            AuthSchemeId::Falcon512Poseidon2,
-        )))
-    }
-
-    fn multisig_account() -> Account {
-        let approvers = ApproverSet::new(
-            vec![Approver::new(
-                AuthSecretKey::new_falcon512_poseidon2().public_key().to_commitment(),
-                AuthSchemeId::Falcon512Poseidon2,
-            )],
-            1,
-        )
-        .unwrap();
-
-        account_with_auth(AuthMultisig::new(AuthMultisigConfig::new(approvers)).unwrap())
-    }
-
-    fn guarded_multisig_account() -> Account {
-        let approvers = ApproverSet::new(
-            vec![Approver::new(
-                AuthSecretKey::new_falcon512_poseidon2().public_key().to_commitment(),
-                AuthSchemeId::Falcon512Poseidon2,
-            )],
-            1,
-        )
-        .unwrap();
-
-        let guardian = GuardianConfig::new(Approver::new(
-            AuthSecretKey::new_falcon512_poseidon2().public_key().to_commitment(),
-            AuthSchemeId::Falcon512Poseidon2,
-        ));
-
-        account_with_auth(
-            AuthGuardedMultisig::new(AuthGuardedMultisigConfig::new(approvers, guardian).unwrap())
-                .unwrap(),
-        )
-    }
-
-    fn multisig_smart_account() -> Account {
-        let approvers = ApproverSet::new(
-            vec![Approver::new(
-                AuthSecretKey::new_falcon512_poseidon2().public_key().to_commitment(),
-                AuthSchemeId::Falcon512Poseidon2,
-            )],
-            1,
-        )
-        .unwrap();
-
-        account_with_auth(AuthMultisigSmart::new(AuthMultisigSmartConfig::new(approvers)).unwrap())
-    }
-
-    /// Returns the auth args a screening pass would run `account` under.
-    fn screening_auth_args(
-        account: &Account,
-        verification_base_fee: u32,
-        preset: Option<Word>,
-    ) -> Word {
-        let tx_args = match preset {
-            Some(auth_args) => TransactionArgs::new(AdviceMap::default()).with_auth_args(auth_args),
-            None => TransactionArgs::new(AdviceMap::default()),
-        };
-
-        with_native_fee_conversion_info(
-            tx_args,
-            account.id(),
-            account.code(),
-            Some(&fee_parameters(verification_base_fee)),
-        )
-        .auth_args()
-    }
-
-    fn native_commitment() -> Word {
-        commit_fee_conversion_info(
-            FeeConversionInfo::one_to_one(native_fee_faucet_id()),
-            NATIVE_FEE_CONVERSION_SALT,
-        )
-        .0
-    }
-
-    /// Trial execution runs the auth procedure, so without conversion info `fee::pay_fee` aborts
-    /// and the note screens as unconsumable. The commitment has to match the one the execution
-    /// path attaches, or screening would measure a fee the real transaction never pays.
-    #[test]
-    fn a_fee_charging_chain_gets_native_conversion_info_for_the_auth_components_reading_it() {
-        for account in [singlesig_account(), multisig_account(), guarded_multisig_account()] {
-            let component = auth_component_of(&account.code().interface(account.id()));
-            assert_eq!(
-                screening_auth_args(&account, 500, None),
-                native_commitment(),
-                "screening should commit the native asset at rate 1/1 for {component:?}"
-            );
-        }
-    }
-
-    /// The advice map has to carry the preimage: the auth procedure resolves the commitment
-    /// through it, and an entry-less map aborts just as a missing commitment does.
-    #[test]
-    fn the_conversion_info_preimage_is_placed_in_the_advice_map() {
-        let (auth_arg, expected_preimage) = commit_fee_conversion_info(
-            FeeConversionInfo::one_to_one(native_fee_faucet_id()),
-            NATIVE_FEE_CONVERSION_SALT,
-        );
-
-        for account in [singlesig_account(), multisig_account(), guarded_multisig_account()] {
-            let component = auth_component_of(&account.code().interface(account.id()));
-            let tx_args = with_native_fee_conversion_info(
-                TransactionArgs::new(AdviceMap::default()),
-                account.id(),
-                account.code(),
-                Some(&fee_parameters(500)),
-            );
-
-            let (_, advice_map, _) = tx_args.advice_inputs().clone().into_parts();
-            assert_eq!(
-                advice_map.get(&auth_arg).map(|preimage| preimage.to_vec()),
-                Some(expected_preimage.clone()),
-                "the commitment should resolve to its preimage during screening for {component:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_chain_charging_nothing_leaves_the_auth_args_alone() {
-        assert_eq!(
-            screening_auth_args(&singlesig_account(), 0, None),
-            Word::empty(),
-            "a fee-free chain needs no conversion info"
-        );
-    }
-
-    /// `NoAuth` takes its asset and rate from `fee::native_conversion_info` instead of the auth
-    /// args, so an injected commitment would be discarded. `AuthMultisigSmart` never reaches
-    /// `miden::standards::fee` at all and would read the commitment as its summary salt.
-    #[test]
-    fn an_auth_component_that_does_not_read_the_auth_args_is_left_alone() {
-        for account in [account_with_auth(NoAuth), multisig_smart_account()] {
-            let component = auth_component_of(&account.code().interface(account.id()));
-            assert_eq!(
-                screening_auth_args(&account, 500, None),
-                Word::empty(),
-                "only the components reading the auth args as conversion info should get them, \
-                 but {component:?} did"
-            );
-        }
-    }
-
-    /// Caller-supplied auth args may already commit a non-native asset, or carry something else
-    /// entirely, so screening defers to them exactly as the execution path does.
-    #[test]
-    fn caller_supplied_auth_args_are_preserved() {
-        let preset = Word::from([1u32, 2, 3, 4]);
-        assert_eq!(
-            screening_auth_args(&singlesig_account(), 500, Some(preset)),
-            preset,
-            "screening should not overwrite auth args the caller set"
-        );
-    }
-
-    /// Absent fee parameters are the defensive branch described on
-    /// [`NoteScreener::fee_parameters`]: nothing is committed, and the trial execution reports the
-    /// missing header itself.
-    #[test]
-    fn absent_fee_parameters_leave_the_auth_args_alone() {
-        let account = singlesig_account();
-        assert_eq!(
-            with_native_fee_conversion_info(
-                TransactionArgs::new(AdviceMap::default()),
-                account.id(),
-                account.code(),
-                None,
-            )
-            .auth_args(),
-            Word::empty(),
-        );
-    }
 }

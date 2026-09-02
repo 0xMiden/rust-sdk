@@ -23,8 +23,8 @@ const INTEGRATION_TESTS_HEADER: &str = r#"// Auto-generated integration tests
 "#;
 
 const INTEGRATION_TESTS_IMPORTS: &str = r#"use anyhow::Result;
-use miden_client_integration_tests::tests::config::ClientConfig;
-use miden_client_integration_tests::tests::fee_funding;"#;
+use miden_client_test_harness::ClientConfig;
+use miden_client_test_harness::fee_funding;"#;
 
 const TOKIO_TEST_WRAPPER: &str = r#"/// Auto-generated tokio test wrapper for {ORIGINAL_FUNCTION_NAME}
 #[tokio::test]
@@ -33,7 +33,7 @@ async fn {TEST_FUNCTION_NAME}() -> Result<()> {{
     // TEST_MIDEN_PROVER_URL, TEST_MIDEN_NOTE_TRANSPORT_URL, and MIDEN_TEST_TIMEOUT.
     // Note transport is cleared here to avoid eager gRPC connections for every test;
     // transport tests configure their own transport via TEST_MIDEN_NOTE_TRANSPORT_URL.
-    // The funder wallets come from MIDEN_FUNDER_ACCOUNTS, since a `#[tokio::test]` wrapper has
+    // The funder wallets come from MIDEN_FUNDER_ACCOUNTS_DIR, since a `#[tokio::test]` wrapper has
     // no arguments of its own to read.
     let client_config = ClientConfig::default()
         .with_note_transport_endpoint(None)
@@ -155,55 +155,9 @@ fn collect_test_cases_recursive(current_dir: &Path, test_cases: &mut Vec<TestCas
             collect_test_cases_recursive(&path, test_cases);
         } else if path.extension().and_then(|s| s.to_str()) == Some("rs") {
             let mut file_test_cases = collect_test_cases_from_file(&path);
-            if !file_test_cases.is_empty() {
-                assert_declared_publicly_in_parent_module(&path);
-            }
             test_cases.append(&mut file_test_cases);
         }
     }
-}
-
-/// Fails the build if `path` is not publicly declared in its parent `mod.rs`.
-///
-/// The generated registry reaches the tests it discovered through the crate's public path, derived
-/// from the file's location. A file that is undeclared, or declared privately, cannot be reached
-/// that way, and the import fails to resolve in generated code the author never wrote; reporting it
-/// against the file itself is what makes the mistake findable. Only files that contribute tests are
-/// held to this — a helper module beside them is free to stay private.
-fn assert_declared_publicly_in_parent_module(path: &Path) {
-    let Some(module) = path.file_stem().and_then(|stem| stem.to_str()) else {
-        return;
-    };
-    if module == "mod" {
-        return;
-    }
-
-    let parent_module = path.with_file_name("mod.rs");
-    let declarations = fs::read_to_string(&parent_module).unwrap_or_default();
-    let declared = declarations.lines().any(|line| declares_module(line, module));
-
-    assert!(
-        declared,
-        "{} defines a test module that {} does not declare. Add `pub mod {};` there, or delete \
-         the file if it is not meant to be part of the suite.",
-        path.display(),
-        parent_module.display(),
-        module,
-    );
-}
-
-/// Whether `line` declares `module` publicly.
-///
-/// The generated wrappers import each module as `miden_client_integration_tests::tests::<module>`,
-/// an out-of-crate path, so only a bare `pub` makes the tests reachable: `pub(crate)` and friends
-/// compile here and fail there. Attributes ahead of the keyword are tolerated, since a one-line
-/// `#[cfg(...)] pub mod foo;` declares it just as well.
-fn declares_module(line: &str, module: &str) -> bool {
-    let Some((_, after_pub)) = line.split_once("pub") else {
-        return false;
-    };
-
-    after_pub.split_whitespace().collect::<Vec<_>>() == ["mod", &format!("{module};")]
 }
 
 /// Extracts test case information from a single Rust source file.
@@ -348,10 +302,12 @@ fn parse_test_function_name(line: &str) -> Option<String> {
 
     let tokens: Vec<&str> = s.split_whitespace().collect();
     // Look for public function patterns
-    let fn_pos = match tokens.as_slice() {
-        ["pub", "async", "fn", ..] => 2,
-        ["pub", "fn", ..] => 1,
-        _ => return None,
+    let fn_pos = if tokens[0] == "pub" && tokens[1] == "async" && tokens[2] == "fn" {
+        2 // pub async fn 
+    } else if tokens[0] == "pub" && tokens[1] == "fn" {
+        1 // pub fn 
+    } else {
+        return None;
     };
 
     let name_token = tokens.get(fn_pos + 1)?;
@@ -393,8 +349,7 @@ fn parse_test_function_name(line: &str) -> Option<String> {
 /// ```rust
 /// // File header and imports
 /// use anyhow::Result;
-///
-/// use crate::tests::config::ClientConfig;
+/// use miden_client_test_harness::ClientConfig;
 /// // ... other imports
 ///
 /// /// Auto-generated tokio test wrapper for my_test

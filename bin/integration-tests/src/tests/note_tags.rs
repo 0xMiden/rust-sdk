@@ -7,8 +7,7 @@ use miden_client::store::{InputNoteRecord, NoteFilter};
 use miden_client::sync::NoteTagSource;
 use miden_client::testing::common::*;
 use miden_client::transaction::{InputNote, PaymentNoteDescription, TransactionRequestBuilder};
-
-use crate::tests::config::ClientConfig;
+use miden_client_test_harness::ClientConfig;
 
 // HELPERS
 // ================================================================================================
@@ -32,12 +31,8 @@ pub async fn test_output_notes_do_not_register_tags(client_config: ClientConfig)
     // Client 1 runs the faucet; client 2 tracks the recipient wallet, so from client 1's
     // perspective the minted note goes to an external account.
     let (mut client_1, keystore_1) = client_config.clone().into_client().await?;
-    let (mut client_2, keystore_2) = client_config
-        .clone()
-        .with_fresh_store()
-        .with_note_transport_endpoint(None)
-        .into_client()
-        .await?;
+    let (mut client_2, keystore_2) =
+        client_config.clone().with_note_transport_endpoint(None).into_client().await?;
     wait_for_node(&mut client_2).await;
 
     let (faucet_account, _) = insert_new_fungible_faucet(
@@ -98,7 +93,8 @@ pub async fn test_output_notes_do_not_register_tags(client_config: ClientConfig)
     let tx_id =
         consume_notes(&mut client_2, basic_wallet.id(), &[received_note.note().clone()]).await;
     wait_for_tx(&mut client_2, tx_id).await?;
-    assert_account_balance(&client_2, basic_wallet.id(), faucet_account.id(), MINT_AMOUNT).await;
+    assert_account_has_single_asset(&client_2, basic_wallet.id(), faucet_account.id(), MINT_AMOUNT)
+        .await;
 
     Ok(())
 }
@@ -107,12 +103,8 @@ pub async fn test_output_notes_do_not_register_tags(client_config: ClientConfig)
 /// a self-directed transfer and for an expected note imported by details.
 pub async fn test_input_note_tag_lifecycle(client_config: ClientConfig) -> Result<()> {
     let (mut client_1, keystore_1) = client_config.clone().into_client().await?;
-    let (mut client_2, keystore_2) = client_config
-        .clone()
-        .with_fresh_store()
-        .with_note_transport_endpoint(None)
-        .into_client()
-        .await?;
+    let (mut client_2, keystore_2) =
+        client_config.clone().with_note_transport_endpoint(None).into_client().await?;
     wait_for_node(&mut client_1).await;
 
     let (faucet_account, _) = insert_new_fungible_faucet(

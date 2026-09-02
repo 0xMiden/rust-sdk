@@ -61,7 +61,7 @@ use miden_client::store::{InputNoteState, NoteFilter};
 use miden_client::sync::NoteTagSource;
 use miden_client::testing::common::{
     TestClient,
-    assert_account_balance,
+    assert_account_has_single_asset,
     consume_notes,
     execute_tx_and_sync,
     insert_new_wallet,
@@ -70,9 +70,8 @@ use miden_client::testing::common::{
 };
 use miden_client::transaction::TransactionRequestBuilder;
 use miden_client::{Felt, Word, ZERO};
+use miden_client_test_harness::ClientConfig;
 use rand::{Rng, RngExt};
-
-use crate::tests::config::ClientConfig;
 
 // HELPERS
 // ================================================================================================
@@ -732,7 +731,7 @@ pub async fn test_network_note_consumed_by_ntx(client_config: ClientConfig) -> R
 /// note flow.
 pub async fn test_ntx_mint_produces_public_p2id(client_config: ClientConfig) -> Result<()> {
     let (mut client, keystore) = client_config.clone().into_client().await?;
-    let (mut client_2, keystore_2) = client_config.clone().with_fresh_store().into_client().await?;
+    let (mut client_2, keystore_2) = client_config.clone().into_client().await?;
 
     let (alice, ..) =
         insert_new_wallet(&mut client, AccountType::Public, &keystore, RPO_FALCON_SCHEME_ID)
@@ -813,7 +812,7 @@ pub async fn test_ntx_mint_produces_public_note_with_non_standard_script(
     client_config: ClientConfig,
 ) -> Result<()> {
     let (mut client, keystore) = client_config.clone().into_client().await?;
-    let (mut client_2, keystore_2) = client_config.clone().with_fresh_store().into_client().await?;
+    let (mut client_2, keystore_2) = client_config.clone().into_client().await?;
 
     let (alice, ..) =
         insert_new_wallet(&mut client, AccountType::Public, &keystore, RPO_FALCON_SCHEME_ID)
@@ -823,6 +822,9 @@ pub async fn test_ntx_mint_produces_public_note_with_non_standard_script(
             .await?;
 
     let faucet = deploy_network_fungible_faucet(&mut client, alice.id()).await?;
+
+    // A mint cannot double as the account's deploy.
+    client.deploy_account(alice.id()).await?;
     let amount = Felt::new_unchecked(100);
 
     // Registered case: pre-register a non-standard output script via `expected_ntx_scripts` on a
@@ -875,7 +877,8 @@ pub async fn test_ntx_mint_produces_public_note_with_non_standard_script(
     let consume_tx_id = consume_notes(&mut client_2, bob.id(), &[note]).await;
     wait_for_tx(&mut client_2, consume_tx_id).await?;
 
-    assert_account_balance(&client_2, bob.id(), faucet.id(), amount.as_canonical_u64()).await;
+    assert_account_has_single_asset(&client_2, bob.id(), faucet.id(), amount.as_canonical_u64())
+        .await;
 
     // Unregistered case: mint a note whose public output uses a different non-standard script
     // that is never registered. The NTX builder cannot build the public output note, so it
@@ -972,8 +975,7 @@ pub async fn test_watch_network_account(client_config: ClientConfig) -> Result<(
     const BUMP_NOTE_NUMBER: u64 = 3;
 
     let (mut client_1, keystore_1) = client_config.clone().into_client().await?;
-    let (mut client_2, _keystore_2) =
-        client_config.clone().with_fresh_store().into_client().await?;
+    let (mut client_2, _keystore_2) = client_config.clone().into_client().await?;
     client_1.sync_state().await?;
 
     let incr_note_root = note_script_root(INCR_NOTE_SCRIPT_CODE, client_1.source_manager())?;

@@ -339,10 +339,9 @@ impl MockRpcApi {
 impl NodeRpcClient for MockRpcApi {
     /// Always reports the commitment as unset, unlike a real client.
     ///
-    /// Callers read this to skip re-fetching genesis, which for a real client is safe because its
-    /// RPC connection is its own: whoever set the commitment also stored the header. Tests share
-    /// one mock across several clients with separate stores, so a commitment set by the first
-    /// would stop every later client from ever storing genesis.
+    /// A real client's RPC connection is its own, so whoever set the commitment also stored the
+    /// header. Tests share one mock across clients with separate stores, where a commitment set by
+    /// the first would stop every later client from storing genesis at all.
     fn has_genesis_commitment(&self) -> Option<Word> {
         None
     }

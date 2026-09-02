@@ -1,0 +1,30 @@
+[package]
+authors.workspace      = true
+description            = "Shared harness for the miden client's node-backed tests. NOT for production use."
+edition.workspace      = true
+license.workspace      = true
+name                   = "miden-client-test-harness"
+publish                = false
+repository.workspace   = true
+rust-version.workspace = true
+version.workspace      = true
+
+[dependencies]
+# Workspace dependencies
+miden-client              = { features = ["std", "testing", "tonic"], workspace = true }
+miden-client-sqlite-store = { workspace = true }
+
+# External dependencies
+anyhow      = { features = ["std"], workspace = true }
+async-trait = { workspace = true }
+rand        = { workspace = true }
+rustix      = { workspace = true }
+tokio       = { workspace = true }
+uuid        = { workspace = true }
+
+[lints]
+workspace = true
+
+[lib]
+doctest = false
+test    = false

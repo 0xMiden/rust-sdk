@@ -25,6 +25,8 @@ miden-standards = { features = ["std", "testing"], workspace = true }
 anyhow      = { workspace = true }
 rand        = { workspace = true }
 rand_chacha = { workspace = true }
+serde       = { workspace = true }
+toml        = { workspace = true }
 
 [lints]
 workspace = true

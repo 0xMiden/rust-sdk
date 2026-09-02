@@ -27,10 +27,9 @@ use miden_client::transaction::{
     TransactionStatus,
 };
 use miden_client::{ClientError, EMPTY_WORD, Word};
+use miden_client_test_harness::ClientConfig;
 use rand::Rng;
 use tracing::info;
-
-use crate::tests::config::ClientConfig;
 
 // TESTS
 // ================================================================================================
@@ -39,9 +38,9 @@ pub async fn test_onchain_notes_flow(client_config: ClientConfig) -> Result<()> 
     // Client 1 is an private faucet which will mint an onchain note for client 2
     let (mut client_1, keystore_1) = client_config.clone().into_client().await?;
     // Client 2 is an private account which will consume the note that it will sync from the node
-    let (mut client_2, keystore_2) = client_config.clone().with_fresh_store().into_client().await?;
+    let (mut client_2, keystore_2) = client_config.clone().into_client().await?;
     // Client 3 will be transferred part of the assets by client 2's account
-    let (mut client_3, keystore_3) = client_config.clone().with_fresh_store().into_client().await?;
+    let (mut client_3, keystore_3) = client_config.clone().into_client().await?;
     wait_for_node(&mut client_3).await;
 
     // Create faucet account
@@ -97,7 +96,13 @@ pub async fn test_onchain_notes_flow(client_config: ClientConfig) -> Result<()> 
     let tx_id =
         consume_notes(&mut client_2, basic_wallet_1.id(), &[received_note.note().clone()]).await;
     wait_for_tx(&mut client_2, tx_id).await?;
-    assert_account_balance(&client_2, basic_wallet_1.id(), faucet_account.id(), MINT_AMOUNT).await;
+    assert_account_has_single_asset(
+        &client_2,
+        basic_wallet_1.id(),
+        faucet_account.id(),
+        MINT_AMOUNT,
+    )
+    .await;
 
     let p2id_asset = FungibleAsset::new(faucet_account.id(), TRANSFER_AMOUNT)?;
     let tx_request = TransactionRequestBuilder::new().build_pay_to_id(
@@ -156,14 +161,19 @@ pub async fn test_onchain_notes_flow(client_config: ClientConfig) -> Result<()> 
 
     let tx_id = consume_notes(&mut client_3, basic_wallet_2.id(), &[note]).await;
     wait_for_tx(&mut client_3, tx_id).await?;
-    assert_account_balance(&client_3, basic_wallet_2.id(), faucet_account.id(), TRANSFER_AMOUNT)
-        .await;
+    assert_account_has_single_asset(
+        &client_3,
+        basic_wallet_2.id(),
+        faucet_account.id(),
+        TRANSFER_AMOUNT,
+    )
+    .await;
     Ok(())
 }
 
 pub async fn test_onchain_accounts(client_config: ClientConfig) -> Result<()> {
     let (mut client_1, keystore_1) = client_config.clone().into_client().await?;
-    let (mut client_2, keystore_2) = client_config.clone().with_fresh_store().into_client().await?;
+    let (mut client_2, keystore_2) = client_config.clone().into_client().await?;
     wait_for_node(&mut client_2).await;
 
     let (faucet_account_header, secret_key) = insert_new_fungible_faucet(
@@ -231,11 +241,12 @@ pub async fn test_onchain_accounts(client_config: ClientConfig) -> Result<()> {
     info!(account_id = %target_account_id, "Consuming note on first client");
     let tx_id = consume_notes(&mut client_1, target_account_id, &[note]).await;
     wait_for_tx(&mut client_1, tx_id).await?;
-    assert_account_balance(&client_1, target_account_id, faucet_account_id, MINT_AMOUNT).await;
+    assert_account_has_single_asset(&client_1, target_account_id, faucet_account_id, MINT_AMOUNT)
+        .await;
     let tx_id =
         consume_notes(&mut client_2, second_client_target_account_id, &[second_client_note]).await;
     wait_for_tx(&mut client_2, tx_id).await?;
-    assert_account_balance(
+    assert_account_has_single_asset(
         &client_2,
         second_client_target_account_id,
         faucet_account_id,
@@ -337,7 +348,7 @@ pub async fn test_onchain_accounts(client_config: ClientConfig) -> Result<()> {
 
 pub async fn test_import_account_by_id(client_config: ClientConfig) -> Result<()> {
     let (mut client_1, keystore_1) = client_config.clone().into_client().await?;
-    let (mut client_2, keystore_2) = client_config.clone().with_fresh_store().into_client().await?;
+    let (mut client_2, keystore_2) = client_config.clone().into_client().await?;
     wait_for_node(&mut client_1).await;
 
     let mut user_seed = [0u8; 32];
@@ -402,7 +413,13 @@ pub async fn test_import_account_by_id(client_config: ClientConfig) -> Result<()
     client_2.sync_state().await?;
     let tx_id = consume_notes(&mut client_2, target_account_id, &[note]).await;
     wait_for_tx(&mut client_2, tx_id).await?;
-    assert_account_balance(&client_2, target_account_id, faucet_account_id, MINT_AMOUNT * 2).await;
+    assert_account_has_single_asset(
+        &client_2,
+        target_account_id,
+        faucet_account_id,
+        MINT_AMOUNT * 2,
+    )
+    .await;
     Ok(())
 }
 
@@ -414,8 +431,7 @@ pub async fn test_import_account_by_id(client_config: ClientConfig) -> Result<()
 ///     txs (watched accounts track on-chain state, not their note outputs).
 pub async fn test_import_watched_account_by_id(client_config: ClientConfig) -> Result<()> {
     let (mut client_1, keystore_1) = client_config.clone().into_client().await?;
-    let (mut client_2, _keystore_2) =
-        client_config.clone().with_fresh_store().into_client().await?;
+    let (mut client_2, _keystore_2) = client_config.clone().into_client().await?;
     wait_for_node(&mut client_1).await;
 
     let (faucet_account, _) = insert_new_fungible_faucet(
@@ -580,13 +596,21 @@ pub async fn test_consumed_note_ordering(client_config: ClientConfig) -> Result<
     }
     client.sync_state().await?;
 
-    // Build a consume request per minted note and submit them as a single proven batch.
+    // Requests are built before the batch borrows the client, so a funding note can still be
+    // folded in.
+    let requests: Vec<_> = minted_notes
+        .iter()
+        .map(|note| {
+            let tx_request = TransactionRequestBuilder::new()
+                .build_consume_notes(vec![note.clone()])
+                .unwrap();
+            client.fund_request(wallet_account.id(), tx_request)
+        })
+        .collect();
+
     let mut batch = client.new_transaction_batch();
-    for (i, note) in minted_notes.iter().enumerate() {
-        let tx_request = TransactionRequestBuilder::new()
-            .build_consume_notes(vec![note.clone()])
-            .unwrap();
-        info!(note_id = %note.id(), index = i, "Pushing consume tx into batch");
+    for (i, tx_request) in requests.into_iter().enumerate() {
+        info!(index = i, "Pushing consume tx into batch");
         batch.push(wallet_account.id(), tx_request).await?;
     }
     let submission_tip = batch.submit().await?;
@@ -698,8 +722,7 @@ pub async fn test_watched_account_recovers_consumed_public_note(
     client_config: ClientConfig,
 ) -> Result<()> {
     let (mut client_a, keystore_a) = client_config.clone().into_client().await?;
-    let (mut client_b, _keystore_b) =
-        client_config.clone().with_fresh_store().into_client().await?;
+    let (mut client_b, _keystore_b) = client_config.clone().into_client().await?;
     wait_for_node(&mut client_a).await;
 
     let (faucet, _) = insert_new_fungible_faucet(
@@ -770,7 +793,7 @@ pub async fn test_watched_account_recovers_consumed_public_note(
 /// 4. Client 2 consumes both notes.
 pub async fn test_sync_note_with_attachment(client_config: ClientConfig) -> Result<()> {
     let (mut client_1, keystore_1) = client_config.clone().into_client().await?;
-    let (mut client_2, keystore_2) = client_config.clone().with_fresh_store().into_client().await?;
+    let (mut client_2, keystore_2) = client_config.clone().into_client().await?;
     wait_for_node(&mut client_1).await;
 
     // Create faucet in client 1
@@ -867,7 +890,8 @@ pub async fn test_sync_note_with_attachment(client_config: ClientConfig) -> Resu
     let tx_id = consume_notes(&mut client_2, wallet.id(), &received_notes).await;
     wait_for_tx(&mut client_2, tx_id).await?;
 
-    assert_account_balance(&client_2, wallet.id(), faucet_account.id(), MINT_AMOUNT * 2).await;
+    assert_account_has_single_asset(&client_2, wallet.id(), faucet_account.id(), MINT_AMOUNT * 2)
+        .await;
 
     Ok(())
 }

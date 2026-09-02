@@ -1,4 +1,5 @@
 use std::boxed::Box;
+use std::collections::BTreeMap;
 use std::env::temp_dir;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -45,6 +46,7 @@ use crate::transaction::{
     TransactionRequest,
     TransactionRequestBuilder,
     TransactionRequestError,
+    TransactionResult,
     TransactionStatus,
 };
 use crate::{Client, ClientError};
@@ -59,12 +61,79 @@ use crate::{Client, ClientError};
 pub struct TestClient {
     client: Client<FilesystemKeyStore>,
     fee_funder: Option<Arc<dyn FeeFunder>>,
+    /// Funding notes paid to accounts that have not spent them yet.
+    ///
+    /// A note's assets reach the vault before the fee is withdrawn, so folding one into an
+    /// account's next transaction makes that transaction its deploy as well.
+    pending_funding: BTreeMap<AccountId, Note>,
 }
 
 impl TestClient {
     /// Wraps `client` with no fee funder, which is all a fee-free chain needs.
     pub fn new(client: Client<FilesystemKeyStore>) -> Self {
-        Self { client, fee_funder: None }
+        Self {
+            client,
+            fee_funder: None,
+            pending_funding: BTreeMap::new(),
+        }
+    }
+
+    /// Records funding notes, to be folded into each account's next transaction.
+    pub(crate) fn stash_funding(&mut self, funded: impl IntoIterator<Item = (AccountId, Note)>) {
+        self.pending_funding.extend(funded);
+    }
+
+    /// Takes `account_id`'s funding note, opting it out of automatic folding.
+    ///
+    /// The caller must then consume it somewhere, or the account cannot pay a fee. Use it when a
+    /// test needs the funding in a particular transaction — one asserting on what a sync reports,
+    /// say.
+    pub fn take_funding(&mut self, account_id: AccountId) -> Option<Note> {
+        self.pending_funding.remove(&account_id)
+    }
+
+    /// Submits a transaction for `account_id`, folding in its funding note when it has one.
+    ///
+    /// Shadows [`Client::submit_new_transaction`], still reachable through [`Deref`] for callers
+    /// that want the unfunded path.
+    pub async fn submit_new_transaction(
+        &mut self,
+        account_id: AccountId,
+        transaction_request: TransactionRequest,
+    ) -> Result<TransactionId, ClientError> {
+        let transaction_request = self.fund_request(account_id, transaction_request);
+
+        Box::pin(self.client.submit_new_transaction(account_id, transaction_request)).await
+    }
+
+    /// Executes a transaction for `account_id`, folding in its funding note when it has one.
+    ///
+    /// Takes `&mut self` where the wrapped method takes `&self`, since taking the note mutates.
+    pub async fn execute_transaction(
+        &mut self,
+        account_id: AccountId,
+        transaction_request: TransactionRequest,
+    ) -> Result<TransactionResult, ClientError> {
+        let transaction_request = self.fund_request(account_id, transaction_request);
+
+        Box::pin(self.client.execute_transaction(account_id, transaction_request)).await
+    }
+
+    /// Returns `transaction_request` with `account_id`'s funding note folded in.
+    ///
+    /// Only needed for requests not going through [`Self::submit_new_transaction`] — notably a
+    /// batch, which borrows the client, so the note must be taken before the batch is created.
+    #[must_use]
+    pub fn fund_request(
+        &mut self,
+        account_id: AccountId,
+        mut transaction_request: TransactionRequest,
+    ) -> TransactionRequest {
+        if let Some(note) = self.take_funding(account_id) {
+            transaction_request.add_unauthenticated_input_note(note);
+        }
+
+        transaction_request
     }
 
     /// Sets the funder the account-creating helpers draw the native fee asset from.
@@ -135,6 +204,39 @@ pub async fn insert_new_wallet_with_seed(
     init_seed: [u8; 32],
     auth_scheme: AuthSchemeId,
 ) -> Result<(Account, AuthSecretKey)> {
+    let (account, key_pair) =
+        insert_new_wallet_with_seed_unfunded(client, visibility, keystore, init_seed, auth_scheme)
+            .await?;
+    client.fund_if_needed(&[account.id()]).await?;
+
+    Ok((account, key_pair))
+}
+
+/// Inserts a new wallet account without funding or deploying it.
+///
+/// Callers creating several accounts at once should use this and fund them together with a single
+/// [`TestClient::fund_if_needed`], which costs one funding transaction instead of one
+/// per account.
+pub async fn insert_new_wallet_unfunded(
+    client: &mut TestClient,
+    visibility: AccountType,
+    keystore: &FilesystemKeyStore,
+    auth_scheme: AuthSchemeId,
+) -> Result<(Account, AuthSecretKey)> {
+    let mut init_seed = [0u8; 32];
+    client.rng().fill_bytes(&mut init_seed);
+
+    insert_new_wallet_with_seed_unfunded(client, visibility, keystore, init_seed, auth_scheme).await
+}
+
+/// Inserts a new wallet account built with the provided seed, without funding or deploying it.
+pub async fn insert_new_wallet_with_seed_unfunded(
+    client: &mut TestClient,
+    visibility: AccountType,
+    keystore: &FilesystemKeyStore,
+    init_seed: [u8; 32],
+    auth_scheme: AuthSchemeId,
+) -> Result<(Account, AuthSecretKey)> {
     let key_pair = match auth_scheme {
         AuthSchemeId::Falcon512Poseidon2 => AuthSecretKey::new_falcon512_poseidon2(),
         AuthSchemeId::EcdsaK256Keccak => AuthSecretKey::new_ecdsa_k256_keccak(),
@@ -156,8 +258,6 @@ pub async fn insert_new_wallet_with_seed(
 
     info!(account_id = %account.id(), ?visibility, "Inserted new wallet");
 
-    client.fund_and_deploy_if_needed(account.id()).await?;
-
     Ok((account, key_pair))
 }
 
@@ -166,6 +266,22 @@ pub async fn insert_new_wallet_with_seed(
 /// A [`BasicWallet`] rides along for its `receive_asset` procedure, which `FungibleFaucet` does not
 /// export, so a P2ID note can fund the faucet's own minting fees. Minting is unaffected.
 pub async fn insert_new_fungible_faucet(
+    client: &mut TestClient,
+    visibility: AccountType,
+    keystore: &FilesystemKeyStore,
+    auth_scheme: AuthSchemeId,
+) -> Result<(Account, AuthSecretKey)> {
+    let (account, key_pair) =
+        insert_new_fungible_faucet_unfunded(client, visibility, keystore, auth_scheme).await?;
+    client.fund_if_needed(&[account.id()]).await?;
+
+    Ok((account, key_pair))
+}
+
+/// Inserts a new fungible faucet account without funding or deploying it.
+///
+/// See [`insert_new_wallet_unfunded`] for when to prefer this.
+pub async fn insert_new_fungible_faucet_unfunded(
     client: &mut TestClient,
     visibility: AccountType,
     keystore: &FilesystemKeyStore,
@@ -217,8 +333,6 @@ pub async fn insert_new_fungible_faucet(
     client.add_account(&account, false).await?;
 
     info!(account_id = %account.id(), ?visibility, "Inserted new fungible faucet");
-
-    client.fund_and_deploy_if_needed(account.id()).await?;
 
     Ok((account, key_pair))
 }
@@ -465,20 +579,26 @@ pub async fn setup_two_wallets_and_faucet(
 
     // Create faucet account
     let (faucet_account, _) =
-        insert_new_fungible_faucet(client, account_visibility, keystore, auth_scheme)
+        insert_new_fungible_faucet_unfunded(client, account_visibility, keystore, auth_scheme)
             .await
             .with_context(|| "failed to insert new fungible faucet account")?;
 
     // Create regular accounts
     let (first_basic_account, ..) =
-        insert_new_wallet(client, account_visibility, keystore, auth_scheme)
+        insert_new_wallet_unfunded(client, account_visibility, keystore, auth_scheme)
             .await
             .with_context(|| "failed to insert first basic wallet account")?;
 
     let (second_basic_account, ..) =
-        insert_new_wallet(client, account_visibility, keystore, auth_scheme)
+        insert_new_wallet_unfunded(client, account_visibility, keystore, auth_scheme)
             .await
             .with_context(|| "failed to insert second basic wallet account")?;
+
+    // All three at once, so one funding transaction covers the set.
+    client
+        .fund_if_needed(&[faucet_account.id(), first_basic_account.id(), second_basic_account.id()])
+        .await
+        .with_context(|| "failed to fund and deploy the created accounts")?;
 
     info!(
         faucet_id = %faucet_account.id(),
@@ -499,13 +619,20 @@ pub async fn setup_wallet_and_faucet(
     auth_scheme: AuthSchemeId,
 ) -> Result<(Account, Account)> {
     let (faucet_account, _) =
-        insert_new_fungible_faucet(client, account_visibility, keystore, auth_scheme)
+        insert_new_fungible_faucet_unfunded(client, account_visibility, keystore, auth_scheme)
             .await
             .with_context(|| "failed to insert new fungible faucet account")?;
 
-    let (basic_account, ..) = insert_new_wallet(client, account_visibility, keystore, auth_scheme)
+    let (basic_account, ..) =
+        insert_new_wallet_unfunded(client, account_visibility, keystore, auth_scheme)
+            .await
+            .with_context(|| "failed to insert new wallet account")?;
+
+    // Both at once, so one funding transaction covers the pair.
+    client
+        .fund_if_needed(&[faucet_account.id(), basic_account.id()])
         .await
-        .with_context(|| "failed to insert new wallet account")?;
+        .with_context(|| "failed to fund and deploy the created accounts")?;
 
     Ok((basic_account, faucet_account))
 }
@@ -551,11 +678,8 @@ pub async fn consume_notes(
     tx_id
 }
 
-/// Asserts that the account's balance of `faucet_id`'s asset is `expected_amount`.
-///
-/// Says nothing about the rest of the vault: on a fee-charging chain every account also holds the
-/// native fee asset.
-pub async fn assert_account_balance(
+/// Asserts that the account has a single asset with the expected amount.
+pub async fn assert_account_has_single_asset(
     client: &TestClient,
     account_id: AccountId,
     faucet_id: AccountId,
@@ -709,7 +833,7 @@ pub async fn insert_account_with_custom_component(
     keystore.add_key(&key_pair, account.id()).await.unwrap();
     client.add_account(&account, false).await?;
 
-    client.fund_and_deploy_if_needed(account.id()).await?;
+    client.fund_if_needed(&[account.id()]).await?;
 
     Ok((account, key_pair))
 }

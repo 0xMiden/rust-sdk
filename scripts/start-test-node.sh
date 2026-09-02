@@ -45,32 +45,6 @@ NETWORK_TX_AUTH="${MIDEN_NETWORK_TX_AUTH:-miden-client-testing-ntx-secret}"
 # Genesis `verification_base_fee`. Every transaction pays out of its own account's vault, as on a
 # real chain. At 0 fees are never charged.
 VERIFICATION_BASE_FEE="${MIDEN_VERIFICATION_BASE_FEE:-500}"
-case "$VERIFICATION_BASE_FEE" in
-    '' | *[!0-9]*)
-        echo "error: MIDEN_VERIFICATION_BASE_FEE must be a non-negative integer, got" \
-            "'$VERIFICATION_BASE_FEE'" >&2
-        exit 1
-        ;;
-esac
-# Padding is stripped first so that the fee-charging test below is not fooled by a zero written as
-# "00", and so that the digit count that follows measures the value rather than the padding.
-while [ "${VERIFICATION_BASE_FEE#0}" != "$VERIFICATION_BASE_FEE" ]; do
-    VERIFICATION_BASE_FEE="${VERIFICATION_BASE_FEE#0}"
-done
-VERIFICATION_BASE_FEE="${VERIFICATION_BASE_FEE:-0}"
-# The genesis field is a u32. The digit count is checked before any arithmetic because the shell's
-# is 64-bit and wraps silently: 2^64 would otherwise normalize to 0 and quietly turn fees off.
-case "$VERIFICATION_BASE_FEE" in
-    ???????????*)
-        echo "error: MIDEN_VERIFICATION_BASE_FEE must fit in a u32, got" \
-            "'$VERIFICATION_BASE_FEE'" >&2
-        exit 1
-        ;;
-esac
-if [ "$VERIFICATION_BASE_FEE" -gt 4294967295 ]; then
-    echo "error: MIDEN_VERIFICATION_BASE_FEE must fit in a u32, got $VERIFICATION_BASE_FEE" >&2
-    exit 1
-fi
 
 NODE_BINS=(miden-validator miden-node miden-ntx-builder miden-remote-prover)
 
@@ -157,13 +131,11 @@ MIDEN_VERIFICATION_BASE_FEE="$VERIFICATION_BASE_FEE" "$GEN_GENESIS" "$DATA/genes
 # below once `miden-validator genesis` has generated them.
 rm -rf "$ROOT/data/funders"
 mkdir -p "$ROOT/data"
-# `-p` because these files carry secret keys and gen-genesis writes them owner-only; a plain copy
-# would recreate them under the umask.
-cp -p "$DATA/genesis-config/tst_faucet.mac" "$ROOT/data/account.mac"
+cp "$DATA/genesis-config/tst_faucet.mac" "$ROOT/data/account.mac"
 # Expose the agglayer accounts under ./data, where the tests read them via AGGLAYER_ACCOUNTS_DIR.
 for mac in bridge_admin.mac ger_manager.mac bridge.mac agglayer_faucet.mac \
            native_faucet.mac faucet_operator.mac; do
-    cp -p "$DATA/genesis-config/$mac" "$ROOT/data/$mac"
+    cp "$DATA/genesis-config/$mac" "$ROOT/data/$mac"
 done
 
 # The validator's signing key and the set's shared transaction encryption key are passed on the
@@ -186,39 +158,25 @@ done
 
 {
     # Genesis generation is separate from bootstrap: `genesis` builds the block once, then every
-    # component seeds its database from the resulting file. Chained with `&&` because errexit does
-    # not apply inside a group that `||` guards, so a failing step would otherwise be masked by a
-    # later one succeeding.
+    # component seeds its database from the resulting file.
     "$BIN/miden-validator" genesis --genesis-block-directory "$DATA/genesis" \
         --accounts-directory "$DATA/accounts" --config "$DATA/genesis-config/genesis.toml" \
-        --validator.key "$VALIDATOR_PUBLIC_KEY" &&
+        --validator.key "$VALIDATOR_PUBLIC_KEY"
     "$BIN/miden-validator" bootstrap --data-directory "$DATA/validator" \
-        --genesis "$DATA/genesis/genesis.dat" &&
-    "$BIN/miden-node" bootstrap --data-directory "$DATA/node" \
-        --genesis "$DATA/genesis/genesis.dat" &&
+        --genesis "$DATA/genesis/genesis.dat"
+    "$BIN/miden-node" bootstrap --data-directory "$DATA/node" --genesis "$DATA/genesis/genesis.dat"
     "$BIN/miden-ntx-builder" bootstrap --data-directory "$DATA/ntx-builder" \
         --genesis "$DATA/genesis/genesis.dat"
-} >"$LOG_DIR/bootstrap.log" 2>&1 || {
-    # Every diagnostic went to the log, so say where it is rather than dying silently.
-    echo "error: genesis or bootstrap failed; see $LOG_DIR/bootstrap.log" >&2
-    exit 1
-}
+} >"$LOG_DIR/bootstrap.log" 2>&1
 NATIVE_FAUCET_ID="$(sed -n 's/^Native faucet account id: //p' "$LOG_DIR/bootstrap.log")"
 echo "==> native faucet $NATIVE_FAUCET_ID, operator wallet in $ROOT/data/faucet_operator.mac"
 
 # Expose the wallets the node generated from the genesis `[[wallet]]` entries under ./data/funders,
-# where the tests read them via MIDEN_FUNDER_ACCOUNTS. A fee-free genesis declares none.
+# where the tests read them via MIDEN_FUNDER_ACCOUNTS_DIR. A fee-free genesis declares none.
 if compgen -G "$DATA/accounts/wallet_*.mac" >/dev/null; then
-    # The node writes these, so their mode is its own, and they hold spendable keys. The directory
-    # mode closes the window between the copy and the chmod.
-    mkdir -p -m 700 "$ROOT/data/funders"
+    mkdir -p "$ROOT/data/funders"
     cp "$DATA"/accounts/wallet_*.mac "$ROOT/data/funders/"
-    chmod 600 "$ROOT"/data/funders/wallet_*.mac
     echo "==> exposed $(ls "$ROOT/data/funders" | wc -l | tr -d ' ') funder wallets in $ROOT/data/funders"
-elif [ "$VERIFICATION_BASE_FEE" != "0" ]; then
-    # Without funders every test that creates an account fails, far from the cause.
-    echo "error: genesis declared funder wallets but the node produced none; see $LOG_DIR/bootstrap.log" >&2
-    exit 1
 fi
 
 echo "==> starting components"
@@ -257,7 +215,10 @@ start sequencer   "$BIN/miden-node" sequencer --rpc.listen "$RPC" --data-directo
     --validator.url "http://$VALIDATOR" --ntx-builder.url "http://$NTX" \
     --rpc.network-tx-auth-header-value "$NETWORK_TX_AUTH" \
     --block.interval 3s --batch.interval 1s
-start prover      "$BIN/miden-remote-prover" --kind=transaction --port="$PROVER_PORT"
+# A network transaction's proof runs well past the 60s default on a shared CI runner, and the
+# default capacity of 1 rejects the ntx-builder's retry outright, so it never converges.
+start prover      "$BIN/miden-remote-prover" --kind=transaction --port="$PROVER_PORT" \
+    --timeout 300s --capacity 8
 # Let the sequencer bind its RPC before the ntx-builder dials it.
 sleep 2
 start ntx-builder "$BIN/miden-ntx-builder" start --listen "$NTX" --rpc.url "http://$RPC" \
@@ -284,20 +245,13 @@ for _ in $(seq 1 60); do
         READY=1
         break
     fi
-    # Tear down before giving up: the components that are still alive would otherwise outlive this
-    # script, and the next run wipes `$DATA` out from under them after finding the RPC port free.
-    check_components_alive || { cleanup; exit 1; }
+    check_components_alive || exit 1
     sleep 1
 done
 if [ -z "$READY" ]; then
     echo "error: RPC did not become ready within 60s; see $LOG_DIR" >&2
-    cleanup
     exit 1
 fi
-# The RPC belongs to the sequencer, so it answers even if the prover or the ntx-builder died on
-# startup. Without this the script would report a healthy node and the tests needing those
-# services would fail far from the cause.
-check_components_alive || { cleanup; exit 1; }
 echo "==> node is up (RPC on http://$RPC); logs in $LOG_DIR"
 
 if [ "$MODE" = "background" ]; then

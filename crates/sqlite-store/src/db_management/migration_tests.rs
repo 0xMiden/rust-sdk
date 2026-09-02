@@ -42,10 +42,24 @@ const FIXTURE_MIGRATION_V3: &str = r"
 ALTER TABLE note_records ADD COLUMN assets_reencoded TEXT NOT NULL DEFAULT '';
 ";
 
+// FIXTURE SCHEMA HASHES
+// ================================================================================================
+
+/// The fingerprints the fixture versions build, pinned the way a shipped migration's is.
+const FIXTURE_V1_HASH: &str = "0x1d5b0d9677b9365a008b14ef0aac7788eaa9d7cee1771c1f192adbfdcd1576e6";
+const FIXTURE_V2_HASH: &str = "0xfa8b25c227e5af3f2f40ee7bf2c32954cf678a51bf4f644d58c67d92d23048f0";
+
+/// v3 as its SQL alone builds it, which is also what a hook that only moves data leaves behind.
+const FIXTURE_V3_HASH: &str = "0xc0c50bee012cd56746038d9fd44050c5d55dd60ca9b525131151b0c8e82c96b7";
+
+/// v3 as [`index_reencoded_assets`] leaves it, carrying the index that hook creates.
+const FIXTURE_V3_INDEXED_HASH: &str =
+    "0xda8449bcda726cc7b50a7013139953ed5b6ba8e4bdd999f9bb0d19fd8bd2e244";
+
 static FIXTURE_MIGRATION: LazyLock<SqliteMigrator> = LazyLock::new(|| {
     SqliteMigrator::new(&[
-        SqliteMigration::new(FIXTURE_MIGRATION_V1),
-        SqliteMigration::new(FIXTURE_MIGRATION_V2),
+        SqliteMigration::new(FIXTURE_MIGRATION_V1, FIXTURE_V1_HASH),
+        SqliteMigration::new(FIXTURE_MIGRATION_V2, FIXTURE_V2_HASH),
     ])
 });
 
@@ -73,8 +87,7 @@ fn reencode_assets(tx: &Transaction<'_>) -> HookResult {
 /// Fails on any row it cannot decode, which is how a hook reports data the new encoding does not
 /// admit.
 ///
-/// It finds no rows on an empty database, so deriving the fingerprint of each version still
-/// succeeds and a migrator carrying it can be built.
+/// It finds no rows on an empty database, so building the schema from scratch still succeeds.
 fn reencode_assets_as_amount(tx: &Transaction<'_>) -> HookResult {
     for (id, assets) in read_ids_and_assets(tx)? {
         let amount: u64 = assets.parse().map_err(|_| {
@@ -114,12 +127,21 @@ fn open_db_at_fixture_version(version: usize) -> Connection {
     conn
 }
 
-/// The fixture migrations with a third version whose SQL adds a column and whose hook is `hook`.
-fn fixture_migration_with_hook(hook: MigrationHook) -> SqliteMigrator {
+/// The fixture migrations with a third version whose SQL adds a column, applied by `hook` when
+/// there is one, and pinned to `expected_hash`.
+fn fixture_migration_with_v3(
+    hook: Option<MigrationHook>,
+    expected_hash: &'static str,
+) -> SqliteMigrator {
+    let v3 = match hook {
+        Some(hook) => SqliteMigration::with_hook(FIXTURE_MIGRATION_V3, hook, expected_hash),
+        None => SqliteMigration::new(FIXTURE_MIGRATION_V3, expected_hash),
+    };
+
     SqliteMigrator::new(&[
-        SqliteMigration::new(FIXTURE_MIGRATION_V1),
-        SqliteMigration::new(FIXTURE_MIGRATION_V2),
-        SqliteMigration::with_hook(FIXTURE_MIGRATION_V3, hook),
+        SqliteMigration::new(FIXTURE_MIGRATION_V1, FIXTURE_V1_HASH),
+        SqliteMigration::new(FIXTURE_MIGRATION_V2, FIXTURE_V2_HASH),
+        v3,
     ])
 }
 
@@ -241,17 +263,12 @@ fn partial_migration_schema_drift_is_rejected() {
 
 #[test]
 fn user_data_does_not_change_schema_hash() {
+    let client = SqliteMigrator::client();
     let mut conn = open_memory_db();
-    SqliteMigrator::client()
-        .apply(&mut conn)
-        .expect("production schema should apply");
+    client.apply(&mut conn).expect("production schema should apply");
 
     let hash_before = SchemaHash::of(&conn).expect("schema hash should compute");
-    let latest_hash = *SqliteMigrator::client()
-        .expected_schema_hashes()
-        .last()
-        .expect("the client ships at least one migration");
-    assert_eq!(hash_before, latest_hash);
+    assert_eq!(hash_before.to_string(), client.expected_hash(client.latest_version()));
 
     conn.execute(
         "INSERT INTO settings (name, value) VALUES (?1, ?2)",
@@ -262,9 +279,7 @@ fn user_data_does_not_change_schema_hash() {
     let hash_after_data = SchemaHash::of(&conn).expect("schema hash should compute");
     assert_eq!(hash_before, hash_after_data);
 
-    SqliteMigrator::client()
-        .apply(&mut conn)
-        .expect("database with user data should reopen");
+    client.apply(&mut conn).expect("database with user data should reopen");
     assert_eq!(hash_before, SchemaHash::of(&conn).expect("schema hash should compute"));
 }
 
@@ -326,7 +341,7 @@ fn migration_hook_transforms_data_sql_cannot() {
     let mut conn = open_db_at_fixture_version(1);
     seed_fixture_v1(&conn);
 
-    let migration = fixture_migration_with_hook(reencode_assets);
+    let migration = fixture_migration_with_v3(Some(reencode_assets), FIXTURE_V3_HASH);
     migration.apply(&mut conn).expect("hooked migration should apply");
 
     assert_eq!(user_version(&conn), migration.latest_version());
@@ -351,7 +366,7 @@ fn failing_migration_hook_rolls_back_the_upgrade() {
     seed_fixture_v1(&conn);
     let rows_before = read_fixture_v1_rows(&conn);
 
-    let migration = fixture_migration_with_hook(reencode_assets_as_amount);
+    let migration = fixture_migration_with_v3(Some(reencode_assets_as_amount), FIXTURE_V3_HASH);
     let err = migration.apply(&mut conn).unwrap_err();
     let SqliteStoreError::Migration(message) = err else {
         panic!("a hook that fails should be reported as a migration failure, got {err:?}");
@@ -365,8 +380,8 @@ fn failing_migration_hook_rolls_back_the_upgrade() {
     // SQL of the two versions before it down with it.
     assert_eq!(user_version(&conn), 1, "the version should not have advanced");
     assert_eq!(
-        SchemaHash::of(&conn).expect("schema hash should compute"),
-        migration.expected_schema_hashes()[0],
+        SchemaHash::of(&conn).expect("schema hash should compute").to_string(),
+        migration.expected_hash(1),
         "the schema should still be the one version 1 builds"
     );
     assert_eq!(read_fixture_v1_rows(&conn), rows_before, "the rows should be untouched");
@@ -374,17 +389,23 @@ fn failing_migration_hook_rolls_back_the_upgrade() {
 
 #[test]
 fn schema_built_by_a_hook_is_covered_by_the_fingerprint() {
-    let migration = fixture_migration_with_hook(index_reencoded_assets);
-    let without_hook = SqliteMigrator::new(&[
-        SqliteMigration::new(FIXTURE_MIGRATION_V1),
-        SqliteMigration::new(FIXTURE_MIGRATION_V2),
-        SqliteMigration::new(FIXTURE_MIGRATION_V3),
-    ]);
+    let migration =
+        fixture_migration_with_v3(Some(index_reencoded_assets), FIXTURE_V3_INDEXED_HASH);
+    let without_hook = fixture_migration_with_v3(None, FIXTURE_V3_HASH);
     let latest = migration.latest_version();
 
+    let mut hooked_db = open_memory_db();
+    let mut plain_db = open_memory_db();
+    without_hook
+        .apply(&mut plain_db)
+        .expect("the migration without a hook should apply");
+    migration
+        .apply(&mut hooked_db)
+        .expect("the migration with the indexing hook should apply");
+
     assert_ne!(
-        migration.expected_schema_hashes()[latest - 1],
-        without_hook.expected_schema_hashes()[latest - 1],
+        SchemaHash::of(&hooked_db).expect("schema hash should compute"),
+        SchemaHash::of(&plain_db).expect("schema hash should compute"),
         "the index the hook creates should be part of the version's fingerprint"
     );
 

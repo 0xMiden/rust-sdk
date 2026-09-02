@@ -397,6 +397,41 @@ impl<AUTH> Client<AUTH> {
         self.add_account_inner(&account, ClientAccountType::Watched, true).await
     }
 
+    // ACCOUNT WITNESS PREFETCHING
+    // --------------------------------------------------------------------------------------------
+
+    /// Registers an account whose account witness [`Client::sync_chain`] keeps up to date, so that
+    /// transactions using it as a foreign account resolve the witness locally. This trades one
+    /// request per transaction for one per sync.
+    ///
+    /// A [`ForeignAccount::Private`](crate::transaction::ForeignAccount) needs nothing else, since
+    /// the caller supplies the account data. A
+    /// [`ForeignAccount::Public`](crate::transaction::ForeignAccount) additionally has to be
+    /// tracked by this client, so that its code, storage and vault come from the store as well;
+    /// registering an untracked public account costs a request per sync and saves none.
+    ///
+    /// The account is not validated against the network here. Registering an already registered
+    /// account is a no-op and keeps any cached witness.
+    pub async fn track_account_witness(&self, account_id: AccountId) -> Result<(), ClientError> {
+        self.store.track_account_witness(account_id).await.map_err(Into::into)
+    }
+
+    /// Stops keeping the account's witness up to date and drops the cached one.
+    ///
+    /// Returns `true` if the account was registered. Transactions using it keep working, falling
+    /// back to fetching the witness from the node.
+    pub async fn untrack_account_witness(
+        &self,
+        account_id: AccountId,
+    ) -> Result<bool, ClientError> {
+        self.store.untrack_account_witness(account_id).await.map_err(Into::into)
+    }
+
+    /// Returns the IDs of every account registered via [`Client::track_account_witness`].
+    pub async fn tracked_account_witnesses(&self) -> Result<Vec<AccountId>, ClientError> {
+        self.store.tracked_account_witnesses().await.map_err(Into::into)
+    }
+
     /// Fetches a public [`Account`] from the network, returning a typed error when the account
     /// doesn't exist on chain or is private.
     async fn fetch_public_account(&self, account_id: AccountId) -> Result<Account, ClientError> {

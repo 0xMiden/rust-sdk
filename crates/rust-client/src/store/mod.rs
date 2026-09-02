@@ -40,6 +40,7 @@ use miden_protocol::account::{
 };
 use miden_protocol::address::Address;
 use miden_protocol::asset::{Asset, AssetId, AssetVault, AssetWitness};
+use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::merkle::MerkleError;
 use miden_protocol::crypto::merkle::mmr::{Forest, InOrderIndex, MmrPeaks, PartialMmr};
@@ -470,6 +471,50 @@ pub trait Store: Send + Sync {
     ///
     /// Tag removal is the caller's responsibility — see [`Self::remove_note_tag`].
     async fn remove_address(&self, address: Address) -> Result<bool, StoreError>;
+
+    // ACCOUNT WITNESSES
+    // --------------------------------------------------------------------------------------------
+
+    /// Registers an account whose [`AccountWitness`] should be refreshed on every sync, so that
+    /// transactions using it as a foreign account can resolve the witness locally.
+    ///
+    /// No-op if the account is already registered; a cached witness is left in place. The witness
+    /// itself is filled in by the next sync.
+    async fn track_account_witness(&self, account_id: AccountId) -> Result<(), StoreError>;
+
+    /// Stops refreshing the account's witness and drops any cached one.
+    ///
+    /// Returns `true` if the account was registered.
+    async fn untrack_account_witness(&self, account_id: AccountId) -> Result<bool, StoreError>;
+
+    /// Retrieves the ID of every registered account, whether or not a witness has been cached for
+    /// it yet.
+    async fn tracked_account_witnesses(&self) -> Result<Vec<AccountId>, StoreError>;
+
+    /// Retrieves the cached [`AccountWitness`] along with the block it was fetched at.
+    ///
+    /// Callers must reject a witness whose block is not the one they execute against.
+    ///
+    /// Returns `None` when the account is not registered or has not been refreshed yet.
+    async fn get_account_witness(
+        &self,
+        account_id: AccountId,
+    ) -> Result<Option<(AccountWitness, BlockNumber)>, StoreError>;
+
+    /// Caches an [`AccountWitness`] for a registered account, replacing any previous one.
+    ///
+    /// Returns `false` if the account is not registered, in which case nothing is written.
+    /// Registering is [`Self::track_account_witness`]'s job alone.
+    ///
+    /// The caller should verify the witness against `block_num`'s account root first. The read
+    /// path only checks the block number, so a bad witness stored here surfaces later as a kernel
+    /// assertion during execution rather than as a chain validation error at sync time.
+    async fn update_account_witness(
+        &self,
+        account_id: AccountId,
+        witness: &AccountWitness,
+        block_num: BlockNumber,
+    ) -> Result<bool, StoreError>;
 
     // SETTINGS
     // --------------------------------------------------------------------------------------------

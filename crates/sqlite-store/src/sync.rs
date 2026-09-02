@@ -191,6 +191,12 @@ impl SqliteStore {
             for (account_id, digest) in account_updates.mismatched_private_accounts() {
                 Self::lock_account_on_unexpected_commitment(&db_tx, account_id, digest)?;
             }
+
+            // Writes only land for accounts registered for witness prefetching; the rest are
+            // no-ops, so the sync does not have to know which ones those are.
+            for (account_id, witness) in account_updates.account_witnesses() {
+                Self::update_account_witness_tx(&db_tx, *account_id, witness, block_num)?;
+            }
         }
         db_tx.commit().into_store_error()
     }

@@ -6,33 +6,43 @@ use std::time::Duration;
 
 use miden_client::assembly::CodeBuilder;
 use miden_client::auth::{AuthSchemeId, AuthSecretKey, AuthSingleSig, RPO_FALCON_SCHEME_ID};
-use miden_client::keystore::Keystore;
+use miden_client::keystore::{FilesystemKeyStore, Keystore};
 use miden_client::note::{Note, P2idNote};
+use miden_client::rpc::domain::account::AccountStorageRequirements;
 use miden_client::store::{NoteFilter, TransactionFilter};
+use miden_client::testing::common::TestClient;
+use miden_client::testing::mock::MockRpcApi;
 use miden_client::transaction::{
     ChainAnchor,
     ChainAnchorError,
+    ForeignAccount,
     ProvenTransaction,
     TransactionExecutorError,
     TransactionInputs,
     TransactionProver,
     TransactionProverError,
+    TransactionRequest,
     TransactionRequestBuilder,
+    TransactionScript,
 };
 use miden_client::{ClientError, Deserializable, Serializable, async_trait};
 use miden_debug::{DapClient, DapConfig, DapStopReason};
 use miden_protocol::account::{
+    Account,
     AccountBuilder,
     AccountComponent,
     AccountComponentMetadata,
+    AccountId,
     AccountType,
+    PartialAccount,
+    PartialStorage,
     StorageMap,
     StorageMapKey,
     StorageSlot,
     StorageSlotName,
 };
 use miden_protocol::assembly::diagnostics::miette::GraphicalReportHandler;
-use miden_protocol::asset::{Asset, FungibleAsset};
+use miden_protocol::asset::{Asset, FungibleAsset, PartialVault};
 use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::note::{NoteRecipient, NoteStorage, NoteType};
 use miden_protocol::testing::account_id::{
@@ -581,6 +591,349 @@ async fn lazy_foreign_account_loading() {
         .unwrap();
     assert_eq!(cached.len(), 1, "foreign account code should be cached after lazy loading");
 }
+
+// ACCOUNT WITNESS PREFETCHING TESTS
+// ================================================================================================
+
+/// Everything an FPI transaction needs: the deployed foreign account, a local wallet to execute
+/// against, and the transaction script that invokes the foreign procedure.
+struct FpiSetup {
+    foreign_account: Account,
+    local_wallet_id: AccountId,
+    tx_script: TransactionScript,
+    map_slot_name: StorageSlotName,
+    map_key: StorageMapKey,
+}
+
+/// Deploys a foreign account exposing a procedure that reads one of its storage map entries, and
+/// builds the FPI script that calls it.
+///
+/// The account is tracked by the client either way, so both storage modes have their code, storage
+/// and vault available locally; what differs is how a transaction declares them.
+async fn deploy_fpi_account(
+    client: &mut TestClient,
+    rpc_api: &MockRpcApi,
+    keystore: &FilesystemKeyStore,
+    account_type: AccountType,
+) -> FpiSetup {
+    // Sentinels the FPI script asserts on. The value must be non-zero: an absent map key reads as
+    // an empty word, so a zero value would let a failed read pass the assertion.
+    let map_key: Word = [Felt::from(7u32); 4].into();
+    let map_value: Word = [Felt::from(11u32); 4].into();
+    let map_slot_name = StorageSlotName::new("miden::testing::fpi::witness_map").unwrap();
+
+    // A one-entry map slot, and a procedure that reads that entry and leaves it on the stack.
+    let mut storage_map = StorageMap::new();
+    storage_map.insert(StorageMapKey::new(map_key), map_value).unwrap();
+    let map_slot = StorageSlot::with_map(map_slot_name.clone(), storage_map);
+
+    let component_code = CodeBuilder::default()
+        .compile_component_code(
+            "miden::testing::fpi_witness_component",
+            format!(
+                r#"
+                const STORAGE_MAP_SLOT = word("miden::testing::fpi::witness_map")
+                @account_procedure
+                pub proc get_map_item
+                    push.{map_key}
+                    push.STORAGE_MAP_SLOT[0..2]
+                    exec.::miden::protocol::active_account::get_map_item
+                    swapw dropw
+                end"#
+            ),
+        )
+        .unwrap();
+    let fpi_component = AccountComponent::new(
+        component_code,
+        vec![map_slot],
+        AccountComponentMetadata::new("miden::testing::fpi_witness_component"),
+    )
+    .unwrap();
+    let proc_root = fpi_component.mast_forest().procedure_digests().next().unwrap();
+
+    // The key is stored so the account can sign its own deploy transaction.
+    let secret_key = AuthSecretKey::new_falcon512_poseidon2();
+    let foreign_account = AccountBuilder::new(Default::default())
+        .account_type(account_type)
+        .with_component(fpi_component)
+        .with_component(AuthSingleSig::new(Approver::new(
+            secret_key.public_key().to_commitment(),
+            AuthSchemeId::Falcon512Poseidon2,
+        )))
+        .build_with_schema_commitment()
+        .unwrap();
+    let foreign_account_id = foreign_account.id();
+
+    keystore.add_key(&secret_key, foreign_account_id).await.unwrap();
+    client.add_account(&foreign_account, false).await.unwrap();
+
+    // Deploying takes the nonce from 0 to 1, which is what puts the account in the account tree
+    // and makes its witness provable. Proving a block commits it.
+    let deploy_request = TransactionRequestBuilder::new().build().unwrap();
+    Box::pin(client.submit_new_transaction(foreign_account_id, deploy_request))
+        .await
+        .unwrap();
+    rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+
+    // The account the transactions execute against; the foreign account is only read.
+    let local_wallet =
+        super::insert_new_wallet(client, AccountType::Public, keystore).await.unwrap();
+
+    let tx_script = client
+        .code_builder()
+        .compile_tx_script(format!(
+            "
+            use miden::protocol::tx
+            @transaction_script
+            pub proc main
+                push.{proc_root}
+                push.{prefix} push.{suffix}
+                exec.tx::execute_foreign_procedure
+                push.{map_value} assert_eqw
+            end
+            ",
+            prefix = foreign_account_id.prefix().as_u64(),
+            suffix = foreign_account_id.suffix(),
+        ))
+        .unwrap();
+
+    // Read back after the deploy: the pre-deploy value has a nonce of 0, whose commitment the
+    // witness does not prove, and the kernel rejects that.
+    let foreign_account = client.get_account(foreign_account_id).await.unwrap().unwrap();
+
+    FpiSetup {
+        foreign_account,
+        local_wallet_id: local_wallet.id(),
+        tx_script,
+        map_slot_name,
+        map_key: StorageMapKey::new(map_key),
+    }
+}
+
+/// Builds the FPI request, declaring the foreign account the way its storage mode requires:
+/// `Public` carries only the ID, `Private` carries the account data.
+fn fpi_request(setup: &FpiSetup) -> TransactionRequest {
+    let foreign_account = if setup.foreign_account.id().is_public() {
+        let requirements = AccountStorageRequirements::new([(
+            setup.map_slot_name.clone(),
+            core::slice::from_ref(&setup.map_key),
+        )]);
+        ForeignAccount::public(setup.foreign_account.id(), requirements).unwrap()
+    } else {
+        let (id, _vault, storage, code, nonce, seed) = setup.foreign_account.clone().into_parts();
+        let partial_account = PartialAccount::new(
+            id,
+            nonce,
+            code,
+            PartialStorage::new_full(storage),
+            PartialVault::default(),
+            seed,
+        )
+        .unwrap();
+        ForeignAccount::private(partial_account).unwrap()
+    };
+
+    TransactionRequestBuilder::new()
+        .custom_script(setup.tx_script.clone())
+        .foreign_accounts([foreign_account])
+        .build()
+        .unwrap()
+}
+
+/// A registered account's witness is refreshed by the sync and then served from the store, so a
+/// private-FPI transaction reaches the node zero times for it.
+#[tokio::test]
+async fn tracked_account_witness_is_served_from_the_store() {
+    let (mut client, rpc_api, keystore) = Box::pin(create_test_client()).await;
+    let setup =
+        Box::pin(deploy_fpi_account(&mut client, &rpc_api, &keystore, AccountType::Private)).await;
+    let foreign_account_id = setup.foreign_account.id();
+
+    client.track_account_witness(foreign_account_id).await.unwrap();
+    assert_eq!(client.tracked_account_witnesses().await.unwrap(), vec![foreign_account_id]);
+
+    // Precondition: the refresh runs as part of the sync, so a witness must land at the new sync
+    // height. Without this the assertion below would pass for the wrong reason.
+    client.sync_state().await.unwrap();
+
+    let sync_height = client.get_sync_height().await.unwrap();
+    let (_, cached_at) = client
+        .test_store()
+        .get_account_witness(foreign_account_id)
+        .await
+        .unwrap()
+        .expect("the sync should have cached a witness for the registered account");
+    assert_eq!(cached_at, sync_height, "the witness must be cached at the synced block");
+
+    // The actual subject: a transaction at that same height issues no request for the witness.
+    // Counted from after the sync so the refresh's own request is not attributed to it.
+    let calls_before = rpc_api.get_account_call_count();
+    Box::pin(client.execute_transaction(setup.local_wallet_id, fpi_request(&setup)))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        rpc_api.get_account_call_count(),
+        calls_before,
+        "a cached witness at the reference block must not reach the node"
+    );
+}
+
+/// Without registering the account there is nothing cached, so the transaction fetches the witness
+/// from the node. Guards against the sync prefetching accounts nobody asked for.
+#[tokio::test]
+async fn untracked_account_witness_is_fetched_from_the_node() {
+    let (mut client, rpc_api, keystore) = Box::pin(create_test_client()).await;
+    let setup =
+        Box::pin(deploy_fpi_account(&mut client, &rpc_api, &keystore, AccountType::Private)).await;
+    let foreign_account_id = setup.foreign_account.id();
+
+    // No call to `track_account_witness`, so the sync has nothing to prefetch.
+    client.sync_state().await.unwrap();
+
+    assert!(
+        client
+            .test_store()
+            .get_account_witness(foreign_account_id)
+            .await
+            .unwrap()
+            .is_none(),
+        "an unregistered account must not be prefetched by the sync"
+    );
+
+    let calls_before = rpc_api.get_account_call_count();
+    Box::pin(client.execute_transaction(setup.local_wallet_id, fpi_request(&setup)))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        rpc_api.get_account_call_count(),
+        calls_before + 1,
+        "without a cached witness the transaction must ask the node for the witness, once"
+    );
+}
+
+/// A witness cached at a block other than the transaction's reference block is not used.
+#[tokio::test]
+async fn stale_account_witness_falls_back_to_the_node() {
+    let (mut client, rpc_api, keystore) = Box::pin(create_test_client()).await;
+    let setup =
+        Box::pin(deploy_fpi_account(&mut client, &rpc_api, &keystore, AccountType::Private)).await;
+    let foreign_account_id = setup.foreign_account.id();
+
+    // Registered and cached at the current sync height.
+    client.track_account_witness(foreign_account_id).await.unwrap();
+    client.sync_state().await.unwrap();
+
+    let sync_height = client.get_sync_height().await.unwrap();
+    let (witness, cached_at) = client
+        .test_store()
+        .get_account_witness(foreign_account_id)
+        .await
+        .unwrap()
+        .expect("the sync should have cached a witness");
+    assert_eq!(cached_at, sync_height);
+
+    // Re-stamp the same witness at an earlier block. Only the block number differs from the
+    // passing case, which isolates it as the thing the read path checks.
+    let stale_block = sync_height.checked_sub(1).expect("the chain is past genesis by now");
+    client
+        .test_store()
+        .update_account_witness(foreign_account_id, &witness, stale_block)
+        .await
+        .unwrap();
+
+    // The transaction still executes against `sync_height`, so the entry cannot serve it.
+    let calls_before = rpc_api.get_account_call_count();
+    Box::pin(client.execute_transaction(setup.local_wallet_id, fpi_request(&setup)))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        rpc_api.get_account_call_count(),
+        calls_before + 1,
+        "a witness from another block must be ignored and refetched"
+    );
+}
+
+/// A public foreign account the client tracks already has its code, storage and vault in the store,
+/// so a cached witness completes its inputs and the transaction reaches the node zero times.
+#[tokio::test]
+async fn tracked_public_account_inputs_are_built_from_the_store() {
+    let (mut client, rpc_api, keystore) = Box::pin(create_test_client()).await;
+    let setup =
+        Box::pin(deploy_fpi_account(&mut client, &rpc_api, &keystore, AccountType::Public)).await;
+    let foreign_account_id = setup.foreign_account.id();
+
+    client.track_account_witness(foreign_account_id).await.unwrap();
+    client.sync_state().await.unwrap();
+
+    let calls_before = rpc_api.get_account_call_count();
+    Box::pin(client.execute_transaction(setup.local_wallet_id, fpi_request(&setup)))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        rpc_api.get_account_call_count(),
+        calls_before,
+        "a tracked account with a cached witness must not reach the node"
+    );
+}
+
+/// The witness is cached at the reference block, so only the commitment mismatch can reject it.
+#[tokio::test]
+async fn public_account_state_ahead_of_its_witness_reaches_the_node() {
+    let (mut client, rpc_api, keystore) = Box::pin(create_test_client()).await;
+    let setup =
+        Box::pin(deploy_fpi_account(&mut client, &rpc_api, &keystore, AccountType::Public)).await;
+    let foreign_account_id = setup.foreign_account.id();
+
+    client.track_account_witness(foreign_account_id).await.unwrap();
+    client.sync_state().await.unwrap();
+
+    // Advance the stored account without syncing, so the sync height and the cached witness's
+    // block stay put while the local state moves past the commitment the witness proves.
+    let bump = TransactionRequestBuilder::new().build().unwrap();
+    Box::pin(client.submit_new_transaction(foreign_account_id, bump)).await.unwrap();
+
+    let calls_before = rpc_api.get_account_call_count();
+    Box::pin(client.execute_transaction(setup.local_wallet_id, fpi_request(&setup)))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        rpc_api.get_account_call_count(),
+        calls_before + 1,
+        "a witness that does not prove the stored state must be ignored"
+    );
+}
+
+/// Without a cached witness the inputs cannot be built locally, so the account is fetched with its
+/// details. Isolates the witness as the one piece the store cannot supply on its own.
+#[tokio::test]
+async fn public_account_without_a_cached_witness_reaches_the_node() {
+    let (mut client, rpc_api, keystore) = Box::pin(create_test_client()).await;
+    let setup =
+        Box::pin(deploy_fpi_account(&mut client, &rpc_api, &keystore, AccountType::Public)).await;
+
+    // Tracked, but never registered for witness prefetching.
+    client.sync_state().await.unwrap();
+
+    let calls_before = rpc_api.get_account_call_count();
+    Box::pin(client.execute_transaction(setup.local_wallet_id, fpi_request(&setup)))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        rpc_api.get_account_call_count(),
+        calls_before + 1,
+        "without a cached witness the account must be fetched from the node"
+    );
+}
+
+// CHAIN ANCHOR TESTS
+// ================================================================================================
 
 #[tokio::test]
 async fn chain_anchor_pins_execution_to_an_older_reference_block() {

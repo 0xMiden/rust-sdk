@@ -1,7 +1,6 @@
 use anyhow::{Context, Result};
 use miden_client::account::AccountType;
 use miden_client::auth::RPO_FALCON_SCHEME_ID;
-use miden_client::testing::common::{execute_tx_and_sync, insert_new_wallet, wait_for_blocks};
 use miden_client::transaction::TransactionRequestBuilder;
 use miden_client::{Felt, Word, ZERO};
 use miden_client_test_harness::ClientConfig;
@@ -29,12 +28,11 @@ use super::network_transaction::{
 /// was successful (note script was executed successfully), note script updates the counter of the
 /// network (counter) account.
 pub async fn test_network_fpi(client_config: ClientConfig) -> Result<()> {
-    let (mut client, keystore) = client_config.clone().into_client().await?;
+    let mut client = client_config.clone().into_client().await?;
     client.sync_state().await?;
 
     let (foreign_account, proc_root) = deploy_foreign_account(
         &mut client,
-        &keystore,
         AccountType::Public,
         format!(
             r#"
@@ -70,7 +68,7 @@ pub async fn test_network_fpi(client_config: ClientConfig) -> Result<()> {
 
     client.sync_state().await?;
 
-    let (mut client2, keystore2) = client_config.into_client().await?;
+    let mut client2 = client_config.into_client().await?;
 
     // NOTE: Syncing the client is important because the client needs to be beyond the account
     // creation block
@@ -114,9 +112,7 @@ pub async fn test_network_fpi(client_config: ClientConfig) -> Result<()> {
 
     client2.sync_state().await?;
 
-    let (sender_account, ..) =
-        insert_new_wallet(&mut client2, AccountType::Private, &keystore2, RPO_FALCON_SCHEME_ID)
-            .await?;
+    let sender_account = client2.insert_wallet(AccountType::Private).await?;
 
     let network_note = get_network_note_with_script(
         sender_account.id(),
@@ -128,9 +124,9 @@ pub async fn test_network_fpi(client_config: ClientConfig) -> Result<()> {
 
     let tx_request = TransactionRequestBuilder::new().own_output_notes([network_note]).build()?;
 
-    execute_tx_and_sync(&mut client2, sender_account.id(), tx_request).await?;
+    client2.execute_tx_and_sync(sender_account.id(), tx_request).await?;
 
-    wait_for_blocks(&mut client2, 2).await;
+    client2.wait_for_blocks(2).await?;
 
     // get the updated network account to check that the counter value was updated (meaning that the
     // note was executed successfully, so the FPI was successful)

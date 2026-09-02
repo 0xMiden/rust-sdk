@@ -5,22 +5,13 @@ use miden_client::ClientError;
 use miden_client::account::{AccountBuilderSchemaCommitmentExt, AccountType};
 use miden_client::assembly::CodeBuilder;
 use miden_client::asset::{Asset, AssetAmount, FungibleAsset};
-use miden_client::auth::{AuthSchemeId, AuthSecretKey, AuthSingleSig, RPO_FALCON_SCHEME_ID};
+use miden_client::auth::{AuthSchemeId, AuthSecretKey, AuthSingleSig};
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::{FilesystemKeyStore, Keystore};
 use miden_client::note::{NoteType, NoteUpdateTracker};
 use miden_client::rpc::NodeRpcClient;
 use miden_client::store::{StoreError, TransactionFilter};
-use miden_client::testing::common::{
-    MINT_AMOUNT,
-    TRANSFER_AMOUNT,
-    create_test_store_path,
-    insert_new_fungible_faucet,
-    insert_new_wallet,
-    mint_and_consume,
-    mint_note,
-    setup_two_wallets_and_faucet,
-};
+use miden_client::testing::common::{MINT_AMOUNT, TRANSFER_AMOUNT, create_test_store_path};
 use miden_client::testing::mock::MockRpcApi;
 use miden_client::transaction::{
     BatchBuilderError,
@@ -55,7 +46,7 @@ use crate::tests::{create_test_client, seed_mock_transaction_encryption_key};
 /// `ProposedBatch` and an empty inputs vector — good enough to exercise the trait wiring.
 #[tokio::test]
 async fn submit_proven_batch_returns_chain_tip() {
-    let (_client, rpc_api, _keystore) = Box::pin(create_test_client()).await;
+    let (_client, rpc_api) = Box::pin(create_test_client()).await;
 
     // Pick the first account recorded in the prebuilt mock chain.
     let account_id = rpc_api
@@ -103,7 +94,7 @@ async fn submit_proven_batch_returns_chain_tip() {
 /// both transactions land in the local store.
 #[tokio::test]
 async fn batch_builder_submits_two_txs_on_one_account() {
-    let (mut client, rpc_api, _keystore) = Box::pin(create_test_client()).await;
+    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
 
     // Pick the first tracked account in the mock chain (same pattern as the existing test above).
     let account_id = rpc_api
@@ -275,17 +266,10 @@ async fn apply_transaction_batch_rolls_back_on_mid_batch_failure() {
 ///   against in-batch (`2 * MINT_AMOUNT`).
 #[tokio::test]
 async fn batch_builder_push_succeeds_when_balance_depends_on_prior_push() {
-    let (mut client, rpc_api, authenticator) = Box::pin(create_test_client()).await;
+    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
 
     let (first_regular_account, second_regular_account, faucet_account_header) =
-        setup_two_wallets_and_faucet(
-            &mut client,
-            AccountType::Private,
-            &authenticator,
-            RPO_FALCON_SCHEME_ID,
-        )
-        .await
-        .unwrap();
+        client.setup_two_wallets_and_faucet(AccountType::Private).await.unwrap();
 
     let from_account_id = first_regular_account.id();
     let to_account_id = second_regular_account.id();
@@ -293,13 +277,18 @@ async fn batch_builder_push_succeeds_when_balance_depends_on_prior_push() {
 
     // Pre-batch: give A `MINT_AMOUNT` (also gets A on-chain so its first
     // batch-tx delta is partial, not full-state).
-    mint_and_consume(&mut client, from_account_id, faucet_account_id, NoteType::Private).await;
+    client
+        .mint_and_consume(from_account_id, faucet_account_id, NoteType::Private)
+        .await
+        .unwrap();
     rpc_api.prove_block();
     client.sync_state().await.unwrap();
 
     // Mint a second note worth `MINT_AMOUNT` for A — left UNCONSUMED, so push 1 can claim it.
-    let (_mint_tx_id, second_note) =
-        mint_note(&mut client, from_account_id, faucet_account_id, NoteType::Private).await;
+    let (_mint_tx_id, second_note) = client
+        .mint_note(from_account_id, faucet_account_id, NoteType::Private)
+        .await
+        .unwrap();
     rpc_api.prove_block();
     client.sync_state().await.unwrap();
 
@@ -433,7 +422,7 @@ fn batch_bump_map_request() -> TransactionRequestBuilder {
 #[allow(clippy::too_many_lines)]
 #[tokio::test]
 async fn batch_builder_serves_witnesses_for_state_untouched_by_prior_push() {
-    let (mut client, rpc_api, authenticator) = Box::pin(create_test_client()).await;
+    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
 
     // The executing account: a wallet that also owns a storage map.
     let map_component = batch_bump_map_component();
@@ -456,34 +445,17 @@ async fn batch_builder_serves_witnesses_for_state_untouched_by_prior_push() {
         .unwrap();
     let from_id = from_account.id();
 
-    authenticator.add_key(&key_pair, from_id).await.unwrap();
+    client.keystore().add_key(&key_pair, from_id).await.unwrap();
     client.add_account(&from_account, false).await.unwrap();
 
-    let (to_account, _) =
-        insert_new_wallet(&mut client, AccountType::Private, &authenticator, RPO_FALCON_SCHEME_ID)
-            .await
-            .unwrap();
+    let to_account = client.insert_wallet(AccountType::Private).await.unwrap();
     let to_id = to_account.id();
 
-    let (consumed_faucet, _) = insert_new_fungible_faucet(
-        &mut client,
-        AccountType::Private,
-        &authenticator,
-        RPO_FALCON_SCHEME_ID,
-    )
-    .await
-    .unwrap();
+    let consumed_faucet = client.insert_faucet(AccountType::Private).await.unwrap();
     let consumed_faucet_id = consumed_faucet.id();
 
     // A second, independent faucet whose balance `from` holds but never touches in push 1.
-    let (held_faucet, _) = insert_new_fungible_faucet(
-        &mut client,
-        AccountType::Private,
-        &authenticator,
-        RPO_FALCON_SCHEME_ID,
-    )
-    .await
-    .unwrap();
+    let held_faucet = client.insert_faucet(AccountType::Private).await.unwrap();
     let held_faucet_id = held_faucet.id();
     client.sync_state().await.unwrap();
 
@@ -491,13 +463,16 @@ async fn batch_builder_serves_witnesses_for_state_untouched_by_prior_push() {
     // nonce > 0, so batch pushes run against committed partial state instead of the full-state
     // new-account path). The balance is part of the committed vault but is NOT touched by the
     // first in-batch transaction.
-    mint_and_consume(&mut client, from_id, held_faucet_id, NoteType::Private).await;
+    client
+        .mint_and_consume(from_id, held_faucet_id, NoteType::Private)
+        .await
+        .unwrap();
     rpc_api.prove_block();
     client.sync_state().await.unwrap();
 
     // Mint a note from the consumed faucet for `from`, left UNCONSUMED so push 1 can claim it.
     let (_mint_tx_id, consumed_note) =
-        mint_note(&mut client, from_id, consumed_faucet_id, NoteType::Private).await;
+        client.mint_note(from_id, consumed_faucet_id, NoteType::Private).await.unwrap();
     rpc_api.prove_block();
     client.sync_state().await.unwrap();
 
@@ -538,7 +513,7 @@ async fn batch_builder_serves_witnesses_for_state_untouched_by_prior_push() {
 /// Verify that submitting an empty batch (no pushes) returns `BatchBuilderError::Empty`.
 #[tokio::test]
 async fn batch_builder_empty_submit_returns_empty_error() {
-    let (mut client, rpc_api, _keystore) = Box::pin(create_test_client()).await;
+    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
 
     // Pick the first tracked account in the mock chain.
     let _account_id = rpc_api
@@ -569,29 +544,27 @@ async fn batch_builder_empty_submit_returns_empty_error() {
 /// rejected push leaves the batch intact so it still submits the transaction pushed before it.
 #[tokio::test]
 async fn batch_builder_push_rejects_duplicate_input_note() {
-    let (mut client, rpc_api, authenticator) = Box::pin(create_test_client()).await;
+    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
 
     let (first_regular_account, _second_regular_account, faucet_account_header) =
-        setup_two_wallets_and_faucet(
-            &mut client,
-            AccountType::Private,
-            &authenticator,
-            RPO_FALCON_SCHEME_ID,
-        )
-        .await
-        .unwrap();
+        client.setup_two_wallets_and_faucet(AccountType::Private).await.unwrap();
 
     let from_account_id = first_regular_account.id();
     let faucet_account_id = faucet_account_header.id();
 
     // Get the account on-chain so its first batch-tx delta is partial, not full-state.
-    mint_and_consume(&mut client, from_account_id, faucet_account_id, NoteType::Private).await;
+    client
+        .mint_and_consume(from_account_id, faucet_account_id, NoteType::Private)
+        .await
+        .unwrap();
     rpc_api.prove_block();
     client.sync_state().await.unwrap();
 
     // Mint a single note for `from_account` — left UNCONSUMED.
-    let (_mint_tx_id, note) =
-        mint_note(&mut client, from_account_id, faucet_account_id, NoteType::Private).await;
+    let (_mint_tx_id, note) = client
+        .mint_note(from_account_id, faucet_account_id, NoteType::Private)
+        .await
+        .unwrap();
     rpc_api.prove_block();
     client.sync_state().await.unwrap();
 
@@ -696,7 +669,7 @@ async fn batch_builder_submits_txs_across_multiple_accounts() {
 /// fails with `ClientError::AccountDataNotFound`.
 #[tokio::test]
 async fn batch_builder_push_for_unknown_account_returns_error() {
-    let (mut client, rpc_api, _keystore) = Box::pin(create_test_client()).await;
+    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
 
     // Pick an account that EXISTS on the mock chain but is NOT registered with the client
     // store (we never call `client.add_account` for it).
@@ -732,17 +705,10 @@ async fn batch_builder_push_for_unknown_account_returns_error() {
 /// producer's `TransactionRequest::expected_output_own_notes` before pushing.
 #[tokio::test]
 async fn batch_builder_cross_account_note_flow() {
-    let (mut client, rpc_api, authenticator) = Box::pin(create_test_client()).await;
+    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
 
     let (first_regular_account, second_regular_account, faucet_account_header) =
-        setup_two_wallets_and_faucet(
-            &mut client,
-            AccountType::Private,
-            &authenticator,
-            RPO_FALCON_SCHEME_ID,
-        )
-        .await
-        .unwrap();
+        client.setup_two_wallets_and_faucet(AccountType::Private).await.unwrap();
 
     let account_id_a = first_regular_account.id();
     let account_id_b = second_regular_account.id();
@@ -750,10 +716,16 @@ async fn batch_builder_cross_account_note_flow() {
 
     // Pre-batch: get both A and B on-chain (each with MINT_AMOUNT) so their first batch-tx
     // deltas are partial, not full-state — the batch apply path requires partial deltas.
-    mint_and_consume(&mut client, account_id_a, faucet_account_id, NoteType::Private).await;
+    client
+        .mint_and_consume(account_id_a, faucet_account_id, NoteType::Private)
+        .await
+        .unwrap();
     rpc_api.prove_block();
     client.sync_state().await.unwrap();
-    mint_and_consume(&mut client, account_id_b, faucet_account_id, NoteType::Private).await;
+    client
+        .mint_and_consume(account_id_b, faucet_account_id, NoteType::Private)
+        .await
+        .unwrap();
     rpc_api.prove_block();
     client.sync_state().await.unwrap();
 
@@ -821,31 +793,29 @@ async fn batch_builder_cross_account_note_flow() {
 /// `DuplicateInputNote(note_id)`.
 #[tokio::test]
 async fn batch_builder_dedup_rejects_duplicate_input_note_across_accounts() {
-    let (mut client, rpc_api, authenticator) = Box::pin(create_test_client()).await;
+    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
 
     let (first_regular_account, second_regular_account, faucet_account_header) =
-        setup_two_wallets_and_faucet(
-            &mut client,
-            AccountType::Private,
-            &authenticator,
-            RPO_FALCON_SCHEME_ID,
-        )
-        .await
-        .unwrap();
+        client.setup_two_wallets_and_faucet(AccountType::Private).await.unwrap();
 
     let account_id_a = first_regular_account.id();
     let account_id_b = second_regular_account.id();
     let faucet_account_id = faucet_account_header.id();
 
     // Get account A on-chain so its first batch-tx delta is partial, not full-state.
-    mint_and_consume(&mut client, account_id_a, faucet_account_id, NoteType::Private).await;
+    client
+        .mint_and_consume(account_id_a, faucet_account_id, NoteType::Private)
+        .await
+        .unwrap();
     rpc_api.prove_block();
     client.sync_state().await.unwrap();
 
     // Mint a single shared note (created with A's recipient, but we'll try to feed the same
     // note to both pushes).
-    let (_mint_tx_id, note) =
-        mint_note(&mut client, account_id_a, faucet_account_id, NoteType::Private).await;
+    let (_mint_tx_id, note) = client
+        .mint_note(account_id_a, faucet_account_id, NoteType::Private)
+        .await
+        .unwrap();
     rpc_api.prove_block();
     client.sync_state().await.unwrap();
 

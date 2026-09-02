@@ -17,7 +17,7 @@ use miden_client::asset::FungibleAsset;
 use miden_client::block::BlockNumber;
 use miden_client::keystore::Keystore;
 use miden_client::note::{Note, NoteType, P2idNote};
-use miden_client::testing::common::{TestClient, wait_for_node, wait_for_tx};
+use miden_client::testing::common::TestClient;
 use miden_client::testing::fee::FeeFunder;
 use miden_client::transaction::TransactionRequestBuilder;
 use rand::RngExt;
@@ -152,7 +152,7 @@ impl Funder {
     }
 
     async fn build_client(&self) -> Result<TestClient> {
-        let (mut client, keystore) = self
+        let mut client = self
             .client_config
             .clone()
             .into_unsynced_client()
@@ -160,13 +160,13 @@ impl Funder {
             .context("failed to build the funder client")?;
 
         // Some tests create their accounts before waiting for the node, so the wait happens here.
-        wait_for_node(&mut client).await;
+        client.wait_for_node().await;
         client.sync_state().await.context("failed to sync the funder client")?;
 
         for wallet in &self.wallets {
             let id = wallet.account.id();
             for key in &wallet.auth_secret_keys {
-                keystore.add_key(key, id).await.context("failed to add a funder key")?;
+                client.keystore().add_key(key, id).await.context("failed to add a funder key")?;
             }
         }
 
@@ -234,7 +234,8 @@ impl Funder {
 
         // Waited on before the wallet is released: another process claiming it reads its state
         // from the chain, which does not carry this payment until it commits.
-        wait_for_tx(client, tx_id)
+        client
+            .wait_for_tx(tx_id)
             .await
             .with_context(|| format!("the payment from funder {wallet_id} never committed"))?;
 

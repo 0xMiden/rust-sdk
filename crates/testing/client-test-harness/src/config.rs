@@ -177,26 +177,27 @@ impl ClientConfig {
 
     /// Creates a `TestClient` without syncing it, for tests that have to wait for the node first.
     ///
-    /// The client gets its own store and keystore.
-    pub async fn into_unsynced_client(self) -> Result<(TestClient, FilesystemKeyStore)> {
+    /// The client gets its own store and keystore, the latter reachable through
+    /// `TestClient::keystore`.
+    pub async fn into_unsynced_client(self) -> Result<TestClient> {
         let fee_funder = self.fee_funder.clone();
-        let (builder, keystore) = self.into_client_builder()?;
+        let (builder, _keystore) = self.into_client_builder()?;
 
         let client = builder.build().await.with_context(|| "failed to build test client")?;
 
-        Ok((TestClient::from(client).with_fee_funder(fee_funder), keystore))
+        Ok(TestClient::from(client).with_fee_funder(fee_funder))
     }
 
     /// Creates a `TestClient`.
     ///
     /// The client gets its own store and keystore, and is synced to the current state before being
     /// returned.
-    pub async fn into_client(self) -> Result<(TestClient, FilesystemKeyStore)> {
-        let (mut client, keystore) = self.into_unsynced_client().await?;
+    pub async fn into_client(self) -> Result<TestClient> {
+        let mut client = self.into_unsynced_client().await?;
 
         client.sync_state().await.with_context(|| "failed to sync client state")?;
 
-        Ok((client, keystore))
+        Ok(client)
     }
 }
 

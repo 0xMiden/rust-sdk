@@ -2,7 +2,6 @@ use anyhow::{Context, Result};
 use miden_client::Felt;
 use miden_client::account::AccountType;
 use miden_client::asset::{Asset, AssetAmount, FungibleAsset};
-use miden_client::auth::RPO_FALCON_SCHEME_ID;
 use miden_client::note::NoteType;
 use miden_client::store::TransactionFilter;
 use miden_client::testing::common::*;
@@ -29,26 +28,21 @@ use tracing::info;
 pub async fn test_batch_builder_submits_two_p2id_on_one_account(
     client_config: ClientConfig,
 ) -> Result<()> {
-    let (mut client, authenticator) = client_config.into_client().await?;
-    wait_for_node(&mut client).await;
+    let mut client = client_config.into_client().await?;
+    client.wait_for_node().await;
 
     let (first_regular_account, second_regular_account, faucet_account_header) =
-        setup_two_wallets_and_faucet(
-            &mut client,
-            AccountType::Private,
-            &authenticator,
-            RPO_FALCON_SCHEME_ID,
-        )
-        .await?;
+        client.setup_two_wallets_and_faucet(AccountType::Private).await?;
 
     let from_account_id = first_regular_account.id();
     let to_account_id = second_regular_account.id();
     let faucet_account_id = faucet_account_header.id();
 
     // Mint tokens into first_regular_account (covers both transfers).
-    let tx_id =
-        mint_and_consume(&mut client, from_account_id, faucet_account_id, NoteType::Private).await;
-    wait_for_tx(&mut client, tx_id).await?;
+    let tx_id = client
+        .mint_and_consume(from_account_id, faucet_account_id, NoteType::Private)
+        .await?;
+    client.wait_for_tx(tx_id).await?;
     client.sync_state().await.unwrap();
 
     let nonce_before = client.account_reader(from_account_id).nonce().await?;
@@ -105,7 +99,7 @@ pub async fn test_batch_builder_submits_two_p2id_on_one_account(
     // to finalize the batch's block.
     let mut committed_count = 0;
     for attempt in 0..30 {
-        wait_for_blocks(&mut client, 1).await;
+        client.wait_for_blocks(1).await?;
         client.sync_state().await.unwrap();
         let all_transactions = client.get_transactions(TransactionFilter::All).await.unwrap();
         committed_count = all_transactions
@@ -163,17 +157,11 @@ pub async fn test_batch_builder_submits_two_p2id_on_one_account(
 /// balance is `MINT_AMOUNT + TRANSFER_AMOUNT`, and both accounts' nonces advanced by
 /// exactly 1 during the batch.
 pub async fn test_batch_builder_multiple_accounts(client_config: ClientConfig) -> Result<()> {
-    let (mut client, authenticator) = client_config.into_client().await?;
-    wait_for_node(&mut client).await;
+    let mut client = client_config.into_client().await?;
+    client.wait_for_node().await;
 
     let (first_regular_account, second_regular_account, faucet_account_header) =
-        setup_two_wallets_and_faucet(
-            &mut client,
-            AccountType::Private,
-            &authenticator,
-            RPO_FALCON_SCHEME_ID,
-        )
-        .await?;
+        client.setup_two_wallets_and_faucet(AccountType::Private).await?;
 
     let account_id_a = first_regular_account.id();
     let account_id_b = second_regular_account.id();
@@ -181,12 +169,14 @@ pub async fn test_batch_builder_multiple_accounts(client_config: ClientConfig) -
 
     // Pre-batch: get BOTH A and B on-chain (each with MINT_AMOUNT) so their first batch-tx
     // deltas are partial, not full-state. The batch apply path requires partial deltas.
-    let tx_id_a =
-        mint_and_consume(&mut client, account_id_a, faucet_account_id, NoteType::Private).await;
-    wait_for_tx(&mut client, tx_id_a).await?;
-    let tx_id_b =
-        mint_and_consume(&mut client, account_id_b, faucet_account_id, NoteType::Private).await;
-    wait_for_tx(&mut client, tx_id_b).await?;
+    let tx_id_a = client
+        .mint_and_consume(account_id_a, faucet_account_id, NoteType::Private)
+        .await?;
+    client.wait_for_tx(tx_id_a).await?;
+    let tx_id_b = client
+        .mint_and_consume(account_id_b, faucet_account_id, NoteType::Private)
+        .await?;
+    client.wait_for_tx(tx_id_b).await?;
     client.sync_state().await.unwrap();
 
     let nonce_a_before = client.account_reader(account_id_a).nonce().await?;
@@ -233,7 +223,7 @@ pub async fn test_batch_builder_multiple_accounts(client_config: ClientConfig) -
     let mut a_committed = 0;
     let mut b_committed = 0;
     for attempt in 0..30 {
-        wait_for_blocks(&mut client, 1).await;
+        client.wait_for_blocks(1).await?;
         client.sync_state().await.unwrap();
         let all_transactions = client.get_transactions(TransactionFilter::All).await.unwrap();
         a_committed = all_transactions
@@ -305,29 +295,25 @@ pub async fn test_batch_builder_multiple_accounts(client_config: ClientConfig) -
 /// Asserts A advances by 2 nonces and B by 1, A's balance reflects two outbound notes,
 /// and B's reflects one outbound note (all output notes remain pending consumption).
 pub async fn test_batch_builder_interleaved_pushes(client_config: ClientConfig) -> Result<()> {
-    let (mut client, authenticator) = client_config.into_client().await?;
-    wait_for_node(&mut client).await;
+    let mut client = client_config.into_client().await?;
+    client.wait_for_node().await;
 
     let (first_regular_account, second_regular_account, faucet_account_header) =
-        setup_two_wallets_and_faucet(
-            &mut client,
-            AccountType::Private,
-            &authenticator,
-            RPO_FALCON_SCHEME_ID,
-        )
-        .await?;
+        client.setup_two_wallets_and_faucet(AccountType::Private).await?;
 
     let account_id_a = first_regular_account.id();
     let account_id_b = second_regular_account.id();
     let faucet_account_id = faucet_account_header.id();
 
     // Pre-batch: fund both A and B on-chain so their first batch-tx deltas are partial.
-    let tx_id_a =
-        mint_and_consume(&mut client, account_id_a, faucet_account_id, NoteType::Private).await;
-    wait_for_tx(&mut client, tx_id_a).await?;
-    let tx_id_b =
-        mint_and_consume(&mut client, account_id_b, faucet_account_id, NoteType::Private).await;
-    wait_for_tx(&mut client, tx_id_b).await?;
+    let tx_id_a = client
+        .mint_and_consume(account_id_a, faucet_account_id, NoteType::Private)
+        .await?;
+    client.wait_for_tx(tx_id_a).await?;
+    let tx_id_b = client
+        .mint_and_consume(account_id_b, faucet_account_id, NoteType::Private)
+        .await?;
+    client.wait_for_tx(tx_id_b).await?;
     client.sync_state().await.unwrap();
 
     let nonce_a_before = client.account_reader(account_id_a).nonce().await?;
@@ -376,7 +362,7 @@ pub async fn test_batch_builder_interleaved_pushes(client_config: ClientConfig) 
     let mut a_committed = 0;
     let mut b_committed = 0;
     for attempt in 0..30 {
-        wait_for_blocks(&mut client, 1).await;
+        client.wait_for_blocks(1).await?;
         client.sync_state().await.unwrap();
         let all_transactions = client.get_transactions(TransactionFilter::All).await.unwrap();
         a_committed = all_transactions

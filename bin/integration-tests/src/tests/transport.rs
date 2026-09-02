@@ -2,19 +2,9 @@ use anyhow::{Context, Result};
 use miden_client::account::AccountType;
 use miden_client::address::{Address, AddressInterface, RoutingParameters};
 use miden_client::asset::FungibleAsset;
-use miden_client::auth::RPO_FALCON_SCHEME_ID;
 use miden_client::block::BlockNumber;
 use miden_client::note::NoteType;
 use miden_client::store::{InputNoteState, NoteFilter};
-use miden_client::testing::common::{
-    assert_account_has_single_asset,
-    consume_notes,
-    execute_tx_and_sync,
-    insert_new_fungible_faucet,
-    insert_new_wallet,
-    wait_for_node,
-    wait_for_tx,
-};
 use miden_client::transaction::TransactionRequestBuilder;
 use miden_client_test_harness::ClientConfig;
 
@@ -36,32 +26,24 @@ pub async fn test_transport_note_inclusion_proof_and_consumption(
     let sender_config = client_config.clone();
     let recipient_config = client_config;
 
-    let (mut sender, sender_keystore) =
+    let mut sender =
         sender_config.into_unsynced_client().await.context("failed to build sender")?;
-    let (mut recipient, recipient_keystore) = recipient_config
+    let mut recipient = recipient_config
         .into_unsynced_client()
         .await
         .context("failed to build recipient")?;
 
-    wait_for_node(&mut sender).await;
+    sender.wait_for_node().await;
 
-    let (faucet_account, _) = insert_new_fungible_faucet(
-        &mut sender,
-        AccountType::Private,
-        &sender_keystore,
-        RPO_FALCON_SCHEME_ID,
-    )
-    .await
-    .context("failed to insert faucet")?;
+    let faucet_account = sender
+        .insert_faucet(AccountType::Private)
+        .await
+        .context("failed to insert faucet")?;
 
-    let (recipient_account, _) = insert_new_wallet(
-        &mut recipient,
-        AccountType::Private,
-        &recipient_keystore,
-        RPO_FALCON_SCHEME_ID,
-    )
-    .await
-    .context("failed to insert wallet")?;
+    let recipient_account = recipient
+        .insert_wallet(AccountType::Private)
+        .await
+        .context("failed to insert wallet")?;
 
     let recipient_address = Address::new(recipient_account.id())
         .with_routing_parameters(RoutingParameters::new(AddressInterface::BasicWallet));
@@ -85,7 +67,8 @@ pub async fn test_transport_note_inclusion_proof_and_consumption(
         .cloned()
         .context("expected output note missing")?;
 
-    execute_tx_and_sync(&mut sender, faucet_account.id(), tx_request)
+    sender
+        .execute_tx_and_sync(faucet_account.id(), tx_request)
         .await
         .context("mint tx failed")?;
 
@@ -119,11 +102,12 @@ pub async fn test_transport_note_inclusion_proof_and_consumption(
     );
 
     // Consume the note
-    let tx_id = consume_notes(&mut recipient, recipient_account.id(), &[note]).await;
-    wait_for_tx(&mut recipient, tx_id).await?;
+    let tx_id = recipient.consume_notes(recipient_account.id(), &[note]).await?;
+    recipient.wait_for_tx(tx_id).await?;
 
     // Verify balance
-    assert_account_has_single_asset(&recipient, recipient_account.id(), faucet_account.id(), 100)
+    recipient
+        .assert_account_has_single_asset(recipient_account.id(), faucet_account.id(), 100)
         .await;
 
     Ok(())
@@ -144,32 +128,24 @@ pub async fn test_transport_multiple_notes_different_blocks(
     let sender_config = client_config.clone();
     let recipient_config = client_config;
 
-    let (mut sender, sender_keystore) =
+    let mut sender =
         sender_config.into_unsynced_client().await.context("failed to build sender")?;
-    let (mut recipient, recipient_keystore) = recipient_config
+    let mut recipient = recipient_config
         .into_unsynced_client()
         .await
         .context("failed to build recipient")?;
 
-    wait_for_node(&mut sender).await;
+    sender.wait_for_node().await;
 
-    let (faucet_account, _) = insert_new_fungible_faucet(
-        &mut sender,
-        AccountType::Private,
-        &sender_keystore,
-        RPO_FALCON_SCHEME_ID,
-    )
-    .await
-    .context("failed to insert faucet")?;
+    let faucet_account = sender
+        .insert_faucet(AccountType::Private)
+        .await
+        .context("failed to insert faucet")?;
 
-    let (recipient_account, _) = insert_new_wallet(
-        &mut recipient,
-        AccountType::Private,
-        &recipient_keystore,
-        RPO_FALCON_SCHEME_ID,
-    )
-    .await
-    .context("failed to insert wallet")?;
+    let recipient_account = recipient
+        .insert_wallet(AccountType::Private)
+        .await
+        .context("failed to insert wallet")?;
 
     let recipient_address = Address::new(recipient_account.id())
         .with_routing_parameters(RoutingParameters::new(AddressInterface::BasicWallet));
@@ -197,7 +173,8 @@ pub async fn test_transport_multiple_notes_different_blocks(
             .last()
             .cloned()
             .context("expected output note missing")?;
-        execute_tx_and_sync(&mut sender, faucet_account.id(), tx_request)
+        sender
+            .execute_tx_and_sync(faucet_account.id(), tx_request)
             .await
             .context("mint tx failed")?;
         minted_notes.push(note);
@@ -269,11 +246,12 @@ pub async fn test_transport_multiple_notes_different_blocks(
     );
 
     // Consume all notes
-    let tx_id = consume_notes(&mut recipient, recipient_account.id(), &minted_notes).await;
-    wait_for_tx(&mut recipient, tx_id).await?;
+    let tx_id = recipient.consume_notes(recipient_account.id(), &minted_notes).await?;
+    recipient.wait_for_tx(tx_id).await?;
 
     // Verify total balance (10 + 20 + 30 = 60)
-    assert_account_has_single_asset(&recipient, recipient_account.id(), faucet_account.id(), 60)
+    recipient
+        .assert_account_has_single_asset(recipient_account.id(), faucet_account.id(), 60)
         .await;
 
     Ok(())
@@ -293,32 +271,24 @@ pub async fn test_transport_note_not_yet_committed(client_config: ClientConfig) 
     let sender_config = client_config.clone();
     let recipient_config = client_config;
 
-    let (mut sender, sender_keystore) =
+    let mut sender =
         sender_config.into_unsynced_client().await.context("failed to build sender")?;
-    let (mut recipient, recipient_keystore) = recipient_config
+    let mut recipient = recipient_config
         .into_unsynced_client()
         .await
         .context("failed to build recipient")?;
 
-    wait_for_node(&mut sender).await;
+    sender.wait_for_node().await;
 
-    let (faucet_account, _) = insert_new_fungible_faucet(
-        &mut sender,
-        AccountType::Private,
-        &sender_keystore,
-        RPO_FALCON_SCHEME_ID,
-    )
-    .await
-    .context("failed to insert faucet")?;
+    let faucet_account = sender
+        .insert_faucet(AccountType::Private)
+        .await
+        .context("failed to insert faucet")?;
 
-    let (recipient_account, _) = insert_new_wallet(
-        &mut recipient,
-        AccountType::Private,
-        &recipient_keystore,
-        RPO_FALCON_SCHEME_ID,
-    )
-    .await
-    .context("failed to insert wallet")?;
+    let recipient_account = recipient
+        .insert_wallet(AccountType::Private)
+        .await
+        .context("failed to insert wallet")?;
 
     let recipient_address = Address::new(recipient_account.id())
         .with_routing_parameters(RoutingParameters::new(AddressInterface::BasicWallet));
@@ -371,7 +341,8 @@ pub async fn test_transport_note_not_yet_committed(client_config: ClientConfig) 
     );
 
     // Now execute the mint tx — note commits on chain
-    execute_tx_and_sync(&mut sender, faucet_account.id(), tx_request)
+    sender
+        .execute_tx_and_sync(faucet_account.id(), tx_request)
         .await
         .context("mint tx failed")?;
 
@@ -391,10 +362,11 @@ pub async fn test_transport_note_not_yet_committed(client_config: ClientConfig) 
     assert!(received.inclusion_proof().is_some(), "should have inclusion proof after commit");
 
     // Consume the note
-    let tx_id = consume_notes(&mut recipient, recipient_account.id(), &[note]).await;
-    wait_for_tx(&mut recipient, tx_id).await?;
+    let tx_id = recipient.consume_notes(recipient_account.id(), &[note]).await?;
+    recipient.wait_for_tx(tx_id).await?;
 
-    assert_account_has_single_asset(&recipient, recipient_account.id(), faucet_account.id(), 100)
+    recipient
+        .assert_account_has_single_asset(recipient_account.id(), faucet_account.id(), 100)
         .await;
 
     Ok(())

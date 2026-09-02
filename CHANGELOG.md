@@ -42,6 +42,7 @@
 * [BREAKING][rust] `Client::remove_address` and `Store::remove_address` return `bool` instead of `()`, reporting whether the address was tracked. When it wasn't, `Client::remove_address` now leaves the derived note tag in place instead of running its cleanup.
 * [BREAKING][type][rust] Added the `TransactionRequestError::ForeignProcedureInputsTooLong` variant ([#2187](https://github.com/0xMiden/rust-sdk/pull/2187)).
 * [BREAKING][behavior][store] The `output_notes` table gained a nullable `script_root` column referencing `notes_scripts`, and note scripts are fully normalized: an output note's state blob no longer embeds the script, which is stored once in `notes_scripts` and joined back in on read. All tables are now `STRICT`, and the `tags` table stores its rows keyed by a `(tag, source)` primary key (`WITHOUT ROWID`) instead of carrying a separate unique index. This changes the schema fingerprint, so opening a database created before this change fails with `SchemaHashMismatch` and existing stores must be recreated.
+* [BREAKING][removal][test] Loose helper functions in `miden_client::testing::common` are now methods on `TestClient`. `TestClient::keystore()` exposes the client's keystore, so `ClientConfig::into_client` and `into_unsynced_client` return just the `TestClient` instead of a client/keystore pair ([#2477](https://github.com/0xMiden/rust-sdk/issues/2477)).
 
 ### Fixes
 

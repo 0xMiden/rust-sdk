@@ -5,7 +5,7 @@ use std::net::TcpListener;
 use std::time::Duration;
 
 use miden_client::assembly::CodeBuilder;
-use miden_client::auth::{AuthSchemeId, AuthSecretKey, AuthSingleSig, RPO_FALCON_SCHEME_ID};
+use miden_client::auth::{AuthSchemeId, AuthSecretKey, AuthSingleSig};
 use miden_client::keystore::Keystore;
 use miden_client::note::{Note, P2idNote};
 use miden_client::store::{NoteFilter, TransactionFilter};
@@ -46,15 +46,12 @@ use miden_standards::account::auth::Approver;
 use miden_standards::account::wallets::BasicWallet;
 
 use super::PaymentNoteDescription;
-use crate::tests::{create_test_client, setup_wallet_and_faucet};
+use crate::tests::create_test_client;
 
 #[tokio::test]
 async fn dap_transaction_execution_records_replay_data() {
-    let (mut client, _, keystore) = Box::pin(create_test_client()).await;
-    let (wallet, _) =
-        setup_wallet_and_faucet(&mut client, AccountType::Private, &keystore, RPO_FALCON_SCHEME_ID)
-            .await
-            .unwrap();
+    let (mut client, _) = Box::pin(create_test_client()).await;
+    let (wallet, _) = client.setup_wallet_and_faucet(AccountType::Private).await.unwrap();
 
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let listen_addr = listener.local_addr().unwrap();
@@ -107,7 +104,7 @@ async fn dap_transaction_execution_records_replay_data() {
 
 #[tokio::test]
 async fn transaction_creates_two_notes() {
-    let (mut client, _, keystore) = Box::pin(create_test_client()).await;
+    let (mut client, _) = Box::pin(create_test_client()).await;
     let asset_1: Asset =
         FungibleAsset::new(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET.try_into().unwrap(), 123)
             .unwrap()
@@ -130,7 +127,7 @@ async fn transaction_creates_two_notes() {
         .build_existing()
         .unwrap();
 
-    keystore.add_key(&secret_key, account.id()).await.unwrap();
+    client.keystore().add_key(&secret_key, account.id()).await.unwrap();
 
     client.add_account(&account, false).await.unwrap();
     client.sync_state().await.unwrap();
@@ -162,11 +159,8 @@ async fn transaction_creates_two_notes() {
 
 #[tokio::test]
 async fn transaction_error_reports_source_line() {
-    let (mut client, _, keystore) = Box::pin(create_test_client()).await;
-    let (wallet, _) =
-        setup_wallet_and_faucet(&mut client, AccountType::Private, &keystore, RPO_FALCON_SCHEME_ID)
-            .await
-            .unwrap();
+    let (mut client, _) = Box::pin(create_test_client()).await;
+    let (wallet, _) = client.setup_wallet_and_faucet(AccountType::Private).await.unwrap();
 
     let failing_script = client
         .code_builder()
@@ -203,11 +197,8 @@ async fn transaction_error_reports_source_line() {
 /// unchanged — no orphaned input notes and no orphaned output note scripts.
 #[tokio::test]
 async fn execute_transaction_failure_leaves_store_unchanged() {
-    let (mut client, _, keystore) = Box::pin(create_test_client()).await;
-    let (wallet, faucet) =
-        setup_wallet_and_faucet(&mut client, AccountType::Private, &keystore, RPO_FALCON_SCHEME_ID)
-            .await
-            .unwrap();
+    let (mut client, _) = Box::pin(create_test_client()).await;
+    let (wallet, faucet) = client.setup_wallet_and_faucet(AccountType::Private).await.unwrap();
 
     // A note targeting the wallet that is not tracked by the store. Passing it as a request
     // input note is what would trigger an input-note write during preparation.
@@ -328,15 +319,9 @@ impl TransactionProver for SwapProver {
 /// the local store updated as if the requested transaction had gone through.
 #[tokio::test]
 async fn submit_rejects_proven_transaction_unrelated_to_the_request() {
-    let (mut client, _, keystore) = Box::pin(create_test_client()).await;
-    let (wallet, faucet_a) =
-        setup_wallet_and_faucet(&mut client, AccountType::Private, &keystore, RPO_FALCON_SCHEME_ID)
-            .await
-            .unwrap();
-    let (_, faucet_b) =
-        setup_wallet_and_faucet(&mut client, AccountType::Private, &keystore, RPO_FALCON_SCHEME_ID)
-            .await
-            .unwrap();
+    let (mut client, _) = Box::pin(create_test_client()).await;
+    let (wallet, faucet_a) = client.setup_wallet_and_faucet(AccountType::Private).await.unwrap();
+    let (_, faucet_b) = client.setup_wallet_and_faucet(AccountType::Private).await.unwrap();
 
     // Transaction B: a mint from a different faucet, executed and proven on its own. This is
     // what the rogue prover hands back regardless of what it is asked to prove.
@@ -423,11 +408,8 @@ async fn submit_rejects_proven_transaction_unrelated_to_the_request() {
 /// request can be retried with a different (local) prover.
 #[tokio::test]
 async fn prover_fallback_pattern_allows_retry_with_different_prover() {
-    let (mut client, _, keystore) = Box::pin(create_test_client()).await;
-    let (wallet, faucet) =
-        setup_wallet_and_faucet(&mut client, AccountType::Private, &keystore, RPO_FALCON_SCHEME_ID)
-            .await
-            .unwrap();
+    let (mut client, _) = Box::pin(create_test_client()).await;
+    let (wallet, faucet) = client.setup_wallet_and_faucet(AccountType::Private).await.unwrap();
 
     let fungible_asset = FungibleAsset::new(faucet.id(), 100).unwrap();
 
@@ -463,7 +445,7 @@ async fn prover_fallback_pattern_allows_retry_with_different_prover() {
 /// account is not specified in the `TransactionRequestBuilder`.
 #[tokio::test]
 async fn lazy_foreign_account_loading() {
-    let (mut client, rpc_api, keystore) = Box::pin(create_test_client()).await;
+    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
 
     // Setup: Create and deploy a public foreign account with a storage map.
     let map_key: Word =
@@ -512,7 +494,7 @@ async fn lazy_foreign_account_loading() {
         .unwrap();
     let foreign_account_id = foreign_account.id();
 
-    keystore.add_key(&secret_key, foreign_account_id).await.unwrap();
+    client.keystore().add_key(&secret_key, foreign_account_id).await.unwrap();
     client.add_account(&foreign_account, false).await.unwrap();
 
     // Deploy the foreign account (sets nonce from 0 to 1).
@@ -526,9 +508,7 @@ async fn lazy_foreign_account_loading() {
     client.sync_state().await.unwrap();
 
     // Setup: Create a local wallet to execute the FPI transaction.
-    let local_wallet = super::insert_new_wallet(&mut client, AccountType::Public, &keystore)
-        .await
-        .unwrap();
+    let local_wallet = client.insert_wallet(AccountType::Public).await.unwrap();
 
     // Execute FPI transaction WITHOUT specifying foreign account.
 
@@ -584,11 +564,8 @@ async fn lazy_foreign_account_loading() {
 
 #[tokio::test]
 async fn chain_anchor_pins_execution_to_an_older_reference_block() {
-    let (mut client, rpc_api, keystore) = Box::pin(create_test_client()).await;
-    let (wallet, faucet) =
-        setup_wallet_and_faucet(&mut client, AccountType::Private, &keystore, RPO_FALCON_SCHEME_ID)
-            .await
-            .unwrap();
+    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
+    let (wallet, faucet) = client.setup_wallet_and_faucet(AccountType::Private).await.unwrap();
     client.sync_state().await.unwrap();
 
     let transaction_request = TransactionRequestBuilder::new()
@@ -641,11 +618,8 @@ async fn chain_anchor_pins_execution_to_an_older_reference_block() {
 
 #[tokio::test]
 async fn chain_anchor_for_request_tracks_consumed_note_blocks() {
-    let (mut client, rpc_api, keystore) = Box::pin(create_test_client()).await;
-    let (wallet, faucet) =
-        setup_wallet_and_faucet(&mut client, AccountType::Private, &keystore, RPO_FALCON_SCHEME_ID)
-            .await
-            .unwrap();
+    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
+    let (wallet, faucet) = client.setup_wallet_and_faucet(AccountType::Private).await.unwrap();
     client.sync_state().await.unwrap();
 
     // Mint a note for the wallet and let it commit on chain.
@@ -700,11 +674,8 @@ async fn chain_anchor_for_request_tracks_consumed_note_blocks() {
 
 #[tokio::test]
 async fn chain_anchor_execution_ignoring_invalid_input_notes() {
-    let (mut client, rpc_api, keystore) = Box::pin(create_test_client()).await;
-    let (wallet, faucet) =
-        setup_wallet_and_faucet(&mut client, AccountType::Private, &keystore, RPO_FALCON_SCHEME_ID)
-            .await
-            .unwrap();
+    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
+    let (wallet, faucet) = client.setup_wallet_and_faucet(AccountType::Private).await.unwrap();
     client.sync_state().await.unwrap();
 
     // Mint a note for the wallet and let it commit on chain.
@@ -747,11 +718,8 @@ async fn chain_anchor_execution_ignoring_invalid_input_notes() {
 
 #[tokio::test]
 async fn chain_anchor_untracked_note_block_fails_with_typed_error() {
-    let (mut client, rpc_api, keystore) = Box::pin(create_test_client()).await;
-    let (wallet, faucet) =
-        setup_wallet_and_faucet(&mut client, AccountType::Private, &keystore, RPO_FALCON_SCHEME_ID)
-            .await
-            .unwrap();
+    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
+    let (wallet, faucet) = client.setup_wallet_and_faucet(AccountType::Private).await.unwrap();
     client.sync_state().await.unwrap();
 
     let mint_request = TransactionRequestBuilder::new()
@@ -807,11 +775,8 @@ async fn chain_anchor_untracked_note_block_fails_with_typed_error() {
 /// unsubmittable transaction.
 #[tokio::test]
 async fn chain_anchor_execution_rejects_an_already_expired_transaction() {
-    let (mut client, rpc_api, keystore) = Box::pin(create_test_client()).await;
-    let (wallet, faucet) =
-        setup_wallet_and_faucet(&mut client, AccountType::Private, &keystore, RPO_FALCON_SCHEME_ID)
-            .await
-            .unwrap();
+    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
+    let (wallet, faucet) = client.setup_wallet_and_faucet(AccountType::Private).await.unwrap();
     client.sync_state().await.unwrap();
 
     // The shortest expiry the builder accepts, so a handful of blocks is enough to pass it.
@@ -881,11 +846,8 @@ async fn chain_anchor_execution_rejects_an_already_expired_transaction() {
 /// authenticate it. Consuming a note created in that very block exercises this.
 #[tokio::test]
 async fn chain_anchor_for_request_handles_a_note_created_in_the_reference_block() {
-    let (mut client, rpc_api, keystore) = Box::pin(create_test_client()).await;
-    let (wallet, faucet) =
-        setup_wallet_and_faucet(&mut client, AccountType::Private, &keystore, RPO_FALCON_SCHEME_ID)
-            .await
-            .unwrap();
+    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
+    let (wallet, faucet) = client.setup_wallet_and_faucet(AccountType::Private).await.unwrap();
     client.sync_state().await.unwrap();
 
     let mint_request = TransactionRequestBuilder::new()

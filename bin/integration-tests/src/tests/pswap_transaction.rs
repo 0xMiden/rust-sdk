@@ -1,7 +1,6 @@
 use anyhow::{Context, Result};
 use miden_client::account::AccountType;
 use miden_client::asset::{AssetAmount, FungibleAsset};
-use miden_client::auth::RPO_FALCON_SCHEME_ID;
 use miden_client::note::{Note, NoteType, PswapNote};
 use miden_client::testing::common::*;
 use miden_client::transaction::{PswapTransactionData, TransactionRequestBuilder};
@@ -22,59 +21,27 @@ pub async fn test_pswap_full_fill_onchain(client_config: ClientConfig) -> Result
     const OFFERED_AMOUNT: u64 = 100;
     const REQUESTED_AMOUNT: u64 = 50;
 
-    let (mut alice_client, alice_authenticator) = client_config.clone().into_client().await?;
-    wait_for_node(&mut alice_client).await;
-    let (mut bob_client, bob_authenticator) = client_config.clone().into_client().await?;
+    let mut alice_client = client_config.clone().into_client().await?;
+    alice_client.wait_for_node().await;
+    let mut bob_client = client_config.clone().into_client().await?;
 
     alice_client.sync_state().await?;
     bob_client.sync_state().await?;
 
-    let (alice_account, ..) = insert_new_wallet(
-        &mut alice_client,
-        AccountType::Private,
-        &alice_authenticator,
-        RPO_FALCON_SCHEME_ID,
-    )
-    .await?;
-    let (bob_account, ..) = insert_new_wallet(
-        &mut bob_client,
-        AccountType::Private,
-        &bob_authenticator,
-        RPO_FALCON_SCHEME_ID,
-    )
-    .await?;
+    let alice_account = alice_client.insert_wallet(AccountType::Private).await?;
+    let bob_account = bob_client.insert_wallet(AccountType::Private).await?;
 
-    let (btc_faucet_account, _) = insert_new_fungible_faucet(
-        &mut alice_client,
-        AccountType::Private,
-        &alice_authenticator,
-        RPO_FALCON_SCHEME_ID,
-    )
-    .await?;
-    let (eth_faucet_account, _) = insert_new_fungible_faucet(
-        &mut bob_client,
-        AccountType::Private,
-        &bob_authenticator,
-        RPO_FALCON_SCHEME_ID,
-    )
-    .await?;
+    let btc_faucet_account = alice_client.insert_faucet(AccountType::Private).await?;
+    let eth_faucet_account = bob_client.insert_faucet(AccountType::Private).await?;
 
-    let tx_id = mint_and_consume(
-        &mut alice_client,
-        alice_account.id(),
-        btc_faucet_account.id(),
-        NoteType::Public,
-    )
-    .await;
-    wait_for_tx(&mut alice_client, tx_id).await?;
-    let tx_id = mint_and_consume(
-        &mut bob_client,
-        bob_account.id(),
-        eth_faucet_account.id(),
-        NoteType::Public,
-    )
-    .await;
-    wait_for_tx(&mut bob_client, tx_id).await?;
+    let tx_id = alice_client
+        .mint_and_consume(alice_account.id(), btc_faucet_account.id(), NoteType::Public)
+        .await?;
+    alice_client.wait_for_tx(tx_id).await?;
+    let tx_id = bob_client
+        .mint_and_consume(bob_account.id(), eth_faucet_account.id(), NoteType::Public)
+        .await?;
+    bob_client.wait_for_tx(tx_id).await?;
 
     let offered_asset = FungibleAsset::new(btc_faucet_account.id(), OFFERED_AMOUNT)?;
     let requested_asset = FungibleAsset::new(eth_faucet_account.id(), REQUESTED_AMOUNT)?;
@@ -89,7 +56,7 @@ pub async fn test_pswap_full_fill_onchain(client_config: ClientConfig) -> Result
     )?;
 
     let pswap_note = tx_request.expected_output_own_notes()[0].clone();
-    execute_tx_and_sync(&mut alice_client, alice_account.id(), tx_request).await?;
+    alice_client.execute_tx_and_sync(alice_account.id(), tx_request).await?;
 
     // Subscribe bob_client to the PSWAP discovery tag so it can pick up the public note.
     let pswap_tag = PswapNote::create_tag(NoteType::Public, &offered_asset, &requested_asset);
@@ -112,7 +79,7 @@ pub async fn test_pswap_full_fill_onchain(client_config: ClientConfig) -> Result
         "the consumer should not track any future notes"
     );
 
-    execute_tx_and_sync(&mut bob_client, bob_account.id(), consume_request).await?;
+    bob_client.execute_tx_and_sync(bob_account.id(), consume_request).await?;
 
     // Alice discovers her payback through the creator-side note screening path after syncing, then
     // consumes it.
@@ -126,7 +93,7 @@ pub async fn test_pswap_full_fill_onchain(client_config: ClientConfig) -> Result
     let payback_note: Note = payback_record.try_into()?;
     let consume_payback =
         TransactionRequestBuilder::new().build_consume_notes(vec![payback_note])?;
-    execute_tx_and_sync(&mut alice_client, alice_account.id(), consume_payback).await?;
+    alice_client.execute_tx_and_sync(alice_account.id(), consume_payback).await?;
 
     let alice_account_reader = alice_client.account_reader(alice_account.id());
     assert_eq!(
@@ -165,59 +132,27 @@ pub async fn test_pswap_partial_fill_onchain(client_config: ClientConfig) -> Res
     const REMAINING_OFFERED: u64 = OFFERED_AMOUNT - EXPECTED_PAYOUT;
     const REMAINING_REQUESTED: u64 = REQUESTED_AMOUNT - ACCOUNT_FILL;
 
-    let (mut alice_client, alice_authenticator) = client_config.clone().into_client().await?;
-    wait_for_node(&mut alice_client).await;
-    let (mut bob_client, bob_authenticator) = client_config.clone().into_client().await?;
+    let mut alice_client = client_config.clone().into_client().await?;
+    alice_client.wait_for_node().await;
+    let mut bob_client = client_config.clone().into_client().await?;
 
     alice_client.sync_state().await?;
     bob_client.sync_state().await?;
 
-    let (alice_account, ..) = insert_new_wallet(
-        &mut alice_client,
-        AccountType::Private,
-        &alice_authenticator,
-        RPO_FALCON_SCHEME_ID,
-    )
-    .await?;
-    let (bob_account, ..) = insert_new_wallet(
-        &mut bob_client,
-        AccountType::Private,
-        &bob_authenticator,
-        RPO_FALCON_SCHEME_ID,
-    )
-    .await?;
+    let alice_account = alice_client.insert_wallet(AccountType::Private).await?;
+    let bob_account = bob_client.insert_wallet(AccountType::Private).await?;
 
-    let (btc_faucet_account, _) = insert_new_fungible_faucet(
-        &mut alice_client,
-        AccountType::Private,
-        &alice_authenticator,
-        RPO_FALCON_SCHEME_ID,
-    )
-    .await?;
-    let (eth_faucet_account, _) = insert_new_fungible_faucet(
-        &mut bob_client,
-        AccountType::Private,
-        &bob_authenticator,
-        RPO_FALCON_SCHEME_ID,
-    )
-    .await?;
+    let btc_faucet_account = alice_client.insert_faucet(AccountType::Private).await?;
+    let eth_faucet_account = bob_client.insert_faucet(AccountType::Private).await?;
 
-    let tx_id = mint_and_consume(
-        &mut alice_client,
-        alice_account.id(),
-        btc_faucet_account.id(),
-        NoteType::Public,
-    )
-    .await;
-    wait_for_tx(&mut alice_client, tx_id).await?;
-    let tx_id = mint_and_consume(
-        &mut bob_client,
-        bob_account.id(),
-        eth_faucet_account.id(),
-        NoteType::Public,
-    )
-    .await;
-    wait_for_tx(&mut bob_client, tx_id).await?;
+    let tx_id = alice_client
+        .mint_and_consume(alice_account.id(), btc_faucet_account.id(), NoteType::Public)
+        .await?;
+    alice_client.wait_for_tx(tx_id).await?;
+    let tx_id = bob_client
+        .mint_and_consume(bob_account.id(), eth_faucet_account.id(), NoteType::Public)
+        .await?;
+    bob_client.wait_for_tx(tx_id).await?;
 
     let offered_asset = FungibleAsset::new(btc_faucet_account.id(), OFFERED_AMOUNT)?;
     let requested_asset = FungibleAsset::new(eth_faucet_account.id(), REQUESTED_AMOUNT)?;
@@ -230,7 +165,7 @@ pub async fn test_pswap_partial_fill_onchain(client_config: ClientConfig) -> Res
         alice_client.rng(),
     )?;
     let pswap_note = tx_request.expected_output_own_notes()[0].clone();
-    execute_tx_and_sync(&mut alice_client, alice_account.id(), tx_request).await?;
+    alice_client.execute_tx_and_sync(alice_account.id(), tx_request).await?;
 
     let pswap_tag = PswapNote::create_tag(NoteType::Public, &offered_asset, &requested_asset);
     bob_client.add_note_tag(pswap_tag).await?;
@@ -253,7 +188,7 @@ pub async fn test_pswap_partial_fill_onchain(client_config: ClientConfig) -> Res
         "the consumer should not track any future notes"
     );
 
-    execute_tx_and_sync(&mut bob_client, bob_account.id(), consume_request).await?;
+    bob_client.execute_tx_and_sync(bob_account.id(), consume_request).await?;
 
     // Bob spent only ACCOUNT_FILL of ETH and received EXPECTED_PAYOUT of BTC (proportional, not
     // the full offered amount). This is the assertion that catches a wrong NOTE_ARGS layout: a
@@ -294,42 +229,20 @@ pub async fn test_pswap_cancel_onchain(client_config: ClientConfig) -> Result<()
     const OFFERED_AMOUNT: u64 = 100;
     const REQUESTED_AMOUNT: u64 = 50;
 
-    let (mut alice_client, alice_authenticator) = client_config.into_client().await?;
-    wait_for_node(&mut alice_client).await;
+    let mut alice_client = client_config.into_client().await?;
+    alice_client.wait_for_node().await;
     alice_client.sync_state().await?;
 
-    let (alice_account, ..) = insert_new_wallet(
-        &mut alice_client,
-        AccountType::Private,
-        &alice_authenticator,
-        RPO_FALCON_SCHEME_ID,
-    )
-    .await?;
+    let alice_account = alice_client.insert_wallet(AccountType::Private).await?;
 
-    let (btc_faucet_account, _) = insert_new_fungible_faucet(
-        &mut alice_client,
-        AccountType::Private,
-        &alice_authenticator,
-        RPO_FALCON_SCHEME_ID,
-    )
-    .await?;
+    let btc_faucet_account = alice_client.insert_faucet(AccountType::Private).await?;
     // The requested-side faucet exists only so the FungibleAsset is well-formed.
-    let (eth_faucet_account, _) = insert_new_fungible_faucet(
-        &mut alice_client,
-        AccountType::Private,
-        &alice_authenticator,
-        RPO_FALCON_SCHEME_ID,
-    )
-    .await?;
+    let eth_faucet_account = alice_client.insert_faucet(AccountType::Private).await?;
 
-    let tx_id = mint_and_consume(
-        &mut alice_client,
-        alice_account.id(),
-        btc_faucet_account.id(),
-        NoteType::Private,
-    )
-    .await;
-    wait_for_tx(&mut alice_client, tx_id).await?;
+    let tx_id = alice_client
+        .mint_and_consume(alice_account.id(), btc_faucet_account.id(), NoteType::Private)
+        .await?;
+    alice_client.wait_for_tx(tx_id).await?;
 
     let offered_asset = FungibleAsset::new(btc_faucet_account.id(), OFFERED_AMOUNT)?;
     let requested_asset = FungibleAsset::new(eth_faucet_account.id(), REQUESTED_AMOUNT)?;
@@ -342,7 +255,7 @@ pub async fn test_pswap_cancel_onchain(client_config: ClientConfig) -> Result<()
         alice_client.rng(),
     )?;
     let pswap_note = create_request.expected_output_own_notes()[0].clone();
-    execute_tx_and_sync(&mut alice_client, alice_account.id(), create_request).await?;
+    alice_client.execute_tx_and_sync(alice_account.id(), create_request).await?;
 
     let alice_account_reader = alice_client.account_reader(alice_account.id());
     assert_eq!(
@@ -354,7 +267,7 @@ pub async fn test_pswap_cancel_onchain(client_config: ClientConfig) -> Result<()
     info!(note_id = %pswap_note.id(), "Alice cancels the PSWAP");
     let cancel_request =
         TransactionRequestBuilder::new().build_pswap_cancel(pswap_note, alice_account.id())?;
-    execute_tx_and_sync(&mut alice_client, alice_account.id(), cancel_request).await?;
+    alice_client.execute_tx_and_sync(alice_account.id(), cancel_request).await?;
 
     let alice_account_reader = alice_client.account_reader(alice_account.id());
     assert_eq!(

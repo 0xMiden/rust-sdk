@@ -1576,13 +1576,10 @@ impl FeeAuth {
             return Self::FixedSalt;
         }
 
-        // Every multisig flavour whose MASM calls `fee::load_conversion_info` belongs here.
-        // `multisig_smart.masm` and `guarded_multisig.masm` both `dupw` the auth argument, load the
-        // conversion info out of it and keep the copy as the summary salt, so the salt is the
-        // caller's replay guard in both.
+        // `AuthMultisigSmart` is absent deliberately: it reads the auth argument as a summary salt
+        // and nothing else, so conversion info committed there is never read.
         let caller_chosen_salt = components.iter().find_map(|component| match component {
             AccountComponentInterface::AuthMultisig
-            | AccountComponentInterface::AuthMultisigSmart
             | AccountComponentInterface::AuthGuardedMultisig => {
                 Some(Self::CallerChosenSalt(component.name()))
             },
@@ -1595,7 +1592,8 @@ impl FeeAuth {
                 .find(|component| {
                     matches!(
                         component,
-                        AccountComponentInterface::AuthNoAuth
+                        AccountComponentInterface::AuthMultisigSmart
+                            | AccountComponentInterface::AuthNoAuth
                             | AccountComponentInterface::AuthNetworkAccount
                     )
                 })
@@ -1853,8 +1851,6 @@ mod tests {
         AuthGuardedMultisigConfig,
         AuthMultisig,
         AuthMultisigConfig,
-        AuthMultisigSmart,
-        AuthMultisigSmartConfig,
         AuthSingleSig,
         FeeConversionInfo,
         GuardianConfig,
@@ -1866,7 +1862,6 @@ mod tests {
 
     use super::{
         AccountComponentInterface,
-        FeeAuth,
         NATIVE_FEE_CONVERSION_SALT,
         TransactionRequest,
         TransactionRequestBuilder,
@@ -2180,19 +2175,6 @@ mod tests {
     // GUARDED MULTISIG
     // --------------------------------------------------------------------------------------------
 
-    fn smart_multisig_account() -> Account {
-        let approvers = ApproverSet::new(
-            vec![Approver::new(
-                AuthSecretKey::new_falcon512_poseidon2().public_key().to_commitment(),
-                AuthSchemeId::Falcon512Poseidon2,
-            )],
-            1,
-        )
-        .unwrap();
-
-        account_with_auth(AuthMultisigSmart::new(AuthMultisigSmartConfig::new(approvers)).unwrap())
-    }
-
     /// `guarded_multisig.masm` loads the conversion info out of the auth args and pays the fee with
     /// it, so a declared asset and rate are what the account pays with rather than something
     /// discarded and reinterpreted as the summary salt.
@@ -2241,20 +2223,6 @@ mod tests {
             )
             .expect("a chain charging nothing needs no conversion info"),
             None,
-        );
-    }
-
-    /// On 0.16.0-rc.9 `multisig_smart.masm` gained the same `fee::load_conversion_info` call as
-    /// `guarded_multisig.masm`, so it reads the auth argument as conversion info rather than as a
-    /// summary salt alone and must be told to declare its own.
-    #[test]
-    fn a_smart_multisig_account_reads_the_auth_arg_as_conversion_info() {
-        assert!(
-            matches!(
-                FeeAuth::of(&smart_multisig_account().code_interface()),
-                FeeAuth::CallerChosenSalt(_)
-            ),
-            "a smart multisig loads conversion info out of the auth args"
         );
     }
 

@@ -172,8 +172,10 @@ pub async fn print_executed_transaction<AUTH>(
         println!("{table}");
     }
 
-    // VAULT The patch carries the new absolute value of each changed asset, cleared entries are
-    // listed as removed.
+    // VAULT
+    //
+    // The patch carries the new absolute value of each changed asset, cleared entries are listed as
+    // removed.
     if patch.vault().is_empty() {
         println!("Account Vault will not be changed.");
     } else {

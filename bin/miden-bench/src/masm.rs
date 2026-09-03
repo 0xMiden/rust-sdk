@@ -21,8 +21,10 @@ fn write_read_op_instructions(script: &mut String, op: &ReadOp) {
     writeln!(script, "    push.{}", op.key.as_word().to_hex())
         .expect("write to string should not fail");
 
-    // Call the account's reader procedure for this storage map slot. Stack input: [KEY] Stack
-    // output via call frame: [VALUE, pad(12)] = 16 elements
+    // Call the account's reader procedure for this storage map slot.
+    //
+    // Stack input: [KEY]
+    // Stack output via call frame: [VALUE, pad(12)] = 16 elements
     writeln!(script, "    call.storage_reader::get_map_item_slot_{}", op.slot_idx)
         .expect("write to string should not fail");
 

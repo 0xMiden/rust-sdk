@@ -2425,8 +2425,9 @@ fn create_account_with_no_auth() {
 fn create_account_with_multisig_auth() {
     let temp_dir = init_cli().1;
 
-    // Create init storage data file for multisig threshold_config is a value slot with [threshold,
-    // num_approvers, 0, 0] approver_public_keys and procedure_thresholds are map slots
+    // Create init storage data file for multisig:
+    // - threshold_config is a value slot with [threshold, num_approvers, 0, 0]
+    // - approver_public_keys, approver_schemes and procedure_thresholds are map slots
     let init_storage_data_toml = r#"
         "miden::standards::auth::multisig::threshold_config.threshold" = "2"
         "miden::standards::auth::multisig::threshold_config.num_approvers" = "3"

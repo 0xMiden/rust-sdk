@@ -1249,9 +1249,9 @@ impl StateSync {
         chain_tip: BlockNumber,
         current_block_num: BlockNumber,
     ) -> Result<(), ClientError> {
-        // To receive information about added nullifiers, we reduce them to the higher 16 bits Note
+        // To receive information about added nullifiers, we reduce them to the higher 16 bits. Note
         // that besides filtering by nullifier prefixes, the node also filters by block number (it
-        // only returns nullifiers from current_block_num + 1 until chain_tip)
+        // only returns nullifiers from current_block_num + 1 until chain_tip).
 
         // Check for new nullifiers for input notes that were updated
         let nullifiers_tags: Vec<u16> =
@@ -1895,8 +1895,9 @@ mod tests {
 
         #[test]
         fn chains_rpc_transactions_by_state_commitment() {
-            // Chain: tx_a (state 1->2) -> tx_b (state 2->3) -> tx_c (state 3->4) Passed in reverse
-            // order to verify chaining uses state, not insertion order.
+            // Chain: tx_a (state 1->2) -> tx_b (state 2->3) -> tx_c (state 3->4)
+            //
+            // Passed in reverse order to verify chaining uses state, not insertion order.
             let tx_a = make_rpc_tx(1, 2, &[10], 5);
             let tx_b = make_rpc_tx(2, 3, &[20], 5);
             let tx_c = make_rpc_tx(3, 4, &[30], 5);

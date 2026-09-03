@@ -307,7 +307,7 @@ fn parse_test_function_name(line: &str) -> Option<String> {
     };
 
     let name_token = tokens.get(fn_pos + 1)?;
-    // Extract only valid identifier characters from the name token This stops at '(' for
+    // Extract only valid identifier characters from the name token. This stops at '(' for
     // parameters, '<' for generics, etc.
     let ident: String = name_token
         .chars()

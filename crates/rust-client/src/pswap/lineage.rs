@@ -36,7 +36,7 @@ impl PswapLineageState {
         self as u8
     }
 
-    /// Errors on unknown discriminants — guards against forward- incompatible serialized encodings.
+    /// Errors on unknown discriminants, guards against forward-incompatible serialized encodings.
     pub fn try_from_u8(value: u8) -> Result<Self, PswapLineageError> {
         match value {
             0 => Ok(Self::Active),

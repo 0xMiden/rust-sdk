@@ -936,7 +936,7 @@ fn parse_note_scripts_columns(
     row: &rusqlite::Row<'_>,
 ) -> Result<SerializedNoteScriptPars, rusqlite::Error> {
     // The script root can be derived from the script itself. There's no need to retrieve it
-    // separately. let script_root = row.get(0)?;
+    // separately.
     let script = row.get(1)?;
 
     Ok(SerializedNoteScriptPars { script })

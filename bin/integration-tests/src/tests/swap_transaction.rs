@@ -106,13 +106,13 @@ pub async fn test_swap_fully_onchain(client_config: ClientConfig) -> Result<()> 
         &Asset::Fungible(requested_asset),
     );
 
-    // add swap note's tag to client2 we could technically avoid this step, but for the first
+    // add swap note's tag to client2, we could technically avoid this step, but for the first
     // iteration of swap notes we'll require to manually add tags
     info!(tag = %swap_note_tag, "Adding swap note tag to client 2");
     client2.add_note_tag(swap_note_tag).await?;
 
-    // sync on client 2, we should get the swap note consume swap note with accountB, and check that
-    // the vault changed appropriately
+    // sync on client 2, we should get the swap note, consume swap note with accountB, and check
+    // that the vault changed appropriately
     client2.sync_state().await?;
     info!(note_id = %expected_output_notes[0].id(), account_id = %account_b.id(), "Consuming swap note on client 2");
 

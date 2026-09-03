@@ -42,14 +42,14 @@ fix: ## Run Fix with configs
 	cargo fix --workspace --features "testing std" --all-targets --allow-staged --allow-dirty
 
 .PHONY: format
-format: ## Reflow comments, then run format using nightly toolchain
-	cargo xtask fmt-comments --write
+format: ## Run format using nightly toolchain, then reflow comments
 	cargo +nightly fmt --all
+	cargo xtask fmt-comments --write
 
 .PHONY: format-check
-format-check: ## Run comment reflow and format checks without writing changes
-	cargo xtask fmt-comments --check
+format-check: ## Run format and comment reflow checks without writing changes
 	cargo +nightly fmt --all --check
+	cargo xtask fmt-comments --check
 
 .PHONY: shear
 shear: ## Run cargo-shear to find unused or misplaced dependencies

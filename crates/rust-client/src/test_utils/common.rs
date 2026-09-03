@@ -401,8 +401,8 @@ pub async fn wait_for_tx(client: &mut TestClient, transaction_id: TransactionId)
             },
         }
 
-        // Log wait time in a file if the env var is set This allows us to aggregate and measure how
-        // long the tests are waiting for transactions to be committed
+        // Log wait time in a file if the env var is set. This allows us to aggregate and measure
+        // how long the tests are waiting for transactions to be committed.
         if std::env::var("LOG_WAIT_TIMES") == Ok("true".to_string()) {
             let elapsed = now.elapsed();
             let wait_times_dir = std::path::PathBuf::from("wait_times");

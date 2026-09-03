@@ -146,7 +146,7 @@ mod tests {
     #[test]
     fn submissions_retry_resource_exhausted() {
         for endpoint in [RpcEndpoint::SubmitProvenTx, RpcEndpoint::SubmitProvenBatch] {
-            assert!(is_retryable(endpoint, &Status::new(Code::ResourceExhausted, "slow down")));
+            assert!(is_retryable(endpoint, &Status::new(Code::ResourceExhausted, "rate limited")));
         }
     }
 
@@ -155,7 +155,7 @@ mod tests {
         let endpoint = RpcEndpoint::GetBlockHeaderByNumber;
 
         assert!(is_retryable(endpoint, &Status::new(Code::Unavailable, "transport error")));
-        assert!(is_retryable(endpoint, &Status::new(Code::ResourceExhausted, "slow down")));
+        assert!(is_retryable(endpoint, &Status::new(Code::ResourceExhausted, "rate limited")));
     }
 
     #[test]

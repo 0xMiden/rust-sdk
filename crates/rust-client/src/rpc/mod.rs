@@ -741,6 +741,7 @@ impl RpcEndpoint {
     ///
     /// The match is exhaustive on purpose, so a new endpoint has to be classified before it
     /// compiles.
+    #[cfg(feature = "tonic")]
     pub(crate) fn is_idempotent(self) -> bool {
         match self {
             RpcEndpoint::SubmitProvenTx | RpcEndpoint::SubmitProvenBatch => false,

@@ -29,9 +29,6 @@ const NO_VALUE: &str = "-";
 /// Placeholder shown instead of the ID of a consumed note the client can't resolve.
 const PRIVATE_NOTE: &str = "<private>";
 
-/// Shown instead of the expiration block of a transaction that can't expire.
-const NO_EXPIRATION: &str = "never";
-
 #[derive(Clone, Debug, ValueEnum)]
 pub enum TransactionStatusFilter {
     Pending,
@@ -131,7 +128,7 @@ async fn show_transaction<AUTH: Keystore + Sync + 'static>(
     let transaction = get_transaction_with_id_prefix(client, transaction_id_prefix).await?;
     let resolver = load_faucet_metadata_resolver()?;
 
-    print_transaction_summary(&transaction);
+    print_transaction_details(&transaction);
     print_input_notes(client, &resolver, &transaction).await?;
     print_output_notes(client, &resolver, &transaction).await?;
 
@@ -162,7 +159,7 @@ async fn get_transaction_with_id_prefix<AUTH: Keystore + Sync + 'static>(
 }
 
 /// Prints the transaction's own metadata.
-fn print_transaction_summary(transaction: &TransactionRecord) {
+fn print_transaction_details(transaction: &TransactionRecord) {
     let details = &transaction.details;
 
     let mut table = create_dynamic_table(&["Transaction Information"]);
@@ -321,7 +318,7 @@ where
             tx.id.to_string(),
             tx.status.to_string(),
             tx.details.account_id.to_string(),
-            tx.script.as_ref().map_or("-".to_string(), |x| x.root().to_string()),
+            tx.script.as_ref().map_or(NO_VALUE.to_string(), |x| x.root().to_string()),
             tx.details.input_note_nullifiers.len().to_string(),
             tx.details.output_notes.num_notes().to_string(),
         ]);
@@ -341,10 +338,11 @@ fn standard_transaction_script_name(root: TransactionScriptRoot) -> Option<&'sta
     None
 }
 
-/// Formats the expiration block; [`BlockNumber::MAX`] marks a transaction that can't expire.
+/// Formats the expiration block; [`BlockNumber::MAX`] marks a transaction that can't expire, and
+/// is shown as the empty-value placeholder.
 fn format_expiration_block(expiration_block_num: BlockNumber) -> String {
     if expiration_block_num == BlockNumber::MAX {
-        NO_EXPIRATION.to_string()
+        NO_VALUE.to_string()
     } else {
         expiration_block_num.to_string()
     }
@@ -399,6 +397,7 @@ mod tests {
     };
 
     use super::{
+        NO_VALUE,
         TransactionStatusFilter,
         format_expiration_block,
         format_timestamp,
@@ -449,8 +448,8 @@ mod tests {
     }
 
     #[test]
-    fn format_expiration_block_reports_the_sentinel_as_never() {
-        assert_eq!(format_expiration_block(BlockNumber::MAX), "never");
+    fn format_expiration_block_reports_the_sentinel_as_no_value() {
+        assert_eq!(format_expiration_block(BlockNumber::MAX), NO_VALUE);
         assert_eq!(format_expiration_block(BlockNumber::from(7u32)), "7");
     }
 }

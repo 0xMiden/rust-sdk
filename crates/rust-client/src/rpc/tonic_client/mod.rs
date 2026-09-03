@@ -295,9 +295,11 @@ impl GrpcClient {
     /// Executes an RPC call and automatically retries transient failures.
     ///
     /// The provided closure is invoked with a freshly connected [`ApiClient`] on each attempt.
-    /// Retries are delegated to [`retry::RetryState`], which currently handles gRPC
-    /// [`tonic::Code::ResourceExhausted`] and [`tonic::Code::Unavailable`] responses, including
-    /// honoring cooldown delays when the node provides them.
+    /// Retries are delegated to [`retry::RetryState`], which handles gRPC
+    /// [`tonic::Code::ResourceExhausted`] responses on any endpoint and
+    /// [`tonic::Code::Unavailable`] only where repeating the call is safe (see
+    /// [`RpcEndpoint::is_idempotent`]), including honoring cooldown delays when the node provides
+    /// them.
     ///
     /// Returns the first successful gRPC response. If the call keeps failing after retries are
     /// exhausted, or if the error is not retryable, this returns the corresponding [`RpcError`] for
@@ -307,7 +309,8 @@ impl GrpcClient {
         endpoint: RpcEndpoint,
         mut call: impl FnMut(ApiClient) -> RpcFuture<Result<tonic::Response<T>, Status>>,
     ) -> Result<tonic::Response<T>, RpcError> {
-        let mut retry_state = retry::RetryState::new(self.max_retries, self.retry_interval_ms);
+        let mut retry_state =
+            retry::RetryState::new(endpoint, self.max_retries, self.retry_interval_ms);
 
         loop {
             let rpc_api = self.ensure_connected().await?;

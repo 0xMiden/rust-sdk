@@ -26,7 +26,7 @@ edition      = "2024"
 license      = "MIT"
 repository   = "https://github.com/0xMiden/rust-sdk"
 rust-version = "1.98"
-version      = "0.16.0-rc.4"
+version      = "0.16.0-rc.5"
 
 [profile.dev]
 codegen-units = 16
@@ -37,9 +37,9 @@ opt-level = 1
 
 [workspace.dependencies]
 # Workspace crates
-miden-client                   = { default-features = false, path = "crates/rust-client", version = "0.16.0-rc.4" }
-miden-client-integration-tests = { default-features = false, path = "bin/integration-tests", version = "0.16.0-rc.4" }
-miden-client-sqlite-store      = { default-features = false, path = "crates/sqlite-store", version = "0.16.0-rc.4" }
+miden-client                   = { default-features = false, path = "crates/rust-client", version = "0.16.0-rc.5" }
+miden-client-integration-tests = { default-features = false, path = "bin/integration-tests", version = "0.16.0-rc.5" }
+miden-client-sqlite-store      = { default-features = false, path = "crates/sqlite-store", version = "0.16.0-rc.5" }
 
 # Miden protocol dependencies
 miden-agglayer  = { default-features = false, version = "0.16.0-rc.9" }

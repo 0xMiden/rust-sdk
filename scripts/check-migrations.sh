@@ -18,8 +18,8 @@ if ! git rev-parse --verify --quiet "${BASE}^{commit}" > /dev/null; then
     exit 1
 fi
 
-# Compared against the merge base rather than the tip of the base branch, so a migration added on
-# the base branch after this one forked is not attributed to this pull request.
+# Compare only the branch's own commits, prevents a migration added on the base branch after this one
+# forked being attributed to this pull request.
 CHANGED=$(git diff --name-only --diff-filter=MDR --merge-base "${BASE}" -- "${MIGRATIONS_DIR}")
 
 if [ -z "${CHANGED}" ]; then

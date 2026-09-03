@@ -65,16 +65,15 @@ impl<AUTH> Client<AUTH> {
 
     /// Send a note through the note transport network.
     ///
-    /// The note will be end-to-end encrypted (unimplemented, currently plaintext)
-    /// using the provided recipient's `address` details.
-    /// The recipient will be able to retrieve this note through the note's [`NoteTag`].
+    /// The note will be end-to-end encrypted (unimplemented, currently plaintext) using the
+    /// provided recipient's `address` details. The recipient will be able to retrieve this note
+    /// through the note's [`NoteTag`].
     ///
-    /// **Durability.** The relay payload is persisted to the outbox before the
-    /// transport call. If the call fails or is interrupted, the entry stays in
-    /// the outbox and is retried on the next [`Client::flush_relay_outbox`]
-    /// (which [`Client::sync_note_transport`] runs), so a transient transport
-    /// failure does not drop the note. The receiver dedupes by note id, so a
-    /// re-send after a partial success is harmless.
+    /// **Durability.** The relay payload is persisted to the outbox before the transport call. If
+    /// the call fails or is interrupted, the entry stays in the outbox and is retried on the next
+    /// [`Client::flush_relay_outbox`] (which [`Client::sync_note_transport`] runs), so a transient
+    /// transport failure does not drop the note. The receiver dedupes by note id, so a re-send
+    /// after a partial success is harmless.
     ///
     /// Prefer [`Client::send_private_note_with_block_hint`], which also relays a block hint so the
     /// recipient gets deterministic delivery instead of relying on its lookback heuristic.
@@ -97,8 +96,8 @@ impl<AUTH> Client<AUTH> {
     /// the commitment is correct, and the chain tip at send time is a safe choice. A tighter value
     /// just means less for the recipient to scan.
     ///
-    /// The same durability guarantees as [`Client::send_private_note`] apply: the hint is
-    /// persisted with the relay payload, so a retried send preserves it.
+    /// The same durability guarantees as [`Client::send_private_note`] apply: the hint is persisted
+    /// with the relay payload, so a retried send preserves it.
     pub async fn send_private_note_with_block_hint(
         &mut self,
         note: Note,
@@ -160,15 +159,14 @@ impl<AUTH> Client<AUTH> {
         Ok(())
     }
 
-    /// Re-attempt every relay payload in the durable outbox. Each entry is a
-    /// private note whose previous transport delivery failed. Successful
-    /// re-sends are dropped; failures are kept for the next call. Every entry
-    /// is attempted independently, so one persistently-failing note does not
-    /// block the others.
+    /// Re-attempt every relay payload in the durable outbox. Each entry is a private note whose
+    /// previous transport delivery failed. Successful re-sends are dropped; failures are kept for
+    /// the next call. Every entry is attempted independently, so one persistently-failing note does
+    /// not block the others.
     ///
-    /// [`Client::sync_note_transport`] runs this automatically and ignores its
-    /// error, so a relay failure can't block a sync. Callers driving retries
-    /// themselves can invoke it directly and inspect the returned error.
+    /// [`Client::sync_note_transport`] runs this automatically and ignores its error, so a relay
+    /// failure can't block a sync. Callers driving retries themselves can invoke it directly and
+    /// inspect the returned error.
     pub async fn flush_relay_outbox(&self) -> Result<(), ClientError> {
         let api = self.get_note_transport_api()?;
 
@@ -215,10 +213,10 @@ impl<AUTH> Client<AUTH> {
 
     /// Load the durable relay outbox.
     ///
-    /// Returns an empty `Vec` if the outbox key is absent. On deserialization
-    /// failure (schema mismatch or storage corruption) the entry is dropped and
-    /// an empty `Vec` is returned — leaving unreadable bytes in place would
-    /// block every subsequent relay because each sync would re-read them.
+    /// Returns an empty `Vec` if the outbox key is absent. On deserialization failure (schema
+    /// mismatch or storage corruption) the entry is dropped and an empty `Vec` is returned —
+    /// leaving unreadable bytes in place would block every subsequent relay because each sync would
+    /// re-read them.
     async fn load_relay_outbox(&self) -> Result<Vec<NoteInfo>, ClientError> {
         let bytes = self
             .store
@@ -346,12 +344,11 @@ where
 
     /// Fetch notes for tracked note tags.
     ///
-    /// The client will query the configured note transport node for all tracked note tags.
-    /// To list tracked tags please use [`Client::get_note_tags`]. To add a new note tag please use
-    /// [`Client::add_note_tag`].
-    /// Only notes directed at your addresses will be stored and readable given the use of
-    /// end-to-end encryption (unimplemented).
-    /// Fetched notes will be stored into the client's store.
+    /// The client will query the configured note transport node for all tracked note tags. To list
+    /// tracked tags please use [`Client::get_note_tags`]. To add a new note tag please use
+    /// [`Client::add_note_tag`]. Only notes directed at your addresses will be stored and readable
+    /// given the use of end-to-end encryption (unimplemented). Fetched notes will be stored into
+    /// the client's store.
     ///
     /// An internal pagination mechanism is employed to reduce the number of downloaded notes: this
     /// fetches only notes past the stored cursor. Historical notes for a newly tracked tag are
@@ -545,10 +542,10 @@ pub trait NoteTransportClient: Send + Sync {
 
     /// Send a note, relaying a block hint for the recipient's commitment scan.
     ///
-    /// `block_hint` is the block from which the recipient should start scanning for the
-    /// note's commitment. The default implementation ignores it and delegates to
-    /// [`NoteTransportClient::send_note`], so existing implementors keep compiling. Transports
-    /// that can carry the hint (e.g. the gRPC client) override this.
+    /// `block_hint` is the block from which the recipient should start scanning for the note's
+    /// commitment. The default implementation ignores it and delegates to
+    /// [`NoteTransportClient::send_note`], so existing implementors keep compiling. Transports that
+    /// can carry the hint (e.g. the gRPC client) override this.
     async fn send_note_with_block_hint(
         &self,
         header: NoteHeader,
@@ -560,8 +557,8 @@ pub trait NoteTransportClient: Send + Sync {
 
     /// Fetch notes for given tags
     ///
-    /// Downloads notes for given tags.
-    /// Returns notes labelled after the provided cursor (pagination), and an updated cursor.
+    /// Downloads notes for given tags. Returns notes labelled after the provided cursor
+    /// (pagination), and an updated cursor.
     async fn fetch_notes(
         &self,
         tag: &[NoteTag],

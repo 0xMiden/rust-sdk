@@ -76,9 +76,9 @@ fn main() {
 
 /// Initializes tracing.
 ///
-/// If `RUST_LOG` is set, it always takes precedence (backwards compatible).
-/// Otherwise, when `--verbose` is set, enables info-level tracing for integration tests and
-/// the client's test utilities.
+/// If `RUST_LOG` is set, it always takes precedence (backwards compatible). Otherwise, when
+/// `--verbose` is set, enables info-level tracing for integration tests and the client's test
+/// utilities.
 ///
 /// Tracing output is routed to stderr to avoid corrupting subprocess JSON on stdout.
 fn init_tracing(verbose: bool) {
@@ -192,8 +192,8 @@ impl TryFrom<Args> for BaseConfig {
 
     /// Creates a BaseConfig from command line arguments.
     ///
-    /// The `--network` flag sets defaults for all components. Individual flags
-    /// (`--prover-url`, `--note-transport-url`) override specific components.
+    /// The `--network` flag sets defaults for all components. Individual flags (`--prover-url`,
+    /// `--note-transport-url`) override specific components.
     fn try_from(args: Args) -> Result<Self, Self::Error> {
         // --rpc-url overrides the network preset for RPC.
         let endpoint = if let Some(ref rpc_url) = args.rpc_url {
@@ -431,9 +431,9 @@ impl SubprocessResult {
 
 /// Runs a single test in subprocess mode.
 ///
-/// This function is called when the binary is invoked with `--internal-run-test`.
-/// It executes the named test, captures the result, and outputs it as JSON to stdout.
-/// All other stdout from the test is preserved and will be captured by the parent process.
+/// This function is called when the binary is invoked with `--internal-run-test`. It executes the
+/// named test, captures the result, and outputs it as JSON to stdout. All other stdout from the
+/// test is preserved and will be captured by the parent process.
 fn run_single_test_subprocess(args: &Args, test_name: &str) {
     let all_tests = generated_tests::get_all_tests();
     let test = all_tests.into_iter().find(|t| t.name == test_name);
@@ -561,8 +561,8 @@ fn format_error_report(error: anyhow::Error) -> String {
 
 /// Runs tests with retries for failed tests.
 ///
-/// Executes tests in parallel, then retries any failures up to `retry_count` times.
-/// Returns the final results for all tests, including attempt history.
+/// Executes tests in parallel, then retries any failures up to `retry_count` times. Returns the
+/// final results for all tests, including attempt history.
 fn run_tests_with_retries(
     tests: Vec<TestCase>,
     base_config: BaseConfig,
@@ -608,9 +608,8 @@ fn run_tests_with_retries(
 
 /// Runs multiple tests in parallel using subprocess execution.
 ///
-/// Each test is spawned as a separate subprocess, enabling true OS-level parallelism.
-/// Stdout/stderr from each subprocess is captured automatically and associated with
-/// the test result.
+/// Each test is spawned as a separate subprocess, enabling true OS-level parallelism. Stdout/stderr
+/// from each subprocess is captured automatically and associated with the test result.
 fn run_tests_parallel(
     tests: Vec<TestCase>,
     base_config: BaseConfig,

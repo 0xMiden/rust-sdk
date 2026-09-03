@@ -75,9 +75,9 @@ impl TransactionRecord {
     /// Returns the `(nullifier, note_id)` references of the public input notes this transaction
     /// consumed, letting a client fetch by id consumed notes it never tracked.
     ///
-    /// Only yields references whose nullifier appears in the transaction header's input notes:
-    /// a reference the node can't tie to an actually-consumed input is dropped, so a misbehaving
-    /// node can't attribute an unrelated note to this transaction's account.
+    /// Only yields references whose nullifier appears in the transaction header's input notes: a
+    /// reference the node can't tie to an actually-consumed input is dropped, so a misbehaving node
+    /// can't attribute an unrelated note to this transaction's account.
     pub fn trusted_consumed_note_refs(&self) -> impl Iterator<Item = (Nullifier, NoteId)> + '_ {
         let consumed_nullifiers: BTreeSet<Nullifier> = self
             .transaction_header
@@ -132,13 +132,13 @@ impl TryFrom<proto::rpc::TransactionRecord> for TransactionRecord {
     }
 }
 
-/// Converts a proto `TransactionHeader` and its associated output note inclusion proofs
-/// into the domain `TransactionHeader`, committed output notes, and erased note IDs.
+/// Converts a proto `TransactionHeader` and its associated output note inclusion proofs into the
+/// domain `TransactionHeader`, committed output notes, and erased note IDs.
 ///
 /// The proto `TransactionHeader.output_notes` contains `NoteHeader`s for ALL output notes
 /// (including erased ones). Inclusion proofs for committed notes are provided separately in
-/// `output_note_proofs`. Notes present in `output_notes` but without a corresponding proof
-/// are erased (created and consumed within the same batch).
+/// `output_note_proofs`. Notes present in `output_notes` but without a corresponding proof are
+/// erased (created and consumed within the same batch).
 fn convert_transaction_header(
     value: proto::transaction::TransactionHeader,
     output_note_proofs: Vec<proto::note::NoteInclusionInBlockProof>,

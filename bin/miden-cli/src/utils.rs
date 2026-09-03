@@ -83,8 +83,8 @@ pub(crate) async fn parse_account_id<AUTH>(
 /// Splits a `<ACCOUNT_ID>[:<PROCEDURE>]` target into its account ID and procedure parts.
 ///
 /// Account IDs (hex or bech32) never contain a colon, so the first one separates the two. The
-/// procedure is `None` when the target carries no colon; commands that require one reject that
-/// case themselves.
+/// procedure is `None` when the target carries no colon; commands that require one reject that case
+/// themselves.
 pub(crate) fn split_procedure_target(target: &str) -> (&str, Option<&str>) {
     match target.split_once(':') {
         Some((account_id, procedure)) => (account_id, Some(procedure)),
@@ -222,8 +222,8 @@ pub async fn print_executed_transaction<AUTH>(
 
 /// Prints the output stack from `execute_program`.
 ///
-/// If `expected_results` is `Some(n)`, prints the top `n` values. If `None`, prints up to the
-/// last non-zero value so trailing zero-padding is hidden.
+/// If `expected_results` is `Some(n)`, prints the top `n` values. If `None`, prints up to the last
+/// non-zero value so trailing zero-padding is hidden.
 pub fn print_executed_program_stack(
     stack: &[Felt; MIN_STACK_DEPTH],
     expected_results: Option<usize>,

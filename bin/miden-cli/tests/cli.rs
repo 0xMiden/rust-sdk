@@ -61,13 +61,13 @@ use rand::RngExt;
 /// in the process of spawning commands.
 ///
 /// Tests added here should only interact with the CLI through `assert_cmd`, with the exception of
-/// reading data from the client's store since it would be quite tedious to parse the CLI output
-/// for that and is more error prone.
+/// reading data from the client's store since it would be quite tedious to parse the CLI output for
+/// that and is more error prone.
 ///
 /// Note that each client has to run in its own directory so you'll need to create a random
-/// temporary directory (check existing tests to see how). You'll also need to make the commands
-/// run as if they were spawned on that directory. `std::env::set_current_dir` shouldn't be used as
-/// it impacts on other tests and instead you should use `assert_cmd::Command::current_dir`.
+/// temporary directory (check existing tests to see how). You'll also need to make the commands run
+/// as if they were spawned on that directory. `std::env::set_current_dir` shouldn't be used as it
+/// impacts on other tests and instead you should use `assert_cmd::Command::current_dir`.
 
 // INIT TESTS
 // ================================================================================================
@@ -1634,8 +1634,8 @@ fn block_on<F: std::future::Future>(future: F) -> F::Output {
 /// Gives an account the CLI just created enough of the native fee asset to pay for its own
 /// transactions, and deploys it.
 ///
-/// Deploys rather than holding the funding note: the CLI runs in its own process, so the funds
-/// have to be in the vault before it transacts.
+/// Deploys rather than holding the funding note: the CLI runs in its own process, so the funds have
+/// to be in the vault before it transacts.
 async fn fund_cli_account(
     cli_path: &Path,
     store_path: &Path,

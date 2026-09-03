@@ -12,9 +12,9 @@ use crate::ClientConfig;
 // PSWAP FULL FILL ONCHAIN
 // ================================================================================================
 
-/// Verifies an end-to-end PSWAP full-fill flow against a real node:
-/// Alice creates a public PSWAP, Bob discovers it via the discovery tag, Bob fully fills it, and
-/// both parties end up with the expected balances after consuming the resulting payback note.
+/// Verifies an end-to-end PSWAP full-fill flow against a real node: Alice creates a public PSWAP,
+/// Bob discovers it via the discovery tag, Bob fully fills it, and both parties end up with the
+/// expected balances after consuming the resulting payback note.
 ///
 /// The PSWAP consume MASM emits a payback note with a word-sized attachment (see
 /// `add_word_attachment` in `standards/notes/pswap.masm`); Alice fetches that payback note via sync

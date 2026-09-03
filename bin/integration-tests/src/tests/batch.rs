@@ -17,16 +17,14 @@ use crate::ClientConfig;
 
 /// Real-node integration test for the `BatchBuilder` end-to-end path.
 ///
-/// Mints tokens onto a first wallet, then submits two P2ID transfers from that
-/// wallet to a second wallet as a single proven batch via
-/// `Client::new_transaction_batch`.
+/// Mints tokens onto a first wallet, then submits two P2ID transfers from that wallet to a second
+/// wallet as a single proven batch via `Client::new_transaction_batch`.
 ///
-/// The balance assertion at the end implicitly verifies `InMemoryBatchDataStore`'s
-/// account state stacking: if the second push read the pre-batch state instead of
-/// the post-push-1 state, both transactions would carry the same
-/// `initial_account_state` in their proofs and the node would reject the batch.
-/// Successful submission with balance = `MINT_AMOUNT` - 2 * `TRANSFER_AMOUNT` proves
-/// that each push saw the state produced by the previous push.
+/// The balance assertion at the end implicitly verifies `InMemoryBatchDataStore`'s account state
+/// stacking: if the second push read the pre-batch state instead of the post-push-1 state, both
+/// transactions would carry the same `initial_account_state` in their proofs and the node would
+/// reject the batch. Successful submission with balance = `MINT_AMOUNT` - 2 * `TRANSFER_AMOUNT`
+/// proves that each push saw the state produced by the previous push.
 pub async fn test_batch_builder_submits_two_p2id_on_one_account(
     client_config: ClientConfig,
 ) -> Result<()> {
@@ -159,9 +157,9 @@ pub async fn test_batch_builder_submits_two_p2id_on_one_account(
 /// - tx1 (A → B): transfer `TRANSFER_AMOUNT` via P2ID.
 /// - tx2 (B): consume the just-created P2ID note.
 ///
-/// Asserts both transactions commit, A's balance is `MINT_AMOUNT - TRANSFER_AMOUNT`, B's
-/// balance is `MINT_AMOUNT + TRANSFER_AMOUNT`, and both accounts' nonces advanced by
-/// exactly 1 during the batch.
+/// Asserts both transactions commit, A's balance is `MINT_AMOUNT - TRANSFER_AMOUNT`, B's balance is
+/// `MINT_AMOUNT + TRANSFER_AMOUNT`, and both accounts' nonces advanced by exactly 1 during the
+/// batch.
 pub async fn test_batch_builder_multiple_accounts(client_config: ClientConfig) -> Result<()> {
     let (mut client, authenticator) = client_config.into_client().await?;
     wait_for_node(&mut client).await;
@@ -296,14 +294,14 @@ pub async fn test_batch_builder_multiple_accounts(client_config: ClientConfig) -
 
 /// Integration test for the A → B → A interleaved push path.
 ///
-/// Pre-mints `MINT_AMOUNT` to both A and B so each has on-chain state. Then submits a
-/// 3-tx batch with pushes in order `A → B`, `B → A`, `A → B`. The middle B push forces
+/// Pre-mints `MINT_AMOUNT` to both A and B so each has on-chain state. Then submits a 3-tx batch
+/// with pushes in order `A → B`, `B → A`, `A → B`. The middle B push forces
 /// `InMemoryBatchDataStore` to handle a non-A push between two A pushes. The third push must read
 /// A's cached post-push-1 state, not re-fetch from the store, otherwise its `initial_account_state`
 /// would not match the chain produced by push 1 and the node would reject the batch.
 ///
-/// Asserts A advances by 2 nonces and B by 1, A's balance reflects two outbound notes,
-/// and B's reflects one outbound note (all output notes remain pending consumption).
+/// Asserts A advances by 2 nonces and B by 1, A's balance reflects two outbound notes, and B's
+/// reflects one outbound note (all output notes remain pending consumption).
 pub async fn test_batch_builder_interleaved_pushes(client_config: ClientConfig) -> Result<()> {
     let (mut client, authenticator) = client_config.into_client().await?;
     wait_for_node(&mut client).await;

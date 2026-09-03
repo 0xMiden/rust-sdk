@@ -553,12 +553,12 @@ pub async fn test_incorrect_genesis(client_config: ClientConfig) -> Result<()> {
     }
 }
 
-/// Tests that consumed notes are returned in the correct transaction order when multiple
-/// consume transactions for the same account are included in the same block.
+/// Tests that consumed notes are returned in the correct transaction order when multiple consume
+/// transactions for the same account are included in the same block.
 ///
-/// The test mints 3 notes, then submits 3 consume transactions as a single proven batch
-/// so they land in the same block. After syncing, it verifies that `InputNoteReader` returns the
-/// notes in submission order.
+/// The test mints 3 notes, then submits 3 consume transactions as a single proven batch so they
+/// land in the same block. After syncing, it verifies that `InputNoteReader` returns the notes in
+/// submission order.
 pub async fn test_consumed_note_ordering(client_config: ClientConfig) -> Result<()> {
     let (mut client, keystore) = client_config.clone().into_client().await?;
     wait_for_node(&mut client).await;
@@ -713,8 +713,8 @@ pub async fn test_consumed_note_ordering(client_config: ClientConfig) -> Result<
     Ok(())
 }
 
-/// A client that only *watches* an account (no note tag registered) recovers a committed
-/// public note the account consumed authenticated, even though it never discovered the note by tag.
+/// A client that only *watches* an account (no note tag registered) recovers a committed public
+/// note the account consumed authenticated, even though it never discovered the note by tag.
 ///
 /// The node attaches a `consumed_note_refs` entry (the note's id, mapped from the input nullifier)
 /// to the consumer's transaction. The client reads it during sync, fetches the full body via

@@ -40,9 +40,9 @@ use crate::store::data_store::ClientDataStore;
 // IN-MEMORY BATCH DATA STORE
 // ================================================================================================
 
-/// A [`DataStore`] that lets a [`crate::transaction::BatchBuilder`] stack in-memory account
-/// state for any number of local accounts. For each account pushed into the batch, the executor
-/// sees the in-batch [`PartialAccount`] state instead of the stale store state.
+/// A [`DataStore`] that lets a [`crate::transaction::BatchBuilder`] stack in-memory account state
+/// for any number of local accounts. For each account pushed into the batch, the executor sees the
+/// in-batch [`PartialAccount`] state instead of the stale store state.
 ///
 /// Witnesses for the in-batch state are served entirely client-side: each account SMT (the vault
 /// and every map slot) is viewed through a [`StagedSmt`] that replays the batch's accumulated
@@ -54,8 +54,8 @@ pub(crate) struct InMemoryBatchDataStore {
     current_accounts: BTreeMap<AccountId, CachedAccountState>,
 }
 
-/// The in-batch state of one account: the partial account served to the executor, plus the
-/// staged view of each of its SMTs from which witnesses at the in-batch roots are opened.
+/// The in-batch state of one account: the partial account served to the executor, plus the staged
+/// view of each of its SMTs from which witnesses at the in-batch roots are opened.
 ///
 /// Cloned to apply a transaction's writes atomically; the staged trees only hold the paths the
 /// batch has touched, so a copy stays proportional to the batch rather than to the account.

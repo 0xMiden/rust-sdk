@@ -5,8 +5,8 @@
 //! This crate provides a lightweight client that handles connections to the Miden node, manages
 //! accounts and their state, and facilitates executing, proving, and submitting transactions.
 //!
-//! For a protocol-level overview and guides for getting started, please visit the official
-//! [Miden docs](https://docs.miden.xyz/).
+//! For a protocol-level overview and guides for getting started, please visit the official [Miden
+//! docs](https://docs.miden.xyz/).
 //!
 //! ## Overview
 //!
@@ -39,8 +39,8 @@
 //! - **`AggLayer`:** Bridge account components, note constructors, and Ethereum-compatible helper
 //!   types from the Miden `AggLayer` protocol crate.
 //!
-//! The library is designed to work in both `no_std` and `std` environments and is
-//! configurable via Cargo features.
+//! The library is designed to work in both `no_std` and `std` environments and is configurable via
+//! Cargo features.
 //!
 //! ## Usage
 //!
@@ -58,21 +58,20 @@
 //! ```rust,ignore
 //! use std::sync::Arc;
 //!
-//! use miden_client::builder::ClientBuilder;
-//! use miden_client::keystore::FilesystemKeyStore;
-//! use miden_client::rpc::{Endpoint, GrpcClient, VerifyingRpcClient};
-//! use miden_client_sqlite_store::SqliteStore;
+//! use miden_client::builder::ClientBuilder; use miden_client::keystore::FilesystemKeyStore; use
+//! miden_client::rpc::{Endpoint, GrpcClient, VerifyingRpcClient}; use
+//! miden_client_sqlite_store::SqliteStore;
 //!
 //! # pub async fn create_test_client() -> Result<(), Box<dyn std::error::Error>> {
 //! // Create the SQLite store.
 //! let sqlite_store = SqliteStore::new("path/to/store".try_into()?).await?;
 //! let store = Arc::new(sqlite_store);
 //!
-//! // Create the keystore for transaction signing.
-//! let keystore = FilesystemKeyStore::new("path/to/keys/directory".try_into()?)?;
+//! // Create the keystore for transaction signing. let keystore =
+//! FilesystemKeyStore::new("path/to/keys/directory".try_into()?)?;
 //!
-//! // Create the RPC client.
-//! let endpoint = Endpoint::new("https".into(), "localhost".into(), Some(57291));
+//! // Create the RPC client. let endpoint = Endpoint::new("https".into(), "localhost".into(),
+//! Some(57291));
 //!
 //! // Instantiate the client using the builder.
 //! let client = ClientBuilder::new()
@@ -434,9 +433,9 @@ pub struct Client<AUTH> {
 ///   an existing block relevant without changing peaks; pruning the cached MMR while it's missing
 ///   such a block would over-delete auth nodes that the store still needs.
 ///
-/// The cached MMR includes the sync-height block as a tracked leaf; the store persists the
-/// peaks committed by that block's header, i.e. the peaks over the chain *before* that block
-/// was added, so the two states are offset by one leaf.
+/// The cached MMR includes the sync-height block as a tracked leaf; the store persists the peaks
+/// committed by that block's header, i.e. the peaks over the chain *before* that block was added,
+/// so the two states are offset by one leaf.
 pub(crate) struct CachedPartialMmr {
     pub(crate) store_peaks_hash: Word,
     pub(crate) tracked_blocks_hash: Word,
@@ -545,9 +544,9 @@ impl<AUTH> Client<AUTH> {
 // CLIENT RNG
 // ================================================================================================
 
-// NOTE: The idea of having `ClientRng` is to enforce `Send` and `Sync` over `FeltRng`.
-// This allows `Client`` to be `Send` and `Sync`. There may be users that would want to use clients
-// with !Send/!Sync RNGs. For this we have two options:
+// NOTE: The idea of having `ClientRng` is to enforce `Send` and `Sync` over `FeltRng`. This allows
+// `Client`` to be `Send` and `Sync`. There may be users that would want to use clients with
+// !Send/!Sync RNGs. For this we have two options:
 //
 // - We can make client generic over R (adds verbosity but is more flexible and maybe even correct)
 // - We can optionally (e.g., based on features/target) change `ClientRng` definition to not enforce

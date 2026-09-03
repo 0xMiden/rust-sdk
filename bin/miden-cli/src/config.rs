@@ -26,8 +26,8 @@ pub const DEFAULT_REMOTE_PROVER_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Returns the global miden directory path.
 ///
-/// If the `MIDEN_CLIENT_HOME` environment variable is set, returns that path directly.
-/// Otherwise, returns the `.miden` directory in the user's home directory.
+/// If the `MIDEN_CLIENT_HOME` environment variable is set, returns that path directly. Otherwise,
+/// returns the `.miden` directory in the user's home directory.
 pub fn get_global_miden_dir() -> Result<PathBuf, std::io::Error> {
     if let Ok(miden_home) = std::env::var("MIDEN_CLIENT_HOME") {
         return Ok(PathBuf::from(miden_home));
@@ -111,9 +111,9 @@ impl Provider for CliConfig {
 
 /// Default implementation for `CliConfig`.
 ///
-/// **Note**: This implementation is primarily used by the [`figment`] `Provider` trait
-/// (see [`CliConfig::data()`]) to provide default values during configuration merging.
-/// The paths returned are relative and intended to be resolved against a `.miden` directory.
+/// **Note**: This implementation is primarily used by the [`figment`] `Provider` trait (see
+/// [`CliConfig::data()`]) to provide default values during configuration merging. The paths
+/// returned are relative and intended to be resolved against a `.miden` directory.
 ///
 /// For loading configuration from the filesystem, use [`CliConfig::load()`] instead.
 impl Default for CliConfig {
@@ -138,16 +138,16 @@ impl Default for CliConfig {
 impl CliConfig {
     /// Returns `true` when this config was loaded from the local `.miden` directory.
     ///
-    /// This is typically set when loading via [`CliConfig::from_local_dir`] or
-    /// [`CliConfig::load`] (when local takes precedence).
+    /// This is typically set when loading via [`CliConfig::from_local_dir`] or [`CliConfig::load`]
+    /// (when local takes precedence).
     pub fn is_local(&self) -> bool {
         matches!(&self.config_dir, Some(ConfigDir { kind: ConfigKind::Local, .. }))
     }
 
     /// Returns `true` when this config was loaded from the global `.miden` directory.
     ///
-    /// This is typically set when loading via [`CliConfig::from_global_dir`] or
-    /// [`CliConfig::load`] (when local config is not available).
+    /// This is typically set when loading via [`CliConfig::from_global_dir`] or [`CliConfig::load`]
+    /// (when local config is not available).
     pub fn is_global(&self) -> bool {
         matches!(&self.config_dir, Some(ConfigDir { kind: ConfigKind::Global, .. }))
     }
@@ -280,8 +280,8 @@ impl CliConfig {
     ///
     /// **This method bypasses the standard CLI configuration discovery logic.**
     ///
-    /// This method ONLY checks the global directory and does NOT check for local config first.
-    /// This differs from CLI behavior which prioritizes local config over global.
+    /// This method ONLY checks the global directory and does NOT check for local config first. This
+    /// differs from CLI behavior which prioritizes local config over global.
     ///
     /// ## Recommended Alternative
     ///
@@ -330,9 +330,8 @@ impl CliConfig {
     /// 1. Local `.miden/miden-client.toml` in the current working directory
     /// 2. Global `.miden/miden-client.toml` in the home directory (fallback)
     ///
-    /// This matches the CLI's configuration priority logic. For most use cases, you should
-    /// use [`CliClient::new()`](crate::CliClient::new) instead, which uses this method
-    /// internally.
+    /// This matches the CLI's configuration priority logic. For most use cases, you should use
+    /// [`CliClient::new()`](crate::CliClient::new) instead, which uses this method internally.
     ///
     /// # Returns
     ///
@@ -345,8 +344,8 @@ impl CliConfig {
     ///   global config file exists
     /// - [`CliError::Config`](crate::errors::CliError::Config) if configuration file parsing fails
     ///
-    /// Note: If a local config file exists but has parse errors, the error is returned
-    /// immediately without falling back to global config.
+    /// Note: If a local config file exists but has parse errors, the error is returned immediately
+    /// without falling back to global config.
     ///
     /// # Examples
     ///

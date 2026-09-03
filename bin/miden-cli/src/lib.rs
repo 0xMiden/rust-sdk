@@ -37,9 +37,8 @@ pub type CliKeyStore = FilesystemKeyStore;
 
 /// A Client configured using the CLI's system user configuration.
 ///
-/// This is a wrapper around `Client<CliKeyStore>` that provides convenient
-/// initialization methods while maintaining full compatibility with the
-/// underlying Client API through `Deref`.
+/// This is a wrapper around `Client<CliKeyStore>` that provides convenient initialization methods
+/// while maintaining full compatibility with the underlying Client API through `Deref`.
 ///
 /// # Examples
 ///
@@ -51,8 +50,7 @@ pub type CliKeyStore = FilesystemKeyStore;
 /// // Create a CLI-configured client
 /// let mut client = CliClient::new().await?;
 ///
-/// // All Client methods work automatically via Deref
-/// client.sync_state().await?;
+/// // All Client methods work automatically via Deref client.sync_state().await?;
 ///
 /// // Build and submit transactions
 /// let req = TransactionRequestBuilder::new()
@@ -203,11 +201,9 @@ impl CliClient {
     /// // Create a client with default settings (debug disabled)
     /// let mut client = CliClient::new().await?;
     ///
-    /// // Or with debug mode enabled
-    /// let mut client = CliClient::new().await?;
+    /// // Or with debug mode enabled let mut client = CliClient::new().await?;
     ///
-    /// // Use it like a regular Client
-    /// client.sync_state().await?;
+    /// // Use it like a regular Client client.sync_state().await?;
     ///
     /// // Build and submit transactions
     /// let req = TransactionRequestBuilder::new()
@@ -287,8 +283,8 @@ pub use miden_client::*;
 
 /// Client binary name.
 ///
-/// If, for whatever reason, we fail to obtain the client's executable name,
-/// then we simply display the standard "miden-client".
+/// If, for whatever reason, we fail to obtain the client's executable name, then we simply display
+/// the standard "miden-client".
 pub fn client_binary_name() -> OsString {
     std::env::current_exe()
         .inspect_err(|e| {

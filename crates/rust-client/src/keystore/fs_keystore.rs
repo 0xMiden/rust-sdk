@@ -104,8 +104,8 @@ impl KeyIndex {
 
     /// Returns the account ID associated with a given public key commitment hex.
     ///
-    /// Iterates over all mappings to find which account contains the commitment.
-    /// Returns `None` if no account is found.
+    /// Iterates over all mappings to find which account contains the commitment. Returns `None` if
+    /// no account is found.
     fn get_account_id(&self, pub_key_commitment: PublicKeyCommitment) -> Option<AccountId> {
         let pub_key_hex = Word::from(pub_key_commitment).to_hex();
 

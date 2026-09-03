@@ -215,8 +215,7 @@ pub async fn insert_new_wallet_with_seed(
 /// Inserts a new wallet account without funding or deploying it.
 ///
 /// Callers creating several accounts at once should use this and fund them together with a single
-/// [`TestClient::fund_if_needed`], which costs one funding transaction instead of one
-/// per account.
+/// [`TestClient::fund_if_needed`], which costs one funding transaction instead of one per account.
 pub async fn insert_new_wallet_unfunded(
     client: &mut TestClient,
     visibility: AccountType,
@@ -463,12 +462,12 @@ pub async fn wait_for_blocks_no_sync(client: &mut TestClient, amount_of_blocks: 
     }
 }
 
-/// Syncs repeatedly until the given account has at least one consumable note, or until
-/// `max_blocks` have elapsed since the call. Returns the list of consumable notes once found.
+/// Syncs repeatedly until the given account has at least one consumable note, or until `max_blocks`
+/// have elapsed since the call. Returns the list of consumable notes once found.
 ///
-/// This is useful when waiting for a network transaction to produce an output note (e.g., a
-/// P2ID note created by a faucet after consuming a CLAIM note), where the exact number of
-/// blocks needed is unpredictable.
+/// This is useful when waiting for a network transaction to produce an output note (e.g., a P2ID
+/// note created by a faucet after consuming a CLAIM note), where the exact number of blocks needed
+/// is unpredictable.
 ///
 /// # Panics
 ///

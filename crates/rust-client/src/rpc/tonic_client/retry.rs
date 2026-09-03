@@ -18,9 +18,9 @@ pub(super) const DEFAULT_RETRY_INTERVAL_MS: u64 = 100;
 /// Tracks retry attempts for a single RPC call and applies the node-provided cooldown policy.
 ///
 /// The state is intentionally tiny: it only counts how many retries have already been attempted.
-/// Delay selection is derived from the current gRPC [`Status`], preferring a non-zero
-/// `retry-after` response metadata value when present and falling back to the configured
-/// retry interval otherwise.
+/// Delay selection is derived from the current gRPC [`Status`], preferring a non-zero `retry-after`
+/// response metadata value when present and falling back to the configured retry interval
+/// otherwise.
 pub(super) struct RetryState {
     attempt: u32,
     max_retries: u32,

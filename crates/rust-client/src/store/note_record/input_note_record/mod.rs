@@ -49,12 +49,11 @@ pub use states::{
 /// specific information about the note state.
 ///
 /// Once a proof is received, the [`InputNoteRecord`] can be transformed into an [`InputNote`] and
-/// used as input for transactions.
-/// It is also possible to convert [`Note`] and [`InputNote`] into [`InputNoteRecord`] (we fill the
-/// `metadata` and `inclusion_proof` fields if possible).
+/// used as input for transactions. It is also possible to convert [`Note`] and [`InputNote`] into
+/// [`InputNoteRecord`] (we fill the `metadata` and `inclusion_proof` fields if possible).
 ///
-/// Notes can also be consumed as unauthenticated notes, where their existence is verified by
-/// the network.
+/// Notes can also be consumed as unauthenticated notes, where their existence is verified by the
+/// network.
 #[derive(Clone, Debug, PartialEq)]
 pub struct InputNoteRecord {
     /// Details of a note consisting of assets, script, inputs, and a serial number.
@@ -122,8 +121,8 @@ impl InputNoteRecord {
     /// Sets the note's attachments, returning `true` if the record changed.
     ///
     /// Attachments are a top-level field of the record, independent of the [`InputNoteState`]
-    /// machine. They are populated during sync once fetched from the node, since they are
-    /// required to reconstruct the note's ID for consumption.
+    /// machine. They are populated during sync once fetched from the node, since they are required
+    /// to reconstruct the note's ID for consumption.
     pub(crate) fn attachments_received(&mut self, attachments: NoteAttachments) -> bool {
         if self.attachments == attachments {
             return false;
@@ -171,10 +170,10 @@ impl InputNoteRecord {
 
     /// Returns the account ID that consumed this note, if available.
     ///
-    /// This is available for notes in processing, consumed-local, or consumed-external
-    /// states. For externally consumed notes, the account is only known when it is tracked
-    /// by this client. Returns `None` for notes that haven't been submitted for consumption,
-    /// invalid notes, or externally consumed notes where the consuming account is unknown.
+    /// This is available for notes in processing, consumed-local, or consumed-external states. For
+    /// externally consumed notes, the account is only known when it is tracked by this client.
+    /// Returns `None` for notes that haven't been submitted for consumption, invalid notes, or
+    /// externally consumed notes where the consuming account is unknown.
     pub fn consumer_account(&self) -> Option<AccountId> {
         match &self.state {
             InputNoteState::ProcessingAuthenticated(s) => Some(s.submission_data.consumer_account),
@@ -288,8 +287,8 @@ impl InputNoteRecord {
     /// Modifies the state of the note record to reflect that the note has been consumed by a
     /// transaction not submitted by this client. Returns `true` if the state was changed.
     ///
-    /// `consumer_account` is `Some` when the consuming account is tracked by this client
-    /// (derived from `sync_transactions` data). It is `None` for untracked accounts.
+    /// `consumer_account` is `Some` when the consuming account is tracked by this client (derived
+    /// from `sync_transactions` data). It is `None` for untracked accounts.
     ///
     /// Errors:
     /// - If the nullifier doesn't match the expected value.

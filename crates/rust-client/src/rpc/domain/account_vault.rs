@@ -35,8 +35,8 @@ impl TryFrom<proto::primitives::Asset> for Asset {
 /// The merged result of syncing an account's vault over a block range.
 ///
 /// The node reports per-block asset updates that may repeat a vault key across blocks; these are
-/// merged into a single absolute [`AccountVaultPatch`] (latest block wins per key). Also
-/// provides the current chain tip observed while processing the request.
+/// merged into a single absolute [`AccountVaultPatch`] (latest block wins per key). Also provides
+/// the current chain tip observed while processing the request.
 pub struct AccountVaultInfo {
     /// Current chain tip.
     pub chain_tip: BlockNumber,

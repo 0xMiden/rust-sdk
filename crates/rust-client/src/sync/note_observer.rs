@@ -20,8 +20,8 @@ pub trait NoteObserver {
     /// Per-note hook. Runs before the screener verdict, so before the note's id is recomputed and
     /// its inclusion proof verified. `attachments` is empty for a note that carries none.
     ///
-    /// Returns `true` to mark the enclosing block as relevant even if the screener discards it,
-    /// so sync persists its header.
+    /// Returns `true` to mark the enclosing block as relevant even if the screener discards it, so
+    /// sync persists its header.
     async fn observe(
         &self,
         committed_note: &CommittedNote,

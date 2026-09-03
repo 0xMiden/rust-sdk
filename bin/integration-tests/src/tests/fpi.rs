@@ -365,12 +365,12 @@ pub async fn test_lazy_fpi_loading(client_config: ClientConfig) -> Result<()> {
     Ok(())
 }
 
-/// Tests that lazy loading a public foreign account that reads from a storage map works
-/// even when no `AccountStorageRequirements` are specified upfront.
+/// Tests that lazy loading a public foreign account that reads from a storage map works even when
+/// no `AccountStorageRequirements` are specified upfront.
 ///
-/// The executor first lazy-loads the foreign account (with empty storage requirements),
-/// then when the procedure reads from the storage map, `get_storage_map_witness` detects
-/// the cache miss and makes a second RPC call to fetch the storage map entries.
+/// The executor first lazy-loads the foreign account (with empty storage requirements), then when
+/// the procedure reads from the storage map, `get_storage_map_witness` detects the cache miss and
+/// makes a second RPC call to fetch the storage map entries.
 pub async fn test_lazy_fpi_loading_with_storage_map(client_config: ClientConfig) -> Result<()> {
     let (mut client, keystore) = client_config.clone().into_client().await?;
     wait_for_node(&mut client).await;

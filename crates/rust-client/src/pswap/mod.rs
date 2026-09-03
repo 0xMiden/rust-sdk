@@ -1,5 +1,5 @@
-//! PSWAP chain tracking — follows partial-swap orders across fills so the
-//! creator can always see the current tip and reclaim the unfilled balance.
+//! PSWAP chain tracking — follows partial-swap orders across fills so the creator can always see
+//! the current tip and reclaim the unfilled balance.
 //!
 //! Flow:
 //! 1. Create → persist a [`PswapLineageRecord`] + asset-pair tag subscription.
@@ -8,9 +8,8 @@
 //!    emits one `PswapLineageRoundUpdate` per round.
 //! 3. Reclaim → [`Client::build_pswap_cancel_by_order`].
 //!
-//! Protocol invariants (≤1 payback + ≤1 remainder per round, attachment
-//! word layout, deterministic reconstruction) live on
-//! `miden_standards::note::PswapNote`.
+//! Protocol invariants (≤1 payback + ≤1 remainder per round, attachment word layout, deterministic
+//! reconstruction) live on `miden_standards::note::PswapNote`.
 //!
 //! # Trust model
 //!

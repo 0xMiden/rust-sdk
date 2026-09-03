@@ -36,8 +36,8 @@ impl BenchConfig {
 
 /// Creates a Miden client using the given endpoint and store directory.
 ///
-/// The store directory should already exist. It will contain (or be populated with)
-/// the `SQLite` database (`store.sqlite3`) and filesystem keystore (`keystore/`).
+/// The store directory should already exist. It will contain (or be populated with) the `SQLite`
+/// database (`store.sqlite3`) and filesystem keystore (`keystore/`).
 pub async fn create_client(
     endpoint: &Endpoint,
     store_path: &Path,

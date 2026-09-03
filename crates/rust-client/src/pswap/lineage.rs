@@ -158,10 +158,10 @@ impl PswapLineageRecord {
     /// `round_depth`.
     ///
     /// The `(order_id, depth)` bucket is keyed off attachment fields the sender controls, so the
-    /// raw note set is untrusted. We **validate then classify**: each candidate is
-    /// reconstructed from our stored depth-0 note and kept only if its id matches the observed
-    /// note (a forger can't match without actually emitting a genuine payback/remainder of our
-    /// order). Classification runs on the surviving genuine notes, never on the raw count.
+    /// raw note set is untrusted. We **validate then classify**: each candidate is reconstructed
+    /// from our stored depth-0 note and kept only if its id matches the observed note (a forger
+    /// can't match without actually emitting a genuine payback/remainder of our order).
+    /// Classification runs on the surviving genuine notes, never on the raw count.
     ///
     /// Returns `Ok(None)` when the bucket holds no genuine note and the tip wasn't consumed — the
     /// notes are forged/unrelated and this isn't our round, so the caller stops advancing.

@@ -519,8 +519,8 @@ pub(crate) fn build_account_patch(
 pub struct AccountUpdates {
     /// Updated public accounts, either as full state replacements or incremental patches.
     updated_public_accounts: Vec<PublicAccountUpdate>,
-    /// Account commitments received from the network that don't match the currently
-    /// locally-tracked state of the private accounts.
+    /// Account commitments received from the network that don't match the currently locally-tracked
+    /// state of the private accounts.
     ///
     /// These updates may represent a stale account commitment (meaning that the latest local state
     /// hasn't been committed). If this is not the case, the account may be locked until the state

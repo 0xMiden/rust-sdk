@@ -1,5 +1,5 @@
-//! Provides an interface for the client to communicate with a Miden node using
-//! Remote Procedure Calls (RPC).
+//! Provides an interface for the client to communicate with a Miden node using Remote Procedure
+//! Calls (RPC).
 //!
 //! This module defines the [`NodeRpcClient`] trait which abstracts calls to the RPC protocol used
 //! to:
@@ -26,8 +26,8 @@
 //! let endpoint = Endpoint::new("https".into(), "localhost".into(), Some(57291));
 //! let rpc_client = VerifyingRpcClient::new(GrpcClient::new(&endpoint, 1000));
 //!
-//! // Fetch the latest block header (by passing None).
-//! let (block_header, mmr_proof) = rpc_client.get_block_header_by_number(None, true).await?;
+//! // Fetch the latest block header (by passing None). let (block_header, mmr_proof) =
+//! rpc_client.get_block_header_by_number(None, true).await?;
 //!
 //! println!("Latest block number: {}", block_header.block_num());
 //! if let Some(proof) = mmr_proof {
@@ -156,8 +156,8 @@ pub trait NodeRpcClient: Send + Sync {
     /// Given a Proven Transaction, send it to the node for it to be included in a future block
     /// using the `/SubmitProvenTransaction` RPC endpoint.
     ///
-    /// The transaction inputs are passed already sealed, since sealing needs the client's RNG
-    /// for the scheme's ephemeral key material. See [`encryption`] for how they are produced.
+    /// The transaction inputs are passed already sealed, since sealing needs the client's RNG for
+    /// the scheme's ephemeral key material. See [`encryption`] for how they are produced.
     ///
     /// Returns the node's chain tip at submission (not the block the transaction is committed in).
     async fn submit_proven_transaction(
@@ -168,9 +168,9 @@ pub trait NodeRpcClient: Send + Sync {
 
     /// Given a Proven Batch together with the corresponding [`ProposedBatch`] and the list of
     /// [`SealedTransactionInputs`] (one per transaction, matching the ordering of the batch), sends
-    /// the batch to the node for inclusion in a future block using the `/SubmitProvenBatch`
-    /// RPC endpoint. All transactions in the batch must build on the current mempool state
-    /// following normal transaction submission rules.
+    /// the batch to the node for inclusion in a future block using the `/SubmitProvenBatch` RPC
+    /// endpoint. All transactions in the batch must build on the current mempool state following
+    /// normal transaction submission rules.
     ///
     /// Each transaction's inputs are sealed independently against its own transaction ID, because
     /// the node fans the batch out into one validator submission per transaction. See
@@ -185,9 +185,9 @@ pub trait NodeRpcClient: Send + Sync {
     ) -> Result<BlockNumber, RpcError>;
 
     /// Given a block number, fetches the block header corresponding to that height from the node
-    /// using the `/GetBlockHeaderByNumber` endpoint.
-    /// If `include_mmr_proof` is set to true and the function returns an `Ok`, the second value
-    /// of the return tuple should always be Some(MmrProof).
+    /// using the `/GetBlockHeaderByNumber` endpoint. If `include_mmr_proof` is set to true and the
+    /// function returns an `Ok`, the second value of the return tuple should always be
+    /// Some(MmrProof).
     ///
     /// When `None` is provided, returns info regarding the latest block.
     ///
@@ -199,21 +199,20 @@ pub trait NodeRpcClient: Send + Sync {
         include_mmr_proof: bool,
     ) -> Result<(BlockHeader, Option<MmrProof>), RpcError>;
 
-    /// Given a block number, fetches the block corresponding to that height from the node using
-    /// the `/GetBlockByNumber` RPC endpoint.
+    /// Given a block number, fetches the block corresponding to that height from the node using the
+    /// `/GetBlockByNumber` RPC endpoint.
     ///
     /// If `include_proof` is set to true, the block proof will be included in the response.
     ///
-    /// The returned block is not verified against the requested `block_num`;
-    /// [`VerifyingRpcClient`] performs that check.
+    /// The returned block is not verified against the requested `block_num`; [`VerifyingRpcClient`]
+    /// performs that check.
     async fn get_block_by_number(
         &self,
         block_num: BlockNumber,
         include_proof: bool,
     ) -> Result<ProvenBlock, RpcError>;
 
-    /// Fetches note-related data for a list of [`NoteId`] using the `/GetNotesById`
-    /// RPC endpoint.
+    /// Fetches note-related data for a list of [`NoteId`] using the `/GetNotesById` RPC endpoint.
     ///
     /// For [`miden_protocol::note::NoteType::Private`] notes, the response includes only the
     /// [`miden_protocol::note::NoteMetadata`].
@@ -224,8 +223,8 @@ pub trait NodeRpcClient: Send + Sync {
     /// In both cases, a [`miden_protocol::note::NoteInclusionProof`] is returned so the caller can
     /// verify that each note is part of the block's note tree.
     ///
-    /// Returned notes are not verified to be among the requested `note_ids`;
-    /// [`VerifyingRpcClient`] performs that check.
+    /// Returned notes are not verified to be among the requested `note_ids`; [`VerifyingRpcClient`]
+    /// performs that check.
     async fn get_notes_by_id(&self, note_ids: &[NoteId]) -> Result<Vec<FetchedNote>, RpcError>;
 
     /// Fetches the MMR delta for a given block range using the `/SyncChainMmr` RPC endpoint.
@@ -280,9 +279,9 @@ pub trait NodeRpcClient: Send + Sync {
         Ok(Some(Account::try_from(&details)?))
     }
 
-    /// Fetches notes related to the specified tags using the `/SyncNotes` RPC endpoint,
-    /// paginating over the full block range and returning, in block-number order, every block in
-    /// that range that contains at least one note matching the requested tags.
+    /// Fetches notes related to the specified tags using the `/SyncNotes` RPC endpoint, paginating
+    /// over the full block range and returning, in block-number order, every block in that range
+    /// that contains at least one note matching the requested tags.
     ///
     /// - `block_from`: The starting block number for the range (inclusive).
     /// - `block_to`: The ending block number for the range (inclusive).
@@ -397,8 +396,8 @@ pub trait NodeRpcClient: Send + Sync {
         Ok(synced_blocks)
     }
 
-    /// Fetches the nullifiers corresponding to a list of prefixes using the
-    /// `/SyncNullifiers` RPC endpoint.
+    /// Fetches the nullifiers corresponding to a list of prefixes using the `/SyncNullifiers` RPC
+    /// endpoint.
     ///
     /// - `prefix` is a list of nullifiers prefixes to search for.
     /// - `block_from`: The starting block number for the range (inclusive).
@@ -417,13 +416,13 @@ pub trait NodeRpcClient: Send + Sync {
     ///
     /// The response carries an
     /// [`AccountWitness`](miden_protocol::block::account_tree::AccountWitness) and the target
-    /// block. Public accounts additionally get [`AccountDetails`]; for private accounts the
-    /// other `request` fields are ignored.
+    /// block. Public accounts additionally get [`AccountDetails`]; for private accounts the other
+    /// `request` fields are ignored.
     ///
     /// For a fully oversize-resolved account, use [`NodeRpcClient::get_account_details`].
     ///
-    /// The response block number is not verified against the requested one;
-    /// [`VerifyingRpcClient`] performs that check.
+    /// The response block number is not verified against the requested one; [`VerifyingRpcClient`]
+    /// performs that check.
     ///
     /// # Errors
     ///
@@ -496,8 +495,8 @@ pub trait NodeRpcClient: Send + Sync {
     }
 
     /// Fetches the commit height where the nullifier was consumed. If the nullifier isn't found,
-    /// then `None` is returned.
-    /// The `block_num` parameter is the block number to start the search from (inclusive).
+    /// then `None` is returned. The `block_num` parameter is the block number to start the search
+    /// from (inclusive).
     ///
     /// The default implementation of this method makes two RPC requests: one to
     /// [`NodeRpcClient::get_block_header_by_number`] to resolve the chain tip, and one to
@@ -528,8 +527,8 @@ pub trait NodeRpcClient: Send + Sync {
     }
 
     /// Fetches public note-related data for a list of [`NoteId`] and builds [`InputNoteRecord`]s
-    /// with it. If a note is not found or it's private, it is ignored and will not be included
-    /// in the returned list.
+    /// with it. If a note is not found or it's private, it is ignored and will not be included in
+    /// the returned list.
     ///
     /// The default implementation of this method uses [`NodeRpcClient::get_notes_by_id`].
     async fn get_public_note_records(
@@ -606,8 +605,8 @@ pub trait NodeRpcClient: Send + Sync {
         account_id: AccountId,
     ) -> Result<StorageMapInfo, RpcError>;
 
-    /// Fetches account vault updates for specified account within a block range,
-    /// using the `/SyncAccountVault` RPC endpoint.
+    /// Fetches account vault updates for specified account within a block range, using the
+    /// `/SyncAccountVault` RPC endpoint.
     ///
     /// - `block_from`: The starting block number for the range (inclusive).
     /// - `block_to`: The ending block number for the range (inclusive). The node rejects values
@@ -651,8 +650,8 @@ pub trait NodeRpcClient: Send + Sync {
 
     /// Fetches the RPC status without requiring Accept header validation.
     ///
-    /// This is useful for diagnostics when version negotiation fails, as it allows
-    /// retrieving node information even when there's a version mismatch.
+    /// This is useful for diagnostics when version negotiation fails, as it allows retrieving node
+    /// information even when there's a version mismatch.
     async fn get_status_unversioned(&self) -> Result<RpcStatusInfo, RpcError>;
 
     /// Fetches the status of a specific network note ID.
@@ -667,8 +666,8 @@ pub trait NodeRpcClient: Send + Sync {
 /// Selects which note content [`NodeRpcClient::sync_notes_with_content`] resolves via
 /// `GetNotesById` after syncing note inclusions.
 ///
-/// This enables the possibility of optimizing the call by not requesting more data than needed.
-/// For example, when a public note's details are already known (but not the attachments),
+/// This enables the possibility of optimizing the call by not requesting more data than needed. For
+/// example, when a public note's details are already known (but not the attachments),
 /// `AttachmentsOnly` can be used. One example of this is when importing notes through
 /// `NoteDetails`.
 ///

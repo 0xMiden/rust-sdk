@@ -62,9 +62,9 @@ impl From<CliAccountType> for AccountType {
 
 /// Creates a new wallet account and store it locally.
 ///
-/// A wallet account exposes functionality to sign transactions and
-/// manage asset transfers. Additionally, more component templates can be added by specifying
-/// a list of component template files.
+/// A wallet account exposes functionality to sign transactions and manage asset transfers.
+/// Additionally, more component templates can be added by specifying a list of component template
+/// files.
 #[derive(Debug, Parser, Clone)]
 pub struct NewWalletCmd {
     /// Account type (`private` or `public`).
@@ -131,8 +131,8 @@ impl NewWalletCmd {
 ///
 /// # Authentication Components
 ///
-/// If a package with an authentication component is provided via `-p`, it will be used for
-/// the account. Otherwise, a default `RpoFalcon512` authentication component will be added
+/// If a package with an authentication component is provided via `-p`, it will be used for the
+/// account. Otherwise, a default `RpoFalcon512` authentication component will be added
 /// automatically.
 ///
 /// Each account can only have one authentication component. If multiple packages contain
@@ -280,10 +280,10 @@ struct FungibleFaucetMetadata {
 /// Builds a fully-populated [`FungibleFaucet`] [`AccountComponent`] from the user-supplied
 /// `[fungible-faucet-metadata]` block.
 ///
-/// `FungibleFaucet` embeds the token metadata and requires every storage slot to be initialized
-/// to deploy the `basic-fungible-faucet` package. Rather than encode the schema's field-level
-/// layout here, the component is built directly from the high-level metadata via the typed
-/// builder, which produces the same code and storage layout the package would have.
+/// `FungibleFaucet` embeds the token metadata and requires every storage slot to be initialized to
+/// deploy the `basic-fungible-faucet` package. Rather than encode the schema's field-level layout
+/// here, the component is built directly from the high-level metadata via the typed builder, which
+/// produces the same code and storage layout the package would have.
 fn build_fungible_faucet_component(
     metadata: &FungibleFaucetMetadata,
 ) -> Result<AccountComponent, CliError> {
@@ -382,8 +382,8 @@ fn load_init_storage_data(
 
 /// Separates account components into auth and regular components.
 ///
-/// Returns a tuple of (`auth_component`, `regular_components`).
-/// Returns an error if multiple auth components are found.
+/// Returns a tuple of (`auth_component`, `regular_components`). Returns an error if multiple auth
+/// components are found.
 fn separate_auth_components(
     components: Vec<AccountComponent>,
 ) -> Result<(Option<AccountComponent>, Vec<AccountComponent>), CliError> {
@@ -414,8 +414,8 @@ fn separate_auth_components(
     Ok((auth_component, regular_components))
 }
 
-/// Returns `true` when the CLI should inject a default `TokenPolicyManager` for a fungible
-/// faucet account built from package components.
+/// Returns `true` when the CLI should inject a default `TokenPolicyManager` for a fungible faucet
+/// account built from package components.
 ///
 /// Why this exists:
 /// - Fungible faucets require a token policy manager (with mint and burn policies) in addition to

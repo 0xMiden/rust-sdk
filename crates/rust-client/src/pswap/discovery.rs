@@ -1,7 +1,7 @@
 //! Post-sync correlator: joins tracked-note consumption events from
-//! `NoteUpdateTracker::consumed_note_ids()` with the PSWAP-attachment
-//! notes collected by [`super::observer::PswapChainObserver`], emitting
-//! one `PswapLineageRoundUpdate` per round transition.
+//! `NoteUpdateTracker::consumed_note_ids()` with the PSWAP-attachment notes collected by
+//! [`super::observer::PswapChainObserver`], emitting one `PswapLineageRoundUpdate` per round
+//! transition.
 //!
 //! See [`crate::pswap`] for the overall design.
 
@@ -28,9 +28,9 @@ use crate::sync::StateSyncUpdate;
 
 /// Returns one [`PswapLineageRoundUpdate`] per round advanced this sync.
 ///
-/// Each active lineage is walked in memory across as many rounds as this sync
-/// window reveals. Only the final tip's remainder is persisted to `input_notes`;
-/// intermediate remainders are already spent on-chain.
+/// Each active lineage is walked in memory across as many rounds as this sync window reveals. Only
+/// the final tip's remainder is persisted to `input_notes`; intermediate remainders are already
+/// spent on-chain.
 pub(crate) async fn discover_pswap_rounds(
     store: Arc<dyn Store>,
     state_sync_update: &StateSyncUpdate,
@@ -80,8 +80,8 @@ pub(crate) async fn discover_pswap_rounds(
 ///   1. a consumed note id that is a tracked tip → via the tip index;
 ///   2. a chain note → carries its `order_id` on its attachment.
 ///
-/// Both are needed: signal 2 catches a fill whose notes arrive before its tip
-/// nullifier; signal 1 carries reclaim, which emits no chain notes.
+/// Both are needed: signal 2 catches a fill whose notes arrive before its tip nullifier; signal 1
+/// carries reclaim, which emits no chain notes.
 async fn collect_candidate_orders(
     store: &Arc<dyn Store>,
     consumed_note_ids: &BTreeSet<NoteId>,
@@ -130,15 +130,14 @@ fn group_notes_by_order_depth(
     notes_by_order_depth
 }
 
-/// Walks one active lineage across every round this sync window reveals,
-/// returning its round updates (final-tip remainder kept, intermediates dropped).
+/// Walks one active lineage across every round this sync window reveals, returning its round
+/// updates (final-tip remainder kept, intermediates dropped).
 ///
-/// Advances round-by-round while live. A round fires when the tip's consumption
-/// was observed (`tip_consumed`) OR depth+1 chain notes exist: by protocol
-/// invariant a payback/remainder at depth N+1 can only come from consuming the
-/// depth-N tip, so notes alone prove consumption. That's what follows a
-/// same-block multi-fill on a private chain, whose intermediate remainder is
-/// never tracked. The state guard ends the loop on terminal.
+/// Advances round-by-round while live. A round fires when the tip's consumption was observed
+/// (`tip_consumed`) OR depth+1 chain notes exist: by protocol invariant a payback/remainder at
+/// depth N+1 can only come from consuming the depth-N tip, so notes alone prove consumption. That's
+/// what follows a same-block multi-fill on a private chain, whose intermediate remainder is never
+/// tracked. The state guard ends the loop on terminal.
 async fn advance_lineage(
     store: &Arc<dyn Store>,
     mut lineage: PswapLineageRecord,

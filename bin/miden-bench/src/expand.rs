@@ -109,12 +109,12 @@ async fn submit_expansion_batches(
 
 /// Fills entries into a specific storage map of a deployed account.
 ///
-/// The account must have been deployed via the `deploy` command, which creates
-/// empty storage maps with expansion procedures already installed. This function
-/// submits transactions that call those procedures to insert entries.
+/// The account must have been deployed via the `deploy` command, which creates empty storage maps
+/// with expansion procedures already installed. This function submits transactions that call those
+/// procedures to insert entries.
 ///
-/// The signing key is expected to be present in the persistent keystore
-/// (written by the `deploy` command).
+/// The signing key is expected to be present in the persistent keystore (written by the `deploy`
+/// command).
 pub async fn expand_storage(
     client: &mut Client<FilesystemKeyStore>,
     account_id_str: &str,

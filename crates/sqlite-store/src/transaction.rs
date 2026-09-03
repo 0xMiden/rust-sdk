@@ -99,8 +99,8 @@ impl SqliteStore {
 
     /// Inserts a transaction and updates the current state based on the `tx_result` changes.
     ///
-    /// SQL writes and forest mutations go through the same rusqlite transaction, so they commit
-    /// or roll back atomically.
+    /// SQL writes and forest mutations go through the same rusqlite transaction, so they commit or
+    /// roll back atomically.
     pub fn apply_transaction(
         conn: &mut Connection,
         tx_update: &TransactionStoreUpdate,
@@ -133,11 +133,11 @@ impl SqliteStore {
         db_tx.commit().into_store_error()
     }
 
-    /// Applies a transaction's store update within the provided rusqlite transaction.
-    /// Does NOT commit — caller is responsible for commit/rollback.
+    /// Applies a transaction's store update within the provided rusqlite transaction. Does NOT
+    /// commit — caller is responsible for commit/rollback.
     ///
-    /// The storage-map-root pre-read is performed via the transaction so that each call sees
-    /// writes made by prior calls within the same outer transaction.
+    /// The storage-map-root pre-read is performed via the transaction so that each call sees writes
+    /// made by prior calls within the same outer transaction.
     pub(crate) fn apply_transaction_in_txn(
         db_tx: &Transaction<'_>,
         smt_forest: &mut ScopedAccountForest<'_, '_>,

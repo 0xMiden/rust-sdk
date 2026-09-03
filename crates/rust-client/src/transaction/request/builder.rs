@@ -136,9 +136,9 @@ impl TransactionRequestBuilder {
         self
     }
 
-    /// Specifies the output notes that should be created in the transaction script and will
-    /// be used as a transaction script template. These notes will also be added to the expected
-    /// output recipients of the transaction.
+    /// Specifies the output notes that should be created in the transaction script and will be used
+    /// as a transaction script template. These notes will also be added to the expected output
+    /// recipients of the transaction.
     ///
     /// If a transaction script template is already set (e.g. by calling `with_custom_script`), the
     /// [`TransactionRequestBuilder::build`] method will return an error.
@@ -163,11 +163,11 @@ impl TransactionRequestBuilder {
         self
     }
 
-    /// Specifies one or more foreign accounts (public or private) that contain data
-    /// utilized by the transaction.
+    /// Specifies one or more foreign accounts (public or private) that contain data utilized by the
+    /// transaction.
     ///
-    /// At execution, the client queries the node and retrieves the appropriate data,
-    /// depending on whether each foreign account is public or private:
+    /// At execution, the client queries the node and retrieves the appropriate data, depending on
+    /// whether each foreign account is public or private:
     ///
     /// - **Public accounts**: the node retrieves the state and code for the account and injects
     ///   them as advice inputs. Public accounts can be omitted here, as they will be lazily loaded
@@ -239,9 +239,9 @@ impl TransactionRequestBuilder {
     /// The number of blocks in relation to the transaction's reference block after which the
     /// transaction will expire. By default, the transaction will not expire.
     ///
-    /// Setting transaction expiration delta defines an upper bound for transaction expiration,
-    /// but other code executed during the transaction may impose an even smaller transaction
-    /// expiration delta.
+    /// Setting transaction expiration delta defines an upper bound for transaction expiration, but
+    /// other code executed during the transaction may impose an even smaller transaction expiration
+    /// delta.
     #[must_use]
     pub fn expiration_delta(mut self, expiration_delta: u16) -> Self {
         self.expiration_delta = Some(expiration_delta);
@@ -276,9 +276,9 @@ impl TransactionRequestBuilder {
 
     /// Declares the salt the fee conversion info is committed under.
     ///
-    /// Fees are always settled in the chain's native fee asset at rate 1/1. The client commits
-    /// that info through the transaction's auth args when preparing the transaction, under a
-    /// fixed default salt.
+    /// Fees are always settled in the chain's native fee asset at rate 1/1. The client commits that
+    /// info through the transaction's auth args when preparing the transaction, under a fixed
+    /// default salt.
     #[must_use]
     pub fn fee_conversion_salt(mut self, salt: Word) -> Self {
         self.fee_conversion_salt = Some(salt);
@@ -286,17 +286,17 @@ impl TransactionRequestBuilder {
         self
     }
 
-    /// Specifies note scripts that the node's network transaction (NTX) builder will need in
-    /// its script registry.
+    /// Specifies note scripts that the node's network transaction (NTX) builder will need in its
+    /// script registry.
     ///
-    /// When a transaction creates notes destined for a network account, the node's NTX builder
-    /// must have the scripts of any public output notes in its registry. If a required script
-    /// is missing, the NTX will silently fail on the node side.
+    /// When a transaction creates notes destined for a network account, the node's NTX builder must
+    /// have the scripts of any public output notes in its registry. If a required script is
+    /// missing, the NTX will silently fail on the node side.
     ///
-    /// When this field is set, the client will check each script against the node before
-    /// executing the main transaction. For any script not yet registered, the client
-    /// automatically creates and submits a separate registration transaction (a public note
-    /// carrying that script) so the node's registry is populated before the NTX executes.
+    /// When this field is set, the client will check each script against the node before executing
+    /// the main transaction. For any script not yet registered, the client automatically creates
+    /// and submits a separate registration transaction (a public note carrying that script) so the
+    /// node's registry is populated before the NTX executes.
     ///
     /// Standard note scripts are ignored here — the NTX builder resolves them directly.
     #[must_use]
@@ -429,9 +429,9 @@ impl TransactionRequestBuilder {
     /// Consumes the builder and returns a [`TransactionRequest`] for a transaction that registers
     /// note scripts in the node's script registry.
     ///
-    /// This creates one public output note per script, each with empty assets and storage. The
-    /// node indexes the script of every public note it processes, so submitting this transaction
-    /// makes the scripts available for future network transactions (NTX).
+    /// This creates one public output note per script, each with empty assets and storage. The node
+    /// indexes the script of every public note it processes, so submitting this transaction makes
+    /// the scripts available for future network transactions (NTX).
     ///
     /// - `sender_account_id` is the account executing the transaction.
     /// - `scripts` is the list of note scripts to register.
@@ -815,10 +815,10 @@ impl SwapTransactionData {
 
 /// Contains information related to a partial swap (PSWAP) transaction.
 ///
-/// A PSWAP transaction involves creating a PSWAP note that carries the offered fungible asset
-/// and, when consumed (filled), produces a payback note carrying the requested fungible asset
-/// taken from the filler's vault. Both legs are restricted to fungible assets so that fills can
-/// be denominated in arbitrary amounts.
+/// A PSWAP transaction involves creating a PSWAP note that carries the offered fungible asset and,
+/// when consumed (filled), produces a payback note carrying the requested fungible asset taken from
+/// the filler's vault. Both legs are restricted to fungible assets so that fills can be denominated
+/// in arbitrary amounts.
 #[derive(Clone, Debug)]
 pub struct PswapTransactionData {
     /// Account ID of the creator account.

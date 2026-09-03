@@ -212,19 +212,17 @@ impl NoteTransportClient for MockNoteTransportApi {
 // FAULTY NOTE TRANSPORT API
 // ================================================================================================
 
-/// Test-only [`NoteTransportClient`] decorator that injects controlled failures
-/// into `send_note` calls.
+/// Test-only [`NoteTransportClient`] decorator that injects controlled failures into `send_note`
+/// calls.
 ///
-/// Reproduces the failure mode where the NTL is reachable but rejects (or
-/// silently drops) a relay attempt, exercising the durable outbox in
-/// [`Client::send_private_note`](crate::Client::send_private_note): without
-/// retry/persistence a failed relay would leave the recipient unable to
-/// discover the note.
+/// Reproduces the failure mode where the NTL is reachable but rejects (or silently drops) a relay
+/// attempt, exercising the durable outbox in
+/// [`Client::send_private_note`](crate::Client::send_private_note): without retry/persistence a
+/// failed relay would leave the recipient unable to discover the note.
 ///
-/// The decorator counts attempts (`send_attempts`) and lets a test specify how
-/// many of the next `send_note` calls should fail (`fail_next`); successful
-/// calls delegate to an inner [`MockNoteTransportApi`]. `fetch_notes` and
-/// `stream_notes` always delegate to the inner mock.
+/// The decorator counts attempts (`send_attempts`) and lets a test specify how many of the next
+/// `send_note` calls should fail (`fail_next`); successful calls delegate to an inner
+/// [`MockNoteTransportApi`]. `fetch_notes` and `stream_notes` always delegate to the inner mock.
 pub struct FaultyNoteTransportApi {
     inner: MockNoteTransportApi,
     fail_next: AtomicUsize,

@@ -164,8 +164,8 @@ impl<AUTH> Default for ClientBuilder<AUTH> {
 
 /// Network-specific constructors for [`ClientBuilder`].
 ///
-/// These constructors automatically configure the builder for a specific network,
-/// including RPC endpoint, transaction prover, and note transport (where applicable).
+/// These constructors automatically configure the builder for a specific network, including RPC
+/// endpoint, transaction prover, and note transport (where applicable).
 #[cfg(feature = "tonic")]
 impl<AUTH> ClientBuilder<AUTH>
 where
@@ -183,8 +183,8 @@ where
     /// - A store (via `.store()`)
     /// - An authenticator (via `.authenticator()`)
     ///
-    /// All defaults can be overridden by calling the corresponding builder methods
-    /// after `for_testnet()`.
+    /// All defaults can be overridden by calling the corresponding builder methods after
+    /// `for_testnet()`.
     ///
     /// # Example
     ///
@@ -227,8 +227,8 @@ where
     /// - A store (via `.store()`)
     /// - An authenticator (via `.authenticator()`)
     ///
-    /// All defaults can be overridden by calling the corresponding builder methods
-    /// after `for_devnet()`.
+    /// All defaults can be overridden by calling the corresponding builder methods after
+    /// `for_devnet()`.
     ///
     /// # Example
     ///
@@ -271,8 +271,8 @@ where
     /// - A store (via `.store()`)
     /// - An authenticator (via `.authenticator()`)
     ///
-    /// All defaults can be overridden by calling the corresponding builder methods
-    /// after `for_localhost()`.
+    /// All defaults can be overridden by calling the corresponding builder methods after
+    /// `for_localhost()`.
     ///
     /// # Example
     ///
@@ -309,8 +309,8 @@ where
 
     /// Sets a custom RPC client directly.
     ///
-    /// The client is used as provided: wrap it in
-    /// [`VerifyingRpcClient`] to have node responses verified against the requests.
+    /// The client is used as provided: wrap it in [`VerifyingRpcClient`] to have node responses
+    /// verified against the requests.
     #[must_use]
     pub fn rpc(mut self, client: Arc<dyn NodeRpcClient>) -> Self {
         self.rpc_api = Some(client);
@@ -353,13 +353,12 @@ where
     /// Overrides the source manager used to retain MASM source information for assembled programs.
     ///
     /// If not set, the client uses a default [`DefaultSourceManager`]. The same instance is
-    /// forwarded to the transaction executor and to every script compiled through the client
-    /// (e.g. via [`Client::code_builder`](crate::Client::code_builder)).
+    /// forwarded to the transaction executor and to every script compiled through the client (e.g.
+    /// via [`Client::code_builder`](crate::Client::code_builder)).
     ///
     /// Set this explicitly only when scripts or modules are compiled outside the client (for
     /// example, using an external [`Assembler`](miden_protocol::assembly::Assembler)): pass the
-    /// same `Arc` used by that external assembler so all source spans resolve correctly at
-    /// runtime.
+    /// same `Arc` used by that external assembler so all source spans resolve correctly at runtime.
     #[must_use]
     pub fn source_manager(mut self, sm: Arc<dyn SourceManagerSync>) -> Self {
         self.source_manager = Some(sm);
@@ -399,9 +398,8 @@ where
 
     /// Enables or disables the in-memory Partial MMR cache.
     ///
-    /// When enabled, the client reuses the current Partial MMR between sync and pruning
-    /// operations. When disabled, it rebuilds the Partial MMR from the store each time it is
-    /// needed.
+    /// When enabled, the client reuses the current Partial MMR between sync and pruning operations.
+    /// When disabled, it rebuilds the Partial MMR from the store each time it is needed.
     #[must_use]
     pub fn cache_partial_mmr_in_memory(mut self, enabled: bool) -> Self {
         self.cache_partial_mmr_in_memory = enabled;
@@ -436,8 +434,8 @@ where
     /// Returns the endpoint configured for this builder, if any.
     ///
     /// This is set automatically when using network-specific constructors like
-    /// [`for_testnet()`](Self::for_testnet), [`for_devnet()`](Self::for_devnet),
-    /// or [`for_localhost()`](Self::for_localhost).
+    /// [`for_testnet()`](Self::for_testnet), [`for_devnet()`](Self::for_devnet), or
+    /// [`for_localhost()`](Self::for_localhost).
     #[must_use]
     pub fn endpoint(&self) -> Option<&Endpoint> {
         self.endpoint.as_ref()
@@ -548,9 +546,9 @@ where
 /// Marker trait for the authenticator type parameter of [`ClientBuilder`].
 ///
 /// The builder stores the authenticator and passes it to the client. The client uses it only to
-/// sign transactions, so any [`TransactionAuthenticator`] with a `'static` lifetime qualifies.
-/// Key management is not required. A signer that holds no secret key, such as a remote signing
-/// service, can be used without implementing [`Keystore`](crate::keystore::Keystore).
+/// sign transactions, so any [`TransactionAuthenticator`] with a `'static` lifetime qualifies. Key
+/// management is not required. A signer that holds no secret key, such as a remote signing service,
+/// can be used without implementing [`Keystore`](crate::keystore::Keystore).
 pub trait BuilderAuthenticator: TransactionAuthenticator + 'static {}
 impl<T> BuilderAuthenticator for T where T: TransactionAuthenticator + 'static {}
 
@@ -563,8 +561,8 @@ impl ClientBuilder<FilesystemKeyStore> {
     /// Creates a [`FilesystemKeyStore`] from the given path and sets it as the authenticator.
     ///
     /// This is a convenience method that creates the keystore and configures it as the
-    /// authenticator in a single call. The keystore provides transaction signing capabilities
-    /// using keys stored on the filesystem.
+    /// authenticator in a single call. The keystore provides transaction signing capabilities using
+    /// keys stored on the filesystem.
     ///
     /// # Errors
     ///

@@ -9,6 +9,9 @@
 //!
 //! A line that opens a tagged note such as `TODO:` or `SAFETY:` starts a new paragraph, so the tag
 //! stays at the start of a line where a reader or a tag scanner can find it.
+//!
+//! An empty comment line also starts a new paragraph. Each paragraph is reflowed on its own, so a
+//! paragraph the formatter refuses to touch does not stop its neighbours from being reflowed.
 
 use std::ffi::OsStr;
 use std::fs;
@@ -248,7 +251,8 @@ fn replacements(comment_lines: &[CommentLine], width: usize) -> Vec<Replacement>
         let mut block_end = block_start + 1;
 
         // Only adjacent lines with the same indentation and marker are joined into one paragraph.
-        // Blank lines, indentation changes, and prefix changes are treated as paragraph boundaries.
+        // Blank lines, empty comment lines, indentation changes, and prefix changes are paragraph
+        // boundaries.
         while block_end < comment_lines.len()
             && same_block(&comment_lines[block_end - 1], &comment_lines[block_end])
         {
@@ -269,7 +273,17 @@ fn same_block(previous: &CommentLine, current: &CommentLine) -> bool {
     previous.line_idx + 1 == current.line_idx
         && previous.indent == current.indent
         && previous.prefix == current.prefix
+        && !is_empty_comment(&previous.content)
+        && !is_empty_comment(&current.content)
         && !starts_tagged_note(&current.content)
+}
+
+/// Returns true if the comment line has no text after its marker.
+///
+/// An empty comment line separates paragraphs. It forms a block of its own, which the reflow
+/// rejects and leaves in place, so the paragraphs on either side are reflowed independently.
+fn is_empty_comment(content: &str) -> bool {
+    content.trim().is_empty()
 }
 
 /// Tags that mark the start of their own comment paragraph.
@@ -573,6 +587,28 @@ fn main() {}
         .unwrap();
 
         assert_eq!(reflowed, expected);
+    }
+
+    #[test]
+    fn empty_comment_lines_separate_paragraphs() {
+        let source = r"/// Summary line that is short.
+///
+/// A body paragraph that
+/// was wrapped by hand.
+///
+/// - a list item that must stay put
+fn main() {}
+";
+
+        let expected = r"/// Summary line that is short.
+///
+/// A body paragraph that was wrapped by hand.
+///
+/// - a list item that must stay put
+fn main() {}
+";
+
+        assert_eq!(reflow(source, 100), expected);
     }
 
     #[test]

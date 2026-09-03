@@ -20,20 +20,17 @@ use crate::store::{AccountStatus, Store};
 
 /// Provides lazy access to account data.
 ///
-/// `AccountReader` executes queries lazily - each method call fetches fresh data
-/// from storage, ensuring you always see the current state.
+/// `AccountReader` executes queries lazily - each method call fetches fresh data from storage,
+/// ensuring you always see the current state.
 ///
 /// # Example
 /// ```ignore
 /// let reader = client.account_reader(account_id);
 ///
-/// // Each call fetches fresh data
-/// let nonce = reader.nonce().await?;
-/// let status = reader.status().await?;
-/// let commitment = reader.commitment().await?;
+/// // Each call fetches fresh data let nonce = reader.nonce().await?; let status =
+/// reader.status().await?; let commitment = reader.commitment().await?;
 ///
-/// // Vault access
-/// let balance = reader.get_balance(faucet_id).await?;
+/// // Vault access let balance = reader.get_balance(faucet_id).await?;
 ///
 /// // Storage access
 /// let value = reader.get_storage_item("my_slot").await?;
@@ -158,8 +155,7 @@ impl AccountReader {
     ///
     /// This method fetches the requested slot from storage.
     ///
-    /// For `Value` slots, returns the stored word.
-    /// For `Map` slots, returns the map root.
+    /// For `Value` slots, returns the stored word. For `Map` slots, returns the map root.
     pub async fn get_storage_item(
         &self,
         slot_name: impl Into<StorageSlotName>,

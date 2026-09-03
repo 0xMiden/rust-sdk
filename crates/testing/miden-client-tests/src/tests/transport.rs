@@ -594,8 +594,8 @@ async fn fetch_private_notes_finds_note_committed_at_sync_height() {
     );
 }
 
-/// A private note must reach the recipient even when the sender's first relay
-/// attempt fails, provided the transport later recovers.
+/// A private note must reach the recipient even when the sender's first relay attempt fails,
+/// provided the transport later recovers.
 ///
 /// `send_private_note` persists the payload in a durable outbox, so a relay that fails is retried
 /// instead of dropped. Without persistence the recipient would never learn about the note.
@@ -946,10 +946,10 @@ fn multi_word_attachment() -> NoteAttachment {
     .unwrap()
 }
 
-/// Build a chain with a private note (tag 0) committed at block 1, advance
-/// `blocks_past_commitment` blocks beyond it, then create a recipient client synced to the tip
-/// with an (initially empty) note transport. Returns the client, the committed note, and the
-/// shared mock transport node so a test can deliver the note over the NTL afterwards.
+/// Build a chain with a private note (tag 0) committed at block 1, advance `blocks_past_commitment`
+/// blocks beyond it, then create a recipient client synced to the tip with an (initially empty)
+/// note transport. Returns the client, the committed note, and the shared mock transport node so a
+/// test can deliver the note over the NTL afterwards.
 ///
 /// With `with_unserved_attachment` the note carries a multi-word attachment the mock node never
 /// serves. It has to be multi-word, since the node sends a single-word one on the sync record.

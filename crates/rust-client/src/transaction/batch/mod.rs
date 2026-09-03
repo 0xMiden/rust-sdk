@@ -1,5 +1,5 @@
-//! Stacks multiple transactions across one or more local accounts and submits them as one
-//! proven batch via the node's `SubmitProvenBatch` endpoint.
+//! Stacks multiple transactions across one or more local accounts and submits them as one proven
+//! batch via the node's `SubmitProvenBatch` endpoint.
 //!
 //! ## Flow
 //!
@@ -12,17 +12,17 @@
 //!
 //! ## Multi-account semantics
 //!
-//! Each `push` specifies which local account the transaction targets. A single batch can
-//! contain transactions from any combination of local accounts. Per-account in-memory state
-//! stacks for repeated pushes against the same account.
+//! Each `push` specifies which local account the transaction targets. A single batch can contain
+//! transactions from any combination of local accounts. Per-account in-memory state stacks for
+//! repeated pushes against the same account.
 //!
 //! ## In-batch cross-account note flow
 //!
-//! A transaction in the batch may consume a note produced by an earlier transaction in the
-//! same batch — even if the producer and consumer target different accounts. The user
-//! extracts the expected output note from the producing request via
-//! [`TransactionRequest::expected_output_own_notes`] and feeds it as an input to the
-//! consuming request. Push order must respect producer-before-consumer.
+//! A transaction in the batch may consume a note produced by an earlier transaction in the same
+//! batch — even if the producer and consumer target different accounts. The user extracts the
+//! expected output note from the producing request via
+//! [`TransactionRequest::expected_output_own_notes`] and feeds it as an input to the consuming
+//! request. Push order must respect producer-before-consumer.
 //!
 //! ## Constraints
 //!
@@ -36,8 +36,8 @@
 //!
 //! ## Error semantics after RPC accept
 //!
-//! Once the node accepts the batch, the local store still needs to be updated. If that step
-//! fails, the caller receives one of two errors that both carry the accepted `block_num`:
+//! Once the node accepts the batch, the local store still needs to be updated. If that step fails,
+//! the caller receives one of two errors that both carry the accepted `block_num`:
 //!
 //! - [`BatchBuilderError::BatchSubmittedButUpdateBuildFailed`] — building one of the per-tx
 //!   [`TransactionStoreUpdate`]s failed.
@@ -110,8 +110,8 @@ impl<AUTH> BatchBuilder<'_, AUTH>
 where
     AUTH: TransactionAuthenticator + Sync + 'static,
 {
-    /// Assemble the `ProposedBatch`, prove it, submit it via the client's RPC, and
-    /// atomically apply the per-transaction updates to the local store.
+    /// Assemble the `ProposedBatch`, prove it, submit it via the client's RPC, and atomically apply
+    /// the per-transaction updates to the local store.
     ///
     /// Returns the node's chain tip at submission (not the block the batch is committed). The
     /// submitted transactions are recorded locally as pending; call `sync_state` to get the block
@@ -242,13 +242,13 @@ where
         Ok(block_num)
     }
 
-    /// Execute `req` against the batch's in-memory state for `account_id`, prove it using
-    /// the client's configured prover, and append the resulting proven transaction to the
-    /// batch. The first push for a given account lazily loads its state from the store.
+    /// Execute `req` against the batch's in-memory state for `account_id`, prove it using the
+    /// client's configured prover, and append the resulting proven transaction to the batch. The
+    /// first push for a given account lazily loads its state from the store.
     ///
     /// The batch is only advanced once the transaction has both executed and been proven, so on
-    /// failure the builder still holds exactly the transactions it held before the call and
-    /// remains usable. Returns `&mut Self` so pushes can be chained.
+    /// failure the builder still holds exactly the transactions it held before the call and remains
+    /// usable. Returns `&mut Self` so pushes can be chained.
     pub async fn push(
         &mut self,
         account_id: AccountId,

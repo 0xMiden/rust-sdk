@@ -37,8 +37,8 @@ pub(crate) mod api_client_wrapper {
     impl ApiClient {
         /// Connects to the Miden node API using the provided URL, timeout and genesis commitment.
         ///
-        /// When `bearer_token` is `Some`, an `authorization: Bearer <token>` header is
-        /// injected into every outbound request alongside the standard `accept` header.
+        /// When `bearer_token` is `Some`, an `authorization: Bearer <token>` header is injected
+        /// into every outbound request alongside the standard `accept` header.
         // Kept async for API parity with the native client; in WASM this is synchronous.
         #[allow(clippy::unused_async)]
         pub async fn new_client(
@@ -132,8 +132,8 @@ pub(crate) mod api_client_wrapper {
     impl ApiClient {
         /// Connects to the Miden node API using the provided URL, timeout and genesis commitment.
         ///
-        /// When `bearer_token` is `Some`, an `authorization: Bearer <token>` header is
-        /// injected into every outbound request alongside the standard `accept` header.
+        /// When `bearer_token` is `Some`, an `authorization: Bearer <token>` header is injected
+        /// into every outbound request alongside the standard `accept` header.
         pub async fn new_client(
             endpoint: String,
             timeout_ms: u64,
@@ -251,11 +251,11 @@ impl MetadataInterceptor {
         Ok(self)
     }
 
-    /// Adds or overwrites the `authorization: Bearer <token>` header on the interceptor.
-    /// A `None` token is a no-op.
+    /// Adds or overwrites the `authorization: Bearer <token>` header on the interceptor. A `None`
+    /// token is a no-op.
     ///
-    /// Returns [`RpcError::ConnectionError`] if the token is not a valid ASCII metadata
-    /// value, mirroring the behaviour of other transport-setup failures on the client.
+    /// Returns [`RpcError::ConnectionError`] if the token is not a valid ASCII metadata value,
+    /// mirroring the behaviour of other transport-setup failures on the client.
     pub(super) fn with_bearer_token(
         self,
         bearer_token: Option<&str>,
@@ -281,8 +281,8 @@ impl Interceptor for MetadataInterceptor {
 /// Returns the HTTP header [`MetadataInterceptor`] that is expected by Miden RPC.
 ///
 /// The interceptor sets the `accept` header to the Miden API version and optionally includes the
-/// genesis commitment. When `bearer_token` is `Some`, an `authorization: Bearer <token>` header
-/// is also attached.
+/// genesis commitment. When `bearer_token` is `Some`, an `authorization: Bearer <token>` header is
+/// also attached.
 fn accept_header_interceptor(
     genesis_digest: Option<Word>,
     bearer_token: Option<&str>,

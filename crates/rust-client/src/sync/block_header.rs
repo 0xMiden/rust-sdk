@@ -167,9 +167,8 @@ impl<AUTH> Client<AUTH> {
 // UTILS
 // --------------------------------------------------------------------------------------------
 
-/// Returns a merkle path nodes for a specific block adjusted for a defined forest size.
-/// This function trims the merkle path to include only the nodes that are relevant for
-/// the MMR forest.
+/// Returns a merkle path nodes for a specific block adjusted for a defined forest size. This
+/// function trims the merkle path to include only the nodes that are relevant for the MMR forest.
 ///
 /// # Parameters
 /// - `merkle_path`: Original merkle path.

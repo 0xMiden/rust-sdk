@@ -1,8 +1,8 @@
 //! Synthetic store contents for the SQL store scaling benchmark.
 //!
 //! Every record is built through public client APIs, so the seeded database is the same shape a
-//! real client would produce, and the measurements below it stay honest about what the store has
-//! to do.
+//! real client would produce, and the measurements below it stay honest about what the store has to
+//! do.
 
 use miden_client::account::component::BasicWallet;
 use miden_client::account::{Account, AccountBuilder, AccountId, AccountType};

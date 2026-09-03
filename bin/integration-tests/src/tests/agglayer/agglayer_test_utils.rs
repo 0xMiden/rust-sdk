@@ -23,8 +23,8 @@ use serde::Deserialize;
 
 /// Deserializes a JSON value that may be either a number or a string into a `String`.
 ///
-/// Foundry's `vm.serializeUint` outputs JSON numbers for uint256 values.
-/// This deserializer accepts both `"100"` (string) and `100` (number) forms.
+/// Foundry's `vm.serializeUint` outputs JSON numbers for uint256 values. This deserializer accepts
+/// both `"100"` (string) and `100` (number) forms.
 fn deserialize_uint_to_string<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: serde::Deserializer<'de>,

@@ -346,8 +346,8 @@ async fn resolve_call_target<AUTH: Keystore + Sync + 'static>(
 
 /// Picks the local account the FPI call runs from, preferring the default account.
 ///
-/// Any account works: the script calls the foreign procedure, not the native account's code.
-/// Locked accounts are skipped because their local state doesn't match the node's.
+/// Any account works: the script calls the foreign procedure, not the native account's code. Locked
+/// accounts are skipped because their local state doesn't match the node's.
 async fn pick_local_executor<AUTH: Keystore + Sync + 'static>(
     client: &Client<AUTH>,
 ) -> Result<AccountId, CliError> {
@@ -484,8 +484,8 @@ fn print_manifest_signature(package: &Package, procedure_name: &str) -> Procedur
 
 /// Builds a transaction script that pushes `args` and calls the procedure at `digest`.
 ///
-/// Only the top results are read back, and `truncate_stack` restores the 16-element exit
-/// invariant, so anything left below the results can stay there.
+/// Only the top results are read back, and `truncate_stack` restores the 16-element exit invariant,
+/// so anything left below the results can stay there.
 fn generate_tx_script(
     code_builder: CodeBuilder,
     digest: &Word,

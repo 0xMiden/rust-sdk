@@ -516,8 +516,8 @@ impl SqliteStore {
 
     /// Reconciles the account's forest lineages to exactly match the provided full state.
     ///
-    /// Map slots that disappeared from the state are enumerated from the latest storage tables,
-    /// so this must run before those rows are replaced.
+    /// Map slots that disappeared from the state are enumerated from the latest storage tables, so
+    /// this must run before those rows are replaced.
     pub(crate) fn reconcile_account_forest(
         tx: &Transaction<'_>,
         smt_forest: &mut ScopedAccountForest<'_, '_>,
@@ -538,12 +538,12 @@ impl SqliteStore {
         Self::apply_forest_update(tx, smt_forest, update)
     }
 
-    /// Reconciles the account's forest lineages to the state currently stored in the latest
-    /// account tables. Used after rows are restored from historical during undo.
+    /// Reconciles the account's forest lineages to the state currently stored in the latest account
+    /// tables. Used after rows are restored from historical during undo.
     ///
-    /// `extra_map_slots` lists map slots that may hold forest entries even though they have no
-    /// rows anymore (captured before the tables were rewritten); their lineages are reset to
-    /// the empty tree unless the restored state repopulates them.
+    /// `extra_map_slots` lists map slots that may hold forest entries even though they have no rows
+    /// anymore (captured before the tables were rewritten); their lineages are reset to the empty
+    /// tree unless the restored state repopulates them.
     fn reconcile_account_forest_from_tables(
         tx: &Transaction<'_>,
         smt_forest: &mut ScopedAccountForest<'_, '_>,
@@ -564,8 +564,8 @@ impl SqliteStore {
 
     /// Verifies that the persisted top-level storage slots match the expected commitment.
     ///
-    /// This runs after the storage patch is written so create, update, and removal semantics have
-    /// a single source of truth. A mismatch rolls back together with the rest of the transaction.
+    /// This runs after the storage patch is written so create, update, and removal semantics have a
+    /// single source of truth. A mismatch rolls back together with the rest of the transaction.
     fn verify_storage_commitment(
         tx: &Transaction<'_>,
         account_id: AccountId,
@@ -1053,9 +1053,9 @@ impl SqliteStore {
 
     /// Writes a new row into `latest_account_headers`.
     ///
-    /// Does not archive any previous state, use [`Self::replace_account_header`] when a row
-    /// for this account already exists. If a row does exist it will be overwritten with the
-    /// provided `watched` value and no historical row added.
+    /// Does not archive any previous state, use [`Self::replace_account_header`] when a row for
+    /// this account already exists. If a row does exist it will be overwritten with the provided
+    /// `watched` value and no historical row added.
     fn insert_new_account_header(
         tx: &Transaction<'_>,
         new_header: &AccountHeader,
@@ -1105,9 +1105,9 @@ impl SqliteStore {
 
     /// Replaces an account's latest header, archiving the previous one to historical.
     ///
-    /// Preserves the `watched` flag from the existing latest row (mode is a per-account
-    /// property, not per-state). The new latest row is written with `account_seed = NULL`
-    /// and `locked = false`; the previous seed and lock state move into the historical row.
+    /// Preserves the `watched` flag from the existing latest row (mode is a per-account property,
+    /// not per-state). The new latest row is written with `account_seed = NULL` and `locked =
+    /// false`; the previous seed and lock state move into the historical row.
     fn replace_account_header(
         tx: &Transaction<'_>,
         new_header: &AccountHeader,
@@ -1189,9 +1189,9 @@ impl SqliteStore {
 
     /// Prunes historical account states for a single account up to the given nonce.
     ///
-    /// Deletes all historical entries with `replaced_at_nonce <= up_to_nonce`
-    /// (see DESIGN.md for why this threshold is safe), then removes any account
-    /// code that was only referenced by the deleted headers.
+    /// Deletes all historical entries with `replaced_at_nonce <= up_to_nonce` (see DESIGN.md for
+    /// why this threshold is safe), then removes any account code that was only referenced by the
+    /// deleted headers.
     pub fn prune_account_history(
         conn: &mut Connection,
         account_id: AccountId,

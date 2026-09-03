@@ -39,17 +39,17 @@ pub struct ReadOp {
 
 /// Runs transaction benchmarks (requires a running node).
 ///
-/// The benchmark uses the specified account as the native account executing transactions.
-/// Each transaction reads storage entries (both value and map slots) from the account's
-/// own storage. Slot types and entries are auto-detected from the imported account storage.
+/// The benchmark uses the specified account as the native account executing transactions. Each
+/// transaction reads storage entries (both value and map slots) from the account's own storage.
+/// Slot types and entries are auto-detected from the imported account storage.
 ///
-/// The signing key is expected to be present in the persistent keystore (written by the
-/// `deploy` command). When the key is available, all benchmarks (execution, proving, full)
-/// are run. Otherwise only execution is benchmarked.
+/// The signing key is expected to be present in the persistent keystore (written by the `deploy`
+/// command). When the key is available, all benchmarks (execution, proving, full) are run.
+/// Otherwise only execution is benchmarked.
 ///
-/// When `max_reads_per_tx` is provided and total reads exceed that limit, reads are
-/// split across multiple transactions per benchmark iteration. Each iteration's reported
-/// time is the sum across all transactions.
+/// When `max_reads_per_tx` is provided and total reads exceed that limit, reads are split across
+/// multiple transactions per benchmark iteration. Each iteration's reported time is the sum across
+/// all transactions.
 pub async fn run_transaction_benchmarks(
     client: &mut Client<FilesystemKeyStore>,
     config: &BenchConfig,
@@ -155,8 +155,8 @@ pub async fn run_transaction_benchmarks(
 
 /// Benchmarks transaction execution time (reading storage from active account).
 ///
-/// When multiple chunks are provided, each iteration executes all chunks sequentially
-/// and reports the total execution time.
+/// When multiple chunks are provided, each iteration executes all chunks sequentially and reports
+/// the total execution time.
 async fn benchmark_tx_execution(
     config: &BenchConfig,
     account_id: AccountId,
@@ -211,8 +211,8 @@ async fn benchmark_tx_execution(
 
 /// Benchmarks transaction proving time.
 ///
-/// When multiple chunks are provided, each iteration executes and proves all chunks
-/// sequentially, reporting the total proving time (execution time is excluded).
+/// When multiple chunks are provided, each iteration executes and proves all chunks sequentially,
+/// reporting the total proving time (execution time is excluded).
 async fn benchmark_tx_proving(
     config: &BenchConfig,
     account_id: AccountId,
@@ -274,9 +274,9 @@ async fn benchmark_tx_proving(
 
 /// Benchmarks full transaction (execute + prove + submit).
 ///
-/// When multiple chunks are provided, each iteration submits all chunks sequentially
-/// with block advancement waits between submissions (needed for nonce updates).
-/// Reports the total time including waits.
+/// When multiple chunks are provided, each iteration submits all chunks sequentially with block
+/// advancement waits between submissions (needed for nonce updates). Reports the total time
+/// including waits.
 async fn benchmark_tx_full(
     config: &BenchConfig,
     account_id: AccountId,
@@ -344,9 +344,9 @@ async fn benchmark_tx_full(
 
 /// Builds slot infos from the imported account storage.
 ///
-/// Only includes bench map slots (`miden::bench::map_slot_N`), returned in canonical
-/// index order (0, 1, 2, ...) to match the account's reader component. This ensures
-/// the dynamically-linked reader procedures have matching MAST roots.
+/// Only includes bench map slots (`miden::bench::map_slot_N`), returned in canonical index order
+/// (0, 1, 2, ...) to match the account's reader component. This ensures the dynamically-linked
+/// reader procedures have matching MAST roots.
 fn build_slot_infos_from_storage(
     storage: &miden_client::account::AccountStorage,
 ) -> Vec<StorageSlotInfo> {
@@ -415,9 +415,9 @@ fn chunk_read_ops(all_ops: &[ReadOp], max_reads: usize) -> Vec<Vec<ReadOp>> {
 
 /// Creates a fresh client for a benchmark iteration.
 ///
-/// Each iteration uses a new client to avoid state leaking between measurements.
-/// The client connects to the same persistent store directory (populated by `deploy`),
-/// which contains the `SQLite` database and filesystem keystore.
+/// Each iteration uses a new client to avoid state leaking between measurements. The client
+/// connects to the same persistent store directory (populated by `deploy`), which contains the
+/// `SQLite` database and filesystem keystore.
 async fn create_iteration_client(
     config: &BenchConfig,
 ) -> anyhow::Result<Client<FilesystemKeyStore>> {

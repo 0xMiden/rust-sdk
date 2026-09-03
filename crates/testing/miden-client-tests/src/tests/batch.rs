@@ -261,13 +261,12 @@ async fn apply_transaction_batch_rolls_back_on_mid_batch_failure() {
         .expect("update_account on A must succeed after the failed batch was rolled back");
 }
 
-/// `BatchBuilder::push` must execute each transaction against the in-batch (stacked)
-/// account state, not the persisted pre-batch state — otherwise a transaction that
-/// depends on state created by a prior push in the same batch fails even though the
-/// stacked state satisfies it.
+/// `BatchBuilder::push` must execute each transaction against the in-batch (stacked) account state,
+/// not the persisted pre-batch state — otherwise a transaction that depends on state created by a
+/// prior push in the same batch fails even though the stacked state satisfies it.
 ///
-/// Setup: A starts with `MINT_AMOUNT` (consumed, also puts A on-chain). A second
-/// mint note also worth `MINT_AMOUNT` is left UNCONSUMED.
+/// Setup: A starts with `MINT_AMOUNT` (consumed, also puts A on-chain). A second mint note also
+/// worth `MINT_AMOUNT` is left UNCONSUMED.
 ///
 /// - Push 1 consumes the second note → in-batch balance becomes `2 * MINT_AMOUNT`.
 /// - Push 2 sends `MINT_AMOUNT + 1` to B → invalid against pre-batch (`MINT_AMOUNT`) but valid

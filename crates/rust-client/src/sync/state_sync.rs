@@ -76,8 +76,8 @@ struct FetchedSyncData {
 
 /// A note a watched account consumed, carrying what recovery needs to validate and attribute it.
 ///
-/// Complements the note id (under which recovery keys these entries) from the node's
-/// `(nullifier, note_id)` reference with the consuming account and block.
+/// Complements the note id (under which recovery keys these entries) from the node's `(nullifier,
+/// note_id)` reference with the consuming account and block.
 struct RecoverableConsumedNote {
     nullifier: Nullifier,
     consumer: AccountId,
@@ -131,9 +131,9 @@ pub struct StateSyncInput {
     pub input_notes: Vec<InputNoteRecord>,
     /// Output notes whose lifecycle should be followed during sync.
     ///
-    /// Inclusion (committed) updates are derived from transaction sync, so the account that
-    /// created a note must be present in `accounts` for the note to transition to committed.
-    /// The consumed transition does not depend on this: nullifier sync detects it regardless.
+    /// Inclusion (committed) updates are derived from transaction sync, so the account that created
+    /// a note must be present in `accounts` for the note to transition to committed. The consumed
+    /// transition does not depend on this: nullifier sync detects it regardless.
     pub output_notes: Vec<OutputNoteRecord>,
     /// Transactions to track for commitment or discard during sync.
     pub uncommitted_transactions: Vec<TransactionRecord>,
@@ -233,8 +233,7 @@ impl StateSync {
     /// Disables the nullifier sync.
     ///
     /// When disabled, the component will not query the node for new nullifiers after each sync
-    /// step. This is useful for clients that don't need to track note consumption, such as
-    /// faucets.
+    /// step. This is useful for clients that don't need to track note consumption, such as faucets.
     pub fn disable_nullifier_sync(&mut self) {
         self.sync_nullifiers = false;
     }
@@ -628,12 +627,12 @@ impl StateSync {
         Ok(())
     }
 
-    /// Applies the MMR delta and inserts the chain-tip leaf into the partial blockchain
-    /// updates. The delta excludes the chain-tip leaf because of the one-block lag in block
-    /// header MMR commitments, so the tip leaf has to be added separately.
+    /// Applies the MMR delta and inserts the chain-tip leaf into the partial blockchain updates.
+    /// The delta excludes the chain-tip leaf because of the one-block lag in block header MMR
+    /// commitments, so the tip leaf has to be added separately.
     ///
-    /// Before adding the chain-tip leaf, the post-delta peaks are checked against the chain
-    /// tip header's chain commitment to ensure the delta advanced the MMR to the expected state.
+    /// Before adding the chain-tip leaf, the post-delta peaks are checked against the chain tip
+    /// header's chain commitment to ensure the delta advanced the MMR to the expected state.
     fn advance_mmr(
         mmr_delta: MmrDelta,
         chain_tip_header: &BlockHeader,
@@ -789,9 +788,9 @@ impl StateSync {
 
     /// Marks output notes that were erased by same-batch note erasure as consumed.
     ///
-    /// When a note is created and consumed in the same batch, note erasure removes it from
-    /// the block body. The node reports these as erased output notes in the transaction
-    /// record (note ID only, no inclusion proof). We mark them as consumed.
+    /// When a note is created and consumed in the same batch, note erasure removes it from the
+    /// block body. The node reports these as erased output notes in the transaction record (note ID
+    /// only, no inclusion proof). We mark them as consumed.
     fn mark_erased_notes_as_consumed(
         note_updates: &mut NoteUpdateTracker,
         transaction: &RpcTransactionRecord,
@@ -931,8 +930,8 @@ impl StateSync {
     /// single `get_account` call that requests every storage map and the vault.
     ///
     /// Accounts whose vault or maps are too large to fit in a single response fall back to the
-    /// incremental [`PublicAccountUpdate::Delta`] path, which fetches vault and storage map
-    /// updates over the synced block range.
+    /// incremental [`PublicAccountUpdate::Delta`] path, which fetches vault and storage map updates
+    /// over the synced block range.
     async fn sync_public_accounts(
         &self,
         account_updates: &mut AccountUpdates,
@@ -992,8 +991,8 @@ impl StateSync {
     ///
     /// # Panics
     ///
-    /// Panics if the node response omits account details, since that would mean the account is
-    /// not public.
+    /// Panics if the node response omits account details, since that would mean the account is not
+    /// public.
     async fn sync_public_account(
         &self,
         account_id: AccountId,
@@ -1157,8 +1156,8 @@ impl StateSync {
         })
     }
 
-    /// Applies the changes received from the sync response to the notes and transactions tracked
-    /// by the client and updates the `note_updates` accordingly.
+    /// Applies the changes received from the sync response to the notes and transactions tracked by
+    /// the client and updates the `note_updates` accordingly.
     ///
     /// This method uses the callbacks provided to the [`StateSync`] component to check if the
     /// updates received are relevant to the client.
@@ -1237,11 +1236,10 @@ impl StateSync {
     }
 
     /// Collects the nullifier tags for the notes that were updated in the sync response and uses
-    /// the `sync_nullifiers` endpoint to check if there are new nullifiers for these
-    /// notes. It then processes the nullifiers to apply the state transitions on the note updates.
+    /// the `sync_nullifiers` endpoint to check if there are new nullifiers for these notes. It then
+    /// processes the nullifiers to apply the state transitions on the note updates.
     ///
-    /// The `transaction_updates` parameter will be updated to track the new discarded
-    /// transactions.
+    /// The `transaction_updates` parameter will be updated to track the new discarded transactions.
     async fn nullifiers_state_sync(
         &self,
         note_updates: &mut NoteUpdateTracker,
@@ -1312,8 +1310,8 @@ fn group_txs_by_account_block(
 /// Walks a group of transaction records in execution order.
 ///
 /// Same-block transactions for the same account form an execution chain: each tx's
-/// `final_state_commitment` is the next tx's `initial_state_commitment`. This finds the chain
-/// start and walks forward, yielding each tx in execution order.
+/// `final_state_commitment` is the next tx's `initial_state_commitment`. This finds the chain start
+/// and walks forward, yielding each tx in execution order.
 fn walk_execution_chain<'a>(
     txs: &'a [&'a RpcTransactionRecord],
 ) -> impl Iterator<Item = &'a RpcTransactionRecord> + 'a {
@@ -1389,9 +1387,9 @@ fn derive_account_commitments(
 /// Returns nullifiers ordered by consuming transaction position, per account.
 ///
 /// Groups RPC transaction records by (`account_id`, `block_num`), chains them using
-/// `initial_state_commitment` / `final_state_commitment`, and collects each transaction's
-/// input note nullifiers in execution order. Nullifiers from the same account are in execution
-/// order; ordering across different accounts is arbitrary.
+/// `initial_state_commitment` / `final_state_commitment`, and collects each transaction's input
+/// note nullifiers in execution order. Nullifiers from the same account are in execution order;
+/// ordering across different accounts is arbitrary.
 fn compute_ordered_nullifiers(transaction_records: &[RpcTransactionRecord]) -> Vec<Nullifier> {
     let mut result = Vec::new();
 
@@ -1978,8 +1976,8 @@ mod tests {
     // DERIVE ACCOUNT COMMITMENTS TESTS
     // --------------------------------------------------------------------------------------------
 
-    /// `derive_account_commitments` must walk the execution chain to get the final
-    /// commitment when several transactions for the same account land in the same block.
+    /// `derive_account_commitments` must walk the execution chain to get the final commitment when
+    /// several transactions for the same account land in the same block.
     ///
     /// Test scenario:
     /// - Account A, block 5: chain 1 - 2 - 3 (older group; must be dominated by block 6).
@@ -2331,8 +2329,8 @@ mod tests {
         );
     }
 
-    /// Verifies that the sync correctly processes notes committed in multiple blocks
-    /// (batched `SyncNotes` response) and tracks their blocks in the partial MMR.
+    /// Verifies that the sync correctly processes notes committed in multiple blocks (batched
+    /// `SyncNotes` response) and tracks their blocks in the partial MMR.
     ///
     /// This test creates a faucet and mints notes in separate blocks (blocks 1, 2, 3),
     /// so `sync_notes` returns multiple `SyncNotesBlock`s. It then verifies:
@@ -2434,11 +2432,11 @@ mod tests {
         );
     }
 
-    /// Tests that erased notes are marked as consumed when a committed transaction
-    /// reports output notes that were erased by same-batch note erasure.
+    /// Tests that erased notes are marked as consumed when a committed transaction reports output
+    /// notes that were erased by same-batch note erasure.
     ///
-    /// This simulates same-batch note erasure: the transaction was committed, its header
-    /// says it produced a note, but the note was erased and doesn't exist on the node.
+    /// This simulates same-batch note erasure: the transaction was committed, its header says it
+    /// produced a note, but the note was erased and doesn't exist on the node.
     #[tokio::test]
     async fn erased_notes_are_marked_as_consumed() {
         // Create a public output note. It won't be in the mock chain (simulating erasure).
@@ -2485,22 +2483,21 @@ mod tests {
         );
     }
 
-    /// Tests that erased notes targeting a tracked network account are marked as consumed
-    /// by that account through the full sync flow.
+    /// Tests that erased notes targeting a tracked network account are marked as consumed by that
+    /// account through the full sync flow.
     ///
-    /// Same-batch erasure scenario: a sender's transaction creates an output note
-    /// targeting a network account that consumes it in the same batch, so the note never
-    /// appears in the block body and the mock RPC surfaces it as erased in the
-    /// transaction sync response.
+    /// Same-batch erasure scenario: a sender's transaction creates an output note targeting a
+    /// network account that consumes it in the same batch, so the note never appears in the block
+    /// body and the mock RPC surfaces it as erased in the transaction sync response.
     ///
-    /// When the client tracks the network account, the expected end state is that an
-    /// input note record is created for the erased note in a consumed state with the
-    /// network account as the consumer.
+    /// When the client tracks the network account, the expected end state is that an input note
+    /// record is created for the erased note in a consumed state with the network account as the
+    /// consumer.
     ///
-    /// Ignored because the consumer extraction from an erased note's attachments is no
-    /// longer wired through `mark_erased_note_as_consumed` — the RPC sync stream delivers
-    /// only a bare `NoteHeader`, so the consumer is left unknown. Re-enable once attachments
-    /// are delivered alongside erased notes (or the test is reworked against the new model).
+    /// Ignored because the consumer extraction from an erased note's attachments is no longer wired
+    /// through `mark_erased_note_as_consumed` — the RPC sync stream delivers only a bare
+    /// `NoteHeader`, so the consumer is left unknown. Re-enable once attachments are delivered
+    /// alongside erased notes (or the test is reworked against the new model).
     #[allow(clippy::too_many_lines)]
     #[ignore = "consumer derivation removed; see comment above"]
     #[tokio::test]

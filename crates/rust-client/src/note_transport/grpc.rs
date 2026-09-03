@@ -1,7 +1,7 @@
 //! gRPC-based note transport client.
 //!
-//! On native targets, the connection is established lazily on the first request using a
-//! TLS-enabled `tonic` channel. On WASM, a `tonic_web_wasm_client` is created on demand.
+//! On native targets, the connection is established lazily on the first request using a TLS-enabled
+//! `tonic` channel. On WASM, a `tonic_web_wasm_client` is created on demand.
 
 use alloc::boxed::Box;
 use alloc::string::String;
@@ -223,8 +223,7 @@ impl GrpcNoteTransportClient {
 
     /// Stream notes from the note transport network.
     ///
-    /// Subscribes to a given tag.
-    /// New notes are received periodically.
+    /// Subscribes to a given tag. New notes are received periodically.
     pub async fn stream_notes(
         &self,
         tag: NoteTag,

@@ -6,11 +6,11 @@
 //! only reads tree metadata) and dropped before the transaction is committed. Rolling back the
 //! transaction discards all forest changes; there is no separate in-memory state to reconcile.
 //!
-//! Trees are stored per lineage as their full set of key-value entries, their inner nodes packed
-//! as 8-level subtree blobs (the same layout as miden-crypto's persistent forest backend), and a
-//! metadata row (latest version, root, and entry count). Witness reads load one leaf plus the
-//! eight subtree blobs on its path, so their cost is independent of the tree size. Mutations load
-//! the affected lineage's SMT on demand, so memory usage is bounded by the trees touched by an
+//! Trees are stored per lineage as their full set of key-value entries, their inner nodes packed as
+//! 8-level subtree blobs (the same layout as miden-crypto's persistent forest backend), and a
+//! metadata row (latest version, root, and entry count). Witness reads load one leaf plus the eight
+//! subtree blobs on its path, so their cost is independent of the tree size. Mutations load the
+//! affected lineage's SMT on demand, so memory usage is bounded by the trees touched by an
 //! operation rather than by the total account state.
 
 use std::collections::hash_map::Entry;
@@ -99,13 +99,12 @@ impl fmt::Debug for SqliteForestBackend<'_, '_> {
 /// Read-only view over the same transaction.
 ///
 /// A separate type because the [`Backend::Reader`] contract requires a view that implements
-/// [`BackendReader`] but not [`Backend`]; every method delegates to the wrapped backend. The
-/// view observes the transaction's current (uncommitted) state, intentionally, so that later
-/// forest queries within a store operation see earlier writes of the same transaction. This
-/// deviates from the upstream contract's point-in-time snapshot wording (like the no-IO
-/// wording on `entry_count`); both deviations are safe for this crate-private backend, whose
-/// forests live only inside a single store operation, and are raised in the upstream API
-/// discussion.
+/// [`BackendReader`] but not [`Backend`]; every method delegates to the wrapped backend. The view
+/// observes the transaction's current (uncommitted) state, intentionally, so that later forest
+/// queries within a store operation see earlier writes of the same transaction. This deviates from
+/// the upstream contract's point-in-time snapshot wording (like the no-IO wording on
+/// `entry_count`); both deviations are safe for this crate-private backend, whose forests live only
+/// inside a single store operation, and are raised in the upstream API discussion.
 #[derive(Clone, Copy)]
 pub(crate) struct SqliteForestBackendReader<'a, 'conn>(SqliteForestBackend<'a, 'conn>);
 
@@ -222,9 +221,9 @@ fn require_consistent_position(lineage: LineageId, key: Word, position: u64) -> 
 
 /// Loads the sorted key-value entries of the SMT leaf at `position`.
 ///
-/// Entries are sorted by key because a multi-entry leaf's hash is order-sensitive and `SQLite`
-/// row order is unspecified; sorting by [`Word`] matches the canonical order the SMT maintains
-/// inside its leaves.
+/// Entries are sorted by key because a multi-entry leaf's hash is order-sensitive and `SQLite` row
+/// order is unspecified; sorting by [`Word`] matches the canonical order the SMT maintains inside
+/// its leaves.
 fn load_leaf_entries(
     conn: &Connection,
     lineage: LineageId,
@@ -310,8 +309,8 @@ fn load_subtree(conn: &Connection, lineage: LineageId, root_index: NodeIndex) ->
 
 /// Computes the Merkle path for `leaf_index` from the stored subtree blobs on its path.
 ///
-/// One subtree per 8-level band is loaded (roots at depths 56, 48, ..., 0); siblings of nodes
-/// that are not present in a blob are empty subtree roots.
+/// One subtree per 8-level band is loaded (roots at depths 56, 48, ..., 0); siblings of nodes that
+/// are not present in a blob are empty subtree roots.
 fn compute_merkle_path(
     conn: &Connection,
     lineage: LineageId,
@@ -362,15 +361,15 @@ struct ComputedLineageMutations {
 /// Computes the forward and reverse mutation sets for `kv_ops` on an existing lineage by reading
 /// only the affected leaves and the subtree blobs on their paths.
 ///
-/// This mirrors `SparseMerkleTree::compute_mutations_sequential` (and the reverse-set
-/// construction of `apply_mutations_with_reversion`) over persisted state, so its cost scales
-/// with the change set instead of the tree size. Because the new root is derived from stored
-/// subtree data, every touched leaf's stored path is first authenticated against `old_root`
-/// (both node halves per level); a missing or diverged blob is reported as corruption instead
-/// of silently producing a wrong root. Corruption on untouched paths is not detectable without
-/// a full scan and remains covered by the read-time root check. The stored `entry_count` is
-/// trusted within representable range (deltas are applied to it, not recounted), and the
-/// bulk-load heuristic keys off raw op count, not distinct leaf positions.
+/// This mirrors `SparseMerkleTree::compute_mutations_sequential` (and the reverse-set construction
+/// of `apply_mutations_with_reversion`) over persisted state, so its cost scales with the change
+/// set instead of the tree size. Because the new root is derived from stored subtree data, every
+/// touched leaf's stored path is first authenticated against `old_root` (both node halves per
+/// level); a missing or diverged blob is reported as corruption instead of silently producing a
+/// wrong root. Corruption on untouched paths is not detectable without a full scan and remains
+/// covered by the read-time root check. The stored `entry_count` is trusted within representable
+/// range (deltas are applied to it, not recounted), and the bulk-load heuristic keys off raw op
+/// count, not distinct leaf positions.
 #[allow(clippy::too_many_lines)]
 fn compute_update_mutations(
     conn: &Connection,
@@ -613,9 +612,9 @@ fn write_pairs(conn: &Connection, lineage: LineageId, forward: &SmtMutationSet) 
 /// Applies the inner-node mutations of a forward mutation set to the stored subtree blobs.
 ///
 /// Mutations are grouped by containing subtree so each affected blob is loaded, patched with one
-/// batch call, and written back (or deleted once empty) exactly once. A removal that targets a
-/// node absent from its blob means the stored subtrees have diverged from the stored entries,
-/// which is corruption of backend data.
+/// batch call, and written back (or deleted once empty) exactly once. A removal that targets a node
+/// absent from its blob means the stored subtrees have diverged from the stored entries, which is
+/// corruption of backend data.
 fn write_subtrees(conn: &Connection, lineage: LineageId, forward: &SmtMutationSet) -> Result<()> {
     // A `BTreeMap` (rather than a hash map) keeps the write order deterministic.
     let mut groups: BTreeMap<NodeIndex, Vec<(&NodeIndex, &NodeMutation)>> = BTreeMap::new();

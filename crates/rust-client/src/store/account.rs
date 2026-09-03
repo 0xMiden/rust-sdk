@@ -53,9 +53,9 @@ pub enum ClientAccountType {
 
 /// Represents a stored account state along with its status.
 ///
-/// The account should be stored in the database with its parts normalized. Meaning that the
-/// account header, vault, storage and code are stored separately. This is done to avoid data
-/// duplication as the header can reference the same elements if they have equal roots.
+/// The account should be stored in the database with its parts normalized. Meaning that the account
+/// header, vault, storage and code are stored separately. This is done to avoid data duplication as
+/// the header can reference the same elements if they have equal roots.
 #[derive(Debug)]
 pub struct AccountRecord {
     /// Full account object.

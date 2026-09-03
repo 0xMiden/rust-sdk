@@ -466,8 +466,8 @@ impl NoteUpdateTracker {
 
     /// Applies inclusion proofs from the transaction sync response to tracked output notes.
     ///
-    /// This transitions output notes from `Expected` to `Committed` state using the
-    /// inclusion proofs returned by `SyncTransactions`.
+    /// This transitions output notes from `Expected` to `Committed` state using the inclusion
+    /// proofs returned by `SyncTransactions`.
     pub(crate) fn apply_output_note_inclusion_proofs(
         &mut self,
         committed_notes: &[CommittedNote],
@@ -483,9 +483,9 @@ impl NoteUpdateTracker {
 
     /// Marks an erased note as consumed.
     ///
-    /// This handles notes that were erased due to same-batch note erasure: the note was
-    /// created and consumed within the same batch, so it never appeared in the block body.
-    /// The `block_num` is the block in which the creating transaction was committed.
+    /// This handles notes that were erased due to same-batch note erasure: the note was created and
+    /// consumed within the same batch, so it never appeared in the block body. The `block_num` is
+    /// the block in which the creating transaction was committed.
     ///
     /// The consumer account id is derived from the tracked input record's attachments (a
     /// [`NetworkAccountTarget`], when present), not from the erased-note RPC stream, which delivers
@@ -561,10 +561,10 @@ impl NoteUpdateTracker {
 
     /// Builds a consumed input note record from a tracked output note and inserts it.
     ///
-    /// Used when an output note is consumed externally and the client should also surface
-    /// it as a consumed input — for example, when the same client tracks both the sender
-    /// and the consumer of the note. No-op if the input is already tracked, the output is
-    /// not tracked, or the output cannot be converted to a [`Note`].
+    /// Used when an output note is consumed externally and the client should also surface it as a
+    /// consumed input — for example, when the same client tracks both the sender and the consumer
+    /// of the note. No-op if the input is already tracked, the output is not tracked, or the output
+    /// cannot be converted to a [`Note`].
     fn try_insert_consumed_input_from_output(
         &mut self,
         note_id: NoteId,

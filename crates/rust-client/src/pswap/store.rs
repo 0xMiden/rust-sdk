@@ -1,14 +1,14 @@
-//! Client-side persistence for PSWAP lineages over the existing `settings`
-//! KV store, using two key families:
+//! Client-side persistence for PSWAP lineages over the existing `settings` KV store, using two key
+//! families:
 //!
 //! ```text
 //! pswap/order/{order_id_hex}    →  serialized PswapLineageRecord  (PRIMARY; stable, never re-keyed)
 //! pswap/tip/{tip_note_id_hex}   →  order_id (Felt, 8 bytes)       (SECONDARY INDEX; re-keyed each round)
 //! ```
 //!
-//! The record lives under the stable `order_id`. The tip changes each round,
-//! so it keys a tiny index value (the `order_id`) that lets discovery resolve
-//! a consumed tip back to its order without a full scan.
+//! The record lives under the stable `order_id`. The tip changes each round, so it keys a tiny
+//! index value (the `order_id`) that lets discovery resolve a consumed tip back to its order
+//! without a full scan.
 
 use alloc::string::String;
 use alloc::sync::Arc;
@@ -104,15 +104,14 @@ pub(crate) async fn resolve_order_by_tip(
     Ok(Some(order_id))
 }
 
-/// Fetches and reconstructs the immutable depth-0 PSWAP note from `output_notes`
-/// by its stable id. The lineage record stores only `original_note_id` and the
-/// cheap order facts; the full note (script + recipient) is recovered here when
-/// reconstruction (payback/remainder rebuild) or a depth-0 reclaim needs it.
+/// Fetches and reconstructs the immutable depth-0 PSWAP note from `output_notes` by its stable id.
+/// The lineage record stores only `original_note_id` and the cheap order facts; the full note
+/// (script + recipient) is recovered here when reconstruction (payback/remainder rebuild) or a
+/// depth-0 reclaim needs it.
 ///
-/// The output note is persisted before the lineage record that points at it, so
-/// a miss — or a record lacking the recipient — means a broken invariant (e.g.
-/// the note was pruned), surfaced as [`PswapLineageError::OriginalNoteUnavailable`]
-/// rather than silently dropping work.
+/// The output note is persisted before the lineage record that points at it, so a miss — or a
+/// record lacking the recipient — means a broken invariant (e.g. the note was pruned), surfaced as
+/// [`PswapLineageError::OriginalNoteUnavailable`] rather than silently dropping work.
 pub(crate) async fn get_original_pswap(
     store: &Arc<dyn Store>,
     original_note_id: NoteId,
@@ -164,16 +163,15 @@ pub(crate) async fn list_lineages(
 // ROUND APPLICATION
 // ================================================================================================
 
-/// Applies one round transition: persists any reconstructed payback/remainder
-/// into `input_notes`, advances the lineage record, re-keys the tip index,
-/// and drops the asset-pair tag on terminal states.
+/// Applies one round transition: persists any reconstructed payback/remainder into `input_notes`,
+/// advances the lineage record, re-keys the tip index, and drops the asset-pair tag on terminal
+/// states.
 ///
-/// The lineage-record advance and tip re-key are committed as one atomic
-/// settings batch, so the record and its tip index never diverge. The
-/// `input_notes` and tag writes target other tables and keep the note-first
-/// ordering: a crash before the settings batch leaves the lineage at the old
-/// tip, and the next sync re-derives the round idempotently (`upsert_input_notes`
-/// is keyed on `note_id`; settings are last-writer-wins).
+/// The lineage-record advance and tip re-key are committed as one atomic settings batch, so the
+/// record and its tip index never diverge. The `input_notes` and tag writes target other tables and
+/// keep the note-first ordering: a crash before the settings batch leaves the lineage at the old
+/// tip, and the next sync re-derives the round idempotently (`upsert_input_notes` is keyed on
+/// `note_id`; settings are last-writer-wins).
 pub(crate) async fn apply_round(
     store: &Arc<dyn Store>,
     update: &PswapLineageRoundUpdate,

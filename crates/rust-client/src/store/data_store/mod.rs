@@ -72,13 +72,13 @@ impl ClientDataStore {
         }
     }
 
-    /// Serves chain data from the provided [`ChainAnchor`] instead of rebuilding it at the
-    /// store's sync height, pinning execution to the anchor's reference block.
+    /// Serves chain data from the provided [`ChainAnchor`] instead of rebuilding it at the store's
+    /// sync height, pinning execution to the anchor's reference block.
     ///
     /// The store's account data is still used as-is: only the reference block header and the
-    /// partial blockchain come from the anchor. Any authenticated input note must have been
-    /// created in a block tracked by the anchor's partial blockchain, otherwise
-    /// `get_transaction_inputs` fails.
+    /// partial blockchain come from the anchor. Any authenticated input note must have been created
+    /// in a block tracked by the anchor's partial blockchain, otherwise `get_transaction_inputs`
+    /// fails.
     #[must_use]
     pub fn with_chain_anchor(mut self, anchor: ChainAnchor) -> Self {
         self.anchor = Some(Box::new(anchor));
@@ -122,8 +122,8 @@ impl ClientDataStore {
 
     /// Attempts to resolve a storage map witness from the local store.
     ///
-    /// This covers any account present in the store (local or foreign) as well as any
-    /// foreign account previously cached in `foreign_account_inputs`.
+    /// This covers any account present in the store (local or foreign) as well as any foreign
+    /// account previously cached in `foreign_account_inputs`.
     ///
     /// Returns `Ok(None)` when the map is not found locally.
     async fn get_local_storage_map_witness(
@@ -430,11 +430,11 @@ impl DataStore for ClientDataStore {
         Ok((partial_account, block_header, partial_blockchain))
     }
 
-    /// Retrieves witnesses for the requested assets from the local store, falling back to a
-    /// single RPC vault fetch when the store cannot serve the requested root.
+    /// Retrieves witnesses for the requested assets from the local store, falling back to a single
+    /// RPC vault fetch when the store cannot serve the requested root.
     ///
-    /// Assets absent from the vault are served too: the store returns an emptiness proof for
-    /// them, which the executor needs when an asset is being added to the vault.
+    /// Assets absent from the vault are served too: the store returns an emptiness proof for them,
+    /// which the executor needs when an asset is being added to the vault.
     async fn get_vault_asset_witnesses(
         &self,
         account_id: AccountId,
@@ -634,11 +634,11 @@ fn resolve_witness_from_inputs(
     Ok(WitnessResolution::FetchParams(slot_name, inputs.code().clone()))
 }
 
-/// Builds a [`PartialMmr`] from the given peaks and a list of blocks that should be
-/// authenticated against them.
+/// Builds a [`PartialMmr`] from the given peaks and a list of blocks that should be authenticated
+/// against them.
 ///
-/// `authenticated_blocks` must not contain the block whose forest matches `peaks`. For that
-/// block the kernel extends the MMR itself, so an authentication path is not needed.
+/// `authenticated_blocks` must not contain the block whose forest matches `peaks`. For that block
+/// the kernel extends the MMR itself, so an authentication path is not needed.
 pub(crate) async fn build_partial_mmr_with_paths(
     store: &alloc::sync::Arc<dyn Store>,
     peaks: MmrPeaks,
@@ -665,8 +665,8 @@ pub(crate) async fn build_partial_mmr_with_paths(
 /// Retrieves all Partial Blockchain nodes required for authenticating the set of blocks, and then
 /// constructs the path for each of them.
 ///
-/// This function assumes `block_nums` doesn't contain values above or equal to `forest`.
-/// If there are any such values, the function will panic when calling `mmr_merkle_path_len()`.
+/// This function assumes `block_nums` doesn't contain values above or equal to `forest`. If there
+/// are any such values, the function will panic when calling `mmr_merkle_path_len()`.
 async fn get_authentication_path_for_blocks(
     store: &alloc::sync::Arc<dyn Store>,
     block_nums: &[BlockNumber],

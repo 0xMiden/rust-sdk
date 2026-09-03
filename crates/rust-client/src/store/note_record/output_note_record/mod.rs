@@ -32,8 +32,8 @@ use super::NoteRecordError;
 // OUTPUT NOTE RECORD
 // ================================================================================================
 
-/// Represents a Note which was the result of executing some transaction of which the Store can
-/// keep track and retrieve.
+/// Represents a Note which was the result of executing some transaction of which the Store can keep
+/// track and retrieve.
 ///
 /// An [`OutputNoteRecord`] contains all the information of a [`Note`] while it allows for not
 /// knowing the recipient details (nullifier, script, inputs and serial number).

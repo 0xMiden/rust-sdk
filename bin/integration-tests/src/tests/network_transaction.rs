@@ -369,8 +369,8 @@ async fn deploy_network_fungible_faucet(
 /// Waits for a public note to be observed as `Committed` on `observer`.
 ///
 /// Advances up to `max_blocks` blocks on `block_client`, syncing `observer` after each block and
-/// looking the note up by its details commitment. Returns `true` as soon as the note is observed
-/// as `Committed` and `false` if the window elapses first.
+/// looking the note up by its details commitment. Returns `true` as soon as the note is observed as
+/// `Committed` and `false` if the window elapses first.
 async fn wait_for_committed_note(
     block_client: &mut TestClient,
     observer: &mut TestClient,

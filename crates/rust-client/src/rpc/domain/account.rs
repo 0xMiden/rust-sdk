@@ -150,11 +150,11 @@ impl proto::rpc::account_response::AccountDetails {
     /// Converts the RPC response into `AccountDetails`.
     ///
     /// The RPC response may omit unchanged account codes. If so, this function uses
-    /// `known_account_codes` to fill in the missing code. If a required code cannot be found in
-    /// the response or `known_account_codes`, an error is returned.
+    /// `known_account_codes` to fill in the missing code. If a required code cannot be found in the
+    /// response or `known_account_codes`, an error is returned.
     ///
-    /// `storage_requirements` is the request this response answers, used to check that each
-    /// partial map covers exactly the keys that were asked for.
+    /// `storage_requirements` is the request this response answers, used to check that each partial
+    /// map covers exactly the keys that were asked for.
     ///
     /// # Errors
     /// - If account code is missing both on `self` and `known_account_codes`
@@ -240,8 +240,8 @@ impl TryFrom<&AccountDetails> for Account {
     /// Builds an [`Account`] from [`AccountDetails`].
     ///
     /// This conversion fails if the account details are incomplete, i.e., when the account's
-    /// storage maps or vault exceed the node's size threshold, or when only specific map keys
-    /// were requested.
+    /// storage maps or vault exceed the node's size threshold, or when only specific map keys were
+    /// requested.
     fn try_from(details: &AccountDetails) -> Result<Self, Self::Error> {
         if details.vault_details.too_many_assets {
             return Err(RpcError::ExpectedDataMissing(
@@ -544,8 +544,8 @@ impl TryFrom<proto::rpc::account_storage_details::AccountStorageMapDetails>
 
 /// Returns the first key that appears more than once, if any.
 ///
-/// The key lists this guards are bounded by [`AccountStorageMapDetails::MAX_PARTIAL_MAP_KEYS`],
-/// so the quadratic scan avoids allocating a set.
+/// The key lists this guards are bounded by [`AccountStorageMapDetails::MAX_PARTIAL_MAP_KEYS`], so
+/// the quadratic scan avoids allocating a set.
 fn first_duplicate_key(keys: &[StorageMapKey]) -> Option<&StorageMapKey> {
     keys.iter()
         .enumerate()
@@ -820,8 +820,8 @@ impl TryFrom<proto::account::AccountWitness> for AccountWitness {
 // ACCOUNT STORAGE REQUEST
 // ================================================================================================
 
-/// Per-slot map data to include in a `/GetAccount` response. Slots absent here are omitted
-/// from `map_details` (the storage header still lists every slot).
+/// Per-slot map data to include in a `/GetAccount` response. Slots absent here are omitted from
+/// `map_details` (the storage header still lists every slot).
 ///
 /// - Empty key list: all entries, no proof. May come back as [`StorageMapEntries::LimitExceeded`].
 /// - Non-empty key list: just those keys, covered by one partial SMT.
@@ -920,9 +920,8 @@ pub enum VaultFetch {
     Always,
     /// Include vault data only if the account's current vault root differs from this commitment.
     ///
-    /// An omitted asset list is byte-identical to a genuinely empty vault, so callers must keep
-    /// the vault whose root they send and verify any reconstruction against the header's vault
-    /// root.
+    /// An omitted asset list is byte-identical to a genuinely empty vault, so callers must keep the
+    /// vault whose root they send and verify any reconstruction against the header's vault root.
     IfChangedFrom(Word),
 }
 
@@ -942,8 +941,8 @@ impl From<VaultFetch> for Option<proto::primitives::Digest> {
 /// Which storage map entries to include in a `/GetAccount` response.
 ///
 /// Mirrors the node's `AccountDetailRequest` storage request: the storage header (slot roots) is
-/// always returned; this only controls which map *entries* come with it. The variants are
-/// mutually exclusive.
+/// always returned; this only controls which map *entries* come with it. The variants are mutually
+/// exclusive.
 #[derive(Clone, Debug, Default)]
 pub enum StorageMapFetch {
     /// Don't request any map entries; only the storage header is returned.

@@ -52,8 +52,7 @@ pub struct AccountCmd {
     /// Additional package files (`.masp`) used to resolve procedure MAST roots to names and
     /// signatures, on top of the packages in the configured packages directory.
     ///
-    /// May be passed multiple times. On a duplicate MAST root, the passed packages take
-    /// precedence.
+    /// May be passed multiple times. On a duplicate MAST root, the passed packages take precedence.
     #[arg(short, long, value_name = "FILE", requires = "inspect")]
     package: Vec<PathBuf>,
     /// When using --inspect, also print the MASM disassembly of each procedure.
@@ -61,9 +60,8 @@ pub struct AccountCmd {
     verbose: bool,
     /// Manages default account for transaction execution.
     ///
-    /// If no ID is provided it will display the current default account ID.
-    /// If "none" is provided it will remove the default account else it will set the default
-    /// account to the provided ID.
+    /// If no ID is provided it will display the current default account ID. If "none" is provided
+    /// it will remove the default account else it will set the default account to the provided ID.
     #[arg(short, long, group = "action", value_name = "ID")]
     default: Option<Option<String>>,
 }

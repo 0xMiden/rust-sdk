@@ -52,8 +52,8 @@ pub const GENESIS_FAUCET_FILE: &str = "tst_faucet.mac";
 
 /// Number of funder wallets a fee-charging genesis declares when no count is given.
 ///
-/// A wallet is claimed only for the length of one payment, so this covers the payments in flight
-/// at once, which the test runner's thread cap bounds to a handful.
+/// A wallet is claimed only for the length of one payment, so this covers the payments in flight at
+/// once, which the test runner's thread cap bounds to a handful.
 pub const DEFAULT_NUM_FUNDER_WALLETS: u32 = 16;
 
 /// Balance, in base units of the native fee asset, each funder wallet holds at genesis. Covers the
@@ -85,8 +85,8 @@ const GENESIS_ACCOUNT_FEE_BALANCE: u64 = 1_000_000_000;
 /// `miden-validator bootstrap --genesis-config-file <output_dir>/genesis.toml`.
 ///
 /// This emits the TST genesis faucet (written with its secret key), the test faucets, and the
-/// `too_many_assets` account as `.mac` files referenced by `[[account]]` entries in
-/// `genesis.toml`, which the node loads verbatim.
+/// `too_many_assets` account as `.mac` files referenced by `[[account]]` entries in `genesis.toml`,
+/// which the node loads verbatim.
 ///
 /// The native fee faucet is generated here and pointed at by `native_faucet` rather than left to
 /// the node, so its ID is known before the remaining accounts are serialized. A vault entry can

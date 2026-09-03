@@ -27,13 +27,13 @@ type BlockchainCache = BTreeMap<BTreeSet<BlockNumber>, (BlockHeader, PartialBloc
 /// state, so the witness for an asset is the same no matter which account holds the vault.
 type VaultWitnessCache = BTreeMap<(Word, AssetId), AssetWitness>;
 
-/// In-memory state that [`super::ClientDataStore`] serves to the executor without going through
-/// the persistent store.
+/// In-memory state that [`super::ClientDataStore`] serves to the executor without going through the
+/// persistent store.
 ///
 /// This bundles everything that exists only for the duration of an execution session: data
-/// registered up front for the in-flight transaction request (account code, foreign account
-/// inputs, output note scripts) plus data cached lazily while the transaction executes (RPC-fetched
-/// foreign accounts and storage map witnesses, the reference block).
+/// registered up front for the in-flight transaction request (account code, foreign account inputs,
+/// output note scripts) plus data cached lazily while the transaction executes (RPC-fetched foreign
+/// accounts and storage map witnesses, the reference block).
 pub(super) struct DataStoreCache {
     /// Store used to provide MAST nodes to the transaction executor.
     pub(super) mast_store: Arc<TransactionMastStore>,
@@ -208,8 +208,8 @@ impl DataStoreCache {
             .insert(ref_blocks, (header.clone(), blockchain.clone()));
     }
 
-    /// Returns the cached witnesses for the given vault root and requested asset IDs, or `None`
-    /// if any of them is missing.
+    /// Returns the cached witnesses for the given vault root and requested asset IDs, or `None` if
+    /// any of them is missing.
     ///
     /// Returns `None` if the execution-input cache is disabled.
     pub(super) fn get_vault_asset_witnesses(

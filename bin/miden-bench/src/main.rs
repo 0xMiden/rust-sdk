@@ -66,9 +66,9 @@ enum Command {
 impl Command {
     /// Returns whether the command needs the global startup sync against the network.
     ///
-    /// Only commands that read pre-existing chain state (deploy, expand, transaction)
-    /// require a synced client at startup. Import / export operate on a file or call
-    /// their own RPC and do not benefit from the pre-sync.
+    /// Only commands that read pre-existing chain state (deploy, expand, transaction) require a
+    /// synced client at startup. Import / export operate on a file or call their own RPC and do not
+    /// benefit from the pre-sync.
     fn startup_mode(&self) -> StartupMode {
         match self {
             Command::Deploy(_) | Command::Expand(_) | Command::Transaction(_) => {

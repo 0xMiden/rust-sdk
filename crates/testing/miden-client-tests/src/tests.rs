@@ -652,13 +652,13 @@ async fn stale_cached_partial_mmr_is_rebuilt_from_store() {
     );
 }
 
-/// Tests that MMR authentication nodes are persisted even when `include_block` is false
-/// (i.e., a synced block has no relevant notes and is not the chain tip).
+/// Tests that MMR authentication nodes are persisted even when `include_block` is false (i.e., a
+/// synced block has no relevant notes and is not the chain tip).
 ///
-/// This covers the scenario where a browser extension popup is closed and reopened:
-/// the in-memory `PartialMmr` is lost and must be fully reconstructable from the store.
-/// Without persisting auth nodes for skipped blocks, the store would be missing nodes
-/// needed for Merkle authentication paths, causing transaction execution to fail.
+/// This covers the scenario where a browser extension popup is closed and reopened: the in-memory
+/// `PartialMmr` is lost and must be fully reconstructable from the store. Without persisting auth
+/// nodes for skipped blocks, the store would be missing nodes needed for Merkle authentication
+/// paths, causing transaction execution to fail.
 #[tokio::test]
 async fn sync_persists_auth_nodes_for_skipped_blocks() {
     use miden_client::async_trait;
@@ -3017,9 +3017,9 @@ async fn swap_public_payback_test() {
 /// `NoteFilter::Unspent` and receive inclusion proofs during sync, transitioning from
 /// `ExpectedPartial` to `CommittedPartial` state.
 ///
-/// This is a regression test for a bug where `NoteFilter::Unspent` for output notes did not
-/// include `ExpectedPartial` and `CommittedPartial` states, causing partial output notes to be
-/// excluded from sync operations and never receiving their inclusion proofs.
+/// This is a regression test for a bug where `NoteFilter::Unspent` for output notes did not include
+/// `ExpectedPartial` and `CommittedPartial` states, causing partial output notes to be excluded
+/// from sync operations and never receiving their inclusion proofs.
 #[tokio::test]
 async fn partial_output_note_receives_inclusion_proof_after_sync() {
     let (mut client, mock_rpc_api, keystore) = Box::pin(create_test_client()).await;
@@ -5181,8 +5181,8 @@ async fn storage_and_vault_proofs_ecdsa() {
     // Create an account that will accept assets (basic wallet) but also that has a storage map that
     // can be updated.
     //
-    // Same setup as `storage_and_vault_proofs`, but using ECDSA auth instead of RPO Falcon.
-    // The storage map is still updated via named-slot access in `BUMP_MAP_CODE`.
+    // Same setup as `storage_and_vault_proofs`, but using ECDSA auth instead of RPO Falcon. The
+    // storage map is still updated via named-slot access in `BUMP_MAP_CODE`.
     let mut storage_map = StorageMap::new();
     storage_map
         .insert(

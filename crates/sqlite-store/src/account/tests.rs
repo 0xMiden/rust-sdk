@@ -219,11 +219,11 @@ async fn apply_account_patch_additions() -> anyhow::Result<()> {
 
 /// Applying a fungible vault patch must preserve the asset's [`AssetCallbackFlag`].
 ///
-/// The callback flag is part of an asset's vault key *and* value encoding, so if the store
-/// drops it while applying a patch, the locally recomputed vault root diverges from the one
-/// the transaction kernel produced (which carries the flag). That divergence surfaces as a
-/// `MerkleStoreError`/`ConflictingRoots` when `apply_account_vault_patch` compares the
-/// recomputed root against `final_account_state.vault_root()`.
+/// The callback flag is part of an asset's vault key *and* value encoding, so if the store drops it
+/// while applying a patch, the locally recomputed vault root diverges from the one the transaction
+/// kernel produced (which carries the flag). That divergence surfaces as a
+/// `MerkleStoreError`/`ConflictingRoots` when `apply_account_vault_patch` compares the recomputed
+/// root against `final_account_state.vault_root()`.
 ///
 /// Callback-bearing fungible assets are produced by agglayer faucets (B2AGG), so this path is
 /// exercised when a wallet consumes an agglayer-minted note. Ordinary assets use the disabled flag,
@@ -1436,8 +1436,8 @@ async fn lock_account_affects_latest_and_historical() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Verifies that undoing a patch after `update_account_state` does not resurrect entries that
-/// were removed by the update. This exercises the archival logic in `update_account_state`.
+/// Verifies that undoing a patch after `update_account_state` does not resurrect entries that were
+/// removed by the update. This exercises the archival logic in `update_account_state`.
 ///
 /// Flow:
 /// 1. Insert account with map entries {A, B, C} and an asset X at nonce 1
@@ -1916,8 +1916,8 @@ async fn undo_multiple_nonces_at_once() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Verifies that entries genuinely new in `update_account_state` (not in the previous state)
-/// are correctly removed from latest on undo. These entries get NULL `old_value` in historical.
+/// Verifies that entries genuinely new in `update_account_state` (not in the previous state) are
+/// correctly removed from latest on undo. These entries get NULL `old_value` in historical.
 ///
 /// Flow:
 /// 1. Insert account with map entries {A, B} at nonce 1
@@ -2389,8 +2389,8 @@ fn build_bulk_patch_for_reopen_test(
     Ok((patch, account_after, keys))
 }
 
-/// The forest is persisted in the database: after dropping and reopening the store from the
-/// same file, witness reads are served from the persisted forest without any state rebuild.
+/// The forest is persisted in the database: after dropping and reopening the store from the same
+/// file, witness reads are served from the persisted forest without any state rebuild.
 ///
 /// The account is taken through two committed patches so more than one forest version precedes the
 /// reopen, and the map is filled with enough entries to span several of the 8-level subtree blobs

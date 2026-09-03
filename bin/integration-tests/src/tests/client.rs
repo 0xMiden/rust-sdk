@@ -1686,8 +1686,8 @@ pub async fn test_output_only_note(client_config: ClientConfig) -> Result<()> {
     Ok(())
 }
 
-/// Tests that `get_account` with `AccountStorageRequirements` correctly filters storage
-/// map entries by key.
+/// Tests that `get_account` with `AccountStorageRequirements` correctly filters storage map entries
+/// by key.
 ///
 /// Creates a public account with a map slot containing 2 entries, then verifies:
 /// - Requesting with empty keys returns `AllEntries` with both entries.

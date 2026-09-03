@@ -183,9 +183,9 @@ async fn load_ecdsa_accounts_test() {
     assert_eq!(actual_commitments, expected_commitments);
 }
 
-/// Tests that pruning while a transaction is pending does not break the ability to
-/// commit that transaction. The pending tx's input state lives in the historical tables;
-/// pruning must not delete it, otherwise undo on discard would fail.
+/// Tests that pruning while a transaction is pending does not break the ability to commit that
+/// transaction. The pending tx's input state lives in the historical tables; pruning must not
+/// delete it, otherwise undo on discard would fail.
 ///
 /// Scenario:
 ///   1. Mint tx1 and commit it (nonce 0 to 1)
@@ -372,9 +372,9 @@ fn compile_slot_tx_script(
 ///   - Prune history
 ///   - Verify: A=10, B=20, C=3: slot C was never modified and must survive pruning
 ///
-/// With the `replaced_at` historical model, only slots that actually changed get recorded
-/// in the historical tables. Slot C is never in the historical table because it was never
-/// replaced, so pruning cannot lose it.
+/// With the `replaced_at` historical model, only slots that actually changed get recorded in the
+/// historical tables. Slot C is never in the historical table because it was never replaced, so
+/// pruning cannot lose it.
 #[tokio::test]
 async fn prune_preserves_unmodified_storage_slots() {
     let (mut client, mock_rpc_api, keystore) = Box::pin(create_test_client()).await;

@@ -81,8 +81,8 @@ impl SqliteStore {
         Ok(())
     }
 
-    /// Writes only the changed storage slots, archiving old values from latest to historical
-    /// before replacing or removing them.
+    /// Writes only the changed storage slots, archiving old values from latest to historical before
+    /// replacing or removing them.
     ///
     /// The storage patch is the source of truth for slot type, value, and removal. Roots for map
     /// slots that remain present are read from the already-updated forest.

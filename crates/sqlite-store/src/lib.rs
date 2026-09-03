@@ -1,5 +1,5 @@
-//! SQLite-backed Store implementation for miden-client.
-//! This crate provides `SqliteStore` and its full implementation.
+//! SQLite-backed Store implementation for miden-client. This crate provides `SqliteStore` and its
+//! full implementation.
 //!
 //! [`SqliteStore`] enables the persistence of accounts, transactions, notes, block headers, and MMR
 //! nodes using an `SQLite` database.
@@ -150,8 +150,8 @@ impl SqliteStore {
 
 // SQLite implementation of the Store trait
 //
-// To simplify, all implementations rely on inner SqliteStore functions that map 1:1 by name
-// This way, the actual implementations are grouped by entity types in their own sub-modules
+// To simplify, all implementations rely on inner SqliteStore functions that map 1:1 by name This
+// way, the actual implementations are grouped by entity types in their own sub-modules
 #[async_trait::async_trait]
 impl Store for SqliteStore {
     fn identifier(&self) -> &str {
@@ -609,8 +609,8 @@ pub(crate) fn current_timestamp_u64() -> u64 {
 
 /// Gets a `u64` value from the database.
 ///
-/// `Sqlite` uses `i64` as its internal representation format, and so when retrieving
-/// we need to make sure we cast as `u64` to get the original value
+/// `Sqlite` uses `i64` as its internal representation format, and so when retrieving we need to
+/// make sure we cast as `u64` to get the original value
 pub fn column_value_as_u64<I: rusqlite::RowIndex>(
     row: &rusqlite::Row<'_>,
     index: I,

@@ -22,9 +22,8 @@ fn write_read_op_instructions(script: &mut String, op: &ReadOp) {
         .expect("write to string should not fail");
 
     // Call the account's reader procedure for this storage map slot.
-    //
-    // Stack input: [KEY]
-    // Stack output via call frame: [VALUE, pad(12)] = 16 elements
+    // - Stack input: [KEY]
+    // - Stack output via call frame: [VALUE, pad(12)] = 16 elements
     writeln!(script, "    call.storage_reader::get_map_item_slot_{}", op.slot_idx)
         .expect("write to string should not fail");
 
@@ -34,13 +33,11 @@ fn write_read_op_instructions(script: &mut String, op: &ReadOp) {
 
 /// Generates a MASM script that reads storage entries from the active account.
 ///
-/// Uses `call` to invoke account reader procedures rather than directly `exec`-ing
-/// kernel syscalls. The kernel's `authenticate_account_origin` requires the caller
-/// to be an account procedure.
+/// Uses `call` to invoke account reader procedures rather than directly `exec`-ing kernel syscalls.
+/// The kernel's `authenticate_account_origin` requires the caller to be an account procedure.
 ///
-/// When the total number of read ops exceeds [`MAX_OPS_PER_BLOCK`], the script is
-/// split into `repeat.1 ... end` blocks to stay within the Miden parser's per-block
-/// instruction limit.
+/// When the total number of read ops exceeds [`MAX_OPS_PER_BLOCK`], the script is split into
+/// `repeat.1 ... end` blocks to stay within the Miden parser's per-block instruction limit.
 fn generate_storage_read_script(read_ops: &[ReadOp]) -> String {
     let mut script = String::from(
         "use bench_reader::storage_reader

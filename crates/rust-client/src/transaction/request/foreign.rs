@@ -33,8 +33,7 @@ use crate::rpc::domain::account::{
 // FPI SCRIPT
 // ================================================================================================
 
-/// Builds a transaction script that invokes the procedure with the given root on a foreign
-/// account.
+/// Builds a transaction script that invokes the procedure with the given root on a foreign account.
 ///
 /// `args` are the procedure's inputs, pushed so that `args[0]` ends up on top of the stack. The
 /// kernel reads them as a fixed window of [`MIN_STACK_DEPTH`] felts, so no more may be passed.
@@ -263,8 +262,8 @@ pub(crate) fn account_proof_into_inputs(
     Err(TransactionRequestError::ForeignAccountDataMissing)
 }
 
-/// Rebuilds a [`PartialStorageMap`] from the raw keys the node covered and the partial SMT
-/// covering them.
+/// Rebuilds a [`PartialStorageMap`] from the raw keys the node covered and the partial SMT covering
+/// them.
 ///
 /// An empty key list keeps the root alone, since there is no opening to derive it from.
 fn partial_map_into_partial_storage(

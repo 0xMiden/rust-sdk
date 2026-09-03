@@ -8,14 +8,14 @@ use miden_protocol::crypto::merkle::smt::{PartialSmt, SmtProof};
 // ================================================================================================
 
 /// One account SMT (the vault or a storage map slot) as a batch in progress sees it: proofs
-/// anchored at the tree's committed root plus the absolute values of the keys in-batch
-/// transactions wrote.
+/// anchored at the tree's committed root plus the absolute values of the keys in-batch transactions
+/// wrote.
 ///
 /// Replaying the writes onto the proofs ([`Self::staged_view`]) yields the current in-batch tree,
 /// from which a witness for any key can be opened — the key only needs its committed-root proof
 /// supplied, which the store can always serve since the committed state is never mutated while a
-/// batch is being built. The one exception is a tree anchored at the empty root (a fresh or
-/// removed map slot): there every key is implicitly provable and no proofs are needed at all.
+/// batch is being built. The one exception is a tree anchored at the empty root (a fresh or removed
+/// map slot): there every key is implicitly provable and no proofs are needed at all.
 #[derive(Clone)]
 pub(crate) struct StagedSmt {
     /// Committed-root proofs for every key an in-batch transaction has written so far. Its root is
@@ -55,8 +55,8 @@ impl StagedSmt {
 
     /// Folds a transaction's writes into the view and returns the new in-batch root.
     ///
-    /// `committed_proofs` must cover every written key (except keys whose committed path is
-    /// already tracked, e.g. by an earlier write or an empty subtree).
+    /// `committed_proofs` must cover every written key (except keys whose committed path is already
+    /// tracked, e.g. by an earlier write or an empty subtree).
     pub fn apply_entries(
         &mut self,
         committed_proofs: impl IntoIterator<Item = SmtProof>,

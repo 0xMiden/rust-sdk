@@ -38,8 +38,8 @@ use crate::ClientConfig;
 //   asserts that the {asserted_value} parameter is 0. To test this we first execute with an
 //   incorrect value passed in, and after that we try again with the correct value.
 //
-// Because it's currently not possible to create/consume notes without assets, the P2ID code
-// is used as the base for the note code.
+// Because it's currently not possible to create/consume notes without assets, the P2ID code is used
+// as the base for the note code.
 
 const NOTE_ARGS: [Felt; 8] = [
     Felt::new_unchecked(9),

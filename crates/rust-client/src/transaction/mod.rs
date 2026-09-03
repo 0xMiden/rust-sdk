@@ -1300,10 +1300,9 @@ where
         let new_output_notes = executed_tx
             .output_notes()
             .iter()
-            .filter(|output_note| {
-                output_note
-                    .recipient()
-                    .is_none_or(|recipient| recipient.script().root() != TxFeeNote::script_root())
+            .filter(|output_note| match output_note {
+                RawOutputNote::Full(note) => !is_tx_fee_note(note),
+                RawOutputNote::Partial(_) => true,
             })
             .cloned()
             .filter_map(|output_note| {
@@ -1313,20 +1312,14 @@ where
 
         // New relevant input notes
         let mut new_input_notes = vec![];
-        let output_notes: Vec<Note> =
-            notes_from_output(executed_tx.output_notes()).cloned().collect();
+        let output_notes: Vec<Note> = notes_from_output(executed_tx.output_notes())
+            .filter(|note| !is_tx_fee_note(note))
+            .cloned()
+            .collect();
         let note_screener = self.note_screener().clone();
         let output_note_relevances = note_screener.get_batch_consumability(&output_notes).await?;
 
         for note in output_notes {
-            // The fee note is a bearer note meant for whoever builds the batch, so the screener
-            // wrongly reports it as consumable here. Tracking it would also register its tag, and
-            // all TX_FEE notes share one chain-wide tag, so every later sync would pull in every
-            // fee note the chain has produced.
-            if note.script().root() == TxFeeNote::script_root() {
-                continue;
-            }
-
             if output_note_relevances.contains_key(&note.id()) {
                 let metadata = *note.metadata();
                 let tag = metadata.tag();
@@ -1788,6 +1781,11 @@ pub fn notes_from_output(output_notes: &RawOutputNotes) -> impl Iterator<Item = 
         RawOutputNote::Full(n) => Some(n),
         RawOutputNote::Partial(_) => None,
     })
+}
+
+/// Returns `true` if the note uses the canonical TX_FEE script.
+fn is_tx_fee_note(note: &Note) -> bool {
+    note.script().root() == TxFeeNote::script_root()
 }
 
 /// Validates that the executed transaction's output recipients match what was expected in the

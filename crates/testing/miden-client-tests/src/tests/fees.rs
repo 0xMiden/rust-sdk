@@ -16,6 +16,7 @@ use miden_client::auth::{AuthSchemeId, AuthSecretKey};
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::{FilesystemKeyStore, Keystore};
 use miden_client::store::NoteFilter;
+use miden_client::sync::NoteTagSource;
 use miden_client::testing::common::{TestClient, create_test_store_path};
 use miden_client::testing::mock::MockRpcApi;
 use miden_client::transaction::{
@@ -37,6 +38,7 @@ use miden_standards::account::auth::{
     AuthSingleSig,
 };
 use miden_standards::account::wallets::BasicWallet;
+use miden_standards::note::TxFeeNote;
 use miden_standards::testing::note::NoteBuilder;
 use miden_testing::{Auth, MockChain, MockChainBuilder};
 
@@ -289,10 +291,12 @@ async fn fee_charging_client_with_auth(
 /// supposed to contain the fee note, so only what `apply_transaction` persists distinguishes the
 /// two.
 #[tokio::test]
-async fn the_fee_note_is_not_tracked_as_one_of_our_output_notes() {
+async fn the_fee_note_is_not_tracked_as_a_client_note() {
     let (mut client, account) = Box::pin(fee_charging_client()).await;
 
-    let before = client.get_output_notes(NoteFilter::All).await.unwrap().len();
+    let output_notes_before = client.get_output_notes(NoteFilter::All).await.unwrap().len();
+    let input_notes_before = client.get_input_notes(NoteFilter::All).await.unwrap().len();
+    let note_tags_before = client.get_note_tags().await.unwrap();
 
     let executed = Box::pin(
         client.execute_transaction(account.id(), TransactionRequestBuilder::new().build().unwrap()),
@@ -316,9 +320,22 @@ async fn the_fee_note_is_not_tracked_as_one_of_our_output_notes() {
     let tracked = client.get_output_notes(NoteFilter::All).await.unwrap();
     assert_eq!(
         tracked.len(),
-        before,
+        output_notes_before,
         "the kernel fee note must not be recorded as one of our own output notes"
     );
+
+    let tracked_inputs = client.get_input_notes(NoteFilter::All).await.unwrap();
+    assert_eq!(
+        tracked_inputs.len(),
+        input_notes_before,
+        "the kernel fee note must not be recorded as an input note"
+    );
+
+    let note_tags = client.get_note_tags().await.unwrap();
+    assert_eq!(note_tags, note_tags_before, "the kernel fee note must not register a note tag");
+    assert!(!note_tags.iter().any(|record| {
+        record.tag == TxFeeNote::TAG && matches!(record.source, NoteTagSource::Note(_))
+    }));
 }
 
 /// A note whose script the consumption checker cannot classify is screened by trial-executing it,

@@ -27,10 +27,13 @@ use crate::store::{AccountStatus, Store};
 /// ```ignore
 /// let reader = client.account_reader(account_id);
 ///
-/// // Each call fetches fresh data let nonce = reader.nonce().await?; let status =
-/// reader.status().await?; let commitment = reader.commitment().await?;
+/// // Each call fetches fresh data
+/// let nonce = reader.nonce().await?;
+/// let status = reader.status().await?;
+/// let commitment = reader.commitment().await?;
 ///
-/// // Vault access let balance = reader.get_balance(faucet_id).await?;
+/// // Vault access
+/// let balance = reader.get_balance(faucet_id).await?;
 ///
 /// // Storage access
 /// let value = reader.get_storage_item("my_slot").await?;

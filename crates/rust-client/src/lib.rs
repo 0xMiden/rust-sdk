@@ -58,20 +58,21 @@
 //! ```rust,ignore
 //! use std::sync::Arc;
 //!
-//! use miden_client::builder::ClientBuilder; use miden_client::keystore::FilesystemKeyStore; use
-//! miden_client::rpc::{Endpoint, GrpcClient, VerifyingRpcClient}; use
-//! miden_client_sqlite_store::SqliteStore;
+//! use miden_client::builder::ClientBuilder;
+//! use miden_client::keystore::FilesystemKeyStore;
+//! use miden_client::rpc::{Endpoint, GrpcClient, VerifyingRpcClient};
+//! use miden_client_sqlite_store::SqliteStore;
 //!
 //! # pub async fn create_test_client() -> Result<(), Box<dyn std::error::Error>> {
 //! // Create the SQLite store.
 //! let sqlite_store = SqliteStore::new("path/to/store".try_into()?).await?;
 //! let store = Arc::new(sqlite_store);
 //!
-//! // Create the keystore for transaction signing. let keystore =
-//! FilesystemKeyStore::new("path/to/keys/directory".try_into()?)?;
+//! // Create the keystore for transaction signing.
+//! let keystore = FilesystemKeyStore::new("path/to/keys/directory".try_into()?)?;
 //!
-//! // Create the RPC client. let endpoint = Endpoint::new("https".into(), "localhost".into(),
-//! Some(57291));
+//! // Create the RPC client.
+//! let endpoint = Endpoint::new("https".into(), "localhost".into(), Some(57291));
 //!
 //! // Instantiate the client using the builder.
 //! let client = ClientBuilder::new()

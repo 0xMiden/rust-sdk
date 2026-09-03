@@ -50,7 +50,8 @@ pub type CliKeyStore = FilesystemKeyStore;
 /// // Create a CLI-configured client
 /// let mut client = CliClient::new().await?;
 ///
-/// // All Client methods work automatically via Deref client.sync_state().await?;
+/// // All Client methods work automatically via Deref
+/// client.sync_state().await?;
 ///
 /// // Build and submit transactions
 /// let req = TransactionRequestBuilder::new()
@@ -201,9 +202,11 @@ impl CliClient {
     /// // Create a client with default settings (debug disabled)
     /// let mut client = CliClient::new().await?;
     ///
-    /// // Or with debug mode enabled let mut client = CliClient::new().await?;
+    /// // Or with debug mode enabled
+    /// let mut client = CliClient::new().await?;
     ///
-    /// // Use it like a regular Client client.sync_state().await?;
+    /// // Use it like a regular Client
+    /// client.sync_state().await?;
     ///
     /// // Build and submit transactions
     /// let req = TransactionRequestBuilder::new()

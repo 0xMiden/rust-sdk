@@ -11,7 +11,9 @@
 //! stays at the start of a line where a reader or a tag scanner can find it.
 //!
 //! An empty comment line also starts a new paragraph. Each paragraph is reflowed on its own, so a
-//! paragraph the formatter refuses to touch does not stop its neighbours from being reflowed.
+//! paragraph the formatter refuses to touch does not stop its neighbours from being reflowed. The
+//! exception is a fenced code block: nothing between its fences is reflowed, even when empty
+//! comment lines split it into several paragraphs.
 
 use std::ffi::OsStr;
 use std::fs;
@@ -79,6 +81,8 @@ struct CommentLine {
     indent: String,
     prefix: Prefix,
     content: String,
+    /// Whether the line is a fence marker or sits inside a fenced code block.
+    in_fence: bool,
 }
 
 /// A byte-range rewrite to be applied to the original source.
@@ -181,10 +185,44 @@ fn comment_lines(
     collect_line_comment_ranges(root, &mut ranges);
     ranges.sort_by_key(|range| range.start);
 
-    ranges
+    let mut lines: Vec<CommentLine> = ranges
         .into_iter()
         .filter_map(|range| comment_line(source, range, line_starts, include_normal_comments))
-        .collect()
+        .collect();
+    mark_fenced_lines(&mut lines);
+    lines
+}
+
+/// Flags fence markers and every line between them within one contiguous comment run.
+///
+/// Fence state is tracked per run of adjacent lines with the same indentation and marker, so an
+/// unclosed fence only affects the comment it belongs to and never leaks into later comments.
+fn mark_fenced_lines(lines: &mut [CommentLine]) {
+    let mut in_fence = false;
+
+    for idx in 0..lines.len() {
+        if idx == 0 || !same_run(&lines[idx - 1], &lines[idx]) {
+            in_fence = false;
+        }
+
+        if is_fence_marker(&lines[idx].content) {
+            in_fence = !in_fence;
+            lines[idx].in_fence = true;
+        } else {
+            lines[idx].in_fence = in_fence;
+        }
+    }
+}
+
+fn same_run(previous: &CommentLine, current: &CommentLine) -> bool {
+    previous.line_idx + 1 == current.line_idx
+        && previous.indent == current.indent
+        && previous.prefix == current.prefix
+}
+
+fn is_fence_marker(content: &str) -> bool {
+    let text = content.trim_start();
+    text.starts_with("```") || text.starts_with("~~~")
 }
 
 fn collect_line_comment_ranges(node: Node<'_>, ranges: &mut Vec<Range<usize>>) {
@@ -224,6 +262,7 @@ fn comment_line(
         indent: source[line_start..range.start].to_owned(),
         prefix,
         content: content.to_owned(),
+        in_fence: false,
     })
 }
 
@@ -331,6 +370,12 @@ fn reflow_block(block: &[CommentLine], width: usize) -> Option<Replacement> {
     let text_width = width.checked_sub(line_prefix.chars().count() + 1)?;
 
     if text_width == 0 {
+        return None;
+    }
+
+    // Code inside a fenced block is laid out by hand. Joining two of its lines can hide a statement
+    // behind a `//` comment, so any paragraph that touches a fence is left alone.
+    if block.iter().any(|line| line.in_fence) {
         return None;
     }
 
@@ -609,6 +654,22 @@ fn main() {}
 ";
 
         assert_eq!(reflow(source, 100), expected);
+    }
+
+    #[test]
+    fn fenced_code_is_untouched_even_with_empty_lines_inside() {
+        let source = r"/// Example:
+///
+/// ```
+/// let a = 1;
+///
+/// // a comment inside the example
+/// let b = 2;
+/// ```
+fn main() {}
+";
+
+        assert_eq!(reflow(source, 100), source);
     }
 
     #[test]

@@ -38,13 +38,13 @@
 //! // `sync_state()`.
 //! let sync_summary: SyncSummary = client.sync_state().await?;
 //!
-//! println!("Synced up to block number: {}", sync_summary.block_num); println!("New private notes:
-//! {}", sync_summary.new_private_notes.len()); println!("Committed notes: {}",
-//! sync_summary.committed_notes.len()); println!("Consumed notes: {}",
-//! sync_summary.consumed_notes.len()); println!("Updated accounts: {}",
-//! sync_summary.updated_accounts.len()); println!("Locked accounts: {}",
-//! sync_summary.locked_accounts.len()); println!("Committed transactions: {}",
-//! sync_summary.committed_transactions.len());
+//! println!("Synced up to block number: {}", sync_summary.block_num);
+//! println!("New private notes: {}", sync_summary.new_private_notes.len());
+//! println!("Committed notes: {}", sync_summary.committed_notes.len());
+//! println!("Consumed notes: {}", sync_summary.consumed_notes.len());
+//! println!("Updated accounts: {}", sync_summary.updated_accounts.len());
+//! println!("Locked accounts: {}", sync_summary.locked_accounts.len());
+//! println!("Committed transactions: {}", sync_summary.committed_transactions.len());
 //!
 //! Ok(())
 //! # }

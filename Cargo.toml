@@ -7,7 +7,6 @@ members = [
   "bin/miden-cli",
   "crates/rust-client",
   "crates/sqlite-store",
-  "crates/testing/client-test-harness",
   "crates/testing/miden-client-tests",
   "crates/testing/test-node-genesis",
 ]
@@ -37,9 +36,9 @@ opt-level = 1
 
 [workspace.dependencies]
 # Workspace crates
-miden-client              = { default-features = false, path = "crates/rust-client", version = "0.16.0-rc.4" }
-miden-client-sqlite-store = { default-features = false, path = "crates/sqlite-store", version = "0.16.0-rc.4" }
-miden-client-test-harness = { default-features = false, path = "crates/testing/client-test-harness", version = "0.16.0-rc.4" }
+miden-client                   = { default-features = false, path = "crates/rust-client", version = "0.16.0-rc.4" }
+miden-client-integration-tests = { default-features = false, path = "bin/integration-tests", version = "0.16.0-rc.4" }
+miden-client-sqlite-store      = { default-features = false, path = "crates/sqlite-store", version = "0.16.0-rc.4" }
 
 # Miden protocol dependencies
 miden-agglayer  = { default-features = false, version = "0.16.0-rc.9" }

@@ -43,10 +43,10 @@ use miden_client::testing::common::{
     wait_for_tx,
 };
 use miden_client::transaction::TransactionRequestBuilder;
-use miden_client_test_harness::ClientConfig;
 
 use super::agglayer_test_utils::generate_claim_data_for_account;
 use super::{AgglayerConfig, create_agglayer_clients, setup_core_accounts};
+use crate::ClientConfig;
 
 /// Amount of tokens to bridge out in the bridge-out phase of the test.
 const BRIDGE_OUT_AMOUNT: u64 = 1000;

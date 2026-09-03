@@ -22,7 +22,6 @@ path = "tests/integration.rs"
 miden-agglayer            = { features = ["std", "testing"], workspace = true }
 miden-client              = { features = ["std", "testing", "tonic"], workspace = true }
 miden-client-sqlite-store = { workspace = true }
-miden-client-test-harness = { workspace = true }
 miden-protocol            = { default-features = false, features = ["testing"], workspace = true }
 
 # External dependencies
@@ -33,11 +32,13 @@ clap               = { features = ["derive", "env"], workspace = true }
 num_cpus           = { version = "1.0" }
 rand               = { workspace = true }
 regex              = { workspace = true }
+rustix             = { workspace = true }
 serde              = { workspace = true }
 serde_json         = { features = ["arbitrary_precision"], workspace = true }
 tokio              = { workspace = true }
 tracing            = { workspace = true }
 tracing-subscriber = { features = ["env-filter", "fmt", "json"], workspace = true }
+uuid               = { features = ["v4"], workspace = true }
 
 [lib]
 doctest = false

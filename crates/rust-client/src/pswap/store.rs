@@ -27,7 +27,7 @@ use super::lineage::{
     PswapLineageState,
 };
 use crate::store::input_note_states::{CommittedNoteState, UnverifiedNoteState};
-use crate::store::{InputNoteRecord, NoteFilter, SettingMutation, Store, StoreError};
+use crate::store::{InputNoteRecord, NoteFilter, SettingMutation, SettingScope, Store, StoreError};
 use crate::sync::{NoteTagRecord, NoteTagSource};
 use crate::utils::{Deserializable, Serializable, bytes_to_hex_string};
 
@@ -62,16 +62,19 @@ pub(crate) async fn put_lineage(
     record: &PswapLineageRecord,
 ) -> Result<(), StoreError> {
     store
-        .apply_settings_mutations(vec![
-            SettingMutation::Set {
-                key: order_key(record.order_id()),
-                value: record.to_bytes(),
-            },
-            SettingMutation::Set {
-                key: tip_key(record.current_tip_note_id),
-                value: record.order_id().to_bytes(),
-            },
-        ])
+        .apply_settings_mutations(
+            SettingScope::Client,
+            vec![
+                SettingMutation::Set {
+                    key: order_key(record.order_id()),
+                    value: record.to_bytes(),
+                },
+                SettingMutation::Set {
+                    key: tip_key(record.current_tip_note_id),
+                    value: record.order_id().to_bytes(),
+                },
+            ],
+        )
         .await
 }
 
@@ -80,7 +83,7 @@ pub(crate) async fn get_lineage(
     store: &Arc<dyn Store>,
     order_id: Felt,
 ) -> Result<Option<PswapLineageRecord>, StoreError> {
-    let Some(bytes) = store.get_setting(order_key(order_id)).await? else {
+    let Some(bytes) = store.get_setting(SettingScope::Client, order_key(order_id)).await? else {
         return Ok(None);
     };
     let record = PswapLineageRecord::read_from_bytes(&bytes)
@@ -94,7 +97,7 @@ pub(crate) async fn resolve_order_by_tip(
     store: &Arc<dyn Store>,
     tip: NoteId,
 ) -> Result<Option<Felt>, StoreError> {
-    let Some(bytes) = store.get_setting(tip_key(tip)).await? else {
+    let Some(bytes) = store.get_setting(SettingScope::Client, tip_key(tip)).await? else {
         return Ok(None);
     };
     let order_id = Felt::read_from_bytes(&bytes).map_err(StoreError::DataDeserializationError)?;
@@ -137,11 +140,11 @@ pub(crate) async fn list_lineages(
     filter: PswapLineageFilter,
 ) -> Result<Vec<PswapLineageRecord>, StoreError> {
     let mut out = Vec::new();
-    for key in store.list_setting_keys().await? {
+    for key in store.list_setting_keys(SettingScope::Client).await? {
         if !key.starts_with(ORDER_PREFIX) {
             continue;
         }
-        let Some(bytes) = store.get_setting(key).await? else {
+        let Some(bytes) = store.get_setting(SettingScope::Client, key).await? else {
             continue;
         };
         let record = PswapLineageRecord::read_from_bytes(&bytes)
@@ -224,7 +227,7 @@ pub(crate) async fn apply_round(
             value: update.order_id.to_bytes(),
         });
     }
-    store.apply_settings_mutations(mutations).await?;
+    store.apply_settings_mutations(SettingScope::Client, mutations).await?;
 
     // 4. Terminal states no longer need the asset-pair subscription. The tag is re-derived from the
     //    depth-0 note (the record stores only amounts, not the faucets the tag needs) — one fetch,

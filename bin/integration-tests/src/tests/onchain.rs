@@ -27,9 +27,10 @@ use miden_client::transaction::{
     TransactionStatus,
 };
 use miden_client::{ClientError, EMPTY_WORD, Word};
-use miden_client_test_harness::ClientConfig;
 use rand::Rng;
 use tracing::info;
+
+use crate::ClientConfig;
 
 // TESTS
 // ================================================================================================

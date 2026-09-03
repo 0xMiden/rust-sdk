@@ -244,9 +244,7 @@ impl TransactionAuthenticator for FilesystemKeyStore {
             })?
             .ok_or(AuthenticationError::UnknownPublicKey(pub_key))?;
 
-        let signature = secret_key.sign(message);
-
-        Ok(signature)
+        Ok(secret_key.sign(message))
     }
 
     /// Retrieves a public key for a specific public key commitment.

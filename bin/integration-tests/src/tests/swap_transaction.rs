@@ -7,8 +7,9 @@ use miden_client::note::{Note, NoteDetails, NoteFile, NoteType, SwapNote};
 use miden_client::store::NoteFilter;
 use miden_client::testing::common::*;
 use miden_client::transaction::{SwapTransactionData, TransactionRequestBuilder};
-use miden_client_test_harness::ClientConfig;
 use tracing::info;
+
+use crate::ClientConfig;
 
 // SWAP FULLY ONCHAIN
 // ================================================================================================

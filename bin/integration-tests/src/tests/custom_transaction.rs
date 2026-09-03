@@ -22,7 +22,8 @@ use miden_client::transaction::{
 };
 use miden_client::utils::{Deserializable, Serializable};
 use miden_client::{Felt, Word, ZERO};
-use miden_client_test_harness::ClientConfig;
+
+use crate::ClientConfig;
 
 // CUSTOM TRANSACTION REQUEST
 // ================================================================================================

@@ -97,6 +97,29 @@ pub use note_record::{
     input_note_states,
 };
 
+// SETTING SCOPE
+// ================================================================================================
+
+/// Which side of the client/user boundary a `settings` row belongs to.
+///
+/// The discriminants are what a store persists, so they are part of its schema.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum SettingScope {
+    /// Owned by the client itself. A store persists these rows but the public settings API on
+    /// [`Client`](crate::Client) never reaches them.
+    Client = 0,
+    /// Owned by the user of the client.
+    User = 1,
+}
+
+impl SettingScope {
+    /// Returns the value this scope is stored as.
+    pub fn as_u8(self) -> u8 {
+        self as u8
+    }
+}
+
 // SETTING MUTATION
 // ================================================================================================
 
@@ -474,22 +497,32 @@ pub trait Store: Send + Sync {
     // SETTINGS
     // --------------------------------------------------------------------------------------------
 
-    /// Adds a value to the `settings` table.
-    async fn set_setting(&self, key: String, value: Vec<u8>) -> Result<(), StoreError>;
+    /// Adds a value to `scope` in the `settings` table.
+    async fn set_setting(
+        &self,
+        scope: SettingScope,
+        key: String,
+        value: Vec<u8>,
+    ) -> Result<(), StoreError>;
 
-    /// Retrieves a value from the `settings` table.
-    async fn get_setting(&self, key: String) -> Result<Option<Vec<u8>>, StoreError>;
+    /// Retrieves a value from `scope` in the `settings` table.
+    async fn get_setting(
+        &self,
+        scope: SettingScope,
+        key: String,
+    ) -> Result<Option<Vec<u8>>, StoreError>;
 
-    /// Deletes a value from the `settings` table. Returns `true` if the key was present.
-    async fn remove_setting(&self, key: String) -> Result<bool, StoreError>;
+    /// Deletes a value from `scope` in the `settings` table. Returns `true` if the key was present.
+    async fn remove_setting(&self, scope: SettingScope, key: String) -> Result<bool, StoreError>;
 
-    /// Returns all the keys from the `settings` table.
-    async fn list_setting_keys(&self) -> Result<Vec<String>, StoreError>;
+    /// Returns the keys held by `scope` in the `settings` table.
+    async fn list_setting_keys(&self, scope: SettingScope) -> Result<Vec<String>, StoreError>;
 
-    /// Applies a batch of [`SettingMutation`]s. Use this when several `settings` entries must stay
-    /// mutually consistent (e.g. a record and its secondary index).
+    /// Applies a batch of [`SettingMutation`]s against `scope`. Use this when several `settings`
+    /// entries must stay mutually consistent (e.g. a record and its secondary index).
     async fn apply_settings_mutations(
         &self,
+        scope: SettingScope,
         mutations: Vec<SettingMutation>,
     ) -> Result<(), StoreError>;
 
@@ -542,15 +575,20 @@ pub trait Store: Send + Sync {
     /// This is used to reduce the number of fetched notes from the note transport network.
     /// If no cursor exists, initializes it to 0.
     async fn get_note_transport_cursor(&self) -> Result<NoteTransportCursor, StoreError> {
-        let cursor_bytes = if let Some(bytes) =
-            self.get_setting(NOTE_TRANSPORT_CURSOR_STORE_SETTING.into()).await?
+        let cursor_bytes = if let Some(bytes) = self
+            .get_setting(SettingScope::Client, NOTE_TRANSPORT_CURSOR_STORE_SETTING.into())
+            .await?
         {
             bytes
         } else {
             // Lazy initialization: create cursor if not present
             let initial = 0u64.to_be_bytes().to_vec();
-            self.set_setting(NOTE_TRANSPORT_CURSOR_STORE_SETTING.into(), initial.clone())
-                .await?;
+            self.set_setting(
+                SettingScope::Client,
+                NOTE_TRANSPORT_CURSOR_STORE_SETTING.into(),
+                initial.clone(),
+            )
+            .await?;
             initial
         };
         let array: [u8; 8] = cursor_bytes
@@ -570,8 +608,12 @@ pub trait Store: Send + Sync {
         cursor: NoteTransportCursor,
     ) -> Result<(), StoreError> {
         let cursor_bytes = cursor.value().to_be_bytes().to_vec();
-        self.set_setting(NOTE_TRANSPORT_CURSOR_STORE_SETTING.into(), cursor_bytes)
-            .await?;
+        self.set_setting(
+            SettingScope::Client,
+            NOTE_TRANSPORT_CURSOR_STORE_SETTING.into(),
+            cursor_bytes,
+        )
+        .await?;
         Ok(())
     }
 
@@ -580,7 +622,9 @@ pub trait Store: Send + Sync {
 
     /// Gets persisted RPC limits. Returns `None` if not stored.
     async fn get_rpc_limits(&self) -> Result<Option<RpcLimits>, StoreError> {
-        let Some(bytes) = self.get_setting(RPC_LIMITS_STORE_SETTING.into()).await? else {
+        let Some(bytes) =
+            self.get_setting(SettingScope::Client, RPC_LIMITS_STORE_SETTING.into()).await?
+        else {
             return Ok(None);
         };
         let limits = RpcLimits::read_from_bytes(&bytes)?;
@@ -589,7 +633,8 @@ pub trait Store: Send + Sync {
 
     /// Persists RPC limits to the store.
     async fn set_rpc_limits(&self, limits: RpcLimits) -> Result<(), StoreError> {
-        self.set_setting(RPC_LIMITS_STORE_SETTING.into(), limits.to_bytes()).await
+        self.set_setting(SettingScope::Client, RPC_LIMITS_STORE_SETTING.into(), limits.to_bytes())
+            .await
     }
 
     // TRANSACTION ENCRYPTION KEY
@@ -602,7 +647,9 @@ pub trait Store: Send + Sync {
     async fn get_transaction_encryption_key(
         &self,
     ) -> Result<Option<TransactionEncryptionKey>, StoreError> {
-        let Some(bytes) = self.get_setting(TRANSACTION_ENCRYPTION_KEY_STORE_SETTING.into()).await?
+        let Some(bytes) = self
+            .get_setting(SettingScope::Client, TRANSACTION_ENCRYPTION_KEY_STORE_SETTING.into())
+            .await?
         else {
             return Ok(None);
         };
@@ -615,14 +662,19 @@ pub trait Store: Send + Sync {
         &self,
         key: &TransactionEncryptionKey,
     ) -> Result<(), StoreError> {
-        self.set_setting(TRANSACTION_ENCRYPTION_KEY_STORE_SETTING.into(), key.to_bytes())
-            .await
+        self.set_setting(
+            SettingScope::Client,
+            TRANSACTION_ENCRYPTION_KEY_STORE_SETTING.into(),
+            key.to_bytes(),
+        )
+        .await
     }
 
     /// Removes the cached transaction encryption key, so the next submission fetches and verifies a
     /// fresh one. Used when the node rejects a submission sealed against a retired key.
     async fn remove_transaction_encryption_key(&self) -> Result<(), StoreError> {
-        self.remove_setting(TRANSACTION_ENCRYPTION_KEY_STORE_SETTING.into()).await?;
+        self.remove_setting(SettingScope::Client, TRANSACTION_ENCRYPTION_KEY_STORE_SETTING.into())
+            .await?;
         Ok(())
     }
 

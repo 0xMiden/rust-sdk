@@ -16,7 +16,8 @@ use miden_client::testing::common::{
     wait_for_tx,
 };
 use miden_client::transaction::TransactionRequestBuilder;
-use miden_client_test_harness::ClientConfig;
+
+use crate::ClientConfig;
 
 // TRANSPORT NOTE INCLUSION PROOF AND CONSUMPTION TESTS
 // ================================================================================================

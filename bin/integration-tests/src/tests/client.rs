@@ -57,8 +57,9 @@ use miden_client::transaction::{
 };
 use miden_client::{ClientError, Felt, Word};
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
-use miden_client_test_harness::{ClientConfig, create_test_auth_path};
 use tracing::info;
+
+use crate::{ClientConfig, create_test_auth_path};
 
 pub async fn test_client_builder_initializes_client_with_endpoint(
     client_config: ClientConfig,

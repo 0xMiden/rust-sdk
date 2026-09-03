@@ -165,7 +165,7 @@ pub struct NewAccountCmd {
     /// any package contributes a `FungibleFaucet` component, the resulting account is treated as a
     /// fungible faucet (and an implicit `TokenPolicyManager` is installed when not already
     /// provided).
-    #[arg(short, long)]
+    #[arg(short, long, required = true)]
     pub packages: Vec<PathBuf>,
     /// Optional file path to a TOML file containing a list of key/values used for initializing
     /// storage. Each of these keys should map to the templated storage values within the passed
@@ -455,10 +455,9 @@ async fn create_client_account<AUTH: Keystore + Sync + 'static>(
     offline: bool,
 ) -> Result<Account, CliError> {
     if package_paths.is_empty() {
-        return Err(CliError::InvalidArgument(format!(
-            "Account must contain at least one component. To provide one, pass a package with the -p flag, like so:
-{} -p <package_name>
-            ", client_binary_name().display())));
+        return Err(CliError::InvalidArgument(
+            "Account must contain at least one component".to_string(),
+        ));
     }
 
     // Load the component templates and initialization storage data.

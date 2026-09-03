@@ -25,6 +25,7 @@ use miden_tx::utils::serde::{
 };
 
 pub use self::errors::NoteTransportError;
+use crate::store::SettingScope;
 use crate::sync::NoteTagSource;
 use crate::{Client, ClientError};
 
@@ -221,7 +222,7 @@ impl<AUTH> Client<AUTH> {
     async fn load_relay_outbox(&self) -> Result<Vec<NoteInfo>, ClientError> {
         let bytes = self
             .store
-            .get_setting(String::from(NOTE_TRANSPORT_OUTBOX_KEY))
+            .get_setting(SettingScope::Client, String::from(NOTE_TRANSPORT_OUTBOX_KEY))
             .await
             .map_err(ClientError::StoreError)?;
         let Some(bytes) = bytes else {
@@ -232,7 +233,7 @@ impl<AUTH> Client<AUTH> {
             Err(err) => {
                 tracing::warn!(?err, "dropping unreadable relay outbox; resetting to empty");
                 self.store
-                    .remove_setting(String::from(NOTE_TRANSPORT_OUTBOX_KEY))
+                    .remove_setting(SettingScope::Client, String::from(NOTE_TRANSPORT_OUTBOX_KEY))
                     .await
                     .map_err(ClientError::StoreError)?;
                 Ok(Vec::new())
@@ -245,11 +246,17 @@ impl<AUTH> Client<AUTH> {
     async fn save_relay_outbox(&self, entries: Vec<NoteInfo>) -> Result<(), ClientError> {
         let key = String::from(NOTE_TRANSPORT_OUTBOX_KEY);
         if entries.is_empty() {
-            self.store.remove_setting(key).await.map_err(ClientError::StoreError)?;
+            self.store
+                .remove_setting(SettingScope::Client, key)
+                .await
+                .map_err(ClientError::StoreError)?;
             return Ok(());
         }
         let bytes = entries.to_bytes();
-        self.store.set_setting(key, bytes).await.map_err(ClientError::StoreError)
+        self.store
+            .set_setting(SettingScope::Client, key, bytes)
+            .await
+            .map_err(ClientError::StoreError)
     }
 
     /// The set of tracked tags eligible for history backfill.
@@ -282,7 +289,7 @@ impl<AUTH> Client<AUTH> {
     async fn load_covered_tags(&self) -> Result<BTreeSet<NoteTag>, ClientError> {
         let bytes = self
             .store
-            .get_setting(String::from(NOTE_TRANSPORT_COVERED_TAGS_KEY))
+            .get_setting(SettingScope::Client, String::from(NOTE_TRANSPORT_COVERED_TAGS_KEY))
             .await
             .map_err(ClientError::StoreError)?;
         let Some(bytes) = bytes else {
@@ -293,7 +300,10 @@ impl<AUTH> Client<AUTH> {
             Err(err) => {
                 tracing::warn!(?err, "dropping unreadable covered-tags set; resetting to empty");
                 self.store
-                    .remove_setting(String::from(NOTE_TRANSPORT_COVERED_TAGS_KEY))
+                    .remove_setting(
+                        SettingScope::Client,
+                        String::from(NOTE_TRANSPORT_COVERED_TAGS_KEY),
+                    )
                     .await
                     .map_err(ClientError::StoreError)?;
                 Ok(BTreeSet::new())
@@ -306,11 +316,14 @@ impl<AUTH> Client<AUTH> {
     async fn save_covered_tags(&self, tags: &BTreeSet<NoteTag>) -> Result<(), ClientError> {
         let key = String::from(NOTE_TRANSPORT_COVERED_TAGS_KEY);
         if tags.is_empty() {
-            self.store.remove_setting(key).await.map_err(ClientError::StoreError)?;
+            self.store
+                .remove_setting(SettingScope::Client, key)
+                .await
+                .map_err(ClientError::StoreError)?;
             return Ok(());
         }
         self.store
-            .set_setting(key, tags.to_bytes())
+            .set_setting(SettingScope::Client, key, tags.to_bytes())
             .await
             .map_err(ClientError::StoreError)
     }

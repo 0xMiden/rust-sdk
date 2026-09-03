@@ -12,14 +12,13 @@ use std::time::{Duration, Instant};
 use clap::Parser;
 use miden_client::grpc_support::{DEVNET_PROVER_ENDPOINT, TESTNET_PROVER_ENDPOINT};
 use miden_client::rpc::Endpoint;
-use miden_client_test_harness::{ClientConfig, NoteTransportEndpoint, fee_funding};
+use miden_client_integration_tests::{ClientConfig, NoteTransportEndpoint, fee_funding, tests};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::prelude::*;
 
 mod generated_tests;
-mod tests;
 
 // MAIN
 // ================================================================================================

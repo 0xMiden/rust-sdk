@@ -100,6 +100,7 @@
 
 * [rust] Re-exported the typed view over a package's exported signatures as `miden_client::vm::typed`, `TransactionExecutorError` from the crate root, and `ExecutionError`, `OperationError` and `error_code_from_msg` as `miden_client::vm`, so callers can match a failed transaction against a specific kernel assertion ([#2179](https://github.com/0xMiden/rust-sdk/pull/2179)).
 * [store] Each SQL migration now carries the fingerprint of the schema it builds. Opening a store checks every version it applies against that version's own pin, so a migration edited to build a different schema is rejected even when creating a fresh database ([#2445](https://github.com/0xMiden/rust-sdk/pull/2445)).
+* [FEATURE][rust] `TransactionRequestBuilder::expected_output_recipients` now takes any `IntoIterator` whose items convert into `NoteRecipient`, matching `own_output_notes` and `foreign_accounts`, so recipients no longer have to be collected into a `Vec<NoteRecipient>` first. Callers already passing a `Vec<NoteRecipient>` are unaffected ([#2499](https://github.com/0xMiden/rust-sdk/pull/2499)).
 
 ### Fixes
 

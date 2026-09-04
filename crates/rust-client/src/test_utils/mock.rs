@@ -48,7 +48,7 @@ use crate::rpc::domain::storage_map::StorageMapInfo;
 use crate::rpc::domain::sync::{ChainMmrInfo, SyncTarget};
 use crate::rpc::domain::transaction::TransactionRecord;
 use crate::rpc::encryption::{AttestedTransactionEncryptionKey, SealedTransactionInputs};
-use crate::rpc::{AccountStateAt, NodeRpcClient, RpcError, RpcStatusInfo};
+use crate::rpc::{AccountStateAt, NodeRpcClient, RpcEndpoint, RpcError, RpcStatusInfo};
 
 pub type MockClient<AUTH> = Client<AUTH>;
 
@@ -80,6 +80,10 @@ pub struct MockRpcApi {
     /// Number of `get_notes_by_id` requests served, so a test can assert that a flow avoided the
     /// round trip.
     get_notes_by_id_calls: Arc<AtomicUsize>,
+    /// Failures to serve instead of answering, keyed by [`RpcEndpoint::proto_name`] and set by
+    /// [`MockRpcApi::fail_next_call`]. An entry is removed when served, so the call after it
+    /// answers normally and a test can exercise a retry.
+    next_call_failures: Arc<RwLock<BTreeMap<&'static str, RpcError>>>,
 }
 
 impl Default for MockRpcApi {
@@ -103,7 +107,21 @@ impl MockRpcApi {
             private_note_attachments: Arc::new(RwLock::new(BTreeMap::new())),
             sync_notes_mmr_path_overrides: Arc::new(RwLock::new(BTreeMap::new())),
             get_notes_by_id_calls: Arc::new(AtomicUsize::new(0)),
+            next_call_failures: Arc::new(RwLock::new(BTreeMap::new())),
         }
+    }
+
+    /// Makes the next call to `endpoint` fail with `error` instead of answering. The failure is
+    /// consumed, so the call after it answers normally and a test can exercise a retry.
+    ///
+    /// Only the endpoints that check [`Self::take_failure`] honor this.
+    pub fn fail_next_call(&self, endpoint: RpcEndpoint, error: RpcError) {
+        self.next_call_failures.write().insert(endpoint.proto_name(), error);
+    }
+
+    /// Returns the failure staged for `endpoint`, removing it so it is served once.
+    fn take_failure(&self, endpoint: RpcEndpoint) -> Option<RpcError> {
+        self.next_call_failures.write().remove(endpoint.proto_name())
     }
 
     /// Registers the attachment content for a private note so that subsequent `get_notes_by_id`
@@ -504,7 +522,9 @@ impl NodeRpcClient for MockRpcApi {
         _sealed_transaction_inputs: SealedTransactionInputs, /* Unnecessary for testing client
                                                               * itself. */
     ) -> Result<BlockNumber, RpcError> {
-        // TODO: add some basic validations to test error cases
+        if let Some(error) = self.take_failure(RpcEndpoint::SubmitProvenTx) {
+            return Err(error);
+        }
 
         // Record private-note attachment content the way a real node does: attachments are
         // stored on-chain even for private notes, so `get_notes_by_id` must be able to serve

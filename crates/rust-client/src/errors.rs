@@ -22,7 +22,7 @@ use miden_protocol::errors::{
     TransactionScriptError,
 };
 use miden_protocol::note::NoteId;
-use miden_protocol::transaction::{ProvenTransaction, TransactionId};
+use miden_protocol::transaction::{ProvenTransaction, TransactionId, TransactionInputs};
 // RE-EXPORTS
 // ================================================================================================
 pub use miden_standards::errors::CodeBuilderError;
@@ -231,17 +231,17 @@ pub enum ClientError {
     },
     #[error(
         "submission of transaction {} came back without a definite outcome, so the node may or \
-         may not have accepted it. Nothing was recorded locally. The proven transaction is \
-         attached: resubmitting those same bytes cannot double spend, because the transaction id \
-         is fixed and its effects are keyed by it, but it will be rejected as a state conflict if \
-         the original did land. Syncing resolves it either way once the transaction commits or \
-         expires.",
+         may not have accepted it; nothing was recorded locally",
         transaction.id()
     )]
     SubmissionOutcomeUnknown {
-        /// The transaction as submitted, so the caller can resend the same bytes or track
-        /// `transaction.id()` until a sync resolves it.
+        /// The transaction as submitted. Pass it back to
+        /// [`Client::submit_proven_transaction`](crate::Client::submit_proven_transaction)
+        /// alongside `transaction_inputs` to retry, or track `transaction.id()` instead.
         transaction: Box<ProvenTransaction>,
+        /// The inputs the submission sealed. Required to retry: they cannot be recovered from the
+        /// proven transaction, which only commits to them.
+        transaction_inputs: Box<TransactionInputs>,
         #[source]
         source: RpcError,
     },
@@ -360,13 +360,12 @@ impl From<&ClientError> for Option<ErrorHint> {
                 let tx_id = transaction.id();
                 Some(ErrorHint {
                     message: format!(
-                        "Transaction {tx_id} was submitted and the outcome came back undecided, \
-                         so it may already be in the mempool. Nothing was recorded locally. Do \
-                         not build and submit a replacement: that would be a different \
-                         transaction, and it would be rejected as a conflict if the original \
-                         landed. Either resubmit the `transaction` attached to this error, whose \
-                         id is fixed so it cannot double spend, or keep syncing and check \
-                         `get_transactions` for {tx_id} until it commits or expires."
+                        "Do not build and submit a replacement for {tx_id}: that would be a \
+                         different transaction, and it would be rejected as a conflict if the \
+                         original landed. Either retry with the `transaction` and \
+                         `transaction_inputs` attached to this error, whose id is fixed so it \
+                         cannot double spend, or keep syncing and check `get_transactions` for \
+                         {tx_id} until it commits or expires."
                     ),
                     docs_url: Some(TROUBLESHOOTING_DOC),
                 })

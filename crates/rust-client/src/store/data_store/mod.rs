@@ -226,28 +226,25 @@ impl ClientDataStore {
                 ))
             })?;
 
-        let proof = match map_detail.entries {
-            StorageMapEntries::EntriesWithProofs(proofs) => {
-                // We requested a single key, so we expect a single proof.
-                proofs.into_iter().next().ok_or_else(|| {
-                    DataStoreError::other("RPC returned no proofs for the requested key")
-                })?
-            },
-            StorageMapEntries::AllEntries(_) => {
-                return Err(DataStoreError::other(
-                    "unexpected AllEntries response; specific keys were requested",
-                ));
-            },
+        let StorageMapEntries::PartialMap { partial_smt, .. } = map_detail.entries else {
+            return Err(DataStoreError::other(
+                "expected a partial storage map in response to a specific-key request",
+            ));
         };
 
-        // Reject a wrong-root proof here rather than as an opaque merkle error inside the VM.
-        let proof_root = proof.compute_root();
-        if proof_root != map_root {
+        // Reject a wrong-root response here rather than as an opaque merkle error inside the VM.
+        // The whole tree shares one root, so this covers every opening taken from it.
+        let map_detail_root = partial_smt.root();
+        if map_detail_root != map_root {
             return Err(DataStoreError::other(format!(
-                "storage map proof fetched for account {account_id} verifies against root \
-                 {proof_root} but the executor requires root {map_root}"
+                "storage map fetched for account {account_id} verifies against root \
+                 {map_detail_root} but the executor requires root {map_root}"
             )));
         }
+
+        let proof = partial_smt.open(&map_key.hash().as_word()).map_err(|err| {
+            DataStoreError::other_with_source("failed to open the requested storage map key", err)
+        })?;
 
         let witness = StorageMapWitness::new(proof, [map_key]).map_err(|err| {
             DataStoreError::other_with_source("failed to create storage map witness", err)
@@ -434,9 +431,11 @@ impl DataStore for ClientDataStore {
         Ok((partial_account, block_header, partial_blockchain))
     }
 
-    /// Retrieves witnesses for the requested assets, trying everything local first — per-asset
-    /// reads, then the full local vault — and falling back to a single RPC vault fetch when the
-    /// local store cannot serve the requested root.
+    /// Retrieves witnesses for the requested assets from the local store, falling back to a
+    /// single RPC vault fetch when the store cannot serve the requested root.
+    ///
+    /// Assets absent from the vault are served too: the store returns an emptiness proof for
+    /// them, which the executor needs when an asset is being added to the vault.
     async fn get_vault_asset_witnesses(
         &self,
         account_id: AccountId,
@@ -447,56 +446,23 @@ impl DataStore for ClientDataStore {
             return Ok(witnesses);
         }
 
-        let mut asset_witnesses = Vec::with_capacity(asset_ids.len());
-        for asset_id in asset_ids.iter().copied() {
-            match self.store.get_account_asset(account_id, asset_id).await {
-                Ok(Some((_, witness))) if witness.proof().compute_root() == vault_root => {
-                    asset_witnesses.push(witness);
-                },
-                Ok(_) => {
-                    asset_witnesses.clear();
-                    break;
-                },
-                Err(err) => {
-                    tracing::debug!(
-                        %account_id,
-                        %err,
-                        "asset witness not available locally, will try the full vault"
-                    );
-                    asset_witnesses.clear();
-                    break;
-                },
-            }
-        }
-
-        // Fall back to the full local vault — an absent asset still needs a non-membership
-        // witness, which only the vault itself can produce — and lastly to an RPC vault fetch,
-        // for accounts the local store cannot serve at the requested root.
-        if asset_witnesses.len() != asset_ids.len() {
-            let vault = match self.store.get_account_vault(account_id).await {
-                Ok(vault) if vault.root() == vault_root => vault,
-                Ok(vault) => {
-                    tracing::debug!(
-                        %account_id,
-                        local_root = %vault.root(),
-                        requested_root = %vault_root,
-                        "local vault is missing or stale, will fetch it via RPC"
-                    );
-                    self.fetch_vault_via_rpc(account_id, vault_root).await?
-                },
-                Err(err) => {
-                    tracing::debug!(
-                        %account_id,
-                        %err,
-                        "vault not available locally, will fetch it via RPC"
-                    );
-                    self.fetch_vault_via_rpc(account_id, vault_root).await?
-                },
-            };
-
-            asset_witnesses =
-                asset_ids.iter().copied().map(|asset_id| vault.open(asset_id)).collect();
-        }
+        let asset_witnesses = match self
+            .store
+            .get_vault_asset_witnesses(account_id, vault_root, asset_ids.clone())
+            .await
+        {
+            Ok(witnesses) => witnesses,
+            Err(err) => {
+                tracing::debug!(
+                    %account_id,
+                    requested_root = %vault_root,
+                    %err,
+                    "local store cannot serve the requested vault root, will fetch it via RPC"
+                );
+                let vault = self.fetch_vault_via_rpc(account_id, vault_root).await?;
+                asset_ids.iter().copied().map(|asset_id| vault.open(asset_id)).collect()
+            },
+        };
 
         self.cache
             .insert_vault_asset_witnesses(vault_root, &asset_ids, &asset_witnesses);

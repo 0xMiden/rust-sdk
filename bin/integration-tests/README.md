@@ -163,36 +163,30 @@ The integration tests cover several categories:
 
 AggLayer tests verify the bridge integration flow: GER updates, faucet registration, bridge-in (claiming), and bridge-out.
 
-### Two genesis modes
+### Pre-deployed accounts
 
-AggLayer tests support two modes, depending on whether the node has agglayer accounts pre-deployed at genesis:
+The four AggLayer accounts are always supplied rather than created by the tests: they are network
+accounts, which no client transaction can deploy, and on a fee-charging chain they must be seeded
+with the fee asset because no note in their allowlist can carry it to them later.
 
-1. **Empty genesis (runtime setup)**: All accounts (bridge admin, GER manager, bridge, faucet) are created at runtime. This is the default and works against any node started with `make start-node`.
-
-2. **Complete genesis (pre-deployed)**: Agglayer accounts are included in the genesis block. Start the node with `make start-node-agglayer`, then point the tests at the `.mac` files:
-
-```bash
-# Start node with agglayer genesis accounts
-make start-node-agglayer
-
-# Run genesis-aware tests
-AGGLAYER_ACCOUNTS_DIR=./data/ miden-client-integration-tests --contains "agglayer"
-```
-
-### Environment variables
-
-- `AGGLAYER_ACCOUNTS_DIR` - Path to directory containing agglayer `.mac` account files. Setting it switches the agglayer tests to complete-genesis mode (otherwise they default to runtime setup). The node writes these files to `./data/` when started with `AGGLAYER_GENESIS=1`. On devnet, this would point to wherever the devnet account files are stored.
-
-### Genesis account files
-
-When the node is started with `make start-node-agglayer` (or `AGGLAYER_GENESIS=1`), the following files are written to the data directory:
+`scripts/start-test-node.sh` writes them into `./data/`:
 
 - `bridge_admin.mac` - Bridge admin wallet (includes secret key)
 - `ger_manager.mac` - GER manager wallet (includes secret key)
-- `bridge.mac` - AggLayer bridge account (no secret key, NoAuth)
-- `agglayer_faucet.mac` - AggLayer faucet account (no secret key, NoAuth)
+- `bridge.mac` - AggLayer bridge account (no secret key, network account)
+- `agglayer_faucet.mac` - AggLayer faucet account (no secret key, network account)
 
-The genesis faucet uses a deterministic test origin token address (`0xAAAA...AA`) and is pre-registered in the bridge's faucet registry.
+The bridge is deployed unconfigured. The tests register the faucet against it with a
+`CONFIG_AGG_BRIDGE` note, using a deterministic test origin token address (`0xAAAA...AA`).
+
+### Environment variables
+
+- `AGGLAYER_ACCOUNTS_DIR` - Directory holding the AggLayer `.mac` account files. Required by the AggLayer tests. The Make targets point it at `./data`, where the testing node writes them. On devnet, point it at wherever the devnet account files are stored.
+
+```bash
+make start-node-background
+AGGLAYER_ACCOUNTS_DIR=./data miden-client-integration-tests --contains "agglayer"
+```
 
 ### Testing against devnet
 
@@ -202,6 +196,56 @@ The same tests work against devnet by setting `AGGLAYER_ACCOUNTS_DIR` to the dir
 AGGLAYER_ACCOUNTS_DIR=/path/to/devnet/accounts \
   miden-client-integration-tests --network devnet --contains "agglayer"
 ```
+
+## Fees
+
+The testing node charges a fee for every transaction, as a real chain does: its genesis sets
+`verification_base_fee = 500`. To run it fee-free instead:
+
+```bash
+MIDEN_VERIFICATION_BASE_FEE=0 make start-node-background
+```
+
+The suite never mints. It draws the native asset from pre-funded basic wallets named by `--funders`
+(or `MIDEN_FUNDER_ACCOUNTS_DIR`), either one `.mac` file or a directory of them.
+
+```bash
+# Local node: its genesis pre-funds the wallets and start-test-node.sh writes them here.
+# The Makefile targets pass this for you.
+MIDEN_FUNDER_ACCOUNTS_DIR=$PWD/data/funders cargo nextest run --workspace --release --test=integration
+
+# Deployed network: supply wallets funded out of band, since nothing can be minted there.
+miden-client-integration-tests --network testnet --funders ./testnet-funders
+```
+
+The `insert_new_*` helpers pay each account they create. The account is deployed by whichever
+transaction first consumes that note, as described below. An account a test builds itself can be
+funded and deployed on the spot with `TestClient::deploy_account`, whose deploy transaction
+consumes the funding note and thereby settles its own fee.
+
+A funding transaction costs a fee and a proof, so accounts are funded in batches wherever a test
+creates more than one: the `setup_*` helpers create their accounts with the `insert_new_*_unfunded`
+variants and then pass the whole set to `TestClient::fund_if_needed`, which pays them all from one
+transaction. A test creating several accounts of its own should do the same rather than calling the
+funding `insert_new_*` helpers in a row.
+
+Funding costs no transaction of its own beyond that payment. Each account's note is held until the
+account's next transaction and folded into it, so that one transaction deploys the account, funds
+it and does the test's work. `TestClient::submit_new_transaction` does the folding; a request going
+somewhere else needs `TestClient::fund_request` first, notably a batch, which borrows the client
+for as long as it lives. A test that needs the funding to land in a particular transaction — one
+asserting on what a sync reports, say — should call `TestClient::take_funding` and consume the note
+itself.
+
+Funders must be **public** and carry their secret key: a public funder's state is re-read from the
+chain before every payment, which is what makes sharing one between test processes safe.
+
+### Environment variables
+
+- `MIDEN_FUNDER_ACCOUNTS_DIR` - funder `.mac` file or directory, same as `--funders`
+- `MIDEN_VERIFICATION_BASE_FEE` - genesis `verification_base_fee` for the testing node (default
+  `500`; `0` runs the node fee-free and declares no funder wallets)
+- `MIDEN_NUM_FUNDER_WALLETS` - number of wallets a fee-charging genesis pre-funds (default `16`)
 
 ## Test Case Generation
 

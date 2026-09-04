@@ -6,7 +6,13 @@ use core::fmt;
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::crypto::merkle::MerkleError;
-pub use miden_protocol::errors::{AccountError, AccountIdError, AssetError, NetworkIdError};
+pub use miden_protocol::errors::{
+    AccountError,
+    AccountIdError,
+    AccountPatchError,
+    AssetError,
+    NetworkIdError,
+};
 use miden_protocol::errors::{
     NoteError,
     PartialBlockchainError,
@@ -79,6 +85,8 @@ pub enum ClientError {
     AccountAlreadyTracked(AccountId),
     #[error("account error")]
     AccountError(#[from] AccountError),
+    #[error("account patch error")]
+    AccountPatchError(#[from] AccountPatchError),
     #[error("account {0} is locked because the local state may be out of date with the network")]
     AccountLocked(AccountId),
     #[error(
@@ -121,6 +129,10 @@ pub enum ClientError {
         "cannot recover consumed note {0}: its nullifier has no position in the sync's transaction execution order"
     )]
     MissingConsumedNoteOrder(NoteId),
+    #[error(
+        "cannot continue iterating consumed notes: the store returned the note with details commitment {0}, which carries no consumption position"
+    )]
+    MissingNoteConsumptionPosition(Word),
     #[error("note with id {0} not found on chain")]
     NoteNotFoundOnChain(NoteId),
     #[error("failed to parse hex string")]

@@ -215,9 +215,15 @@ pub mod auth {
     };
     pub use miden_standards::account::auth::{
         Approver,
+        ApproverSet,
+        AuthGuardedMultisig,
+        AuthGuardedMultisigConfig,
         AuthMultisig,
         AuthMultisigConfig,
+        AuthMultisigSmart,
+        AuthMultisigSmartConfig,
         AuthSingleSig,
+        GuardianConfig,
         NoAuth,
     };
     pub use miden_tx::auth::{BasicAuthenticator, SigningInputs, TransactionAuthenticator};

@@ -306,9 +306,7 @@ where
         None => account_reader.partial_account().await?,
     };
 
-    let prep = client
-        .prepare_transaction(account.code_interface(), transaction_request, None)
-        .await?;
+    let prep = client.prepare_transaction_for_batch(&account, transaction_request).await?;
 
     data_store.register_note_scripts(prep.output_note_scripts());
     for fpi_account in &prep.foreign_account_inputs {

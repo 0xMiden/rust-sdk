@@ -16,7 +16,7 @@ use miden_client::account::{
     StorageSlotName,
 };
 use miden_client::assembly::CodeBuilder;
-use miden_client::asset::{AssetId, FungibleAsset};
+use miden_client::asset::{AssetId, FungibleAsset, PartialVault};
 use miden_client::auth::{
     Approver,
     AuthSchemeId,
@@ -32,7 +32,7 @@ use miden_client::transaction::{AdviceInputs, ForeignAccount, TransactionRequest
 use miden_client::{Felt, Word};
 use tracing::info;
 
-use crate::tests::config::ClientConfig;
+use crate::ClientConfig;
 
 // FPI TESTS
 // ================================================================================================
@@ -540,13 +540,13 @@ async fn standard_fpi(
             .await?
             .context("failed to find foreign account after deploying")?;
 
-        let (id, _vault, storage, code, nonce, seed) = foreign_account.into_parts();
+        let (id, vault, storage, code, nonce, seed) = foreign_account.into_parts();
         let acc = PartialAccount::new(
             id,
             nonce,
             code,
             PartialStorage::new_full(storage),
-            Default::default(),
+            PartialVault::new_full(vault),
             seed,
         )?;
 
@@ -842,19 +842,14 @@ pub(crate) async fn deploy_foreign_account(
 
     info!(account_id = %foreign_account_id, ?account_type, "Deploying foreign account");
 
-    let tx_id = client
-        .submit_new_transaction(
-            foreign_account_id,
-            TransactionRequestBuilder::new()
-                .build()
-                .with_context(|| "failed to build transaction request")?,
-        )
-        .await?;
-    wait_for_tx(client, tx_id).await?;
+    client.deploy_account(foreign_account_id).await?;
 
     // NOTE: We get the new account state here since the first transaction updates the nonce from
     // to 1
-    let foreign_account: Account = client.try_get_account(foreign_account_id).await?;
+    let foreign_account: Account = client
+        .get_account(foreign_account_id)
+        .await?
+        .with_context(|| format!("account {foreign_account_id} should be tracked"))?;
 
     Ok((foreign_account, proc_root))
 }

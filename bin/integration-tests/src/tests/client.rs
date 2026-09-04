@@ -4,7 +4,12 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use assert_matches::assert_matches;
-use miden_client::account::component::{AccountComponent, AccountComponentMetadata, Approver};
+use miden_client::account::component::{
+    AccountComponent,
+    AccountComponentMetadata,
+    Approver,
+    BasicWallet,
+};
 use miden_client::account::{
     Account,
     AccountBuilder,
@@ -54,17 +59,15 @@ use miden_client::{ClientError, Felt, Word};
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
 use tracing::info;
 
-use crate::tests::config::ClientConfig;
+use crate::{ClientConfig, create_test_auth_path};
 
 pub async fn test_client_builder_initializes_client_with_endpoint(
     client_config: ClientConfig,
 ) -> Result<()> {
-    let (endpoint, _, store_config, auth_path) = client_config.as_parts();
-
     let mut client = ClientBuilder::<FilesystemKeyStore>::new()
-        .grpc_client(&endpoint, Some(10_000))
-        .filesystem_keystore(auth_path)?
-        .sqlite_store(store_config)
+        .grpc_client(&client_config.rpc_endpoint, Some(10_000))
+        .filesystem_keystore(create_test_auth_path())?
+        .sqlite_store(create_test_store_path())
         .build()
         .await?;
 
@@ -134,6 +137,8 @@ pub async fn test_multiple_tx_on_same_block(client_config: ClientConfig) -> Resu
     info!(from = %from_account_id, to = %to_account_id, "Submitting 2-tx P2ID batch");
 
     // Submit both requests as a single proven batch via the node's `SubmitProvenBatch` path.
+    let tx_request_1 = client.fund_request(from_account_id, tx_request_1);
+    let tx_request_2 = client.fund_request(from_account_id, tx_request_2);
     let mut batch = client.new_transaction_batch();
     batch.push(from_account_id, tx_request_1).await?;
     batch.push(from_account_id, tx_request_2).await?;
@@ -330,14 +335,11 @@ pub async fn test_import_expected_note_uncommitted(client_config: ClientConfig) 
     .unwrap()
     .0;
 
-    let (mut client_2, _) = ClientConfig::default()
-        .with_rpc_endpoint(client_config.rpc_endpoint())
-        .into_client()
-        .await?;
+    let (mut client_2, authenticator_2) = client_config.clone().into_client().await?;
     let (client_2_account, _) = insert_new_wallet(
         &mut client_2,
         AccountType::Private,
-        &authenticator,
+        &authenticator_2,
         RPO_FALCON_SCHEME_ID,
     )
     .await?;
@@ -385,10 +387,7 @@ pub async fn test_import_expected_notes_from_the_past_as_committed(
     )
     .await?;
 
-    let (mut client_2, _) = ClientConfig::default()
-        .with_rpc_endpoint(client_config.rpc_endpoint())
-        .into_client()
-        .await?;
+    let (mut client_2, _) = client_config.clone().into_client().await?;
 
     wait_for_node(&mut client_2).await;
 
@@ -499,10 +498,7 @@ pub async fn test_get_account_update(client_config: ClientConfig) -> Result<()> 
 
 pub async fn test_sync_detail_values(client_config: ClientConfig) -> Result<()> {
     let (mut client1, authenticator_1) = client_config.clone().into_client().await?;
-    let (mut client2, authenticator_2) = ClientConfig::default()
-        .with_rpc_endpoint(client_config.rpc_endpoint())
-        .into_client()
-        .await?;
+    let (mut client2, authenticator_2) = client_config.clone().into_client().await?;
     wait_for_node(&mut client1).await;
     wait_for_node(&mut client2).await;
 
@@ -623,6 +619,9 @@ pub async fn test_sync_transactions_chunks_when_exceeding_limits(
         RPO_FALCON_SCHEME_ID,
     )
     .await?;
+
+    // A mint cannot double as the account's deploy.
+    client.deploy_account(faucet.id()).await?;
 
     let fungible_asset = FungibleAsset::new(faucet.id(), MINT_AMOUNT)?;
     let tx_request = TransactionRequestBuilder::new().build_mint_fungible_asset(
@@ -816,10 +815,7 @@ pub async fn test_multiple_transactions_can_be_committed_in_different_blocks_wit
 /// - Consuming unauthenticated notes.
 pub async fn test_consume_multiple_expected_notes(client_config: ClientConfig) -> Result<()> {
     let (mut client, authenticator_1) = client_config.clone().into_client().await?;
-    let (mut unauth_client, authenticator_2) = ClientConfig::default()
-        .with_rpc_endpoint(client_config.rpc_endpoint())
-        .into_client()
-        .await?;
+    let (mut unauth_client, authenticator_2) = client_config.clone().into_client().await?;
 
     wait_for_node(&mut client).await;
 
@@ -923,10 +919,7 @@ pub async fn test_import_consumed_note_with_proof(client_config: ClientConfig) -
     )
     .await?;
 
-    let (mut client_2, authenticator_2) = ClientConfig::default()
-        .with_rpc_endpoint(client_config.rpc_endpoint())
-        .into_client()
-        .await?;
+    let (mut client_2, authenticator_2) = client_config.clone().into_client().await?;
     let (client_2_account, _) = insert_new_wallet(
         &mut client_2,
         AccountType::Private,
@@ -1003,10 +996,7 @@ pub async fn test_import_consumed_note_with_id(client_config: ClientConfig) -> R
         )
         .await?;
 
-    let (mut client_2, _) = ClientConfig::default()
-        .with_rpc_endpoint(client_config.rpc_endpoint())
-        .into_client()
-        .await?;
+    let (mut client_2, _) = client_config.clone().into_client().await?;
 
     wait_for_node(&mut client_2).await;
 
@@ -1072,10 +1062,7 @@ pub async fn test_import_note_with_proof(client_config: ClientConfig) -> Result<
         )
         .await?;
 
-    let (mut client_2, _) = ClientConfig::default()
-        .with_rpc_endpoint(client_config.rpc_endpoint())
-        .into_client()
-        .await?;
+    let (mut client_2, _) = client_config.clone().into_client().await?;
 
     wait_for_node(&mut client_2).await;
 
@@ -1135,10 +1122,7 @@ pub async fn test_discarded_transaction(client_config: ClientConfig) -> Result<(
     )
     .await?;
 
-    let (mut client_2, authenticator_2) = ClientConfig::default()
-        .with_rpc_endpoint(client_config.rpc_endpoint())
-        .into_client()
-        .await?;
+    let (mut client_2, authenticator_2) = client_config.clone().into_client().await?;
     let (second_regular_account, ..) = insert_new_wallet(
         &mut client_2,
         AccountType::Private,
@@ -1351,10 +1335,7 @@ pub async fn test_locked_account(client_config: ClientConfig) -> Result<()> {
     let original_seed = private_account.seed();
 
     // Import private account in client 2
-    let (mut client_2, _) = ClientConfig::default()
-        .with_rpc_endpoint(client_config.rpc_endpoint())
-        .into_client()
-        .await?;
+    let (mut client_2, _) = client_config.clone().into_client().await?;
     client_2.add_account(&private_account, false).await.unwrap();
 
     wait_for_node(&mut client_2).await;
@@ -1657,11 +1638,18 @@ pub async fn test_ignore_invalid_notes(client_config: ClientConfig) -> Result<()
 
     execute_tx_and_sync(&mut client, account_id, tx_request).await?;
 
-    // Check that only the valid notes were consumed
     let consumed_notes = client.get_input_notes(NoteFilter::Consumed).await.unwrap();
-    assert_eq!(consumed_notes.len(), 2);
-    assert!(consumed_notes.iter().any(|note| note.id() == Some(note_1.id())));
-    assert!(consumed_notes.iter().any(|note| note.id() == Some(note_2.id())));
+    // Checked by ID rather than by count: on a fee-charging chain the account also consumed its
+    // funding note.
+    let consumed = |id| consumed_notes.iter().any(|note| note.id() == Some(id));
+    assert!(
+        consumed(note_1.id()) && consumed(note_2.id()),
+        "both valid notes should be consumed"
+    );
+    assert!(
+        !consumed(note_3.id()) && !consumed(note_4.id()),
+        "notes targeting another account should be ignored"
+    );
     Ok(())
 }
 
@@ -1703,7 +1691,9 @@ pub async fn test_output_only_note(client_config: ClientConfig) -> Result<()> {
 ///
 /// Creates a public account with a map slot containing 2 entries, then verifies:
 /// - Requesting with empty keys returns `AllEntries` with both entries.
-/// - Requesting with one specific key returns `EntriesWithProofs` with just that entry's proof.
+/// - Requesting with one specific key returns `PartialMap` covering just that key.
+/// - Requesting several keys, one of them absent from the map, returns a single `PartialMap`
+///   covering all of them, proving the absent one holds no value.
 pub async fn test_get_account_storage_map_key_filtering(client_config: ClientConfig) -> Result<()> {
     let (mut client, keystore) = client_config.into_client().await?;
     wait_for_node(&mut client).await;
@@ -1749,6 +1739,7 @@ pub async fn test_get_account_storage_map_key_filtering(client_config: ClientCon
     let account = AccountBuilder::new(Default::default())
         .with_component(component)
         .with_component(auth_component)
+        .with_component(BasicWallet)
         .account_type(AccountType::Public)
         .build_with_schema_commitment()
         .context("failed to build account")?;
@@ -1758,10 +1749,7 @@ pub async fn test_get_account_storage_map_key_filtering(client_config: ClientCon
     client.add_account(&account, false).await?;
 
     // Deploy the account (first tx updates nonce)
-    let tx_id = client
-        .submit_new_transaction(account_id, TransactionRequestBuilder::new().build()?)
-        .await?;
-    wait_for_tx(&mut client, tx_id).await?;
+    client.deploy_account(account_id).await?;
 
     let rpc = client.test_rpc_api();
 
@@ -1802,14 +1790,56 @@ pub async fn test_get_account_storage_map_key_filtering(client_config: ClientCon
         .context("expected storage map details")?;
 
     match &map_one.entries {
-        StorageMapEntries::EntriesWithProofs(proofs) => {
-            assert_eq!(proofs.len(), 1, "expected 1 proof");
-            let hashed_key = map_key_1.hash().as_word();
-            let value = proofs[0].get(&hashed_key);
-            assert!(value.is_some(), "proof should contain the requested key");
-            assert_eq!(value.unwrap(), map_value_1, "value should match the requested key's value");
+        StorageMapEntries::PartialMap { map_keys, partial_smt } => {
+            assert_eq!(map_keys, &[map_key_1], "expected only the requested key");
+            let value = partial_smt.get_value(&map_key_1.hash().as_word())?;
+            assert_eq!(value, map_value_1, "value should match the requested key's value");
         },
-        other => anyhow::bail!("expected EntriesWithProofs, got {:?}", other),
+        other => anyhow::bail!("expected PartialMap, got {:?}", other),
+    }
+
+    // Request both keys plus one that is absent from the map. All three must be covered by a
+    // single partial SMT anchored at the slot's root.
+    let absent_key = StorageMapKey::new(
+        [Felt::from(77u32), Felt::from(77u32), Felt::from(77u32), Felt::from(77u32)].into(),
+    );
+    let requirements_batch = AccountStorageRequirements::new([(
+        map_slot_name.clone(),
+        [&map_key_1, &map_key_2, &absent_key],
+    )]);
+    let (_, proof_batch) = rpc
+        .get_account(
+            account_id,
+            GetAccountRequest {
+                storage: StorageMapFetch::Slots(requirements_batch),
+                ..Default::default()
+            },
+        )
+        .await?;
+    let map_batch = proof_batch
+        .find_map_details(&map_slot_name)
+        .context("expected storage map details")?;
+
+    match &map_batch.entries {
+        StorageMapEntries::PartialMap { map_keys, partial_smt } => {
+            assert_eq!(map_keys.len(), 3, "expected all three requested keys");
+            assert_eq!(
+                partial_smt.get_value(&map_key_1.hash().as_word())?,
+                map_value_1,
+                "the first key's value must be readable from the batched tree"
+            );
+            assert_eq!(
+                partial_smt.get_value(&map_key_2.hash().as_word())?,
+                map_value_2,
+                "the second key's value must be readable from the batched tree"
+            );
+            assert_eq!(
+                partial_smt.get_value(&absent_key.hash().as_word())?,
+                Word::empty(),
+                "a key absent from the map must be proven absent"
+            );
+        },
+        other => anyhow::bail!("expected PartialMap, got {:?}", other),
     }
 
     Ok(())
@@ -1852,10 +1882,12 @@ pub async fn test_get_account_returns_vault_details(client_config: ClientConfig)
     let details = details.context("expected account details for public account")?;
     let vault_root = details.header.vault_root();
 
-    assert_eq!(
-        details.vault_details.assets,
-        vec![Asset::Fungible(FungibleAsset::new(faucet.id(), MINT_AMOUNT).unwrap())],
-        "expected exactly 1 asset (the minted fungible token)"
+    // The vault also holds the native fee asset where the chain charges one, so this checks for
+    // the minted token rather than for it alone.
+    let minted = Asset::Fungible(FungibleAsset::new(faucet.id(), MINT_AMOUNT).unwrap());
+    assert!(
+        details.vault_details.assets.contains(&minted),
+        "expected the minted token in the vault"
     );
 
     // Query 2: VaultFetch::IfChangedFrom(actual_root) — commitment matches, node returns empty

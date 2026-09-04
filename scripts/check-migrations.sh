@@ -18,8 +18,8 @@ if ! git rev-parse --verify --quiet "${BASE}^{commit}" > /dev/null; then
     exit 1
 fi
 
-# Compared against the merge base rather than the tip of the base branch, so a migration added on
-# the base branch after this one forked is not attributed to this pull request.
+# Compare only the branch's own commits, prevents a migration added on the base branch after this one
+# forked being attributed to this pull request.
 CHANGED=$(git diff --name-only --diff-filter=MDR --merge-base "${BASE}" -- "${MIGRATIONS_DIR}")
 
 if [ -z "${CHANGED}" ]; then
@@ -31,9 +31,8 @@ fi
 >&2 echo "${CHANGED}"
 >&2 echo ""
 >&2 echo "Migrations are append-only. Add a new file under \"${MIGRATIONS_DIR}\" with the next
-version prefix instead, register it in CLIENT_MIGRATIONS and append its schema hash to
-PINNED_SCHEMA_HASHES, both in crates/sqlite-store/src/db_management/migration.rs, rather than editing
-the existing entries.
+version prefix instead, and register it in CLIENT_MIGRATIONS together with the schema hash it builds,
+in crates/sqlite-store/src/db_management/migration.rs, rather than editing the existing entries.
 
 This behavior can be overridden by using the \"no migration check\" label, which is used for
 schema changes that no released client can encounter yet."

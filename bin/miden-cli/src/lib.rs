@@ -363,7 +363,7 @@ enum Behavior {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "miden-client")]
+#[command(name = "miden-client", version)]
 pub struct Cli {
     #[command(subcommand)]
     action: Command,

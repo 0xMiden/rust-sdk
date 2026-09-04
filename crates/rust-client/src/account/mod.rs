@@ -494,21 +494,25 @@ impl<AUTH> Client<AUTH> {
     }
 
     /// Removes an [`Address`] from the associated [`AccountId`], alongside its derived [`NoteTag`].
-    /// If no address was tracked for the given account, this is a no-op.
+    ///
+    /// Returns `true` if the address was tracked. If it wasn't, this is a no-op: the derived tag is
+    /// left in place, since it may have been registered by something other than this address.
     pub async fn remove_address(
         &mut self,
         address: Address,
         account_id: AccountId,
-    ) -> Result<(), ClientError> {
+    ) -> Result<bool, ClientError> {
         let derived_note_tag = address.to_note_tag();
         let note_tag_record = NoteTagRecord::with_account_source(derived_note_tag, account_id);
-        self.store.remove_address(address).await?;
+        if !self.store.remove_address(address).await? {
+            return Ok(false);
+        }
         // Remove the note tag if no other address are associated with it.
         let addresses = self.store.get_addresses_by_account_id(account_id).await?;
         if addresses.iter().all(|address| address.to_note_tag() != derived_note_tag) {
             self.store.remove_note_tag(note_tag_record).await?;
         }
-        Ok(())
+        Ok(true)
     }
 
     // ACCOUNT DATA RETRIEVAL
@@ -557,30 +561,28 @@ impl<AUTH> Client<AUTH> {
         self.store.get_account_headers().await.map_err(Into::into)
     }
 
+    /// Returns the [`AccountHeader`] of the account with the specified ID along with its status,
+    /// or `None` if the account isn't tracked by the client.
+    ///
+    /// Said account's state is the state after the last performed sync.
+    pub async fn get_account_header(
+        &self,
+        account_id: AccountId,
+    ) -> Result<Option<(AccountHeader, AccountStatus)>, ClientError> {
+        self.store.get_account_header(account_id).await.map_err(Into::into)
+    }
+
     /// Retrieves the full [`Account`] object from the store, returning `None` if not found.
     ///
-    /// This method loads the complete account state including vault, storage, and code.
-    ///
-    /// For lazy access that fetches only the data you need, use
+    /// This method loads the complete account state including vault, storage, and code —
+    /// including building the vault's Merkle tree. For lazy access that fetches only the data
+    /// you need (existence checks, single fields, storage items), use
     /// [`Client::account_reader`] instead.
-    ///
-    /// Use [`Client::try_get_account`] if you want to error when the account is not found.
     pub async fn get_account(&self, account_id: AccountId) -> Result<Option<Account>, ClientError> {
         match self.store.get_account(account_id).await? {
             Some(record) => Ok(Some(record.try_into()?)),
             None => Ok(None),
         }
-    }
-
-    /// Retrieves the full [`Account`] object from the store, erroring if not found.
-    ///
-    /// This method loads the complete account state including vault, storage, and code.
-    ///
-    /// Use [`Client::get_account`] if you want to handle missing accounts gracefully.
-    pub async fn try_get_account(&self, account_id: AccountId) -> Result<Account, ClientError> {
-        self.get_account(account_id)
-            .await?
-            .ok_or(ClientError::AccountDataNotFound(account_id))
     }
 
     /// Creates an [`AccountReader`] for lazy access to account data.

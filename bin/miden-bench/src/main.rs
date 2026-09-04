@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use clap::{Args, Parser, Subcommand};
 use miden_client::rpc::Endpoint;
+use miden_client::testing::common::TestClient;
 
 mod benchmarks;
 mod config;
@@ -16,7 +17,8 @@ mod masm;
 mod metrics;
 mod report;
 
-use config::{BenchConfig, DEFAULT_STORE_DIR};
+use config::{BenchConfig, DEFAULT_STORE_DIR, RPC_TIMEOUT_MS};
+use miden_client_integration_tests::{ClientConfig, fee_funding};
 
 const DEFAULT_ITERATION_COUNT: usize = 5;
 
@@ -38,12 +40,19 @@ struct CliArgs {
     /// for the `SQLite` database and filesystem keystore.
     #[arg(long, global = true, default_value = DEFAULT_STORE_DIR)]
     store: String,
+
+    /// Path to pre-funded basic wallets to draw transaction fees from: either one `.mac` account
+    /// file or a directory of them.
+    #[arg(long, global = true, env = fee_funding::FUNDER_ACCOUNTS_ENV)]
+    funders: Option<PathBuf>,
 }
 
 #[derive(Subcommand, Clone)]
 enum Command {
     /// Benchmark transaction operations: read all storage entries from account (requires node)
     Transaction(TransactionArgs),
+    /// Benchmark how the SQL store scales with the number of notes and accounts (no node needed)
+    Store(StoreArgs),
     /// Deploy a public wallet with configurable storage to the network (requires node)
     Deploy(StorageArgs),
     /// Expand storage: fill entries in a specific map of a deployed account (requires node)
@@ -65,7 +74,7 @@ impl Command {
             Command::Deploy(_) | Command::Expand(_) | Command::Transaction(_) => {
                 StartupMode::Synced
             },
-            Command::Import(_) | Command::Export(_) => StartupMode::Unsynced,
+            Command::Import(_) | Command::Export(_) | Command::Store(_) => StartupMode::Unsynced,
         }
     }
 }
@@ -97,6 +106,22 @@ struct TransactionArgs {
     /// When omitted, all entries are read in a single transaction.
     #[arg(short, long)]
     reads: Option<usize>,
+
+    /// Number of benchmark iterations
+    #[arg(short, long, default_value_t = DEFAULT_ITERATION_COUNT)]
+    iterations: usize,
+}
+
+/// SQL store scaling benchmark options
+#[derive(Args, Clone)]
+struct StoreArgs {
+    /// Note counts to measure, as a comma-separated list
+    #[arg(long, default_value = "1000,10000", value_delimiter = ',', value_parser = parse_size)]
+    notes: Vec<usize>,
+
+    /// Account counts to measure, as a comma-separated list
+    #[arg(long, default_value = "100,1000", value_delimiter = ',', value_parser = parse_size)]
+    accounts: Vec<usize>,
 
     /// Number of benchmark iterations
     #[arg(short, long, default_value_t = DEFAULT_ITERATION_COUNT)]
@@ -230,9 +255,16 @@ async fn main() {
     println!("Network: {endpoint}");
     println!("Store directory: {}", store_path.display());
 
-    let mut client = config::create_client(&endpoint, &store_path)
+    let client = config::create_client(&endpoint, &store_path)
         .await
         .expect("Failed to create client");
+
+    let fee_funder = fee_funding::load(
+        &ClientConfig::new(endpoint.clone(), RPC_TIMEOUT_MS),
+        args.funders.as_deref(),
+    )
+    .expect("Failed to load the funder wallets");
+    let mut client = TestClient::from(client).with_fee_funder(fee_funder);
 
     match args.command.startup_mode() {
         StartupMode::Synced => {
@@ -249,7 +281,7 @@ async fn main() {
 
 async fn dispatch_command(
     command: Command,
-    client: &mut miden_client::Client<miden_client::keystore::FilesystemKeyStore>,
+    client: &mut TestClient,
     store_path: PathBuf,
     endpoint: Endpoint,
     store_flag: &str,
@@ -317,6 +349,9 @@ async fn dispatch_command(
                 },
             }
         },
+        Command::Store(store_args) => {
+            run_store_benchmark(store_args).await;
+        },
         Command::Import(import_args) => {
             let result = match (import_args.filename, import_args.account_id) {
                 (Some(filename), None) => {
@@ -349,8 +384,55 @@ async fn dispatch_command(
     }
 }
 
+/// Runs the SQL store scaling sweeps and prints one table per sweep.
+async fn run_store_benchmark(store_args: StoreArgs) {
+    // The seeded databases are throwaway: they live in their own temp directory, so a run can
+    // neither read nor overwrite the accounts and notes the other commands keep.
+    let workdir = std::env::temp_dir().join(format!("miden-bench-scaling-{}", std::process::id()));
+    std::fs::create_dir_all(&workdir).expect("Failed to create the benchmark directory");
+    println!("Seeded databases: {}", workdir.display());
+
+    // Ascending sizes make the growth column read from the first size to the last.
+    let mut notes = store_args.notes;
+    notes.sort_unstable();
+    let mut accounts = store_args.accounts;
+    accounts.sort_unstable();
+
+    let start_time = Instant::now();
+    let results = Box::pin(benchmarks::store::run_store_benchmarks(
+        &notes,
+        &accounts,
+        store_args.iterations,
+        &workdir,
+    ))
+    .await;
+    let total_duration = start_time.elapsed();
+
+    std::fs::remove_dir_all(&workdir).expect("Failed to remove the benchmark directory");
+
+    match results {
+        Ok(results) => {
+            report::print_scaling_results(&results.notes, "Note scaling");
+            report::print_scaling_results(&results.accounts, "Account scaling");
+            println!("\nTotal time: {:.2}s", total_duration.as_secs_f64());
+        },
+        Err(e) => {
+            panic!("Store benchmark failed: {e:?}");
+        },
+    }
+}
+
 // HELPERS
 // ================================================================================================
+
+fn parse_size(s: &str) -> Result<usize, String> {
+    let n: usize = s.trim().parse().map_err(|e| format!("{e}"))?;
+    if n == 0 {
+        return Err("size must be greater than 0".to_string());
+    }
+
+    Ok(n)
+}
 
 fn parse_maps(s: &str) -> Result<usize, String> {
     let n: usize = s.parse().map_err(|e| format!("{e}"))?;

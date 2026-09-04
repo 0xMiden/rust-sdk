@@ -133,26 +133,62 @@ impl TryFrom<proto::note::NoteMetadata> for NoteMetadata {
 
 /// Aggregates individual attachment commitments into the note's attachments commitment.
 ///
-/// The element layout mirrors [`NoteAttachments`]' own sequential commitment, so hashing this
-/// yields the same value as the full attachments would, without needing their contents.
-// TODO: single-word attachment payloads now arrive inline in the sync response, so some note data
-// may be derived without a `GetNotesById` request
-// https://github.com/0xMiden/rust-sdk/issues/2360
-struct AttachmentCommitments(Vec<Word>);
+/// The element layout mirrors [`NoteAttachments`]' own sequential commitment, so this yields the
+/// same value as the full attachments would, which is what lets commitment-only records work.
+struct AttachmentCommitments<'a>(&'a [Word]);
 
-impl SequentialCommit for AttachmentCommitments {
+impl SequentialCommit for AttachmentCommitments<'_> {
     type Commitment = Word;
 
     fn to_elements(&self) -> Vec<Felt> {
         let mut elements = Vec::with_capacity(self.0.len() * miden_protocol::WORD_SIZE);
-        for commitment in &self.0 {
+        for commitment in self.0 {
             elements.extend_from_slice(commitment.as_elements());
         }
         elements
     }
 }
 
-impl TryFrom<proto::note::NoteSyncMetadata> for NoteMetadata {
+/// The attachments of a note as a `SyncNotes` record reports them. Both variants determine the
+/// note's attachments commitment exactly, but only one carries the content.
+#[derive(Debug)]
+enum ReportedAttachments {
+    /// Every attachment arrived verbatim, so the content is known and needs no fetching.
+    Full(NoteAttachments),
+    /// At least one attachment arrived as a commitment only. Holds one commitment per attachment,
+    /// enough to rebuild the note's metadata but not its content.
+    Commitments(Vec<Word>),
+}
+
+impl ReportedAttachments {
+    /// Returns the note's attachments commitment.
+    fn to_commitment(&self) -> Word {
+        match self {
+            Self::Full(attachments) => attachments.to_commitment(),
+            Self::Commitments(commitments) => AttachmentCommitments(commitments).to_commitment(),
+        }
+    }
+
+    /// Consumes the report and returns the content, when the record carried all of it.
+    fn into_content(self) -> Option<NoteAttachments> {
+        match self {
+            Self::Full(attachments) => Some(attachments),
+            Self::Commitments(_) => None,
+        }
+    }
+}
+
+/// The note metadata reconstructed from a `SyncNotes` record, together with what that record
+/// reported about the note's attachments.
+#[derive(Debug)]
+struct SyncNoteMetadata {
+    /// The note's full metadata, equal to what the on-chain note commits to.
+    metadata: NoteMetadata,
+    /// What the record reported about the note's attachments.
+    attachments: ReportedAttachments,
+}
+
+impl TryFrom<proto::note::NoteSyncMetadata> for SyncNoteMetadata {
     type Error = RpcConversionError;
 
     fn try_from(value: proto::note::NoteSyncMetadata) -> Result<Self, Self::Error> {
@@ -173,6 +209,9 @@ impl TryFrom<proto::note::NoteSyncMetadata> for NoteMetadata {
 
         let mut attachment_headers = [NoteAttachmentHeader::absent(); NoteAttachments::MAX_COUNT];
         let mut commitments = Vec::with_capacity(value.attachments.len());
+        // Stays `Some` until an attachment arrives as a commitment only, since the content can be
+        // rebuilt only as a whole set.
+        let mut contents = Some(Vec::with_capacity(value.attachments.len()));
 
         for (slot, attachment) in value.attachments.into_iter().enumerate() {
             let raw_scheme = u16::try_from(attachment.scheme).map_err(|_| {
@@ -189,29 +228,42 @@ impl TryFrom<proto::note::NoteSyncMetadata> for NoteMetadata {
             let payload = attachment.payload.ok_or_else(|| {
                 proto::note::NoteSyncAttachment::missing_field(stringify!(payload))
             })?;
-            // Single-word attachments are sent verbatim, so their commitment is derived locally;
-            // larger ones are sent as commitments to keep the sync response bounded.
-            // TODO: the verbatim word is discarded here, but it could be kept to derive note data
-            // without a `GetNotesById` request
-            // https://github.com/0xMiden/rust-sdk/issues/2360
-            let commitment = match payload {
+            // An attachment that fits in a single word is sent verbatim, so it can be rebuilt in
+            // full. A larger one is sent as a commitment to keep the sync response bounded. The
+            // node may send a commitment even for a single-word one, so the choice is read off the
+            // payload variant and never inferred from a word count.
+            match payload {
                 proto::note::note_sync_attachment::Payload::Value(value) => {
-                    NoteAttachment::with_word(scheme, Word::try_from(value)?).to_commitment()
+                    let attachment = NoteAttachment::with_word(scheme, Word::try_from(value)?);
+                    commitments.push(attachment.to_commitment());
+                    if let Some(contents) = contents.as_mut() {
+                        contents.push(attachment);
+                    }
                 },
                 proto::note::note_sync_attachment::Payload::Commitment(commitment) => {
-                    Word::try_from(commitment)?
+                    commitments.push(Word::try_from(commitment)?);
+                    contents = None;
                 },
-            };
-            commitments.push(commitment);
+            }
         }
 
-        let attachments_commitment = AttachmentCommitments(commitments).to_commitment();
+        let attachments = match contents {
+            Some(contents) => {
+                ReportedAttachments::Full(NoteAttachments::new(contents).map_err(|err| {
+                    RpcConversionError::InvalidField(format!("attachments: {err}"))
+                })?)
+            },
+            None => ReportedAttachments::Commitments(commitments),
+        };
 
-        Ok(NoteMetadata::from_parts(
-            partial_metadata,
-            attachment_headers,
-            attachments_commitment,
-        ))
+        Ok(SyncNoteMetadata {
+            metadata: NoteMetadata::from_parts(
+                partial_metadata,
+                attachment_headers,
+                attachments.to_commitment(),
+            ),
+            attachments,
+        })
     }
 }
 
@@ -331,9 +383,8 @@ impl TryFrom<proto::rpc::sync_notes_response::NoteSyncBlock> for SyncNotesBlock 
 /// A block's worth of notes resolved by
 /// [`NodeRpcClient::sync_notes_with_content`](crate::rpc::NodeRpcClient::sync_notes_with_content).
 ///
-/// Unlike [`SyncNotesBlock`] (the raw `SyncNotes` response), each note here also carries the body
-/// and attachment content fetched via `GetNotesById`, so a consumer never has to re-join two
-/// parallel collections by note ID.
+/// Unlike [`SyncNotesBlock`] (the raw `SyncNotes` response), each note here also carries its
+/// attachments and, for a fetched public note, its details, so no re-joining by note ID is needed.
 #[derive(Debug, Clone)]
 pub struct ResolvedSyncNotesBlock {
     /// Block header containing the matching notes.
@@ -345,28 +396,31 @@ pub struct ResolvedSyncNotesBlock {
 }
 
 /// Everything resolved about a single note during a notes sync: its identity, metadata, and
-/// inclusion proof (always present, from `SyncNotes`), plus any body or attachment content
-/// fetched via `GetNotesById`.
+/// inclusion proof (always present, from `SyncNotes`), its attachments, and the public note body
+/// when it was fetched via `GetNotesById`.
 #[derive(Debug, Clone)]
 pub struct SyncedNote {
     /// Note identity, metadata, and inclusion proof, as reported by `SyncNotes`.
     pub committed: CommittedNote,
-    /// Body and/or attachment content resolved via `GetNotesById`; `None` if none was fetched
-    /// (plain private notes, or public notes when bodies were not requested).
-    pub content: Option<ResolvedNoteContent>,
+    /// The public note's body, fetched via `GetNotesById`. `None` for a private note, and for a
+    /// public note whose body was not requested or not returned.
+    pub details: Option<NoteDetails>,
+    /// The note's attachments, either carried in full by the sync record or fetched via
+    /// `GetNotesById`. Empty for a note whose metadata advertises none.
+    pub attachments: NoteAttachments,
 }
 
 impl SyncedNote {
     /// Pairs a sync record with the content resolved for it, checking that the content is
-    /// consistent with the record's metadata:
+    /// consistent with the record:
     ///
-    /// - The content variant must match the record's note type.
-    /// - Resolved attachments must hash to the metadata's attachments commitment — the metadata is
-    ///   what inclusion-proof verification later authenticates, so this binds the fetched bytes to
-    ///   the on-chain note.
-    /// - A note whose metadata advertises attachments must have resolved content: storing such a
-    ///   note without its attachment content would leave it unconsumable with no retry path once
-    ///   its expected-note tag is dropped.
+    /// - Only a public note can have a body. The converse is not checked, since a public note
+    ///   legitimately has no body whenever its body was not requested.
+    /// - The attachments must hash to the metadata's attachments commitment. This also catches a
+    ///   note advertising attachments whose content never arrived, which would be unconsumable.
+    ///
+    /// Both sides of that check come from the node, so it is a consistency check between its
+    /// responses. The note is authenticated by a consumer recomputing its id and inclusion proof.
     ///
     /// A rejection concerns a single note, not the response as a whole:
     /// [`NodeRpcClient::sync_notes_with_content`](crate::rpc::NodeRpcClient::sync_notes_with_content)
@@ -374,77 +428,25 @@ impl SyncedNote {
     /// availability can be influenced by the note's creator.
     pub fn new(
         committed: CommittedNote,
-        content: Option<ResolvedNoteContent>,
+        details: Option<NoteDetails>,
+        attachments: NoteAttachments,
     ) -> Result<Self, RpcError> {
-        match &content {
-            Some(resolved) => {
-                let expected_note_type = match resolved {
-                    ResolvedNoteContent::Public { .. } => NoteType::Public,
-                    ResolvedNoteContent::Private { .. } => NoteType::Private,
-                };
-                if committed.note_type() != expected_note_type {
-                    return Err(RpcError::InvalidResponse(format!(
-                        "content returned for note {} does not match the note's type",
-                        committed.note_id()
-                    )));
-                }
-
-                if resolved.attachments().to_commitment()
-                    != committed.metadata().attachments_commitment()
-                {
-                    return Err(RpcError::InvalidResponse(format!(
-                        "attachment content returned for note {} does not match the note's \
-                         attachments commitment",
-                        committed.note_id()
-                    )));
-                }
-            },
-            None => {
-                if committed.has_attachments() {
-                    return Err(RpcError::InvalidResponse(format!(
-                        "note {} advertises attachments but the node did not return their content",
-                        committed.note_id()
-                    )));
-                }
-            },
+        if details.is_some() && committed.note_type() != NoteType::Public {
+            return Err(RpcError::InvalidResponse(format!(
+                "a note body was returned for private note {}",
+                committed.note_id()
+            )));
         }
 
-        Ok(Self { committed, content })
-    }
-}
-
-/// Body and attachment content fetched for a note via `GetNotesById`.
-#[derive(Debug, Clone)]
-#[allow(clippy::large_enum_variant)]
-pub enum ResolvedNoteContent {
-    /// Content fetched for a public note.
-    Public {
-        /// The public note body (recipient and assets, without metadata).
-        details: NoteDetails,
-        /// The note's attachment content. May be empty for a public note that carries none.
-        attachments: NoteAttachments,
-    },
-    /// Content fetched for a private note. Private notes expose no on-chain body, so only their
-    /// attachment content is resolved.
-    Private {
-        /// The note's attachment content.
-        attachments: NoteAttachments,
-    },
-}
-
-impl ResolvedNoteContent {
-    /// Returns the attachment content fetched for the note.
-    pub fn attachments(&self) -> &NoteAttachments {
-        match self {
-            Self::Public { attachments, .. } | Self::Private { attachments } => attachments,
+        if attachments.to_commitment() != committed.metadata().attachments_commitment() {
+            return Err(RpcError::InvalidResponse(format!(
+                "the attachments resolved for note {} do not match the note's attachments \
+                 commitment",
+                committed.note_id()
+            )));
         }
-    }
 
-    /// Consumes the content and returns the attachment content fetched for the note.
-    pub fn into_attachments(self) -> NoteAttachments {
-        match self {
-            Self::Public { attachments, .. } | Self::Private { attachments } => attachments,
-        }
+        Ok(Self { committed, details, attachments })
     }
 }
 
@@ -456,12 +458,14 @@ impl ResolvedNoteContent {
 pub struct CommittedNote {
     /// Note ID of the committed note.
     note_id: NoteId,
-    /// Note metadata. Sync responses always carry the full [`NoteMetadata`] (header fields plus
-    /// attachment scheme markers and the attachments commitment); attachment **content** is
-    /// fetched separately via `GetNotesById`.
+    /// Note metadata. Sync responses always carry the full [`NoteMetadata`]: header fields plus
+    /// attachment scheme markers and the attachments commitment.
     metadata: NoteMetadata,
     /// Inclusion proof for the note in the block.
     inclusion_proof: NoteInclusionProof,
+    /// The note's attachment content, when the source reporting the note carried every attachment
+    /// verbatim. See [`CommittedNote::attachments`].
+    attachments: Option<NoteAttachments>,
 }
 
 impl CommittedNote {
@@ -470,7 +474,35 @@ impl CommittedNote {
         metadata: NoteMetadata,
         inclusion_proof: NoteInclusionProof,
     ) -> Self {
-        Self { note_id, metadata, inclusion_proof }
+        Self {
+            note_id,
+            metadata,
+            inclusion_proof,
+            attachments: None,
+        }
+    }
+
+    /// Records the note's attachment content, for a source that reports every attachment verbatim.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the content does not hash to the metadata's attachments commitment.
+    /// Such content would turn [`CommittedNote::needs_attachment_fetch`] off for a note whose real
+    /// content was never obtained, leaving it to be dropped for good by the consistency check in
+    /// [`SyncedNote::new`] instead of being fetched.
+    pub fn with_attachments(
+        mut self,
+        attachments: NoteAttachments,
+    ) -> Result<Self, RpcConversionError> {
+        if attachments.to_commitment() != self.metadata.attachments_commitment() {
+            return Err(RpcConversionError::InvalidField(format!(
+                "attachments recorded for note {} do not match its attachments commitment",
+                self.note_id,
+            )));
+        }
+
+        self.attachments = Some(attachments);
+        Ok(self)
     }
 
     pub fn note_id(&self) -> &NoteId {
@@ -495,15 +527,23 @@ impl CommittedNote {
     }
 
     /// Returns `true` if the note's metadata advertises at least one attachment.
-    ///
-    /// Sync records carry attachment scheme markers (not the attachment content), so a present
-    /// scheme in any header slot indicates the note has attachments whose content must be fetched
-    /// separately via `GetNotesById`.
     pub fn has_attachments(&self) -> bool {
-        self.metadata
-            .attachment_headers()
-            .iter()
-            .any(|header| header.scheme().is_some())
+        self.metadata.has_attachments()
+    }
+
+    /// Returns the note's attachment content, `Some` when the reporting source
+    /// carried every attachment verbatim.
+    ///
+    /// `None` means at least one attachment must be fetched via `GetNotesById`, or that the source
+    /// reports no attachment content at all, as `SyncTransactions` inclusion proofs do.
+    pub fn attachments(&self) -> Option<&NoteAttachments> {
+        self.attachments.as_ref()
+    }
+
+    /// Returns `true` if the note's attachment content has to be fetched via `GetNotesById`: its
+    /// metadata advertises attachments and the source reporting the note did not carry them all.
+    pub fn needs_attachment_fetch(&self) -> bool {
+        self.has_attachments() && self.attachments.is_none()
     }
 
     pub fn inclusion_proof(&self) -> &NoteInclusionProof {
@@ -523,7 +563,7 @@ impl TryFrom<proto::note::NoteSyncRecord> for CommittedNote {
         let proto_metadata = note
             .metadata
             .ok_or(proto::rpc::SyncNotesResponse::missing_field(stringify!(notes.metadata)))?;
-        let metadata: NoteMetadata = proto_metadata.try_into()?;
+        let SyncNoteMetadata { metadata, attachments } = proto_metadata.try_into()?;
 
         let proto_inclusion_proof = note.inclusion_proof.ok_or(
             proto::rpc::SyncNotesResponse::missing_field(stringify!(notes.inclusion_proof)),
@@ -538,7 +578,12 @@ impl TryFrom<proto::note::NoteSyncRecord> for CommittedNote {
 
         let inclusion_proof: NoteInclusionProof = proto_inclusion_proof.try_into()?;
 
-        Ok(CommittedNote::new(note_id, metadata, inclusion_proof))
+        let committed = CommittedNote::new(note_id, metadata, inclusion_proof);
+
+        match attachments.into_content() {
+            Some(attachments) => committed.with_attachments(attachments),
+            None => Ok(committed),
+        }
     }
 }
 
@@ -658,6 +703,9 @@ impl TryFrom<proto::note::NoteScript> for NoteScript {
 #[cfg(test)]
 mod tests {
     use miden_protocol::account::{AccountIdVersion, AccountType, AssetCallbackFlag};
+    use miden_protocol::crypto::merkle::SparseMerklePath;
+    use miden_protocol::note::{NoteAssets, NoteRecipient, NoteStorage};
+    use miden_standards::code_builder::CodeBuilder;
 
     use super::*;
 
@@ -668,6 +716,44 @@ mod tests {
             AccountType::Public,
             AssetCallbackFlag::Disabled,
         )
+    }
+
+    fn single_word_attachment(scheme: u16, word: u32) -> NoteAttachment {
+        NoteAttachment::with_word(
+            NoteAttachmentScheme::new(scheme).unwrap(),
+            Word::from([word, word, word, word]),
+        )
+    }
+
+    fn multi_word_attachment(scheme: u16) -> NoteAttachment {
+        NoteAttachment::with_words(
+            NoteAttachmentScheme::new(scheme).unwrap(),
+            vec![Word::from([5u32, 6, 7, 8]), Word::from([9u32, 10, 11, 12])],
+        )
+        .unwrap()
+    }
+
+    /// Builds the sync record a node sends for `attachments`, then decodes it the way
+    /// [`CommittedNote`] does.
+    fn decode_sync_metadata(attachments: &NoteAttachments) -> SyncNoteMetadata {
+        sync_metadata(sync_attachments(attachments)).try_into().unwrap()
+    }
+
+    fn bare_committed_note(metadata: NoteMetadata) -> CommittedNote {
+        let path = SparseMerklePath::from_parts(0, Vec::new()).unwrap();
+        let inclusion_proof =
+            NoteInclusionProof::new(BlockNumber::GENESIS, 0, path).expect("index 0 is in range");
+
+        CommittedNote::new(NoteId::from_raw(Word::empty()), metadata, inclusion_proof)
+    }
+
+    fn committed_note(decoded: SyncNoteMetadata) -> CommittedNote {
+        let committed = bare_committed_note(decoded.metadata);
+
+        match decoded.attachments.into_content() {
+            Some(attachments) => committed.with_attachments(attachments).unwrap(),
+            None => committed,
+        }
     }
 
     /// Encodes attachments the way the node does in a sync response: single-word attachments carry
@@ -707,28 +793,16 @@ mod tests {
 
     #[test]
     fn sync_metadata_reconstructs_metadata_with_mixed_attachments() {
-        let attachments = NoteAttachments::new(vec![
-            NoteAttachment::with_word(
-                NoteAttachmentScheme::new(42).unwrap(),
-                Word::from([1u32, 2, 3, 4]),
-            ),
-            NoteAttachment::with_words(
-                NoteAttachmentScheme::new(100).unwrap(),
-                vec![Word::from([5u32, 6, 7, 8]), Word::from([9u32, 10, 11, 12])],
-            )
-            .unwrap(),
-        ])
-        .unwrap();
+        let attachments =
+            NoteAttachments::new(vec![single_word_attachment(42, 1), multi_word_attachment(100)])
+                .unwrap();
 
         let expected = NoteMetadata::new(
             PartialNoteMetadata::new(sender(), NoteType::Private).with_tag(NoteTag::new(7)),
             &attachments,
         );
 
-        let reconstructed: NoteMetadata =
-            sync_metadata(sync_attachments(&attachments)).try_into().unwrap();
-
-        assert_eq!(reconstructed, expected);
+        assert_eq!(decode_sync_metadata(&attachments).metadata, expected);
     }
 
     #[test]
@@ -739,9 +813,103 @@ mod tests {
             &attachments,
         );
 
-        let reconstructed: NoteMetadata = sync_metadata(Vec::new()).try_into().unwrap();
+        let decoded: SyncNoteMetadata = sync_metadata(Vec::new()).try_into().unwrap();
 
-        assert_eq!(reconstructed, expected);
+        assert_eq!(decoded.metadata, expected);
+    }
+
+    /// A record whose every attachment fits in a single word describes the note's attachments in
+    /// full, so no `GetNotesById` request is needed to obtain them.
+    #[test]
+    fn sync_metadata_reports_attachments_sent_verbatim() {
+        let attachments = NoteAttachments::new(vec![
+            single_word_attachment(42, 1),
+            single_word_attachment(64, 2),
+        ])
+        .unwrap();
+
+        let decoded = decode_sync_metadata(&attachments);
+
+        let committed = committed_note(decoded);
+        assert_eq!(committed.attachments(), Some(&attachments));
+        assert!(!committed.needs_attachment_fetch());
+    }
+
+    /// A full set leaves no trailing slot absent, so it is the only case where the positional
+    /// header fill writes every slot.
+    #[test]
+    fn sync_metadata_reconstructs_a_full_attachment_set() {
+        let attachments = NoteAttachments::new(
+            (0..NoteAttachments::MAX_COUNT)
+                .map(|i| {
+                    let scheme = u16::try_from(i).unwrap() + 42;
+                    single_word_attachment(scheme, u32::try_from(i).unwrap() + 1)
+                })
+                .collect(),
+        )
+        .unwrap();
+
+        let expected = NoteMetadata::new(
+            PartialNoteMetadata::new(sender(), NoteType::Private).with_tag(NoteTag::new(7)),
+            &attachments,
+        );
+        let decoded = decode_sync_metadata(&attachments);
+
+        assert_eq!(decoded.metadata, expected);
+        let committed = committed_note(decoded);
+        assert_eq!(committed.attachments(), Some(&attachments));
+        assert!(!committed.needs_attachment_fetch());
+    }
+
+    /// A note with no attachments has nothing to fetch, and its (empty) attachments are known.
+    #[test]
+    fn sync_metadata_reports_empty_attachments() {
+        let decoded: SyncNoteMetadata = sync_metadata(Vec::new()).try_into().unwrap();
+
+        let committed = committed_note(decoded);
+        assert_eq!(committed.attachments(), Some(&NoteAttachments::empty()));
+        assert!(!committed.needs_attachment_fetch());
+    }
+
+    /// One attachment sent as a commitment withholds the whole set, since the attachments can only
+    /// be rebuilt as a whole.
+    #[test]
+    fn sync_metadata_withholds_partially_reported_attachments() {
+        let attachments =
+            NoteAttachments::new(vec![single_word_attachment(42, 1), multi_word_attachment(100)])
+                .unwrap();
+
+        let decoded = decode_sync_metadata(&attachments);
+
+        assert!(matches!(decoded.attachments, ReportedAttachments::Commitments(_)));
+        assert!(committed_note(decoded).needs_attachment_fetch());
+    }
+
+    /// The node may send a commitment even for a single-word attachment, so availability follows
+    /// the payload variant alone, never a word count.
+    #[test]
+    fn sync_metadata_withholds_single_word_attachment_sent_as_commitment() {
+        let attachment = single_word_attachment(42, 1);
+        let proto_attachments = vec![proto::note::NoteSyncAttachment {
+            scheme: u32::from(attachment.attachment_scheme().as_u16()),
+            payload: Some(proto::note::note_sync_attachment::Payload::Commitment(
+                attachment.to_commitment().into(),
+            )),
+        }];
+        let attachments = NoteAttachments::new(vec![attachment]).unwrap();
+
+        let decoded: SyncNoteMetadata = sync_metadata(proto_attachments).try_into().unwrap();
+
+        // The metadata is still reconstructed exactly, only the content is missing.
+        assert_eq!(
+            decoded.metadata,
+            NoteMetadata::new(
+                PartialNoteMetadata::new(sender(), NoteType::Private).with_tag(NoteTag::new(7)),
+                &attachments,
+            )
+        );
+        assert!(matches!(decoded.attachments, ReportedAttachments::Commitments(_)));
+        assert!(committed_note(decoded).needs_attachment_fetch());
     }
 
     #[test]
@@ -752,7 +920,7 @@ mod tests {
         };
         let attachments = vec![attachment; NoteAttachments::MAX_COUNT + 1];
 
-        let err = NoteMetadata::try_from(sync_metadata(attachments)).unwrap_err();
+        let err = SyncNoteMetadata::try_from(sync_metadata(attachments)).unwrap_err();
 
         assert!(matches!(err, RpcConversionError::InvalidField(_)), "got {err:?}");
     }
@@ -764,7 +932,7 @@ mod tests {
             payload: Some(proto::note::note_sync_attachment::Payload::Value(Word::empty().into())),
         }];
 
-        let err = NoteMetadata::try_from(sync_metadata(attachments)).unwrap_err();
+        let err = SyncNoteMetadata::try_from(sync_metadata(attachments)).unwrap_err();
 
         assert!(matches!(err, RpcConversionError::InvalidField(_)), "got {err:?}");
     }
@@ -773,11 +941,40 @@ mod tests {
     fn sync_metadata_rejects_missing_attachment_payload() {
         let attachments = vec![proto::note::NoteSyncAttachment { scheme: 42, payload: None }];
 
-        let err = NoteMetadata::try_from(sync_metadata(attachments)).unwrap_err();
+        let err = SyncNoteMetadata::try_from(sync_metadata(attachments)).unwrap_err();
 
         assert!(
             matches!(err, RpcConversionError::MissingFieldInProtobufRepresentation { .. }),
             "got {err:?}"
         );
+    }
+
+    #[test]
+    fn synced_note_rejects_a_body_for_a_private_note() {
+        let decoded: SyncNoteMetadata = sync_metadata(Vec::new()).try_into().unwrap();
+        let committed = committed_note(decoded);
+
+        let note_script = CodeBuilder::new()
+            .compile_note_script("@note_script\npub proc main\n    nop\nend")
+            .unwrap();
+        let recipient =
+            NoteRecipient::new(Word::empty(), note_script, NoteStorage::new(vec![]).unwrap());
+        let details = NoteDetails::new(NoteAssets::new(vec![]).unwrap(), recipient);
+
+        let err = SyncedNote::new(committed, Some(details), NoteAttachments::empty()).unwrap_err();
+
+        assert!(matches!(err, RpcError::InvalidResponse(_)), "got {err:?}");
+    }
+
+    /// A note advertising attachments whose content never arrived is rejected: empty attachments
+    /// hash to a different commitment than the note's.
+    #[test]
+    fn synced_note_rejects_unresolved_attachments() {
+        let attachments = NoteAttachments::new(vec![multi_word_attachment(100)]).unwrap();
+        let committed = committed_note(decode_sync_metadata(&attachments));
+
+        let err = SyncedNote::new(committed, None, NoteAttachments::empty()).unwrap_err();
+
+        assert!(matches!(err, RpcError::InvalidResponse(_)), "got {err:?}");
     }
 }

@@ -30,7 +30,7 @@ use miden_client::{ClientError, EMPTY_WORD, Word};
 use rand::Rng;
 use tracing::info;
 
-use crate::tests::config::ClientConfig;
+use crate::ClientConfig;
 
 // TESTS
 // ================================================================================================
@@ -39,15 +39,9 @@ pub async fn test_onchain_notes_flow(client_config: ClientConfig) -> Result<()> 
     // Client 1 is an private faucet which will mint an onchain note for client 2
     let (mut client_1, keystore_1) = client_config.clone().into_client().await?;
     // Client 2 is an private account which will consume the note that it will sync from the node
-    let (mut client_2, keystore_2) = ClientConfig::default()
-        .with_rpc_endpoint(client_config.rpc_endpoint())
-        .into_client()
-        .await?;
+    let (mut client_2, keystore_2) = client_config.clone().into_client().await?;
     // Client 3 will be transferred part of the assets by client 2's account
-    let (mut client_3, keystore_3) = ClientConfig::default()
-        .with_rpc_endpoint(client_config.rpc_endpoint())
-        .into_client()
-        .await?;
+    let (mut client_3, keystore_3) = client_config.clone().into_client().await?;
     wait_for_node(&mut client_3).await;
 
     // Create faucet account
@@ -134,23 +128,29 @@ pub async fn test_onchain_notes_flow(client_config: ClientConfig) -> Result<()> 
         NoteType::Public,
         client_2.rng(),
     )?;
-    let note = tx_request
+    let reclaimed_note = tx_request
         .expected_output_own_notes()
         .pop()
         .with_context(|| "no expected output notes found in onchain transaction from basic wallet")?
         .clone();
     execute_tx_and_sync(&mut client_2, basic_wallet_1.id(), tx_request).await?;
 
-    let tx_request = TransactionRequestBuilder::new().build_consume_notes(vec![note.clone()])?;
+    let tx_request =
+        TransactionRequestBuilder::new().build_consume_notes(vec![reclaimed_note.clone()])?;
     execute_tx_and_sync(&mut client_2, basic_wallet_1.id(), tx_request).await?;
 
     // sync client 3 (basic account 2)
     client_3.sync_state().await?;
 
     // client 3 should have two notes, the one directed to them and the one consumed by client 2
-    // (which should come from the tag added)
+    // (which should come from the tag added). The reclaimed one is looked up by ID rather than by
+    // counting, since on a fee-charging chain the account also consumed a note to fund itself.
     assert_eq!(client_3.get_input_notes(NoteFilter::Committed).await?.len(), 1);
-    assert_eq!(client_3.get_input_notes(NoteFilter::Consumed).await?.len(), 1);
+    let consumed = client_3.get_input_notes(NoteFilter::Consumed).await?;
+    assert!(
+        consumed.iter().any(|note| note.id() == Some(reclaimed_note.id())),
+        "client 3 should track the reclaimed note as consumed"
+    );
 
     let note = client_3
         .get_input_notes(NoteFilter::Committed)
@@ -174,10 +174,7 @@ pub async fn test_onchain_notes_flow(client_config: ClientConfig) -> Result<()> 
 
 pub async fn test_onchain_accounts(client_config: ClientConfig) -> Result<()> {
     let (mut client_1, keystore_1) = client_config.clone().into_client().await?;
-    let (mut client_2, keystore_2) = ClientConfig::default()
-        .with_rpc_endpoint(client_config.rpc_endpoint())
-        .into_client()
-        .await?;
+    let (mut client_2, keystore_2) = client_config.clone().into_client().await?;
     wait_for_node(&mut client_2).await;
 
     let (faucet_account_header, secret_key) = insert_new_fungible_faucet(
@@ -352,10 +349,7 @@ pub async fn test_onchain_accounts(client_config: ClientConfig) -> Result<()> {
 
 pub async fn test_import_account_by_id(client_config: ClientConfig) -> Result<()> {
     let (mut client_1, keystore_1) = client_config.clone().into_client().await?;
-    let (mut client_2, keystore_2) = ClientConfig::default()
-        .with_rpc_endpoint(client_config.rpc_endpoint())
-        .into_client()
-        .await?;
+    let (mut client_2, keystore_2) = client_config.clone().into_client().await?;
     wait_for_node(&mut client_1).await;
 
     let mut user_seed = [0u8; 32];
@@ -438,10 +432,7 @@ pub async fn test_import_account_by_id(client_config: ClientConfig) -> Result<()
 ///     txs (watched accounts track on-chain state, not their note outputs).
 pub async fn test_import_watched_account_by_id(client_config: ClientConfig) -> Result<()> {
     let (mut client_1, keystore_1) = client_config.clone().into_client().await?;
-    let (mut client_2, _keystore_2) = ClientConfig::default()
-        .with_rpc_endpoint(client_config.rpc_endpoint())
-        .into_client()
-        .await?;
+    let (mut client_2, _keystore_2) = client_config.clone().into_client().await?;
     wait_for_node(&mut client_1).await;
 
     let (faucet_account, _) = insert_new_fungible_faucet(
@@ -546,8 +537,7 @@ pub async fn test_import_watched_account_by_id(client_config: ClientConfig) -> R
 }
 
 pub async fn test_incorrect_genesis(client_config: ClientConfig) -> Result<()> {
-    let (builder, _) = client_config.into_client_builder().await?;
-    let mut client = builder.build().await?;
+    let (mut client, _) = client_config.into_unsynced_client().await?;
 
     // Set an incorrect genesis commitment
     client.test_rpc_api().set_genesis_commitment(EMPTY_WORD).await?;
@@ -607,13 +597,21 @@ pub async fn test_consumed_note_ordering(client_config: ClientConfig) -> Result<
     }
     client.sync_state().await?;
 
-    // Build a consume request per minted note and submit them as a single proven batch.
+    // Requests are built before the batch borrows the client, so a funding note can still be
+    // folded in.
+    let requests: Vec<_> = minted_notes
+        .iter()
+        .map(|note| {
+            let tx_request = TransactionRequestBuilder::new()
+                .build_consume_notes(vec![note.clone()])
+                .unwrap();
+            client.fund_request(wallet_account.id(), tx_request)
+        })
+        .collect();
+
     let mut batch = client.new_transaction_batch();
-    for (i, note) in minted_notes.iter().enumerate() {
-        let tx_request = TransactionRequestBuilder::new()
-            .build_consume_notes(vec![note.clone()])
-            .unwrap();
-        info!(note_id = %note.id(), index = i, "Pushing consume tx into batch");
+    for (i, tx_request) in requests.into_iter().enumerate() {
+        info!(index = i, "Pushing consume tx into batch");
         batch.push(wallet_account.id(), tx_request).await?;
     }
     let submission_tip = batch.submit().await?;
@@ -725,10 +723,7 @@ pub async fn test_watched_account_recovers_consumed_public_note(
     client_config: ClientConfig,
 ) -> Result<()> {
     let (mut client_a, keystore_a) = client_config.clone().into_client().await?;
-    let (mut client_b, _keystore_b) = ClientConfig::default()
-        .with_rpc_endpoint(client_config.rpc_endpoint())
-        .into_client()
-        .await?;
+    let (mut client_b, _keystore_b) = client_config.clone().into_client().await?;
     wait_for_node(&mut client_a).await;
 
     let (faucet, _) = insert_new_fungible_faucet(
@@ -799,10 +794,7 @@ pub async fn test_watched_account_recovers_consumed_public_note(
 /// 4. Client 2 consumes both notes.
 pub async fn test_sync_note_with_attachment(client_config: ClientConfig) -> Result<()> {
     let (mut client_1, keystore_1) = client_config.clone().into_client().await?;
-    let (mut client_2, keystore_2) = ClientConfig::default()
-        .with_rpc_endpoint(client_config.rpc_endpoint())
-        .into_client()
-        .await?;
+    let (mut client_2, keystore_2) = client_config.clone().into_client().await?;
     wait_for_node(&mut client_1).await;
 
     // Create faucet in client 1
@@ -867,8 +859,8 @@ pub async fn test_sync_note_with_attachment(client_config: ClientConfig) -> Resu
         }])
         .await?;
 
-    // Client 2 syncs and should discover both notes. sync_notes carries full metadata for both;
-    // get_notes_by_id then resolves the public note body and the private note's attachment content.
+    // Client 2 syncs and should discover both notes. Both attachments are single words, so the
+    // sync response carries them and only the public note's body needs `get_notes_by_id`.
     info!("Syncing client 2 to discover notes with attachments");
     client_2.sync_state().await?;
 

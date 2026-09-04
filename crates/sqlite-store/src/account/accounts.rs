@@ -1,6 +1,6 @@
 //! Account-related database operations.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::string::ToString;
 use std::vec::Vec;
 
@@ -288,6 +288,22 @@ impl SqliteStore {
         Ok((item, witness))
     }
 
+    /// Retrieves vault asset witnesses for the given vault keys, including emptiness proofs for
+    /// keys absent from the vault (which the executor needs when an asset is being added).
+    ///
+    /// The witnesses are opened against the account's vault tree in the forest, after verifying
+    /// that its root matches `vault_root` — the committed root the caller expects.
+    pub(crate) fn get_vault_asset_witnesses(
+        conn: &mut Connection,
+        account_id: AccountId,
+        vault_root: Word,
+        asset_ids: BTreeSet<AssetId>,
+    ) -> Result<Vec<AssetWitness>, StoreError> {
+        let db_tx = conn.transaction().into_store_error()?;
+        let smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&db_tx))?;
+        smt_forest.open_vault_asset_witnesses(account_id, vault_root, asset_ids)
+    }
+
     pub(crate) fn get_account_addresses(
         conn: &mut Connection,
         account_id: AccountId,
@@ -390,15 +406,16 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// Returns `true` if a row was deleted, `false` if the address wasn't tracked.
     pub(crate) fn remove_address(
         conn: &mut Connection,
         address: &Address,
-    ) -> Result<(), StoreError> {
+    ) -> Result<bool, StoreError> {
         with_write_tx(conn, |tx| {
-            let serialized_address = address.to_bytes();
             const DELETE_QUERY: &str = "DELETE FROM addresses WHERE address = ?";
-            tx.execute(DELETE_QUERY, params![serialized_address]).into_store_error()?;
-            Ok(())
+            let count = tx.execute(DELETE_QUERY, params![address.to_bytes()]).into_store_error()?;
+
+            Ok(count > 0)
         })
     }
 

@@ -60,7 +60,7 @@ pub struct ExecCmd {
 impl ExecCmd {
     pub async fn execute<AUTH: Keystore + Sync + 'static>(
         &self,
-        mut client: Client<AUTH>,
+        client: Client<AUTH>,
     ) -> Result<(), CliError> {
         let script_path = PathBuf::from(&self.script_path);
         if !script_path.exists() {
@@ -87,7 +87,7 @@ impl ExecCmd {
         let tx_script = client.code_builder().compile_tx_script(script_path.as_path())?;
 
         let output_stack =
-            self.execute_program(&mut client, account_id, tx_script, advice_inputs).await?;
+            self.execute_program(&client, account_id, tx_script, advice_inputs).await?;
 
         println!("Program executed successfully");
         if self.hex_words {
@@ -100,7 +100,7 @@ impl ExecCmd {
 
     async fn execute_program<AUTH: Keystore + Sync + 'static>(
         &self,
-        client: &mut Client<AUTH>,
+        client: &Client<AUTH>,
         account_id: AccountId,
         tx_script: TransactionScript,
         advice_inputs: AdviceInputs,

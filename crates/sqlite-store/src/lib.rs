@@ -6,14 +6,15 @@
 
 use std::boxed::Box;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::string::{String, ToString};
+use std::time::Duration;
 use std::vec::Vec;
 
-use db_management::migrations::apply_migrations;
+use db_management::migration::SqliteMigrator;
 use db_management::pool_manager::{Pool, SqlitePoolManager};
-use db_management::settings::{get_setting, list_setting_keys, remove_setting, set_setting};
+use deadpool::Runtime;
 use miden_client::Word;
 use miden_client::account::{
     Account,
@@ -35,11 +36,13 @@ use miden_client::store::{
     AccountStorageFilter,
     BlockRelevance,
     ClientAccountType,
+    InputNoteCursor,
     InputNoteRecord,
     NoteFilter,
     OutputNoteRecord,
     PartialBlockchainFilter,
     SettingMutation,
+    SettingScope,
     Store,
     StoreError,
     TransactionFilter,
@@ -54,13 +57,15 @@ use rusqlite::Connection;
 use rusqlite::types::Value;
 use sql_error::SqlResultExt;
 
+use crate::account::rows::query_vault_assets;
+
 mod account;
 mod builder;
 mod chain_data;
 mod db_management;
 mod forest;
-mod macros;
 mod note;
+mod settings;
 mod sql_error;
 mod sync;
 mod transaction;
@@ -70,13 +75,13 @@ pub use builder::ClientBuilderSqliteExt;
 // SQLITE STORE
 // ================================================================================================
 
-/// Represents a pool of connections with an `SQLite` database. The pool is used to interact
-/// concurrently with the underlying database in a safe and efficient manner.
+/// `SQLite`-backed [`Store`] implementation.
 ///
-/// Current table definitions can be found in the `migrations/` SQL files.
+/// Current table definitions are the result of applying every migration under `migrations/` in
+/// order.
 pub struct SqliteStore {
     pub(crate) pool: Pool,
-    database_filepath: String,
+    database_filepath: PathBuf,
 }
 
 impl SqliteStore {
@@ -85,25 +90,43 @@ impl SqliteStore {
 
     /// Returns a new instance of [Store] instantiated with the specified configuration options.
     pub async fn new(database_filepath: PathBuf) -> Result<Self, StoreError> {
-        let database_filepath_str = database_filepath.to_string_lossy().into_owned();
-        let sqlite_pool_manager = SqlitePoolManager::new(database_filepath);
+        if database_filepath.to_str().is_none() {
+            return Err(database_error(format!(
+                "database path is not valid UTF-8: {}",
+                database_filepath.display()
+            )));
+        }
+
+        let sqlite_pool_manager = SqlitePoolManager::new(database_filepath.clone());
         let pool = Pool::builder(sqlite_pool_manager)
+            .wait_timeout(Some(Duration::from_secs(30)))
+            .runtime(Runtime::Tokio1)
             .build()
-            .map_err(|e| StoreError::DatabaseError(e.to_string()))?;
+            .map_err(database_error)?;
 
-        let conn = pool.get().await.map_err(|e| StoreError::DatabaseError(e.to_string()))?;
-
-        conn.interact(apply_migrations)
-            .await
-            .map_err(|e| StoreError::DatabaseError(e.to_string()))?
-            .map_err(|e| StoreError::DatabaseError(e.to_string()))?;
+        Self::migrate(&pool, SqliteMigrator::client()).await?;
 
         // Account SMT data is persisted in the forest tables and read on demand, so no state
         // needs to be rebuilt here.
-        Ok(SqliteStore {
-            pool,
-            database_filepath: database_filepath_str,
-        })
+        Ok(SqliteStore { pool, database_filepath })
+    }
+
+    /// Returns the path of the database file backing this store.
+    pub fn database_filepath(&self) -> &Path {
+        &self.database_filepath
+    }
+
+    /// Brings the database in `pool` up to the latest version of the schema `migration` builds.
+    ///
+    /// The upgrade is verified before it is committed, so a failure is rolled back by `SQLite` and
+    /// leaves the store exactly as it was.
+    async fn migrate(pool: &Pool, migration: &'static SqliteMigrator) -> Result<(), StoreError> {
+        let conn = pool.get().await.map_err(database_error)?;
+
+        conn.interact(move |conn| migration.apply(conn))
+            .await
+            .map_err(database_error)?
+            .map_err(database_error)
     }
 
     /// Interacts with the database by executing the provided function on a connection from the
@@ -120,10 +143,10 @@ impl SqliteStore {
         self.pool
             .get()
             .await
-            .map_err(|err| StoreError::DatabaseError(err.to_string()))?
+            .map_err(database_error)?
             .interact(f)
             .await
-            .map_err(|err| StoreError::DatabaseError(err.to_string()))?
+            .map_err(database_error)?
     }
 }
 
@@ -134,7 +157,9 @@ impl SqliteStore {
 #[async_trait::async_trait]
 impl Store for SqliteStore {
     fn identifier(&self) -> &str {
-        &self.database_filepath
+        self.database_filepath
+            .to_str()
+            .expect("rejected by SqliteStore::new when not UTF-8")
     }
 
     fn get_current_timestamp(&self) -> Option<u64> {
@@ -211,22 +236,22 @@ impl Store for SqliteStore {
             .await
     }
 
-    async fn get_input_note_by_offset(
+    async fn get_input_note_after(
         &self,
         filter: NoteFilter,
         consumer: AccountId,
         block_start: Option<BlockNumber>,
         block_end: Option<BlockNumber>,
-        offset: u32,
+        cursor: Option<InputNoteCursor>,
     ) -> Result<Option<InputNoteRecord>, StoreError> {
         self.interact_with_connection(move |conn| {
-            SqliteStore::get_input_note_by_offset(
+            SqliteStore::get_input_note_after(
                 conn,
                 &filter,
                 consumer,
                 block_start,
                 block_end,
-                offset,
+                cursor,
             )
         })
         .await
@@ -420,28 +445,56 @@ impl Store for SqliteStore {
         .await
     }
 
-    async fn set_setting(&self, key: String, value: Vec<u8>) -> Result<(), StoreError> {
-        self.interact_with_connection(move |conn| set_setting(conn, &key, &value)).await
+    async fn set_setting(
+        &self,
+        scope: SettingScope,
+        key: String,
+        value: Vec<u8>,
+    ) -> Result<(), StoreError> {
+        self.interact_with_connection(move |conn| {
+            SqliteStore::set_setting(conn, scope, &key, &value).into_store_error()
+        })
+        .await
     }
 
-    async fn get_setting(&self, key: String) -> Result<Option<Vec<u8>>, StoreError> {
-        self.interact_with_connection(move |conn| get_setting(conn, &key)).await
+    async fn get_setting(
+        &self,
+        scope: SettingScope,
+        key: String,
+    ) -> Result<Option<Vec<u8>>, StoreError> {
+        self.interact_with_connection(move |conn| SqliteStore::get_setting(conn, scope, &key))
+            .await
     }
 
-    async fn remove_setting(&self, key: String) -> Result<(), StoreError> {
-        self.interact_with_connection(move |conn| remove_setting(conn, &key)).await
+    async fn remove_setting(&self, scope: SettingScope, key: String) -> Result<bool, StoreError> {
+        self.interact_with_connection(move |conn| SqliteStore::remove_setting(conn, scope, &key))
+            .await
     }
 
-    async fn list_setting_keys(&self) -> Result<Vec<String>, StoreError> {
-        self.interact_with_connection(move |conn| list_setting_keys(conn)).await
+    async fn list_setting_keys(&self, scope: SettingScope) -> Result<Vec<String>, StoreError> {
+        self.interact_with_connection(move |conn| SqliteStore::list_setting_keys(conn, scope))
+            .await
     }
 
     async fn apply_settings_mutations(
         &self,
+        scope: SettingScope,
         mutations: Vec<SettingMutation>,
     ) -> Result<(), StoreError> {
         self.interact_with_connection(move |conn| {
-            SqliteStore::apply_settings_mutations(conn, &mutations)
+            with_write_tx(conn, |tx| {
+                for mutation in &mutations {
+                    match mutation {
+                        SettingMutation::Set { key, value } => {
+                            SqliteStore::set_setting(tx, scope, key, value).into_store_error()?;
+                        },
+                        SettingMutation::Remove { key } => {
+                            SqliteStore::remove_setting(tx, scope, key)?;
+                        },
+                    }
+                }
+                Ok(())
+            })
         })
         .await
     }
@@ -456,6 +509,23 @@ impl Store for SqliteStore {
             .await
     }
 
+    async fn get_account_assets(&self, account_id: AccountId) -> Result<Vec<Asset>, StoreError> {
+        self.interact_with_connection(move |conn| query_vault_assets(conn, account_id))
+            .await
+    }
+
+    async fn get_vault_asset_witnesses(
+        &self,
+        account_id: AccountId,
+        vault_root: Word,
+        asset_ids: BTreeSet<AssetId>,
+    ) -> Result<Vec<AssetWitness>, StoreError> {
+        self.interact_with_connection(move |conn| {
+            SqliteStore::get_vault_asset_witnesses(conn, account_id, vault_root, asset_ids)
+        })
+        .await
+    }
+
     async fn get_account_asset(
         &self,
         account_id: AccountId,
@@ -463,17 +533,6 @@ impl Store for SqliteStore {
     ) -> Result<Option<(Asset, AssetWitness)>, StoreError> {
         self.interact_with_connection(move |conn| {
             SqliteStore::get_account_asset(conn, account_id, asset_id)
-        })
-        .await
-    }
-
-    async fn get_account_storage(
-        &self,
-        account_id: AccountId,
-        filter: AccountStorageFilter,
-    ) -> Result<AccountStorage, StoreError> {
-        self.interact_with_connection(move |conn| {
-            SqliteStore::get_account_storage(conn, account_id, &filter)
         })
         .await
     }
@@ -486,6 +545,17 @@ impl Store for SqliteStore {
     ) -> Result<(Word, StorageMapWitness), StoreError> {
         self.interact_with_connection(move |conn| {
             SqliteStore::get_account_map_item(conn, account_id, slot_name, key)
+        })
+        .await
+    }
+
+    async fn get_account_storage(
+        &self,
+        account_id: AccountId,
+        filter: AccountStorageFilter,
+    ) -> Result<AccountStorage, StoreError> {
+        self.interact_with_connection(move |conn| {
+            SqliteStore::get_account_storage(conn, account_id, &filter)
         })
         .await
     }
@@ -511,7 +581,7 @@ impl Store for SqliteStore {
         .await
     }
 
-    async fn remove_address(&self, address: Address) -> Result<(), StoreError> {
+    async fn remove_address(&self, address: Address) -> Result<bool, StoreError> {
         self.interact_with_connection(move |conn| SqliteStore::remove_address(conn, &address))
             .await
     }
@@ -529,6 +599,10 @@ impl Store for SqliteStore {
 
 // UTILS
 // ================================================================================================
+
+fn database_error(err: impl core::fmt::Display) -> StoreError {
+    StoreError::DatabaseError(err.to_string())
+}
 
 /// Returns the current UTC timestamp as `u64` (non-leap seconds since Unix epoch).
 pub(crate) fn current_timestamp_u64() -> u64 {
@@ -620,11 +694,37 @@ fn with_write_tx_behavior<R>(
 #[cfg(test)]
 pub mod tests {
     use std::boxed::Box;
+    use std::sync::LazyLock;
 
     use miden_client::store::Store;
     use miden_client::testing::common::create_test_store_path;
 
-    use super::{SqliteStore, StoreError, column_value_as_u64, u64_to_value, with_write_tx};
+    use super::db_management::migration::SqliteMigrator;
+    use super::db_management::migration::tests::damaging_migration;
+    use super::db_management::pool_manager::SqlitePoolManager;
+    use super::{Pool, SqliteStore, StoreError, column_value_as_u64, u64_to_value, with_write_tx};
+
+    /// A migration set that changes the store and is then rejected, which is the failure the
+    /// rollback has to undo.
+    static DAMAGING_MIGRATION: LazyLock<SqliteMigrator> = LazyLock::new(damaging_migration);
+
+    #[tokio::test]
+    async fn failed_migration_leaves_the_store_as_it_was() {
+        let database_filepath = create_test_store_path();
+        drop(SqliteStore::new(database_filepath.clone()).await.unwrap());
+
+        let pool = Pool::builder(SqlitePoolManager::new(database_filepath.clone()))
+            .build()
+            .unwrap();
+        let err = SqliteStore::migrate(&pool, &DAMAGING_MIGRATION).await.unwrap_err();
+
+        assert!(
+            err.to_string().contains("produced a schema this client does not expect"),
+            "the migration should have been rejected, got {err}"
+        );
+        // Reopening verifies the schema, so it only succeeds if the dropped table is still there.
+        SqliteStore::new(database_filepath).await.unwrap();
+    }
 
     fn assert_send_sync<T: Send + Sync>() {}
 

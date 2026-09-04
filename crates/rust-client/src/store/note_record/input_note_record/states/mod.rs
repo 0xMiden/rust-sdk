@@ -71,6 +71,19 @@ impl InputNoteState {
     pub const STATE_CONSUMED_UNAUTHENTICATED_LOCAL: u8 = 7;
     pub const STATE_CONSUMED_EXTERNAL: u8 = 8;
 
+    /// Discriminants of the states in which the note hasn't been nullified yet. `Invalid` is left
+    /// out because such a note can never be consumed.
+    ///
+    /// The list is the definition backing [`InputNoteState::is_unspent`], so a store can filter on
+    /// the persisted discriminant without restating the set.
+    pub const UNSPENT_STATES: [u8; 5] = [
+        Self::STATE_EXPECTED,
+        Self::STATE_UNVERIFIED,
+        Self::STATE_COMMITTED,
+        Self::STATE_PROCESSING_AUTHENTICATED,
+        Self::STATE_PROCESSING_UNAUTHENTICATED,
+    ];
+
     /// Returns the inner state handler that implements state transitions.
     fn inner(&self) -> &dyn NoteStateHandler {
         match self {
@@ -103,6 +116,12 @@ impl InputNoteState {
             },
             InputNoteState::ConsumedExternal(_) => Self::STATE_CONSUMED_EXTERNAL,
         }
+    }
+
+    /// Returns true if the note hasn't been nullified yet and can still be consumed. `Invalid`
+    /// notes count as neither unspent nor consumed.
+    pub fn is_unspent(&self) -> bool {
+        Self::UNSPENT_STATES.contains(&self.discriminant())
     }
 
     pub(crate) fn metadata(&self) -> Option<&NoteMetadata> {

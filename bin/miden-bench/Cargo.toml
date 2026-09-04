@@ -18,8 +18,9 @@ path = "src/main.rs"
 
 [dependencies]
 # Workspace dependencies
-miden-client              = { features = ["std", "testing", "tonic"], path = "../../crates/rust-client" }
-miden-client-sqlite-store = { path = "../../crates/sqlite-store" }
+miden-client                   = { features = ["std", "testing", "tonic"], path = "../../crates/rust-client" }
+miden-client-integration-tests = { workspace = true }
+miden-client-sqlite-store      = { path = "../../crates/sqlite-store" }
 
 # External dependencies
 anyhow      = { features = ["std"], workspace = true }

@@ -61,8 +61,10 @@ impl SqliteStore {
     pub(crate) fn get_tracked_block_headers(
         conn: &mut Connection,
     ) -> Result<Vec<BlockHeader>, StoreError> {
+        // `idx_block_headers_has_notes` is declared `WHERE has_client_notes = 1`, and SQLite
+        // matches a partial index only when the predicate is spelled the same way.
         const QUERY: &str =
-            "SELECT header, has_client_notes FROM block_headers WHERE has_client_notes=true";
+            "SELECT header, has_client_notes FROM block_headers WHERE has_client_notes=1";
         conn.prepare(QUERY)
             .into_store_error()?
             .query_map(params![], parse_block_headers_columns)
@@ -78,7 +80,7 @@ impl SqliteStore {
     pub(crate) fn get_tracked_block_header_numbers(
         conn: &mut Connection,
     ) -> Result<BTreeSet<usize>, StoreError> {
-        const QUERY: &str = "SELECT block_num FROM block_headers WHERE has_client_notes=true";
+        const QUERY: &str = "SELECT block_num FROM block_headers WHERE has_client_notes=1";
         conn.prepare(QUERY)
             .into_store_error()?
             .query_map(params![], |row| row.get::<_, u32>(0))
@@ -362,7 +364,7 @@ pub(crate) fn set_block_header_has_client_notes(
     const QUERY: &str = "\
         UPDATE block_headers
         SET has_client_notes=?
-        WHERE block_num=? AND has_client_notes=FALSE;";
+        WHERE block_num=? AND has_client_notes=0;";
     tx.execute(QUERY, params![has_client_notes, block_num]).into_store_error()?;
     Ok(())
 }

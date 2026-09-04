@@ -6,26 +6,20 @@ use miden_protocol::account::StorageMapKey;
 use miden_protocol::{Hasher, ONE, Word, ZERO};
 
 use super::{AgglayerConfig, create_agglayer_clients, setup_core_accounts};
-use crate::tests::config::ClientConfig;
+use crate::ClientConfig;
 
 // TESTS
 // ================================================================================================
 
-/// Test GER update flow.
-///
-/// If `AGGLAYER_ACCOUNTS_DIR` is set, loads pre-deployed accounts from `.mac` files (complete
-/// genesis mode). Otherwise, creates all accounts at runtime (empty genesis mode).
+/// Test GER update flow, against the pre-deployed accounts (see [`AgglayerConfig`]).
 pub async fn test_agglayer_update_ger(client_config: ClientConfig) -> Result<()> {
     let agglayer_config = AgglayerConfig::from_env()?;
+    let _agglayer_accounts = agglayer_config.claim()?;
     let (mut bridge_admin, mut ger_manager, mut user) =
         create_agglayer_clients(&client_config).await?;
-    let (_bridge_admin_id, ger_manager_id, bridge_id) = setup_core_accounts(
-        agglayer_config.as_ref(),
-        &mut bridge_admin,
-        &mut ger_manager,
-        &mut user,
-    )
-    .await?;
+    let (_bridge_admin_id, ger_manager_id, bridge_id) =
+        setup_core_accounts(&agglayer_config, &mut bridge_admin, &mut ger_manager, &mut user)
+            .await?;
 
     // CREATE UPDATE_GER NOTE
     // --------------------------------------------------------------------------------------------
@@ -43,25 +37,36 @@ pub async fn test_agglayer_update_ger(client_config: ClientConfig) -> Result<()>
 
     // WAIT FOR NETWORK ACCOUNT TO PROCESS UPDATE_GER NOTE
     // --------------------------------------------------------------------------------------------
-    wait_for_blocks(&mut ger_manager.client, 5).await;
+    // Polled rather than waited out: the node builds the network transaction on its own
+    // schedule, which stretches with load.
+    const MAX_POLL_BLOCKS: usize = 60;
 
-    // VERIFY GER HASH WAS STORED IN MAP
-    // --------------------------------------------------------------------------------------------
     let ger_elements = ger.to_elements();
     let ger_lower: Word = ger_elements[0..4].try_into().expect("to_elements returns 8 felts");
     let ger_upper: Word = ger_elements[4..8].try_into().expect("to_elements returns 8 felts");
     let ger_key = Hasher::merge(&[ger_lower, ger_upper]);
 
-    let stored_value = ger_manager
-        .client
-        .account_reader(bridge_id)
-        .get_storage_map_item(
-            AggLayerBridge::ger_map_slot_name().clone(),
-            StorageMapKey::new(ger_key),
-        )
-        .await?;
+    let mut is_registered = false;
+    for _ in 0..MAX_POLL_BLOCKS {
+        let stored_value = ger_manager
+            .client
+            .account_reader(bridge_id)
+            .get_storage_map_item(
+                AggLayerBridge::ger_map_slot_name().clone(),
+                StorageMapKey::new(ger_key),
+            )
+            .await?;
 
-    let is_registered = stored_value == Word::new([ONE, ZERO, ZERO, ZERO]);
+        is_registered = stored_value == Word::new([ONE, ZERO, ZERO, ZERO]);
+        if is_registered {
+            break;
+        }
+
+        wait_for_blocks(&mut ger_manager.client, 1).await;
+    }
+
+    // VERIFY GER HASH WAS STORED IN MAP
+    // --------------------------------------------------------------------------------------------
     println!("GER registered: {is_registered}");
 
     assert!(is_registered, "GER was not registered in the bridge account");

@@ -5,13 +5,14 @@ use std::rc::Rc;
 
 use miden_client::account::AccountId;
 use miden_client::note::{BlockNumber, NoteId};
-use miden_client::store::{InputNoteState, NoteFilter, OutputNoteState};
-use rusqlite::types::Value;
+use miden_client::store::{InputNoteCursor, InputNoteState, NoteFilter, OutputNoteState};
+use miden_client::utils::Serializable;
+use rusqlite::types::{ToSqlOutput, Value};
 
 use super::{INPUT_NOTE_COLUMNS, OUTPUT_NOTE_COLUMNS};
 use crate::blob_array;
 
-type NoteQueryParams = Vec<Rc<Vec<Value>>>;
+type NoteQueryParams = Vec<ToSqlOutput<'static>>;
 
 /// Builds a `column IN rarray(?)` condition, pushing the bound value list onto `params`.
 ///
@@ -22,17 +23,24 @@ fn in_rarray_condition(
     values: Rc<Vec<Value>>,
     params: &mut NoteQueryParams,
 ) -> String {
-    params.push(values);
+    params.push(ToSqlOutput::Array(values));
     format!("({column} IN rarray(?))")
 }
 
 // NOTE FILTER (OUTPUT NOTES)
 // ================================================================================================
 
+fn output_notes_base_query() -> String {
+    format!(
+        "SELECT {OUTPUT_NOTE_COLUMNS} from output_notes AS note \
+         LEFT OUTER JOIN notes_scripts AS script ON note.script_root = script.script_root"
+    )
+}
+
 /// Returns the output notes query for a specific `NoteFilter`
 pub(super) fn note_filter_to_query_output_notes(filter: &NoteFilter) -> (String, NoteQueryParams) {
     let (condition, params) = note_filter_output_notes_condition(filter);
-    let query = format!("SELECT {OUTPUT_NOTE_COLUMNS} from output_notes AS note WHERE {condition}");
+    let query = format!("{} WHERE {condition}", output_notes_base_query());
 
     (query, params)
 }
@@ -59,8 +67,10 @@ pub(super) fn note_filter_output_notes_condition(filter: &NoteFilter) -> (String
                 OutputNoteState::STATE_EXPECTED_FULL
             )
         },
-        NoteFilter::Processing | NoteFilter::ScriptRoots(_) | NoteFilter::Unverified => {
-            "1 = 0".to_string()
+        NoteFilter::Processing | NoteFilter::Unverified => "1 = 0".to_string(),
+        NoteFilter::ScriptRoots(script_roots) => {
+            // Notes without known details have a NULL script root and never match.
+            in_rarray_condition("note.script_root", blob_array(script_roots), &mut params)
         },
         NoteFilter::Unique(note_id) => {
             in_rarray_condition("note.note_id", blob_array([note_id.as_word()]), &mut params)
@@ -108,7 +118,7 @@ pub(super) fn note_filter_to_query_input_notes(filter: &NoteFilter) -> (String, 
             "{base_query} WHERE {condition} \
              ORDER BY note.consumed_block_height ASC, \
                       note.consumed_tx_order IS NULL, note.consumed_tx_order ASC, \
-                      note.note_id ASC"
+                      note.details_commitment ASC"
         )
     } else {
         format!("{base_query} WHERE {condition}")
@@ -117,34 +127,59 @@ pub(super) fn note_filter_to_query_input_notes(filter: &NoteFilter) -> (String, 
     (query, params)
 }
 
-/// Returns a query that fetches a single input note at the given offset from the filtered set,
-/// restricted to a consumer account and optionally to a block range.
-pub(super) fn note_filter_to_query_input_note_by_offset(
+/// Returns a query that fetches the input note following `cursor` in the filtered set, restricted
+/// to a consumer account and optionally to a block range.
+pub(super) fn note_filter_to_query_input_note_after(
     filter: &NoteFilter,
     consumer: AccountId,
     block_start: Option<BlockNumber>,
     block_end: Option<BlockNumber>,
-    offset: u32,
+    cursor: Option<InputNoteCursor>,
 ) -> (String, NoteQueryParams) {
-    use core::fmt::Write;
     let (mut condition, mut params) = note_filter_input_notes_condition(filter);
 
-    let consumer_condition =
-        in_rarray_condition("note.consumer_account_id", blob_array([&consumer]), &mut params);
-    let _ = write!(condition, " AND {consumer_condition}");
+    // `consumer_account_id` is the first column of `idx_input_notes_consumption`. The equality
+    // avoids a full sort for the ORDER BY.
+    params.push(ToSqlOutput::from(consumer.to_bytes()));
+    condition.push_str(" AND note.consumer_account_id = ?");
     condition.push_str(" AND note.consumed_tx_order IS NOT NULL");
 
-    if let Some(start) = block_start {
-        let _ = write!(condition, " AND note.consumed_block_height >= {}", start.as_u32());
-    }
-    if let Some(end) = block_end {
-        let _ = write!(condition, " AND note.consumed_block_height <= {}", end.as_u32());
+    // A cursor at or after `block_start` is the tighter lower bound, and emitting both makes
+    // SQLite abandon the row-value seek over `idx_input_notes_consumption`. A cursor before
+    // `block_start` excludes nothing that `block_start` does not, so it is dropped.
+    let cursor = cursor
+        .filter(|cursor| block_start.is_none_or(|start| cursor.consumed_block_height() >= start));
+
+    match cursor {
+        Some(cursor) => {
+            condition.push_str(
+                " AND (note.consumed_block_height, note.consumed_tx_order, \
+                 note.details_commitment) > (?, ?, ?)",
+            );
+            params.push(ToSqlOutput::from(cursor.consumed_block_height().as_u32()));
+            params.push(ToSqlOutput::from(cursor.consumed_tx_order()));
+            params.push(ToSqlOutput::from(cursor.details_commitment().to_bytes()));
+        },
+        None => {
+            if let Some(start) = block_start {
+                condition.push_str(" AND note.consumed_block_height >= ?");
+                params.push(ToSqlOutput::from(start.as_u32()));
+            }
+        },
     }
 
+    if let Some(end) = block_end {
+        condition.push_str(" AND note.consumed_block_height <= ?");
+        params.push(ToSqlOutput::from(end.as_u32()));
+    }
+
+    // `details_commitment` is the primary key of the `WITHOUT ROWID` table, so it trails every
+    // index on it. Ordering by it makes the order total and keeps the seek index-served.
     let query = format!(
         "{} WHERE {condition} \
-         ORDER BY note.consumed_block_height ASC, note.consumed_tx_order ASC, note.note_id ASC \
-         LIMIT 1 OFFSET {offset}",
+         ORDER BY note.consumed_block_height ASC, note.consumed_tx_order ASC, \
+                  note.details_commitment ASC \
+         LIMIT 1",
         input_notes_base_query()
     );
 
@@ -198,14 +233,8 @@ pub(super) fn note_filter_input_notes_condition(filter: &NoteFilter) -> (String,
             format!("(state_discriminant = {})", InputNoteState::STATE_UNVERIFIED)
         },
         NoteFilter::Unspent => {
-            format!(
-                "(state_discriminant in ({}, {}, {}, {}, {}))",
-                InputNoteState::STATE_EXPECTED,
-                InputNoteState::STATE_PROCESSING_AUTHENTICATED,
-                InputNoteState::STATE_PROCESSING_UNAUTHENTICATED,
-                InputNoteState::STATE_UNVERIFIED,
-                InputNoteState::STATE_COMMITTED
-            )
+            let states = InputNoteState::UNSPENT_STATES.map(|state| state.to_string()).join(", ");
+            format!("(state_discriminant in ({states}))")
         },
     };
 

@@ -1,7 +1,8 @@
 pub(crate) mod errors;
-pub(crate) mod migrations;
+pub(crate) mod migration;
 pub(crate) mod pool_manager;
-pub(crate) mod settings;
+pub(crate) mod schema;
+pub(crate) mod utils;
 
 #[cfg(test)]
 mod migration_tests;

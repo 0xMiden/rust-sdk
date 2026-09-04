@@ -13,7 +13,7 @@ use miden_client::transaction::{
 };
 use tracing::info;
 
-use crate::tests::config::ClientConfig;
+use crate::ClientConfig;
 
 /// Real-node integration test for the `BatchBuilder` end-to-end path.
 ///
@@ -90,6 +90,8 @@ pub async fn test_batch_builder_submits_two_p2id_on_one_account(
     );
 
     // Submit both requests as a single batch.
+    let tx_request_1 = client.fund_request(from_account_id, tx_request_1);
+    let tx_request_2 = client.fund_request(from_account_id, tx_request_2);
     let mut batch = client.new_transaction_batch();
     batch.push(from_account_id, tx_request_1).await?;
     batch.push(from_account_id, tx_request_2).await?;
@@ -218,6 +220,8 @@ pub async fn test_batch_builder_multiple_accounts(client_config: ClientConfig) -
         "Submitting cross-account batch (A→B P2ID + B consume)"
     );
 
+    let req_send = client.fund_request(account_id_a, req_send);
+    let req_consume = client.fund_request(account_id_b, req_consume);
     let mut batch = client.new_transaction_batch();
     batch.push(account_id_a, req_send).await?;
     batch.push(account_id_b, req_consume).await?;
@@ -357,6 +361,8 @@ pub async fn test_batch_builder_interleaved_pushes(client_config: ClientConfig) 
 
     info!("Submitting A→B→A interleaved batch");
 
+    let req_a_to_b_first = client.fund_request(account_id_a, req_a_to_b_first);
+    let req_b_to_a = client.fund_request(account_id_b, req_b_to_a);
     let mut batch = client.new_transaction_batch();
     batch.push(account_id_a, req_a_to_b_first).await?;
     batch.push(account_id_b, req_b_to_a).await?;

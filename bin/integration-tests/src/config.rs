@@ -1,6 +1,6 @@
 use std::env::temp_dir;
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -15,10 +15,13 @@ use miden_client::note_transport::{
 };
 use miden_client::rpc::{Endpoint, GrpcClient, VerifyingRpcClient};
 use miden_client::testing::common::{FilesystemKeyStore, TestClient, create_test_store_path};
+use miden_client::testing::fee::FeeFunder;
 use miden_client::{Felt, RemoteTransactionProver};
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
 use rand::RngExt;
 use uuid::Uuid;
+
+use crate::fee_funding;
 
 const NETWORK_DEVNET: &str = "devnet";
 const NETWORK_TESTNET: &str = "testnet";
@@ -58,8 +61,8 @@ impl FromStr for NoteTransportEndpoint {
 impl fmt::Display for NoteTransportEndpoint {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Devnet => write!(f, "devnet ({})", NOTE_TRANSPORT_DEVNET_ENDPOINT),
-            Self::Testnet => write!(f, "testnet ({})", NOTE_TRANSPORT_TESTNET_ENDPOINT),
+            Self::Devnet => write!(f, "devnet ({NOTE_TRANSPORT_DEVNET_ENDPOINT})"),
+            Self::Testnet => write!(f, "testnet ({NOTE_TRANSPORT_TESTNET_ENDPOINT})"),
             Self::Custom(url) => write!(f, "{url}"),
         }
     }
@@ -69,14 +72,16 @@ impl fmt::Display for NoteTransportEndpoint {
 pub struct ClientConfig {
     pub rpc_endpoint: Endpoint,
     pub rpc_timeout_ms: u64,
-    pub store_config: PathBuf,
-    pub auth_path: PathBuf,
     /// Optional remote prover endpoint. If set, the client will use a remote prover instead of the
     /// default local prover.
     pub prover_endpoint: Option<String>,
     /// Optional note transport endpoint. If set, the client will connect to a note transport
     /// service.
     pub note_transport_endpoint: Option<NoteTransportEndpoint>,
+    /// Funder the account-creating test helpers draw the native fee asset from. Shared by every
+    /// client built from this config and its clones, so consecutive payments from one wallet chain
+    /// off each other's nonce.
+    pub fee_funder: Option<Arc<dyn FeeFunder>>,
 }
 
 impl ClientConfig {
@@ -84,20 +89,10 @@ impl ClientConfig {
         Self {
             rpc_endpoint,
             rpc_timeout_ms,
-            auth_path: create_test_auth_path(),
-            store_config: create_test_store_path(),
             prover_endpoint: None,
             note_transport_endpoint: None,
+            fee_funder: None,
         }
-    }
-
-    pub fn as_parts(&self) -> (Endpoint, u64, PathBuf, PathBuf) {
-        (
-            self.rpc_endpoint.clone(),
-            self.rpc_timeout_ms,
-            self.store_config.clone(),
-            self.auth_path.clone(),
-        )
     }
 
     #[allow(clippy::return_self_not_must_use)]
@@ -115,24 +110,31 @@ impl ClientConfig {
         self
     }
 
+    /// Sets the funder the account-creating test helpers draw the native fee asset from.
     #[allow(clippy::return_self_not_must_use)]
-    pub fn with_rpc_endpoint(mut self, rpc_endpoint: Endpoint) -> Self {
-        self.rpc_endpoint = rpc_endpoint;
+    pub fn with_fee_funder(mut self, fee_funder: Option<Arc<dyn FeeFunder>>) -> Self {
+        self.fee_funder = fee_funder;
         self
     }
 
-    pub fn rpc_endpoint(&self) -> Endpoint {
-        self.rpc_endpoint.clone()
+    /// Loads the pre-funded wallets at `funders`, one `.mac` account file or a directory of them,
+    /// as the fee funder. `None` leaves the config without one, which is all a fee-free chain
+    /// needs.
+    pub fn with_funders(self, funders: Option<&Path>) -> Result<Self> {
+        let fee_funder = fee_funding::load(&self, funders)?;
+        Ok(self.with_fee_funder(fee_funder))
     }
 
     /// Creates a `TestClient` builder and keystore.
     ///
-    /// Creates the client builder using the provided `ClientConfig`. The store uses a `SQLite`
-    /// database at a temporary location determined by the store config.
-    pub async fn into_client_builder(
+    /// The store is a `SQLite` database at a temporary location, and the keystore a temporary
+    /// directory, both created here rather than held on the config, so every client this is called
+    /// on gets its own.
+    pub fn into_client_builder(
         self,
     ) -> Result<(ClientBuilder<FilesystemKeyStore>, FilesystemKeyStore)> {
-        let (rpc_endpoint, rpc_timeout, store_config, auth_path) = self.as_parts();
+        let store_config = create_test_store_path();
+        let auth_path = create_test_auth_path();
 
         let mut rng = rand::rng();
         let coin_seed: [u64; 4] = rng.random();
@@ -143,8 +145,10 @@ impl ClientConfig {
             format!("failed to create keystore at path: {}", auth_path.to_string_lossy())
         })?;
 
-        let rpc_client =
-            Arc::new(VerifyingRpcClient::new(GrpcClient::new(&rpc_endpoint, rpc_timeout)));
+        let rpc_client = Arc::new(VerifyingRpcClient::new(GrpcClient::new(
+            &self.rpc_endpoint,
+            self.rpc_timeout_ms,
+        )));
 
         let mut builder = ClientBuilder::new()
             .rpc(rpc_client)
@@ -171,15 +175,24 @@ impl ClientConfig {
         Ok((builder, keystore))
     }
 
+    /// Creates a `TestClient` without syncing it, for tests that have to wait for the node first.
+    ///
+    /// The client gets its own store and keystore.
+    pub async fn into_unsynced_client(self) -> Result<(TestClient, FilesystemKeyStore)> {
+        let fee_funder = self.fee_funder.clone();
+        let (builder, keystore) = self.into_client_builder()?;
+
+        let client = builder.build().await.with_context(|| "failed to build test client")?;
+
+        Ok((TestClient::from(client).with_fee_funder(fee_funder), keystore))
+    }
+
     /// Creates a `TestClient`.
     ///
-    /// Creates the client using the provided [`ClientConfig`]. The store uses a `SQLite` database
-    /// at a temporary location determined by the store config. The client is synced to the
-    /// current state before being returned.
+    /// The client gets its own store and keystore, and is synced to the current state before being
+    /// returned.
     pub async fn into_client(self) -> Result<(TestClient, FilesystemKeyStore)> {
-        let (builder, keystore) = self.into_client_builder().await?;
-
-        let mut client = builder.build().await.with_context(|| "failed to build test client")?;
+        let (mut client, keystore) = self.into_unsynced_client().await?;
 
         client.sync_state().await.with_context(|| "failed to sync client state")?;
 
@@ -259,7 +272,8 @@ impl Default for ClientConfig {
     }
 }
 
-pub(crate) fn create_test_auth_path() -> PathBuf {
+/// Creates a fresh keystore directory, for a test building a client without a [`ClientConfig`].
+pub fn create_test_auth_path() -> PathBuf {
     let auth_path = temp_dir().join(format!("keystore-{}", Uuid::new_v4()));
     std::fs::create_dir_all(&auth_path).unwrap();
     auth_path

@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::future::Future;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::process::{Command, Stdio};
 use std::str::FromStr;
@@ -11,15 +12,13 @@ use std::time::{Duration, Instant};
 use clap::Parser;
 use miden_client::grpc_support::{DEVNET_PROVER_ENDPOINT, TESTNET_PROVER_ENDPOINT};
 use miden_client::rpc::Endpoint;
+use miden_client_integration_tests::{ClientConfig, NoteTransportEndpoint, fee_funding, tests};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::prelude::*;
 
-use crate::tests::config::{ClientConfig, NoteTransportEndpoint};
-
 mod generated_tests;
-mod tests;
 
 // MAIN
 // ================================================================================================
@@ -162,6 +161,11 @@ struct Args {
     #[arg(long, env = "TEST_MIDEN_NOTE_TRANSPORT_URL")]
     note_transport_url: Option<String>,
 
+    /// Path to the pre-funded basic wallets the tests draw transaction fees from: either one
+    /// `.mac` account file or a directory of them.
+    #[arg(long, env = fee_funding::FUNDER_ACCOUNTS_ENV)]
+    funders: Option<PathBuf>,
+
     /// Enable verbose tracing output (info-level logs from tests and client).
     #[arg(short, long)]
     verbose: bool,
@@ -179,6 +183,7 @@ struct BaseConfig {
     timeout: u64,
     prover_endpoint: Option<String>,
     note_transport_endpoint: Option<NoteTransportEndpoint>,
+    funders: Option<PathBuf>,
     verbose: bool,
 }
 
@@ -235,6 +240,7 @@ impl TryFrom<Args> for BaseConfig {
             timeout: timeout_ms,
             prover_endpoint,
             note_transport_endpoint,
+            funders: args.funders,
             verbose: args.verbose,
         })
     }
@@ -454,7 +460,8 @@ fn run_single_test_subprocess(args: &Args, test_name: &str) {
         rt.block_on(async {
             let config = ClientConfig::new(base_config.rpc_endpoint.clone(), base_config.timeout)
                 .with_prover_endpoint(base_config.prover_endpoint.clone())
-                .with_note_transport_endpoint(base_config.note_transport_endpoint.clone());
+                .with_note_transport_endpoint(base_config.note_transport_endpoint.clone())
+                .with_funders(base_config.funders.as_deref())?;
             (test.function)(config).await
         })
     }));
@@ -658,6 +665,7 @@ fn run_tests_parallel(
     let note_transport_endpoint = base_config.note_transport_endpoint.clone();
     let timeout = base_config.timeout;
     let verbose = base_config.verbose;
+    let funders = base_config.funders.clone();
 
     // Spawn worker threads (each spawns subprocesses)
     let mut handles = Vec::new();
@@ -670,6 +678,7 @@ fn run_tests_parallel(
         let network_endpoint = network_endpoint.clone();
         let prover_endpoint = prover_endpoint.clone();
         let note_transport_endpoint = note_transport_endpoint.clone();
+        let funders = funders.clone();
 
         let handle = thread::spawn(move || {
             loop {
@@ -706,6 +715,11 @@ fn run_tests_parallel(
                 // Forward note transport URL if set
                 if let Some(ref transport) = note_transport_endpoint {
                     cmd.arg("--note-transport-url").arg(transport.to_url());
+                }
+
+                // Forward the funder wallets
+                if let Some(ref funders) = funders {
+                    cmd.arg("--funders").arg(funders);
                 }
 
                 // Forward verbosity flag

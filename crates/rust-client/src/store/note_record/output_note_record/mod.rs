@@ -13,6 +13,7 @@ use miden_protocol::note::{
     NoteInclusionProof,
     NoteMetadata,
     NoteRecipient,
+    NoteScriptRoot,
     Nullifier,
     PartialNote,
 };
@@ -113,6 +114,12 @@ impl OutputNoteRecord {
 
     pub fn recipient(&self) -> Option<&NoteRecipient> {
         self.state.recipient()
+    }
+
+    /// Returns the root of the note's script, or `None` if the note's full details (and thus its
+    /// script) are not known.
+    pub fn script_root(&self) -> Option<NoteScriptRoot> {
+        self.recipient().map(|recipient| recipient.script().root())
     }
 
     pub fn nullifier(&self) -> Option<Nullifier> {

@@ -1,4 +1,5 @@
-//! SQL-generation macros shared across the store's modules.
+// MACROS
+// ================================================================================================
 
 /// Auxiliary macro which substitutes `$src` token by `$dst` expression.
 #[macro_export]

@@ -186,7 +186,7 @@ impl SqliteStore {
     }
 }
 
-/// Inserts the tag record, relying on the unique `(tag, source)` index for idempotency across
+/// Inserts the tag record, relying on the `(tag, source)` primary key for idempotency across
 /// concurrent connections. Returns whether a new row was inserted.
 pub(super) fn add_note_tag_tx(
     tx: &Transaction<'_>,
@@ -217,14 +217,14 @@ mod tests {
     use rusqlite::Connection;
 
     use crate::SqliteStore;
-    use crate::db_management::migrations::apply_migrations;
+    use crate::db_management::migration::SqliteMigrator;
 
     /// A missing checkpoint row is only reachable through corruption (the initial migration seeds
     /// it); it must surface as an error, not a panic.
     #[test]
     fn get_sync_height_errors_when_checkpoint_is_missing() {
         let mut conn = Connection::open_in_memory().unwrap();
-        apply_migrations(&mut conn).unwrap();
+        SqliteMigrator::client().apply(&mut conn).unwrap();
         conn.execute("DELETE FROM blockchain_checkpoint", []).unwrap();
 
         let err = SqliteStore::get_sync_height(&mut conn).unwrap_err();

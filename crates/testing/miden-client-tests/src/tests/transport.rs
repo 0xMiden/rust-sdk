@@ -939,7 +939,7 @@ async fn flush_relay_outbox_retries_failed_relay_without_full_sync() {
 /// transport fetch screens what a tag match delivers, so a client that is offered a note paying
 /// someone else discards it instead of storing it.
 #[tokio::test]
-async fn note_delivered_by_tag_match_is_discarded_when_no_tracked_account_can_consume_it() {
+async fn note_delivered_by_tag_match_is_only_kept_when_a_tracked_account_can_consume_it() {
     let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
     let (mut sender, sender_account) = create_test_user_transport(mock_node.clone()).await;
     let (mut client, account) = create_test_user_transport(mock_node.clone()).await;
@@ -983,19 +983,11 @@ async fn note_delivered_by_tag_match_is_discarded_when_no_tracked_account_can_co
     client.sync_state().await.unwrap();
     let notes = client.get_input_notes(NoteFilter::All).await.unwrap();
     assert!(notes.is_empty(), "a note no tracked account can consume must not be stored");
-}
 
-/// The screening filter must not discard a note the client can actually consume: same delivery
-/// path as the test above, with the note targeting the account that tracks the tag.
-#[tokio::test]
-async fn note_delivered_by_tag_match_is_kept_when_a_tracked_account_can_consume_it() {
-    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
-    let (mut sender, sender_account) = create_test_user_transport(mock_node.clone()).await;
-    let (mut recipient, recipient_account) = create_test_user_transport(mock_node.clone()).await;
-
+    // Now send a note consumable by the account and check the client tracks it
     let note: Note = P2idNote::builder()
         .sender(sender_account.id())
-        .target(recipient_account.id())
+        .target(account.id())
         .asset(dummy_asset())
         .note_type(NoteType::Private)
         .generate_serial_number(sender.rng())
@@ -1003,15 +995,17 @@ async fn note_delivered_by_tag_match_is_kept_when_a_tracked_account_can_consume_
         .unwrap()
         .into();
 
-    let recipient_address = Address::new(recipient_account.id())
+    let recipient_address = Address::new(account.id())
         .with_routing_parameters(RoutingParameters::new(AddressInterface::BasicWallet));
     sender
         .send_private_note_with_block_hint(note, &recipient_address, BlockNumber::from(0))
         .await
         .unwrap();
 
-    recipient.sync_state().await.unwrap();
-    let notes = recipient.get_input_notes(NoteFilter::All).await.unwrap();
+    // The client now will track the note during the sync because this time the note is consumable
+    // by the tracked account
+    client.sync_state().await.unwrap();
+    let notes = client.get_input_notes(NoteFilter::All).await.unwrap();
     assert_eq!(notes.len(), 1, "a note the tracked account can consume must be stored");
 }
 

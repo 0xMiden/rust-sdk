@@ -14,7 +14,7 @@ use miden_client::note::{
     NoteType,
     PartialNoteMetadata,
 };
-use miden_client::note_transport::NoteTransportClient;
+use miden_client::note_transport::{NoteTransportClient, NoteTransportCursor};
 use miden_client::store::NoteFilter;
 use miden_client::testing::common::create_test_store_path;
 use miden_client::testing::mock::{MockClient, MockRpcApi};
@@ -960,17 +960,23 @@ async fn note_delivered_by_tag_match_is_discarded_when_no_tracked_account_can_co
     // By default the P2ID note is tagged for the target account, so here we manually
     // override the note with the client's account tag.
     let (assets, _, recipient, attachments) = note.into_parts();
-    let metadata = PartialNoteMetadata::new(sender_account.id(), NoteType::Private)
-        .with_tag(NoteTag::with_account_target(account.id()));
+    let account_tag = NoteTag::with_account_target(account.id());
+    let metadata =
+        PartialNoteMetadata::new(sender_account.id(), NoteType::Private).with_tag(account_tag);
     let note = Note::with_attachments(assets, metadata, recipient, attachments);
 
     // The address is not what routes the note: the relay keys off the tag in its header.
     let address = Address::new(account.id())
         .with_routing_parameters(RoutingParameters::new(AddressInterface::BasicWallet));
     sender
-        .send_private_note_with_block_hint(note, &address, BlockNumber::from(0))
+        .send_private_note_with_block_hint(note.clone(), &address, BlockNumber::from(0))
         .await
         .unwrap();
+
+    // Fetch the notes matching the `account_tag` and check the P2ID note was actually committed
+    let (notes_info, _) = mock_node.read().get_notes(&[account_tag], NoteTransportCursor::init());
+    let fetched_note_info = notes_info.first().unwrap();
+    assert_eq!(fetched_note_info.header, *note.header());
 
     // During the sync, the client retrieves the note from the NTL (since the tag matches its
     // account), but the note is discarded because its account cannot consume it.

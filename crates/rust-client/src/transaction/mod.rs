@@ -451,9 +451,8 @@ where
 
     /// Captures a [`ChainAnchor`] at the client's current sync height, tracking the creation
     /// blocks of the request's authenticated input notes so that the request can later execute
-    /// against the anchor. A note pinned through
-    /// [`TransactionRequestBuilder::explicit_input_notes`] contributes the block of the proof
-    /// it carries. The store's inclusion proof decides for every other note.
+    /// against the anchor. This covers notes the store holds as authenticated and notes pinned
+    /// as authenticated through [`TransactionRequestBuilder::explicit_input_notes`].
     ///
     /// This is the capture entry point for flows that never see a successful execution result at
     /// capture time — e.g. multisig proposal flows, where execution intentionally fails with
@@ -472,24 +471,30 @@ where
         &self,
         transaction_request: &TransactionRequest,
     ) -> Result<ChainAnchor, ClientError> {
-        let mut tracked_blocks: BTreeSet<BlockNumber> = transaction_request
-            .explicit_input_note_proofs()
-            .map(|proof| proof.location().block_num())
+        let inferred_input_note_ids: Vec<NoteId> = transaction_request
+            .input_note_ids()
+            .filter(|note_id| !transaction_request.explicit_input_notes.contains_key(note_id))
             .collect();
 
-        let inferred_input_note_ids: Vec<NoteId> =
-            transaction_request.inferred_input_note_ids().collect();
-        if !inferred_input_note_ids.is_empty() {
-            tracked_blocks.extend(
-                self.store
-                    .get_input_notes(NoteFilter::List(inferred_input_note_ids))
-                    .await?
-                    .iter()
-                    .filter(|record| record.is_authenticated())
-                    .filter_map(|record| record.inclusion_proof())
-                    .map(|proof| proof.location().block_num()),
-            );
-        }
+        let mut tracked_blocks: BTreeSet<BlockNumber> = if inferred_input_note_ids.is_empty() {
+            BTreeSet::new()
+        } else {
+            self.store
+                .get_input_notes(NoteFilter::List(inferred_input_note_ids))
+                .await?
+                .iter()
+                .filter(|record| record.is_authenticated())
+                .filter_map(|record| record.inclusion_proof())
+                .map(|proof| proof.location().block_num())
+                .collect()
+        };
+        tracked_blocks.extend(
+            transaction_request
+                .explicit_input_notes
+                .values()
+                .filter_map(InputNote::proof)
+                .map(|proof| proof.location().block_num()),
+        );
 
         self.chain_anchor_at_tip(tracked_blocks).await
     }

@@ -17,7 +17,6 @@ use miden_protocol::note::{
     NoteDetails,
     NoteDetailsCommitment,
     NoteId,
-    NoteInclusionProof,
     NoteRecipient,
     NoteScript,
     NoteStorage,
@@ -57,9 +56,8 @@ pub struct TransactionRequestBuilder {
     /// Optional arguments of the Notes to be consumed by the transaction. This
     /// includes both authenticated and unauthenticated notes.
     input_notes_args: Vec<(NoteId, Option<NoteArgs>)>,
-    /// Pinned consumption mode of selected input notes. `Some(proof)` pins the note as
-    /// authenticated with that proof. `None` pins it as unauthenticated.
-    explicit_input_notes: BTreeMap<NoteId, Option<NoteInclusionProof>>,
+    /// Pinned consumption mode of selected input notes.
+    explicit_input_notes: BTreeMap<NoteId, InputNote>,
     /// Notes to be created by the transaction. The full note data is needed internally
     /// to build the transaction script template.
     own_output_notes: Vec<Note>,
@@ -132,11 +130,9 @@ impl TransactionRequestBuilder {
 
     /// Adds the specified notes as input notes to the transaction request.
     ///
-    /// The executing client decides how it consumes each of these notes. A note whose inclusion
-    /// proof is in the client's store is consumed as authenticated. Any other note is consumed as
-    /// unauthenticated. Two clients with different stores can therefore consume the same note in
-    /// different modes. Use [`Self::explicit_input_notes`] when the mode must not depend on the
-    /// executing client.
+    /// The executing client consumes a note as authenticated when its store holds the note's
+    /// inclusion proof and as unauthenticated otherwise. Use [`Self::explicit_input_notes`] when
+    /// the mode must not depend on the executing client.
     #[must_use]
     pub fn input_notes(
         mut self,
@@ -150,34 +146,26 @@ impl TransactionRequestBuilder {
     }
 
     /// Adds the specified [`InputNote`]s as input notes to the transaction request. Each note is
-    /// consumed in the mode it carries.
+    /// consumed in the mode it carries: an [`InputNote::Authenticated`] note with its proof, an
+    /// [`InputNote::Unauthenticated`] note as unauthenticated even if the executing client's store
+    /// holds a proof for it. The executing client does not classify these notes from its store, so
+    /// every client that executes the request commits to the same input notes and produces the
+    /// same transaction summary. Use this for a request that is shared across clients.
     ///
-    /// An [`InputNote::Authenticated`] note is consumed as authenticated, with its proof. An
-    /// [`InputNote::Unauthenticated`] note is consumed as unauthenticated, even when the executing
-    /// client's store holds an inclusion proof for it. The executing client does not consult its
-    /// store to classify these notes. Every client that executes the request therefore commits to
-    /// the same input notes. Use this method for a request that is shared across clients to
-    /// collect signatures over a transaction summary. The input notes commitment covers the mode
-    /// of each note, so two clients that classify a note differently produce different summaries.
-    ///
-    /// The executing client must be able to serve the block header of the creation block of each
-    /// authenticated note. The header is available when the client has synced or imported the
-    /// note. It is also available when the request executes against a
-    /// [`ChainAnchor`](crate::transaction::ChainAnchor) that tracks the block. See
-    /// [`Client::chain_anchor_for_request`](crate::Client::chain_anchor_for_request).
+    /// To consume an authenticated note, the executing client must be able to serve the header of
+    /// the note's creation block, from its store or from the
+    /// [`ChainAnchor`](crate::transaction::ChainAnchor) the request executes against.
     #[must_use]
     pub fn explicit_input_notes(
         mut self,
         notes: impl IntoIterator<Item = (InputNote, Option<NoteArgs>)>,
     ) -> Self {
         for (input_note, argument) in notes {
-            let proof = input_note.proof().cloned();
-            let note = input_note.into_note();
-            let note_id = note.id();
+            let note_id = input_note.id();
 
             self.input_notes_args.push((note_id, argument));
-            self.input_notes.push(note);
-            self.explicit_input_notes.insert(note_id, proof);
+            self.input_notes.push(input_note.note().clone());
+            self.explicit_input_notes.insert(note_id, input_note);
         }
         self
     }

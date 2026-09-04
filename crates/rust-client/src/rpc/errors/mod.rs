@@ -77,6 +77,38 @@ impl RpcError {
             }
         )
     }
+
+    /// Returns whether this is a submission that came back without a definite outcome, so the
+    /// node may or may not have accepted the transaction.
+    ///
+    /// In practice a lost submission arrives as `Unavailable`, `Unknown` or `Cancelled`. The match
+    /// lists the codes the node issues deliberately instead, so a code this client does not
+    /// recognize stays on the "may have landed" side.
+    pub fn is_indeterminate_submission(&self) -> bool {
+        let Self::RequestError {
+            endpoint: RpcEndpoint::SubmitProvenTx | RpcEndpoint::SubmitProvenBatch,
+            error_kind,
+            ..
+        } = self
+        else {
+            return false;
+        };
+
+        !matches!(
+            error_kind,
+            // The node processed the request and rejected it. `ResourceExhausted` belongs here
+            // too: it is a refusal issued before any processing.
+            GrpcError::InvalidArgument
+                | GrpcError::FailedPrecondition
+                | GrpcError::NotFound
+                | GrpcError::AlreadyExists
+                | GrpcError::OutOfRange
+                | GrpcError::ResourceExhausted
+                | GrpcError::Unauthenticated
+                | GrpcError::PermissionDenied
+                | GrpcError::Unimplemented
+        )
+    }
 }
 
 impl From<DeserializationError> for RpcError {
@@ -252,5 +284,85 @@ impl AcceptHeaderError {
             return Some(Self::ParsingError(message.to_string()));
         }
         None
+    }
+}
+
+// TESTS
+// ================================================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::{GrpcError, RpcEndpoint, RpcError};
+
+    fn submission_failure(error_kind: GrpcError) -> RpcError {
+        RpcError::RequestError {
+            endpoint: RpcEndpoint::SubmitProvenTx,
+            error_kind,
+            endpoint_error: None,
+            source: None,
+        }
+    }
+
+    /// None of these carry evidence about whether the node processed the request, so a submission
+    /// that fails with any of them may still be in the mempool.
+    #[test]
+    fn transport_failures_are_indeterminate() {
+        for error_kind in [
+            GrpcError::Unavailable,
+            GrpcError::Unknown("transport error".into()),
+            GrpcError::Cancelled,
+            GrpcError::DeadlineExceeded,
+            GrpcError::Internal,
+            GrpcError::Aborted,
+        ] {
+            let label = format!("{error_kind:?}");
+            assert!(
+                submission_failure(error_kind).is_indeterminate_submission(),
+                "{label} must be treated as indeterminate"
+            );
+        }
+    }
+
+    /// Codes the node issues deliberately are an answer, so the transaction did not land.
+    #[test]
+    fn deliberate_rejections_are_definite() {
+        for error_kind in [
+            GrpcError::InvalidArgument,
+            GrpcError::FailedPrecondition,
+            GrpcError::ResourceExhausted,
+            GrpcError::NotFound,
+            GrpcError::AlreadyExists,
+            GrpcError::OutOfRange,
+            GrpcError::Unauthenticated,
+            GrpcError::PermissionDenied,
+            GrpcError::Unimplemented,
+        ] {
+            let label = format!("{error_kind:?}");
+            assert!(
+                !submission_failure(error_kind).is_indeterminate_submission(),
+                "{label} is a rejection, not an unknown outcome"
+            );
+        }
+    }
+
+    /// A read that fails leaves nothing behind to recover, so it never qualifies.
+    #[test]
+    fn reads_are_never_indeterminate_submissions() {
+        let err = RpcError::RequestError {
+            endpoint: RpcEndpoint::GetBlockHeaderByNumber,
+            error_kind: GrpcError::Unavailable,
+            endpoint_error: None,
+            source: None,
+        };
+
+        assert!(!err.is_indeterminate_submission());
+    }
+
+    /// A connection that was never opened is not a submission failure: nothing was sent.
+    #[test]
+    fn connection_errors_are_not_indeterminate() {
+        let err = RpcError::ConnectionError("no route to host".into());
+
+        assert!(!err.is_indeterminate_submission());
     }
 }

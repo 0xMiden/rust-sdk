@@ -759,6 +759,13 @@ where
 
     /// Submits a previously proven transaction to the RPC endpoint and returns the node’s chain tip
     /// upon mempool admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError::SubmissionOutcomeUnknown`] when the submission came back without a
+    /// definite answer. It carries the proven transaction and the inputs it was submitted with, so
+    /// a retry does not have to execute or prove again. Every other failure is a rejection the
+    /// node issued deliberately.
     pub async fn submit_proven_transaction(
         &mut self,
         proven_transaction: ProvenTransaction,
@@ -767,14 +774,24 @@ where
         info!("Submitting transaction to the network...");
         let tx_id = proven_transaction.id();
         let key = self.transaction_encryption_key().await?;
+
+        // Both are kept so an indeterminate outcome can hand back everything a retry needs. The
+        // inputs cannot be recovered from the proven transaction, which only commits to them, and
+        // sealing draws fresh randomness so every attempt has to seal again.
+        let transaction_inputs = transaction_inputs.into();
+        let submitted = proven_transaction.clone();
+
         let sealed_inputs =
-            seal_transaction_inputs(&mut self.rng, &key, tx_id, &transaction_inputs.into())?;
+            seal_transaction_inputs(&mut self.rng, &key, tx_id, &transaction_inputs)?;
+
         let result =
             self.rpc_api.submit_proven_transaction(proven_transaction, sealed_inputs).await;
         if let Err(err) = &result {
             self.forget_stale_transaction_encryption_key(err).await;
         }
-        let block_num = result?;
+
+        let block_num = result
+            .map_err(|err| promote_indeterminate_submission(err, submitted, transaction_inputs))?;
         info!("Transaction submitted.");
 
         Ok(block_num)
@@ -1777,6 +1794,24 @@ pub(crate) async fn fetch_public_account_inputs(
         });
 
     Ok(account_inputs)
+}
+
+/// Promotes a submission failure whose outcome is unknown, attaching everything a retry needs. Any
+/// other failure is a rejection the node issued deliberately and passes through unchanged.
+fn promote_indeterminate_submission(
+    err: RpcError,
+    transaction: ProvenTransaction,
+    transaction_inputs: TransactionInputs,
+) -> ClientError {
+    if !err.is_indeterminate_submission() {
+        return ClientError::RpcError(err);
+    }
+
+    ClientError::SubmissionOutcomeUnknown {
+        transaction: Box::new(transaction),
+        transaction_inputs: Box::new(transaction_inputs),
+        source: err,
+    }
 }
 
 /// Extracts notes from [`RawOutputNotes`].

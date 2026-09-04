@@ -39,6 +39,11 @@ VALIDATOR="127.0.0.1:50101"
 NTX="127.0.0.1:50301"
 PROVER_PORT=50051
 PROVER="127.0.0.1:$PROVER_PORT"
+# How long a single network transaction proof may take. The prover enforces it server-side and the
+# ntx-builder waits that long for the response. Shared so the two cannot drift apart: if the
+# ntx-builder waited less, it would abandon a request the prover is still working on, re-queue the
+# same proof behind it, and repeat until the note is dropped.
+PROVER_TIMEOUT=300s
 # Shared secret authorizing the ntx-builder to submit network transactions; the sequencer rejects
 # them unless both sides agree on it.
 NETWORK_TX_AUTH="${MIDEN_NETWORK_TX_AUTH:-miden-client-testing-ntx-secret}"
@@ -215,14 +220,17 @@ start sequencer   "$BIN/miden-node" sequencer --rpc.listen "$RPC" --data-directo
     --validator.url "http://$VALIDATOR" --ntx-builder.url "http://$NTX" \
     --rpc.network-tx-auth-header-value "$NETWORK_TX_AUTH" \
     --block.interval 3s --batch.interval 1s
-# A network transaction's proof runs well past the 60s default on a shared CI runner, and the
-# default capacity of 1 rejects the ntx-builder's retry outright, so it never converges.
+# A network transaction's proof runs well past the prover's 60s default on a shared CI runner, and
+# the default capacity of 1 rejects the ntx-builder's retry outright, so it never converges.
 start prover      "$BIN/miden-remote-prover" --kind=transaction --port="$PROVER_PORT" \
-    --timeout 300s --capacity 8
+    --timeout "$PROVER_TIMEOUT" --capacity 8
 # Let the sequencer bind its RPC before the ntx-builder dials it.
 sleep 2
+# The ntx-builder's own default of 10s is shorter than the heaviest proofs take on CI, so it is
+# given the prover's full budget (see PROVER_TIMEOUT).
 start ntx-builder "$BIN/miden-ntx-builder" start --listen "$NTX" --rpc.url "http://$RPC" \
     --rpc.auth-header-value "$NETWORK_TX_AUTH" --tx-prover.url "http://$PROVER" \
+    --tx-prover.timeout "$PROVER_TIMEOUT" \
     --max-cycles "$((1 << 18))" \
     --data-directory "$DATA/ntx-builder"
 

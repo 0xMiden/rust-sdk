@@ -450,7 +450,21 @@ The target is a single argument of the form `<ACCOUNT_ID>:<PROCEDURE>`. For an a
 
 `--package` takes either a path to a `.masp` file or a bare name, which is looked up in the configured packages directory. It is optional: without it, `<PROCEDURE>` must be the procedure's hex digest instead of its name, and the output stack is printed as raw field elements since there is no manifest to read the signature from.
 
-Arguments are passed positionally after the target. Each one is a `u64` field element, and they are pushed onto the stack so that the first argument ends up on top. Their number is checked against the procedure's signature in the package manifest. If the package does not record a signature, the check is skipped and a warning is printed, in which case passing the wrong number of arguments may fail or produce a wrong result.
+Arguments are passed positionally after the target, one token per value in the procedure's signature. The signature comes from the package manifest, and it also decides how each token is read and how the result is printed:
+
+| Type | Token form | Example |
+| ---- | ---------- | ------- |
+| `felt` | decimal field element | `42` |
+| integers (`u8`…`u128`, `i8`…`i128`) | decimal, range-checked against the type | `-1` |
+| `bool` | `true`, `false`, `1` or `0` | `true` |
+| `word` | hex | `0x00..` |
+| `account-id` | hex account ID | `0x4614b8bf575eab71455e97bd394e90` |
+| `asset` | `<AMOUNT>::<FAUCET_ID>`, fungible only | `100::0xabcdef0123456789` |
+| records and fixed arrays | one token per field, in order | `3 4` for `point { x, y }` |
+
+Only procedures exported from a WIT interface carry a signature. A procedure without one is still called, with one raw field element per argument written in decimal (a `0x` hex literal is not accepted); the argument count is not checked and the result is printed as a stack dump.
+
+The arguments are pushed onto the stack so that the first one ends up on top, and together they may occupy at most 16 stack values — that is all a called procedure can see.
 
 `--inputs-path` takes the same TOML format as [`exec`](#exec). The entries are loaded into the VM's advice map and are visible to the called procedure.
 
@@ -465,7 +479,7 @@ miden-client call 0x4614b8bf575eab71455e97bd394e90:increment-count --package tar
 The command first prints the procedure's signature and its return values, then the effects the call has on the account:
 
 ```sh
-Raw Signature: extern "fast" fn() -> felt
+Signature: increment-count() -> felt
 
 Result: 1
 The transaction will have the following effects:
@@ -487,6 +501,8 @@ Account Vault will not be changed.
 Nonce incremented by: 1.
 ```
 
+A procedure that only reads leaves the transaction with no effects at all, which the transaction kernel does not allow. The result is still printed, followed by a note that the transaction was rejected for having no effects.
+
 :::note
 The call is executed locally. No proof is generated, nothing is submitted to the network, and the account's stored state is left unchanged.
 :::
@@ -504,7 +520,7 @@ miden-client call 0x4614b8bf575eab71455e97bd394e90:get-count --package target/mi
 ```sh
 Account 0x4614b8bf575eab71455e97bd394e90 isn't tracked locally; reading its state from the network and running the call from your account 0x8fa1c2....
 
-Raw Signature: extern "fast" fn() -> felt
+Signature: get-count() -> felt
 
 Result: 1
 

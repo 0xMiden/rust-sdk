@@ -48,7 +48,7 @@ use miden_client_cli::MIDEN_DIR;
 use miden_client_cli::config::{KEYSTORE_DIRECTORY, Network};
 use miden_client_integration_tests::{ClientConfig, fee_funding};
 use miden_client_sqlite_store::SqliteStore;
-use midenc_hir_type::{CallConv, FunctionType, Type};
+use midenc_hir_type::{CallConv, FunctionType, StructType, Type};
 use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
 use rand::RngExt;
@@ -1774,7 +1774,17 @@ fn call_nonexistent_procedure() {
 /// Helper: builds the `call-test` package (arithmetic + storage procedures) at runtime and
 /// writes the serialized `.masp` to `out_path`.
 fn call_test_exports(package: &Package) -> Vec<PackageExport> {
-    let signature_overrides: [(&str, FunctionType); 4] = [
+    // The `account-id` core type as the compiler records it: a named record of two field
+    // elements. Its name is what the CLI's `account-id` codec matches against.
+    let account_id = Type::Struct(Arc::new(StructType::named(
+        Arc::from("miden:base/core-types@1.0.0/account-id"),
+        [
+            (Arc::<str>::from("prefix"), Type::Felt),
+            (Arc::<str>::from("suffix"), Type::Felt),
+        ],
+    )));
+
+    let signature_overrides: [(&str, FunctionType); 6] = [
         (
             "add",
             FunctionType::new(CallConv::ComponentModel, [Type::Felt, Type::Felt], [Type::Felt]),
@@ -1792,6 +1802,14 @@ fn call_test_exports(package: &Package) -> Vec<PackageExport> {
         (
             "wide_result",
             FunctionType::new(CallConv::ComponentModel, [], vec![Type::Felt; 17]),
+        ),
+        (
+            "take_account_id",
+            FunctionType::new(CallConv::ComponentModel, [account_id.clone()], [account_id.clone()]),
+        ),
+        (
+            "account_id_suffix",
+            FunctionType::new(CallConv::ComponentModel, [account_id.clone()], [Type::Felt]),
         ),
     ];
 
@@ -1852,6 +1870,27 @@ fn build_call_test_masp(out_path: &Path) {
             adv_push adv_push
             add
             exec.sys::truncate_stack
+        end
+
+        @account_procedure
+        pub proc take_account_id
+            # Identity over the two felts of an account id, so the typed decoder can be checked
+            # against the value that was encoded.
+            nop
+        end
+
+        @account_procedure
+        pub proc account_id_suffix
+            # Drops the prefix and returns the suffix, so a swapped field order cannot pass
+            # unnoticed the way it does through the identity above.
+            drop
+        end
+
+        @account_procedure
+        pub proc raw_add
+            # Left out of `signature_overrides`, so the package describes no WIT types for it and
+            # `call` has to fall back to raw field elements.
+            add
         end
     "#;
 
@@ -2136,10 +2175,141 @@ fn call_with_advice_inputs() {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output_line(&stdout, "Result:"), "Result: 22felt");
+}
+
+/// Returns the single line of `stdout` that starts with `prefix`, so a test can compare the whole
+/// line. A fragment match would also accept a longer value that starts the same way.
+fn output_line<'a>(stdout: &'a str, prefix: &str) -> &'a str {
+    let mut matching = stdout.lines().filter(|line| line.starts_with(prefix));
+    let line = matching
+        .next()
+        .unwrap_or_else(|| panic!("no line starts with `{prefix}`:\n{stdout}"));
     assert!(
-        stdout.contains("Result: 22"),
-        "Expected advice-derived result in output:\n{stdout}"
+        matching.next().is_none(),
+        "more than one line starts with `{prefix}`:\n{stdout}"
     );
+    line
+}
+
+/// Tests the typed encode/decode path: an `account-id` hex token is expanded to two felts on
+/// the way in and rendered back as `account-id(0x..)` on the way out.
+#[test]
+fn call_typed_account_id_roundtrip() {
+    let (temp_dir, account_id, masp_path) = setup_call_test_account();
+
+    let acct_hex = "0xaa0000000000bb110000cc000000dd";
+    let mut cmd = cargo_bin_cmd!("miden-client");
+    cmd.args([
+        "call",
+        &format!("{account_id}:take_account_id"),
+        acct_hex,
+        "--package",
+        masp_path.to_str().unwrap(),
+    ]);
+
+    let output = cmd.current_dir(&temp_dir).output().unwrap();
+    assert!(
+        output.status.success(),
+        "Call failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        output_line(&stdout, "Signature:"),
+        "Signature: take_account_id(account-id) -> account-id"
+    );
+    assert_eq!(output_line(&stdout, "Result:"), format!("Result: account-id({acct_hex})"));
+}
+
+/// Tests the untyped fallback: a procedure the package describes no WIT types for is still called,
+/// with one field element per argument and the output stack printed as-is.
+#[test]
+fn call_untyped_procedure_falls_back_to_raw_felts() {
+    let (temp_dir, account_id, masp_path) = setup_call_test_account();
+
+    let mut cmd = cargo_bin_cmd!("miden-client");
+    cmd.args([
+        "call",
+        &format!("{account_id}:raw_add"),
+        "3",
+        "7",
+        "--package",
+        masp_path.to_str().unwrap(),
+    ]);
+
+    let output = cmd.current_dir(&temp_dir).output().unwrap();
+    assert!(
+        output.status.success(),
+        "Call failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output_line(&stdout, "Signature:"), "Signature: raw_add(...) [no type info]");
+    // The dump runs to the last non-zero value, and `add` leaves nothing but the sum.
+    assert_eq!(output_line(&stdout, "Result:"), "Result: 10");
+}
+
+/// Tests that an untyped procedure takes its arguments the way a `felt` is written on the typed
+/// path, so the fallback cannot teach a syntax that stops working once the types arrive.
+#[test]
+fn call_untyped_procedure_rejects_a_hex_argument() {
+    let (temp_dir, account_id, masp_path) = setup_call_test_account();
+
+    let mut cmd = cargo_bin_cmd!("miden-client");
+    cmd.args([
+        "call",
+        &format!("{account_id}:raw_add"),
+        "0xff",
+        "7",
+        "--package",
+        masp_path.to_str().unwrap(),
+    ]);
+
+    let output = cmd.current_dir(&temp_dir).output().unwrap();
+    assert!(!output.status.success(), "Expected failure for a hex argument");
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("Invalid argument '0xff'. Expected a felt."),
+        "Unexpected stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// Tests that the two felts of an `account-id` argument reach the procedure in signature order.
+/// The identity round-trip above cannot show this: encoding and decoding would agree even if both
+/// had the fields the wrong way around.
+#[test]
+fn call_typed_account_id_field_order() {
+    let (temp_dir, account_id, masp_path) = setup_call_test_account();
+
+    let acct_hex = "0xaa0000000000bb110000cc000000dd";
+    let suffix = AccountId::from_hex(acct_hex).unwrap().suffix();
+
+    let mut cmd = cargo_bin_cmd!("miden-client");
+    cmd.args([
+        "call",
+        &format!("{account_id}:account_id_suffix"),
+        acct_hex,
+        "--package",
+        masp_path.to_str().unwrap(),
+    ]);
+
+    let output = cmd.current_dir(&temp_dir).output().unwrap();
+    assert!(
+        output.status.success(),
+        "Call failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        output_line(&stdout, "Signature:"),
+        "Signature: account_id_suffix(account-id) -> felt"
+    );
+    assert_eq!(output_line(&stdout, "Result:"), format!("Result: {suffix}felt"));
 }
 
 /// Tests that calling a `add` with the wrong number of arguments fails
@@ -2159,10 +2329,7 @@ fn call_rejects_wrong_arg_count() {
     let out = too_few.current_dir(&temp_dir).output().unwrap();
     assert!(!out.status.success(), "Expected failure for too-few args");
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("expects 2 value") && stderr.contains("got 1"),
-        "Unexpected stderr:\n{stderr}"
-    );
+    assert_eq!(output_line(&stderr, "  ×"), "  × procedure 'add' expects 2 argument(s), got 1");
 
     // Too many: 3 args for a 2-arg procedure.
     let mut too_many = cargo_bin_cmd!("miden-client");
@@ -2178,10 +2345,7 @@ fn call_rejects_wrong_arg_count() {
     let out = too_many.current_dir(&temp_dir).output().unwrap();
     assert!(!out.status.success(), "Expected failure for too-many args");
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("expects 2 value") && stderr.contains("got 3"),
-        "Unexpected stderr:\n{stderr}"
-    );
+    assert_eq!(output_line(&stderr, "  ×"), "  × procedure 'add' expects 2 argument(s), got 3");
 }
 
 /// Tests passing more arguments than a procedure can be given.

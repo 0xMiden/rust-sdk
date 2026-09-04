@@ -2582,6 +2582,7 @@ dependencies = [
  "gloo-timers",
  "hex",
  "miden-agglayer",
+ "miden-assembly-syntax",
  "miden-debug",
  "miden-node-proto-build",
  "miden-note-transport-proto-build",

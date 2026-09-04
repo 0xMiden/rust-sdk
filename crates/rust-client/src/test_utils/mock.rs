@@ -114,7 +114,8 @@ impl MockRpcApi {
     /// Makes the next call to `endpoint` fail with `error` instead of answering. The failure is
     /// consumed, so the call after it answers normally and a test can exercise a retry.
     ///
-    /// Only the endpoints that check [`Self::take_failure`] honor this.
+    /// Staging a failure for an endpoint whose mock implementation does not look for one is a
+    /// silent no-op.
     pub fn fail_next_call(&self, endpoint: RpcEndpoint, error: RpcError) {
         self.next_call_failures.write().insert(endpoint.proto_name(), error);
     }

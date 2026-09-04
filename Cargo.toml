@@ -8,7 +8,7 @@ members = [
   "crates/rust-client",
   "crates/sqlite-store",
   "crates/testing/miden-client-tests",
-  "crates/testing/test-node-genesis",
+  "crates/testing/test-node-genesis", "crates/web3signer-authenticator",
 ]
 
 default-members = ["bin/miden-cli", "crates/rust-client"]

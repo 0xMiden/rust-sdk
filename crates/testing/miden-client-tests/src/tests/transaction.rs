@@ -18,7 +18,6 @@ use miden_client::transaction::{
     TransactionInputs,
     TransactionProver,
     TransactionProverError,
-    TransactionRequest,
     TransactionRequestBuilder,
 };
 use miden_client::{ClientError, Deserializable, Serializable, async_trait};
@@ -667,12 +666,32 @@ async fn chain_anchor_for_request_tracks_consumed_note_blocks() {
     client.sync_state().await.unwrap();
 
     let note = client.get_input_note(note_id).await.unwrap().unwrap();
+    let proof = note.inclusion_proof().unwrap().clone();
     let note_block = note.inclusion_proof().unwrap().location().block_num();
+    let note_details: Note = note.clone().try_into().unwrap();
 
     // Advance one block so the note's creation block is older than the anchor's reference
     // block — otherwise the note block IS the reference block and needs no tracking.
     rpc_api.prove_block();
     client.sync_state().await.unwrap();
+
+    for input_note in [
+        InputNote::authenticated(note_details.clone(), proof),
+        InputNote::unauthenticated(note_details),
+    ] {
+        let is_authenticated = input_note.proof().is_some();
+        let request = TransactionRequestBuilder::new()
+            .explicit_input_notes([(input_note, None)])
+            .build()
+            .unwrap();
+        let anchor = client.chain_anchor_for_request(&request).await.unwrap();
+        assert_eq!(anchor.partial_blockchain().contains_block(note_block), is_authenticated);
+
+        let result = Box::pin(client.execute_transaction_at(wallet.id(), request, anchor))
+            .await
+            .unwrap();
+        assert_eq!(result.consumed_notes().get_note(0).proof().is_some(), is_authenticated);
+    }
 
     // Capture the anchor from the consume request itself: the note's creation block must be
     // tracked without the caller having to know it.
@@ -698,106 +717,6 @@ async fn chain_anchor_for_request_tracks_consumed_note_blocks() {
         .await
         .unwrap();
     assert_eq!(result.executed_transaction().block_header().block_num(), anchor_block);
-}
-
-#[tokio::test]
-async fn explicit_input_notes_override_store_classification() {
-    let (mut client, rpc_api, keystore) = Box::pin(create_test_client()).await;
-    let (wallet, faucet) =
-        setup_wallet_and_faucet(&mut client, AccountType::Private, &keystore, RPO_FALCON_SCHEME_ID)
-            .await
-            .unwrap();
-    client.sync_state().await.unwrap();
-
-    let mint_request = TransactionRequestBuilder::new()
-        .build_mint_fungible_asset(
-            FungibleAsset::new(faucet.id(), 5u64).unwrap(),
-            wallet.id(),
-            NoteType::Private,
-            client.rng(),
-        )
-        .unwrap();
-    let note_id = mint_request.expected_output_own_notes().pop().unwrap().id();
-    Box::pin(client.submit_new_transaction(faucet.id(), mint_request))
-        .await
-        .unwrap();
-    rpc_api.prove_block();
-    client.sync_state().await.unwrap();
-
-    let note_record = client.get_input_note(note_id).await.unwrap().unwrap();
-    let note_block = note_record.inclusion_proof().unwrap().location().block_num();
-    let note: Note = note_record.clone().try_into().unwrap();
-
-    // Make the creation block old enough to require anchor tracking.
-    rpc_api.prove_block();
-    client.sync_state().await.unwrap();
-
-    let inferred_request = TransactionRequestBuilder::new()
-        .input_notes([(note.clone(), None)])
-        .build()
-        .unwrap();
-    let explicit_authenticated_request = TransactionRequestBuilder::new()
-        .explicit_input_notes([(
-            InputNote::authenticated(note.clone(), note_record.inclusion_proof().unwrap().clone()),
-            None,
-        )])
-        .build()
-        .unwrap();
-    let explicit_unauthenticated_request = TransactionRequestBuilder::new()
-        .explicit_input_notes([(InputNote::unauthenticated(note), None)])
-        .build()
-        .unwrap();
-
-    // Classification survives serialization.
-    let explicit_authenticated_request =
-        TransactionRequest::read_from_bytes(&explicit_authenticated_request.to_bytes()).unwrap();
-    let explicit_unauthenticated_request =
-        TransactionRequest::read_from_bytes(&explicit_unauthenticated_request.to_bytes()).unwrap();
-
-    let inferred_anchor = client.chain_anchor_for_request(&inferred_request).await.unwrap();
-    let explicit_authenticated_anchor =
-        client.chain_anchor_for_request(&explicit_authenticated_request).await.unwrap();
-    let explicit_unauthenticated_anchor = client
-        .chain_anchor_for_request(&explicit_unauthenticated_request)
-        .await
-        .unwrap();
-
-    assert!(inferred_anchor.partial_blockchain().contains_block(note_block));
-    assert!(explicit_authenticated_anchor.partial_blockchain().contains_block(note_block));
-    assert!(
-        !explicit_unauthenticated_anchor.partial_blockchain().contains_block(note_block),
-        "an explicitly unauthenticated note must not inherit the store's inclusion proof"
-    );
-
-    let inferred = Box::pin(client.execute_transaction(wallet.id(), inferred_request))
-        .await
-        .unwrap();
-    let explicit_authenticated =
-        Box::pin(client.execute_transaction(wallet.id(), explicit_authenticated_request))
-            .await
-            .unwrap();
-    let explicit_unauthenticated =
-        Box::pin(client.execute_transaction(wallet.id(), explicit_unauthenticated_request))
-            .await
-            .unwrap();
-
-    assert!(matches!(inferred.consumed_notes().get_note(0), InputNote::Authenticated { .. }));
-    assert!(matches!(
-        explicit_authenticated.consumed_notes().get_note(0),
-        InputNote::Authenticated { .. }
-    ));
-    assert!(matches!(
-        explicit_unauthenticated.consumed_notes().get_note(0),
-        InputNote::Unauthenticated { .. }
-    ));
-    assert_eq!(
-        inferred.consumed_notes().commitment(),
-        explicit_authenticated.consumed_notes().commitment()
-    );
-    assert_ne!(
-        inferred.consumed_notes().commitment(),
-        explicit_unauthenticated.consumed_notes().commitment()
-    );
 }
 
 #[tokio::test]

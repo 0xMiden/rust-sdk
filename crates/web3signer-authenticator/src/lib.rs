@@ -1,14 +1,27 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+use miden_client::{
+    AuthenticationError,
+    auth::{PublicKeyCommitment, Signature, SigningInputs, TransactionAuthenticator},
+};
+use miden_processor::FutureMaybeSend;
+use miden_protocol::account::auth::PublicKey;
+use std::sync::Arc;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+pub struct Web3SignerAuthenticator {}
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
+impl TransactionAuthenticator for Web3SignerAuthenticator {
+    fn get_signature(
+        &self,
+        _pub_key_commitment: PublicKeyCommitment,
+        _signing_inputs: &SigningInputs,
+    ) -> impl FutureMaybeSend<Result<Signature, AuthenticationError>> {
+        async { todo!() }
+    }
+
+    /// Retrieves a public key for a specific public key commitment.
+    fn get_public_key(
+        &self,
+        _pub_key_commitment: PublicKeyCommitment,
+    ) -> impl FutureMaybeSend<Option<Arc<PublicKey>>> {
+        async { todo!() }
     }
 }

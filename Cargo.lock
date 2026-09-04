@@ -6171,6 +6171,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "web3signer-authenticator"
+version = "0.16.0-rc.5"
+dependencies = [
+ "miden-client",
+ "miden-processor",
+ "miden-protocol",
+]
+
+[[package]]
 name = "winapi"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"

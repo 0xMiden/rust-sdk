@@ -70,8 +70,9 @@ use miden_client::testing::common::{
 };
 use miden_client::transaction::TransactionRequestBuilder;
 use miden_client::{Felt, Word, ZERO};
-use miden_client_test_harness::ClientConfig;
 use rand::{Rng, RngExt};
+
+use crate::ClientConfig;
 
 // HELPERS
 // ================================================================================================
@@ -109,10 +110,19 @@ const COUNTER_CONTRACT: &str = r#"
         end"#;
 
 const INCR_NONCE_AUTH_CODE: &str = "
+    use miden::standards::fee
     use miden::protocol::native_account
+
+    const POST_FEE_CYCLES = 1024
 
     @auth_script
     pub proc auth_basic
+        dropw
+
+        exec.fee::native_conversion_info
+        push.POST_FEE_CYCLES
+        exec.fee::pay_fee drop
+
         exec.native_account::incr_nonce
         drop
     end
@@ -252,14 +262,11 @@ pub(crate) async fn deploy_counter_contract(client: &mut TestClient) -> Result<A
     .map_err(|err| anyhow::anyhow!(err))
     .context("failed to create increment nonce auth component")?;
 
-    // The auth component bumps the nonce on its own and pays no fee, so an empty transaction is
-    // both a valid account update and a deploy it can afford.
-    let account = build_counter_account(client, [incr_nonce_auth], false)?;
+    // The auth component pays the fee from the account's vault. The wallet component lets its
+    // deploy transaction consume the funding note that supplies that vault.
+    let account = build_counter_account(client, [incr_nonce_auth], true)?;
     client.add_account(&account, false).await?;
-    let tx_id = client
-        .submit_new_transaction(account.id(), TransactionRequestBuilder::new().build()?)
-        .await?;
-    wait_for_tx(client, tx_id).await?;
+    client.deploy_account(account.id()).await?;
 
     Ok(account)
 }

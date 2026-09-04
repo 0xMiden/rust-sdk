@@ -7,7 +7,8 @@ use miden_client::store::{InputNoteRecord, NoteFilter};
 use miden_client::sync::NoteTagSource;
 use miden_client::testing::common::*;
 use miden_client::transaction::{InputNote, PaymentNoteDescription, TransactionRequestBuilder};
-use miden_client_test_harness::ClientConfig;
+
+use crate::ClientConfig;
 
 // HELPERS
 // ================================================================================================

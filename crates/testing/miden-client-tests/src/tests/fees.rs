@@ -5,14 +5,42 @@
 //! against a `MockChain` with a non-zero `verification_base_fee`, which is the only switch that
 //! turns fee collection on.
 
+use std::env::temp_dir;
+use std::sync::Arc;
+
+use miden_client::ClientError;
 use miden_client::account::component::{FeeConversionInfo, commit_fee_conversion_info};
-use miden_client::account::{Account, AccountId};
+use miden_client::account::{Account, AccountComponentInterface, AccountId};
 use miden_client::asset::{Asset, FungibleAsset};
-use miden_client::auth::AuthSchemeId;
-use miden_client::transaction::{TransactionExecutorError, TransactionRequestBuilder};
-use miden_protocol::Word;
+use miden_client::auth::{AuthSchemeId, AuthSecretKey};
+use miden_client::builder::ClientBuilder;
+use miden_client::keystore::{FilesystemKeyStore, Keystore};
+use miden_client::store::NoteFilter;
+use miden_client::testing::common::{TestClient, create_test_store_path};
+use miden_client::testing::mock::MockRpcApi;
+use miden_client::transaction::{
+    TransactionExecutorError,
+    TransactionRequestBuilder,
+    TransactionRequestError,
+};
+use miden_client_sqlite_store::ClientBuilderSqliteExt;
+use miden_protocol::account::{AccountBuilder, AccountComponent, AccountType};
+use miden_protocol::crypto::rand::RandomCoin;
 use miden_protocol::testing::account_id::ACCOUNT_ID_FEE_FAUCET;
+use miden_protocol::{Felt, Word};
+use miden_standards::account::AccountBuilderSchemaCommitmentExt;
+use miden_standards::account::auth::{
+    Approver,
+    ApproverSet,
+    AuthMultisig,
+    AuthMultisigConfig,
+    AuthSingleSig,
+};
+use miden_standards::account::wallets::BasicWallet;
+use miden_standards::testing::note::NoteBuilder;
 use miden_testing::{Auth, MockChain, MockChainBuilder};
+
+use super::seed_mock_transaction_encryption_key;
 
 /// Base fee used by the protocol's own fee-payment tests. Large enough that the computed fee is
 /// non-zero, which is what forces the conversion info to be present.
@@ -174,4 +202,222 @@ async fn fee_payment_fails_without_fee_asset_balance() {
             .contains("amount of the asset in the vault is less than the amount to remove"),
         "expected the vault withdrawal to abort, got: {err:?}"
     );
+}
+
+/// Builds a fee-charging chain and a client that can transact on it as `account`.
+///
+/// The account is built here rather than by the chain builder so that its key can be put in the
+/// client's keystore: the client signs with its own authenticator, and a chain-generated key is
+/// not reachable from outside the chain.
+async fn fee_charging_client() -> (TestClient, Account) {
+    let key = AuthSecretKey::new_falcon512_poseidon2();
+    let approver =
+        Approver::new(key.public_key().to_commitment(), AuthSchemeId::Falcon512Poseidon2);
+
+    Box::pin(fee_charging_client_with_auth(AuthSingleSig::new(approver), key)).await
+}
+
+/// Builds a fee-charging chain and a client whose account authenticates through `AuthMultisig`,
+/// which reads the auth args as conversion info but will not accept a salt it did not choose.
+async fn fee_charging_multisig_client() -> (TestClient, Account) {
+    let key = AuthSecretKey::new_falcon512_poseidon2();
+    let approvers = ApproverSet::new(
+        vec![Approver::new(
+            key.public_key().to_commitment(),
+            AuthSchemeId::Falcon512Poseidon2,
+        )],
+        1,
+    )
+    .unwrap();
+    let auth = AuthMultisig::new(AuthMultisigConfig::new(approvers)).unwrap();
+
+    Box::pin(fee_charging_client_with_auth(auth, key)).await
+}
+
+async fn fee_charging_client_with_auth(
+    auth: impl Into<AccountComponent>,
+    key: AuthSecretKey,
+) -> (TestClient, Account) {
+    let fee_faucet_id: AccountId = ACCOUNT_ID_FEE_FAUCET.try_into().unwrap();
+    let fee_asset: Asset = FungibleAsset::new(fee_faucet_id, FEE_ASSET_BALANCE).unwrap().into();
+
+    let mut account = AccountBuilder::new([11u8; 32])
+        .account_type(AccountType::Public)
+        .with_component(auth)
+        .with_component(BasicWallet)
+        .build_with_schema_commitment()
+        .unwrap();
+    // A new account's vault has to be built empty, and a nonce of zero marks it undeployed, while
+    // the chain takes this one as already on it holding enough of the fee asset to pay.
+    account.vault_mut().add_asset(fee_asset).unwrap();
+    account.set_nonce(Felt::ONE).unwrap();
+
+    let mut builder = MockChainBuilder::new().verification_base_fee(VERIFICATION_BASE_FEE);
+    builder.add_account(account.clone()).unwrap();
+    let chain = builder.build().unwrap();
+
+    let keystore = FilesystemKeyStore::new(temp_dir()).unwrap();
+    keystore.add_key(&key, account.id()).await.unwrap();
+
+    let mut client = TestClient::from(
+        ClientBuilder::new()
+            .rpc(Arc::new(MockRpcApi::new(chain)))
+            .rng(Box::new(RandomCoin::new(Word::from([0xfeeu32, 1, 2, 3]))))
+            .sqlite_store(create_test_store_path())
+            .authenticator(Arc::new(keystore))
+            .tx_discard_delta(None)
+            .build()
+            .await
+            .unwrap(),
+    );
+    client.ensure_genesis_in_place().await.unwrap();
+    seed_mock_transaction_encryption_key(&mut client).await;
+    client.add_account(&account, false).await.unwrap();
+    client.sync_state().await.unwrap();
+
+    (client, account)
+}
+
+/// The kernel's fee note must NOT be tracked as one of the user's own output notes.
+///
+/// It is a bearer note for whoever builds the batch. Tracking it would put it in the store, return
+/// it from `get_output_notes` as a note the user created, list it in `miden-client notes`, and feed
+/// its nullifier prefix into `sync_nullifiers` on every sync -- the client asking the node about a
+/// note it does not own, once per fee-paying transaction.
+///
+/// Asserted against the STORE, not against the executed transaction: the raw output list is
+/// supposed to contain the fee note, so only what `apply_transaction` persists distinguishes the
+/// two.
+#[tokio::test]
+async fn the_fee_note_is_not_tracked_as_one_of_our_output_notes() {
+    let (mut client, account) = Box::pin(fee_charging_client()).await;
+
+    let before = client.get_output_notes(NoteFilter::All).await.unwrap().len();
+
+    let executed = Box::pin(
+        client.execute_transaction(account.id(), TransactionRequestBuilder::new().build().unwrap()),
+    )
+    .await
+    .expect("the client should attach conversion info and pay the fee");
+
+    // Precondition: the chain really charges, so a fee note really is emitted. Without this the
+    // assertion below would pass just as well on a fee-free chain and prove nothing.
+    assert_eq!(
+        executed.executed_transaction().output_notes().num_notes(),
+        1,
+        "precondition: a fee-paying transaction emits the fee note"
+    );
+
+    // `apply_transaction` is the store write under test -- it is what builds the
+    // `OutputNoteRecord`s from the executed transaction's output notes.
+    let height = client.get_sync_height().await.unwrap();
+    client.apply_transaction(&executed, height).await.unwrap();
+
+    let tracked = client.get_output_notes(NoteFilter::All).await.unwrap();
+    assert_eq!(
+        tracked.len(),
+        before,
+        "the kernel fee note must not be recorded as one of our own output notes"
+    );
+}
+
+/// A note whose script the consumption checker cannot classify is screened by trial-executing it,
+/// which runs the account's auth procedure and therefore pays the fee. Screening has to commit
+/// conversion info of its own for that: without it the trial aborts in `fee::pay_fee`, the checker
+/// reports unconsumable conditions, and the note is dropped from the sync as irrelevant.
+#[tokio::test]
+async fn note_screening_finds_a_custom_script_note_consumable_on_a_fee_charging_chain() {
+    let (client, account) = Box::pin(fee_charging_client()).await;
+
+    let script = client
+        .code_builder()
+        .compile_note_script(super::TARGET_BOUND_NOTE_SCRIPT)
+        .unwrap();
+    let note = NoteBuilder::new(account.id(), RandomCoin::new(Word::from([7u32, 7, 7, 7])))
+        .script(script)
+        .note_storage([account.id().suffix(), account.id().prefix().as_felt()])
+        .unwrap()
+        .build()
+        .unwrap();
+
+    let consumability = client.note_screener().get_consumability(&note).await.unwrap();
+
+    assert_eq!(
+        consumability.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+        vec![account.id()],
+        "the target account should be able to consume the note it is bound to"
+    );
+}
+
+/// `check_notes_consumability` trial-executes the notes it is given the same way screening does, so
+/// it needs conversion info of its own on a fee-charging chain. This covers the second injection
+/// call site, which the screening test above does not reach.
+///
+/// It asserts on the failure REASON rather than on `successful`. The screener attaches no
+/// authenticator on purpose, and this API has no "consumable once authorized" verdict of the kind
+/// `can_consume` produces through `handle_epilogue_error`, so a signature-authenticated account
+/// never lands a note in `successful` whatever the fee does. What the injected conversion info
+/// decides is how far the trial gets: with it, execution reaches the signature request; without it,
+/// it aborts earlier in `fee::pay_fee`.
+#[tokio::test]
+async fn checking_note_consumability_pays_the_fee_on_a_fee_charging_chain() {
+    let (client, account) = Box::pin(fee_charging_client()).await;
+
+    let script = client
+        .code_builder()
+        .compile_note_script(super::TARGET_BOUND_NOTE_SCRIPT)
+        .unwrap();
+    let note = NoteBuilder::new(account.id(), RandomCoin::new(Word::from([9u32, 9, 9, 9])))
+        .script(script)
+        .note_storage([account.id().suffix(), account.id().prefix().as_felt()])
+        .unwrap()
+        .build()
+        .unwrap();
+
+    let consumption_info = client
+        .note_screener()
+        .check_notes_consumability(account.id(), vec![note.clone()])
+        .await
+        .expect("checking consumability should not error");
+
+    let failed = consumption_info
+        .failed()
+        .iter()
+        .find(|failed| failed.note().id() == note.id())
+        .expect("the note should be accounted for");
+
+    let error = failed.error();
+    assert!(
+        matches!(error, TransactionExecutorError::MissingAuthenticator),
+        "the trial should get as far as requesting a signature rather than aborting on the unpaid \
+         fee, got: {error:?}"
+    );
+}
+
+/// An `AuthMultisig` account cannot inherit the client's fixed salt, because `multisig.masm` reuses
+/// the auth args as the transaction summary salt and rejects a summary it has already recorded. The
+/// client therefore refuses the request up front rather than letting it abort in the VM.
+///
+/// The unit tests cover `resolve_fee_conversion_info` directly; this one checks the error reaches a
+/// caller of `execute_transaction` intact.
+#[tokio::test]
+async fn a_multisig_account_is_told_to_declare_its_own_conversion_info() {
+    let (mut client, account) = Box::pin(fee_charging_multisig_client()).await;
+
+    let err = Box::pin(
+        client.execute_transaction(account.id(), TransactionRequestBuilder::new().build().unwrap()),
+    )
+    .await
+    .expect_err("a multisig request declaring no conversion info should be rejected");
+
+    // Matched on the variant rather than on rendered text. `ClientError::TransactionRequestError`
+    // displays as a bare "invalid transaction request", so the inner prose is reachable only
+    // through `source()`; and a substring of the Debug rendering cannot tell this variant from its
+    // sibling `FeeConversionInfoUnsupported`, which is the very distinction under test.
+    match err {
+        ClientError::TransactionRequestError(
+            TransactionRequestError::FeeConversionInfoRequired(auth_component),
+        ) => assert_eq!(auth_component, AccountComponentInterface::AuthMultisig.name()),
+        other => panic!("expected FeeConversionInfoRequired(Multisig), got {other:?}"),
+    }
 }

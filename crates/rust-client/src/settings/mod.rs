@@ -8,6 +8,7 @@ use miden_tx::utils::serde::{Deserializable, Serializable};
 
 use super::Client;
 use crate::errors::ClientError;
+use crate::store::SettingScope;
 
 // CLIENT METHODS
 // ================================================================================================
@@ -27,7 +28,10 @@ impl<AUTH> Client<AUTH> {
         key: String,
         value: T,
     ) -> Result<(), ClientError> {
-        self.store.set_setting(key, value.to_bytes()).await.map_err(Into::into)
+        self.store
+            .set_setting(SettingScope::User, key, value.to_bytes())
+            .await
+            .map_err(Into::into)
     }
 
     /// Retrieves the value for `key`, or `None` if it hasn’t been set.
@@ -36,7 +40,7 @@ impl<AUTH> Client<AUTH> {
         key: String,
     ) -> Result<Option<T>, ClientError> {
         self.store
-            .get_setting(key)
+            .get_setting(SettingScope::User, key)
             .await
             .map(|value| value.map(|value| Deserializable::read_from_bytes(&value)))?
             .transpose()
@@ -45,11 +49,11 @@ impl<AUTH> Client<AUTH> {
 
     /// Deletes the setting value from the store. Returns `true` if `key` had a value set.
     pub async fn remove_setting(&self, key: String) -> Result<bool, ClientError> {
-        self.store.remove_setting(key).await.map_err(Into::into)
+        self.store.remove_setting(SettingScope::User, key).await.map_err(Into::into)
     }
 
     /// Returns all the setting keys from the store.
     pub async fn list_setting_keys(&self) -> Result<Vec<String>, ClientError> {
-        self.store.list_setting_keys().await.map_err(Into::into)
+        self.store.list_setting_keys(SettingScope::User).await.map_err(Into::into)
     }
 }

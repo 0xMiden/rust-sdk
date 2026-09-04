@@ -29,11 +29,12 @@ use miden_client::store::{InputNoteState, TransactionFilter};
 use miden_client::testing::common::*;
 use miden_client::transaction::TransactionRequestBuilder;
 use miden_client::{Client, ClientRng, Word};
-use miden_client_test_harness::ClientConfig;
 use miden_protocol::MAX_TX_EXECUTION_CYCLES;
 use miden_protocol::transaction::TransactionFee;
 use rand::Rng;
 use tracing::info;
+
+use crate::ClientConfig;
 
 // PASS-THROUGH TRANSACTIONS (change sender from Alice -> Pass-through account)
 // ================================================================================================

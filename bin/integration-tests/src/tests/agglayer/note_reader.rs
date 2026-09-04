@@ -2,9 +2,9 @@ use anyhow::Result;
 use miden_agglayer::{ExitRoot, UpdateGerNote};
 use miden_client::testing::common::{wait_for_blocks, wait_for_tx};
 use miden_client::transaction::TransactionRequestBuilder;
-use miden_client_test_harness::ClientConfig;
 
 use super::{AgglayerConfig, create_agglayer_clients, setup_core_accounts};
+use crate::ClientConfig;
 
 // TESTS
 // ================================================================================================

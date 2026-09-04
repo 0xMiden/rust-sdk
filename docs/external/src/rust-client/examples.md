@@ -11,6 +11,8 @@ For a complete example on how to run the client and submit transactions to the M
 
 When using a remote prover, network issues or server errors may cause proving to fail. A common pattern is to configure the client with a remote prover by default and fall back to local proving when remote proving fails.
 
+`RemoteTransactionProver` requires the `tonic` feature (see [Crate features](./features.md#crate-features)).
+
 ```rust
 use std::sync::Arc;
 use miden_client::{

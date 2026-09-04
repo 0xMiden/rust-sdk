@@ -11,8 +11,9 @@ use miden_client::transaction::{
     TransactionRequestBuilder,
     TransactionStatus,
 };
-use miden_client_test_harness::ClientConfig;
 use tracing::info;
+
+use crate::ClientConfig;
 
 /// Real-node integration test for the `BatchBuilder` end-to-end path.
 ///

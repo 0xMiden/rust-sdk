@@ -196,7 +196,7 @@ impl SqliteStore {
     }
 }
 
-/// Inserts the tag record, relying on the unique `(tag, source)` index for idempotency across
+/// Inserts the tag record, relying on the `(tag, source)` primary key for idempotency across
 /// concurrent connections. Returns whether a new row was inserted.
 pub(super) fn add_note_tag_tx(
     tx: &Transaction<'_>,

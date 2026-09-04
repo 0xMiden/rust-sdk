@@ -12,6 +12,7 @@ use miden_client::store::{NoteFilter, TransactionFilter};
 use miden_client::transaction::{
     ChainAnchor,
     ChainAnchorError,
+    InputNote,
     ProvenTransaction,
     TransactionExecutorError,
     TransactionInputs,
@@ -665,12 +666,32 @@ async fn chain_anchor_for_request_tracks_consumed_note_blocks() {
     client.sync_state().await.unwrap();
 
     let note = client.get_input_note(note_id).await.unwrap().unwrap();
+    let proof = note.inclusion_proof().unwrap().clone();
     let note_block = note.inclusion_proof().unwrap().location().block_num();
+    let note_details: Note = note.clone().try_into().unwrap();
 
     // Advance one block so the note's creation block is older than the anchor's reference
     // block — otherwise the note block IS the reference block and needs no tracking.
     rpc_api.prove_block();
     client.sync_state().await.unwrap();
+
+    for input_note in [
+        InputNote::authenticated(note_details.clone(), proof),
+        InputNote::unauthenticated(note_details),
+    ] {
+        let is_authenticated = input_note.proof().is_some();
+        let request = TransactionRequestBuilder::new()
+            .explicit_input_notes([(input_note, None)])
+            .build()
+            .unwrap();
+        let anchor = client.chain_anchor_for_request(&request).await.unwrap();
+        assert_eq!(anchor.partial_blockchain().contains_block(note_block), is_authenticated);
+
+        let result = Box::pin(client.execute_transaction_at(wallet.id(), request, anchor))
+            .await
+            .unwrap();
+        assert_eq!(result.consumed_notes().get_note(0).proof().is_some(), is_authenticated);
+    }
 
     // Capture the anchor from the consume request itself: the note's creation block must be
     // tracked without the caller having to know it.

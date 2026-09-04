@@ -354,6 +354,11 @@ where
     /// and a consistent [`PartialBlockchain`], typically captured by the transaction's original
     /// proposer via [`Self::chain_anchor_for_request`] and shipped alongside the signed data.
     ///
+    /// The anchor pins the reference block only. The mode each input note is consumed in also
+    /// enters the summary, so a request shared across clients should pin it through
+    /// [`TransactionRequestBuilder::explicit_input_notes`]. Otherwise each client classifies the
+    /// notes from its own store, and two clients can commit to different input notes.
+    ///
     /// Callers holding an anchor from an untrusted source should first compare
     /// [`ChainAnchor::block_commitment`] against an independently trusted value (e.g. the block
     /// commitment bound into the signed transaction summary).
@@ -446,7 +451,8 @@ where
 
     /// Captures a [`ChainAnchor`] at the client's current sync height, tracking the creation
     /// blocks of the request's authenticated input notes so that the request can later execute
-    /// against the anchor.
+    /// against the anchor. This covers notes the store holds as authenticated and notes pinned
+    /// as authenticated through [`TransactionRequestBuilder::explicit_input_notes`].
     ///
     /// This is the capture entry point for flows that never see a successful execution result at
     /// capture time — e.g. multisig proposal flows, where execution intentionally fails with
@@ -465,13 +471,16 @@ where
         &self,
         transaction_request: &TransactionRequest,
     ) -> Result<ChainAnchor, ClientError> {
-        let input_note_ids: Vec<NoteId> = transaction_request.input_note_ids().collect();
+        let inferred_input_note_ids: Vec<NoteId> = transaction_request
+            .input_note_ids()
+            .filter(|note_id| !transaction_request.explicit_input_notes.contains_key(note_id))
+            .collect();
 
-        let tracked_blocks: BTreeSet<BlockNumber> = if input_note_ids.is_empty() {
+        let mut tracked_blocks: BTreeSet<BlockNumber> = if inferred_input_note_ids.is_empty() {
             BTreeSet::new()
         } else {
             self.store
-                .get_input_notes(NoteFilter::List(input_note_ids))
+                .get_input_notes(NoteFilter::List(inferred_input_note_ids))
                 .await?
                 .iter()
                 .filter(|record| record.is_authenticated())
@@ -479,6 +488,13 @@ where
                 .map(|proof| proof.location().block_num())
                 .collect()
         };
+        tracked_blocks.extend(
+            transaction_request
+                .explicit_input_notes
+                .values()
+                .filter_map(InputNote::proof)
+                .map(|proof| proof.location().block_num()),
+        );
 
         self.chain_anchor_at_tip(tracked_blocks).await
     }

@@ -25,7 +25,7 @@ use miden_protocol::note::{
     PartialNote,
     PartialNoteMetadata,
 };
-use miden_protocol::transaction::TransactionScript;
+use miden_protocol::transaction::{InputNote, TransactionScript};
 use miden_protocol::vm::AdviceMap;
 use miden_protocol::{Felt, Word};
 use miden_standards::note::{P2idNote, P2ideNote, PswapNote, PswapNoteStorage, SwapNote};
@@ -48,13 +48,16 @@ use crate::ClientRng;
 /// scripts, and setting other transaction parameters.
 #[derive(Clone, Debug)]
 pub struct TransactionRequestBuilder {
-    /// Notes to be consumed by the transaction.
-    /// Notes whose inclusion proof is present in the store are will be consumed as authenticated;
-    /// the ones that do not have proofs will be consumed as unauthenticated.
+    /// Notes to be consumed by the transaction, in consumption order.
+    ///
+    /// A note with an entry in `explicit_input_notes` is consumed in the mode that entry pins.
+    /// The executing client infers the mode of every other note from its store.
     input_notes: Vec<Note>,
     /// Optional arguments of the Notes to be consumed by the transaction. This
     /// includes both authenticated and unauthenticated notes.
     input_notes_args: Vec<(NoteId, Option<NoteArgs>)>,
+    /// Pinned consumption mode of selected input notes.
+    explicit_input_notes: BTreeMap<NoteId, InputNote>,
     /// Notes to be created by the transaction. The full note data is needed internally
     /// to build the transaction script template.
     own_output_notes: Vec<Note>,
@@ -108,6 +111,7 @@ impl TransactionRequestBuilder {
         Self {
             input_notes: vec![],
             input_notes_args: vec![],
+            explicit_input_notes: BTreeMap::new(),
             own_output_notes: Vec::new(),
             expected_output_recipients: BTreeMap::new(),
             expected_future_notes: BTreeMap::new(),
@@ -125,6 +129,10 @@ impl TransactionRequestBuilder {
     }
 
     /// Adds the specified notes as input notes to the transaction request.
+    ///
+    /// The executing client consumes a note as authenticated when its store holds the note's
+    /// inclusion proof and as unauthenticated otherwise. Use [`Self::explicit_input_notes`] when
+    /// the mode must not depend on the executing client.
     #[must_use]
     pub fn input_notes(
         mut self,
@@ -133,6 +141,31 @@ impl TransactionRequestBuilder {
         for (note, argument) in notes {
             self.input_notes_args.push((note.id(), argument));
             self.input_notes.push(note);
+        }
+        self
+    }
+
+    /// Adds the specified [`InputNote`]s as input notes to the transaction request. Each note is
+    /// consumed in the mode it carries: an [`InputNote::Authenticated`] note with its proof, an
+    /// [`InputNote::Unauthenticated`] note as unauthenticated even if the executing client's store
+    /// holds a proof for it. The executing client does not classify these notes from its store, so
+    /// every client that executes the request commits to the same input notes and produces the
+    /// same transaction summary. Use this for a request that is shared across clients.
+    ///
+    /// To consume an authenticated note, the executing client must be able to serve the header of
+    /// the note's creation block, from its store or from the
+    /// [`ChainAnchor`](crate::transaction::ChainAnchor) the request executes against.
+    #[must_use]
+    pub fn explicit_input_notes(
+        mut self,
+        notes: impl IntoIterator<Item = (InputNote, Option<NoteArgs>)>,
+    ) -> Self {
+        for (input_note, argument) in notes {
+            let note_id = input_note.id();
+
+            self.input_notes_args.push((note_id, argument));
+            self.input_notes.push(input_note.note().clone());
+            self.explicit_input_notes.insert(note_id, input_note);
         }
         self
     }
@@ -635,6 +668,7 @@ impl TransactionRequestBuilder {
         Ok(TransactionRequest {
             input_notes: self.input_notes,
             input_notes_args: self.input_notes_args,
+            explicit_input_notes: self.explicit_input_notes,
             script_template,
             expected_output_recipients: self.expected_output_recipients,
             expected_future_notes: self.expected_future_notes,

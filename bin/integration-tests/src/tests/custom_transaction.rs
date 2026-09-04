@@ -38,8 +38,8 @@ use crate::ClientConfig;
 //   asserts that the {asserted_value} parameter is 0. To test this we first execute with an
 //   incorrect value passed in, and after that we try again with the correct value.
 //
-// Because it's currently not possible to create/consume notes without assets, the P2ID code
-// is used as the base for the note code.
+// Because it's currently not possible to create/consume notes without assets, the P2ID code is used
+// as the base for the note code.
 
 const NOTE_ARGS: [Felt; 8] = [
     Felt::new_unchecked(9),
@@ -244,8 +244,8 @@ pub async fn test_merkle_store(client_config: ClientConfig) -> Result<()> {
 pub async fn test_onchain_notes_sync_with_tag(client_config: ClientConfig) -> Result<()> {
     // Client 1 has an private faucet which will mint an onchain note for client 2
     let (mut client_1, keystore_1) = client_config.clone().into_client().await?;
-    // Client 2 will be used to sync and check that by adding the tag we can still fetch notes
-    // whose tag doesn't necessarily match any of its accounts
+    // Client 2 will be used to sync and check that by adding the tag we can still fetch notes whose
+    // tag doesn't necessarily match any of its accounts
     let (mut client_2, keystore_2) = client_config.clone().into_client().await?;
     // Client 3 will be the control client. We won't add any tags and expect the note not to be
     // fetched

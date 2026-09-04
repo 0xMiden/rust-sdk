@@ -119,6 +119,7 @@ jobs:
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/next' }}
       - name: Install Rust with rustfmt
         run: |
+          rustup toolchain install --no-self-update
           rustup update --no-self-update nightly
           rustup +nightly component add rustfmt
       - name: make - format-check

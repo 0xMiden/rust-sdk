@@ -22,8 +22,8 @@ pub struct BenchConfig {
     pub network: Endpoint,
     /// Number of benchmark iterations
     pub iterations: usize,
-    /// Persistent store directory. Deploy saves the account and keystore here;
-    /// transaction and expand commands reuse the same directory.
+    /// Persistent store directory. Deploy saves the account and keystore here; transaction and
+    /// expand commands reuse the same directory.
     pub store_path: PathBuf,
 }
 
@@ -36,8 +36,8 @@ impl BenchConfig {
 
 /// Creates a Miden client using the given endpoint and store directory.
 ///
-/// The store directory should already exist. It will contain (or be populated with)
-/// the `SQLite` database (`store.sqlite3`) and filesystem keystore (`keystore/`).
+/// The store directory should already exist. It will contain (or be populated with) the `SQLite`
+/// database (`store.sqlite3`) and filesystem keystore (`keystore/`).
 pub async fn create_client(
     endpoint: &Endpoint,
     store_path: &Path,

@@ -4,8 +4,8 @@
 //! the leftovers of another. What matters in the output is the growth between the smallest and the
 //! largest size: a query served by an index stays flat, one that falls back to a scan does not.
 //!
-//! Within a size, the read measurements run before the writing ones, so every read sees exactly
-//! the seeded database.
+//! Within a size, the read measurements run before the writing ones, so every read sees exactly the
+//! seeded database.
 
 use std::path::Path;
 use std::sync::Arc;

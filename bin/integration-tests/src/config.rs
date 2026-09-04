@@ -217,8 +217,8 @@ impl Default for ClientConfig {
         let network = std::env::var("TEST_MIDEN_NETWORK").ok();
         let network_lower = network.map(|n| n.to_lowercase());
 
-        // Resolve RPC endpoint: TEST_MIDEN_RPC_URL overrides network preset.
-        // When no network is set, defaults to localhost.
+        // Resolve RPC endpoint: TEST_MIDEN_RPC_URL overrides network preset. When no network is
+        // set, defaults to localhost.
         let endpoint = if let Ok(rpc_url) = std::env::var("TEST_MIDEN_RPC_URL") {
             Endpoint::try_from(rpc_url.as_str()).unwrap()
         } else {
@@ -230,8 +230,8 @@ impl Default for ClientConfig {
             }
         };
 
-        // Resolve prover: TEST_MIDEN_PROVER_URL overrides network preset.
-        // "localhost" forces local prover. Named values resolve to their URLs.
+        // Resolve prover: TEST_MIDEN_PROVER_URL overrides network preset. "localhost" forces local
+        // prover. Named values resolve to their URLs.
         let prover_endpoint = if let Ok(url) = std::env::var("TEST_MIDEN_PROVER_URL") {
             match url.to_lowercase().as_str() {
                 NETWORK_LOCALHOST => None,

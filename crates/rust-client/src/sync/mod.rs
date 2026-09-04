@@ -1,5 +1,5 @@
-//! Provides the client APIs for synchronizing the client's local state with the Miden
-//! network. It ensures that the client maintains a valid, up-to-date view of the chain.
+//! Provides the client APIs for synchronizing the client's local state with the Miden network. It
+//! ensures that the client maintains a valid, up-to-date view of the chain.
 //!
 //! ## Overview
 //!
@@ -15,9 +15,9 @@
 //! - Aggregating transaction updates to determine which transactions have been committed or
 //!   discarded.
 //!
-//! The result of the synchronization process is captured in a [`SyncSummary`], which provides
-//! a summary of the new block number along with lists of received, committed, and consumed note
-//! IDs, updated account IDs, locked accounts, and committed transaction IDs.
+//! The result of the synchronization process is captured in a [`SyncSummary`], which provides a
+//! summary of the new block number along with lists of received, committed, and consumed note IDs,
+//! updated account IDs, locked accounts, and committed transaction IDs.
 //!
 //! Once the data is requested and retrieved, updates are persisted in the client's store.
 //!
@@ -52,9 +52,9 @@
 //!
 //! The `sync_state` method loops internally until the client is fully synced to the network tip.
 //!
-//! For more advanced usage, refer to the individual functions (such as
-//! `committed_note_updates` and `consumed_note_updates`) to understand how the sync data is
-//! processed and applied to the local store.
+//! For more advanced usage, refer to the individual functions (such as `committed_note_updates` and
+//! `consumed_note_updates`) to understand how the sync data is processed and applied to the local
+//! store.
 
 use alloc::collections::BTreeSet;
 use alloc::sync::Arc;
@@ -122,12 +122,11 @@ where
         self.store.get_sync_height().await.map_err(Into::into)
     }
 
-    /// Syncs the client's on-chain state with the current state of the Miden network and returns
-    /// a [`SyncSummary`] corresponding to the local state update.
+    /// Syncs the client's on-chain state with the current state of the Miden network and returns a
+    /// [`SyncSummary`] corresponding to the local state update.
     ///
-    /// Does **not** fetch private notes from the Note Transport Layer. Use
-    /// [`Client::sync_state`] for the combined sync, or call [`Client::sync_note_transport`]
-    /// separately.
+    /// Does **not** fetch private notes from the Note Transport Layer. Use [`Client::sync_state`]
+    /// for the combined sync, or call [`Client::sync_note_transport`] separately.
     ///
     /// Builds the default sync input, runs [`StateSync::sync_state`] (see that method for the
     /// detailed pipeline), applies the resulting update to the store, caches the partial MMR, and
@@ -145,7 +144,6 @@ where
 
         let mut partial_mmr = self.get_current_partial_mmr().await?;
 
-        // Get the sync update from the network
         let state_sync_update = state_sync.sync_state(&mut partial_mmr, input).await?;
 
         let sync_summary: SyncSummary = (&state_sync_update).into();
@@ -180,15 +178,15 @@ where
             return Ok(Vec::new());
         }
 
-        // Drain any private notes whose previous relay attempt failed. A flush
-        // error is logged, not propagated: a failing relay must not block the
-        // sync, and the entries stay durable for the next attempt.
+        // Drain any private notes whose previous relay attempt failed. A flush error is logged, not
+        // propagated: a failing relay must not block the sync, and the entries stay durable for the
+        // next attempt.
         if let Err(err) = self.flush_relay_outbox().await {
             tracing::warn!(?err, "relay outbox flush failed during sync; entries retained");
         }
 
-        // Recover historical private notes for any tag added after the global cursor advanced.
-        // This drains each newly tracked tag from the start, fetching only that tag's own history.
+        // Recover historical private notes for any tag added after the global cursor advanced. This
+        // drains each newly tracked tag from the start, fetching only that tag's own history.
         let mut imported_ids = self.backfill_new_tags().await?;
 
         let cursor = self.store.get_note_transport_cursor().await?;
@@ -206,12 +204,12 @@ where
     /// Runs the full client sync.
     ///
     /// First fetches private notes from the Note Transport Layer (see
-    /// [`Client::sync_note_transport`]), then syncs the client's on-chain state with the Miden
-    /// node (see [`Client::sync_chain`]). If note transport is disabled, this is equivalent to
+    /// [`Client::sync_note_transport`]), then syncs the client's on-chain state with the Miden node
+    /// (see [`Client::sync_chain`]). If note transport is disabled, this is equivalent to
     /// [`Client::sync_chain`].
     ///
-    /// Fails fast on the first error. Private notes delivered via NTL are imported before the
-    /// chain sync reads its input set, so their nullifiers are checked in the same call.
+    /// Fails fast on the first error. Private notes delivered via NTL are imported before the chain
+    /// sync reads its input set, so their nullifiers are checked in the same call.
     pub async fn sync_state(&mut self) -> Result<SyncSummary, ClientError> {
         let new_private_notes = self.sync_note_transport().await?;
         let mut summary = self.sync_chain().await?;
@@ -285,10 +283,10 @@ where
     /// Prunes irrelevant block data from the store.
     ///
     /// Identifies tracked blocks whose input notes have all been consumed, untracks them from the
-    /// `PartialMmr` to determine which authentication nodes are no longer needed, then delegates
-    /// to [`Store::untrack_and_prune_irrelevant_blocks`] to atomically remove the stale nodes,
-    /// mark the blocks as irrelevant, and delete irrelevant block headers.
-    /// Any caller of this function should've cached the `PartialMmr` beforehand.
+    /// `PartialMmr` to determine which authentication nodes are no longer needed, then delegates to
+    /// [`Store::untrack_and_prune_irrelevant_blocks`] to atomically remove the stale nodes, mark
+    /// the blocks as irrelevant, and delete irrelevant block headers. Any caller of this function
+    /// should've cached the `PartialMmr` beforehand.
     async fn untrack_and_prune_irrelevant_blocks(&mut self) -> Result<(), ClientError> {
         let tracked_blocks = self.store.get_tracked_block_header_numbers().await?;
         let to_untrack: Vec<usize> = if tracked_blocks.is_empty() {
@@ -323,8 +321,8 @@ where
             updated_partial_mmr = Some(partial_mmr);
         }
 
-        // Store deletes stale auth nodes, marks blocks as irrelevant, and removes irrelevant
-        // block headers. Old irrelevant tip headers may still need pruning.
+        // Store deletes stale auth nodes, marks blocks as irrelevant, and removes irrelevant block
+        // headers. Old irrelevant tip headers may still need pruning.
         self.store
             .untrack_and_prune_irrelevant_blocks(&blocks_to_untrack, &nodes_to_remove)
             .await?;
@@ -336,8 +334,8 @@ where
         Ok(())
     }
 
-    /// Ensures that the RPC limits are set in the RPC client. If not already cached,
-    /// fetches them from the node and persists them in the store.
+    /// Ensures that the RPC limits are set in the RPC client. If not already cached, fetches them
+    /// from the node and persists them in the store.
     pub async fn ensure_rpc_limits_in_place(&mut self) -> Result<(), ClientError> {
         if self.rpc_api.has_rpc_limits().is_some() {
             return Ok(());

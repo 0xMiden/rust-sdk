@@ -17,8 +17,8 @@ use crate::sync::NoteTagRecord;
 // TRANSACTION STORE UPDATE
 // ================================================================================================
 
-/// Represents the changes that need to be applied to the client store as a result of a
-/// transaction execution.
+/// Represents the changes that need to be applied to the client store as a result of a transaction
+/// execution.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TransactionStoreUpdate {
     /// Details of the executed transaction to be inserted.
@@ -135,8 +135,8 @@ mod tests {
 
     #[tokio::test]
     async fn transaction_store_update_serialization_roundtrip() {
-        // Build a minimal MockChain with an account consuming a P2ID note so that we can
-        // produce a real `ExecutedTransaction`.
+        // Build a minimal MockChain with an account consuming a P2ID note so that we can produce a
+        // real `ExecutedTransaction`.
         let sender_id = ACCOUNT_ID_SENDER.try_into().unwrap();
         let faucet_id = ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET.try_into().unwrap();
         let asset = Asset::Fungible(FungibleAsset::new(faucet_id, 100u64).unwrap());
@@ -160,8 +160,8 @@ mod tests {
         .await
         .unwrap();
 
-        // Build non-trivial `note_updates` and `new_tags` so that the round-trip covers all
-        // fields that were previously dropped.
+        // Build non-trivial `note_updates` and `new_tags` so that the round-trip covers every
+        // field.
         let input_note = InputNoteRecord::from(note.clone());
         let note_updates = NoteUpdateTracker::for_transaction_updates([input_note], [], []);
 

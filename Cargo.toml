@@ -9,6 +9,7 @@ members = [
   "crates/sqlite-store",
   "crates/testing/miden-client-tests",
   "crates/testing/test-node-genesis",
+  "xtask",
 ]
 
 default-members = ["bin/miden-cli", "crates/rust-client"]

@@ -73,8 +73,7 @@ impl fmt::Display for ErrorHint {
     }
 }
 
-// TODO: This is mostly illustrative but we could add a URL with fragemtn identifiers
-// for each error
+// TODO: This is mostly illustrative but we could add a URL with fragemtn identifiers for each error
 const TROUBLESHOOTING_DOC: &str =
     "https://docs.miden.xyz/builder/tools/clients/rust-client/cli/cli-troubleshooting";
 
@@ -229,10 +228,9 @@ pub enum ClientError {
         #[source]
         source: Box<ClientError>,
     },
-    /// Generic carrier for feature-specific errors raised by an observer
-    /// or domain module. Keeps `ClientError` free of per-feature variants;
-    /// each feature provides its own `From<MyFeatureError> for ClientError`
-    /// returning `Observer(Box::new(err))`.
+    /// Generic carrier for feature-specific errors raised by an observer or domain module. Keeps
+    /// `ClientError` free of per-feature variants; each feature provides its own
+    /// `From<MyFeatureError> for ClientError` returning `Observer(Box::new(err))`.
     #[error(transparent)]
     Observer(Box<dyn core::error::Error + Send + Sync + 'static>),
 }
@@ -240,9 +238,9 @@ pub enum ClientError {
 // OBSERVER FAN-OUT
 // ================================================================================================
 
-/// Logs a non-fatal observer failure without propagating it, so one observer
-/// can't abort the others or the surrounding sync/transaction step. Shared by
-/// the `NoteObserver` and `TransactionObserver` fan-out loops.
+/// Logs a non-fatal observer failure without propagating it, so one observer can't abort the others
+/// or the surrounding sync/transaction step. Shared by the `NoteObserver` and `TransactionObserver`
+/// fan-out loops.
 pub(crate) fn log_observer_failure(
     observer: &'static str,
     op: &str,

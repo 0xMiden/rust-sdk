@@ -171,8 +171,8 @@ async fn fee_can_be_paid_from_a_note_consumed_in_the_same_transaction() {
     );
 }
 
-/// An account that does not hold the fee asset cannot pay, even with correctly committed
-/// conversion info: `pay_fee` withdraws the fee from the account vault.
+/// An account that does not hold the fee asset cannot pay, even with correctly committed conversion
+/// info: `pay_fee` withdraws the fee from the account vault.
 #[tokio::test]
 async fn fee_payment_fails_without_fee_asset_balance() {
     let (chain, account, fee_faucet_id) = fee_charging_chain(0);
@@ -207,8 +207,8 @@ async fn fee_payment_fails_without_fee_asset_balance() {
 /// Builds a fee-charging chain and a client that can transact on it as `account`.
 ///
 /// The account is built here rather than by the chain builder so that its key can be put in the
-/// client's keystore: the client signs with its own authenticator, and a chain-generated key is
-/// not reachable from outside the chain.
+/// client's keystore: the client signs with its own authenticator, and a chain-generated key is not
+/// reachable from outside the chain.
 async fn fee_charging_client() -> (TestClient, Account) {
     let key = AuthSecretKey::new_falcon512_poseidon2();
     let approver =

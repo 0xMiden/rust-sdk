@@ -1,5 +1,5 @@
-//! Per-note observer that collects every PSWAP-attachment note seen
-//! during sync. Lineage-scope filtering happens later, in `discovery`.
+//! Per-note observer that collects every PSWAP-attachment note seen during sync. Lineage-scope
+//! filtering happens later, in `discovery`.
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
@@ -31,10 +31,9 @@ use crate::utils::RwLock;
 ///   updates.
 pub struct PswapChainObserver {
     store: Arc<dyn Store>,
-    /// `observe()` writes, `apply()` drains; never concurrent. The observer is
-    /// shared via the outer `Arc<dyn NoteObserver>` and only ever touched
-    /// through `&self`, so the `RwLock` alone provides the needed interior
-    /// mutability — no inner `Arc`.
+    /// `observe()` writes, `apply()` drains; never concurrent. The observer is shared via the outer
+    /// `Arc<dyn NoteObserver>` and only ever touched through `&self`, so the `RwLock` alone
+    /// provides the needed interior mutability — no inner `Arc`.
     chain_note_updates: RwLock<Vec<ObservedPswapNote>>,
 }
 
@@ -76,8 +75,8 @@ impl NoteObserver for PswapChainObserver {
         Ok(true)
     }
 
-    /// Drains the collector, runs the correlator, applies round updates.
-    /// Per-round failures are logged, not propagated.
+    /// Drains the collector, runs the correlator, applies round updates. Per-round failures are
+    /// logged, not propagated.
     async fn apply(&self, sync_update: &crate::sync::StateSyncUpdate) -> Result<(), ClientError> {
         let chain_note_updates = core::mem::take(&mut *self.chain_note_updates.write());
 
@@ -109,9 +108,8 @@ impl NoteObserver for PswapChainObserver {
 // HELPERS
 // ---------------------------------------------------------------------------
 
-/// Pulls the typed [`PswapNoteAttachment`] off a note's attachment word
-/// `[amount, order_id, depth, 0]`. Returns `None` for notes without a
-/// PSWAP-scheme attachment or with malformed content.
+/// Pulls the typed [`PswapNoteAttachment`] off a note's attachment word `[amount, order_id, depth,
+/// 0]`. Returns `None` for notes without a PSWAP-scheme attachment or with malformed content.
 fn extract_pswap_attachment(attachments: &NoteAttachments) -> Option<PswapNoteAttachment> {
     let pswap_attach = attachments.find(PswapNote::PSWAP_ATTACHMENT_SCHEME)?;
     let word = pswap_attach.content().as_words().first()?;
@@ -128,9 +126,8 @@ fn extract_pswap_attachment(attachments: &NoteAttachments) -> Option<PswapNoteAt
 
 #[cfg(test)]
 mod tests {
-    //! Reject-branch coverage for `extract_pswap_attachment` — the per-note
-    //! fast-path that turns a raw attachment word into a typed
-    //! [`PswapNoteAttachment`] (or rejects it).
+    //! Reject-branch coverage for `extract_pswap_attachment` — the per-note fast-path that turns a
+    //! raw attachment word into a typed [`PswapNoteAttachment`] (or rejects it).
     use alloc::vec::Vec;
 
     use miden_protocol::note::{NoteAttachment, NoteAttachmentScheme, NoteAttachments};
@@ -164,9 +161,8 @@ mod tests {
         assert_eq!(parsed.depth(), 3);
     }
 
-    /// No PSWAP-scheme attachment present → `None`. Covers both the empty
-    /// set and the "has attachments, but none is ours" case (the common
-    /// path for unrelated notes during sync).
+    /// No PSWAP-scheme attachment present → `None`. Covers both the empty set and the "has
+    /// attachments, but none is ours" case (the common path for unrelated notes during sync).
     #[test]
     fn extract_pswap_attachment_rejects_missing_scheme() {
         let empty = NoteAttachments::new(Vec::new()).unwrap();
@@ -187,8 +183,8 @@ mod tests {
         assert!(extract_pswap_attachment(&pswap_attachments(word)).is_none());
     }
 
-    /// `depth` above `u32::MAX` is rejected, not panicked on. The amount
-    /// field is valid so the parser reaches the depth check.
+    /// `depth` above `u32::MAX` is rejected, not panicked on. The amount field is valid so the
+    /// parser reaches the depth check.
     #[test]
     fn extract_pswap_attachment_rejects_oversized_depth() {
         let word = pswap_word(10, 7, u64::from(u32::MAX) + 1);

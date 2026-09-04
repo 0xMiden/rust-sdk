@@ -36,8 +36,8 @@ struct CliArgs {
     #[arg(short, long, default_value = "localhost", env = "MIDEN_NETWORK", global = true)]
     network: Network,
 
-    /// Path to the persistent store directory. All commands share this directory
-    /// for the `SQLite` database and filesystem keystore.
+    /// Path to the persistent store directory. All commands share this directory for the `SQLite`
+    /// database and filesystem keystore.
     #[arg(long, global = true, default_value = DEFAULT_STORE_DIR)]
     store: String,
 
@@ -66,9 +66,9 @@ enum Command {
 impl Command {
     /// Returns whether the command needs the global startup sync against the network.
     ///
-    /// Only commands that read pre-existing chain state (deploy, expand, transaction)
-    /// require a synced client at startup. Import / export operate on a file or call
-    /// their own RPC and do not benefit from the pre-sync.
+    /// Only commands that read pre-existing chain state (deploy, expand, transaction) require a
+    /// synced client at startup. Import / export operate on a file or call their own RPC and do not
+    /// benefit from the pre-sync.
     fn startup_mode(&self) -> StartupMode {
         match self {
             Command::Deploy(_) | Command::Expand(_) | Command::Transaction(_) => {
@@ -100,10 +100,9 @@ struct TransactionArgs {
     #[arg(short, long)]
     account_id: String,
 
-    /// Maximum storage reads per transaction. When total entries exceed this limit,
-    /// reads are split across multiple transactions per benchmark iteration.
-    /// Each iteration's time is the sum across all transactions.
-    /// When omitted, all entries are read in a single transaction.
+    /// Maximum storage reads per transaction. When total entries exceed this limit, reads are split
+    /// across multiple transactions per benchmark iteration. Each iteration's time is the sum
+    /// across all transactions. When omitted, all entries are read in a single transaction.
     #[arg(short, long)]
     reads: Option<usize>,
 

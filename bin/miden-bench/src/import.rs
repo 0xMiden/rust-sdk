@@ -9,9 +9,9 @@ use miden_client::{Client, Serializable};
 
 use crate::report::format_size;
 
-/// Imports an account from a `.mac` file. The file is read with [`AccountFile::read`],
-/// the auth secret keys are inserted into the filesystem keystore, and the account
-/// is added to the client's store. Fails if the account already exists in the store.
+/// Imports an account from a `.mac` file. The file is read with [`AccountFile::read`], the auth
+/// secret keys are inserted into the filesystem keystore, and the account is added to the client's
+/// store. Fails if the account already exists in the store.
 pub async fn import_from_file(
     client: &mut Client<FilesystemKeyStore>,
     store_path: &Path,
@@ -44,9 +44,8 @@ pub async fn import_from_file(
     Ok(())
 }
 
-/// Imports a public account from the network by its ID via
-/// [`Client::import_account_by_id`]. After the import, the account is read back from
-/// the store to report the serialized account size.
+/// Imports a public account from the network by its ID via [`Client::import_account_by_id`]. After
+/// the import, the account is read back from the store to report the serialized account size.
 pub async fn import_from_network(
     client: &mut Client<FilesystemKeyStore>,
     account_id_str: &str,

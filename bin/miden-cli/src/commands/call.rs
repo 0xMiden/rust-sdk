@@ -54,8 +54,8 @@ pub struct CallCmd {
     #[arg(value_name = "args")]
     args: Vec<String>,
 
-    /// Path to the package (.masp) file containing the procedure. If omitted, `<PROCEDURE>` must
-    /// be a hex digest and the output stack is shown as raw felts.
+    /// Path to the package (.masp) file containing the procedure. If omitted, `<PROCEDURE>` must be
+    /// a hex digest and the output stack is shown as raw felts.
     #[arg(long, short)]
     package: Option<PathBuf>,
 
@@ -114,8 +114,8 @@ impl CallCmd {
         }
     }
 
-    /// Resolves the procedure digest and code builder either from `--package` (calling by name)
-    /// or from a hex digest when no package is given.
+    /// Resolves the procedure digest and code builder either from `--package` (calling by name) or
+    /// from a hex digest when no package is given.
     fn resolve_call_code<AUTH: Keystore + Sync + 'static>(
         &self,
         client: &Client<AUTH>,
@@ -170,9 +170,9 @@ impl CallCmd {
 
             // The account's code is loaded from the client's store at VM runtime, so the library
             // doesn't need to be embedded in the script. The assembler still needs it at compile
-            // time to resolve `call.<digest>` to a known procedure — otherwise it emits a
-            // "phantom target" warning. Dynamic linking provides that resolution without
-            // embedding the library bytes.
+            // time to resolve `call.<digest>` to a known procedure — otherwise it emits a "phantom
+            // target" warning. Dynamic linking provides that resolution without embedding the
+            // library bytes.
             let builder = client.code_builder().with_dynamically_linked_package(&package)?;
             Ok(CallCode { builder, digest, result_felts })
         } else {
@@ -199,16 +199,16 @@ impl CallCmd {
 // HELPERS
 // ================================================================================================
 
-/// Resolved call code: the linked builder, the procedure digest, and the stack width of the
-/// results when known.
+/// Resolved call code: the linked builder, the procedure digest, and the stack width of the results
+/// when known.
 struct CallCode {
     builder: CodeBuilder,
     digest: Word,
     result_felts: Option<usize>,
 }
 
-/// Runs a remote call via FPI. FPI cannot mutate the foreign account, so there is no state delta
-/// to compute — only the read phase runs.
+/// Runs a remote call via FPI. FPI cannot mutate the foreign account, so there is no state delta to
+/// compute — only the read phase runs.
 async fn run_remote_call<AUTH: Keystore + Sync + 'static>(
     client: &Client<AUTH>,
     target_id: AccountId,
@@ -305,8 +305,8 @@ async fn resolve_call_target<AUTH: Keystore + Sync + 'static>(
     target_id: AccountId,
 ) -> Result<CallTarget, CliError> {
     if let Some((_, status)) = client.get_account_header(target_id).await? {
-        // A locked account holds outdated state and is always private, so it can't be read from
-        // the network either.
+        // A locked account holds outdated state and is always private, so it can't be read from the
+        // network either.
         if status.is_locked() {
             return Err(CliError::InvalidArgument(format!(
                 "Account {target_id} is locked: its local state doesn't match the network's, so \
@@ -346,8 +346,8 @@ async fn resolve_call_target<AUTH: Keystore + Sync + 'static>(
 
 /// Picks the local account the FPI call runs from, preferring the default account.
 ///
-/// Any account works: the script calls the foreign procedure, not the native account's code.
-/// Locked accounts are skipped because their local state doesn't match the node's.
+/// Any account works: the script calls the foreign procedure, not the native account's code. Locked
+/// accounts are skipped because their local state doesn't match the node's.
 async fn pick_local_executor<AUTH: Keystore + Sync + 'static>(
     client: &Client<AUTH>,
 ) -> Result<AccountId, CliError> {
@@ -376,9 +376,9 @@ async fn pick_local_executor<AUTH: Keystore + Sync + 'static>(
 }
 
 fn resolve_procedure_digest(package: &Package, procedure_name: &str) -> Result<Word, CliError> {
-    // The user passes a bare name (e.g. `get_count`); match it
-    // against each export's name without the module path. Export names may be kebab (Rust/WIT) or
-    // snake (hand-written MASM bare identifiers), so compare with `_` and `-` treated as equal.
+    // The user passes a bare name (e.g. `get_count`); match it against each export's name without
+    // the module path. Export names may be kebab (Rust/WIT) or snake (hand-written MASM bare
+    // identifiers), so compare with `_` and `-` treated as equal.
     let target = procedure_name.replace('_', "-");
 
     let mut available = Vec::new();
@@ -417,8 +417,8 @@ fn parse_args(args: &[String]) -> Result<Vec<Felt>, CliError> {
 }
 
 /// How many field elements a procedure's arguments and results occupy on the stack. A multi-felt
-/// type such as `Word` counts as its flattened width, not as one item. `None` means the
-/// information is unavailable (procedure missing from manifest or export lacks type info).
+/// type such as `Word` counts as its flattened width, not as one item. `None` means the information
+/// is unavailable (procedure missing from manifest or export lacks type info).
 struct ProcedureSignature {
     param_felts: Option<usize>,
     result_felts: Option<usize>,
@@ -484,8 +484,8 @@ fn print_manifest_signature(package: &Package, procedure_name: &str) -> Procedur
 
 /// Builds a transaction script that pushes `args` and calls the procedure at `digest`.
 ///
-/// Only the top results are read back, and `truncate_stack` restores the 16-element exit
-/// invariant, so anything left below the results can stay there.
+/// Only the top results are read back, and `truncate_stack` restores the 16-element exit invariant,
+/// so anything left below the results can stay there.
 fn generate_tx_script(
     code_builder: CodeBuilder,
     digest: &Word,

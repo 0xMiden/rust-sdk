@@ -139,9 +139,9 @@ impl SqliteStore {
             // Update notes
             apply_note_updates_tx(&db_tx, &note_updates)?;
 
-            // Remove tags of input notes whose inclusion settled in this sync (committed,
-            // consumed during catch-up, or invalidated): their tag no longer drives note sync.
-            // Metadata-less records are skipped; their tag (if any) cannot be reconstructed.
+            // Remove tags of input notes whose inclusion settled in this sync (committed, consumed
+            // during catch-up, or invalidated): their tag no longer drives note sync. Metadata-less
+            // records are skipped; their tag (if any) cannot be reconstructed.
             let tags_to_remove = note_updates
                 .updated_input_notes()
                 .filter_map(|note_update| {

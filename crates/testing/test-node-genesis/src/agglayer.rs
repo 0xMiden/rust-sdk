@@ -1,5 +1,5 @@
-//! Builds the agglayer genesis accounts (bridge admin, GER manager, bridge, faucet) included in
-//! the genesis configuration when agglayer support is requested.
+//! Builds the agglayer genesis accounts (bridge admin, GER manager, bridge, faucet) included in the
+//! genesis configuration when agglayer support is requested.
 
 use std::collections::BTreeSet;
 
@@ -40,8 +40,8 @@ pub const GER_MANAGER_ACCOUNT_FILE: &str = "ger_manager.mac";
 pub const BRIDGE_ACCOUNT_FILE: &str = "bridge.mac";
 pub const AGGLAYER_FAUCET_ACCOUNT_FILE: &str = "agglayer_faucet.mac";
 
-/// Account files to include in genesis and save to disk (account + secret keys).
-/// Each entry is (filename, `AccountFile`).
+/// Account files to include in genesis and save to disk (account + secret keys). Each entry is
+/// (filename, `AccountFile`).
 pub type AgglayerGenesisAccounts = Vec<(&'static str, AccountFile)>;
 
 /// Creates all agglayer genesis accounts:
@@ -94,9 +94,9 @@ pub fn create_agglayer_genesis_accounts(fee_balance: Asset) -> Result<AgglayerGe
     .context("failed to build bridge account")?;
     let bridge = into_genesis_account(bridge, fee_balance)?;
 
-    // 4. Create and deploy the Faucet. In protocol 0.15 the faucet no longer stores conversion
-    // metadata (origin token address, network, scale, metadata hash); that data lives on the
-    // bridge's `faucet_metadata_map` and is written by the CONFIG_AGG_BRIDGE note at test time.
+    // 4. Create and deploy the Faucet. The faucet does not store conversion metadata (origin token
+    // address, network, scale, metadata hash); that data lives on the bridge's
+    // `faucet_metadata_map` and is written by the CONFIG_AGG_BRIDGE note at test time.
     let faucet_seed: Word = rng.random::<[u32; 4]>().map(Felt::from).into();
     let faucet = AggLayerFaucet::account_builder(
         faucet_seed,

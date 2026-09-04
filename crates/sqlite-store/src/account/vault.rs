@@ -47,13 +47,13 @@ impl SqliteStore {
         Ok(())
     }
 
-    /// Persists vault patch changes to the asset tables, updating fungible and non-fungible
-    /// assets. It archives old values from latest to historical, deletes removed assets from
-    /// latest, then inserts updated assets.
+    /// Persists vault patch changes to the asset tables, updating fungible and non-fungible assets.
+    /// It archives old values from latest to historical, deletes removed assets from latest, then
+    /// inserts updated assets.
     ///
-    /// The corresponding forest update (and the verification that the resulting vault root
-    /// matches the final header) happens in `apply_account_patch`, which applies all of an
-    /// account's tree changes in one batch.
+    /// The corresponding forest update (and the verification that the resulting vault root matches
+    /// the final header) happens in `apply_account_patch`, which applies all of an account's tree
+    /// changes in one batch.
     pub(crate) fn apply_account_vault_patch(
         tx: &Transaction<'_>,
         account_id: AccountId,
@@ -82,8 +82,8 @@ impl SqliteStore {
         Ok(())
     }
 
-    /// Persists vault delta changes: archives old values from latest to historical,
-    /// then updates latest (deletes removed assets, inserts/updates changed assets).
+    /// Persists vault delta changes: archives old values from latest to historical, then updates
+    /// latest (deletes removed assets, inserts/updates changed assets).
     fn persist_vault_delta(
         tx: &Transaction<'_>,
         account_id_bytes: &[u8],

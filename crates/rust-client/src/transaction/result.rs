@@ -60,8 +60,8 @@ impl TransactionResult {
         self.transaction.output_notes()
     }
 
-    /// Returns the list of notes that might be created in the future as a result of the
-    /// transaction execution.
+    /// Returns the list of notes that might be created in the future as a result of the transaction
+    /// execution.
     pub fn future_notes(&self) -> &[(NoteDetails, NoteTag)] {
         &self.future_notes
     }

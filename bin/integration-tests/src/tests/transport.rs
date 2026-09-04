@@ -280,8 +280,8 @@ pub async fn test_transport_multiple_notes_different_blocks(
     Ok(())
 }
 
-/// Tests that a note sent via transport before being committed on-chain starts as Expected,
-/// then transitions to Committed once the mint tx is executed and synced.
+/// Tests that a note sent via transport before being committed on-chain starts as Expected, then
+/// transitions to Committed once the mint tx is executed and synced.
 pub async fn test_transport_note_not_yet_committed(client_config: ClientConfig) -> Result<()> {
     if client_config.note_transport_endpoint.is_none() {
         eprintln!(

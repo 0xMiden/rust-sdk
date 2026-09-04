@@ -83,8 +83,8 @@ pub(crate) async fn parse_account_id<AUTH>(
 /// Splits a `<ACCOUNT_ID>[:<PROCEDURE>]` target into its account ID and procedure parts.
 ///
 /// Account IDs (hex or bech32) never contain a colon, so the first one separates the two. The
-/// procedure is `None` when the target carries no colon; commands that require one reject that
-/// case themselves.
+/// procedure is `None` when the target carries no colon; commands that require one reject that case
+/// themselves.
 pub(crate) fn split_procedure_target(target: &str) -> (&str, Option<&str>) {
     match target.split_once(':') {
         Some((account_id, procedure)) => (account_id, Some(procedure)),
@@ -112,8 +112,8 @@ pub fn load_faucet_metadata_resolver() -> Result<FaucetMetadataResolver, CliErro
     FaucetMetadataResolver::new(config.token_symbol_map_filepath)
 }
 
-/// Prints the effects of an executed transaction: input notes, output notes, storage value
-/// changes, storage map changes, vault changes, and the nonce change.
+/// Prints the effects of an executed transaction: input notes, output notes, storage value changes,
+/// storage map changes, vault changes, and the nonce change.
 pub async fn print_executed_transaction<AUTH>(
     client: &Client<AUTH>,
     executed_tx: &ExecutedTransaction,
@@ -173,6 +173,7 @@ pub async fn print_executed_transaction<AUTH>(
     }
 
     // VAULT
+    //
     // The patch carries the new absolute value of each changed asset, cleared entries are listed as
     // removed.
     if patch.vault().is_empty() {
@@ -221,8 +222,8 @@ pub async fn print_executed_transaction<AUTH>(
 
 /// Prints the output stack from `execute_program`.
 ///
-/// If `expected_results` is `Some(n)`, prints the top `n` values. If `None`, prints up to the
-/// last non-zero value so trailing zero-padding is hidden.
+/// If `expected_results` is `Some(n)`, prints the top `n` values. If `None`, prints up to the last
+/// non-zero value so trailing zero-padding is hidden.
 pub fn print_executed_program_stack(
     stack: &[Felt; MIN_STACK_DEPTH],
     expected_results: Option<usize>,
@@ -295,8 +296,8 @@ pub struct FaucetMetadataResolver {
 
 impl FaucetMetadataResolver {
     /// Creates a new instance of the [`FaucetMetadataResolver`] by loading the token symbol map
-    /// file from the specified `token_symbol_map_filepath`. If the file doesn't exist, an empty
-    /// map is created.
+    /// file from the specified `token_symbol_map_filepath`. If the file doesn't exist, an empty map
+    /// is created.
     pub fn new(token_symbol_map_filepath: PathBuf) -> Result<Self, CliError> {
         let raw: BTreeMap<String, RawFaucetEntry> =
             match std::fs::read_to_string(token_symbol_map_filepath) {
@@ -356,8 +357,8 @@ impl FaucetMetadataResolver {
         Ok(client.get_setting::<FaucetMetadata>(setting_key).await?)
     }
 
-    /// Looks up `(symbol, decimals)` for a faucet, walking TOML → settings store → RPC fetch.
-    /// On RPC success, the result is persisted to the settings store.
+    /// Looks up `(symbol, decimals)` for a faucet, walking TOML → settings store → RPC fetch. On
+    /// RPC success, the result is persisted to the settings store.
     pub async fn resolve<AUTH>(
         &self,
         client: &Client<AUTH>,
@@ -387,8 +388,8 @@ impl FaucetMetadataResolver {
         }
     }
 
-    /// Formats a fungible asset using [`Self::resolve`]. On miss, returns
-    /// `(<bech32 faucet address>, <base-unit amount>)`.
+    /// Formats a fungible asset using [`Self::resolve`]. On miss, returns `(<bech32 faucet
+    /// address>, <base-unit amount>)`.
     pub async fn format_fungible_asset<AUTH>(
         &self,
         client: &Client<AUTH>,

@@ -163,9 +163,9 @@ pub(super) fn note_filter_to_query_input_note_after(
     condition.push_str(" AND note.consumer_account_id = ?");
     condition.push_str(" AND note.consumed_tx_order IS NOT NULL");
 
-    // A cursor at or after `block_start` is the tighter lower bound, and emitting both makes
-    // SQLite abandon the row-value seek over `idx_input_notes_consumption`. A cursor before
-    // `block_start` excludes nothing that `block_start` does not, so it is dropped.
+    // A cursor at or after `block_start` is the tighter lower bound, and emitting both makes SQLite
+    // abandon the row-value seek over `idx_input_notes_consumption`. A cursor before `block_start`
+    // excludes nothing that `block_start` does not, so it is dropped.
     let cursor = cursor
         .filter(|cursor| block_start.is_none_or(|start| cursor.consumed_block_height() >= start));
 

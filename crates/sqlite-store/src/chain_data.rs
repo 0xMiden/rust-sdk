@@ -466,8 +466,8 @@ mod test {
         );
     }
 
-    /// Tests that `insert_block_header` persists the tracked header and its MMR
-    /// authentication nodes in the same call, so both are retrievable afterwards.
+    /// Tests that `insert_block_header` persists the tracked header and its MMR authentication
+    /// nodes in the same call, so both are retrievable afterwards.
     #[tokio::test]
     async fn insert_block_header_stores_header_and_nodes() {
         let store = create_test_store().await;
@@ -507,8 +507,8 @@ mod test {
         assert_eq!(stored_nodes, expected);
     }
 
-    /// Tests that a failure inserting the MMR nodes rolls back the block header written in the
-    /// same call, proving both land in a single transaction.
+    /// Tests that a failure inserting the MMR nodes rolls back the block header written in the same
+    /// call, proving both land in a single transaction.
     #[tokio::test]
     async fn insert_block_header_rolls_back_header_when_nodes_fail() {
         let store = create_test_store().await;
@@ -688,8 +688,8 @@ mod test {
         nodes.into_iter().collect()
     }
 
-    /// Tests that `untrack_and_prune_irrelevant_blocks` removes redundant authentication nodes
-    /// for untracked blocks while preserving nodes needed by blocks that remain tracked.
+    /// Tests that `untrack_and_prune_irrelevant_blocks` removes redundant authentication nodes for
+    /// untracked blocks while preserving nodes needed by blocks that remain tracked.
     #[tokio::test]
     async fn prune_irrelevant_blocks_removes_redundant_auth_nodes() {
         let store = create_test_store().await;

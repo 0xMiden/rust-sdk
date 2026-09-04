@@ -1,10 +1,10 @@
 //! Provides note importing methods.
 //!
-//! This module allows users to import notes into the client's store.
-//! Depending on the variant of [`NoteFile`] provided, the client will either fetch note details
-//! from the network or create a new note record from supplied data. If a note already exists in
-//! the store, it is updated with the new information. Additionally, the appropriate note tag
-//! is tracked based on the imported note's metadata.
+//! This module allows users to import notes into the client's store. Depending on the variant of
+//! [`NoteFile`] provided, the client will either fetch note details from the network or create a
+//! new note record from supplied data. If a note already exists in the store, it is updated with
+//! the new information. Additionally, the appropriate note tag is tracked based on the imported
+//! note's metadata.
 //!
 //! For more specific information on how the process is performed, refer to the docs for
 //! [`Client::import_note()`].
@@ -41,12 +41,12 @@ where
     // --------------------------------------------------------------------------------------------
 
     /// Imports a batch of new input notes into the client's store. The information stored depends
-    /// on the type of note files provided. If the notes existed previously, it will be updated
-    /// with the new information. The tags specified by the `NoteFile`s will start being
-    /// tracked. Returns the details commitments of notes that were successfully imported or
-    /// updated. The details commitment is used (rather than the note ID) because notes imported
-    /// without metadata — e.g. from [`NoteFile::ExpectedNote`] in an `Expected` state — have no
-    /// note ID yet, whereas the details commitment is always available.
+    /// on the type of note files provided. If the notes existed previously, it will be updated with
+    /// the new information. The tags specified by the `NoteFile`s will start being tracked. Returns
+    /// the details commitments of notes that were successfully imported or updated. The details
+    /// commitment is used (rather than the note ID) because notes imported without metadata — e.g.
+    /// from [`NoteFile::ExpectedNote`] in an `Expected` state — have no note ID yet, whereas the
+    /// details commitment is always available.
     ///
     /// - If the note files are [`NoteFile::NoteId`], the notes are fetched from the node and stored
     ///   in the client's store. If the note is private or doesn't exist, an error is returned.
@@ -72,8 +72,8 @@ where
 
         // Deduplicate the incoming files, keeping note IDs and details commitments in separate
         // collections. `NoteFile::NoteId` entries are keyed by their note ID; detail-carrying
-        // entries (`ExpectedNote`/`Committed`) are keyed by their details commitment, since
-        // they may have no note ID of their own.
+        // entries (`ExpectedNote`/`Committed`) are keyed by their details commitment, since they
+        // may have no note ID of their own.
         let mut ids = BTreeSet::new();
         let mut files_by_commitment = BTreeMap::new();
         for note_file in note_files {
@@ -175,9 +175,9 @@ where
     // HELPERS
     // ================================================================================================
 
-    /// Builds note records from the note IDs. If a note with the same ID was already stored it
-    /// is passed via `previous_note` so it can be updated. The note information is fetched from
-    /// the node and stored in the client's store.
+    /// Builds note records from the note IDs. If a note with the same ID was already stored it is
+    /// passed via `previous_note` so it can be updated. The note information is fetched from the
+    /// node and stored in the client's store.
     ///
     /// Only records that changed as a result of the import are returned.
     ///
@@ -241,12 +241,12 @@ where
     }
 
     /// Builds a note record list from notes and inclusion proofs. If a note with the same ID was
-    /// already stored it is passed via `previous_note` so it can be updated. The note's
-    /// nullifier is used to determine if the note has been consumed in the node and gives it
-    /// the correct state.
+    /// already stored it is passed via `previous_note` so it can be updated. The note's nullifier
+    /// is used to determine if the note has been consumed in the node and gives it the correct
+    /// state.
     ///
-    /// If the note isn't consumed and it was committed in the past relative to the client, then
-    /// the MMR for the relevant block is fetched from the node and stored.
+    /// If the note isn't consumed and it was committed in the past relative to the client, then the
+    /// MMR for the relevant block is fetched from the node and stored.
     ///
     /// Only records that changed as a result of the import are returned.
     pub(crate) async fn import_note_records_by_proof(
@@ -307,8 +307,8 @@ where
                     note_record.inclusion_proof_received(inclusion_proof, metadata)?;
 
                 if block_height <= current_block_num {
-                    // A note committed in the past needs its block header fetched and
-                    // authenticated to verify the inclusion proof.
+                    // A note committed in the past needs its block header fetched and authenticated
+                    // to verify the inclusion proof.
                     let block_header = self
                         .get_and_store_authenticated_block(block_height, &mut partial_mmr)
                         .await?;
@@ -458,9 +458,9 @@ where
                 let committed = &sync_note.committed;
 
                 // The note carries its own commit height in its inclusion proof, which is a
-                // separate field from the block header checked above. Authenticating the note
-                // later looks that height up in the partial MMR, so a height beyond our synced
-                // view has to be dropped here rather than trusted.
+                // separate field from the block header checked above. Authenticating the note later
+                // looks that height up in the partial MMR, so a height beyond our synced view has
+                // to be dropped here rather than trusted.
                 if committed.block_num() > current_block_num {
                     continue;
                 }
@@ -482,8 +482,8 @@ where
 // HELPERS
 // ================================================================================================
 
-/// Returns an error if the already-stored note is currently being processed by a local
-/// transaction, since an in-flight note can't be overwritten by an import.
+/// Returns an error if the already-stored note is currently being processed by a local transaction,
+/// since an in-flight note can't be overwritten by an import.
 fn ensure_not_processing(previous_note: Option<&InputNoteRecord>) -> Result<(), ClientError> {
     if let Some(note) = previous_note
         && note.is_processing()

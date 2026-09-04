@@ -8,6 +8,9 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
+miden-processor = { workspace = true }
+miden-client    = { workspace = true }
+miden-protocol        = { workspace = true }
 
 [lints]
 workspace = true

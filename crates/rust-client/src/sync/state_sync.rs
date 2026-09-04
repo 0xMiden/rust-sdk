@@ -462,10 +462,10 @@ impl StateSync {
                 account_updates,
             ));
         };
-        assert!(
-            note_blocks_awaiting_screening.is_empty(),
-            "note blocks must be screened before the update is built"
-        );
+        // Check the note blocks have been screened before building the update
+        if !note_blocks_awaiting_screening.is_empty() {
+            return Err(ClientError::UnscreenedNoteBlocks);
+        }
 
         let chain_tip = chain_tip_header.block_num();
 

@@ -235,6 +235,8 @@ pub enum ClientError {
     /// returning `Observer(Box::new(err))`.
     #[error(transparent)]
     Observer(Box<dyn core::error::Error + Send + Sync + 'static>),
+    #[error("expected note blocks to be screened before state sync update is built")]
+    UnscreenedNoteBlocks,
 }
 
 // OBSERVER FAN-OUT

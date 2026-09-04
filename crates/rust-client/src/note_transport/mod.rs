@@ -458,7 +458,7 @@ where
         Ok(())
     }
 
-    /// Returns the tracked tags that were registered for an account, i.e. derived from its id.
+    /// Returns the tracked tags that were registered for an account, i.e. derived from its ID.
     async fn tracked_account_tags(&self) -> Result<BTreeSet<NoteTag>, ClientError> {
         let tags = self
             .store

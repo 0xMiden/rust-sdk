@@ -759,6 +759,13 @@ where
 
     /// Submits a previously proven transaction to the RPC endpoint and returns the node’s chain tip
     /// upon mempool admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError::SubmissionOutcomeUnknown`] when the submission came back without a
+    /// definite answer. The transaction may already be in the mempool, so the error carries the
+    /// proven transaction back for the caller to resend or track. Every other failure is a
+    /// rejection the node issued deliberately.
     pub async fn submit_proven_transaction(
         &mut self,
         proven_transaction: ProvenTransaction,
@@ -769,12 +776,27 @@ where
         let key = self.transaction_encryption_key().await?;
         let sealed_inputs =
             seal_transaction_inputs(&mut self.rng, &key, tx_id, &transaction_inputs.into())?;
+
+        // Kept so an indeterminate outcome can hand the transaction back: the submission consumes
+        // it, and re-executing the request would produce a different transaction id.
+        let submitted = proven_transaction.clone();
+
         let result =
             self.rpc_api.submit_proven_transaction(proven_transaction, sealed_inputs).await;
         if let Err(err) = &result {
             self.forget_stale_transaction_encryption_key(err).await;
         }
-        let block_num = result?;
+
+        let block_num = result.map_err(|err| {
+            if err.is_indeterminate_submission() {
+                ClientError::SubmissionOutcomeUnknown {
+                    transaction: Box::new(submitted),
+                    source: err,
+                }
+            } else {
+                ClientError::RpcError(err)
+            }
+        })?;
         info!("Transaction submitted.");
 
         Ok(block_num)

@@ -22,7 +22,7 @@ use miden_protocol::errors::{
     TransactionScriptError,
 };
 use miden_protocol::note::NoteId;
-use miden_protocol::transaction::TransactionId;
+use miden_protocol::transaction::{ProvenTransaction, TransactionId};
 // RE-EXPORTS
 // ================================================================================================
 pub use miden_standards::errors::CodeBuilderError;
@@ -229,6 +229,22 @@ pub enum ClientError {
         #[source]
         source: Box<ClientError>,
     },
+    #[error(
+        "submission of transaction {} came back without a definite outcome, so the node may or \
+         may not have accepted it. Nothing was recorded locally. The proven transaction is \
+         attached: resubmitting those same bytes cannot double spend, because the transaction id \
+         is fixed and its effects are keyed by it, but it will be rejected as a state conflict if \
+         the original did land. Syncing resolves it either way once the transaction commits or \
+         expires.",
+        transaction.id()
+    )]
+    SubmissionOutcomeUnknown {
+        /// The transaction as submitted, so the caller can resend the same bytes or track
+        /// `transaction.id()` until a sync resolves it.
+        transaction: Box<ProvenTransaction>,
+        #[source]
+        source: RpcError,
+    },
     /// Generic carrier for feature-specific errors raised by an observer
     /// or domain module. Keeps `ClientError` free of per-feature variants;
     /// each feature provides its own `From<MyFeatureError> for ClientError`
@@ -336,6 +352,21 @@ impl From<&ClientError> for Option<ErrorHint> {
                          same transaction: if the original is still in the mempool or has been \
                          finalized in a block, the account (and network) state has already been \
                          mutated by the accepted copy, so the node will reject the retry."
+                    ),
+                    docs_url: Some(TROUBLESHOOTING_DOC),
+                })
+            },
+            ClientError::SubmissionOutcomeUnknown { transaction, .. } => {
+                let tx_id = transaction.id();
+                Some(ErrorHint {
+                    message: format!(
+                        "Transaction {tx_id} was submitted and the outcome came back undecided, \
+                         so it may already be in the mempool. Nothing was recorded locally. Do \
+                         not build and submit a replacement: that would be a different \
+                         transaction, and it would be rejected as a conflict if the original \
+                         landed. Either resubmit the `transaction` attached to this error, whose \
+                         id is fixed so it cannot double spend, or keep syncing and check \
+                         `get_transactions` for {tx_id} until it commits or expires."
                     ),
                     docs_url: Some(TROUBLESHOOTING_DOC),
                 })

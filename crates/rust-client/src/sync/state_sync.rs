@@ -269,23 +269,55 @@ impl StateSync {
     ///
     /// Use [`Client::build_sync_input()`](`crate::Client::build_sync_input()`) to build the default
     /// input, or assemble it manually for custom sync. The `current_partial_mmr` is taken by
-    /// mutable reference so callers can keep it in memory across syncs.
+    /// mutable reference so callers can keep it in memory across syncs; it is only modified once
+    /// every check has passed.
     ///
     /// During the sync process, the following steps are performed:
     /// 1. Fetch sync data from the node (MMR delta, note inclusions, transactions).
     /// 2. Update account states (fetch updated public accounts, flag mismatched private ones).
-    /// 3. Advance the partial MMR to the chain tip.
-    /// 4. Screen note inclusions via the configured [`OnNoteReceived`] callback.
-    /// 5. Process transaction inclusions (commit local txs, record external consumers, discard
+    /// 3. Screen note inclusions via the configured [`OnNoteReceived`] callback.
+    /// 4. Process transaction inclusions (commit local txs, record external consumers, discard
     ///    stale/expired txs, commit output notes).
+    /// 5. Recover the public notes a tracked account consumed but the client never tracked.
     /// 6. Detect consumed notes via nullifier sync (optional, see
     ///    [`Self::disable_nullifier_sync`]).
-    /// 7. Track in the MMR the screened blocks that still hold an unspent note.
+    /// 7. Advance the partial MMR to the chain tip and track the screened blocks that still hold an
+    ///    unspent note.
+    ///
+    /// Steps 1-2 are [`Self::fetch_state`], 3-5 [`Self::derive_state_updates`], 6
+    /// [`Self::fetch_nullifiers`] and 7 [`Self::build_update`]; each can be driven separately.
     pub async fn sync_state(
         &self,
         current_partial_mmr: &mut PartialMmr,
         input: StateSyncInput,
     ) -> Result<StateSyncUpdate, ClientError> {
+        let block_num = block_num_from_forest(current_partial_mmr)?;
+
+        let mut chain_sync_data = self.fetch_state(block_num, input).await?;
+        self.derive_state_updates(&mut chain_sync_data).await?;
+        self.fetch_nullifiers(&mut chain_sync_data).await?;
+
+        // Work on a clone so any validation failure leaves `current_partial_mmr` untouched.
+        let mut working_mmr = current_partial_mmr.clone();
+        let update = Self::build_update(chain_sync_data, &mut working_mmr)?;
+        *current_partial_mmr = working_mmr;
+
+        Ok(update)
+    }
+
+    /// Fetches the node's view of everything that changed since `block_from`: the MMR delta, the
+    /// note inclusions, the transactions, and the account states.
+    ///
+    /// Every node call that does not depend on note screening happens here, so a caller can run
+    /// this concurrently with another sync's fetch. Interpreting the response is
+    /// [`Self::derive_state_updates`]'s, and the nullifier check [`Self::fetch_nullifiers`]'s.
+    /// Both run afterwards so a caller syncing more than one source can write the other source
+    /// first, and check nullifiers once across all of them.
+    pub async fn fetch_state(
+        &self,
+        block_from: BlockNumber,
+        input: StateSyncInput,
+    ) -> Result<ChainSyncData, ClientError> {
         let StateSyncInput {
             accounts,
             note_tags,
@@ -293,28 +325,25 @@ impl StateSync {
             output_notes,
             uncommitted_transactions,
         } = input;
-        let block_num = u32::try_from(current_partial_mmr.forest().num_leaves().saturating_sub(1))
-            .map_err(|_| ClientError::InvalidPartialMmrForest)?
-            .into();
 
         let note_tags = Arc::new(note_tags);
         let account_ids: Vec<AccountId> = accounts.iter().map(AccountHeader::id).collect();
 
-        let mut note_updates = NoteUpdateTracker::new(input_notes, output_notes);
-        let mut transaction_updates = TransactionUpdateTracker::new(uncommitted_transactions);
-        let mut partial_blockchain_updates = PartialBlockchainUpdates::default();
+        let note_updates = NoteUpdateTracker::new(input_notes, output_notes);
+        let transaction_updates = TransactionUpdateTracker::new(uncommitted_transactions);
         let mut account_updates = AccountUpdates::default();
 
-        let Some(sync_data) = self.fetch_sync_data(block_num, &account_ids, &note_tags).await?
+        let Some(sync_data) = self.fetch_sync_data(block_from, &account_ids, &note_tags).await?
         else {
             // No progress — already at the tip.
-            return Ok(StateSyncUpdate::from_parts(
-                block_num,
-                partial_blockchain_updates,
+            return Ok(ChainSyncData {
+                block_from,
+                advance: None,
+                superseded_states: Vec::new(),
                 note_updates,
                 transaction_updates,
                 account_updates,
-            ));
+            });
         };
 
         let FetchedSyncData {
@@ -323,7 +352,6 @@ impl StateSync {
             note_blocks,
             transactions,
         } = sync_data;
-        let chain_tip = chain_tip_header.block_num();
 
         let new_commitments = derive_account_commitments(&transactions);
         let superseded_states = self
@@ -331,44 +359,122 @@ impl StateSync {
                 &mut account_updates,
                 &accounts,
                 &new_commitments,
-                block_num,
+                block_from,
                 &chain_tip_header,
             )
             .await?;
 
+        Ok(ChainSyncData {
+            block_from,
+            advance: Some(ChainAdvance {
+                chain_tip_header,
+                mmr_delta,
+                note_blocks_awaiting_screening: note_blocks,
+                transactions,
+                relevant_note_blocks: Vec::new(),
+            }),
+            superseded_states,
+            note_updates,
+            transaction_updates,
+            account_updates,
+        })
+    }
+
+    /// Turns the node's raw response into note and transaction updates.
+    ///
+    /// Discards the local transactions the node superseded, screens the received notes for
+    /// relevance, applies the transaction inclusions, and recovers the public notes the tracked
+    /// accounts consumed, fetching those by id.
+    pub async fn derive_state_updates(
+        &self,
+        chain_sync_data: &mut ChainSyncData,
+    ) -> Result<(), ClientError> {
+        let ChainSyncData {
+            advance,
+            superseded_states,
+            note_updates,
+            transaction_updates,
+            ..
+        } = chain_sync_data;
+
+        let Some(advance) = advance.as_mut() else {
+            return Ok(());
+        };
+
         // Discard the local transactions whose result lost a same-nonce race against the network.
-        for superseded_state in superseded_states {
+        for superseded_state in core::mem::take(superseded_states) {
             transaction_updates.apply_superseded_account_state(superseded_state);
         }
 
-        // Work on a clone so any validation failure leaves `current_partial_mmr` untouched.
-        let mut working_mmr = current_partial_mmr.clone();
+        advance.relevant_note_blocks = self
+            .screen_note_blocks(
+                core::mem::take(&mut advance.note_blocks_awaiting_screening),
+                note_updates,
+            )
+            .await?;
+
+        self.apply_transactions_and_nullifiers(
+            &advance.chain_tip_header,
+            &advance.transactions,
+            note_updates,
+            transaction_updates,
+        )?;
+
+        self.recover_consumed_public_notes(note_updates, &advance.transactions).await?;
+
+        Ok(())
+    }
+
+    /// Verifies the fetched chain data against `partial_mmr` and turns it into the update to
+    /// apply to the store.
+    ///
+    /// It applies the node's delta, checks the resulting peaks against the chain tip header's
+    /// chain commitment, and tracks the screened note blocks that still hold an unspent note.
+    pub fn build_update(
+        chain_sync_data: ChainSyncData,
+        partial_mmr: &mut PartialMmr,
+    ) -> Result<StateSyncUpdate, ClientError> {
+        let ChainSyncData {
+            block_from,
+            advance,
+            note_updates,
+            transaction_updates,
+            account_updates,
+            ..
+        } = chain_sync_data;
+
+        let mut partial_blockchain_updates = PartialBlockchainUpdates::default();
+
+        let Some(ChainAdvance {
+            chain_tip_header,
+            mmr_delta,
+            note_blocks_awaiting_screening,
+            relevant_note_blocks,
+            ..
+        }) = advance
+        else {
+            // No progress — already at the tip.
+            return Ok(StateSyncUpdate::from_parts(
+                block_from,
+                partial_blockchain_updates,
+                note_updates,
+                transaction_updates,
+                account_updates,
+            ));
+        };
+        // Check the note blocks have been screened before building the update
+        if !note_blocks_awaiting_screening.is_empty() {
+            return Err(ClientError::UnscreenedNoteBlocks);
+        }
+
+        let chain_tip = chain_tip_header.block_num();
 
         Self::advance_mmr(
             mmr_delta,
             &chain_tip_header,
-            &mut working_mmr,
+            partial_mmr,
             &mut partial_blockchain_updates,
         )?;
-        let relevant_note_blocks = self.screen_note_blocks(note_blocks, &mut note_updates).await?;
-        self.apply_transactions_and_nullifiers(
-            &chain_tip_header,
-            &transactions,
-            &mut note_updates,
-            &mut transaction_updates,
-        )?;
-
-        if self.sync_nullifiers {
-            self.nullifiers_state_sync(
-                &mut note_updates,
-                &mut transaction_updates,
-                chain_tip,
-                block_num,
-            )
-            .await?;
-        }
-
-        self.recover_consumed_public_notes(&mut note_updates, &transactions).await?;
 
         let blocks_with_unspent_notes: BTreeSet<BlockNumber> =
             note_updates.unspent_input_note_block_numbers().collect();
@@ -376,11 +482,9 @@ impl StateSync {
         Self::validate_and_track_note_blocks(
             relevant_note_blocks,
             &blocks_with_unspent_notes,
-            &mut working_mmr,
+            partial_mmr,
             &mut partial_blockchain_updates,
         )?;
-
-        *current_partial_mmr = working_mmr;
 
         Ok(StateSyncUpdate::from_parts(
             chain_tip,
@@ -389,6 +493,39 @@ impl StateSync {
             transaction_updates,
             account_updates,
         ))
+    }
+
+    /// Checks the node for nullifiers of every note `chain_sync_data` could have consumed.
+    ///
+    /// The query covers every note the tracker holds, including any the caller added from another
+    /// sync path — so a transport-delivered note consumed within one sync is reported as consumed
+    /// by that same sync.
+    ///
+    /// No-op when the nullifier sync is disabled (see [`Self::disable_nullifier_sync`]) or when
+    /// the node reported no progress, since there is no block range to query.
+    pub async fn fetch_nullifiers(
+        &self,
+        chain_sync_data: &mut ChainSyncData,
+    ) -> Result<(), ClientError> {
+        if !self.sync_nullifiers {
+            return Ok(());
+        }
+
+        let Some(chain_tip) = chain_sync_data
+            .advance
+            .as_ref()
+            .map(|advance| advance.chain_tip_header.block_num())
+        else {
+            return Ok(());
+        };
+
+        self.nullifiers_state_sync(
+            &mut chain_sync_data.note_updates,
+            &mut chain_sync_data.transaction_updates,
+            chain_tip,
+            chain_sync_data.block_from,
+        )
+        .await
     }
 
     /// Recovers public notes a watched account consumed, from the `consumed_note_refs` the node
@@ -1297,8 +1434,55 @@ impl StateSync {
     }
 }
 
+// CHAIN SYNC DATA
+// ================================================================================================
+
+/// The chain data a sync fetched from the node, before any of it has been verified against the
+/// client's MMR or to the store.
+///
+/// Built by [`StateSync::fetch_state`], extended by [`StateSync::fetch_nullifiers`] and turned
+/// into a [`StateSyncUpdate`] by [`StateSync::build_update`].
+pub struct ChainSyncData {
+    /// The chain tip the sync started from.
+    pub(crate) block_from: BlockNumber,
+    /// What the node reported beyond `block_from`, or `None` when the client was already at the
+    /// chain tip.
+    advance: Option<ChainAdvance>,
+    /// Account states the node superseded, to be applied to the transaction updates.
+    superseded_states: Vec<Word>,
+    /// Notes as the sync found them. A caller that wrote notes of its own after the sync input
+    /// was built has to track them here, or this sync's verdicts have no record to apply to.
+    pub(crate) note_updates: NoteUpdateTracker,
+    transaction_updates: TransactionUpdateTracker,
+    account_updates: AccountUpdates,
+}
+
+/// The part of a [`ChainSyncData`] that only exists when the node reported progress.
+struct ChainAdvance {
+    /// Header of the chain tip the sync advanced to.
+    chain_tip_header: BlockHeader,
+    /// MMR delta from `block_from` to the chain tip, excluding the chain-tip leaf.
+    mmr_delta: MmrDelta,
+    /// Note blocks as the node returned them. [`StateSync::derive_state_updates`]
+    /// drains these into `relevant_note_blocks`, so this is empty by the time the update is
+    /// built.
+    note_blocks_awaiting_screening: Vec<ResolvedSyncNotesBlock>,
+    /// Transaction records as the node returned them, read by
+    /// [`StateSync::derive_state_updates`].
+    transactions: Vec<RpcTransactionRecord>,
+    /// Screened blocks holding a client-relevant note, each with its `sync_notes` MMR path.
+    relevant_note_blocks: Vec<RelevantNoteBlock>,
+}
+
 // HELPERS
 // ================================================================================================
+
+/// Returns the block number the given partial MMR is synced to.
+pub(crate) fn block_num_from_forest(partial_mmr: &PartialMmr) -> Result<BlockNumber, ClientError> {
+    Ok(u32::try_from(partial_mmr.forest().num_leaves().saturating_sub(1))
+        .map_err(|_| ClientError::InvalidPartialMmrForest)?
+        .into())
+}
 
 /// Groups transaction records by `(account_id, block_num)`.
 fn group_txs_by_account_block(

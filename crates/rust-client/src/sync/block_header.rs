@@ -9,6 +9,7 @@ use miden_protocol::{Felt, Word};
 use tracing::warn;
 
 use crate::rpc::NodeRpcClient;
+use crate::rpc::domain::note::ResolvedSyncNotesBlock;
 use crate::store::{BlockRelevance, StoreError};
 #[cfg(feature = "testing")]
 use crate::test_utils::mock::MockRpcApi;
@@ -126,6 +127,39 @@ impl<AUTH> Client<AUTH> {
             .map(|&n| Felt::from(u32::try_from(n).expect("block number fits in u32")))
             .collect();
         Ok(Rpo256::hash_elements(&elements))
+    }
+
+    /// Tracks each fetched note block in `partial_mmr` and stores its header together with the
+    /// authentication nodes that tracking produced.
+    pub(crate) async fn insert_note_blocks(
+        &mut self,
+        blocks: Vec<ResolvedSyncNotesBlock>,
+        partial_mmr: &mut PartialMmr,
+    ) -> Result<(), ClientError> {
+        let mut authenticated_blocks = Vec::with_capacity(blocks.len());
+        for block in blocks {
+            let block_num = block.block_header.block_num();
+            // Also skips a block the loop itself just tracked, so one returned twice is stored
+            // once.
+            if partial_mmr.is_tracked(block_num.as_usize()) {
+                continue;
+            }
+
+            let path_nodes = track_block_in_mmr(
+                partial_mmr,
+                block_num,
+                block.block_header.commitment(),
+                &block.mmr_path,
+            )?;
+            authenticated_blocks.push((block.block_header, path_nodes));
+        }
+
+        for (block_header, path_nodes) in authenticated_blocks {
+            let nodes = authenticated_block_nodes(&block_header, path_nodes);
+            self.store.insert_block_header(&block_header, &nodes, true).await?;
+        }
+
+        Ok(())
     }
 
     // HELPERS

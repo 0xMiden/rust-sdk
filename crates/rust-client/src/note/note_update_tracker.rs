@@ -377,6 +377,24 @@ impl NoteUpdateTracker {
             })
     }
 
+    /// Tracks additional already-persisted input notes.
+    ///
+    /// Used to extend a sync's nullifier check to notes that are about to be written by another
+    /// path (e.g. the note transport sync) and are therefore absent from the store snapshot this
+    /// tracker was built from. Notes already tracked for the same details commitment are skipped,
+    /// so a record built by this sync is never replaced by a stale one.
+    pub(crate) fn track_existing_input_notes(
+        &mut self,
+        notes: impl IntoIterator<Item = InputNoteRecord>,
+    ) {
+        for note in notes {
+            if self.input_notes.contains_key(&note.details_commitment()) {
+                continue;
+            }
+            self.insert_input_note(note, NoteUpdateType::None);
+        }
+    }
+
     /// Appends nullifiers to the per-account ordered nullifier list.
     ///
     /// Nullifiers from the same account must be in execution order; ordering across different

@@ -61,6 +61,7 @@
 
 ### Enhancements
 
+* [rust] The chain sync and the note transport sync are each split into a fetch phase and a store phase, so every NTL and RPC call happens before the first store write. `Client::sync_state` runs the two fetch phases concurrently and applies both sets of updates afterwards, instead of running a full note transport sync before the chain sync ([#2453](https://github.com/0xMiden/rust-sdk/pull/2453)).
 * [FEATURE][rust] `ClientBuilder` accepts any `TransactionAuthenticator + 'static` as its authenticator. The `BuilderAuthenticator` bound no longer requires `Keystore` or `From<FilesystemKeyStore>`, so a signer that holds no secret key, such as a remote signing service, can be plugged into the builder without implementing key management.
 * [FEATURE][rust] Added `AuthGuardedMultisig`, `AuthGuardedMultisigConfig`, `GuardianConfig` and `ApproverSet` to `miden_client::auth`, which previously exposed only the single- and multisig components. Building a guarded multisig account no longer means reaching past the client into `miden_standards` ([#2465](https://github.com/0xMiden/rust-sdk/pull/2465)).
 * [FEATURE][rust] `Client::sync_state` now issues its independent gRPC calls concurrently instead of one after another, reducing the total time a sync takes. `NodeRpcClient::sync_notes_with_content` and `NodeRpcClient::sync_transactions` are now called concurrently rather than in sequence, and the per-account `NodeRpcClient::get_account` requests are issued in parallel instead of one at a time ([#2420](https://github.com/0xMiden/rust-sdk/pull/2420)).
@@ -98,6 +99,7 @@
 
 ### Fixes
 
+* [FIX][rust] A private note fetched from the Note Transport Layer whose nullifier is already on chain is now imported as consumed instead of committed, so `get_consumable_notes` no longer reports notes the node will reject ([#2453](https://github.com/0xMiden/rust-sdk/pull/2453)).
 * [FIX][rust] `ChainAnchor` deserialization no longer panics on crafted input: a partial blockchain whose tracked leaf is missing an ancestor sibling, or whose block-map key disagrees with its header, is rejected as an invalid value, and anchors tracking more blocks than a transaction can reference are rejected early with the new `ChainAnchorError::TooManyTrackedBlocks` ([#2421](https://github.com/0xMiden/rust-sdk/pull/2421)).
 * [FIX][rust] `Client::execute_transaction_at` now fails with the new `ChainAnchorError::AnchoredTransactionExpired` when the executed transaction's expiration block has already been reached, instead of handing back a transaction the network would reject after proving ([#2421](https://github.com/0xMiden/rust-sdk/pull/2421)).
 * [FIX][rust] A request that sets `ignore_invalid_input_notes` but carries no input notes, or whose notes are all screened out, no longer fails with an out-of-range note-count error from the consumption checker ([#2421](https://github.com/0xMiden/rust-sdk/pull/2421)).

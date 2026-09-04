@@ -1,6 +1,5 @@
 #![allow(clippy::items_after_statements)]
 
-use std::rc::Rc;
 use std::vec::Vec;
 
 use miden_client::Word;
@@ -15,15 +14,14 @@ use miden_client::transaction::{
     TransactionStoreUpdate,
 };
 use miden_client::utils::{Deserializable as _, Serializable as _};
-use rusqlite::types::Value;
-use rusqlite::{Connection, Transaction, TransactionBehavior, params};
+use rusqlite::{Connection, Transaction, params};
 
 use super::SqliteStore;
 use super::note::apply_note_updates_tx;
 use super::sync::add_note_tag_tx;
 use crate::forest::{ScopedAccountForest, SqliteForestBackend};
 use crate::sql_error::SqlResultExt;
-use crate::{insert_sql, subst};
+use crate::{blob_array, insert_sql, subst, with_immediate_write_tx};
 
 pub(crate) const UPSERT_TRANSACTION_QUERY: &str = insert_sql!(
     transactions {
@@ -69,69 +67,52 @@ struct SerializedTransactionParts {
 
 impl SqliteStore {
     /// Retrieves tracked transactions, filtered by [`TransactionFilter`].
-    pub fn get_transactions(
+    pub(crate) fn get_transactions(
         conn: &mut Connection,
         filter: &TransactionFilter,
     ) -> Result<Vec<TransactionRecord>, StoreError> {
-        match filter {
-            TransactionFilter::Ids(ids) => {
-                let id_blobs = ids.iter().map(|id| Value::Blob(id.to_bytes())).collect::<Vec<_>>();
+        // Only the `Ids` filter binds a parameter (the id list, as a single rarray value).
+        let id_list = match filter {
+            TransactionFilter::Ids(ids) => Some(blob_array(ids)),
+            _ => None,
+        };
 
-                // Create a prepared statement and bind the array parameter
-                conn.prepare(filter.to_query().as_ref())
-                    .into_store_error()?
-                    .query_map(params![Rc::new(id_blobs)], parse_transaction_columns)
-                    .into_store_error()?
-                    .map(|result| Ok(result.into_store_error()?).and_then(parse_transaction))
-                    .collect::<Result<Vec<TransactionRecord>, _>>()
-            },
-            _ => {
-                // For other filters, no parameters are needed
-                conn.prepare(filter.to_query().as_ref())
-                    .into_store_error()?
-                    .query_map([], parse_transaction_columns)
-                    .into_store_error()?
-                    .map(|result| Ok(result.into_store_error()?).and_then(parse_transaction))
-                    .collect::<Result<Vec<TransactionRecord>, _>>()
-            },
-        }
+        conn.prepare(filter.to_query().as_ref())
+            .into_store_error()?
+            .query_map(rusqlite::params_from_iter(id_list), parse_transaction_columns)
+            .into_store_error()?
+            .map(|result| Ok(result.into_store_error()?).and_then(parse_transaction))
+            .collect::<Result<Vec<TransactionRecord>, _>>()
     }
 
     /// Inserts a transaction and updates the current state based on the `tx_result` changes.
     ///
     /// SQL writes and forest mutations go through the same rusqlite transaction, so they commit
     /// or roll back atomically.
-    pub fn apply_transaction(
+    pub(crate) fn apply_transaction(
         conn: &mut Connection,
         tx_update: &TransactionStoreUpdate,
     ) -> Result<(), StoreError> {
-        let db_tx = conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .into_store_error()?;
-        {
-            let mut forest = ScopedAccountForest::new(SqliteForestBackend::new(&db_tx))?;
-            Self::apply_transaction_in_txn(&db_tx, &mut forest, tx_update)?;
-        }
-        db_tx.commit().into_store_error()
+        with_immediate_write_tx(conn, |tx| {
+            let mut forest = ScopedAccountForest::new(SqliteForestBackend::new(tx))?;
+            Self::apply_transaction_in_txn(tx, &mut forest, tx_update)
+        })
     }
 
     /// Applies a batch of [`TransactionStoreUpdate`]s atomically. Either every update in the
     /// slice is persisted or none are. Executes in order inside a single
     /// [`rusqlite::Transaction`].
-    pub fn apply_transaction_batch(
+    pub(crate) fn apply_transaction_batch(
         conn: &mut Connection,
         tx_updates: &[TransactionStoreUpdate],
     ) -> Result<(), StoreError> {
-        let db_tx = conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .into_store_error()?;
-        {
-            let mut forest = ScopedAccountForest::new(SqliteForestBackend::new(&db_tx))?;
+        with_immediate_write_tx(conn, |tx| {
+            let mut forest = ScopedAccountForest::new(SqliteForestBackend::new(tx))?;
             for update in tx_updates {
-                Self::apply_transaction_in_txn(&db_tx, &mut forest, update)?;
+                Self::apply_transaction_in_txn(tx, &mut forest, update)?;
             }
-        }
-        db_tx.commit().into_store_error()
+            Ok(())
+        })
     }
 
     /// Applies a transaction's store update within the provided rusqlite transaction.
@@ -247,10 +228,10 @@ fn serialize_transaction_data(transaction_record: &TransactionRecord) -> Seriali
 fn parse_transaction_columns(
     row: &rusqlite::Row<'_>,
 ) -> Result<SerializedTransactionParts, rusqlite::Error> {
-    let id: Vec<u8> = row.get(0)?;
-    let tx_script: Option<Vec<u8>> = row.get(1)?;
-    let details: Vec<u8> = row.get(2)?;
-    let status: Vec<u8> = row.get(3)?;
+    let id: Vec<u8> = row.get("id")?;
+    let tx_script: Option<Vec<u8>> = row.get("script")?;
+    let details: Vec<u8> = row.get("details")?;
+    let status: Vec<u8> = row.get("status")?;
 
     Ok(SerializedTransactionParts { id, tx_script, details, status })
 }

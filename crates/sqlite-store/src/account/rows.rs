@@ -1,4 +1,4 @@
-//! Helper functions for account operations.
+//! Row mappers and query helpers for the account tables.
 
 use std::collections::BTreeMap;
 
@@ -17,10 +17,10 @@ use miden_client::asset::{Asset, AssetId};
 use miden_client::store::{AccountStatus, AccountStorageFilter, ClientAccountType, StoreError};
 use miden_client::{Deserializable, Serializable, Word};
 use rusqlite::types::Value;
-use rusqlite::{Connection, Params, params, params_from_iter};
+use rusqlite::{Connection, Params, ToSql, params, params_from_iter};
 
-use crate::column_value_as_u64;
 use crate::sql_error::SqlResultExt;
+use crate::{column_value_as_u64, text_array};
 
 pub(crate) struct SerializedHeaderData {
     pub id: Vec<u8>,
@@ -53,11 +53,12 @@ pub(crate) fn parse_accounts(
         _ => AccountStatus::Tracked,
     };
 
-    let nonce = miden_client::Felt::new(nonce).expect("stored nonce must be a valid Felt");
+    let nonce = miden_client::Felt::new(nonce).map_err(|err| {
+        StoreError::ParsingError(format!("stored nonce is not a valid Felt: {err}"))
+    })?;
     Ok((
         AccountHeader::new(
-            AccountId::read_from_bytes(&id)
-                .expect("Conversion from stored AccountID should not panic"),
+            AccountId::read_from_bytes(&id)?,
             nonce,
             Word::read_from_bytes(&vault_root)?,
             Word::read_from_bytes(&storage_commitment)?,
@@ -65,6 +66,24 @@ pub(crate) fn parse_accounts(
         ),
         status,
     ))
+}
+
+/// Columns shared by `latest_account_headers` and `historical_account_headers` that make up a
+/// [`SerializedHeaderData`] row; the mappers below read exactly these columns by name.
+const ACCOUNT_HEADER_COLUMNS: &str =
+    "id, nonce, vault_root, storage_commitment, code_commitment, account_seed, locked";
+
+/// Reads the [`SerializedHeaderData`] columns from a header row.
+fn parse_header_row(row: &rusqlite::Row<'_>) -> Result<SerializedHeaderData, rusqlite::Error> {
+    Ok(SerializedHeaderData {
+        id: row.get("id")?,
+        nonce: column_value_as_u64(row, "nonce")?,
+        vault_root: row.get("vault_root")?,
+        storage_commitment: row.get("storage_commitment")?,
+        code_commitment: row.get("code_commitment")?,
+        account_seed: row.get("account_seed")?,
+        locked: row.get("locked")?,
+    })
 }
 
 /// Fetches rows from `latest_account_headers`. Each row includes the [`ClientAccountType`],
@@ -76,33 +95,16 @@ pub(crate) fn query_latest_account_headers(
     params: impl Params,
 ) -> Result<Vec<(AccountHeader, AccountStatus, ClientAccountType)>, StoreError> {
     let query = format!(
-        "SELECT id, nonce, vault_root, storage_commitment, code_commitment, account_seed, locked, watched \
+        "SELECT {ACCOUNT_HEADER_COLUMNS}, watched \
          FROM latest_account_headers WHERE {where_clause}"
     );
     conn.prepare(&query)
         .into_store_error()?
         .query_map(params, |row| {
-            let id: Vec<u8> = row.get(0)?;
-            let nonce: u64 = column_value_as_u64(row, 1)?;
-            let vault_root: Vec<u8> = row.get(2)?;
-            let storage_commitment: Vec<u8> = row.get(3)?;
-            let code_commitment: Vec<u8> = row.get(4)?;
-            let account_seed: Option<Vec<u8>> = row.get(5)?;
-            let locked: bool = row.get(6)?;
-            let watched: bool = row.get(7)?;
+            let parts = parse_header_row(row)?;
+            let watched: bool = row.get("watched")?;
 
-            Ok((
-                SerializedHeaderData {
-                    id,
-                    nonce,
-                    vault_root,
-                    storage_commitment,
-                    code_commitment,
-                    account_seed,
-                    locked,
-                },
-                watched,
-            ))
+            Ok((parts, watched))
         })
         .into_store_error()?
         .map(|result| {
@@ -124,30 +126,12 @@ pub(crate) fn query_historical_account_headers(
     params: impl Params,
 ) -> Result<Vec<(AccountHeader, AccountStatus)>, StoreError> {
     let query = format!(
-        "SELECT id, nonce, vault_root, storage_commitment, code_commitment, account_seed, locked \
+        "SELECT {ACCOUNT_HEADER_COLUMNS} \
          FROM historical_account_headers WHERE {where_clause}"
     );
     conn.prepare(&query)
         .into_store_error()?
-        .query_map(params, |row| {
-            let id: Vec<u8> = row.get(0)?;
-            let nonce: u64 = column_value_as_u64(row, 1)?;
-            let vault_root: Vec<u8> = row.get(2)?;
-            let storage_commitment: Vec<u8> = row.get(3)?;
-            let code_commitment: Vec<u8> = row.get(4)?;
-            let account_seed: Option<Vec<u8>> = row.get(5)?;
-            let locked: bool = row.get(6)?;
-
-            Ok(SerializedHeaderData {
-                id,
-                nonce,
-                vault_root,
-                storage_commitment,
-                code_commitment,
-                account_seed,
-                locked,
-            })
-        })
+        .query_map(params, parse_header_row)
         .into_store_error()?
         .map(|result| parse_accounts(result.into_store_error()?))
         .collect::<Result<Vec<(AccountHeader, AccountStatus)>, StoreError>>()
@@ -207,8 +191,8 @@ pub(crate) fn query_vault_assets(
     conn.prepare(VAULT_QUERY)
         .into_store_error()?
         .query_map(params![account_id.to_bytes()], |row| {
-            let asset_id: Vec<u8> = row.get(0)?;
-            let asset: Vec<u8> = row.get(1)?;
+            let asset_id: Vec<u8> = row.get("asset_id")?;
+            let asset: Vec<u8> = row.get("asset")?;
             Ok((asset_id, asset))
         })
         .into_store_error()?
@@ -229,26 +213,22 @@ pub(crate) fn query_storage_slots(
     // Build storage values query with filter pushed to SQL
     let base_query =
         "SELECT slot_name, slot_value, slot_type FROM latest_account_storage WHERE account_id = ?1";
-    let mut values_params: Vec<Value> = vec![Value::Blob(account_id.to_bytes())];
+    let mut values_params: Vec<Box<dyn ToSql>> = vec![Box::new(Value::Blob(account_id.to_bytes()))];
     let query = match filter {
         AccountStorageFilter::All => base_query.to_string(),
         AccountStorageFilter::SlotName(name) => {
-            values_params.push(Value::Text(name.to_string()));
+            values_params.push(Box::new(Value::Text(name.to_string())));
             format!("{base_query} AND slot_name = ?2")
         },
         AccountStorageFilter::SlotNames(names) => {
             if names.is_empty() {
                 return Ok(BTreeMap::new());
             }
-            let placeholders =
-                (0..names.len()).map(|i| format!("?{}", i + 2)).collect::<Vec<_>>().join(", ");
-            for name in names {
-                values_params.push(Value::Text(name.to_string()));
-            }
-            format!("{base_query} AND slot_name IN ({placeholders})")
+            values_params.push(Box::new(text_array(names.iter().map(StorageSlotName::to_string))));
+            format!("{base_query} AND slot_name IN rarray(?2)")
         },
         AccountStorageFilter::Root(root) => {
-            values_params.push(Value::Blob(root.to_bytes()));
+            values_params.push(Box::new(Value::Blob(root.to_bytes())));
             format!("{base_query} AND slot_value = ?2")
         },
     };
@@ -256,9 +236,9 @@ pub(crate) fn query_storage_slots(
     let mut stmt = conn.prepare(&query).into_store_error()?;
     let storage_values = stmt
         .query_map(params_from_iter(values_params.iter()), |row| {
-            let slot_name: String = row.get(0)?;
-            let value: Vec<u8> = row.get(1)?;
-            let slot_type: u8 = row.get(2)?;
+            let slot_name: String = row.get("slot_name")?;
+            let value: Vec<u8> = row.get("slot_value")?;
+            let slot_type: u8 = row.get("slot_type")?;
             Ok((slot_name, value, slot_type))
         })
         .into_store_error()?
@@ -312,18 +292,14 @@ pub(crate) fn query_storage_maps(
 ) -> Result<BTreeMap<StorageSlotName, StorageMap>, StoreError> {
     let base_query =
         "SELECT slot_name, key, value FROM latest_storage_map_entries WHERE account_id = ?1";
-    let mut map_params: Vec<Value> = vec![Value::Blob(account_id.to_bytes())];
+    let mut map_params: Vec<Box<dyn ToSql>> = vec![Box::new(Value::Blob(account_id.to_bytes()))];
     let query = match slot_name_filter {
         Some(names) => {
             if names.is_empty() {
                 return Ok(BTreeMap::new());
             }
-            let placeholders =
-                (0..names.len()).map(|i| format!("?{}", i + 2)).collect::<Vec<_>>().join(", ");
-            for name in names {
-                map_params.push(Value::Text(name.clone()));
-            }
-            format!("{base_query} AND slot_name IN ({placeholders})")
+            map_params.push(Box::new(text_array(names.iter().cloned())));
+            format!("{base_query} AND slot_name IN rarray(?2)")
         },
         None => base_query.to_string(),
     };
@@ -331,9 +307,9 @@ pub(crate) fn query_storage_maps(
     let mut stmt = conn.prepare(&query).into_store_error()?;
     let map_entries = stmt
         .query_map(params_from_iter(map_params.iter()), |row| {
-            let slot_name: String = row.get(0)?;
-            let key: Vec<u8> = row.get(1)?;
-            let value: Vec<u8> = row.get(2)?;
+            let slot_name: String = row.get("slot_name")?;
+            let key: Vec<u8> = row.get("key")?;
+            let value: Vec<u8> = row.get("value")?;
 
             Ok((slot_name, key, value))
         })
@@ -369,9 +345,9 @@ pub(crate) fn query_storage_values(
     conn.prepare(STORAGE_QUERY)
         .into_store_error()?
         .query_map(params![account_id.to_bytes()], |row| {
-            let slot_name: String = row.get(0)?;
-            let value: Vec<u8> = row.get(1)?;
-            let slot_type: u8 = row.get(2)?;
+            let slot_name: String = row.get("slot_name")?;
+            let value: Vec<u8> = row.get("slot_value")?;
+            let slot_type: u8 = row.get("slot_type")?;
             Ok((slot_name, value, slot_type))
         })
         .into_store_error()?

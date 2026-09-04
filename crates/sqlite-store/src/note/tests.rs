@@ -815,6 +815,22 @@ async fn output_notes_filtered_by_script_root() {
     assert!(notes.is_empty());
 }
 
+/// `get_note_script` returns the stored script when present and `NoteScriptNotFound` otherwise.
+#[tokio::test]
+async fn get_note_script_by_root() {
+    let store = create_test_store().await;
+    let script = StandardNote::SWAP.script();
+
+    store.upsert_note_scripts(std::slice::from_ref(&script)).await.unwrap();
+
+    let stored = store.get_note_script(script.root().into()).await.unwrap();
+    assert_eq!(stored.root(), script.root());
+
+    let missing_root = Word::default();
+    let err = store.get_note_script(missing_root).await.unwrap_err();
+    assert!(matches!(err, miden_client::store::StoreError::NoteScriptNotFound(_)));
+}
+
 #[tokio::test]
 async fn output_note_state_blob_does_not_embed_script() {
     let store = create_test_store().await;

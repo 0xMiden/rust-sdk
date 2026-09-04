@@ -281,7 +281,7 @@ impl SqliteStore {
             let mut read_stmt = tx.prepare_cached(READ_ALL_MAP_ENTRIES).into_store_error()?;
             let rows = read_stmt
                 .query_map(params![account_id_bytes, slot_name_str], |row| {
-                    Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+                    Ok((row.get::<_, Vec<u8>>("key")?, row.get::<_, Vec<u8>>("value")?))
                 })
                 .into_store_error()?;
             rows.collect::<Result<_, _>>().into_store_error()?

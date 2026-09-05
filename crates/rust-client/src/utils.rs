@@ -54,6 +54,8 @@ pub enum TokenParseError {
     ParseU64(#[source] ParseIntError),
     #[error("Amount has more than {0} decimal places")]
     TooManyDecimals(u8),
+    #[error("Amount is too large to fit in a u64")]
+    AmountTooLarge,
     #[error("Amount is not a valid asset amount")]
     InvalidAmount(#[source] AssetError),
 }
@@ -75,7 +77,9 @@ pub fn tokens_to_base_units(
         return Err(TokenParseError::MultipleDecimalPoints);
     }
 
-    // Validate that the parts are valid numbers
+    // Validate that the parts contain only valid digits (catches non-numeric chars).
+    // Note: each part is validated individually, so a large combined value is NOT
+    // caught here — that case is handled by the AmountTooLarge error below.
     for part in &parts {
         part.parse::<u64>().map_err(TokenParseError::ParseU64)?;
     }
@@ -103,8 +107,10 @@ pub fn tokens_to_base_units(
     // Combine the integer and padded fractional part
     let combined = format!("{}{}", integer_part, &fractional_part[0..n_decimals.into()]);
 
-    // Convert the combined string to an integer
-    let units = combined.parse::<u64>().map_err(TokenParseError::ParseU64)?;
+    // Convert the combined string to an integer; a parse failure here means the
+    // combined value overflows u64, not that it contains invalid digits (those
+    // are already caught by the split/trim logic above).
+    let units = combined.parse::<u64>().map_err(|_| TokenParseError::AmountTooLarge)?;
 
     AssetAmount::new(units).map_err(TokenParseError::InvalidAmount)
 }
@@ -147,6 +153,13 @@ mod tests {
             tokens_to_base_units("18446744.073709551615", 12),
             Err(TokenParseError::InvalidAmount(_))
         ),);
+        // Combined string overflows u64 entirely — must return AmountTooLarge,
+        // not a confusing ParseU64 error.
+        // "184467440737095516.16" with 2 decimals → "18446744073709551616" = u64::MAX + 1
+        assert!(matches!(
+            tokens_to_base_units("184467440737095516.16", 2),
+            Err(TokenParseError::AmountTooLarge)
+        ));
     }
 
     #[test]

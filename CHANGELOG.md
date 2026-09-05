@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Bug Fixes
+
+* [fix][rust] `tokens_to_base_units` now returns `TokenParseError::AmountTooLarge` instead of `TokenParseError::ParseU64` when the combined integer+fractional string overflows `u64::MAX` ([#2506](https://github.com/0xMiden/rust-sdk/pull/2506)).
+
 ### Breaking Changes
 
 * [BREAKING][removal][rust] Removed `Client::try_get_account`. Use `Client::get_account` and handle the `None` case, or `Client::account_reader` for existence checks and single-field reads that don't need the full materialized account ([#2362](https://github.com/0xMiden/rust-sdk/pull/2362)).

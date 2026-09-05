@@ -1,9 +1,9 @@
 use std::boxed::Box;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::string::String;
 use std::vec::Vec;
 
-use miden_protocol::account::AccountId;
+use miden_protocol::account::{AccountId, AccountVaultPatch};
 use miden_protocol::address::NetworkId;
 use miden_protocol::batch::{ProposedBatch, ProvenBatch};
 use miden_protocol::block::account_tree::AccountWitness;
@@ -171,6 +171,24 @@ fn account_proof() -> AccountProof {
     AccountProof::new(witness, None).expect("a proof without details has nothing to cross-check")
 }
 
+/// An empty `sync_storage_maps` response whose pagination cursor sits at `block_number`.
+fn storage_map_info(block_number: u32) -> StorageMapInfo {
+    StorageMapInfo {
+        chain_tip: BlockNumber::from(block_number),
+        block_number: BlockNumber::from(block_number),
+        map_entries: BTreeMap::new(),
+    }
+}
+
+/// An empty `sync_account_vault` response whose pagination cursor sits at `block_number`.
+fn account_vault_info(block_number: u32) -> AccountVaultInfo {
+    AccountVaultInfo {
+        chain_tip: BlockNumber::from(block_number),
+        block_number: BlockNumber::from(block_number),
+        vault_patch: AccountVaultPatch::default(),
+    }
+}
+
 // CANNED TRANSPORT
 // ================================================================================================
 
@@ -202,6 +220,10 @@ struct CannedTransport {
     account: Option<(BlockNumber, AccountProof)>,
     note_script: CannedScript,
     transactions: Option<Vec<TransactionRecord>>,
+    /// The pagination cursor block to report from `sync_storage_maps`.
+    storage_map_block: Option<u32>,
+    /// The pagination cursor block to report from `sync_account_vault`.
+    account_vault_block: Option<u32>,
     /// When set, every canned method fails instead of answering.
     fail_with: Option<String>,
 }
@@ -334,7 +356,11 @@ impl NodeRpcClient for CannedTransport {
         _block_to: BlockNumber,
         _account_id: AccountId,
     ) -> Result<StorageMapInfo, RpcError> {
-        unimplemented!("not used in these tests")
+        if let Some(err) = self.failure() {
+            return Err(err);
+        }
+        let block = self.storage_map_block.expect("test must set a canned sync_storage_maps block");
+        Ok(storage_map_info(block))
     }
 
     async fn sync_account_vault(
@@ -343,7 +369,13 @@ impl NodeRpcClient for CannedTransport {
         _block_to: BlockNumber,
         _account_id: AccountId,
     ) -> Result<AccountVaultInfo, RpcError> {
-        unimplemented!("not used in these tests")
+        if let Some(err) = self.failure() {
+            return Err(err);
+        }
+        let block = self
+            .account_vault_block
+            .expect("test must set a canned sync_account_vault block");
+        Ok(account_vault_info(block))
     }
 
     async fn sync_transactions(
@@ -672,6 +704,149 @@ async fn sync_transactions_accepts_empty_response() {
         .await
         .expect("an empty response must be accepted");
     assert!(records.is_empty());
+}
+
+// BLOCK WINDOW RANGE
+// ================================================================================================
+
+#[tokio::test]
+async fn sync_notes_verifies_block_range() {
+    let from = BlockNumber::from(10u32);
+    let to = BlockNumber::from(20u32);
+    let tags = BTreeSet::from([NoteTag::new(1)]);
+
+    // A block inside the window is accepted (empty blocks keep the tag check out of the way).
+    let client = VerifyingRpcClient::new(CannedTransport {
+        sync_notes: Some(vec![sync_notes_block(15, &[])]),
+        ..Default::default()
+    });
+    client
+        .sync_notes(from, to, &tags)
+        .await
+        .expect("a block inside the window must be accepted");
+
+    // A block before the window is rejected.
+    let client = VerifyingRpcClient::new(CannedTransport {
+        sync_notes: Some(vec![sync_notes_block(5, &[])]),
+        ..Default::default()
+    });
+    let err = client
+        .sync_notes(from, to, &tags)
+        .await
+        .expect_err("a block before the window must be rejected");
+    assert!(matches!(err, RpcError::InvalidResponse(_)));
+
+    // A block after the window is rejected.
+    let client = VerifyingRpcClient::new(CannedTransport {
+        sync_notes: Some(vec![sync_notes_block(25, &[])]),
+        ..Default::default()
+    });
+    let err = client
+        .sync_notes(from, to, &tags)
+        .await
+        .expect_err("a block after the window must be rejected");
+    assert!(matches!(err, RpcError::InvalidResponse(_)));
+}
+
+#[tokio::test]
+async fn sync_nullifiers_verifies_block_range() {
+    let from = BlockNumber::from(10u32);
+    let to = BlockNumber::from(20u32);
+
+    let client = VerifyingRpcClient::new(CannedTransport {
+        nullifiers: Some(vec![nullifier_update(0xabcd, 15)]),
+        ..Default::default()
+    });
+    client
+        .sync_nullifiers(&[0xabcd], from, to)
+        .await
+        .expect("an update inside the window must be accepted");
+
+    let client = VerifyingRpcClient::new(CannedTransport {
+        nullifiers: Some(vec![nullifier_update(0xabcd, 25)]),
+        ..Default::default()
+    });
+    let err = client
+        .sync_nullifiers(&[0xabcd], from, to)
+        .await
+        .expect_err("an update outside the window must be rejected");
+    assert!(matches!(err, RpcError::InvalidResponse(_)));
+}
+
+#[tokio::test]
+async fn sync_storage_maps_verifies_block_range() {
+    let from = BlockNumber::from(10u32);
+    let to = BlockNumber::from(20u32);
+
+    let client = VerifyingRpcClient::new(CannedTransport {
+        storage_map_block: Some(15),
+        ..Default::default()
+    });
+    client
+        .sync_storage_maps(from, to, test_account_id())
+        .await
+        .expect("a cursor inside the window must be accepted");
+
+    let client = VerifyingRpcClient::new(CannedTransport {
+        storage_map_block: Some(25),
+        ..Default::default()
+    });
+    // `StorageMapInfo` is not `Debug`, so the rejection is unpacked instead of `expect_err`ed.
+    let Err(err) = client.sync_storage_maps(from, to, test_account_id()).await else {
+        panic!("a cursor outside the window must be rejected")
+    };
+    assert!(matches!(err, RpcError::InvalidResponse(_)));
+}
+
+#[tokio::test]
+async fn sync_account_vault_verifies_block_range() {
+    let from = BlockNumber::from(10u32);
+    let to = BlockNumber::from(20u32);
+
+    let client = VerifyingRpcClient::new(CannedTransport {
+        account_vault_block: Some(15),
+        ..Default::default()
+    });
+    client
+        .sync_account_vault(from, to, test_account_id())
+        .await
+        .expect("a cursor inside the window must be accepted");
+
+    let client = VerifyingRpcClient::new(CannedTransport {
+        account_vault_block: Some(5),
+        ..Default::default()
+    });
+    // `AccountVaultInfo` is not `Debug`, so the rejection is unpacked instead of `expect_err`ed.
+    let Err(err) = client.sync_account_vault(from, to, test_account_id()).await else {
+        panic!("a cursor outside the window must be rejected")
+    };
+    assert!(matches!(err, RpcError::InvalidResponse(_)));
+}
+
+#[tokio::test]
+async fn sync_transactions_verifies_block_range() {
+    let requested = test_account_id();
+
+    // transaction_record() stamps the record at GENESIS (block 0), inside [GENESIS, 20].
+    let client = VerifyingRpcClient::new(CannedTransport {
+        transactions: Some(vec![transaction_record(requested)]),
+        ..Default::default()
+    });
+    client
+        .sync_transactions(BlockNumber::GENESIS, BlockNumber::from(20u32), vec![requested])
+        .await
+        .expect("a record inside the window must be accepted");
+
+    // The same block-0 record is outside a later window.
+    let client = VerifyingRpcClient::new(CannedTransport {
+        transactions: Some(vec![transaction_record(requested)]),
+        ..Default::default()
+    });
+    let err = client
+        .sync_transactions(BlockNumber::from(10u32), BlockNumber::from(20u32), vec![requested])
+        .await
+        .expect_err("a record outside the window must be rejected");
+    assert!(matches!(err, RpcError::InvalidResponse(_)));
 }
 
 #[tokio::test]

@@ -110,9 +110,7 @@ pub fn tokens_to_base_units(
     // Convert the combined string to an integer; a parse failure here means the
     // combined value overflows u64, not that it contains invalid digits (those
     // are already caught by the split/trim logic above).
-    let units = combined
-        .parse::<u64>()
-        .map_err(|_| TokenParseError::AmountTooLarge)?;
+    let units = combined.parse::<u64>().map_err(|_| TokenParseError::AmountTooLarge)?;
 
     AssetAmount::new(units).map_err(TokenParseError::InvalidAmount)
 }

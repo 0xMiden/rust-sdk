@@ -953,7 +953,10 @@ fn cli_empty_commands() {
     );
 
     let mut import_cmd = cargo_bin_cmd!("miden-client");
-    assert_command_fails_but_does_not_panic(import_cmd.args(["export"]).current_dir(&temp_dir));
+    assert_command_fails_but_does_not_panic(import_cmd.args(["import"]).current_dir(&temp_dir));
+
+    let mut export_cmd = cargo_bin_cmd!("miden-client");
+    assert_command_fails_but_does_not_panic(export_cmd.args(["export"]).current_dir(&temp_dir));
 
     let mut mint_cmd = cargo_bin_cmd!("miden-client");
     assert_command_fails_but_does_not_panic(mint_cmd.args(["mint"]).current_dir(&temp_dir));

@@ -5,8 +5,7 @@
 ### Fixes
 
 * [FIX][cli] `miden-client import` now rejects invocations without a file path instead of silently succeeding ([#2450](https://github.com/0xMiden/rust-sdk/pull/2450)).
-<!-- TODO: update the PR link below to the actual PR number once the PR is opened (currently a placeholder). -->
-* [FIX][rust] `StateSync::validate_account_proof` now returns a `ChainValidationError` when a `get_account` proof carries no account details, instead of panicking. The RPC layer allows the details to be absent, so a malformed or malicious node response could crash the client mid-sync ([#XXXX](https://github.com/0xMiden/rust-sdk/pull/XXXX)).
+* [FIX][rust] `StateSync::validate_account_proof` now returns a `ChainValidationError` when a `get_account` proof carries no account details, instead of panicking. The RPC layer allows the details to be absent, so a malformed or malicious node response could crash the client mid-sync ([#2502](https://github.com/0xMiden/rust-sdk/pull/2502)).
 
 ## 0.16.0 (2026-09-07)
 

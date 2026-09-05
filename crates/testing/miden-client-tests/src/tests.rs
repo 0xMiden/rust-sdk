@@ -1171,6 +1171,78 @@ async fn note_without_asset() {
 }
 
 #[tokio::test]
+async fn swap_note_with_zero_asset() {
+    let (mut client, _rpc_api, keystore) = Box::pin(create_test_client()).await;
+
+    let faucet = insert_new_fungible_faucet(&mut client, AccountType::Private, &keystore)
+        .await
+        .unwrap();
+
+    let wallet = insert_new_wallet(&mut client, AccountType::Private, &keystore).await.unwrap();
+
+    client.sync_state().await.unwrap();
+
+    // A swap exchanges the offered asset for the requested one, and filling it emits a P2ID
+    // payback carrying the requested asset, so neither side may be zero.
+    let other_faucet = insert_new_fungible_faucet(&mut client, AccountType::Private, &keystore)
+        .await
+        .unwrap();
+
+    let zero_asset = Asset::Fungible(FungibleAsset::new(faucet.id(), 0).unwrap());
+    let some_asset = Asset::Fungible(FungibleAsset::new(other_faucet.id(), 100).unwrap());
+
+    let error = TransactionRequestBuilder::new()
+        .build_swap(
+            &SwapTransactionData::new(wallet.id(), zero_asset, some_asset),
+            NoteType::Public,
+            NoteType::Private,
+            client.rng(),
+        )
+        .unwrap_err();
+
+    assert!(matches!(error, TransactionRequestError::SwapNoteWithZeroAsset("offered")));
+
+    let error = TransactionRequestBuilder::new()
+        .build_swap(
+            &SwapTransactionData::new(wallet.id(), some_asset, zero_asset),
+            NoteType::Public,
+            NoteType::Private,
+            client.rng(),
+        )
+        .unwrap_err();
+
+    assert!(matches!(error, TransactionRequestError::SwapNoteWithZeroAsset("requested")));
+
+    // PSWAP carries the same exchange, fungible on both sides.
+    let zero = FungibleAsset::new(faucet.id(), 0).unwrap();
+    let some = FungibleAsset::new(other_faucet.id(), 100).unwrap();
+
+    let error = TransactionRequestBuilder::new()
+        .build_pswap_create(
+            &PswapTransactionData::new(wallet.id(), zero, some),
+            NoteType::Public,
+            NoteType::Private,
+            None,
+            client.rng(),
+        )
+        .unwrap_err();
+
+    assert!(matches!(error, TransactionRequestError::SwapNoteWithZeroAsset("offered")));
+
+    let error = TransactionRequestBuilder::new()
+        .build_pswap_create(
+            &PswapTransactionData::new(wallet.id(), some, zero),
+            NoteType::Public,
+            NoteType::Private,
+            None,
+            client.rng(),
+        )
+        .unwrap_err();
+
+    assert!(matches!(error, TransactionRequestError::SwapNoteWithZeroAsset("requested")));
+}
+
+#[tokio::test]
 async fn execute_program() {
     let (mut client, _, keystore) = Box::pin(create_test_client()).await;
     let _ = client.sync_state().await.unwrap();

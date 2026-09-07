@@ -96,8 +96,7 @@ impl RpcError {
 
         !matches!(
             error_kind,
-            // The node processed the request and rejected it. `ResourceExhausted` belongs here
-            // too: it is a refusal issued before any processing.
+            // The node processed the request and rejected it
             GrpcError::InvalidArgument
                 | GrpcError::FailedPrecondition
                 | GrpcError::NotFound

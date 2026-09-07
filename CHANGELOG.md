@@ -4,6 +4,7 @@
 
 ### Breaking Changes
 
+* [BREAKING][behavior][rust,web] `TransactionRequest` serialization now carries the pinned input notes, so a request serialized by an earlier version cannot be deserialized by this one and vice versa. Rebuild any request that is stored or in flight across the upgrade ([#2437](https://github.com/0xMiden/rust-sdk/pull/2437)).
 * [BREAKING][removal][rust] Removed `Client::try_get_account`. Use `Client::get_account` and handle the `None` case, or `Client::account_reader` for existence checks and single-field reads that don't need the full materialized account ([#2362](https://github.com/0xMiden/rust-sdk/pull/2362)).
 * [BREAKING][behavior][rpc] The `GetAccount` response no longer carries one SMT opening per requested storage map key. A slot queried with specific keys now comes back as a single partial SMT covering all of them, alongside the original unhashed keys, so the client requires a node that speaks this format ([#2362](https://github.com/0xMiden/rust-sdk/pull/2362)).
 * [BREAKING][type][rust] `StorageMapEntries::EntriesWithProofs(Vec<SmtProof>)` is replaced by `StorageMapEntries::PartialMap { map_keys, partial_smt }`, which carries the values only inside the tree: read one by hashing its raw key and calling `PartialSmt::get_value`. The enum also gained a `LimitExceeded` variant and `AccountStorageMapDetails::too_many_entries` was removed in its favor ([#2362](https://github.com/0xMiden/rust-sdk/pull/2362)).
@@ -63,6 +64,7 @@
 
 ### Enhancements
 
+* [FEATURE][rust] Added `TransactionRequestBuilder::explicit_input_notes` so callers can pin each input note as authenticated or unauthenticated instead of deriving its mode from the executing client's store ([#2437](https://github.com/0xMiden/rust-sdk/pull/2437)).
 * [FEATURE][rust] `ClientBuilder` accepts any `TransactionAuthenticator + 'static` as its authenticator. The `BuilderAuthenticator` bound no longer requires `Keystore` or `From<FilesystemKeyStore>`, so a signer that holds no secret key, such as a remote signing service, can be plugged into the builder without implementing key management.
 * [FEATURE][rust] Added `AuthGuardedMultisig`, `AuthGuardedMultisigConfig`, `GuardianConfig` and `ApproverSet` to `miden_client::auth`, which previously exposed only the single- and multisig components. Building a guarded multisig account no longer means reaching past the client into `miden_standards` ([#2465](https://github.com/0xMiden/rust-sdk/pull/2465)).
 * [FEATURE][rust] `Client::sync_state` now issues its independent gRPC calls concurrently instead of one after another, reducing the total time a sync takes. `NodeRpcClient::sync_notes_with_content` and `NodeRpcClient::sync_transactions` are now called concurrently rather than in sequence, and the per-account `NodeRpcClient::get_account` requests are issued in parallel instead of one at a time ([#2420](https://github.com/0xMiden/rust-sdk/pull/2420)).

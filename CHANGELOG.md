@@ -46,7 +46,7 @@
 * [BREAKING][behavior][rust] `Client::list_setting_keys` returns only the user's keys. The client's own entries, such as the note transport cursor and the cached RPC limits, no longer appear in the listing and can no longer be read or overwritten through the `Client` settings API ([#2456](https://github.com/0xMiden/rust-sdk/pull/2456)).
 * [BREAKING][behavior][store] The SQLite `settings` table now carries a `scope` column with `(scope, name)` as its primary key. This changes the schema fingerprint, so opening a database created before this change fails with `SchemaDrift` and existing stores must be recreated ([#2456](https://github.com/0xMiden/rust-sdk/pull/2456)).
 
-* [BREAKING][rust] Updated the protocol dependencies to `0.16.0-rc.9`, which raises the MSRV to 1.98. `guarded_multisig.masm` and `multisig_smart.masm` both call `fee::load_conversion_info` as of that release, so `AuthMultisigSmart` now reads the auth argument as fee conversion info rather than as a summary salt alone and, like the other multisig components, must declare its own salt on a fee-charging chain ([#2465](https://github.com/0xMiden/rust-sdk/pull/2465)).
+* [BREAKING][rust] Updated the protocol dependencies to `0.16.1`, which raises the MSRV to 1.98.1. `guarded_multisig.masm` and `multisig_smart.masm` both call `fee::load_conversion_info` as of `0.16.0-rc.9`, so `AuthMultisigSmart` now reads the auth argument as fee conversion info rather than as a summary salt alone and, like the other multisig components, must declare its own salt on a fee-charging chain ([#2465](https://github.com/0xMiden/rust-sdk/pull/2465)).
 
 ### Fixes
 

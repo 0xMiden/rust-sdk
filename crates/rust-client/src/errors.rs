@@ -365,6 +365,23 @@ impl From<&ClientError> for Option<ErrorHint> {
                     docs_url: Some(TROUBLESHOOTING_DOC),
                 })
             },
+            ClientError::BatchBuilder(BatchBuilderError::BatchSubmissionOutcomeUnknown {
+                submission,
+                ..
+            }) => Some(ErrorHint {
+                message: format!(
+                    "Do not rebuild the batch: re-executing produces new transaction ids over \
+                     the same notes, so if the original did land you would be left with ids that \
+                     can never commit. Neither option can apply the batch twice, since both \
+                     consume the same nullifiers. Either retry with the `submission` attached to \
+                     this error, which carries the proven batch and each transaction's inputs and \
+                     records the batch if the node accepts it, or sync and see whether the \
+                     accounts moved: until a retry is accepted the {} ids in \
+                     `submission.transaction_ids()` have no record to look up.",
+                    submission.transaction_count()
+                ),
+                docs_url: Some(TROUBLESHOOTING_DOC),
+            }),
             _ => None,
         }
     }

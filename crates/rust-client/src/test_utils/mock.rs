@@ -84,6 +84,10 @@ pub struct MockRpcApi {
     /// [`MockRpcApi::fail_next_call`]. An entry is removed when served, so the call after it
     /// answers normally and a test can exercise a retry.
     next_call_failures: Arc<RwLock<BTreeMap<&'static str, RpcError>>>,
+    /// Sealed inputs handed to `submit_proven_batch`, one entry per call and recorded before any
+    /// staged failure is served, so a test can assert that a resubmission sealed again instead of
+    /// reusing a cached ciphertext.
+    submitted_batch_sealed_inputs: Arc<RwLock<Vec<Vec<SealedTransactionInputs>>>>,
 }
 
 impl Default for MockRpcApi {
@@ -108,7 +112,30 @@ impl MockRpcApi {
             sync_notes_mmr_path_overrides: Arc::new(RwLock::new(BTreeMap::new())),
             get_notes_by_id_calls: Arc::new(AtomicUsize::new(0)),
             next_call_failures: Arc::new(RwLock::new(BTreeMap::new())),
+            submitted_batch_sealed_inputs: Arc::new(RwLock::new(Vec::new())),
         }
+    }
+
+    /// Id of the first account updated in the mock chain's proven blocks, in block then
+    /// within-block order. Tests use it to get hold of an account the chain already knows.
+    ///
+    /// Panics if the chain has no account updates.
+    pub fn first_account_id(&self) -> AccountId {
+        self.mock_chain
+            .read()
+            .proven_blocks()
+            .iter()
+            .flat_map(|block| block.body().updated_accounts())
+            .next()
+            .expect("the mock chain must have at least one account update")
+            .account_id()
+    }
+
+    /// Sealed inputs recorded by `submit_proven_batch`, one entry per call, including calls that
+    /// went on to be served a staged failure. Within an entry the order matches the batch's
+    /// transaction order.
+    pub fn submitted_batch_sealed_inputs(&self) -> Vec<Vec<SealedTransactionInputs>> {
+        self.submitted_batch_sealed_inputs.read().clone()
     }
 
     /// Makes the next call to `endpoint` fail with `error` instead of answering. The failure is
@@ -551,15 +578,23 @@ impl NodeRpcClient for MockRpcApi {
     }
 
     /// Simulates the submission of a proven batch to the node by adding it to the mock chain's
-    /// pending batches. The `proposed_batch` and `sealed_transaction_inputs` arguments are accepted
-    /// to match the trait signature but are unused — the mock relies on the `ProvenBatch`
-    /// alone, matching how `submit_proven_transaction` ignores its `sealed_transaction_inputs`.
+    /// pending batches. The `proposed_batch` argument is accepted to match the trait signature but
+    /// is unused: the mock relies on the `ProvenBatch` alone. The sealed inputs are recorded rather
+    /// than decrypted, so a test can inspect what each attempt sent.
     async fn submit_proven_batch(
         &self,
         proven_batch: ProvenBatch,
         _proposed_batch: ProposedBatch,
-        _sealed_transaction_inputs: Vec<SealedTransactionInputs>,
+        sealed_transaction_inputs: Vec<SealedTransactionInputs>,
     ) -> Result<BlockNumber, RpcError> {
+        // Recorded before the staged failure is served: a submission whose response is lost still
+        // reached the node, so a test can compare what that attempt sent against the retry.
+        self.submitted_batch_sealed_inputs.write().push(sealed_transaction_inputs);
+
+        if let Some(error) = self.take_failure(RpcEndpoint::SubmitProvenBatch) {
+            return Err(error);
+        }
+
         let mut mock_chain = self.mock_chain.write();
         mock_chain.add_pending_batch(proven_batch);
         drop(mock_chain);

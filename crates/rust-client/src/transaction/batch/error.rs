@@ -1,6 +1,10 @@
+use alloc::boxed::Box;
+
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::NoteId;
 
+use super::ProvenBatchSubmission;
+use crate::rpc::RpcError;
 use crate::store::StoreError;
 use crate::transaction::TransactionStoreUpdateError;
 
@@ -15,6 +19,21 @@ pub enum BatchBuilderError {
     /// `submit` was called on a builder with zero successful pushes.
     #[error("batch is empty — push at least one transaction before submitting")]
     Empty,
+
+    /// The batch submission came back without a definite outcome, so the node may or may not have
+    /// accepted it. Nothing was recorded locally for any of its transactions.
+    #[error(
+        "submission of a batch of {} transactions came back without a definite outcome, so the \
+         node may or may not have accepted it; nothing was recorded locally",
+        submission.transaction_count()
+    )]
+    BatchSubmissionOutcomeUnknown {
+        /// The batch as submitted, to resend with
+        /// [`Client::retry_proven_batch`](crate::Client::retry_proven_batch).
+        submission: Box<ProvenBatchSubmission>,
+        #[source]
+        source: RpcError,
+    },
 
     /// The node accepted the batch (RPC returned `block_num`), but building one of the
     /// per-tx [`crate::transaction::TransactionStoreUpdate`]s failed. Callers should trigger

@@ -458,9 +458,11 @@ Arguments are passed positionally after the target, one token per value in the p
 | integers (`u8`…`u128`, `i8`…`i128`) | decimal, range-checked against the type | `-1` |
 | `bool` | `true`, `false`, `1` or `0` | `true` |
 | `word` | hex | `0x00..` |
-| `account-id` | hex account ID | `0x4614b8bf575eab71455e97bd394e90` |
-| `asset` | `<AMOUNT>::<FAUCET_ID>`, fungible only | `100::0xabcdef0123456789` |
+| `account-id` | hex account ID, or a bech32 address naming one | `0x4614b8bf575eab71455e97bd394e90` |
+| `asset` | `<AMOUNT>::<FAUCET_ID>`, fungible only, the faucet in either account ID spelling | `100::0xabcdef0123456789` |
 | records and fixed arrays | one token per field, in order | `3 4` for `point { x, y }` |
+
+An `account-id` argument takes the same two spellings the target does, so both can be written the same way in one command line. A hex prefix of a tracked account is not one of them: resolving a prefix reads the client's store, and an argument is read on its own.
 
 Only procedures exported from a WIT interface carry a signature. A procedure without one is still called, with one raw field element per argument written in decimal (a `0x` hex literal is not accepted); the argument count is not checked and the result is printed as a stack dump.
 

@@ -4,15 +4,14 @@
 //! [`Asset::as_elements`]. The CLI registers this codec so an asset argument can be given as a
 //! single `<AMOUNT>::<FAUCET_ID>` token instead of two raw word hexes, and so a returned asset
 //! renders back the same way. The token form matches the one the rest of the CLI takes for
-//! fungible assets, minus the token symbol and address spellings: resolving those needs the
-//! client, and a codec only sees the text.
+//! fungible assets, minus the token symbol: resolving one needs the client's faucet metadata, and
+//! a codec only sees the text.
 
-use miden_client::account::AccountId;
 use miden_client::asset::{Asset, FungibleAsset};
 use miden_client::vm::typed::{MIDEN_CORE_TYPES, TypedError, WitScalarCodec};
 use miden_client::{Felt, Word};
 
-use crate::codecs::invalid_scalar;
+use crate::codecs::{invalid_scalar, parse_account_id_token};
 
 /// Bare WIT type name the typed encoder matches this codec against (e.g. the leaf of
 /// `miden:base/core-types@1.0.0/asset`).
@@ -38,8 +37,9 @@ impl WitScalarCodec for AssetCodec {
         let amount: u64 = amount.parse().map_err(|e: core::num::ParseIntError| {
             invalid_scalar(ASSET_WIT_NAME, token, &format!("invalid amount: {e}"))
         })?;
-        let faucet_id =
-            AccountId::from_hex(faucet).map_err(|e| invalid_scalar(ASSET_WIT_NAME, token, &e))?;
+        // The faucet takes the same spellings as any other account ID argument, and reports
+        // under its own type: a bad faucet is a bad account ID, not a bad asset.
+        let faucet_id = parse_account_id_token(faucet)?;
         let asset: Asset = FungibleAsset::new(faucet_id, amount)
             .map_err(|e| invalid_scalar(ASSET_WIT_NAME, token, &e))?
             .into();
@@ -70,6 +70,8 @@ fn malformed_asset(reason: &'static str) -> TypedError {
 
 #[cfg(test)]
 mod tests {
+    use miden_client::account::AccountId;
+    use miden_client::address::{Address, NetworkId};
     use miden_client::testing::account_id::ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET;
 
     use super::*;
@@ -90,6 +92,17 @@ mod tests {
         assert_eq!(felts.len(), 8);
 
         assert_eq!(AssetCodec.decode(&felts).unwrap(), format!("asset({token})"));
+    }
+
+    #[test]
+    fn a_bech32_faucet_encodes_to_the_same_felts_as_its_hex_spelling() {
+        let id = AccountId::try_from(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET).unwrap();
+        let bech32 = format!("100::{}", Address::new(id).encode(NetworkId::Testnet));
+
+        assert_eq!(
+            AssetCodec.encode(&bech32).unwrap(),
+            AssetCodec.encode(&faucet_token(100)).unwrap()
+        );
     }
 
     #[test]

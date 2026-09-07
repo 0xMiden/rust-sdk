@@ -1054,10 +1054,10 @@ async fn import_processing_note_returns_error() {
 async fn note_without_asset() {
     let (mut client, _rpc_api) = Box::pin(create_test_client()).await;
 
-    // A bare faucet, so the zero-asset note below goes through the faucet interface instead of
-    // being accepted by a wallet component's send path.
+    // A faucet with no wallet component, so the zero-asset note below goes through the faucet
+    // interface instead of being accepted by a wallet component's send path.
     let (faucet, _) = client
-        .insert_account(AccountSetup::faucet(AccountType::Private).bare())
+        .insert_account(AccountSetup::faucet(AccountType::Private).without_basic_wallet_component())
         .await
         .unwrap();
 

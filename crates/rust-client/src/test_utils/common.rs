@@ -195,7 +195,7 @@ pub struct AccountSetup {
     auth_scheme: AuthSchemeId,
     seed: Option<[u8; 32]>,
     funded: bool,
-    bare: bool,
+    with_basic_wallet_component: bool,
     extra_components: Vec<AccountComponent>,
 }
 
@@ -207,7 +207,7 @@ impl AccountSetup {
             auth_scheme: RPO_FALCON_SCHEME_ID,
             seed: None,
             funded: true,
-            bare: false,
+            with_basic_wallet_component: true,
             extra_components: Vec::new(),
         }
     }
@@ -245,10 +245,10 @@ impl AccountSetup {
     }
 
     /// Builds a faucet without the [`BasicWallet`] ride-along, so the account exposes only the
-    /// faucet interface.
+    /// faucet interface. Has no effect on a wallet setup.
     #[must_use]
-    pub fn bare(mut self) -> Self {
-        self.bare = true;
+    pub fn without_basic_wallet_component(mut self) -> Self {
+        self.with_basic_wallet_component = false;
         self
     }
 
@@ -311,7 +311,7 @@ impl TestClient {
                     .build();
 
                 builder = builder.with_component(faucet);
-                if !setup.bare {
+                if setup.with_basic_wallet_component {
                     builder = builder.with_component(BasicWallet);
                 }
                 builder = builder.with_components(policy_manager);

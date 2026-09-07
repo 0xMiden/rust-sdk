@@ -6,12 +6,13 @@ use alloc::vec::Vec;
 use miden_protocol::account::{
     AccountHeader,
     AccountId,
+    PartialAccount,
     StorageMapKey,
     StorageMapWitness,
     StorageSlotName,
 };
 use miden_protocol::address::Address;
-use miden_protocol::asset::{Asset, AssetCallbackFlag, AssetVaultKey};
+use miden_protocol::asset::{Asset, AssetAmount, AssetId};
 use miden_protocol::{Felt, Word};
 
 use crate::errors::ClientError;
@@ -100,6 +101,15 @@ impl AccountReader {
             .ok_or(ClientError::AccountDataNotFound(self.account_id))
     }
 
+    /// Retrieves the minimal partial account representation for this account.
+    pub(crate) async fn partial_account(&self) -> Result<PartialAccount, ClientError> {
+        self.store
+            .get_minimal_partial_account(self.account_id)
+            .await?
+            .ok_or(ClientError::AccountDataNotFound(self.account_id))?
+            .try_into()
+    }
+
     /// Retrieves the addresses associated with this account.
     pub async fn addresses(&self) -> Result<Vec<Address>, ClientError> {
         self.store
@@ -111,25 +121,34 @@ impl AccountReader {
     // VAULT ACCESS
     // --------------------------------------------------------------------------------------------
 
-    /// Retrieves the balance of a fungible asset in the account's vault.
-    ///
-    /// Returns `0` if the asset is not present in the vault or if the asset is not a fungible
-    /// asset.
+    /// Retrieves all assets in the account's vault as a plain list, without building the vault's
+    /// Merkle tree.
     ///
     /// To load the entire vault, use
     /// [`Client::get_account_vault`](crate::Client::get_account_vault).
-    pub async fn get_balance(&self, faucet_id: AccountId) -> Result<u64, ClientError> {
-        let mut total = 0u64;
-        for callback_flag in [AssetCallbackFlag::Disabled, AssetCallbackFlag::Enabled] {
-            let vault_key = AssetVaultKey::new_fungible(faucet_id, callback_flag);
-            if let Some((Asset::Fungible(fungible_asset), _)) =
-                self.store.get_account_asset(self.account_id, vault_key).await?
-            {
-                total = total.saturating_add(u64::from(fungible_asset.amount()));
-            }
-        }
+    pub async fn assets(&self) -> Result<Vec<Asset>, ClientError> {
+        self.store
+            .get_account_assets(self.account_id)
+            .await
+            .map_err(ClientError::StoreError)
+    }
 
-        Ok(total)
+    /// Retrieves the balance of a fungible asset in the account's vault.
+    ///
+    /// Returns [`AssetAmount::ZERO`] if the asset is not present in the vault or if the asset is
+    /// not a fungible asset.
+    ///
+    /// To load the entire vault, use
+    /// [`Client::get_account_vault`](crate::Client::get_account_vault).
+    pub async fn get_balance(&self, faucet_id: AccountId) -> Result<AssetAmount, ClientError> {
+        let asset_id = AssetId::new_fungible(faucet_id);
+        if let Some((Asset::Fungible(fungible_asset), _)) =
+            self.store.get_account_asset(self.account_id, asset_id).await?
+        {
+            Ok(fungible_asset.amount())
+        } else {
+            Ok(AssetAmount::ZERO)
+        }
     }
 
     // STORAGE ACCESS

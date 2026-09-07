@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use miden_protocol::account::AccountDelta;
+use miden_protocol::account::AccountPatch;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{NoteDetails, NoteTag};
 use miden_protocol::transaction::{
@@ -81,9 +81,9 @@ impl TransactionResult {
         self.transaction.tx_inputs()
     }
 
-    /// Returns the [`AccountDelta`] that describes the change of state for the executing account.
-    pub fn account_delta(&self) -> &AccountDelta {
-        self.transaction.account_delta()
+    /// Returns the [`AccountPatch`] that describes the change of state for the executing account.
+    pub fn account_patch(&self) -> &AccountPatch {
+        self.transaction.account_patch()
     }
 
     /// Returns input notes that were consumed as part of the transaction.

@@ -9,12 +9,11 @@ use miden_client::Client;
 use miden_client::account::component::{
     AccountComponent,
     AccountComponentMetadata,
-    BurnPolicyConfig,
+    BurnPolicy,
     FungibleFaucet,
     InitStorageData,
     MIDEN_PACKAGE_EXTENSION,
-    MintPolicyConfig,
-    PolicyRegistration,
+    MintPolicy,
     StorageSlotSchema,
     TokenName,
     TokenPolicyManager,
@@ -26,12 +25,11 @@ use miden_client::account::{
     AccountType,
 };
 use miden_client::asset::{AssetAmount, TokenSymbol};
-use miden_client::auth::{AuthSchemeId, AuthSecretKey, AuthSingleSig};
+use miden_client::auth::{Approver, AuthSchemeId, AuthSecretKey, AuthSingleSig};
 use miden_client::keystore::Keystore;
-use miden_client::transaction::TransactionRequestBuilder;
 use miden_client::utils::Deserializable;
 use miden_client::vm::{Package, SectionId};
-use rand::RngCore;
+use rand::Rng;
 use serde::Deserialize;
 use tracing::debug;
 
@@ -82,16 +80,9 @@ pub struct NewWalletCmd {
     /// present in the init storage data file.
     #[arg(short, long)]
     pub init_storage_data_path: Option<PathBuf>,
-    /// If set, the newly created wallet will be deployed to the network by submitting an
-    /// authentication transaction.
-    #[arg(long, default_value_t = false)]
-    pub deploy: bool,
     /// Seed local-only state so the wallet can be created and used for execution without a node.
     /// Only available when built with the `testing` feature.
-    #[cfg_attr(
-        feature = "testing",
-        arg(long, default_value_t = false, conflicts_with = "deploy")
-    )]
+    #[cfg_attr(feature = "testing", arg(long, default_value_t = false))]
     #[cfg_attr(not(feature = "testing"), arg(skip = false))]
     pub offline: bool,
 }
@@ -113,7 +104,6 @@ impl NewWalletCmd {
             self.account_type.into(),
             &package_paths,
             self.init_storage_data_path.clone(),
-            self.deploy,
             self.offline,
         )
         .await?;
@@ -175,7 +165,7 @@ pub struct NewAccountCmd {
     /// account. If any package contributes a `FungibleFaucet` component, the resulting account
     /// is treated as a fungible faucet (and an implicit `TokenPolicyManager` is installed when
     /// not already provided).
-    #[arg(short, long)]
+    #[arg(short, long, required = true)]
     pub packages: Vec<PathBuf>,
     /// Optional file path to a TOML file containing a list of key/values used for initializing
     /// storage. Each of these keys should map to the templated storage values within the passed
@@ -183,16 +173,9 @@ pub struct NewAccountCmd {
     /// present in the init storage data file.
     #[arg(short, long)]
     pub init_storage_data_path: Option<PathBuf>,
-    /// If set, the newly created account will be deployed to the network by submitting an
-    /// authentication transaction.
-    #[arg(long, default_value_t = false)]
-    pub deploy: bool,
     /// Seed local-only state so the account can be created and used for execution without a node.
     /// Only available when built with the `testing` feature.
-    #[cfg_attr(
-        feature = "testing",
-        arg(long, default_value_t = false, conflicts_with = "deploy")
-    )]
+    #[cfg_attr(feature = "testing", arg(long, default_value_t = false))]
     #[cfg_attr(not(feature = "testing"), arg(skip = false))]
     pub offline: bool,
 }
@@ -209,7 +192,6 @@ impl NewAccountCmd {
             self.account_type.into(),
             &self.packages,
             self.init_storage_data_path.clone(),
-            self.deploy,
             self.offline,
         )
         .await?;
@@ -229,7 +211,7 @@ impl NewAccountCmd {
 // ================================================================================================
 
 /// Reads [[`miden_core::vm::Package`]]s from the given file paths.
-fn load_packages(
+pub(crate) fn load_packages(
     cli_config: &CliConfig,
     package_paths: &[PathBuf],
 ) -> Result<Vec<Package>, CliError> {
@@ -341,7 +323,7 @@ fn build_fungible_faucet_component(
 /// `Package.name` field stores the component's full canonical name from `FungibleFaucet::NAME`.)
 fn drop_basic_fungible_faucet_packages(packages: &mut Vec<Package>) -> bool {
     let before = packages.len();
-    packages.retain(|pkg| pkg.name.to_string() != FungibleFaucet::NAME);
+    packages.retain(|pkg| pkg.name != FungibleFaucet::NAME);
     packages.len() != before
 }
 
@@ -471,14 +453,12 @@ async fn create_client_account<AUTH: Keystore + Sync + 'static>(
     account_type: AccountType,
     package_paths: &[PathBuf],
     init_storage_data_path: Option<PathBuf>,
-    deploy: bool,
     offline: bool,
 ) -> Result<Account, CliError> {
     if package_paths.is_empty() {
-        return Err(CliError::InvalidArgument(format!(
-            "Account must contain at least one component. To provide one, pass a package with the -p flag, like so:
-{} -p <package_name>
-            ", client_binary_name().display())));
+        return Err(CliError::InvalidArgument(
+            "Account must contain at least one component".to_string(),
+        ));
     }
 
     // Load the component templates and initialization storage data.
@@ -529,29 +509,24 @@ async fn create_client_account<AUTH: Keystore + Sync + 'static>(
     // default `allow_all` policy manager implicitly.
     if should_add_implicit_token_policy_manager(&regular_components) {
         debug!("Adding implicit TokenPolicyManager component for fungible faucet");
-        let policy_manager = TokenPolicyManager::new()
-            .with_mint_policy(MintPolicyConfig::AllowAll, PolicyRegistration::Active)
-            .map_err(|err| {
-                CliError::Faucet(err.into(), "Failed to register mint policy".to_string())
-            })?
-            .with_burn_policy(BurnPolicyConfig::AllowAll, PolicyRegistration::Active)
-            .map_err(|err| {
-                CliError::Faucet(err.into(), "Failed to register burn policy".to_string())
-            })?;
+        let policy_manager = TokenPolicyManager::builder()
+            .active_mint_policy(MintPolicy::allow_all())
+            .active_burn_policy(BurnPolicy::allow_all())
+            .build();
         regular_components.extend(policy_manager);
     }
     // Add the auth component (either from packages or default Falcon)
     let key_pair = if let Some(auth_component) = auth_component {
         debug!("Adding auth component from package");
-        builder = builder.with_auth_component(auth_component);
+        builder = builder.with_component(auth_component);
         None
     } else {
         debug!("Adding default Falcon auth component");
         let kp = AuthSecretKey::new_falcon512_poseidon2_with_rng(client.rng());
-        builder = builder.with_auth_component(AuthSingleSig::new(
+        builder = builder.with_component(AuthSingleSig::new(Approver::new(
             kp.public_key().to_commitment(),
             AuthSchemeId::Falcon512Poseidon2,
-        ));
+        )));
         Some(kp)
     };
 
@@ -583,27 +558,7 @@ async fn create_client_account<AUTH: Keystore + Sync + 'static>(
 
     client.add_account(&account, false).await?;
 
-    if deploy {
-        deploy_account(client, &account).await?;
-    }
-
     Ok(account)
-}
-
-/// Submits a deploy transaction to the node for the specified account.
-async fn deploy_account<AUTH: Keystore + Sync + 'static>(
-    client: &mut Client<AUTH>,
-    account: &Account,
-) -> Result<(), CliError> {
-    // Build a minimal transaction request. The transaction execution will naturally increment
-    // the account nonce from 0 to 1, which deploys the account on-chain.
-    // We don't need to call auth procedures directly as that must be done in the epilogue.
-    let tx_request = TransactionRequestBuilder::new().build().map_err(|err| {
-        CliError::Transaction(err.into(), "Failed to build deploy transaction".to_string())
-    })?;
-
-    client.submit_new_transaction(account.id(), tx_request).await?;
-    Ok(())
 }
 
 fn process_packages(
@@ -717,11 +672,10 @@ mod tests {
     #[test]
     fn implicit_token_policy_manager_is_skipped_when_component_already_present() {
         let mut regular_components: Vec<AccountComponent> = vec![test_fungible_faucet_component()];
-        let policy_manager = TokenPolicyManager::new()
-            .with_mint_policy(MintPolicyConfig::AllowAll, PolicyRegistration::Active)
-            .unwrap()
-            .with_burn_policy(BurnPolicyConfig::AllowAll, PolicyRegistration::Active)
-            .unwrap();
+        let policy_manager = TokenPolicyManager::builder()
+            .active_mint_policy(MintPolicy::allow_all())
+            .active_burn_policy(BurnPolicy::allow_all())
+            .build();
         regular_components.extend(policy_manager);
 
         assert!(!should_add_implicit_token_policy_manager(&regular_components));

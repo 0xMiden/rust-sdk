@@ -172,7 +172,7 @@ impl CliConfig {
     ///
     /// Or for client initialization:
     /// ```ignore
-    /// CliClient::new(debug_mode).await?
+    /// CliClient::new().await?
     /// ```
     ///
     /// ## When to use this method
@@ -246,7 +246,7 @@ impl CliConfig {
     /// For standard CLI-like behavior:
     /// ```ignore
     /// CliConfig::load()  // Respects local → global fallback
-    /// CliClient::new(debug_mode).await?
+    /// CliClient::new().await?
     /// ```
     ///
     /// ## When to use this method
@@ -288,7 +288,7 @@ impl CliConfig {
     /// For standard CLI-like behavior:
     /// ```ignore
     /// CliConfig::load()  // Respects local → global priority
-    /// CliClient::new(debug_mode).await?
+    /// CliClient::new().await?
     /// ```
     ///
     /// ## When to use this method
@@ -358,7 +358,7 @@ impl CliConfig {
     /// let config = CliConfig::load()?;
     ///
     /// // Or even better, use CliClient directly:
-    /// // let client = CliClient::new(DebugMode::Disabled).await?;
+    /// // let client = CliClient::new().await?;
     /// # Ok(())
     /// # }
     /// ```

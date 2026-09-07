@@ -5,9 +5,6 @@ use alloc::vec::Vec;
 
 use anyhow::{Context, Result, ensure};
 use miden_agglayer::{
-    EthAddress,
-    EthAmount,
-    EthEmbeddedAccountId,
     ExitRoot,
     GlobalIndex,
     Keccak256Output,
@@ -16,6 +13,7 @@ use miden_agglayer::{
     ProofData,
     SmtNode,
 };
+use miden_client::agglayer::{EthAddress, EthAmount, EthEmbeddedAccountId};
 use miden_client::utils::hex_to_bytes;
 use miden_protocol::account::AccountId;
 use serde::Deserialize;

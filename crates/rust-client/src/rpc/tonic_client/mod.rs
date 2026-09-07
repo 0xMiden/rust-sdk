@@ -10,21 +10,31 @@ use miden_protocol::vm::FutureMaybeSend;
 
 type RpcFuture<T> = Pin<Box<dyn FutureMaybeSend<T>>>;
 
-use miden_protocol::account::{AccountCode, AccountId};
+use miden_protocol::account::{
+    AccountCode,
+    AccountId,
+    AccountVaultPatch,
+    StorageMapPatchEntries,
+    StorageSlotName,
+};
 use miden_protocol::address::NetworkId;
 use miden_protocol::batch::{ProposedBatch, ProvenBatch};
 use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::block::{BlockHeader, BlockNumber, ProvenBlock};
+use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
+    PublicKey as ValidatorPublicKey,
+    Signature as ValidatorSignature,
+};
 use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::crypto::merkle::mmr::{Forest, MmrPath, MmrProof};
 use miden_protocol::note::{NoteId, NoteScript, NoteTag};
-use miden_protocol::transaction::{ProvenTransaction, TransactionInputs};
+use miden_protocol::transaction::ProvenTransaction;
 use miden_protocol::utils::serde::Deserializable;
 use miden_protocol::{EMPTY_WORD, Word};
 use miden_tx::utils::serde::Serializable;
 use miden_tx::utils::sync::RwLock;
 use tonic::Status;
-use tracing::info;
+use tracing::{info, warn};
 
 use super::domain::account::{
     AccountProof,
@@ -32,15 +42,21 @@ use super::domain::account::{
     GetAccountRequest,
     StorageMapFetch,
 };
-use super::domain::note::{FetchedNote, NoteSyncBlock};
+use super::domain::note::{FetchedNote, SyncNotesBlock};
 use super::domain::nullifier::NullifierUpdate;
+use super::encryption::{
+    AttestedTransactionEncryptionKey,
+    NextTransactionEncryptionKey,
+    SealedTransactionInputs,
+    ValidatorAttestation,
+};
 use super::generated::rpc::AccountRequest;
 use super::generated::rpc::account_request::AccountDetailRequest;
 use super::{Endpoint, NodeRpcClient, RpcEndpoint, RpcError, RpcStatusInfo};
-use crate::rpc::domain::account_vault::{AccountVaultInfo, AccountVaultUpdate};
+use crate::rpc::domain::account_vault::AccountVaultInfo;
 use crate::rpc::domain::limits::RpcLimits;
 use crate::rpc::domain::status::NetworkNoteStatusInfo;
-use crate::rpc::domain::storage_map::{StorageMapInfo, StorageMapUpdate};
+use crate::rpc::domain::storage_map::StorageMapInfo;
 use crate::rpc::domain::sync::{ChainMmrInfo, SyncTarget};
 use crate::rpc::domain::transaction::TransactionRecord;
 use crate::rpc::errors::node::parse_node_error;
@@ -281,9 +297,11 @@ impl GrpcClient {
     /// Executes an RPC call and automatically retries transient failures.
     ///
     /// The provided closure is invoked with a freshly connected [`ApiClient`] on each attempt.
-    /// Retries are delegated to [`retry::RetryState`], which currently handles gRPC
-    /// [`tonic::Code::ResourceExhausted`] and [`tonic::Code::Unavailable`] responses, including
-    /// honoring cooldown delays when the node provides them.
+    /// Retries are delegated to [`retry::RetryState`], which handles gRPC
+    /// [`tonic::Code::ResourceExhausted`] responses on any endpoint and
+    /// [`tonic::Code::Unavailable`] only where repeating the call is safe (see
+    /// [`RpcEndpoint::is_idempotent`]), including honoring cooldown delays when the node provides
+    /// them.
     ///
     /// Returns the first successful gRPC response. If the call keeps failing after retries are
     /// exhausted, or if the error is not retryable, this returns the corresponding [`RpcError`]
@@ -293,7 +311,8 @@ impl GrpcClient {
         endpoint: RpcEndpoint,
         mut call: impl FnMut(ApiClient) -> RpcFuture<Result<tonic::Response<T>, Status>>,
     ) -> Result<tonic::Response<T>, RpcError> {
-        let mut retry_state = retry::RetryState::new(self.max_retries, self.retry_interval_ms);
+        let mut retry_state =
+            retry::RetryState::new(endpoint, self.max_retries, self.retry_interval_ms);
 
         loop {
             let rpc_api = self.ensure_connected().await?;
@@ -360,14 +379,76 @@ impl NodeRpcClient for GrpcClient {
         Ok(())
     }
 
+    async fn get_transaction_encryption_key(
+        &self,
+    ) -> Result<AttestedTransactionEncryptionKey, RpcError> {
+        let api_response = self
+            .call_with_retry(RpcEndpoint::GetTransactionEncryptionKey, |mut rpc_api| {
+                Box::pin(async move { rpc_api.get_transaction_encryption_key(()).await })
+            })
+            .await?;
+        let response = api_response.into_inner();
+
+        // An undecodable attestation is skipped rather than failing the whole response, so that one
+        // junk entry served by the relaying operator cannot hide a valid attestation behind it.
+        // Verification requires one that both decodes and verifies, so dropping the rest is safe.
+        let attestations = response
+            .attestations
+            .into_iter()
+            .filter_map(|attestation| {
+                let decoded =
+                    ValidatorPublicKey::read_from_bytes(&attestation.validator_public_key)
+                        .ok()
+                        .zip(ValidatorSignature::read_from_bytes(&attestation.signature).ok())
+                        .map(|(validator_key, signature)| ValidatorAttestation {
+                            validator_key,
+                            signature,
+                        });
+                if decoded.is_none() {
+                    warn!(
+                        "skipping a transaction encryption key attestation that failed to decode"
+                    );
+                }
+                decoded
+            })
+            .collect::<Vec<_>>();
+
+        // A negative scheme is a malformed response, not a scheme this client happens to not
+        // support, so it is rejected here rather than aliased onto a valid identifier.
+        let wire_scheme = |scheme: i32| {
+            u32::try_from(scheme)
+                .map_err(|_| RpcError::InvalidResponse(format!("negative IES scheme '{scheme}'")))
+        };
+
+        let next_key = response
+            .next_key
+            .map(|next| {
+                Ok::<_, RpcError>(NextTransactionEncryptionKey {
+                    scheme: wire_scheme(next.scheme)?,
+                    key_id: next.key_id,
+                    public_key: next.public_key,
+                    rotation_block_num: next.rotation_block_num.into(),
+                })
+            })
+            .transpose()?;
+
+        Ok(AttestedTransactionEncryptionKey {
+            scheme: wire_scheme(response.scheme)?,
+            key_id: response.key_id,
+            public_key: response.public_key,
+            attestations,
+            next_key,
+        })
+    }
+
     async fn submit_proven_transaction(
         &self,
         proven_transaction: ProvenTransaction,
-        transaction_inputs: TransactionInputs,
+        sealed_transaction_inputs: SealedTransactionInputs,
     ) -> Result<BlockNumber, RpcError> {
         let request = proto::transaction::ProvenTransaction {
             transaction: proven_transaction.to_bytes(),
-            transaction_inputs: Some(transaction_inputs.to_bytes()),
+            sealed_transaction_inputs: Some(sealed_transaction_inputs.into()),
         };
 
         let api_response = self
@@ -384,12 +465,15 @@ impl NodeRpcClient for GrpcClient {
         &self,
         proven_batch: ProvenBatch,
         proposed_batch: ProposedBatch,
-        transaction_inputs: Vec<TransactionInputs>,
+        sealed_transaction_inputs: Vec<SealedTransactionInputs>,
     ) -> Result<BlockNumber, RpcError> {
         let request = proto::transaction::TransactionBatch {
             batch_proof: proven_batch.to_bytes(),
             proposed_batch: Some(proposed_batch.to_bytes()),
-            transaction_inputs: transaction_inputs.iter().map(Serializable::to_bytes).collect(),
+            sealed_transaction_inputs: sealed_transaction_inputs
+                .into_iter()
+                .map(Into::into)
+                .collect(),
         };
 
         let api_response = self
@@ -565,7 +649,7 @@ impl NodeRpcClient for GrpcClient {
             .ok_or(RpcError::ExpectedDataMissing("AccountWitness".to_string()))?
             .try_into()?;
 
-        let block_num: BlockNumber = response
+        let response_block_num: BlockNumber = response
             .block_num
             .ok_or(RpcError::ExpectedDataMissing("response block num".to_string()))?
             .block_num
@@ -586,11 +670,11 @@ impl NodeRpcClient for GrpcClient {
         let proof = AccountProof::new(account_witness, headers)
             .map_err(|err| RpcError::InvalidResponse(err.to_string()))?;
 
-        Ok((block_num, proof))
+        Ok((response_block_num, proof))
     }
 
     /// Sends one or more `SyncNoteRequest`s to the node and merges the responses into a list of
-    /// [`NoteSyncBlock`]s.
+    /// [`SyncNotesBlock`]s.
     ///
     /// Chunks `note_tags` by [`RpcLimits::note_tags_limit`] and paginates each chunk across the
     /// requested block range.
@@ -599,7 +683,7 @@ impl NodeRpcClient for GrpcClient {
         block_from: BlockNumber,
         block_to: BlockNumber,
         note_tags: &BTreeSet<NoteTag>,
-    ) -> Result<Vec<NoteSyncBlock>, RpcError> {
+    ) -> Result<Vec<SyncNotesBlock>, RpcError> {
         if note_tags.is_empty() {
             return Ok(Vec::new());
         }
@@ -609,7 +693,7 @@ impl NodeRpcClient for GrpcClient {
 
         // Merge blocks across tag-chunks: a single block can hold notes whose tags fall into
         // different chunks, so the same block can appear in multiple chunks' responses.
-        let mut merged_blocks: BTreeMap<BlockNumber, NoteSyncBlock> = BTreeMap::new();
+        let mut merged_blocks: BTreeMap<BlockNumber, SyncNotesBlock> = BTreeMap::new();
 
         for chunk in tags.chunks(limits.note_tags_limit as usize) {
             let proto_tags: Vec<u32> = chunk.iter().map(|&t| t.into()).collect();
@@ -639,7 +723,7 @@ impl NodeRpcClient for GrpcClient {
                 let page_block_to = BlockNumber::from(page.block_num);
 
                 for proto_block in response.blocks {
-                    let block: NoteSyncBlock = proto_block.try_into()?;
+                    let block: SyncNotesBlock = proto_block.try_into()?;
                     let bn = block.block_header.block_num();
                     if let Some(existing) = merged_blocks.get_mut(&bn) {
                         for (id, note) in block.notes {
@@ -755,13 +839,6 @@ impl NodeRpcClient for GrpcClient {
         };
         let note_script = NoteScript::try_from(script)?;
 
-        let fetched_root = note_script.root();
-        if Word::from(fetched_root) != root {
-            return Err(RpcError::InvalidResponse(format!(
-                "node returned note script with root {fetched_root} for requested root {root}",
-            )));
-        }
-
         Ok(Some(note_script))
     }
 
@@ -772,7 +849,7 @@ impl NodeRpcClient for GrpcClient {
         account_id: AccountId,
     ) -> Result<StorageMapInfo, RpcError> {
         let mut pagination = BlockPagination::new(block_from, block_to);
-        let mut updates = Vec::new();
+        let mut map_entries: BTreeMap<StorageSlotName, StorageMapPatchEntries> = BTreeMap::new();
 
         let (chain_tip, block_number) = loop {
             let request = proto::rpc::SyncAccountStorageMapsRequest {
@@ -788,20 +865,17 @@ impl NodeRpcClient for GrpcClient {
                     Box::pin(async move { rpc_api.sync_account_storage_maps(request).await })
                 })
                 .await?;
-            let response = response.into_inner();
-            let page = response
-                .pagination_info
-                .ok_or(RpcError::ExpectedDataMissing("pagination_info".to_owned()))?;
-            let page_block_num = BlockNumber::from(page.block_num);
-            let page_chain_tip = BlockNumber::from(page.chain_tip);
-            let batch = response
-                .updates
-                .into_iter()
-                .map(TryInto::try_into)
-                .collect::<Result<Vec<StorageMapUpdate>, _>>()?;
-            updates.extend(batch);
+            let page = StorageMapInfo::try_from(response.into_inner())?;
 
-            match pagination.advance(page_block_num, page_chain_tip)? {
+            for (slot_name, entries) in page.map_entries {
+                map_entries
+                    .entry(slot_name)
+                    .or_default()
+                    .as_map_mut()
+                    .extend(entries.into_map());
+            }
+
+            match pagination.advance(page.block_number, page.chain_tip)? {
                 PaginationResult::Continue => {},
                 PaginationResult::Done {
                     chain_tip: final_chain_tip,
@@ -810,7 +884,7 @@ impl NodeRpcClient for GrpcClient {
             }
         };
 
-        Ok(StorageMapInfo { chain_tip, block_number, updates })
+        Ok(StorageMapInfo { chain_tip, block_number, map_entries })
     }
 
     async fn sync_account_vault(
@@ -820,7 +894,7 @@ impl NodeRpcClient for GrpcClient {
         account_id: AccountId,
     ) -> Result<AccountVaultInfo, RpcError> {
         let mut pagination = BlockPagination::new(block_from, block_to);
-        let mut updates = Vec::new();
+        let mut vault_patch = AccountVaultPatch::default();
 
         let (chain_tip, block_number) = loop {
             let request = proto::rpc::SyncAccountVaultRequest {
@@ -836,20 +910,11 @@ impl NodeRpcClient for GrpcClient {
                     Box::pin(async move { rpc_api.sync_account_vault(request).await })
                 })
                 .await?;
-            let response = response.into_inner();
-            let page = response
-                .pagination_info
-                .ok_or(RpcError::ExpectedDataMissing("pagination_info".to_owned()))?;
-            let page_block_num = BlockNumber::from(page.block_num);
-            let page_chain_tip = BlockNumber::from(page.chain_tip);
-            let batch = response
-                .updates
-                .iter()
-                .map(|u| (*u).try_into())
-                .collect::<Result<Vec<AccountVaultUpdate>, _>>()?;
-            updates.extend(batch);
+            let page = AccountVaultInfo::try_from(response.into_inner())?;
 
-            match pagination.advance(page_block_num, page_chain_tip)? {
+            vault_patch.merge(page.vault_patch);
+
+            match pagination.advance(page.block_number, page.chain_tip)? {
                 PaginationResult::Continue => {},
                 PaginationResult::Done {
                     chain_tip: final_chain_tip,
@@ -858,7 +923,7 @@ impl NodeRpcClient for GrpcClient {
             }
         };
 
-        Ok(AccountVaultInfo { chain_tip, block_number, updates })
+        Ok(AccountVaultInfo { chain_tip, block_number, vault_patch })
     }
 
     /// Sends one or more `SyncTransactions` requests to the node and concatenates the responses

@@ -17,14 +17,16 @@ path = "src/bin/gen-genesis.rs"
 
 [dependencies]
 # Miden dependencies
-miden-agglayer  = { workspace = true }
+miden-agglayer  = { features = ["std", "testing"], workspace = true }
 miden-protocol  = { features = ["std", "testing"], workspace = true }
-miden-standards = { features = ["std"], workspace = true }
+miden-standards = { features = ["std", "testing"], workspace = true }
 
 # External dependencies
 anyhow      = { workspace = true }
 rand        = { workspace = true }
 rand_chacha = { workspace = true }
+serde       = { workspace = true }
+toml        = { workspace = true }
 
 [lints]
 workspace = true

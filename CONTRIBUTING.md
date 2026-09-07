@@ -4,10 +4,10 @@
 
 We want to make contributing to this project as easy and transparent as possible, whether it's:
 
-- Reporting a [bug](https://github.com/0xMiden/miden-client/issues/new)
-- Taking part in [discussions](https://github.com/0xMiden/miden-client/discussions)
-- Submitting a [fix](https://github.com/0xMiden/miden-client/pulls)
-- Proposing new [features](https://github.com/0xMiden/miden-client/issues/new)
+- Reporting a [bug](https://github.com/0xMiden/rust-sdk/issues/new)
+- Taking part in [discussions](https://github.com/0xMiden/rust-sdk/discussions)
+- Submitting a [fix](https://github.com/0xMiden/rust-sdk/pulls)
+- Proposing new [features](https://github.com/0xMiden/rust-sdk/issues/new)
 
 ## Flow
 We are using [Github Flow](https://docs.github.com/en/get-started/quickstart/github-flow), so all code changes happen through pull requests from a [forked repo](https://docs.github.com/en/get-started/quickstart/fork-a-repo).
@@ -64,7 +64,7 @@ For example, a new change to the `miden-node-store` crate might have the followi
 
 ### Code Style and Documentation
 - For documentation in the codebase, we follow the [rustdoc](https://doc.rust-lang.org/rust-by-example/meta/doc.html) convention with no more than 100 characters per line.
-- We also have technical and user documentation built with [mkdocs](https://github.com/mkdocs/mkdocs). You should update it whenever architectural changes or public interface (cli, client lib, etc.) changes are being made.
+- We also have technical and user documentation built with [Docusaurus](https://docusaurus.io/). You should update it whenever architectural changes or public interface (cli, client lib, etc.) changes are being made.
 - For code sections, we use code separators like the following to a width of 100 characters::
     ```
     // CODE SECTION HEADER
@@ -92,7 +92,7 @@ We use [semver](https://semver.org/) naming convention.
 - Repo forked and branch created from `next` according to the naming convention.
 - Commit messages and code style follow conventions.
 - Tests added for new functionality, with all previously existing tests passing.
-  - Read more on how to run integration tests [here](./tests/README.md).
+  - Read more on how to run integration tests [here](./bin/integration-tests/README.md).
 - Documentation/comments updated for all changes according to our documentation convention.
 - Lints: Rustfmt, Clippy, Rustdoc, Typos and TOML-formatting linting passing.
   - As mentioned above, `make lint` can be used for checking there.

@@ -9,15 +9,16 @@ use miden_protocol::note::{
     NoteAttachments,
     NoteDetails,
     NoteDetailsCommitment,
-    NoteFile,
     NoteId,
     NoteInclusionProof,
     NoteMetadata,
     NoteRecipient,
+    NoteScriptRoot,
     Nullifier,
     PartialNote,
 };
 use miden_protocol::transaction::RawOutputNote;
+use miden_standards::note::{NoteFile, NoteSyncHint};
 use miden_tx::utils::serde::{
     ByteReader,
     ByteWriter,
@@ -113,6 +114,12 @@ impl OutputNoteRecord {
 
     pub fn recipient(&self) -> Option<&NoteRecipient> {
         self.state.recipient()
+    }
+
+    /// Returns the root of the note's script, or `None` if the note's full details (and thus its
+    /// script) are not known.
+    pub fn script_root(&self) -> Option<NoteScriptRoot> {
+        self.recipient().map(|recipient| recipient.script().root())
     }
 
     pub fn nullifier(&self) -> Option<Nullifier> {
@@ -288,12 +295,11 @@ impl OutputNoteRecord {
             NoteExportType::NoteId => Ok(NoteFile::NoteId(self.id())),
             NoteExportType::NoteDetails => {
                 let after_block_num = self.expected_height();
-                let tag = Some(self.metadata().tag());
+                let tag = self.metadata().tag();
 
-                Ok(NoteFile::NoteDetails {
+                Ok(NoteFile::ExpectedNote {
                     details: self.try_into()?,
-                    after_block_num,
-                    tag,
+                    sync_hint: NoteSyncHint::new(after_block_num, tag),
                 })
             },
             NoteExportType::NoteWithProof => {
@@ -304,7 +310,7 @@ impl OutputNoteRecord {
                     ))?
                     .clone();
 
-                Ok(NoteFile::NoteWithProof(self.try_into()?, proof))
+                Ok(NoteFile::Committed { note: self.try_into()?, proof })
             },
         }
     }

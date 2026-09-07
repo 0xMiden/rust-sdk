@@ -26,7 +26,7 @@ Check the [Miden client documentation](https://docs.miden.xyz/builder/tools/clie
    cargo install miden-client-cli --locked
    ```
 
-   You can now use the `miden-client --version` command, and you should see `Miden 0.10.0`.
+   You can now use the `miden-client --version` command to verify the installed version.
 
 ## Create a new Miden account
 
@@ -52,7 +52,7 @@ Save the account ID for a future step.
 
 1. To request funds from the faucet navigate to the following website: [Miden faucet website](https://faucet.testnet.miden.io/).
 
-2. Copy the **Account ID** printed by the `miden account -l` command in the previous step. Feel free to change the amount of tokens to issue.
+2. Copy the **Account ID** printed by the `miden-client account -l` command in the previous step. Feel free to change the amount of tokens to issue.
 
 3. Paste this ID into the **Request test tokens** input field on the faucet website and click **Send Private Note**.
 
@@ -199,4 +199,4 @@ For more information on the Miden client, refer to the [Miden client documentati
 
 - Need a fresh start? All state is maintained in `store.sqlite3`, located in the directory defined in the `miden-client.toml` file. If you want to clear all state, delete this file. It recreates on any command execution.
 
-- Getting an error? Only execute the `miden-client` command in the folder where your `miden-client.toml` is located.
+- Getting an error? If you initialized the client with `--local`, run `miden-client` from the directory containing `.miden`.

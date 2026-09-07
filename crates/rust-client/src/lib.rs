@@ -58,10 +58,9 @@
 //! ```rust,ignore
 //! use std::sync::Arc;
 //!
-//! use miden_client::DebugMode;
 //! use miden_client::builder::ClientBuilder;
 //! use miden_client::keystore::FilesystemKeyStore;
-//! use miden_client::rpc::{Endpoint, GrpcClient};
+//! use miden_client::rpc::{Endpoint, GrpcClient, VerifyingRpcClient};
 //! use miden_client_sqlite_store::SqliteStore;
 //!
 //! # pub async fn create_test_client() -> Result<(), Box<dyn std::error::Error>> {
@@ -77,10 +76,9 @@
 //!
 //! // Instantiate the client using the builder.
 //! let client = ClientBuilder::new()
-//!     .rpc(Arc::new(GrpcClient::new(&endpoint, 10_000)))
+//!     .rpc(Arc::new(VerifyingRpcClient::new(GrpcClient::new(&endpoint, 10_000))))
 //!     .store(store)
 //!     .authenticator(Arc::new(keystore))
-//!     .in_debug_mode(DebugMode::Disabled)
 //!     .build()
 //!     .await?;
 //!
@@ -124,6 +122,8 @@ pub mod keystore;
 pub mod note;
 pub mod note_transport;
 pub mod pswap;
+#[cfg(feature = "tonic")]
+pub mod remote_prover;
 pub mod rpc;
 pub mod settings;
 pub mod store;
@@ -144,12 +144,19 @@ pub use miden_protocol::utils::serde::{Deserializable, Serializable, SliceReader
 // ================================================================================================
 
 pub mod notes {
-    pub use miden_protocol::note::NoteFile;
+    pub use miden_standards::note::NoteFile;
 }
 
 /// Provides `AggLayer` bridge components, note constructors, and helper types.
 pub mod agglayer {
     pub use miden_agglayer::*;
+    pub use miden_standards::interop::eth::{
+        AddressConversionError,
+        EthAddress,
+        EthAmount,
+        EthAmountError,
+        EthEmbeddedAccountId,
+    };
 }
 
 /// Provides types and utilities for working with Miden Assembly.
@@ -161,30 +168,21 @@ pub mod assembly {
     pub use miden_protocol::assembly::diagnostics::Report;
     pub use miden_protocol::assembly::diagnostics::reporting::PrintDiagnostic;
     pub use miden_protocol::assembly::mast::MastNodeExt;
-    pub use miden_protocol::assembly::{
-        Assembler,
-        DefaultSourceManager,
-        Library,
-        Module,
-        ModuleKind,
-        Path,
-    };
+    pub use miden_protocol::assembly::{Assembler, DefaultSourceManager, Module, ModuleKind, Path};
     pub use miden_standards::code_builder::CodeBuilder;
 }
 
 /// Provides types and utilities for working with assets within the Miden network.
 pub mod asset {
     pub use miden_protocol::account::delta::{
-        AccountStorageDelta,
         AccountVaultDelta,
         FungibleAssetDelta,
         NonFungibleAssetDelta,
         NonFungibleDeltaAction,
-        StorageMapDelta,
-        StorageSlotDelta,
     };
     pub use miden_protocol::account::{
         AccountStorageHeader,
+        AssetCallbackFlag,
         StorageMapWitness,
         StorageSlotContent,
         StorageSlotHeader,
@@ -192,12 +190,10 @@ pub mod asset {
     pub use miden_protocol::asset::{
         Asset,
         AssetAmount,
-        AssetCallbackFlag,
         AssetCallbacks,
         AssetComposition,
         AssetId,
         AssetVault,
-        AssetVaultKey,
         AssetWitness,
         FungibleAsset,
         NonFungibleAsset,
@@ -217,13 +213,17 @@ pub mod auth {
         PublicKeyCommitment,
         Signature,
     };
-    pub use miden_standards::AuthMethod;
     pub use miden_standards::account::auth::{
+        Approver,
+        ApproverSet,
+        AuthGuardedMultisig,
+        AuthGuardedMultisigConfig,
         AuthMultisig,
         AuthMultisigConfig,
+        AuthMultisigSmart,
+        AuthMultisigSmartConfig,
         AuthSingleSig,
-        AuthSingleSigAcl,
-        AuthSingleSigAclConfig,
+        GuardianConfig,
         NoAuth,
     };
     pub use miden_tx::auth::{BasicAuthenticator, SigningInputs, TransactionAuthenticator};
@@ -236,13 +236,23 @@ pub mod auth {
 
 /// Provides types for working with blocks within the Miden network.
 pub mod block {
-    pub use miden_protocol::block::{BlockHeader, BlockNumber};
+    pub use miden_protocol::block::{BlockHeader, BlockNumber, FeeParameters, ValidatorKeys};
 }
 
 /// Provides cryptographic types and utilities used within the Miden rollup
 /// network. It re-exports commonly used types and random number generators like `FeltRng` from
 /// the `miden_standards` crate.
 pub mod crypto {
+    pub mod ecdsa_k256_keccak {
+        pub use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
+            PublicKey,
+            Signature,
+            SigningKey,
+        };
+    }
+    pub mod eddsa_25519_sha512 {
+        pub use miden_protocol::crypto::dsa::eddsa_25519_sha512::{KeyExchangeKey, PublicKey};
+    }
     pub mod rpo_falcon512 {
         pub use miden_protocol::crypto::dsa::falcon512_poseidon2::{
             PublicKey,
@@ -261,13 +271,18 @@ pub mod crypto {
         MmrProof,
         PartialMmr,
     };
+    // Forest backend types are re-exported for downstream stores.
     pub use miden_protocol::crypto::merkle::smt::{
+        Backend,
+        BackendReader,
+        ForestInMemoryBackend,
         LeafIndex,
         SMT_DEPTH,
         Smt,
         SmtForest,
         SmtLeaf,
         SmtProof,
+        VersionId,
     };
     pub use miden_protocol::crypto::merkle::store::MerkleStore;
     pub use miden_protocol::crypto::merkle::{
@@ -295,6 +310,10 @@ pub mod address {
 
 /// Provides types for working with the virtual machine within the Miden network.
 pub mod vm {
+    pub use miden_assembly_syntax::ast::types::signatures as typed;
+    pub use miden_processor::ExecutionError;
+    pub use miden_processor::mast::error_code_from_msg;
+    pub use miden_processor::operation::OperationError;
     pub use miden_protocol::vm::{
         AdviceInputs,
         AdviceMap,
@@ -326,8 +345,9 @@ pub use miden_protocol::{
     Word,
     ZERO,
 };
-pub use miden_remote_prover_client::RemoteTransactionProver;
 pub use miden_tx::ExecutionOptions;
+#[cfg(feature = "tonic")]
+pub use remote_prover::RemoteTransactionProver;
 
 /// Provides test utilities for working with accounts and account IDs
 /// within the Miden network. This module is only available when the `testing` feature is
@@ -340,18 +360,24 @@ pub mod testing {
     pub use miden_standards::testing as standards;
     pub use miden_standards::testing::note::NoteBuilder;
     pub use miden_testing::*;
+    /// The data store the executor reads from, along with the trait whose methods it serves.
+    /// Exposed here so that tests can exercise it on its own, without going through a
+    /// transaction or a note screening pass.
+    pub use miden_tx::DataStore;
 
+    pub use crate::store::data_store::ClientDataStore;
     pub use crate::test_utils::*;
 }
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::convert::Infallible;
 
 use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::merkle::mmr::PartialMmr;
 use miden_protocol::crypto::rand::FeltRng;
 use miden_tx::auth::TransactionAuthenticator;
-use rand::RngCore;
+use rand::{TryCryptoRng, TryRng};
 use rpc::NodeRpcClient;
 use store::Store;
 
@@ -385,7 +411,7 @@ pub struct Client<AUTH> {
     authenticator: Option<Arc<AUTH>>,
     /// Shared source manager used to retain MASM source information for assembled programs.
     source_manager: Arc<dyn SourceManagerSync>,
-    /// Options that control the transaction executor's runtime behaviour (e.g. debug mode).
+    /// Options that control the transaction executor's runtime behaviour (e.g. cycle limits).
     exec_options: ExecutionOptions,
     /// Number of blocks after which pending transactions are considered stale and discarded.
     tx_discard_delta: Option<u32>,
@@ -455,11 +481,6 @@ impl<AUTH> Client<AUTH>
 where
     AUTH: TransactionAuthenticator,
 {
-    /// Returns true if the client is in debug mode.
-    pub fn in_debug_mode(&self) -> bool {
-        self.exec_options.enable_debugging()
-    }
-
     /// Returns an instance of the `CodeBuilder`
     pub fn code_builder(&self) -> assembly::CodeBuilder {
         assembly::CodeBuilder::with_source_manager(self.source_manager.clone())
@@ -548,7 +569,7 @@ impl<T> ClientFeltRng for T where T: FeltRng + Send + Sync {}
 /// Boxed RNG trait object used by the client.
 pub type ClientRngBox = Box<dyn ClientFeltRng>;
 
-/// A wrapper around a [`FeltRng`] that implements the [`RngCore`] trait.
+/// A wrapper around a [`FeltRng`] that implements the [`TryRng`] trait.
 /// This allows the user to pass their own generic RNG so that it's used by the client.
 pub struct ClientRng(ClientRngBox);
 
@@ -562,19 +583,27 @@ impl ClientRng {
     }
 }
 
-impl RngCore for ClientRng {
-    fn next_u32(&mut self) -> u32 {
-        self.0.next_u32()
+impl TryRng for ClientRng {
+    type Error = Infallible;
+
+    fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+        Ok(self.0.next_u32())
     }
 
-    fn next_u64(&mut self) -> u64 {
-        self.0.next_u64()
+    fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+        Ok(self.0.next_u64())
     }
 
-    fn fill_bytes(&mut self, dest: &mut [u8]) {
+    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), Self::Error> {
         self.0.fill_bytes(dest);
+        Ok(())
     }
 }
+
+// The client's RNG already backs key and serial-number generation, so callers are required to
+// supply cryptographically secure randomness. Asserting it here lets the RNG drive primitives that
+// demand a `CryptoRng`, such as sealing transaction inputs.
+impl TryCryptoRng for ClientRng {}
 
 impl FeltRng for ClientRng {
     fn draw_element(&mut self) -> Felt {
@@ -583,32 +612,6 @@ impl FeltRng for ClientRng {
 
     fn draw_word(&mut self) -> Word {
         self.0.draw_word()
-    }
-}
-
-/// Indicates whether the client is operating in debug mode.
-#[derive(Debug, Clone, Copy)]
-pub enum DebugMode {
-    Enabled,
-    Disabled,
-}
-
-impl From<DebugMode> for bool {
-    fn from(debug_mode: DebugMode) -> Self {
-        match debug_mode {
-            DebugMode::Enabled => true,
-            DebugMode::Disabled => false,
-        }
-    }
-}
-
-impl From<bool> for DebugMode {
-    fn from(debug_mode: bool) -> DebugMode {
-        if debug_mode {
-            DebugMode::Enabled
-        } else {
-            DebugMode::Disabled
-        }
     }
 }
 

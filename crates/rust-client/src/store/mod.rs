@@ -39,16 +39,25 @@ use miden_protocol::account::{
     StorageSlotName,
 };
 use miden_protocol::address::Address;
-use miden_protocol::asset::{Asset, AssetVault, AssetVaultKey, AssetWitness};
+use miden_protocol::asset::{Asset, AssetId, AssetVault, AssetWitness};
 use miden_protocol::block::{BlockHeader, BlockNumber};
+use miden_protocol::crypto::merkle::MerkleError;
 use miden_protocol::crypto::merkle::mmr::{Forest, InOrderIndex, MmrPeaks, PartialMmr};
 use miden_protocol::errors::AccountError;
-use miden_protocol::note::{NoteDetailsCommitment, NoteId, NoteScript, NoteTag, Nullifier};
+use miden_protocol::note::{
+    NoteDetailsCommitment,
+    NoteId,
+    NoteScript,
+    NoteScriptRoot,
+    NoteTag,
+    Nullifier,
+};
 use miden_protocol::transaction::TransactionId;
 use miden_protocol::{Felt, Word};
 use miden_tx::utils::serde::{Deserializable, Serializable};
 
 use crate::note_transport::{NOTE_TRANSPORT_CURSOR_STORE_SETTING, NoteTransportCursor};
+use crate::rpc::encryption::{TRANSACTION_ENCRYPTION_KEY_STORE_SETTING, TransactionEncryptionKey};
 use crate::rpc::{RPC_LIMITS_STORE_SETTING, RpcLimits};
 use crate::sync::{NoteTagRecord, StateSyncUpdate};
 use crate::transaction::{TransactionRecord, TransactionStatusVariant, TransactionStoreUpdate};
@@ -65,7 +74,7 @@ mod errors;
 pub use errors::*;
 
 mod smt_forest;
-pub use smt_forest::AccountSmtForest;
+pub use smt_forest::{AccountSmtForest, AccountUpdate};
 
 mod account;
 pub use account::{
@@ -88,6 +97,29 @@ pub use note_record::{
     input_note_states,
 };
 
+// SETTING SCOPE
+// ================================================================================================
+
+/// Which side of the client/user boundary a `settings` row belongs to.
+///
+/// The discriminants are what a store persists, so they are part of its schema.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum SettingScope {
+    /// Owned by the client itself. A store persists these rows but the public settings API on
+    /// [`Client`](crate::Client) never reaches them.
+    Client = 0,
+    /// Owned by the user of the client.
+    User = 1,
+}
+
+impl SettingScope {
+    /// Returns the value this scope is stored as.
+    pub fn as_u8(self) -> u8 {
+        self as u8
+    }
+}
+
 // SETTING MUTATION
 // ================================================================================================
 
@@ -99,6 +131,46 @@ pub enum SettingMutation {
     Set { key: String, value: Vec<u8> },
     /// Delete `key`.
     Remove { key: String },
+}
+
+// INPUT NOTE CURSOR
+// ================================================================================================
+
+/// Identifies a position in the per-account consumption order of input notes.
+///
+/// Obtained from a record returned by [`Store::get_input_note_after`] and passed back to fetch
+/// the note that follows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct InputNoteCursor {
+    consumed_block_height: BlockNumber,
+    consumed_tx_order: u32,
+    details_commitment: NoteDetailsCommitment,
+}
+
+impl InputNoteCursor {
+    /// Returns the cursor pointing at `record`, or `None` if the note is not consumed.
+    pub fn from_record(record: &InputNoteRecord) -> Option<Self> {
+        Some(Self {
+            consumed_block_height: record.state().consumed_block_height()?,
+            consumed_tx_order: record.state().consumed_tx_order()?,
+            details_commitment: record.details_commitment(),
+        })
+    }
+
+    /// Returns the block height at which the note was consumed.
+    pub fn consumed_block_height(&self) -> BlockNumber {
+        self.consumed_block_height
+    }
+
+    /// Returns the per-account position of the consuming transaction within the block.
+    pub fn consumed_tx_order(&self) -> u32 {
+        self.consumed_tx_order
+    }
+
+    /// Returns the commitment to the note's details.
+    pub fn details_commitment(&self) -> NoteDetailsCommitment {
+        self.details_commitment
+    }
 }
 
 // STORE TRAIT
@@ -182,20 +254,26 @@ pub trait Store: Send + Sync {
         filter: NoteFilter,
     ) -> Result<Vec<OutputNoteRecord>, StoreError>;
 
-    /// Retrieves a single input note at the given offset from the filtered set for the given
-    /// consumer account. Optionally restricts to a block range via `block_start` and
-    /// `block_end`. Returns `None` when the offset is past the end of the matching notes.
+    /// Retrieves the input note following `cursor` in the filtered set for the given consumer
+    /// account, or the first matching note when `cursor` is `None`. Optionally restricts to a
+    /// block range via `block_start` and `block_end`. Returns `None` when no matching note
+    /// follows the cursor.
+    ///
+    /// Build the cursor for the next call from the returned record with
+    /// [`InputNoteCursor::from_record`].
     ///
     /// # Ordering
     ///
-    /// Notes are sorted by their per-account on-chain execution order.
-    async fn get_input_note_by_offset(
+    /// Notes are sorted by their per-account on-chain execution order: block number, then
+    /// per-account transaction order within the block. Notes consumed by the same transaction
+    /// are ordered deterministically and consistently across calls.
+    async fn get_input_note_after(
         &self,
         filter: NoteFilter,
         consumer: AccountId,
         block_start: Option<BlockNumber>,
         block_end: Option<BlockNumber>,
-        offset: u32,
+        cursor: Option<InputNoteCursor>,
     ) -> Result<Option<InputNoteRecord>, StoreError>;
 
     /// Returns the nullifiers of all unspent input notes.
@@ -265,15 +343,6 @@ pub trait Store: Send + Sync {
         filter: PartialBlockchainFilter,
     ) -> Result<BTreeMap<InOrderIndex, Word>, StoreError>;
 
-    /// Inserts blockchain MMR authentication nodes.
-    ///
-    /// In the case where the [`InOrderIndex`] already exists on the table, the insertion is
-    /// ignored.
-    async fn insert_partial_blockchain_nodes(
-        &self,
-        nodes: &[(InOrderIndex, Word)],
-    ) -> Result<(), StoreError>;
-
     /// Returns the chain MMR peaks at the current sync height (peaks at `forest = block_num`,
     /// i.e. excluding `block_num` itself as a leaf).
     ///
@@ -284,16 +353,19 @@ pub trait Store: Send + Sync {
     /// Before the first sync, returns an empty [`MmrPeaks`].
     async fn get_current_blockchain_peaks(&self) -> Result<MmrPeaks, StoreError>;
 
-    /// Inserts a block header into the store.
+    /// Inserts a block header together with its MMR authentication nodes in a single
+    /// transaction, so the header and the nodes that rebuild its `PartialMmr` are committed
+    /// together.
     ///
-    /// Insert-if-not-exists with a one-way flag upgrade: on conflict with an existing row,
-    /// `header` is preserved and `has_client_notes` is only upgraded from `false` to `true`;
-    /// never downgraded.
-    // TODO: this method's name only tells half the story. The insert is conditional and
-    // the flag has its own upgrade rule. Revisit the name in a follow-up.
+    /// The header is inserted-if-not-exists with a one-way `has_client_notes` upgrade: on
+    /// conflict the stored `header` is preserved and the flag only moves from `false` to
+    /// `true`, never back. The MMR nodes are likewise inserted-if-not-exists: an
+    /// `InOrderIndex` already present is left untouched (auth paths of tracked blocks share
+    /// internal nodes, so re-inserting an existing index must be a no-op, not an error).
     async fn insert_block_header(
         &self,
         block_header: &BlockHeader,
+        nodes: &[(InOrderIndex, Word)],
         has_client_notes: bool,
     ) -> Result<(), StoreError>;
 
@@ -417,30 +489,40 @@ pub trait Store: Send + Sync {
         account_id: AccountId,
     ) -> Result<(), StoreError>;
 
-    /// Removes an [`Address`].
+    /// Removes an [`Address`]. Returns `true` if the address was tracked.
     ///
     /// Tag removal is the caller's responsibility — see [`Self::remove_note_tag`].
-    async fn remove_address(&self, address: Address) -> Result<(), StoreError>;
+    async fn remove_address(&self, address: Address) -> Result<bool, StoreError>;
 
     // SETTINGS
     // --------------------------------------------------------------------------------------------
 
-    /// Adds a value to the `settings` table.
-    async fn set_setting(&self, key: String, value: Vec<u8>) -> Result<(), StoreError>;
+    /// Adds a value to `scope` in the `settings` table.
+    async fn set_setting(
+        &self,
+        scope: SettingScope,
+        key: String,
+        value: Vec<u8>,
+    ) -> Result<(), StoreError>;
 
-    /// Retrieves a value from the `settings` table.
-    async fn get_setting(&self, key: String) -> Result<Option<Vec<u8>>, StoreError>;
+    /// Retrieves a value from `scope` in the `settings` table.
+    async fn get_setting(
+        &self,
+        scope: SettingScope,
+        key: String,
+    ) -> Result<Option<Vec<u8>>, StoreError>;
 
-    /// Deletes a value from the `settings` table.
-    async fn remove_setting(&self, key: String) -> Result<(), StoreError>;
+    /// Deletes a value from `scope` in the `settings` table. Returns `true` if the key was present.
+    async fn remove_setting(&self, scope: SettingScope, key: String) -> Result<bool, StoreError>;
 
-    /// Returns all the keys from the `settings` table.
-    async fn list_setting_keys(&self) -> Result<Vec<String>, StoreError>;
+    /// Returns the keys held by `scope` in the `settings` table.
+    async fn list_setting_keys(&self, scope: SettingScope) -> Result<Vec<String>, StoreError>;
 
-    /// Applies a batch of [`SettingMutation`]s. Use this when several `settings` entries must stay
-    /// mutually consistent (e.g. a record and its secondary index).
+    /// Applies a batch of [`SettingMutation`]s against `scope`. Use this when several `settings`
+    /// entries must stay mutually consistent (e.g. a record and its secondary index).
     async fn apply_settings_mutations(
         &self,
+        scope: SettingScope,
         mutations: Vec<SettingMutation>,
     ) -> Result<(), StoreError>;
 
@@ -463,8 +545,7 @@ pub trait Store: Send + Sync {
 
     /// Removes a note tag from the list of tags that the client is interested in.
     ///
-    /// If the tag wasn't present in the store returns false since no tag was actually removed.
-    /// Otherwise returns true.
+    /// Returns the number of tags that were removed.
     async fn remove_note_tag(&self, tag: NoteTagRecord) -> Result<usize, StoreError>;
 
     /// Returns the block number of the last state sync block.
@@ -476,7 +557,7 @@ pub trait Store: Send + Sync {
     /// - Updating the corresponding tracked input/output notes. Consumed notes carry consumption
     ///   metadata — `consumed_block_height`, `consumed_tx_order`, and `consumer_account_id` — in
     ///   their note state. Implementations must persist these fields so that ordered queries (see
-    ///   [`Store::get_input_note_by_offset`]) work correctly.
+    ///   [`Store::get_input_note_after`]) work correctly.
     /// - Removing note tags that are no longer relevant.
     /// - Updating transactions in the store, marking as `committed` or `discarded`.
     ///   - In turn, validating private account's state transitions. If a private account's
@@ -494,15 +575,20 @@ pub trait Store: Send + Sync {
     /// This is used to reduce the number of fetched notes from the note transport network.
     /// If no cursor exists, initializes it to 0.
     async fn get_note_transport_cursor(&self) -> Result<NoteTransportCursor, StoreError> {
-        let cursor_bytes = if let Some(bytes) =
-            self.get_setting(NOTE_TRANSPORT_CURSOR_STORE_SETTING.into()).await?
+        let cursor_bytes = if let Some(bytes) = self
+            .get_setting(SettingScope::Client, NOTE_TRANSPORT_CURSOR_STORE_SETTING.into())
+            .await?
         {
             bytes
         } else {
             // Lazy initialization: create cursor if not present
             let initial = 0u64.to_be_bytes().to_vec();
-            self.set_setting(NOTE_TRANSPORT_CURSOR_STORE_SETTING.into(), initial.clone())
-                .await?;
+            self.set_setting(
+                SettingScope::Client,
+                NOTE_TRANSPORT_CURSOR_STORE_SETTING.into(),
+                initial.clone(),
+            )
+            .await?;
             initial
         };
         let array: [u8; 8] = cursor_bytes
@@ -522,8 +608,12 @@ pub trait Store: Send + Sync {
         cursor: NoteTransportCursor,
     ) -> Result<(), StoreError> {
         let cursor_bytes = cursor.value().to_be_bytes().to_vec();
-        self.set_setting(NOTE_TRANSPORT_CURSOR_STORE_SETTING.into(), cursor_bytes)
-            .await?;
+        self.set_setting(
+            SettingScope::Client,
+            NOTE_TRANSPORT_CURSOR_STORE_SETTING.into(),
+            cursor_bytes,
+        )
+        .await?;
         Ok(())
     }
 
@@ -532,7 +622,9 @@ pub trait Store: Send + Sync {
 
     /// Gets persisted RPC limits. Returns `None` if not stored.
     async fn get_rpc_limits(&self) -> Result<Option<RpcLimits>, StoreError> {
-        let Some(bytes) = self.get_setting(RPC_LIMITS_STORE_SETTING.into()).await? else {
+        let Some(bytes) =
+            self.get_setting(SettingScope::Client, RPC_LIMITS_STORE_SETTING.into()).await?
+        else {
             return Ok(None);
         };
         let limits = RpcLimits::read_from_bytes(&bytes)?;
@@ -541,7 +633,49 @@ pub trait Store: Send + Sync {
 
     /// Persists RPC limits to the store.
     async fn set_rpc_limits(&self, limits: RpcLimits) -> Result<(), StoreError> {
-        self.set_setting(RPC_LIMITS_STORE_SETTING.into(), limits.to_bytes()).await
+        self.set_setting(SettingScope::Client, RPC_LIMITS_STORE_SETTING.into(), limits.to_bytes())
+            .await
+    }
+
+    // TRANSACTION ENCRYPTION KEY
+    // --------------------------------------------------------------------------------------------
+
+    /// Gets the cached transaction encryption key. Returns `None` if not stored.
+    ///
+    /// The key is public data shared by the whole validator set, so it is cached rather than
+    /// treated as a secret.
+    async fn get_transaction_encryption_key(
+        &self,
+    ) -> Result<Option<TransactionEncryptionKey>, StoreError> {
+        let Some(bytes) = self
+            .get_setting(SettingScope::Client, TRANSACTION_ENCRYPTION_KEY_STORE_SETTING.into())
+            .await?
+        else {
+            return Ok(None);
+        };
+        let key = TransactionEncryptionKey::read_from_bytes(&bytes)?;
+        Ok(Some(key))
+    }
+
+    /// Caches the transaction encryption key, replacing any previously cached key.
+    async fn set_transaction_encryption_key(
+        &self,
+        key: &TransactionEncryptionKey,
+    ) -> Result<(), StoreError> {
+        self.set_setting(
+            SettingScope::Client,
+            TRANSACTION_ENCRYPTION_KEY_STORE_SETTING.into(),
+            key.to_bytes(),
+        )
+        .await
+    }
+
+    /// Removes the cached transaction encryption key, so the next submission fetches and verifies
+    /// a fresh one. Used when the node rejects a submission sealed against a retired key.
+    async fn remove_transaction_encryption_key(&self) -> Result<(), StoreError> {
+        self.remove_setting(SettingScope::Client, TRANSACTION_ENCRYPTION_KEY_STORE_SETTING.into())
+            .await?;
+        Ok(())
     }
 
     // PARTIAL MMR
@@ -598,21 +732,56 @@ pub trait Store: Send + Sync {
     /// Retrieves the asset vault for a specific account.
     async fn get_account_vault(&self, account_id: AccountId) -> Result<AssetVault, StoreError>;
 
-    /// Retrieves a specific asset (by vault key) from the account's vault along with its Merkle
+    /// Retrieves all assets in the account's vault as a plain list, without building the vault's
+    /// Merkle tree.
+    ///
+    /// Prefer this over [`Store::get_account_vault`] when only asset values are needed (e.g.
+    /// balance checks): it avoids hashing every asset into an SMT.
+    ///
+    /// The default implementation of this method uses [`Store::get_account_vault`].
+    async fn get_account_assets(&self, account_id: AccountId) -> Result<Vec<Asset>, StoreError> {
+        Ok(self.get_account_vault(account_id).await?.assets().collect())
+    }
+
+    /// Returns vault asset witnesses for `asset_ids` against the account's vault with root
+    /// `vault_root`. An asset absent from the vault yields an emptiness proof rather than an
+    /// error, which the executor needs when an asset is being added to the vault.
+    ///
+    /// The default implementation reconstructs the vault via [`Store::get_account_vault`] and
+    /// opens each witness from it; backends that keep an in-memory Merkle forest (e.g.
+    /// `SqliteStore`) override it to open the witnesses directly, without materializing the
+    /// vault.
+    async fn get_vault_asset_witnesses(
+        &self,
+        account_id: AccountId,
+        vault_root: Word,
+        asset_ids: BTreeSet<AssetId>,
+    ) -> Result<Vec<AssetWitness>, StoreError> {
+        let vault = self.get_account_vault(account_id).await?;
+        if vault.root() != vault_root {
+            return Err(StoreError::MerkleStoreError(MerkleError::ConflictingRoots {
+                expected_root: vault_root,
+                actual_root: vault.root(),
+            }));
+        }
+        Ok(asset_ids.into_iter().map(|asset_id| vault.open(asset_id)).collect())
+    }
+
+    /// Retrieves a specific asset (by vault id) from the account's vault along with its Merkle
     /// witness.
     ///
     /// The default implementation of this method uses [`Store::get_account_vault`].
     async fn get_account_asset(
         &self,
         account_id: AccountId,
-        vault_key: AssetVaultKey,
+        asset_id: AssetId,
     ) -> Result<Option<(Asset, AssetWitness)>, StoreError> {
         let vault = self.get_account_vault(account_id).await?;
-        let Some(asset) = vault.assets().find(|a| a.vault_key() == vault_key) else {
+        let Some(asset) = vault.assets().find(|a| a.id() == asset_id) else {
             return Ok(None);
         };
 
-        let witness = AssetWitness::new(vault.open(vault_key).into())?;
+        let witness = vault.open(asset_id);
 
         Ok(Some((asset, witness)))
     }
@@ -674,6 +843,9 @@ pub trait Store: Send + Sync {
         }
     }
 
+    // IN-BATCH (STAGED) WITNESSES
+    // --------------------------------------------------------------------------------------------
+
     // PARTIAL ACCOUNTS
     // --------------------------------------------------------------------------------------------
 
@@ -712,13 +884,6 @@ pub enum TransactionFilter {
     Uncommitted,
     /// Return a list of the transaction that matches the provided [`TransactionId`]s.
     Ids(Vec<TransactionId>),
-    /// Return a list of the expired transactions that were executed before the provided
-    /// [`BlockNumber`]. Transactions created after the provided block number are not
-    /// considered.
-    ///
-    /// A transaction is considered expired if is uncommitted and the transaction's block number
-    /// is less than the provided block number.
-    ExpiredBefore(BlockNumber),
 }
 
 // TRANSACTIONS FILTER HELPERS
@@ -738,14 +903,6 @@ impl TransactionFilter {
             TransactionFilter::Ids(_) => {
                 // Use SQLite's array parameter binding
                 format!("{QUERY} WHERE tx.id IN rarray(?)")
-            },
-            TransactionFilter::ExpiredBefore(block_num) => {
-                format!(
-                    "{QUERY} WHERE tx.block_num < {} AND tx.status_variant != {} AND tx.status_variant != {}",
-                    block_num.as_u32(),
-                    TransactionStatusVariant::Discarded as u8,
-                    TransactionStatusVariant::Committed as u8
-                )
             },
         }
     }
@@ -780,6 +937,10 @@ pub enum NoteFilter {
     /// Return a list of notes that are currently being processed. This filter doesn't apply to
     /// output notes.
     Processing,
+    /// Return a list containing any notes whose script root matches one of the provided
+    /// [`NoteScriptRoot`]s. Notes whose script isn't known (e.g. partial output notes) never
+    /// match.
+    ScriptRoots(Vec<NoteScriptRoot>),
     /// Return a list containing the note that matches with the provided [`NoteId`]. The query will
     /// return an error if the note isn't found.
     Unique(NoteId),

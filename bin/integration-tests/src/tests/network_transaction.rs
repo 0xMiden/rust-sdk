@@ -8,11 +8,15 @@ use miden_client::account::component::{
     AccountComponent,
     AccountComponentMetadata,
     AuthNetworkAccount,
-    BurnPolicyConfig,
+    BasicConstantFeePolicy,
+    BasicWallet,
+    BurnPolicy,
+    FeePolicy,
+    FeePolicyManager,
     FungibleFaucet,
-    MintPolicyConfig,
+    MintPolicy,
+    NetworkAccount,
     PausableManager,
-    PolicyRegistration,
     TokenName,
     TokenPolicyManager,
 };
@@ -25,13 +29,16 @@ use miden_client::account::{
     StorageSlot,
     StorageSlotName,
 };
-use miden_client::assembly::{CodeBuilder, Library, Module, ModuleKind, Path, SourceManagerSync};
+use miden_client::assembly::{CodeBuilder, SourceManagerSync};
 use miden_client::asset::{AssetAmount, FungibleAsset, TokenSymbol};
 use miden_client::auth::RPO_FALCON_SCHEME_ID;
+use miden_client::block::BlockNumber;
 use miden_client::crypto::FeltRng;
 use miden_client::note::{
+    FeeSponsorshipNote,
     MintNote,
     MintNoteStorage,
+    NetworkAccountConfigNote,
     NetworkAccountTarget,
     Note,
     NoteAssets,
@@ -45,6 +52,7 @@ use miden_client::note::{
     NoteStorage,
     NoteTag,
     NoteType,
+    P2idNote,
     P2idNoteStorage,
     PartialNoteMetadata,
     StandardNote,
@@ -60,11 +68,11 @@ use miden_client::testing::common::{
     wait_for_blocks,
     wait_for_tx,
 };
-use miden_client::transaction::{TransactionKernel, TransactionRequestBuilder};
+use miden_client::transaction::TransactionRequestBuilder;
 use miden_client::{Felt, Word, ZERO};
-use rand::{Rng, RngCore};
+use rand::{Rng, RngExt};
 
-use crate::tests::config::ClientConfig;
+use crate::ClientConfig;
 
 // HELPERS
 // ================================================================================================
@@ -82,12 +90,14 @@ const COUNTER_CONTRACT: &str = r#"
         const COUNTER_SLOT = word("miden::testing::counter_contract::counter")
 
         # => []
+        @account_procedure
         pub proc get_count
             push.COUNTER_SLOT[0..2] exec.active_account::get_item
             exec.sys::truncate_stack
         end
 
         # => []
+        @account_procedure
         pub proc increment_count
             push.COUNTER_SLOT[0..2] exec.active_account::get_item
             # => [count]
@@ -100,10 +110,19 @@ const COUNTER_CONTRACT: &str = r#"
         end"#;
 
 const INCR_NONCE_AUTH_CODE: &str = "
+    use miden::standards::fee
     use miden::protocol::native_account
+
+    const POST_FEE_CYCLES = 1024
 
     @auth_script
     pub proc auth_basic
+        dropw
+
+        exec.fee::native_conversion_info
+        push.POST_FEE_CYCLES
+        exec.fee::pay_fee drop
+
         exec.native_account::incr_nonce
         drop
     end
@@ -121,7 +140,8 @@ const INCR_NOTE_SCRIPT_CODE: &str = "
 // procedure already increments the nonce, so the script itself needs
 // only to satisfy the builder's requirement that _some_ user code runs.
 const NOOP_TX_SCRIPT: &str = "
-    begin
+    @transaction_script
+    pub proc main
         push.0 drop
     end
 ";
@@ -137,7 +157,7 @@ const NON_STANDARD_CLAIM_NOTE_SCRIPT: &str = r#"
     use miden::protocol::active_account
     use miden::protocol::account_id
     use miden::protocol::active_note
-    use miden::standards::wallets::basic->basic_wallet
+    use miden::standards::wallets::basic as basic_wallet
 
     @note_script
     pub proc main
@@ -163,11 +183,11 @@ const NON_STANDARD_CLAIM_NOTE_SCRIPT: &str = r#"
         exec.active_account::get_id
         # => [account_id_suffix, account_id_prefix, target_account_id_suffix, target_account_id_prefix]
 
-        exec.account_id::is_equal assert.err="consumer is not the note's target account"
+        exec.account_id::eq assert.err="consumer is not the note's target account"
         # => []
 
         # move all of the note's assets into the consuming account's vault
-        exec.basic_wallet::add_assets_to_account
+        exec.basic_wallet::move_note_assets_to_account
         # => []
     end
 "#;
@@ -176,15 +196,56 @@ const NON_STANDARD_CLAIM_NOTE_SCRIPT: &str = r#"
 ///
 /// The standardized allowlist slot (carried by [`AuthNetworkAccount`]) is what makes the node treat
 /// the account as a network account and route matching notes to it.
+///
+/// P2ID is allowlisted on top of the caller's roots, and the account carries a wallet component, so
+/// that its deploy transaction can consume a funding note.
 pub(crate) async fn deploy_network_counter_contract(
     client: &mut TestClient,
     allowed_note_script_roots: &[NoteScriptRoot],
 ) -> Result<Account> {
-    let roots = allowed_note_script_roots.iter().copied().collect::<BTreeSet<NoteScriptRoot>>();
-    let auth = AuthNetworkAccount::with_allowed_notes(roots)
+    let roots = allowed_note_script_roots
+        .iter()
+        .copied()
+        .chain([P2idNote::script_root()])
+        .collect::<BTreeSet<NoteScriptRoot>>();
+    let (genesis, _) = client
+        .get_block_header_by_num(BlockNumber::GENESIS)
+        .await?
+        .context("genesis block header is not in the store")?;
+    let fee_policy_manager =
+        zero_fee_policy_manager(genesis.fee_parameters().fee_faucet_id(), roots.iter().copied());
+    let auth = AuthNetworkAccount::new(roots, fee_policy_manager)
         .map_err(|err| anyhow::anyhow!(err))
         .context("failed to build network account auth component")?;
-    deploy_counter_with_auth(client, auth).await
+
+    let account = build_counter_account(client, auth, true)?;
+    client.add_account(&account, false).await?;
+    client.deploy_account(account.id()).await?;
+
+    Ok(account)
+}
+
+/// Builds a fee policy manager pricing every note the account can consume at zero.
+///
+/// `fee_faucet_id` must be the faucet the chain charges fees in, as named by the genesis header's
+/// fee parameters.
+fn zero_fee_policy_manager(
+    fee_faucet_id: AccountId,
+    allowed_note_script_roots: impl IntoIterator<Item = NoteScriptRoot>,
+) -> FeePolicyManager {
+    let fee_policy: FeePolicy = BasicConstantFeePolicy::new()
+        .with_fees(
+            allowed_note_script_roots
+                .into_iter()
+                .chain([NetworkAccountConfigNote::script_root(), FeeSponsorshipNote::script_root()])
+                .map(|root| (root, AssetAmount::ZERO)),
+        )
+        .into();
+
+    FeePolicyManager::builder()
+        .fee_faucet_id(fee_faucet_id)
+        .active_fee_policy(fee_policy)
+        .build()
 }
 
 /// Deploys a counter contract as an ordinary public account that consumes notes via user
@@ -200,15 +261,24 @@ pub(crate) async fn deploy_counter_contract(client: &mut TestClient) -> Result<A
     )
     .map_err(|err| anyhow::anyhow!(err))
     .context("failed to create increment nonce auth component")?;
-    deploy_counter_with_auth(client, incr_nonce_auth).await
+
+    // The auth component pays the fee from the account's vault. The wallet component lets its
+    // deploy transaction consume the funding note that supplies that vault.
+    let account = build_counter_account(client, [incr_nonce_auth], true)?;
+    client.add_account(&account, false).await?;
+    client.deploy_account(account.id()).await?;
+
+    Ok(account)
 }
 
-/// Builds a public counter contract account with the given auth component and deploys it with an
-/// empty transaction; the auth component should bump the nonce from 0 to 1, which makes the account
-/// update valid.
-async fn deploy_counter_with_auth(
+/// Builds a public counter contract account with the given auth component, without deploying it.
+///
+/// `receives_assets` adds a wallet component, which an account needs before a P2ID note can deposit
+/// into it.
+fn build_counter_account(
     client: &mut TestClient,
-    auth: impl Into<AccountComponent>,
+    auth: impl IntoIterator<Item = impl Into<AccountComponent>>,
+    receives_assets: bool,
 ) -> Result<Account> {
     let counter_slot = StorageSlot::with_empty_value(COUNTER_SLOT_NAME.clone());
     let counter_code = CodeBuilder::default()
@@ -225,19 +295,17 @@ async fn deploy_counter_with_auth(
     let mut init_seed = [0u8; 32];
     client.rng().fill_bytes(&mut init_seed);
 
-    let acc = AccountBuilder::new(init_seed)
+    let mut builder = AccountBuilder::new(init_seed)
         .account_type(AccountType::Public)
         .with_component(counter_component)
-        .with_auth_component(auth)
-        .build_with_schema_commitment()
-        .context("failed to build counter contract account")?;
+        .with_components(auth);
+    if receives_assets {
+        builder = builder.with_component(BasicWallet);
+    }
 
-    client.add_account(&acc, false).await?;
-    let tx_id = client
-        .submit_new_transaction(acc.id(), TransactionRequestBuilder::new().build()?)
-        .await?;
-    wait_for_tx(client, tx_id).await?;
-    Ok(acc)
+    builder
+        .build_with_schema_commitment()
+        .context("failed to build counter contract account")
 }
 
 /// Deploys a network fungible faucet owned by `owner_id` and commits its initial state on-chain.
@@ -252,10 +320,11 @@ async fn deploy_network_fungible_faucet(
 ) -> Result<Account> {
     // The faucet is a network account: `AuthNetworkAccount` carries the standardized allowlist slot
     // the node uses to route MINT notes to it and enforces that only allowlisted notes are consumed
-    // with no tx script. The scriptless deploy transaction below is authorized by this same auth.
-    let allowed_roots = [MintNote::script_root()].into_iter().collect::<BTreeSet<_>>();
-    let network_auth = AuthNetworkAccount::with_allowed_notes(allowed_roots)
-        .map_err(|err| anyhow!("failed to build faucet network-account auth: {err}"))?;
+    // with no tx script. P2ID joins the allowlist so that the deploy below can consume a funding
+    // note, which the faucet needs because `AuthNetworkAccount` pays its fee out of its own vault.
+    let allowed_roots = [MintNote::script_root(), P2idNote::script_root()]
+        .into_iter()
+        .collect::<BTreeSet<_>>();
 
     let mut init_seed = [0u8; 32];
     client.rng().fill_bytes(&mut init_seed);
@@ -268,13 +337,21 @@ async fn deploy_network_fungible_faucet(
         .max_supply(AssetAmount::new(9_999_999)?)
         .build()
         .map_err(|e| anyhow!("failed to build fungible faucet component: {e}"))?;
-    let policy_manager = TokenPolicyManager::new()
-        .with_mint_policy(MintPolicyConfig::OwnerOnly, PolicyRegistration::Active)?
-        .with_burn_policy(BurnPolicyConfig::AllowAll, PolicyRegistration::Active)?;
-    let faucet = AccountBuilder::new(init_seed)
-        .account_type(AccountType::Public)
-        .with_auth_component(network_auth)
+    let policy_manager = TokenPolicyManager::builder()
+        .active_mint_policy(MintPolicy::owner_only())
+        .active_burn_policy(BurnPolicy::allow_all())
+        .build();
+    let (genesis, _) = client
+        .get_block_header_by_num(BlockNumber::GENESIS)
+        .await?
+        .context("genesis block header is not in the store")?;
+    let fee_policy_manager = zero_fee_policy_manager(
+        genesis.fee_parameters().fee_faucet_id(),
+        allowed_roots.iter().copied(),
+    );
+    let faucet = NetworkAccount::builder(init_seed, allowed_roots, fee_policy_manager)?
         .with_component(faucet_component)
+        .with_component(BasicWallet)
         .with_components(AccessControl::Ownable2Step { owner: owner_id })
         .with_components(policy_manager)
         .with_component(PausableManager)
@@ -282,11 +359,9 @@ async fn deploy_network_fungible_faucet(
         .map_err(|e| anyhow!("failed to build network faucet: {e}"))?;
     client.add_account(&faucet, false).await?;
 
-    // Scriptless deploy: `AuthNetworkAccount` forbids tx scripts and bumps the nonce on its own, so
-    // an empty transaction is enough to register the faucet on-chain.
-    let deploy_tx = TransactionRequestBuilder::new().build()?;
-    let deploy_tx_id = client.submit_new_transaction(faucet.id(), deploy_tx).await?;
-    wait_for_tx(client, deploy_tx_id).await?;
+    // Scriptless deploy, which `AuthNetworkAccount` authorizes on its own: it consumes a funding
+    // note where the chain charges a fee, and is an empty transaction where it does not.
+    client.deploy_account(faucet.id()).await?;
 
     Ok(faucet)
 }
@@ -366,20 +441,19 @@ fn build_non_standard_mint(
     )
     .details_commitment();
 
-    let mint_storage = MintNoteStorage::new_public(
+    let mint_storage = MintNoteStorage::new_fungible_public(
         recipient,
         expected_asset,
-        NoteTag::with_account_target(target).into(),
+        NoteTag::with_account_target(target),
     )?;
     let target_ntx = NetworkAccountTarget::new(faucet.id(), NoteExecutionHint::Always)?;
-    let attachments = NoteAttachments::new(vec![target_ntx.into()])?;
-    let mint_note = MintNote::create(
-        faucet.id(),
-        faucet_owner, // must equal the faucet owner, checked by mint_and_send
-        mint_storage,
-        attachments,
-        client.rng(),
-    )?;
+    let mint_note: Note = MintNote::builder()
+        .sender(faucet_owner) // must equal the faucet owner, checked by mint_and_send
+        .mint_storage(mint_storage)
+        .attachment(target_ntx)
+        .generate_serial_number(client.rng())
+        .build()?
+        .into();
 
     Ok((custom_script, mint_note, expected_output_commitment))
 }
@@ -664,10 +738,7 @@ pub async fn test_network_note_consumed_by_ntx(client_config: ClientConfig) -> R
 /// note flow.
 pub async fn test_ntx_mint_produces_public_p2id(client_config: ClientConfig) -> Result<()> {
     let (mut client, keystore) = client_config.clone().into_client().await?;
-    let (mut client_2, keystore_2) = ClientConfig::default()
-        .with_rpc_endpoint(client_config.rpc_endpoint())
-        .into_client()
-        .await?;
+    let (mut client_2, keystore_2) = client_config.clone().into_client().await?;
 
     let (alice, ..) =
         insert_new_wallet(&mut client, AccountType::Public, &keystore, RPO_FALCON_SCHEME_ID)
@@ -693,16 +764,20 @@ pub async fn test_ntx_mint_produces_public_p2id(client_config: ClientConfig) -> 
     )
     .details_commitment();
 
-    let mint_storage = MintNoteStorage::new_public(
+    let mint_storage = MintNoteStorage::new_fungible_public(
         bob_recipient,
         expected_asset,
-        NoteTag::with_account_target(bob.id()).into(),
+        NoteTag::with_account_target(bob.id()),
     )?;
 
     let target_ntx = NetworkAccountTarget::new(faucet.id(), NoteExecutionHint::Always)?;
-    let attachments = NoteAttachments::new(vec![target_ntx.into()])?;
-    let mint_note =
-        MintNote::create(faucet.id(), alice.id(), mint_storage, attachments, client.rng())?;
+    let mint_note: Note = MintNote::builder()
+        .sender(alice.id())
+        .mint_storage(mint_storage)
+        .attachment(target_ntx)
+        .generate_serial_number(client.rng())
+        .build()?
+        .into();
 
     let mint_tx = TransactionRequestBuilder::new().own_output_notes(vec![mint_note]).build()?;
     execute_tx_and_sync(&mut client, alice.id(), mint_tx).await?;
@@ -744,10 +819,7 @@ pub async fn test_ntx_mint_produces_public_note_with_non_standard_script(
     client_config: ClientConfig,
 ) -> Result<()> {
     let (mut client, keystore) = client_config.clone().into_client().await?;
-    let (mut client_2, keystore_2) = ClientConfig::default()
-        .with_rpc_endpoint(client_config.rpc_endpoint())
-        .into_client()
-        .await?;
+    let (mut client_2, keystore_2) = client_config.clone().into_client().await?;
 
     let (alice, ..) =
         insert_new_wallet(&mut client, AccountType::Public, &keystore, RPO_FALCON_SCHEME_ID)
@@ -757,6 +829,9 @@ pub async fn test_ntx_mint_produces_public_note_with_non_standard_script(
             .await?;
 
     let faucet = deploy_network_fungible_faucet(&mut client, alice.id()).await?;
+
+    // A mint cannot double as the account's deploy.
+    client.deploy_account(alice.id()).await?;
     let amount = Felt::new_unchecked(100);
 
     // Registered case: pre-register a non-standard output script via `expected_ntx_scripts` on a
@@ -838,25 +913,6 @@ pub async fn test_ntx_mint_produces_public_note_with_non_standard_script(
     Ok(())
 }
 
-/// Compiles the counter contract library using the provided source manager so that all source
-/// spans are registered in the same manager used by the client's executor.
-pub(crate) fn counter_contract_library(source_manager: Arc<dyn SourceManagerSync>) -> Arc<Library> {
-    let assembler = TransactionKernel::assembler_with_source_manager(source_manager.clone());
-    let module = Module::parser(ModuleKind::Library)
-        .parse_str(
-            Path::new("external_contract::counter_contract"),
-            COUNTER_CONTRACT,
-            source_manager.clone(),
-        )
-        .map_err(|err| anyhow!(err))
-        .unwrap();
-    assembler
-        .clone()
-        .assemble_library([module])
-        .map_err(|err| anyhow!(err))
-        .unwrap()
-}
-
 /// Compiles a note script (linked against the counter contract library) and returns its script
 /// root, used to populate a network account's note-script allowlist. The root must match the note
 /// the account is expected to consume, so this compiles the script exactly as
@@ -865,8 +921,8 @@ pub(crate) fn note_script_root(
     script: &str,
     source_manager: Arc<dyn SourceManagerSync>,
 ) -> Result<NoteScriptRoot> {
-    let script = CodeBuilder::with_source_manager(source_manager.clone())
-        .with_dynamically_linked_library(counter_contract_library(source_manager))?
+    let script = CodeBuilder::with_source_manager(source_manager)
+        .with_linked_module("external_contract::counter_contract", COUNTER_CONTRACT)?
         .compile_note_script(script)?;
     Ok(script.root())
 }
@@ -899,8 +955,8 @@ pub(crate) fn get_network_note_with_script<T: Rng>(
     let partial_metadata = PartialNoteMetadata::new(sender, NoteType::Public)
         .with_tag(NoteTag::with_account_target(network_account));
 
-    let script = CodeBuilder::with_source_manager(source_manager.clone())
-        .with_dynamically_linked_library(counter_contract_library(source_manager))?
+    let script = CodeBuilder::with_source_manager(source_manager)
+        .with_linked_module("external_contract::counter_contract", COUNTER_CONTRACT)?
         .compile_note_script(script)?;
     let recipient = NoteRecipient::new(
         Word::new([
@@ -926,10 +982,7 @@ pub async fn test_watch_network_account(client_config: ClientConfig) -> Result<(
     const BUMP_NOTE_NUMBER: u64 = 3;
 
     let (mut client_1, keystore_1) = client_config.clone().into_client().await?;
-    let (mut client_2, _keystore_2) = ClientConfig::default()
-        .with_rpc_endpoint(client_config.rpc_endpoint())
-        .into_client()
-        .await?;
+    let (mut client_2, _keystore_2) = client_config.clone().into_client().await?;
     client_1.sync_state().await?;
 
     let incr_note_root = note_script_root(INCR_NOTE_SCRIPT_CODE, client_1.source_manager())?;

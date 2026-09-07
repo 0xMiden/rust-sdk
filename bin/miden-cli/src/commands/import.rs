@@ -1,12 +1,11 @@
-use std::fs::{self, File};
-use std::io::Read;
+use std::fs;
 use std::path::PathBuf;
 
+use miden_client::Client;
 use miden_client::account::{AccountFile, AccountId};
 use miden_client::keystore::Keystore;
 use miden_client::note::NoteFile;
 use miden_client::utils::Deserializable;
-use miden_client::{Client, ClientError};
 use tracing::info;
 
 use crate::commands::account::{account_code_has_basic_wallet, set_default_account_if_unset};
@@ -32,9 +31,9 @@ impl ImportCmd {
     ) -> Result<(), CliError> {
         validate_paths(&self.filenames)?;
         for filename in &self.filenames {
-            let note_file = read_note_file(filename.clone());
+            let contents = fs::read(filename)?;
 
-            if let Ok(note_file) = note_file {
+            if let Ok(note_file) = NoteFile::read_from_bytes(&contents) {
                 match client.import_notes(&[note_file]).await?.first() {
                     Some(commitment) => println!(
                         "Successfully imported note with details commitment {}",
@@ -47,7 +46,12 @@ impl ImportCmd {
                     "Attempting to import account data from {}...",
                     fs::canonicalize(filename)?.as_path().display()
                 );
-                let account_file = AccountFile::read(filename)?;
+                let Ok(account_file) = AccountFile::read_from_bytes(&contents) else {
+                    return Err(CliError::Import(format!(
+                        "failed to read `{}` as a note or as an account",
+                        filename.to_string_lossy()
+                    )));
+                };
                 let account_id =
                     import_account(&mut client, &keystore, account_file, self.overwrite).await?;
 
@@ -92,17 +96,6 @@ async fn import_account<AUTH>(
     client.add_account(&account, overwrite).await?;
 
     Ok(account_id)
-}
-
-// IMPORT NOTE
-// ================================================================================================
-
-fn read_note_file(filename: PathBuf) -> Result<NoteFile, CliError> {
-    let mut contents = vec![];
-    let mut _file = File::open(filename).and_then(|mut f| f.read_to_end(&mut contents))?;
-
-    NoteFile::read_from_bytes(&contents)
-        .map_err(|err| ClientError::DataDeserializationError(err).into())
 }
 
 // HELPERS

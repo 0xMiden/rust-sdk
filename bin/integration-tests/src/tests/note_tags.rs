@@ -2,13 +2,13 @@ use anyhow::{Context, Result};
 use miden_client::account::AccountType;
 use miden_client::asset::FungibleAsset;
 use miden_client::auth::RPO_FALCON_SCHEME_ID;
-use miden_client::note::{NoteFile, NoteType};
+use miden_client::note::{NoteFile, NoteSyncHint, NoteType};
 use miden_client::store::{InputNoteRecord, NoteFilter};
 use miden_client::sync::NoteTagSource;
 use miden_client::testing::common::*;
 use miden_client::transaction::{InputNote, PaymentNoteDescription, TransactionRequestBuilder};
 
-use crate::tests::config::ClientConfig;
+use crate::ClientConfig;
 
 // HELPERS
 // ================================================================================================
@@ -32,11 +32,8 @@ pub async fn test_output_notes_do_not_register_tags(client_config: ClientConfig)
     // Client 1 runs the faucet; client 2 tracks the recipient wallet, so from client 1's
     // perspective the minted note goes to an external account.
     let (mut client_1, keystore_1) = client_config.clone().into_client().await?;
-    let (mut client_2, keystore_2) = ClientConfig::default()
-        .with_rpc_endpoint(client_config.rpc_endpoint())
-        .with_note_transport_endpoint(None)
-        .into_client()
-        .await?;
+    let (mut client_2, keystore_2) =
+        client_config.clone().with_note_transport_endpoint(None).into_client().await?;
     wait_for_node(&mut client_2).await;
 
     let (faucet_account, _) = insert_new_fungible_faucet(
@@ -107,11 +104,8 @@ pub async fn test_output_notes_do_not_register_tags(client_config: ClientConfig)
 /// a self-directed transfer and for an expected note imported by details.
 pub async fn test_input_note_tag_lifecycle(client_config: ClientConfig) -> Result<()> {
     let (mut client_1, keystore_1) = client_config.clone().into_client().await?;
-    let (mut client_2, keystore_2) = ClientConfig::default()
-        .with_rpc_endpoint(client_config.rpc_endpoint())
-        .with_note_transport_endpoint(None)
-        .into_client()
-        .await?;
+    let (mut client_2, keystore_2) =
+        client_config.clone().with_note_transport_endpoint(None).into_client().await?;
     wait_for_node(&mut client_1).await;
 
     let (faucet_account, _) = insert_new_fungible_faucet(
@@ -204,10 +198,9 @@ pub async fn test_input_note_tag_lifecycle(client_config: ClientConfig) -> Resul
     let note_tag = note_record.metadata().context("expected note should have metadata")?.tag();
 
     client_2
-        .import_notes(&[NoteFile::NoteDetails {
+        .import_notes(&[NoteFile::ExpectedNote {
             details: note_record.clone().into(),
-            after_block_num: client_1.get_sync_height().await?,
-            tag: Some(note_tag),
+            sync_hint: NoteSyncHint::new(client_1.get_sync_height().await?, note_tag),
         }])
         .await?;
     assert_eq!(

@@ -182,9 +182,10 @@ newCodeExample();
    - `behavior`: Explain the behavioral difference and when code needs adaptation
    - `arch`: Show Cargo.toml/package.json changes, new import paths
 5. **Scope inference for untagged entries:** if `[scope]` is absent or ambiguous, search for the
-   identifiers in `crates/rust-client` and `crates/web-client` (and `crates/web-client/js`).
-   Include sections for every language where the API changed. Do not omit Rust just because the
-   description mentions the WebClient.
+   identifiers in `crates/rust-client` and, for web APIs, the
+   [0xMiden/web-sdk](https://github.com/0xMiden/web-sdk) repository. Include sections for every
+   language where the API changed. Do not omit Rust just because the description mentions the
+   WebClient.
 6. **Include both Rust and TypeScript** when scope includes both `rust` and `web`
 7. **Group related changes** that affect the same workflow
 8. **Identify compile errors** users will encounter and how to fix them

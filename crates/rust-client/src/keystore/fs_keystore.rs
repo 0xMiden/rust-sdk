@@ -227,6 +227,7 @@ impl TransactionAuthenticator for FilesystemKeyStore {
     /// # Errors
     /// If the public key isn't found in the store, [`AuthenticationError::UnknownPublicKey`] is
     /// returned.
+    #[allow(clippy::unused_async_trait_impl)]
     async fn get_signature(
         &self,
         pub_key: PublicKeyCommitment,
@@ -241,9 +242,7 @@ impl TransactionAuthenticator for FilesystemKeyStore {
             })?
             .ok_or(AuthenticationError::UnknownPublicKey(pub_key))?;
 
-        let signature = secret_key.sign(message);
-
-        Ok(signature)
+        Ok(secret_key.sign(message))
     }
 
     /// Retrieves a public key for a specific public key commitment.

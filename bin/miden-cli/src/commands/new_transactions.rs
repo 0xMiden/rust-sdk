@@ -1,14 +1,19 @@
 use std::io;
+#[cfg(feature = "dap")]
+use std::net::SocketAddr;
+#[cfg(feature = "dap")]
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use miden_client::account::AccountId;
+use miden_client::asset::AssetAmount;
 use miden_client::keystore::Keystore;
 use miden_client::note::{
     BlockNumber,
     Note,
+    NoteTag,
     NoteType as MidenNoteType,
-    SwapNote,
     get_input_note_with_id_prefix,
 };
 use miden_client::store::NoteRecordError;
@@ -106,7 +111,7 @@ impl MintCmd {
 
 /// Create a pay-to-id transaction.
 #[derive(Debug, Parser, Clone)]
-pub struct SendCmd {
+pub struct TransferCmd {
     /// Sender account ID or its hex prefix. If none is provided, the default account's ID is used
     /// instead.
     #[arg(short = 's', long = "sender")]
@@ -141,7 +146,7 @@ pub struct SendCmd {
     delegate_proving: bool,
 }
 
-impl SendCmd {
+impl TransferCmd {
     pub async fn execute<AUTH: Keystore + Sync + 'static>(
         &self,
         mut client: Client<AUTH>,
@@ -210,6 +215,11 @@ pub struct SwapCmd {
     #[arg(short, long, value_enum)]
     note_type: NoteType,
 
+    /// Visibility of the payback note produced when the swap is consumed. Defaults to private
+    /// (cheaper, and the swap already records the trade in the consuming transaction).
+    #[arg(long, value_enum, default_value_t = NoteType::Private)]
+    payback_note_type: NoteType,
+
     /// Flag to submit the executed transaction without asking for confirmation.
     #[arg(long, default_value_t = false)]
     force: bool,
@@ -247,7 +257,7 @@ impl SwapCmd {
             .build_swap(
                 &swap_transaction,
                 (&self.note_type).into(),
-                MidenNoteType::Private,
+                (&self.payback_note_type).into(),
                 client.rng(),
             )
             .map_err(|err| {
@@ -263,14 +273,9 @@ impl SwapCmd {
         )
         .await?;
 
-        let payback_note_tag: u32 = SwapNote::build_tag(
-            (&self.note_type).into(),
-            &swap_transaction.offered_asset(),
-            &swap_transaction.requested_asset(),
-        )
-        .into();
+        let payback_note_tag: u32 = NoteTag::with_account_target(sender_account_id).into();
         println!(
-            "To receive updates about the payback Swap Note run `miden-client tags --add {payback_note_tag}`",
+            "To receive updates about the payback note run `miden-client tags --add {payback_note_tag}`",
         );
 
         Ok(())
@@ -295,6 +300,19 @@ pub struct ConsumeNotesCmd {
     /// Flag to delegate proving to the remote prover specified in the config file.
     #[arg(long, default_value_t = false)]
     delegate_proving: bool,
+
+    /// Debug the note-consumption transaction instead of proving and submitting it: start a DAP
+    /// debug adapter server on the given address (e.g. "127.0.0.1:4711") and wait for a DAP client
+    /// to connect before executing.
+    #[cfg(feature = "dap")]
+    #[arg(long = "start-debug-adapter")]
+    start_debug_adapter: Option<SocketAddr>,
+
+    /// Write a replay snapshot of the debug session to this file once it ends, for offline replay
+    /// with `miden-debug --replay <FILE>`. Only meaningful together with `--start-debug-adapter`.
+    #[cfg(feature = "dap")]
+    #[arg(long = "record", value_name = "FILE", requires = "start_debug_adapter")]
+    record: Option<PathBuf>,
 }
 
 impl ConsumeNotesCmd {
@@ -343,6 +361,18 @@ impl ConsumeNotesCmd {
                     "Failed to build consume notes transaction".to_string(),
                 )
             })?;
+
+        #[cfg(feature = "dap")]
+        if let Some(addr) = self.start_debug_adapter.as_ref() {
+            return debug_transaction(
+                &mut client,
+                account_id,
+                transaction_request,
+                addr,
+                self.record.as_deref(),
+            )
+            .await;
+        }
 
         execute_transaction(
             &mut client,
@@ -494,10 +524,13 @@ impl PswapConsumeCmd {
         let consumer_id = parse_account_id(&client, &self.account).await?;
         let note = resolve_input_note(&client, &self.note).await?;
 
+        let fill_amount = AssetAmount::new(self.fill_amount)
+            .map_err(|err| CliError::Parse(err.into(), "Invalid fill amount".to_string()))?;
+
         // The CLI does not yet support note-supplied fills (in-flight fills routed through
         // other notes), so pass 0 for `note_fill_amount`.
         let tx_request = TransactionRequestBuilder::new()
-            .build_pswap_consume(&note, consumer_id, self.fill_amount, 0)
+            .build_pswap_consume(&note, consumer_id, fill_amount, AssetAmount::ZERO)
             .map_err(|err| {
                 CliError::Transaction(
                     err.into(),
@@ -653,4 +686,63 @@ async fn execute_transaction<AUTH: Keystore + Sync + 'static>(
     }
 
     Ok(())
+}
+
+/// Runs `transaction_request` under a DAP debug adapter instead of proving and submitting it, so a
+/// DAP client can attach and step through the full transaction (kernel, note scripts, account
+/// code). Optionally writes a replay snapshot for offline replay with `miden-debug --replay`.
+#[cfg(feature = "dap")]
+async fn debug_transaction<AUTH: Keystore + Sync + 'static>(
+    client: &mut Client<AUTH>,
+    account_id: AccountId,
+    transaction_request: TransactionRequest,
+    addr: &SocketAddr,
+    record: Option<&std::path::Path>,
+) -> Result<(), CliError> {
+    let mut config = miden_debug::DapConfig::new(addr.to_string());
+    // The DAP executor is created and consumed inside the transaction executor, so recorded
+    // advice mutations are read back through this shared handle once the session ends.
+    let recorder = config.record_event_mutations();
+    let snapshot_recorder = record.map(|path| (config.record_snapshot(path.to_path_buf()), path));
+    let config_handle = config.clone();
+    miden_debug::DapConfig::set_global(config);
+
+    println!(
+        "Starting debug session on {addr}; connect a DAP client to step through the transaction..."
+    );
+    let result = loop {
+        let result = client
+            .execute_transaction_with_dap(account_id, transaction_request.clone())
+            .await
+            .map(|_| ())
+            .map_err(|err| {
+                CliError::Transaction(err.into(), "error debugging the transaction".to_string())
+            });
+
+        if config_handle.restart_requested() {
+            config_handle.reset_restart();
+            println!("Rebuilding transaction and restarting debug session...");
+            continue;
+        }
+
+        break result;
+    };
+
+    let mutation_sets = recorder.take();
+    if !mutation_sets.is_empty() {
+        println!(
+            "Recorded {} advice mutation set(s) from event handlers during the debug session.",
+            mutation_sets.len()
+        );
+    }
+    if let Some((snapshot_recorder, path)) = &snapshot_recorder
+        && let Err(err) = super::report_replay_snapshot_write(snapshot_recorder, path)
+    {
+        if result.is_err() {
+            eprintln!("{err}");
+        } else {
+            return Err(err);
+        }
+    }
+    result
 }

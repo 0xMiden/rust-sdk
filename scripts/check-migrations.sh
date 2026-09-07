@@ -1,0 +1,39 @@
+#!/bin/bash
+# Fails closed: any error resolving the base branch or running git aborts the script rather than
+# reporting success. This is the only automated guard against an edited migration, so a silent
+# pass would be worse than a false alarm.
+set -euo pipefail
+
+MIGRATIONS_DIR="${1:-crates/sqlite-store/src/migrations}"
+
+if [ "${NO_MIGRATION_CHECK_LABEL:-false}" = "true" ]; then
+    echo "\"no migration check\" label has been set"
+    exit 0
+fi
+
+BASE="origin/${BASE_REF:?must be set to the base branch of the pull request}"
+
+if ! git rev-parse --verify --quiet "${BASE}^{commit}" > /dev/null; then
+    >&2 echo "Cannot resolve \"${BASE}\". Fetch the base branch before running this check."
+    exit 1
+fi
+
+# Compare only the branch's own commits, prevents a migration added on the base branch after this one
+# forked being attributed to this pull request.
+CHANGED=$(git diff --name-only --diff-filter=MDR --merge-base "${BASE}" -- "${MIGRATIONS_DIR}")
+
+if [ -z "${CHANGED}" ]; then
+    echo "No released migration was modified."
+    exit 0
+fi
+
+>&2 echo "The following merged migrations were modified, renamed or deleted:"
+>&2 echo "${CHANGED}"
+>&2 echo ""
+>&2 echo "Migrations are append-only. Add a new file under \"${MIGRATIONS_DIR}\" with the next
+version prefix instead, and register it in CLIENT_MIGRATIONS together with the schema hash it builds,
+in crates/sqlite-store/src/db_management/migration.rs, rather than editing the existing entries.
+
+This behavior can be overridden by using the \"no migration check\" label, which is used for
+schema changes that no released client can encounter yet."
+exit 1

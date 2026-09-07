@@ -505,7 +505,7 @@ fn note_summary(
     let note_tag_str = note_metadata.map_or("-".to_string(), |metadata| metadata.tag().to_string());
 
     let note_sender_str =
-        note_metadata.map_or("-".to_string(), |metadata| metadata.tag().to_string());
+        note_metadata.map_or("-".to_string(), |metadata| metadata.sender().to_string());
 
     CliNoteSummary {
         id: id_str,
@@ -518,5 +518,50 @@ fn note_summary(
         tag: note_tag_str,
         sender: note_sender_str,
         exportable: output_note_record.is_some(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use miden_client::Word;
+    use miden_client::account::AccountId;
+    use miden_client::note::{
+        Note,
+        NoteAssets,
+        NoteRecipient,
+        NoteStorage,
+        NoteTag,
+        NoteType,
+        PartialNoteMetadata,
+        StandardNote,
+    };
+    use miden_client::store::InputNoteRecord;
+    use miden_client::testing::account_id::ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE;
+
+    use super::note_summary;
+
+    /// The sender and the tag come from separate metadata fields, and a tag doesn't have to encode
+    /// the sender, so the summary must read each from its own field.
+    #[test]
+    fn note_summary_reads_the_sender_and_the_tag_from_their_own_fields() {
+        let sender =
+            AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE).unwrap();
+        let tag = NoteTag::new(42);
+
+        let note = Note::new(
+            NoteAssets::new(vec![]).unwrap(),
+            PartialNoteMetadata::new(sender, NoteType::Public).with_tag(tag),
+            NoteRecipient::new(
+                Word::default(),
+                StandardNote::P2ID.script(),
+                NoteStorage::new(vec![]).unwrap(),
+            ),
+        );
+        let record = InputNoteRecord::from(note);
+
+        let summary = note_summary(Some(&record), None);
+
+        assert_eq!(summary.sender, sender.to_string());
+        assert_eq!(summary.tag, tag.to_string());
     }
 }

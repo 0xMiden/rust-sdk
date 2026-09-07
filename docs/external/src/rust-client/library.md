@@ -8,8 +8,10 @@ To use the Miden client library in a Rust project, include it as a dependency.
 In your project's `Cargo.toml`, add:
 
 ```toml
-miden-client = { version = "0.11" }
+miden-client = { version = "0.16.0-alpha.1", features = ["tonic"] }
 ```
+
+The `tonic` feature is not enabled by default and gates everything that speaks gRPC to a node: `GrpcClient`, `RemoteTransactionProver`, the gRPC note transport client, and the `ClientBuilder` methods that wire them up. Leave it out only when supplying your own `NodeRpcClient` and `TransactionProver` implementations. See [Features](./features.md#crate-features) for the full list.
 
 ## Client instantiation
 
@@ -58,7 +60,6 @@ let client = ClientBuilder::new()
     .filesystem_keystore("path/to/keys")?
     // Optional: custom prover via .prover(Arc::new(prover))
     // Optional: note transport via .note_transport(Arc::new(nt_client))
-    // Optional: debug mode via .in_debug_mode(DebugMode::Enabled)
     // Optional: custom source manager via .source_manager(Arc::new(sm)) — only
     //   needed when compiling scripts outside the client with an external
     //   `Assembler`; pass the same `Arc` to both so source spans align.
@@ -105,14 +106,10 @@ The account's state is also tracked locally, but during sync the client updates 
 
 ### Network accounts
 
-A network account is a public account that the node drives automatically: it consumes matching notes on the network's behalf via network transactions (NTX). An account becomes a network account by using the `AuthNetworkAccount` auth component, which carries a standardized allowlist of note script roots. The node uses that allowlist to identify the account and route only allowlisted notes to it; the auth procedure additionally enforces that consumed notes are allowlisted and that no transaction script runs.
+A network account is a public account that the node drives automatically: it consumes matching notes on the network's behalf via network transactions (NTX). A network account is built by using the `NetworkAccount::builder` method, which takes a standardized allowlist of note script roots. The node uses that allowlist to identify the account and route only allowlisted notes to it; the auth procedure additionally enforces that consumed notes are allowlisted and that no transaction script runs.
 
 ```rust
-let auth = AuthNetworkAccount::with_allowlist(allowed_note_script_roots)?;
-
-let network_account = AccountBuilder::new(init_seed)
-    .account_type(AccountType::Public) // network accounts must be public
-    .with_auth_component(auth)
+let network_account = NetworkAccount::builder(init_seed, allowed_note_script_roots)?
     .with_component(/* your contract component */)
     .build_with_schema_commitment()?;
 client.add_account(&network_account, false).await?;
@@ -167,7 +164,7 @@ You may also customize the transaction request with the other `TransactionReques
 
 You can use note screening when you need to decide whether a note is relevant to the accounts tracked by the client. Screening checks whether each tracked account can consume the note now or at a future block.
 
-Screening may run trial transaction executions, so it is not free. Use it when you need consumability information for planning, filtering, or building a consume transaction.
+Screening cost depends on each screened note's script. A few well-known scripts, such as P2ID, can be checked statically. Every other note is trial-executed against every tracked account, so cost grows with the number of tracked accounts multiplied by the number of notes screened. Use screening when you need consumability information for planning, filtering, or building a consume transaction.
 
 ### Use the Client helpers first
 
@@ -188,6 +185,8 @@ for (note, accounts) in consumable_notes {
     }
 }
 ```
+
+Passing an account ID to `get_consumable_notes` screens only that account, so its cost scales with the number of committed notes alone. If you only need the committed notes without consumability verdicts, `get_input_notes` with `NoteFilter::Committed` is much cheaper.
 
 ### Obtain a screener
 
@@ -216,7 +215,7 @@ let screener_with_args = client.note_screener().with_transaction_args(tx_args);
 
 ### Check one note
 
-To check one note, call `can_consume`.
+To check one note, call `get_consumability`.
 
 ```rust
 use miden_client::note::{Note, NoteConsumptionStatus};
@@ -225,7 +224,7 @@ use miden_client::note::{Note, NoteConsumptionStatus};
 let input_note_record = client.get_input_note(note_id).await?.unwrap();
 let note: Note = input_note_record.try_into()?;
 
-let account_statuses = screener.can_consume(&note).await?;
+let account_statuses = screener.get_consumability(&note).await?;
 
 for (account_id, status) in account_statuses {
     match status {
@@ -247,7 +246,7 @@ for (account_id, status) in account_statuses {
 
 ### Check many notes
 
-When you have several notes, use `can_consume_batch` to check them all in one pass.
+When you have several notes, use `get_batch_consumability` to check them all in one pass.
 
 ```rust
 use std::collections::BTreeMap;
@@ -266,12 +265,14 @@ let notes: Vec<Note> = input_note_records
 
 // Check all notes with one executor setup.
 let notes_by_id: BTreeMap<NoteId, Vec<NoteConsumability>> =
-    screener.can_consume_batch(&notes).await?;
+    screener.get_batch_consumability(&notes).await?;
 
 for (note_id, account_statuses) in notes_by_id {
     println!("{} has {} possible consumers", note_id.to_hex(), account_statuses.len());
 }
 ```
+
+Prefer a single `get_batch_consumability` call over calling `get_consumability` in a loop. A batch reuses each account's execution inputs (account state, reference block, and vault witnesses) across every note in the same pass, while separate calls re-read them each time. This reuse lasts only for the duration of the call, so it does not carry across separate screening calls.
 
 ### Check consumability for one account
 
@@ -304,4 +305,43 @@ for failed_note in &consumption_info.failed {
     // Failed notes include the note and the execution error.
     println!("cannot consume {}: {}", failed_note.note.id().to_hex(), failed_note.error);
 }
+```
+
+## Reading consumed notes
+
+### When to use the note reader
+
+Use the note reader when you need to iterate over the input notes a specific account has already consumed, for example to build a consumption history or reconcile past activity.
+
+`InputNoteReader` reads lazily from the store, so creating a reader does not run a query. Since the reader queries the local store, sync the client first to see the latest consumptions. Notes are returned in on-chain consumption order, first by block number, then by the account's transaction order within each block.
+
+### Iterate over an account's consumed notes
+
+Obtain a reader from the client and call `next` until it returns `None`. Each call to `next` runs one store query.
+
+```rust
+let mut reader = client.input_note_reader(account_id);
+
+while let Some(note) = reader.next().await? {
+    // Use the consumed input note.
+}
+```
+
+### Restrict to a block range
+
+Configure the reader with `in_block_range` to return only notes consumed within an inclusive block range. `reset` returns the reader to the beginning without changing its consumer account or block range.
+
+```rust
+use miden_client::block::BlockNumber;
+
+let mut reader = client
+    .input_note_reader(account_id)
+    .in_block_range(BlockNumber::from(0u32), BlockNumber::from(100u32));
+
+while let Some(note) = reader.next().await? {
+    // Use the consumed input note.
+}
+
+// Start another pass over the same notes.
+reader.reset();
 ```

@@ -126,7 +126,7 @@ mod tests {
         ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET,
         ACCOUNT_ID_SENDER,
     };
-    use miden_testing::{MockChainBuilder, TxContextInput};
+    use miden_testing::{MockChainBuilder, MockTransactionInput};
 
     use super::*;
     use crate::note::NoteUpdateTracker;
@@ -151,12 +151,8 @@ mod tests {
 
         let executed_tx = Box::pin(
             chain
-                .build_tx_context(
-                    TxContextInput::Account(account.clone()),
-                    &[],
-                    core::slice::from_ref(&note),
-                )
-                .unwrap()
+                .build_transaction(MockTransactionInput::Account(account.clone()))
+                .unauthenticated_input_note(note.clone())
                 .build()
                 .unwrap()
                 .execute(),

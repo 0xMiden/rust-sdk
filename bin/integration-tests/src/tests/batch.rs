@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use miden_client::Felt;
 use miden_client::account::AccountType;
-use miden_client::asset::{Asset, FungibleAsset};
+use miden_client::asset::{Asset, AssetAmount, FungibleAsset};
 use miden_client::auth::RPO_FALCON_SCHEME_ID;
 use miden_client::note::NoteType;
 use miden_client::store::TransactionFilter;
@@ -13,7 +13,7 @@ use miden_client::transaction::{
 };
 use tracing::info;
 
-use crate::tests::config::ClientConfig;
+use crate::ClientConfig;
 
 /// Real-node integration test for the `BatchBuilder` end-to-end path.
 ///
@@ -90,14 +90,12 @@ pub async fn test_batch_builder_submits_two_p2id_on_one_account(
     );
 
     // Submit both requests as a single batch.
-    let block_num = client
-        .new_transaction_batch()
-        .push(from_account_id, tx_request_1)
-        .await?
-        .push(from_account_id, tx_request_2)
-        .await?
-        .submit()
-        .await?;
+    let tx_request_1 = client.fund_request(from_account_id, tx_request_1);
+    let tx_request_2 = client.fund_request(from_account_id, tx_request_2);
+    let mut batch = client.new_transaction_batch();
+    batch.push(from_account_id, tx_request_1).await?;
+    batch.push(from_account_id, tx_request_2).await?;
+    let block_num = batch.submit().await?;
 
     info!(block_num = block_num.as_u32(), "Batch submitted successfully");
 
@@ -146,7 +144,7 @@ pub async fn test_batch_builder_submits_two_p2id_on_one_account(
 
     assert_eq!(
         sender_balance,
-        MINT_AMOUNT - (TRANSFER_AMOUNT * 2),
+        AssetAmount::new(MINT_AMOUNT - (TRANSFER_AMOUNT * 2)).unwrap(),
         "sender balance should have decreased by exactly 2 * TRANSFER_AMOUNT — this proves \
          BatchBuilder stacked account state correctly between pushes"
     );
@@ -222,14 +220,12 @@ pub async fn test_batch_builder_multiple_accounts(client_config: ClientConfig) -
         "Submitting cross-account batch (A→B P2ID + B consume)"
     );
 
-    let block_num = client
-        .new_transaction_batch()
-        .push(account_id_a, req_send)
-        .await?
-        .push(account_id_b, req_consume)
-        .await?
-        .submit()
-        .await?;
+    let req_send = client.fund_request(account_id_a, req_send);
+    let req_consume = client.fund_request(account_id_b, req_consume);
+    let mut batch = client.new_transaction_batch();
+    batch.push(account_id_a, req_send).await?;
+    batch.push(account_id_b, req_consume).await?;
+    let block_num = batch.submit().await?;
 
     info!(block_num = block_num.as_u32(), "Cross-account batch submitted");
     assert!(block_num.as_u32() > 0, "expected a positive block number");
@@ -287,12 +283,12 @@ pub async fn test_batch_builder_multiple_accounts(client_config: ClientConfig) -
 
     assert_eq!(
         a_balance,
-        MINT_AMOUNT - TRANSFER_AMOUNT,
+        AssetAmount::new(MINT_AMOUNT - TRANSFER_AMOUNT).unwrap(),
         "A's balance should be MINT_AMOUNT - TRANSFER_AMOUNT after sending"
     );
     assert_eq!(
         b_balance,
-        MINT_AMOUNT + TRANSFER_AMOUNT,
+        AssetAmount::new(MINT_AMOUNT + TRANSFER_AMOUNT).unwrap(),
         "B's balance should be MINT_AMOUNT + TRANSFER_AMOUNT after consuming the in-batch note"
     );
 
@@ -365,16 +361,13 @@ pub async fn test_batch_builder_interleaved_pushes(client_config: ClientConfig) 
 
     info!("Submitting A→B→A interleaved batch");
 
-    let block_num = client
-        .new_transaction_batch()
-        .push(account_id_a, req_a_to_b_first)
-        .await?
-        .push(account_id_b, req_b_to_a)
-        .await?
-        .push(account_id_a, req_a_to_b_second)
-        .await?
-        .submit()
-        .await?;
+    let req_a_to_b_first = client.fund_request(account_id_a, req_a_to_b_first);
+    let req_b_to_a = client.fund_request(account_id_b, req_b_to_a);
+    let mut batch = client.new_transaction_batch();
+    batch.push(account_id_a, req_a_to_b_first).await?;
+    batch.push(account_id_b, req_b_to_a).await?;
+    batch.push(account_id_a, req_a_to_b_second).await?;
+    let block_num = batch.submit().await?;
 
     info!(block_num = block_num.as_u32(), "Interleaved batch submitted");
     assert!(block_num.as_u32() > 0, "expected a positive block number");
@@ -432,12 +425,12 @@ pub async fn test_batch_builder_interleaved_pushes(client_config: ClientConfig) 
 
     assert_eq!(
         a_balance,
-        MINT_AMOUNT - (TRANSFER_AMOUNT * 2),
+        AssetAmount::new(MINT_AMOUNT - (TRANSFER_AMOUNT * 2)).unwrap(),
         "A's balance should reflect two outbound P2ID notes"
     );
     assert_eq!(
         b_balance,
-        MINT_AMOUNT - TRANSFER_AMOUNT,
+        AssetAmount::new(MINT_AMOUNT - TRANSFER_AMOUNT).unwrap(),
         "B's balance should reflect one outbound P2ID note"
     );
 

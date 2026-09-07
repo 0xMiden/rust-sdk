@@ -6,6 +6,7 @@ use std::env::temp_dir;
 use std::println;
 use std::sync::Arc;
 
+use miden_client::ClientError;
 use miden_client::account::{Address, AddressInterface};
 use miden_client::address::RoutingParameters;
 use miden_client::assembly::CodeBuilder;
@@ -21,6 +22,7 @@ use miden_client::keystore::{FilesystemKeyStore, Keystore};
 use miden_client::note::{BlockNumber, NetworkAccountTarget, NoteExecutionHint};
 use miden_client::pswap::PswapLineageState;
 use miden_client::rpc::NodeRpcClient;
+use miden_client::rpc::encryption::TransactionEncryptionKey;
 use miden_client::store::input_note_states::ConsumedAuthenticatedLocalNoteState;
 use miden_client::store::{
     AccountStorageFilter,
@@ -29,6 +31,7 @@ use miden_client::store::{
     InputNoteState,
     NoteFilter,
     OutputNoteState,
+    StoreError,
     TransactionFilter,
 };
 use miden_client::sync::{NoteTagRecord, NoteTagSource};
@@ -60,7 +63,6 @@ use miden_client::transaction::{
     TransactionStatus,
 };
 use miden_client::utils::{Deserializable, Serializable};
-use miden_client::{ClientError, DebugMode};
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
 use miden_protocol::account::{
     Account,
@@ -70,28 +72,25 @@ use miden_protocol::account::{
     AccountComponentMetadata,
     AccountHeader,
     AccountId,
+    AccountIdVersion,
     AccountType,
+    AssetCallbackFlag,
     StorageMap,
     StorageMapKey,
     StorageSlot,
     StorageSlotContent,
     StorageSlotName,
 };
-use miden_protocol::asset::{
-    Asset,
-    AssetAmount,
-    AssetCallbackFlag,
-    AssetVaultKey,
-    AssetWitness,
-    FungibleAsset,
-    TokenSymbol,
-};
+use miden_protocol::asset::{Asset, AssetAmount, AssetId, FungibleAsset, TokenSymbol};
+use miden_protocol::crypto::dsa::eddsa_25519_sha512::KeyExchangeKey;
+use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::crypto::rand::{FeltRng, RandomCoin};
 use miden_protocol::note::{
     Note,
     NoteAssets,
+    NoteAttachment,
+    NoteAttachmentScheme,
     NoteAttachments,
-    NoteFile,
     NoteRecipient,
     NoteStorage,
     NoteTag,
@@ -112,17 +111,14 @@ use miden_protocol::transaction::RawOutputNote;
 use miden_protocol::vm::AdviceInputs;
 use miden_protocol::{EMPTY_WORD, Felt, ONE, Word};
 use miden_standards::account::AccountBuilderSchemaCommitmentExt;
+use miden_standards::account::auth::Approver;
 use miden_standards::account::faucets::{FungibleFaucet, TokenName};
-use miden_standards::account::interface::AccountInterfaceError;
-use miden_standards::account::policies::{
-    BurnPolicyConfig,
-    MintPolicyConfig,
-    PolicyRegistration,
-    TokenPolicyManager,
-};
+use miden_standards::account::policies::{BurnPolicy, MintPolicy, TokenPolicyManager};
 use miden_standards::account::wallets::BasicWallet;
 use miden_standards::note::{
     NoteConsumptionStatus,
+    NoteFile,
+    NoteSyncHint,
     P2idNote,
     P2idNoteStorage,
     PswapNote,
@@ -131,12 +127,14 @@ use miden_standards::note::{
 };
 use miden_standards::testing::mock_account::MockAccountExt;
 use miden_standards::testing::note::NoteBuilder;
-use miden_testing::{MockChain, MockChainBuilder, TxContextInput};
+use miden_standards::tx_script::SendNotesTransactionScriptError;
+use miden_testing::{MockChain, MockChainBuilder, MockTransactionInput};
 use rand::rngs::StdRng;
-use rand::{Rng, RngCore, SeedableRng};
+use rand::{Rng, RngExt, SeedableRng};
 use rstest::rstest;
 
 mod batch;
+mod fees;
 pub mod store;
 mod transaction;
 mod transport;
@@ -152,8 +150,8 @@ const NUM_STORAGE_MAP_ENTRIES_LARGE_ACCOUNT: u64 = 2001;
 const NUM_FAUCETS_LARGE_ACCOUNT: u64 = 10;
 
 /// Oversize threshold used for the mock RPC in large-account tests.
-/// Both storage map entries and vault assets must exceed this to trigger
-/// the `too_many_entries` / `too_many_assets` flags.
+/// Both storage map entries and vault assets must exceed this, so the maps come back as
+/// `StorageMapEntries::LimitExceeded` and the vault with the `too_many_assets` flag set.
 const OVERSIZE_THRESHOLD: usize = 5;
 
 // TESTS
@@ -171,10 +169,10 @@ async fn input_notes_round_trip() {
     // insert notes into database
     for note in &available_notes {
         client
-            .import_notes(&[NoteFile::NoteWithProof(
-                note.note().unwrap().clone(),
-                note.inclusion_proof().clone(),
-            )])
+            .import_notes(&[NoteFile::Committed {
+                note: note.note().unwrap().clone(),
+                proof: note.inclusion_proof().clone(),
+            }])
             .await
             .unwrap();
     }
@@ -207,10 +205,9 @@ async fn get_input_note() {
     // insert Note into database
     let note: InputNoteRecord = original_note.clone().into();
     client
-        .import_notes(&[NoteFile::NoteDetails {
-            details: note.into(),
-            tag: None,
-            after_block_num: 0.into(),
+        .import_notes(&[NoteFile::ExpectedNote {
+            details: note.clone().into(),
+            sync_hint: NoteSyncHint::new(0.into(), note.metadata().unwrap().tag()),
         }])
         .await
         .unwrap();
@@ -331,7 +328,10 @@ async fn insert_same_account_twice_fails() {
 
     let account = Account::mock(
         ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2,
-        AuthSingleSig::new(PublicKeyCommitment::from(EMPTY_WORD), AuthSchemeId::Falcon512Poseidon2),
+        [AuthSingleSig::new(Approver::new(
+            PublicKeyCommitment::from(EMPTY_WORD),
+            AuthSchemeId::Falcon512Poseidon2,
+        ))],
     );
 
     assert!(client.add_account(&account, false).await.is_ok());
@@ -345,7 +345,10 @@ async fn account_code() {
 
     let account = Account::mock(
         ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE,
-        AuthSingleSig::new(PublicKeyCommitment::from(EMPTY_WORD), AuthSchemeId::Falcon512Poseidon2),
+        [AuthSingleSig::new(Approver::new(
+            PublicKeyCommitment::from(EMPTY_WORD),
+            AuthSchemeId::Falcon512Poseidon2,
+        ))],
     );
 
     let account_code = account.code();
@@ -367,7 +370,10 @@ async fn get_account_by_id() {
 
     let account = Account::mock(
         ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_UPDATABLE_CODE,
-        AuthSingleSig::new(PublicKeyCommitment::from(EMPTY_WORD), AuthSchemeId::Falcon512Poseidon2),
+        [AuthSingleSig::new(Approver::new(
+            PublicKeyCommitment::from(EMPTY_WORD),
+            AuthSchemeId::Falcon512Poseidon2,
+        ))],
     );
 
     client.add_account(&account, false).await.unwrap();
@@ -399,10 +405,9 @@ async fn sync_state() {
 
     for note in &expected_notes {
         client
-            .import_notes(&[NoteFile::NoteDetails {
+            .import_notes(&[NoteFile::ExpectedNote {
                 details: note.clone().into(),
-                after_block_num: 0.into(),
-                tag: Some(note.metadata().tag()),
+                sync_hint: NoteSyncHint::new(0.into(), note.metadata().tag()),
             }])
             .await
             .unwrap();
@@ -433,8 +438,10 @@ async fn sync_state() {
 
 #[tokio::test]
 async fn sync_state_mmr() {
-    // generate test client with a random store name
-    let (mut client, rpc_api, keystore) = Box::pin(create_test_client()).await;
+    let (builder, rpc_api, keystore) = Box::pin(create_test_client_builder()).await;
+    let mut client =
+        TestClient::from(builder.irrelevant_block_prune_interval(None).build().await.unwrap());
+    client.ensure_genesis_in_place().await.unwrap();
     // Import note and create wallet so that synced notes do not get discarded (due to being
     // irrelevant)
     insert_new_wallet(&mut client, AccountType::Private, &keystore).await.unwrap();
@@ -448,10 +455,9 @@ async fn sync_state_mmr() {
 
     for note in &notes {
         client
-            .import_notes(&[NoteFile::NoteDetails {
+            .import_notes(&[NoteFile::ExpectedNote {
                 details: note.clone().into(),
-                after_block_num: 0.into(),
-                tag: Some(note.metadata().tag()),
+                sync_hint: NoteSyncHint::new(0.into(), note.metadata().tag()),
             }])
             .await
             .unwrap();
@@ -485,12 +491,11 @@ async fn sync_state_mmr() {
     // Try reconstructing the partial_mmr from what's in the database
     let partial_mmr = client.test_store().get_current_partial_mmr().await.unwrap();
     assert!(partial_mmr.forest().num_leaves() >= 6);
-    assert!(partial_mmr.open(0).unwrap().is_none());
     // Block 1 holds the only unspent public note, so its leaf stays tracked.
     assert!(partial_mmr.open(1).unwrap().is_some());
     assert!(partial_mmr.open(2).unwrap().is_none());
     assert!(partial_mmr.open(3).unwrap().is_none());
-    // Block 4's notes are all consumed externally, so pruning untracks its leaf.
+    // Block 4's notes are all consumed externally, so its leaf is never persisted as tracked.
     assert!(partial_mmr.open(4).unwrap().is_none());
     assert!(partial_mmr.open(5).unwrap().is_none());
 
@@ -499,16 +504,70 @@ async fn sync_state_mmr() {
     let (block_1, _) = rpc_api.get_block_header_by_number(Some(1.into()), false).await.unwrap();
     partial_mmr.peaks().verify(block_1.commitment(), mmr_proof).unwrap();
 
-    // Only block 1 remains tracked after pruning; block 4 was untracked because all its
-    // notes are already consumed externally.
-    assert_eq!(client.test_store().get_tracked_block_headers().await.unwrap().len(), 1);
+    // Automatic pruning is disabled: block 4 is absent because the sync update did not persist it.
+    assert!(
+        client
+            .test_store()
+            .get_tracked_block_headers()
+            .await
+            .unwrap()
+            .iter()
+            .all(|header| header.block_num() != BlockNumber::from(4u32))
+    );
+    assert!(
+        client
+            .test_store()
+            .get_block_headers(&[BlockNumber::from(4u32)].into_iter().collect())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+/// A block that becomes irrelevant because all of its notes are consumed during the same sync must
+/// still have its header and MMR path authenticated before it is omitted from storage.
+#[tokio::test]
+async fn sync_state_rejects_tampered_path_for_same_sync_consumed_note() {
+    let (builder, rpc_api, keystore) = Box::pin(create_test_client_builder()).await;
+    let mut client =
+        TestClient::from(builder.irrelevant_block_prune_interval(None).build().await.unwrap());
+    client.ensure_genesis_in_place().await.unwrap();
+    insert_new_wallet(&mut client, AccountType::Private, &keystore).await.unwrap();
+
+    let notes = rpc_api
+        .get_public_available_notes()
+        .into_iter()
+        .filter_map(|note| note.note().cloned())
+        .collect::<Vec<Note>>();
+
+    for note in &notes {
+        client
+            .import_notes(&[NoteFile::ExpectedNote {
+                details: note.clone().into(),
+                sync_hint: NoteSyncHint::new(0.into(), note.metadata().tag()),
+            }])
+            .await
+            .unwrap();
+    }
+
+    // The prebuilt chain commits the second note in block 4 and consumes it in block 5.
+    assert_eq!(rpc_api.get_chain_tip_block_num(), BlockNumber::from(5u32));
+    rpc_api.set_sync_notes_mmr_path(BlockNumber::from(4u32), MerklePath::default());
+
+    let result = client.sync_state().await;
+    assert!(
+        matches!(result, Err(ClientError::StoreError(StoreError::MmrError(_)))),
+        "the invalid MMR path must be rejected, got {result:?}"
+    );
 }
 
 #[tokio::test]
 async fn sync_state_mmr_with_in_memory_cache() {
     let (builder, rpc_api, keystore) = Box::pin(create_test_client_builder()).await;
-    let mut client = builder.cache_partial_mmr_in_memory(true).build().await.unwrap();
+    let mut client =
+        TestClient::from(builder.cache_partial_mmr_in_memory(true).build().await.unwrap());
     client.ensure_genesis_in_place().await.unwrap();
+    seed_mock_transaction_encryption_key(&mut client).await;
 
     insert_new_wallet(&mut client, AccountType::Private, &keystore).await.unwrap();
 
@@ -534,8 +593,10 @@ async fn sync_state_mmr_with_in_memory_cache() {
 #[tokio::test]
 async fn stale_cached_partial_mmr_is_rebuilt_from_store() {
     let (builder, rpc_api, keystore) = Box::pin(create_test_client_builder()).await;
-    let mut client = builder.cache_partial_mmr_in_memory(true).build().await.unwrap();
+    let mut client =
+        TestClient::from(builder.cache_partial_mmr_in_memory(true).build().await.unwrap());
     client.ensure_genesis_in_place().await.unwrap();
+    seed_mock_transaction_encryption_key(&mut client).await;
     insert_new_wallet(&mut client, AccountType::Private, &keystore).await.unwrap();
 
     // Import the mock chain's public notes so a block becomes tracked after sync.
@@ -546,10 +607,9 @@ async fn stale_cached_partial_mmr_is_rebuilt_from_store() {
         .collect();
     for note in &notes {
         client
-            .import_notes(&[NoteFile::NoteDetails {
+            .import_notes(&[NoteFile::ExpectedNote {
                 details: note.clone().into(),
-                after_block_num: 0.into(),
-                tag: Some(note.metadata().tag()),
+                sync_hint: NoteSyncHint::new(0.into(), note.metadata().tag()),
             }])
             .await
             .unwrap();
@@ -659,12 +719,12 @@ async fn sync_persists_auth_nodes_for_skipped_blocks() {
     // Blocks 1 and 4 had matching note tags but the screener discarded them,
     // so `include_block` was false for those steps.
     assert_eq!(
-        state_sync_update.partial_blockchain_updates.block_headers().count(),
+        state_sync_update.partial_blockchain_updates().block_headers().count(),
         1,
         "expected only the chain tip block header to be stored"
     );
     let (tip_header, ..) =
-        state_sync_update.partial_blockchain_updates.block_headers().next().unwrap();
+        state_sync_update.partial_blockchain_updates().block_headers().next().unwrap();
     assert_eq!(tip_header.block_num(), rpc_api.get_chain_tip_block_num());
 
     // Authentication nodes must be non-empty: they include nodes produced by applying
@@ -672,7 +732,7 @@ async fn sync_persists_auth_nodes_for_skipped_blocks() {
     // tracked genesis leaf's Merkle proof path, which changes as the tree grows.
     assert!(
         !state_sync_update
-            .partial_blockchain_updates
+            .partial_blockchain_updates()
             .new_authentication_nodes()
             .is_empty(),
         "expected authentication nodes from intermediate (skipped) blocks to be persisted"
@@ -744,7 +804,7 @@ async fn sync_state_no_redundant_get_account_calls() {
 
     // Only 1 updated public account entry, not N duplicates
     assert_eq!(
-        state_sync_update.account_updates.updated_public_accounts().len(),
+        state_sync_update.account_updates().updated_public_accounts().len(),
         1,
         "expected exactly 1 updated public account"
     );
@@ -783,6 +843,20 @@ async fn sync_state_tags() {
 }
 
 #[tokio::test]
+async fn get_latest_block_header_tracks_sync_height() {
+    let (mut client, _rpc_api, _) = Box::pin(create_test_client()).await;
+
+    client.sync_state().await.unwrap();
+
+    let header = client
+        .get_latest_block_header()
+        .await
+        .expect("a header should be stored at the sync height");
+
+    assert_eq!(header.block_num(), client.get_sync_height().await.unwrap());
+}
+
+#[tokio::test]
 async fn tags() {
     // generate test client with a random store name
     let (mut client, _rpc_api, _) = Box::pin(create_test_client()).await;
@@ -793,27 +867,27 @@ async fn tags() {
     // add a tag
     let tag_1: NoteTag = 1.into();
     let tag_2: NoteTag = 2.into();
-    client.add_note_tag(tag_1).await.unwrap();
-    client.add_note_tag(tag_2).await.unwrap();
+    assert!(client.add_note_tag(tag_1).await.unwrap());
+    assert!(client.add_note_tag(tag_2).await.unwrap());
 
     // verify that the tag is being tracked
     assert_eq!(client.get_note_tags().await.unwrap(), vec![tag_1, tag_2]);
 
     // attempt to add the same tag again
-    client.add_note_tag(tag_1).await.unwrap();
+    assert!(!client.add_note_tag(tag_1).await.unwrap());
 
     // verify that the tag is still being tracked only once
     assert_eq!(client.get_note_tags().await.unwrap(), vec![tag_1, tag_2]);
 
     // Try removing non-existent tag
     let tag_4: NoteTag = 4.into();
-    client.remove_note_tag(tag_4).await.unwrap();
+    assert!(!client.remove_note_tag(tag_4).await.unwrap());
 
     // verify that the tracked tags are unchanged
     assert_eq!(client.get_note_tags().await.unwrap(), vec![tag_1, tag_2]);
 
     // remove second tag
-    client.remove_note_tag(tag_1).await.unwrap();
+    assert!(client.remove_note_tag(tag_1).await.unwrap());
 
     // verify that tag_1 is not tracked anymore
     assert_eq!(client.get_note_tags().await.unwrap(), vec![tag_2]);
@@ -847,7 +921,7 @@ async fn mint_transaction() {
             .unwrap();
     let executed_tx = transaction_result.executed_transaction().clone();
 
-    assert_eq!(executed_tx.account_delta().nonce_delta(), ONE);
+    assert_eq!(executed_tx.account_patch().final_nonce(), Some(ONE));
 }
 
 #[tokio::test]
@@ -886,18 +960,17 @@ async fn import_note_validation() {
     let consumed_note = consumed_note.expect("expected to find at least one consumed note");
 
     client
-        .import_notes(&[NoteFile::NoteWithProof(
-            consumed_note.note().unwrap().clone(),
-            consumed_note.inclusion_proof().clone(),
-        )])
+        .import_notes(&[NoteFile::Committed {
+            note: consumed_note.note().unwrap().clone(),
+            proof: consumed_note.inclusion_proof().clone(),
+        }])
         .await
         .unwrap();
 
     client
-        .import_notes(&[NoteFile::NoteDetails {
+        .import_notes(&[NoteFile::ExpectedNote {
             details: expected_note.note().unwrap().into(),
-            after_block_num: 0.into(),
-            tag: None,
+            sync_hint: NoteSyncHint::new(0.into(), expected_note.note().unwrap().metadata().tag()),
         }])
         .await
         .unwrap();
@@ -1005,6 +1078,11 @@ async fn import_processing_note_returns_error() {
     ));
 }
 
+// TODO: fix - blocked by an upstream miden-standards bug (0.16.0-alpha.2). The
+// `send_notes_script.rs::move_asset_to_note_body` helper only emits the `pad(21)->pad(16)` stack
+// reduction inside the per-asset loop, so a zero-asset output note created from a basic wallet
+// returns at stack depth 21 and the VM rejects the transaction with `InvalidStackDepthOnReturn`.
+// Re-enable once the standards send-notes script handles zero-asset notes.
 #[tokio::test]
 async fn note_without_asset() {
     let (mut client, _rpc_api, keystore) = Box::pin(create_test_client()).await;
@@ -1048,9 +1126,11 @@ async fn note_without_asset() {
 
     assert!(matches!(
         error,
-        ClientError::TransactionRequestError(TransactionRequestError::AccountInterfaceError(
-            AccountInterfaceError::FaucetNoteWithoutAsset
-        ))
+        ClientError::TransactionRequestError(
+            TransactionRequestError::SendNotesTransactionScriptError(
+                SendNotesTransactionScriptError::FaucetNoteUnexpectedNumAssets
+            )
+        )
     ));
 
     let error = TransactionRequestBuilder::new()
@@ -1076,6 +1156,18 @@ async fn note_without_asset() {
         .unwrap_err();
 
     assert!(matches!(error, TransactionRequestError::P2IDNoteWithoutAsset));
+
+    // Minting emits a P2ID note as well, so a zero-amount mint is turned away the same way.
+    let error = TransactionRequestBuilder::new()
+        .build_mint_fungible_asset(
+            FungibleAsset::new(faucet.id(), 0).unwrap(),
+            wallet.id(),
+            NoteType::Public,
+            client.rng(),
+        )
+        .unwrap_err();
+
+    assert!(matches!(error, TransactionRequestError::P2IDNoteWithoutAsset));
 }
 
 #[tokio::test]
@@ -1088,7 +1180,8 @@ async fn execute_program() {
     let code = "
         use miden::core::sys
 
-        begin
+        @transaction_script
+        pub proc main
             push.16
             repeat.16
                 dup push.1 sub
@@ -1299,14 +1392,14 @@ async fn p2id_transfer() {
         .get_balance(faucet_account_id)
         .await
         .unwrap();
-    assert_eq!(from_balance, MINT_AMOUNT - TRANSFER_AMOUNT);
+    assert_eq!(from_balance, AssetAmount::new(MINT_AMOUNT - TRANSFER_AMOUNT).unwrap());
 
     let to_balance = client
         .account_reader(to_account_id)
         .get_balance(faucet_account_id)
         .await
         .unwrap();
-    assert_eq!(to_balance, TRANSFER_AMOUNT);
+    assert_eq!(to_balance, AssetAmount::new(TRANSFER_AMOUNT).unwrap());
 
     assert_note_cannot_be_consumed_twice(
         &mut client,
@@ -1340,12 +1433,8 @@ async fn input_note_reader_finds_externally_consumed_notes() {
     // Consumer consumes the note directly on the chain (bypassing any client).
     let tx = Box::pin(
         chain
-            .build_tx_context(
-                miden_testing::TxContextInput::Account(consumer.clone()),
-                &[],
-                core::slice::from_ref(&p2id_note),
-            )
-            .unwrap()
+            .build_transaction(miden_testing::MockTransactionInput::Account(consumer.clone()))
+            .unauthenticated_input_note(p2id_note.clone())
             .build()
             .unwrap()
             .execute(),
@@ -1368,12 +1457,12 @@ async fn input_note_reader_finds_externally_consumed_notes() {
         .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore))
-        .in_debug_mode(DebugMode::Enabled)
         .tx_discard_delta(None)
         .build()
         .await
         .unwrap();
     client.ensure_genesis_in_place().await.unwrap();
+    seed_mock_transaction_encryption_key(&mut client).await;
 
     // Register the consumer account so sync_transactions returns its transactions.
     client.add_account(&consumer, false).await.unwrap();
@@ -1381,10 +1470,9 @@ async fn input_note_reader_finds_externally_consumed_notes() {
     // Import the P2ID note as an input note so the client tracks it. The tag lets the import
     // resolve the note's on-chain commitment (and thus its metadata) so it can later be matched
     // when the external consumer's nullifier appears during sync.
-    let note_file = NoteFile::NoteDetails {
+    let note_file = NoteFile::ExpectedNote {
         details: p2id_note.into(),
-        after_block_num: BlockNumber::from(0u32),
-        tag: Some(p2id_tag),
+        sync_hint: NoteSyncHint::new(BlockNumber::from(0u32), p2id_tag),
     };
     client.import_notes(&[note_file]).await.unwrap();
 
@@ -1452,12 +1540,8 @@ async fn import_by_id_already_consumed_note_is_findable_by_id() {
     // Consumer consumes the note directly on the chain (bypassing any client).
     let tx = Box::pin(
         chain
-            .build_tx_context(
-                miden_testing::TxContextInput::Account(consumer.clone()),
-                &[],
-                core::slice::from_ref(&p2id_note),
-            )
-            .unwrap()
+            .build_transaction(miden_testing::MockTransactionInput::Account(consumer.clone()))
+            .unauthenticated_input_note(p2id_note.clone())
             .build()
             .unwrap()
             .execute(),
@@ -1479,12 +1563,12 @@ async fn import_by_id_already_consumed_note_is_findable_by_id() {
         .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore))
-        .in_debug_mode(DebugMode::Enabled)
         .tx_discard_delta(None)
         .build()
         .await
         .unwrap();
     client.ensure_genesis_in_place().await.unwrap();
+    seed_mock_transaction_encryption_key(&mut client).await;
 
     // Import the already-consumed public note by id.
     let returned = client.import_notes(&[NoteFile::NoteId(note_id)]).await.unwrap();
@@ -1509,7 +1593,7 @@ async fn import_by_id_already_consumed_note_is_findable_by_id() {
 /// make block 4 irrelevant on demand.
 async fn setup_prunable_block_scenario(
     prune_interval: Option<u32>,
-) -> (MockClient<FilesystemKeyStore>, MockRpcApi, AccountId, Note) {
+) -> (TestClient, MockRpcApi, AccountId, Note) {
     let mut builder = MockChainBuilder::new();
     let mock_account = builder.add_existing_mock_account(miden_testing::Auth::IncrNonce).unwrap();
 
@@ -1538,9 +1622,9 @@ async fn setup_prunable_block_scenario(
     // Block 1: create the first unspent note (keeps block 1 permanently relevant).
     let tx = Box::pin(
         chain
-            .build_tx_context(TxContextInput::AccountId(mock_account.id()), &[], &[spawn_note_1])
-            .unwrap()
-            .extend_expected_output_notes(vec![RawOutputNote::Full(note_first)])
+            .build_transaction(MockTransactionInput::AccountId(mock_account.id()))
+            .unauthenticated_input_note(spawn_note_1)
+            .expected_output_notes(vec![RawOutputNote::Full(note_first)])
             .build()
             .unwrap()
             .execute(),
@@ -1558,9 +1642,9 @@ async fn setup_prunable_block_scenario(
     // irrelevant.
     let tx = Box::pin(
         chain
-            .build_tx_context(TxContextInput::AccountId(mock_account.id()), &[], &[spawn_note_2])
-            .unwrap()
-            .extend_expected_output_notes(vec![RawOutputNote::Full(note_second.clone())])
+            .build_transaction(MockTransactionInput::AccountId(mock_account.id()))
+            .unauthenticated_input_note(spawn_note_2)
+            .expected_output_notes(vec![RawOutputNote::Full(note_second.clone())])
             .build()
             .unwrap()
             .execute(),
@@ -1580,13 +1664,13 @@ async fn setup_prunable_block_scenario(
         .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore))
-        .in_debug_mode(DebugMode::Enabled)
         .tx_discard_delta(None)
         .irrelevant_block_prune_interval(prune_interval)
         .build()
         .await
         .unwrap();
     client.ensure_genesis_in_place().await.unwrap();
+    seed_mock_transaction_encryption_key(&mut client).await;
     client.add_note_tag(NoteTag::new(0)).await.unwrap();
 
     client.sync_state().await.unwrap();
@@ -1596,7 +1680,7 @@ async fn setup_prunable_block_scenario(
         "setup precondition: two relevant blocks tracked",
     );
 
-    (client, mock_rpc, mock_account.id(), note_second)
+    (TestClient::from(client), mock_rpc, mock_account.id(), note_second)
 }
 
 /// Consumes `note` against `account_id` on the mocked chain and proves the resulting block, so the
@@ -1606,8 +1690,8 @@ async fn consume_note_and_prove(mock_rpc: &MockRpcApi, account_id: AccountId, no
         let tx_context = mock_rpc
             .mock_chain
             .write()
-            .build_tx_context(TxContextInput::AccountId(account_id), &[], &[note])
-            .unwrap()
+            .build_transaction(MockTransactionInput::AccountId(account_id))
+            .unauthenticated_input_note(note)
             .build()
             .unwrap();
         Box::pin(tx_context.execute()).await.unwrap()
@@ -1819,14 +1903,20 @@ async fn p2ide_transfer_consumed_by_target() {
         .get_balance(faucet_account_id)
         .await
         .unwrap();
-    assert_eq!(new_from_balance, from_account_balance - TRANSFER_AMOUNT);
+    assert_eq!(
+        new_from_balance,
+        (from_account_balance - AssetAmount::new(TRANSFER_AMOUNT).unwrap()).unwrap()
+    );
 
     let new_to_balance = client
         .account_reader(to_account_id)
         .get_balance(faucet_account_id)
         .await
         .unwrap();
-    assert_eq!(new_to_balance, to_account_balance + TRANSFER_AMOUNT);
+    assert_eq!(
+        new_to_balance,
+        (to_account_balance + AssetAmount::new(TRANSFER_AMOUNT).unwrap()).unwrap()
+    );
 
     assert_note_cannot_be_consumed_twice(&mut client, to_account_id, note).await;
 }
@@ -1937,7 +2027,7 @@ async fn p2ide_transfer_consumed_by_sender() {
         .get_balance(faucet_account_id)
         .await
         .unwrap();
-    assert_eq!(to_balance, 0);
+    assert_eq!(to_balance, AssetAmount::ZERO);
 
     // Check that the target can't consume the note anymore
     assert_note_cannot_be_consumed_twice(
@@ -2033,7 +2123,7 @@ async fn p2ide_timelocked() {
         .get_balance(faucet_account_id)
         .await
         .unwrap();
-    assert_eq!(target_balance, TRANSFER_AMOUNT);
+    assert_eq!(target_balance, AssetAmount::new(TRANSFER_AMOUNT).unwrap());
 }
 
 #[tokio::test]
@@ -2112,18 +2202,20 @@ async fn get_consumable_notes() {
     let consumable_notes = Box::pin(client.get_consumable_notes(None)).await.unwrap();
     let relevant_accounts = &consumable_notes.first().unwrap().1;
     assert_eq!(relevant_accounts.len(), 2);
-    assert!(
-        !Box::pin(client.get_consumable_notes(Some(from_account_id)))
-            .await
-            .unwrap()
-            .is_empty()
-    );
-    assert!(
-        !Box::pin(client.get_consumable_notes(Some(to_account_id)))
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    let from_consumable =
+        Box::pin(client.get_consumable_notes(Some(from_account_id))).await.unwrap();
+    assert!(!from_consumable.is_empty());
+    for (_, relevances) in &from_consumable {
+        let accounts: Vec<_> = relevances.iter().map(|(id, _)| *id).collect();
+        assert_eq!(accounts, vec![from_account_id]);
+    }
+
+    let to_consumable = Box::pin(client.get_consumable_notes(Some(to_account_id))).await.unwrap();
+    assert!(!to_consumable.is_empty());
+    for (_, relevances) in &to_consumable {
+        let accounts: Vec<_> = relevances.iter().map(|(id, _)| *id).collect();
+        assert_eq!(accounts, vec![to_account_id]);
+    }
 
     // Check that the note is only consumable after block 100 for the account that sent the
     // transaction
@@ -2152,6 +2244,171 @@ async fn get_consumable_notes() {
         | NoteConsumptionStatus::ConsumableWithAuthorization => {},
         _ => panic!("Unexpected NoteConsumptionStatus"),
     }
+}
+
+/// A note script that only the account whose ID is in the note's storage can consume. It is not a
+/// standard note script and its consumability cannot be determined statically, so the screener
+/// falls back to a trial transaction per (account, note) pair, which is the path the
+/// execution-input cache serves. Being account-bound, its verdict differs per tracked account, so
+/// serving one account's execution inputs for another changes the screening result.
+const TARGET_BOUND_NOTE_SCRIPT: &str = r#"
+    use miden::protocol::active_account
+    use miden::protocol::account_id
+    use miden::protocol::active_note
+
+    @note_script
+    pub proc main
+        # drop the note arguments
+        dropw
+
+        # write the note storage to memory starting at address 0
+        push.0 exec.active_note::get_storage
+        # => [num_storage_items]
+
+        # this script expects exactly the 2 storage items of an account id (suffix, prefix)
+        eq.2 assert.err="target-bound note expects exactly 2 storage items"
+        # => []
+
+        # address 0 holds the suffix and address 1 the prefix, so load the prefix first to leave
+        # [suffix, prefix] on the stack
+        mem_load.1 mem_load.0
+        # => [target_account_id_suffix, target_account_id_prefix]
+
+        exec.active_account::get_id
+        # => [account_id_suffix, account_id_prefix, target_suffix, target_prefix]
+
+        exec.account_id::eq assert.err="consumer is not the note's target account"
+        # => []
+    end
+"#;
+
+/// Screens committed notes that only one of the three tracked accounts can consume, so the
+/// screening result depends on which account's state each trial execution runs against. The
+/// execution inputs memoized across the pass must therefore stay separated per account: serving
+/// one account's inputs for another changes which accounts are reported as able to consume.
+#[tokio::test]
+async fn note_screening_reports_only_the_account_bound_by_the_note() {
+    use std::collections::BTreeSet;
+
+    use miden_client::note::Note;
+    use miden_client::store::InputNoteRecord;
+    use miden_client::store::input_note_states::CommittedNoteState;
+    use miden_protocol::account::AccountId;
+    use miden_protocol::crypto::merkle::SparseMerklePath;
+    use miden_protocol::note::{NoteDetails, NoteId, NoteInclusionProof};
+
+    const NOTE_COUNT: usize = 3;
+
+    let (mut client, _mock_rpc_api, authenticator) = Box::pin(create_test_client()).await;
+
+    let (first_wallet, _second_wallet, faucet) = setup_two_wallets_and_faucet(
+        &mut client,
+        AccountType::Private,
+        &authenticator,
+        RPO_FALCON_SCHEME_ID,
+    )
+    .await
+    .unwrap();
+
+    let target = first_wallet.id();
+    let faucet_id = faucet.id();
+
+    let script = client.code_builder().compile_note_script(TARGET_BOUND_NOTE_SCRIPT).unwrap();
+
+    // Screening an unauthenticated note does not verify the inclusion proof, so a dummy proof and
+    // an empty block note root are enough to make the records committed.
+    let block_num = client.get_sync_height().await.unwrap();
+    let dummy_proof = NoteInclusionProof::new(block_num, 0, SparseMerklePath::default()).unwrap();
+
+    let mut records = Vec::with_capacity(NOTE_COUNT);
+    let mut expected_ids = BTreeSet::new();
+    for i in 0..NOTE_COUNT {
+        let note = NoteBuilder::new(
+            faucet_id,
+            RandomCoin::new([i as u64, 0, 0, 0].map(Felt::new_unchecked).into()),
+        )
+        .script(script.clone())
+        .note_storage([target.suffix(), target.prefix().as_felt()])
+        .unwrap()
+        .build()
+        .unwrap();
+        expected_ids.insert(note.id());
+
+        let metadata = *note.metadata();
+        let attachments = note.attachments().clone();
+        let details = NoteDetails::from(note);
+        let state = CommittedNoteState {
+            metadata,
+            inclusion_proof: dummy_proof.clone(),
+            block_note_root: EMPTY_WORD,
+        }
+        .into();
+        records.push(InputNoteRecord::new(details, attachments, None, state));
+    }
+    client.test_store().upsert_input_notes(&records).await.unwrap();
+
+    let notes = records
+        .into_iter()
+        .map(TryInto::try_into)
+        .collect::<Result<Vec<Note>, _>>()
+        .unwrap();
+
+    let screened = Box::pin(client.note_screener().get_batch_consumability(&notes)).await.unwrap();
+
+    assert_eq!(screened.keys().copied().collect::<BTreeSet<NoteId>>(), expected_ids);
+    for relevances in screened.values() {
+        let accounts: Vec<AccountId> = relevances.iter().map(|(id, _)| *id).collect();
+        assert_eq!(accounts, vec![target]);
+    }
+}
+
+/// Reads transaction inputs straight from the data store the screener runs its trial executions
+/// against, without going through a screening pass.
+///
+/// Checks the properties the memoization depends on: a cache miss serves what a plain store read
+/// would have returned, a repeated read is served from the cache rather than from the store
+/// (observable as a stale read after the account state changes in the store), and entries stay
+/// separated per account so one account never receives another's state.
+#[tokio::test]
+async fn execution_input_cache_matches_uncached_reads() {
+    use miden_client::testing::{ClientDataStore, DataStore};
+
+    let (mut client, _mock_rpc_api, authenticator) = Box::pin(create_test_client()).await;
+
+    let (first_wallet, second_wallet, _faucet) = setup_two_wallets_and_faucet(
+        &mut client,
+        AccountType::Private,
+        &authenticator,
+        RPO_FALCON_SCHEME_ID,
+    )
+    .await
+    .unwrap();
+
+    let first = first_wallet.id();
+    let second = second_wallet.id();
+
+    let blocks = BTreeSet::from([client.get_sync_height().await.unwrap()]);
+    let store = client.test_store().clone();
+    let rpc_api = client.test_rpc_api().clone();
+
+    let cached = ClientDataStore::new(store.clone(), rpc_api.clone()).with_execution_input_cache();
+    let uncached = ClientDataStore::new(store.clone(), rpc_api);
+
+    let miss = cached.get_transaction_inputs(first, blocks.clone()).await.unwrap();
+    let fresh = uncached.get_transaction_inputs(first, blocks.clone()).await.unwrap();
+    assert_eq!(miss, fresh);
+
+    let mut account = client.get_account(first).await.unwrap().unwrap();
+    account.increment_nonce(ONE).unwrap();
+    store.update_account(&account).await.unwrap();
+
+    let hit = cached.get_transaction_inputs(first, blocks.clone()).await.unwrap();
+    let updated = uncached.get_transaction_inputs(first, blocks.clone()).await.unwrap();
+    assert_ne!(updated, miss);
+    assert_eq!(hit, miss);
+
+    let other = cached.get_transaction_inputs(second, blocks).await.unwrap();
+    assert_eq!(other.0.id(), second);
 }
 
 #[tokio::test]
@@ -2228,9 +2485,11 @@ async fn get_output_notes() {
 async fn account_rollback() {
     let (builder, mock_rpc_api, authenticator) = Box::pin(create_test_client_builder()).await;
 
-    let mut client = builder.tx_discard_delta(Some(TX_DISCARD_DELTA)).build().await.unwrap();
+    let mut client =
+        TestClient::from(builder.tx_discard_delta(Some(TX_DISCARD_DELTA)).build().await.unwrap());
 
     client.sync_state().await.unwrap();
+    seed_mock_transaction_encryption_key(&mut client).await;
 
     let (regular_account, faucet_account_header) = setup_wallet_and_faucet(
         &mut client,
@@ -2690,7 +2949,73 @@ async fn swap_chain_test() {
         .get_balance(account_pairs[0].1.id())
         .await
         .unwrap();
-    assert_eq!(last_wallet_balance, 1);
+    assert_eq!(last_wallet_balance, AssetAmount::new(1).unwrap());
+}
+
+#[tokio::test]
+async fn swap_public_payback_test() {
+    let (mut client, mock_rpc_api, keystore) = create_test_client().await;
+
+    let (wallet_a, faucet_a) =
+        setup_wallet_and_faucet(&mut client, AccountType::Private, &keystore, RPO_FALCON_SCHEME_ID)
+            .await
+            .unwrap();
+    mint_and_consume(&mut client, wallet_a.id(), faucet_a.id(), NoteType::Private).await;
+    mock_rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+
+    let (wallet_b, faucet_b) =
+        setup_wallet_and_faucet(&mut client, AccountType::Private, &keystore, RPO_FALCON_SCHEME_ID)
+            .await
+            .unwrap();
+    mint_and_consume(&mut client, wallet_b.id(), faucet_b.id(), NoteType::Private).await;
+    mock_rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+
+    // wallet_a offers asset_a and requests asset_b, with PUBLIC payback.
+    let tx_request = TransactionRequestBuilder::new()
+        .build_swap(
+            &SwapTransactionData::new(
+                wallet_a.id(),
+                Asset::Fungible(FungibleAsset::new(faucet_a.id(), 1).unwrap()),
+                Asset::Fungible(FungibleAsset::new(faucet_b.id(), 1).unwrap()),
+            ),
+            NoteType::Private,
+            NoteType::Public,
+            client.rng(),
+        )
+        .unwrap();
+
+    let swap_note = tx_request.expected_output_own_notes()[0].clone();
+    let payback_commitment = tx_request.expected_future_notes().next().unwrap().0.commitment();
+    Box::pin(client.submit_new_transaction(wallet_a.id(), tx_request))
+        .await
+        .unwrap();
+    mock_rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+
+    // wallet_b consumes the swap, producing a public P2ID payback to wallet_a with no off-band
+    // data.
+    let tx_request = TransactionRequestBuilder::new().build_consume_notes(vec![swap_note]).unwrap();
+    Box::pin(client.submit_new_transaction(wallet_b.id(), tx_request))
+        .await
+        .unwrap();
+    mock_rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+
+    // The payback note's committed metadata must show it was emitted as a public note.
+    let payback_record = client
+        .get_input_notes(NoteFilter::DetailsCommitments(vec![payback_commitment]))
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(payback_record.metadata().unwrap().note_type(), NoteType::Public);
+
+    // wallet_b ended up with asset_a, wallet_a will receive asset_b via the public payback note.
+    let wallet_b_balance =
+        client.account_reader(wallet_b.id()).get_balance(faucet_a.id()).await.unwrap();
+    assert_eq!(wallet_b_balance, AssetAmount::new(1).unwrap());
 }
 
 /// Tests that partial output notes (created when a SWAP note is consumed) are correctly included in
@@ -2746,9 +3071,10 @@ async fn partial_output_note_receives_inclusion_proof_after_sync() {
     mock_rpc_api.prove_block();
     client.sync_state().await.unwrap();
 
-    // Wallet B consumes the SWAP note. The SWAP script creates a payback note for wallet A using
-    // only the recipient digest committed inside the SWAP note. From the VM's perspective this
-    // payback note is an OutputNote::Partial, which gets stored as ExpectedPartial.
+    // Wallet B consumes the SWAP note. The SWAP script derives the payback recipient at consume
+    // time (P2ID to the creator with serial = SWAP_serial with element 0 + 1) and emits the
+    // payback note. From the VM's perspective this payback note is an OutputNote::Partial, which
+    // gets stored as ExpectedPartial.
     let consume_tx_request =
         TransactionRequestBuilder::new().build_consume_notes(vec![swap_note]).unwrap();
 
@@ -2860,16 +3186,20 @@ async fn pswap_fill_test(
     assert_eq!(
         alice_account
             .vault()
-            .get_balance(AssetVaultKey::new_fungible(eth_faucet.id(), AssetCallbackFlag::Disabled,))
-            .unwrap()
-            .as_u64(),
-        MINT_AMOUNT - offered_amount,
+            .get_balance(AssetId::new_fungible(eth_faucet.id()))
+            .unwrap(),
+        AssetAmount::new(MINT_AMOUNT - offered_amount).unwrap(),
         "Alice's ETH balance should decrease by the offered amount"
     );
 
     // Step 2: Bob fills the PSWAP note.
     let consume_request = TransactionRequestBuilder::new()
-        .build_pswap_consume(&pswap_note, bob_wallet.id(), account_fill_amount, 0)
+        .build_pswap_consume(
+            &pswap_note,
+            bob_wallet.id(),
+            AssetAmount::new(account_fill_amount).unwrap(),
+            AssetAmount::ZERO,
+        )
         .unwrap();
 
     Box::pin(client.submit_new_transaction(bob_wallet.id(), consume_request))
@@ -2883,23 +3213,15 @@ async fn pswap_fill_test(
     // Bob spent exactly the fill amount — proves NOTE_ARGS were honored (a wrong layout would
     // fall back to the script's full-fill default path).
     assert_eq!(
-        bob_account
-            .vault()
-            .get_balance(AssetVaultKey::new_fungible(usd_faucet.id(), AssetCallbackFlag::Disabled,))
-            .unwrap()
-            .as_u64(),
-        MINT_AMOUNT - account_fill_amount,
+        bob_account.vault().get_balance(AssetId::new_fungible(usd_faucet.id())).unwrap(),
+        AssetAmount::new(MINT_AMOUNT - account_fill_amount).unwrap(),
         "Bob's USD balance should decrease by exactly the fill amount"
     );
 
     // Bob received the proportional payout.
     assert_eq!(
-        bob_account
-            .vault()
-            .get_balance(AssetVaultKey::new_fungible(eth_faucet.id(), AssetCallbackFlag::Disabled,))
-            .unwrap()
-            .as_u64(),
-        expected_payout,
+        bob_account.vault().get_balance(AssetId::new_fungible(eth_faucet.id())).unwrap(),
+        AssetAmount::new(expected_payout).unwrap(),
         "Bob should have received the expected ETH payout"
     );
 
@@ -2923,7 +3245,7 @@ async fn pswap_fill_test(
                 "remainder offered amount should reflect the unfilled portion"
             );
             assert_eq!(
-                remainder.storage().requested_asset_amount(),
+                remainder.storage().min_requested_amount(),
                 rem_requested,
                 "remainder requested amount should reflect the unfilled portion"
             );
@@ -2981,10 +3303,9 @@ async fn pswap_cancel_test() {
     assert_eq!(
         alice_account
             .vault()
-            .get_balance(AssetVaultKey::new_fungible(eth_faucet.id(), AssetCallbackFlag::Disabled,))
-            .unwrap()
-            .as_u64(),
-        MINT_AMOUNT - offered_amount,
+            .get_balance(AssetId::new_fungible(eth_faucet.id()))
+            .unwrap(),
+        AssetAmount::new(MINT_AMOUNT - offered_amount).unwrap(),
         "Alice's ETH balance should decrease by the offered amount"
     );
 
@@ -3004,10 +3325,9 @@ async fn pswap_cancel_test() {
     assert_eq!(
         alice_account
             .vault()
-            .get_balance(AssetVaultKey::new_fungible(eth_faucet.id(), AssetCallbackFlag::Disabled,))
-            .unwrap()
-            .as_u64(),
-        MINT_AMOUNT,
+            .get_balance(AssetId::new_fungible(eth_faucet.id()))
+            .unwrap(),
+        AssetAmount::new(MINT_AMOUNT).unwrap(),
         "Alice's ETH balance should be fully restored after canceling the PSWAP note"
     );
 }
@@ -3018,9 +3338,7 @@ async fn pswap_cancel_test() {
 // keystore. This is what lets the PSWAP lineage test model Alice and Bob as two
 // genuinely separate clients (as they are in production), rather than two
 // accounts colocated on one store.
-async fn create_pswap_test_client(
-    mock_rpc_api: &MockRpcApi,
-) -> (MockClient<FilesystemKeyStore>, FilesystemKeyStore) {
+async fn create_pswap_test_client(mock_rpc_api: &MockRpcApi) -> (TestClient, FilesystemKeyStore) {
     let mut seed_rng = rand::rng();
     let coin_seed: [u64; 4] = seed_rng.random();
     let rng = RandomCoin::new(coin_seed.map(|v| Felt::new_unchecked(v >> 1)).into());
@@ -3032,20 +3350,20 @@ async fn create_pswap_test_client(
         .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore.clone()))
-        .in_debug_mode(DebugMode::Enabled)
         .tx_discard_delta(None)
         .build()
         .await
         .unwrap();
     client.ensure_genesis_in_place().await.unwrap();
+    seed_mock_transaction_encryption_key(&mut client).await;
 
-    (client, keystore)
+    (TestClient::from(client), keystore)
 }
 
 /// Two-client mock-chain test: Alice creates a PSWAP, Bob partial-fills, Alice reclaims the
 /// remainder and consumes the payback. Runs as `#[rstest]` cases for `NoteType::Public` and
-/// `NoteType::Private`; for the private case the test pre-registers Bob's payback + remainder
-/// attachments on the mock RPC (a real node returns them automatically).
+/// `NoteType::Private`. PSWAP attachments are single words, so they reach both clients on the sync
+/// window itself.
 #[rstest]
 #[case::public_pswap(NoteType::Public)]
 #[case::private_pswap(NoteType::Private)]
@@ -3124,33 +3442,17 @@ async fn pswap_chain_tracking_test(#[case] note_type: NoteType) {
     assert_eq!(lineage.remaining_offered.as_u64(), offered_amount);
     assert_eq!(lineage.remaining_requested.as_u64(), requested_amount);
 
-    // Private-only: pre-register payback + remainder attachments on the mock (a real node
-    // returns them via RPC).
-    if note_type == NoteType::Private {
-        let fill_amount = AssetAmount::new(25).unwrap();
-        let payout_amount = AssetAmount::new(50).unwrap();
-        let new_offered = AssetAmount::new(50).unwrap();
-        let new_requested = AssetAmount::new(25).unwrap();
-        let payback_attachment = PswapNoteAttachment::new(fill_amount, order_id, 1);
-        let remainder_attachment = PswapNoteAttachment::new(payout_amount, order_id, 1);
-        let expected_payback =
-            pswap_typed.payback_note(bob_wallet.id(), &payback_attachment).unwrap();
-        let expected_remainder = pswap_typed
-            .remainder_note(bob_wallet.id(), &remainder_attachment, new_offered, new_requested)
-            .unwrap();
-        mock_rpc_api.register_private_note_attachments(
-            expected_payback.id(),
-            expected_payback.attachments().clone(),
-        );
-        mock_rpc_api.register_private_note_attachments(
-            expected_remainder.id(),
-            expected_remainder.attachments().clone(),
-        );
-    }
+    // A PSWAP attachment is a single word, so payback and remainder notes carry theirs on the
+    // sync window. Nothing needs pre-registering on the mock.
 
     // ── Bob partial-fills: 25 ETH → 50 BTC payout, leaving 50 BTC / 25 ETH. ──
     let consume_request = TransactionRequestBuilder::new()
-        .build_pswap_consume(&pswap_note, bob_wallet.id(), 25, 0)
+        .build_pswap_consume(
+            &pswap_note,
+            bob_wallet.id(),
+            AssetAmount::new(25).unwrap(),
+            AssetAmount::ZERO,
+        )
         .unwrap();
     Box::pin(bob_client.submit_new_transaction(bob_wallet.id(), consume_request))
         .await
@@ -3219,10 +3521,9 @@ async fn pswap_chain_tracking_test(#[case] note_type: NoteType) {
     assert_eq!(
         alice_account
             .vault()
-            .get_balance(AssetVaultKey::new_fungible(eth_faucet.id(), AssetCallbackFlag::Disabled))
-            .unwrap()
-            .as_u64(),
-        25,
+            .get_balance(AssetId::new_fungible(eth_faucet.id()))
+            .unwrap(),
+        AssetAmount::new(25).unwrap(),
         "Alice should have received 25 ETH from the fill"
     );
 
@@ -3231,10 +3532,9 @@ async fn pswap_chain_tracking_test(#[case] note_type: NoteType) {
     assert_eq!(
         alice_account
             .vault()
-            .get_balance(AssetVaultKey::new_fungible(btc_faucet.id(), AssetCallbackFlag::Disabled))
-            .unwrap()
-            .as_u64(),
-        MINT_AMOUNT - 50,
+            .get_balance(AssetId::new_fungible(btc_faucet.id()))
+            .unwrap(),
+        AssetAmount::new(MINT_AMOUNT - 50).unwrap(),
         "Alice's BTC should reflect 50 paid out and 50 reclaimed"
     );
 }
@@ -3302,22 +3602,14 @@ async fn pswap_full_fill_chain_tracking_test(#[case] note_type: NoteType) {
         bob_client.sync_state().await.unwrap();
     }
 
-    // Private-only: pre-register payback attachment (full fill emits no remainder, so only
-    // one attachment to register).
-    if note_type == NoteType::Private {
-        let fill_amount = AssetAmount::new(requested_amount).unwrap();
-        let payback_attachment = PswapNoteAttachment::new(fill_amount, order_id, 1);
-        let expected_payback =
-            pswap_typed.payback_note(bob_wallet.id(), &payback_attachment).unwrap();
-        mock_rpc_api.register_private_note_attachments(
-            expected_payback.id(),
-            expected_payback.attachments().clone(),
-        );
-    }
-
     // Bob full-fills: consumes the entire 50 ETH side → only a payback note is emitted.
     let consume_request = TransactionRequestBuilder::new()
-        .build_pswap_consume(&pswap_note, bob_wallet.id(), requested_amount, 0)
+        .build_pswap_consume(
+            &pswap_note,
+            bob_wallet.id(),
+            AssetAmount::new(requested_amount).unwrap(),
+            AssetAmount::ZERO,
+        )
         .unwrap();
     Box::pin(bob_client.submit_new_transaction(bob_wallet.id(), consume_request))
         .await
@@ -3357,19 +3649,17 @@ async fn pswap_full_fill_chain_tracking_test(#[case] note_type: NoteType) {
     assert_eq!(
         alice_account
             .vault()
-            .get_balance(AssetVaultKey::new_fungible(eth_faucet.id(), AssetCallbackFlag::Disabled))
-            .unwrap()
-            .as_u64(),
-        requested_amount,
+            .get_balance(AssetId::new_fungible(eth_faucet.id()))
+            .unwrap(),
+        AssetAmount::new(requested_amount).unwrap(),
         "Alice should have received the full 50 ETH"
     );
     assert_eq!(
         alice_account
             .vault()
-            .get_balance(AssetVaultKey::new_fungible(btc_faucet.id(), AssetCallbackFlag::Disabled))
-            .unwrap()
-            .as_u64(),
-        MINT_AMOUNT - offered_amount,
+            .get_balance(AssetId::new_fungible(btc_faucet.id()))
+            .unwrap(),
+        AssetAmount::new(MINT_AMOUNT - offered_amount).unwrap(),
         "Alice's BTC should reflect the full 100 paid out"
     );
 }
@@ -3441,7 +3731,12 @@ async fn pswap_multi_round_chain_tracking_test() {
 
     // ── Round 1: Bob fills 25 ETH → 50 BTC payout, leaving 50 BTC / 25 ETH. ──
     let consume_request = TransactionRequestBuilder::new()
-        .build_pswap_consume(&pswap_note, bob_wallet.id(), 25, 0)
+        .build_pswap_consume(
+            &pswap_note,
+            bob_wallet.id(),
+            AssetAmount::new(25).unwrap(),
+            AssetAmount::ZERO,
+        )
         .unwrap();
     Box::pin(bob_client.submit_new_transaction(bob_wallet.id(), consume_request))
         .await
@@ -3472,7 +3767,12 @@ async fn pswap_multi_round_chain_tracking_test() {
     // ── Round 2 (separate block): Bob consumes his own remainder, filling 10 ETH → 20 BTC,
     //    leaving 30 BTC / 15 ETH. ──
     let consume_request = TransactionRequestBuilder::new()
-        .build_pswap_consume(&remainder_r1, bob_wallet.id(), 10, 0)
+        .build_pswap_consume(
+            &remainder_r1,
+            bob_wallet.id(),
+            AssetAmount::new(10).unwrap(),
+            AssetAmount::ZERO,
+        )
         .unwrap();
     Box::pin(bob_client.submit_new_transaction(bob_wallet.id(), consume_request))
         .await
@@ -3515,41 +3815,31 @@ async fn pswap_multi_round_chain_tracking_test() {
     assert_eq!(
         alice_account
             .vault()
-            .get_balance(AssetVaultKey::new_fungible(eth_faucet.id(), AssetCallbackFlag::Disabled))
-            .unwrap()
-            .as_u64(),
-        35,
+            .get_balance(AssetId::new_fungible(eth_faucet.id()))
+            .unwrap(),
+        AssetAmount::new(35).unwrap(),
         "Alice should have received 25 + 10 = 35 ETH across both rounds"
     );
     // BTC: 100 locked − 70 paid out (50 + 20) + 30 reclaimed = MINT − 70.
     assert_eq!(
         alice_account
             .vault()
-            .get_balance(AssetVaultKey::new_fungible(btc_faucet.id(), AssetCallbackFlag::Disabled))
-            .unwrap()
-            .as_u64(),
-        MINT_AMOUNT - 70,
+            .get_balance(AssetId::new_fungible(btc_faucet.id()))
+            .unwrap(),
+        AssetAmount::new(MINT_AMOUNT - 70).unwrap(),
         "Alice's BTC should reflect 70 paid out and 30 reclaimed"
     );
 
     // Bob received 50 + 20 = 70 BTC and paid 25 + 10 = 35 ETH across both fills.
     let bob_account = bob_client.get_account(bob_wallet.id()).await.unwrap().unwrap();
     assert_eq!(
-        bob_account
-            .vault()
-            .get_balance(AssetVaultKey::new_fungible(btc_faucet.id(), AssetCallbackFlag::Disabled))
-            .unwrap()
-            .as_u64(),
-        70,
+        bob_account.vault().get_balance(AssetId::new_fungible(btc_faucet.id())).unwrap(),
+        AssetAmount::new(70).unwrap(),
         "Bob should have received 70 BTC across both fills"
     );
     assert_eq!(
-        bob_account
-            .vault()
-            .get_balance(AssetVaultKey::new_fungible(eth_faucet.id(), AssetCallbackFlag::Disabled))
-            .unwrap()
-            .as_u64(),
-        MINT_AMOUNT - 35,
+        bob_account.vault().get_balance(AssetId::new_fungible(eth_faucet.id())).unwrap(),
+        AssetAmount::new(MINT_AMOUNT - 35).unwrap(),
         "Bob should have paid 35 ETH across both fills"
     );
 }
@@ -3613,7 +3903,7 @@ async fn pswap_asset_pair_tag_isolated_per_order() {
         &FungibleAsset::new(btc_faucet.id(), 40).unwrap(),
         &FungibleAsset::new(eth_faucet.id(), 20).unwrap(),
     );
-    let pair_subscriptions = async |client: &MockClient<FilesystemKeyStore>| -> usize {
+    let pair_subscriptions = async |client: &TestClient| -> usize {
         client
             .get_note_tags()
             .await
@@ -3684,10 +3974,10 @@ async fn empty_storage_map() {
 
     let account = AccountBuilder::new(init_seed)
         .account_type(AccountType::Public)
-        .with_auth_component(AuthSingleSig::new(
+        .with_component(AuthSingleSig::new(Approver::new(
             pub_key.to_commitment(),
             AuthSchemeId::Falcon512Poseidon2,
-        ))
+        )))
         .with_component(BasicWallet)
         .with_component(component)
         .build_with_schema_commitment()
@@ -3719,6 +4009,7 @@ const BUMP_MAP_CODE: &str = r#"
 
                 const MAP_SLOT = word("miden::testing::bump_map::map")
 
+                @account_procedure
                 pub proc bump_map_item
                     # map key
                     push.{map_key}
@@ -3785,7 +4076,8 @@ async fn storage_and_vault_proofs() {
         .unwrap()
         .compile_tx_script(
             "use external_contract::bump_item_contract
-            begin
+            @transaction_script
+            pub proc main
                 call.bump_item_contract::bump_map_item
             end",
         )
@@ -3799,10 +4091,10 @@ async fn storage_and_vault_proofs() {
 
     let account = AccountBuilder::new(init_seed)
         .account_type(AccountType::Public)
-        .with_auth_component(AuthSingleSig::new(
+        .with_component(AuthSingleSig::new(Approver::new(
             pub_key.to_commitment(),
             AuthSchemeId::Falcon512Poseidon2,
-        ))
+        )))
         .with_component(BasicWallet)
         .with_component(bump_item_component)
         .build_with_schema_commitment()
@@ -3851,15 +4143,15 @@ async fn storage_and_vault_proofs() {
         assert_eq!(account_vault_root, vault.root());
 
         // Check that specific asset proof matches the one in the vault
-        let vault_key = AssetVaultKey::new_fungible(faucet_account_id, AssetCallbackFlag::Disabled);
+        let asset_id = AssetId::new_fungible(faucet_account_id);
         let (asset, witness) = client
             .test_store()
-            .get_account_asset(account_id, vault_key)
+            .get_account_asset(account_id, asset_id)
             .await
             .unwrap()
             .unwrap();
 
-        let expected_witness = AssetWitness::new(vault.open(asset.vault_key()).into()).unwrap();
+        let expected_witness = vault.open(asset.id());
         assert_eq!(witness, expected_witness);
 
         // Check that specific map item proof matches the one in the storage
@@ -3894,7 +4186,10 @@ async fn account_addresses_basic_wallet() {
 
     let account = Account::mock(
         ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2,
-        AuthSingleSig::new(PublicKeyCommitment::from(EMPTY_WORD), AuthSchemeId::Falcon512Poseidon2),
+        [AuthSingleSig::new(Approver::new(
+            PublicKeyCommitment::from(EMPTY_WORD),
+            AuthSchemeId::Falcon512Poseidon2,
+        ))],
     );
 
     client.add_account(&account, false).await.unwrap();
@@ -3934,7 +4229,10 @@ async fn account_add_address_after_creation() {
 
     let account = Account::mock(
         ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2,
-        AuthSingleSig::new(PublicKeyCommitment::from(EMPTY_WORD), AuthSchemeId::Falcon512Poseidon2),
+        [AuthSingleSig::new(Approver::new(
+            PublicKeyCommitment::from(EMPTY_WORD),
+            AuthSchemeId::Falcon512Poseidon2,
+        ))],
     );
 
     client.add_account(&account, false).await.unwrap();
@@ -3950,16 +4248,19 @@ async fn account_add_address_after_creation() {
     assert!(client.add_address(basic_wallet_address.clone(), account.id()).await.is_ok());
 
     // We can remove the default address and the note tag is still present
-    assert!(client.remove_address(default_address.clone(), account.id()).await.is_ok());
+    assert!(client.remove_address(default_address.clone(), account.id()).await.unwrap());
     let derived_note_tag = default_address.to_note_tag();
     let note_tag_record = NoteTagRecord::with_account_source(derived_note_tag, account.id());
     let note_tags = client.get_note_tags().await.unwrap();
     assert!(note_tags.contains(&note_tag_record));
 
     // If we remove all addresses, note tag should be removed
-    assert!(client.remove_address(basic_wallet_address.clone(), account.id()).await.is_ok());
+    assert!(client.remove_address(basic_wallet_address.clone(), account.id()).await.unwrap());
     let note_tags = client.get_note_tags().await.unwrap();
     assert!(!note_tags.contains(&note_tag_record));
+
+    // Removing an address that isn't tracked reports that nothing was removed
+    assert!(!client.remove_address(basic_wallet_address, account.id()).await.unwrap());
 
     // Then add it again
     assert!(client.add_address(default_address, account.id()).await.is_ok());
@@ -3987,11 +4288,11 @@ async fn import_watched_account_by_id_rejects_already_tracked_native_account() {
         .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore))
-        .in_debug_mode(DebugMode::Enabled)
         .build()
         .await
         .unwrap();
     client.ensure_genesis_in_place().await.unwrap();
+    seed_mock_transaction_encryption_key(&mut client).await;
 
     client.add_account(&account, false).await.unwrap();
 
@@ -4024,6 +4325,11 @@ async fn import_watched_account_by_id_rejects_already_tracked_native_account() {
     assert!(!account_record.is_watched());
 }
 
+// TODO: fix - blocked by an upstream miden-standards bug (0.16.0-alpha.2). Creating the zero-asset
+// output note from a basic wallet hits `send_notes_script.rs::move_asset_to_note_body`, whose
+// `pad(21)->pad(16)` stack reduction only runs inside the per-asset loop; with no assets the tx
+// script returns at stack depth 21 and the VM rejects it with `InvalidStackDepthOnReturn`.
+// Re-enable once the standards send-notes script handles zero-asset notes.
 #[tokio::test]
 async fn consume_note_with_custom_script() {
     let (mut client, mock_rpc_api, keystore) = create_test_client().await;
@@ -4046,9 +4352,10 @@ async fn consume_note_with_custom_script() {
     client.sync_state().await.unwrap();
 
     let custom_note_script = "
+        use miden::core::sys
         @note_script
         pub proc main
-            nop
+            exec.sys::truncate_stack
         end
     ";
     let note_script = client.code_builder().compile_note_script(custom_note_script).unwrap();
@@ -4218,34 +4525,40 @@ async fn sync_storage_maps_pagination_from_middle() {
 // PRIVATE NOTE ATTACHMENT SYNC TESTS
 // ================================================================================================
 
-/// A private note carries its [`NoteAttachments`] on-chain: they feed the metadata commitment and
-/// thus the note ID. This test verifies that when such a note commits during a regular state sync,
-/// the client fetches the attachments via `GetNotesById` and stores them on the resulting
-/// [`InputNoteRecord`], so the note can be reconstructed with the same ID it has on-chain (and is
-/// therefore consumable).
-#[tokio::test]
-async fn sync_stores_private_note_attachments() {
-    // 1. Build a mock chain with a sender and a public target account (the attachment target must
-    //    be public).
+/// Commits a PRIVATE note carrying `build_attachments`, tracks it as expected, then syncs.
+/// Returns the record, the on-chain note, and the `GetNotesById` count.
+async fn sync_committed_private_note_with_attachments(
+    build_attachments: impl FnOnce(AccountId) -> NoteAttachments,
+    serve_attachments: bool,
+) -> (InputNoteRecord, Note, usize) {
+    // 1. Build a mock chain with a sender and a public target account (an attachment target must be
+    //    public).
     let mut mock_chain_builder = MockChainBuilder::new();
+    let faucet_id = AccountId::dummy(
+        [7u8; 15],
+        AccountIdVersion::Version1,
+        AccountType::Public,
+        AssetCallbackFlag::Disabled,
+    );
+    let note_asset = FungibleAsset::new(faucet_id, 100).unwrap();
     let sender = mock_chain_builder
-        .add_existing_mock_account(miden_testing::Auth::IncrNonce)
+        .add_existing_mock_account_with_assets(miden_testing::Auth::IncrNonce, [note_asset.into()])
         .unwrap();
     let target = mock_chain_builder.add_existing_wallet(miden_testing::Auth::IncrNonce).unwrap();
 
-    // 2. Build a PRIVATE P2ID note carrying a NetworkAccountTarget attachment.
-    let ntx_target = NetworkAccountTarget::new(target.id(), NoteExecutionHint::Always).unwrap();
-    let attachments = NoteAttachments::new(vec![ntx_target.into()]).unwrap();
+    // 2. Build a PRIVATE P2ID note carrying the attachments.
+    let attachments = build_attachments(target.id());
     let mut note_rng = RandomCoin::new([1, 2, 3, 4].map(Felt::new_unchecked).into());
-    let private_note = P2idNote::create(
-        sender.id(),
-        target.id(),
-        vec![],
-        NoteType::Private,
-        attachments.clone(),
-        &mut note_rng,
-    )
-    .unwrap();
+    let private_note: Note = P2idNote::builder()
+        .sender(sender.id())
+        .target(target.id())
+        .asset(note_asset)
+        .note_type(NoteType::Private)
+        .attachments(attachments.clone().into_vec())
+        .generate_serial_number(&mut note_rng)
+        .build()
+        .unwrap()
+        .into();
 
     // Declare the note as a spawn note (not yet committed) and build the chain at genesis.
     let spawn_note =
@@ -4255,9 +4568,9 @@ async fn sync_stores_private_note_attachments() {
     // 3. Commit the private note at block 1, then advance a few blocks.
     let tx = Box::pin(
         mock_chain
-            .build_tx_context(TxContextInput::AccountId(sender.id()), &[], &[spawn_note])
-            .unwrap()
-            .extend_expected_output_notes(vec![RawOutputNote::Full(private_note.clone())])
+            .build_transaction(MockTransactionInput::AccountId(sender.id()))
+            .unauthenticated_input_note(spawn_note)
+            .expected_output_notes(vec![RawOutputNote::Full(private_note.clone())])
             .build()
             .unwrap()
             .execute(),
@@ -4270,26 +4583,26 @@ async fn sync_stores_private_note_attachments() {
         mock_chain.prove_next_block().unwrap();
     }
 
-    // 4. Build a client backed by this chain. A fixed node returns private-note attachments via
-    //    `get_notes_by_id`, but the MockChain stores private notes without their attachment
-    //    content, so register them on the mock RPC explicitly.
+    // 4. Build a client backed by this chain.
     let rpc_api = Arc::new(MockRpcApi::new(mock_chain));
-    rpc_api.register_private_note_attachments(private_note.id(), attachments.clone());
+    if serve_attachments {
+        rpc_api.register_private_note_attachments(private_note.id(), attachments.clone());
+    }
 
     let rng =
         RandomCoin::new(rand::random::<[u64; 4]>().map(|v| Felt::new_unchecked(v >> 1)).into());
     let keystore = FilesystemKeyStore::new(std::env::temp_dir()).unwrap();
     let mut client = ClientBuilder::new()
-        .rpc(rpc_api)
+        .rpc(rpc_api.clone())
         .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore))
-        .in_debug_mode(DebugMode::Enabled)
         .tx_discard_delta(None)
         .build()
         .await
         .unwrap();
     client.ensure_genesis_in_place().await.unwrap();
+    seed_mock_transaction_encryption_key(&mut client).await;
 
     // 5. Track the note as an expected input note (no metadata, empty attachments) and register its
     //    tag so the chain sync sees the note's block. The client has not synced past block 1, so
@@ -4297,10 +4610,9 @@ async fn sync_stores_private_note_attachments() {
     let note_tag = private_note.metadata().tag();
     client.add_note_tag(note_tag).await.unwrap();
     client
-        .import_notes(&[NoteFile::NoteDetails {
+        .import_notes(&[NoteFile::ExpectedNote {
             details: private_note.clone().into(),
-            after_block_num: BlockNumber::from(0u32),
-            tag: Some(note_tag),
+            sync_hint: NoteSyncHint::new(BlockNumber::from(0u32), note_tag),
         }])
         .await
         .unwrap();
@@ -4316,12 +4628,10 @@ async fn sync_stores_private_note_attachments() {
         "imported expected note should start with empty attachments"
     );
 
-    // 6. Sync: the note commits via the regular note-state sync path, which fetches the attachments
-    //    and stores them on the record.
+    // 6. Sync: the note commits via the regular note-state sync path, which resolves the
+    //    attachments and stores them on the record.
     client.sync_state().await.unwrap();
 
-    // 7. The committed record should carry the original attachments and reconstruct to the same
-    //    note ID as the on-chain note.
     let committed = client
         .get_input_notes(NoteFilter::Committed)
         .await
@@ -4330,10 +4640,68 @@ async fn sync_stores_private_note_attachments() {
         .find(|n| n.id() == Some(private_note.id()))
         .expect("private note should be committed after sync");
 
+    (committed, private_note, rpc_api.get_notes_by_id_call_count())
+}
+
+/// A single-word attachment is carried verbatim by the `SyncNotes` response, so the client must
+/// reconstruct it locally, with no `GetNotesById` request and no help from the node.
+#[tokio::test]
+async fn sync_stores_private_note_attachments_carried_by_the_sync_response() {
+    let (committed, private_note, get_notes_by_id_calls) =
+        sync_committed_private_note_with_attachments(
+            |target_id| {
+                let ntx_target =
+                    NetworkAccountTarget::new(target_id, NoteExecutionHint::Always).unwrap();
+                NoteAttachments::new(vec![ntx_target.into()]).unwrap()
+            },
+            false,
+        )
+        .await;
+
     assert_eq!(
         committed.attachments(),
-        &attachments,
+        private_note.attachments(),
         "sync should store the private note's attachments on the record"
+    );
+    assert_eq!(
+        get_notes_by_id_calls, 0,
+        "a single-word attachment arrives with the sync record, so no note has to be fetched"
+    );
+
+    let reconstructed: Note = (&committed).try_into().unwrap();
+    assert_eq!(
+        reconstructed.id(),
+        private_note.id(),
+        "reconstructed note must match the on-chain note ID (attachments feed the ID)"
+    );
+}
+
+/// An attachment spanning more than one word reaches the client as a commitment only, so its
+/// content still has to be fetched via `GetNotesById` before the note can be stored.
+#[tokio::test]
+async fn sync_fetches_private_note_attachments_sent_as_a_commitment() {
+    let (committed, private_note, get_notes_by_id_calls) =
+        sync_committed_private_note_with_attachments(
+            |_| {
+                let attachment = NoteAttachment::with_words(
+                    NoteAttachmentScheme::new(100).unwrap(),
+                    vec![Word::from([1u32, 2, 3, 4]), Word::from([5u32, 6, 7, 8])],
+                )
+                .unwrap();
+                NoteAttachments::new(vec![attachment]).unwrap()
+            },
+            true,
+        )
+        .await;
+
+    assert_eq!(
+        committed.attachments(),
+        private_note.attachments(),
+        "sync should store the fetched attachments on the record"
+    );
+    assert_eq!(
+        get_notes_by_id_calls, 1,
+        "a multi-word attachment has to be fetched, since the sync record only commits to it"
     );
 
     let reconstructed: Note = (&committed).try_into().unwrap();
@@ -4403,8 +4771,7 @@ async fn sync_large_public_account() {
     // This changes the on-chain commitment so sync detects a mismatch.
     let tx = Box::pin(
         mock_chain
-            .build_tx_context(TxContextInput::AccountId(mock_account.id()), &[], &[])
-            .unwrap()
+            .build_transaction(MockTransactionInput::AccountId(mock_account.id()))
             .build()
             .unwrap()
             .execute(),
@@ -4414,8 +4781,8 @@ async fn sync_large_public_account() {
     mock_chain.add_pending_executed_transaction(&tx).unwrap();
     mock_chain.prove_next_block().unwrap();
 
-    // 3. Create MockRpcApi with a low oversize threshold so both the storage map
-    // and vault trigger the `too_many_entries` / `too_many_assets` flags.
+    // 3. Create MockRpcApi with a low oversize threshold so the storage map comes back as
+    // `LimitExceeded` and the vault with the `too_many_assets` flag set.
     let rpc_api = MockRpcApi::new(mock_chain).with_oversize_threshold(OVERSIZE_THRESHOLD);
     let arc_rpc_api = Arc::new(rpc_api.clone());
 
@@ -4433,11 +4800,11 @@ async fn sync_large_public_account() {
         .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore))
-        .in_debug_mode(DebugMode::Enabled)
         .build()
         .await
         .unwrap();
     client.ensure_genesis_in_place().await.unwrap();
+    seed_mock_transaction_encryption_key(&mut client).await;
     client.add_account(&original_account, false).await.unwrap();
 
     // 5. Sync — the client detects a commitment mismatch, fetches full account state.
@@ -4526,13 +4893,33 @@ async fn prepare_offline_bootstrap_inserts_mock_chain_genesis() {
 // HELPERS
 // ================================================================================================
 
-pub async fn create_test_client() -> (MockClient<FilesystemKeyStore>, MockRpcApi, FilesystemKeyStore)
-{
+pub async fn create_test_client() -> (TestClient, MockRpcApi, FilesystemKeyStore) {
     let (builder, rpc_api, keystore) = Box::pin(create_test_client_builder()).await;
-    let mut client = builder.build().await.unwrap();
+    let mut client = TestClient::from(builder.build().await.unwrap());
     client.ensure_genesis_in_place().await.unwrap();
+    seed_mock_transaction_encryption_key(&mut client).await;
 
     (client, rpc_api, keystore)
+}
+
+/// Gives a mock-backed client the transaction encryption key that submission seals against.
+pub async fn seed_mock_transaction_encryption_key(client: &mut MockClient<FilesystemKeyStore>) {
+    let genesis_commitment = client
+        .get_block_header_by_num(BlockNumber::GENESIS)
+        .await
+        .unwrap()
+        .expect("genesis must be in place before the encryption key is seeded")
+        .0
+        .commitment();
+
+    client
+        .seed_transaction_encryption_key(TransactionEncryptionKey::new_unattested(
+            b"mock-key-id".to_vec(),
+            KeyExchangeKey::with_rng(&mut StdRng::seed_from_u64(0xface)).public_key(),
+            genesis_commitment,
+        ))
+        .await
+        .expect("seeding the encryption key in the store should succeed");
 }
 
 pub async fn create_test_client_builder()
@@ -4553,7 +4940,6 @@ pub async fn create_test_client_builder()
         .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore.clone()))
-        .in_debug_mode(DebugMode::Enabled)
         .tx_discard_delta(None);
 
     (builder, rpc_api, keystore)
@@ -4591,9 +4977,9 @@ pub async fn create_prebuilt_mock_chain() -> MockChain {
     // Block 1: Create first note
     let tx = Box::pin(
         mock_chain
-            .build_tx_context(TxContextInput::AccountId(mock_account.id()), &[], &[spawn_note_1])
-            .unwrap()
-            .extend_expected_output_notes(vec![RawOutputNote::Full(note_first)])
+            .build_transaction(MockTransactionInput::AccountId(mock_account.id()))
+            .unauthenticated_input_note(spawn_note_1)
+            .expected_output_notes(vec![RawOutputNote::Full(note_first)])
             .build()
             .unwrap()
             .execute(),
@@ -4613,9 +4999,9 @@ pub async fn create_prebuilt_mock_chain() -> MockChain {
 
     let tx = Box::pin(
         mock_chain
-            .build_tx_context(mock_account.id(), &[], &[spawn_note_2])
-            .unwrap()
-            .extend_expected_output_notes(vec![RawOutputNote::Full(note_second.clone())])
+            .build_transaction(mock_account.id())
+            .unauthenticated_input_note(spawn_note_2)
+            .expected_output_notes(vec![RawOutputNote::Full(note_second.clone())])
             .build()
             .unwrap()
             .execute(),
@@ -4628,8 +5014,8 @@ pub async fn create_prebuilt_mock_chain() -> MockChain {
 
     let transaction = Box::pin(
         mock_chain
-            .build_tx_context(mock_account.id(), &[], &[note_second])
-            .unwrap()
+            .build_transaction(mock_account.id())
+            .unauthenticated_input_note(note_second)
             .build()
             .unwrap()
             .execute(),
@@ -4657,10 +5043,10 @@ async fn insert_new_wallet(
 
     let account = AccountBuilder::new(init_seed)
         .account_type(visibility)
-        .with_auth_component(AuthSingleSig::new(
+        .with_component(AuthSingleSig::new(Approver::new(
             pub_key.to_commitment(),
             AuthSchemeId::Falcon512Poseidon2,
-        ))
+        )))
         .with_component(BasicWallet)
         .build_with_schema_commitment()
         .unwrap();
@@ -4685,10 +5071,10 @@ async fn insert_new_ecdsa_wallet(
 
     let account = AccountBuilder::new(init_seed)
         .account_type(visibility)
-        .with_auth_component(AuthSingleSig::new(
+        .with_component(AuthSingleSig::new(Approver::new(
             pub_key.to_commitment(),
             AuthSchemeId::EcdsaK256Keccak,
-        ))
+        )))
         .with_component(BasicWallet)
         .build_with_schema_commitment()
         .unwrap();
@@ -4724,18 +5110,17 @@ async fn insert_new_fungible_faucet(
         .unwrap();
     // Only mint/burn policies — see test_utils/common.rs::insert_new_fungible_faucet for the
     // reason transfer policies are intentionally omitted.
-    let policy_manager = TokenPolicyManager::new()
-        .with_mint_policy(MintPolicyConfig::AllowAll, PolicyRegistration::Active)
-        .unwrap()
-        .with_burn_policy(BurnPolicyConfig::AllowAll, PolicyRegistration::Active)
-        .unwrap();
+    let policy_manager = TokenPolicyManager::builder()
+        .active_mint_policy(MintPolicy::allow_all())
+        .active_burn_policy(BurnPolicy::allow_all())
+        .build();
 
     let account = AccountBuilder::new(init_seed)
         .account_type(visibility)
-        .with_auth_component(AuthSingleSig::new(
+        .with_component(AuthSingleSig::new(Approver::new(
             pub_key.to_commitment(),
             AuthSchemeId::Falcon512Poseidon2,
-        ))
+        )))
         .with_component(faucet)
         .with_components(policy_manager)
         .build_with_schema_commitment()
@@ -4774,18 +5159,17 @@ async fn insert_new_ecdsa_fungible_faucet(
         .unwrap();
     // Only mint/burn policies — see test_utils/common.rs::insert_new_fungible_faucet for the
     // reason transfer policies are intentionally omitted.
-    let policy_manager = TokenPolicyManager::new()
-        .with_mint_policy(MintPolicyConfig::AllowAll, PolicyRegistration::Active)
-        .unwrap()
-        .with_burn_policy(BurnPolicyConfig::AllowAll, PolicyRegistration::Active)
-        .unwrap();
+    let policy_manager = TokenPolicyManager::builder()
+        .active_mint_policy(MintPolicy::allow_all())
+        .active_burn_policy(BurnPolicy::allow_all())
+        .build();
 
     let account = AccountBuilder::new(init_seed)
         .account_type(visibility)
-        .with_auth_component(AuthSingleSig::new(
+        .with_component(AuthSingleSig::new(Approver::new(
             pub_key.to_commitment(),
             AuthSchemeId::EcdsaK256Keccak,
-        ))
+        )))
         .with_component(faucet)
         .with_components(policy_manager)
         .build_with_schema_commitment()
@@ -4839,7 +5223,8 @@ async fn storage_and_vault_proofs_ecdsa() {
         .unwrap()
         .compile_tx_script(
             "use external_contract::bump_item_contract
-            begin
+            @transaction_script
+            pub proc main
                 call.bump_item_contract::bump_map_item
             end",
         )
@@ -4853,10 +5238,10 @@ async fn storage_and_vault_proofs_ecdsa() {
 
     let account = AccountBuilder::new(init_seed)
         .account_type(AccountType::Public)
-        .with_auth_component(AuthSingleSig::new(
+        .with_component(AuthSingleSig::new(Approver::new(
             pub_key.to_commitment(),
             AuthSchemeId::EcdsaK256Keccak,
-        ))
+        )))
         .with_component(BasicWallet)
         .with_component(bump_item_component)
         .build_with_schema_commitment()
@@ -4905,15 +5290,15 @@ async fn storage_and_vault_proofs_ecdsa() {
         assert_eq!(account_vault_root, vault.root());
 
         // Check that specific asset proof matches the one in the vault
-        let vault_key = AssetVaultKey::new_fungible(faucet_account_id, AssetCallbackFlag::Disabled);
+        let asset_id = AssetId::new_fungible(faucet_account_id);
         let (asset, witness) = client
             .test_store()
-            .get_account_asset(account_id, vault_key)
+            .get_account_asset(account_id, asset_id)
             .await
             .unwrap()
             .unwrap();
 
-        let expected_witness = AssetWitness::new(vault.open(asset.vault_key()).into()).unwrap();
+        let expected_witness = vault.open(asset.id());
         assert_eq!(witness, expected_witness);
 
         // Check that specific map item proof matches the one in the storage
@@ -4949,8 +5334,10 @@ async fn execute_transaction_fails_for_watched_account() {
     // public `add_account`/`import_watched_account_by_id` paths so we don't need a mock RPC
     // round-trip.
     let key_pair = AuthSecretKey::new_falcon512_poseidon2();
-    let auth_component =
-        AuthSingleSig::new(key_pair.public_key().to_commitment(), AuthSchemeId::Falcon512Poseidon2);
+    let auth_component = AuthSingleSig::new(Approver::new(
+        key_pair.public_key().to_commitment(),
+        AuthSchemeId::Falcon512Poseidon2,
+    ));
 
     let mut init_seed = [0u8; 32];
     client.rng().fill_bytes(&mut init_seed);
@@ -4965,14 +5352,13 @@ async fn execute_transaction_fails_for_watched_account() {
         .max_supply(AssetAmount::new(max_supply).unwrap())
         .build()
         .unwrap();
-    let policy_manager = TokenPolicyManager::new()
-        .with_mint_policy(MintPolicyConfig::AllowAll, PolicyRegistration::Active)
-        .unwrap()
-        .with_burn_policy(BurnPolicyConfig::AllowAll, PolicyRegistration::Active)
-        .unwrap();
+    let policy_manager = TokenPolicyManager::builder()
+        .active_mint_policy(MintPolicy::allow_all())
+        .active_burn_policy(BurnPolicy::allow_all())
+        .build();
     let faucet = AccountBuilder::new(init_seed)
         .account_type(AccountType::Public)
-        .with_auth_component(auth_component)
+        .with_component(auth_component)
         .with_component(token)
         .with_components(policy_manager)
         .build_with_schema_commitment()

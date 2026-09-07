@@ -158,8 +158,15 @@ pub async fn expand_storage(
     let entries = generate_entries(map_idx, offset, count);
     let expansion_code = generate_expansion_component_code(num_maps);
 
-    submit_expansion_batches(client, account_id, map_idx, offset, &entries, &expansion_code)
-        .await?;
+    Box::pin(submit_expansion_batches(
+        client,
+        account_id,
+        map_idx,
+        offset,
+        &entries,
+        &expansion_code,
+    ))
+    .await?;
 
     println!();
     println!("Total expand time: {:.2?}", total_t.elapsed());

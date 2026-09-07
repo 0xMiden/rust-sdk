@@ -5,6 +5,7 @@ use std::error::Error;
 
 use miden_client::account::{AccountId, AddressError};
 use miden_client::keystore::KeyStoreError;
+use miden_client::vm::typed::TypedError;
 use miden_client::{
     AccountError,
     AccountIdError,
@@ -51,7 +52,6 @@ pub enum CliError {
         help(
             "Check if the configuration file exists and is well-formed. If it does not exist, run `{} init` command to create it.",
             client_binary_name().display()
-
         )
     )]
     Config(#[source] SourceError, String),
@@ -64,6 +64,16 @@ pub enum CliError {
         )
     )]
     ConfigNotFound(String),
+    #[error("configuration file already exists: {0}")]
+    #[diagnostic(
+        code(cli::config_already_exists),
+        help(
+            "Edit the configuration file, or remove it with `{} clear-config{1}` \
+            (this deletes the whole .miden directory, including the store and keystore).",
+            client_binary_name().display(),
+        )
+    )]
+    ConfigAlreadyExists(String, String),
     #[error("execute program error: {1}")]
     #[diagnostic(code(cli::execute_program_error))]
     Exec(#[source] SourceError, String),
@@ -95,11 +105,26 @@ pub enum CliError {
     MissingFlag(String),
     #[error("network id error")]
     NetworkIdError(#[from] NetworkIdError),
+    #[error("client has not been synced yet")]
+    #[diagnostic(
+        code(cli::not_synced),
+        help("Run `{} sync` first.", client_binary_name().display())
+    )]
+    NotSynced,
     #[error("invalid argument: {0}")]
     InvalidArgument(String),
+    // Covers both directions of the typed path: encoding arguments and decoding results. The
+    // inner error already states the whole problem, so it is shown in place of a wrapper message
+    // rather than under one, where it would be printed twice.
+    #[error(transparent)]
+    #[diagnostic(code(cli::typed_error))]
+    Typed(#[from] TypedError),
     #[error("parse error: {1}")]
     #[diagnostic(code(cli::parse_error), help("Check the inputs."))]
     Parse(#[source] SourceError, String),
+    #[error("replay snapshot error")]
+    #[diagnostic(code(cli::replay_snapshot_error))]
+    ReplaySnapshot(#[source] SourceError),
     #[error("script builder error")]
     #[diagnostic(code(cli::script_builder_error))]
     CodeBuilder(#[from] CodeBuilderError),

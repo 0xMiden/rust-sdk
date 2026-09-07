@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use miden_client::account::{AccountId, FaucetMetadata};
 use miden_client::address::{Address, AddressId};
-use miden_client::asset::{FungibleAsset, NonFungibleDeltaAction};
+use miden_client::asset::{Asset, FungibleAsset};
 use miden_client::transaction::{ExecutedTransaction, InputNote};
 use miden_client::utils::{base_units_to_tokens, tokens_to_base_units};
 use miden_client::vm::MIN_STACK_DEPTH;
@@ -80,6 +80,18 @@ pub(crate) async fn parse_account_id<AUTH>(
     }
 }
 
+/// Splits a `<ACCOUNT_ID>[:<PROCEDURE>]` target into its account ID and procedure parts.
+///
+/// Account IDs (hex or bech32) never contain a colon, so the first one separates the two. The
+/// procedure is `None` when the target carries no colon; commands that require one reject that
+/// case themselves.
+pub(crate) fn split_procedure_target(target: &str) -> (&str, Option<&str>) {
+    match target.split_once(':') {
+        Some((account_id, procedure)) => (account_id, Some(procedure)),
+        None => (target, None),
+    }
+}
+
 /// Checks if either local or global configuration file exists.
 pub(super) fn config_file_exists() -> Result<bool, CliError> {
     let local_miden_dir = get_local_miden_dir()?;
@@ -103,12 +115,12 @@ pub fn load_faucet_metadata_resolver() -> Result<FaucetMetadataResolver, CliErro
 /// Prints the effects of an executed transaction: input notes, output notes, storage value
 /// changes, storage map changes, vault changes, and the nonce change.
 pub async fn print_executed_transaction<AUTH>(
-    client: &mut Client<AUTH>,
+    client: &Client<AUTH>,
     executed_tx: &ExecutedTransaction,
 ) -> Result<(), CliError> {
     println!("The transaction will have the following effects:\n");
 
-    let delta = executed_tx.account_delta();
+    let patch = executed_tx.account_patch();
 
     // INPUT NOTES
     let input_note_ids = executed_tx.input_notes().iter().map(InputNote::id).collect::<Vec<_>>();
@@ -135,10 +147,12 @@ pub async fn print_executed_transaction<AUTH>(
     println!();
 
     // STORAGE VALUES
-    if delta.storage().values().next().is_some() {
-        let mut table = create_dynamic_table(&["Storage Slot", "Effect"]);
-        for (slot, new_value) in delta.storage().values() {
-            table.add_row(vec![slot.to_string(), format!("Updated ({})", new_value.to_hex())]);
+    if patch.storage().values().next().is_some() {
+        let mut table = create_dynamic_table(&["Storage Slot", "New Value"]);
+        for (slot, value_patch) in patch.storage().values() {
+            let new_value =
+                value_patch.value().map_or_else(|| "removed".to_string(), |v| v.to_hex());
+            table.add_row(vec![slot.to_string(), new_value]);
         }
         println!("Storage changes:");
         println!("{table}");
@@ -147,10 +161,10 @@ pub async fn print_executed_transaction<AUTH>(
     }
 
     // STORAGE MAPS
-    if delta.storage().maps().next().is_some() {
+    if patch.storage().maps().next().is_some() {
         let mut table = create_dynamic_table(&["Storage Slot", "Map Key", "New Value"]);
-        for (slot, map_delta) in delta.storage().maps() {
-            for (key, value) in map_delta.entries() {
+        for (slot, map_patch) in patch.storage().maps() {
+            for (key, value) in map_patch.entries().into_iter().flat_map(|e| e.as_map().iter()) {
                 table.add_row(vec![slot.to_string(), Word::from(*key).to_hex(), value.to_hex()]);
             }
         }
@@ -159,41 +173,37 @@ pub async fn print_executed_transaction<AUTH>(
     }
 
     // VAULT
-    if delta.vault().is_empty() {
+    // The patch carries the new absolute value of each changed asset, cleared entries are listed as
+    // removed.
+    if patch.vault().is_empty() {
         println!("Account Vault will not be changed.");
     } else {
         let resolver = load_faucet_metadata_resolver()?;
-        let mut table = create_dynamic_table(&["Asset Type", "Faucet ID", "Amount"]);
+        let mut table = create_dynamic_table(&["Asset Type", "Faucet ID", "New Amount"]);
 
-        for (vault_key, amount) in delta.vault().fungible().iter() {
-            let asset = FungibleAsset::new(vault_key.faucet_id(), amount.unsigned_abs())
-                .map_err(CliError::Asset)?;
-            let (faucet_fmt, amount_fmt) = resolver.format_fungible_asset(client, &asset).await?;
-
-            if amount.is_positive() {
-                table.add_row(vec!["Fungible Asset", &faucet_fmt, &format!("+{amount_fmt}")]);
-            } else {
-                table.add_row(vec!["Fungible Asset", &faucet_fmt, &format!("-{amount_fmt}")]);
-            }
-        }
-
-        for (asset, action) in delta.vault().non_fungible().iter() {
-            match action {
-                NonFungibleDeltaAction::Add => {
+        for asset in patch.vault().updated_assets() {
+            match asset {
+                Asset::Fungible(fungible) => {
+                    let (faucet_fmt, amount_fmt) =
+                        resolver.format_fungible_asset(client, &fungible).await?;
+                    table.add_row(vec!["Fungible Asset", &faucet_fmt, &amount_fmt]);
+                },
+                Asset::NonFungible(non_fungible) => {
                     table.add_row(vec![
                         "Non Fungible Asset",
-                        &asset.faucet_id().prefix().to_hex(),
+                        &non_fungible.faucet_id().prefix().to_hex(),
                         "1",
                     ]);
                 },
-                NonFungibleDeltaAction::Remove => {
-                    table.add_row(vec![
-                        "Non Fungible Asset",
-                        &asset.faucet_id().prefix().to_hex(),
-                        "-1",
-                    ]);
-                },
             }
+        }
+
+        for asset_id in patch.vault().removed_asset_ids() {
+            table.add_row(vec![
+                "Removed Asset",
+                &asset_id.faucet_id().prefix().to_hex(),
+                "removed",
+            ]);
         }
 
         println!("Vault changes:");
@@ -201,7 +211,10 @@ pub async fn print_executed_transaction<AUTH>(
     }
 
     // NONCE
-    println!("Nonce incremented by: {}.", delta.nonce_delta());
+    match patch.final_nonce() {
+        Some(nonce) => println!("New account nonce: {nonce}."),
+        None => println!("Account nonce will not be changed."),
+    }
 
     Ok(())
 }
@@ -253,14 +266,14 @@ pub fn print_executed_program_stack_hex_words(stack: &[Felt; MIN_STACK_DEPTH]) {
 // FAUCET METADATA RESOLVER
 // ================================================================================================
 
-/// Raw TOML row as written by the user. The `id` is a bech32 address.
+/// Raw TOML row as written by the user.
 #[derive(Debug, Deserialize)]
 struct RawFaucetEntry {
-    pub id: String,
+    pub address: String,
     pub decimals: u8,
 }
 
-/// Parsed entry — the `id` string has been normalized into a typed `AccountId`.
+/// Parsed entry — the address string has been normalized into a typed `AccountId`.
 #[derive(Debug, Clone)]
 struct FaucetTomlEntry {
     pub account_id: AccountId,
@@ -271,7 +284,7 @@ struct FaucetTomlEntry {
 ///
 /// Lookup walks three sources in priority order:
 ///
-/// 1. The user's TOML symbol map (bech32 `id`).
+/// 1. The user's TOML symbol map (bech32 `address`).
 /// 2. The client's settings store, populated from previous RPC fetches.
 /// 3. A fresh RPC fetch from the network. Successful fetches are persisted back to the settings
 ///    store.
@@ -305,10 +318,10 @@ impl FaucetMetadataResolver {
         let mut parsed: BTreeMap<String, FaucetTomlEntry> = BTreeMap::new();
         let mut seen: BTreeSet<AccountId> = BTreeSet::new();
         for (symbol, entry) in raw {
-            let account_id = parse_id_string(&entry.id).map_err(|err| {
+            let account_id = parse_address(&entry.address).map_err(|err| {
                 CliError::Config(
                     err.into(),
-                    format!("Failed to parse `id` for token symbol {symbol}"),
+                    format!("Failed to parse `address` for token symbol {symbol}"),
                 )
             })?;
             if !seen.insert(account_id) {
@@ -347,7 +360,7 @@ impl FaucetMetadataResolver {
     /// On RPC success, the result is persisted to the settings store.
     pub async fn resolve<AUTH>(
         &self,
-        client: &mut Client<AUTH>,
+        client: &Client<AUTH>,
         faucet_id: AccountId,
     ) -> Result<Option<FaucetMetadata>, CliError> {
         // 1) & 2) local sources (TOML + settings store)
@@ -378,11 +391,11 @@ impl FaucetMetadataResolver {
     /// `(<bech32 faucet address>, <base-unit amount>)`.
     pub async fn format_fungible_asset<AUTH>(
         &self,
-        client: &mut Client<AUTH>,
+        client: &Client<AUTH>,
         asset: &FungibleAsset,
     ) -> Result<(String, String), CliError> {
         if let Some(meta) = self.resolve(client, asset.faucet_id()).await? {
-            return Ok((meta.symbol, base_units_to_tokens(asset.amount().as_u64(), meta.decimals)));
+            return Ok((meta.symbol, base_units_to_tokens(asset.amount(), meta.decimals)));
         }
         let network_id = client.network_id().await?;
         let address_str = Address::new(asset.faucet_id()).encode(network_id);
@@ -431,7 +444,7 @@ impl FaucetMetadataResolver {
             let amount = tokens_to_base_units(amount, entry.decimals).map_err(|err| {
                 CliError::Parse(err.into(), "Failed to parse tokens to base units".to_string())
             })?;
-            (entry.account_id, amount)
+            (entry.account_id, amount.as_u64())
         };
 
         FungibleAsset::new(faucet_id, amount).map_err(CliError::Asset)
@@ -453,12 +466,39 @@ fn faucet_metadata_setting_key(faucet_id: AccountId) -> String {
     format!("{FAUCET_METADATA_SETTING_PREFIX}{}", faucet_id.to_hex())
 }
 
-/// Parses an `id` string from the TOML as a bech32 address.
-fn parse_id_string(id: &str) -> Result<AccountId, String> {
-    let (_, address) = Address::decode(id)
-        .map_err(|err| format!("`{id}` is not a valid bech32 address: {err}"))?;
+/// Parses a bech32 address from the token symbol map.
+fn parse_address(address_str: &str) -> Result<AccountId, String> {
+    let (_, address) = Address::decode(address_str)
+        .map_err(|err| format!("`{address_str}` is not a valid bech32 address: {err}"))?;
     if let AddressId::AccountId(account_id) = address.id() {
         return Ok(account_id);
     }
-    Err(format!("address `{id}` does not encode an account ID"))
+    Err(format!("address `{address_str}` does not encode an account ID"))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::RawFaucetEntry;
+
+    #[test]
+    fn raw_faucet_entry_accepts_address_field() {
+        let entries: BTreeMap<String, RawFaucetEntry> = toml::from_str(
+            r#"BTC = { address = "mlcl1qru2e5yvx40ndgqqqzusrryr0ucyd0uj", decimals = 8 }"#,
+        )
+        .unwrap();
+
+        assert_eq!(entries["BTC"].address, "mlcl1qru2e5yvx40ndgqqqzusrryr0ucyd0uj");
+        assert_eq!(entries["BTC"].decimals, 8);
+    }
+
+    #[test]
+    fn raw_faucet_entry_rejects_id_field() {
+        let result = toml::from_str::<BTreeMap<String, RawFaucetEntry>>(
+            r#"BTC = { id = "mlcl1qru2e5yvx40ndgqqqzusrryr0ucyd0uj", decimals = 8 }"#,
+        );
+
+        assert!(result.is_err());
+    }
 }

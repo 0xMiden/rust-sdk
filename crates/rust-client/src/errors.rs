@@ -6,7 +6,13 @@ use core::fmt;
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::crypto::merkle::MerkleError;
-pub use miden_protocol::errors::{AccountError, AccountIdError, AssetError, NetworkIdError};
+pub use miden_protocol::errors::{
+    AccountError,
+    AccountIdError,
+    AccountPatchError,
+    AssetError,
+    NetworkIdError,
+};
 use miden_protocol::errors::{
     NoteError,
     PartialBlockchainError,
@@ -16,26 +22,27 @@ use miden_protocol::errors::{
     TransactionScriptError,
 };
 use miden_protocol::note::NoteId;
-use miden_standards::account::interface::AccountInterfaceError;
+use miden_protocol::transaction::{ProvenTransaction, TransactionId, TransactionInputs};
 // RE-EXPORTS
 // ================================================================================================
 pub use miden_standards::errors::CodeBuilderError;
-pub use miden_tx::AuthenticationError;
+use miden_standards::tx_script::SendNotesTransactionScriptError;
 use miden_tx::utils::HexParseError;
 use miden_tx::utils::serde::DeserializationError;
-use miden_tx::{
-    DataStoreError,
-    NoteCheckerError,
-    TransactionExecutorError,
-    TransactionProverError,
-};
+pub use miden_tx::{AuthenticationError, TransactionExecutorError};
+use miden_tx::{DataStoreError, NoteCheckerError, TransactionProverError};
 use thiserror::Error;
 
 use crate::note::NoteScreenerError;
 use crate::note_transport::NoteTransportError;
 use crate::rpc::RpcError;
 use crate::store::{NoteRecordError, StoreError};
-use crate::transaction::{BatchBuilderError, TransactionRequestError, TransactionStoreUpdateError};
+use crate::transaction::{
+    BatchBuilderError,
+    ChainAnchorError,
+    TransactionRequestError,
+    TransactionStoreUpdateError,
+};
 
 // ACTIONABLE HINTS
 // ================================================================================================
@@ -78,6 +85,8 @@ pub enum ClientError {
     AccountAlreadyTracked(AccountId),
     #[error("account error")]
     AccountError(#[from] AccountError),
+    #[error("account patch error")]
+    AccountPatchError(#[from] AccountPatchError),
     #[error("account {0} is locked because the local state may be out of date with the network")]
     AccountLocked(AccountId),
     #[error(
@@ -104,6 +113,8 @@ pub enum ClientError {
     AccountDataNotFound(AccountId),
     #[error(transparent)]
     BatchBuilder(#[from] BatchBuilderError),
+    #[error("chain anchor error")]
+    ChainAnchorError(#[from] ChainAnchorError),
     #[error("data store error")]
     DataStoreError(#[from] DataStoreError),
     #[error("failed to construct the partial blockchain")]
@@ -114,6 +125,14 @@ pub enum ClientError {
     ProvenBatchError(#[from] ProvenBatchError),
     #[error("failed to deserialize data")]
     DataDeserializationError(#[from] DeserializationError),
+    #[error(
+        "cannot recover consumed note {0}: its nullifier has no position in the sync's transaction execution order"
+    )]
+    MissingConsumedNoteOrder(NoteId),
+    #[error(
+        "cannot continue iterating consumed notes: the store returned the note with details commitment {0}, which carries no consumption position"
+    )]
+    MissingNoteConsumptionPosition(Word),
     #[error("note with id {0} not found on chain")]
     NoteNotFoundOnChain(NoteId),
     #[error("failed to parse hex string")]
@@ -151,6 +170,10 @@ pub enum ClientError {
     #[error("RPC error")]
     RpcError(#[from] RpcError),
     #[error(
+        "no transaction encryption key is available; the validator set's key must be cached in the store before transaction inputs can be sealed for submission"
+    )]
+    MissingTransactionEncryptionKey,
+    #[error(
         "transaction failed a recency check: {0} — the reference block may be too old; try syncing and resubmitting"
     )]
     RecencyConditionError(&'static str),
@@ -164,10 +187,15 @@ pub enum ClientError {
     TransactionInputError(#[source] TransactionInputError),
     #[error("transaction proving failed")]
     TransactionProvingError(#[from] TransactionProverError),
+    #[error("prover returned a proof of transaction {returned}, but {requested} was requested")]
+    MismatchedProvenTransaction {
+        requested: TransactionId,
+        returned: TransactionId,
+    },
     #[error("invalid transaction request")]
     TransactionRequestError(#[from] TransactionRequestError),
-    #[error("failed to build transaction script from account interface")]
-    AccountInterfaceError(#[from] AccountInterfaceError),
+    #[error("failed to build the send-notes transaction script")]
+    SendNotesTransactionScriptError(#[from] SendNotesTransactionScriptError),
     #[error("transaction script error")]
     TransactionScriptError(#[source] TransactionScriptError),
     #[error("client initialization error: {0}")]
@@ -195,6 +223,22 @@ pub enum ClientError {
         pending_update: Box<crate::transaction::TransactionStoreUpdate>,
         #[source]
         source: Box<ClientError>,
+    },
+    #[error(
+        "submission of transaction {} came back without a definite outcome, so the node may or \
+         may not have accepted it; nothing was recorded locally",
+        transaction.id()
+    )]
+    SubmissionOutcomeUnknown {
+        /// The transaction as submitted. Pass it back to
+        /// [`Client::submit_proven_transaction`](crate::Client::submit_proven_transaction)
+        /// alongside `transaction_inputs` to retry, or track `transaction.id()` instead.
+        transaction: Box<ProvenTransaction>,
+        /// The inputs the submission sealed. Required to retry: they cannot be recovered from the
+        /// proven transaction, which only commits to them.
+        transaction_inputs: Box<TransactionInputs>,
+        #[source]
+        source: RpcError,
     },
     /// Generic carrier for feature-specific errors raised by an observer
     /// or domain module. Keeps `ClientError` free of per-feature variants;
@@ -303,6 +347,20 @@ impl From<&ClientError> for Option<ErrorHint> {
                          same transaction: if the original is still in the mempool or has been \
                          finalized in a block, the account (and network) state has already been \
                          mutated by the accepted copy, so the node will reject the retry."
+                    ),
+                    docs_url: Some(TROUBLESHOOTING_DOC),
+                })
+            },
+            ClientError::SubmissionOutcomeUnknown { transaction, .. } => {
+                let tx_id = transaction.id();
+                Some(ErrorHint {
+                    message: format!(
+                        "Do not build and submit a replacement for {tx_id}: that would be a \
+                         different transaction, and it would be rejected as a conflict if the \
+                         original landed. Either retry with the `transaction` and \
+                         `transaction_inputs` attached to this error, whose id is fixed so it \
+                         cannot double spend, or keep syncing and check `get_transactions` for \
+                         {tx_id} until it commits or expires."
                     ),
                     docs_url: Some(TROUBLESHOOTING_DOC),
                 })

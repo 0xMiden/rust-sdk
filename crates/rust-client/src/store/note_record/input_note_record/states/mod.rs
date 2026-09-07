@@ -70,10 +70,19 @@ impl InputNoteState {
     pub const STATE_CONSUMED_AUTHENTICATED_LOCAL: u8 = 6;
     pub const STATE_CONSUMED_UNAUTHENTICATED_LOCAL: u8 = 7;
     pub const STATE_CONSUMED_EXTERNAL: u8 = 8;
-    /// `ConsumedExternal` layout that also stores the note metadata. Discriminant 8 is the legacy
-    /// metadata-less layout, kept read-only for stores written by older client versions.
-    //TODO: Remove this when merging next to main.
-    pub const STATE_CONSUMED_EXTERNAL_V2: u8 = 9;
+
+    /// Discriminants of the states in which the note hasn't been nullified yet. `Invalid` is left
+    /// out because such a note can never be consumed.
+    ///
+    /// The list is the definition backing [`InputNoteState::is_unspent`], so a store can filter on
+    /// the persisted discriminant without restating the set.
+    pub const UNSPENT_STATES: [u8; 5] = [
+        Self::STATE_EXPECTED,
+        Self::STATE_UNVERIFIED,
+        Self::STATE_COMMITTED,
+        Self::STATE_PROCESSING_AUTHENTICATED,
+        Self::STATE_PROCESSING_UNAUTHENTICATED,
+    ];
 
     /// Returns the inner state handler that implements state transitions.
     fn inner(&self) -> &dyn NoteStateHandler {
@@ -105,8 +114,14 @@ impl InputNoteState {
             InputNoteState::ConsumedUnauthenticatedLocal(_) => {
                 Self::STATE_CONSUMED_UNAUTHENTICATED_LOCAL
             },
-            InputNoteState::ConsumedExternal(_) => Self::STATE_CONSUMED_EXTERNAL_V2,
+            InputNoteState::ConsumedExternal(_) => Self::STATE_CONSUMED_EXTERNAL,
         }
+    }
+
+    /// Returns true if the note hasn't been nullified yet and can still be consumed. `Invalid`
+    /// notes count as neither unspent nor consumed.
+    pub fn is_unspent(&self) -> bool {
+        Self::UNSPENT_STATES.contains(&self.discriminant())
     }
 
     pub(crate) fn metadata(&self) -> Option<&NoteMetadata> {
@@ -246,9 +261,6 @@ impl Deserializable for InputNoteState {
                 Ok(ConsumedUnauthenticatedLocalNoteState::read_from(source)?.into())
             },
             Self::STATE_CONSUMED_EXTERNAL => {
-                Ok(ConsumedExternalNoteState::read_from_legacy(source)?.into())
-            },
-            Self::STATE_CONSUMED_EXTERNAL_V2 => {
                 Ok(ConsumedExternalNoteState::read_from(source)?.into())
             },
             _ => Err(DeserializationError::InvalidValue(format!(

@@ -7,20 +7,22 @@ use miden_protocol::assembly::{DefaultSourceManager, SourceManagerSync};
 use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::rand::RandomCoin;
 use miden_protocol::{Felt, MAX_TX_EXECUTION_CYCLES, MIN_TX_EXECUTION_CYCLES};
+use miden_tx::auth::TransactionAuthenticator;
 use miden_tx::{ExecutionOptions, LocalTransactionProver};
-use rand::Rng;
+use rand::RngExt;
 
 #[cfg(any(feature = "tonic", feature = "std"))]
 use crate::alloc::string::ToString;
 #[cfg(feature = "std")]
 use crate::keystore::FilesystemKeyStore;
-use crate::keystore::Keystore;
 use crate::note_transport::NoteTransportClient;
 use crate::pswap::PswapTransactionObserver;
 use crate::rpc::{Endpoint, NodeRpcClient};
+#[cfg(feature = "tonic")]
+use crate::rpc::{GrpcClient, VerifyingRpcClient};
 use crate::store::{Store, StoreError};
 use crate::transaction::{TransactionObserver, TransactionProver};
-use crate::{Client, ClientError, ClientRng, ClientRngBox, DebugMode, grpc_support};
+use crate::{Client, ClientError, ClientRng, ClientRngBox, grpc_support};
 
 // CONSTANTS
 // ================================================================================================
@@ -87,9 +89,8 @@ pub trait StoreFactory {
 ///   generating keys, serial numbers, and other cryptographic operations. If not provided, a random
 ///   seed-based RNG is created automatically. Configure via [`rng()`](Self::rng).
 ///
-/// - **Authenticator** ([`TransactionAuthenticator`](miden_tx::auth::TransactionAuthenticator)):
-///   Handles transaction signing when signatures are requested from within the VM. Configure via
-///   [`authenticator()`](Self::authenticator).
+/// - **Authenticator** ([`TransactionAuthenticator`]): Handles transaction signing when signatures
+///   are requested from within the VM. Configure via [`authenticator()`](Self::authenticator).
 ///
 /// - **Transaction prover** ([`TransactionProver`]): Generates proofs for transactions. Defaults to
 ///   a local prover if not specified. Configure via [`prover()`](Self::prover).
@@ -97,9 +98,6 @@ pub trait StoreFactory {
 /// - **Note transport** ([`NoteTransportClient`]): Optional component for exchanging private notes
 ///   through the Miden note transport network. Configure via
 ///   [`note_transport()`](Self::note_transport).
-///
-/// - **Debug mode**: Enables debug mode for transaction execution. Configure via
-///   [`in_debug_mode()`](Self::in_debug_mode).
 ///
 /// - **Transaction discard delta**: Number of blocks after which pending transactions are
 ///   considered stale and discarded. Configure via [`tx_discard_delta()`](Self::tx_discard_delta).
@@ -120,8 +118,6 @@ pub struct ClientBuilder<AUTH> {
     rng: Option<ClientRngBox>,
     /// The authenticator provided by the user.
     authenticator: Option<Arc<AUTH>>,
-    /// A flag to enable debug mode.
-    in_debug_mode: DebugMode,
     /// Number of blocks after which pending transactions are considered stale and discarded.
     /// If `None`, there is no limit and transactions will be kept indefinitely.
     tx_discard_delta: Option<u32>,
@@ -153,7 +149,6 @@ impl<AUTH> Default for ClientBuilder<AUTH> {
             store: None,
             rng: None,
             authenticator: None,
-            in_debug_mode: DebugMode::Disabled,
             tx_discard_delta: Some(TX_DISCARD_DELTA),
             irrelevant_block_prune_interval: Some(IRRELEVANT_BLOCK_PRUNE_INTERVAL),
             cache_partial_mmr_in_memory: CACHE_PARTIAL_MMR_IN_MEMORY,
@@ -204,10 +199,10 @@ where
     pub fn for_testnet() -> Self {
         let endpoint = Endpoint::testnet();
         Self {
-            rpc_api: Some(Arc::new(crate::rpc::GrpcClient::new(
+            rpc_api: Some(Arc::new(VerifyingRpcClient::new(GrpcClient::new(
                 &endpoint,
                 DEFAULT_GRPC_TIMEOUT_MS,
-            ))),
+            )))),
             tx_prover: Some(Arc::new(RemoteTransactionProver::new(
                 TESTNET_PROVER_ENDPOINT.to_string(),
             ))),
@@ -248,10 +243,10 @@ where
     pub fn for_devnet() -> Self {
         let endpoint = Endpoint::devnet();
         Self {
-            rpc_api: Some(Arc::new(crate::rpc::GrpcClient::new(
+            rpc_api: Some(Arc::new(VerifyingRpcClient::new(GrpcClient::new(
                 &endpoint,
                 DEFAULT_GRPC_TIMEOUT_MS,
-            ))),
+            )))),
             tx_prover: Some(Arc::new(RemoteTransactionProver::new(
                 DEVNET_PROVER_ENDPOINT.to_string(),
             ))),
@@ -292,10 +287,10 @@ where
     pub fn for_localhost() -> Self {
         let endpoint = Endpoint::localhost();
         Self {
-            rpc_api: Some(Arc::new(crate::rpc::GrpcClient::new(
+            rpc_api: Some(Arc::new(VerifyingRpcClient::new(GrpcClient::new(
                 &endpoint,
                 DEFAULT_GRPC_TIMEOUT_MS,
-            ))),
+            )))),
             endpoint: Some(endpoint),
             ..Self::default()
         }
@@ -312,28 +307,25 @@ where
         Self::default()
     }
 
-    /// Enable or disable debug mode.
-    #[must_use]
-    pub fn in_debug_mode(mut self, debug: DebugMode) -> Self {
-        self.in_debug_mode = debug;
-        self
-    }
-
     /// Sets a custom RPC client directly.
+    ///
+    /// The client is used as provided: wrap it in
+    /// [`VerifyingRpcClient`] to have node responses verified against the requests.
     #[must_use]
     pub fn rpc(mut self, client: Arc<dyn NodeRpcClient>) -> Self {
         self.rpc_api = Some(client);
         self
     }
 
-    /// Sets a gRPC client from the endpoint and optional timeout.
+    /// Sets a gRPC client from the endpoint and optional timeout, wrapped in a
+    /// [`VerifyingRpcClient`] so node responses are verified against the requests.
     #[must_use]
     #[cfg(feature = "tonic")]
-    pub fn grpc_client(mut self, endpoint: &crate::rpc::Endpoint, timeout_ms: Option<u64>) -> Self {
-        self.rpc_api = Some(Arc::new(crate::rpc::GrpcClient::new(
+    pub fn grpc_client(mut self, endpoint: &Endpoint, timeout_ms: Option<u64>) -> Self {
+        self.rpc_api = Some(Arc::new(VerifyingRpcClient::new(GrpcClient::new(
             endpoint,
             timeout_ms.unwrap_or(DEFAULT_GRPC_TIMEOUT_MS),
-        )));
+        ))));
         self
     }
 
@@ -539,8 +531,6 @@ where
                 Some(MAX_TX_EXECUTION_CYCLES),
                 MIN_TX_EXECUTION_CYCLES,
                 ExecutionOptions::DEFAULT_CORE_TRACE_FRAGMENT_SIZE,
-                false,
-                self.in_debug_mode.into(),
             )
             .expect("Default executor's options should always be valid"),
             tx_discard_delta: self.tx_discard_delta,
@@ -555,20 +545,20 @@ where
     }
 }
 
-// FILESYSTEM KEYSTORE CONVENIENCE METHOD
+// BUILDER AUTHENTICATOR
 // ================================================================================================
 
-/// Marker trait to capture the bounds the builder requires for the authenticator type
-/// parameter.
-#[cfg(feature = "std")]
-pub trait BuilderAuthenticator: Keystore + From<FilesystemKeyStore> + 'static {}
-#[cfg(feature = "std")]
-impl<T> BuilderAuthenticator for T where T: Keystore + From<FilesystemKeyStore> + 'static {}
+/// Marker trait for the authenticator type parameter of [`ClientBuilder`].
+///
+/// The builder stores the authenticator and passes it to the client. The client uses it only to
+/// sign transactions, so any [`TransactionAuthenticator`] with a `'static` lifetime qualifies.
+/// Key management is not required. A signer that holds no secret key, such as a remote signing
+/// service, can be used without implementing [`Keystore`](crate::keystore::Keystore).
+pub trait BuilderAuthenticator: TransactionAuthenticator + 'static {}
+impl<T> BuilderAuthenticator for T where T: TransactionAuthenticator + 'static {}
 
-#[cfg(not(feature = "std"))]
-pub trait BuilderAuthenticator: Keystore + 'static {}
-#[cfg(not(feature = "std"))]
-impl<T> BuilderAuthenticator for T where T: Keystore + 'static {}
+// FILESYSTEM KEYSTORE CONVENIENCE METHOD
+// ================================================================================================
 
 /// Convenience method for [`ClientBuilder`] when using [`FilesystemKeyStore`] as the authenticator.
 #[cfg(feature = "std")]

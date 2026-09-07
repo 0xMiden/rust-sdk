@@ -6,13 +6,15 @@ rust-version.workspace = true
 version.workspace      = true
 
 [dev-dependencies]
-miden-client              = { features = ["std", "testing"], workspace = true }
+miden-client              = { features = ["dap", "std", "testing"], workspace = true }
 miden-client-sqlite-store = { workspace = true }
+miden-debug               = { workspace = true }
 miden-protocol            = { default-features = false, features = ["testing"], workspace = true }
 miden-standards           = { features = ["testing"], workspace = true }
 miden-testing             = { default-features = false, workspace = true }
 rand                      = { workspace = true }
 rstest                    = { workspace = true }
+tempfile                  = { workspace = true }
 tokio                     = { workspace = true }
 
 [lints]

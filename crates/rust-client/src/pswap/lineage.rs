@@ -96,7 +96,7 @@ impl PswapLineageRecord {
             current_tip_note_id: original_note_id,
             current_depth: 0,
             remaining_offered: pswap.offered_asset().amount(),
-            remaining_requested: pswap.storage().requested_asset().amount(),
+            remaining_requested: pswap.storage().min_requested_asset().amount(),
             state: PswapLineageState::Active,
         }
     }
@@ -494,7 +494,7 @@ pub(crate) mod test_helpers {
         let offered = FungibleAsset::new(offered_faucet, offered_amount).unwrap();
         let requested = FungibleAsset::new(requested_faucet, requested_amount).unwrap();
         let storage = PswapNoteStorage::builder()
-            .requested_asset(requested)
+            .min_requested_asset(requested)
             .creator_account_id(creator)
             .build();
         PswapNote::builder()

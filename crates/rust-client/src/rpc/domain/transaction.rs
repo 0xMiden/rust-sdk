@@ -1,9 +1,8 @@
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::ToString;
 use alloc::vec::Vec;
 
 use miden_protocol::Word;
-use miden_protocol::asset::Asset;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{NoteHeader, NoteId, NoteInclusionProof, Nullifier};
 use miden_protocol::transaction::{
@@ -15,10 +14,6 @@ use miden_protocol::transaction::{
 
 use super::note::CommittedNote;
 use crate::rpc::{RpcConversionError, RpcError, generated as proto};
-
-/// A native asset faucet ID for use in testing scenarios.
-#[cfg(test)]
-pub const ACCOUNT_ID_NATIVE_ASSET_FAUCET: u128 = 0xab00_0000_0000_cd21_0000_ac00_0000_de00_u128;
 
 // INTO TRANSACTION ID
 // ================================================================================================
@@ -68,6 +63,32 @@ pub struct TransactionRecord {
     pub output_notes: Vec<CommittedNote>,
     /// Output notes that were erased by same-batch note erasure.
     pub erased_output_notes: Vec<NoteHeader>,
+    /// Maps each consumed input note's nullifier to its note id, for public notes the node could
+    /// resolve. Lets a client recover, by id, a consumed note it never tracked. Empty for
+    /// private/unresolvable inputs.
+    // TODO: perhaps we might want to rename this field (see https://github.com/0xMiden/node/pull/2304#discussion_r3511308376)
+    pub(crate) consumed_note_refs: Vec<(Nullifier, NoteId)>,
+}
+
+impl TransactionRecord {
+    /// Returns the `(nullifier, note_id)` references of the public input notes this transaction
+    /// consumed, letting a client fetch by id consumed notes it never tracked.
+    ///
+    /// Only yields references whose nullifier appears in the transaction header's input notes:
+    /// a reference the node can't tie to an actually-consumed input is dropped, so a misbehaving
+    /// node can't attribute an unrelated note to this transaction's account.
+    pub fn trusted_consumed_note_refs(&self) -> impl Iterator<Item = (Nullifier, NoteId)> + '_ {
+        let consumed_nullifiers: BTreeSet<Nullifier> = self
+            .transaction_header
+            .input_notes()
+            .iter()
+            .map(InputNoteCommitment::nullifier)
+            .collect();
+        self.consumed_note_refs
+            .iter()
+            .copied()
+            .filter(move |(nullifier, _)| consumed_nullifiers.contains(nullifier))
+    }
 }
 
 impl TryFrom<proto::rpc::TransactionRecord> for TransactionRecord {
@@ -84,11 +105,28 @@ impl TryFrom<proto::rpc::TransactionRecord> for TransactionRecord {
         let (transaction_header, output_notes, erased_output_notes) =
             convert_transaction_header(proto_header, value.output_note_proofs)?;
 
+        let consumed_note_refs = value
+            .consumed_note_refs
+            .into_iter()
+            .map(|r| {
+                let nullifier: Nullifier = r
+                    .nullifier
+                    .ok_or(RpcError::ExpectedDataMissing("consumed_note_ref.nullifier".into()))?
+                    .try_into()?;
+                let note_id: NoteId = r
+                    .note_id
+                    .ok_or(RpcError::ExpectedDataMissing("consumed_note_ref.note_id".into()))?
+                    .try_into()?;
+                Ok((nullifier, note_id))
+            })
+            .collect::<Result<Vec<_>, RpcError>>()?;
+
         Ok(Self {
             block_num,
             transaction_header,
             output_notes,
             erased_output_notes,
+            consumed_note_refs,
         })
     }
 }
@@ -180,30 +218,12 @@ fn convert_transaction_header(
         }
     }
 
-    let fee_asset: Asset = value
-        .fee
-        .ok_or(RpcConversionError::MissingFieldInProtobufRepresentation {
-            entity: "TransactionHeader",
-            field_name: "fee",
-        })?
-        .try_into()?;
-
-    let fee = match fee_asset {
-        Asset::Fungible(fungible) => fungible,
-        Asset::NonFungible(_) => {
-            return Err(RpcError::InvalidResponse(
-                "expected fungible asset for transaction fee".into(),
-            ));
-        },
-    };
-
     let transaction_header = TransactionHeader::new(
         account_id.try_into()?,
         initial_state_commitment.try_into()?,
         final_state_commitment.try_into()?,
         input_notes,
         output_note_headers,
-        fee,
     );
     Ok((transaction_header, committed_output_notes, erased_output_notes))
 }

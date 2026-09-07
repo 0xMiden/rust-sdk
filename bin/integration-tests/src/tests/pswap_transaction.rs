@@ -1,13 +1,13 @@
 use anyhow::{Context, Result};
 use miden_client::account::AccountType;
-use miden_client::asset::FungibleAsset;
+use miden_client::asset::{AssetAmount, FungibleAsset};
 use miden_client::auth::RPO_FALCON_SCHEME_ID;
 use miden_client::note::{Note, NoteType, PswapNote};
 use miden_client::testing::common::*;
 use miden_client::transaction::{PswapTransactionData, TransactionRequestBuilder};
 use tracing::info;
 
-use crate::tests::config::ClientConfig;
+use crate::ClientConfig;
 
 // PSWAP FULL FILL ONCHAIN
 // ================================================================================================
@@ -25,10 +25,7 @@ pub async fn test_pswap_full_fill_onchain(client_config: ClientConfig) -> Result
 
     let (mut alice_client, alice_authenticator) = client_config.clone().into_client().await?;
     wait_for_node(&mut alice_client).await;
-    let (mut bob_client, bob_authenticator) = ClientConfig::default()
-        .with_rpc_endpoint(client_config.rpc_endpoint())
-        .into_client()
-        .await?;
+    let (mut bob_client, bob_authenticator) = client_config.clone().into_client().await?;
 
     alice_client.sync_state().await?;
     bob_client.sync_state().await?;
@@ -105,8 +102,8 @@ pub async fn test_pswap_full_fill_onchain(client_config: ClientConfig) -> Result
     let consume_request = TransactionRequestBuilder::new().build_pswap_consume(
         &pswap_note,
         bob_account.id(),
-        REQUESTED_AMOUNT,
-        0,
+        AssetAmount::new(REQUESTED_AMOUNT).unwrap(),
+        AssetAmount::ZERO,
     )?;
     // The consumer tracks neither output note: the payback settles to the creator and the
     // remainder is the order's next tip. Both are validated as the transaction's own outputs, but
@@ -135,18 +132,21 @@ pub async fn test_pswap_full_fill_onchain(client_config: ClientConfig) -> Result
     let alice_account_reader = alice_client.account_reader(alice_account.id());
     assert_eq!(
         alice_account_reader.get_balance(btc_faucet_account.id()).await?,
-        MINT_AMOUNT - OFFERED_AMOUNT
+        AssetAmount::new(MINT_AMOUNT - OFFERED_AMOUNT).unwrap()
     );
     assert_eq!(
         alice_account_reader.get_balance(eth_faucet_account.id()).await?,
-        REQUESTED_AMOUNT
+        AssetAmount::new(REQUESTED_AMOUNT).unwrap()
     );
 
     let bob_account_reader = bob_client.account_reader(bob_account.id());
-    assert_eq!(bob_account_reader.get_balance(btc_faucet_account.id()).await?, OFFERED_AMOUNT);
+    assert_eq!(
+        bob_account_reader.get_balance(btc_faucet_account.id()).await?,
+        AssetAmount::new(OFFERED_AMOUNT).unwrap()
+    );
     assert_eq!(
         bob_account_reader.get_balance(eth_faucet_account.id()).await?,
-        MINT_AMOUNT - REQUESTED_AMOUNT
+        AssetAmount::new(MINT_AMOUNT - REQUESTED_AMOUNT).unwrap()
     );
 
     Ok(())
@@ -168,10 +168,7 @@ pub async fn test_pswap_partial_fill_onchain(client_config: ClientConfig) -> Res
 
     let (mut alice_client, alice_authenticator) = client_config.clone().into_client().await?;
     wait_for_node(&mut alice_client).await;
-    let (mut bob_client, bob_authenticator) = ClientConfig::default()
-        .with_rpc_endpoint(client_config.rpc_endpoint())
-        .into_client()
-        .await?;
+    let (mut bob_client, bob_authenticator) = client_config.clone().into_client().await?;
 
     alice_client.sync_state().await?;
     bob_client.sync_state().await?;
@@ -244,8 +241,8 @@ pub async fn test_pswap_partial_fill_onchain(client_config: ClientConfig) -> Res
     let consume_request = TransactionRequestBuilder::new().build_pswap_consume(
         &pswap_note,
         bob_account.id(),
-        ACCOUNT_FILL,
-        0,
+        AssetAmount::new(ACCOUNT_FILL).unwrap(),
+        AssetAmount::ZERO,
     )?;
 
     // The consumer tracks neither output note. The payback settles to the creator and the
@@ -265,12 +262,12 @@ pub async fn test_pswap_partial_fill_onchain(client_config: ClientConfig) -> Res
     let bob_account_reader = bob_client.account_reader(bob_account.id());
     assert_eq!(
         bob_account_reader.get_balance(btc_faucet_account.id()).await?,
-        EXPECTED_PAYOUT,
+        AssetAmount::new(EXPECTED_PAYOUT).unwrap(),
         "Bob should have received a proportional share, not the full offered amount"
     );
     assert_eq!(
         bob_account_reader.get_balance(eth_faucet_account.id()).await?,
-        MINT_AMOUNT - ACCOUNT_FILL,
+        AssetAmount::new(MINT_AMOUNT - ACCOUNT_FILL).unwrap(),
         "Bob should have spent only the partial fill amount"
     );
 
@@ -351,7 +348,7 @@ pub async fn test_pswap_cancel_onchain(client_config: ClientConfig) -> Result<()
     let alice_account_reader = alice_client.account_reader(alice_account.id());
     assert_eq!(
         alice_account_reader.get_balance(btc_faucet_account.id()).await?,
-        MINT_AMOUNT - OFFERED_AMOUNT,
+        AssetAmount::new(MINT_AMOUNT - OFFERED_AMOUNT).unwrap(),
         "creating the PSWAP should debit the offered asset"
     );
 
@@ -363,7 +360,7 @@ pub async fn test_pswap_cancel_onchain(client_config: ClientConfig) -> Result<()
     let alice_account_reader = alice_client.account_reader(alice_account.id());
     assert_eq!(
         alice_account_reader.get_balance(btc_faucet_account.id()).await?,
-        MINT_AMOUNT,
+        AssetAmount::new(MINT_AMOUNT).unwrap(),
         "cancelling should restore the offered asset to the creator"
     );
 

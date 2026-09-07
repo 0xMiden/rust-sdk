@@ -40,11 +40,11 @@ Remember to use the [Miden client documentation](https://docs.miden.xyz/builder/
    To do this, run:
 
    ```sh
-   miden-client send --sender <regular-account-id-A> --target <regular-account-id-B> --asset 50::<faucet-account-id> --note-type private
+   miden-client transfer --sender <regular-account-id-A> --target <regular-account-id-B> --asset 50::<faucet-account-id> --note-type private
    ```
 
    :::note
-   The faucet account ID can be found on the [Miden faucet website](https://testnet.miden.io/) under the title **Miden faucet**.
+   The faucet account ID can be found on the [Miden faucet website](https://faucet.testnet.miden.io/) under the title **Miden faucet**.
    :::
 
    This generates a private Pay-to-ID (`P2ID`) note containing `50` assets, transferred from one account to the other.

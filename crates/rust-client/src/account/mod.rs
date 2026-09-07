@@ -37,7 +37,6 @@ use alloc::vec::Vec;
 
 use miden_protocol::Felt;
 use miden_protocol::account::auth::PublicKey;
-pub use miden_protocol::account::delta::AccountUpdateDetails;
 pub use miden_protocol::account::{
     Account,
     AccountBuilder,
@@ -52,24 +51,30 @@ pub use miden_protocol::account::{
     AccountIdPrefixV1,
     AccountIdV1,
     AccountIdVersion,
+    AccountPatch,
     AccountProcedureRoot,
     AccountStorage,
+    AccountStoragePatch,
     AccountType,
+    AccountUpdateDetails,
+    AccountVaultPatch,
     PartialAccount,
     PartialStorage,
     PartialStorageMap,
     RoleSymbol,
     StorageMap,
-    StorageMapDelta,
     StorageMapKey,
     StorageMapKeyHash,
+    StorageMapPatch,
+    StorageMapPatchEntries,
     StorageMapWitness,
     StorageSlot,
     StorageSlotContent,
-    StorageSlotDelta,
     StorageSlotId,
     StorageSlotName,
+    StorageSlotPatch,
     StorageSlotType,
+    StorageValuePatch,
 };
 pub use miden_protocol::address::{Address, AddressInterface, AddressType, NetworkId};
 use miden_protocol::asset::AssetVault;
@@ -112,8 +117,12 @@ mod account_reader;
 pub use account_reader::AccountReader;
 /// Raw access to `miden-standards` account modules for items not curated by `miden-client`.
 pub use miden_standards::account as standards;
-use miden_standards::account::auth::AuthSingleSig;
+use miden_standards::account::auth::{Approver, AuthSingleSig};
 use miden_standards::account::faucets::FungibleFaucet;
+pub use miden_standards::account::inspection::{
+    AccountBuilderSchemaCommitmentExt,
+    AccountSchemaCommitment,
+};
 // RE-EXPORTS
 // ================================================================================================
 pub use miden_standards::account::interface::{
@@ -121,10 +130,6 @@ pub use miden_standards::account::interface::{
     AccountComponentInterfaceExt,
     AccountInterface,
     AccountInterfaceExt,
-};
-pub use miden_standards::account::metadata::{
-    AccountBuilderSchemaCommitmentExt,
-    AccountSchemaCommitment,
 };
 use miden_standards::account::wallets::BasicWallet;
 
@@ -183,29 +188,41 @@ pub mod component {
         FungibleFaucetBuilder,
         FungibleFaucetError,
         LogoURI,
+        NonFungibleFaucet,
         TokenMetadata,
         TokenMetadataError,
         TokenName,
-        create_fungible_faucet,
+        create_network_fungible_faucet,
+        create_singlesig_user_fungible_faucet,
+    };
+    pub use miden_standards::account::fees::{
+        BasicConstantFeePolicy,
+        FeePolicy,
+        FeePolicyError,
+        FeePolicyManager,
+        FeePolicyManagerBuilder,
     };
     pub use miden_standards::account::policies::{
-        AllowlistOwnerControlled,
+        AllowlistManager,
         AllowlistStorage,
         BasicAllowlist,
         BasicBlocklist,
-        BlocklistOwnerControlled,
+        BlocklistManager,
         BlocklistStorage,
         BurnAllowAll,
         BurnOwnerOnly,
-        BurnPolicyConfig,
+        BurnPolicy,
+        BurnPolicyError,
+        MinBurnAmount,
         MintAllowAll,
         MintOwnerOnly,
-        MintPolicyConfig,
-        PolicyRegistration,
+        MintPolicy,
+        MintPolicyError,
         TokenPolicyManager,
-        TokenPolicyManagerError,
+        TokenPolicyManagerBuilder,
         TransferAllowAll,
         TransferPolicy,
+        TransferPolicyError,
     };
     pub use miden_standards::account::wallets::BasicWallet;
 }
@@ -277,7 +294,7 @@ impl<AUTH> Client<AUTH> {
             }
         }
 
-        let tracked_account = self.store.get_account(account.id()).await?;
+        let tracked_account = self.store.get_minimal_partial_account(account.id()).await?;
 
         match tracked_account {
             None => {
@@ -458,7 +475,7 @@ impl<AUTH> Client<AUTH> {
             return Err(ClientError::AddressAlreadyTracked(address_bench32));
         }
 
-        let tracked_account = self.store.get_account(account_id).await?;
+        let tracked_account = self.store.get_minimal_partial_account(account_id).await?;
         match tracked_account {
             None => Err(ClientError::AccountDataNotFound(account_id)),
             Some(tracked_account) => {
@@ -477,21 +494,25 @@ impl<AUTH> Client<AUTH> {
     }
 
     /// Removes an [`Address`] from the associated [`AccountId`], alongside its derived [`NoteTag`].
-    /// If no address was tracked for the given account, this is a no-op.
+    ///
+    /// Returns `true` if the address was tracked. If it wasn't, this is a no-op: the derived tag is
+    /// left in place, since it may have been registered by something other than this address.
     pub async fn remove_address(
         &mut self,
         address: Address,
         account_id: AccountId,
-    ) -> Result<(), ClientError> {
+    ) -> Result<bool, ClientError> {
         let derived_note_tag = address.to_note_tag();
         let note_tag_record = NoteTagRecord::with_account_source(derived_note_tag, account_id);
-        self.store.remove_address(address).await?;
+        if !self.store.remove_address(address).await? {
+            return Ok(false);
+        }
         // Remove the note tag if no other address are associated with it.
         let addresses = self.store.get_addresses_by_account_id(account_id).await?;
         if addresses.iter().all(|address| address.to_note_tag() != derived_note_tag) {
             self.store.remove_note_tag(note_tag_record).await?;
         }
-        Ok(())
+        Ok(true)
     }
 
     // ACCOUNT DATA RETRIEVAL
@@ -540,30 +561,28 @@ impl<AUTH> Client<AUTH> {
         self.store.get_account_headers().await.map_err(Into::into)
     }
 
+    /// Returns the [`AccountHeader`] of the account with the specified ID along with its status,
+    /// or `None` if the account isn't tracked by the client.
+    ///
+    /// Said account's state is the state after the last performed sync.
+    pub async fn get_account_header(
+        &self,
+        account_id: AccountId,
+    ) -> Result<Option<(AccountHeader, AccountStatus)>, ClientError> {
+        self.store.get_account_header(account_id).await.map_err(Into::into)
+    }
+
     /// Retrieves the full [`Account`] object from the store, returning `None` if not found.
     ///
-    /// This method loads the complete account state including vault, storage, and code.
-    ///
-    /// For lazy access that fetches only the data you need, use
+    /// This method loads the complete account state including vault, storage, and code —
+    /// including building the vault's Merkle tree. For lazy access that fetches only the data
+    /// you need (existence checks, single fields, storage items), use
     /// [`Client::account_reader`] instead.
-    ///
-    /// Use [`Client::try_get_account`] if you want to error when the account is not found.
     pub async fn get_account(&self, account_id: AccountId) -> Result<Option<Account>, ClientError> {
         match self.store.get_account(account_id).await? {
             Some(record) => Ok(Some(record.try_into()?)),
             None => Ok(None),
         }
-    }
-
-    /// Retrieves the full [`Account`] object from the store, erroring if not found.
-    ///
-    /// This method loads the complete account state including vault, storage, and code.
-    ///
-    /// Use [`Client::get_account`] if you want to handle missing accounts gracefully.
-    pub async fn try_get_account(&self, account_id: AccountId) -> Result<Account, ClientError> {
-        self.get_account(account_id)
-            .await?
-            .ok_or(ClientError::AccountDataNotFound(account_id))
     }
 
     /// Creates an [`AccountReader`] for lazy access to account data.
@@ -630,11 +649,11 @@ pub fn build_wallet_id(
 ) -> Result<AccountId, ClientError> {
     let auth_scheme = public_key.auth_scheme();
     let auth_component: AccountComponent =
-        AuthSingleSig::new(public_key.to_commitment(), auth_scheme).into();
+        AuthSingleSig::new(Approver::new(public_key.to_commitment(), auth_scheme)).into();
 
     let account = AccountBuilder::new(init_seed)
         .account_type(account_visibility)
-        .with_auth_component(auth_component)
+        .with_component(auth_component)
         .with_component(BasicWallet)
         .build_with_schema_commitment()?;
 
@@ -645,12 +664,13 @@ pub fn build_wallet_id(
 mod schema_commitment_tests {
     use miden_protocol::EMPTY_WORD;
     use miden_protocol::account::auth::AuthSecretKey;
-    use miden_standards::account::metadata::AccountSchemaCommitment;
+    use miden_standards::account::inspection::AccountSchemaCommitment;
 
     use super::{
         AccountBuilder,
         AccountBuilderSchemaCommitmentExt,
         AccountType,
+        Approver,
         AuthSingleSig,
         BasicWallet,
     };
@@ -661,10 +681,10 @@ mod schema_commitment_tests {
         let key = AuthSecretKey::new_falcon512_poseidon2();
         let account = AccountBuilder::new([2u8; 32])
             .account_type(AccountType::Private)
-            .with_auth_component(AuthSingleSig::new(
+            .with_component(AuthSingleSig::new(Approver::new(
                 key.public_key().to_commitment(),
                 AuthSchemeId::Falcon512Poseidon2,
-            ))
+            )))
             .with_component(BasicWallet)
             .build_with_schema_commitment()
             .expect("build_with_schema_commitment");

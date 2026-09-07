@@ -14,9 +14,11 @@ use tonic::service::Interceptor;
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod api_client_wrapper {
     use alloc::string::String;
+    use core::time::Duration;
 
     use miden_protocol::Word;
     use tonic::service::interceptor::InterceptedService;
+    use tonic_web_wasm_client::options::FetchOptions;
 
     use super::{MetadataInterceptor, accept_header_interceptor};
     use crate::rpc::RpcError;
@@ -33,7 +35,7 @@ pub(crate) mod api_client_wrapper {
     }
 
     impl ApiClient {
-        /// Connects to the Miden node API using the provided URL and genesis commitment.
+        /// Connects to the Miden node API using the provided URL, timeout and genesis commitment.
         ///
         /// When `bearer_token` is `Some`, an `authorization: Bearer <token>` header is
         /// injected into every outbound request alongside the standard `accept` header.
@@ -41,12 +43,13 @@ pub(crate) mod api_client_wrapper {
         #[allow(clippy::unused_async)]
         pub async fn new_client(
             endpoint: String,
-            _timeout_ms: u64,
+            timeout_ms: u64,
             genesis_commitment: Option<Word>,
             bearer_token: Option<String>,
             max_decoding_message_size: usize,
         ) -> Result<ApiClient, RpcError> {
-            let wasm_client = WasmClient::new(endpoint);
+            let fetch_options = FetchOptions::new().timeout(Duration::from_millis(timeout_ms));
+            let wasm_client = WasmClient::new_with_options(endpoint, fetch_options);
             let interceptor =
                 accept_header_interceptor(genesis_commitment, bearer_token.as_deref())?;
             let client = ProtoClient::with_interceptor(wasm_client.clone(), interceptor)
@@ -66,11 +69,12 @@ pub(crate) mod api_client_wrapper {
         #[allow(clippy::unused_async)]
         pub async fn new_client_without_accept_header(
             endpoint: String,
-            _timeout_ms: u64,
+            timeout_ms: u64,
             bearer_token: Option<String>,
             max_decoding_message_size: usize,
         ) -> Result<ApiClient, RpcError> {
-            let wasm_client = WasmClient::new(endpoint);
+            let fetch_options = FetchOptions::new().timeout(Duration::from_millis(timeout_ms));
+            let wasm_client = WasmClient::new_with_options(endpoint, fetch_options);
             let interceptor =
                 MetadataInterceptor::default().with_bearer_token(bearer_token.as_deref())?;
             let client = ProtoClient::with_interceptor(wasm_client.clone(), interceptor)

@@ -16,19 +16,11 @@ Call a command on the `miden-client` like this:
 miden-client <command> <flags> <arguments>
 ```
 
-Optionally, you can include the `--debug` flag to run the command with debug mode, which enables debug output logs from scripts that were compiled in this mode:
-
-```sh
-miden-client --debug <flags> <arguments>
-```
-
-Note that the debug flag overrides the `MIDEN_DEBUG` environment variable.
-
 ## Commands
 
 ### `init`
 
-Creates a configuration file for the client in the current directory. Running this command is optional, as the client will self-initialize by default. By default, the command uses the Testnet network.
+Creates a global configuration file for the client. Pass `--local` to create one in the current directory. Running this command is optional, as the client will self-initialize by default. By default, the command uses the Testnet network.
 
 ```sh
 # This will create a config file named `miden-client.toml` using default values
@@ -41,10 +33,10 @@ miden-client init --network devnet
 miden-client init --network localhost
 
 # You can also specify a custom network
-miden-client init --network 18.203.155.106
+miden-client init --network http://18.203.155.106
 # You can specify the port
-miden-client init --network 18.203.155.106:8080
-# You can also specify the protocol (http/https)
+miden-client init --network http://18.203.155.106:8080
+# You can use HTTPS
 miden-client init --network https://18.203.155.106
 # You can specify both
 miden-client init --network https://18.203.155.106:1234
@@ -56,7 +48,7 @@ miden-client init --store-path db/store.sqlite3
 miden-client init --block-delta 250
 
 # You can provide both flags
-miden-client init --network 18.203.155.106 --store-path db/store.sqlite3
+miden-client init --network http://18.203.155.106 --store-path db/store.sqlite3
 
 # You can set a remote prover to offload the proving process (along with the `--delegate-proving` flag in transaction commands)
 miden-client init --remote-prover-endpoint <PROVER_URL>
@@ -65,7 +57,7 @@ miden-client init --remote-prover-endpoint <PROVER_URL>
 miden-client init --note-transport-endpoint <MIDEN_NOTE_TRANSPORT_URL>
 ```
 
-More information on the configuration file can be found in the [configuration section](https://github.com/0xMiden/miden-client/docs/typedoc/rust-client/cli-config.md).
+More information on the configuration file can be found in the [configuration section](cli-config.md).
 
 ### `account`
 
@@ -73,11 +65,12 @@ Inspect account details.
 
 #### Action Flags
 
-| Flags            | Description                                      | Short Flag |
-| ---------------- | ------------------------------------------------ | ---------- |
-| `--list`         | List all accounts monitored by this client       | `-l`       |
-| `--show <ID>`    | Show details of the account for the specified ID | `-s`       |
-| `--default <ID>` | Manage the setting for the default account       | `-d`       |
+| Flags                        | Description                                                   | Short Flag |
+| ---------------------------- | ------------------------------------------------------------ | ---------- |
+| `--list`                     | List all accounts monitored by this client                   | `-l`       |
+| `--show <ID>`                | Show details of the account for the specified ID             | `-s`       |
+| `--inspect <ID[:PROCEDURE]>` | List the procedures an account exposes, or resolve a single one |         |
+| `--default <ID>`             | Manage the setting for the default account                   | `-d`       |
 
 The `--show` flag also accepts a partial ID instead of the full ID. For example, instead of:
 
@@ -92,6 +85,11 @@ miden-client account --show 0x8fd4b86
 ```
 
 For the `--default` flag, if `<ID>` is "none" then the previous default account is cleared. If no `<ID>` is specified then the default account is shown.
+
+The `--inspect` flag lists the procedures an account exposes, grouped into resolved procedures (shown in a table with their name, signature, and MAST root) and unresolved ones (listed by their MAST root under a hint to pass `--package`). Pass `<ID>:<PROCEDURE>` to resolve a single procedure by name; if no procedure with that name can be resolved (the account does not expose it, or its defining package was not provided) the command fails with an error. Like `--show`, it accepts a partial ID. It supports two additional flags:
+
+- `-p, --package <FILE>`: Supplies an additional `.masp` package used to resolve procedure MAST roots to their names and signatures, on top of the packages in the configured packages directory. It is repeatable (pass it once per package); when the same MAST root is exported by more than one package the first-loaded one wins (passed packages are consulted first) and a warning lists the packages involved. Procedures whose name cannot be resolved are still listed by their MAST root.
+- `-v, --verbose`: Prints the MASM disassembly of each procedure.
 
 ### `new-wallet`
 
@@ -300,17 +298,19 @@ Additionally, you can optionally not specify note IDs, in which case any note th
 
 Either `Expected` or `Committed` notes may be consumed by this command, changing their state to `Processing`. It's state will be updated to `Consumed` after the next sync.
 
-#### `send`
+#### `transfer`
 
-Sends assets to another account. Sender Account creates a note that a target Account ID can consume. The asset is identified by the tuple `(FAUCET ID, AMOUNT)`. The note can be configured to be recallable making the sender able to consume it after a height is reached.
+Transfers assets to another account. Sender Account creates a note that a target Account ID can consume. The asset is identified by the tuple `(FAUCET ID, AMOUNT)`. The note can be configured to be recallable making the sender able to consume it after a height is reached.
 
-Usage: `miden-client send --sender <SENDER ACCOUNT ID> --target <TARGET ACCOUNT ID> --asset <AMOUNT>::<FAUCET ID> --note-type <NOTE_TYPE> <RECALL_HEIGHT>`
+Usage: `miden-client transfer --sender <SENDER ACCOUNT ID> --target <TARGET ACCOUNT ID> --asset <AMOUNT>::<FAUCET ID> --note-type <NOTE_TYPE> [--recall-height <RECALL_HEIGHT>]`
 
 #### `swap`
 
 The source account creates a `SWAP` note that offers some asset in exchange for some other asset. When another account consumes that note, it will receive the offered asset amount and the requested asset will removed from its vault (and put into a new note which the first account can then consume). Consuming the note will fail if the account doesn't have enough of the requested asset.
 
-Usage: `miden-client swap --source <SOURCE ACCOUNT ID> --offered-asset <OFFERED AMOUNT>::<OFFERED FAUCET ID> --requested-asset <REQUESTED AMOUNT>::<REQUESTED FAUCET ID> --note-type <NOTE_TYPE>`
+Usage: `miden-client swap --source <SOURCE ACCOUNT ID> --offered-asset <OFFERED AMOUNT>::<OFFERED FAUCET ID> --requested-asset <REQUESTED AMOUNT>::<REQUESTED FAUCET ID> --note-type <NOTE_TYPE> [--payback-note-type <NOTE_TYPE>]`
+
+The `--payback-note-type` option controls the visibility of the payback note created when the swap is consumed. It defaults to `private`.
 
 ### `address`
 
@@ -352,18 +352,18 @@ miden-client address remove 0x17f13f4f83a8e8100c19d2961dfda2 mlcl1qple0ejnutx8zy
 
 #### Tips
 
-For `send` and `consume-notes`, you can omit the `--sender` and `--account` flags to use the default account defined in the [config](https://github.com/0xMiden/miden-client/docs/typedoc/rust-client/cli-config.md). If you omit the flag but have no default account defined in the config, you'll get an error instead.
+For `transfer` and `consume-notes`, you can omit the `--sender` and `--account` flags to use the client's [default account](cli-config.md#default-account-id). If you omit the flag but have no default account set, you'll get an error instead.
 
 For every command which needs an account ID (either wallet or faucet), you can also provide a partial ID instead of the full ID for each account. So instead of
 
 ```sh
-miden-client send --sender 0x80519a1c5e3680fc --target 0x8fd4b86a6387f8d8 --asset 100::0xa99c5c8764d4e011
+miden-client transfer --sender 0x80519a1c5e3680fc --target 0x8fd4b86a6387f8d8 --asset 100::0xa99c5c8764d4e011 --note-type private
 ```
 
 You can do:
 
 ```sh
-miden-client send --sender 0x80519 --target 0x8fd4b --asset 100::0xa99c5c8764d4e011
+miden-client transfer --sender 0x80519 --target 0x8fd4b --asset 100::0xa99c5c8764d4e011 --note-type private
 ```
 
 !!! note
@@ -383,7 +383,7 @@ TX Summary:
 Continue with proving and submission? Changes will be irreversible once the proof is finalized on the network (y/N)
 ```
 
-This confirmation can be skipped in non-interactive environments by providing the `--force` flag (`miden-client send --force ...`).
+This confirmation can be skipped in non-interactive environments by providing the `--force` flag (`miden-client transfer --force ...`).
 
 #### Delegated proving
 
@@ -437,18 +437,34 @@ inputs = [ { key = "0x0000000000000000000000000000000000000000000000000000001000
 
 #### `call`
 
-Call a procedure on an account tracked by the client and show what it returns, along with the state changes the call would produce.
+Call a procedure on an account and show what it returns, along with the state changes the call would produce.
 
-Usage: `miden-client call <ACCOUNT_ID>:<PROCEDURE> [ARGS]... --package <PACKAGE>`
+Usage: `miden-client call <ACCOUNT_ID>:<PROCEDURE> [ARGS]... [--package <PACKAGE>]`
 
 | Flag                          | Description                                                   | Aliases |
 | ----------------------------- | ------------------------------------------------------------- | ------- |
-| `--package <PACKAGE>`         | Path to the `.masp` package that exports the procedure.       | `-p`    |
+| `--package <PACKAGE>`         | The `.masp` package that exports the procedure, as a path or a name resolved in the packages directory. Optional. | `-p`    |
 | `--inputs-path <INPUTS_PATH>` | Path to a TOML file with advice map entries.                  | `-i`    |
 
-The target is a single argument of the form `<ACCOUNT_ID>:<PROCEDURE>`. The account ID may be given as a partial ID. The procedure name is matched against the package's exports with `_` and `-` treated as equivalent, so it can be written in either snake_case or kebab-case (`get_count` matches the export `get-count`).
+The target is a single argument of the form `<ACCOUNT_ID>:<PROCEDURE>`. For an account tracked by the client, the ID may be given as a partial ID; an account that isn't tracked has to be named by its full hex ID or its bech32 address, since a prefix is resolved against the local store. The procedure name is matched against the package's exports with `_` and `-` treated as equivalent, so it can be written in either snake_case or kebab-case (`get_count` matches the export `get-count`).
 
-Arguments are passed positionally after the target. Each one is a `u64` field element, and they are pushed onto the stack so that the first argument ends up on top. Their number is checked against the procedure's signature in the package manifest. If the package does not record a signature, the check is skipped and a warning is printed, in which case passing the wrong number of arguments may fail or produce a wrong result.
+`--package` takes either a path to a `.masp` file or a bare name, which is looked up in the configured packages directory. It is optional: without it, `<PROCEDURE>` must be the procedure's hex digest instead of its name, and the output stack is printed as raw field elements since there is no manifest to read the signature from.
+
+Arguments are passed positionally after the target, one token per value in the procedure's signature. The signature comes from the package manifest, and it also decides how each token is read and how the result is printed:
+
+| Type | Token form | Example |
+| ---- | ---------- | ------- |
+| `felt` | decimal field element | `42` |
+| integers (`u8`…`u128`, `i8`…`i128`) | decimal, range-checked against the type | `-1` |
+| `bool` | `true`, `false`, `1` or `0` | `true` |
+| `word` | hex | `0x00..` |
+| `account-id` | hex account ID | `0x4614b8bf575eab71455e97bd394e90` |
+| `asset` | `<AMOUNT>::<FAUCET_ID>`, fungible only | `100::0xabcdef0123456789` |
+| records and fixed arrays | one token per field, in order | `3 4` for `point { x, y }` |
+
+Only procedures exported from a WIT interface carry a signature. A procedure without one is still called, with one raw field element per argument written in decimal (a `0x` hex literal is not accepted); the argument count is not checked and the result is printed as a stack dump.
+
+The arguments are pushed onto the stack so that the first one ends up on top, and together they may occupy at most 16 stack values — that is all a called procedure can see.
 
 `--inputs-path` takes the same TOML format as [`exec`](#exec). The entries are loaded into the VM's advice map and are visible to the called procedure.
 
@@ -463,7 +479,7 @@ miden-client call 0x4614b8bf575eab71455e97bd394e90:increment-count --package tar
 The command first prints the procedure's signature and its return values, then the effects the call has on the account:
 
 ```sh
-Raw Signature: increment-count() -> (Felt)
+Signature: increment-count() -> felt
 
 Result: 1
 The transaction will have the following effects:
@@ -485,8 +501,34 @@ Account Vault will not be changed.
 Nonce incremented by: 1.
 ```
 
+A procedure that only reads leaves the transaction with no effects at all, which the transaction kernel does not allow. The result is still printed, followed by a note that the transaction was rejected for having no effects.
+
 :::note
 The call is executed locally. No proof is generated, nothing is submitted to the network, and the account's stored state is left unchanged.
+:::
+
+##### Calling an account that isn't tracked locally
+
+If the target account is not in the local store, the client reads its state from the network and runs the call from one of your own accounts — the default account if one is set, otherwise the first usable one. That account only runs the call; nothing about it changes.
+
+This requires the target account's state to be public, so the node can serve it, and it requires at least one of your own accounts to run the call from (accounts whose local state is out of sync with the node are skipped). Such calls can only read the account: the transaction kernel rejects any procedure that would mutate an account other than the one running the transaction, so only the return values are printed. No state delta is shown either — the only account a delta could describe is the one running the call, whose changes come from its own authentication and nonce rather than from the procedure. The account has to be named by its full hex ID or its bech32 address — a partial ID is resolved against the local store, which by definition does not have this account.
+
+```sh
+miden-client call 0x4614b8bf575eab71455e97bd394e90:get-count --package target/miden/dev/counter-contract.masp
+```
+
+```sh
+Account 0x4614b8bf575eab71455e97bd394e90 isn't tracked locally; reading its state from the network and running the call from your account 0x8fa1c2....
+
+Signature: get-count() -> felt
+
+Result: 1
+
+A call on an account read from the network can only read it; no state delta.
+```
+
+:::note
+The account state read this way comes from the transaction's reference block, which the wallet running the call picks. It is not revalidated against the account's current on-chain state, so run `miden-client sync` first if you need a recent value.
 :::
 
 ### `note-transport`

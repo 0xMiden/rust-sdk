@@ -1,10 +1,10 @@
 //! Contains structures and functions related to transaction creation.
-use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::collections::BTreeMap;
 use alloc::string::ToString;
 use alloc::vec::Vec;
 
 use miden_protocol::account::AccountId;
-use miden_protocol::asset::{Asset, FungibleAsset};
+use miden_protocol::asset::{Asset, AssetAmount, FungibleAsset};
 use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::merkle::InnerNodeInfo;
 use miden_protocol::crypto::merkle::store::MerkleStore;
@@ -14,7 +14,6 @@ use miden_protocol::note::{
     Note,
     NoteAssets,
     NoteAttachment,
-    NoteAttachments,
     NoteDetails,
     NoteDetailsCommitment,
     NoteId,
@@ -26,17 +25,10 @@ use miden_protocol::note::{
     PartialNote,
     PartialNoteMetadata,
 };
-use miden_protocol::transaction::TransactionScript;
+use miden_protocol::transaction::{InputNote, TransactionScript};
 use miden_protocol::vm::AdviceMap;
 use miden_protocol::{Felt, Word};
-use miden_standards::note::{
-    P2idNote,
-    P2ideNote,
-    P2ideNoteStorage,
-    PswapNote,
-    PswapNoteStorage,
-    SwapNote,
-};
+use miden_standards::note::{P2idNote, P2ideNote, PswapNote, PswapNoteStorage, SwapNote};
 
 use super::{
     ForeignAccount,
@@ -56,13 +48,16 @@ use crate::ClientRng;
 /// scripts, and setting other transaction parameters.
 #[derive(Clone, Debug)]
 pub struct TransactionRequestBuilder {
-    /// Notes to be consumed by the transaction.
-    /// Notes whose inclusion proof is present in the store are will be consumed as authenticated;
-    /// the ones that do not have proofs will be consumed as unauthenticated.
+    /// Notes to be consumed by the transaction, in consumption order.
+    ///
+    /// A note with an entry in `explicit_input_notes` is consumed in the mode that entry pins.
+    /// The executing client infers the mode of every other note from its store.
     input_notes: Vec<Note>,
     /// Optional arguments of the Notes to be consumed by the transaction. This
     /// includes both authenticated and unauthenticated notes.
     input_notes_args: Vec<(NoteId, Option<NoteArgs>)>,
+    /// Pinned consumption mode of selected input notes.
+    explicit_input_notes: BTreeMap<NoteId, InputNote>,
     /// Notes to be created by the transaction. The full note data is needed internally
     /// to build the transaction script template.
     own_output_notes: Vec<Note>,
@@ -97,6 +92,10 @@ pub struct TransactionRequestBuilder {
     /// Optional [`Word`] that will be pushed to the stack for the authentication procedure
     /// during transaction execution.
     auth_arg: Option<Word>,
+    /// Salt the native fee conversion info is committed under when the transaction is prepared,
+    /// set through [`TransactionRequestBuilder::fee_conversion_salt`]. `None` leaves the client
+    /// to use its fixed default salt.
+    fee_conversion_salt: Option<Word>,
     /// Note scripts that the node's NTX builder will need in its script registry.
     ///
     /// See [`TransactionRequestBuilder::expected_ntx_scripts`] for details.
@@ -112,6 +111,7 @@ impl TransactionRequestBuilder {
         Self {
             input_notes: vec![],
             input_notes_args: vec![],
+            explicit_input_notes: BTreeMap::new(),
             own_output_notes: Vec::new(),
             expected_output_recipients: BTreeMap::new(),
             expected_future_notes: BTreeMap::new(),
@@ -123,11 +123,16 @@ impl TransactionRequestBuilder {
             ignore_invalid_input_notes: false,
             script_arg: None,
             auth_arg: None,
+            fee_conversion_salt: None,
             expected_ntx_scripts: vec![],
         }
     }
 
     /// Adds the specified notes as input notes to the transaction request.
+    ///
+    /// The executing client consumes a note as authenticated when its store holds the note's
+    /// inclusion proof and as unauthenticated otherwise. Use [`Self::explicit_input_notes`] when
+    /// the mode must not depend on the executing client.
     #[must_use]
     pub fn input_notes(
         mut self,
@@ -136,6 +141,31 @@ impl TransactionRequestBuilder {
         for (note, argument) in notes {
             self.input_notes_args.push((note.id(), argument));
             self.input_notes.push(note);
+        }
+        self
+    }
+
+    /// Adds the specified [`InputNote`]s as input notes to the transaction request. Each note is
+    /// consumed in the mode it carries: an [`InputNote::Authenticated`] note with its proof, an
+    /// [`InputNote::Unauthenticated`] note as unauthenticated even if the executing client's store
+    /// holds a proof for it. The executing client does not classify these notes from its store, so
+    /// every client that executes the request commits to the same input notes and produces the
+    /// same transaction summary. Use this for a request that is shared across clients.
+    ///
+    /// To consume an authenticated note, the executing client must be able to serve the header of
+    /// the note's creation block, from its store or from the
+    /// [`ChainAnchor`](crate::transaction::ChainAnchor) the request executes against.
+    #[must_use]
+    pub fn explicit_input_notes(
+        mut self,
+        notes: impl IntoIterator<Item = (InputNote, Option<NoteArgs>)>,
+    ) -> Self {
+        for (input_note, argument) in notes {
+            let note_id = input_note.id();
+
+            self.input_notes_args.push((note_id, argument));
+            self.input_notes.push(input_note.note().clone());
+            self.explicit_input_notes.insert(note_id, input_note);
         }
         self
     }
@@ -200,10 +230,16 @@ impl TransactionRequestBuilder {
     /// specified expected recipients, but it may also create notes for other recipients not
     /// included in this set.
     #[must_use]
-    pub fn expected_output_recipients(mut self, recipients: Vec<NoteRecipient>) -> Self {
+    pub fn expected_output_recipients(
+        mut self,
+        recipients: impl IntoIterator<Item = impl Into<NoteRecipient>>,
+    ) -> Self {
         self.expected_output_recipients = recipients
             .into_iter()
-            .map(|recipient| (recipient.digest(), recipient))
+            .map(|recipient| {
+                let recipient: NoteRecipient = recipient.into();
+                (recipient.digest(), recipient)
+            })
             .collect::<BTreeMap<_, _>>();
         self
     }
@@ -274,6 +310,19 @@ impl TransactionRequestBuilder {
     #[must_use]
     pub fn auth_arg(mut self, auth_arg: Word) -> Self {
         self.auth_arg = Some(auth_arg);
+        self.fee_conversion_salt = None;
+        self
+    }
+
+    /// Declares the salt the fee conversion info is committed under.
+    ///
+    /// Fees are always settled in the chain's native fee asset at rate 1/1. The client commits
+    /// that info through the transaction's auth args when preparing the transaction, under a
+    /// fixed default salt.
+    #[must_use]
+    pub fn fee_conversion_salt(mut self, salt: Word) -> Self {
+        self.fee_conversion_salt = Some(salt);
+        self.auth_arg = None;
         self
     }
 
@@ -314,7 +363,8 @@ impl TransactionRequestBuilder {
     /// Consumes the builder and returns a [`TransactionRequest`] for a transaction to mint fungible
     /// assets. This request must be executed against a fungible faucet account.
     ///
-    /// - `asset` is the fungible asset to be minted.
+    /// - `asset` is the fungible asset to be minted. The amount must be non-zero: minting nothing
+    ///   would emit a P2ID note the target cannot draw anything from.
     /// - `target_id` is the account ID of the account to receive the minted asset.
     /// - `note_type` determines the visibility of the note to be created.
     /// - `rng` is the random number generator used to generate the serial number for the created
@@ -328,14 +378,21 @@ impl TransactionRequestBuilder {
         note_type: NoteType,
         rng: &mut ClientRng,
     ) -> Result<TransactionRequest, TransactionRequestError> {
-        let created_note = P2idNote::create(
-            asset.faucet_id(),
-            target_id,
-            vec![asset.into()],
-            note_type,
-            NoteAttachments::empty(),
-            rng,
-        )?;
+        // Minting emits a P2ID note, and a P2ID note carrying nothing is rejected on the transfer
+        // path for the same reason: it costs a transaction and leaves the target a note with
+        // nothing to consume.
+        if asset.amount() == AssetAmount::ZERO {
+            return Err(TransactionRequestError::P2IDNoteWithoutAsset);
+        }
+
+        let created_note = P2idNote::builder()
+            .sender(asset.faucet_id())
+            .target(target_id)
+            .asset(asset)
+            .note_type(note_type)
+            .generate_serial_number(rng)
+            .build()?
+            .into();
 
         self.own_output_notes(vec![created_note]).build()
     }
@@ -390,15 +447,17 @@ impl TransactionRequestBuilder {
     ) -> Result<TransactionRequest, TransactionRequestError> {
         // The created note is the one that we need as the output of the tx, the other one is the
         // one that we expect to receive and consume eventually.
-        let (created_note, payback_note_details) = SwapNote::create(
-            swap_data.account_id(),
-            swap_data.offered_asset(),
-            swap_data.requested_asset(),
-            note_type,
-            NoteAttachments::empty(),
-            payback_note_type,
-            rng,
-        )?;
+        let swap_note = SwapNote::builder()
+            .sender(swap_data.account_id())
+            .offered_asset(swap_data.offered_asset())
+            .requested_asset(swap_data.requested_asset())
+            .note_type(note_type)
+            .payback_note_type(payback_note_type)
+            .generate_serial_number(rng)
+            .build()?;
+
+        let payback_note_details = swap_note.payback_note_details();
+        let created_note = Note::from(swap_note);
 
         let payback_tag = NoteTag::with_account_target(swap_data.account_id());
 
@@ -464,7 +523,7 @@ impl TransactionRequestBuilder {
         rng: &mut ClientRng,
     ) -> Result<TransactionRequest, TransactionRequestError> {
         let storage = PswapNoteStorage::builder()
-            .requested_asset(pswap_data.requested_asset())
+            .min_requested_asset(pswap_data.requested_asset())
             .creator_account_id(pswap_data.creator_account_id())
             .payback_note_type(payback_note_type)
             .build();
@@ -498,23 +557,25 @@ impl TransactionRequestBuilder {
         self,
         pswap_note: &Note,
         consumer_account_id: AccountId,
-        account_fill_amount: u64,
-        note_fill_amount: u64,
+        account_fill_amount: AssetAmount,
+        note_fill_amount: AssetAmount,
     ) -> Result<TransactionRequest, TransactionRequestError> {
         let pswap = PswapNote::try_from(pswap_note)
             .map_err(TransactionRequestError::NoteValidationError)?;
 
-        let requested_faucet_id = pswap.storage().requested_asset().faucet_id();
+        let requested_faucet_id = pswap.storage().min_requested_asset().faucet_id();
 
-        let account_fill_asset = FungibleAsset::new(requested_faucet_id, account_fill_amount)?;
-        let note_fill_asset = FungibleAsset::new(requested_faucet_id, note_fill_amount)?;
+        let account_fill_asset =
+            FungibleAsset::new(requested_faucet_id, account_fill_amount.as_u64())?;
+        let note_fill_asset = FungibleAsset::new(requested_faucet_id, note_fill_amount.as_u64())?;
 
         let (payback_note, remainder_pswap) = pswap
             .execute(consumer_account_id, Some(account_fill_asset), Some(note_fill_asset))
             .map_err(TransactionRequestError::NoteExecutionError)?;
 
-        let note_args = PswapNote::create_args(account_fill_amount, note_fill_amount)
-            .map_err(TransactionRequestError::NoteArgError)?;
+        let note_args =
+            PswapNote::create_args(account_fill_amount.as_u64(), note_fill_amount.as_u64())
+                .map_err(TransactionRequestError::NoteArgError)?;
 
         // Payback and remainder both settle to the creator, not the consumer. Declare them as
         // expected recipients so the transaction is validated against them, but don't register
@@ -569,11 +630,8 @@ impl TransactionRequestBuilder {
     /// - If an expiration delta is set when a custom script is set.
     /// - If an invalid note variant is encountered in the own output notes.
     pub fn build(self) -> Result<TransactionRequest, TransactionRequestError> {
-        let mut seen_input_notes = BTreeSet::new();
-        for (note_id, _) in &self.input_notes_args {
-            if !seen_input_notes.insert(note_id) {
-                return Err(TransactionRequestError::DuplicateInputNote(*note_id));
-            }
+        if self.expiration_delta == Some(0) {
+            return Err(TransactionRequestError::ZeroExpirationDelta);
         }
 
         let script_template = match (self.custom_script, self.own_output_notes.is_empty()) {
@@ -600,9 +658,10 @@ impl TransactionRequestBuilder {
             (None, true) => None,
         };
 
-        Ok(TransactionRequest {
+        let request = TransactionRequest {
             input_notes: self.input_notes,
             input_notes_args: self.input_notes_args,
+            explicit_input_notes: self.explicit_input_notes,
             script_template,
             expected_output_recipients: self.expected_output_recipients,
             expected_future_notes: self.expected_future_notes,
@@ -613,8 +672,12 @@ impl TransactionRequestBuilder {
             ignore_invalid_input_notes: self.ignore_invalid_input_notes,
             script_arg: self.script_arg,
             auth_arg: self.auth_arg,
+            fee_conversion_salt: self.fee_conversion_salt,
             expected_ntx_scripts: self.expected_ntx_scripts,
-        })
+        };
+        request.validate()?;
+
+        Ok(request)
     }
 }
 
@@ -709,28 +772,26 @@ impl PaymentNoteDescription {
     ) -> Result<Note, NoteError> {
         if self.reclaim_height.is_none() && self.timelock_height.is_none() {
             // Create a P2ID note
-            P2idNote::create(
-                self.sender_account_id,
-                self.target_account_id,
-                self.assets,
-                note_type,
-                NoteAttachments::empty(),
-                rng,
-            )
+            Ok(P2idNote::builder()
+                .sender(self.sender_account_id)
+                .target(self.target_account_id)
+                .assets(self.assets)
+                .note_type(note_type)
+                .generate_serial_number(rng)
+                .build()?
+                .into())
         } else {
             // Create a P2IDE note
-            P2ideNote::create(
-                self.sender_account_id,
-                P2ideNoteStorage::new(
-                    self.target_account_id,
-                    self.reclaim_height,
-                    self.timelock_height,
-                ),
-                self.assets,
-                note_type,
-                NoteAttachments::empty(),
-                rng,
-            )
+            Ok(P2ideNote::builder()
+                .sender(self.sender_account_id)
+                .target(self.target_account_id)
+                .assets(self.assets)
+                .note_type(note_type)
+                .maybe_reclaim_height(self.reclaim_height)
+                .maybe_timelock_height(self.timelock_height)
+                .generate_serial_number(rng)
+                .build()?
+                .into())
         }
     }
 }

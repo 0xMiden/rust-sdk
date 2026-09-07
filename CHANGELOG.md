@@ -656,7 +656,7 @@
 ### Fixes
 
 * Added JS files generated from TypeScript ([#1218](https://github.com/0xMiden/rust-sdk/pull/1218)).
-* Changed method for automatically picking up tests for integraion tests binary ([#1219](https://github.com/0xMiden/rust-sdk/pull/1219)).
+* Changed method for automatically picking up tests for integration tests binary ([#1219](https://github.com/0xMiden/rust-sdk/pull/1219)).
 
 ## 0.11.0 (2025-08-30)
 

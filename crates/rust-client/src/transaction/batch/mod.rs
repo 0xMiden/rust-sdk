@@ -50,8 +50,9 @@
 //!   local store failed.
 //!
 //! In all three cases `sync_state` reconciles the accounts with what the network holds. It does
-//! not create transaction records: none were written, so these transactions never appear in
-//! `get_transactions`.
+//! not create transaction records, though: syncing updates records the client already holds and
+//! never inserts missing ones. For the unknown outcome an accepted retry writes them; for the two
+//! post-accept errors nothing will, since neither carries the updates that failed.
 
 mod data_store;
 mod error;
@@ -104,8 +105,8 @@ impl ProvenBatchSubmission {
         self.tx_results.len()
     }
 
-    /// Ids the batch was submitted with. The client recorded nothing, so they do not appear in
-    /// `get_transactions`; they are for the caller's own bookkeeping.
+    /// Ids the batch was submitted with. Nothing is recorded for them yet, so they reach
+    /// `get_transactions` only once a retry is accepted.
     pub fn transaction_ids(&self) -> impl Iterator<Item = TransactionId> + '_ {
         self.tx_results.iter().map(|tx_result| tx_result.executed_transaction().id())
     }
@@ -170,8 +171,10 @@ where
     /// That error is the only source of a [`ProvenBatchSubmission`]: the type has no public
     /// constructor, and assembling and proving a batch goes through [`BatchBuilder`].
     ///
-    /// The local store is not touched. These transactions have no local record, so they never
-    /// appear in `get_transactions`; a sync shows their effect on the accounts instead.
+    /// A retry the node accepts records the batch the way the first send would have, so the
+    /// transactions reach the store no matter which attempt landed. A retry the node rejects
+    /// records nothing, and neither will a later sync: syncing updates records the client already
+    /// holds and never inserts missing ones.
     ///
     /// # Errors
     ///
@@ -181,15 +184,16 @@ where
         &mut self,
         submission: &ProvenBatchSubmission,
     ) -> Result<BlockNumber, ClientError> {
-        self.send_proven_batch(submission).await
+        self.send_and_apply_proven_batch(submission).await
     }
 
-    /// Seals the submission's inputs against the current key and sends the batch, mapping an
-    /// outcome the node never confirmed to the error that carries the submission back.
+    /// Seals the submission's inputs against the current key, sends the batch, and on acceptance
+    /// applies the per-transaction store updates atomically.
     ///
     /// Shared by the first send from [`BatchBuilder::submit`] and by every retry through
-    /// [`Client::retry_proven_batch`], so the sealing and the error mapping live in one place.
-    async fn send_proven_batch(
+    /// [`Client::retry_proven_batch`], so both record what the node took and both map an
+    /// unconfirmed outcome to the error that carries the submission back.
+    async fn send_and_apply_proven_batch(
         &mut self,
         submission: &ProvenBatchSubmission,
     ) -> Result<BlockNumber, ClientError> {
@@ -216,7 +220,29 @@ where
             self.forget_stale_transaction_encryption_key(err).await;
         }
 
-        result.map_err(|err| promote_indeterminate_submission(err, submission))
+        let block_num = result.map_err(|err| promote_indeterminate_submission(err, submission))?;
+
+        // The node took the batch. Record it, one update per transaction, applied atomically.
+        let mut updates: Vec<TransactionStoreUpdate> =
+            Vec::with_capacity(submission.transaction_count());
+        for tx_result in &submission.tx_results {
+            let update = self.get_transaction_store_update(tx_result, block_num).await.map_err(
+                |source| BatchBuilderError::BatchSubmittedButUpdateBuildFailed {
+                    block_num,
+                    source,
+                },
+            )?;
+            updates.push(update);
+        }
+
+        if let Err(source) = self.store.apply_transaction_batch(updates).await {
+            return Err(ClientError::from(BatchBuilderError::BatchSubmittedButApplyFailed {
+                block_num,
+                source,
+            }));
+        }
+
+        Ok(block_num)
     }
 }
 
@@ -306,37 +332,14 @@ where
         let executed_batch = BatchExecutor::new().execute(proposed_batch.clone())?;
         let proven_batch = LocalBatchProver::new().prove(executed_batch)?;
 
-        // 7. Submit via RPC. The proven batch is kept so an unconfirmed submission can be retried
-        //    without executing or proving again.
+        // 7. Submit via RPC and record what the node took. The proven batch is kept so an
+        //    unconfirmed submission can be retried without executing or proving again.
         let submission = ProvenBatchSubmission {
             proven_batch,
             proposed_batch: Box::new(proposed_batch),
             tx_results,
         };
-        let block_num = self.client.send_proven_batch(&submission).await?;
-        let tx_results = submission.tx_results;
-
-        let mut updates: Vec<TransactionStoreUpdate> = Vec::with_capacity(len);
-
-        // 8. Build per-tx TransactionStoreUpdates.
-        for tx_result in &tx_results {
-            let update =
-                self.client.get_transaction_store_update(tx_result, block_num).await.map_err(
-                    |source| BatchBuilderError::BatchSubmittedButUpdateBuildFailed {
-                        block_num,
-                        source,
-                    },
-                )?;
-            updates.push(update);
-        }
-
-        // 9. Apply atomically; if it fails, return BatchSubmittedButApplyFailed.
-        if let Err(source) = self.client.store.apply_transaction_batch(updates).await {
-            return Err(ClientError::from(BatchBuilderError::BatchSubmittedButApplyFailed {
-                block_num,
-                source,
-            }));
-        }
+        let block_num = self.client.send_and_apply_proven_batch(&submission).await?;
 
         Ok(block_num)
     }

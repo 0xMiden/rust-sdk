@@ -838,9 +838,16 @@ async fn indeterminate_batch_submission_is_retryable_with_the_attached_payload()
         .await
         .expect("the attached payload must be enough to submit again");
 
-    // The retry entry point writes no rows, and a sync will not create them: these transactions
-    // never appear in `get_transactions`.
-    assert!(client.get_transactions(TransactionFilter::All).await.unwrap().is_empty());
+    // A retry the node accepted records the batch, so the ids the payload handed over are the ones
+    // now in the store. Nothing else can write them: they have no record until this point.
+    let recorded: BTreeSet<_> = client
+        .get_transactions(TransactionFilter::All)
+        .await
+        .unwrap()
+        .iter()
+        .map(|tx| tx.id)
+        .collect();
+    assert_eq!(recorded, ids, "the retry must record exactly the payload's transactions");
 
     // The retry seals again rather than resending the ciphertext the first attempt sent, which is
     // what lets it survive a rotation of the validator set's encryption key.

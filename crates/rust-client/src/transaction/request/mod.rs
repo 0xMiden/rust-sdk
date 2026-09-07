@@ -1,7 +1,7 @@
 //! Contains structures and functions related to transaction creation.
 
 use alloc::boxed::Box;
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::num::NonZeroU16;
@@ -286,6 +286,21 @@ impl TransactionRequest {
         self.auth_arg = Some(auth_arg);
     }
 
+    /// Checks the invariants every request must hold, whether it was built or deserialized.
+    ///
+    /// # Errors
+    /// - If a note appears more than once among the input notes.
+    fn validate(&self) -> Result<(), TransactionRequestError> {
+        let mut seen_input_notes = BTreeSet::new();
+        for (note_id, _) in &self.input_notes_args {
+            if !seen_input_notes.insert(note_id) {
+                return Err(TransactionRequestError::DuplicateInputNote(*note_id));
+            }
+        }
+
+        Ok(())
+    }
+
     /// Builds the [`InputNotes`] needed for the transaction execution.
     ///
     /// A note with a pinned mode keeps that mode. Any other note is authenticated when
@@ -484,7 +499,7 @@ impl Deserializable for TransactionRequest {
         let fee_conversion_salt = Option::<Word>::read_from(source)?;
         let expected_ntx_scripts = Vec::<NoteScript>::read_from(source)?;
 
-        Ok(TransactionRequest {
+        let request = TransactionRequest {
             input_notes,
             input_notes_args,
             explicit_input_notes,
@@ -500,7 +515,12 @@ impl Deserializable for TransactionRequest {
             auth_arg,
             fee_conversion_salt,
             expected_ntx_scripts,
-        })
+        };
+        request
+            .validate()
+            .map_err(|err| DeserializationError::InvalidValue(err.to_string()))?;
+
+        Ok(request)
     }
 }
 
@@ -681,6 +701,33 @@ mod tests {
             ))
             .into()
         });
+    }
+
+    #[test]
+    fn deserialization_rejects_duplicate_input_notes() {
+        let sender_id = AccountId::try_from(ACCOUNT_ID_SENDER).unwrap();
+        let target_id =
+            AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE).unwrap();
+        let faucet_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
+        let note = P2idNote::builder()
+            .sender(sender_id)
+            .target(target_id)
+            .assets(vec![FungibleAsset::new(faucet_id, 100).unwrap()])
+            .note_type(NoteType::Private)
+            .generate_serial_number(&mut RandomCoin::new(Word::default()))
+            .build()
+            .unwrap();
+
+        // The builder rejects a duplicate, so the built request is corrupted by hand.
+        let mut tx_request = TransactionRequestBuilder::new()
+            .input_notes(vec![(note.into(), None)])
+            .build()
+            .unwrap();
+        let note_id = tx_request.input_note_ids().next().unwrap();
+        tx_request.input_notes.push(tx_request.input_notes[0].clone());
+        tx_request.input_notes_args.push((note_id, None));
+
+        assert!(TransactionRequest::read_from_bytes(&tx_request.to_bytes()).is_err());
     }
 
     fn assert_transaction_request_serialization_with<F>(auth_component: F)

@@ -4,6 +4,7 @@
 
 ### Breaking Changes
 
+* [BREAKING][behavior][rust,web] `TransactionRequest` serialization now carries the pinned input notes, so a request serialized by an earlier version cannot be deserialized by this one and vice versa. Rebuild any request that is stored or in flight across the upgrade ([#2437](https://github.com/0xMiden/rust-sdk/pull/2437)).
 * [BREAKING][removal][rust] Removed `Client::try_get_account`. Use `Client::get_account` and handle the `None` case, or `Client::account_reader` for existence checks and single-field reads that don't need the full materialized account ([#2362](https://github.com/0xMiden/rust-sdk/pull/2362)).
 * [BREAKING][behavior][rpc] The `GetAccount` response no longer carries one SMT opening per requested storage map key. A slot queried with specific keys now comes back as a single partial SMT covering all of them, alongside the original unhashed keys, so the client requires a node that speaks this format ([#2362](https://github.com/0xMiden/rust-sdk/pull/2362)).
 * [BREAKING][type][rust] `StorageMapEntries::EntriesWithProofs(Vec<SmtProof>)` is replaced by `StorageMapEntries::PartialMap { map_keys, partial_smt }`, which carries the values only inside the tree: read one by hashing its raw key and calling `PartialSmt::get_value`. The enum also gained a `LimitExceeded` variant and `AccountStorageMapDetails::too_many_entries` was removed in its favor ([#2362](https://github.com/0xMiden/rust-sdk/pull/2362)).

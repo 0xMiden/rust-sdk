@@ -1,5 +1,5 @@
 //! Contains structures and functions related to transaction creation.
-use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::collections::BTreeMap;
 use alloc::string::ToString;
 use alloc::vec::Vec;
 
@@ -630,13 +630,6 @@ impl TransactionRequestBuilder {
     /// - If an expiration delta is set when a custom script is set.
     /// - If an invalid note variant is encountered in the own output notes.
     pub fn build(self) -> Result<TransactionRequest, TransactionRequestError> {
-        let mut seen_input_notes = BTreeSet::new();
-        for (note_id, _) in &self.input_notes_args {
-            if !seen_input_notes.insert(note_id) {
-                return Err(TransactionRequestError::DuplicateInputNote(*note_id));
-            }
-        }
-
         if self.expiration_delta == Some(0) {
             return Err(TransactionRequestError::ZeroExpirationDelta);
         }
@@ -665,7 +658,7 @@ impl TransactionRequestBuilder {
             (None, true) => None,
         };
 
-        Ok(TransactionRequest {
+        let request = TransactionRequest {
             input_notes: self.input_notes,
             input_notes_args: self.input_notes_args,
             explicit_input_notes: self.explicit_input_notes,
@@ -681,7 +674,10 @@ impl TransactionRequestBuilder {
             auth_arg: self.auth_arg,
             fee_conversion_salt: self.fee_conversion_salt,
             expected_ntx_scripts: self.expected_ntx_scripts,
-        })
+        };
+        request.validate()?;
+
+        Ok(request)
     }
 }
 

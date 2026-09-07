@@ -171,6 +171,18 @@
 * [FIX][rust] `NodeRpcClient::sync_notes` now rejects responses containing a note whose tag was not requested with `RpcError::InvalidResponse` ([#2284](https://github.com/0xMiden/rust-sdk/pull/2284)).
 * [FIX][rust] Public account sync now binds `get_account` responses to the SyncMMR target block, rejecting snapshots from a different block, account, or account root ([#2255](https://github.com/0xMiden/rust-sdk/pull/2255)).
 
+## 0.15.5 (2026-08-03)
+
+### Breaking Changes
+
+* [BREAKING][type][rust] `TransactionRequestError::InputNoteAlreadyConsumed` now carries a `NoteDetailsCommitment` instead of a `NoteId`, since a note record that was consumed externally may lack the metadata needed to derive its ID ([#2344](https://github.com/0xMiden/rust-sdk/pull/2354)).
+
+### Fixes
+
+* [FIX][rust] An NTL delivery colliding with a note that a local transaction is consuming no longer wedges `sync_state()`: such deliveries are skipped (the store already holds their details) and the transport cursor advances past them ([#2353](https://github.com/0xMiden/rust-sdk/pull/2353)).
+* [FIX][rust] Transport deliveries are now validated on receipt — entries whose details don't match the header's details commitment or whose tag was never requested are dropped, with the cursor advancing past them ([#2353](https://github.com/0xMiden/rust-sdk/pull/2353)).
+* [FIX][rust] `Client::prepare_transaction` no longer panics when an input note is already consumed and its record carries no metadata; it returns `InputNoteAlreadyConsumed` instead ([#2344](https://github.com/0xMiden/rust-sdk/pull/2354)).
+
 ## 0.15.4 (2026-07-16)
 
 ### Changes

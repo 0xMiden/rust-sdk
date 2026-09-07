@@ -1,8 +1,8 @@
 //! A [`TransactionAuthenticator`] that signs with keys held in a `Web3Signer` instance.
 //!
-//! The key directory is read once, when the authenticator is built, and the authenticator signs
-//! only for the keys it found there. It holds no key material and has no fallback signer under
-//! any configuration: a public key commitment that is not in the directory is an error rather
+//! The signer's key list is read once, when the authenticator is built, and the authenticator
+//! signs only for the keys it found there. It holds no key material and has no fallback signer
+//! under any configuration: a public key commitment that is not in the key list is an error rather
 //! than a request that gets served locally, so a vault that is misconfigured or points at the
 //! wrong instance cannot be mistaken for a working one.
 //!
@@ -73,7 +73,7 @@ pub enum Web3SignerError {
     Transport { path: String, message: String },
 
     /// The signer holds no keys. Reported when building the authenticator, because an empty
-    /// directory means every later signing request would fail.
+    /// key list means every later signing request would fail.
     #[error("`{PUBLIC_KEYS_PATH}` returned no keys")]
     NoKeys,
 
@@ -127,7 +127,7 @@ pub trait SignerTransport: Send + Sync {
 // WEB3SIGNER AUTHENTICATOR
 // ================================================================================================
 
-/// One key of the signer's directory.
+/// One key of the signer's key list.
 struct KeyEntry {
     /// Handed out by [`TransactionAuthenticator::get_public_key`].
     public_key: Arc<PublicKey>,
@@ -147,7 +147,7 @@ pub struct Web3SignerAuthenticator<T> {
 
 #[cfg(feature = "std")]
 impl Web3SignerAuthenticator<HttpTransport> {
-    /// Reads the key directory of the `Web3Signer` instance at `url` over HTTP and builds the
+    /// Reads the key list of the `Web3Signer` instance at `url` over HTTP and builds the
     /// authenticator from it.
     ///
     /// # Errors
@@ -159,7 +159,7 @@ impl Web3SignerAuthenticator<HttpTransport> {
 }
 
 impl<T: SignerTransport> Web3SignerAuthenticator<T> {
-    /// Reads the key directory over the given transport and builds the authenticator from it.
+    /// Reads the key list over the given transport and builds the authenticator from it.
     pub async fn connect_with(transport: T) -> Result<Self, Web3SignerError> {
         let body = transport.get(PUBLIC_KEYS_PATH).await?;
 
@@ -197,7 +197,7 @@ impl<T: SignerTransport> Web3SignerAuthenticator<T> {
         self.keys.keys().copied()
     }
 
-    /// Requests a signature over `message` for one key of the directory.
+    /// Requests a signature over `message` for one key of the key list.
     async fn request_signature(
         &self,
         entry: &KeyEntry,
@@ -398,19 +398,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn signs_with_a_key_of_the_directory() {
+    async fn signs_with_a_key_of_the_key_list() {
         let authenticator = Web3SignerAuthenticator::connect_with(MockTransport::new())
             .await
-            .expect("directory is readable");
+            .expect("key list is readable");
 
         let commitment = authenticator
             .public_key_commitments()
             .next()
-            .expect("directory holds the mock key");
+            .expect("key list holds the mock key");
         let public_key = authenticator
             .get_public_key(commitment)
             .await
-            .expect("commitment is in the directory");
+            .expect("commitment is in the key list");
 
         let inputs = signing_inputs();
         let signature = authenticator
@@ -428,13 +428,13 @@ mod tests {
     async fn unknown_commitment_is_rejected_without_signing() {
         let authenticator = Web3SignerAuthenticator::connect_with(MockTransport::new())
             .await
-            .expect("directory is readable");
+            .expect("key list is readable");
 
         let unknown = PublicKeyCommitment::from(Word::from([1u32, 2, 3, 4]));
         let error = authenticator
             .get_signature(unknown, &signing_inputs())
             .await
-            .expect_err("commitment is not in the directory");
+            .expect_err("commitment is not in the key list");
 
         assert!(matches!(error, AuthenticationError::UnknownPublicKey(_)));
         assert!(
@@ -451,9 +451,8 @@ mod tests {
 
         let authenticator = Web3SignerAuthenticator::connect_with(transport)
             .await
-            .expect("directory is readable");
-        let commitment =
-            authenticator.public_key_commitments().next().expect("directory has a key");
+            .expect("key list is readable");
+        let commitment = authenticator.public_key_commitments().next().expect("key list has a key");
 
         authenticator
             .get_signature(commitment, &signing_inputs())

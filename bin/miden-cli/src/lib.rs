@@ -276,6 +276,7 @@ impl DerefMut for CliClient {
 }
 
 mod advice_inputs;
+mod codecs;
 pub mod config;
 // These modules intentionally shadow the miden_client re-exports - CLI has its own errors/utils
 #[allow(hidden_glob_reexports)]
@@ -362,7 +363,7 @@ enum Behavior {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "miden-client")]
+#[command(name = "miden-client", version)]
 pub struct Cli {
     #[command(subcommand)]
     action: Command,

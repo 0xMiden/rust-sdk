@@ -6,7 +6,8 @@ use miden_client::block::BlockNumber;
 use miden_client::note::NoteType;
 use miden_client::store::{InputNoteState, NoteFilter};
 use miden_client::transaction::TransactionRequestBuilder;
-use miden_client_test_harness::ClientConfig;
+
+use crate::ClientConfig;
 
 // TRANSPORT NOTE INCLUSION PROOF AND CONSUMPTION TESTS
 // ================================================================================================

@@ -4,6 +4,16 @@
 
 ### Breaking Changes
 
+* [BREAKING][removal][test] Loose helper functions in `miden_client::testing::common` are now methods on `TestClient`. `TestClient::keystore()` exposes the client's keystore, so `ClientConfig::into_client` and `into_unsynced_client` return just the `TestClient` instead of a client/keystore pair ([#2481](https://github.com/0xMiden/rust-sdk/pull/2481)).
+
+### Fixes
+
+* [FIX][test] The integration tests run again on a chain that charges no fee. A `--funders` path (`MIDEN_FUNDER_ACCOUNTS_DIR`) that is unset, empty, missing, or holds no `.mac` file now leaves the run without funders instead of failing, which is all a fee-free genesis needs, since it declares no wallets for the path to hold. A `.mac` file that is present but unusable stays a hard error ([#2481](https://github.com/0xMiden/rust-sdk/pull/2481)).
+
+## 0.16.0 (2026-09-07)
+
+### Breaking Changes
+
 * [BREAKING][removal][rust] Removed `Client::try_get_account`. Use `Client::get_account` and handle the `None` case, or `Client::account_reader` for existence checks and single-field reads that don't need the full materialized account ([#2362](https://github.com/0xMiden/rust-sdk/pull/2362)).
 * [BREAKING][behavior][rpc] The `GetAccount` response no longer carries one SMT opening per requested storage map key. A slot queried with specific keys now comes back as a single partial SMT covering all of them, alongside the original unhashed keys, so the client requires a node that speaks this format ([#2362](https://github.com/0xMiden/rust-sdk/pull/2362)).
 * [BREAKING][type][rust] `StorageMapEntries::EntriesWithProofs(Vec<SmtProof>)` is replaced by `StorageMapEntries::PartialMap { map_keys, partial_smt }`, which carries the values only inside the tree: read one by hashing its raw key and calling `PartialSmt::get_value`. The enum also gained a `LimitExceeded` variant and `AccountStorageMapDetails::too_many_entries` was removed in its favor ([#2362](https://github.com/0xMiden/rust-sdk/pull/2362)).
@@ -42,10 +52,11 @@
 * [BREAKING][rust] `Client::remove_address` and `Store::remove_address` return `bool` instead of `()`, reporting whether the address was tracked. When it wasn't, `Client::remove_address` now leaves the derived note tag in place instead of running its cleanup.
 * [BREAKING][type][rust] Added the `TransactionRequestError::ForeignProcedureInputsTooLong` variant ([#2187](https://github.com/0xMiden/rust-sdk/pull/2187)).
 * [BREAKING][behavior][store] The `output_notes` table gained a nullable `script_root` column referencing `notes_scripts`, and note scripts are fully normalized: an output note's state blob no longer embeds the script, which is stored once in `notes_scripts` and joined back in on read. All tables are now `STRICT`, and the `tags` table stores its rows keyed by a `(tag, source)` primary key (`WITHOUT ROWID`) instead of carrying a separate unique index. This changes the schema fingerprint, so opening a database created before this change fails with `SchemaHashMismatch` and existing stores must be recreated.
-* [BREAKING][removal][test] Loose helper functions in `miden_client::testing::common` are now methods on `TestClient`. `TestClient::keystore()` exposes the client's keystore, so `ClientConfig::into_client` and `into_unsynced_client` return just the `TestClient` instead of a client/keystore pair ([#2481](https://github.com/0xMiden/rust-sdk/pull/2481)).
 * [BREAKING][param][store] Settings are split into a client-owned and a user-owned scope. `Store::set_setting`, `Store::get_setting`, `Store::remove_setting`, `Store::list_setting_keys` and `Store::apply_settings_mutations` take a `SettingScope` as their first argument, and implementations must persist it so the same key name in each scope addresses a different entry. The `Client` methods are unchanged and always operate on `SettingScope::User` ([#2456](https://github.com/0xMiden/rust-sdk/pull/2456)).
 * [BREAKING][behavior][rust] `Client::list_setting_keys` returns only the user's keys. The client's own entries, such as the note transport cursor and the cached RPC limits, no longer appear in the listing and can no longer be read or overwritten through the `Client` settings API ([#2456](https://github.com/0xMiden/rust-sdk/pull/2456)).
 * [BREAKING][behavior][store] The SQLite `settings` table now carries a `scope` column with `(scope, name)` as its primary key. This changes the schema fingerprint, so opening a database created before this change fails with `SchemaDrift` and existing stores must be recreated ([#2456](https://github.com/0xMiden/rust-sdk/pull/2456)).
+
+* [BREAKING][rust] Updated the protocol dependencies to `0.16.1`, which raises the MSRV to 1.98.1. `guarded_multisig.masm` and `multisig_smart.masm` both call `fee::load_conversion_info` as of `0.16.0-rc.9`, so `AuthMultisigSmart` now reads the auth argument as fee conversion info rather than as a summary salt alone and, like the other multisig components, must declare its own salt on a fee-charging chain ([#2465](https://github.com/0xMiden/rust-sdk/pull/2465), [#2511](https://github.com/0xMiden/rust-sdk/pull/2511)).
 
 ### Fixes
 
@@ -53,12 +64,15 @@
 * [FIX][test] The AggLayer genesis accounts now declare their zero-fee policy in the faucet the generated genesis charges fees in, rather than the mock chain's. A network account settles its fee against the faucet its own policy names, so the bridge's and faucet's network transactions could not be executed and their notes sat unconsumed, failing `agglayer_update_ger` and `agglayer_note_reader_reads_consumed_notes` ([#2446](https://github.com/0xMiden/rust-sdk/issues/2446)).
 * [FIX][rust] An empty auth argument no longer suppresses the fee conversion info the client attaches, and an account whose auth component reads that argument as a caller-chosen salt (`AuthMultisig`, `AuthGuardedMultisig`) is now rejected with `TransactionRequestError::FeeConversionInfoRequired` instead of failing inside the VM, unless the request declares a salt with `TransactionRequestBuilder::fee_conversion_salt`. Accounts carrying an auth component the client cannot classify are left alone rather than panicking ([#2446](https://github.com/0xMiden/rust-sdk/issues/2446)).
 * [FIX][rust] Note screening on a fee-charging chain no longer reports notes with a custom script as unconsumable. Screening runs the full transaction kernel, auth procedure included, so `fee::pay_fee` aborted when a non-zero fee met auth args carrying no conversion info, and the note was dropped from the sync. Screening now commits the same native conversion info the execution path attaches, drawn from one shared source so the two cannot disagree. Standard notes were unaffected: their consumability is answered without executing anything ([#2446](https://github.com/0xMiden/rust-sdk/issues/2446)).
+* [FIX][rust] A transaction's own TX_FEE note is no longer recorded as one of the paying account's output notes either. It is a bearer note for whoever builds the batch, so tracking it returned it from `get_output_notes` as a note the user created, listed it in `miden-client notes`, and fed its nullifier prefix into `sync_nullifiers` on every sync. The raw output list is still kept verbatim on the transaction record ([#2465](https://github.com/0xMiden/rust-sdk/pull/2465), [#2484](https://github.com/0xMiden/rust-sdk/pull/2484)).
 * [FIX][rust] A transaction's own TX_FEE note is no longer tracked as an input note the paying account could consume. It is a bearer note, so the note screener reported it as consumable, and tracking it registered its note tag: every TX_FEE note on a chain shares one tag, so from a client's first fee-paying transaction onwards every sync pulled in every fee note the chain had produced ([#2446](https://github.com/0xMiden/rust-sdk/issues/2446)).
-* [FIX][test] The integration tests run again on a chain that charges no fee. A `--funders` path (`MIDEN_FUNDER_ACCOUNTS_DIR`) that is unset, empty, missing, or holds no `.mac` file now leaves the run without funders instead of failing, which is all a fee-free genesis needs, since it declares no wallets for the path to hold. A `.mac` file that is present but unusable stays a hard error ([#2481](https://github.com/0xMiden/rust-sdk/pull/2481)).
+* [FIX][rust] The RPC retry policy is now endpoint-aware: `SubmitProvenTransaction` and `SubmitProvenBatch` retry only `ResourceExhausted` and let `Unavailable` propagate, while read endpoints keep retrying both. `Unavailable` does not say whether the node processed the request, so resubmitting could hit the nullifier consumed by an accepted copy and report a conflict indistinguishable from a genuine double spend, hiding the original success ([#2441](https://github.com/0xMiden/rust-sdk/issues/2441)).
+* [FIX][cli] `-V`/`--version` now work when the binary is invoked under a different name, such as through the `miden client` shim installed by midenup ([#2486] https://github.com/0xMiden/rust-sdk/pull/2486)).
 
 ### Enhancements
 
 * [FEATURE][rust] `ClientBuilder` accepts any `TransactionAuthenticator + 'static` as its authenticator. The `BuilderAuthenticator` bound no longer requires `Keystore` or `From<FilesystemKeyStore>`, so a signer that holds no secret key, such as a remote signing service, can be plugged into the builder without implementing key management.
+* [FEATURE][rust] Added `AuthGuardedMultisig`, `AuthGuardedMultisigConfig`, `GuardianConfig` and `ApproverSet` to `miden_client::auth`, which previously exposed only the single- and multisig components. Building a guarded multisig account no longer means reaching past the client into `miden_standards` ([#2465](https://github.com/0xMiden/rust-sdk/pull/2465)).
 * [FEATURE][rust] `Client::sync_state` now issues its independent gRPC calls concurrently instead of one after another, reducing the total time a sync takes. `NodeRpcClient::sync_notes_with_content` and `NodeRpcClient::sync_transactions` are now called concurrently rather than in sequence, and the per-account `NodeRpcClient::get_account` requests are issued in parallel instead of one at a time ([#2420](https://github.com/0xMiden/rust-sdk/pull/2420)).
 * [store] Added `SqliteStore::database_filepath`, which returns the backing database path losslessly as a `&Path` ([#2363](https://github.com/0xMiden/rust-sdk/pull/2363)).
 * [FEATURE][rust] Syncing no longer issues a `GetNotesById` request for a note whose attachments the `SyncNotes` response already carried. The node sends an attachment that fits in a single word verbatim, so the client reconstructs it locally: a private note whose attachments are all single-word is resolved with no follow-up request during state sync, as is a note of either type while checking expected notes. Both standard attachment schemes in `miden-standards` (`NetworkAccountTarget` and the PSWAP attachment) are single-word, so the round trip disappears from the common case. A caller-supplied attachment spanning more than one word arrives as a commitment and is still fetched. Public notes are unaffected during state sync, since their bodies are requested regardless ([#2360](https://github.com/0xMiden/rust-sdk/issues/2360)).
@@ -90,7 +104,13 @@
 * [FEATURE][rust] Added `Client::get_account_header`, which reads a single account's header and status from the store instead of loading every tracked account's ([#2187](https://github.com/0xMiden/rust-sdk/pull/2187)).
 * [FEATURE][cli] `call` now works on public accounts that aren't tracked locally: the account is read from the network via a foreign procedure invocation, run from one of the client's own accounts (the default account when set). Such calls are read-only, so no state delta is shown. `--package` (`-p`) is now optional; if not set, `<PROCEDURE>` must be a hex digest and the output stack is printed as raw felts ([#2187](https://github.com/0xMiden/rust-sdk/pull/2187)).
 * [rust] `Client::execute_transaction`, `Client::execute_transaction_with_dap`, `Client::execute_program`, `Client::execute_program_with_dap`, `Client::set_setting` and `Client::remove_setting` now take `&self` instead of `&mut self`; none of them mutate the client ([#2187](https://github.com/0xMiden/rust-sdk/pull/2187)).
+* [FEATURE][cli] `call` reads the procedure's signature from the package manifest: it prints the signature with type names (`add-points(point, point) -> point`), takes each argument as one token of its own type (an `account-id` as `0x..`, an `asset` as `<AMOUNT>::<FAUCET_ID>`) and renders the result the same way. A procedure exported without a WIT signature keeps the raw-felt path, with its arguments written in decimal and its results printed as a stack dump. Arguments that don't fit the stack the called procedure can see are now rejected instead of arriving as zeros, and a procedure that only reads reports that the transaction was rejected for having no effects ([#2179](https://github.com/0xMiden/rust-sdk/pull/2179)).
+
+### Changes
+
+* [rust] Re-exported the typed view over a package's exported signatures as `miden_client::vm::typed`, `TransactionExecutorError` from the crate root, and `ExecutionError`, `OperationError` and `error_code_from_msg` as `miden_client::vm`, so callers can match a failed transaction against a specific kernel assertion ([#2179](https://github.com/0xMiden/rust-sdk/pull/2179)).
 * [store] Each SQL migration now carries the fingerprint of the schema it builds. Opening a store checks every version it applies against that version's own pin, so a migration edited to build a different schema is rejected even when creating a fresh database ([#2445](https://github.com/0xMiden/rust-sdk/pull/2445)).
+* [FEATURE][rust] `TransactionRequestBuilder::expected_output_recipients` now takes any `IntoIterator` whose items convert into `NoteRecipient`, matching `own_output_notes` and `foreign_accounts`, so recipients no longer have to be collected into a `Vec<NoteRecipient>` first. Callers already passing a `Vec<NoteRecipient>` are unaffected ([#2499](https://github.com/0xMiden/rust-sdk/pull/2499)).
 
 ### Fixes
 
@@ -160,6 +180,18 @@
 * [FIX][rust] `NodeRpcClient::sync_nullifiers` now rejects responses containing a nullifier whose prefix was not requested with `RpcError::InvalidResponse` ([#2282](https://github.com/0xMiden/rust-sdk/pull/2282)).
 * [FIX][rust] `NodeRpcClient::sync_notes` now rejects responses containing a note whose tag was not requested with `RpcError::InvalidResponse` ([#2284](https://github.com/0xMiden/rust-sdk/pull/2284)).
 * [FIX][rust] Public account sync now binds `get_account` responses to the SyncMMR target block, rejecting snapshots from a different block, account, or account root ([#2255](https://github.com/0xMiden/rust-sdk/pull/2255)).
+
+## 0.15.5 (2026-08-03)
+
+### Breaking Changes
+
+* [BREAKING][type][rust] `TransactionRequestError::InputNoteAlreadyConsumed` now carries a `NoteDetailsCommitment` instead of a `NoteId`, since a note record that was consumed externally may lack the metadata needed to derive its ID ([#2344](https://github.com/0xMiden/rust-sdk/pull/2354)).
+
+### Fixes
+
+* [FIX][rust] An NTL delivery colliding with a note that a local transaction is consuming no longer wedges `sync_state()`: such deliveries are skipped (the store already holds their details) and the transport cursor advances past them ([#2353](https://github.com/0xMiden/rust-sdk/pull/2353)).
+* [FIX][rust] Transport deliveries are now validated on receipt — entries whose details don't match the header's details commitment or whose tag was never requested are dropped, with the cursor advancing past them ([#2353](https://github.com/0xMiden/rust-sdk/pull/2353)).
+* [FIX][rust] `Client::prepare_transaction` no longer panics when an input note is already consumed and its record carries no metadata; it returns `InputNoteAlreadyConsumed` instead ([#2344](https://github.com/0xMiden/rust-sdk/pull/2354)).
 
 ## 0.15.4 (2026-07-16)
 
@@ -646,7 +678,7 @@
 ### Fixes
 
 * Added JS files generated from TypeScript ([#1218](https://github.com/0xMiden/rust-sdk/pull/1218)).
-* Changed method for automatically picking up tests for integraion tests binary ([#1219](https://github.com/0xMiden/rust-sdk/pull/1219)).
+* Changed method for automatically picking up tests for integration tests binary ([#1219](https://github.com/0xMiden/rust-sdk/pull/1219)).
 
 ## 0.11.0 (2025-08-30)
 

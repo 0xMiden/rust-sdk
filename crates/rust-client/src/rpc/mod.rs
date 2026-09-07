@@ -731,6 +731,37 @@ impl RpcEndpoint {
             RpcEndpoint::GetNetworkNoteStatus => "GetNetworkNoteStatus",
         }
     }
+
+    /// Returns whether repeating the call is safe when the outcome of the previous attempt is
+    /// unknown.
+    ///
+    /// Submissions are not: the node may have accepted the transaction before the response was
+    /// lost, so a repeat hits already-consumed state and comes back as a conflict that cannot be
+    /// told apart from a genuine double spend.
+    ///
+    /// The match is exhaustive on purpose, so a new endpoint has to be classified before it
+    /// compiles.
+    #[cfg(feature = "tonic")]
+    pub(crate) fn is_idempotent(self) -> bool {
+        match self {
+            RpcEndpoint::SubmitProvenTx | RpcEndpoint::SubmitProvenBatch => false,
+            RpcEndpoint::Status
+            | RpcEndpoint::SyncNullifiers
+            | RpcEndpoint::GetAccount
+            | RpcEndpoint::GetBlockByNumber
+            | RpcEndpoint::GetBlockHeaderByNumber
+            | RpcEndpoint::GetNotesById
+            | RpcEndpoint::SyncChainMmr
+            | RpcEndpoint::SyncNotes
+            | RpcEndpoint::GetNoteScriptByRoot
+            | RpcEndpoint::SyncStorageMaps
+            | RpcEndpoint::SyncAccountVault
+            | RpcEndpoint::SyncTransactions
+            | RpcEndpoint::GetLimits
+            | RpcEndpoint::GetNetworkNoteStatus
+            | RpcEndpoint::GetTransactionEncryptionKey => true,
+        }
+    }
 }
 
 impl fmt::Display for RpcEndpoint {

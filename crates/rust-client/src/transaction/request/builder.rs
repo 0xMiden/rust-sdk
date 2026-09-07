@@ -197,10 +197,16 @@ impl TransactionRequestBuilder {
     /// specified expected recipients, but it may also create notes for other recipients not
     /// included in this set.
     #[must_use]
-    pub fn expected_output_recipients(mut self, recipients: Vec<NoteRecipient>) -> Self {
+    pub fn expected_output_recipients(
+        mut self,
+        recipients: impl IntoIterator<Item = impl Into<NoteRecipient>>,
+    ) -> Self {
         self.expected_output_recipients = recipients
             .into_iter()
-            .map(|recipient| (recipient.digest(), recipient))
+            .map(|recipient| {
+                let recipient: NoteRecipient = recipient.into();
+                (recipient.digest(), recipient)
+            })
             .collect::<BTreeMap<_, _>>();
         self
     }

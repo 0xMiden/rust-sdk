@@ -1,11 +1,11 @@
 use anyhow::Result;
 use miden_agglayer::{AggLayerBridge, ExitRoot, UpdateGerNote};
 use miden_client::transaction::TransactionRequestBuilder;
-use miden_client_test_harness::ClientConfig;
 use miden_protocol::account::StorageMapKey;
 use miden_protocol::{Hasher, ONE, Word, ZERO};
 
 use super::{AgglayerConfig, create_agglayer_clients, setup_core_accounts};
+use crate::ClientConfig;
 
 // TESTS
 // ================================================================================================

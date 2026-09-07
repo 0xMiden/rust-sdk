@@ -23,8 +23,8 @@ const INTEGRATION_TESTS_HEADER: &str = r#"// Auto-generated integration tests
 "#;
 
 const INTEGRATION_TESTS_IMPORTS: &str = r#"use anyhow::Result;
-use miden_client_test_harness::ClientConfig;
-use miden_client_test_harness::fee_funding;"#;
+use miden_client_integration_tests::ClientConfig;
+use miden_client_integration_tests::fee_funding;"#;
 
 const TOKIO_TEST_WRAPPER: &str = r#"/// Auto-generated tokio test wrapper for {ORIGINAL_FUNCTION_NAME}
 #[tokio::test]
@@ -345,7 +345,7 @@ fn parse_test_function_name(line: &str) -> Option<String> {
 /// ```rust
 /// // File header and imports
 /// use anyhow::Result;
-/// use miden_client_test_harness::ClientConfig;
+/// use miden_client_integration_tests::ClientConfig;
 /// // ... other imports
 ///
 /// /// Auto-generated tokio test wrapper for my_test

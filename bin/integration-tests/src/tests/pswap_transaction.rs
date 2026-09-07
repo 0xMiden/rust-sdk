@@ -4,8 +4,9 @@ use miden_client::asset::{AssetAmount, FungibleAsset};
 use miden_client::note::{Note, NoteType, PswapNote};
 use miden_client::testing::common::*;
 use miden_client::transaction::{PswapTransactionData, TransactionRequestBuilder};
-use miden_client_test_harness::ClientConfig;
 use tracing::info;
+
+use crate::ClientConfig;
 
 // PSWAP FULL FILL ONCHAIN
 // ================================================================================================

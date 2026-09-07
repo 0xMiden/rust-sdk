@@ -896,7 +896,7 @@ async fn chain_anchor_for_request_handles_a_note_created_in_the_reference_block(
 /// `rpc::errors`.
 #[tokio::test]
 async fn indeterminate_submission_is_retryable_with_the_attached_payload() {
-    let (mut client, rpc_api, keystore) = Box::pin(create_test_client()).await;
+    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
 
     let secret_key = AuthSecretKey::new_falcon512_poseidon2();
     let account = AccountBuilder::new(Default::default())
@@ -907,7 +907,7 @@ async fn indeterminate_submission_is_retryable_with_the_attached_payload() {
         )))
         .build_existing()
         .unwrap();
-    keystore.add_key(&secret_key, account.id()).await.unwrap();
+    client.keystore().add_key(&secret_key, account.id()).await.unwrap();
     client.add_account(&account, false).await.unwrap();
     client.sync_state().await.unwrap();
 

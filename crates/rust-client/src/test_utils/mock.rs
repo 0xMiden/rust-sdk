@@ -84,8 +84,9 @@ pub struct MockRpcApi {
     /// [`MockRpcApi::fail_next_call`]. An entry is removed when served, so the call after it
     /// answers normally and a test can exercise a retry.
     next_call_failures: Arc<RwLock<BTreeMap<&'static str, RpcError>>>,
-    /// Sealed inputs handed to `submit_proven_batch`, one entry per call that reached the mock, so
-    /// a test can assert that a resubmission sealed again instead of reusing a cached ciphertext.
+    /// Sealed inputs handed to `submit_proven_batch`, one entry per call and recorded before any
+    /// staged failure is served, so a test can assert that a resubmission sealed again instead of
+    /// reusing a cached ciphertext.
     submitted_batch_sealed_inputs: Arc<RwLock<Vec<Vec<SealedTransactionInputs>>>>,
 }
 
@@ -118,7 +119,7 @@ impl MockRpcApi {
     /// Id of the first account updated in the mock chain's proven blocks, in block then
     /// within-block order. Tests use it to get hold of an account the chain already knows.
     ///
-    /// Panics if the chain has no account updates, which for a mock means the test set it up wrong.
+    /// Panics if the chain has no account updates.
     pub fn first_account_id(&self) -> AccountId {
         self.mock_chain
             .read()
@@ -130,8 +131,9 @@ impl MockRpcApi {
             .account_id()
     }
 
-    /// Sealed inputs recorded by `submit_proven_batch`, one entry per call that reached the mock.
-    /// Within an entry the order matches the batch's transaction order.
+    /// Sealed inputs recorded by `submit_proven_batch`, one entry per call, including calls that
+    /// went on to be served a staged failure. Within an entry the order matches the batch's
+    /// transaction order.
     pub fn submitted_batch_sealed_inputs(&self) -> Vec<Vec<SealedTransactionInputs>> {
         self.submitted_batch_sealed_inputs.read().clone()
     }
@@ -585,11 +587,13 @@ impl NodeRpcClient for MockRpcApi {
         _proposed_batch: ProposedBatch,
         sealed_transaction_inputs: Vec<SealedTransactionInputs>,
     ) -> Result<BlockNumber, RpcError> {
+        // Recorded before the staged failure is served: a submission whose response is lost still
+        // reached the node, so a test can compare what that attempt sent against the retry.
+        self.submitted_batch_sealed_inputs.write().push(sealed_transaction_inputs);
+
         if let Some(error) = self.take_failure(RpcEndpoint::SubmitProvenBatch) {
             return Err(error);
         }
-
-        self.submitted_batch_sealed_inputs.write().push(sealed_transaction_inputs);
 
         let mut mock_chain = self.mock_chain.write();
         mock_chain.add_pending_batch(proven_batch);

@@ -39,7 +39,7 @@
 //! A submission that comes back without a definite outcome raises
 //! [`BatchBuilderError::BatchSubmissionOutcomeUnknown`]. The node may or may not have accepted the
 //! batch and nothing was recorded locally, so the error carries a [`ProvenBatchSubmission`] to
-//! resend with [`Client::submit_proven_batch`] or to track by its transaction ids.
+//! resend with [`Client::retry_proven_batch`].
 //!
 //! Once the node accepts the batch, the local store still needs to be updated. If that step
 //! fails, the caller receives one of two errors that both carry the accepted `block_num`:
@@ -49,7 +49,9 @@
 //! - [`BatchBuilderError::BatchSubmittedButApplyFailed`] — applying the updates atomically to the
 //!   local store failed.
 //!
-//! In all three cases `sync_state` reconciles the local store with what the network holds.
+//! In all three cases `sync_state` reconciles the accounts with what the network holds. It does
+//! not create transaction records: none were written, so these transactions never appear in
+//! `get_transactions`.
 
 mod data_store;
 mod error;
@@ -86,17 +88,13 @@ use crate::{Client, ClientError};
 /// outcome the node never confirmed can be retried without executing or proving again.
 ///
 /// Handed back by [`BatchBuilderError::BatchSubmissionOutcomeUnknown`] and accepted by
-/// [`Client::submit_proven_batch`].
+/// [`Client::retry_proven_batch`].
 #[derive(Debug, Clone)]
 pub struct ProvenBatchSubmission {
     proven_batch: ProvenBatch,
-    // Boxed on the protocol type's own advice: it is large, and this struct travels inside an
-    // error.
     proposed_batch: Box<ProposedBatch>,
-    /// Kept whole rather than as inputs or sealed inputs. Not sealed, because the validator set's
-    /// key can rotate between attempts and a retry has to seal against the current one. Whole
-    /// results, because `BatchBuilder::submit` needs them after the RPC to build the store
-    /// updates.
+    /// The validator set's key can rotate between attempts, so a retry has to seal these again,
+    /// and `BatchBuilder::submit` needs the whole results after the RPC for the store updates.
     tx_results: Vec<TransactionResult>,
 }
 
@@ -106,7 +104,8 @@ impl ProvenBatchSubmission {
         self.tx_results.len()
     }
 
-    /// Ids of the transactions in the batch, to track until a sync resolves them.
+    /// Ids the batch was submitted with. The client recorded nothing, so they do not appear in
+    /// `get_transactions`; they are for the caller's own bookkeeping.
     pub fn transaction_ids(&self) -> impl Iterator<Item = TransactionId> + '_ {
         self.tx_results.iter().map(|tx_result| tx_result.executed_transaction().id())
     }
@@ -168,18 +167,29 @@ where
     /// being executed or proven a second time. The batch id is fixed, so resending it cannot
     /// duplicate its effects, but the node rejects it as a conflict if the original did land.
     ///
-    /// Unlike [`Client::submit_proven_transaction`](crate::Client::submit_proven_transaction) this
-    /// is not a general-purpose submit: [`ProvenBatchSubmission`] has no public constructor, so the
-    /// only way to obtain one is from that error. Assembling and proving a batch goes through
-    /// [`BatchBuilder`].
+    /// That error is the only source of a [`ProvenBatchSubmission`]: the type has no public
+    /// constructor, and assembling and proving a batch goes through [`BatchBuilder`].
     ///
-    /// The local store is not touched. On success, sync to record the transactions.
+    /// The local store is not touched. These transactions have no local record, so they never
+    /// appear in `get_transactions`; a sync shows their effect on the accounts instead.
     ///
     /// # Errors
     ///
     /// Returns [`BatchBuilderError::BatchSubmissionOutcomeUnknown`] when the submission comes back
     /// without a definite answer. Every other failure is a rejection the node issued deliberately.
-    pub async fn submit_proven_batch(
+    pub async fn retry_proven_batch(
+        &mut self,
+        submission: &ProvenBatchSubmission,
+    ) -> Result<BlockNumber, ClientError> {
+        self.send_proven_batch(submission).await
+    }
+
+    /// Seals the submission's inputs against the current key and sends the batch, mapping an
+    /// outcome the node never confirmed to the error that carries the submission back.
+    ///
+    /// Shared by the first send from [`BatchBuilder::submit`] and by every retry through
+    /// [`Client::retry_proven_batch`], so the sealing and the error mapping live in one place.
+    async fn send_proven_batch(
         &mut self,
         submission: &ProvenBatchSubmission,
     ) -> Result<BlockNumber, ClientError> {
@@ -303,7 +313,7 @@ where
             proposed_batch: Box::new(proposed_batch),
             tx_results,
         };
-        let block_num = self.client.submit_proven_batch(&submission).await?;
+        let block_num = self.client.send_proven_batch(&submission).await?;
         let tx_results = submission.tx_results;
 
         let mut updates: Vec<TransactionStoreUpdate> = Vec::with_capacity(len);

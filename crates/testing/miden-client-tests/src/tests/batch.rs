@@ -98,15 +98,7 @@ async fn submit_proven_batch_returns_chain_tip() {
 async fn batch_builder_submits_two_txs_on_one_account() {
     let (mut client, rpc_api, _keystore) = Box::pin(create_test_client()).await;
 
-    let account_id = rpc_api.first_account_id();
-
-    // Retrieve the committed account state from the mock chain and register it with the client
-    // store so that `new_transaction_batch` can find it.
-    let account = rpc_api.mock_chain.read().committed_account(account_id).unwrap().clone();
-    client.add_account(&account, false).await.unwrap();
-
-    // Sync so the client's store reflects the on-chain state.
-    client.sync_state().await.unwrap();
+    let account_id = register_mock_chain_account(&mut client, &rpc_api).await;
 
     // Build two minimal no-op TransactionRequests for the same account.
     // The mock account uses IncrNonce auth which requires no signing key — a bare
@@ -781,8 +773,9 @@ async fn batch_builder_cross_account_note_flow() {
     );
 }
 
-/// Registers the mock chain's first account with `client` and returns its id, so a batch can be
-/// pushed against it. The account uses `IncrNonce` auth, so no signing key is needed.
+/// Registers the mock chain's first account with `client`, syncing so the store reflects the
+/// on-chain state, and returns its id so a batch can be pushed against it. The account uses
+/// `IncrNonce` auth, so no signing key is needed.
 async fn register_mock_chain_account(client: &mut TestClient, rpc_api: &MockRpcApi) -> AccountId {
     let account_id = rpc_api.first_account_id();
 
@@ -835,47 +828,40 @@ async fn indeterminate_batch_submission_is_retryable_with_the_attached_payload()
 
     // The payload describes the whole batch, not just one of its transactions.
     assert_eq!(submission.transaction_count(), 2);
-    let tracked: BTreeSet<_> = submission.transaction_ids().collect();
-    assert_eq!(
-        tracked.len(),
-        2,
-        "each transaction in the batch must be trackable by its own id"
-    );
+    let ids: BTreeSet<_> = submission.transaction_ids().collect();
+    assert_eq!(ids.len(), 2, "the payload must expose one distinct id per transaction");
 
     // Nothing was recorded, so the payload is all the caller has left to work with.
     assert!(client.get_transactions(TransactionFilter::All).await.unwrap().is_empty());
 
-    // The staged failure is consumed before the mock records anything, so these two calls are the
-    // ones the mock sees. Both go out with the same payload.
-    Box::pin(client.submit_proven_batch(&submission))
+    Box::pin(client.retry_proven_batch(&submission))
         .await
         .expect("the attached payload must be enough to submit again");
-    Box::pin(client.submit_proven_batch(&submission))
-        .await
-        .expect("the payload must stay usable across attempts");
 
-    // The retry entry point does not touch the store: syncing is what records the transactions.
+    // The retry entry point writes no rows, and a sync will not create them: these transactions
+    // never appear in `get_transactions`.
     assert!(client.get_transactions(TransactionFilter::All).await.unwrap().is_empty());
 
-    // Every attempt seals again rather than resending a cached ciphertext, which is what lets a
-    // retry survive a rotation of the validator set's encryption key. `seal_transaction_inputs`
-    // draws a fresh ephemeral key per call, so the same inputs seal to different bytes.
+    // The retry seals again rather than resending the ciphertext the first attempt sent, which is
+    // what lets it survive a rotation of the validator set's encryption key.
+    // `seal_transaction_inputs` draws a fresh ephemeral key per call, so the same inputs seal to
+    // different bytes.
     let attempts = rpc_api.submitted_batch_sealed_inputs();
-    assert_eq!(attempts.len(), 2, "the mock must have seen exactly the two successful attempts");
+    assert_eq!(attempts.len(), 2, "the mock must have seen the lost attempt and the retry");
     assert_eq!(attempts[0].len(), 2, "one sealed entry per transaction in the batch");
     assert_eq!(attempts[1].len(), attempts[0].len());
-    for (first, second) in attempts[0].iter().zip(attempts[1].iter()) {
-        assert_eq!(first.key_id(), second.key_id(), "both attempts seal against the same key");
+    for (lost, retry) in attempts[0].iter().zip(attempts[1].iter()) {
+        assert_eq!(lost.key_id(), retry.key_id(), "both attempts seal against the same key");
         assert_ne!(
-            first.ciphertext(),
-            second.ciphertext(),
-            "each attempt must seal again instead of reusing the previous ciphertext"
+            lost.ciphertext(),
+            retry.ciphertext(),
+            "the retry must seal again instead of reusing the first attempt's ciphertext"
         );
     }
 }
 
-/// A rejection the node issued deliberately is an answer, so it must stay a plain
-/// `ClientError::RpcError` and never promote to `BatchSubmissionOutcomeUnknown`.
+/// A deliberate rejection stays a plain `ClientError::RpcError` instead of promoting to
+/// `BatchSubmissionOutcomeUnknown`. `FailedPrecondition` also evicts the cached encryption key.
 #[tokio::test]
 async fn deliberately_rejected_batch_submission_stays_an_rpc_error() {
     let (mut client, rpc_api, _keystore) = Box::pin(create_test_client()).await;

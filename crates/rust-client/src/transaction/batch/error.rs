@@ -29,8 +29,7 @@ pub enum BatchBuilderError {
     )]
     BatchSubmissionOutcomeUnknown {
         /// The batch as submitted, to resend with
-        /// [`Client::submit_proven_batch`](crate::Client::submit_proven_batch) or to read
-        /// `transaction_ids()` from and track.
+        /// [`Client::retry_proven_batch`](crate::Client::retry_proven_batch).
         submission: Box<ProvenBatchSubmission>,
         #[source]
         source: RpcError,

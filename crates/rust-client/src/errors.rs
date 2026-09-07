@@ -371,12 +371,13 @@ impl From<&ClientError> for Option<ErrorHint> {
             }) => Some(ErrorHint {
                 message: format!(
                     "Do not rebuild the batch: re-executing produces new transaction ids over \
-                     the same notes, so if the original did land you would be left tracking ids \
-                     that can never commit. Neither option can apply the batch twice, since both \
+                     the same notes, so if the original did land you would be left with ids that \
+                     can never commit. Neither option can apply the batch twice, since both \
                      consume the same nullifiers. Either retry with the `submission` attached to \
                      this error, which carries the proven batch and each transaction's inputs, or \
-                     keep syncing and check `get_transactions` for the {} ids in \
-                     `submission.transaction_ids()` until they commit or expire.",
+                     sync and see whether the accounts moved: nothing was recorded locally, so \
+                     the {} ids in `submission.transaction_ids()` never show up in \
+                     `get_transactions`.",
                     submission.transaction_count()
                 ),
                 docs_url: Some(TROUBLESHOOTING_DOC),

@@ -18,8 +18,8 @@ pub enum KeyStoreError {
 
 /// A trait for managing cryptographic keys and their association with accounts.
 ///
-/// This trait extends [`TransactionAuthenticator`] to provide a unified interface
-/// for key storage, retrieval, and account-key mapping.
+/// This trait extends [`TransactionAuthenticator`] to provide a unified interface for key storage,
+/// retrieval, and account-key mapping.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 pub trait Keystore: TransactionAuthenticator {
@@ -63,11 +63,11 @@ pub trait Keystore: TransactionAuthenticator {
 
     /// Returns all secret keys associated with the given account ID.
     ///
-    /// This is a convenience method that calls `get_account_key_commitments`
-    /// followed by `get_key` for each commitment.
+    /// This is a convenience method that calls `get_account_key_commitments` followed by `get_key`
+    /// for each commitment.
     ///
-    /// Returns an empty vector if the account has no associated keys.
-    /// Returns an error if any key lookup fails.
+    /// Returns an empty vector if the account has no associated keys. Returns an error if any key
+    /// lookup fails.
     async fn get_keys_for_account(
         &self,
         account_id: &AccountId,

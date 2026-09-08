@@ -57,8 +57,8 @@ impl ImportCmd {
 
                 println!("Successfully imported account {account_id}");
 
-                // Only basic wallets are eligible to become the default account; faucets and
-                // other account kinds are skipped.
+                // Only basic wallets are eligible to become the default account; faucets and other
+                // account kinds are skipped.
                 if let Some(code) = client.get_account_code(account_id).await?
                     && account_code_has_basic_wallet(account_id, &code)
                 {

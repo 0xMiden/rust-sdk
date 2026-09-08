@@ -113,9 +113,9 @@ pub enum CliError {
     NotSynced,
     #[error("invalid argument: {0}")]
     InvalidArgument(String),
-    // Covers both directions of the typed path: encoding arguments and decoding results. The
-    // inner error already states the whole problem, so it is shown in place of a wrapper message
-    // rather than under one, where it would be printed twice.
+    // Covers both directions of the typed path: encoding arguments and decoding results. The inner
+    // error already states the whole problem, so it is shown in place of a wrapper message rather
+    // than under one, where it would be printed twice.
     #[error(transparent)]
     #[diagnostic(code(cli::typed_error))]
     Typed(#[from] TypedError),

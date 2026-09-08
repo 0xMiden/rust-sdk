@@ -26,8 +26,8 @@ async fn assert_no_note_sourced_tags(client: &TestClient, context: &str) -> Resu
 // TESTS
 // ================================================================================================
 
-/// Output notes must not register tags: commitment and inclusion proof arrive via
-/// account-matched transaction sync, and the recipient still gets the note via its account tag.
+/// Output notes must not register tags: commitment and inclusion proof arrive via account-matched
+/// transaction sync, and the recipient still gets the note via its account tag.
 pub async fn test_output_notes_do_not_register_tags(client_config: ClientConfig) -> Result<()> {
     // Client 1 runs the faucet; client 2 tracks the recipient wallet, so from client 1's
     // perspective the minted note goes to an external account.
@@ -87,8 +87,8 @@ pub async fn test_output_notes_do_not_register_tags(client_config: ClientConfig)
         .get_input_note(note.id())
         .await?
         .context("recipient should have received the minted note")?;
-    // Guard against the unauthenticated-input fallback: the conversion below succeeds even
-    // without an inclusion proof, so committedness must be asserted explicitly.
+    // Guard against the unauthenticated-input fallback: the conversion below succeeds even without
+    // an inclusion proof, so committedness must be asserted explicitly.
     assert!(received_record.is_committed(), "received note should be committed");
     let received_note: InputNote = received_record.try_into()?;
     let tx_id =
@@ -100,8 +100,8 @@ pub async fn test_output_notes_do_not_register_tags(client_config: ClientConfig)
     Ok(())
 }
 
-/// Expected input notes register exactly one tag and it is cleaned up on commit — covered for
-/// a self-directed transfer and for an expected note imported by details.
+/// Expected input notes register exactly one tag and it is cleaned up on commit — covered for a
+/// self-directed transfer and for an expected note imported by details.
 pub async fn test_input_note_tag_lifecycle(client_config: ClientConfig) -> Result<()> {
     let (mut client_1, keystore_1) = client_config.clone().into_client().await?;
     let (mut client_2, keystore_2) =
@@ -181,8 +181,8 @@ pub async fn test_input_note_tag_lifecycle(client_config: ClientConfig) -> Resul
     let tx_id = consume_notes(&mut client_1, wallet_b.id(), &[received_note.note().clone()]).await;
     wait_for_tx(&mut client_1, tx_id).await?;
 
-    // Importing an expected note by details (before it is committed on chain) registers a tag
-    // and cleans it up once the note commits.
+    // Importing an expected note by details (before it is committed on chain) registers a tag and
+    // cleans it up once the note commits.
     let tx_request = TransactionRequestBuilder::new().build_mint_fungible_asset(
         FungibleAsset::new(faucet_account.id(), MINT_AMOUNT)?,
         wallet_c.id(),

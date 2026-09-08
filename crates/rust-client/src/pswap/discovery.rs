@@ -1,7 +1,7 @@
 //! Post-sync correlator: joins tracked-note consumption events from
-//! `NoteUpdateTracker::consumed_note_ids()` with the PSWAP-attachment
-//! notes collected by [`super::observer::PswapChainObserver`], emitting
-//! one `PswapLineageRoundUpdate` per round transition.
+//! `NoteUpdateTracker::consumed_note_ids()` with the PSWAP-attachment notes collected by
+//! [`super::observer::PswapChainObserver`], emitting one `PswapLineageRoundUpdate` per round
+//! transition.
 //!
 //! See [`crate::pswap`] for the overall design.
 
@@ -28,9 +28,9 @@ use crate::sync::StateSyncUpdate;
 
 /// Returns one [`PswapLineageRoundUpdate`] per round advanced this sync.
 ///
-/// Each active lineage is walked in memory across as many rounds as this sync
-/// window reveals. Only the final tip's remainder is persisted to `input_notes`;
-/// intermediate remainders are already spent on-chain.
+/// Each active lineage is walked in memory across as many rounds as this sync window reveals. Only
+/// the final tip's remainder is persisted to `input_notes`; intermediate remainders are already
+/// spent on-chain.
 pub(crate) async fn discover_pswap_rounds(
     store: Arc<dyn Store>,
     state_sync_update: &StateSyncUpdate,
@@ -80,8 +80,8 @@ pub(crate) async fn discover_pswap_rounds(
 ///   1. a consumed note id that is a tracked tip → via the tip index;
 ///   2. a chain note → carries its `order_id` on its attachment.
 ///
-/// Both are needed: signal 2 catches a fill whose notes arrive before its tip
-/// nullifier; signal 1 carries reclaim, which emits no chain notes.
+/// Both are needed: signal 2 catches a fill whose notes arrive before its tip nullifier; signal 1
+/// carries reclaim, which emits no chain notes.
 async fn collect_candidate_orders(
     store: &Arc<dyn Store>,
     consumed_note_ids: &BTreeSet<NoteId>,
@@ -99,8 +99,8 @@ async fn collect_candidate_orders(
     Ok(candidate_orders)
 }
 
-/// Loads the `Active` lineage record for each candidate order, skipping orders
-/// with no tracked record or already in a terminal state.
+/// Loads the `Active` lineage record for each candidate order, skipping orders with no tracked
+/// record or already in a terminal state.
 async fn load_active_lineages(
     store: &Arc<dyn Store>,
     candidate_orders: BTreeSet<Felt>,
@@ -130,15 +130,14 @@ fn group_notes_by_order_depth(
     notes_by_order_depth
 }
 
-/// Walks one active lineage across every round this sync window reveals,
-/// returning its round updates (final-tip remainder kept, intermediates dropped).
+/// Walks one active lineage across every round this sync window reveals, returning its round
+/// updates (final-tip remainder kept, intermediates dropped).
 ///
-/// Advances round-by-round while live. A round fires when the tip's consumption
-/// was observed (`tip_consumed`) OR depth+1 chain notes exist: by protocol
-/// invariant a payback/remainder at depth N+1 can only come from consuming the
-/// depth-N tip, so notes alone prove consumption. That's what follows a
-/// same-block multi-fill on a private chain, whose intermediate remainder is
-/// never tracked. The state guard ends the loop on terminal.
+/// Advances round-by-round while live. A round fires when the tip's consumption was observed
+/// (`tip_consumed`) OR depth+1 chain notes exist: by protocol invariant a payback/remainder at
+/// depth N+1 can only come from consuming the depth-N tip, so notes alone prove consumption. That's
+/// what follows a same-block multi-fill on a private chain, whose intermediate remainder is never
+/// tracked. The state guard ends the loop on terminal.
 async fn advance_lineage(
     store: &Arc<dyn Store>,
     mut lineage: PswapLineageRecord,
@@ -147,9 +146,9 @@ async fn advance_lineage(
     block_headers: &BTreeMap<BlockNumber, BlockHeader>,
 ) -> Vec<PswapLineageRoundUpdate> {
     let mut lineage_rounds: Vec<PswapLineageRoundUpdate> = Vec::new();
-    // The depth-0 note is immutable across rounds and only fills (not reclaim)
-    // need it to reconstruct outputs. Fetched lazily from `output_notes` on the
-    // first fill and cached for the rest of this lineage's rounds.
+    // The depth-0 note is immutable across rounds and only fills (not reclaim) need it to
+    // reconstruct outputs. Fetched lazily from `output_notes` on the first fill and cached for the
+    // rest of this lineage's rounds.
     let mut original_pswap: Option<PswapNote> = None;
 
     while lineage.state == PswapLineageState::Active {
@@ -163,8 +162,8 @@ async fn advance_lineage(
             break;
         }
 
-        // Fills (notes present) reconstruct payback/remainder from the original note;
-        // fetch it once. A reclaim round (no notes) needs nothing from the note.
+        // Fills (notes present) reconstruct payback/remainder from the original note; fetch it
+        // once. A reclaim round (no notes) needs nothing from the note.
         if !notes.is_empty() && original_pswap.is_none() {
             match store::get_original_pswap(store, lineage.original_note_id).await {
                 Ok(pswap) => original_pswap = Some(pswap),
@@ -207,9 +206,9 @@ async fn advance_lineage(
     }
 
     // Intermediate remainders are already spent on-chain; inserting them would leave stale
-    // Unverified notes whose consumption falls outside the next sync's window. Keep only the
-    // final (live) tip's remainder; drop the rest. Paybacks are all kept — each is a distinct
-    // consumable note for the creator.
+    // Unverified notes whose consumption falls outside the next sync's window. Keep only the final
+    // (live) tip's remainder; drop the rest. Paybacks are all kept — each is a distinct consumable
+    // note for the creator.
     if let Some((_, intermediate_rounds)) = lineage_rounds.split_last_mut() {
         for round in intermediate_rounds {
             round.remainder = None;

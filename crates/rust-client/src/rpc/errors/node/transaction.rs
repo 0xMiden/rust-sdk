@@ -17,8 +17,8 @@ pub enum AddTransactionError {
     /// Mempool is at capacity
     #[error("the mempool is at capacity")]
     CapacityExceeded,
-    /// Error code not recognized by this client version. This can happen if the node
-    /// is newer than the client and has added new error variants.
+    /// Error code not recognized by this client version. This can happen if the node is newer than
+    /// the client and has added new error variants.
     #[error("unknown error code {code}: {message}")]
     Unknown { code: u8, message: String },
 }

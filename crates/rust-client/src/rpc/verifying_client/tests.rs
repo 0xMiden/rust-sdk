@@ -117,9 +117,9 @@ fn note_metadata(tag: NoteTag) -> NoteMetadata {
     )
 }
 
-/// Wraps `note_id` in the shape `get_notes_by_id` responds with. The `Private` variant reports
-/// the ID it was handed instead of deriving it from the note's contents, so the surrounding
-/// fixtures do not constrain which ID a test can plant.
+/// Wraps `note_id` in the shape `get_notes_by_id` responds with. The `Private` variant reports the
+/// ID it was handed instead of deriving it from the note's contents, so the surrounding fixtures do
+/// not constrain which ID a test can plant.
 fn fetched_note(note_id: NoteId) -> FetchedNote {
     FetchedNote::Private(
         note_id,
@@ -174,9 +174,8 @@ fn account_proof() -> AccountProof {
 // CANNED TRANSPORT
 // ================================================================================================
 
-/// The canned `get_note_script_by_root` response. An enum rather than a nested [`Option`] so
-/// that a test setting no response stays distinct from a node reporting no script for the
-/// requested root.
+/// The canned `get_note_script_by_root` response. An enum rather than a nested [`Option`] so that a
+/// test setting no response stays distinct from a node reporting no script for the requested root.
 #[derive(Default)]
 enum CannedScript {
     #[default]
@@ -187,9 +186,9 @@ enum CannedScript {
 
 /// A transport that answers with canned responses regardless of the request, so that
 /// [`VerifyingRpcClient`] can be exercised against responses a well-behaved node would never
-/// produce. Ignoring the arguments is what lets a test drive one response into both an
-/// accepting and a rejecting request. Methods whose slot is left unset are unreachable: each
-/// test sets only what it exercises.
+/// produce. Ignoring the arguments is what lets a test drive one response into both an accepting
+/// and a rejecting request. Methods whose slot is left unset are unreachable: each test sets only
+/// what it exercises.
 #[derive(Default)]
 struct CannedTransport {
     block_header: Option<(BlockHeader, Option<MmrProof>)>,
@@ -573,8 +572,8 @@ async fn get_account_verifies_block_num_only_for_pinned_requests() {
 
 #[tokio::test]
 async fn get_account_rejects_proof_for_wrong_account_id() {
-    // account_proof() is built for test_account_id() (ACCOUNT_ID_SENDER),
-    // but we request a different account ID -- the verifying client must reject it.
+    // account_proof() is built for test_account_id() (ACCOUNT_ID_SENDER), but we request a
+    // different account ID -- the verifying client must reject it.
     let client = VerifyingRpcClient::new(CannedTransport {
         account: Some((BlockNumber::from(1u32), account_proof())),
         ..Default::default()

@@ -81,8 +81,8 @@ impl AgglayerConfig {
         self.faucet.account.id()
     }
 
-    /// Imports a single account (by ID) into the given client and keystore.
-    /// Fetches the latest state from the network. Adds any matching secret keys.
+    /// Imports a single account (by ID) into the given client and keystore. Fetches the latest
+    /// state from the network. Adds any matching secret keys.
     pub async fn import_account(
         &self,
         account_id: AccountId,

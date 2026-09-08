@@ -21,8 +21,8 @@ use thiserror::Error;
 /// A self-contained, verifiable anchor for executing a transaction against a specific reference
 /// block instead of the client's current sync height.
 ///
-/// The anchor bundles the reference [`BlockHeader`] with a [`PartialBlockchain`] consistent with
-/// it — exactly the chain data `TransactionInputs` requires: `chain_length()` equals the header's
+/// The anchor bundles the reference [`BlockHeader`] with a [`PartialBlockchain`] consistent with it
+/// — exactly the chain data `TransactionInputs` requires: `chain_length()` equals the header's
 /// block number and the peaks hash to the header's chain commitment. Both invariants are enforced
 /// on construction (including deserialization), so an anchor received from an untrusted party only
 /// needs its [`Self::block_commitment`] checked against an independently trusted value — e.g. the
@@ -36,9 +36,9 @@ use thiserror::Error;
 /// signed data, and replay the transaction with [`crate::Client::execute_transaction_at`] so the
 /// summary — and with it the signature advice keys — reproduces exactly.
 ///
-/// When the transaction consumes authenticated notes, the anchor's [`PartialBlockchain`] must
-/// track each note's creation block; [`crate::Client::chain_anchor_for_request`] captures an
-/// anchor tracking the blocks of a request's authenticated input notes.
+/// When the transaction consumes authenticated notes, the anchor's [`PartialBlockchain`] must track
+/// each note's creation block; [`crate::Client::chain_anchor_for_request`] captures an anchor
+/// tracking the blocks of a request's authenticated input notes.
 ///
 /// [`TransactionSummary`]: miden_protocol::transaction::TransactionSummary
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,8 +89,8 @@ impl ChainAnchor {
     /// Returns the commitment of the anchored reference block.
     ///
     /// Callers holding an anchor from an untrusted source should compare this against an
-    /// independently trusted commitment (e.g. the block commitment bound into a signed
-    /// transaction summary) before executing with the anchor.
+    /// independently trusted commitment (e.g. the block commitment bound into a signed transaction
+    /// summary) before executing with the anchor.
     pub fn block_commitment(&self) -> Word {
         self.header.commitment()
     }
@@ -142,9 +142,9 @@ impl Deserializable for ChainAnchor {
         }
 
         for (block_num, header) in &blocks {
-            // The constructor re-derives each position from the header, so the key must agree
-            // with it — otherwise a crafted anchor could aim the `open` below at a harmless
-            // position while the constructor opens the dangerous one.
+            // The constructor re-derives each position from the header, so the key must agree with
+            // it — otherwise a crafted anchor could aim the `open` below at a harmless position
+            // while the constructor opens the dangerous one.
             if block_num != &header.block_num() {
                 return Err(DeserializationError::InvalidValue(format!(
                     "block map key {block_num} does not match the block number {} of the header it maps to",
@@ -340,8 +340,8 @@ mod tests {
         assert!(ChainAnchor::read_from_bytes(&bytes).is_err());
     }
 
-    /// A block-map key that disagrees with its header would let a crafted anchor aim the
-    /// pre-flight `open` at a harmless position, so deserialization must reject it.
+    /// A block-map key that disagrees with its header would let a crafted anchor aim the pre-flight
+    /// `open` at a harmless position, so deserialization must reject it.
     #[test]
     fn deserialization_rejects_a_block_key_that_disagrees_with_its_header() {
         use alloc::collections::BTreeMap;

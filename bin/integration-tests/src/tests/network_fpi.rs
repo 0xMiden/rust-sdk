@@ -23,11 +23,10 @@ use crate::ClientConfig;
 ///
 /// This test uses three accounts: public foreign account, network counter account, and sender
 /// account as a private wallet (which is needed only for the note creation, so potentially it could
-/// be replaced by any account ID).
-/// Sender account creates a note, which targets the counter account. This note's script contains
-/// the FPI, which obtains the map value from the foreign account. In order to check whether the FPI
-/// was successful (note script was executed successfully), note script updates the counter of the
-/// network (counter) account.
+/// be replaced by any account ID). Sender account creates a note, which targets the counter
+/// account. This note's script contains the FPI, which obtains the map value from the foreign
+/// account. In order to check whether the FPI was successful (note script was executed
+/// successfully), note script updates the counter of the network (counter) account.
 pub async fn test_network_fpi(client_config: ClientConfig) -> Result<()> {
     let (mut client, keystore) = client_config.clone().into_client().await?;
     client.sync_state().await?;

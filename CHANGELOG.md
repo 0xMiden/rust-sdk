@@ -152,7 +152,7 @@
 
 ### Features
 
-* [FEATURE][rust] New `miden-client-web3signer` crate: `Web3SignerAuthenticator` signs transactions with `EcdsaK256Keccak` keys held in a Web3Signer instance, reading the signer's key list once at `connect` and keeping no local key material or fallback signer. Its HTTP transport requires the crate's `std` feature; other targets implement the `SignerTransport` trait.
+* [FEATURE][rust] New `miden-client-web3signer-authenticator` crate provides `Web3SignerAuthenticator`, which allows a Miden client to sign transactions with `EcdsaK256Keccak` keys held in a Web3Signer instance ([#2501](https://github.com/0xMiden/rust-sdk/pull/2501)).
 * [FEATURE][rust] Historical private notes for a newly tracked tag are now backfilled automatically on sync. `Client::sync_note_transport` diffs the tracked note tags against a persisted covered set and drains each newly tracked tag from the start, fetching only that tag's own history rather than re-scanning every tag. ([#2258](https://github.com/0xMiden/rust-sdk/issues/2258))
 
 ### Changes

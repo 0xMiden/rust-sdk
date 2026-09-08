@@ -2886,7 +2886,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "miden-client-web3signer"
+name = "miden-client-web3signer-authenticator"
 version = "0.16.0-rc.5"
 dependencies = [
  "hex",

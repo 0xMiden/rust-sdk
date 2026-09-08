@@ -2,11 +2,10 @@
 authors.workspace      = true
 categories             = ["cryptography", "no-std"]
 description            = "Transaction authenticator that signs Miden transactions with keys held in a Web3Signer instance"
-documentation          = "https://docs.rs/miden-client-web3signer"
 edition.workspace      = true
 keywords               = ["client", "miden", "signer", "web3signer"]
 license.workspace      = true
-name                   = "miden-client-web3signer"
+name                   = "miden-client-web3signer-authenticator"
 repository.workspace   = true
 rust-version.workspace = true
 version.workspace      = true
@@ -14,7 +13,7 @@ version.workspace      = true
 [features]
 default = ["std"]
 # Enables the built-in HTTP transport. The rest of the crate is no_std + alloc, so targets without
-# an HTTP client of this kind (wasm32, embedded) implement `SignerTransport` themselves.
+# an HTTP client of this kind like wasm32 implement `SignerTransport` themselves.
 std = ["dep:reqwest", "hex/std", "thiserror/std"]
 
 [dependencies]
@@ -29,9 +28,7 @@ reqwest   = { default-features = false, features = ["rustls-tls"], optional = tr
 thiserror = { workspace = true }
 
 [dev-dependencies]
-# `std` gives the tests `miden_protocol::crypto::rand::test_utils`, which is gated on it.
-miden-protocol = { features = ["std"], workspace = true }
-tokio          = { workspace = true }
+tokio = { workspace = true }
 
 [lints]
 workspace = true

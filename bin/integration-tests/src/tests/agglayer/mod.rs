@@ -5,8 +5,9 @@ use miden_client::Deserializable;
 use miden_client::account::{AccountFile, AccountId};
 use miden_client::keystore::Keystore;
 use miden_client::testing::common::{FilesystemKeyStore, TestClient, wait_for_node};
-use miden_client_test_harness::ClientConfig;
-use miden_client_test_harness::fee_funding::AccountLock;
+
+use crate::ClientConfig;
+use crate::fee_funding::AccountLock;
 
 pub mod agglayer_bridge_in_out;
 mod agglayer_test_utils;
@@ -80,8 +81,8 @@ impl AgglayerConfig {
         self.faucet.account.id()
     }
 
-    /// Imports a single account (by ID) into the given client and keystore.
-    /// Fetches the latest state from the network. Adds any matching secret keys.
+    /// Imports a single account (by ID) into the given client and keystore. Fetches the latest
+    /// state from the network. Adds any matching secret keys.
     pub async fn import_account(
         &self,
         account_id: AccountId,

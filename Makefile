@@ -42,12 +42,14 @@ fix: ## Run Fix with configs
 	cargo fix --workspace --features "testing std" --all-targets --allow-staged --allow-dirty
 
 .PHONY: format
-format: ## Run format using nightly toolchain
+format: ## Run format using nightly toolchain, then reflow comments
 	cargo +nightly fmt --all
+	cargo xtask fmt-comments --write
 
 .PHONY: format-check
-format-check: ## Run format using nightly toolchain but only in check mode
+format-check: ## Run format and comment reflow checks without writing changes
 	cargo +nightly fmt --all --check
+	cargo xtask fmt-comments --check
 
 .PHONY: shear
 shear: ## Run cargo-shear to find unused or misplaced dependencies
@@ -140,14 +142,9 @@ integration-test-non-agglayer: ## Run every integration test except the agglayer
 	TEST_MIDEN_NOTE_TRANSPORT_URL=$(TEST_MIDEN_NOTE_TRANSPORT_URL) MIDEN_FUNDER_ACCOUNTS_DIR=$(MIDEN_FUNDER_ACCOUNTS_DIR) cargo nextest run --workspace --release --test=integration -E 'not test(/agglayer/)'
 	MIDEN_FUNDER_ACCOUNTS_DIR=$(MIDEN_FUNDER_ACCOUNTS_DIR) cargo nextest run --workspace --release --test=integration --run-ignored ignored-only -- import_genesis_accounts_can_be_used_for_transactions
 
-# `agglayer_bridge_in_out` is excluded: its closing B2AGG note produces a network transaction the
-# node cannot prove inside the ntx-builder's deadline, and the builder then retries it for ~15
-# minutes. The test itself passes — it never asserts the note was consumed — but the bridge is
-# occupied throughout, so the agglayer tests that run afterwards never get their notes consumed.
-# TODO: restore once the bridge-out proof fits the deadline, and make the test assert on it.
 .PHONY: integration-test-agglayer
 integration-test-agglayer: ## Run only the agglayer integration tests
-	MIDEN_FUNDER_ACCOUNTS_DIR=$(MIDEN_FUNDER_ACCOUNTS_DIR) AGGLAYER_ACCOUNTS_DIR=$(AGGLAYER_ACCOUNTS_DIR) cargo nextest run --workspace --release --test=integration -E 'test(/agglayer/) - test(=agglayer_bridge_in_out)'
+	MIDEN_FUNDER_ACCOUNTS_DIR=$(MIDEN_FUNDER_ACCOUNTS_DIR) AGGLAYER_ACCOUNTS_DIR=$(AGGLAYER_ACCOUNTS_DIR) cargo nextest run --workspace --release --test=integration -E 'test(/agglayer/)'
 
 .PHONY: integration-test-miden-bench
 integration-test-miden-bench: install-bench ## Run miden-bench smoke tests

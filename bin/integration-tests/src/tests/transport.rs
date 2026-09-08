@@ -16,7 +16,8 @@ use miden_client::testing::common::{
     wait_for_tx,
 };
 use miden_client::transaction::TransactionRequestBuilder;
-use miden_client_test_harness::ClientConfig;
+
+use crate::ClientConfig;
 
 // TRANSPORT NOTE INCLUSION PROOF AND CONSUMPTION TESTS
 // ================================================================================================
@@ -279,8 +280,8 @@ pub async fn test_transport_multiple_notes_different_blocks(
     Ok(())
 }
 
-/// Tests that a note sent via transport before being committed on-chain starts as Expected,
-/// then transitions to Committed once the mint tx is executed and synced.
+/// Tests that a note sent via transport before being committed on-chain starts as Expected, then
+/// transitions to Committed once the mint tx is executed and synced.
 pub async fn test_transport_note_not_yet_committed(client_config: ClientConfig) -> Result<()> {
     if client_config.note_transport_endpoint.is_none() {
         eprintln!(

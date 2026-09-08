@@ -98,8 +98,8 @@ fn attachment_headers_from_proto(
 fn attachment_schemes_to_proto(
     headers: &[NoteAttachmentHeader; NoteAttachments::MAX_COUNT],
 ) -> Vec<u32> {
-    // Encode each header as the scheme value, with `0` meaning absent. Trailing absent slots
-    // are stripped to match the wire convention.
+    // Encode each header as the scheme value, with `0` meaning absent. Trailing absent slots are
+    // stripped to match the wire convention.
     let mut encoded: Vec<u32> = headers
         .iter()
         .map(|h| h.scheme().map_or(0, |s| u32::from(s.as_u16())))
@@ -149,8 +149,8 @@ impl SequentialCommit for AttachmentCommitments<'_> {
     }
 }
 
-/// A single attachment as a `SyncNotes` record reports it: verbatim when the node sent its
-/// content, commitment-only otherwise.
+/// A single attachment as a `SyncNotes` record reports it: verbatim when the node sent its content,
+/// commitment-only otherwise.
 #[derive(Debug)]
 enum ReportedAttachment {
     /// The attachment arrived verbatim, so its content is known.
@@ -181,8 +181,8 @@ enum ReportedAttachments {
 }
 
 impl ReportedAttachments {
-    /// Aggregates the per-attachment reports of one record. The content is reconstructible only
-    /// as a whole set, so a single commitment-only attachment demotes the entire report to
+    /// Aggregates the per-attachment reports of one record. The content is reconstructible only as
+    /// a whole set, so a single commitment-only attachment demotes the entire report to
     /// commitments.
     fn from_reports(reports: Vec<ReportedAttachment>) -> Result<Self, RpcConversionError> {
         let commitments: Vec<Word> =
@@ -542,8 +542,8 @@ impl CommittedNote {
     ///
     /// # Errors
     ///
-    /// Returns an error if the content does not hash to the metadata's attachments commitment.
-    /// Such content would turn [`CommittedNote::needs_attachment_fetch`] off for a note whose real
+    /// Returns an error if the content does not hash to the metadata's attachments commitment. Such
+    /// content would turn [`CommittedNote::needs_attachment_fetch`] off for a note whose real
     /// content was never obtained, leaving it to be dropped for good by the consistency check in
     /// [`SyncedNote::new`] instead of being fetched.
     pub fn with_attachments(
@@ -587,8 +587,8 @@ impl CommittedNote {
         self.metadata.has_attachments()
     }
 
-    /// Returns the note's attachment content, `Some` when the reporting source
-    /// carried every attachment verbatim.
+    /// Returns the note's attachment content, `Some` when the reporting source carried every
+    /// attachment verbatim.
     ///
     /// `None` means at least one attachment must be fetched via `GetNotesById`, or that the source
     /// reports no attachment content at all, as `SyncTransactions` inclusion proofs do.

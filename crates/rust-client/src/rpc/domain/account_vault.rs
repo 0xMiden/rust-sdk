@@ -35,8 +35,8 @@ impl TryFrom<proto::primitives::Asset> for Asset {
 /// The merged result of syncing an account's vault over a block range.
 ///
 /// The node reports per-block asset updates that may repeat a vault key across blocks; these are
-/// merged into a single absolute [`AccountVaultPatch`] (latest block wins per key). Also
-/// provides the current chain tip observed while processing the request.
+/// merged into a single absolute [`AccountVaultPatch`] (latest block wins per key). Also provides
+/// the current chain tip observed while processing the request.
 pub struct AccountVaultInfo {
     /// Current chain tip.
     pub chain_tip: BlockNumber,
@@ -67,8 +67,8 @@ impl TryFrom<proto::rpc::SyncAccountVaultResponse> for AccountVaultInfo {
             .collect::<Result<Vec<_>, _>>()?;
 
         // The node may report the same asset ID in more than one block, folding the updates in
-        // ascending block order lets the latest block win, with an absent asset (`None`) encoding
-        // a removal.
+        // ascending block order lets the latest block win, with an absent asset (`None`) encoding a
+        // removal.
         updates.sort_by_key(|(block_num, ..)| *block_num);
         let mut vault_patch = AccountVaultPatch::default();
         for (_, asset_id, asset) in updates {

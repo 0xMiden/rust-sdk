@@ -45,16 +45,16 @@ pub(crate) fn parse_string_array(body: &str) -> impl Iterator<Item = &str> {
 /// tag byte. The signer uses the last one, and `ecdsa_k256_keccak` reads only the compressed one,
 /// so every key is parsed here and re-encoded compressed.
 pub(crate) fn decode_public_key(
-    identifier: &str,
+    public_key_hex: &str,
 ) -> Result<ecdsa_k256_keccak::PublicKey, Web3SignerError> {
-    let bytes = decode_hex(identifier)?;
+    let bytes = decode_hex(public_key_hex)?;
 
     let sec1 = match bytes.len() {
         UNTAGGED_KEY_LEN => [&[UNCOMPRESSED_TAG][..], &bytes].concat(),
         COMPRESSED_KEY_LEN | UNCOMPRESSED_KEY_LEN => bytes,
         other => {
             return Err(Web3SignerError::InvalidPublicKey {
-                identifier: identifier.to_string(),
+                identifier: public_key_hex.to_string(),
                 message: format!(
                     "{other} bytes, expected {COMPRESSED_KEY_LEN} (compressed), \
                      {UNTAGGED_KEY_LEN} (full, as the signer reports it) or \
@@ -65,7 +65,7 @@ pub(crate) fn decode_public_key(
     };
 
     let invalid_key = |message: String| Web3SignerError::InvalidPublicKey {
-        identifier: identifier.to_string(),
+        identifier: public_key_hex.to_string(),
         message,
     };
 

@@ -8,8 +8,8 @@
 //! `account-id` and `asset` are the rest. `AccountId` says what a valid id is, and `Asset` says
 //! what a valid asset is, so both codecs live on this side.
 //!
-//! [`with_cli_codecs`] registers them in one place, so the commands that render typed signatures
-//! do not know the individual types.
+//! [`with_cli_codecs`] registers them in one place, so the commands that render typed signatures do
+//! not know the individual types.
 //!
 //! [`WitScalarCodec`]: miden_client::vm::typed::WitScalarCodec
 //! [`TypedProcInfo`]: miden_client::vm::typed::TypedProcInfo
@@ -32,8 +32,8 @@ pub(crate) const ACCOUNT_ID_WIT_NAME: &str = "account-id";
 
 /// Reads an account ID written either way the rest of the CLI takes one: as full hex, or as a
 /// bech32 address naming an account ID. Both spellings reach the CLI in one command line, since
-/// `call` resolves its target through [`parse_account_id`], so an argument that takes an account
-/// ID has to accept the same two.
+/// `call` resolves its target through [`parse_account_id`], so an argument that takes an account ID
+/// has to accept the same two.
 ///
 /// [`parse_account_id`]: crate::utils::parse_account_id
 pub(crate) fn parse_account_id_token(token: &str) -> Result<AccountId, TypedError> {

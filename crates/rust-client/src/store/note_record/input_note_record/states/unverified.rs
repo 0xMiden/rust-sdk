@@ -56,9 +56,9 @@ impl NoteStateHandler for UnverifiedNoteState {
         note_id: NoteId,
         block_header: &BlockHeader,
     ) -> Result<Option<InputNoteState>, NoteRecordError> {
-        // The proof authenticates the note against the note root of the block it names, so a
-        // header for any other block cannot confirm it, however well the path verifies: with an
-        // honest node this should never trigger.
+        // The proof authenticates the note against the note root of the block it names, so a header
+        // for any other block cannot confirm it, however well the path verifies: with an honest
+        // node this should never trigger.
         let proof_authenticates_note = self.inclusion_proof.location().block_num()
             == block_header.block_num()
             && self
@@ -175,8 +175,8 @@ mod tests {
 
     use super::*;
 
-    /// An unverified note whose empty path authenticates it against a note root equal to the
-    /// note's own ID, in the block the proof names.
+    /// An unverified note whose empty path authenticates it against a note root equal to the note's
+    /// own ID, in the block the proof names.
     fn unverified_note(proof_block: u32) -> (NoteId, UnverifiedNoteState) {
         let note_id = NoteId::from_raw(Word::from([1u32, 2, 3, 4]));
         let sender = AccountId::dummy(

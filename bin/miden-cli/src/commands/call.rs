@@ -72,8 +72,8 @@ pub struct CallCmd {
     #[arg(value_name = "args")]
     args: Vec<String>,
 
-    /// Path to the package (.masp) file containing the procedure. If omitted, `<PROCEDURE>` must
-    /// be a hex digest and the output stack is shown as raw felts.
+    /// Path to the package (.masp) file containing the procedure. If omitted, `<PROCEDURE>` must be
+    /// a hex digest and the output stack is shown as raw felts.
     #[arg(long, short)]
     package: Option<PathBuf>,
 
@@ -141,9 +141,9 @@ impl CallCmd {
             None => self.resolve_from_digest(client, procedure)?,
         };
 
-        // A procedure only sees the top MIN_STACK_DEPTH felts of the stack. An argument below
-        // that reaches it as a zero and the call still succeeds, so without this check a
-        // procedure with wide arguments would run on the wrong values.
+        // A procedure only sees the top MIN_STACK_DEPTH felts of the stack. An argument below that
+        // reaches it as a zero and the call still succeeds, so without this check a procedure with
+        // wide arguments would run on the wrong values.
         if call_code.args.len() > MIN_STACK_DEPTH {
             return Err(CliError::InvalidArgument(format!(
                 "A procedure takes at most {MIN_STACK_DEPTH} input values; got {}.",
@@ -198,8 +198,8 @@ impl CallCmd {
 
         let args = if let Some(typed) = &typed {
             println!("Signature: {typed}\n");
-            // Checks the argument count as well, and names the procedure and both counts when it
-            // is wrong, so there is nothing to check here first.
+            // Checks the argument count as well, and names the procedure and both counts when it is
+            // wrong, so there is nothing to check here first.
             typed.encode_args(&self.args)?
         } else {
             println!("Signature: {name}(...) [no type info]\n");
@@ -212,10 +212,9 @@ impl CallCmd {
         };
 
         // The account's code is loaded from the client's store at VM runtime, so the library
-        // doesn't need to be embedded in the script. The assembler still needs it at compile
-        // time to resolve `call.<digest>` to a known procedure — otherwise it emits a
-        // "phantom target" warning. Dynamic linking provides that resolution without
-        // embedding the library bytes.
+        // doesn't need to be embedded in the script. The assembler still needs it at compile time
+        // to resolve `call.<digest>` to a known procedure — otherwise it emits a "phantom target"
+        // warning. Dynamic linking provides that resolution without embedding the library bytes.
         let builder = client.code_builder().with_dynamically_linked_package(&package)?;
         Ok(CallCode { builder, digest, args, typed })
     }
@@ -280,8 +279,8 @@ fn print_call_result(output_stack: &[Felt; MIN_STACK_DEPTH], typed: Option<&Type
     }
 }
 
-/// Runs a remote call via FPI. FPI cannot mutate the foreign account, so there is no state delta
-/// to compute — only the read phase runs.
+/// Runs a remote call via FPI. FPI cannot mutate the foreign account, so there is no state delta to
+/// compute — only the read phase runs.
 async fn run_remote_call<AUTH: Keystore + Sync + 'static>(
     client: &Client<AUTH>,
     target_id: AccountId,
@@ -376,8 +375,8 @@ async fn resolve_call_target<AUTH: Keystore + Sync + 'static>(
     target_id: AccountId,
 ) -> Result<CallTarget, CliError> {
     if let Some((_, status)) = client.get_account_header(target_id).await? {
-        // A locked account holds outdated state and is always private, so it can't be read from
-        // the network either.
+        // A locked account holds outdated state and is always private, so it can't be read from the
+        // network either.
         if status.is_locked() {
             return Err(CliError::InvalidArgument(format!(
                 "Account {target_id} is locked: its local state doesn't match the network's, so \
@@ -417,8 +416,8 @@ async fn resolve_call_target<AUTH: Keystore + Sync + 'static>(
 
 /// Picks the local account the FPI call runs from, preferring the default account.
 ///
-/// Any account works: the script calls the foreign procedure, not the native account's code.
-/// Locked accounts are skipped because their local state doesn't match the node's.
+/// Any account works: the script calls the foreign procedure, not the native account's code. Locked
+/// accounts are skipped because their local state doesn't match the node's.
 async fn pick_local_executor<AUTH: Keystore + Sync + 'static>(
     client: &Client<AUTH>,
 ) -> Result<AccountId, CliError> {
@@ -446,22 +445,22 @@ async fn pick_local_executor<AUTH: Keystore + Sync + 'static>(
         })
 }
 
-/// Finds the export `procedure_name` names, which carries both the digest to call and the
-/// signature the arguments are encoded against.
+/// Finds the export `procedure_name` names, which carries both the digest to call and the signature
+/// the arguments are encoded against.
 ///
 /// The compiler writes two exports for the same Component Model procedure: one with its WIT
-/// signature, `add-points(point, point) -> point`, and one lowered to the C ABI,
-/// `fn(felt, felt, felt, felt) -> i32`. Arguments are encoded and results are rendered from the
-/// signature this picks, so it has to be the WIT one. The lowered signature describes the ABI
-/// plumbing instead: its parameters are the flattened felts, and its `i32` result is a pointer to
-/// the value rather than the value.
+/// signature, `add-points(point, point) -> point`, and one lowered to the C ABI, `fn(felt, felt,
+/// felt, felt) -> i32`. Arguments are encoded and results are rendered from the signature this
+/// picks, so it has to be the WIT one. The lowered signature describes the ABI plumbing instead:
+/// its parameters are the flattened felts, and its `i32` result is a pointer to the value rather
+/// than the value.
 fn resolve_procedure_export<'a>(
     manifest: &'a PackageManifest,
     procedure_name: &str,
 ) -> Result<&'a ProcedureExport, CliError> {
-    // The user passes a bare name (e.g. `get_count`); match it
-    // against each export's name without the module path. Export names may be kebab (Rust/WIT) or
-    // snake (hand-written MASM bare identifiers), so compare with `_` and `-` treated as equal.
+    // The user passes a bare name (e.g. `get_count`); match it against each export's name without
+    // the module path. Export names may be kebab (Rust/WIT) or snake (hand-written MASM bare
+    // identifiers), so compare with `_` and `-` treated as equal.
     let target = procedure_name.replace('_', "-");
 
     let mut available = Vec::new();
@@ -483,10 +482,10 @@ fn resolve_procedure_export<'a>(
             return Ok(proc);
         }
         // Any other match is the fallback: an export carrying no signature at all (hand-written
-        // MASM), or one that describes a lowering rather than the values the caller passes
-        // (`Fast`, `C`). Each of those is still callable with raw field elements. Keep the first
-        // one and go on looking: the manifest is free to write the Component Model export after
-        // it, and that one is worth more.
+        // MASM), or one that describes a lowering rather than the values the caller passes (`Fast`,
+        // `C`). Each of those is still callable with raw field elements. Keep the first one and go
+        // on looking: the manifest is free to write the Component Model export after it, and that
+        // one is worth more.
         untyped.get_or_insert(proc);
     }
 
@@ -547,8 +546,8 @@ fn report_failed_delta(error: &ClientError) {
 /// describe.
 ///
 /// A value is written the way a `felt` is written on the typed path: in decimal. The untyped path
-/// is the fallback, so accepting more than the typed one would teach a syntax that stops working
-/// as soon as the procedure gains a signature.
+/// is the fallback, so accepting more than the typed one would teach a syntax that stops working as
+/// soon as the procedure gains a signature.
 fn encode_raw_args(args: &[String]) -> Result<Vec<Felt>, CliError> {
     args.iter()
         .map(|arg| {
@@ -564,8 +563,8 @@ fn encode_raw_args(args: &[String]) -> Result<Vec<Felt>, CliError> {
 
 /// Builds a transaction script that pushes `args` and calls the procedure at `digest`.
 ///
-/// Only the top results are read back, and `truncate_stack` restores the 16-element exit
-/// invariant, so anything left below the results can stay there.
+/// Only the top results are read back, and `truncate_stack` restores the 16-element exit invariant,
+/// so anything left below the results can stay there.
 fn generate_tx_script(
     code_builder: CodeBuilder,
     digest: &Word,
@@ -643,8 +642,8 @@ mod tests {
 
     #[test]
     fn a_lowered_name_is_not_reachable_by_the_bare_procedure_name() {
-        // The last part of the lowered path holds the whole interface, so it never equals the
-        // plain name. Were it found, its `i32` return would be printed as a value.
+        // The last part of the lowered path holds the whole interface, so it never equals the plain
+        // name. Were it found, its `i32` return would be printed as a value.
         let manifest = manifest_with_exports(&[lowered_form()]);
 
         // The message itself is pinned by `an_unknown_procedure_lists_the_whole_export_surface`.
@@ -719,9 +718,9 @@ mod tests {
                 FIELD_MODULUS.to_string(),
                 format!("invalid argument: Argument '{FIELD_MODULUS}' is too large for a felt."),
             ),
-            // The typed path writes a `felt` in decimal and reserves `0x` for wider values, so
-            // the untyped path cannot take hex either: it would work only until the procedure is
-            // given a signature.
+            // The typed path writes a `felt` in decimal and reserves `0x` for wider values, so the
+            // untyped path cannot take hex either: it would work only until the procedure is given
+            // a signature.
             (
                 "0xff".to_string(),
                 "invalid argument: Invalid argument '0xff'. Expected a felt.".to_string(),

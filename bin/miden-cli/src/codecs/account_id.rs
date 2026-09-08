@@ -1,9 +1,8 @@
 //! The `account-id` codec for typed `call` rendering.
 //!
-//! `account-id` felts are validated with protocol-level rules, so the CLI registers this codec
-//! (via [`TypedProcInfo::with_scalar_codec`]) to encode one account ID token, hex or bech32, into
-//! the two stack felts the procedure expects and render the returned felts back as
-//! `account-id(0x..)`.
+//! `account-id` felts are validated with protocol-level rules, so the CLI registers this codec (via
+//! [`TypedProcInfo::with_scalar_codec`]) to encode one account ID token, hex or bech32, into the
+//! two stack felts the procedure expects and render the returned felts back as `account-id(0x..)`.
 //!
 //! [`TypedProcInfo::with_scalar_codec`]: miden_client::vm::typed::TypedProcInfo::with_scalar_codec
 
@@ -80,8 +79,8 @@ mod tests {
 
     #[test]
     fn a_bech32_token_encodes_to_the_same_felts_as_its_hex_spelling() {
-        // `call` resolves its target through `parse_account_id`, which takes bech32, so an
-        // argument of the same type has to reach the same account from either spelling.
+        // `call` resolves its target through `parse_account_id`, which takes bech32, so an argument
+        // of the same type has to reach the same account from either spelling.
         let id = AccountId::from_hex(HEX_ID).unwrap();
         let bech32 = Address::new(id).encode(NetworkId::Testnet);
 

@@ -3,9 +3,9 @@
 //! On the stack a WIT `asset` is its eight felts — the id word followed by the value word, i.e.
 //! [`Asset::as_elements`]. The CLI registers this codec so an asset argument can be given as a
 //! single `<AMOUNT>::<FAUCET_ID>` token instead of two raw word hexes, and so a returned asset
-//! renders back the same way. The token form matches the one the rest of the CLI takes for
-//! fungible assets, minus the token symbol: resolving one needs the client's faucet metadata, and
-//! a codec only sees the text.
+//! renders back the same way. The token form matches the one the rest of the CLI takes for fungible
+//! assets, minus the token symbol: resolving one needs the client's faucet metadata, and a codec
+//! only sees the text.
 
 use miden_client::asset::{Asset, FungibleAsset};
 use miden_client::vm::typed::{MIDEN_CORE_TYPES, TypedError, WitScalarCodec};
@@ -37,8 +37,8 @@ impl WitScalarCodec for AssetCodec {
         let amount: u64 = amount.parse().map_err(|e: core::num::ParseIntError| {
             invalid_scalar(ASSET_WIT_NAME, token, &format!("invalid amount: {e}"))
         })?;
-        // The faucet takes the same spellings as any other account ID argument, and reports
-        // under its own type: a bad faucet is a bad account ID, not a bad asset.
+        // The faucet takes the same spellings as any other account ID argument, and reports under
+        // its own type: a bad faucet is a bad account ID, not a bad asset.
         let faucet_id = parse_account_id_token(faucet)?;
         let asset: Asset = FungibleAsset::new(faucet_id, amount)
             .map_err(|e| invalid_scalar(ASSET_WIT_NAME, token, &e))?

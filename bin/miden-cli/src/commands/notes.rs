@@ -60,13 +60,13 @@ pub struct NotesCmd {
     /// consumable by this account will be shown.
     #[arg(short, long, value_name = "account_id")]
     account_id: Option<String>,
-    /// Send a stored private note through the note transport network.
-    /// Define both the note ID (as hex string, in full or a prefix) and address (as Bech32 string)
-    /// such as: `--send 0xc1234567 mm1qpkdyek2c0ywwvzupakc7zlzty8qn2qnfc`
+    /// Send a stored private note through the note transport network. Define both the note ID (as
+    /// hex string, in full or a prefix) and address (as Bech32 string) such as: `--send 0xc1234567
+    /// mm1qpkdyek2c0ywwvzupakc7zlzty8qn2qnfc`
     #[arg(long, group = "action", num_args = 2, value_names = ["note_id", "address"])]
     send: Option<Vec<String>>,
-    /// Fetch notes from the note transport network.
-    /// Fetched notes for tracked note tags will be added to the store.
+    /// Fetch notes from the note transport network. Fetched notes for tracked note tags will be
+    /// added to the store.
     #[arg(long, group = "action")]
     fetch: bool,
 }

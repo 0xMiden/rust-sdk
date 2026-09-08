@@ -20,23 +20,22 @@ pub enum PswapLineageError {
     #[error("PSWAP lineage is not active (state = {0:?}); no further rounds expected")]
     NotActive(PswapLineageState),
 
-    /// The lineage's creator is not a local account — reclaim requires
-    /// the creator's signing authority.
+    /// The lineage's creator is not a local account — reclaim requires the creator's signing
+    /// authority.
     #[error(
         "PSWAP creator account {0} is not local; reclaim requires the creator's signing authority"
     )]
     CreatorNotLocal(AccountId),
 
-    /// The current tip is missing from the store — the tracked lineage is
-    /// out of sync with the stored notes.
+    /// The current tip is missing from the store — the tracked lineage is out of sync with the
+    /// stored notes.
     #[error("current tip note is missing from the local store; the tracked lineage is out of sync")]
     TipMissing,
 
-    /// The depth-0 note referenced by `original_note_id` could not be fetched
-    /// from `output_notes`, or was stored without the recipient needed to
-    /// reconstruct it. The note is written before the lineage record, so this
-    /// signals a broken invariant (e.g. the output note was pruned) rather than
-    /// an expected race.
+    /// The depth-0 note referenced by `original_note_id` could not be fetched from `output_notes`,
+    /// or was stored without the recipient needed to reconstruct it. The note is written before the
+    /// lineage record, so this signals a broken invariant (e.g. the output note was pruned) rather
+    /// than an expected race.
     #[error(
         "PSWAP original note {0} is unavailable in the output-note store or lacks recipient details"
     )]

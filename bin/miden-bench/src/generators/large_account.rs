@@ -9,8 +9,8 @@ use rand_chacha::rand_core::SeedableRng;
 
 /// Describes a storage slot for reader procedure generation.
 ///
-/// Used to generate MASM reader component code that provides procedures
-/// to read from both value and map storage slots.
+/// Used to generate MASM reader component code that provides procedures to read from both value and
+/// map storage slots.
 #[derive(Clone, Debug)]
 pub struct SlotDescriptor {
     /// The full slot name (e.g., `miden::bench::map_slot_0`)
@@ -21,11 +21,11 @@ pub struct SlotDescriptor {
 
 /// Generates MASM code for a storage reader component with procedures for each slot.
 ///
-/// For map slots: generates `get_map_item_slot_N` (reads a key-value entry).
-/// For value slots: generates `get_value_slot_N` (reads the slot value directly).
+/// For map slots: generates `get_map_item_slot_N` (reads a key-value entry). For value slots:
+/// generates `get_value_slot_N` (reads the slot value directly).
 ///
-/// These procedures must be called from within account context (via `call` from a
-/// transaction script), because the kernel verifies the caller is an account procedure.
+/// These procedures must be called from within account context (via `call` from a transaction
+/// script), because the kernel verifies the caller is an account procedure.
 pub fn generate_reader_component_code(slots: &[SlotDescriptor]) -> String {
     let mut code = String::new();
 
@@ -73,9 +73,9 @@ end
 
 /// Generates a random non-zero `[Felt; 4]` value suitable for storage map entries.
 ///
-/// Values must be non-zero because the SMT treats zero values as deletions.
-/// The probability of generating an all-zero word is astronomically small (~2^-256),
-/// but we guard against it for correctness.
+/// Values must be non-zero because the SMT treats zero values as deletions. The probability of
+/// generating an all-zero word is astronomically small (~2^-256), but we guard against it for
+/// correctness.
 pub fn random_word(rng: &mut impl Rng) -> [Felt; 4] {
     loop {
         let word: [Felt; 4] =

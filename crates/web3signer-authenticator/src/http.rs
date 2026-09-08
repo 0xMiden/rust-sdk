@@ -10,24 +10,9 @@ use reqwest::{Client, RequestBuilder};
 
 use crate::{SignerTransport, Web3SignerError};
 
-/// Time a single request to the signer is given before it is abandoned.
-const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
-
-// CONFIG
-// ================================================================================================
-
-/// Settings of the connection to a `Web3Signer` instance.
-#[derive(Clone, Copy, Debug)]
-pub struct Web3SignerConfig {
-    /// Time a single request to the signer is given before it is abandoned.
-    pub timeout: Duration,
-}
-
-impl Default for Web3SignerConfig {
-    fn default() -> Self {
-        Self { timeout: DEFAULT_TIMEOUT }
-    }
-}
+/// Time a single request to the signer is given before it is abandoned. A transport that needs a
+/// different one implements [`SignerTransport`] over its own client.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 // HTTP TRANSPORT
 // ================================================================================================
@@ -46,9 +31,9 @@ impl HttpTransport {
     /// Builds a transport for the `Web3Signer` instance at `url`.
     ///
     /// # Errors
-    /// Returns an error if the HTTP client cannot be built with the given configuration.
-    pub fn new(url: &str, config: Web3SignerConfig) -> Result<Self, Web3SignerError> {
-        let client = Client::builder().timeout(config.timeout).build().map_err(|err| {
+    /// Returns an error if the HTTP client cannot be built.
+    pub fn new(url: &str) -> Result<Self, Web3SignerError> {
+        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().map_err(|err| {
             Web3SignerError::Transport {
                 path: url.to_string(),
                 message: err.to_string(),

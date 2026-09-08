@@ -10,12 +10,10 @@
 //! `Web3Signer` can produce. The authenticator neither creates, imports nor exports keys.
 //!
 //! ```no_run
-//! use miden_client_web3signer::{Web3SignerAuthenticator, Web3SignerConfig, Web3SignerError};
+//! use miden_client_web3signer::{Web3SignerAuthenticator, Web3SignerError};
 //!
 //! # async fn example() -> Result<(), Web3SignerError> {
-//! let authenticator =
-//!     Web3SignerAuthenticator::connect("http://127.0.0.1:9000", Web3SignerConfig::default())
-//!         .await?;
+//! let authenticator = Web3SignerAuthenticator::connect("http://127.0.0.1:9000").await?;
 //! # Ok(())
 //! # }
 //! ```
@@ -51,7 +49,7 @@ pub use transport::SignerTransport;
 #[cfg(feature = "std")]
 mod http;
 #[cfg(feature = "std")]
-pub use http::{HttpTransport, Web3SignerConfig};
+pub use http::HttpTransport;
 
 // CONSTANTS
 // ================================================================================================
@@ -91,8 +89,8 @@ impl Web3SignerAuthenticator<HttpTransport> {
     /// # Errors
     /// Returns an error if the instance cannot be reached, holds no keys, or lists a key that is
     /// not a secp256k1 public key.
-    pub async fn connect(url: &str, config: Web3SignerConfig) -> Result<Self, Web3SignerError> {
-        Self::connect_with(HttpTransport::new(url, config)?).await
+    pub async fn connect(url: &str) -> Result<Self, Web3SignerError> {
+        Self::connect_with(HttpTransport::new(url)?).await
     }
 }
 

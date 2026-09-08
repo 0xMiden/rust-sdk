@@ -179,7 +179,7 @@ build: ## Build the CLI binary, client library and tests binary in release mode
 .PHONY: build-wasm
 build-wasm: ## Build the client library for wasm32 with no_std (no default features)
 	cargo build --package miden-client --target wasm32-unknown-unknown --no-default-features --locked
-	cargo build --package miden-client-web3signer --target wasm32-unknown-unknown --no-default-features --locked
+	cargo build --package miden-client-web3signer-authenticator --target wasm32-unknown-unknown --no-default-features --locked
 
 # --- Check ---------------------------------------------------------------------------------------
 

@@ -10,20 +10,17 @@ use miden_protocol::utils::serde::Deserializable;
 use crate::Web3SignerError;
 
 /// Length of a `Web3Signer` secp256k1 signature: `r || s || v`.
-pub(crate) const SIGNATURE_BYTES: usize = 65;
-
-/// Length of the `r || s` part of a signature.
-pub(crate) const SCALARS_BYTES: usize = 64;
+pub(crate) const SIGNATURE_LEN: usize = 65;
 
 /// Length of a public key in its compressed form.
-const COMPRESSED_KEY_BYTES: usize = 33;
+const COMPRESSED_KEY_LEN: usize = 33;
 
 /// Length of a public key in its full form without the leading tag byte, which is how the
 /// signer reports it.
-const UNTAGGED_KEY_BYTES: usize = 64;
+const UNTAGGED_KEY_LEN: usize = 64;
 
 /// Length of a public key in its full form, tag byte included.
-const UNCOMPRESSED_KEY_BYTES: usize = 65;
+const UNCOMPRESSED_KEY_LEN: usize = 65;
 
 /// Tag byte that marks a key as being in its full form.
 const UNCOMPRESSED_TAG: u8 = 0x04;
@@ -53,15 +50,15 @@ pub(crate) fn decode_public_key(
     let bytes = decode_hex(identifier)?;
 
     let sec1 = match bytes.len() {
-        UNTAGGED_KEY_BYTES => [&[UNCOMPRESSED_TAG][..], &bytes].concat(),
-        COMPRESSED_KEY_BYTES | UNCOMPRESSED_KEY_BYTES => bytes,
+        UNTAGGED_KEY_LEN => [&[UNCOMPRESSED_TAG][..], &bytes].concat(),
+        COMPRESSED_KEY_LEN | UNCOMPRESSED_KEY_LEN => bytes,
         other => {
             return Err(Web3SignerError::InvalidPublicKey {
                 identifier: identifier.to_string(),
                 message: format!(
-                    "{other} bytes, expected {COMPRESSED_KEY_BYTES} (compressed), \
-                     {UNTAGGED_KEY_BYTES} (full, as the signer reports it) or \
-                     {UNCOMPRESSED_KEY_BYTES} (full with its tag byte)"
+                    "{other} bytes, expected {COMPRESSED_KEY_LEN} (compressed), \
+                     {UNTAGGED_KEY_LEN} (full, as the signer reports it) or \
+                     {UNCOMPRESSED_KEY_LEN} (full with its tag byte)"
                 ),
             });
         },
@@ -93,36 +90,25 @@ pub(crate) fn decode_hex(value: &str) -> Result<Vec<u8>, Web3SignerError> {
 }
 
 /// Decodes an `r || s || v` signature as returned by `Web3Signer`.
-pub(crate) fn decode_signature(
-    response: &str,
-    identifier: &str,
-) -> Result<Signature, Web3SignerError> {
-    let bytes = decode_hex(response)?;
-    let bytes: [u8; SIGNATURE_BYTES] =
-        bytes
-            .as_slice()
-            .try_into()
-            .map_err(|_| Web3SignerError::InvalidSignatureLength {
-                identifier: identifier.to_string(),
-                got: bytes.len(),
-            })?;
+pub(crate) fn decode_signature(signature_hex: &str) -> Result<Signature, Web3SignerError> {
+    let decoded = decode_hex(signature_hex)?;
+    let signature_bytes: [u8; SIGNATURE_LEN] = decoded
+        .as_slice()
+        .try_into()
+        .map_err(|_| Web3SignerError::InvalidSignatureLength { length: decoded.len() })?;
 
-    let scalars: [u8; SCALARS_BYTES] =
-        bytes[..SCALARS_BYTES].try_into().expect("slice is exactly the scalars");
+    let mut scalars = [0u8; 64];
+    scalars.copy_from_slice(&signature_bytes[..64]);
+    let v = signature_bytes[64];
 
-    // `Web3Signer` reports `v` the way web3j writes it, as the recovery id offset by 27. A plain
-    // recovery id is taken as it is, and anything else is rejected below.
-    let recovery_id = match bytes[SCALARS_BYTES] {
-        v @ 27..=30 => v - 27,
-        v => v,
+    let recovery_id = match v {
+        offset @ 27..=30 => offset - 27,
+        recovery_id => recovery_id,
     };
 
     let signature =
         ecdsa_k256_keccak::Signature::from_sec1_bytes_and_recovery_id(scalars, recovery_id)
-            .map_err(|_| Web3SignerError::InvalidRecoveryId {
-                identifier: identifier.to_string(),
-                v: bytes[SCALARS_BYTES],
-            })?;
+            .map_err(|_| Web3SignerError::InvalidRecoveryId { v })?;
 
     Ok(Signature::EcdsaK256Keccak(signature))
 }

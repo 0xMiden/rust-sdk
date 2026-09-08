@@ -18,10 +18,10 @@ pub enum Web3SignerError {
     #[error("`{identifier}` is not a secp256k1 public key: {message}")]
     InvalidPublicKey { identifier: String, message: String },
     /// The returned signature is not exactly 65 bytes long.
-    #[error("signature for `{identifier}` is {got} bytes, expected 65")]
-    InvalidSignatureLength { identifier: String, got: usize },
+    #[error("the signature is {length} bytes, expected 65")]
+    InvalidSignatureLength { length: usize },
     /// The returned `v` component of a signature is neither a recovery id nor a recovery id offset
     /// by 27.
-    #[error("signature for `{identifier}` carries `v = {v}`, which is not a recovery id")]
-    InvalidRecoveryId { identifier: String, v: u8 },
+    #[error("the signature carries `v = {v}`, which is not a valid recovery id")]
+    InvalidRecoveryId { v: u8 },
 }

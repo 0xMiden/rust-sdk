@@ -146,7 +146,7 @@ impl<T: SignerTransport> Web3SignerAuthenticator<T> {
 
         let response = self.transport.post(&path, format!("{{\"data\":\"0x{data}\"}}")).await?;
 
-        decode_signature(&response, &entry.identifier)
+        decode_signature(&response)
     }
 }
 
@@ -199,7 +199,7 @@ mod tests {
     use miden_protocol::utils::serde::{Deserializable, Serializable};
 
     use super::*;
-    use crate::decode::{SCALARS_BYTES, SIGNATURE_BYTES};
+    use crate::decode::SIGNATURE_LEN;
 
     /// A transport that answers the way a `Web3Signer` instance holding a single key does.
     struct MockTransport {
@@ -208,7 +208,7 @@ mod tests {
         /// signer.
         signed: core::sync::atomic::AtomicBool,
         /// Number of signature bytes to answer with, to exercise the length check.
-        signature_bytes: usize,
+        signature_len: usize,
     }
 
     impl MockTransport {
@@ -218,7 +218,7 @@ mod tests {
                 // test deterministic without pulling in an RNG.
                 signing_key: SigningKey::read_from_bytes(&[7; 32]).expect("key is in range"),
                 signed: core::sync::atomic::AtomicBool::new(false),
-                signature_bytes: SIGNATURE_BYTES,
+                signature_len: SIGNATURE_LEN,
             }
         }
 
@@ -252,7 +252,7 @@ mod tests {
             let mut bytes = signature.to_sec1_bytes().to_vec();
             bytes.push(signature.v() + 27);
 
-            Ok(format!("0x{}", hex::encode(&bytes[..self.signature_bytes])))
+            Ok(format!("0x{}", hex::encode(&bytes[..self.signature_len])))
         }
     }
 
@@ -310,7 +310,7 @@ mod tests {
     #[tokio::test]
     async fn signature_of_the_wrong_length_is_rejected() {
         let mut transport = MockTransport::new();
-        transport.signature_bytes = SCALARS_BYTES;
+        transport.signature_len = SIGNATURE_LEN - 1;
 
         let authenticator = Web3SignerAuthenticator::connect_with(transport)
             .await

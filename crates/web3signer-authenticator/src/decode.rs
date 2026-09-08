@@ -113,9 +113,6 @@ pub(crate) fn decode_signature(signature_hex: &str) -> Result<Signature, Web3Sig
     Ok(Signature::EcdsaK256Keccak(signature))
 }
 
-// TESTS
-// ================================================================================================
-
 #[cfg(test)]
 mod tests {
     use alloc::format;

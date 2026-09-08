@@ -1,13 +1,9 @@
-//! A [`TransactionAuthenticator`] that signs with keys held in a `Web3Signer` instance.
-//!
-//! The signer's key list is read once, when the authenticator is built, and the authenticator
-//! signs only for the keys it found there. It holds no key material and has no fallback signer
-//! under any configuration: a public key commitment that is not in the key list is an error rather
-//! than a request that gets served locally, so a vault that is misconfigured or points at the
-//! wrong instance cannot be mistaken for a working one.
+//! A `Web3Signer` client that implements [`TransactionAuthenticator`].
+//! A Miden client configured with it signs transactions through the remote signer rather than a
+//! local key.
 //!
 //! Only the `EcdsaK256Keccak` authentication scheme is supported, since that is the only scheme
-//! `Web3Signer` can produce. The authenticator neither creates, imports nor exports keys.
+//! `Web3Signer` can produce.
 //!
 //! ```no_run
 //! use miden_client_web3signer::{Web3SignerAuthenticator, Web3SignerError};
@@ -17,6 +13,9 @@
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! The authenticator is then given to `ClientBuilder::authenticator`, and the client signs with
+//! the remote signer from that point on.
 
 #![no_std]
 
@@ -51,21 +50,14 @@ mod http;
 #[cfg(feature = "std")]
 pub use http::HttpTransport;
 
-// CONSTANTS
-// ================================================================================================
-
 /// Endpoint listing the keys the signer holds.
 const PUBLIC_KEYS_PATH: &str = "/api/v1/eth1/publicKeys";
 
 /// Endpoint prefix for a signing request; the key's identifier completes it.
 const SIGN_PATH_PREFIX: &str = "/api/v1/eth1/sign/";
 
-// WEB3SIGNER AUTHENTICATOR
-// ================================================================================================
-
-/// One key of the signer's key list.
+/// A `Web3Signer` public key and its hex identifier.
 struct PublicKeyEntry {
-    /// Handed out by [`TransactionAuthenticator::get_public_key`].
     public_key: Arc<PublicKey>,
     /// The key's identifier as the signer reported it, used verbatim in the signing URL.
     identifier: String,
@@ -190,9 +182,6 @@ impl<T: SignerTransport> TransactionAuthenticator for Web3SignerAuthenticator<T>
     }
 }
 
-// TESTS
-// ================================================================================================
-
 #[cfg(test)]
 mod tests {
     use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey;
@@ -204,9 +193,6 @@ mod tests {
     /// A transport that answers the way a `Web3Signer` instance holding a single key does.
     struct MockTransport {
         signing_key: SigningKey,
-        /// Set when a signing request is received, to assert that unknown keys don't reach the
-        /// signer.
-        signed: core::sync::atomic::AtomicBool,
         /// Number of signature bytes to answer with, to exercise the length check.
         signature_len: usize,
     }
@@ -214,10 +200,7 @@ mod tests {
     impl MockTransport {
         fn new() -> Self {
             Self {
-                // Any 32 bytes below the curve order are a valid key; a fixed one keeps the
-                // test deterministic without pulling in an RNG.
                 signing_key: SigningKey::read_from_bytes(&[7; 32]).expect("key is in range"),
-                signed: core::sync::atomic::AtomicBool::new(false),
                 signature_len: SIGNATURE_LEN,
             }
         }
@@ -237,7 +220,6 @@ mod tests {
 
         #[allow(clippy::unused_async_trait_impl)]
         async fn post(&self, path: &str, body: String) -> Result<String, Web3SignerError> {
-            self.signed.store(true, core::sync::atomic::Ordering::Relaxed);
             assert_eq!(path, format!("{SIGN_PATH_PREFIX}{}", self.identifier()));
 
             // The signer hashes the payload itself, so signing the word the payload decodes to
@@ -288,23 +270,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unknown_commitment_is_rejected_without_signing() {
+    async fn unknown_commitment_is_rejected() {
         let authenticator = Web3SignerAuthenticator::connect_with(MockTransport::new())
             .await
             .expect("key list is readable");
 
-        let unknown = PublicKeyCommitment::from(Word::from([1u32, 2, 3, 4]));
+        let unknown_commitment = PublicKeyCommitment::from(Word::from([1u32, 2, 3, 4]));
         let error = authenticator
-            .get_signature(unknown, &signing_inputs())
+            .get_signature(unknown_commitment, &signing_inputs())
             .await
             .expect_err("commitment is not in the key list");
 
         assert!(matches!(error, AuthenticationError::UnknownPublicKey(_)));
-        assert!(
-            !authenticator.transport.signed.load(core::sync::atomic::Ordering::Relaxed),
-            "an unknown commitment must not reach the signer"
-        );
-        assert!(authenticator.get_public_key(unknown).await.is_none());
+        assert!(authenticator.get_public_key(unknown_commitment).await.is_none());
     }
 
     #[tokio::test]

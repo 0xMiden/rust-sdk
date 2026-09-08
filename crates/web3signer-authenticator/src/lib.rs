@@ -31,7 +31,6 @@ use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 
 use miden_protocol::Word;
 use miden_protocol::account::auth::{PublicKey, PublicKeyCommitment, Signature};
@@ -40,7 +39,15 @@ use miden_protocol::utils::serde::Deserializable;
 use miden_protocol::vm::FutureMaybeSend;
 use miden_tx::AuthenticationError;
 use miden_tx::auth::{SigningInputs, TransactionAuthenticator};
-use thiserror::Error;
+
+use crate::decode::{decode_hex, decode_signature, parse_string_array};
+
+mod decode;
+mod error;
+mod transport;
+
+pub use error::Web3SignerError;
+pub use transport::SignerTransport;
 
 #[cfg(feature = "std")]
 mod http;
@@ -55,74 +62,6 @@ const PUBLIC_KEYS_PATH: &str = "/api/v1/eth1/publicKeys";
 
 /// Endpoint prefix for a signing request; the key's identifier completes it.
 const SIGN_PATH_PREFIX: &str = "/api/v1/eth1/sign/";
-
-/// Length of a `Web3Signer` secp256k1 signature: `r || s || v`.
-const SIGNATURE_BYTES: usize = 65;
-
-/// Length of the `r || s` part of a signature.
-const SCALARS_BYTES: usize = 64;
-
-// ERRORS
-// ================================================================================================
-
-/// Error returned while talking to a `Web3Signer` instance.
-#[derive(Debug, Error)]
-pub enum Web3SignerError {
-    /// The request could not be completed, or the signer answered with a non-success status.
-    #[error("request to `{path}` failed: {message}")]
-    Transport { path: String, message: String },
-
-    /// The signer holds no keys. Reported when building the authenticator, because an empty
-    /// key list means every later signing request would fail.
-    #[error("`{PUBLIC_KEYS_PATH}` returned no keys")]
-    NoKeys,
-
-    /// A response field that should be hex is not.
-    #[error("hex decoding of the response for `{identifier}` failed: {message}")]
-    InvalidHex { identifier: String, message: String },
-
-    /// A listed key is not a 33-byte compressed SEC1 secp256k1 public key.
-    #[error("`{identifier}` is not a compressed SEC1 public key: {message}")]
-    InvalidPublicKey { identifier: String, message: String },
-
-    /// The returned signature is not exactly 65 bytes long.
-    #[error("signature for `{identifier}` is {got} bytes, expected {SIGNATURE_BYTES}")]
-    InvalidSignatureLength { identifier: String, got: usize },
-
-    /// The returned `v` is neither a recovery id nor a recovery id offset by 27.
-    #[error("signature for `{identifier}` carries `v = {v}`, which is not a recovery id")]
-    InvalidRecoveryId { identifier: String, v: u8 },
-
-    /// The returned signature does not belong to the key it was requested for.
-    #[error(
-        "signature for `{identifier}` does not recover to that key; the signer may hash the \
-         request payload differently than this crate expects"
-    )]
-    SignatureDoesNotVerify { identifier: String },
-}
-
-// SIGNER TRANSPORT
-// ================================================================================================
-
-/// Request transport for a `Web3Signer` instance.
-///
-/// An implementation owns the signer's base URL, prepends it to the `path` it is given, and maps
-/// any non-success response status to [`Web3SignerError::Transport`] instead of returning the
-/// body. Both methods return the response body.
-///
-/// [`HttpTransport`] implements this over `reqwest` and requires the `std` feature. Targets
-/// without it, such as wasm32 or embedded ones, provide their own.
-pub trait SignerTransport: Send + Sync {
-    /// Sends a GET request to `path`.
-    fn get(&self, path: &str) -> impl FutureMaybeSend<Result<String, Web3SignerError>>;
-
-    /// Sends a POST request to `path` with a JSON `body`.
-    fn post(
-        &self,
-        path: &str,
-        body: String,
-    ) -> impl FutureMaybeSend<Result<String, Web3SignerError>>;
-}
 
 // WEB3SIGNER AUTHENTICATOR
 // ================================================================================================
@@ -252,82 +191,6 @@ impl<T: SignerTransport> TransactionAuthenticator for Web3SignerAuthenticator<T>
     }
 }
 
-// HELPERS
-// ================================================================================================
-
-/// Splits a flat JSON array of strings, `["0x..","0x.."]`, into its entries, stripping quotes and
-/// whitespace and skipping empty ones.
-///
-/// The `publicKeys` response is exactly this shape, so parsing it needs no JSON dependency in the
-/// `no_std` core.
-fn parse_string_array(body: &str) -> impl Iterator<Item = &str> {
-    body.trim()
-        .trim_start_matches('[')
-        .trim_end_matches(']')
-        .split(',')
-        .map(|entry| entry.trim().trim_matches('"').trim())
-        .filter(|entry| !entry.is_empty())
-}
-
-/// Decodes a hex string, tolerating a `0x` prefix, surrounding whitespace and the quotes of a JSON
-/// string body.
-fn decode_hex(value: &str, identifier: &str) -> Result<Vec<u8>, Web3SignerError> {
-    let value = value.trim().trim_matches('"').trim();
-
-    hex::decode(value.strip_prefix("0x").unwrap_or(value)).map_err(|err| {
-        Web3SignerError::InvalidHex {
-            identifier: identifier.to_string(),
-            message: err.to_string(),
-        }
-    })
-}
-
-/// Decodes an `r || s || v` signature as returned by `Web3Signer` and checks that it belongs to
-/// `verifying_key`.
-fn decode_signature(
-    response: &str,
-    identifier: &str,
-    message: Word,
-    verifying_key: &ecdsa_k256_keccak::PublicKey,
-) -> Result<Signature, Web3SignerError> {
-    let bytes = decode_hex(response, identifier)?;
-    let bytes: [u8; SIGNATURE_BYTES] =
-        bytes
-            .as_slice()
-            .try_into()
-            .map_err(|_| Web3SignerError::InvalidSignatureLength {
-                identifier: identifier.to_string(),
-                got: bytes.len(),
-            })?;
-
-    let scalars: [u8; SCALARS_BYTES] =
-        bytes[..SCALARS_BYTES].try_into().expect("slice is exactly the scalars");
-
-    // `Web3Signer` reports `v` the way web3j writes it, as the recovery id offset by 27. A plain
-    // recovery id is taken as it is, and anything else is rejected below.
-    let recovery_id = match bytes[SCALARS_BYTES] {
-        v @ 27..=30 => v - 27,
-        v => v,
-    };
-
-    let signature =
-        ecdsa_k256_keccak::Signature::from_sec1_bytes_and_recovery_id(scalars, recovery_id)
-            .map_err(|_| Web3SignerError::InvalidRecoveryId {
-                identifier: identifier.to_string(),
-                v: bytes[SCALARS_BYTES],
-            })?;
-
-    // Recovering the key both checks the signature against the key it was requested for and
-    // guarantees that `Signature::to_encoded_signature`, which recovers it again while encoding
-    // the signature for the VM, will not fail later on.
-    let recovered = ecdsa_k256_keccak::PublicKey::recover_from(message, &signature).ok();
-    if recovered.as_ref() != Some(verifying_key) {
-        return Err(Web3SignerError::SignatureDoesNotVerify { identifier: identifier.to_string() });
-    }
-
-    Ok(Signature::EcdsaK256Keccak(signature))
-}
-
 // TESTS
 // ================================================================================================
 
@@ -337,6 +200,7 @@ mod tests {
     use miden_protocol::utils::serde::Serializable;
 
     use super::*;
+    use crate::decode::{SCALARS_BYTES, SIGNATURE_BYTES};
 
     /// A transport that answers the way a `Web3Signer` instance holding a single key does.
     struct MockTransport {

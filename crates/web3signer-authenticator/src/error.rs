@@ -1,0 +1,39 @@
+use alloc::string::String;
+
+use thiserror::Error;
+
+/// Error returned while talking to a `Web3Signer` instance.
+#[derive(Debug, Error)]
+pub enum Web3SignerError {
+    /// The request could not be completed, or the signer answered with a non-success status.
+    #[error("request to `{path}` failed: {message}")]
+    Transport { path: String, message: String },
+
+    /// The signer holds no keys. Reported when building the authenticator, because an empty
+    /// key list means every later signing request would fail.
+    #[error("the signer reported no keys")]
+    NoKeys,
+
+    /// A response field that should be hex is not.
+    #[error("hex decoding of the response for `{identifier}` failed: {message}")]
+    InvalidHex { identifier: String, message: String },
+
+    /// A listed key is not a 33-byte compressed SEC1 secp256k1 public key.
+    #[error("`{identifier}` is not a compressed SEC1 public key: {message}")]
+    InvalidPublicKey { identifier: String, message: String },
+
+    /// The returned signature is not exactly 65 bytes long.
+    #[error("signature for `{identifier}` is {got} bytes, expected 65")]
+    InvalidSignatureLength { identifier: String, got: usize },
+
+    /// The returned `v` is neither a recovery id nor a recovery id offset by 27.
+    #[error("signature for `{identifier}` carries `v = {v}`, which is not a recovery id")]
+    InvalidRecoveryId { identifier: String, v: u8 },
+
+    /// The returned signature does not belong to the key it was requested for.
+    #[error(
+        "signature for `{identifier}` does not recover to that key; the signer may hash the \
+         request payload differently than this crate expects"
+    )]
+    SignatureDoesNotVerify { identifier: String },
+}

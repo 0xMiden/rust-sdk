@@ -16,7 +16,7 @@ use crate::{FilesystemKeyStore, Parser};
 #[command(about = "Import notes or accounts")]
 pub struct ImportCmd {
     /// Paths to the files that contains the account/note data.
-    #[arg()]
+    #[arg(required = true)]
     filenames: Vec<PathBuf>,
     /// Only relevant for accounts. If set, the account will be overwritten if it already exists.
     #[arg(short, long, default_value_t = false)]

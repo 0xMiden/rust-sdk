@@ -350,6 +350,11 @@ where
     /// consistent [`PartialBlockchain`], typically captured by the transaction's original proposer
     /// via [`Self::chain_anchor_for_request`] and shipped alongside the signed data.
     ///
+    /// The anchor pins the reference block only. The mode each input note is consumed in also
+    /// enters the summary, so a request shared across clients should pin it through
+    /// [`TransactionRequestBuilder::explicit_input_notes`]. Otherwise each client classifies the
+    /// notes from its own store, and two clients can commit to different input notes.
+    ///
     /// Callers holding an anchor from an untrusted source should first compare
     /// [`ChainAnchor::block_commitment`] against an independently trusted value (e.g. the block
     /// commitment bound into the signed transaction summary).
@@ -442,7 +447,8 @@ where
 
     /// Captures a [`ChainAnchor`] at the client's current sync height, tracking the creation blocks
     /// of the request's authenticated input notes so that the request can later execute against the
-    /// anchor.
+    /// anchor. This covers notes the store holds as authenticated and notes pinned as authenticated
+    /// through [`TransactionRequestBuilder::explicit_input_notes`].
     ///
     /// This is the capture entry point for flows that never see a successful execution result at
     /// capture time — e.g. multisig proposal flows, where execution intentionally fails with
@@ -461,13 +467,16 @@ where
         &self,
         transaction_request: &TransactionRequest,
     ) -> Result<ChainAnchor, ClientError> {
-        let input_note_ids: Vec<NoteId> = transaction_request.input_note_ids().collect();
+        let inferred_input_note_ids: Vec<NoteId> = transaction_request
+            .input_note_ids()
+            .filter(|note_id| !transaction_request.explicit_input_notes.contains_key(note_id))
+            .collect();
 
-        let tracked_blocks: BTreeSet<BlockNumber> = if input_note_ids.is_empty() {
+        let mut tracked_blocks: BTreeSet<BlockNumber> = if inferred_input_note_ids.is_empty() {
             BTreeSet::new()
         } else {
             self.store
-                .get_input_notes(NoteFilter::List(input_note_ids))
+                .get_input_notes(NoteFilter::List(inferred_input_note_ids))
                 .await?
                 .iter()
                 .filter(|record| record.is_authenticated())
@@ -475,6 +484,13 @@ where
                 .map(|proof| proof.location().block_num())
                 .collect()
         };
+        tracked_blocks.extend(
+            transaction_request
+                .explicit_input_notes
+                .values()
+                .filter_map(InputNote::proof)
+                .map(|proof| proof.location().block_num()),
+        );
 
         self.chain_anchor_at_tip(tracked_blocks).await
     }
@@ -624,14 +640,11 @@ where
             .get_input_notes(NoteFilter::List(transaction_request.input_note_ids().collect()))
             .await?;
 
-        // Verify that none of the authenticated input notes are already consumed.
+        // Verify that none of the stored input notes are already consumed.
         for note in &stored_note_records {
             if note.is_consumed() {
-                let id = note.id().expect(
-                    "stored note records reaching this check carry metadata so id() is Some",
-                );
                 return Err(ClientError::TransactionRequestError(
-                    TransactionRequestError::InputNoteAlreadyConsumed(id),
+                    TransactionRequestError::InputNoteAlreadyConsumed(note.details_commitment()),
                 ));
             }
         }
@@ -755,6 +768,13 @@ where
 
     /// Submits a previously proven transaction to the RPC endpoint and returns the node’s chain tip
     /// upon mempool admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError::SubmissionOutcomeUnknown`] when the submission came back without a
+    /// definite answer. It carries the proven transaction and the inputs it was submitted with, so
+    /// a retry does not have to execute or prove again. Every other failure is a rejection the node
+    /// issued deliberately.
     pub async fn submit_proven_transaction(
         &mut self,
         proven_transaction: ProvenTransaction,
@@ -763,14 +783,24 @@ where
         info!("Submitting transaction to the network...");
         let tx_id = proven_transaction.id();
         let key = self.transaction_encryption_key().await?;
+
+        // Both are kept so an indeterminate outcome can hand back everything a retry needs. The
+        // inputs cannot be recovered from the proven transaction, which only commits to them, and
+        // sealing draws fresh randomness so every attempt has to seal again.
+        let transaction_inputs = transaction_inputs.into();
+        let submitted = proven_transaction.clone();
+
         let sealed_inputs =
-            seal_transaction_inputs(&mut self.rng, &key, tx_id, &transaction_inputs.into())?;
+            seal_transaction_inputs(&mut self.rng, &key, tx_id, &transaction_inputs)?;
+
         let result =
             self.rpc_api.submit_proven_transaction(proven_transaction, sealed_inputs).await;
         if let Err(err) = &result {
             self.forget_stale_transaction_encryption_key(err).await;
         }
-        let block_num = result?;
+
+        let block_num = result
+            .map_err(|err| promote_indeterminate_submission(err, submitted, transaction_inputs))?;
         info!("Transaction submitted.");
 
         Ok(block_num)
@@ -1768,6 +1798,24 @@ pub(crate) async fn fetch_public_account_inputs(
         });
 
     Ok(account_inputs)
+}
+
+/// Promotes a submission failure whose outcome is unknown, attaching everything a retry needs. Any
+/// other failure is a rejection the node issued deliberately and passes through unchanged.
+fn promote_indeterminate_submission(
+    err: RpcError,
+    transaction: ProvenTransaction,
+    transaction_inputs: TransactionInputs,
+) -> ClientError {
+    if !err.is_indeterminate_submission() {
+        return ClientError::RpcError(err);
+    }
+
+    ClientError::SubmissionOutcomeUnknown {
+        transaction: Box::new(transaction),
+        transaction_inputs: Box::new(transaction_inputs),
+        source: err,
+    }
 }
 
 /// Extracts notes from [`RawOutputNotes`].

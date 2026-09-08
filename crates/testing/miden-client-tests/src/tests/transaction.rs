@@ -8,10 +8,13 @@ use miden_client::assembly::CodeBuilder;
 use miden_client::auth::{AuthSchemeId, AuthSecretKey, AuthSingleSig, RPO_FALCON_SCHEME_ID};
 use miden_client::keystore::Keystore;
 use miden_client::note::{Note, P2idNote};
+use miden_client::rpc::{GrpcError, RpcEndpoint, RpcError};
 use miden_client::store::{NoteFilter, TransactionFilter};
 use miden_client::transaction::{
     ChainAnchor,
     ChainAnchorError,
+    InputNote,
+    LocalTransactionProver,
     ProvenTransaction,
     TransactionExecutorError,
     TransactionInputs,
@@ -665,12 +668,32 @@ async fn chain_anchor_for_request_tracks_consumed_note_blocks() {
     client.sync_state().await.unwrap();
 
     let note = client.get_input_note(note_id).await.unwrap().unwrap();
+    let proof = note.inclusion_proof().unwrap().clone();
     let note_block = note.inclusion_proof().unwrap().location().block_num();
+    let note_details: Note = note.clone().try_into().unwrap();
 
     // Advance one block so the note's creation block is older than the anchor's reference block —
     // otherwise the note block IS the reference block and needs no tracking.
     rpc_api.prove_block();
     client.sync_state().await.unwrap();
+
+    for input_note in [
+        InputNote::authenticated(note_details.clone(), proof),
+        InputNote::unauthenticated(note_details),
+    ] {
+        let is_authenticated = input_note.proof().is_some();
+        let request = TransactionRequestBuilder::new()
+            .explicit_input_notes([(input_note, None)])
+            .build()
+            .unwrap();
+        let anchor = client.chain_anchor_for_request(&request).await.unwrap();
+        assert_eq!(anchor.partial_blockchain().contains_block(note_block), is_authenticated);
+
+        let result = Box::pin(client.execute_transaction_at(wallet.id(), request, anchor))
+            .await
+            .unwrap();
+        assert_eq!(result.consumed_notes().get_note(0).proof().is_some(), is_authenticated);
+    }
 
     // Capture the anchor from the consume request itself: the note's creation block must be tracked
     // without the caller having to know it.
@@ -919,4 +942,71 @@ async fn chain_anchor_for_request_handles_a_note_created_in_the_reference_block(
     Box::pin(client.execute_transaction_at(wallet.id(), consume_request, anchor))
         .await
         .unwrap();
+}
+
+// INDETERMINATE SUBMISSIONS
+// ================================================================================================
+
+/// A submission whose outcome the node never confirmed hands back everything a retry needs, and
+/// that payload alone submits again: no execute, no prove, same transaction id.
+///
+/// This is the only test that drives the real `submit_proven_transaction` twice, which is what
+/// makes it worth its runtime. The classification itself is covered by the cheap unit tests in
+/// `rpc::errors`.
+#[tokio::test]
+async fn indeterminate_submission_is_retryable_with_the_attached_payload() {
+    let (mut client, rpc_api, keystore) = Box::pin(create_test_client()).await;
+
+    let secret_key = AuthSecretKey::new_falcon512_poseidon2();
+    let account = AccountBuilder::new(Default::default())
+        .with_component(BasicWallet)
+        .with_component(AuthSingleSig::new(Approver::new(
+            secret_key.public_key().to_commitment(),
+            AuthSchemeId::Falcon512Poseidon2,
+        )))
+        .build_existing()
+        .unwrap();
+    keystore.add_key(&secret_key, account.id()).await.unwrap();
+    client.add_account(&account, false).await.unwrap();
+    client.sync_state().await.unwrap();
+
+    // A transaction that does nothing but advance the nonce, proven with a dummy proof: the
+    // submission path does not verify proofs, and a real one is the expensive part.
+    let request = TransactionRequestBuilder::new().build().unwrap();
+    let tx_result = Box::pin(client.execute_transaction(account.id(), request)).await.unwrap();
+    let proven = LocalTransactionProver::default()
+        .prove_dummy(tx_result.executed_transaction().clone())
+        .unwrap();
+    let tx_id = proven.id();
+
+    // The connection breaks while the response is in flight, so the node may or may not have taken
+    // the transaction.
+    rpc_api.fail_next_call(
+        RpcEndpoint::SubmitProvenTx,
+        RpcError::RequestError {
+            endpoint: RpcEndpoint::SubmitProvenTx,
+            error_kind: GrpcError::Unknown("transport error".into()),
+            endpoint_error: None,
+            source: None,
+        },
+    );
+
+    let err = Box::pin(client.submit_proven_transaction(proven, &tx_result))
+        .await
+        .unwrap_err();
+    let ClientError::SubmissionOutcomeUnknown { transaction, transaction_inputs, .. } = err else {
+        panic!("expected SubmissionOutcomeUnknown, got: {err:?}");
+    };
+    assert_eq!(
+        transaction.id(),
+        tx_id,
+        "the retry has to send the same transaction, not a new one"
+    );
+
+    // Nothing was recorded, so the payload is all the caller has left to work with.
+    assert!(client.get_transactions(TransactionFilter::All).await.unwrap().is_empty());
+
+    Box::pin(client.submit_proven_transaction(*transaction, *transaction_inputs))
+        .await
+        .expect("the attached payload must be enough to submit again");
 }

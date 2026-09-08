@@ -3,7 +3,6 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use k256::ecdsa::VerifyingKey;
-use miden_protocol::Word;
 use miden_protocol::account::auth::Signature;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak;
 use miden_protocol::utils::serde::Deserializable;
@@ -93,13 +92,10 @@ pub(crate) fn decode_hex(value: &str) -> Result<Vec<u8>, Web3SignerError> {
     })
 }
 
-/// Decodes an `r || s || v` signature as returned by `Web3Signer` and checks that it belongs to
-/// `verifying_key`.
+/// Decodes an `r || s || v` signature as returned by `Web3Signer`.
 pub(crate) fn decode_signature(
     response: &str,
     identifier: &str,
-    message: Word,
-    verifying_key: &ecdsa_k256_keccak::PublicKey,
 ) -> Result<Signature, Web3SignerError> {
     let bytes = decode_hex(response)?;
     let bytes: [u8; SIGNATURE_BYTES] =
@@ -127,14 +123,6 @@ pub(crate) fn decode_signature(
                 identifier: identifier.to_string(),
                 v: bytes[SCALARS_BYTES],
             })?;
-
-    // Recovering the key both checks the signature against the key it was requested for and
-    // guarantees that `Signature::to_encoded_signature`, which recovers it again while encoding
-    // the signature for the VM, will not fail later on.
-    let recovered = ecdsa_k256_keccak::PublicKey::recover_from(message, &signature).ok();
-    if recovered.as_ref() != Some(verifying_key) {
-        return Err(Web3SignerError::SignatureDoesNotVerify { identifier: identifier.to_string() });
-    }
 
     Ok(Signature::EcdsaK256Keccak(signature))
 }

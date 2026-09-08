@@ -29,11 +29,4 @@ pub enum Web3SignerError {
     /// The returned `v` is neither a recovery id nor a recovery id offset by 27.
     #[error("signature for `{identifier}` carries `v = {v}`, which is not a recovery id")]
     InvalidRecoveryId { identifier: String, v: u8 },
-
-    /// The returned signature does not belong to the key it was requested for.
-    #[error(
-        "signature for `{identifier}` does not recover to that key; the signer may hash the \
-         request payload differently than this crate expects"
-    )]
-    SignatureDoesNotVerify { identifier: String },
 }

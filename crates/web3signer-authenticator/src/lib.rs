@@ -29,10 +29,10 @@ use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 
 use miden_protocol::Word;
 use miden_protocol::account::auth::{PublicKey, PublicKeyCommitment, Signature};
-use miden_protocol::crypto::dsa::ecdsa_k256_keccak;
 use miden_protocol::vm::FutureMaybeSend;
 use miden_tx::AuthenticationError;
 use miden_tx::auth::{SigningInputs, TransactionAuthenticator};
@@ -64,11 +64,9 @@ const SIGN_PATH_PREFIX: &str = "/api/v1/eth1/sign/";
 // ================================================================================================
 
 /// One key of the signer's key list.
-struct KeyEntry {
+struct PublicKeyEntry {
     /// Handed out by [`TransactionAuthenticator::get_public_key`].
     public_key: Arc<PublicKey>,
-    /// The same key, kept unwrapped for the recovery check in [`decode_signature`].
-    verifying_key: ecdsa_k256_keccak::PublicKey,
     /// The key's identifier as the signer reported it, used verbatim in the signing URL.
     identifier: String,
 }
@@ -78,7 +76,7 @@ struct KeyEntry {
 /// See the [crate-level documentation](crate) for the guarantees this makes.
 pub struct Web3SignerAuthenticator<T> {
     transport: T,
-    keys: BTreeMap<PublicKeyCommitment, KeyEntry>,
+    public_keys_by_commitment: BTreeMap<PublicKeyCommitment, PublicKeyEntry>,
 }
 
 #[cfg(feature = "std")]
@@ -97,39 +95,47 @@ impl Web3SignerAuthenticator<HttpTransport> {
 impl<T: SignerTransport> Web3SignerAuthenticator<T> {
     /// Reads the key list over the given transport and builds the authenticator from it.
     pub async fn connect_with(transport: T) -> Result<Self, Web3SignerError> {
-        let body = transport.get(PUBLIC_KEYS_PATH).await?;
-
-        let mut keys = BTreeMap::new();
-        for identifier in parse_string_array(&body) {
-            let verifying_key = decode_public_key(identifier)?;
-
-            let public_key = PublicKey::EcdsaK256Keccak(verifying_key.clone());
-            keys.insert(
-                public_key.to_commitment(),
-                KeyEntry {
-                    public_key: Arc::new(public_key),
-                    verifying_key,
-                    identifier: identifier.to_string(),
-                },
-            );
-        }
-
-        if keys.is_empty() {
+        let listed_keys = Self::list_public_keys(&transport).await?;
+        if listed_keys.is_empty() {
             return Err(Web3SignerError::NoKeys);
         }
 
-        Ok(Self { transport, keys })
+        let public_keys_by_commitment = listed_keys
+            .into_iter()
+            .map(|(identifier, public_key)| {
+                let entry = PublicKeyEntry {
+                    public_key: Arc::new(public_key),
+                    identifier,
+                };
+                (entry.public_key.to_commitment(), entry)
+            })
+            .collect();
+
+        Ok(Self { transport, public_keys_by_commitment })
+    }
+
+    /// Requests the signer's key list and returns each key with the identifier it was listed
+    /// under.
+    async fn list_public_keys(transport: &T) -> Result<Vec<(String, PublicKey)>, Web3SignerError> {
+        let body = transport.get(PUBLIC_KEYS_PATH).await?;
+
+        parse_string_array(&body)
+            .map(|identifier| {
+                let public_key = PublicKey::EcdsaK256Keccak(decode_public_key(identifier)?);
+                Ok((identifier.to_string(), public_key))
+            })
+            .collect()
     }
 
     /// Returns the public key commitments this authenticator can sign for.
     pub fn public_key_commitments(&self) -> impl Iterator<Item = PublicKeyCommitment> + '_ {
-        self.keys.keys().copied()
+        self.public_keys_by_commitment.keys().copied()
     }
 
     /// Requests a signature over `message` for one key of the key list.
     async fn request_signature(
         &self,
-        entry: &KeyEntry,
+        entry: &PublicKeyEntry,
         message: Word,
     ) -> Result<Signature, Web3SignerError> {
         // `Web3Signer` hashes the payload with keccak256 before signing, which is exactly what
@@ -140,7 +146,7 @@ impl<T: SignerTransport> Web3SignerAuthenticator<T> {
 
         let response = self.transport.post(&path, format!("{{\"data\":\"0x{data}\"}}")).await?;
 
-        decode_signature(&response, &entry.identifier, message, &entry.verifying_key)
+        decode_signature(&response, &entry.identifier)
     }
 }
 
@@ -160,7 +166,7 @@ impl<T: SignerTransport> TransactionAuthenticator for Web3SignerAuthenticator<T>
 
         async move {
             let entry = self
-                .keys
+                .public_keys_by_commitment
                 .get(&pub_key_commitment)
                 .ok_or(AuthenticationError::UnknownPublicKey(pub_key_commitment))?;
 
@@ -175,7 +181,10 @@ impl<T: SignerTransport> TransactionAuthenticator for Web3SignerAuthenticator<T>
         &self,
         pub_key_commitment: PublicKeyCommitment,
     ) -> impl FutureMaybeSend<Option<Arc<PublicKey>>> {
-        let public_key = self.keys.get(&pub_key_commitment).map(|entry| entry.public_key.clone());
+        let public_key = self
+            .public_keys_by_commitment
+            .get(&pub_key_commitment)
+            .map(|entry| entry.public_key.clone());
 
         async move { public_key }
     }

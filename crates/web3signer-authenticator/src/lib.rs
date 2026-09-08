@@ -1,6 +1,5 @@
-//! A `Web3Signer` client that implements [`TransactionAuthenticator`].
-//! A Miden client configured with it signs transactions through the remote signer rather than a
-//! local key.
+//! A `Web3Signer` client that implements [`TransactionAuthenticator`]. A Miden client configured
+//! with it signs transactions through the remote signer rather than a local key.
 //!
 //! Only the `EcdsaK256Keccak` authentication scheme is supported, since that is the only scheme
 //! `Web3Signer` can produce.
@@ -14,8 +13,8 @@
 //! # }
 //! ```
 //!
-//! The authenticator is then given to `ClientBuilder::authenticator`, and the client signs with
-//! the remote signer from that point on.
+//! The authenticator is then given to `ClientBuilder::authenticator`, and the client signs with the
+//! remote signer from that point on.
 
 #![no_std]
 
@@ -106,8 +105,7 @@ impl<T: SignerTransport> Web3SignerAuthenticator<T> {
         Ok(Self { transport, public_keys_by_commitment })
     }
 
-    /// Requests the signer's key list and returns each key with the identifier it was listed
-    /// under.
+    /// Requests the signer's key list and returns each key with the identifier it was listed under.
     async fn list_public_keys(transport: &T) -> Result<Vec<(String, PublicKey)>, Web3SignerError> {
         let body = transport.get(PUBLIC_KEYS_PATH).await?;
 
@@ -131,8 +129,8 @@ impl<T: SignerTransport> Web3SignerAuthenticator<T> {
         message: Word,
     ) -> Result<Signature, Web3SignerError> {
         // `Web3Signer` hashes the payload with keccak256 before signing, which is exactly what
-        // `ecdsa_k256_keccak` signing does to the 32 bytes of a message word, so the payload is
-        // the message word itself and nothing is hashed here.
+        // `ecdsa_k256_keccak` signing does to the 32 bytes of a message word, so the payload is the
+        // message word itself and nothing is hashed here.
         let data = hex::encode(<[u8; 32]>::from(message));
         let path = format!("{SIGN_PATH_PREFIX}{}", entry.identifier);
 

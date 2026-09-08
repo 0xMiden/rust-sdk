@@ -15,8 +15,8 @@ pub(crate) const SIGNATURE_LEN: usize = 65;
 /// Length of a public key in its compressed form.
 const COMPRESSED_KEY_LEN: usize = 33;
 
-/// Length of a public key in its full form without the leading tag byte, which is how the
-/// signer reports it.
+/// Length of a public key in its full form without the leading tag byte, which is how the signer
+/// reports it.
 const UNTAGGED_KEY_LEN: usize = 64;
 
 /// Length of a public key in its full form, tag byte included.
@@ -41,9 +41,9 @@ pub(crate) fn parse_string_array(body: &str) -> impl Iterator<Item = &str> {
 
 /// Decodes a public key the signer reported.
 ///
-/// A secp256k1 public key has three encodings: compressed, full, and full without its leading
-/// tag byte. The signer uses the last one, and `ecdsa_k256_keccak` reads only the compressed one,
-/// so every key is parsed here and re-encoded compressed.
+/// A secp256k1 public key has three encodings: compressed, full, and full without its leading tag
+/// byte. The signer uses the last one, and `ecdsa_k256_keccak` reads only the compressed one, so
+/// every key is parsed here and re-encoded compressed.
 pub(crate) fn decode_public_key(
     public_key_hex: &str,
 ) -> Result<ecdsa_k256_keccak::PublicKey, Web3SignerError> {

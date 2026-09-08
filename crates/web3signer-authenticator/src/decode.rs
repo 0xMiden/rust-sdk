@@ -1,9 +1,12 @@
-use alloc::string::ToString;
+use alloc::format;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
+use k256::ecdsa::VerifyingKey;
 use miden_protocol::Word;
 use miden_protocol::account::auth::Signature;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak;
+use miden_protocol::utils::serde::Deserializable;
 
 use crate::Web3SignerError;
 
@@ -12,6 +15,19 @@ pub(crate) const SIGNATURE_BYTES: usize = 65;
 
 /// Length of the `r || s` part of a signature.
 pub(crate) const SCALARS_BYTES: usize = 64;
+
+/// Length of a public key in its compressed form.
+const COMPRESSED_KEY_BYTES: usize = 33;
+
+/// Length of a public key in its full form without the leading tag byte, which is how the
+/// signer reports it.
+const UNTAGGED_KEY_BYTES: usize = 64;
+
+/// Length of a public key in its full form, tag byte included.
+const UNCOMPRESSED_KEY_BYTES: usize = 65;
+
+/// Tag byte that marks a key as being in its full form.
+const UNCOMPRESSED_TAG: u8 = 0x04;
 
 /// Splits a flat JSON array of strings, `["0x..","0x.."]`, into its entries, stripping quotes and
 /// whitespace and skipping empty ones.
@@ -25,6 +41,44 @@ pub(crate) fn parse_string_array(body: &str) -> impl Iterator<Item = &str> {
         .split(',')
         .map(|entry| entry.trim().trim_matches('"').trim())
         .filter(|entry| !entry.is_empty())
+}
+
+/// Decodes a public key the signer reported.
+///
+/// A secp256k1 public key has three encodings: compressed, full, and full without its leading
+/// tag byte. The signer uses the last one, and `ecdsa_k256_keccak` reads only the compressed one,
+/// so every key is parsed here and re-encoded compressed.
+pub(crate) fn decode_public_key(
+    value: &str,
+    identifier: &str,
+) -> Result<ecdsa_k256_keccak::PublicKey, Web3SignerError> {
+    let bytes = decode_hex(value, identifier)?;
+
+    let sec1 = match bytes.len() {
+        UNTAGGED_KEY_BYTES => [&[UNCOMPRESSED_TAG][..], &bytes].concat(),
+        COMPRESSED_KEY_BYTES | UNCOMPRESSED_KEY_BYTES => bytes,
+        other => {
+            return Err(Web3SignerError::InvalidPublicKey {
+                identifier: identifier.to_string(),
+                message: format!(
+                    "{other} bytes, expected {COMPRESSED_KEY_BYTES} (compressed), \
+                     {UNTAGGED_KEY_BYTES} (full, as the signer reports it) or \
+                     {UNCOMPRESSED_KEY_BYTES} (full with its tag byte)"
+                ),
+            });
+        },
+    };
+
+    let invalid_key = |message: String| Web3SignerError::InvalidPublicKey {
+        identifier: identifier.to_string(),
+        message,
+    };
+
+    let verifying_key =
+        VerifyingKey::from_sec1_bytes(&sec1).map_err(|err| invalid_key(err.to_string()))?;
+
+    ecdsa_k256_keccak::PublicKey::read_from_bytes(verifying_key.to_sec1_point(true).as_bytes())
+        .map_err(|err| invalid_key(err.to_string()))
 }
 
 /// Decodes a hex string, tolerating a `0x` prefix, surrounding whitespace and the quotes of a JSON
@@ -84,4 +138,33 @@ pub(crate) fn decode_signature(
     }
 
     Ok(Signature::EcdsaK256Keccak(signature))
+}
+
+// TESTS
+// ================================================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::format;
+
+    /// A key as `Web3Signer` reports it: full form, no leading tag byte.
+    const UNCOMPRESSED: &str = "0x09b02f8a5fddd222ade4ea4528faefc399623af3f736be3c44f03e2df22fb792\
+                                f3931a4d9573d333ca74343305762a753388c3422a86d98b713fc91c1ea04842";
+
+    /// The same key, compressed.
+    const COMPRESSED: &str = "0x0209b02f8a5fddd222ade4ea4528faefc399623af3f736be3c44f03e2df22fb792";
+
+    #[test]
+    fn every_key_encoding_decodes_to_the_same_key() {
+        let tagged = format!("0x04{}", UNCOMPRESSED.trim_start_matches("0x"));
+
+        let compressed = decode_public_key(COMPRESSED, "test").expect("compressed key decodes");
+        let uncompressed =
+            decode_public_key(UNCOMPRESSED, "test").expect("uncompressed key decodes");
+        let tagged = decode_public_key(&tagged, "test").expect("tagged key decodes");
+
+        assert_eq!(compressed, uncompressed);
+        assert_eq!(compressed, tagged);
+    }
 }

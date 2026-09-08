@@ -2890,6 +2890,7 @@ name = "miden-client-web3signer"
 version = "0.16.0-rc.5"
 dependencies = [
  "hex",
+ "k256",
  "miden-protocol",
  "miden-tx",
  "reqwest",

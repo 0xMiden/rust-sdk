@@ -24,11 +24,14 @@ miden-tx       = { workspace = true }
 
 # External dependencies
 hex       = { default-features = false, features = ["alloc"], version = "0.4" }
+k256      = { default-features = false, features = ["ecdsa"], version = "0.14" }
 reqwest   = { default-features = false, features = ["rustls-tls"], optional = true, version = "0.12" }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true }
+# `std` gives the tests `miden_protocol::crypto::rand::test_utils`, which is gated on it.
+miden-protocol = { features = ["std"], workspace = true }
+tokio          = { workspace = true }
 
 [lints]
 workspace = true

@@ -18,8 +18,8 @@ pub enum Web3SignerError {
     #[error("hex decoding of the response for `{identifier}` failed: {message}")]
     InvalidHex { identifier: String, message: String },
 
-    /// A listed key is not a 33-byte compressed SEC1 secp256k1 public key.
-    #[error("`{identifier}` is not a compressed SEC1 public key: {message}")]
+    /// A listed key is not a secp256k1 public key.
+    #[error("`{identifier}` is not a secp256k1 public key: {message}")]
     InvalidPublicKey { identifier: String, message: String },
 
     /// The returned signature is not exactly 65 bytes long.

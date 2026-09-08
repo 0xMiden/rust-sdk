@@ -24,7 +24,7 @@
 
 extern crate alloc;
 
-#[cfg(feature = "std")]
+#[cfg(any(feature = "std", test))]
 extern crate std;
 
 use alloc::collections::BTreeMap;
@@ -35,12 +35,11 @@ use alloc::sync::Arc;
 use miden_protocol::Word;
 use miden_protocol::account::auth::{PublicKey, PublicKeyCommitment, Signature};
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak;
-use miden_protocol::utils::serde::Deserializable;
 use miden_protocol::vm::FutureMaybeSend;
 use miden_tx::AuthenticationError;
 use miden_tx::auth::{SigningInputs, TransactionAuthenticator};
 
-use crate::decode::{decode_hex, decode_signature, parse_string_array};
+use crate::decode::{decode_public_key, decode_signature, parse_string_array};
 
 mod decode;
 mod error;
@@ -91,7 +90,7 @@ impl Web3SignerAuthenticator<HttpTransport> {
     ///
     /// # Errors
     /// Returns an error if the instance cannot be reached, holds no keys, or lists a key that is
-    /// not a compressed SEC1 secp256k1 public key.
+    /// not a secp256k1 public key.
     pub async fn connect(url: &str, config: Web3SignerConfig) -> Result<Self, Web3SignerError> {
         Self::connect_with(HttpTransport::new(url, config)?).await
     }
@@ -104,14 +103,7 @@ impl<T: SignerTransport> Web3SignerAuthenticator<T> {
 
         let mut keys = BTreeMap::new();
         for identifier in parse_string_array(&body) {
-            let bytes = decode_hex(identifier, identifier)?;
-            let verifying_key =
-                ecdsa_k256_keccak::PublicKey::read_from_bytes(&bytes).map_err(|err| {
-                    Web3SignerError::InvalidPublicKey {
-                        identifier: identifier.to_string(),
-                        message: err.to_string(),
-                    }
-                })?;
+            let verifying_key = decode_public_key(identifier, identifier)?;
 
             let public_key = PublicKey::EcdsaK256Keccak(verifying_key.clone());
             keys.insert(
@@ -197,7 +189,7 @@ impl<T: SignerTransport> TransactionAuthenticator for Web3SignerAuthenticator<T>
 #[cfg(test)]
 mod tests {
     use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey;
-    use miden_protocol::utils::serde::Serializable;
+    use miden_protocol::utils::serde::{Deserializable, Serializable};
 
     use super::*;
     use crate::decode::{SCALARS_BYTES, SIGNATURE_BYTES};

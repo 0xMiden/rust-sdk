@@ -6,6 +6,10 @@
 
 * [FIX][cli] `miden-client import` now rejects invocations without a file path instead of silently succeeding ([#2450](https://github.com/0xMiden/rust-sdk/pull/2450)).
 
+### Enhancements
+
+* [rust] Re-exported `NetworkNotePricer` from `miden_client`, allowing downstream users to avoid a direct `miden-tx` dependency ([#2517](https://github.com/0xMiden/rust-sdk/issues/2517)).
+
 ## 0.16.0 (2026-09-07)
 
 ### Breaking Changes

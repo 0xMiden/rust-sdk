@@ -344,7 +344,7 @@ pub use miden_protocol::{
     Word,
     ZERO,
 };
-pub use miden_tx::ExecutionOptions;
+pub use miden_tx::{ExecutionOptions, NetworkNotePricer};
 #[cfg(feature = "tonic")]
 pub use remote_prover::RemoteTransactionProver;
 

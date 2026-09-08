@@ -18,6 +18,9 @@ default-members = ["bin/miden-cli", "crates/rust-client"]
 ignore = [
   # rust-client's wasm32 target needs a sync-only tokio and can't inherit the workspace's rt-multi-thread features.
   { dependency = "tokio", member = "crates/rust-client" },
+  # web3signer-authenticator is no_std and needs hex without its std default. A member can add
+  # features to an inherited dependency but cannot turn the workspace's default features off.
+  { dependency = "hex", member = "crates/web3signer-authenticator" },
 ]
 
 [workspace.package]

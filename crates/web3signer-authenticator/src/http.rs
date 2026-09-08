@@ -28,7 +28,7 @@ impl HttpTransport {
     pub fn new(url: &str) -> Result<Self, Web3SignerError> {
         let client = Client::builder().timeout(REQUEST_TIMEOUT).build().map_err(|err| {
             Web3SignerError::Transport {
-                path: url.to_string(),
+                url: url.to_string(),
                 message: err.to_string(),
             }
         })?;
@@ -40,9 +40,9 @@ impl HttpTransport {
     }
 
     /// Sends a prepared request and returns its body, mapping a non-success status to an error.
-    async fn send(&self, path: &str, request: RequestBuilder) -> Result<String, Web3SignerError> {
+    async fn send(&self, url: String, request: RequestBuilder) -> Result<String, Web3SignerError> {
         let transport_error = |err: reqwest::Error| Web3SignerError::Transport {
-            path: path.to_string(),
+            url: url.clone(),
             message: err.to_string(),
         };
 
@@ -52,7 +52,7 @@ impl HttpTransport {
 
         if !status.is_success() {
             return Err(Web3SignerError::Transport {
-                path: path.to_string(),
+                url,
                 message: format!("signer answered {status}: {}", body.trim()),
             });
         }
@@ -63,12 +63,10 @@ impl HttpTransport {
 
 impl SignerTransport for HttpTransport {
     fn get(&self, path: &str) -> impl FutureMaybeSend<Result<String, Web3SignerError>> {
-        let request = self
-            .client
-            .get(format!("{}{path}", self.base_url))
-            .header(ACCEPT, "application/json");
+        let url = format!("{}{path}", self.base_url);
+        let request = self.client.get(&url).header(ACCEPT, "application/json");
 
-        self.send(path, request)
+        self.send(url, request)
     }
 
     fn post(
@@ -77,13 +75,14 @@ impl SignerTransport for HttpTransport {
         body: String,
     ) -> impl FutureMaybeSend<Result<String, Web3SignerError>> {
         // The signing endpoint answers with the signature as text unless asked for JSON.
+        let url = format!("{}{path}", self.base_url);
         let request = self
             .client
-            .post(format!("{}{path}", self.base_url))
+            .post(&url)
             .header(ACCEPT, "text/plain")
             .header(CONTENT_TYPE, "application/json")
             .body(body);
 
-        self.send(path, request)
+        self.send(url, request)
     }
 }

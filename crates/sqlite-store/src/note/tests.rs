@@ -109,8 +109,8 @@ fn create_expected_input_note_with_script(index: u32, script: NoteScript) -> Inp
     InputNoteRecord::new(details, NoteAttachments::empty(), Some(0), state.into())
 }
 
-/// Helper to create an expected (non-consumed) input note that carries metadata, so it has a
-/// known nullifier.
+/// Helper to create an expected (non-consumed) input note that carries metadata, so it has a known
+/// nullifier.
 fn create_expected_input_note_with_metadata(index: u32) -> InputNoteRecord {
     let serial_number: Word =
         [Felt::new_unchecked(u64::from(index) + 9000), ZERO, ZERO, ZERO].into();
@@ -545,8 +545,8 @@ async fn input_note_after_ignores_a_cursor_before_the_block_range() {
         .await
         .unwrap();
 
-    // A cursor before `block_start` selects nothing that the range does not already exclude, so
-    // the first note in the range is returned.
+    // A cursor before `block_start` selects nothing that the range does not already exclude, so the
+    // first note in the range is returned.
     let cursor = InputNoteCursor::from_record(&note_at_1).unwrap();
     let note = store
         .get_input_note_after(
@@ -988,8 +988,8 @@ fn unspent_states_classify_every_note_state() {
 }
 
 /// Attachment content is resolved during sync, after the record may already be stored, so a
-/// state-only update has to persist it too. Attachments feed the note id, so a record that keeps
-/// a stale set reconstructs to a different note than the on-chain one and becomes unconsumable.
+/// state-only update has to persist it too. Attachments feed the note id, so a record that keeps a
+/// stale set reconstructs to a different note than the on-chain one and becomes unconsumable.
 #[tokio::test]
 async fn input_note_state_update_persists_attachments() {
     let store = create_test_store().await;

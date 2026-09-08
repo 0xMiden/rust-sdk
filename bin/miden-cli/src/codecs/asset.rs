@@ -3,9 +3,9 @@
 //! On the stack a WIT `asset` is its eight felts — the id word followed by the value word, i.e.
 //! [`Asset::as_elements`]. The CLI registers this codec so an asset argument can be given as a
 //! single `<AMOUNT>::<FAUCET_ID>` token instead of two raw word hexes, and so a returned asset
-//! renders back the same way. The token form matches the one the rest of the CLI takes for
-//! fungible assets, minus the token symbol and address spellings: resolving those needs the
-//! client, and a codec only sees the text.
+//! renders back the same way. The token form matches the one the rest of the CLI takes for fungible
+//! assets, minus the token symbol and address spellings: resolving those needs the client, and a
+//! codec only sees the text.
 
 use miden_client::account::AccountId;
 use miden_client::asset::{Asset, FungibleAsset};

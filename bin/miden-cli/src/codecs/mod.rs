@@ -8,8 +8,8 @@
 //! `account-id` and `asset` are the rest. `AccountId::from_hex` says what a valid id is, and
 //! `Asset` says what a valid asset is, so both codecs live on this side.
 //!
-//! [`with_cli_codecs`] registers them in one place, so the commands that render typed signatures
-//! do not know the individual types.
+//! [`with_cli_codecs`] registers them in one place, so the commands that render typed signatures do
+//! not know the individual types.
 //!
 //! [`WitScalarCodec`]: miden_client::vm::typed::WitScalarCodec
 //! [`TypedProcInfo`]: miden_client::vm::typed::TypedProcInfo

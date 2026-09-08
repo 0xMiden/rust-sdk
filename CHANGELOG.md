@@ -5,6 +5,9 @@
 ### Fixes
 
 * [FIX][cli] `miden-client import` now rejects invocations without a file path instead of silently succeeding ([#2450](https://github.com/0xMiden/rust-sdk/pull/2450)).
+### Breaking Changes
+
+* [BREAKING][rust] The workspace MSRV and the pinned toolchain are raised to Rust 1.98. Building the client now requires a 1.98 or newer compiler. The declared MSRV of 1.96 could not build the locked dependency graph, whose Miden packages require 1.96.1 ([#2471](https://github.com/0xMiden/rust-sdk/issues/2471)).
 
 ## 0.16.0 (2026-09-07)
 

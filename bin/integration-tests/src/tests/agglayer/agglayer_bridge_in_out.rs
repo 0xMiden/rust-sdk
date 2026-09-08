@@ -175,9 +175,9 @@ pub async fn test_agglayer_bridge_in_out(client_config: ClientConfig) -> Result<
         println!("[bridge_in_out] Round {round}: CLAIM note submitted");
 
         // Wait for the P2ID note to arrive at the destination. The budget spans a network
-        // transaction round trip (the bridge consuming the CLAIM note and emitting the P2ID),
-        // which is far more load-sensitive than a directly submitted transaction, so it is set
-        // well above the ~5 blocks that round trip normally takes.
+        // transaction round trip (the bridge consuming the CLAIM note and emitting the P2ID), which
+        // is far more load-sensitive than a directly submitted transaction, so it is set well above
+        // the ~5 blocks that round trip normally takes.
         let consumable_notes =
             user.wait_for_consumable_notes(destination_account.id(), 120).await?;
         println!(
@@ -240,8 +240,8 @@ pub async fn test_agglayer_bridge_in_out(client_config: ClientConfig) -> Result<
     user.wait_for_tx(tx_id).await?;
     println!("[bridge_in_out] B2AGG note submitted from destination account");
 
-    // Wait for bridge to consume the B2AGG note as network transaction.
-    // Allow extra blocks for CI where the node processes many concurrent network transactions.
+    // Wait for bridge to consume the B2AGG note as network transaction. Allow extra blocks for CI
+    // where the node processes many concurrent network transactions.
     user.wait_for_blocks(5).await?;
     println!("[bridge_in_out] Waited for bridge to consume B2AGG note");
 

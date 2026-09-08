@@ -229,8 +229,8 @@ impl AccountSetup {
         self
     }
 
-    /// Builds the account from `seed` instead of a random one, for tests that re-derive the
-    /// account ID.
+    /// Builds the account from `seed` instead of a random one, for tests that re-derive the account
+    /// ID.
     #[must_use]
     pub fn seed(mut self, seed: [u8; 32]) -> Self {
         self.seed = Some(seed);
@@ -376,8 +376,8 @@ impl TestClient {
         Ok((basic_account, faucet_account))
     }
 
-    /// Sets up two wallet accounts and a faucet account (in that order), on a client that has to
-    /// be in a clean state.
+    /// Sets up two wallet accounts and a faucet account (in that order), on a client that has to be
+    /// in a clean state.
     pub async fn setup_two_wallets_and_faucet(
         &mut self,
         account_type: AccountType,
@@ -497,8 +497,8 @@ impl TestClient {
                     break;
                 },
                 TransactionStatus::Pending => {
-                    // Cooldown between polling iterations to reduce pressure on the node's
-                    // rate limiter when many integration tests poll concurrently.
+                    // Cooldown between polling iterations to reduce pressure on the node's rate
+                    // limiter when many integration tests poll concurrently.
                     tokio::time::sleep(Duration::from_millis(500)).await;
                 },
                 TransactionStatus::Discarded(cause) => {
@@ -506,9 +506,8 @@ impl TestClient {
                 },
             }
 
-            // Log wait time in a file if the env var is set
-            // This allows us to aggregate and measure how long the tests are waiting for
-            // transactions to be committed
+            // Log wait time in a file if the env var is set This allows us to aggregate and measure
+            // how long the tests are waiting for transactions to be committed
             if std::env::var("LOG_WAIT_TIMES") == Ok("true".to_string()) {
                 let elapsed = now.elapsed();
                 let wait_times_dir = std::path::PathBuf::from("wait_times");
@@ -642,8 +641,7 @@ impl TestClient {
     }
 
     /// Mints a note from `faucet_account_id` for `basic_account_id` and returns the executed
-    /// transaction ID and the note with [`MINT_AMOUNT`] units of the corresponding fungible
-    /// asset.
+    /// transaction ID and the note with [`MINT_AMOUNT`] units of the corresponding fungible asset.
     pub async fn mint_note(
         &mut self,
         basic_account_id: AccountId,
@@ -671,8 +669,8 @@ impl TestClient {
         Ok((tx_id, note))
     }
 
-    /// Executes a transaction that consumes the provided notes and returns the transaction ID.
-    /// This assumes the notes contain assets.
+    /// Executes a transaction that consumes the provided notes and returns the transaction ID. This
+    /// assumes the notes contain assets.
     pub async fn consume_notes(
         &mut self,
         account_id: AccountId,
@@ -687,8 +685,8 @@ impl TestClient {
         Ok(tx_id)
     }
 
-    /// Executes a transaction and consumes the resulting unauthenticated notes immediately
-    /// without waiting for the first transaction to be committed.
+    /// Executes a transaction and consumes the resulting unauthenticated notes immediately without
+    /// waiting for the first transaction to be committed.
     pub async fn execute_tx_and_consume_output_notes(
         &mut self,
         tx_request: TransactionRequest,

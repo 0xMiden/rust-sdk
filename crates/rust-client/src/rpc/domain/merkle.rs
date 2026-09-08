@@ -10,8 +10,8 @@ use crate::rpc::generated as proto;
 // CONSTANTS
 // ================================================================================================
 
-/// The maximum number of siblings a [`MerklePath`] can hold. `MerklePath` represents its depth as
-/// a `u8`, so a longer path is not representable.
+/// The maximum number of siblings a [`MerklePath`] can hold. `MerklePath` represents its depth as a
+/// `u8`, so a longer path is not representable.
 const MAX_MERKLE_PATH_SIBLINGS: usize = u8::MAX as usize;
 
 // MERKLE PATH

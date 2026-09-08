@@ -282,9 +282,9 @@ impl SwapCmd {
     }
 }
 
-/// Consume with the account corresponding to `account_id` all of the notes from `list_of_notes`.
-/// If no account ID is provided, the default one is used. If no notes are provided, any notes
-/// that are identified to be owned by the account ID are consumed.
+/// Consume with the account corresponding to `account_id` all of the notes from `list_of_notes`. If
+/// no account ID is provided, the default one is used. If no notes are provided, any notes that are
+/// identified to be owned by the account ID are consumed.
 #[derive(Debug, Parser, Clone)]
 pub struct ConsumeNotesCmd {
     /// The account ID to be used to consume the note or its hex prefix. If none is provided, the
@@ -440,9 +440,8 @@ pub struct PswapCreateCmd {
     #[arg(short, long, value_enum)]
     note_type: NoteType,
 
-    /// Visibility of the payback note produced when the PSWAP is filled. Defaults
-    /// to private (cheaper, and the fill amount is already recorded in the
-    /// executing transaction).
+    /// Visibility of the payback note produced when the PSWAP is filled. Defaults to private
+    /// (cheaper, and the fill amount is already recorded in the executing transaction).
     #[arg(long, value_enum, default_value_t = NoteType::Private)]
     payback_note_type: NoteType,
 
@@ -527,8 +526,8 @@ impl PswapConsumeCmd {
         let fill_amount = AssetAmount::new(self.fill_amount)
             .map_err(|err| CliError::Parse(err.into(), "Invalid fill amount".to_string()))?;
 
-        // The CLI does not yet support note-supplied fills (in-flight fills routed through
-        // other notes), so pass 0 for `note_fill_amount`.
+        // The CLI does not yet support note-supplied fills (in-flight fills routed through other
+        // notes), so pass 0 for `note_fill_amount`.
         let tx_request = TransactionRequestBuilder::new()
             .build_pswap_consume(&note, consumer_id, fill_amount, AssetAmount::ZERO)
             .map_err(|err| {
@@ -546,8 +545,8 @@ impl PswapConsumeCmd {
 /// Cancel an existing partial swap note, reclaiming the offered asset.
 #[derive(Debug, Parser, Clone)]
 pub struct PswapCancelCmd {
-    /// Account ID or its hex prefix of the note creator. If none is provided, the default
-    /// account is used.
+    /// Account ID or its hex prefix of the note creator. If none is provided, the default account
+    /// is used.
     #[arg(short = 's', long = "sender")]
     sender_account_id: Option<String>,
 
@@ -700,8 +699,8 @@ async fn debug_transaction<AUTH: Keystore + Sync + 'static>(
     record: Option<&std::path::Path>,
 ) -> Result<(), CliError> {
     let mut config = miden_debug::DapConfig::new(addr.to_string());
-    // The DAP executor is created and consumed inside the transaction executor, so recorded
-    // advice mutations are read back through this shared handle once the session ends.
+    // The DAP executor is created and consumed inside the transaction executor, so recorded advice
+    // mutations are read back through this shared handle once the session ends.
     let recorder = config.record_event_mutations();
     let snapshot_recorder = record.map(|path| (config.record_snapshot(path.to_path_buf()), path));
     let config_handle = config.clone();

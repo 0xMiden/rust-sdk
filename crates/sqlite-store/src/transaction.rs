@@ -99,8 +99,8 @@ impl SqliteStore {
 
     /// Inserts a transaction and updates the current state based on the `tx_result` changes.
     ///
-    /// SQL writes and forest mutations go through the same rusqlite transaction, so they commit
-    /// or roll back atomically.
+    /// SQL writes and forest mutations go through the same rusqlite transaction, so they commit or
+    /// roll back atomically.
     pub fn apply_transaction(
         conn: &mut Connection,
         tx_update: &TransactionStoreUpdate,
@@ -115,9 +115,8 @@ impl SqliteStore {
         db_tx.commit().into_store_error()
     }
 
-    /// Applies a batch of [`TransactionStoreUpdate`]s atomically. Either every update in the
-    /// slice is persisted or none are. Executes in order inside a single
-    /// [`rusqlite::Transaction`].
+    /// Applies a batch of [`TransactionStoreUpdate`]s atomically. Either every update in the slice
+    /// is persisted or none are. Executes in order inside a single [`rusqlite::Transaction`].
     pub fn apply_transaction_batch(
         conn: &mut Connection,
         tx_updates: &[TransactionStoreUpdate],
@@ -134,11 +133,11 @@ impl SqliteStore {
         db_tx.commit().into_store_error()
     }
 
-    /// Applies a transaction's store update within the provided rusqlite transaction.
-    /// Does NOT commit — caller is responsible for commit/rollback.
+    /// Applies a transaction's store update within the provided rusqlite transaction. Does NOT
+    /// commit — caller is responsible for commit/rollback.
     ///
-    /// The storage-map-root pre-read is performed via the transaction so that each call sees
-    /// writes made by prior calls within the same outer transaction.
+    /// The storage-map-root pre-read is performed via the transaction so that each call sees writes
+    /// made by prior calls within the same outer transaction.
     pub(crate) fn apply_transaction_in_txn(
         db_tx: &Transaction<'_>,
         smt_forest: &mut ScopedAccountForest<'_, '_>,
@@ -372,8 +371,8 @@ mod tests {
         let query = TransactionFilter::Uncommitted.to_query();
         let plan = query_plan(&conn, &query).join("\n");
 
-        // Every entry of the partial index is a pending transaction, so the search never touches
-        // a committed or discarded row.
+        // Every entry of the partial index is a pending transaction, so the search never touches a
+        // committed or discarded row.
         assert!(
             plan.contains("SEARCH tx USING INDEX idx_transactions_pending (status_variant=?)"),
             "pending transactions must be read from the partial index: {plan}"

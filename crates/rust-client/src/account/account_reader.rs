@@ -20,8 +20,8 @@ use crate::store::{AccountStatus, Store};
 
 /// Provides lazy access to account data.
 ///
-/// `AccountReader` executes queries lazily - each method call fetches fresh data
-/// from storage, ensuring you always see the current state.
+/// `AccountReader` executes queries lazily - each method call fetches fresh data from storage,
+/// ensuring you always see the current state.
 ///
 /// # Example
 /// ```ignore
@@ -158,8 +158,7 @@ impl AccountReader {
     ///
     /// This method fetches the requested slot from storage.
     ///
-    /// For `Value` slots, returns the stored word.
-    /// For `Map` slots, returns the map root.
+    /// For `Value` slots, returns the stored word. For `Map` slots, returns the map root.
     pub async fn get_storage_item(
         &self,
         slot_name: impl Into<StorageSlotName>,

@@ -49,8 +49,8 @@ pub fn funders_path_from_env() -> Option<PathBuf> {
 /// Loads the wallets at `funders` as a [`FeeFunder`] paying out of whichever one is free. The
 /// funder client is built from `client_config`'s endpoints.
 ///
-/// Yields no funder when `funders` names no funder file. A file that is there but cannot be
-/// used as a funder is still an error.
+/// Yields no funder when `funders` names no funder file. A file that is there but cannot be used as
+/// a funder is still an error.
 pub fn load(
     client_config: &ClientConfig,
     funders: Option<&Path>,
@@ -79,8 +79,8 @@ fn load_funders(path: Option<&Path>) -> Result<Vec<AccountFile>> {
             .filter(|path| path.extension().is_some_and(|ext| ext == "mac"))
             .collect();
 
-        // Every process has to agree on the order, or the scan offsets would not spread
-        // concurrent tests over distinct wallets.
+        // Every process has to agree on the order, or the scan offsets would not spread concurrent
+        // tests over distinct wallets.
         mac_files.sort();
         mac_files
     } else if path.is_file() {
@@ -207,8 +207,8 @@ impl Funder {
         let asset = FungibleAsset::new(fee_faucet_id, FUNDING_AMOUNT)
             .context("failed to build the native fee asset")?;
 
-        // Built here rather than through `build_pay_to_id`, which describes a single payment.
-        // Notes stay paired with their target, so nothing matches them back by position.
+        // Built here rather than through `build_pay_to_id`, which describes a single payment. Notes
+        // stay paired with their target, so nothing matches them back by position.
         let funded = targets
             .iter()
             .map(|target| {
@@ -236,8 +236,8 @@ impl Funder {
                 || format!("funder {wallet_id} failed to pay {} accounts", targets.len()),
             )?;
 
-        // Waited on before the wallet is released: another process claiming it reads its state
-        // from the chain, which does not carry this payment until it commits.
+        // Waited on before the wallet is released: another process claiming it reads its state from
+        // the chain, which does not carry this payment until it commits.
         client
             .wait_for_tx(tx_id)
             .await

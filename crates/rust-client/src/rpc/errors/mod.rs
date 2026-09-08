@@ -78,8 +78,8 @@ impl RpcError {
         )
     }
 
-    /// Returns whether this is a submission that came back without a definite outcome, so the
-    /// node may or may not have accepted the transaction.
+    /// Returns whether this is a submission that came back without a definite outcome, so the node
+    /// may or may not have accepted the transaction.
     ///
     /// In practice a lost submission arrives as `Unavailable`, `Unknown` or `Cancelled`. The match
     /// lists the codes the node issues deliberately instead, so a code this client does not
@@ -227,8 +227,8 @@ impl GrpcError {
 // ACCEPT HEADER ERROR
 // ================================================================================================
 
-// TODO: Accept header errors are still parsed from message strings, which is fragile.
-// Ideally the node would return structured error codes for these too. See #1129.
+// TODO: Accept header errors are still parsed from message strings, which is fragile. Ideally the
+// node would return structured error codes for these too. See #1129.
 
 /// Errors that can occur during accept header validation.
 #[derive(Debug, Error)]

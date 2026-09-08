@@ -1,7 +1,7 @@
 //! The `account-id` codec for typed `call` rendering.
 //!
-//! `account-id` felts are validated with protocol-level rules, so the CLI registers this codec
-//! (via [`TypedProcInfo::with_scalar_codec`]) to encode one hex token into the two stack felts the
+//! `account-id` felts are validated with protocol-level rules, so the CLI registers this codec (via
+//! [`TypedProcInfo::with_scalar_codec`]) to encode one hex token into the two stack felts the
 //! procedure expects and render the returned felts back as `account-id(0x..)`.
 //!
 //! [`TypedProcInfo::with_scalar_codec`]: miden_client::vm::typed::TypedProcInfo::with_scalar_codec

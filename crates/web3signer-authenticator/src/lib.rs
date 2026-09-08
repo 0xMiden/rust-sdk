@@ -5,7 +5,7 @@
 //! `Web3Signer` can produce.
 //!
 //! ```no_run
-//! use miden_client_web3signer::{Web3SignerAuthenticator, Web3SignerError};
+//! use miden_client_web3signer_authenticator::{Web3SignerAuthenticator, Web3SignerError};
 //!
 //! # async fn example() -> Result<(), Web3SignerError> {
 //! let authenticator = Web3SignerAuthenticator::connect("http://127.0.0.1:9000").await?;
@@ -63,8 +63,6 @@ struct PublicKeyEntry {
 }
 
 /// A [`TransactionAuthenticator`] backed by a `Web3Signer` instance.
-///
-/// See the [crate-level documentation](crate) for the guarantees this makes.
 pub struct Web3SignerAuthenticator<T> {
     transport: T,
     public_keys_by_commitment: BTreeMap<PublicKeyCommitment, PublicKeyEntry>,

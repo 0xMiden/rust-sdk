@@ -17,7 +17,7 @@ use miden_client::asset::{Asset, TokenSymbol};
 use miden_client::rpc::domain::account::GetAccountRequest;
 use miden_client::rpc::{GrpcClient, NodeRpcClient, VerifyingRpcClient};
 use miden_client::transaction::{AccountComponentInterface, AccountInterface};
-use miden_client::utils::base_units_to_tokens;
+use crate::utils::base_units_to_tokens;
 use miden_client::vm::{Package, PackageExport};
 use miden_client::{Client, PrettyPrint, Word, ZERO};
 

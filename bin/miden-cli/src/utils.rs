@@ -5,7 +5,6 @@ use miden_client::account::{AccountId, FaucetMetadata};
 use miden_client::address::{Address, AddressId};
 use miden_client::asset::{Asset, FungibleAsset};
 use miden_client::transaction::{ExecutedTransaction, InputNote};
-use miden_client::utils::{base_units_to_tokens, tokens_to_base_units};
 use miden_client::vm::MIN_STACK_DEPTH;
 use miden_client::{Client, Felt, WORD_SIZE, Word};
 use serde::Deserialize;
@@ -14,6 +13,78 @@ use super::{CLIENT_CONFIG_FILE_NAME, create_dynamic_table, get_account_with_id_p
 use crate::commands::account::DEFAULT_ACCOUNT_ID_KEY;
 use crate::config::{CliConfig, get_global_miden_dir, get_local_miden_dir};
 use crate::errors::CliError;
+
+use core::num::{IntErrorKind, ParseIntError};
+
+use miden_standards::account::faucets::FungibleFaucet;
+
+/// Errors that can occur when parsing a token represented as a decimal number in
+/// a string into base units.
+#[derive(thiserror::Error, Debug)]
+pub(crate) enum TokenParseError {
+    #[error("Number of decimals {0} must be less than or equal to {max_decimals}", max_decimals = FungibleFaucet::MAX_DECIMALS)]
+    MaxDecimals(u8),
+    #[error("More than one decimal point")]
+    MultipleDecimalPoints,
+    #[error("Failed to parse u64")]
+    ParseU64(#[source] ParseIntError),
+    #[error("Amount has more than {0} decimal places")]
+    TooManyDecimals(u8),
+    #[error("Amount is too large")]
+    AmountTooLarge,
+    #[error("Amount is not a valid asset amount")]
+    InvalidAmount(#[source] miden_protocol::errors::AssetError),
+}
+
+
+/// Converts an amount in the faucet base units to the token's decimals.
+pub(crate) fn base_units_to_tokens(units: miden_client::asset::AssetAmount, decimals: u8) -> String {
+    let units_str = units.as_u64().to_string();
+    let len = units_str.len();
+    if decimals == 0 { return units_str; }
+    if decimals as usize >= len {
+        "0.".to_owned() + &"0".repeat(decimals as usize - len) + &units_str
+    } else {
+        let integer_part = &units_str[..len - decimals as usize];
+        let fractional_part = &units_str[len - decimals as usize..];
+        format!("{integer_part}.{fractional_part}")
+    }
+}
+
+/// Converts a decimal number string into base units.
+pub(crate) fn tokens_to_base_units(
+    decimal_str: &str,
+    n_decimals: u8,
+) -> Result<miden_client::asset::AssetAmount, TokenParseError> {
+    if n_decimals > FungibleFaucet::MAX_DECIMALS {
+        return Err(TokenParseError::MaxDecimals(n_decimals));
+    }
+    let parts: Vec<&str> = decimal_str.split('.').collect();
+    if parts.len() > 2 {
+        return Err(TokenParseError::MultipleDecimalPoints);
+    }
+    for part in &parts {
+        part.parse::<u64>().map_err(|e| match e.kind() {
+            IntErrorKind::PosOverflow => TokenParseError::AmountTooLarge,
+            _ => TokenParseError::ParseU64(e),
+        })?;
+    }
+    let integer_part = parts[0];
+    let mut fractional_part = if parts.len() > 1 {
+        parts[1].trim_end_matches('0').to_string()
+    } else {
+        String::new()
+    };
+    if fractional_part.len() > n_decimals.into() {
+        return Err(TokenParseError::TooManyDecimals(n_decimals));
+    }
+    while fractional_part.len() < n_decimals.into() {
+        fractional_part.push('0');
+    }
+    let combined = format!("{}{}", integer_part, &fractional_part[0..n_decimals.into()]);
+    let units = combined.parse::<u64>().map_err(|_| TokenParseError::AmountTooLarge)?;
+    miden_client::asset::AssetAmount::new(units).map_err(TokenParseError::InvalidAmount)
+}
 
 pub(crate) const SHARED_TOKEN_DOCUMENTATION: &str = "There are two accepted formats for the asset:
 - `<AMOUNT>::<FAUCET_ID>` where `<AMOUNT>` is in the faucet base units.

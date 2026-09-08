@@ -10,17 +10,10 @@ use reqwest::{Client, RequestBuilder};
 
 use crate::{SignerTransport, Web3SignerError};
 
-/// Time a single request to the signer is given before it is abandoned. A transport that needs a
-/// different one implements [`SignerTransport`] over its own client.
+/// Time a single request to the web3 signer is given before it is abandoned.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
-// HTTP TRANSPORT
-// ================================================================================================
-
-/// A [`SignerTransport`] that reaches the signer over HTTP.
-///
-/// Client certificates are not supported. A deployment that authenticates its callers that way
-/// implements [`SignerTransport`] itself.
+/// A [`SignerTransport`] that holds [`reqwest::Client`] as the internal HTTP client.
 #[derive(Clone, Debug)]
 pub struct HttpTransport {
     client: Client,

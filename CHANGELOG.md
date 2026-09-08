@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Features
+
+* [FEATURE][rust] Re-exported the fee pricing and note checking types that the client API already surfaces, so downstream crates no longer need a direct `miden-tx` dependency to price note consumption: `NetworkNotePricer`, `NotePricingError` and `NoteCheckerError` at the crate root, `TransactionFee` and `TransactionFeeError` from `transaction`, `NoteCost` and `NoteConsumptionCost` from `note`, and `MastForestStore` and `TransactionMastStore` from `testing` ([#2475](https://github.com/0xMiden/rust-sdk/pull/2475)).
+
 ### Fixes
 
 * [FIX][cli] `miden-client import` now rejects invocations without a file path instead of silently succeeding ([#2450](https://github.com/0xMiden/rust-sdk/pull/2450)).

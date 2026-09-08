@@ -15,8 +15,8 @@ pub enum Web3SignerError {
     NoKeys,
 
     /// A response field that should be hex is not.
-    #[error("hex decoding of the response for `{identifier}` failed: {message}")]
-    InvalidHex { identifier: String, message: String },
+    #[error("`{value}` is not hex: {message}")]
+    InvalidHex { value: String, message: String },
 
     /// A listed key is not a secp256k1 public key.
     #[error("`{identifier}` is not a secp256k1 public key: {message}")]

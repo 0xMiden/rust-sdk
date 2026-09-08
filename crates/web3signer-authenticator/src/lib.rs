@@ -103,7 +103,7 @@ impl<T: SignerTransport> Web3SignerAuthenticator<T> {
 
         let mut keys = BTreeMap::new();
         for identifier in parse_string_array(&body) {
-            let verifying_key = decode_public_key(identifier, identifier)?;
+            let verifying_key = decode_public_key(identifier)?;
 
             let public_key = PublicKey::EcdsaK256Keccak(verifying_key.clone());
             keys.insert(

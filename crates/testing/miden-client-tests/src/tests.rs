@@ -1138,21 +1138,15 @@ async fn note_without_asset() {
 
 #[tokio::test]
 async fn swap_note_with_zero_asset() {
-    let (mut client, _rpc_api, keystore) = Box::pin(create_test_client()).await;
+    let (mut client, _rpc_api) = Box::pin(create_test_client()).await;
 
-    let faucet = insert_new_fungible_faucet(&mut client, AccountType::Private, &keystore)
-        .await
-        .unwrap();
-
-    let wallet = insert_new_wallet(&mut client, AccountType::Private, &keystore).await.unwrap();
+    let (wallet, faucet) = client.setup_wallet_and_faucet(AccountType::Private).await.unwrap();
 
     client.sync_state().await.unwrap();
 
     // A swap exchanges the offered asset for the requested one, and filling it emits a P2ID payback
     // carrying the requested asset, so neither side may be zero.
-    let other_faucet = insert_new_fungible_faucet(&mut client, AccountType::Private, &keystore)
-        .await
-        .unwrap();
+    let other_faucet = client.insert_faucet(AccountType::Private).await.unwrap();
 
     let zero_asset = Asset::Fungible(FungibleAsset::new(faucet.id(), 0).unwrap());
     let some_asset = Asset::Fungible(FungibleAsset::new(other_faucet.id(), 100).unwrap());

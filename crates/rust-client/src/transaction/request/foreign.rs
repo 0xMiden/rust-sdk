@@ -101,6 +101,11 @@ pub enum ForeignAccount {
     /// account witness will be retrieved from the network at execution time so that it can be
     /// used as inputs to the transaction kernel.
     Private(PartialAccount),
+    /// Account whose state and inclusion witness the caller supplies, so nothing is fetched for it
+    /// at execution time. The witness must open against the account tree of the transaction's
+    /// reference block. Storage map keys and vault assets absent from the inputs are still
+    /// resolved lazily during execution.
+    Prefetched(AccountInputs),
 }
 
 impl ForeignAccount {
@@ -134,7 +139,9 @@ impl ForeignAccount {
             ForeignAccount::Public(_, account_storage_requirements) => {
                 account_storage_requirements.clone()
             },
-            ForeignAccount::Private(_) => AccountStorageRequirements::default(),
+            ForeignAccount::Private(_) | ForeignAccount::Prefetched(_) => {
+                AccountStorageRequirements::default()
+            },
         }
     }
 
@@ -143,7 +150,14 @@ impl ForeignAccount {
         match self {
             ForeignAccount::Public(account_id, _) => *account_id,
             ForeignAccount::Private(partial_account) => partial_account.id(),
+            ForeignAccount::Prefetched(inputs) => inputs.id(),
         }
+    }
+}
+
+impl From<AccountInputs> for ForeignAccount {
+    fn from(inputs: AccountInputs) -> Self {
+        Self::Prefetched(inputs)
     }
 }
 
@@ -171,6 +185,10 @@ impl Serializable for ForeignAccount {
                 target.write(1u8);
                 partial_account.write_into(target);
             },
+            ForeignAccount::Prefetched(inputs) => {
+                target.write(2u8);
+                inputs.write_into(target);
+            },
         }
     }
 }
@@ -190,6 +208,7 @@ impl Deserializable for ForeignAccount {
                 let foreign_inputs = PartialAccount::read_from(source)?;
                 Ok(ForeignAccount::Private(foreign_inputs))
             },
+            2 => Ok(ForeignAccount::Prefetched(AccountInputs::read_from(source)?)),
             _ => Err(DeserializationError::InvalidValue("Invalid account type".to_string())),
         }
     }

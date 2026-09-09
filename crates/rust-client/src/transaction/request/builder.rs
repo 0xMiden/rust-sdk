@@ -25,7 +25,7 @@ use miden_protocol::note::{
     PartialNote,
     PartialNoteMetadata,
 };
-use miden_protocol::transaction::{AccountInputs, InputNote, TransactionScript};
+use miden_protocol::transaction::{InputNote, TransactionScript};
 use miden_protocol::vm::AdviceMap;
 use miden_protocol::{Felt, Word};
 use miden_standards::note::{P2idNote, P2ideNote, PswapNote, PswapNoteStorage, SwapNote};
@@ -78,8 +78,6 @@ pub struct TransactionRequestBuilder {
     /// the network, and injected as advice inputs. Additionally, the account's code will be
     /// added to the executor and prover.
     foreign_accounts: BTreeMap<AccountId, ForeignAccount>,
-    /// Foreign account inputs supplied by the caller.
-    foreign_account_inputs: BTreeMap<AccountId, AccountInputs>,
     /// The number of blocks in relation to the transaction's reference block after which the
     /// transaction will expire. If `None`, the transaction will not expire.
     expiration_delta: Option<u16>,
@@ -122,7 +120,6 @@ impl TransactionRequestBuilder {
             merkle_store: MerkleStore::default(),
             expiration_delta: None,
             foreign_accounts: BTreeMap::default(),
-            foreign_account_inputs: BTreeMap::default(),
             ignore_invalid_input_notes: false,
             script_arg: None,
             auth_arg: None,
@@ -213,6 +210,13 @@ impl TransactionRequestBuilder {
     /// - **Private accounts**: the node retrieves a proof of the account's existence and injects
     ///   that as advice inputs. Private accounts must always be declared here with their
     ///   [`PartialAccount`](miden_protocol::account::PartialAccount) state.
+    /// - **Prefetched accounts**: the caller supplies the state and inclusion witness as
+    ///   [`ForeignAccount::Prefetched`] and nothing is fetched for them. The witness must open
+    ///   against the transaction's reference block.
+    ///   [`Client::get_foreign_account_inputs`](crate::Client::get_foreign_account_inputs) fetches
+    ///   inputs for a given block.
+    ///
+    /// Declaring an account ID more than once keeps the last declaration.
     #[must_use]
     pub fn foreign_accounts(
         mut self,
@@ -223,27 +227,6 @@ impl TransactionRequestBuilder {
             self.foreign_accounts.insert(foreign_account.account_id(), foreign_account);
         }
 
-        self
-    }
-
-    /// Supplies foreign account state and inclusion witnesses for the transaction.
-    ///
-    /// Each witness must match the transaction's reference block. For anchored execution, capture
-    /// the inputs with
-    /// [`Client::get_foreign_account_inputs`](crate::Client::get_foreign_account_inputs) at the
-    /// anchor's block. Include every faucet whose asset callbacks the transaction triggers; on a
-    /// fee-charging chain this can include the fee faucet, since the fee note receives its asset.
-    /// Missing storage map or vault witnesses can still require RPC calls during execution.
-    ///
-    /// Supplied inputs take precedence over [`Self::foreign_accounts`], independent of call order.
-    /// If an account ID occurs more than once, the last supplied input replaces earlier inputs.
-    #[must_use]
-    pub fn foreign_account_inputs(
-        mut self,
-        inputs: impl IntoIterator<Item = AccountInputs>,
-    ) -> Self {
-        self.foreign_account_inputs
-            .extend(inputs.into_iter().map(|inputs| (inputs.id(), inputs)));
         self
     }
 
@@ -692,7 +675,6 @@ impl TransactionRequestBuilder {
             advice_map: self.advice_map,
             merkle_store: self.merkle_store,
             foreign_accounts: self.foreign_accounts,
-            foreign_account_inputs: self.foreign_account_inputs,
             expiration_delta: self.expiration_delta,
             ignore_invalid_input_notes: self.ignore_invalid_input_notes,
             script_arg: self.script_arg,

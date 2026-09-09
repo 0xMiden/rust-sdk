@@ -346,37 +346,23 @@ while let Some(note) = reader.next().await? {
 reader.reset();
 ```
 
-## Reuse foreign account inputs with a chain anchor
+## Supply foreign account inputs yourself
 
-Capture foreign account inputs before the node prunes the anchor's reference block. Supply them through `TransactionRequestBuilder::foreign_account_inputs` when you build the request for anchored execution. Supplied inputs take precedence over declarations in `foreign_accounts`, regardless of builder call order.
+A request normally declares foreign accounts as `ForeignAccount::public` or `ForeignAccount::private`, and the client fetches their state and inclusion witnesses from the node at the transaction's reference block. When you already hold that data, declare it as `ForeignAccount::Prefetched` instead and nothing is fetched for that account. The inputs must be valid at the reference block: the executor verifies each witness against that block's account root.
+
+`Client::get_foreign_account_inputs` fetches inputs for a set of declarations at a given block. Its results serialize alongside the request, so one party can fetch them and another can execute with them. This is what makes a transaction pinned to an older block executable after the node stopped serving account state there:
 
 ```rust
-use miden_client::rpc::domain::account::AccountStorageRequirements;
 use miden_client::transaction::{ForeignAccount, TransactionRequestBuilder};
 
 let builder = TransactionRequestBuilder::new().custom_script(tx_script);
-let request = builder.clone().build()?;
-let anchor = client.chain_anchor_for_request(&request).await?;
+let anchor = client.chain_anchor_for_request(&builder.clone().build()?).await?;
 
-let accounts = [
-    ForeignAccount::public(
-        foreign_account_id,
-        storage_requirements,
-    )?,
-    ForeignAccount::public(
-        anchor.header().fee_parameters().fee_faucet_id(),
-        AccountStorageRequirements::default(),
-    )?,
-];
-let inputs = client
-    .get_foreign_account_inputs(accounts, anchor.block_num())
-    .await?;
-let request = builder.foreign_account_inputs(inputs).build()?;
+let declarations = [ForeignAccount::public(foreign_account_id, storage_requirements)?];
+let inputs = client.get_foreign_account_inputs(declarations, anchor.block_num()).await?;
+
+let request = builder.foreign_accounts(inputs).build()?;
 let result = client.execute_transaction_at(account_id, request, anchor).await?;
 ```
 
-Both `TransactionRequest` and `AccountInputs` support serialization. You can ship the request with its anchor, or ship the inputs separately and add them when you rebuild the request. Requests with supplied inputs require a client version that supports this feature. Requests without supplied inputs retain their existing serialized format.
-
-The capture helper fetches only the accounts you specify. Include every account used by foreign procedure calls and every faucet with asset callbacks enabled whose asset the transaction moves. On a fee-charging chain this can include the fee faucet, since the fee note receives the fee asset. For private accounts, use `ForeignAccount::private` with the partial account state. Scripts can select accounts dynamically, so the request alone cannot identify every account that execution will load.
-
-Include the storage map and vault witnesses that execution needs. Missing witnesses can still cause RPC calls. The executor checks supplied account witnesses against the reference block's account root. Supplying inputs does not extend the transaction's expiration or change the trust requirements of the anchor.
+Declaring an account ID more than once keeps the last declaration, so prefetched inputs added after a `ForeignAccount::public` declaration for the same account replace it. Only the accounts you pass are fetched: include every account reached through foreign procedure calls and every faucet with asset callbacks enabled whose asset the transaction moves, which on a fee-charging chain can include the fee faucet. Storage map keys and vault assets absent from the inputs are still resolved lazily during execution.

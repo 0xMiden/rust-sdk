@@ -637,11 +637,12 @@ async fn prefetched_foreign_account_inputs() {
         .await
         .unwrap();
 
-    // Declarations after supplied inputs must not cause a fetch during preparation.
+    // A later declaration of the same account replaces the earlier one, so the prefetched inputs
+    // win over the fetch declaration and preparation fetches nothing.
     let request = builder
         .clone()
-        .foreign_account_inputs(inputs.clone())
         .foreign_accounts(declarations.clone())
+        .foreign_accounts(inputs.clone())
         .build()
         .unwrap();
     let decoded = TransactionRequest::read_from_bytes(&request.to_bytes()).unwrap();
@@ -678,7 +679,7 @@ async fn prefetched_foreign_account_inputs() {
         AccountTree::with_entries([(partial_account.id(), partial_account.to_commitment())])
             .unwrap();
     invalid_inputs[0] = AccountInputs::new(partial_account, other_tree.open(foreign_account_id));
-    let invalid_request = builder.foreign_account_inputs(invalid_inputs).build().unwrap();
+    let invalid_request = builder.foreign_accounts(invalid_inputs).build().unwrap();
     let error = Box::pin(client.execute_transaction_at(wallet_id, invalid_request, anchor))
         .await
         .unwrap_err();

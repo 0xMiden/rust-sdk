@@ -7,14 +7,14 @@ use miden_client::testing::common::*;
 use miden_client::transaction::{PswapTransactionData, TransactionRequestBuilder};
 use tracing::info;
 
-use crate::tests::config::ClientConfig;
+use crate::ClientConfig;
 
 // PSWAP FULL FILL ONCHAIN
 // ================================================================================================
 
-/// Verifies an end-to-end PSWAP full-fill flow against a real node:
-/// Alice creates a public PSWAP, Bob discovers it via the discovery tag, Bob fully fills it, and
-/// both parties end up with the expected balances after consuming the resulting payback note.
+/// Verifies an end-to-end PSWAP full-fill flow against a real node: Alice creates a public PSWAP,
+/// Bob discovers it via the discovery tag, Bob fully fills it, and both parties end up with the
+/// expected balances after consuming the resulting payback note.
 ///
 /// The PSWAP consume MASM emits a payback note with a word-sized attachment (see
 /// `add_word_attachment` in `standards/notes/pswap.masm`); Alice fetches that payback note via sync
@@ -25,10 +25,7 @@ pub async fn test_pswap_full_fill_onchain(client_config: ClientConfig) -> Result
 
     let (mut alice_client, alice_authenticator) = client_config.clone().into_client().await?;
     wait_for_node(&mut alice_client).await;
-    let (mut bob_client, bob_authenticator) = ClientConfig::default()
-        .with_rpc_endpoint(client_config.rpc_endpoint())
-        .into_client()
-        .await?;
+    let (mut bob_client, bob_authenticator) = client_config.clone().into_client().await?;
 
     alice_client.sync_state().await?;
     bob_client.sync_state().await?;
@@ -108,9 +105,9 @@ pub async fn test_pswap_full_fill_onchain(client_config: ClientConfig) -> Result
         AssetAmount::new(REQUESTED_AMOUNT).unwrap(),
         AssetAmount::ZERO,
     )?;
-    // The consumer tracks neither output note: the payback settles to the creator and the
-    // remainder is the order's next tip. Both are validated as the transaction's own outputs, but
-    // neither is registered as an expected future note in the consumer's store.
+    // The consumer tracks neither output note: the payback settles to the creator and the remainder
+    // is the order's next tip. Both are validated as the transaction's own outputs, but neither is
+    // registered as an expected future note in the consumer's store.
     assert!(
         consume_request.expected_future_notes().next().is_none(),
         "the consumer should not track any future notes"
@@ -171,10 +168,7 @@ pub async fn test_pswap_partial_fill_onchain(client_config: ClientConfig) -> Res
 
     let (mut alice_client, alice_authenticator) = client_config.clone().into_client().await?;
     wait_for_node(&mut alice_client).await;
-    let (mut bob_client, bob_authenticator) = ClientConfig::default()
-        .with_rpc_endpoint(client_config.rpc_endpoint())
-        .into_client()
-        .await?;
+    let (mut bob_client, bob_authenticator) = client_config.clone().into_client().await?;
 
     alice_client.sync_state().await?;
     bob_client.sync_state().await?;
@@ -251,10 +245,9 @@ pub async fn test_pswap_partial_fill_onchain(client_config: ClientConfig) -> Res
         AssetAmount::ZERO,
     )?;
 
-    // The consumer tracks neither output note. The payback settles to the creator and the
-    // remainder is the order's next tip; the consumer owns neither, so neither is registered as an
-    // expected future note. Following the remainder is the creator's lineage's job (asserted
-    // below).
+    // The consumer tracks neither output note. The payback settles to the creator and the remainder
+    // is the order's next tip; the consumer owns neither, so neither is registered as an expected
+    // future note. Following the remainder is the creator's lineage's job (asserted below).
     assert!(
         consume_request.expected_future_notes().next().is_none(),
         "the consumer should not track any future notes"
@@ -262,9 +255,9 @@ pub async fn test_pswap_partial_fill_onchain(client_config: ClientConfig) -> Res
 
     execute_tx_and_sync(&mut bob_client, bob_account.id(), consume_request).await?;
 
-    // Bob spent only ACCOUNT_FILL of ETH and received EXPECTED_PAYOUT of BTC (proportional, not
-    // the full offered amount). This is the assertion that catches a wrong NOTE_ARGS layout: a
-    // wrong layout would either fall through to the script's full-fill default or be rejected.
+    // Bob spent only ACCOUNT_FILL of ETH and received EXPECTED_PAYOUT of BTC (proportional, not the
+    // full offered amount). This is the assertion that catches a wrong NOTE_ARGS layout: a wrong
+    // layout would either fall through to the script's full-fill default or be rejected.
     let bob_account_reader = bob_client.account_reader(bob_account.id());
     assert_eq!(
         bob_account_reader.get_balance(btc_faucet_account.id()).await?,

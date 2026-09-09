@@ -10,6 +10,9 @@ use miden_client_sqlite_store::ClientBuilderSqliteExt;
 /// Default store directory name, created in the current working directory.
 pub const DEFAULT_STORE_DIR: &str = "miden-bench-store";
 
+/// RPC request timeout, in milliseconds.
+pub const RPC_TIMEOUT_MS: u64 = 30_000;
+
 /// Configuration for benchmark execution
 #[derive(Clone)]
 pub struct BenchConfig {
@@ -17,8 +20,8 @@ pub struct BenchConfig {
     pub network: Endpoint,
     /// Number of benchmark iterations
     pub iterations: usize,
-    /// Persistent store directory. Deploy saves the account and keystore here;
-    /// transaction and expand commands reuse the same directory.
+    /// Persistent store directory. Deploy saves the account and keystore here; transaction and
+    /// expand commands reuse the same directory.
     pub store_path: PathBuf,
 }
 
@@ -31,8 +34,8 @@ impl BenchConfig {
 
 /// Creates a Miden client using the given endpoint and store directory.
 ///
-/// The store directory should already exist. It will contain (or be populated with)
-/// the `SQLite` database (`store.sqlite3`) and filesystem keystore (`keystore/`).
+/// The store directory should already exist. It will contain (or be populated with) the `SQLite`
+/// database (`store.sqlite3`) and filesystem keystore (`keystore/`).
 pub async fn create_client(
     endpoint: &Endpoint,
     store_path: &Path,
@@ -42,7 +45,7 @@ pub async fn create_client(
     std::fs::create_dir_all(&keystore_path)?;
 
     let client = ClientBuilder::new()
-        .rpc(Arc::new(VerifyingRpcClient::new(GrpcClient::new(endpoint, 30_000))))
+        .rpc(Arc::new(VerifyingRpcClient::new(GrpcClient::new(endpoint, RPC_TIMEOUT_MS))))
         .sqlite_store(sqlite_path)
         .filesystem_keystore(keystore_path.to_str().expect("keystore path should be valid UTF-8"))?
         .tx_discard_delta(None)

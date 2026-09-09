@@ -71,6 +71,19 @@ impl InputNoteState {
     pub const STATE_CONSUMED_UNAUTHENTICATED_LOCAL: u8 = 7;
     pub const STATE_CONSUMED_EXTERNAL: u8 = 8;
 
+    /// Discriminants of the states in which the note hasn't been nullified yet. `Invalid` is left
+    /// out because such a note can never be consumed.
+    ///
+    /// The list is the definition backing [`InputNoteState::is_unspent`], so a store can filter on
+    /// the persisted discriminant without restating the set.
+    pub const UNSPENT_STATES: [u8; 5] = [
+        Self::STATE_EXPECTED,
+        Self::STATE_UNVERIFIED,
+        Self::STATE_COMMITTED,
+        Self::STATE_PROCESSING_AUTHENTICATED,
+        Self::STATE_PROCESSING_UNAUTHENTICATED,
+    ];
+
     /// Returns the inner state handler that implements state transitions.
     fn inner(&self) -> &dyn NoteStateHandler {
         match self {
@@ -105,6 +118,12 @@ impl InputNoteState {
         }
     }
 
+    /// Returns true if the note hasn't been nullified yet and can still be consumed. `Invalid`
+    /// notes count as neither unspent nor consumed.
+    pub fn is_unspent(&self) -> bool {
+        Self::UNSPENT_STATES.contains(&self.discriminant())
+    }
+
     pub(crate) fn metadata(&self) -> Option<&NoteMetadata> {
         self.inner().metadata()
     }
@@ -127,8 +146,8 @@ impl InputNoteState {
         }
     }
 
-    /// Returns the per-account position of the consuming transaction within the account's
-    /// execution chain for the block, if available.
+    /// Returns the per-account position of the consuming transaction within the account's execution
+    /// chain for the block, if available.
     pub fn consumed_tx_order(&self) -> Option<u32> {
         match self {
             InputNoteState::ConsumedAuthenticatedLocal(s) => s.consumed_tx_order,
@@ -138,8 +157,8 @@ impl InputNoteState {
         }
     }
 
-    /// Sets the consumed transaction order on the inner consumed state. No-op if the note is
-    /// not in a consumed state.
+    /// Sets the consumed transaction order on the inner consumed state. No-op if the note is not in
+    /// a consumed state.
     pub(crate) fn set_consumed_tx_order(&mut self, order: Option<u32>) {
         match self {
             InputNoteState::ConsumedAuthenticatedLocal(s) => s.consumed_tx_order = order,
@@ -170,9 +189,9 @@ impl InputNoteState {
         self.inner().consumed_externally(nullifier_block_height, consumer_account)
     }
 
-    /// Returns a new state to reflect that the note has received a block header.
-    /// This will mark the note as verified or invalid, depending on the block header
-    /// information and inclusion proof. If the note state doesn't change, `None` is returned.
+    /// Returns a new state to reflect that the note has received a block header. This will mark the
+    /// note as verified or invalid, depending on the block header information and inclusion proof.
+    /// If the note state doesn't change, `None` is returned.
     pub(crate) fn block_header_received(
         &self,
         note_id: NoteId,

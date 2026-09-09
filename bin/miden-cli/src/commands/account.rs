@@ -13,7 +13,7 @@ use miden_client::account::{
     StorageSlotContent,
 };
 use miden_client::address::{Address, AddressInterface, NetworkId, RoutingParameters};
-use miden_client::asset::Asset;
+use miden_client::asset::{Asset, TokenSymbol};
 use miden_client::rpc::domain::account::GetAccountRequest;
 use miden_client::rpc::{GrpcClient, NodeRpcClient, VerifyingRpcClient};
 use miden_client::transaction::{AccountComponentInterface, AccountInterface};
@@ -52,8 +52,7 @@ pub struct AccountCmd {
     /// Additional package files (`.masp`) used to resolve procedure MAST roots to names and
     /// signatures, on top of the packages in the configured packages directory.
     ///
-    /// May be passed multiple times. On a duplicate MAST root, the passed packages take
-    /// precedence.
+    /// May be passed multiple times. On a duplicate MAST root, the passed packages take precedence.
     #[arg(short, long, value_name = "FILE", requires = "inspect")]
     package: Vec<PathBuf>,
     /// When using --inspect, also print the MASM disassembly of each procedure.
@@ -61,15 +60,14 @@ pub struct AccountCmd {
     verbose: bool,
     /// Manages default account for transaction execution.
     ///
-    /// If no ID is provided it will display the current default account ID.
-    /// If "none" is provided it will remove the default account else it will set the default
-    /// account to the provided ID.
+    /// If no ID is provided it will display the current default account ID. If "none" is provided
+    /// it will remove the default account else it will set the default account to the provided ID.
     #[arg(short, long, group = "action", value_name = "ID")]
     default: Option<Option<String>>,
 }
 
 impl AccountCmd {
-    pub async fn execute<AUTH>(&self, mut client: Client<AUTH>) -> Result<(), CliError> {
+    pub async fn execute<AUTH>(&self, client: Client<AUTH>) -> Result<(), CliError> {
         let cli_config = CliConfig::load()?;
         match self {
             AccountCmd {
@@ -91,9 +89,9 @@ impl AccountCmd {
                 let (id, procedure) = split_procedure_target(target);
                 let account_id = parse_account_id(&client, id).await?;
 
-                // Explicit `--package` files take precedence over the configured packages
-                // directory (on a duplicate MAST root the first package wins), but both are
-                // consulted so default names still resolve alongside the passed packages.
+                // Explicit `--package` files take precedence over the configured packages directory
+                // (on a duplicate MAST root the first package wins), but both are consulted so
+                // default names still resolve alongside the passed packages.
                 let mut packages = load_packages(&cli_config, &self.package)?;
                 packages.extend(load_packages_from_directory(&cli_config.package_directory)?);
 
@@ -143,7 +141,8 @@ impl AccountCmd {
                         client
                             .set_setting(DEFAULT_ACCOUNT_ID_KEY.to_string(), account.id())
                             .await?;
-                        println!("Setting default account to {id}...");
+
+                        println!("Default account set to {}", account.id());
                     },
                 }
             },
@@ -165,10 +164,10 @@ async fn list_accounts<AUTH>(client: Client<AUTH>) -> Result<(), CliError> {
     for (acc, _acc_seed) in &accounts {
         let reader = client.account_reader(acc.id());
         let status = reader.status().await?.to_string();
-        let token_symbol = get_faucet_component(&client, acc.id())
+        let token_symbol = get_faucet_token_info(&client, acc.id())
             .await
             .ok()
-            .map(|faucet| faucet.symbol().to_string());
+            .map(|(symbol, _)| symbol.to_string());
 
         table.add_row(vec![
             acc.id().to_hex(),
@@ -210,11 +209,10 @@ async fn show_account<AUTH>(
                 Asset::Fungible(fungible_asset) => {
                     let faucet_id = fungible_asset.faucet_id();
                     let asset_amount = fungible_asset.amount();
-                    let (faucet, amount) = match get_faucet_component(client, faucet_id).await {
-                        Ok(faucet_component) => (
-                            faucet_component.symbol().to_string(),
-                            base_units_to_tokens(asset_amount, faucet_component.decimals()),
-                        ),
+                    let (faucet, amount) = match get_faucet_token_info(client, faucet_id).await {
+                        Ok((symbol, decimals)) => {
+                            (symbol.to_string(), base_units_to_tokens(asset_amount, decimals))
+                        },
                         Err(_) => (faucet_id.prefix().to_hex(), asset_amount.as_u64().to_string()),
                     };
                     ("Fungible Asset", faucet, amount)
@@ -575,20 +573,31 @@ fn print_summary_table(account: &Account, network_id: NetworkId, token_symbol: O
     println!("{table}\n");
 }
 
-/// Loads the tracked account for `account_id` and reconstructs its [`FungibleFaucet`] component.
+/// Reads the faucet's token symbol and decimals from its token config storage slot.
 ///
 /// # Errors
-/// Returns an error if the account is not tracked by the client or its faucet metadata can't be
-/// read.
-async fn get_faucet_component<AUTH>(
+/// Returns an error if the account is not tracked by the client, has no token config slot (i.e.
+/// is not a fungible faucet), or the token config can't be decoded.
+async fn get_faucet_token_info<AUTH>(
     client: &Client<AUTH>,
     account_id: AccountId,
-) -> Result<FungibleFaucet, CliError> {
-    let account = client.get_account(account_id).await?.ok_or_else(|| {
-        CliError::Input(format!("account {account_id} not tracked by the client"))
+) -> Result<(TokenSymbol, u8), CliError> {
+    let token_config = client
+        .account_reader(account_id)
+        .get_storage_item(FungibleFaucet::token_config_slot().clone())
+        .await?;
+
+    // Token config word layout: `[token_supply, max_supply, decimals, symbol]` (see
+    // `FungibleFaucet::token_config_slot_value`).
+    let [_token_supply, _max_supply, decimals, symbol] = *token_config;
+    let symbol = TokenSymbol::try_from(symbol).map_err(|err| {
+        CliError::Input(format!("failed to decode token symbol of faucet {account_id}: {err}"))
+    })?;
+    let decimals = u8::try_from(decimals.as_canonical_u64()).map_err(|err| {
+        CliError::Input(format!("failed to decode token decimals of faucet {account_id}: {err}"))
     })?;
 
-    faucet_component_from_account(&account)
+    Ok((symbol, decimals))
 }
 
 /// Reconstructs the [`FungibleFaucet`] component from a materialized [`Account`].

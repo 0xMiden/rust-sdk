@@ -26,8 +26,8 @@ pub enum GetAccountError {
     /// Requested block has been pruned
     #[error("block pruned")]
     BlockPruned,
-    /// Error code not recognized by this client version. This can happen if the node
-    /// is newer than the client and has added new error variants.
+    /// Error code not recognized by this client version. This can happen if the node is newer than
+    /// the client and has added new error variants.
     #[error("unknown error code {code}: {message}")]
     Unknown { code: u8, message: String },
 }

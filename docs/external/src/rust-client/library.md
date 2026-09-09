@@ -8,8 +8,10 @@ To use the Miden client library in a Rust project, include it as a dependency.
 In your project's `Cargo.toml`, add:
 
 ```toml
-miden-client = { version = "0.16.0-alpha.1" }
+miden-client = { version = "0.16.0-alpha.1", features = ["tonic"] }
 ```
+
+The `tonic` feature is not enabled by default and gates everything that speaks gRPC to a node: `GrpcClient`, `RemoteTransactionProver`, the gRPC note transport client, and the `ClientBuilder` methods that wire them up. Leave it out only when supplying your own `NodeRpcClient` and `TransactionProver` implementations. See [Features](./features.md#crate-features) for the full list.
 
 ## Client instantiation
 

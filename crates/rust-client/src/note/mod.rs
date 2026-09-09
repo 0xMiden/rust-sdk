@@ -1,9 +1,9 @@
 //! Contains the Client APIs related to notes. Notes can contain assets and scripts that are
 //! executed as part of transactions.
 //!
-//! This module enables the tracking, retrieval, and processing of notes.
-//! It offers methods to query input and output notes from the store, check their consumability,
-//! compile note scripts, and retrieve notes based on partial ID matching.
+//! This module enables the tracking, retrieval, and processing of notes. It offers methods to query
+//! input and output notes from the store, check their consumability, compile note scripts, and
+//! retrieve notes based on partial ID matching.
 //!
 //! ## Overview
 //!
@@ -261,11 +261,11 @@ where
         Ok(self.store.get_output_notes(NoteFilter::Unique(note_id)).await?.pop())
     }
 
-    /// Returns an [`InputNoteReader`] that lazily iterates over consumed input notes
-    /// for the given consumer account.
+    /// Returns an [`InputNoteReader`] that lazily iterates over consumed input notes for the given
+    /// consumer account.
     ///
-    /// The consumer is required because ordering is only guaranteed among notes
-    /// consumed by the same account.
+    /// The consumer is required because ordering is only guaranteed among notes consumed by the
+    /// same account.
     ///
     /// # Example
     ///

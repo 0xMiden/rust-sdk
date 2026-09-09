@@ -6,7 +6,13 @@ use core::fmt;
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::crypto::merkle::MerkleError;
-pub use miden_protocol::errors::{AccountError, AccountIdError, AssetError, NetworkIdError};
+pub use miden_protocol::errors::{
+    AccountError,
+    AccountIdError,
+    AccountPatchError,
+    AssetError,
+    NetworkIdError,
+};
 use miden_protocol::errors::{
     NoteError,
     PartialBlockchainError,
@@ -16,20 +22,15 @@ use miden_protocol::errors::{
     TransactionScriptError,
 };
 use miden_protocol::note::NoteId;
-use miden_protocol::transaction::TransactionId;
+use miden_protocol::transaction::{ProvenTransaction, TransactionId, TransactionInputs};
 // RE-EXPORTS
 // ================================================================================================
 pub use miden_standards::errors::CodeBuilderError;
 use miden_standards::tx_script::SendNotesTransactionScriptError;
-pub use miden_tx::AuthenticationError;
 use miden_tx::utils::HexParseError;
 use miden_tx::utils::serde::DeserializationError;
-use miden_tx::{
-    DataStoreError,
-    NoteCheckerError,
-    TransactionExecutorError,
-    TransactionProverError,
-};
+pub use miden_tx::{AuthenticationError, TransactionExecutorError};
+use miden_tx::{DataStoreError, NoteCheckerError, TransactionProverError};
 use thiserror::Error;
 
 use crate::note::NoteScreenerError;
@@ -67,8 +68,7 @@ impl fmt::Display for ErrorHint {
     }
 }
 
-// TODO: This is mostly illustrative but we could add a URL with fragemtn identifiers
-// for each error
+// TODO: This is mostly illustrative but we could add a URL with fragemtn identifiers for each error
 const TROUBLESHOOTING_DOC: &str =
     "https://docs.miden.xyz/builder/tools/clients/rust-client/cli/cli-troubleshooting";
 
@@ -84,6 +84,8 @@ pub enum ClientError {
     AccountAlreadyTracked(AccountId),
     #[error("account error")]
     AccountError(#[from] AccountError),
+    #[error("account patch error")]
+    AccountPatchError(#[from] AccountPatchError),
     #[error("account {0} is locked because the local state may be out of date with the network")]
     AccountLocked(AccountId),
     #[error(
@@ -126,6 +128,10 @@ pub enum ClientError {
         "cannot recover consumed note {0}: its nullifier has no position in the sync's transaction execution order"
     )]
     MissingConsumedNoteOrder(NoteId),
+    #[error(
+        "cannot continue iterating consumed notes: the store returned the note with details commitment {0}, which carries no consumption position"
+    )]
+    MissingNoteConsumptionPosition(Word),
     #[error("note with id {0} not found on chain")]
     NoteNotFoundOnChain(NoteId),
     #[error("failed to parse hex string")]
@@ -217,10 +223,25 @@ pub enum ClientError {
         #[source]
         source: Box<ClientError>,
     },
-    /// Generic carrier for feature-specific errors raised by an observer
-    /// or domain module. Keeps `ClientError` free of per-feature variants;
-    /// each feature provides its own `From<MyFeatureError> for ClientError`
-    /// returning `Observer(Box::new(err))`.
+    #[error(
+        "submission of transaction {} came back without a definite outcome, so the node may or \
+         may not have accepted it; nothing was recorded locally",
+        transaction.id()
+    )]
+    SubmissionOutcomeUnknown {
+        /// The transaction as submitted. Pass it back to
+        /// [`Client::submit_proven_transaction`](crate::Client::submit_proven_transaction)
+        /// alongside `transaction_inputs` to retry, or track `transaction.id()` instead.
+        transaction: Box<ProvenTransaction>,
+        /// The inputs the submission sealed. Required to retry: they cannot be recovered from the
+        /// proven transaction, which only commits to them.
+        transaction_inputs: Box<TransactionInputs>,
+        #[source]
+        source: RpcError,
+    },
+    /// Generic carrier for feature-specific errors raised by an observer or domain module. Keeps
+    /// `ClientError` free of per-feature variants; each feature provides its own
+    /// `From<MyFeatureError> for ClientError` returning `Observer(Box::new(err))`.
     #[error(transparent)]
     Observer(Box<dyn core::error::Error + Send + Sync + 'static>),
 }
@@ -228,9 +249,9 @@ pub enum ClientError {
 // OBSERVER FAN-OUT
 // ================================================================================================
 
-/// Logs a non-fatal observer failure without propagating it, so one observer
-/// can't abort the others or the surrounding sync/transaction step. Shared by
-/// the `NoteObserver` and `TransactionObserver` fan-out loops.
+/// Logs a non-fatal observer failure without propagating it, so one observer can't abort the others
+/// or the surrounding sync/transaction step. Shared by the `NoteObserver` and `TransactionObserver`
+/// fan-out loops.
 pub(crate) fn log_observer_failure(
     observer: &'static str,
     op: &str,
@@ -328,6 +349,20 @@ impl From<&ClientError> for Option<ErrorHint> {
                     docs_url: Some(TROUBLESHOOTING_DOC),
                 })
             },
+            ClientError::SubmissionOutcomeUnknown { transaction, .. } => {
+                let tx_id = transaction.id();
+                Some(ErrorHint {
+                    message: format!(
+                        "Do not build and submit a replacement for {tx_id}: that would be a \
+                         different transaction, and it would be rejected as a conflict if the \
+                         original landed. Either retry with the `transaction` and \
+                         `transaction_inputs` attached to this error, whose id is fixed so it \
+                         cannot double spend, or keep syncing and check `get_transactions` for \
+                         {tx_id} until it commits or expires."
+                    ),
+                    docs_url: Some(TROUBLESHOOTING_DOC),
+                })
+            },
             _ => None,
         }
     }
@@ -359,6 +394,14 @@ impl From<&TransactionRequestError> for Option<ErrorHint> {
             TransactionRequestError::P2IDNoteWithoutAsset => Some(ErrorHint {
                 message: "A pay-to-ID (P2ID) note transfers assets to a target account. \
                           Add at least one fungible or non-fungible asset to the note.".to_string(),
+                docs_url: Some(TROUBLESHOOTING_DOC),
+            }),
+            TransactionRequestError::SwapNoteWithZeroAsset(side) => Some(ErrorHint {
+                message: format!(
+                    "A swap note exchanges the offered asset for the requested one, and its \
+                     payback is a P2ID note carrying the requested asset. A zero {side} asset \
+                     leaves one side of that exchange empty. Set a non-zero amount."
+                ),
                 docs_url: Some(TROUBLESHOOTING_DOC),
             }),
             TransactionRequestError::OutputNoteSenderMismatch { expected, actual } => {

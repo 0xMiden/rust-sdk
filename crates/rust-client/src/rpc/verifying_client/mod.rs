@@ -172,9 +172,9 @@ impl<T: NodeRpcClient> NodeRpcClient for VerifyingRpcClient<T> {
     async fn get_transaction_encryption_key(
         &self,
     ) -> Result<AttestedTransactionEncryptionKey, RpcError> {
-        // Nothing to verify here: the request carries no payload to check the response against,
-        // and trust in the served key comes from the validator attestation, which the caller
-        // verifies via `AttestedTransactionEncryptionKey::verify`.
+        // Nothing to verify here: the request carries no payload to check the response against, and
+        // trust in the served key comes from the validator attestation, which the caller verifies
+        // via `AttestedTransactionEncryptionKey::verify`.
         self.0.get_transaction_encryption_key().await
     }
 

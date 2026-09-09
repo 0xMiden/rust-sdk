@@ -9,6 +9,10 @@
 #   --background     return once the node's RPC is ready, leaving it running (used by CI)
 #   --install-only   install the node binaries and exit (used by the CI build job)
 #   --print-rev      print the pinned node rev or version (CI cache key) and exit
+#
+# Env vars:
+#   MIDEN_VERIFICATION_BASE_FEE  genesis `verification_base_fee` (default 500; 0 disables fees)
+#   MIDEN_NUM_FUNDER_WALLETS     number of funder wallets a fee-charging genesis declares
 
 set -euo pipefail
 
@@ -35,9 +39,17 @@ VALIDATOR="127.0.0.1:50101"
 NTX="127.0.0.1:50301"
 PROVER_PORT=50051
 PROVER="127.0.0.1:$PROVER_PORT"
+# How long a single network transaction proof may take. The prover enforces it server-side and the
+# ntx-builder waits that long for the response. Shared so the two cannot drift apart: if the
+# ntx-builder waited less, it would abandon a request the prover is still working on, re-queue the
+# same proof behind it, and repeat until the note is dropped.
+PROVER_TIMEOUT=300s
 # Shared secret authorizing the ntx-builder to submit network transactions; the sequencer rejects
 # them unless both sides agree on it.
 NETWORK_TX_AUTH="${MIDEN_NETWORK_TX_AUTH:-miden-client-testing-ntx-secret}"
+# Genesis `verification_base_fee`. Every transaction pays out of its own account's vault, as on a
+# real chain. At 0 fees are never charged.
+VERIFICATION_BASE_FEE="${MIDEN_VERIFICATION_BASE_FEE:-500}"
 
 NODE_BINS=(miden-validator miden-node miden-ntx-builder miden-remote-prover)
 
@@ -115,32 +127,62 @@ fi
 echo "==> building gen-genesis"
 cargo build --release -p test-node-genesis --bin gen-genesis
 
-echo "==> generating genesis + bootstrapping"
+echo "==> generating genesis + bootstrapping (verification_base_fee = $VERIFICATION_BASE_FEE)"
 rm -rf "$DATA"
 # Each component opens its SQLite DB directly under its data dir and does not create it.
 mkdir -p "$LOG_DIR" "$DATA/validator" "$DATA/node" "$DATA/ntx-builder"
-"$GEN_GENESIS" "$DATA/genesis-config"
+MIDEN_VERIFICATION_BASE_FEE="$VERIFICATION_BASE_FEE" "$GEN_GENESIS" "$DATA/genesis-config"
+# Cleared up front so a fee-free run cannot leave a previous run's funders behind, and re-exposed
+# below once `miden-validator genesis` has generated them.
+rm -rf "$ROOT/data/funders"
 mkdir -p "$ROOT/data"
 cp "$DATA/genesis-config/tst_faucet.mac" "$ROOT/data/account.mac"
-# With AGGLAYER_GENESIS set, gen-genesis also emits the agglayer account files; expose them under
-# ./data so tests can load them via AGGLAYER_ACCOUNTS_DIR=./data.
-for mac in bridge_admin.mac ger_manager.mac bridge.mac agglayer_faucet.mac; do
-    if [ -f "$DATA/genesis-config/$mac" ]; then
-        cp "$DATA/genesis-config/$mac" "$ROOT/data/$mac"
-    fi
+# Expose the agglayer accounts under ./data, where the tests read them via AGGLAYER_ACCOUNTS_DIR.
+for mac in bridge_admin.mac ger_manager.mac bridge.mac agglayer_faucet.mac \
+           native_faucet.mac faucet_operator.mac; do
+    cp "$DATA/genesis-config/$mac" "$ROOT/data/$mac"
+done
+
+# The validator's signing key and the set's shared transaction encryption key are passed on the
+# command line. The genesis header commits to the signing key's public half, so the key-pair has to
+# exist before the genesis block is built. A fresh pair per run is fine because `$DATA` is wiped
+# above, so no earlier chain state depends on the previous one.
+VALIDATOR_KEYS="$("$BIN/miden-validator" keygen)"
+validator_key() {
+    printf '%s\n' "$VALIDATOR_KEYS" | awk -v field="$1:" '$1 == field { print $2; exit }'
+}
+SIGNING_KEY="$(validator_key signing-key)"
+VALIDATOR_PUBLIC_KEY="$(validator_key validator-key)"
+ENCRYPTION_KEY="$(validator_key encryption-key)"
+for key in SIGNING_KEY VALIDATOR_PUBLIC_KEY ENCRYPTION_KEY; do
+    [ -n "${!key}" ] || {
+        echo "error: miden-validator keygen did not report a $key" >&2
+        exit 1
+    }
 done
 
 {
     # Genesis generation is separate from bootstrap: `genesis` builds the block once, then every
     # component seeds its database from the resulting file.
     "$BIN/miden-validator" genesis --genesis-block-directory "$DATA/genesis" \
-        --accounts-directory "$DATA/accounts" --config "$DATA/genesis-config/genesis.toml"
+        --accounts-directory "$DATA/accounts" --config "$DATA/genesis-config/genesis.toml" \
+        --validator.key "$VALIDATOR_PUBLIC_KEY"
     "$BIN/miden-validator" bootstrap --data-directory "$DATA/validator" \
         --genesis "$DATA/genesis/genesis.dat"
     "$BIN/miden-node" bootstrap --data-directory "$DATA/node" --genesis "$DATA/genesis/genesis.dat"
     "$BIN/miden-ntx-builder" bootstrap --data-directory "$DATA/ntx-builder" \
         --genesis "$DATA/genesis/genesis.dat"
 } >"$LOG_DIR/bootstrap.log" 2>&1
+NATIVE_FAUCET_ID="$(sed -n 's/^Native faucet account id: //p' "$LOG_DIR/bootstrap.log")"
+echo "==> native faucet $NATIVE_FAUCET_ID, operator wallet in $ROOT/data/faucet_operator.mac"
+
+# Expose the wallets the node generated from the genesis `[[wallet]]` entries under ./data/funders,
+# where the tests read them via MIDEN_FUNDER_ACCOUNTS_DIR. A fee-free genesis declares none.
+if compgen -G "$DATA/accounts/wallet_*.mac" >/dev/null; then
+    mkdir -p "$ROOT/data/funders"
+    cp "$DATA"/accounts/wallet_*.mac "$ROOT/data/funders/"
+    echo "==> exposed $(ls "$ROOT/data/funders" | wc -l | tr -d ' ') funder wallets in $ROOT/data/funders"
+fi
 
 echo "==> starting components"
 : > "$PID_FILE"
@@ -166,6 +208,8 @@ trap 'echo; cleanup; exit 0' INT TERM
 # threshold storage-key material to start and ships no generator for it.
 STORAGE_KEY_DIR="$ROOT/scripts/testdata/insecure-golden-storage-key"
 start validator   "$BIN/miden-validator" start --listen "$VALIDATOR" --data-directory "$DATA/validator" \
+    --signing-key.hex "$SIGNING_KEY" \
+    --encryption-key.hex "$ENCRYPTION_KEY" \
     --storage-key.epoch "0909090909090909090909090909090909090909090909090909090909090909" \
     --storage-key.setup-context "$STORAGE_KEY_DIR/setup-context.wire" \
     --storage-key.public-key-set "$STORAGE_KEY_DIR/public-key-set.wire" \
@@ -175,13 +219,18 @@ sleep 2
 start sequencer   "$BIN/miden-node" sequencer --rpc.listen "$RPC" --data-directory "$DATA/node" \
     --validator.url "http://$VALIDATOR" --ntx-builder.url "http://$NTX" \
     --rpc.network-tx-auth-header-value "$NETWORK_TX_AUTH" \
-    --block.interval 3s --batch.interval 1s \
-    --rpc.rate-limit.burst-size 10000 --rpc.rate-limit.replenish-per-second 10000
-start prover      "$BIN/miden-remote-prover" --kind=transaction --port="$PROVER_PORT"
+    --block.interval 3s --batch.interval 1s
+# A network transaction's proof runs well past the prover's 60s default on a shared CI runner, and
+# the default capacity of 1 rejects the ntx-builder's retry outright, so it never converges.
+start prover      "$BIN/miden-remote-prover" --kind=transaction --port="$PROVER_PORT" \
+    --timeout "$PROVER_TIMEOUT" --capacity 8
 # Let the sequencer bind its RPC before the ntx-builder dials it.
 sleep 2
+# The ntx-builder's own default of 10s is shorter than the heaviest proofs take on CI, so it is
+# given the prover's full budget (see PROVER_TIMEOUT).
 start ntx-builder "$BIN/miden-ntx-builder" start --listen "$NTX" --rpc.url "http://$RPC" \
     --rpc.auth-header-value "$NETWORK_TX_AUTH" --tx-prover.url "http://$PROVER" \
+    --tx-prover.timeout "$PROVER_TIMEOUT" \
     --max-cycles "$((1 << 18))" \
     --data-directory "$DATA/ntx-builder"
 

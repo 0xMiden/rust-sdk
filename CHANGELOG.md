@@ -4,6 +4,8 @@
 
 ### Breaking Changes
 
+* [BREAKING][removal][rust] Removed the `miden_client::crypto::RandomCoin` re-export. Use a `rand` CSPRNG such as `ChaCha20Rng`, plus the new `miden_client::rng::{draw_felt, draw_word}` helpers where a `Felt` or `Word` is needed from a generator that does not implement `FeltRng` ([#2414](https://github.com/0xMiden/rust-sdk/pull/2414)).
+* [BREAKING][type][rust] `ClientBuilder::rng` is now only available under the `testing` feature and requires `CryptoRng + Send + Sync`; the marker trait `ClientFeltRng` is renamed to `ClientCryptoRng`. Outside of tests the client's RNG is always an OS-seeded `ChaCha20Rng`; drop the `rng()` call ([#2414](https://github.com/0xMiden/rust-sdk/pull/2414)).
 * [BREAKING][type][rust] Added the `TransactionRequestError::SwapNoteWithZeroAsset` variant, so exhaustive matches on `TransactionRequestError` must handle it ([#2459](https://github.com/0xMiden/rust-sdk/pull/2459)).
 
 ### Fixes

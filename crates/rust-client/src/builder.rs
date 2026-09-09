@@ -5,11 +5,11 @@ use alloc::vec::Vec;
 
 use miden_protocol::assembly::{DefaultSourceManager, SourceManagerSync};
 use miden_protocol::block::BlockNumber;
-use miden_protocol::crypto::rand::RandomCoin;
-use miden_protocol::{Felt, MAX_TX_EXECUTION_CYCLES, MIN_TX_EXECUTION_CYCLES};
+use miden_protocol::{MAX_TX_EXECUTION_CYCLES, MIN_TX_EXECUTION_CYCLES};
 use miden_tx::auth::TransactionAuthenticator;
 use miden_tx::{ExecutionOptions, LocalTransactionProver};
-use rand::RngExt;
+use rand::SeedableRng;
+use rand_chacha::ChaCha20Rng;
 
 #[cfg(any(feature = "tonic", feature = "std"))]
 use crate::alloc::string::ToString;
@@ -85,9 +85,10 @@ pub trait StoreFactory {
 /// - **Store** ([`Store`]): Provides persistence for accounts, notes, and transaction history.
 ///   Configure via [`store()`](Self::store).
 ///
-/// - **RNG** ([`FeltRng`](miden_protocol::crypto::rand::FeltRng)): Provides randomness for
-///   generating keys, serial numbers, and other cryptographic operations. If not provided, a random
-///   seed-based RNG is created automatically. Configure via [`rng()`](Self::rng).
+/// - **RNG** ([`ClientCryptoRng`](crate::ClientCryptoRng)): Provides randomness for generating
+///   keys, serial numbers, and other cryptographic operations. It is always created from a random
+///   seed, so that a caller cannot make the keys it generates predictable. Under the `testing`
+///   feature it can be overridden with `rng()`.
 ///
 /// - **Authenticator** ([`TransactionAuthenticator`]): Handles transaction signing when signatures
 ///   are requested from within the VM. Configure via [`authenticator()`](Self::authenticator).
@@ -114,7 +115,7 @@ pub struct ClientBuilder<AUTH> {
     rpc_api: Option<Arc<dyn NodeRpcClient>>,
     /// An optional store provided by the user.
     pub store: Option<StoreBuilder>,
-    /// An optional RNG provided by the user.
+    /// An optional RNG provided by the user. Only settable under the `testing` feature.
     rng: Option<ClientRngBox>,
     /// The authenticator provided by the user.
     authenticator: Option<Arc<AUTH>>,
@@ -337,6 +338,10 @@ where
     }
 
     /// Optionally provide a custom RNG.
+    ///
+    /// Restricted to the `testing` feature: the client's RNG generates secret keys and seals
+    /// transaction inputs, so outside of tests its output must not be predictable to a caller.
+    #[cfg(feature = "testing")]
     #[must_use]
     pub fn rng(mut self, rng: ClientRngBox) -> Self {
         self.rng = Some(rng);
@@ -471,12 +476,10 @@ where
         };
 
         // Use the provided RNG, or create a default one.
-        let rng = if let Some(user_rng) = self.rng {
+        let rng: ClientRngBox = if let Some(user_rng) = self.rng {
             user_rng
         } else {
-            let mut seed_rng = rand::rng();
-            let coin_seed: [u64; 4] = seed_rng.random();
-            Box::new(RandomCoin::new(coin_seed.map(Felt::new_unchecked).into()))
+            Box::new(ChaCha20Rng::from_rng(&mut rand::rng()))
         };
 
         let tx_prover: Arc<dyn TransactionProver + Send + Sync> =

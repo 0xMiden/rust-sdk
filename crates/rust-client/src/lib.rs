@@ -132,6 +132,7 @@ pub mod transaction;
 pub mod utils;
 
 pub mod builder;
+pub mod rng;
 
 #[cfg(feature = "testing")]
 mod test_utils;
@@ -292,7 +293,7 @@ pub mod crypto {
         NodeIndex,
         SparseMerklePath,
     };
-    pub use miden_protocol::crypto::rand::{FeltRng, RandomCoin};
+    pub use miden_protocol::crypto::rand::FeltRng;
 }
 
 /// Provides types for working with addresses within the Miden network.
@@ -374,7 +375,7 @@ use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::merkle::mmr::PartialMmr;
 use miden_protocol::crypto::rand::FeltRng;
 use miden_tx::auth::TransactionAuthenticator;
-use rand::{TryCryptoRng, TryRng};
+use rand::{CryptoRng, TryCryptoRng, TryRng};
 use rpc::NodeRpcClient;
 use store::Store;
 
@@ -558,14 +559,14 @@ impl<AUTH> Client<AUTH> {
 //   these bounds. (similar to TransactionAuthenticator)
 
 /// Marker trait for RNGs that can be shared across threads and used by the client.
-pub trait ClientFeltRng: FeltRng + Send + Sync {}
-impl<T> ClientFeltRng for T where T: FeltRng + Send + Sync {}
+pub trait ClientCryptoRng: CryptoRng + Send + Sync {}
+impl<T> ClientCryptoRng for T where T: CryptoRng + Send + Sync {}
 
 /// Boxed RNG trait object used by the client.
-pub type ClientRngBox = Box<dyn ClientFeltRng>;
+pub type ClientRngBox = Box<dyn ClientCryptoRng>;
 
-/// A wrapper around a [`FeltRng`] that implements the [`TryRng`] trait. This allows the user to
-/// pass their own generic RNG so that it's used by the client.
+/// A wrapper around a [`CryptoRng`] that implements the [`TryRng`] and [`FeltRng`] traits. This
+/// allows the user to pass their own generic RNG so that it's used by the client.
 pub struct ClientRng(ClientRngBox);
 
 impl ClientRng {
@@ -573,6 +574,7 @@ impl ClientRng {
         Self(rng)
     }
 
+    #[cfg(feature = "testing")]
     pub fn inner_mut(&mut self) -> &mut ClientRngBox {
         &mut self.0
     }
@@ -595,18 +597,16 @@ impl TryRng for ClientRng {
     }
 }
 
-// The client's RNG already backs key and serial-number generation, so callers are required to
-// supply cryptographically secure randomness. Asserting it here lets the RNG drive primitives that
-// demand a `CryptoRng`, such as sealing transaction inputs.
+// Holds because the inner generator is a `CryptoRng` and the delegation above is infallible.
 impl TryCryptoRng for ClientRng {}
 
 impl FeltRng for ClientRng {
     fn draw_element(&mut self) -> Felt {
-        self.0.draw_element()
+        rng::draw_felt(&mut self.0)
     }
 
     fn draw_word(&mut self) -> Word {
-        self.0.draw_word()
+        rng::draw_word(&mut self.0)
     }
 }
 

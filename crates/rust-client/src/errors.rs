@@ -194,11 +194,6 @@ pub enum ClientError {
     },
     #[error("invalid transaction request")]
     TransactionRequestError(#[from] TransactionRequestError),
-    #[error(
-        "the transaction executed without asking for approval, so it produced no transaction \
-         summary; submit it instead"
-    )]
-    TransactionAlreadyAuthorized,
     #[error("failed to build the send-notes transaction script")]
     SendNotesTransactionScriptError(#[from] SendNotesTransactionScriptError),
     #[error("transaction script error")]

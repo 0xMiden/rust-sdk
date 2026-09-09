@@ -5,22 +5,16 @@ use std::net::TcpListener;
 use std::time::Duration;
 
 use miden_client::assembly::CodeBuilder;
-use miden_client::auth::{
-    ApproverSet,
-    AuthMultisig,
-    AuthMultisigConfig,
-    AuthSchemeId,
-    AuthSecretKey,
-    AuthSingleSig,
-    RPO_FALCON_SCHEME_ID,
-};
+use miden_client::auth::{AuthSchemeId, AuthSecretKey, AuthSingleSig, RPO_FALCON_SCHEME_ID};
 use miden_client::keystore::Keystore;
 use miden_client::note::{Note, P2idNote};
+use miden_client::rpc::domain::account::AccountStorageRequirements;
 use miden_client::rpc::{GrpcError, RpcEndpoint, RpcError};
 use miden_client::store::{NoteFilter, TransactionFilter};
 use miden_client::transaction::{
     ChainAnchor,
     ChainAnchorError,
+    ForeignAccount,
     InputNote,
     LocalTransactionProver,
     ProvenTransaction,
@@ -472,9 +466,8 @@ async fn prover_fallback_pattern_allows_retry_with_different_prover() {
 // ================================================================================================
 
 /// Tests that the `ClientDataStore` lazy-loads foreign account inputs via RPC when the foreign
-/// account is not specified in the `TransactionRequestBuilder`, that capturing a transaction
-/// summary returns the loaded state with the map key it read, and that a foreign account declared
-/// as `ForeignAccount::Prefetched` is served without any RPC call.
+/// account is not specified in the `TransactionRequestBuilder`, and that a foreign account
+/// declared as [`ForeignAccount::Prefetched`] is served without any RPC call.
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn lazy_foreign_account_loading() {
@@ -599,44 +592,21 @@ async fn lazy_foreign_account_loading() {
         .unwrap();
     assert_eq!(cached.len(), 1, "foreign account code should be cached after lazy loading");
 
-    // A proposer captures the summary of a transaction its account cannot yet authorize, and gets
-    // the foreign state the execution loaded along with it: the FPI account, with the witness of
-    // the map key the procedure read, and nothing declared. A 1-of-1 multisig whose approver key
-    // the client does not hold stands in for the proposer's account.
-    rpc_api.prove_block();
-    client.sync_state().await.unwrap();
-    let approver = Approver::new(
-        AuthSecretKey::new_falcon512_poseidon2().public_key().to_commitment(),
-        AuthSchemeId::Falcon512Poseidon2,
-    );
-    let approvers = ApproverSet::new(vec![approver], 1).unwrap();
-    let multisig = AccountBuilder::new([7u8; 32])
-        .account_type(AccountType::Public)
-        .with_component(AuthMultisig::new(AuthMultisigConfig::new(approvers)).unwrap())
-        .with_component(BasicWallet)
-        .build_with_schema_commitment()
-        .unwrap();
-    client.add_account(&multisig, false).await.unwrap();
-    let request = TransactionRequestBuilder::new()
-        .custom_script(tx_script.clone())
-        .build()
-        .unwrap();
-    let anchor = client.chain_anchor_for_request(&request).await.unwrap();
-    let capture = client.execute_for_summary_at(multisig.id(), request, anchor).await.unwrap();
-    assert_eq!(capture.summary().block_commitment(), capture.anchor().block_commitment());
-    let (_, inputs, _) = capture.into_parts();
-    assert_eq!(inputs.len(), 1);
-    assert_eq!(inputs[0].id(), foreign_account_id);
-    assert!(
-        inputs[0]
-            .storage()
-            .maps()
-            .any(|map| map.get(&StorageMapKey::new(map_key)).is_some()),
-        "captured inputs should carry the storage map key the procedure read"
-    );
-
     // A prefetched foreign account is served from the request, so the node is never asked for
     // it: the staged failure would abort the transaction if any account fetch happened.
+    rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+    let requirements = AccountStorageRequirements::new([(
+        StorageSlotName::new("miden::testing::fpi::map").unwrap(),
+        &[StorageMapKey::new(map_key)],
+    )]);
+    let inputs = client
+        .get_foreign_account_inputs(
+            [ForeignAccount::public(foreign_account_id, requirements).unwrap()],
+            client.get_sync_height().await.unwrap(),
+        )
+        .await
+        .unwrap();
     rpc_api.fail_next_call(
         RpcEndpoint::GetAccount,
         RpcError::InvalidResponse("unexpected account fetch".into()),

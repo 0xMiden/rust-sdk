@@ -111,13 +111,6 @@ impl ClientDataStore {
         self.cache.replace_foreign_account_inputs(foreign_accounts);
     }
 
-    /// Returns the inputs of every foreign account this data store has served, each extended with
-    /// the storage map and vault witnesses resolved for it, so the set answers every foreign read
-    /// the execution made without a further fetch.
-    pub fn loaded_foreign_account_inputs(&self) -> Result<Vec<AccountInputs>, DataStoreError> {
-        self.cache.loaded_foreign_account_inputs()
-    }
-
     /// Registers note scripts so they can be served to the executor upon request.
     ///
     /// Scripts accumulate across calls (they are not cleared) so that a data store reused for
@@ -491,12 +484,10 @@ impl DataStore for ClientDataStore {
             return Ok(witness);
         }
 
-        // Try the local store. The witness is cached so that it counts among the foreign state
-        // this execution loaded.
+        // Try the local store.
         if let Some(witness) =
             self.get_local_storage_map_witness(account_id, map_root, map_key).await?
         {
-            self.cache.insert_storage_map_witness(map_root, map_key, witness.clone());
             return Ok(witness);
         }
 

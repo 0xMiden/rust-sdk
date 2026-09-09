@@ -8,7 +8,7 @@
 
 ### Fixes
 
-* [FIX][rust] `ForeignAccount` gained the `Prefetched(AccountInputs)` variant: a request can carry a foreign account's state and inclusion witness, and nothing is fetched for that account at execution time. `Client::get_foreign_account_inputs` is now public and fetches inputs for a set of declarations at a given block, and `Client::execute_for_summary` / `Client::execute_for_summary_at` run a request up to the authentication step and return an `AnchoredTransactionSummary`: the summary presented for signing, the anchor it binds, and the foreign account inputs the execution loaded with the storage map and vault witnesses it resolved. Together they let a transaction pinned to an older block execute after the node stopped serving account state there. Exhaustive matches on `ForeignAccount` must handle the new variant. Requests without prefetched accounts keep their serialized format ([#2524](https://github.com/0xMiden/rust-sdk/issues/2524)).
+* [FIX][rust] `ForeignAccount` gained the `Prefetched(AccountInputs)` variant: a request can carry a foreign account's state and inclusion witness, and nothing is fetched for that account at execution time. `Client::get_foreign_account_inputs` is now public and fetches inputs for a set of declarations at a given block. Together they let a transaction pinned to an older block execute after the node stopped serving account state there. Exhaustive matches on `ForeignAccount` must handle the new variant. Requests without prefetched accounts keep their serialized format ([#2524](https://github.com/0xMiden/rust-sdk/issues/2524)).
 
 ## 0.16.0 (2026-09-07)
 

@@ -2,9 +2,20 @@
 
 ## Unreleased
 
+### Breaking Changes
+
+* [BREAKING][type][rust] Flattened `SyncedNote`, it now carries `note_id`, `metadata` and `inclusion_proof` directly, replacing the nested `committed: CommittedNote` field. ([#2475](https://github.com/0xMiden/rust-sdk/pull/2475)).
+* [BREAKING][param][rust] `NoteObserver::observe` now takes a single `&SyncedNote` instead of a `&CommittedNote` and its `&NoteAttachments` ([#2475](https://github.com/0xMiden/rust-sdk/pull/2475)).
+
+### Features
+
+* [FEATURE][rust] The committed note passed to the `OnNoteReceived` callback now always reports the note's resolved attachment content, whether the `SyncNotes` response carried it verbatim or a `GetNotesById` follow-up resolved it ([#2475](https://github.com/0xMiden/rust-sdk/pull/2475)).
+* [FEATURE][rust] `NetworkNotePricer` is re-exported from `miden_client`, so pricing a network note does not require a direct dependency on `miden-tx` ([#2475](https://github.com/0xMiden/rust-sdk/pull/2475)).
+
 ### Fixes
 
 * [FIX][cli] `miden-client import` now rejects invocations without a file path instead of silently succeeding ([#2450](https://github.com/0xMiden/rust-sdk/pull/2450)).
+* [FIX][rust] `AccountStorageDetails::validate_against_request` now checks that a partial storage map covers every key that was requested for its slot, instead of comparing key counts. A response that repeats one key while omitting another is rejected instead of accepted ([#2475](https://github.com/0xMiden/rust-sdk/pull/2475)).
 
 ## 0.16.0 (2026-09-07)
 
@@ -13,8 +24,8 @@
 * [BREAKING][behavior][rust,web] `TransactionRequest` serialization now carries the pinned input notes, so a request serialized by an earlier version cannot be deserialized by this one and vice versa. Rebuild any request that is stored or in flight across the upgrade ([#2437](https://github.com/0xMiden/rust-sdk/pull/2437)).
 * [BREAKING][removal][rust] Removed `Client::try_get_account`. Use `Client::get_account` and handle the `None` case, or `Client::account_reader` for existence checks and single-field reads that don't need the full materialized account ([#2362](https://github.com/0xMiden/rust-sdk/pull/2362)).
 * [BREAKING][type][rust] `StorageMapEntries::EntriesWithProofs(Vec<SmtProof>)` is replaced by `StorageMapEntries::PartialMap { map_keys, partial_smt }`. Read a value by hashing its raw key and calling `PartialSmt::get_value`. The enum also gained a `LimitExceeded` variant, replacing `AccountStorageMapDetails::too_many_entries` ([#2431](https://github.com/0xMiden/rust-sdk/pull/2431)).
-* [BREAKING][type][rust] `SyncedNote` is flattened: it now carries `note_id`, `metadata`, `inclusion_proof`, `details: Option<NoteDetails>` and `attachments: NoteAttachments` directly, replacing the nested `committed: CommittedNote` and `content: Option<ResolvedNoteContent>` fields. `ResolvedNoteContent` is removed. Attachments are no longer optional, a note whose metadata advertises none carries an empty set, so "no attachments" and "attachments not resolved" are no longer the same value ([#2431](https://github.com/0xMiden/rust-sdk/pull/2431)).
-* [BREAKING][param][rust] `NoteObserver::observe` takes a single `&SyncedNote` instead of the committed note and its optional attachments. The synced note bundles the committed record, the resolved attachments (empty for a note that carries none) and, for a fetched public note, its body ([#2431](https://github.com/0xMiden/rust-sdk/pull/2431)).
+* [BREAKING][type][rust] `SyncedNote` splits the content it carries into two fields, `details: Option<NoteDetails>` and `attachments: NoteAttachments`, replacing the previous `content: Option<ResolvedNoteContent>`; `SyncedNote::new` takes them as separate arguments. `ResolvedNoteContent` is removed. Attachments are no longer optional, a note whose metadata advertises none carries an empty set, so "no attachments" and "attachments not resolved" are no longer the same value ([#2431](https://github.com/0xMiden/rust-sdk/pull/2431)).
+* [BREAKING][param][rust] `NoteObserver::observe` takes `&NoteAttachments` instead of `Option<&NoteAttachments>`. A note that carries no attachments is reported with an empty set ([#2431](https://github.com/0xMiden/rust-sdk/pull/2431)).
 * [BREAKING][removal][rust] `impl TryFrom<proto::rpc::AccountResponse> for AccountProof` is removed. Use `proto::rpc::account_response::AccountDetails::into_domain` with the `AccountStorageRequirements` the request was built from ([#2431](https://github.com/0xMiden/rust-sdk/pull/2431)).
 * [BREAKING][behavior][rust] Foreign `AccountInputs` keep a fetched asset list only when it hashes to the account header's vault root; otherwise (omitted because unchanged, capped as oversize, or malformed) they carry a root-only partial vault, and any assets the foreign code reads are resolved during execution as per-asset witnesses — served from the local store first, falling back to fetching the vault via RPC at the transaction reference block and verifying it against the required root ([#2417](https://github.com/0xMiden/rust-sdk/pull/2417)).
 * [BREAKING][behavior][rust] Foreign `AccountInputs` likewise keep a fetched storage-map entry list only when it hashes to the slot's root in the storage header; otherwise (capped as oversize, or malformed) the map is carried root-only and any keys the foreign code reads are resolved during execution as lazy per-key witnesses, instead of syncing an oversized map's full history from genesis before executing ([#2417](https://github.com/0xMiden/rust-sdk/pull/2417)).

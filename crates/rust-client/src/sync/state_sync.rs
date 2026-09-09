@@ -1200,8 +1200,12 @@ impl StateSync {
                 }
             }
 
+            // The screener works on the sync record, which carries the note's resolved attachments
+            // so that a screener implementation can read them.
+            let committed = note.to_committed_note();
+
             let SyncedNote {
-                note_id,
+                note_id: _,
                 metadata,
                 inclusion_proof,
                 details,
@@ -1211,17 +1215,9 @@ impl StateSync {
             // For a public note, pair its fetched body with the inclusion proof and metadata from
             // the sync record (the single source of truth) to build the candidate record.
             let public_note = details.map(|details| {
-                let state = UnverifiedNoteState {
-                    metadata,
-                    inclusion_proof: inclusion_proof.clone(),
-                }
-                .into();
+                let state = UnverifiedNoteState { metadata, inclusion_proof }.into();
                 InputNoteRecord::new(details, attachments.clone(), None, state)
             });
-
-            // The screener and the note tracker work on the sync record alone, with attachments
-            // supplied separately, so hand them the record without its resolved content.
-            let committed = CommittedNote::new(note_id, metadata, inclusion_proof);
 
             match self.note_screener.on_note_received(committed, public_note).await? {
                 NoteUpdateAction::Commit(committed_note) => {

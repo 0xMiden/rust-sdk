@@ -388,13 +388,9 @@ use crate::transaction::TransactionProver;
 pub struct Client<AUTH> {
     /// The client's store, which provides a way to write and read entities to provide persistence.
     store: Arc<dyn Store>,
-    /// The client's random number generator for non-secret values: note serial
-    /// numbers, script arguments, account seeds, etc. The caller can override it,
-    /// so it must not be used for secret keys; see [`Client::secure_rng`] for those.
+    /// An instance of [`FeltRng`] which provides randomness tools for generating new keys,
+    /// serial numbers, etc.
     rng: ClientRng,
-    /// The client's random number generator for secret values: secret keys and the
-    /// ephemeral key and nonce that seal transaction inputs.
-    secure_rng: ClientRng,
     /// An instance of [`NodeRpcClient`] which provides a way for the client to connect to the
     /// Miden node.
     rpc_api: Arc<dyn NodeRpcClient>,
@@ -487,17 +483,9 @@ where
     }
 
     /// Returns a reference to the client's random number generator. This can be used to generate
-    /// randomness for non-secret values such as serial numbers, script arguments, etc.
-    /// Use [`Client::secure_rng`] for generating randomness for secret values.
+    /// randomness for various purposes such as serial numbers, keys, etc.
     pub fn rng(&mut self) -> &mut ClientRng {
         &mut self.rng
-    }
-
-    /// Returns a reference to the client's secure random number generator. This can be used to
-    /// generate randomness for secret values such as account keys, and the nonces that seal
-    /// transaction inputs.
-    pub fn secure_rng(&mut self) -> &mut ClientRng {
-        &mut self.secure_rng
     }
 
     pub fn prover(&self) -> Arc<dyn TransactionProver + Send + Sync> {

@@ -85,9 +85,9 @@ pub trait StoreFactory {
 /// - **Store** ([`Store`]): Provides persistence for accounts, notes, and transaction history.
 ///   Configure via [`store()`](Self::store).
 ///
-/// - **RNG** ([`ClientCryptoRng`](crate::ClientCryptoRng)): Provides randomness for note serial
-///   numbers, script arguments and account seeds. If not provided, a random seed-based RNG is
-///   created automatically. Configure via [`rng()`](Self::rng).
+/// - **RNG** ([`ClientCryptoRng`](crate::ClientCryptoRng)): Provides randomness for generating
+///   keys, serial numbers, and other cryptographic operations. If not provided, a random seed-based
+///   RNG is created automatically. Configure via [`rng()`](Self::rng).
 ///
 /// - **Authenticator** ([`TransactionAuthenticator`](miden_tx::auth::TransactionAuthenticator)):
 ///   Handles transaction signing when signatures are requested from within the VM. Configure via
@@ -337,10 +337,7 @@ where
         self
     }
 
-    /// Optionally provide a custom RNG for note serial numbers, script arguments and account
-    /// seeds. Defaults to `ChaCha20Rng`. Secret keys and transaction input sealing
-    /// use a separate, non-overridable generator; see
-    /// [`Client::secure_rng`](crate::Client::secure_rng).
+    /// Optionally provide a custom RNG.
     #[must_use]
     pub fn rng(mut self, rng: ClientRngBox) -> Self {
         self.rng = Some(rng);
@@ -483,10 +480,6 @@ where
             Box::new(ChaCha20Rng::from_rng(&mut rand::rng()))
         };
 
-        // Create a separate, secure RNG for the sealing of transaction inputs and secret key
-        // generation.
-        let secure_rng: ClientRngBox = Box::new(ChaCha20Rng::from_rng(&mut rand::rng()));
-
         // Set default prover if not provided
         let tx_prover: Arc<dyn TransactionProver + Send + Sync> =
             self.tx_prover.unwrap_or_else(|| Arc::new(LocalTransactionProver::default()));
@@ -529,7 +522,6 @@ where
         Ok(Client {
             store,
             rng: ClientRng::new(rng),
-            secure_rng: ClientRng::new(secure_rng),
             rpc_api,
             tx_prover,
             authenticator: self.authenticator,

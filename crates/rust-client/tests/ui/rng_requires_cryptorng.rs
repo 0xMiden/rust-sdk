@@ -1,7 +1,7 @@
 //! Do not delete: this fixture is driven by the `builder::tests::ui` test.
 //!
 //! `ClientBuilder::rng` must reject a generator that is not a `CryptoRng`, even when it
-//! implements `FeltRng`. See `Client::secure_rng` for why the bound is there.
+//! implements `FeltRng`.
 
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;

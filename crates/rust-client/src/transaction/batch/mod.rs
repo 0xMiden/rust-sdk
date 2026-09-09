@@ -200,7 +200,7 @@ where
             .map(|tx_result| {
                 let executed = tx_result.executed_transaction();
                 seal_transaction_inputs(
-                    &mut self.client.secure_rng,
+                    &mut self.client.rng,
                     &key,
                     executed.id(),
                     executed.tx_inputs(),

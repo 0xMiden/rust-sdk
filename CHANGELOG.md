@@ -6,6 +6,7 @@
 
 * [BREAKING][type][rust] Flattened `SyncedNote`, it now carries `note_id`, `metadata` and `inclusion_proof` directly, replacing the nested `committed: CommittedNote` field. ([#2475](https://github.com/0xMiden/rust-sdk/pull/2475)).
 * [BREAKING][param][rust] `NoteObserver::observe` now takes a single `&SyncedNote` instead of a `&CommittedNote` and its `&NoteAttachments` ([#2475](https://github.com/0xMiden/rust-sdk/pull/2475)).
+* [BREAKING][type][rust] Added the `TransactionRequestError::SwapNoteWithZeroAsset` variant, so exhaustive matches on `TransactionRequestError` must handle it ([#2459](https://github.com/0xMiden/rust-sdk/pull/2459)).
 
 ### Features
 
@@ -14,8 +15,10 @@
 
 ### Fixes
 
+* [FIX][rust] Added validation of cached transaction encryption keys during deserialization. Unsupported encryption schemes and empty or oversized key IDs are rejected before reading the key ID bytes ([#2411](https://github.com/0xMiden/rust-sdk/pull/2411)).
 * [FIX][cli] `miden-client import` now rejects invocations without a file path instead of silently succeeding ([#2450](https://github.com/0xMiden/rust-sdk/pull/2450)).
 * [FIX][rust] `AccountStorageDetails::validate_against_request` now checks that a partial storage map covers every key that was requested for its slot, instead of comparing key counts. A response that repeats one key while omitting another is rejected instead of accepted ([#2475](https://github.com/0xMiden/rust-sdk/pull/2475)).
+* [FIX][rust] `TransactionRequestBuilder::build_swap` and `build_pswap_create` now reject a zero-amount asset on either side of the exchange. A zero requested asset produced a payback P2ID note carrying nothing, and a zero offered asset produced a note whose consumer pays and receives nothing ([#2459](https://github.com/0xMiden/rust-sdk/pull/2459)).
 
 ## 0.16.0 (2026-09-07)
 

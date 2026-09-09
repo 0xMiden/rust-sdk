@@ -1,10 +1,11 @@
 use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::ToString;
+use alloc::vec::Vec;
 
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::merkle::mmr::PartialMmr;
-use miden_protocol::transaction::PartialBlockchain;
+use miden_protocol::transaction::{AccountInputs, PartialBlockchain, TransactionSummary};
 use miden_protocol::{MAX_INPUT_NOTES_PER_TX, Word};
 use miden_tx::utils::serde::{
     ByteReader,
@@ -200,6 +201,69 @@ pub enum ChainAnchorError {
 
 // TESTS
 // ================================================================================================
+
+// ANCHORED TRANSACTION SUMMARY
+// ================================================================================================
+
+/// What a party asked to authorize a transaction needs to reproduce the [`TransactionSummary`] it
+/// is signing: the [`ChainAnchor`] the summary binds, the foreign account state the execution
+/// loaded at the anchor's block, and the summary itself. Produced by
+/// [`Client::execute_for_summary_at`](crate::Client::execute_for_summary_at).
+#[derive(Debug, Clone, PartialEq)]
+pub struct AnchoredTransactionSummary {
+    anchor: ChainAnchor,
+    foreign_account_inputs: Vec<AccountInputs>,
+    summary: TransactionSummary,
+}
+
+impl AnchoredTransactionSummary {
+    /// Bundles `summary` with the anchor it binds and the foreign account inputs loaded there.
+    pub fn new(
+        anchor: ChainAnchor,
+        foreign_account_inputs: Vec<AccountInputs>,
+        summary: TransactionSummary,
+    ) -> Self {
+        Self { anchor, foreign_account_inputs, summary }
+    }
+
+    /// Returns the anchor pinning the reference block the summary binds.
+    pub fn anchor(&self) -> &ChainAnchor {
+        &self.anchor
+    }
+
+    /// Returns the foreign account inputs the execution loaded at the anchor's block, each
+    /// complete with the storage map and vault witnesses it resolved.
+    pub fn foreign_account_inputs(&self) -> &[AccountInputs] {
+        &self.foreign_account_inputs
+    }
+
+    /// Returns the summary the account's authentication procedure presented for approval.
+    pub fn summary(&self) -> &TransactionSummary {
+        &self.summary
+    }
+
+    /// Consumes the bundle and returns its parts.
+    pub fn into_parts(self) -> (ChainAnchor, Vec<AccountInputs>, TransactionSummary) {
+        (self.anchor, self.foreign_account_inputs, self.summary)
+    }
+}
+
+impl Serializable for AnchoredTransactionSummary {
+    fn write_into<W: ByteWriter>(&self, target: &mut W) {
+        self.anchor.write_into(target);
+        self.foreign_account_inputs.write_into(target);
+        self.summary.write_into(target);
+    }
+}
+
+impl Deserializable for AnchoredTransactionSummary {
+    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
+        let anchor = ChainAnchor::read_from(source)?;
+        let foreign_account_inputs = Vec::<AccountInputs>::read_from(source)?;
+        let summary = TransactionSummary::read_from(source)?;
+        Ok(Self { anchor, foreign_account_inputs, summary })
+    }
+}
 
 #[cfg(test)]
 mod tests {

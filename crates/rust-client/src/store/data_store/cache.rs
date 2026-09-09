@@ -3,12 +3,19 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use miden_protocol::Word;
-use miden_protocol::account::{AccountId, PartialAccount, StorageMapKey, StorageMapWitness};
+use miden_protocol::account::{
+    AccountId,
+    PartialAccount,
+    PartialStorage,
+    PartialStorageMap,
+    StorageMapKey,
+    StorageMapWitness,
+};
 use miden_protocol::asset::{AssetId, AssetWitness};
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::note::NoteScript;
 use miden_protocol::transaction::{AccountInputs, PartialBlockchain};
-use miden_tx::TransactionMastStore;
+use miden_tx::{DataStoreError, TransactionMastStore};
 
 use crate::utils::RwLock;
 
@@ -55,12 +62,12 @@ pub(super) struct DataStoreCache {
     /// Reference block headers and partial blockchains served to the executor. Populated under
     /// the same conditions as `partial_accounts`.
     blockchains: RwLock<BlockchainCache>,
-    /// Vault asset witnesses served to the executor. The requested keys always include the fee
-    /// asset key, so this memoizes the per-execution fee witness lookup across a screening batch.
-    /// Populated under the same conditions as `partial_accounts`.
+    /// Vault asset witnesses served to the executor. A witness is fixed by its (vault root, asset)
+    /// key, so caching is always safe; it memoizes the per-execution fee witness lookup across a
+    /// screening batch and records the vault reads an execution made.
     vault_asset_witnesses: RwLock<VaultWitnessCache>,
-    /// Whether `partial_accounts`, `blockchains` and `vault_asset_witnesses` are used at all.
-    /// When unset, their getters miss and their setters do nothing, so the maps stay empty.
+    /// Whether `partial_accounts` and `blockchains` are used at all. When unset, their getters
+    /// miss and their setters do nothing, so the maps stay empty.
     cache_execution_inputs: bool,
     /// The transaction reference block number.
     ref_block: RwLock<Option<BlockNumber>>,
@@ -81,7 +88,7 @@ impl DataStoreCache {
         }
     }
 
-    /// Enables the transaction-input and vault-asset-witness caches.
+    /// Enables the transaction-input caches.
     pub(super) fn enable_execution_input_cache(&mut self) {
         self.cache_execution_inputs = true;
     }
@@ -210,17 +217,11 @@ impl DataStoreCache {
 
     /// Returns the cached witnesses for the given vault root and requested asset IDs, or `None`
     /// if any of them is missing.
-    ///
-    /// Returns `None` if the execution-input cache is disabled.
     pub(super) fn get_vault_asset_witnesses(
         &self,
         vault_root: Word,
         asset_ids: &BTreeSet<AssetId>,
     ) -> Option<Vec<AssetWitness>> {
-        if !self.cache_execution_inputs {
-            return None;
-        }
-
         let cache = self.vault_asset_witnesses.read();
         asset_ids
             .iter()
@@ -230,22 +231,81 @@ impl DataStoreCache {
 
     /// Caches the witnesses resolved for the given vault root and requested asset IDs, matched
     /// positionally.
-    ///
-    /// Does nothing if the execution-input cache is disabled.
     pub(super) fn insert_vault_asset_witnesses(
         &self,
         vault_root: Word,
         asset_ids: &BTreeSet<AssetId>,
         witnesses: &[AssetWitness],
     ) {
-        if !self.cache_execution_inputs {
-            return;
-        }
-
         let mut cache = self.vault_asset_witnesses.write();
         for (asset_id, witness) in asset_ids.iter().zip(witnesses) {
             cache.insert((vault_root, *asset_id), witness.clone());
         }
+    }
+
+    /// Returns the inputs of every cached foreign account, each extended with the storage map and
+    /// vault witnesses cached for its roots. A witness resolved lazily during execution is thereby
+    /// folded back into the account it belongs to, so the returned inputs answer every foreign
+    /// read the execution made without a further fetch.
+    pub(super) fn loaded_foreign_account_inputs(
+        &self,
+    ) -> Result<Vec<AccountInputs>, DataStoreError> {
+        let map_witnesses = self.storage_map_witnesses.read();
+        let vault_witnesses = self.vault_asset_witnesses.read();
+
+        self.foreign_account_inputs
+            .read()
+            .values()
+            .cloned()
+            .map(|inputs| {
+                let (partial_account, account_witness) = inputs.into_parts();
+                let (id, mut vault, storage, code, nonce, seed) = partial_account.into_parts();
+                let (_, header, mut maps) = storage.into_parts();
+
+                // Maps the fetch left root-only are absent from `maps`; a witness for such a root
+                // seeds the map, so the merged inputs open the key without a fetch.
+                let map_roots: BTreeSet<Word> = header.map_slot_roots().collect();
+                for ((map_root, _), witness) in map_witnesses.iter() {
+                    if !map_roots.contains(map_root) {
+                        continue;
+                    }
+                    maps.entry(*map_root)
+                        .or_insert_with(|| PartialStorageMap::new(*map_root))
+                        .add(witness.clone())
+                        .map_err(|err| {
+                            DataStoreError::other_with_source(
+                                "failed to fold a storage map witness into foreign account inputs",
+                                err,
+                            )
+                        })?;
+                }
+                for ((vault_root, _), witness) in vault_witnesses.iter() {
+                    if *vault_root == vault.root() {
+                        vault.add(witness.clone()).map_err(|err| {
+                            DataStoreError::other_with_source(
+                                "failed to fold a vault witness into foreign account inputs",
+                                err,
+                            )
+                        })?;
+                    }
+                }
+
+                let storage = PartialStorage::new(header, maps.into_values()).map_err(|err| {
+                    DataStoreError::other_with_source(
+                        "failed to rebuild foreign account storage",
+                        err,
+                    )
+                })?;
+                let partial_account = PartialAccount::new(id, nonce, code, storage, vault, seed)
+                    .map_err(|err| {
+                        DataStoreError::other_with_source(
+                            "failed to rebuild foreign partial account",
+                            err,
+                        )
+                    })?;
+                Ok(AccountInputs::new(partial_account, account_witness))
+            })
+            .collect()
     }
 
     /// Returns the cached transaction reference block, if set.

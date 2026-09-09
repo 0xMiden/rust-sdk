@@ -122,7 +122,7 @@ pub mod batch;
 pub use batch::{BatchBuilder, BatchBuilderError};
 
 mod chain_anchor;
-pub use chain_anchor::{ChainAnchor, ChainAnchorError};
+pub use chain_anchor::{AnchoredTransactionSummary, ChainAnchor, ChainAnchorError};
 
 #[cfg(feature = "dap")]
 mod dap_executor;
@@ -407,6 +407,61 @@ where
         Ok(result)
     }
 
+    /// Executes `transaction_request` at the client's current sync height up to the point where
+    /// the account's authentication procedure asks for approval, and returns what the parties
+    /// asked to approve need: the [`ChainAnchor`] captured for the request, the foreign account
+    /// state the execution loaded at that block, and the [`TransactionSummary`] presented for
+    /// signing. Nothing is proven, submitted, or persisted.
+    ///
+    /// See [`Self::execute_for_summary_at`] for the details and errors.
+    pub async fn execute_for_summary(
+        &self,
+        account_id: AccountId,
+        transaction_request: TransactionRequest,
+    ) -> Result<AnchoredTransactionSummary, ClientError> {
+        let anchor = self.chain_anchor_for_request(&transaction_request).await?;
+        self.execute_for_summary_at(account_id, transaction_request, anchor).await
+    }
+
+    /// Executes `transaction_request` at `anchor` up to the point where the account's
+    /// authentication procedure asks for approval, and returns the [`TransactionSummary`] it
+    /// presented together with `anchor` and the foreign account state the execution loaded,
+    /// complete with every storage map and vault witness it resolved. Declared as
+    /// [`ForeignAccount::Prefetched`], that state lets any party reproduce the summary at `anchor`
+    /// without the node serving account state at the anchor's block. Nothing is proven,
+    /// submitted, or persisted.
+    ///
+    /// # Errors
+    ///
+    /// - Returns [`ClientError::TransactionAlreadyAuthorized`] if the transaction executed without
+    ///   asking for approval, so no summary exists; submit it instead.
+    /// - Returns the execution error for any other failure.
+    pub async fn execute_for_summary_at(
+        &self,
+        account_id: AccountId,
+        transaction_request: TransactionRequest,
+        anchor: ChainAnchor,
+    ) -> Result<AnchoredTransactionSummary, ClientError> {
+        let run = self
+            .run_transaction(
+                account_id,
+                transaction_request,
+                TransactionExecutionMode::Standard,
+                Some(Box::new(anchor.clone())),
+            )
+            .await;
+
+        match run.outcome {
+            Ok(_) => Err(ClientError::TransactionAlreadyAuthorized),
+            Err(ClientError::TransactionExecutorError(TransactionExecutorError::Unauthorized(
+                summary,
+            ))) => {
+                Ok(AnchoredTransactionSummary::new(anchor, run.loaded_foreign_accounts, *summary))
+            },
+            Err(err) => Err(err),
+        }
+    }
+
     /// Captures a [`ChainAnchor`] at the client's current sync height, tracking the blocks in
     /// `tracked_blocks` (in addition to the reference block itself, which needs no tracking) so
     /// that transactions consuming authenticated notes created in those blocks can later execute
@@ -539,17 +594,63 @@ where
         execution_mode: TransactionExecutionMode,
         anchor: Option<Box<ChainAnchor>>,
     ) -> Result<TransactionResult, ClientError> {
+        self.run_transaction(account_id, transaction_request, execution_mode, anchor)
+            .await
+            .outcome
+    }
+
+    /// Runs a transaction on a fresh data store and reports the outcome together with the foreign
+    /// account state the run loaded. The kernel authenticates a transaction after every foreign
+    /// load, so that state is complete even when authentication rejected the transaction.
+    async fn run_transaction(
+        &self,
+        account_id: AccountId,
+        transaction_request: TransactionRequest,
+        execution_mode: TransactionExecutionMode,
+        anchor: Option<Box<ChainAnchor>>,
+    ) -> TransactionRun {
+        let mut data_store = ClientDataStore::new(self.store.clone(), self.rpc_api.clone());
+        if let Some(anchor) = &anchor {
+            data_store = data_store.with_chain_anchor((**anchor).clone());
+        }
+
+        let outcome = self
+            .execute_on(
+                &data_store,
+                account_id,
+                transaction_request,
+                execution_mode,
+                anchor.as_deref(),
+            )
+            .await;
+        let loaded_foreign_accounts = match data_store.loaded_foreign_account_inputs() {
+            Ok(inputs) => inputs,
+            Err(err) => {
+                return TransactionRun {
+                    outcome: Err(err.into()),
+                    loaded_foreign_accounts: Vec::new(),
+                };
+            },
+        };
+
+        TransactionRun { outcome, loaded_foreign_accounts }
+    }
+
+    /// Prepares `transaction_request`, populates `data_store` for it, and executes it with the
+    /// selected program executor.
+    async fn execute_on(
+        &self,
+        data_store: &ClientDataStore,
+        account_id: AccountId,
+        transaction_request: TransactionRequest,
+        execution_mode: TransactionExecutionMode,
+        anchor: Option<&ChainAnchor>,
+    ) -> Result<TransactionResult, ClientError> {
         let account: PartialAccount =
             self.get_native_account_record(account_id).await?.try_into()?;
 
-        let prep = self
-            .prepare_transaction(&account, transaction_request, anchor.as_deref())
-            .await?;
+        let prep = self.prepare_transaction(&account, transaction_request, anchor).await?;
 
-        let mut data_store = ClientDataStore::new(self.store.clone(), self.rpc_api.clone());
-        if let Some(anchor) = anchor {
-            data_store = data_store.with_chain_anchor(*anchor);
-        }
         data_store.register_note_scripts(prep.output_note_scripts());
         for fpi_account in &prep.foreign_account_inputs {
             data_store.mast_store().load_account_code(fpi_account.code());
@@ -562,7 +663,7 @@ where
         if prep.ignore_invalid_notes {
             notes = self
                 .get_valid_input_notes(
-                    &data_store,
+                    data_store,
                     account.id(),
                     prep.block_num,
                     notes,
@@ -573,13 +674,13 @@ where
 
         let executed_transaction = match execution_mode {
             TransactionExecutionMode::Standard => {
-                self.build_executor(&data_store)?
+                self.build_executor(data_store)?
                     .execute_transaction(account_id, prep.block_num, notes, prep.tx_args)
                     .await?
             },
             #[cfg(feature = "dap")]
             TransactionExecutionMode::Dap => {
-                self.build_dap_executor(&data_store)?
+                self.build_dap_executor(data_store)?
                     .execute_transaction(account_id, prep.block_num, notes, prep.tx_args)
                     .await?
             },
@@ -1204,8 +1305,8 @@ where
     /// [`ForeignAccount::Prefetched`], they are served from the request instead of being fetched.
     /// Under [`Self::execute_transaction_at`] the reference block is the anchor's block; otherwise
     /// it is the sync height at execution time, so do not sync between fetching and executing.
-    /// Only the given accounts are fetched; this method does not discover the accounts a
-    /// transaction loads, such as faucets whose asset callbacks it triggers.
+    /// Only the given accounts are fetched, with the storage map keys their requirements name.
+    /// [`Self::execute_for_summary_at`] discovers accounts and keys by executing instead.
     ///
     /// # Errors
     ///
@@ -1481,6 +1582,12 @@ pub enum TransactionStoreUpdateError {
 
 // HELPERS
 // ================================================================================================
+
+/// The outcome of running a transaction, together with the foreign account state the run loaded.
+struct TransactionRun {
+    outcome: Result<TransactionResult, ClientError>,
+    loaded_foreign_accounts: Vec<AccountInputs>,
+}
 
 #[derive(Clone, Copy, Debug)]
 enum TransactionExecutionMode {

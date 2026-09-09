@@ -365,6 +365,18 @@ let request = TransactionRequestBuilder::new()
     .build()?;
 ```
 
-Declaring an account ID more than once keeps the last declaration, so prefetched inputs added after a `ForeignAccount::public` declaration for the same account replace it. Only the accounts you pass are fetched: include every account reached through foreign procedure calls and every faucet with asset callbacks enabled whose asset the transaction moves, which on a fee-charging chain can include the fee faucet. Storage map keys and vault assets absent from the inputs are still resolved lazily during execution.
+Declaring an account ID more than once keeps the last declaration, so prefetched inputs added after a `ForeignAccount::public` declaration for the same account replace it. Only the accounts you pass are fetched, with the storage map keys their requirements name: include every account reached through foreign procedure calls and every faucet with asset callbacks enabled whose asset the transaction moves, which on a fee-charging chain can include the fee faucet. Storage map keys and vault assets absent from the inputs are still resolved lazily during execution.
+
+When the accounts or keys are not known up front, let an execution discover them. `Client::execute_for_summary_at` runs the request at a `ChainAnchor` up to the point where the account's authentication procedure asks for approval, and returns an `AnchoredTransactionSummary`: the summary presented for signing, the anchor it binds, and the foreign account inputs the execution loaded with every storage map and vault witness it resolved folded in. `Client::execute_for_summary` captures the anchor at the sync height first. A multisig proposer ships the bundle, and a cosigner declares its inputs as prefetched to reproduce the summary at the anchor:
+
+```rust
+let capture = client.execute_for_summary(account_id, request).await?;
+let (anchor, inputs, summary) = capture.into_parts();
+
+// A cosigner, possibly after the node pruned the anchor's block:
+let request = builder.foreign_accounts(inputs).build()?;
+let reproduced = client.execute_for_summary_at(account_id, request, anchor).await?;
+assert_eq!(reproduced.summary().to_commitment(), summary.to_commitment());
+```
 
 Prefetching is what lets a request executed with `Client::execute_transaction_at` run after the node stopped serving account state at the anchor's block: fetch the inputs at `ChainAnchor::block_num` while the node still has them, and ship them with the anchor.

@@ -349,7 +349,14 @@ async fn send<AUTH: Keystore + Sync>(
     let note: Note = note_record
         .try_into()
         .map_err(|e| CliError::from(ClientError::NoteRecordConversionError(e)))?;
-    let (_netid, address) = Address::decode(address).map_err(|e| CliError::Input(e.to_string()))?;
+    let (address_network_id, address) =
+        Address::decode(address).map_err(|e| CliError::Input(e.to_string()))?;
+    let client_network_id = client.network_id().await?;
+    if address_network_id != client_network_id {
+        return Err(CliError::Input(format!(
+            "Address network `{address_network_id}` does not match configured network `{client_network_id}`",
+        )));
+    }
 
     match block_hint {
         Some(block_hint) => {

@@ -23,11 +23,10 @@ use crate::ClientConfig;
 ///
 /// This test uses three accounts: public foreign account, network counter account, and sender
 /// account as a private wallet (which is needed only for the note creation, so potentially it could
-/// be replaced by any account ID).
-/// Sender account creates a note, which targets the counter account. This note's script contains
-/// the FPI, which obtains the map value from the foreign account. In order to check whether the FPI
-/// was successful (note script was executed successfully), note script updates the counter of the
-/// network (counter) account.
+/// be replaced by any account ID). Sender account creates a note, which targets the counter
+/// account. This note's script contains the FPI, which obtains the map value from the foreign
+/// account. In order to check whether the FPI was successful (note script was executed
+/// successfully), note script updates the counter of the network (counter) account.
 pub async fn test_network_fpi(client_config: ClientConfig) -> Result<()> {
     let (mut client, keystore) = client_config.clone().into_client().await?;
     client.sync_state().await?;
@@ -130,10 +129,25 @@ pub async fn test_network_fpi(client_config: ClientConfig) -> Result<()> {
 
     execute_tx_and_sync(&mut client2, sender_account.id(), tx_request).await?;
 
-    wait_for_blocks(&mut client2, 2).await;
+    // The node runs the network transaction some blocks after the note is committed. The number of
+    // blocks depends on the proving time of the node, so poll the counter instead of waiting for a
+    // fixed number of blocks. A counter value of 1 shows that the note script ran to completion, so
+    // the FPI succeeded.
+    let expected_counter = Word::from([Felt::from(1u32), ZERO, ZERO, ZERO]);
+    for _ in 0..10 {
+        let updated_network_account = client2
+            .test_rpc_api()
+            .get_account_details(target_network_account.id())
+            .await?
+            .with_context(|| "account details not available")?;
 
-    // get the updated network account to check that the counter value was updated (meaning that the
-    // note was executed successfully, so the FPI was successful)
+        if updated_network_account.storage().get_item(&COUNTER_SLOT_NAME)? == expected_counter {
+            return Ok(());
+        }
+
+        wait_for_blocks(&mut client2, 1).await;
+    }
+
     let updated_network_account = client2
         .test_rpc_api()
         .get_account_details(target_network_account.id())
@@ -142,7 +156,8 @@ pub async fn test_network_fpi(client_config: ClientConfig) -> Result<()> {
 
     assert_eq!(
         updated_network_account.storage().get_item(&COUNTER_SLOT_NAME)?,
-        Word::from([Felt::from(1u32), ZERO, ZERO, ZERO])
+        expected_counter,
+        "network account counter was not incremented by the FPI note"
     );
 
     Ok(())

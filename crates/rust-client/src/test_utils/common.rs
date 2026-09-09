@@ -215,8 +215,7 @@ pub async fn insert_new_wallet_with_seed(
 /// Inserts a new wallet account without funding or deploying it.
 ///
 /// Callers creating several accounts at once should use this and fund them together with a single
-/// [`TestClient::fund_if_needed`], which costs one funding transaction instead of one
-/// per account.
+/// [`TestClient::fund_if_needed`], which costs one funding transaction instead of one per account.
 pub async fn insert_new_wallet_unfunded(
     client: &mut TestClient,
     visibility: AccountType,
@@ -312,9 +311,9 @@ pub async fn insert_new_fungible_faucet_unfunded(
 
     // Only mint/burn policies — registering transfer (send/receive) policies installs asset
     // callback slots on the faucet, which forces `FungibleAsset` keys to carry
-    // `AssetCallbackFlag::Enabled`. Tests construct assets via `FungibleAsset::new`, which
-    // defaults to `Disabled`, so adding transfer policies makes `mint_and_send` reject the
-    // mint with `ERR_FUNGIBLE_MINT_NOTE_ASSET_NOT_FROM_THIS_FAUCET`.
+    // `AssetCallbackFlag::Enabled`. Tests construct assets via `FungibleAsset::new`, which defaults
+    // to `Disabled`, so adding transfer policies makes `mint_and_send` reject the mint with
+    // `ERR_FUNGIBLE_MINT_NOTE_ASSET_NOT_FROM_THIS_FAUCET`.
     let policy_manager = TokenPolicyManager::builder()
         .active_mint_policy(MintPolicy::allow_all())
         .active_burn_policy(BurnPolicy::allow_all())
@@ -392,8 +391,8 @@ pub async fn wait_for_tx(client: &mut TestClient, transaction_id: TransactionId)
                 break;
             },
             TransactionStatus::Pending => {
-                // Cooldown between polling iterations to reduce pressure on the node's
-                // rate limiter when many integration tests poll concurrently.
+                // Cooldown between polling iterations to reduce pressure on the node's rate limiter
+                // when many integration tests poll concurrently.
                 tokio::time::sleep(Duration::from_millis(500)).await;
             },
             TransactionStatus::Discarded(cause) => {
@@ -401,9 +400,8 @@ pub async fn wait_for_tx(client: &mut TestClient, transaction_id: TransactionId)
             },
         }
 
-        // Log wait time in a file if the env var is set
-        // This allows us to aggregate and measure how long the tests are waiting for transactions
-        // to be committed
+        // Log wait time in a file if the env var is set. This allows us to aggregate and measure
+        // how long the tests are waiting for transactions to be committed.
         if std::env::var("LOG_WAIT_TIMES") == Ok("true".to_string()) {
             let elapsed = now.elapsed();
             let wait_times_dir = std::path::PathBuf::from("wait_times");
@@ -464,12 +462,12 @@ pub async fn wait_for_blocks_no_sync(client: &mut TestClient, amount_of_blocks: 
     }
 }
 
-/// Syncs repeatedly until the given account has at least one consumable note, or until
-/// `max_blocks` have elapsed since the call. Returns the list of consumable notes once found.
+/// Syncs repeatedly until the given account has at least one consumable note, or until `max_blocks`
+/// have elapsed since the call. Returns the list of consumable notes once found.
 ///
-/// This is useful when waiting for a network transaction to produce an output note (e.g., a
-/// P2ID note created by a faucet after consuming a CLAIM note), where the exact number of
-/// blocks needed is unpredictable.
+/// This is useful when waiting for a network transaction to produce an output note (e.g., a P2ID
+/// note created by a faucet after consuming a CLAIM note), where the exact number of blocks needed
+/// is unpredictable.
 ///
 /// # Panics
 ///
@@ -661,8 +659,8 @@ pub async fn mint_note(
     (tx_id, note)
 }
 
-/// Executes a transaction that consumes the provided notes and returns the transaction ID.
-/// This assumes the notes contain assets.
+/// Executes a transaction that consumes the provided notes and returns the transaction ID. This
+/// assumes the notes contain assets.
 pub async fn consume_notes(
     client: &mut TestClient,
     account_id: AccountId,

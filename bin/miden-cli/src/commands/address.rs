@@ -9,8 +9,8 @@ use crate::{Parser, Subcommand, create_dynamic_table};
 
 /// Mirrors [`AddressInterface`], enabling parsing for CLI commands.
 ///
-/// An interface specifies the set of procedures an account exposes, which determines
-/// which notes it is able to receive and consume.
+/// An interface specifies the set of procedures an account exposes, which determines which notes it
+/// is able to receive and consume.
 #[derive(Debug, Clone, ValueEnum)]
 pub enum CliAddressInterface {
     BasicWallet,

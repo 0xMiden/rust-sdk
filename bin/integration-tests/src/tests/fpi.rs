@@ -290,8 +290,8 @@ pub async fn test_nested_fpi_calls(client_config: ClientConfig) -> Result<()> {
     Ok(())
 }
 
-/// Tests that foreign accounts are lazily loaded via RPC when not specified upfront
-/// in the `TransactionRequestBuilder`.
+/// Tests that foreign accounts are lazily loaded via RPC when not specified upfront in the
+/// `TransactionRequestBuilder`.
 pub async fn test_lazy_fpi_loading(client_config: ClientConfig) -> Result<()> {
     let (mut client, keystore) = client_config.clone().into_client().await?;
     wait_for_node(&mut client).await;
@@ -365,12 +365,12 @@ pub async fn test_lazy_fpi_loading(client_config: ClientConfig) -> Result<()> {
     Ok(())
 }
 
-/// Tests that lazy loading a public foreign account that reads from a storage map works
-/// even when no `AccountStorageRequirements` are specified upfront.
+/// Tests that lazy loading a public foreign account that reads from a storage map works even when
+/// no `AccountStorageRequirements` are specified upfront.
 ///
-/// The executor first lazy-loads the foreign account (with empty storage requirements),
-/// then when the procedure reads from the storage map, `get_storage_map_witness` detects
-/// the cache miss and makes a second RPC call to fetch the storage map entries.
+/// The executor first lazy-loads the foreign account (with empty storage requirements), then when
+/// the procedure reads from the storage map, `get_storage_map_witness` detects the cache miss and
+/// makes a second RPC call to fetch the storage map entries.
 pub async fn test_lazy_fpi_loading_with_storage_map(client_config: ClientConfig) -> Result<()> {
     let (mut client, keystore) = client_config.clone().into_client().await?;
     wait_for_node(&mut client).await;
@@ -429,8 +429,8 @@ pub async fn test_lazy_fpi_loading_with_storage_map(client_config: ClientConfig)
 
     wait_for_blocks_no_sync(&mut client2, 2).await;
 
-    // Build request WITHOUT specifying the foreign account — lazy loading should handle
-    // both the account inputs and the storage map entries via separate RPC calls.
+    // Build request WITHOUT specifying the foreign account — lazy loading should handle both the
+    // account inputs and the storage map entries via separate RPC calls.
     let tx_request = TransactionRequestBuilder::new().custom_script(tx_script).build()?;
 
     let _ = client2.submit_new_transaction(native_account.id(), tx_request).await?;
@@ -570,8 +570,7 @@ async fn standard_fpi(
     let block_before_wait = client2.get_sync_height().await.unwrap();
     wait_for_blocks_no_sync(&mut client2, 2).await;
 
-    // Second client should be able to submit a transaction
-    // Without being synced to latest state
+    // Second client should be able to submit a transaction Without being synced to latest state
     let _ = client2.submit_new_transaction(native_account.id(), tx_request).await?;
 
     // After the transaction the foreign account should be cached (for public accounts only)
@@ -595,9 +594,9 @@ async fn standard_fpi(
     Ok(())
 }
 
-/// Deploys a foreign account exposing a procedure that reads an asset from its own vault, funds
-/// the vault with a freshly minted asset, and returns the foreign account's ID, the transaction
-/// script performing the FPI asset read, and the stack expected from a successful read.
+/// Deploys a foreign account exposing a procedure that reads an asset from its own vault, funds the
+/// vault with a freshly minted asset, and returns the foreign account's ID, the transaction script
+/// performing the FPI asset read, and the stack expected from a successful read.
 async fn setup_fpi_vault_asset_read(
     client_config: &ClientConfig,
 ) -> Result<(AccountId, String, [Felt; 16])> {
@@ -678,9 +677,9 @@ async fn setup_fpi_vault_asset_read(
     Ok((foreign_account_id, tx_script_code, expected_stack))
 }
 
-/// Tests that FPI can read an asset from an untracked foreign account's vault: the client
-/// requests the vault with `VaultFetch::Always`, so the asset list arrives with the account
-/// proof and is kept (after verifying it hashes to the header's vault root).
+/// Tests that FPI can read an asset from an untracked foreign account's vault: the client requests
+/// the vault with `VaultFetch::Always`, so the asset list arrives with the account proof and is
+/// kept (after verifying it hashes to the header's vault root).
 pub async fn test_fpi_vault_asset_read_untracked(client_config: ClientConfig) -> Result<()> {
     let (foreign_account_id, tx_script_code, expected_stack) =
         setup_fpi_vault_asset_read(&client_config).await?;
@@ -708,10 +707,10 @@ pub async fn test_fpi_vault_asset_read_untracked(client_config: ClientConfig) ->
     Ok(())
 }
 
-/// Tests that FPI can read an asset from a tracked and synced foreign account's vault: the
-/// client requests `VaultFetch::IfChangedFrom` with a matching root, the node omits the asset
-/// list, the foreign inputs carry a root-only partial vault, and the asset read is served during
-/// execution by a per-asset witness from the local store.
+/// Tests that FPI can read an asset from a tracked and synced foreign account's vault: the client
+/// requests `VaultFetch::IfChangedFrom` with a matching root, the node omits the asset list, the
+/// foreign inputs carry a root-only partial vault, and the asset read is served during execution by
+/// a per-asset witness from the local store.
 pub async fn test_fpi_vault_asset_read_tracked(client_config: ClientConfig) -> Result<()> {
     let (foreign_account_id, tx_script_code, expected_stack) =
         setup_fpi_vault_asset_read(&client_config).await?;
@@ -844,8 +843,8 @@ pub(crate) async fn deploy_foreign_account(
 
     client.deploy_account(foreign_account_id).await?;
 
-    // NOTE: We get the new account state here since the first transaction updates the nonce from
-    // to 1
+    // NOTE: We get the new account state here since the first transaction updates the nonce from to
+    // 1
     let foreign_account: Account = client
         .get_account(foreign_account_id)
         .await?

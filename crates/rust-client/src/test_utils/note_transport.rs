@@ -34,9 +34,9 @@ use crate::note_transport::{
 #[derive(Clone)]
 pub struct MockNoteTransportNode {
     notes: BTreeMap<NoteTag, Vec<(NoteInfo, NoteTransportCursor)>>,
-    /// Optional per-response batch cap; if `Some(n)`, `get_notes` returns at
-    /// most `n` entries (total, across all tags) in one call. Used to exercise
-    /// client-side pagination drain loops. `None` = unbounded (legacy behavior).
+    /// Optional per-response batch cap; if `Some(n)`, `get_notes` returns at most `n` entries
+    /// (total, across all tags) in one call. Used to exercise client-side pagination drain loops.
+    /// `None` = unbounded (legacy behavior).
     max_batch: Option<usize>,
 }
 
@@ -74,14 +74,26 @@ impl MockNoteTransportNode {
         self.notes.entry(tag).or_default().push((info, cursor.into()));
     }
 
+    /// Seed a note under an arbitrary transport tag key, regardless of the note's own tag.
+    pub fn add_note_with_tag_key(
+        &mut self,
+        tag: NoteTag,
+        header: NoteHeader,
+        details_bytes: Vec<u8>,
+    ) {
+        let info = NoteInfo { header, details_bytes, block_hint: None };
+        let cursor = u64::try_from(Utc::now().timestamp_micros()).unwrap();
+        self.notes.entry(tag).or_default().push((info, cursor.into()));
+    }
+
     pub fn get_notes(
         &self,
         tags: &[NoteTag],
         cursor: NoteTransportCursor,
     ) -> (Vec<NoteInfo>, NoteTransportCursor) {
-        // Start `rcursor` at the input — matches the real server's contract
-        // (`rcursor = max(cursor, max_seq_returned)`), so an empty batch
-        // returns the caller's own cursor rather than `init()`.
+        // Start `rcursor` at the input — matches the real server's contract (`rcursor = max(cursor,
+        // max_seq_returned)`), so an empty batch returns the caller's own cursor rather than
+        // `init()`.
         let mut collected: Vec<(NoteInfo, NoteTransportCursor)> = vec![];
         for tag in tags {
             // Assumes stored notes are ordered by cursor
@@ -101,9 +113,9 @@ impl MockNoteTransportNode {
             collected.extend(tnotes);
         }
 
-        // Deterministic ordering across tags: sort by cursor ascending so the
-        // client sees notes in per-cursor order regardless of tag iteration
-        // order, matching the real server's `ORDER BY seq ASC`.
+        // Deterministic ordering across tags: sort by cursor ascending so the client sees notes in
+        // per-cursor order regardless of tag iteration order, matching the real server's `ORDER BY
+        // seq ASC`.
         collected.sort_by_key(|(_, c)| *c);
 
         // Apply the batch cap, if configured.
@@ -212,38 +224,42 @@ impl NoteTransportClient for MockNoteTransportApi {
 // FAULTY NOTE TRANSPORT API
 // ================================================================================================
 
-/// Test-only [`NoteTransportClient`] decorator that injects controlled failures
-/// into `send_note` calls.
+/// Test-only [`NoteTransportClient`] decorator that injects controlled failures into `send_note`
+/// calls.
 ///
-/// Reproduces the failure mode where the NTL is reachable but rejects (or
-/// silently drops) a relay attempt, exercising the durable outbox in
-/// [`Client::send_private_note`](crate::Client::send_private_note): without
-/// retry/persistence a failed relay would leave the recipient unable to
-/// discover the note.
+/// Reproduces the failure mode where the NTL is reachable but rejects (or silently drops) a relay
+/// attempt, exercising the durable outbox in
+/// [`Client::send_private_note`](crate::Client::send_private_note): without retry/persistence a
+/// failed relay would leave the recipient unable to discover the note.
 ///
-/// The decorator counts attempts (`send_attempts`) and lets a test specify how
-/// many of the next `send_note` calls should fail (`fail_next`); successful
-/// calls delegate to an inner [`MockNoteTransportApi`]. `fetch_notes` and
-/// `stream_notes` always delegate to the inner mock.
+/// The decorator counts attempts (`send_attempts`) and lets a test specify how many of the next
+/// `send_note` calls should fail (`fail_next`); successful calls delegate to an inner
+/// [`MockNoteTransportApi`]. `fetch_notes` failures can be injected separately via
+/// [`FaultyNoteTransportApi::fail_next_n_fetches`]; `stream_notes` always delegates to the inner
+/// mock.
 pub struct FaultyNoteTransportApi {
     inner: MockNoteTransportApi,
     fail_next: AtomicUsize,
     send_attempts: AtomicUsize,
+    fail_next_fetches: AtomicUsize,
+    fetch_attempts: AtomicUsize,
 }
 
 impl FaultyNoteTransportApi {
-    /// Create a faulty transport that fails the next `fail_next` `send_note`
-    /// calls before delegating to the inner mock.
+    /// Create a faulty transport that fails the next `fail_next` `send_note` calls before
+    /// delegating to the inner mock.
     pub fn new(mock_node: Arc<RwLock<MockNoteTransportNode>>, fail_next: usize) -> Self {
         Self {
             inner: MockNoteTransportApi::new(mock_node),
             fail_next: AtomicUsize::new(fail_next),
             send_attempts: AtomicUsize::new(0),
+            fail_next_fetches: AtomicUsize::new(0),
+            fetch_attempts: AtomicUsize::new(0),
         }
     }
 
-    /// Reset the fail-counter to `n`; subsequent `send_note` calls fail until
-    /// the counter reaches zero.
+    /// Reset the fail-counter to `n`; subsequent `send_note` calls fail until the counter reaches
+    /// zero.
     pub fn fail_next_n(&self, n: usize) {
         self.fail_next.store(n, Ordering::SeqCst);
     }
@@ -251,6 +267,16 @@ impl FaultyNoteTransportApi {
     /// Total `send_note` calls observed (success + failure).
     pub fn send_attempts(&self) -> usize {
         self.send_attempts.load(Ordering::SeqCst)
+    }
+
+    /// Fail the next `n` `fetch_notes` calls before delegating to the inner mock again.
+    pub fn fail_next_n_fetches(&self, n: usize) {
+        self.fail_next_fetches.store(n, Ordering::SeqCst);
+    }
+
+    /// Total `fetch_notes` calls observed (success + failure).
+    pub fn fetch_attempts(&self) -> usize {
+        self.fetch_attempts.load(Ordering::SeqCst)
     }
 }
 
@@ -301,6 +327,16 @@ impl NoteTransportClient for FaultyNoteTransportApi {
         tags: &[NoteTag],
         cursor: NoteTransportCursor,
     ) -> Result<(Vec<NoteInfo>, NoteTransportCursor), NoteTransportError> {
+        self.fetch_attempts.fetch_add(1, Ordering::SeqCst);
+        let should_fail = self
+            .fail_next_fetches
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok();
+        if should_fail {
+            return Err(NoteTransportError::Network(
+                "FaultyNoteTransportApi: simulated fetch_notes failure".to_string(),
+            ));
+        }
         Ok(self.inner.fetch_notes(tags, cursor))
     }
 

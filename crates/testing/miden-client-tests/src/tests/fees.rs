@@ -25,7 +25,6 @@ use miden_client::transaction::{
 };
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
 use miden_protocol::account::{AccountBuilder, AccountComponent, AccountType};
-use miden_protocol::crypto::rand::RandomCoin;
 use miden_protocol::testing::account_id::ACCOUNT_ID_FEE_FAUCET;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::AccountBuilderSchemaCommitmentExt;
@@ -39,6 +38,8 @@ use miden_standards::account::auth::{
 use miden_standards::account::wallets::BasicWallet;
 use miden_standards::testing::note::NoteBuilder;
 use miden_testing::{Auth, MockChain, MockChainBuilder};
+use rand::SeedableRng;
+use rand_chacha::ChaCha20Rng;
 
 use super::seed_mock_transaction_encryption_key;
 
@@ -332,7 +333,7 @@ async fn note_screening_finds_a_custom_script_note_consumable_on_a_fee_charging_
         .code_builder()
         .compile_note_script(super::TARGET_BOUND_NOTE_SCRIPT)
         .unwrap();
-    let note = NoteBuilder::new(account.id(), RandomCoin::new(Word::from([7u32, 7, 7, 7])))
+    let note = NoteBuilder::new(account.id(), ChaCha20Rng::seed_from_u64(7))
         .script(script)
         .note_storage([account.id().suffix(), account.id().prefix().as_felt()])
         .unwrap()
@@ -366,7 +367,7 @@ async fn checking_note_consumability_pays_the_fee_on_a_fee_charging_chain() {
         .code_builder()
         .compile_note_script(super::TARGET_BOUND_NOTE_SCRIPT)
         .unwrap();
-    let note = NoteBuilder::new(account.id(), RandomCoin::new(Word::from([9u32, 9, 9, 9])))
+    let note = NoteBuilder::new(account.id(), ChaCha20Rng::seed_from_u64(9))
         .script(script)
         .note_storage([account.id().suffix(), account.id().prefix().as_felt()])
         .unwrap()

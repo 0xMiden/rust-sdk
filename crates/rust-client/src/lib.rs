@@ -574,6 +574,7 @@ impl ClientRng {
         Self(rng)
     }
 
+    #[cfg(feature = "testing")]
     pub fn inner_mut(&mut self) -> &mut ClientRngBox {
         &mut self.0
     }

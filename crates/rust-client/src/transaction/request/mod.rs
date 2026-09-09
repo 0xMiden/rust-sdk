@@ -9,6 +9,7 @@ use core::num::NonZeroU16;
 use miden_protocol::Word;
 use miden_protocol::account::{AccountCodeInterface, AccountId};
 use miden_protocol::asset::{Asset, NonFungibleAsset};
+use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::merkle::MerkleError;
 use miden_protocol::crypto::merkle::store::MerkleStore;
 use miden_protocol::errors::{
@@ -582,6 +583,14 @@ pub enum TransactionRequestError {
         "foreign account {0} has incompatible visibility; use `ForeignAccount::public()` for public accounts and `ForeignAccount::private()` for private accounts"
     )]
     InvalidForeignAccountId(AccountId),
+    #[error(
+        "inputs for foreign account {account_id} do not open against the account tree of the \
+         transaction's reference block {block_num}"
+    )]
+    ForeignAccountNotAtReferenceBlock {
+        account_id: AccountId,
+        block_num: BlockNumber,
+    },
     #[error(
         "note {0} cannot be used as an authenticated input: it does not have a valid inclusion proof"
     )]

@@ -709,6 +709,19 @@ where
                     .0
             },
         };
+
+        // A witness opens against the account tree of exactly one block. Rejecting a mismatch here
+        // names the account and the block; inside the executor it would only be a kernel failure.
+        for inputs in &foreign_account_inputs {
+            if inputs.compute_account_root().ok() != Some(reference_header.account_root()) {
+                return Err(TransactionRequestError::ForeignAccountNotAtReferenceBlock {
+                    account_id: inputs.id(),
+                    block_num,
+                }
+                .into());
+            }
+        }
+
         attach_native_fee_conversion_info(
             &mut transaction_request,
             &account_code_interface,
@@ -1186,8 +1199,11 @@ where
     /// a proof of the account's existence on the network is fetched. A
     /// [`ForeignAccount::Prefetched`] account is returned as is.
     ///
-    /// The results are valid for transactions whose reference block is `block_num`, and can be
-    /// declared as [`ForeignAccount::Prefetched`] on such a request so it fetches nothing for them.
+    /// Each witness opens against the account tree of `block_num`, so the results are valid only
+    /// for a transaction whose reference block is exactly `block_num`. Declared as
+    /// [`ForeignAccount::Prefetched`], they are served from the request instead of being fetched.
+    /// Under [`Self::execute_transaction_at`] the reference block is the anchor's block; otherwise
+    /// it is the sync height at execution time, so do not sync between fetching and executing.
     /// Only the given accounts are fetched; this method does not discover the accounts a
     /// transaction loads, such as faucets whose asset callbacks it triggers.
     ///

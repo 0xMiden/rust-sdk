@@ -23,6 +23,7 @@ use miden_client::transaction::{
     TransactionProver,
     TransactionProverError,
     TransactionRequestBuilder,
+    TransactionRequestError,
 };
 use miden_client::{ClientError, Deserializable, Serializable, async_trait};
 use miden_debug::{DapClient, DapConfig, DapStopReason};
@@ -611,13 +612,31 @@ async fn lazy_foreign_account_loading() {
         RpcError::InvalidResponse("unexpected account fetch".into()),
     );
     let tx_request = TransactionRequestBuilder::new()
-        .custom_script(tx_script)
-        .foreign_accounts(inputs)
+        .custom_script(tx_script.clone())
+        .foreign_accounts(inputs.clone())
         .build()
         .unwrap();
     Box::pin(client.submit_new_transaction(local_wallet.id(), tx_request))
         .await
         .unwrap();
+
+    // The same inputs are stale once the reference block moves, and are rejected before execution.
+    rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+    let tx_request = TransactionRequestBuilder::new()
+        .custom_script(tx_script)
+        .foreign_accounts(inputs)
+        .build()
+        .unwrap();
+    let error = Box::pin(client.execute_transaction(local_wallet.id(), tx_request))
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        ClientError::TransactionRequestError(
+            TransactionRequestError::ForeignAccountNotAtReferenceBlock { account_id, .. }
+        ) if account_id == foreign_account_id
+    ));
 }
 
 #[tokio::test]

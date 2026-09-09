@@ -102,9 +102,13 @@ pub enum ForeignAccount {
     /// used as inputs to the transaction kernel.
     Private(PartialAccount),
     /// Account whose state and inclusion witness the caller supplies, so nothing is fetched for it
-    /// at execution time. The witness must open against the account tree of the transaction's
-    /// reference block. Storage map keys and vault assets absent from the inputs are still
-    /// resolved lazily during execution.
+    /// at execution time.
+    ///
+    /// The witness opens against the account tree of exactly one block, so inputs fetched at block
+    /// `N` are only valid for a transaction whose reference block is `N`: the anchor's block under
+    /// [`Client::execute_transaction_at`](crate::Client::execute_transaction_at), or the sync
+    /// height at execution time otherwise. Storage map keys and vault assets absent from the
+    /// inputs are still resolved lazily during execution.
     Prefetched(AccountInputs),
 }
 

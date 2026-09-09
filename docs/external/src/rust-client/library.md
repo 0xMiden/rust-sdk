@@ -348,7 +348,7 @@ reader.reset();
 
 ## Supply foreign account inputs yourself
 
-A request normally declares foreign accounts as `ForeignAccount::public` or `ForeignAccount::private`, and the client fetches their state and inclusion witnesses from the node at the transaction's reference block. When you already hold that data, declare it as `ForeignAccount::Prefetched` and nothing is fetched for that account. The inputs must be valid at the reference block: the executor verifies each witness against that block's account root.
+A request normally declares foreign accounts as `ForeignAccount::public` or `ForeignAccount::private`, and the client fetches their state and inclusion witnesses from the node at the transaction's reference block. When you already hold that data, declare it as `ForeignAccount::Prefetched` and nothing is fetched for that account. A witness opens against the account tree of exactly one block, so inputs fetched at block `N` are only valid for a transaction whose reference block is `N`; the client rejects a mismatch before execution. Under `Client::execute_transaction_at` the reference block is the anchor's block. Otherwise it is the sync height at execution time, so do not sync between fetching and executing.
 
 `Client::get_foreign_account_inputs` fetches inputs for a set of declarations at a given block, and `AccountInputs` serializes, so one party can fetch and another can execute:
 

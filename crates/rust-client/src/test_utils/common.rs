@@ -305,6 +305,11 @@ impl TestClient {
                     .build()
                     .context("failed to build the fungible faucet component")?;
 
+                // Only mint and burn policies are registered. A transfer (send/receive) policy
+                // installs asset callback slots on the faucet, which forces `FungibleAsset` keys to
+                // carry `AssetCallbackFlag::Enabled`. Tests build assets with `FungibleAsset::new`,
+                // which defaults to `Disabled`, so a transfer policy makes `mint_and_send` reject
+                // the mint with `ERR_FUNGIBLE_MINT_NOTE_ASSET_NOT_FROM_THIS_FAUCET`.
                 let policy_manager = TokenPolicyManager::builder()
                     .active_mint_policy(MintPolicy::allow_all())
                     .active_burn_policy(BurnPolicy::allow_all())

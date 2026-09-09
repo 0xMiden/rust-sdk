@@ -410,7 +410,7 @@ async fn sync_state() {
 
 #[tokio::test]
 async fn sync_state_mmr() {
-    let (builder, rpc_api, _keystore) = Box::pin(create_test_client_builder()).await;
+    let (builder, rpc_api) = Box::pin(create_test_client_builder()).await;
     let mut client =
         TestClient::from(builder.irrelevant_block_prune_interval(None).build().await.unwrap());
     client.ensure_genesis_in_place().await.unwrap();
@@ -500,7 +500,7 @@ async fn sync_state_mmr() {
 /// still have its header and MMR path authenticated before it is omitted from storage.
 #[tokio::test]
 async fn sync_state_rejects_tampered_path_for_same_sync_consumed_note() {
-    let (builder, rpc_api, _keystore) = Box::pin(create_test_client_builder()).await;
+    let (builder, rpc_api) = Box::pin(create_test_client_builder()).await;
     let mut client =
         TestClient::from(builder.irrelevant_block_prune_interval(None).build().await.unwrap());
     client.ensure_genesis_in_place().await.unwrap();
@@ -535,7 +535,7 @@ async fn sync_state_rejects_tampered_path_for_same_sync_consumed_note() {
 
 #[tokio::test]
 async fn sync_state_mmr_with_in_memory_cache() {
-    let (builder, rpc_api, _keystore) = Box::pin(create_test_client_builder()).await;
+    let (builder, rpc_api) = Box::pin(create_test_client_builder()).await;
     let mut client =
         TestClient::from(builder.cache_partial_mmr_in_memory(true).build().await.unwrap());
     client.ensure_genesis_in_place().await.unwrap();
@@ -564,7 +564,7 @@ async fn sync_state_mmr_with_in_memory_cache() {
 /// store-backed MMR rather than the stale cache.
 #[tokio::test]
 async fn stale_cached_partial_mmr_is_rebuilt_from_store() {
-    let (builder, rpc_api, _keystore) = Box::pin(create_test_client_builder()).await;
+    let (builder, rpc_api) = Box::pin(create_test_client_builder()).await;
     let mut client =
         TestClient::from(builder.cache_partial_mmr_in_memory(true).build().await.unwrap());
     client.ensure_genesis_in_place().await.unwrap();
@@ -2403,7 +2403,7 @@ async fn get_output_notes() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn account_rollback() {
-    let (builder, mock_rpc_api, _authenticator) = Box::pin(create_test_client_builder()).await;
+    let (builder, mock_rpc_api) = Box::pin(create_test_client_builder()).await;
 
     let mut client =
         TestClient::from(builder.tx_discard_delta(Some(TX_DISCARD_DELTA)).build().await.unwrap());
@@ -4763,7 +4763,7 @@ async fn prepare_offline_bootstrap_inserts_mock_chain_genesis() {
 // ================================================================================================
 
 pub async fn create_test_client() -> (TestClient, MockRpcApi) {
-    let (builder, rpc_api, _keystore) = Box::pin(create_test_client_builder()).await;
+    let (builder, rpc_api) = Box::pin(create_test_client_builder()).await;
     let mut client = TestClient::from(builder.build().await.unwrap());
     client.ensure_genesis_in_place().await.unwrap();
     seed_mock_transaction_encryption_key(&mut client).await;
@@ -4791,8 +4791,7 @@ pub async fn seed_mock_transaction_encryption_key(client: &mut MockClient<Filesy
         .expect("seeding the encryption key in the store should succeed");
 }
 
-pub async fn create_test_client_builder()
--> (ClientBuilder<FilesystemKeyStore>, MockRpcApi, FilesystemKeyStore) {
+pub async fn create_test_client_builder() -> (ClientBuilder<FilesystemKeyStore>, MockRpcApi) {
     let mut rng = rand::rng();
     let coin_seed: [u64; 4] = rng.random();
 
@@ -4808,10 +4807,10 @@ pub async fn create_test_client_builder()
         .rpc(arc_rpc_api)
         .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
-        .authenticator(Arc::new(keystore.clone()))
+        .authenticator(Arc::new(keystore))
         .tx_discard_delta(None);
 
-    (builder, rpc_api, keystore)
+    (builder, rpc_api)
 }
 
 pub async fn create_prebuilt_mock_chain() -> MockChain {

@@ -1051,7 +1051,7 @@ fn dummy_asset() -> Asset {
 pub async fn create_test_client_transport(
     mock_node: Arc<RwLock<MockNoteTransportNode>>,
 ) -> TestClient {
-    let (builder, _, _keystore) = create_test_client_builder().await;
+    let (builder, _) = create_test_client_builder().await;
     let transport_client = MockNoteTransportApi::new(mock_node);
     let builder_w_transport = builder.note_transport(Arc::new(transport_client));
 
@@ -1073,7 +1073,7 @@ pub async fn create_test_user_transport(
 pub async fn create_test_client_with_transport(
     transport: Arc<dyn NoteTransportClient>,
 ) -> TestClient {
-    let (builder, _, _keystore) = create_test_client_builder().await;
+    let (builder, _) = create_test_client_builder().await;
     let mut client = TestClient::from(builder.note_transport(transport).build().await.unwrap());
     client.ensure_genesis_in_place().await.unwrap();
     seed_mock_transaction_encryption_key(&mut client).await;

@@ -125,14 +125,12 @@ impl ClientConfig {
         Ok(self.with_fee_funder(fee_funder))
     }
 
-    /// Creates a `TestClient` builder and keystore.
+    /// Creates a `TestClient` builder.
     ///
     /// The store is a `SQLite` database at a temporary location, and the keystore a temporary
     /// directory, both created here rather than held on the config, so every client this is called
     /// on gets its own.
-    pub fn into_client_builder(
-        self,
-    ) -> Result<(ClientBuilder<FilesystemKeyStore>, FilesystemKeyStore)> {
+    pub fn into_client_builder(self) -> Result<ClientBuilder<FilesystemKeyStore>> {
         let store_config = create_test_store_path();
         let auth_path = create_test_auth_path();
 
@@ -154,7 +152,7 @@ impl ClientConfig {
             .rpc(rpc_client)
             .rng(Box::new(rng))
             .sqlite_store(store_config)
-            .authenticator(Arc::new(keystore.clone()))
+            .authenticator(Arc::new(keystore))
             .tx_discard_delta(None);
 
         if let Some(prover_url) = &self.prover_endpoint {
@@ -172,7 +170,7 @@ impl ClientConfig {
             builder = builder.note_transport(nt_client);
         }
 
-        Ok((builder, keystore))
+        Ok(builder)
     }
 
     /// Creates a `TestClient` without syncing it, for tests that have to wait for the node first.
@@ -181,7 +179,7 @@ impl ClientConfig {
     /// `TestClient::keystore`.
     pub async fn into_unsynced_client(self) -> Result<TestClient> {
         let fee_funder = self.fee_funder.clone();
-        let (builder, _keystore) = self.into_client_builder()?;
+        let builder = self.into_client_builder()?;
 
         let client = builder.build().await.with_context(|| "failed to build test client")?;
 

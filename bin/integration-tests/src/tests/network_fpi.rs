@@ -125,10 +125,25 @@ pub async fn test_network_fpi(client_config: ClientConfig) -> Result<()> {
 
     client2.execute_tx_and_sync(sender_account.id(), tx_request).await?;
 
-    client2.wait_for_blocks(2).await?;
+    // The node runs the network transaction some blocks after the note is committed. The number of
+    // blocks depends on the proving time of the node, so poll the counter instead of waiting for a
+    // fixed number of blocks. A counter value of 1 shows that the note script ran to completion, so
+    // the FPI succeeded.
+    let expected_counter = Word::from([Felt::from(1u32), ZERO, ZERO, ZERO]);
+    for _ in 0..10 {
+        let updated_network_account = client2
+            .test_rpc_api()
+            .get_account_details(target_network_account.id())
+            .await?
+            .with_context(|| "account details not available")?;
 
-    // get the updated network account to check that the counter value was updated (meaning that the
-    // note was executed successfully, so the FPI was successful)
+        if updated_network_account.storage().get_item(&COUNTER_SLOT_NAME)? == expected_counter {
+            return Ok(());
+        }
+
+        client2.wait_for_blocks(1).await?;
+    }
+
     let updated_network_account = client2
         .test_rpc_api()
         .get_account_details(target_network_account.id())
@@ -137,7 +152,8 @@ pub async fn test_network_fpi(client_config: ClientConfig) -> Result<()> {
 
     assert_eq!(
         updated_network_account.storage().get_item(&COUNTER_SLOT_NAME)?,
-        Word::from([Felt::from(1u32), ZERO, ZERO, ZERO])
+        expected_counter,
+        "network account counter was not incremented by the FPI note"
     );
 
     Ok(())

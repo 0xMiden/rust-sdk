@@ -4,11 +4,14 @@
 
 ### Breaking Changes
 
+* [BREAKING][type][rust] Added the `TransactionRequestError::SwapNoteWithZeroAsset` variant, so exhaustive matches on `TransactionRequestError` must handle it ([#2459](https://github.com/0xMiden/rust-sdk/pull/2459)).
 * [BREAKING][removal][test] Loose helper functions in `miden_client::testing::common` are now methods on `TestClient`. `TestClient::keystore()` exposes the client's keystore, so `ClientConfig::into_client` and `into_unsynced_client` return just the `TestClient` instead of a client/keystore pair ([#2481](https://github.com/0xMiden/rust-sdk/pull/2481)).
 
 ### Fixes
 
+* [FIX][rust] Added validation of cached transaction encryption keys during deserialization. Unsupported encryption schemes and empty or oversized key IDs are rejected before reading the key ID bytes ([#2411](https://github.com/0xMiden/rust-sdk/pull/2411)).
 * [FIX][cli] `miden-client import` now rejects invocations without a file path instead of silently succeeding ([#2450](https://github.com/0xMiden/rust-sdk/pull/2450)).
+* [FIX][rust] `TransactionRequestBuilder::build_swap` and `build_pswap_create` now reject a zero-amount asset on either side of the exchange. A zero requested asset produced a payback P2ID note carrying nothing, and a zero offered asset produced a note whose consumer pays and receives nothing ([#2459](https://github.com/0xMiden/rust-sdk/pull/2459)).
 * [FIX][test] The integration tests run again on a chain that charges no fee. A `--funders` path (`MIDEN_FUNDER_ACCOUNTS_DIR`) that is unset, empty, missing, or holds no `.mac` file now leaves the run without funders instead of failing, which is all a fee-free genesis needs, since it declares no wallets for the path to hold. A `.mac` file that is present but unusable stays a hard error ([#2481](https://github.com/0xMiden/rust-sdk/pull/2481)).
 
 ## 0.16.0 (2026-09-07)

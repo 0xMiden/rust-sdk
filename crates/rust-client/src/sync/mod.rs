@@ -232,9 +232,9 @@ where
         }
         self.ensure_genesis_in_place().await?;
 
-        let note_transport_data = self.fetch_note_transport_sync_data().await?;
+        let fetch = self.fetch_note_transport_notes().await?;
 
-        let (imported_ids, _) = self.apply_note_transport_sync_data(note_transport_data).await?;
+        let (imported_ids, _) = self.import_note_transport_notes(fetch).await?;
         Ok(imported_ids)
     }
 
@@ -265,31 +265,23 @@ where
         self.ensure_rpc_limits_in_place().await?;
 
         let state_sync = self.state_sync();
-        let (note_transport_data, mut chain_sync_data) = futures::try_join!(
-            self.fetch_note_transport_sync_data(),
-            self.fetch_chain_updates(&state_sync)
+        let (transport_fetch, mut chain_sync_data) = futures::try_join!(
+            self.fetch_note_transport_notes(),
+            self.fetch_chain_updates(&state_sync),
         )?;
 
-        // The NTL notes must be in the store before the chain data is screened: the screener
-        // recognises a note by looking it up in the store, and the updates for private notes it
-        // cannot find are discarded.
-        let (new_private_notes, transport_delivered_notes) =
-            self.apply_note_transport_sync_data(note_transport_data).await?;
+        let (new_private_notes, imported) =
+            self.import_note_transport_notes(transport_fetch).await?;
 
-        // Merge the NTL notes into the chain `note_updates`, so a commitment the chain reported for
-        // one of them is applied to its record. The tracker was built before the writes above, so
-        // without this the screener's verdict would have no record to apply to.
-        chain_sync_data
-            .note_updates
-            .track_existing_input_notes(transport_delivered_notes);
+        // The chain sync built its note updates from a store snapshot taken before the import, so
+        // the imported records are added here. Without them this sync has no record to apply its
+        // verdicts to, and a note committed within this sync's own block range stays expected.
+        chain_sync_data.note_updates.track_existing_input_notes(imported);
 
         state_sync.derive_state_updates(&mut chain_sync_data).await?;
-
-        // Checks nullifiers both for notes fetched from the chain and from the NTL
         state_sync.fetch_nullifiers(&mut chain_sync_data).await?;
 
         let mut summary = self.apply_chain_updates(&state_sync, chain_sync_data).await?;
-
         summary.new_private_notes = new_private_notes;
         Ok(summary)
     }

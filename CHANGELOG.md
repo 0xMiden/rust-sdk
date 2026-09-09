@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- [FIX][cli] `notes --send` now rejects a recipient address whose network doesn't match the client's configured network, instead of silently sending to it.
+
 ### Breaking Changes
 
 * [BREAKING][type][rust] Added the `TransactionRequestError::SwapNoteWithZeroAsset` variant, so exhaustive matches on `TransactionRequestError` must handle it ([#2459](https://github.com/0xMiden/rust-sdk/pull/2459)).

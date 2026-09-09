@@ -1307,7 +1307,7 @@ checksum = "c6232dd377dcc64799954cbd3a9bb882e9cdc1308ccd87b1c098f1fb2eaf82a8"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.4",
+ "syn 3.0.5",
 ]
 
 [[package]]
@@ -2887,7 +2887,7 @@ dependencies = [
 
 [[package]]
 name = "miden-client-web3signer-authenticator"
-version = "0.16.0-rc.5"
+version = "0.16.0"
 dependencies = [
  "hex",
  "k256",
@@ -6927,7 +6927,7 @@ checksum = "34df6fc39dbd26ddc9c10e6a2984476e13acce22e64e4487636ef494369225da"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.4",
+ "syn 3.0.5",
 ]
 
 [[package]]

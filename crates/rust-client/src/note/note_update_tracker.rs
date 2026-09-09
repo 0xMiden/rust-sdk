@@ -377,20 +377,16 @@ impl NoteUpdateTracker {
             })
     }
 
-    /// Tracks additional already-persisted input notes.
+    /// Tracks input notes as already persisted, replacing any copy of the same note this tracker
+    /// holds.
     ///
-    /// Used to extend a sync's nullifier check to notes that are about to be written by another
-    /// path (e.g. the note transport sync) and are therefore absent from the store snapshot this
-    /// tracker was built from. Notes already tracked for the same details commitment are skipped,
-    /// so a record built by this sync is never replaced by a stale one.
+    /// Used when notes were written to the store after the tracker was built from it, so the
+    /// sync's verdicts apply to each record as it is now rather than to a stale snapshot.
     pub(crate) fn track_existing_input_notes(
         &mut self,
         notes: impl IntoIterator<Item = InputNoteRecord>,
     ) {
         for note in notes {
-            if self.input_notes.contains_key(&note.details_commitment()) {
-                continue;
-            }
             self.insert_input_note(note, NoteUpdateType::None);
         }
     }

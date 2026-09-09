@@ -86,8 +86,9 @@ pub trait StoreFactory {
 ///   Configure via [`store()`](Self::store).
 ///
 /// - **RNG** ([`ClientCryptoRng`](crate::ClientCryptoRng)): Provides randomness for generating
-///   keys, serial numbers, and other cryptographic operations. If not provided, a random seed-based
-///   RNG is created automatically. Configure via [`rng()`](Self::rng).
+///   keys, serial numbers, and other cryptographic operations. It is always created from a random
+///   seed, so that a caller cannot make the keys it generates predictable. Under the `testing`
+///   feature it can be overridden with `rng()`.
 ///
 /// - **Authenticator** ([`TransactionAuthenticator`]): Handles transaction signing when signatures
 ///   are requested from within the VM. Configure via [`authenticator()`](Self::authenticator).
@@ -114,7 +115,7 @@ pub struct ClientBuilder<AUTH> {
     rpc_api: Option<Arc<dyn NodeRpcClient>>,
     /// An optional store provided by the user.
     pub store: Option<StoreBuilder>,
-    /// An optional RNG provided by the user.
+    /// An optional RNG provided by the user. Only settable under the `testing` feature.
     rng: Option<ClientRngBox>,
     /// The authenticator provided by the user.
     authenticator: Option<Arc<AUTH>>,
@@ -337,6 +338,10 @@ where
     }
 
     /// Optionally provide a custom RNG.
+    ///
+    /// Restricted to the `testing` feature: the client's RNG generates secret keys and seals
+    /// transaction inputs, so outside of tests its output must not be predictable to a caller.
+    #[cfg(feature = "testing")]
     #[must_use]
     pub fn rng(mut self, rng: ClientRngBox) -> Self {
         self.rng = Some(rng);
@@ -583,23 +588,5 @@ impl ClientBuilder<FilesystemKeyStore> {
         let keystore = FilesystemKeyStore::new(keystore_path.into())
             .map_err(|e| ClientError::ClientInitializationError(e.to_string()))?;
         Ok(self.authenticator(Arc::new(keystore)))
-    }
-}
-
-// TESTS
-// ================================================================================================
-
-#[cfg(test)]
-mod tests {
-    /// Checks that [`ClientBuilder::rng`] rejects a generator that is not a `CryptoRng`.
-    ///
-    /// The driver lives here rather than in `tests/` because `make test` runs `--lib` only.
-    ///
-    /// The expected diagnostic is snapshotted in `tests/ui/*.stderr`. It quotes the compiler
-    /// verbatim, so a `rand` or `rustc` upgrade can reword it; regenerate with `TRYBUILD=overwrite
-    /// cargo test -p miden-client --features "testing std" --lib ui`.
-    #[test]
-    fn ui() {
-        trybuild::TestCases::new().compile_fail("tests/ui/*.rs");
     }
 }

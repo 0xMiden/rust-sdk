@@ -30,7 +30,13 @@ use miden_protocol::note::{
     NoteTag,
     PartialNote,
 };
-use miden_protocol::transaction::{InputNote, InputNotes, TransactionArgs, TransactionScript};
+use miden_protocol::transaction::{
+    AccountInputs,
+    InputNote,
+    InputNotes,
+    TransactionArgs,
+    TransactionScript,
+};
 use miden_protocol::vm::AdviceMap;
 use miden_standards::account::auth::{FeeConversionInfo, commit_fee_conversion_info};
 use miden_standards::errors::CodeBuilderError;
@@ -114,6 +120,8 @@ pub struct TransactionRequest {
     /// will be retrieved from the network, and injected as advice inputs. Additionally, the
     /// account's code will be added to the executor and prover.
     foreign_accounts: BTreeMap<AccountId, ForeignAccount>,
+    /// Supplied inputs that take precedence over foreign account fetch requirements.
+    foreign_account_inputs: BTreeMap<AccountId, AccountInputs>,
     /// The number of blocks in relation to the transaction's reference block after which the
     /// transaction will expire. If `None`, the transaction will not expire.
     expiration_delta: Option<u16>,
@@ -223,6 +231,11 @@ impl TransactionRequest {
     /// Returns the required foreign accounts keyed by account ID.
     pub fn foreign_accounts(&self) -> &BTreeMap<AccountId, ForeignAccount> {
         &self.foreign_accounts
+    }
+
+    /// Returns the supplied foreign account inputs, keyed by account ID.
+    pub fn foreign_account_inputs(&self) -> &BTreeMap<AccountId, AccountInputs> {
+        &self.foreign_account_inputs
     }
 
     /// Returns whether to ignore invalid input notes or not.
@@ -421,6 +434,11 @@ impl TransactionRequest {
 // SERIALIZATION
 // ================================================================================================
 
+// Bit 0 retains the encoding of the ignore-invalid-input-notes flag. Bit 1 adds an optional
+// foreign-account-inputs section. Requests without supplied inputs keep their existing encoding.
+const IGNORE_INVALID_INPUT_NOTES_FLAG: u8 = 1;
+const HAS_FOREIGN_ACCOUNT_INPUTS_FLAG: u8 = 2;
+
 impl Serializable for TransactionRequest {
     fn write_into<W: ByteWriter>(&self, target: &mut W) {
         self.input_notes.write_into(target);
@@ -444,7 +462,15 @@ impl Serializable for TransactionRequest {
         let foreign_accounts: Vec<_> = self.foreign_accounts.values().cloned().collect();
         foreign_accounts.write_into(target);
         self.expiration_delta.write_into(target);
-        target.write_u8(u8::from(self.ignore_invalid_input_notes));
+        let mut flags = u8::from(self.ignore_invalid_input_notes);
+        if !self.foreign_account_inputs.is_empty() {
+            flags |= HAS_FOREIGN_ACCOUNT_INPUTS_FLAG;
+        }
+        target.write_u8(flags);
+        if !self.foreign_account_inputs.is_empty() {
+            let inputs: Vec<_> = self.foreign_account_inputs.values().collect();
+            inputs.write_into(target);
+        }
         self.script_arg.write_into(target);
         self.auth_arg.write_into(target);
         self.fee_conversion_salt.write_into(target);
@@ -493,7 +519,21 @@ impl Deserializable for TransactionRequest {
             foreign_accounts.entry(foreign_account.account_id()).or_insert(foreign_account);
         }
         let expiration_delta = Option::<u16>::read_from(source)?;
-        let ignore_invalid_input_notes = source.read_u8()? == 1;
+        let flags = source.read_u8()?;
+        if flags & !(IGNORE_INVALID_INPUT_NOTES_FLAG | HAS_FOREIGN_ACCOUNT_INPUTS_FLAG) != 0 {
+            return Err(DeserializationError::InvalidValue(
+                "Invalid transaction request flags".into(),
+            ));
+        }
+        let ignore_invalid_input_notes = flags & IGNORE_INVALID_INPUT_NOTES_FLAG != 0;
+        let foreign_account_inputs = if flags & HAS_FOREIGN_ACCOUNT_INPUTS_FLAG != 0 {
+            Vec::<AccountInputs>::read_from(source)?
+                .into_iter()
+                .map(|inputs| (inputs.id(), inputs))
+                .collect()
+        } else {
+            BTreeMap::new()
+        };
         let script_arg = Option::<Word>::read_from(source)?;
         let auth_arg = Option::<Word>::read_from(source)?;
         let fee_conversion_salt = Option::<Word>::read_from(source)?;
@@ -509,6 +549,7 @@ impl Deserializable for TransactionRequest {
             advice_map,
             merkle_store,
             foreign_accounts,
+            foreign_account_inputs,
             expiration_delta,
             ignore_invalid_input_notes,
             script_arg,
@@ -663,6 +704,7 @@ mod tests {
         StorageSlotName,
     };
     use miden_protocol::asset::FungibleAsset;
+    use miden_protocol::block::account_tree::AccountTree;
     use miden_protocol::crypto::rand::{FeltRng, RandomCoin};
     use miden_protocol::note::{NoteTag, NoteType};
     use miden_protocol::testing::account_id::{
@@ -670,7 +712,7 @@ mod tests {
         ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE,
         ACCOUNT_ID_SENDER,
     };
-    use miden_protocol::transaction::InputNote;
+    use miden_protocol::transaction::{AccountInputs, InputNote};
     use miden_protocol::{EMPTY_WORD, Felt, Word};
     use miden_standards::account::auth::{Approver, AuthSingleSig};
     use miden_standards::note::P2idNote;
@@ -801,5 +843,15 @@ mod tests {
 
         let deserialized_tx_request = TransactionRequest::read_from_bytes(&buffer).unwrap();
         assert_eq!(tx_request, deserialized_tx_request);
+
+        let tree = AccountTree::with_entries([(account.id(), account.to_commitment())]).unwrap();
+        let inputs = AccountInputs::new((&account).into(), tree.open(account.id()));
+        for ignore_invalid in [false, true] {
+            let mut request = tx_request.clone();
+            request.ignore_invalid_input_notes = ignore_invalid;
+            request.foreign_account_inputs.insert(inputs.id(), inputs.clone());
+            let decoded = TransactionRequest::read_from_bytes(&request.to_bytes()).unwrap();
+            assert_eq!(request, decoded);
+        }
     }
 }

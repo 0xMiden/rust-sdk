@@ -345,3 +345,38 @@ while let Some(note) = reader.next().await? {
 // Start another pass over the same notes.
 reader.reset();
 ```
+
+## Reuse foreign account inputs with a chain anchor
+
+Capture foreign account inputs before the node prunes the anchor's reference block. Supply them through `TransactionRequestBuilder::foreign_account_inputs` when you build the request for anchored execution. Supplied inputs take precedence over declarations in `foreign_accounts`, regardless of builder call order.
+
+```rust
+use miden_client::rpc::domain::account::AccountStorageRequirements;
+use miden_client::transaction::{ForeignAccount, TransactionRequestBuilder};
+
+let builder = TransactionRequestBuilder::new().custom_script(tx_script);
+let request = builder.clone().build()?;
+let anchor = client.chain_anchor_for_request(&request).await?;
+
+let accounts = [
+    ForeignAccount::public(
+        foreign_account_id,
+        storage_requirements,
+    )?,
+    ForeignAccount::public(
+        anchor.header().fee_parameters().fee_faucet_id(),
+        AccountStorageRequirements::default(),
+    )?,
+];
+let inputs = client
+    .get_foreign_account_inputs(accounts, anchor.block_num())
+    .await?;
+let request = builder.foreign_account_inputs(inputs).build()?;
+let result = client.execute_transaction_at(account_id, request, anchor).await?;
+```
+
+Both `TransactionRequest` and `AccountInputs` support serialization. You can ship the request with its anchor, or ship the inputs separately and add them when you rebuild the request. Requests with supplied inputs require a client version that supports this feature. Requests without supplied inputs retain their existing serialized format.
+
+The capture helper fetches only the accounts you specify. Include every account used by foreign procedure calls and every faucet with asset callbacks enabled whose asset the transaction moves. On a fee-charging chain this can include the fee faucet, since the fee note receives the fee asset. For private accounts, use `ForeignAccount::private` with the partial account state. Scripts can select accounts dynamically, so the request alone cannot identify every account that execution will load.
+
+Include the storage map and vault witnesses that execution needs. Missing witnesses can still cause RPC calls. The executor checks supplied account witnesses against the reference block's account root. Supplying inputs does not extend the transaction's expiration or change the trust requirements of the anchor.

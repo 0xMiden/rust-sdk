@@ -81,7 +81,7 @@ use miden_protocol::note::{
     NoteScript,
     NoteTag,
 };
-use miden_protocol::transaction::{AccountInputs, PartialBlockchain};
+use miden_protocol::transaction::PartialBlockchain;
 use miden_protocol::vm::MIN_STACK_DEPTH;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::auth::FeeConversionInfo;
@@ -162,6 +162,7 @@ mod result;
 // RE-EXPORTS
 // ================================================================================================
 pub use miden_protocol::transaction::{
+    AccountInputs,
     ExecutedTransaction,
     InputNote,
     InputNotes,
@@ -363,8 +364,10 @@ where
     /// [`ChainAnchor::block_commitment`] against an independently trusted value (e.g. the block
     /// commitment bound into the signed transaction summary).
     ///
-    /// Foreign account proofs are fetched at the anchor's block, so requests with foreign
-    /// accounts additionally require the node to serve account state at that block.
+    /// Supply foreign account inputs through [`TransactionRequestBuilder::foreign_account_inputs`]
+    /// to reuse captured state and witnesses. Accounts without supplied inputs require the node
+    /// to serve account state at the anchor's block. Missing storage map or vault witnesses can
+    /// also require RPC calls.
     ///
     /// # Errors
     ///
@@ -682,7 +685,9 @@ where
 
         let tx_script = transaction_request.build_transaction_script(&account_code_interface)?;
 
-        let foreign_accounts = transaction_request.foreign_accounts().clone();
+        let mut foreign_accounts = transaction_request.foreign_accounts().clone();
+        foreign_accounts
+            .retain(|id, _| !transaction_request.foreign_account_inputs().contains_key(id));
 
         // The reference block: the anchor's block when pinned, the sync height otherwise.
         // Foreign account proofs are fetched at this block to stay consistent with it.
@@ -691,8 +696,11 @@ where
             None => self.store.get_sync_height().await?,
         };
 
-        let foreign_account_inputs =
-            self.retrieve_foreign_account_inputs(foreign_accounts, block_num).await?;
+        let mut foreign_account_inputs = self
+            .get_foreign_account_inputs(foreign_accounts.into_values(), block_num)
+            .await?;
+        foreign_account_inputs
+            .extend(transaction_request.foreign_account_inputs().values().cloned());
 
         let ignore_invalid_notes = transaction_request.ignore_invalid_input_notes();
 
@@ -1181,18 +1189,25 @@ where
     /// For any [`ForeignAccount::Public`] in `foreign_accounts`, these pieces of data are retrieved
     /// from the network. For any [`ForeignAccount::Private`] account, inner data is used and only
     /// a proof of the account's existence on the network is fetched.
-    async fn retrieve_foreign_account_inputs(
+    ///
+    /// For anchored execution, set `block_num` to [`ChainAnchor::block_num`]. Pass the result to
+    /// [`TransactionRequestBuilder::foreign_account_inputs`]. Include every account that execution
+    /// can load: accounts targeted by foreign procedure calls and faucets whose asset callbacks the
+    /// transaction triggers, which on a fee-charging chain can include the fee faucet. This method
+    /// does not discover accounts used by scripts or callbacks.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if account data cannot be fetched or converted to transaction inputs.
+    pub async fn get_foreign_account_inputs(
         &self,
-        foreign_accounts: BTreeMap<AccountId, ForeignAccount>,
+        foreign_accounts: impl IntoIterator<Item = ForeignAccount>,
         block_num: BlockNumber,
     ) -> Result<Vec<AccountInputs>, ClientError> {
-        if foreign_accounts.is_empty() {
-            return Ok(Vec::new());
-        }
+        let foreign_accounts = foreign_accounts.into_iter();
+        let mut return_foreign_account_inputs = Vec::with_capacity(foreign_accounts.size_hint().0);
 
-        let mut return_foreign_account_inputs = Vec::with_capacity(foreign_accounts.len());
-
-        for foreign_account in foreign_accounts.into_values() {
+        for foreign_account in foreign_accounts {
             let foreign_account_inputs = match foreign_account {
                 ForeignAccount::Public(account_id, storage_requirements) => {
                     fetch_public_account_inputs(
@@ -1234,8 +1249,9 @@ where
     ) -> Result<(ClientDataStore, BlockNumber), ClientError> {
         let block_ref = self.get_sync_height().await?;
 
-        let foreign_account_inputs =
-            self.retrieve_foreign_account_inputs(foreign_accounts, block_ref).await?;
+        let foreign_account_inputs = self
+            .get_foreign_account_inputs(foreign_accounts.into_values(), block_ref)
+            .await?;
 
         let account_code = self
             .store

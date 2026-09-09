@@ -6,6 +6,10 @@
 
 * Updated workspace version to 0.16.1 ([#2526](https://github.com/0xMiden/rust-sdk/pull/2526)).
 
+### Fixes
+
+* [FIX][rust] Added `TransactionRequestBuilder::foreign_account_inputs` and `Client::get_foreign_account_inputs` to capture foreign account inputs at a reference block and reuse them during anchored execution after node pruning. Supplied inputs take precedence over account fetch requirements. Requests without supplied inputs retain their serialized format; requests with supplied inputs require a client with this feature ([#2524](https://github.com/0xMiden/rust-sdk/issues/2524)).
+
 ## 0.16.0 (2026-09-07)
 
 ### Breaking Changes

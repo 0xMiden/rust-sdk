@@ -348,21 +348,23 @@ reader.reset();
 
 ## Supply foreign account inputs yourself
 
-A request normally declares foreign accounts as `ForeignAccount::public` or `ForeignAccount::private`, and the client fetches their state and inclusion witnesses from the node at the transaction's reference block. When you already hold that data, declare it as `ForeignAccount::Prefetched` instead and nothing is fetched for that account. The inputs must be valid at the reference block: the executor verifies each witness against that block's account root.
+A request normally declares foreign accounts as `ForeignAccount::public` or `ForeignAccount::private`, and the client fetches their state and inclusion witnesses from the node at the transaction's reference block. When you already hold that data, declare it as `ForeignAccount::Prefetched` and nothing is fetched for that account. The inputs must be valid at the reference block: the executor verifies each witness against that block's account root.
 
-`Client::get_foreign_account_inputs` fetches inputs for a set of declarations at a given block. Its results serialize alongside the request, so one party can fetch them and another can execute with them. This is what makes a transaction pinned to an older block executable after the node stopped serving account state there:
+`Client::get_foreign_account_inputs` fetches inputs for a set of declarations at a given block, and `AccountInputs` serializes, so one party can fetch and another can execute:
 
 ```rust
 use miden_client::transaction::{ForeignAccount, TransactionRequestBuilder};
 
-let builder = TransactionRequestBuilder::new().custom_script(tx_script);
-let anchor = client.chain_anchor_for_request(&builder.clone().build()?).await?;
-
 let declarations = [ForeignAccount::public(foreign_account_id, storage_requirements)?];
-let inputs = client.get_foreign_account_inputs(declarations, anchor.block_num()).await?;
+let block_num = client.get_sync_height().await?;
+let inputs = client.get_foreign_account_inputs(declarations, block_num).await?;
 
-let request = builder.foreign_accounts(inputs).build()?;
-let result = client.execute_transaction_at(account_id, request, anchor).await?;
+let request = TransactionRequestBuilder::new()
+    .custom_script(tx_script)
+    .foreign_accounts(inputs)
+    .build()?;
 ```
 
 Declaring an account ID more than once keeps the last declaration, so prefetched inputs added after a `ForeignAccount::public` declaration for the same account replace it. Only the accounts you pass are fetched: include every account reached through foreign procedure calls and every faucet with asset callbacks enabled whose asset the transaction moves, which on a fee-charging chain can include the fee faucet. Storage map keys and vault assets absent from the inputs are still resolved lazily during execution.
+
+Prefetching is what lets a request executed with `Client::execute_transaction_at` run after the node stopped serving account state at the anchor's block: fetch the inputs at `ChainAnchor::block_num` while the node still has them, and ship them with the anchor.

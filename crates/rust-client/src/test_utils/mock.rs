@@ -161,6 +161,10 @@ impl MockRpcApi {
     }
 
     /// Returns the chain tip block number.
+    pub fn protocol_config(&self) -> miden_protocol::protocol_config::ProtocolConfig {
+        self.mock_chain.read().protocol_config().clone()
+    }
+
     pub fn get_chain_tip_block_num(&self) -> BlockNumber {
         self.mock_chain.read().latest_block_header().block_num()
     }

@@ -290,7 +290,7 @@ pub async fn test_onchain_accounts(client_config: ClientConfig) -> Result<()> {
 
     info!(from = %from_account_id, to = %to_account_id, amount = TRANSFER_AMOUNT, "Running P2ID transaction");
     let tx_request = TransactionRequestBuilder::new().build_pay_to_id(
-        PaymentNoteDescription::new(vec![Asset::Fungible(asset)], from_account_id, to_account_id),
+        PaymentNoteDescription::new(vec![Asset::from(asset)], from_account_id, to_account_id),
         NoteType::Public,
         client_1.rng(),
     )?;

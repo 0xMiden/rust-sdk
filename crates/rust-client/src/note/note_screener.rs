@@ -252,6 +252,11 @@ impl NoteScreener {
         let Some(conversion_info) = native_fee_conversion_info(
             &account_code.interface(account_id),
             header.fee_parameters(),
+            &crate::protocol_config::load_protocol_config(
+                self.store.as_ref(),
+                header.protocol_config_commitment(),
+            )
+            .await?,
         ) else {
             return Ok(tx_args);
         };

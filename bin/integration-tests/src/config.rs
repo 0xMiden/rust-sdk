@@ -157,6 +157,18 @@ impl ClientConfig {
             .authenticator(Arc::new(keystore.clone()))
             .tx_discard_delta(None);
 
+        let protocol_config_path =
+            std::env::var_os("MIDEN_PROTOCOL_CONFIG").map(PathBuf::from).or_else(|| {
+                let path = PathBuf::from("data/protocol-config.bin");
+                path.exists().then_some(path)
+            });
+        if let Some(protocol_config_path) = protocol_config_path {
+            let bytes = std::fs::read(&protocol_config_path)
+                .context("failed to read protocol configuration")?;
+            let config = <miden_client::protocol_config::ProtocolConfig as miden_client::Deserializable>::read_from_bytes(&bytes)?;
+            builder = builder.protocol_config(config);
+        }
+
         if let Some(prover_url) = &self.prover_endpoint {
             builder = builder.prover(Arc::new(RemoteTransactionProver::new(prover_url)));
         }

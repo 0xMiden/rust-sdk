@@ -59,5 +59,10 @@ pub async fn create_client(
         .build()
         .await?;
 
+    if let Some(path) = std::env::var_os("MIDEN_PROTOCOL_CONFIG") {
+        let bytes = std::fs::read(path)?;
+        let config = <miden_client::protocol_config::ProtocolConfig as miden_client::Deserializable>::read_from_bytes(&bytes)?;
+        client.add_protocol_config(config).await?;
+    }
     Ok(client)
 }

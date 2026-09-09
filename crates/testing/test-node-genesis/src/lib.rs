@@ -117,6 +117,13 @@ pub fn write_genesis_config(
         generate_faucet_operator().context("failed to create the native faucet operator")?;
     let native_faucet =
         generate_native_faucet(operator.id()).context("failed to create the native fee faucet")?;
+    let protocol_config = miden_protocol::protocol_config::ProtocolConfig::current(
+        miden_protocol::asset::AssetId::new_fungible(native_faucet.id()),
+    )?;
+    std::fs::write(
+        output_dir.join("protocol-config.bin"),
+        miden_protocol::utils::serde::Serializable::to_bytes(&protocol_config),
+    )?;
     let fee_balance: Asset =
         FungibleAsset::new(native_faucet.id(), GENESIS_ACCOUNT_FEE_BALANCE)?.into();
     AccountFile::new(into_genesis_account(native_faucet, fee_balance)?, vec![])
@@ -442,7 +449,7 @@ fn create_test_account_with_many_assets(faucets: &[Account]) -> anyhow::Result<A
     .expect("basic wallet component should satisfy account component requirements");
 
     let assets = faucets.iter().map(|faucet| {
-        Asset::Fungible(
+        Asset::from(
             FungibleAsset::new(faucet.id(), ASSET_AMOUNT_PER_FAUCET)
                 .expect("faucet id should be valid for asset creation"),
         )

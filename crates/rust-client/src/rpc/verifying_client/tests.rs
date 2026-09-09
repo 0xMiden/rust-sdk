@@ -7,14 +7,7 @@ use miden_protocol::account::AccountId;
 use miden_protocol::address::NetworkId;
 use miden_protocol::batch::{ProposedBatch, ProvenBatch};
 use miden_protocol::block::account_tree::AccountWitness;
-use miden_protocol::block::{
-    BlockBody,
-    BlockHeader,
-    BlockNumber,
-    BlockProof,
-    BlockSignatures,
-    ProvenBlock,
-};
+use miden_protocol::block::{BlockBody, BlockHeader, BlockNumber, BlockSignatures, ProvenBlock};
 use miden_protocol::crypto::merkle::mmr::MmrProof;
 use miden_protocol::crypto::merkle::{MerklePath, SparseMerklePath};
 use miden_protocol::note::{
@@ -37,7 +30,6 @@ use miden_protocol::transaction::{
     OrderedTransactionHeaders,
     ProvenTransaction,
     TransactionHeader,
-    TransactionKernel,
 };
 use miden_protocol::{Felt, Word};
 use miden_standards::note::StandardNote;
@@ -88,7 +80,7 @@ fn nullifier_update(prefix: u16, block_num: u32) -> NullifierUpdate {
 }
 
 fn block_header(block_num: u32) -> BlockHeader {
-    BlockHeader::mock(block_num, None, None, &[], TransactionKernel.to_commitment())
+    BlockHeader::mock(block_num, None, None, &[])
 }
 
 fn proven_block(block_num: u32) -> ProvenBlock {
@@ -100,7 +92,12 @@ fn proven_block(block_num: u32) -> ProvenBlock {
     );
     let signatures = BlockSignatures::new(Vec::new()).expect("no signatures is a valid set");
 
-    ProvenBlock::new_unchecked(block_header(block_num), body, signatures, BlockProof::new_dummy())
+    ProvenBlock::new_unchecked(
+        block_header(block_num),
+        body,
+        signatures,
+        miden_protocol::testing::dummy_execution_proof(),
+    )
 }
 
 fn inclusion_proof() -> NoteInclusionProof {
@@ -155,7 +152,8 @@ fn transaction_record(account_id: AccountId) -> TransactionRecord {
             Word::default(),
             InputNotes::new_unchecked(vec![]),
             vec![],
-        ),
+        )
+        .unwrap(),
         output_notes: vec![],
         erased_output_notes: vec![],
         consumed_note_refs: vec![],

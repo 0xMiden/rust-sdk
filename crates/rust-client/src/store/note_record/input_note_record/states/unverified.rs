@@ -171,7 +171,6 @@ mod tests {
     use miden_protocol::account::{AccountIdVersion, AccountType, AssetCallbackFlag};
     use miden_protocol::crypto::merkle::SparseMerklePath;
     use miden_protocol::note::{NoteAttachments, NoteTag, NoteType, PartialNoteMetadata};
-    use miden_protocol::transaction::TransactionKernel;
 
     use super::*;
 
@@ -202,7 +201,7 @@ mod tests {
     /// A header for `block_num` whose note root is `note_root`, so the same root can be placed in
     /// more than one block.
     fn header(block_num: u32, note_root: Word) -> BlockHeader {
-        BlockHeader::mock(block_num, None, Some(note_root), &[], TransactionKernel.to_commitment())
+        BlockHeader::mock(block_num, None, Some(note_root), &[])
     }
 
     #[test]

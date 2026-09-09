@@ -1,7 +1,7 @@
 use std::io;
-#[cfg(feature = "dap")]
+#[cfg(any())]
 use std::net::SocketAddr;
-#[cfg(feature = "dap")]
+#[cfg(any())]
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -304,13 +304,13 @@ pub struct ConsumeNotesCmd {
     /// Debug the note-consumption transaction instead of proving and submitting it: start a DAP
     /// debug adapter server on the given address (e.g. "127.0.0.1:4711") and wait for a DAP client
     /// to connect before executing.
-    #[cfg(feature = "dap")]
+    #[cfg(any())]
     #[arg(long = "start-debug-adapter")]
     start_debug_adapter: Option<SocketAddr>,
 
     /// Write a replay snapshot of the debug session to this file once it ends, for offline replay
     /// with `miden-debug --replay <FILE>`. Only meaningful together with `--start-debug-adapter`.
-    #[cfg(feature = "dap")]
+    #[cfg(any())]
     #[arg(long = "record", value_name = "FILE", requires = "start_debug_adapter")]
     record: Option<PathBuf>,
 }
@@ -362,7 +362,7 @@ impl ConsumeNotesCmd {
                 )
             })?;
 
-        #[cfg(feature = "dap")]
+        #[cfg(any())]
         if let Some(addr) = self.start_debug_adapter.as_ref() {
             return debug_transaction(
                 &mut client,
@@ -414,8 +414,8 @@ impl PswapCmd {
         client: Client<AUTH>,
     ) -> Result<(), CliError> {
         match &self.action {
-            PswapAction::Create(cmd) => cmd.execute(client).await,
-            PswapAction::Consume(cmd) => cmd.execute(client).await,
+            PswapAction::Create(cmd) => Box::pin(cmd.execute(client)).await,
+            PswapAction::Consume(cmd) => Box::pin(cmd.execute(client)).await,
             PswapAction::Cancel(cmd) => cmd.execute(client).await,
         }
     }
@@ -690,7 +690,7 @@ async fn execute_transaction<AUTH: Keystore + Sync + 'static>(
 /// Runs `transaction_request` under a DAP debug adapter instead of proving and submitting it, so a
 /// DAP client can attach and step through the full transaction (kernel, note scripts, account
 /// code). Optionally writes a replay snapshot for offline replay with `miden-debug --replay`.
-#[cfg(feature = "dap")]
+#[cfg(any())]
 async fn debug_transaction<AUTH: Keystore + Sync + 'static>(
     client: &mut Client<AUTH>,
     account_id: AccountId,

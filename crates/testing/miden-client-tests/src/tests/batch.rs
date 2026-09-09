@@ -310,7 +310,7 @@ async fn batch_builder_push_succeeds_when_balance_depends_on_prior_push() {
     let push2 = TransactionRequestBuilder::new()
         .build_pay_to_id(
             PaymentNoteDescription::new(
-                vec![Asset::Fungible(oversend)],
+                vec![Asset::from(oversend)],
                 from_account_id,
                 to_account_id,
             ),
@@ -509,7 +509,7 @@ async fn batch_builder_serves_witnesses_for_state_untouched_by_prior_push() {
     let held_asset = FungibleAsset::new(held_faucet_id, TRANSFER_AMOUNT).unwrap();
     let push2 = TransactionRequestBuilder::new()
         .build_pay_to_id(
-            PaymentNoteDescription::new(vec![Asset::Fungible(held_asset)], from_id, to_id),
+            PaymentNoteDescription::new(vec![Asset::from(held_asset)], from_id, to_id),
             NoteType::Private,
             client.rng(),
         )
@@ -760,7 +760,7 @@ async fn batch_builder_cross_account_note_flow() {
     let asset = FungibleAsset::new(faucet_account_id, MINT_AMOUNT).unwrap();
     let req_send = TransactionRequestBuilder::new()
         .build_pay_to_id(
-            PaymentNoteDescription::new(vec![Asset::Fungible(asset)], account_id_a, account_id_b),
+            PaymentNoteDescription::new(vec![Asset::from(asset)], account_id_a, account_id_b),
             NoteType::Private,
             client.rng(),
         )

@@ -15,10 +15,10 @@ pub mod sync;
 pub mod tags;
 pub mod transactions;
 
-#[cfg(feature = "dap")]
+#[cfg(any())]
 use crate::errors::CliError;
 
-#[cfg(feature = "dap")]
+#[cfg(any())]
 fn report_replay_snapshot_write(
     recorder: &miden_debug::ReplaySnapshotRecorder,
     requested_path: &std::path::Path,

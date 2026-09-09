@@ -17,11 +17,10 @@ use miden_protocol::errors::{
     AssetVaultError,
     NoteError,
     StorageMapError,
-    TransactionScriptError,
 };
 use miden_protocol::utils::HexParseError;
 use miden_protocol::utils::serde::DeserializationError;
-use miden_protocol::{Word, WordError};
+use miden_protocol::{MastForestScriptError as TransactionScriptError, Word, WordError};
 use miden_tx::DataStoreError;
 use thiserror::Error;
 
@@ -34,6 +33,12 @@ use super::note_record::NoteRecordError;
 #[derive(Debug, Error)]
 #[allow(clippy::large_enum_variant)]
 pub enum StoreError {
+    #[error(
+        "protocol configuration {0} is not stored; register it with Client::add_protocol_config"
+    )]
+    ProtocolConfigNotFound(Word),
+    #[error("stored protocol configuration does not match commitment {0}")]
+    ProtocolConfigCommitmentMismatch(Word),
     #[error("asset error")]
     AssetError(#[from] AssetError),
     #[error("asset vault error")]

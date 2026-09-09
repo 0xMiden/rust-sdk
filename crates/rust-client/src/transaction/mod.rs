@@ -69,7 +69,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use miden_protocol::account::{AccountCode, AccountCodeInterface, AccountId, PartialAccount};
-use miden_protocol::asset::{Asset, NonFungibleAsset};
+use miden_protocol::asset::Asset;
 use miden_protocol::block::{BlockHeader, BlockNumber, FeeParameters};
 use miden_protocol::errors::AssetError;
 use miden_protocol::note::{
@@ -124,7 +124,7 @@ pub use batch::{BatchBuilder, BatchBuilderError};
 mod chain_anchor;
 pub use chain_anchor::{ChainAnchor, ChainAnchorError};
 
-#[cfg(feature = "dap")]
+#[cfg(any())]
 mod dap_executor;
 mod prover;
 pub use prover::TransactionProver;
@@ -189,7 +189,7 @@ pub use miden_tx::auth::TransactionAuthenticator;
 pub use miden_tx::{
     DataStoreError,
     LocalTransactionProver,
-    ProvingOptions,
+    Prover,
     TransactionExecutorError,
     TransactionProverError,
 };
@@ -330,12 +330,12 @@ where
         account_id: AccountId,
         transaction_request: TransactionRequest,
     ) -> Result<TransactionResult, ClientError> {
-        self.execute_transaction_with_mode(
+        Box::pin(self.execute_transaction_with_mode(
             account_id,
             transaction_request,
             TransactionExecutionMode::Standard,
             None,
-        )
+        ))
         .await
     }
 
@@ -508,7 +508,7 @@ where
     ///
     /// This applies the same request preparation and output-recipient validation as
     /// [`Self::execute_transaction`], and returns the corresponding [`ClientError`] on failure.
-    #[cfg(feature = "dap")]
+    #[cfg(any())]
     pub async fn execute_transaction_with_dap(
         &self,
         account_id: AccountId,
@@ -571,7 +571,7 @@ where
                     .execute_transaction(account_id, prep.block_num, notes, prep.tx_args)
                     .await?
             },
-            #[cfg(feature = "dap")]
+            #[cfg(any())]
             TransactionExecutionMode::Dap => {
                 self.build_dap_executor(&data_store)?
                     .execute_transaction(account_id, prep.block_num, notes, prep.tx_args)
@@ -706,6 +706,7 @@ where
             &mut transaction_request,
             &account_code_interface,
             &reference_header,
+            &self.get_protocol_config(reference_header.protocol_config_commitment()).await?,
         )?;
 
         let tx_args = transaction_request.into_transaction_args(tx_script);
@@ -828,7 +829,7 @@ where
         let genesis_commitment =
             self.trusted_block_header(BlockNumber::GENESIS).await?.commitment();
         let chain_tip = self.store.get_sync_height().await?;
-        let validator_keys = self.trusted_block_header(chain_tip).await?.validator_keys().clone();
+        let validator_keys = self.trusted_block_header(chain_tip).await?.validator_config().clone();
 
         let key = attested.verify(genesis_commitment, &validator_keys)?;
         self.store.set_transaction_encryption_key(&key).await?;
@@ -980,7 +981,7 @@ where
 
     /// Executes the provided transaction script with a DAP debug adapter listening for connections,
     /// allowing interactive debugging via any DAP-compatible client.
-    #[cfg(feature = "dap")]
+    #[cfg(any())]
     pub async fn execute_program_with_dap(
         &self,
         account_id: AccountId,
@@ -1288,7 +1289,7 @@ where
     }
 
     /// Creates a transaction executor configured for DAP (Debug Adapter Protocol) debugging.
-    #[cfg(feature = "dap")]
+    #[cfg(any())]
     pub(crate) fn build_dap_executor<'store, 'auth, STORE: DataStore + Sync>(
         &'auth self,
         data_store: &'store STORE,
@@ -1453,7 +1454,7 @@ pub enum TransactionStoreUpdateError {
 #[derive(Clone, Copy, Debug)]
 enum TransactionExecutionMode {
     Standard,
-    #[cfg(feature = "dap")]
+    #[cfg(any())]
     Dap,
 }
 
@@ -1482,7 +1483,7 @@ impl PreparedTransaction {
 /// notes wouldn't be included.
 fn get_outgoing_assets(
     transaction_request: &TransactionRequest,
-) -> (BTreeMap<AccountId, u64>, Vec<NonFungibleAsset>) {
+) -> (BTreeMap<AccountId, u64>, Vec<Asset>) {
     let mut own_notes_assets = match transaction_request.script_template() {
         Some(TransactionScriptTemplate::SendNotes(notes)) => notes
             .iter()
@@ -1523,6 +1524,7 @@ fn attach_native_fee_conversion_info(
     transaction_request: &mut TransactionRequest,
     account_code_interface: &AccountCodeInterface,
     reference_header: &BlockHeader,
+    protocol_config: &miden_protocol::protocol_config::ProtocolConfig,
 ) -> Result<(), ClientError> {
     // An auth arg the caller set is the caller's business: it may carry a commitment the caller
     // computed itself, or something else entirely. An empty word commits nothing, so it does not
@@ -1540,15 +1542,17 @@ fn attach_native_fee_conversion_info(
     match FeeAuth::of(account_code_interface) {
         FeeAuth::FixedSalt => {
             transaction_request.commit_native_fee_conversion_info(
-                fee_parameters.fee_faucet_id(),
+                protocol_config.fee_asset_id().faucet_id(),
                 declared_salt.unwrap_or(NATIVE_FEE_CONVERSION_SALT),
             );
             Ok(())
         },
         FeeAuth::CallerChosenSalt(component) => match declared_salt {
             Some(salt) => {
-                transaction_request
-                    .commit_native_fee_conversion_info(fee_parameters.fee_faucet_id(), salt);
+                transaction_request.commit_native_fee_conversion_info(
+                    protocol_config.fee_asset_id().faucet_id(),
+                    salt,
+                );
                 Ok(())
             },
             None => Err(ClientError::TransactionRequestError(
@@ -1637,6 +1641,7 @@ impl FeeAuth {
 pub(crate) fn native_fee_conversion_info(
     account_code_interface: &AccountCodeInterface,
     fee_parameters: &FeeParameters,
+    protocol_config: &miden_protocol::protocol_config::ProtocolConfig,
 ) -> Option<FeeConversionInfo> {
     if fee_parameters.verification_base_fee() == 0 {
         return None;
@@ -1645,7 +1650,9 @@ pub(crate) fn native_fee_conversion_info(
     // Only a fixed salt can be paired with this info by anyone other than the caller: where the
     // salt is the account's replay guard, the caller is the one who has to choose it.
     match FeeAuth::of(account_code_interface) {
-        FeeAuth::FixedSalt => Some(FeeConversionInfo::one_to_one(fee_parameters.fee_faucet_id())),
+        FeeAuth::FixedSalt => {
+            Some(FeeConversionInfo::one_to_one(protocol_config.fee_asset_id().faucet_id()))
+        },
         FeeAuth::CallerChosenSalt(_) | FeeAuth::Ignored(_) => None,
     }
 }
@@ -1710,7 +1717,7 @@ fn validate_basic_account_request(
     // may occupy more than one callback-flag vault key, so all matching entries are summed.
     let mut available_fungible: BTreeMap<AccountId, u64> = BTreeMap::new();
     for asset in vault_assets {
-        if let Asset::Fungible(fungible) = asset {
+        if let Some(fungible) = asset.as_fungible() {
             let balance = available_fungible.entry(fungible.faucet_id()).or_default();
             *balance = balance.saturating_add(fungible.amount().as_u64());
         }
@@ -1732,9 +1739,7 @@ fn validate_basic_account_request(
     // Check if the account balance plus incoming assets is greater than or equal to the outgoing
     // non fungible assets
     for non_fungible in &non_fungible_set {
-        let held = vault_assets
-            .iter()
-            .any(|asset| matches!(asset, Asset::NonFungible(nf) if nf == non_fungible));
+        let held = vault_assets.iter().any(|asset| asset == non_fungible);
         if !held && !incoming_non_fungible_balance_set.contains(non_fungible) {
             return Err(ClientError::TransactionRequestError(
                 TransactionRequestError::MissingNonFungibleAsset(non_fungible.faucet_id()),
@@ -1883,7 +1888,6 @@ mod tests {
         ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE,
         ACCOUNT_ID_SENDER,
     };
-    use miden_protocol::testing::validator_keys::random_validator_set;
     use miden_standards::account::AccountBuilderSchemaCommitmentExt;
     use miden_standards::account::auth::{
         Approver,
@@ -2052,17 +2056,19 @@ mod tests {
     /// in so the two can be told apart.
     const NATIVE_FEE_FAUCET: u128 = ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET;
 
-    /// Builds a block header whose fee parameters charge `verification_base_fee` in
-    /// [`NATIVE_FEE_FAUCET`]'s asset.
+    fn test_protocol_config() -> miden_protocol::protocol_config::ProtocolConfig {
+        miden_protocol::protocol_config::ProtocolConfig::current(
+            miden_protocol::asset::AssetId::new_fungible(NATIVE_FEE_FAUCET.try_into().unwrap()),
+        )
+        .unwrap()
+    }
+
+    /// Builds a block header with fees in the [`NATIVE_FEE_FAUCET`] asset.
     fn header_with_base_fee(verification_base_fee: u32) -> BlockHeader {
-        let fee_parameters = FeeParameters::new(
-            AccountId::try_from(NATIVE_FEE_FAUCET).unwrap(),
-            verification_base_fee,
-        );
-        let (_, validator_keys) = random_validator_set(1);
+        let fee_parameters = FeeParameters::new(verification_base_fee);
+        let (_, validator_keys) = miden_protocol::block::ValidatorConfig::random_with_signers(1);
 
         BlockHeader::new(
-            1,
             Word::empty(),
             BlockNumber::from(1u32),
             Word::empty(),
@@ -2070,9 +2076,10 @@ mod tests {
             Word::empty(),
             Word::empty(),
             Word::empty(),
-            Word::empty(),
             validator_keys,
             fee_parameters,
+            test_protocol_config().to_commitment(),
+            None,
             0,
         )
     }
@@ -2088,6 +2095,7 @@ mod tests {
             &mut request,
             &account.code_interface(),
             &header_with_base_fee(verification_base_fee),
+            &test_protocol_config(),
         );
         *request.auth_arg()
     }
@@ -2102,6 +2110,7 @@ mod tests {
             &mut request,
             &account.code_interface(),
             &header_with_base_fee(verification_base_fee),
+            &test_protocol_config(),
         )?;
         Ok(*request.auth_arg())
     }

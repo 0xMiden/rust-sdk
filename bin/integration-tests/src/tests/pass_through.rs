@@ -268,7 +268,14 @@ async fn pass_through_fee_asset<AUTH: TransactionAuthenticator + Sync + 'static>
 
     let worst_case_fee =
         TransactionFee::new(MAX_TX_EXECUTION_CYCLES)?.compute_fee(fee_parameters)?;
-    let funding = FungibleAsset::new(fee_parameters.fee_faucet_id(), worst_case_fee.as_u64())?;
+    let funding = FungibleAsset::new(
+        client
+            .get_protocol_config(genesis.protocol_config_commitment())
+            .await?
+            .fee_asset_id()
+            .faucet_id(),
+        worst_case_fee.as_u64(),
+    )?;
 
     let (probe_note, probe_details) =
         create_pass_through_note(sender, target, asset, Some(funding.into()), client.rng())?;
@@ -281,7 +288,14 @@ async fn pass_through_fee_asset<AUTH: TransactionAuthenticator + Sync + 'static>
         .executed_transaction()
         .compute_fee();
 
-    Ok(Some(FungibleAsset::new(fee_parameters.fee_faucet_id(), fee.as_u64())?))
+    Ok(Some(FungibleAsset::new(
+        client
+            .get_protocol_config(genesis.protocol_config_commitment())
+            .await?
+            .fee_asset_id()
+            .faucet_id(),
+        fee.as_u64(),
+    )?))
 }
 
 fn get_pass_through_note_script() -> NoteScript {

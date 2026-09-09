@@ -122,8 +122,10 @@ impl SqliteStore {
 
             PartialBlockchainFilter::Forest(forest) if forest.is_empty() => Ok(BTreeMap::new()),
             PartialBlockchainFilter::Forest(forest) => {
-                let max_index = i64::try_from(forest.rightmost_in_order_index().inner())
-                    .expect("id is a valid i64");
+                let max_index = i64::try_from(
+                    forest.rightmost_in_order_index().expect("forest is not empty").inner(),
+                )
+                .expect("id is a valid i64");
 
                 query_partial_blockchain_nodes(
                     conn,
@@ -405,18 +407,14 @@ mod test {
     use miden_client::store::{PartialBlockchainFilter, Store};
     use miden_client::utils::Serializable;
     use miden_protocol::crypto::merkle::mmr::Mmr;
-    use miden_protocol::transaction::TransactionKernel;
     use rusqlite::params;
 
     use crate::SqliteStore;
     use crate::tests::create_test_store;
 
     async fn insert_dummy_block_headers(store: &mut SqliteStore) -> Vec<BlockHeader> {
-        let block_headers: Vec<BlockHeader> = (0..5)
-            .map(|block_num| {
-                BlockHeader::mock(block_num, None, None, &[], TransactionKernel.to_commitment())
-            })
-            .collect();
+        let block_headers: Vec<BlockHeader> =
+            (0..5).map(|block_num| BlockHeader::mock(block_num, None, None, &[])).collect();
 
         let block_headers_clone = block_headers.clone();
         store
@@ -472,10 +470,9 @@ mod test {
     async fn insert_block_header_stores_header_and_nodes() {
         let store = create_test_store().await;
         const TOTAL_BLOCKS: usize = 8;
-        let tx_kernel = TransactionKernel.to_commitment();
 
         let headers: Vec<BlockHeader> = (0..TOTAL_BLOCKS)
-            .map(|n| BlockHeader::mock(u32::try_from(n).unwrap(), None, None, &[], tx_kernel))
+            .map(|n| BlockHeader::mock(u32::try_from(n).unwrap(), None, None, &[]))
             .collect();
         let mut mmr = Mmr::default();
         for header in &headers {
@@ -512,7 +509,7 @@ mod test {
     #[tokio::test]
     async fn insert_block_header_rolls_back_header_when_nodes_fail() {
         let store = create_test_store().await;
-        let header = BlockHeader::mock(5, None, None, &[], TransactionKernel.to_commitment());
+        let header = BlockHeader::mock(5, None, None, &[]);
         // One node so the node insert actually runs (an empty slice would be a no-op).
         let nodes = [(InOrderIndex::from_leaf_pos(5), header.commitment())];
 
@@ -544,17 +541,8 @@ mod test {
         let store = create_test_store().await;
         const TOTAL_BLOCKS: usize = 7300;
 
-        let tx_kernel_commitment = TransactionKernel.to_commitment();
         let block_headers: Vec<BlockHeader> = (0..TOTAL_BLOCKS)
-            .map(|block_num| {
-                BlockHeader::mock(
-                    u32::try_from(block_num).unwrap(),
-                    None,
-                    None,
-                    &[],
-                    tx_kernel_commitment,
-                )
-            })
+            .map(|block_num| BlockHeader::mock(u32::try_from(block_num).unwrap(), None, None, &[]))
             .collect();
 
         let mut mmr = Mmr::default();
@@ -694,10 +682,9 @@ mod test {
     async fn prune_irrelevant_blocks_removes_redundant_auth_nodes() {
         let store = create_test_store().await;
         const TOTAL_BLOCKS: usize = 16;
-        let tx_kernel = TransactionKernel.to_commitment();
 
         let headers: Vec<BlockHeader> = (0..TOTAL_BLOCKS)
-            .map(|n| BlockHeader::mock(u32::try_from(n).unwrap(), None, None, &[], tx_kernel))
+            .map(|n| BlockHeader::mock(u32::try_from(n).unwrap(), None, None, &[]))
             .collect();
         let mut mmr = Mmr::default();
         for h in &headers {

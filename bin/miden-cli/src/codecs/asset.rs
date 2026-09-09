@@ -56,9 +56,9 @@ impl WitScalarCodec for AssetCodec {
         let value = Word::from([*v0, *v1, *v2, *v3]);
         let asset = Asset::from_id_and_value_words(id, value)
             .map_err(|_| malformed_asset("the felts are not a valid asset"))?;
-        Ok(match asset {
-            Asset::Fungible(f) => format!("asset({}::{})", f.amount(), f.faucet_id().to_hex()),
-            Asset::NonFungible(_) => "asset(non-fungible)".to_string(),
+        Ok(match asset.as_fungible() {
+            Some(f) => format!("asset({}::{})", f.amount(), f.faucet_id().to_hex()),
+            None => "asset(non-fungible)".to_string(),
         })
     }
 }

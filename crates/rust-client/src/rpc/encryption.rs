@@ -33,7 +33,7 @@
 use alloc::string::ToString;
 use alloc::vec::Vec;
 
-use miden_protocol::block::{BlockNumber, ValidatorKeys};
+use miden_protocol::block::{BlockNumber, ValidatorConfig};
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
     PublicKey as ValidatorPublicKey,
     Signature as ValidatorSignature,
@@ -244,7 +244,7 @@ impl AttestedTransactionEncryptionKey {
     pub fn verify(
         self,
         genesis_commitment: Word,
-        validator_keys: &ValidatorKeys,
+        validator_keys: &ValidatorConfig,
     ) -> Result<TransactionEncryptionKey, RpcError> {
         if self.scheme != SUPPORTED_SCHEME {
             return Err(RpcError::TransactionEncryptionKeyRejected(format!(
@@ -266,7 +266,7 @@ impl AttestedTransactionEncryptionKey {
             self.next_key.as_ref(),
         );
 
-        let recognized = validator_keys.as_keys();
+        let recognized = validator_keys.keys();
         let attested = self.attestations.iter().any(|attestation| {
             recognized.contains(&attestation.validator_key)
                 && attestation.validator_key.verify(commitment, &attestation.signature)
@@ -674,7 +674,7 @@ mod tests {
     fn verify_accepts_an_attestation_from_a_recognized_validator() {
         let (key, _) = key_pair();
         let signer = ValidatorSigningKey::with_rng(&mut rng());
-        let validator_keys = ValidatorKeys::new(vec![signer.public_key()]).unwrap();
+        let validator_keys = ValidatorConfig::new(vec![signer.public_key()], 1).unwrap();
 
         let verified =
             attested(&key, &signer, genesis()).verify(genesis(), &validator_keys).unwrap();
@@ -687,7 +687,7 @@ mod tests {
         let (key, _) = key_pair();
         let impostor = ValidatorSigningKey::with_rng(&mut rng());
         let committed = ValidatorSigningKey::with_rng(&mut ChaCha20Rng::seed_from_u64(7));
-        let validator_keys = ValidatorKeys::new(vec![committed.public_key()]).unwrap();
+        let validator_keys = ValidatorConfig::new(vec![committed.public_key()], 1).unwrap();
 
         assert!(attested(&key, &impostor, genesis()).verify(genesis(), &validator_keys).is_err());
     }
@@ -698,7 +698,7 @@ mod tests {
     fn verify_rejects_a_substituted_public_key() {
         let (key, _) = key_pair();
         let signer = ValidatorSigningKey::with_rng(&mut rng());
-        let validator_keys = ValidatorKeys::new(vec![signer.public_key()]).unwrap();
+        let validator_keys = ValidatorConfig::new(vec![signer.public_key()], 1).unwrap();
 
         let substitute = KeyExchangeKey::with_rng(&mut ChaCha20Rng::seed_from_u64(99));
         let mut response = attested(&key, &signer, genesis());
@@ -713,7 +713,7 @@ mod tests {
     fn verify_rejects_an_attestation_from_another_network() {
         let (key, _) = key_pair();
         let signer = ValidatorSigningKey::with_rng(&mut rng());
-        let validator_keys = ValidatorKeys::new(vec![signer.public_key()]).unwrap();
+        let validator_keys = ValidatorConfig::new(vec![signer.public_key()], 1).unwrap();
 
         let response = attested(&key, &signer, genesis());
 
@@ -726,7 +726,7 @@ mod tests {
     fn verify_rejects_an_injected_next_key() {
         let (key, _) = key_pair();
         let signer = ValidatorSigningKey::with_rng(&mut rng());
-        let validator_keys = ValidatorKeys::new(vec![signer.public_key()]).unwrap();
+        let validator_keys = ValidatorConfig::new(vec![signer.public_key()], 1).unwrap();
 
         let mut response = attested(&key, &signer, genesis());
         response.next_key = Some(NextTransactionEncryptionKey {
@@ -745,7 +745,7 @@ mod tests {
     fn verify_rejects_an_unsupported_scheme() {
         let (key, _) = key_pair();
         let signer = ValidatorSigningKey::with_rng(&mut rng());
-        let validator_keys = ValidatorKeys::new(vec![signer.public_key()]).unwrap();
+        let validator_keys = ValidatorConfig::new(vec![signer.public_key()], 1).unwrap();
 
         let mut response = attested(&key, &signer, genesis());
         response.scheme = SUPPORTED_SCHEME + 1;

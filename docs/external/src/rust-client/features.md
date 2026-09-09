@@ -39,4 +39,3 @@ The `miden-client` crate gates some of the functionality above behind Cargo feat
 | `std` | Enables `std` support and concurrent execution in `miden-tx`. Enabled by default for native targets. This turns on the `tonic` dependency's transport and TLS features, which is not the same as the `tonic` feature above: gRPC support still has to be requested explicitly. |
 | `concurrent` | Enables Rayon-parallel proving without pulling in the rest of `std`, for `wasm32` consumers that cannot use it. Native builds get it through `std`. |
 | `testing` | Enables mocks and helpers meant for test environments. **Disabled by default.** |
-| `dap` | Enables running a transaction under a Debug Adapter Protocol client instead of proving it. Implies `std`. **Disabled by default.** |

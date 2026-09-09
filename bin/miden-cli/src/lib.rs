@@ -142,6 +142,23 @@ impl CliClient {
             .authenticator(Arc::new(keystore))
             .tx_discard_delta(Some(TX_DISCARD_DELTA));
 
+        if let Some(faucet) = config.fee_faucet_id.as_deref() {
+            let faucet_id = miden_client::account::AccountId::from_hex(faucet).map_err(|err| {
+                CliError::from(miden_client::ClientError::ClientInitializationError(
+                    err.to_string(),
+                ))
+            })?;
+            let protocol_config = miden_client::protocol_config::ProtocolConfig::current(
+                miden_client::asset::AssetId::new_fungible(faucet_id),
+            )
+            .map_err(|err| {
+                CliError::from(miden_client::ClientError::ClientInitializationError(
+                    err.to_string(),
+                ))
+            })?;
+            builder = builder.protocol_config(protocol_config);
+        }
+
         if let Some(delta) = config.max_block_number_delta {
             builder = builder.max_block_number_delta(delta);
         }
@@ -153,6 +170,15 @@ impl CliClient {
         }
 
         let client = builder.build().await.map_err(CliError::from)?;
+        if let Some(path) = std::env::var_os("MIDEN_PROTOCOL_CONFIG") {
+            let config_result = std::fs::read(path)
+                .map_err(|err| miden_client::ClientError::ClientInitializationError(err.to_string()))
+                .and_then(|bytes| <miden_client::protocol_config::ProtocolConfig as miden_client::Deserializable>::read_from_bytes(&bytes).map_err(Into::into));
+            client
+                .add_protocol_config(config_result.map_err(CliError::from)?)
+                .await
+                .map_err(CliError::from)?;
+        }
         Ok(CliClient(client))
     }
 

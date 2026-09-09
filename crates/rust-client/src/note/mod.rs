@@ -110,7 +110,6 @@ pub use miden_standards::note::{
     FeeSponsorshipNote,
     MintNote,
     MintNoteStorage,
-    NetworkAccountConfigNote,
     NetworkAccountTarget,
     NoteConsumptionStatus,
     NoteExecutionHint,
@@ -329,3 +328,5 @@ where
         .pop()
         .expect("input_note_records should always have one element"))
 }
+
+pub use miden_standards::note::config::NetworkAccountConfigNote;

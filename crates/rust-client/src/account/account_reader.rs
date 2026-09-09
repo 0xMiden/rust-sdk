@@ -142,8 +142,11 @@ impl AccountReader {
     /// [`Client::get_account_vault`](crate::Client::get_account_vault).
     pub async fn get_balance(&self, faucet_id: AccountId) -> Result<AssetAmount, ClientError> {
         let asset_id = AssetId::new_fungible(faucet_id);
-        if let Some((Asset::Fungible(fungible_asset), _)) =
-            self.store.get_account_asset(self.account_id, asset_id).await?
+        if let Some(fungible_asset) = self
+            .store
+            .get_account_asset(self.account_id, asset_id)
+            .await?
+            .and_then(|(asset, _)| asset.as_fungible())
         {
             Ok(fungible_asset.amount())
         } else {

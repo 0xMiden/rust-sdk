@@ -3,7 +3,6 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::fmt;
 
-use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::crypto::merkle::MerkleError;
 pub use miden_protocol::errors::{
@@ -19,10 +18,10 @@ use miden_protocol::errors::{
     ProposedBatchError,
     ProvenBatchError,
     TransactionInputError,
-    TransactionScriptError,
 };
 use miden_protocol::note::NoteId;
 use miden_protocol::transaction::{ProvenTransaction, TransactionId, TransactionInputs};
+use miden_protocol::{MastForestScriptError as TransactionScriptError, Word};
 // RE-EXPORTS
 // ================================================================================================
 pub use miden_standards::errors::CodeBuilderError;

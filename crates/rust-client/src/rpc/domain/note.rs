@@ -693,7 +693,7 @@ impl TryFrom<proto::note::NoteScript> for NoteScript {
     fn try_from(note_script: proto::note::NoteScript) -> Result<Self, Self::Error> {
         let mast_forest = MastForest::read_from_bytes(&note_script.mast)?;
         let entrypoint = MastNodeId::from_u32_safe(note_script.entrypoint, &mast_forest)?;
-        Ok(NoteScript::from_parts(alloc::sync::Arc::new(mast_forest), entrypoint))
+        Ok(NoteScript::from_parts(alloc::sync::Arc::new(mast_forest), entrypoint)?)
     }
 }
 

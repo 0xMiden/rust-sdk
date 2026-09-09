@@ -22,6 +22,7 @@ use miden_client::testing::note_transport::{
     MockNoteTransportApi,
     MockNoteTransportNode,
 };
+use miden_client::transaction::TransactionRequestBuilder;
 use miden_client::utils::RwLock;
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
 use miden_protocol::account::{
@@ -45,6 +46,7 @@ use rand::RngExt;
 
 use crate::tests::{
     create_test_client_builder,
+    insert_new_fungible_faucet,
     insert_new_wallet,
     seed_mock_transaction_encryption_key,
 };
@@ -70,8 +72,7 @@ async fn transport_basic() {
         .unwrap()
         .into();
 
-    // Sync-state / fetch notes
-    // No notes before sending
+    // Sync-state / fetch notes No notes before sending
     recipient.sync_state().await.unwrap();
     let notes = recipient.get_input_notes(NoteFilter::All).await.unwrap();
     assert_eq!(notes.len(), 0);
@@ -82,8 +83,7 @@ async fn transport_basic() {
         .await
         .unwrap();
 
-    // Sync-state / fetch notes
-    // 1 note stored
+    // Sync-state / fetch notes 1 note stored
     recipient.sync_state().await.unwrap();
     let notes = recipient.get_input_notes(NoteFilter::All).await.unwrap();
     assert_eq!(notes.len(), 1);
@@ -136,8 +136,8 @@ async fn transport_recovers_attachments() {
     mock_chain.add_pending_executed_transaction(&tx).unwrap();
     mock_chain.prove_next_block().unwrap();
 
-    // Deliberately not registered on the mock: a single-word attachment reaches the client
-    // through the sync record, so a node that withholds it changes nothing.
+    // Deliberately not registered on the mock: a single-word attachment reaches the client through
+    // the sync record, so a node that withholds it changes nothing.
     let rpc_api = Arc::new(MockRpcApi::new(mock_chain));
 
     let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
@@ -186,9 +186,9 @@ async fn transport_recovers_attachments() {
 /// committed without its content, so a later re-import can retry the fetch.
 #[tokio::test]
 async fn unavailable_attachments_do_not_fail_sync() {
-    // The helper tracks the note's tag and syncs to the tip, so it already exercises the sync
-    // path: the note advertises attachment content the node cannot serve, and the sync succeeds
-    // by skipping the note.
+    // The helper tracks the note's tag and syncs to the tip, so it already exercises the sync path:
+    // the note advertises attachment content the node cannot serve, and the sync succeeds by
+    // skipping the note.
     let (mut client, private_note, mock_transport_node) =
         committed_private_note_recipient(0, true).await;
     assert!(client.get_input_notes(NoteFilter::All).await.unwrap().is_empty());
@@ -297,8 +297,8 @@ async fn backfill_imports_history_for_late_added_tag() {
     recipient.add_note_tag(tag_late).await.unwrap();
 
     // Sync: the backfill must deliver the late tag's note even though its cursor is below the
-    // global cursor. The backfill is scoped to the newly tracked tag (it fetches `&[tag_late]`),
-    // so it recovers that tag's own history without re-scanning every tag from the start.
+    // global cursor. The backfill is scoped to the newly tracked tag (it fetches `&[tag_late]`), so
+    // it recovers that tag's own history without re-scanning every tag from the start.
     recipient.sync_state().await.unwrap();
     let notes = recipient.get_input_notes(NoteFilter::All).await.unwrap();
     assert_eq!(notes.len(), 2, "the late tag's historical note must be backfilled");
@@ -306,10 +306,10 @@ async fn backfill_imports_history_for_late_added_tag() {
 }
 
 /// Removing a tag drops it from the covered set, so re-adding it backfills again. A note that
-/// arrives while the tag is untracked, and that another tag then pushes the global cursor past,
-/// can only be recovered by a from-the-start backfill. Re-adding the tag must recover it, which
-/// proves the covered set is cleared on removal (otherwise the re-added tag would be treated as
-/// already covered and the note would be lost).
+/// arrives while the tag is untracked, and that another tag then pushes the global cursor past, can
+/// only be recovered by a from-the-start backfill. Re-adding the tag must recover it, which proves
+/// the covered set is cleared on removal (otherwise the re-added tag would be treated as already
+/// covered and the note would be lost).
 #[tokio::test]
 async fn backfill_recovers_notes_that_arrived_while_untracked() {
     let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
@@ -496,10 +496,10 @@ async fn transport_fetch_no_matching_tags() {
     assert_eq!(notes.len(), 1, "recipient with matching tags should receive 1 note");
 }
 
-/// Tests that a private note committed on-chain at the same block the client has synced to
-/// is still found when imported via the NTL path. This reproduces the race condition where
-/// fast sync (e.g. every 3s) causes `sync_height` to advance past the note's commitment
-/// block before the NTL delivers the note details.
+/// Tests that a private note committed on-chain at the same block the client has synced to is still
+/// found when imported via the NTL path. This reproduces the race condition where fast sync (e.g.
+/// every 3s) causes `sync_height` to advance past the note's commitment block before the NTL
+/// delivers the note details.
 #[tokio::test]
 async fn fetch_private_notes_finds_note_committed_at_sync_height() {
     // 1. Build a mock chain with a private note committed at block 1.
@@ -580,9 +580,9 @@ async fn fetch_private_notes_finds_note_committed_at_sync_height() {
     let details_bytes = details.to_bytes();
     mock_transport_node.write().add_note(*private_note.header(), details_bytes);
 
-    // 6. Second sync_state: fetch_transport_notes imports the note, then chain sync runs.
-    // Without the fix, after_block_num = sync_height, scan misses the note at block 1.
-    // With the fix, lookback window catches it.
+    // 6. Second sync_state: fetch_transport_notes imports the note, then chain sync runs. The
+    // chain scan starts from a lookback window rather than from the sync height, so it still sees
+    // the note at block 1.
     let summary = client.sync_state().await.unwrap();
     assert!(
         summary.new_private_notes.contains(&private_note.id()),
@@ -600,17 +600,17 @@ async fn fetch_private_notes_finds_note_committed_at_sync_height() {
 /// A private note delivered over the NTL must be committed by the same `sync_state` call that
 /// advances past its commitment block.
 ///
-/// The commitment is learned from two independent sources that only combine through the store:
-/// the NTL supplies the note's details, which the transport half writes as an `Expected` record,
-/// and the node reports the commitment for the note's tag, which the chain half screens with
+/// The commitment is learned from two independent sources that only combine through the store: the
+/// NTL supplies the note's details, which the transport half writes as an `Expected` record, and
+/// the node reports the commitment for the note's tag, which the chain half screens with
 /// `NoteScreener::on_note_received`. That screening is a store lookup — a private note carries no
 /// details from the node, so a record it cannot find is discarded — which makes the order
 /// load-bearing: the transport half must write before the chain half screens.
 ///
-/// This is the case the lookback in `fetch_private_notes_finds_note_committed_at_sync_height`
-/// does not cover. Here the note commits *above* the client's sync height, so the transport half's
-/// own commitment check (capped at the stored sync height) cannot see it and the chain half is the
-/// only thing that can. The chain sync's note query is a forward-moving window, so a commitment
+/// This is the case the lookback in `fetch_private_notes_finds_note_committed_at_sync_height` does
+/// not cover. Here the note commits *above* the client's sync height, so the transport half's own
+/// commitment check (capped at the stored sync height) cannot see it and the chain half is the only
+/// thing that can. The chain sync's note query is a forward-moving window, so a commitment
 /// discarded here is never revisited: the record would stay `Expected` forever.
 #[tokio::test]
 async fn ntl_note_committed_within_the_sync_window_is_committed_by_that_sync() {
@@ -792,24 +792,20 @@ async fn ntl_note_already_spent_below_the_checkpoint_is_not_left_committed() {
     );
 }
 
-/// A private note must reach the recipient even when the sender's first relay
-/// attempt fails, provided the transport later recovers.
+/// A private note must reach the recipient even when the sender's first relay attempt fails,
+/// provided the transport later recovers.
 ///
-/// Without the durable outbox, `send_private_note` relays the payload exactly
-/// once; if that call fails the payload is dropped (no retry, no persistence)
-/// and the recipient never learns about the note. The outbox makes the relay
-/// retriable, so a transient transport failure no longer loses the note.
+/// `send_private_note` persists the payload in a durable outbox, so a relay that fails is retried
+/// instead of dropped. Without persistence the recipient would never learn about the note.
 ///
-/// The test doesn't constrain the fix's shape (inline retry, retry on
-/// `sync_state`, or an explicit `flush_relay_outbox`): it polls by alternating
-/// sender/recipient `sync_state` calls until the note arrives or the budget is
-/// exhausted.
+/// The test does not constrain where the retry happens (inline, on `sync_state`, or through an
+/// explicit `flush_relay_outbox`): it polls by alternating sender and recipient `sync_state` calls
+/// until the note arrives or the budget is exhausted.
 #[tokio::test]
 async fn private_note_relay_recovers_after_transient_ntl_failure() {
     let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
 
-    // Fail the next send_note attempt, then recover — a single transient
-    // transport failure.
+    // Fail the next send_note attempt, then recover — a single transient transport failure.
     let faulty = Arc::new(FaultyNoteTransportApi::new(mock_node.clone(), 1));
     let (mut sender, sender_account) =
         create_test_user_with_transport(faulty.clone() as Arc<dyn NoteTransportClient>).await;
@@ -826,18 +822,16 @@ async fn private_note_relay_recovers_after_transient_ntl_failure() {
         .build()
         .unwrap()
         .into();
-    // Transport-delivered notes carry no metadata (hence no `NoteId`); match by
-    // details commitment.
+    // Transport-delivered notes carry no metadata (hence no `NoteId`); match by details commitment.
     let note_commitment = note.details_commitment();
 
-    // First relay attempt — the faulty NTL rejects it. We don't assert on the
-    // return value: the relay may fail here and be retried later.
+    // First relay attempt — the faulty NTL rejects it. We don't assert on the return value: the
+    // relay may fail here and be retried later.
     let _ = sender
         .send_private_note_with_block_hint(note, &recipient_address, BlockNumber::from(0))
         .await;
 
-    // Drive both clients forward; the retry must deliver the note within a few
-    // rounds.
+    // Drive both clients forward; the retry must deliver the note within a few rounds.
     let mut delivered = false;
     for _ in 0..5 {
         let _ = sender.sync_state().await;
@@ -856,18 +850,17 @@ async fn private_note_relay_recovers_after_transient_ntl_failure() {
         faulty.send_attempts()
     );
 
-    // The fix must actually retry the relay — a single attempt that succeeded
-    // by chance is not durability.
+    // The relay must actually be retried — a single attempt that succeeded by chance is not
+    // durability.
     assert!(
         faulty.send_attempts() >= 2,
-        "fix must retry the relay; observed only {} send_note attempt(s)",
+        "the relay must be retried; observed only {} send_note attempt(s)",
         faulty.send_attempts()
     );
 }
 
-/// The durable outbox entry survives a failed `send_private_note` and is
-/// re-sent by an explicit `flush_relay_outbox`, without a full sync. A second
-/// flush is a no-op once the entry has drained.
+/// The durable outbox entry survives a failed `send_private_note` and is re-sent by an explicit
+/// `flush_relay_outbox`, without a full sync. A second flush is a no-op once the entry has drained.
 #[tokio::test]
 async fn flush_relay_outbox_retries_failed_relay_without_full_sync() {
     let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
@@ -888,8 +881,7 @@ async fn flush_relay_outbox_retries_failed_relay_without_full_sync() {
         .build()
         .unwrap()
         .into();
-    // Transport-delivered notes carry no metadata (hence no `NoteId`); match by
-    // details commitment.
+    // Transport-delivered notes carry no metadata (hence no `NoteId`); match by details commitment.
     let note_commitment = note.details_commitment();
 
     // First relay fails; the payload must survive in the outbox.
@@ -933,10 +925,10 @@ async fn flush_relay_outbox_retries_failed_relay_without_full_sync() {
     );
 }
 
-/// A relay that keeps failing must not block `sync_state`. The outbox flush
-/// runs at the start of the transport step; if its error propagated, a single
-/// undeliverable note would wedge every subsequent sync. The entry must stay in
-/// the outbox for later retry while the sync itself succeeds.
+/// A relay that keeps failing must not block `sync_state`. The outbox flush runs at the start of
+/// the transport step; if its error propagated, a single undeliverable note would wedge every
+/// subsequent sync. The entry must stay in the outbox for later retry while the sync itself
+/// succeeds.
 #[tokio::test]
 async fn persistent_relay_failure_does_not_block_sync_state() {
     let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
@@ -964,8 +956,8 @@ async fn persistent_relay_failure_does_not_block_sync_state() {
         .send_private_note_with_block_hint(note, &recipient_address, BlockNumber::from(0))
         .await;
 
-    // sync_state flushes the outbox (which fails) but must still complete: the
-    // relay failure is logged, not propagated.
+    // sync_state flushes the outbox (which fails) but must still complete: the relay failure is
+    // logged, not propagated.
     sender
         .sync_state()
         .await
@@ -1010,8 +1002,8 @@ async fn send_private_note_with_block_hint_delivers_note() {
 }
 
 /// A private note committed more than the fallback lookback window before the recipient's sync
-/// height is still found when the sender relays an `after_block_num` floor: the deterministic
-/// floor reaches further back than the heuristic would.
+/// height is still found when the sender relays an `after_block_num` floor: the deterministic floor
+/// reaches further back than the heuristic would.
 #[tokio::test]
 async fn fetch_private_notes_uses_sender_provided_after_block_num() {
     // Commit the note at block 1, then advance far enough that the 20-block fallback window
@@ -1044,8 +1036,8 @@ async fn fetch_private_notes_uses_sender_provided_after_block_num() {
     );
 }
 
-/// The same scenario without a sender-provided floor: the fallback lookback window starts above
-/// the note's commitment block, so the imported note's commitment is not located.
+/// The same scenario without a sender-provided floor: the fallback lookback window starts above the
+/// note's commitment block, so the imported note's commitment is not located.
 #[tokio::test]
 async fn fetch_private_notes_without_floor_falls_back_to_lookback_window() {
     let (mut client, private_note, mock_transport_node) =
@@ -1071,6 +1063,177 @@ async fn fetch_private_notes_without_floor_falls_back_to_lookback_window() {
         !committed_notes.iter().any(|n| n.id() == Some(private_note.id())),
         "without a floor the lookback window misses a note committed before sync_height - 20"
     );
+}
+
+/// A delivery of a note being consumed locally is skipped and the cursor advances (#2345).
+#[tokio::test]
+async fn transport_delivery_of_processing_note_does_not_wedge_sync_state() {
+    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
+    let (mut client, keystore) = Box::pin(create_test_client_transport(mock_node.clone())).await;
+    client.sync_state().await.unwrap();
+
+    let account = insert_new_wallet(&mut client, AccountType::Private, &keystore).await.unwrap();
+    let faucet = insert_new_fungible_faucet(&mut client, AccountType::Private, &keystore)
+        .await
+        .unwrap();
+
+    let mint_request = TransactionRequestBuilder::new()
+        .build_mint_fungible_asset(
+            FungibleAsset::new(faucet.id(), 5u64).unwrap(),
+            account.id(),
+            ProtocolNoteType::Public,
+            client.rng(),
+        )
+        .unwrap();
+    Box::pin(client.submit_new_transaction(faucet.id(), mint_request.clone()))
+        .await
+        .unwrap();
+
+    let minted_note = mint_request.expected_output_own_notes().pop().unwrap();
+    let note_record = client.get_input_note(minted_note.id()).await.unwrap().unwrap();
+    let consume_request = TransactionRequestBuilder::new()
+        .input_notes([(note_record.try_into().unwrap(), None)])
+        .build()
+        .unwrap();
+    Box::pin(client.submit_new_transaction(account.id(), consume_request))
+        .await
+        .unwrap();
+    assert!(
+        !client.get_input_notes(NoteFilter::Processing).await.unwrap().is_empty(),
+        "the consumed note should be in a processing state"
+    );
+
+    let cursor_before = client.test_store().get_note_transport_cursor().await.unwrap();
+    // The same note arrives via transport while the consume is in flight.
+    mock_node
+        .write()
+        .add_note(*minted_note.header(), NoteDetails::from(minted_note.clone()).to_bytes());
+
+    let summary = client.sync_state().await.unwrap();
+    assert!(
+        summary.new_private_notes.is_empty(),
+        "the redundant delivery must not be re-imported"
+    );
+
+    let cursor_after = client.test_store().get_note_transport_cursor().await.unwrap();
+    assert!(cursor_after > cursor_before, "cursor must advance past the skipped delivery");
+    client.sync_state().await.unwrap();
+
+    let records = client.get_input_notes(NoteFilter::All).await.unwrap();
+    let matching = records
+        .iter()
+        .filter(|record| record.details_commitment() == minted_note.details_commitment())
+        .count();
+    assert_eq!(matching, 1, "the skipped delivery must not create or overwrite a record");
+}
+
+/// A failed fetch propagates and leaves the cursor unchanged for retry.
+#[tokio::test]
+async fn transport_fetch_failure_leaves_cursor_for_retry() {
+    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
+    let faulty = Arc::new(FaultyNoteTransportApi::new(mock_node.clone(), 0));
+    let (mut recipient, recipient_account) =
+        Box::pin(create_test_user_with_transport(faulty.clone())).await;
+
+    let note: Note = P2idNote::builder()
+        .sender(recipient_account.id())
+        .target(recipient_account.id())
+        .asset(dummy_asset())
+        .note_type(NoteType::Private)
+        .generate_serial_number(recipient.rng())
+        .build()
+        .unwrap()
+        .into();
+    mock_node
+        .write()
+        .add_note(*note.header(), NoteDetails::from(note.clone()).to_bytes());
+
+    faulty.fail_next_n_fetches(2);
+    recipient.sync_state().await.unwrap_err();
+    recipient.sync_state().await.unwrap_err();
+    assert_eq!(faulty.fetch_attempts(), 2);
+    assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 0);
+
+    let summary = recipient.sync_state().await.unwrap();
+    assert_eq!(summary.new_private_notes.len(), 1, "note seeded during the outage must arrive");
+}
+
+/// A delivery whose details don't match the header's commitment is dropped.
+#[tokio::test]
+async fn transport_delivery_with_mismatched_details_is_dropped() {
+    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
+    let (mut sender, sender_account) = create_test_user_transport(mock_node.clone()).await;
+    let (mut recipient, recipient_account) = create_test_user_transport(mock_node.clone()).await;
+
+    let note_a: Note = P2idNote::builder()
+        .sender(sender_account.id())
+        .target(recipient_account.id())
+        .asset(dummy_asset())
+        .note_type(NoteType::Private)
+        .generate_serial_number(sender.rng())
+        .build()
+        .unwrap()
+        .into();
+    let note_b: Note = P2idNote::builder()
+        .sender(sender_account.id())
+        .target(recipient_account.id())
+        .asset(dummy_asset())
+        .note_type(NoteType::Private)
+        .generate_serial_number(sender.rng())
+        .build()
+        .unwrap()
+        .into();
+
+    let cursor_before = recipient.test_store().get_note_transport_cursor().await.unwrap();
+    // Note B's header paired with note A's details.
+    mock_node
+        .write()
+        .add_note(*note_b.header(), NoteDetails::from(note_a.clone()).to_bytes());
+
+    let summary = recipient.sync_state().await.unwrap();
+    assert!(summary.new_private_notes.is_empty(), "forged delivery must not import");
+    assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 0);
+    let cursor_after = recipient.test_store().get_note_transport_cursor().await.unwrap();
+    assert!(cursor_after > cursor_before, "cursor must advance past the forged delivery");
+
+    mock_node
+        .write()
+        .add_note(*note_b.header(), NoteDetails::from(note_b.clone()).to_bytes());
+    let summary = recipient.sync_state().await.unwrap();
+    assert_eq!(summary.new_private_notes.len(), 1);
+    let notes = recipient.get_input_notes(NoteFilter::All).await.unwrap();
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0].details_commitment(), note_b.details_commitment());
+}
+
+/// A delivery for a tag that wasn't requested is dropped.
+#[tokio::test]
+async fn transport_delivery_for_unrequested_tag_is_dropped() {
+    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
+    let (mut sender, sender_account) = create_test_user_transport(mock_node.clone()).await;
+    let (mut recipient, _recipient_account) = create_test_user_transport(mock_node.clone()).await;
+
+    let tracked_tag = NoteTag::new(777);
+    recipient.add_note_tag(tracked_tag).await.unwrap();
+    let foreign_note: Note = P2idNote::builder()
+        .sender(sender_account.id())
+        .target(sender_account.id())
+        .asset(dummy_asset())
+        .note_type(NoteType::Private)
+        .generate_serial_number(sender.rng())
+        .build()
+        .unwrap()
+        .into();
+    // A note tagged for the sender, served under the recipient's tracked tag.
+    mock_node.write().add_note_with_tag_key(
+        tracked_tag,
+        *foreign_note.header(),
+        NoteDetails::from(foreign_note).to_bytes(),
+    );
+
+    let summary = recipient.sync_state().await.unwrap();
+    assert!(summary.new_private_notes.is_empty(), "foreign-tag delivery must not import");
+    assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 0);
 }
 
 // HELPERS
@@ -1142,8 +1305,8 @@ fn private_note_with_tag(account: AccountId, tag: NoteTag, seed: u64) -> Note {
     .unwrap()
 }
 
-/// An attachment spanning more than one word, which a `SyncNotes` response reports as a
-/// commitment only, so its content has to be fetched and a node can withhold it.
+/// An attachment spanning more than one word, which a `SyncNotes` response reports as a commitment
+/// only, so its content has to be fetched and a node can withhold it.
 fn multi_word_attachment() -> NoteAttachment {
     NoteAttachment::with_words(
         NoteAttachmentScheme::new(100).unwrap(),
@@ -1152,10 +1315,10 @@ fn multi_word_attachment() -> NoteAttachment {
     .unwrap()
 }
 
-/// Build a chain with a private note (tag 0) committed at block 1, advance
-/// `blocks_past_commitment` blocks beyond it, then create a recipient client synced to the tip
-/// with an (initially empty) note transport. Returns the client, the committed note, and the
-/// shared mock transport node so a test can deliver the note over the NTL afterwards.
+/// Build a chain with a private note (tag 0) committed at block 1, advance `blocks_past_commitment`
+/// blocks beyond it, then create a recipient client synced to the tip with an (initially empty)
+/// note transport. Returns the client, the committed note, and the shared mock transport node so a
+/// test can deliver the note over the NTL afterwards.
 ///
 /// With `with_unserved_attachment` the note carries a multi-word attachment the mock node never
 /// serves. It has to be multi-word, since the node sends a single-word one on the sync record.

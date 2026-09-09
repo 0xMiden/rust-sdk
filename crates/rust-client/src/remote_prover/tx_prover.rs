@@ -14,8 +14,8 @@ use super::{RemoteProverClientError, generated as proto};
 // REMOTE TRANSACTION PROVER
 // ================================================================================================
 
-/// A [`RemoteTransactionProver`] is a transaction prover that sends witness data to a remote
-/// gRPC server and receives a proven transaction.
+/// A [`RemoteTransactionProver`] is a transaction prover that sends witness data to a remote gRPC
+/// server and receives a proven transaction.
 ///
 /// When compiled for the `wasm32-unknown-unknown` target, it uses the `tonic_web_wasm_client`
 /// transport. Otherwise, it uses the built-in `tonic::transport` for native platforms.

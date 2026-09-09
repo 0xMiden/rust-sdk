@@ -82,8 +82,8 @@ impl KeyIndex {
             KeyStoreError::StorageError(format!("error serializing index: {err:?}"))
         })?;
 
-        // Create the temp file in the same directory as the index so the subsequent atomic
-        // rename stays on the same filesystem.
+        // Create the temp file in the same directory as the index so the subsequent atomic rename
+        // stays on the same filesystem.
         let mut temp_file = tempfile::NamedTempFile::new_in(keys_directory)
             .map_err(keystore_error("error creating temp index file"))?;
         temp_file
@@ -104,8 +104,8 @@ impl KeyIndex {
 
     /// Returns the account ID associated with a given public key commitment hex.
     ///
-    /// Iterates over all mappings to find which account contains the commitment.
-    /// Returns `None` if no account is found.
+    /// Iterates over all mappings to find which account contains the commitment. Returns `None` if
+    /// no account is found.
     fn get_account_id(&self, pub_key_commitment: PublicKeyCommitment) -> Option<AccountId> {
         let pub_key_hex = Word::from(pub_key_commitment).to_hex();
 
@@ -227,7 +227,9 @@ impl TransactionAuthenticator for FilesystemKeyStore {
     /// # Errors
     /// If the public key isn't found in the store, [`AuthenticationError::UnknownPublicKey`] is
     /// returned.
-    #[allow(clippy::unused_async_trait_impl)]
+    // The trait declares this method as async; this implementation signs from local state and has
+    // nothing to await.
+    #[allow(clippy::unused_async_trait_impl, reason = "the trait signature is async")]
     async fn get_signature(
         &self,
         pub_key: PublicKeyCommitment,
@@ -267,10 +269,8 @@ impl Keystore for FilesystemKeyStore {
     ) -> Result<(), KeyStoreError> {
         let pub_key_commitment = key.public_key().to_commitment();
 
-        // Write the key file
         self.add_key_without_account(key)?;
 
-        // Update the index
         {
             let mut index = self.index.write();
             index.add_mapping(&account_id, pub_key_commitment);

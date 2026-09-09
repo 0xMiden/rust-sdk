@@ -67,9 +67,9 @@ pub(crate) fn parse_accounts(
     ))
 }
 
-/// Fetches rows from `latest_account_headers`. Each row includes the [`ClientAccountType`],
-/// which `historical_account_headers` doesn't carry — that's why this query lives separately
-/// from [`query_historical_account_headers`].
+/// Fetches rows from `latest_account_headers`. Each row includes the [`ClientAccountType`], which
+/// `historical_account_headers` doesn't carry — that's why this query lives separately from
+/// [`query_historical_account_headers`].
 pub(crate) fn query_latest_account_headers(
     conn: &Connection,
     where_clause: &str,
@@ -153,8 +153,8 @@ pub(crate) fn query_historical_account_headers(
         .collect::<Result<Vec<(AccountHeader, AccountStatus)>, StoreError>>()
 }
 
-// TODO: this function will probably be refactored to receive more complex where clauses and
-// return multiple mast forests
+// TODO: this function will probably be refactored to receive more complex where clauses and return
+// multiple mast forests
 pub(super) fn query_account_code(
     conn: &Connection,
     commitment: Word,
@@ -272,8 +272,8 @@ pub(crate) fn query_storage_slots(
         })
         .collect::<Result<Vec<(StorageSlotName, Word, StorageSlotType)>, StoreError>>()?;
 
-    // Restrict map entries query by slot name(s) when the filter narrows by name, so we don't
-    // load map entries we'll discard.
+    // Restrict map entries query by slot name(s) when the filter narrows by name, so we don't load
+    // map entries we'll discard.
     let map_filter: Option<Vec<String>> = match filter {
         AccountStorageFilter::SlotName(name) => Some(vec![name.to_string()]),
         AccountStorageFilter::SlotNames(names) => {

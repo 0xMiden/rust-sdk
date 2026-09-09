@@ -1,5 +1,5 @@
-//! Provides the client APIs for synchronizing the client's local state with the Miden
-//! network. It ensures that the client maintains a valid, up-to-date view of the chain.
+//! Provides the client APIs for synchronizing the client's local state with the Miden network. It
+//! ensures that the client maintains a valid, up-to-date view of the chain.
 //!
 //! ## Overview
 //!
@@ -15,9 +15,9 @@
 //! - Aggregating transaction updates to determine which transactions have been committed or
 //!   discarded.
 //!
-//! The result of the synchronization process is captured in a [`SyncSummary`], which provides
-//! a summary of the new block number along with lists of received, committed, and consumed note
-//! IDs, updated account IDs, locked accounts, and committed transaction IDs.
+//! The result of the synchronization process is captured in a [`SyncSummary`], which provides a
+//! summary of the new block number along with lists of received, committed, and consumed note IDs,
+//! updated account IDs, locked accounts, and committed transaction IDs.
 //!
 //! Once the data is requested and retrieved, updates are persisted in the client's store.
 //!
@@ -52,9 +52,9 @@
 //!
 //! The `sync_state` method loops internally until the client is fully synced to the network tip.
 //!
-//! For more advanced usage, refer to the individual functions (such as
-//! `committed_note_updates` and `consumed_note_updates`) to understand how the sync data is
-//! processed and applied to the local store.
+//! For more advanced usage, refer to the individual functions (such as `committed_note_updates` and
+//! `consumed_note_updates`) to understand how the sync data is processed and applied to the local
+//! store.
 
 use alloc::collections::BTreeSet;
 use alloc::format;
@@ -124,12 +124,11 @@ where
         self.store.get_sync_height().await.map_err(Into::into)
     }
 
-    /// Syncs the client's on-chain state with the current state of the Miden network and returns
-    /// a [`SyncSummary`] corresponding to the local state update.
+    /// Syncs the client's on-chain state with the current state of the Miden network and returns a
+    /// [`SyncSummary`] corresponding to the local state update.
     ///
-    /// Does **not** fetch private notes from the Note Transport Layer. Use
-    /// [`Client::sync_state`] for the combined sync, or call [`Client::sync_note_transport`]
-    /// separately.
+    /// Does **not** fetch private notes from the Note Transport Layer. Use [`Client::sync_state`]
+    /// for the combined sync, or call [`Client::sync_note_transport`] separately.
     ///
     /// Fetches everything from the node first ([`Client::fetch_chain_updates`] and
     /// [`StateSync::fetch_nullifiers`]), then applies the result with
@@ -150,10 +149,10 @@ where
     /// Fetches the node's view of everything that changed since the client's chain tip, without
     /// storing anything or modifying the partial MMR.
     ///
-    /// Builds the default sync input and runs [`StateSync::fetch_state`]. The state updates must
-    /// be derived with [`StateSync::derive_state_updates`]. The nullifier check is
-    /// not part of this: run [`StateSync::fetch_nullifiers`] on the result before applying it, so
-    /// it can also cover transport-delivered notes another sync path fetched in the same call.
+    /// Builds the default sync input and runs [`StateSync::fetch_state`]. The state updates must be
+    /// derived with [`StateSync::derive_state_updates`]. The nullifier check is not part of this:
+    /// run [`StateSync::fetch_nullifiers`] on the result before applying it, so it can also cover
+    /// transport-delivered notes another sync path fetched in the same call.
     pub async fn fetch_chain_updates(
         &self,
         state_sync: &StateSync,
@@ -166,23 +165,23 @@ where
 
     /// Builds the [`StateSync`] driving one chain sync.
     ///
-    /// Each `NoteObserver` owns its own per-sync state, so this must be called once per sync
-    /// rather than shared; `with_note_observer` just attaches it.
+    /// Each `NoteObserver` owns its own per-sync state, so this must be called once per sync rather
+    /// than shared; `with_note_observer` just attaches it.
     fn state_sync(&self) -> StateSync {
         StateSync::new(self.rpc_api.clone(), Arc::new(self.note_screener()), self.tx_discard_delta)
             .with_note_observer(Arc::new(PswapChainObserver::new(self.store.clone())))
     }
 
-    /// Verifies fetched chain data against the client's partial MMR and saves the resulting
-    /// update to the store.
+    /// Verifies fetched chain data against the client's partial MMR and saves the resulting update
+    /// to the store.
     ///
-    /// [`StateSync::derive_state_updates`] and [`StateSync::fetch_nullifiers`] must have run on
-    /// the data first. Also caches the partial MMR and prunes irrelevant blocks.
+    /// [`StateSync::derive_state_updates`] and [`StateSync::fetch_nullifiers`] must have run on the
+    /// data first. Also caches the partial MMR and prunes irrelevant blocks.
     ///
     /// # Errors
     ///
-    /// Returns an error if the client no longer starts where the data was fetched from, which
-    /// means another sync advanced the store in between and the data is stale.
+    /// Returns an error if the client no longer starts where the data was fetched from, which means
+    /// another sync advanced the store in between and the data is stale.
     pub async fn apply_chain_updates(
         &mut self,
         state_sync: &StateSync,
@@ -272,14 +271,14 @@ where
         )?;
 
         // The NTL notes must be in the store before the chain data is screened: the screener
-        // recognises a note by looking it up in the store, and the updates for private notes
-        // it cannot find are discarded.
+        // recognises a note by looking it up in the store, and the updates for private notes it
+        // cannot find are discarded.
         let (new_private_notes, transport_delivered_notes) =
             self.apply_note_transport_sync_data(note_transport_data).await?;
 
-        // Merge the NTL notes into the chain `note_updates`, so a commitment the chain reported
-        // for one of them is applied to its record. The tracker was built before the writes
-        // above, so without this the screener's verdict would have no record to apply to.
+        // Merge the NTL notes into the chain `note_updates`, so a commitment the chain reported for
+        // one of them is applied to its record. The tracker was built before the writes above, so
+        // without this the screener's verdict would have no record to apply to.
         chain_sync_data
             .note_updates
             .track_existing_input_notes(transport_delivered_notes);
@@ -361,10 +360,10 @@ where
     /// Prunes irrelevant block data from the store.
     ///
     /// Identifies tracked blocks whose input notes have all been consumed, untracks them from the
-    /// `PartialMmr` to determine which authentication nodes are no longer needed, then delegates
-    /// to [`Store::untrack_and_prune_irrelevant_blocks`] to atomically remove the stale nodes,
-    /// mark the blocks as irrelevant, and delete irrelevant block headers.
-    /// Any caller of this function should've cached the `PartialMmr` beforehand.
+    /// `PartialMmr` to determine which authentication nodes are no longer needed, then delegates to
+    /// [`Store::untrack_and_prune_irrelevant_blocks`] to atomically remove the stale nodes, mark
+    /// the blocks as irrelevant, and delete irrelevant block headers. Any caller of this function
+    /// should've cached the `PartialMmr` beforehand.
     async fn untrack_and_prune_irrelevant_blocks(&mut self) -> Result<(), ClientError> {
         let tracked_blocks = self.store.get_tracked_block_header_numbers().await?;
         let to_untrack: Vec<usize> = if tracked_blocks.is_empty() {
@@ -399,8 +398,8 @@ where
             updated_partial_mmr = Some(partial_mmr);
         }
 
-        // Store deletes stale auth nodes, marks blocks as irrelevant, and removes irrelevant
-        // block headers. Old irrelevant tip headers may still need pruning.
+        // Store deletes stale auth nodes, marks blocks as irrelevant, and removes irrelevant block
+        // headers. Old irrelevant tip headers may still need pruning.
         self.store
             .untrack_and_prune_irrelevant_blocks(&blocks_to_untrack, &nodes_to_remove)
             .await?;
@@ -412,8 +411,8 @@ where
         Ok(())
     }
 
-    /// Ensures that the RPC limits are set in the RPC client. If not already cached,
-    /// fetches them from the node and persists them in the store.
+    /// Ensures that the RPC limits are set in the RPC client. If not already cached, fetches them
+    /// from the node and persists them in the store.
     pub async fn ensure_rpc_limits_in_place(&mut self) -> Result<(), ClientError> {
         if self.rpc_api.has_rpc_limits().is_some() {
             return Ok(());

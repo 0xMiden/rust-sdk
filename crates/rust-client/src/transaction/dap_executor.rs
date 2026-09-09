@@ -93,8 +93,8 @@ fn build_dap_package(
     package_debug_info: &PackageDebugInfo,
     entrypoint_source_node: Option<DebugSourceNodeId>,
 ) -> Result<Arc<Package>, ExecutionError> {
-    // A transaction program is an executable whose root is exported as `$exec::$main`. Reusing
-    // the program's MAST forest, entrypoint node, and digest makes `Package::try_into_program`
+    // A transaction program is an executable whose root is exported as `$exec::$main`. Reusing the
+    // program's MAST forest, entrypoint node, and digest makes `Package::try_into_program`
     // reconstruct the exact program that the transaction executor supplied.
     let entrypoint: Arc<Path> = Path::exec_path().join(ProcedureName::MAIN_PROC_NAME).into();
     let export =
@@ -102,8 +102,8 @@ fn build_dap_package(
             .with_source_node(entrypoint_source_node);
 
     // The transaction kernel is an external dependency of transaction programs. The package
-    // manifest identifies that dependency, while the embedded kernel section gives the debugger
-    // the code required to resolve and execute it offline.
+    // manifest identifies that dependency, while the embedded kernel section gives the debugger the
+    // code required to resolve and execute it offline.
     let kernel = TransactionKernel::package();
     let mut package = Package::create(
         "miden-client-debug".into(),
@@ -115,8 +115,8 @@ fn build_dap_package(
     )
     .map_err(|error| dap_package_construction_error(&error))?;
 
-    // `Package::create` recognizes the exported `$main` procedure as the executable entrypoint.
-    // The embedded kernel payload gives the debugger the code required to execute the package
+    // `Package::create` recognizes the exported `$main` procedure as the executable entrypoint. The
+    // embedded kernel payload gives the debugger the code required to execute the package
     // independently of the transaction host's package store.
     package.sections.push(Section::new(SectionId::KERNEL, kernel.to_bytes()));
 
@@ -126,8 +126,8 @@ fn build_dap_package(
         .sections
         .push(Section::new(SectionId::DEBUG_INFO, package_debug_info.to_bytes()));
 
-    // Decode once here to reject invalid references before the package reaches the asynchronous
-    // DAP session, preserving the structured package error for the caller.
+    // Decode once here to reject invalid references before the package reaches the asynchronous DAP
+    // session, preserving the structured package error for the caller.
     package.debug_info()?;
 
     Ok(Arc::new(package))

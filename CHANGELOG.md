@@ -9,6 +9,10 @@
 * [BREAKING][type][rust] Added the `TransactionRequestError::SwapNoteWithZeroAsset` variant, so exhaustive matches on `TransactionRequestError` must handle it ([#2459](https://github.com/0xMiden/rust-sdk/pull/2459)).
 * [BREAKING][removal][test] Loose helper functions in `miden_client::testing::common` are now methods on `TestClient`. `TestClient::keystore()` exposes the client's keystore, so `ClientConfig::into_client` and `into_unsynced_client` return just the `TestClient` instead of a client/keystore pair ([#2481](https://github.com/0xMiden/rust-sdk/pull/2481)).
 
+### Enhancements
+
+* [FEATURE][cli] Added a `--package` option to `exec` so a compiled transaction script package (`.masp`) can be run instead of MASM source. A path without an extension is resolved in the package directory, as with `call --package` ([#2470](https://github.com/0xMiden/rust-sdk/issues/2470)).
+
 ### Fixes
 
 * [FIX][rust] Refreshed tracked input notes after transport imports so the same sync detects their consumption ([#2453](https://github.com/0xMiden/rust-sdk/pull/2453)).

@@ -532,6 +532,7 @@ fn note_summary(
 mod tests {
     use miden_client::Word;
     use miden_client::account::AccountId;
+    use miden_client::address::{Address, NetworkId};
     use miden_client::note::{
         Note,
         NoteAssets,
@@ -570,5 +571,23 @@ mod tests {
 
         assert_eq!(summary.sender, sender.to_string());
         assert_eq!(summary.tag, tag.to_string());
+    }
+
+    /// `notes --send` must reject an address whose network doesn't match the client's
+    /// configured network. This checks the underlying decode step that the fix relies on:
+    /// encoding an address for one network and decoding it must not report a match against a
+    /// different network.
+    #[test]
+    fn decoded_address_network_differs_across_networks() {
+        let account_id =
+            AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE).unwrap();
+        let address = Address::new(account_id);
+
+        let encoded_for_testnet = address.encode(NetworkId::Testnet);
+        let (decoded_network_id, _decoded_address) =
+            Address::decode(&encoded_for_testnet).unwrap();
+
+        assert_eq!(decoded_network_id, NetworkId::Testnet);
+        assert_ne!(decoded_network_id, NetworkId::Mainnet);
     }
 }

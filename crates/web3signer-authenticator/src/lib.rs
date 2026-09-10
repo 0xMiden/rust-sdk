@@ -110,6 +110,23 @@ impl<T: SignerTransport> Web3SignerAuthenticator<T> {
             .collect()
     }
 
+    /// Returns the public keys the signer listed when the authenticator was built.
+    pub fn get_public_keys(&self) -> Vec<PublicKey> {
+        self.public_keys_by_commitment
+            .values()
+            .map(|entry| (*entry.public_key).clone())
+            .collect()
+    }
+
+    /// Returns the public key the signer listed under `identifier`, or `None` if it lists no such
+    /// key.
+    pub fn get_public_key_by_identifier(&self, identifier: &str) -> Option<PublicKey> {
+        let public_key = PublicKey::EcdsaK256Keccak(decode_public_key(identifier).ok()?);
+        let entry = self.public_keys_by_commitment.get(&public_key.to_commitment())?;
+
+        Some((*entry.public_key).clone())
+    }
+
     /// Returns the public key commitments this authenticator can sign for.
     pub fn public_key_commitments(&self) -> impl Iterator<Item = PublicKeyCommitment> + '_ {
         self.public_keys_by_commitment.keys().copied()
@@ -258,6 +275,25 @@ mod tests {
         assert!(public_key.verify(message, signature.clone()));
         // Panics if the signature does not encode for the VM.
         signature.to_encoded_signature(message);
+    }
+
+    #[tokio::test]
+    async fn keys_are_listed_and_looked_up_by_identifier() {
+        let transport = MockTransport::new();
+        let identifier = transport.identifier();
+        let authenticator = Web3SignerAuthenticator::connect_with(transport)
+            .await
+            .expect("key list is readable");
+
+        let keys = authenticator.get_public_keys();
+        assert_eq!(keys.len(), 1);
+
+        let found = authenticator
+            .get_public_key_by_identifier(&identifier)
+            .expect("the signer listed this identifier");
+        assert_eq!(found.to_commitment(), keys[0].to_commitment());
+
+        assert!(authenticator.get_public_key_by_identifier("0xdeadbeef").is_none());
     }
 
     #[tokio::test]

@@ -52,7 +52,7 @@ const PUBLIC_KEYS_PATH: &str = "/api/v1/eth1/publicKeys";
 const SIGN_PATH_PREFIX: &str = "/api/v1/eth1/sign/";
 
 /// A `Web3Signer` public key and its hex identifier.
-struct PublicKeyEntry {
+struct Web3SignerPublicKey {
     public_key: Arc<PublicKey>,
     /// The key's identifier as the signer reported it, used verbatim in the signing URL.
     identifier: String,
@@ -61,7 +61,7 @@ struct PublicKeyEntry {
 /// A [`TransactionAuthenticator`] backed by a `Web3Signer` instance.
 pub struct Web3SignerAuthenticator<T> {
     transport: T,
-    public_keys_by_commitment: BTreeMap<PublicKeyCommitment, PublicKeyEntry>,
+    public_keys_by_commitment: BTreeMap<PublicKeyCommitment, Web3SignerPublicKey>,
 }
 
 #[cfg(feature = "std")]
@@ -94,13 +94,13 @@ impl<T: SignerTransport> Web3SignerAuthenticator<T> {
     }
 
     /// Requests the signer's key list and returns each key with the identifier it was listed under.
-    async fn list_public_keys(transport: &T) -> Result<Vec<PublicKeyEntry>, Web3SignerError> {
+    async fn list_public_keys(transport: &T) -> Result<Vec<Web3SignerPublicKey>, Web3SignerError> {
         let body = transport.get(PUBLIC_KEYS_PATH).await?;
 
         parse_string_array(&body)
             .map(|identifier| {
                 let public_key = PublicKey::EcdsaK256Keccak(decode_public_key(identifier)?);
-                Ok(PublicKeyEntry {
+                Ok(Web3SignerPublicKey {
                     identifier: identifier.into(),
                     public_key: Arc::new(public_key),
                 })
@@ -116,7 +116,7 @@ impl<T: SignerTransport> Web3SignerAuthenticator<T> {
     /// Requests a signature over `message` for one key of the key list.
     async fn request_signature(
         &self,
-        entry: &PublicKeyEntry,
+        entry: &Web3SignerPublicKey,
         message: Word,
     ) -> Result<Signature, Web3SignerError> {
         // `Web3Signer` hashes the payload with keccak256 before signing, which is exactly what

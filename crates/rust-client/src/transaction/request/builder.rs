@@ -210,6 +210,13 @@ impl TransactionRequestBuilder {
     /// - **Private accounts**: the node retrieves a proof of the account's existence and injects
     ///   that as advice inputs. Private accounts must always be declared here with their
     ///   [`PartialAccount`](miden_protocol::account::PartialAccount) state.
+    /// - **Prefetched accounts**: the caller supplies the state and inclusion witness as
+    ///   [`ForeignAccount::Prefetched`] and nothing is fetched for them. The witness must open
+    ///   against the transaction's reference block.
+    ///   [`Client::get_foreign_account_inputs`](crate::Client::get_foreign_account_inputs) fetches
+    ///   inputs for a given block.
+    ///
+    /// Declaring an account ID more than once keeps the last declaration.
     #[must_use]
     pub fn foreign_accounts(
         mut self,

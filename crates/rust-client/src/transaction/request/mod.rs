@@ -9,6 +9,7 @@ use core::num::NonZeroU16;
 use miden_protocol::Word;
 use miden_protocol::account::{AccountCodeInterface, AccountId};
 use miden_protocol::asset::{Asset, NonFungibleAsset};
+use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::merkle::MerkleError;
 use miden_protocol::crypto::merkle::store::MerkleStore;
 use miden_protocol::errors::{
@@ -583,6 +584,14 @@ pub enum TransactionRequestError {
     )]
     InvalidForeignAccountId(AccountId),
     #[error(
+        "inputs for foreign account {account_id} do not open against the account tree of the \
+         transaction's reference block {block_num}"
+    )]
+    ForeignAccountNotAtReferenceBlock {
+        account_id: AccountId,
+        block_num: BlockNumber,
+    },
+    #[error(
         "note {0} cannot be used as an authenticated input: it does not have a valid inclusion proof"
     )]
     InputNoteNotAuthenticated(NoteId),
@@ -663,6 +672,7 @@ mod tests {
         StorageSlotName,
     };
     use miden_protocol::asset::FungibleAsset;
+    use miden_protocol::block::account_tree::AccountTree;
     use miden_protocol::crypto::rand::{FeltRng, RandomCoin};
     use miden_protocol::note::{NoteTag, NoteType};
     use miden_protocol::testing::account_id::{
@@ -670,7 +680,7 @@ mod tests {
         ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE,
         ACCOUNT_ID_SENDER,
     };
-    use miden_protocol::transaction::InputNote;
+    use miden_protocol::transaction::{AccountInputs, InputNote};
     use miden_protocol::{EMPTY_WORD, Felt, Word};
     use miden_standards::account::auth::{Approver, AuthSingleSig};
     use miden_standards::note::P2idNote;
@@ -801,5 +811,12 @@ mod tests {
 
         let deserialized_tx_request = TransactionRequest::read_from_bytes(&buffer).unwrap();
         assert_eq!(tx_request, deserialized_tx_request);
+
+        let tree = AccountTree::with_entries([(account.id(), account.to_commitment())]).unwrap();
+        let inputs = AccountInputs::new((&account).into(), tree.open(account.id()));
+        let mut request = tx_request;
+        request.foreign_accounts.insert(inputs.id(), ForeignAccount::Prefetched(inputs));
+        let decoded = TransactionRequest::read_from_bytes(&request.to_bytes()).unwrap();
+        assert_eq!(request, decoded);
     }
 }

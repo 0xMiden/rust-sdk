@@ -17,7 +17,6 @@
 //! remote signer from that point on.
 
 #![no_std]
-
 extern crate alloc;
 
 #[cfg(any(feature = "std", test))]

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.17.0-rc.4 (TBD)
+
+### Fixes
+
+* [FIX][rust] `ForeignAccount` gained the `Prefetched(AccountInputs)` variant: a request can carry a foreign account's state and inclusion witness, and nothing is fetched for that account at execution time. `Client::get_foreign_account_inputs` is now public and fetches inputs for a set of declarations at a given block. Together they let a transaction pinned to an older block execute after the node stopped serving account state there. Exhaustive matches on `ForeignAccount` must handle the new variant. Requests without prefetched accounts keep their serialized format Ported from 0.16 ([#2527](https://github.com/0xMiden/rust-sdk/pull/2527), [#2524](https://github.com/0xMiden/rust-sdk/issues/2524)).
+
 ## 0.17.0-rc.3 (2026-09-24)
 
 ### Breaking Changes

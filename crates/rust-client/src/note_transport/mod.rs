@@ -24,8 +24,8 @@ use miden_tx::utils::serde::{
 };
 
 pub use self::errors::NoteTransportError;
-use crate::note::{TransportNoteUpdates, ensure_not_processing};
-use crate::store::{InputNoteRecord, NoteFilter};
+use crate::note::{NoteFile, NoteSyncHint};
+use crate::store::{InputNoteRecord, NoteFilter, SettingScope};
 use crate::sync::NoteTagSource;
 use crate::{Client, ClientError};
 
@@ -40,12 +40,11 @@ pub const NOTE_TRANSPORT_CURSOR_STORE_SETTING: &str = "note_transport_cursor";
 /// avoids a Store-trait schema change while surviving process restarts.
 pub const NOTE_TRANSPORT_COVERED_TAGS_KEY: &str = "note_transport_covered_tags";
 
-/// Settings key for the durable relay outbox: a serialized `Vec<NoteInfo>` of
-/// private notes whose transport delivery has not yet succeeded.
-/// `send_private_note` appends (replacing any entry with the same note id)
-/// before relaying; [`Client::flush_relay_outbox`] drains entries that re-send
-/// successfully. Reusing the settings k/v avoids a Store-trait schema change
-/// while surviving process restarts.
+/// Settings key for the durable relay outbox: a serialized `Vec<NoteInfo>` of private notes whose
+/// transport delivery has not yet succeeded. `send_private_note` appends (replacing any entry with
+/// the same note id) before relaying; [`Client::flush_relay_outbox`] drains entries that re-send
+/// successfully. Reusing the settings k/v avoids a Store-trait schema change while surviving
+/// process restarts.
 pub const NOTE_TRANSPORT_OUTBOX_KEY: &str = "note_transport_outbox";
 
 /// Client note transport methods.
@@ -66,16 +65,15 @@ impl<AUTH> Client<AUTH> {
 
     /// Send a note through the note transport network.
     ///
-    /// The note will be end-to-end encrypted (unimplemented, currently plaintext)
-    /// using the provided recipient's `address` details.
-    /// The recipient will be able to retrieve this note through the note's [`NoteTag`].
+    /// The note will be end-to-end encrypted (unimplemented, currently plaintext) using the
+    /// provided recipient's `address` details. The recipient will be able to retrieve this note
+    /// through the note's [`NoteTag`].
     ///
-    /// **Durability.** The relay payload is persisted to the outbox before the
-    /// transport call. If the call fails or is interrupted, the entry stays in
-    /// the outbox and is retried on the next [`Client::flush_relay_outbox`]
-    /// (which [`Client::sync_note_transport`] runs), so a transient transport
-    /// failure does not drop the note. The receiver dedupes by note id, so a
-    /// re-send after a partial success is harmless.
+    /// **Durability.** The relay payload is persisted to the outbox before the transport call. If
+    /// the call fails or is interrupted, the entry stays in the outbox and is retried on the next
+    /// [`Client::flush_relay_outbox`] (which [`Client::sync_note_transport`] runs), so a transient
+    /// transport failure does not drop the note. The receiver dedupes by note id, so a re-send
+    /// after a partial success is harmless.
     ///
     /// Prefer [`Client::send_private_note_with_block_hint`], which also relays a block hint so the
     /// recipient gets deterministic delivery instead of relying on its lookback heuristic.
@@ -98,8 +96,8 @@ impl<AUTH> Client<AUTH> {
     /// the commitment is correct, and the chain tip at send time is a safe choice. A tighter value
     /// just means less for the recipient to scan.
     ///
-    /// The same durability guarantees as [`Client::send_private_note`] apply: the hint is
-    /// persisted with the relay payload, so a retried send preserves it.
+    /// The same durability guarantees as [`Client::send_private_note`] apply: the hint is persisted
+    /// with the relay payload, so a retried send preserves it.
     pub async fn send_private_note_with_block_hint(
         &mut self,
         note: Note,
@@ -124,21 +122,19 @@ impl<AUTH> Client<AUTH> {
         let note_id = header.id();
         let details = NoteDetails::from(note);
         let details_bytes = details.to_bytes();
-        // e2ee impl hint:
-        // address.key().encrypt(details_bytes)
+        // e2ee impl hint: address.key().encrypt(details_bytes)
 
-        // Persist the payload before the network call so a failed or
-        // interrupted `send_note` leaves a recoverable record rather than
-        // losing the only copy with the call frame. The hint travels with the
-        // entry so a retried send relays the same value.
+        // Persist the payload before the network call so a failed or interrupted `send_note` leaves
+        // a recoverable record rather than losing the only copy with the call frame. The hint
+        // travels with the entry so a retried send relays the same value.
         let entry = NoteInfo {
             header,
             details_bytes: details_bytes.clone(),
             block_hint,
         };
         let mut outbox = self.load_relay_outbox().await?;
-        // Replace any existing entry for this note id so the latest payload
-        // wins when a still-pending note is re-sent.
+        // Replace any existing entry for this note id so the latest payload wins when a
+        // still-pending note is re-sent.
         outbox.retain(|e| e.header.id() != note_id);
         outbox.push(entry);
         self.save_relay_outbox(outbox).await?;
@@ -154,9 +150,8 @@ impl<AUTH> Client<AUTH> {
             },
         }
 
-        // Relay succeeded — drop the entry. A failed store write here is
-        // tolerable: the next flush re-sends and the receiver dedupes by note
-        // id, so a stale entry never causes loss.
+        // Relay succeeded — drop the entry. A failed store write here is tolerable: the next flush
+        // re-sends and the receiver dedupes by note id, so a stale entry never causes loss.
         let mut outbox = self.load_relay_outbox().await?;
         outbox.retain(|e| e.header.id() != note_id);
         self.save_relay_outbox(outbox).await?;
@@ -164,15 +159,14 @@ impl<AUTH> Client<AUTH> {
         Ok(())
     }
 
-    /// Re-attempt every relay payload in the durable outbox. Each entry is a
-    /// private note whose previous transport delivery failed. Successful
-    /// re-sends are dropped; failures are kept for the next call. Every entry
-    /// is attempted independently, so one persistently-failing note does not
-    /// block the others.
+    /// Re-attempt every relay payload in the durable outbox. Each entry is a private note whose
+    /// previous transport delivery failed. Successful re-sends are dropped; failures are kept for
+    /// the next call. Every entry is attempted independently, so one persistently-failing note does
+    /// not block the others.
     ///
-    /// [`Client::sync_note_transport`] runs this automatically and ignores its
-    /// error, so a relay failure can't block a sync. Callers driving retries
-    /// themselves can invoke it directly and inspect the returned error.
+    /// [`Client::sync_note_transport`] runs this automatically and ignores its error, so a relay
+    /// failure can't block a sync. Callers driving retries themselves can invoke it directly and
+    /// inspect the returned error.
     pub async fn flush_relay_outbox(&self) -> Result<(), ClientError> {
         let api = self.get_note_transport_api()?;
 
@@ -181,9 +175,9 @@ impl<AUTH> Client<AUTH> {
             return Ok(());
         }
 
-        // Attempt every entry independently so a single persistently-failing
-        // note can't block the rest. The outbox holds only the caller's own
-        // failed sends, so it stays small and this is not a meaningful burst.
+        // Attempt every entry independently so a single persistently-failing note can't block the
+        // rest. The outbox holds only the caller's own failed sends, so it stays small and this is
+        // not a meaningful burst.
         let mut remaining = Vec::new();
         let mut last_err: Option<NoteTransportError> = None;
 
@@ -219,14 +213,14 @@ impl<AUTH> Client<AUTH> {
 
     /// Load the durable relay outbox.
     ///
-    /// Returns an empty `Vec` if the outbox key is absent. On deserialization
-    /// failure (schema mismatch or storage corruption) the entry is dropped and
-    /// an empty `Vec` is returned — leaving unreadable bytes in place would
-    /// block every subsequent relay because each sync would re-read them.
+    /// Returns an empty `Vec` if the outbox key is absent. On deserialization failure (schema
+    /// mismatch or storage corruption) the entry is dropped and an empty `Vec` is returned —
+    /// leaving unreadable bytes in place would block every subsequent relay because each sync would
+    /// re-read them.
     async fn load_relay_outbox(&self) -> Result<Vec<NoteInfo>, ClientError> {
         let bytes = self
             .store
-            .get_setting(String::from(NOTE_TRANSPORT_OUTBOX_KEY))
+            .get_setting(SettingScope::Client, String::from(NOTE_TRANSPORT_OUTBOX_KEY))
             .await
             .map_err(ClientError::StoreError)?;
         let Some(bytes) = bytes else {
@@ -237,7 +231,7 @@ impl<AUTH> Client<AUTH> {
             Err(err) => {
                 tracing::warn!(?err, "dropping unreadable relay outbox; resetting to empty");
                 self.store
-                    .remove_setting(String::from(NOTE_TRANSPORT_OUTBOX_KEY))
+                    .remove_setting(SettingScope::Client, String::from(NOTE_TRANSPORT_OUTBOX_KEY))
                     .await
                     .map_err(ClientError::StoreError)?;
                 Ok(Vec::new())
@@ -245,16 +239,22 @@ impl<AUTH> Client<AUTH> {
         }
     }
 
-    /// Persist the relay outbox, removing the key entirely when empty so the
-    /// settings table doesn't accumulate empty-vec blobs.
+    /// Persist the relay outbox, removing the key entirely when empty so the settings table doesn't
+    /// accumulate empty-vec blobs.
     async fn save_relay_outbox(&self, entries: Vec<NoteInfo>) -> Result<(), ClientError> {
         let key = String::from(NOTE_TRANSPORT_OUTBOX_KEY);
         if entries.is_empty() {
-            self.store.remove_setting(key).await.map_err(ClientError::StoreError)?;
+            self.store
+                .remove_setting(SettingScope::Client, key)
+                .await
+                .map_err(ClientError::StoreError)?;
             return Ok(());
         }
         let bytes = entries.to_bytes();
-        self.store.set_setting(key, bytes).await.map_err(ClientError::StoreError)
+        self.store
+            .set_setting(SettingScope::Client, key, bytes)
+            .await
+            .map_err(ClientError::StoreError)
     }
 
     /// The set of tracked tags eligible for history backfill.
@@ -287,7 +287,7 @@ impl<AUTH> Client<AUTH> {
     async fn load_covered_tags(&self) -> Result<BTreeSet<NoteTag>, ClientError> {
         let bytes = self
             .store
-            .get_setting(String::from(NOTE_TRANSPORT_COVERED_TAGS_KEY))
+            .get_setting(SettingScope::Client, String::from(NOTE_TRANSPORT_COVERED_TAGS_KEY))
             .await
             .map_err(ClientError::StoreError)?;
         let Some(bytes) = bytes else {
@@ -298,7 +298,10 @@ impl<AUTH> Client<AUTH> {
             Err(err) => {
                 tracing::warn!(?err, "dropping unreadable covered-tags set; resetting to empty");
                 self.store
-                    .remove_setting(String::from(NOTE_TRANSPORT_COVERED_TAGS_KEY))
+                    .remove_setting(
+                        SettingScope::Client,
+                        String::from(NOTE_TRANSPORT_COVERED_TAGS_KEY),
+                    )
                     .await
                     .map_err(ClientError::StoreError)?;
                 Ok(BTreeSet::new())
@@ -311,11 +314,14 @@ impl<AUTH> Client<AUTH> {
     async fn save_covered_tags(&self, tags: &BTreeSet<NoteTag>) -> Result<(), ClientError> {
         let key = String::from(NOTE_TRANSPORT_COVERED_TAGS_KEY);
         if tags.is_empty() {
-            self.store.remove_setting(key).await.map_err(ClientError::StoreError)?;
+            self.store
+                .remove_setting(SettingScope::Client, key)
+                .await
+                .map_err(ClientError::StoreError)?;
             return Ok(());
         }
         self.store
-            .set_setting(key, tags.to_bytes())
+            .set_setting(SettingScope::Client, key, tags.to_bytes())
             .await
             .map_err(ClientError::StoreError)
     }
@@ -338,12 +344,11 @@ where
 
     /// Fetch notes for tracked note tags.
     ///
-    /// The client will query the configured note transport node for all tracked note tags.
-    /// To list tracked tags please use [`Client::get_note_tags`]. To add a new note tag please use
-    /// [`Client::add_note_tag`].
-    /// Only notes directed at your addresses will be stored and readable given the use of
-    /// end-to-end encryption (unimplemented).
-    /// Fetched notes will be stored into the client's store.
+    /// The client will query the configured note transport node for all tracked note tags. To list
+    /// tracked tags please use [`Client::get_note_tags`]. To add a new note tag please use
+    /// [`Client::add_note_tag`]. Only notes directed at your addresses will be stored and readable
+    /// given the use of end-to-end encryption (unimplemented). Fetched notes will be stored into
+    /// the client's store.
     ///
     /// An internal pagination mechanism is employed to reduce the number of downloaded notes: this
     /// fetches only notes past the stored cursor. Historical notes for a newly tracked tag are
@@ -356,12 +361,10 @@ where
         let cursor = self.store.get_note_transport_cursor().await?;
 
         let mut id_by_commitment = BTreeMap::new();
-        let (mut note_updates, new_cursor) = self
-            .fetch_note_transport_updates(cursor, &note_tags, &mut id_by_commitment)
-            .await?;
-        self.fetch_note_nullifiers(&mut note_updates).await?;
+        let (note_files, new_cursor) =
+            self.fetch_transport_notes(cursor, &note_tags, &mut id_by_commitment).await?;
 
-        self.apply_note_transport_updates(note_updates).await?;
+        self.import_notes(&note_files).await?;
         self.store.update_note_transport_cursor(new_cursor).await?;
 
         Ok(())
@@ -382,10 +385,10 @@ where
     /// At most [`Self::MAX_BACKFILL_TAGS_PER_SYNC`] tags are backfilled per call; any remainder
     /// stays uncovered and is picked up on the next sync.
     ///
-    /// Returns the pruned covered set, whether pruning changed it, and the tags to backfill.
-    /// Reads only: persisting the covered set is left to the apply phase, which writes it after
-    /// the imported notes so a crash re-backfills instead of skipping a tag whose notes were
-    /// never written.
+    /// Returns the pruned covered set, whether pruning changed it, and the tags to backfill. Reads
+    /// only: persisting the covered set is left to the apply phase, which writes it after the
+    /// imported notes so a crash re-backfills instead of skipping a tag whose notes were never
+    /// written.
     async fn plan_backfill(&self) -> Result<(BTreeSet<NoteTag>, bool, Vec<NoteTag>), ClientError> {
         let candidates = self.backfill_candidate_tags().await?;
         let loaded = self.load_covered_tags().await?;
@@ -406,25 +409,26 @@ where
 
     /// Drain a single tag's full history from the transport, paging until the cursor stops
     /// advancing. Uses a local cursor and never touches the global one, so it cannot regress
-    /// steady-state progress. Returns the updates from every fetched page, merged in page order
-    /// and none of them written.
+    /// steady-state progress. Returns the note files from every fetched page, in page order and
+    /// none of them written.
     async fn backfill_tag(
         &self,
         tag: NoteTag,
         id_by_commitment: &mut BTreeMap<NoteDetailsCommitment, NoteId>,
-    ) -> Result<TransportNoteUpdates, ClientError> {
-        let mut note_updates = TransportNoteUpdates::default();
+    ) -> Result<Vec<NoteFile>, ClientError> {
+        let mut note_files = Vec::new();
         let mut cursor = NoteTransportCursor::init();
         for _ in 0..Self::MAX_BACKFILL_ITERATIONS {
-            let (page_updates, new_cursor) =
-                self.fetch_note_transport_updates(cursor, &[tag], id_by_commitment).await?;
-            note_updates.merge(page_updates);
-            // Terminate on any lack of forward progress. A well-behaved server returns
-            // `new_cursor == cursor` when there are no new notes for this tag (since
-            // `rcursor = max(cursor, max_seq_returned)`); using `<=` also handles implementations
-            // that return an `init()` cursor on empty batches (see the in-tree mock transport).
+            let (page_files, new_cursor) =
+                self.fetch_transport_notes(cursor, &[tag], id_by_commitment).await?;
+            note_files.extend(page_files);
+            // Terminate on any lack of forward progress. A well-behaved server returns `new_cursor
+            // == cursor` when there are no new notes for this tag (since `rcursor = max(cursor,
+            // max_seq_returned)`); using `<=` also handles implementations that return an `init()`
+            // cursor on empty batches (see the in-tree mock transport).
+
             if new_cursor <= cursor {
-                return Ok(note_updates);
+                return Ok(note_files);
             }
             cursor = new_cursor;
         }
@@ -474,28 +478,28 @@ where
     /// Fetches and returns one batch of notes from the note transport layer for the provided tags
     /// without applying any update to the store.
     ///
-    /// The server paginates; this method issues one RPC and returns the updates together with the
-    /// new cursor. The returned cursor equals the input cursor when the batch was empty (i.e. no
-    /// new notes). Callers that want to drain a tag's full backlog should loop until
+    /// The server paginates; this method issues one transport call and returns the note files
+    /// together with the new cursor. The returned cursor equals the input cursor when the batch was
+    /// empty (i.e. no new notes). Callers that want to drain a tag's full backlog should loop until
     /// `new_cursor == cursor` (see [`Client::backfill_tag`]). Callers that do steady-state polling
     /// (see [`Client::sync_state`] / [`Client::fetch_private_notes`]) should call this once per
     /// tick with the stored cursor.
     ///
     /// Each downloaded note's id is recorded in `id_by_commitment` so the caller can resolve the
     /// written records back to note ids once the final record set is known. Persistence of the
-    /// returned cursor is left to the caller so that drain loops can guard against regression of
-    /// an already-advanced stored cursor.
-    async fn fetch_note_transport_updates(
+    /// returned cursor is left to the caller so that drain loops can guard against regression of an
+    /// already-advanced stored cursor.
+    async fn fetch_transport_notes(
         &self,
         cursor: NoteTransportCursor,
         tags: &[NoteTag],
         id_by_commitment: &mut BTreeMap<NoteDetailsCommitment, NoteId>,
-    ) -> Result<(TransportNoteUpdates, NoteTransportCursor), ClientError> {
-        // Fallback lookback window, in blocks, used only for notes the transport delivered
-        // without a sender-provided block hint. Scanning back from sync height handles
-        // the race where a note is committed on-chain just before the NTL delivers its data.
-        // Without it, check_expected_notes would scan from sync_height forward and miss the
-        // already-committed note. A sender-provided hint is deterministic and always preferred.
+    ) -> Result<(Vec<NoteFile>, NoteTransportCursor), ClientError> {
+        // Fallback lookback window, in blocks, used only for notes the transport delivered without
+        // a sender-provided block hint. Scanning back from sync height handles the race where a
+        // note is committed on-chain just before the NTL delivers its data. Without it,
+        // check_expected_notes would scan from sync_height forward and miss the already-committed
+        // note. A sender-provided hint is deterministic and always preferred.
         const NOTE_LOOKBACK_BLOCKS: u32 = 20;
 
         let mut notes = Vec::new();
@@ -505,136 +509,131 @@ where
         let (note_infos, rcursor) =
             self.get_note_transport_api()?.fetch_notes(tags, cursor).await?;
         for note_info in &note_infos {
-            // e2ee impl hint:
-            // for key in self.store.decryption_keys() try
+            // e2ee impl hint: for key in self.store.decryption_keys() try
             // key.decrypt(details_bytes_encrypted)
-            let note = rejoin_note(&note_info.header, &note_info.details_bytes)?;
+            //
+            // Drop invalid entries so the cursor can advance past them.
+            let note = match rejoin_note(&note_info.header, &note_info.details_bytes) {
+                Ok(note) => note,
+                Err(err) => {
+                    tracing::warn!(?err, "dropping malformed transport delivery");
+                    continue;
+                },
+            };
+            if !tags.contains(&note.metadata().tag()) {
+                tracing::warn!(
+                    tag = ?note.metadata().tag(),
+                    "dropping transport delivery for a tag that was not requested"
+                );
+                continue;
+            }
 
             // The header carries the attachment-aware (on-chain) note id; the rejoined note has
             // empty attachments and would hash to a different id, so key off the header.
             id_by_commitment.insert(note.details_commitment(), note_info.header.id());
+
             notes.push((note, note_info.block_hint));
         }
 
         // Screen the transport-delivered notes to discard the ones that are not relevant to the
-        // accounts tracked by the client.
-        // Boxed to avoid a `clippy::large_futures` warning, since the sync future is already close
-        // to the size limit.
+        // accounts tracked by the client. Boxed to avoid a `clippy::large_futures` warning, since
+        // the sync future is already close to the size limit.
         Box::pin(self.screen_transport_notes(&mut notes)).await?;
+
+        self.drop_notes_processed_locally(&mut notes).await?;
 
         let sync_height = self.get_sync_height().await?;
         let fallback_after_block_num =
             BlockNumber::from(sync_height.as_u32().saturating_sub(NOTE_LOOKBACK_BLOCKS));
 
-        // Deduplicate by details commitment, so a note delivered twice is requested once.
-        let mut requests_by_commitment = BTreeMap::new();
+        let mut note_files = Vec::with_capacity(notes.len());
         for (note, block_hint) in notes {
             let tag = note.metadata().tag();
             // Prefer the sender-provided hint, falling back to the lookback window when absent.
             let after_block_num = block_hint.unwrap_or(fallback_after_block_num);
-            let details = NoteDetails::from(note);
-            requests_by_commitment.insert(details.commitment(), (details, after_block_num, tag));
+            note_files.push(NoteFile::ExpectedNote {
+                details: note.into(),
+                sync_hint: NoteSyncHint::new(after_block_num, tag),
+            });
         }
 
-        let mut previous_by_commitment: BTreeMap<NoteDetailsCommitment, InputNoteRecord> = self
-            .get_input_notes(NoteFilter::DetailsCommitments(
-                requests_by_commitment.keys().copied().collect(),
-            ))
-            .await?
-            .into_iter()
-            .map(|note| (note.details_commitment(), note))
-            .collect();
-
-        let mut requests = Vec::with_capacity(requests_by_commitment.len());
-        for (commitment, (details, after_block_num, tag)) in requests_by_commitment {
-            let previous_note = previous_by_commitment.remove(&commitment);
-            ensure_not_processing(previous_note.as_ref())?;
-            requests.push((previous_note, details, after_block_num, tag));
-        }
-
-        let note_updates = self.fetch_transport_notes_onchain_state(requests).await?;
-
-        Ok((note_updates, rcursor))
+        Ok((note_files, rcursor))
     }
 
-    /// Fetches everything the note transport sync will store.
+    /// Fetches the notes the Note Transport Layer holds for the tracked tags.
     ///
-    /// Runs the per-tag backfill, fetches a page of notes from the Note Transport Layer,
-    /// and checks the nullifiers for the returned notes.
+    /// Runs the per-tag backfill and fetches a page of notes. This performs no node call and writes
+    /// nothing but the relay outbox, so it can run concurrently with the chain fetch. The caller
+    /// imports the returned files and then persists the cursor and the covered-tag set.
     ///
     /// Returns empty data when note transport is not configured.
-    pub(crate) async fn fetch_note_transport_sync_data(
+    pub(crate) async fn fetch_note_transport_updates(
         &self,
-    ) -> Result<NoteTransportSyncData, ClientError> {
-        let mut note_transport_data = NoteTransportSyncData::default();
+    ) -> Result<NoteTransportLayerUpdate, ClientError> {
+        let mut note_transport_update = NoteTransportLayerUpdate::default();
         if !self.is_note_transport_enabled() {
-            return Ok(note_transport_data);
+            return Ok(note_transport_update);
         }
 
-        // Drain any private notes whose previous relay attempt failed. A flush error is logged,
-        // not propagated: a failing relay must not block the sync, and the entries stay durable
-        // for the next attempt. This is the one write the fetch phase performs; it touches only
-        // the outbox setting, which is independent of everything the apply phase writes.
+        // Drain any private notes whose previous relay attempt failed. A flush error is logged, not
+        // propagated: a failing relay must not block the sync, and the entries stay durable for the
+        // next attempt. This is the one write this phase performs; it touches only the outbox
+        // setting, which is independent of everything the apply phase writes.
         if let Err(err) = self.flush_relay_outbox().await {
             tracing::warn!(?err, "relay outbox flush failed during sync; entries retained");
         }
 
-        // Recover historical private notes for any tag added after the global cursor advanced.
-        // This drains each newly tracked tag from the start, fetching only that tag's own history.
+        // Recover historical private notes for any tag added after the global cursor advanced. This
+        // drains each newly tracked tag from the start, fetching only that tag's own history.
         let (mut covered, pruned, new_tags) = self.plan_backfill().await?;
         let backfilled = !new_tags.is_empty();
         for tag in new_tags {
-            note_transport_data
-                .note_updates
-                .merge(self.backfill_tag(tag, &mut note_transport_data.id_by_commitment).await?);
+            note_transport_update
+                .note_files
+                .extend(self.backfill_tag(tag, &mut note_transport_update.id_by_commitment).await?);
             covered.insert(tag);
         }
         if pruned || backfilled {
-            note_transport_data.covered_tags = Some(covered);
+            note_transport_update.covered_tags = Some(covered);
         }
 
         let cursor = self.store.get_note_transport_cursor().await?;
         let note_tags: Vec<NoteTag> =
             self.store.get_unique_note_tags().await?.into_iter().collect();
-        let (note_updates, new_cursor) = self
-            .fetch_note_transport_updates(
-                cursor,
-                &note_tags,
-                &mut note_transport_data.id_by_commitment,
-            )
+        let (note_files, new_cursor) = self
+            .fetch_transport_notes(cursor, &note_tags, &mut note_transport_update.id_by_commitment)
             .await?;
-        note_transport_data.note_updates.merge(note_updates);
-        note_transport_data.cursor = Some(new_cursor);
+        note_transport_update.note_files.extend(note_files);
+        note_transport_update.cursor = Some(new_cursor);
 
-        // Every page is in, so the blocks that committed these notes are now known. This
-        // finishes their records and leaves the blocks for the apply phase to store.
-        self.fetch_note_nullifiers(&mut note_transport_data.note_updates).await?;
-
-        Ok(note_transport_data)
+        Ok(note_transport_update)
     }
 
-    /// Saves to the storage everything [`Client::fetch_note_transport_sync_data`] fetched,
-    /// returning the ids of the imported notes and the records it stored.
+    /// Writes everything [`Client::fetch_note_transport_updates`] returned, in three steps:
+    ///
+    /// 1. Imports the fetched notes, which resolves their on-chain state and stores the records.
+    /// 2. Saves the covered-tag set, when the backfill changed it.
+    /// 3. Advances the stored note transport cursor, when a page was fetched.
     ///
     /// The notes are written before the covered-tag set and the cursor, so a crash between them
     /// re-fetches instead of skipping notes that were never written.
     ///
-    /// The block headers are stored before the committed notes that need them.
-    pub(crate) async fn apply_note_transport_sync_data(
+    /// Returns the ids of the imported notes and the details commitments of the records written.
+    pub(crate) async fn apply_note_transport_update(
         &mut self,
-        note_transport_data: NoteTransportSyncData,
-    ) -> Result<(Vec<NoteId>, Vec<InputNoteRecord>), ClientError> {
-        let NoteTransportSyncData {
-            covered_tags,
-            note_updates,
+        update: NoteTransportLayerUpdate,
+    ) -> Result<(Vec<NoteId>, Vec<NoteDetailsCommitment>), ClientError> {
+        let NoteTransportLayerUpdate {
+            note_files,
             id_by_commitment,
+            covered_tags,
             cursor,
-        } = note_transport_data;
+        } = update;
 
-        let written = self.apply_note_transport_updates(note_updates).await?;
+        let written = self.import_notes(&note_files).await?;
         let mut imported_ids: Vec<NoteId> = written
             .iter()
-            .filter_map(|note| id_by_commitment.get(&note.details_commitment()).copied())
+            .filter_map(|commitment| id_by_commitment.get(commitment).copied())
             .collect();
 
         if let Some(covered_tags) = covered_tags {
@@ -650,23 +649,50 @@ where
 
         Ok((imported_ids, written))
     }
+
+    /// Drops deliveries of notes a local transaction is consuming; importing them would fail on the
+    /// no-overwrite-while-processing guard.
+    async fn drop_notes_processed_locally(
+        &self,
+        notes: &mut Vec<(Note, Option<BlockNumber>)>,
+    ) -> Result<(), ClientError> {
+        if notes.is_empty() {
+            return Ok(());
+        }
+
+        let commitments = notes.iter().map(|(note, _)| note.details_commitment()).collect();
+        let processing: BTreeSet<NoteDetailsCommitment> = self
+            .get_input_notes(NoteFilter::DetailsCommitments(commitments))
+            .await?
+            .into_iter()
+            .filter(InputNoteRecord::is_processing)
+            .map(|record| record.details_commitment())
+            .collect();
+
+        if !processing.is_empty() {
+            tracing::warn!(?processing, "skipping deliveries of notes being consumed locally");
+            notes.retain(|(note, _)| !processing.contains(&note.details_commitment()));
+        }
+        Ok(())
+    }
 }
 
-// NOTE TRANSPORT SYNC DATA
+// NOTE TRANSPORT FETCH
 // ================================================================================================
 
-/// Everything the note transport sync is about to save to the storage.
+/// What the note transport fetch returned, before anything is written.
 ///
-/// Built by [`Client::fetch_note_transport_sync_data`].
+/// Built by [`Client::fetch_note_transport_updates`] and consumed by
+/// [`Client::apply_note_transport_update`].
 #[derive(Default)]
-pub(crate) struct NoteTransportSyncData {
+pub(crate) struct NoteTransportLayerUpdate {
+    /// Notes to import, backfill pages first and then the steady-state page.
+    note_files: Vec<NoteFile>,
+    /// Note ids by details commitment, taken from the note headers the transport returned. Used to
+    /// resolve the written records back to ids.
+    id_by_commitment: BTreeMap<NoteDetailsCommitment, NoteId>,
     /// Covered-tag set to persist, `None` when it did not change.
     covered_tags: Option<BTreeSet<NoteTag>>,
-    /// Every fetched page's updates, merged in fetch order.
-    pub(crate) note_updates: TransportNoteUpdates,
-    /// Note ids by details commitment, taken from the note headers the transport returned. Used
-    /// to resolve the written records back to ids.
-    id_by_commitment: BTreeMap<NoteDetailsCommitment, NoteId>,
     /// New global cursor, from the steady-state page. `None` when no page was fetched.
     cursor: Option<NoteTransportCursor>,
 }
@@ -719,10 +745,10 @@ pub trait NoteTransportClient: Send + Sync {
 
     /// Send a note, relaying a block hint for the recipient's commitment scan.
     ///
-    /// `block_hint` is the block from which the recipient should start scanning for the
-    /// note's commitment. The default implementation ignores it and delegates to
-    /// [`NoteTransportClient::send_note`], so existing implementors keep compiling. Transports
-    /// that can carry the hint (e.g. the gRPC client) override this.
+    /// `block_hint` is the block from which the recipient should start scanning for the note's
+    /// commitment. The default implementation ignores it and delegates to
+    /// [`NoteTransportClient::send_note`], so existing implementors keep compiling. Transports that
+    /// can carry the hint (e.g. the gRPC client) override this.
     async fn send_note_with_block_hint(
         &self,
         header: NoteHeader,
@@ -734,8 +760,8 @@ pub trait NoteTransportClient: Send + Sync {
 
     /// Fetch notes for given tags
     ///
-    /// Downloads notes for given tags.
-    /// Returns notes labelled after the provided cursor (pagination), and an updated cursor.
+    /// Downloads notes for given tags. Returns notes labelled after the provided cursor
+    /// (pagination), and an updated cursor.
     async fn fetch_notes(
         &self,
         tag: &[NoteTag],
@@ -763,9 +789,9 @@ pub struct NoteInfo {
     pub header: NoteHeader,
     /// Note details, can be encrypted
     pub details_bytes: Vec<u8>,
-    /// Sender-provided block hint: the block from which the recipient should start scanning for
-    /// the note's on-chain commitment, instead of applying its default lookback window. `None`
-    /// when the sender did not provide a hint.
+    /// Sender-provided block hint: the block from which the recipient should start scanning for the
+    /// note's on-chain commitment, instead of applying its default lookback window. `None` when the
+    /// sender did not provide a hint.
     pub block_hint: Option<BlockNumber>,
 }
 
@@ -814,9 +840,17 @@ impl Deserializable for NoteTransportCursor {
 fn rejoin_note(header: &NoteHeader, details_bytes: &[u8]) -> Result<Note, DeserializationError> {
     let mut reader = SliceReader::new(details_bytes);
     let details = NoteDetails::read_from(&mut reader)?;
+    // The header must commit to the delivered details.
+    if details.commitment() != header.details_commitment() {
+        return Err(DeserializationError::InvalidValue(format!(
+            "delivered note details (commitment {}) do not match the header's details commitment {}",
+            details.commitment().to_hex(),
+            header.details_commitment().to_hex(),
+        )));
+    }
     // The transport wire format only carries `NoteHeader` + serialized `NoteDetails`, not the
-    // attachments collection. We rejoin with empty attachments; this matches the original note
-    // only when it had no attachments in the first place.
+    // attachments collection. We rejoin with empty attachments; this matches the original note only
+    // when it had no attachments in the first place.
     let partial_metadata = *header.metadata().partial_metadata();
     Ok(Note::new(
         details.assets().clone(),

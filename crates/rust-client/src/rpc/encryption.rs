@@ -1,10 +1,10 @@
 //! Client-side encryption of the private transaction inputs sent alongside a submission.
 //!
-//! Transaction inputs are submitted as an IES-sealed blob rather than in the clear, so that the
-//! RPC operator cannot read them and only holders of the validator set's shared encryption secret
-//! can. Sealing uses the `X25519XChaCha20Poly1305` scheme; the sealed blob on the wire is a
-//! serialized [`SealedMessage`](miden_protocol::crypto::ies::SealedMessage). The node rejects a
-//! submission whose inputs are not sealed.
+//! Transaction inputs are submitted as an IES-sealed blob rather than in the clear, so that the RPC
+//! operator cannot read them and only holders of the validator set's shared encryption secret can.
+//! Sealing uses the `X25519XChaCha20Poly1305` scheme; the sealed blob on the wire is a serialized
+//! [`SealedMessage`](miden_protocol::crypto::ies::SealedMessage). The node rejects a submission
+//! whose inputs are not sealed.
 //!
 //! # Trusting the key
 //!
@@ -30,7 +30,7 @@
 //! The canonical definitions live in the node's `miden_node_proto::domain::encryption`. This module
 //! is a hand-maintained mirror of them, because that is a node crate and this client is `no_std`.
 
-use alloc::string::ToString;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use miden_protocol::block::{BlockNumber, ValidatorKeys};
@@ -86,11 +86,11 @@ const MAX_KEY_ID_LEN: usize = 64;
 
 /// The validator set's public transaction encryption key, with its attestation already verified.
 ///
-/// Holds public key material only, and is shared by every validator in the set; the matching
-/// secret never leaves the validators.
+/// Holds public key material only, and is shared by every validator in the set; the matching secret
+/// never leaves the validators.
 ///
-/// Only [`AttestedTransactionEncryptionKey::verify`] constructs one, so a key that reaches the seal
-/// path has necessarily been vouched for by a chain-recognized validator.
+/// RPC responses can only construct one through [`AttestedTransactionEncryptionKey::verify`].
+/// Deserialization revalidates the scheme and key ID of cached keys.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TransactionEncryptionKey {
     scheme: u32,
@@ -132,8 +132,8 @@ impl TransactionEncryptionKey {
 
     /// Builds a key without an attestation, for tests.
     ///
-    /// Sealing against the returned key still runs the real transcript and wire path, only
-    /// the attestation is skipped, and that is covered by this module's own tests.
+    /// Sealing against the returned key still runs the real transcript and wire path, only the
+    /// attestation is skipped, and that is covered by this module's own tests.
     #[cfg(feature = "testing")]
     pub fn new_unattested(
         key_id: Vec<u8>,
@@ -163,6 +163,8 @@ impl Deserializable for TransactionEncryptionKey {
     fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
         let scheme = source.read_u32()?;
         let key_id_len = source.read_usize()?;
+        validate_key_metadata(scheme, key_id_len).map_err(DeserializationError::InvalidValue)?;
+
         let key_id = source.read_vec(key_id_len)?;
         let public_key = PublicKey::read_from(source)?;
         let genesis_commitment = Word::read_from(source)?;
@@ -246,16 +248,11 @@ impl AttestedTransactionEncryptionKey {
         genesis_commitment: Word,
         validator_keys: &ValidatorKeys,
     ) -> Result<TransactionEncryptionKey, RpcError> {
-        if self.scheme != SUPPORTED_SCHEME {
-            return Err(RpcError::TransactionEncryptionKeyRejected(format!(
-                "unsupported IES scheme '{}'",
-                self.scheme
-            )));
-        }
-
-        validate_key_id(&self.key_id, "encryption key id")?;
+        validate_key_metadata(self.scheme, self.key_id.len())
+            .map_err(RpcError::TransactionEncryptionKeyRejected)?;
         if let Some(next) = &self.next_key {
-            validate_key_id(&next.key_id, "next encryption key id")?;
+            validate_key_id_len(next.key_id.len(), "next encryption key id")
+                .map_err(RpcError::TransactionEncryptionKeyRejected)?;
         }
 
         let commitment = attestation_commitment(
@@ -291,19 +288,22 @@ impl AttestedTransactionEncryptionKey {
     }
 }
 
-/// Rejects a served key identifier that is empty or longer than [`MAX_KEY_ID_LEN`].
-///
-/// Mirrors the validator's `validate_key_id` so the client refuses a key the node itself
-/// would never serve.
-fn validate_key_id(key_id: &[u8], field: &str) -> Result<(), RpcError> {
-    if key_id.is_empty() {
-        return Err(RpcError::TransactionEncryptionKeyRejected(format!("{field} is empty")));
+fn validate_key_metadata(scheme: u32, key_id_len: usize) -> Result<(), String> {
+    if scheme != SUPPORTED_SCHEME {
+        return Err(format!("unsupported IES scheme '{scheme}'"));
     }
-    if key_id.len() > MAX_KEY_ID_LEN {
-        return Err(RpcError::TransactionEncryptionKeyRejected(format!(
-            "{field} is {} bytes, which exceeds the maximum of {MAX_KEY_ID_LEN}",
-            key_id.len()
-        )));
+
+    validate_key_id_len(key_id_len, "encryption key id")
+}
+
+fn validate_key_id_len(key_id_len: usize, field: &str) -> Result<(), String> {
+    if key_id_len == 0 {
+        return Err(format!("{field} is empty"));
+    }
+    if key_id_len > MAX_KEY_ID_LEN {
+        return Err(format!(
+            "{field} is {key_id_len} bytes, which exceeds the maximum of {MAX_KEY_ID_LEN}"
+        ));
     }
     Ok(())
 }
@@ -404,9 +404,9 @@ fn transaction_inputs_associated_data(
 
 /// The sealed, wire-ready form of a transaction's [`TransactionInputs`].
 ///
-/// Wraps the serialized bytes of a [`SealedMessage`](miden_protocol::crypto::ies::SealedMessage)
-/// so that a plaintext blob cannot be passed to submission by mistake, alongside the identifier of
-/// the key they were sealed against.
+/// Wraps the serialized bytes of a [`SealedMessage`](miden_protocol::crypto::ies::SealedMessage) so
+/// that a plaintext blob cannot be passed to submission by mistake, alongside the identifier of the
+/// key they were sealed against.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SealedTransactionInputs {
     key_id: Vec<u8>,
@@ -474,6 +474,30 @@ mod tests {
     use super::*;
 
     const TEST_KEY_ID: [u8; 4] = [0xde, 0xad, 0xbe, 0xef];
+
+    #[test]
+    fn transaction_encryption_key_deserialization_validates_metadata() {
+        let (key, _) = key_pair();
+        assert_eq!(TransactionEncryptionKey::read_from_bytes(&key.to_bytes()).unwrap(), key);
+
+        let invalid_keys = [
+            TransactionEncryptionKey {
+                scheme: SUPPORTED_SCHEME + 1,
+                ..key.clone()
+            },
+            TransactionEncryptionKey { key_id: Vec::new(), ..key.clone() },
+            TransactionEncryptionKey {
+                key_id: vec![0; MAX_KEY_ID_LEN + 1],
+                ..key
+            },
+        ];
+        for key in invalid_keys {
+            assert!(matches!(
+                TransactionEncryptionKey::read_from_bytes(&key.to_bytes()),
+                Err(DeserializationError::InvalidValue(_))
+            ));
+        }
+    }
 
     fn rng() -> ChaCha20Rng {
         ChaCha20Rng::seed_from_u64(0xface)
@@ -759,9 +783,9 @@ mod tests {
     /// Expected values produced by the validator's own implementation over these exact inputs
     /// (`miden_validator::attestation_commitment`, `0xMiden/node` rev `5066b383`, identical on
     /// `next` at `da261511`). The commitment layout is duplicated on both sides, so these vectors
-    /// are what ties them together: if either side changes its layout, this test fails rather
-    /// than every attestation quietly failing to verify. Regenerate by feeding the same inputs to
-    /// the node's function.
+    /// are what ties them together: if either side changes its layout, this test fails rather than
+    /// every attestation quietly failing to verify. Regenerate by feeding the same inputs to the
+    /// node's function.
     #[test]
     fn attestation_commitment_matches_the_validator_implementation() {
         let genesis = Word::from([101u32, 102, 103, 104]);

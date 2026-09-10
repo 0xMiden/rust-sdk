@@ -1,5 +1,5 @@
-//! SQLite-backed Store implementation for miden-client.
-//! This crate provides `SqliteStore` and its full implementation.
+//! SQLite-backed Store implementation for miden-client. This crate provides `SqliteStore` and its
+//! full implementation.
 //!
 //! [`SqliteStore`] enables the persistence of accounts, transactions, notes, block headers, and MMR
 //! nodes using an `SQLite` database.
@@ -41,6 +41,7 @@ use miden_client::store::{
     OutputNoteRecord,
     PartialBlockchainFilter,
     SettingMutation,
+    SettingScope,
     Store,
     StoreError,
     TransactionFilter,
@@ -53,6 +54,8 @@ use miden_protocol::asset::AssetId;
 use rusqlite::Connection;
 use rusqlite::types::Value;
 use sql_error::SqlResultExt;
+
+use crate::account::helpers::query_vault_assets;
 
 mod account;
 mod builder;
@@ -101,8 +104,8 @@ impl SqliteStore {
 
         Self::migrate(&pool, SqliteMigrator::client()).await?;
 
-        // Account SMT data is persisted in the forest tables and read on demand, so no state
-        // needs to be rebuilt here.
+        // Account SMT data is persisted in the forest tables and read on demand, so no state needs
+        // to be rebuilt here.
         Ok(SqliteStore { pool, database_filepath })
     }
 
@@ -147,8 +150,8 @@ impl SqliteStore {
 
 // SQLite implementation of the Store trait
 //
-// To simplify, all implementations rely on inner SqliteStore functions that map 1:1 by name
-// This way, the actual implementations are grouped by entity types in their own sub-modules
+// To simplify, all implementations rely on inner SqliteStore functions that map 1:1 by name This
+// way, the actual implementations are grouped by entity types in their own sub-modules
 #[async_trait::async_trait]
 impl Store for SqliteStore {
     fn identifier(&self) -> &str {
@@ -437,30 +440,40 @@ impl Store for SqliteStore {
         .await
     }
 
-    async fn set_setting(&self, key: String, value: Vec<u8>) -> Result<(), StoreError> {
+    async fn set_setting(
+        &self,
+        scope: SettingScope,
+        key: String,
+        value: Vec<u8>,
+    ) -> Result<(), StoreError> {
         self.interact_with_connection(move |conn| {
-            SqliteStore::set_setting(conn, &key, &value).into_store_error()
+            SqliteStore::set_setting(conn, scope, &key, &value).into_store_error()
         })
         .await
     }
 
-    async fn get_setting(&self, key: String) -> Result<Option<Vec<u8>>, StoreError> {
-        self.interact_with_connection(move |conn| SqliteStore::get_setting(conn, &key))
+    async fn get_setting(
+        &self,
+        scope: SettingScope,
+        key: String,
+    ) -> Result<Option<Vec<u8>>, StoreError> {
+        self.interact_with_connection(move |conn| SqliteStore::get_setting(conn, scope, &key))
             .await
     }
 
-    async fn remove_setting(&self, key: String) -> Result<bool, StoreError> {
-        self.interact_with_connection(move |conn| SqliteStore::remove_setting(conn, &key))
+    async fn remove_setting(&self, scope: SettingScope, key: String) -> Result<bool, StoreError> {
+        self.interact_with_connection(move |conn| SqliteStore::remove_setting(conn, scope, &key))
             .await
     }
 
-    async fn list_setting_keys(&self) -> Result<Vec<String>, StoreError> {
-        self.interact_with_connection(move |conn| SqliteStore::list_setting_keys(conn))
+    async fn list_setting_keys(&self, scope: SettingScope) -> Result<Vec<String>, StoreError> {
+        self.interact_with_connection(move |conn| SqliteStore::list_setting_keys(conn, scope))
             .await
     }
 
     async fn apply_settings_mutations(
         &self,
+        scope: SettingScope,
         mutations: Vec<SettingMutation>,
     ) -> Result<(), StoreError> {
         self.interact_with_connection(move |conn| {
@@ -468,10 +481,10 @@ impl Store for SqliteStore {
             for mutation in &mutations {
                 match mutation {
                     SettingMutation::Set { key, value } => {
-                        SqliteStore::set_setting(&tx, key, value).into_store_error()?;
+                        SqliteStore::set_setting(&tx, scope, key, value).into_store_error()?;
                     },
                     SettingMutation::Remove { key } => {
-                        SqliteStore::remove_setting(&tx, key)?;
+                        SqliteStore::remove_setting(&tx, scope, key)?;
                     },
                 }
             }
@@ -491,6 +504,23 @@ impl Store for SqliteStore {
             .await
     }
 
+    async fn get_account_assets(&self, account_id: AccountId) -> Result<Vec<Asset>, StoreError> {
+        self.interact_with_connection(move |conn| query_vault_assets(conn, account_id))
+            .await
+    }
+
+    async fn get_vault_asset_witnesses(
+        &self,
+        account_id: AccountId,
+        vault_root: Word,
+        asset_ids: BTreeSet<AssetId>,
+    ) -> Result<Vec<AssetWitness>, StoreError> {
+        self.interact_with_connection(move |conn| {
+            SqliteStore::get_vault_asset_witnesses(conn, account_id, vault_root, asset_ids)
+        })
+        .await
+    }
+
     async fn get_account_asset(
         &self,
         account_id: AccountId,
@@ -498,17 +528,6 @@ impl Store for SqliteStore {
     ) -> Result<Option<(Asset, AssetWitness)>, StoreError> {
         self.interact_with_connection(move |conn| {
             SqliteStore::get_account_asset(conn, account_id, asset_id)
-        })
-        .await
-    }
-
-    async fn get_account_storage(
-        &self,
-        account_id: AccountId,
-        filter: AccountStorageFilter,
-    ) -> Result<AccountStorage, StoreError> {
-        self.interact_with_connection(move |conn| {
-            SqliteStore::get_account_storage(conn, account_id, &filter)
         })
         .await
     }
@@ -521,6 +540,17 @@ impl Store for SqliteStore {
     ) -> Result<(Word, StorageMapWitness), StoreError> {
         self.interact_with_connection(move |conn| {
             SqliteStore::get_account_map_item(conn, account_id, slot_name, key)
+        })
+        .await
+    }
+
+    async fn get_account_storage(
+        &self,
+        account_id: AccountId,
+        filter: AccountStorageFilter,
+    ) -> Result<AccountStorage, StoreError> {
+        self.interact_with_connection(move |conn| {
+            SqliteStore::get_account_storage(conn, account_id, &filter)
         })
         .await
     }
@@ -579,8 +609,8 @@ pub(crate) fn current_timestamp_u64() -> u64 {
 
 /// Gets a `u64` value from the database.
 ///
-/// `Sqlite` uses `i64` as its internal representation format, and so when retrieving
-/// we need to make sure we cast as `u64` to get the original value
+/// `Sqlite` uses `i64` as its internal representation format, and so when retrieving we need to
+/// make sure we cast as `u64` to get the original value
 pub fn column_value_as_u64<I: rusqlite::RowIndex>(
     row: &rusqlite::Row<'_>,
     index: I,

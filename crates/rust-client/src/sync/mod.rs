@@ -1,5 +1,5 @@
-//! Provides the client APIs for synchronizing the client's local state with the Miden
-//! network. It ensures that the client maintains a valid, up-to-date view of the chain.
+//! Provides the client APIs for synchronizing the client's local state with the Miden network. It
+//! ensures that the client maintains a valid, up-to-date view of the chain.
 //!
 //! ## Overview
 //!
@@ -15,9 +15,9 @@
 //! - Aggregating transaction updates to determine which transactions have been committed or
 //!   discarded.
 //!
-//! The result of the synchronization process is captured in a [`SyncSummary`], which provides
-//! a summary of the new block number along with lists of received, committed, and consumed note
-//! IDs, updated account IDs, locked accounts, and committed transaction IDs.
+//! The result of the synchronization process is captured in a [`SyncSummary`], which provides a
+//! summary of the new block number along with lists of received, committed, and consumed note IDs,
+//! updated account IDs, locked accounts, and committed transaction IDs.
 //!
 //! Once the data is requested and retrieved, updates are persisted in the client's store.
 //!
@@ -52,9 +52,9 @@
 //!
 //! The `sync_state` method loops internally until the client is fully synced to the network tip.
 //!
-//! For more advanced usage, refer to the individual functions (such as
-//! `committed_note_updates` and `consumed_note_updates`) to understand how the sync data is
-//! processed and applied to the local store.
+//! For more advanced usage, refer to the individual functions (such as `committed_note_updates` and
+//! `consumed_note_updates`) to understand how the sync data is processed and applied to the local
+//! store.
 
 use alloc::collections::BTreeSet;
 use alloc::format;
@@ -69,7 +69,7 @@ use miden_protocol::note::NoteId;
 use miden_protocol::transaction::TransactionId;
 use miden_tx::auth::TransactionAuthenticator;
 use miden_tx::utils::serde::{Deserializable, DeserializationError, Serializable};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::pswap::PswapChainObserver;
 use crate::store::{NoteFilter, TransactionFilter};
@@ -124,12 +124,11 @@ where
         self.store.get_sync_height().await.map_err(Into::into)
     }
 
-    /// Syncs the client's on-chain state with the current state of the Miden network and returns
-    /// a [`SyncSummary`] corresponding to the local state update.
+    /// Syncs the client's on-chain state with the current state of the Miden network and returns a
+    /// [`SyncSummary`] corresponding to the local state update.
     ///
-    /// Does **not** fetch private notes from the Note Transport Layer. Use
-    /// [`Client::sync_state`] for the combined sync, or call [`Client::sync_note_transport`]
-    /// separately.
+    /// Does **not** fetch private notes from the Note Transport Layer. Use [`Client::sync_state`]
+    /// for the combined sync, or call [`Client::sync_note_transport`] separately.
     ///
     /// Fetches everything from the node first ([`Client::fetch_chain_updates`] and
     /// [`StateSync::fetch_nullifiers`]), then applies the result with
@@ -141,7 +140,7 @@ where
 
         let state_sync = self.state_sync();
         let mut chain_sync_data = self.fetch_chain_updates(&state_sync).await?;
-        state_sync.derive_note_and_transaction_updates(&mut chain_sync_data).await?;
+        state_sync.derive_state_updates(&mut chain_sync_data).await?;
         state_sync.fetch_nullifiers(&mut chain_sync_data).await?;
 
         self.apply_chain_updates(&state_sync, chain_sync_data).await
@@ -150,9 +149,10 @@ where
     /// Fetches the node's view of everything that changed since the client's chain tip, without
     /// storing anything or modifying the partial MMR.
     ///
-    /// Builds the default sync input and runs [`StateSync::fetch_state`]. The nullifier check is
-    /// not part of this: run [`StateSync::fetch_nullifiers`] on the result before applying it, so
-    /// it can also cover transport-delivered notes another sync path fetched in the same call.
+    /// Builds the default sync input and runs [`StateSync::fetch_state`]. The state updates must be
+    /// derived with [`StateSync::derive_state_updates`]. The nullifier check is not part of this:
+    /// run [`StateSync::fetch_nullifiers`] on the result before applying it, so it can also cover
+    /// transport-delivered notes another sync path fetched in the same call.
     pub async fn fetch_chain_updates(
         &self,
         state_sync: &StateSync,
@@ -165,22 +165,23 @@ where
 
     /// Builds the [`StateSync`] driving one chain sync.
     ///
-    /// Each `NoteObserver` owns its own per-sync state, so this must be called once per sync
-    /// rather than shared; `with_note_observer` just attaches it.
+    /// Each `NoteObserver` owns its own per-sync state, so this must be called once per sync rather
+    /// than shared; `with_note_observer` just attaches it.
     fn state_sync(&self) -> StateSync {
         StateSync::new(self.rpc_api.clone(), Arc::new(self.note_screener()), self.tx_discard_delta)
             .with_note_observer(Arc::new(PswapChainObserver::new(self.store.clone())))
     }
 
-    /// Verifies fetched chain data against the client's partial MMR and saves the resulting
-    /// update to the store.
+    /// Verifies fetched chain data against the client's partial MMR and saves the resulting update
+    /// to the store.
     ///
-    /// Also caches the partial MMR and prunes irrelevant blocks.
+    /// [`StateSync::derive_state_updates`] and [`StateSync::fetch_nullifiers`] must have run on the
+    /// data first. Also caches the partial MMR and prunes irrelevant blocks.
     ///
     /// # Errors
     ///
-    /// Returns an error if the client no longer starts where the data was fetched from, which
-    /// means another sync advanced the store in between and the data is stale.
+    /// Returns an error if the client no longer starts where the data was fetched from, which means
+    /// another sync advanced the store in between and the data is stale.
     pub async fn apply_chain_updates(
         &mut self,
         state_sync: &StateSync,
@@ -231,9 +232,8 @@ where
         }
         self.ensure_genesis_in_place().await?;
 
-        let note_transport_data = self.fetch_note_transport_sync_data().await?;
-
-        let (imported_ids, _) = self.apply_note_transport_sync_data(note_transport_data).await?;
+        let note_transport_update = self.fetch_note_transport_updates().await?;
+        let (imported_ids, _) = self.apply_note_transport_update(note_transport_update).await?;
         Ok(imported_ids)
     }
 
@@ -245,17 +245,19 @@ where
     ///
     /// 1. Concurrently: the note transport fetch and [`Client::fetch_chain_updates`]. Only node and
     ///    NTL calls happen here, which is all that benefits from overlapping.
-    /// 2. The transport writes, whose records are then tracked in the chain sync's note updates.
-    /// 3. [`StateSync::derive_note_and_transaction_updates`], which screens the node's notes
-    ///    against the store — hence after step 2, so a transport-delivered note is recognised
-    ///    rather than discarded — and applies a commitment reported this sync to those records.
+    /// 2. The transport writes, when its fetch succeeded, whose records are then tracked in the
+    ///    chain sync's note updates.
+    /// 3. [`StateSync::derive_state_updates`], which screens the node's notes against the store —
+    ///    hence after step 2, so a transport-delivered note is recognised rather than discarded —
+    ///    and applies a commitment reported this sync to those records.
     /// 4. [`StateSync::fetch_nullifiers`], covering the tracked notes *and* the transport-delivered
     ///    ones, so a note delivered and consumed in the same window is reported as consumed by this
     ///    call.
-    /// 5. The chain update, written last: a nullified transport-delivered note is persisted as an
+    /// 5. The chain update, written last: a nullified transport-delivered note is saved as an
     ///    update to the row step 2 inserts.
     ///
-    /// Fails fast on the first error. Before step 2 nothing is written but the relay outbox, which
+    /// A transport failure is logged and the chain sync continues without it, leaving the transport
+    /// cursor for the next call to retry. Before step 2 but the relay outbox, which
     /// [`Client::flush_relay_outbox`] persists during the fetch and the next sync retries.
     pub async fn sync_state(&mut self) -> Result<SyncSummary, ClientError> {
         // Both fetch phases need genesis in place, and connecting here means the two concurrent
@@ -264,31 +266,35 @@ where
         self.ensure_rpc_limits_in_place().await?;
 
         let state_sync = self.state_sync();
-        let (note_transport_data, mut chain_sync_data) = futures::try_join!(
-            self.fetch_note_transport_sync_data(),
-            self.fetch_chain_updates(&state_sync)
-        )?;
+        let (note_transport_update, chain_sync_data) = futures::join!(
+            self.fetch_note_transport_updates(),
+            self.fetch_chain_updates(&state_sync),
+        );
 
-        // The NTL notes must be in the store before the chain data is screened: the screener
-        // recognises a note by looking it up in the store, and the updates for private notes
-        // it cannot find are discarded.
-        let (new_private_notes, transport_delivered_notes) =
-            self.apply_note_transport_sync_data(note_transport_data).await?;
+        // An NTL failure does not end the sync
+        let (new_private_notes, imported_notes) = match note_transport_update {
+            Ok(note_transport_update) => {
+                self.apply_note_transport_update(note_transport_update).await?
+            },
+            Err(err) => {
+                warn!(?err, "note transport fetch failed; syncing the chain without it");
+                (Vec::new(), Vec::new())
+            },
+        };
 
-        // Merge the NTL notes into the chain `note_updates`, so a commitment the chain reported
-        // for one of them is applied to its record. The tracker was built before the writes
-        // above, so without this the screener's verdict would have no record to apply to.
-        chain_sync_data
-            .note_updates
-            .track_existing_input_notes(transport_delivered_notes);
+        let mut chain_sync_data = chain_sync_data?;
 
-        state_sync.derive_note_and_transaction_updates(&mut chain_sync_data).await?;
+        // The chain sync built its note updates from a store snapshot taken before the import, so
+        // the imported records are added here. Without them this sync has no record to apply its
+        // verdicts to, and a note committed within this sync's own block range stays expected.
+        let imported_notes =
+            self.get_input_notes(NoteFilter::DetailsCommitments(imported_notes)).await?;
+        chain_sync_data.note_updates.track_existing_input_notes(imported_notes);
 
-        // Checks nullifiers both for notes fetched from the chain and from the NTL
+        state_sync.derive_state_updates(&mut chain_sync_data).await?;
         state_sync.fetch_nullifiers(&mut chain_sync_data).await?;
 
         let mut summary = self.apply_chain_updates(&state_sync, chain_sync_data).await?;
-
         summary.new_private_notes = new_private_notes;
         Ok(summary)
     }
@@ -359,10 +365,10 @@ where
     /// Prunes irrelevant block data from the store.
     ///
     /// Identifies tracked blocks whose input notes have all been consumed, untracks them from the
-    /// `PartialMmr` to determine which authentication nodes are no longer needed, then delegates
-    /// to [`Store::untrack_and_prune_irrelevant_blocks`] to atomically remove the stale nodes,
-    /// mark the blocks as irrelevant, and delete irrelevant block headers.
-    /// Any caller of this function should've cached the `PartialMmr` beforehand.
+    /// `PartialMmr` to determine which authentication nodes are no longer needed, then delegates to
+    /// [`Store::untrack_and_prune_irrelevant_blocks`] to atomically remove the stale nodes, mark
+    /// the blocks as irrelevant, and delete irrelevant block headers. Any caller of this function
+    /// should've cached the `PartialMmr` beforehand.
     async fn untrack_and_prune_irrelevant_blocks(&mut self) -> Result<(), ClientError> {
         let tracked_blocks = self.store.get_tracked_block_header_numbers().await?;
         let to_untrack: Vec<usize> = if tracked_blocks.is_empty() {
@@ -397,8 +403,8 @@ where
             updated_partial_mmr = Some(partial_mmr);
         }
 
-        // Store deletes stale auth nodes, marks blocks as irrelevant, and removes irrelevant
-        // block headers. Old irrelevant tip headers may still need pruning.
+        // Store deletes stale auth nodes, marks blocks as irrelevant, and removes irrelevant block
+        // headers. Old irrelevant tip headers may still need pruning.
         self.store
             .untrack_and_prune_irrelevant_blocks(&blocks_to_untrack, &nodes_to_remove)
             .await?;
@@ -410,8 +416,8 @@ where
         Ok(())
     }
 
-    /// Ensures that the RPC limits are set in the RPC client. If not already cached,
-    /// fetches them from the node and persists them in the store.
+    /// Ensures that the RPC limits are set in the RPC client. If not already cached, fetches them
+    /// from the node and persists them in the store.
     pub async fn ensure_rpc_limits_in_place(&mut self) -> Result<(), ClientError> {
         if self.rpc_api.has_rpc_limits().is_some() {
             return Ok(());

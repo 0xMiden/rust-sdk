@@ -199,8 +199,8 @@ fn generate_wrapper(out_dir: &Path, subdir: &str, wrapper_name: &str) -> miette:
 
 /// Applies `no_std` type replacements to all `.rs` files in the given directory.
 ///
-/// This is needed because `tonic_build` doesn't generate `no_std` compatible files and we need
-/// to build WASM without `std`.
+/// This is needed because `tonic_build` doesn't generate `no_std` compatible files and we need to
+/// build WASM without `std`.
 fn replace_no_std_types_in_dir(dir: &Path) -> miette::Result<()> {
     for entry in fs::read_dir(dir).into_diagnostic()? {
         let entry = entry.into_diagnostic()?;

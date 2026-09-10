@@ -150,11 +150,11 @@ impl proto::rpc::account_response::AccountDetails {
     /// Converts the RPC response into `AccountDetails`.
     ///
     /// The RPC response may omit unchanged account codes. If so, this function uses
-    /// `known_account_codes` to fill in the missing code. If a required code cannot be found in
-    /// the response or `known_account_codes`, an error is returned.
+    /// `known_account_codes` to fill in the missing code. If a required code cannot be found in the
+    /// response or `known_account_codes`, an error is returned.
     ///
-    /// `storage_requirements` is the request this response answers, used to check that each
-    /// partial map covers exactly the keys that were asked for.
+    /// `storage_requirements` is the request this response answers, used to check that each partial
+    /// map covers exactly the keys that were asked for.
     ///
     /// # Errors
     /// - If account code is missing both on `self` and `known_account_codes`
@@ -187,8 +187,8 @@ impl proto::rpc::account_response::AccountDetails {
         storage_details.validate_against_request(storage_requirements)?;
 
         // If an account code was received, it means the previously known account code is no longer
-        // valid. If it was not, it means we sent a code commitment that matched and so our code
-        // is still valid
+        // valid. If it was not, it means we sent a code commitment that matched and so our code is
+        // still valid
         let code = {
             let received_code = code.map(|c| AccountCode::read_from_bytes(&c)).transpose()?;
             match received_code {
@@ -240,8 +240,8 @@ impl TryFrom<&AccountDetails> for Account {
     /// Builds an [`Account`] from [`AccountDetails`].
     ///
     /// This conversion fails if the account details are incomplete, i.e., when the account's
-    /// storage maps or vault exceed the node's size threshold, or when only specific map keys
-    /// were requested.
+    /// storage maps or vault exceed the node's size threshold, or when only specific map keys were
+    /// requested.
     fn try_from(details: &AccountDetails) -> Result<Self, Self::Error> {
         if details.vault_details.too_many_assets {
             return Err(RpcError::ExpectedDataMissing(
@@ -399,8 +399,8 @@ impl TryFrom<proto::rpc::AccountStorageDetails> for AccountStorageDetails {
             .collect::<Result<Vec<AccountStorageMapDetails>, RpcError>>()?;
 
         // A partial map is only worth anything if it is anchored to the slot root the account
-        // commitment covers. Without this check the node could serve a self-consistent tree of
-        // its own making.
+        // commitment covers. Without this check the node could serve a self-consistent tree of its
+        // own making.
         for map_detail in &map_details {
             let StorageMapEntries::PartialMap { partial_smt, .. } = &map_detail.entries else {
                 continue;
@@ -453,8 +453,8 @@ impl AccountStorageMapDetails {
     /// this across all slots of a request, so honouring it per slot is a conservative bound.
     pub const MAX_PARTIAL_MAP_KEYS: usize = 64;
 
-    /// Returns `true` when the node reported that this slot has more entries than it will return
-    /// in a single response, meaning the entries have to be fetched through
+    /// Returns `true` when the node reported that this slot has more entries than it will return in
+    /// a single response, meaning the entries have to be fetched through
     /// [`crate::rpc::NodeRpcClient::sync_storage_maps`] instead.
     pub fn is_limit_exceeded(&self) -> bool {
         matches!(self.entries, StorageMapEntries::LimitExceeded)
@@ -544,8 +544,8 @@ impl TryFrom<proto::rpc::account_storage_details::AccountStorageMapDetails>
 
 /// Returns the first key that appears more than once, if any.
 ///
-/// The key lists this guards are bounded by [`AccountStorageMapDetails::MAX_PARTIAL_MAP_KEYS`],
-/// so the quadratic scan avoids allocating a set.
+/// The key lists this guards are bounded by [`AccountStorageMapDetails::MAX_PARTIAL_MAP_KEYS`], so
+/// the quadratic scan avoids allocating a set.
 fn first_duplicate_key(keys: &[StorageMapKey]) -> Option<&StorageMapKey> {
     keys.iter()
         .enumerate()
@@ -622,12 +622,10 @@ impl StorageMapEntries {
 
 #[derive(Clone, Debug)]
 pub struct AccountVaultDetails {
-    /// A flag that is set to true if the account contains too many assets. This indicates
-    /// to the user that `SyncAccountVault` endpoint should be used to retrieve the
-    /// account's assets
+    /// A flag that is set to true if the account contains too many assets. This indicates to the
+    /// user that `SyncAccountVault` endpoint should be used to retrieve the account's assets
     pub too_many_assets: bool,
-    /// When `too_many_assets` == false, this will contain the list of assets in the
-    /// account's vault
+    /// When `too_many_assets` == false, this will contain the list of assets in the account's vault
     pub assets: Vec<Asset>,
 }
 
@@ -822,8 +820,8 @@ impl TryFrom<proto::account::AccountWitness> for AccountWitness {
 // ACCOUNT STORAGE REQUEST
 // ================================================================================================
 
-/// Per-slot map data to include in a `/GetAccount` response. Slots absent here are omitted
-/// from `map_details` (the storage header still lists every slot).
+/// Per-slot map data to include in a `/GetAccount` response. Slots absent here are omitted from
+/// `map_details` (the storage header still lists every slot).
 ///
 /// - Empty key list: all entries, no proof. May come back as [`StorageMapEntries::LimitExceeded`].
 /// - Non-empty key list: just those keys, covered by one partial SMT.
@@ -922,9 +920,8 @@ pub enum VaultFetch {
     Always,
     /// Include vault data only if the account's current vault root differs from this commitment.
     ///
-    /// An omitted asset list is byte-identical to a genuinely empty vault, so callers must keep
-    /// the vault whose root they send and verify any reconstruction against the header's vault
-    /// root.
+    /// An omitted asset list is byte-identical to a genuinely empty vault, so callers must keep the
+    /// vault whose root they send and verify any reconstruction against the header's vault root.
     IfChangedFrom(Word),
 }
 
@@ -944,8 +941,8 @@ impl From<VaultFetch> for Option<proto::primitives::Digest> {
 /// Which storage map entries to include in a `/GetAccount` response.
 ///
 /// Mirrors the node's `AccountDetailRequest` storage request: the storage header (slot roots) is
-/// always returned; this only controls which map *entries* come with it. The variants are
-/// mutually exclusive.
+/// always returned; this only controls which map *entries* come with it. The variants are mutually
+/// exclusive.
 #[derive(Clone, Debug, Default)]
 pub enum StorageMapFetch {
     /// Don't request any map entries; only the storage header is returned.
@@ -955,8 +952,8 @@ pub enum StorageMapFetch {
     /// maps come back as [`StorageMapEntries::LimitExceeded`], to be resolved via
     /// [`crate::rpc::NodeRpcClient::sync_storage_maps`].
     All,
-    /// Request entries only for the explicitly named slots. See [`AccountStorageRequirements`]
-    /// for the per-slot semantics.
+    /// Request entries only for the explicitly named slots. See [`AccountStorageRequirements`] for
+    /// the per-slot semantics.
     Slots(AccountStorageRequirements),
 }
 
@@ -981,17 +978,17 @@ pub struct GetAccountRequest {
     pub storage: StorageMapFetch,
     /// Block at which to retrieve the proof.
     pub at: AccountStateAt,
-    /// Code commitment the client already has. When the on-chain commitment matches, the node
-    /// skips re-sending the code.
+    /// Code commitment the client already has. When the on-chain commitment matches, the node skips
+    /// re-sending the code.
     pub known_code: Option<AccountCode>,
     /// Vault data retrieval policy.
     pub vault: VaultFetch,
 }
 
 impl GetAccountRequest {
-    /// Creates a request for the minimal account data: the account commitment and storage header
-    /// at the chain tip, with no map entries, no known code, and no vault data. Opt into
-    /// additional data with the builder methods.
+    /// Creates a request for the minimal account data: the account commitment and storage header at
+    /// the chain tip, with no map entries, no known code, and no vault data. Opt into additional
+    /// data with the builder methods.
     #[must_use]
     pub fn new() -> Self {
         Self {

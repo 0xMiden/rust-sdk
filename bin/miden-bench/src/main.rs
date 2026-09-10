@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use clap::{Args, Parser, Subcommand};
 use miden_client::rpc::Endpoint;
+use miden_client::testing::common::TestClient;
 
 mod benchmarks;
 mod config;
@@ -16,7 +17,8 @@ mod masm;
 mod metrics;
 mod report;
 
-use config::{BenchConfig, DEFAULT_STORE_DIR};
+use config::{BenchConfig, DEFAULT_STORE_DIR, RPC_TIMEOUT_MS};
+use miden_client_integration_tests::{ClientConfig, fee_funding};
 
 const DEFAULT_ITERATION_COUNT: usize = 5;
 
@@ -34,10 +36,16 @@ struct CliArgs {
     #[arg(short, long, default_value = "localhost", env = "MIDEN_NETWORK", global = true)]
     network: Network,
 
-    /// Path to the persistent store directory. All commands share this directory
-    /// for the `SQLite` database and filesystem keystore.
+    /// Path to the persistent store directory. All commands share this directory for the `SQLite`
+    /// database and filesystem keystore.
     #[arg(long, global = true, default_value = DEFAULT_STORE_DIR)]
     store: String,
+
+    /// Path to pre-funded basic wallets to draw transaction fees from: either one `.mac` account
+    /// file or a directory of them. Defaults to `MIDEN_FUNDER_ACCOUNTS_DIR`. A path naming no such
+    /// file leaves the run without funders, which is all a fee-free chain needs.
+    #[arg(long, global = true)]
+    funders: Option<PathBuf>,
 }
 
 #[derive(Subcommand, Clone)]
@@ -59,9 +67,9 @@ enum Command {
 impl Command {
     /// Returns whether the command needs the global startup sync against the network.
     ///
-    /// Only commands that read pre-existing chain state (deploy, expand, transaction)
-    /// require a synced client at startup. Import / export operate on a file or call
-    /// their own RPC and do not benefit from the pre-sync.
+    /// Only commands that read pre-existing chain state (deploy, expand, transaction) require a
+    /// synced client at startup. Import / export operate on a file or call their own RPC and do not
+    /// benefit from the pre-sync.
     fn startup_mode(&self) -> StartupMode {
         match self {
             Command::Deploy(_) | Command::Expand(_) | Command::Transaction(_) => {
@@ -93,10 +101,9 @@ struct TransactionArgs {
     #[arg(short, long)]
     account_id: String,
 
-    /// Maximum storage reads per transaction. When total entries exceed this limit,
-    /// reads are split across multiple transactions per benchmark iteration.
-    /// Each iteration's time is the sum across all transactions.
-    /// When omitted, all entries are read in a single transaction.
+    /// Maximum storage reads per transaction. When total entries exceed this limit, reads are split
+    /// across multiple transactions per benchmark iteration. Each iteration's time is the sum
+    /// across all transactions. When omitted, all entries are read in a single transaction.
     #[arg(short, long)]
     reads: Option<usize>,
 
@@ -248,9 +255,15 @@ async fn main() {
     println!("Network: {endpoint}");
     println!("Store directory: {}", store_path.display());
 
-    let mut client = config::create_client(&endpoint, &store_path)
+    let client = config::create_client(&endpoint, &store_path)
         .await
         .expect("Failed to create client");
+
+    let funders = args.funders.or_else(fee_funding::funders_path_from_env);
+    let fee_funder =
+        fee_funding::load(&ClientConfig::new(endpoint.clone(), RPC_TIMEOUT_MS), funders.as_deref())
+            .expect("Failed to load the funder wallets");
+    let mut client = TestClient::from(client).with_fee_funder(fee_funder);
 
     match args.command.startup_mode() {
         StartupMode::Synced => {
@@ -267,7 +280,7 @@ async fn main() {
 
 async fn dispatch_command(
     command: Command,
-    client: &mut miden_client::Client<miden_client::keystore::FilesystemKeyStore>,
+    client: &mut TestClient,
     store_path: PathBuf,
     endpoint: Endpoint,
     store_flag: &str,

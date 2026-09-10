@@ -35,8 +35,8 @@ impl SqlitePoolManager {
     fn new_connection(&self) -> rusqlite::Result<Connection> {
         let conn = Connection::open(&self.database_path)?;
 
-        // Restrict database file permissions to owner-only on Unix.
-        // Also covers WAL and SHM journal files that SQLite may create.
+        // Restrict database file permissions to owner-only on Unix. Also covers WAL and SHM journal
+        // files that SQLite may create.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -57,9 +57,8 @@ impl SqlitePoolManager {
             }
         }
 
-        // Feature used to support `IN` and `NOT IN` queries. We need to load
-        // this module for every connection we create to the DB to support the
-        // queries we want to run
+        // Feature used to support `IN` and `NOT IN` queries. We need to load this module for every
+        // connection we create to the DB to support the queries we want to run
         array::load_module(&conn)?;
 
         conn.busy_timeout(Duration::from_secs(5))?;
@@ -120,8 +119,9 @@ impl Manager for SqlitePoolManager {
 
 #[cfg(test)]
 mod tests {
-    use miden_client::store::Store;
+    use miden_client::store::{SettingScope, Store};
     use miden_client::testing::common::create_test_store_path;
+    use rusqlite::params;
 
     use crate::SqliteStore;
     use crate::sql_error::SqlResultExt;
@@ -174,8 +174,13 @@ mod tests {
             .await;
         assert!(panicked.is_err());
 
-        store.set_setting("after-panic".to_string(), b"value".to_vec()).await?;
-        assert_eq!(store.get_setting("after-panic".to_string()).await?, Some(b"value".to_vec()));
+        store
+            .set_setting(SettingScope::User, "after-panic".to_string(), b"value".to_vec())
+            .await?;
+        assert_eq!(
+            store.get_setting(SettingScope::User, "after-panic".to_string()).await?,
+            Some(b"value".to_vec())
+        );
 
         Ok(())
     }
@@ -189,32 +194,45 @@ mod tests {
         store
             .interact_with_connection(|conn| {
                 conn.execute_batch("BEGIN").into_store_error()?;
-                conn.execute_batch("INSERT INTO settings (name, value) VALUES ('leaked', X'00')")
-                    .into_store_error()?;
+                conn.execute(
+                    "INSERT INTO settings (scope, name, value) VALUES (?1, ?2, ?3)",
+                    params![SettingScope::User.as_u8(), "leaked", b"\x00".as_slice()],
+                )
+                .into_store_error()?;
                 Ok(())
             })
             .await?;
 
         let autocommit = store.interact_with_connection(|conn| Ok(conn.is_autocommit())).await?;
         assert!(autocommit, "the leaked transaction was not rolled back");
-        assert_eq!(store.get_setting("leaked".to_string()).await?, None);
+        assert_eq!(store.get_setting(SettingScope::User, "leaked".to_string()).await?, None);
 
         Ok(())
     }
 
-    /// Two stores open on the same file must wait on each other's write locks rather than fail
-    /// with `SQLITE_BUSY`.
+    /// Two stores open on the same file must wait on each other's write locks rather than fail with
+    /// `SQLITE_BUSY`.
     #[tokio::test]
     async fn overlapping_accessors_wait_instead_of_failing() -> anyhow::Result<()> {
         let path = create_test_store_path();
         let first = SqliteStore::new(path.clone()).await?;
         let second = SqliteStore::new(path).await?;
 
-        first.set_setting("from-first".to_string(), b"1".to_vec()).await?;
-        second.set_setting("from-second".to_string(), b"2".to_vec()).await?;
+        first
+            .set_setting(SettingScope::User, "from-first".to_string(), b"1".to_vec())
+            .await?;
+        second
+            .set_setting(SettingScope::User, "from-second".to_string(), b"2".to_vec())
+            .await?;
 
-        assert_eq!(second.get_setting("from-first".to_string()).await?, Some(b"1".to_vec()));
-        assert_eq!(first.get_setting("from-second".to_string()).await?, Some(b"2".to_vec()));
+        assert_eq!(
+            second.get_setting(SettingScope::User, "from-first".to_string()).await?,
+            Some(b"1".to_vec())
+        );
+        assert_eq!(
+            first.get_setting(SettingScope::User, "from-second".to_string()).await?,
+            Some(b"2".to_vec())
+        );
 
         Ok(())
     }

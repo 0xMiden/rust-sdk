@@ -20,8 +20,8 @@ use crate::store::{AccountStatus, Store};
 
 /// Provides lazy access to account data.
 ///
-/// `AccountReader` executes queries lazily - each method call fetches fresh data
-/// from storage, ensuring you always see the current state.
+/// `AccountReader` executes queries lazily - each method call fetches fresh data from storage,
+/// ensuring you always see the current state.
 ///
 /// # Example
 /// ```ignore
@@ -121,6 +121,18 @@ impl AccountReader {
     // VAULT ACCESS
     // --------------------------------------------------------------------------------------------
 
+    /// Retrieves all assets in the account's vault as a plain list, without building the vault's
+    /// Merkle tree.
+    ///
+    /// To load the entire vault, use
+    /// [`Client::get_account_vault`](crate::Client::get_account_vault).
+    pub async fn assets(&self) -> Result<Vec<Asset>, ClientError> {
+        self.store
+            .get_account_assets(self.account_id)
+            .await
+            .map_err(ClientError::StoreError)
+    }
+
     /// Retrieves the balance of a fungible asset in the account's vault.
     ///
     /// Returns [`AssetAmount::ZERO`] if the asset is not present in the vault or if the asset is
@@ -146,8 +158,7 @@ impl AccountReader {
     ///
     /// This method fetches the requested slot from storage.
     ///
-    /// For `Value` slots, returns the stored word.
-    /// For `Map` slots, returns the map root.
+    /// For `Value` slots, returns the stored word. For `Map` slots, returns the map root.
     pub async fn get_storage_item(
         &self,
         slot_name: impl Into<StorageSlotName>,

@@ -38,9 +38,9 @@ impl<AUTH> Client<AUTH> {
         Ok(block_header)
     }
 
-    /// Ensures that the genesis block is available. If the genesis commitment is already
-    /// cached in the RPC client, returns early. Otherwise, fetches the genesis block from
-    /// the node, stores it, and sets the commitment in the RPC client.
+    /// Ensures that the genesis block is available. If the genesis commitment is already cached in
+    /// the RPC client, returns early. Otherwise, fetches the genesis block from the node, stores
+    /// it, and sets the commitment in the RPC client.
     pub async fn ensure_genesis_in_place(&mut self) -> Result<(), ClientError> {
         if self.rpc_api.has_genesis_commitment().is_some() {
             return Ok(());
@@ -117,8 +117,8 @@ impl<AUTH> Client<AUTH> {
         Ok(self.store.get_current_blockchain_peaks().await?.hash_peaks())
     }
 
-    /// Hashes the store's tracked block numbers (sorted). Used as the cache freshness
-    /// fingerprint to detect tracked-set drift without rebuilding the MMR.
+    /// Hashes the store's tracked block numbers (sorted). Used as the cache freshness fingerprint
+    /// to detect tracked-set drift without rebuilding the MMR.
     async fn current_tracked_blocks_hash(&self) -> Result<Word, ClientError> {
         // BTreeSet iterates in sorted order, so the hash is deterministic.
         let tracked = self.store.get_tracked_block_header_numbers().await?;
@@ -133,7 +133,7 @@ impl<AUTH> Client<AUTH> {
     /// authentication nodes that tracking produced.
     pub(crate) async fn insert_note_blocks(
         &mut self,
-        blocks: Vec<ResolvedSyncNotesBlock>,
+        blocks: &[ResolvedSyncNotesBlock],
         partial_mmr: &mut PartialMmr,
     ) -> Result<(), ClientError> {
         let mut authenticated_blocks = Vec::with_capacity(blocks.len());
@@ -151,7 +151,7 @@ impl<AUTH> Client<AUTH> {
                 block.block_header.commitment(),
                 &block.mmr_path,
             )?;
-            authenticated_blocks.push((block.block_header, path_nodes));
+            authenticated_blocks.push((block.block_header.clone(), path_nodes));
         }
 
         for (block_header, path_nodes) in authenticated_blocks {
@@ -190,7 +190,8 @@ impl<AUTH> Client<AUTH> {
             fetch_block_header(self.rpc_api.clone(), block_num, current_partial_mmr).await?;
         let tracked_nodes = authenticated_block_nodes(&block_header, path_nodes);
 
-        // Insert header and MMR nodes atomically
+        // The header and its MMR nodes must be inserted together; a header without its nodes cannot
+        // be authenticated later.
         self.store.insert_block_header(&block_header, &tracked_nodes, true).await?;
 
         Ok(block_header)
@@ -200,9 +201,8 @@ impl<AUTH> Client<AUTH> {
 // UTILS
 // --------------------------------------------------------------------------------------------
 
-/// Returns a merkle path nodes for a specific block adjusted for a defined forest size.
-/// This function trims the merkle path to include only the nodes that are relevant for
-/// the MMR forest.
+/// Returns a merkle path nodes for a specific block adjusted for a defined forest size. This
+/// function trims the merkle path to include only the nodes that are relevant for the MMR forest.
 ///
 /// # Parameters
 /// - `merkle_path`: Original merkle path.
@@ -228,9 +228,8 @@ pub(crate) fn adjust_merkle_path_for_forest(
     path_nodes
 }
 
-/// Adjusts a Merkle path for the given forest, then calls [`PartialMmr::track`] to verify
-/// and register the block. Returns the forest-adjusted authentication path nodes for the
-/// tracked block.
+/// Adjusts a Merkle path for the given forest, then calls [`PartialMmr::track`] to verify and
+/// register the block. Returns the forest-adjusted authentication path nodes for the tracked block.
 pub(crate) fn track_block_in_mmr(
     partial_mmr: &mut PartialMmr,
     block_num: BlockNumber,
@@ -311,9 +310,9 @@ mod tests {
     #[test]
     #[should_panic(expected = "forest includes block number")]
     fn adjust_merkle_path_panics_for_block_beyond_forest() {
-        // Forest 5 covers leaves 0..=4, so a claimed commit height of 5 has no corresponding
-        // tree and the depth lookup has nothing to return. Notes whose inclusion proof claims a
-        // height past the synced view must be dropped before reaching this point.
+        // Forest 5 covers leaves 0..=4, so a claimed commit height of 5 has no corresponding tree
+        // and the depth lookup has nothing to return. Notes whose inclusion proof claims a height
+        // past the synced view must be dropped before reaching this point.
         let forest = Forest::new(5).expect("valid forest");
         let block_num = BlockNumber::from(5u32);
         let path = MerklePath::new(vec![word(1), word(2), word(3)]);
@@ -375,8 +374,8 @@ mod tests {
 
     #[test]
     fn adjust_path_limit_correct_when_siblings_in_bounds() {
-        // Ensure the expected depth limit matters even when the next sibling
-        // is "in-bounds" (but not part of the leaf's subtree for that forest)
+        // Ensure the expected depth limit matters even when the next sibling is "in-bounds" (but
+        // not part of the leaf's subtree for that forest)
         let large_leaves = 8usize;
         let small_leaves = 7usize;
         let leaf_pos = 2usize;
@@ -392,8 +391,8 @@ mod tests {
         let expected_depth =
             small_forest.leaf_to_corresponding_tree(leaf_pos).expect("leaf is in forest") as usize;
 
-        // Confirm the next sibling after the expected depth is still in bounds, which would
-        // create an overlong path without the depth cap.
+        // Confirm the next sibling after the expected depth is still in bounds, which would create
+        // an overlong path without the depth cap.
         let mut idx = InOrderIndex::from_leaf_pos(leaf_pos);
         for _ in 0..expected_depth {
             idx = idx.parent();

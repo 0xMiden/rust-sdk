@@ -81,7 +81,7 @@ use miden_protocol::note::{
     NoteScript,
     NoteTag,
 };
-use miden_protocol::transaction::{AccountInputs, PartialBlockchain};
+use miden_protocol::transaction::PartialBlockchain;
 use miden_protocol::vm::MIN_STACK_DEPTH;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::auth::FeeConversionInfo;
@@ -162,6 +162,7 @@ mod result;
 // RE-EXPORTS
 // ================================================================================================
 pub use miden_protocol::transaction::{
+    AccountInputs,
     ExecutedTransaction,
     InputNote,
     InputNotes,
@@ -363,8 +364,9 @@ where
     /// [`ChainAnchor::block_commitment`] against an independently trusted value (e.g. the block
     /// commitment bound into the signed transaction summary).
     ///
-    /// Foreign account proofs are fetched at the anchor's block, so requests with foreign
-    /// accounts additionally require the node to serve account state at that block.
+    /// Foreign accounts are fetched at the anchor's block unless declared as
+    /// [`ForeignAccount::Prefetched`], so a node that no longer serves account state at that block
+    /// only affects accounts that are not prefetched.
     ///
     /// # Errors
     ///
@@ -691,8 +693,9 @@ where
             None => self.store.get_sync_height().await?,
         };
 
-        let foreign_account_inputs =
-            self.retrieve_foreign_account_inputs(foreign_accounts, block_num).await?;
+        let foreign_account_inputs = self
+            .get_foreign_account_inputs(foreign_accounts.into_values(), block_num)
+            .await?;
 
         let ignore_invalid_notes = transaction_request.ignore_invalid_input_notes();
 
@@ -706,6 +709,19 @@ where
                     .0
             },
         };
+
+        // A witness opens against the account tree of exactly one block. Rejecting a mismatch here
+        // names the account and the block; inside the executor it would only be a kernel failure.
+        for inputs in &foreign_account_inputs {
+            if inputs.compute_account_root().ok() != Some(reference_header.account_root()) {
+                return Err(TransactionRequestError::ForeignAccountNotAtReferenceBlock {
+                    account_id: inputs.id(),
+                    block_num,
+                }
+                .into());
+            }
+        }
+
         attach_native_fee_conversion_info(
             &mut transaction_request,
             &account_code_interface,
@@ -1180,19 +1196,29 @@ where
     ///
     /// For any [`ForeignAccount::Public`] in `foreign_accounts`, these pieces of data are retrieved
     /// from the network. For any [`ForeignAccount::Private`] account, inner data is used and only
-    /// a proof of the account's existence on the network is fetched.
-    async fn retrieve_foreign_account_inputs(
+    /// a proof of the account's existence on the network is fetched. A
+    /// [`ForeignAccount::Prefetched`] account is returned as is.
+    ///
+    /// Each witness opens against the account tree of `block_num`, so the results are valid only
+    /// for a transaction whose reference block is exactly `block_num`. Declared as
+    /// [`ForeignAccount::Prefetched`], they are served from the request instead of being fetched.
+    /// Under [`Self::execute_transaction_at`] the reference block is the anchor's block; otherwise
+    /// it is the sync height at execution time, so do not sync between fetching and executing.
+    /// Only the given accounts are fetched; this method does not discover the accounts a
+    /// transaction loads, such as faucets whose asset callbacks it triggers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if account data cannot be fetched or converted to transaction inputs.
+    pub async fn get_foreign_account_inputs(
         &self,
-        foreign_accounts: BTreeMap<AccountId, ForeignAccount>,
+        foreign_accounts: impl IntoIterator<Item = ForeignAccount>,
         block_num: BlockNumber,
     ) -> Result<Vec<AccountInputs>, ClientError> {
-        if foreign_accounts.is_empty() {
-            return Ok(Vec::new());
-        }
+        let foreign_accounts = foreign_accounts.into_iter();
+        let mut return_foreign_account_inputs = Vec::with_capacity(foreign_accounts.size_hint().0);
 
-        let mut return_foreign_account_inputs = Vec::with_capacity(foreign_accounts.len());
-
-        for foreign_account in foreign_accounts.into_values() {
+        for foreign_account in foreign_accounts {
             let foreign_account_inputs = match foreign_account {
                 ForeignAccount::Public(account_id, storage_requirements) => {
                     fetch_public_account_inputs(
@@ -1216,6 +1242,7 @@ where
                     let (witness, _) = account_proof.into_parts();
                     AccountInputs::new(partial_account, witness)
                 },
+                ForeignAccount::Prefetched(inputs) => inputs,
             };
 
             return_foreign_account_inputs.push(foreign_account_inputs);
@@ -1234,8 +1261,9 @@ where
     ) -> Result<(ClientDataStore, BlockNumber), ClientError> {
         let block_ref = self.get_sync_height().await?;
 
-        let foreign_account_inputs =
-            self.retrieve_foreign_account_inputs(foreign_accounts, block_ref).await?;
+        let foreign_account_inputs = self
+            .get_foreign_account_inputs(foreign_accounts.into_values(), block_ref)
+            .await?;
 
         let account_code = self
             .store

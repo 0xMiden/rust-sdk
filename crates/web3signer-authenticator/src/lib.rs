@@ -19,9 +19,6 @@
 #![no_std]
 extern crate alloc;
 
-#[cfg(any(feature = "std", test))]
-extern crate std;
-
 use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::{String, ToString};

@@ -52,6 +52,7 @@ const PUBLIC_KEYS_PATH: &str = "/api/v1/eth1/publicKeys";
 const SIGN_PATH_PREFIX: &str = "/api/v1/eth1/sign/";
 
 /// A `Web3Signer` public key and its hex identifier.
+#[derive(Debug, Clone)]
 struct Web3SignerPublicKey {
     public_key: Arc<PublicKey>,
     /// The key's identifier as the signer reported it, used verbatim in the signing URL.
@@ -59,6 +60,7 @@ struct Web3SignerPublicKey {
 }
 
 /// A [`TransactionAuthenticator`] backed by a `Web3Signer` instance.
+#[derive(Debug, Clone)]
 pub struct Web3SignerAuthenticator<T> {
     transport: T,
     public_keys_by_commitment: BTreeMap<PublicKeyCommitment, Web3SignerPublicKey>,

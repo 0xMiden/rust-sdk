@@ -175,7 +175,6 @@ pub fn write_genesis_config(
     // public keys on the command line, and `start-test-node.sh` generates the key-pair it passes
     // there alongside the matching signing key.
     let config = GenesisConfig {
-        version: 1,
         timestamp,
         native_faucet: NATIVE_FAUCET_FILE.to_string(),
         fee_parameters: FeeParametersEntry { verification_base_fee },
@@ -207,7 +206,6 @@ pub fn write_genesis_config(
 /// table, so the scalars have to stay above `fee_parameters` and the two arrays of tables.
 #[derive(Serialize)]
 struct GenesisConfig {
-    version: u32,
     timestamp: u32,
     /// File name of the faucet whose asset the chain charges fees in.
     native_faucet: String,

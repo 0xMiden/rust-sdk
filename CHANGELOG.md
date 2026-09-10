@@ -4,7 +4,7 @@
 
 ### Breaking Changes
 
-* [BREAKING][rust,rpc,store] Updated protocol dependencies to `0.17.0-rc.3` and VM dependencies to `0.32`. Updated node protobuf bindings to node PR #2570 at `0d51bb31795d1d2d48eda49f9a6b711f13fc37df`. Requires a compatible node and a new client database.
+* [BREAKING][rust,rpc,store] Updated protocol dependencies to `0.17.0-rc.3` and VM dependencies to `0.32`. Updated node protobuf bindings to [#2570](https://github.com/0xMiden/node/pull/2570). Requires a compatible node and a new client database.
 * [BREAKING][rust,cli] Disabled the `dap` feature and debugger entry points while `miden-debug` uses an incompatible VM version. The CLI no longer exposes `--start-debug-adapter` or `--record`.
 * [BREAKING][rust] Added protocol configuration registration through `ClientBuilder::protocol_config` and `Client::add_protocol_config`. Execution and note screening require the configuration committed by the reference block. The node does not yet provide it over RPC. The CLI, benchmarks, and integration tests accept a serialized configuration through `MIDEN_PROTOCOL_CONFIG`; the CLI also accepts `fee_faucet_id` in its configuration to select the current protocol configuration.
 * [BREAKING][rust] Replaced the `ValidatorKeys` re-export with `ValidatorConfig` and `ProvingOptions` with `Prover`. Removed the upstream `FungibleAssetDelta`, `NonFungibleAssetDelta`, `NonFungibleDeltaAction`, and `SmtForest` re-exports. `TransactionRequest::incoming_assets` now returns `Vec<Asset>` for assets without fungible amounts. Transaction script error variants now carry `MastForestScriptError`.

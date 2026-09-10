@@ -50,7 +50,7 @@ miden-tx        = { default-features = false, version = "0.17.0-rc.3" }
 miden-tx-batch  = { default-features = false, version = "0.17.0-rc.3" }
 
 # Miden node dependencies
-miden-node-proto-build           = { default-features = false, git = "https://github.com/0xMiden/node", rev = "0d51bb31795d1d2d48eda49f9a6b711f13fc37df" }
+miden-node-proto-build           = { default-features = false, git = "https://github.com/0xMiden/node", rev = "d4062e64ec38ceca8c3044c87c18d70b3b7b4f74" } # TODO: switch to crates.io release once available
 miden-note-transport-proto-build = { default-features = false, version = "0.5.0-rc.2" }
 
 # Miden debug dependency

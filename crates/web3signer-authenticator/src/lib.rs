@@ -21,7 +21,7 @@ extern crate alloc;
 
 use alloc::collections::BTreeMap;
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
@@ -87,26 +87,23 @@ impl<T: SignerTransport> Web3SignerAuthenticator<T> {
 
         let public_keys_by_commitment = listed_keys
             .into_iter()
-            .map(|(identifier, public_key)| {
-                let entry = PublicKeyEntry {
-                    public_key: Arc::new(public_key),
-                    identifier,
-                };
-                (entry.public_key.to_commitment(), entry)
-            })
+            .map(|public_key_entry| (public_key_entry.public_key.to_commitment(), public_key_entry))
             .collect();
 
         Ok(Self { transport, public_keys_by_commitment })
     }
 
     /// Requests the signer's key list and returns each key with the identifier it was listed under.
-    async fn list_public_keys(transport: &T) -> Result<Vec<(String, PublicKey)>, Web3SignerError> {
+    async fn list_public_keys(transport: &T) -> Result<Vec<PublicKeyEntry>, Web3SignerError> {
         let body = transport.get(PUBLIC_KEYS_PATH).await?;
 
         parse_string_array(&body)
             .map(|identifier| {
                 let public_key = PublicKey::EcdsaK256Keccak(decode_public_key(identifier)?);
-                Ok((identifier.to_string(), public_key))
+                Ok(PublicKeyEntry {
+                    identifier: identifier.into(),
+                    public_key: Arc::new(public_key),
+                })
             })
             .collect()
     }

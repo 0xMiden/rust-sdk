@@ -6,11 +6,11 @@ use miden_client::transaction::TransactionRequestBuilder;
 use miden_client::{ClientError, Serializable, Word};
 use miden_protocol::testing::account_id::ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2;
 
-use super::{create_test_client, insert_new_wallet};
+use super::create_test_client;
 
 #[tokio::test]
 async fn protocol_configs_are_selected_by_commitment() {
-    let (client, rpc, _) = create_test_client().await;
+    let (client, rpc) = create_test_client().await;
     let original = rpc.protocol_config();
     let other = ProtocolConfig::current(AssetId::new_fungible(
         ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2.try_into().unwrap(),
@@ -27,7 +27,7 @@ async fn protocol_configs_are_selected_by_commitment() {
 
 #[tokio::test]
 async fn protocol_config_rejects_a_substituted_preimage() {
-    let (mut client, rpc, _) = create_test_client().await;
+    let (mut client, rpc) = create_test_client().await;
     let commitment = rpc.protocol_config().to_commitment();
     let other = ProtocolConfig::current(AssetId::new_fungible(
         ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2.try_into().unwrap(),
@@ -51,9 +51,9 @@ async fn protocol_config_rejects_a_substituted_preimage() {
 
 #[tokio::test]
 async fn execution_requires_the_reference_block_protocol_config() {
-    let (mut client, rpc, keystore) = create_test_client().await;
+    let (mut client, rpc) = create_test_client().await;
     client.sync_state().await.unwrap();
-    let wallet = insert_new_wallet(&mut client, AccountType::Private, &keystore).await.unwrap();
+    let wallet = client.insert_wallet(AccountType::Private).await.unwrap();
     let config = rpc.protocol_config();
     let commitment = config.to_commitment();
     client

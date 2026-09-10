@@ -4,6 +4,8 @@
 
 ### Breaking Changes
 
+* [BREAKING][type][rust] Added the `TransactionRequestError::SwapNoteWithZeroAsset` variant, so exhaustive matches on `TransactionRequestError` must handle it ([#2459](https://github.com/0xMiden/rust-sdk/pull/2459)).
+* [BREAKING][removal][test] Loose helper functions in `miden_client::testing::common` are now methods on `TestClient`. `TestClient::keystore()` exposes the client's keystore, so `ClientConfig::into_client` and `into_unsynced_client` return just the `TestClient` instead of a client/keystore pair ([#2481](https://github.com/0xMiden/rust-sdk/pull/2481)).
 * [BREAKING][rust,rpc,store] Updated protocol dependencies to `0.17.0-rc.3`, VM dependencies to `0.32`, and `miden-debug` to `0.15`. Updated node protobuf bindings to [#2570](https://github.com/0xMiden/node/pull/2570). Requires a compatible node and a new client database.
 * [BREAKING][rust] Added protocol configuration registration through `ClientBuilder::protocol_config` and `Client::add_protocol_config`. Execution and note screening require the configuration committed by the reference block. The node does not yet provide it over RPC. The CLI, benchmarks, and integration tests accept a serialized configuration through `MIDEN_PROTOCOL_CONFIG`; the CLI also accepts `fee_faucet_id` in its configuration to select the current protocol configuration.
 * [BREAKING][rust] Renamed the `ClientError::TransactionScriptError` and `StoreError::TransactionScriptError` variants to `MastForestScriptError`, matching the upstream type that now backs both note scripts and transaction scripts.
@@ -12,7 +14,10 @@
 
 ### Fixes
 
+* [FIX][rust] Added validation of cached transaction encryption keys during deserialization. Unsupported encryption schemes and empty or oversized key IDs are rejected before reading the key ID bytes ([#2411](https://github.com/0xMiden/rust-sdk/pull/2411)).
 * [FIX][cli] `miden-client import` now rejects invocations without a file path instead of silently succeeding ([#2450](https://github.com/0xMiden/rust-sdk/pull/2450)).
+* [FIX][rust] `TransactionRequestBuilder::build_swap` and `build_pswap_create` now reject a zero-amount asset on either side of the exchange. A zero requested asset produced a payback P2ID note carrying nothing, and a zero offered asset produced a note whose consumer pays and receives nothing ([#2459](https://github.com/0xMiden/rust-sdk/pull/2459)).
+* [FIX][test] The integration tests run again on a chain that charges no fee. A `--funders` path (`MIDEN_FUNDER_ACCOUNTS_DIR`) that is unset, empty, missing, or holds no `.mac` file now leaves the run without funders instead of failing, which is all a fee-free genesis needs, since it declares no wallets for the path to hold. A `.mac` file that is present but unusable stays a hard error ([#2481](https://github.com/0xMiden/rust-sdk/pull/2481)).
 
 ## 0.16.0 (2026-09-07)
 

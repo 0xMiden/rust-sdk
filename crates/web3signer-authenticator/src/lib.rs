@@ -88,17 +88,21 @@ impl Web3SignerAuthenticator<HttpTransport> {
 impl<T: SignerTransport> Web3SignerAuthenticator<T> {
     /// Reads the key list over the given transport and builds the authenticator from it.
     pub async fn connect_with(transport: T) -> Result<Self, Web3SignerError> {
-        let listed_keys = Self::list_public_keys(&transport).await?;
-        if listed_keys.is_empty() {
-            return Err(Web3SignerError::NoKeys);
-        }
-
-        let public_keys_by_commitment = listed_keys
-            .into_iter()
-            .map(|public_key_entry| (public_key_entry.public_key.to_commitment(), public_key_entry))
-            .collect();
+        let public_keys_by_commitment = Self::read_public_keys(&transport).await?;
 
         Ok(Self { transport, public_keys_by_commitment })
+    }
+
+    /// Re-reads the signer's key list and replaces the keys the authenticator holds, picking up
+    /// keys added to or removed from the signer since it was built.
+    ///
+    /// # Errors
+    /// Returns an error if the signer cannot be reached, holds no keys, or lists a key that is not
+    /// a secp256k1 public key. The keys held are left unchanged in that case.
+    pub async fn update_public_keys(&mut self) -> Result<(), Web3SignerError> {
+        self.public_keys_by_commitment = Self::read_public_keys(&self.transport).await?;
+
+        Ok(())
     }
 
     /// Returns the public keys the signer listed when the authenticator was built.
@@ -121,6 +125,21 @@ impl<T: SignerTransport> Web3SignerAuthenticator<T> {
     /// Returns the public key commitments this authenticator can sign for.
     pub fn public_key_commitments(&self) -> impl Iterator<Item = PublicKeyCommitment> + '_ {
         self.public_keys_by_commitment.keys().copied()
+    }
+
+    /// Reads the signer's key list and indexes it by public key commitment.
+    async fn read_public_keys(
+        transport: &T,
+    ) -> Result<BTreeMap<PublicKeyCommitment, Web3SignerPublicKey>, Web3SignerError> {
+        let listed_keys = Self::list_public_keys(transport).await?;
+        if listed_keys.is_empty() {
+            return Err(Web3SignerError::NoKeys);
+        }
+
+        Ok(listed_keys
+            .into_iter()
+            .map(|public_key| (public_key.public_key.to_commitment(), public_key))
+            .collect())
     }
 
     /// Requests the signer's key list and returns each key with the identifier it was listed under.
@@ -210,9 +229,9 @@ mod tests {
     use super::*;
     use crate::decode::SIGNATURE_LEN;
 
-    /// A transport that answers the way a `Web3Signer` instance holding a single key does.
+    /// A transport that answers the way a `Web3Signer` instance holding the given keys does.
     struct MockTransport {
-        signing_key: SigningKey,
+        signing_keys: Vec<SigningKey>,
         /// Number of signature bytes to answer with, to exercise the length check.
         signature_len: usize,
     }
@@ -220,14 +239,27 @@ mod tests {
     impl MockTransport {
         fn new() -> Self {
             Self {
-                signing_key: SigningKey::read_from_bytes(&[7; 32]).expect("key is in range"),
+                signing_keys: Vec::from([signing_key(7)]),
                 signature_len: SIGNATURE_LEN,
             }
         }
 
-        fn identifier(&self) -> String {
-            format!("0x{}", hex::encode(self.signing_key.public_key().to_bytes()))
+        /// The identifier the signer lists a key under: its hex-encoded public key.
+        fn identifier(key: &SigningKey) -> String {
+            format!("0x{}", hex::encode(key.public_key().to_bytes()))
         }
+
+        /// The key a signing path names.
+        fn signing_key_for(&self, path: &str) -> &SigningKey {
+            self.signing_keys
+                .iter()
+                .find(|key| path == format!("{SIGN_PATH_PREFIX}{}", Self::identifier(key)))
+                .expect("the path names a listed key")
+        }
+    }
+
+    fn signing_key(seed: u8) -> SigningKey {
+        SigningKey::read_from_bytes(&[seed; 32]).expect("key is in range")
     }
 
     impl SignerTransport for MockTransport {
@@ -235,12 +267,18 @@ mod tests {
         async fn get(&self, path: &str) -> Result<String, Web3SignerError> {
             assert_eq!(path, PUBLIC_KEYS_PATH);
 
-            Ok(format!("[\n  \"{}\"\n]", self.identifier()))
+            let identifiers: Vec<String> = self
+                .signing_keys
+                .iter()
+                .map(|key| format!("\"{}\"", Self::identifier(key)))
+                .collect();
+
+            Ok(format!("[\n  {}\n]", identifiers.join(",\n  ")))
         }
 
         #[allow(clippy::unused_async_trait_impl)]
         async fn post(&self, path: &str, body: String) -> Result<String, Web3SignerError> {
-            assert_eq!(path, format!("{SIGN_PATH_PREFIX}{}", self.identifier()));
+            let signing_key = self.signing_key_for(path);
 
             // The signer hashes the payload itself, so signing the word the payload decodes to
             // reproduces what a real instance returns only if the payload is the message word.
@@ -249,7 +287,7 @@ mod tests {
                 .and_then(|body| body.strip_suffix("\"}"))
                 .expect("body is a data object");
             let data: [u8; 32] = hex::decode(data).unwrap().try_into().unwrap();
-            let signature = self.signing_key.sign(Word::try_from(data).unwrap());
+            let signature = signing_key.sign(Word::try_from(data).unwrap());
 
             let mut bytes = signature.to_sec1_bytes().to_vec();
             bytes.push(signature.v() + 27);
@@ -292,7 +330,7 @@ mod tests {
     #[tokio::test]
     async fn keys_are_listed_and_looked_up_by_identifier() {
         let transport = MockTransport::new();
-        let identifier = transport.identifier();
+        let identifier = MockTransport::identifier(&transport.signing_keys[0]);
         let authenticator = Web3SignerAuthenticator::connect_with(transport)
             .await
             .expect("key list is readable");
@@ -306,6 +344,24 @@ mod tests {
         assert_eq!(found.to_commitment(), keys[0].to_commitment());
 
         assert!(authenticator.get_public_key_by_identifier("0xdeadbeef").is_none());
+    }
+
+    #[tokio::test]
+    async fn updating_picks_up_a_key_added_to_the_signer() {
+        let mut authenticator = Web3SignerAuthenticator::connect_with(MockTransport::new())
+            .await
+            .expect("key list is readable");
+        assert_eq!(authenticator.get_public_keys().len(), 1);
+
+        let added = signing_key(11);
+        let identifier = MockTransport::identifier(&added);
+        authenticator.transport.signing_keys.push(added);
+        assert!(authenticator.get_public_key_by_identifier(&identifier).is_none());
+
+        authenticator.update_public_keys().await.expect("key list is readable");
+
+        assert_eq!(authenticator.get_public_keys().len(), 2);
+        assert!(authenticator.get_public_key_by_identifier(&identifier).is_some());
     }
 
     #[tokio::test]

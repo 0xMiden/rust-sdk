@@ -11,7 +11,7 @@ use miden_protocol::Felt;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
 
-use super::common::{TestClient, wait_for_tx};
+use super::common::TestClient;
 use crate::note::Note;
 use crate::transaction::{TransactionId, TransactionRequestBuilder};
 
@@ -135,7 +135,7 @@ impl TestClient {
     /// deploys and funding notes in its own sync.
     async fn wait_for_deploys(&mut self, tx_ids: &[(AccountId, TransactionId)]) -> Result<()> {
         for (account_id, tx_id) in tx_ids.iter().copied() {
-            wait_for_tx(self, tx_id).await.with_context(|| {
+            self.wait_for_tx(tx_id).await.with_context(|| {
                 format!("the deploy transaction of account {account_id} never committed")
             })?;
         }

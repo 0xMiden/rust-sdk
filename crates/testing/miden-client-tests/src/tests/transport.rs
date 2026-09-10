@@ -44,12 +44,7 @@ use miden_standards::testing::note::NoteBuilder;
 use miden_testing::{Auth, MockChainBuilder, MockTransactionInput};
 use rand::RngExt;
 
-use crate::tests::{
-    create_test_client_builder,
-    insert_new_fungible_faucet,
-    insert_new_wallet,
-    seed_mock_transaction_encryption_key,
-};
+use crate::tests::{create_test_client_builder, seed_mock_transaction_encryption_key};
 
 #[tokio::test]
 async fn transport_basic() {
@@ -1069,13 +1064,11 @@ async fn fetch_private_notes_without_floor_falls_back_to_lookback_window() {
 #[tokio::test]
 async fn transport_delivery_of_processing_note_does_not_wedge_sync_state() {
     let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
-    let (mut client, keystore) = Box::pin(create_test_client_transport(mock_node.clone())).await;
+    let mut client = Box::pin(create_test_client_transport(mock_node.clone())).await;
     client.sync_state().await.unwrap();
 
-    let account = insert_new_wallet(&mut client, AccountType::Private, &keystore).await.unwrap();
-    let faucet = insert_new_fungible_faucet(&mut client, AccountType::Private, &keystore)
-        .await
-        .unwrap();
+    let account = client.insert_wallet(AccountType::Private).await.unwrap();
+    let faucet = client.insert_faucet(AccountType::Private).await.unwrap();
 
     let mint_request = TransactionRequestBuilder::new()
         .build_mint_fungible_asset(
@@ -1253,8 +1246,8 @@ fn dummy_asset() -> Asset {
 
 pub async fn create_test_client_transport(
     mock_node: Arc<RwLock<MockNoteTransportNode>>,
-) -> (TestClient, FilesystemKeyStore) {
-    let (builder, _, keystore) = create_test_client_builder().await;
+) -> TestClient {
+    let (builder, _) = create_test_client_builder().await;
     let transport_client = MockNoteTransportApi::new(mock_node);
     let builder_w_transport = builder.note_transport(Arc::new(transport_client));
 
@@ -1262,32 +1255,32 @@ pub async fn create_test_client_transport(
     client.ensure_genesis_in_place().await.unwrap();
     seed_mock_transaction_encryption_key(&mut client).await;
 
-    (client, keystore)
+    client
 }
 
 pub async fn create_test_user_transport(
     mock_node: Arc<RwLock<MockNoteTransportNode>>,
 ) -> (TestClient, Account) {
-    let (mut client, keystore) = Box::pin(create_test_client_transport(mock_node.clone())).await;
-    let account = insert_new_wallet(&mut client, AccountType::Private, &keystore).await.unwrap();
+    let mut client = Box::pin(create_test_client_transport(mock_node.clone())).await;
+    let account = client.insert_wallet(AccountType::Private).await.unwrap();
     (client, account)
 }
 
 pub async fn create_test_client_with_transport(
     transport: Arc<dyn NoteTransportClient>,
-) -> (TestClient, FilesystemKeyStore) {
-    let (builder, _, keystore) = create_test_client_builder().await;
+) -> TestClient {
+    let (builder, _) = create_test_client_builder().await;
     let mut client = TestClient::from(builder.note_transport(transport).build().await.unwrap());
     client.ensure_genesis_in_place().await.unwrap();
     seed_mock_transaction_encryption_key(&mut client).await;
-    (client, keystore)
+    client
 }
 
 pub async fn create_test_user_with_transport(
     transport: Arc<dyn NoteTransportClient>,
 ) -> (TestClient, Account) {
-    let (mut client, keystore) = Box::pin(create_test_client_with_transport(transport)).await;
-    let account = insert_new_wallet(&mut client, AccountType::Private, &keystore).await.unwrap();
+    let mut client = Box::pin(create_test_client_with_transport(transport)).await;
+    let account = client.insert_wallet(AccountType::Private).await.unwrap();
     (client, account)
 }
 

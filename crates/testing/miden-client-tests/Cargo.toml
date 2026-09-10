@@ -6,6 +6,7 @@ rust-version.workspace = true
 version.workspace      = true
 
 [dev-dependencies]
+anyhow                    = { workspace = true }
 miden-client              = { features = ["dap", "std", "testing"], workspace = true }
 miden-client-sqlite-store = { workspace = true }
 miden-debug               = { workspace = true }

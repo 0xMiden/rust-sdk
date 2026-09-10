@@ -185,7 +185,7 @@ mod tests {
                 .iter()
                 .map(|key| proto::blockchain::ValidatorPublicKey { validator_key: key.to_bytes() })
                 .collect(),
-            quorum: 2,
+            quorum: validators.quorum().into(),
         });
         wire.next_protocol_config = Some(proto::blockchain::NextProtocolConfig {
             effective_from: 10,
@@ -194,7 +194,7 @@ mod tests {
         let decoded = BlockHeader::try_from(wire.clone()).unwrap();
         assert_eq!(proto::blockchain::BlockHeader::from(&decoded), wire);
         assert_eq!(decoded.validator_config().keys(), validators.keys());
-        assert_eq!(decoded.validator_config().quorum(), 2);
+        assert_eq!(decoded.validator_config().quorum(), validators.quorum());
         assert_ne!(decoded.commitment(), header.commitment());
     }
 

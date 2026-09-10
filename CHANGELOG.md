@@ -4,7 +4,7 @@
 
 ### Changes
 
-* [FEATURE][rust] New `miden-client-web3signer-authenticator` crate provides `Web3SignerAuthenticator`, which allows a Miden client to sign transactions with `EcdsaK256Keccak` keys held in a Web3Signer instance ([#2501](https://github.com/0xMiden/rust-sdk/pull/2501)).
+* [FEATURE][rust] New `miden-web3signer-authenticator` crate provides `Web3SignerAuthenticator`, which allows a Miden client to sign transactions with `EcdsaK256Keccak` keys held in a Web3Signer instance ([#2501](https://github.com/0xMiden/rust-sdk/pull/2501)).
 
 ## 0.16.0 (2026-09-07)
 

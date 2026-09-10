@@ -10,8 +10,8 @@
 ## Adding as a dependency
 
 ```toml
-miden-client                          = { version = "0.16", features = ["tonic"] }
-miden-client-web3signer-authenticator = { version = "0.16" }
+miden-client                   = { version = "0.16", features = ["tonic"] }
+miden-web3signer-authenticator = { version = "0.16" }
 ```
 
 ## Quick Start
@@ -23,7 +23,7 @@ remote signer from that point on:
 use std::sync::Arc;
 
 use miden_client::ClientBuilder;
-use miden_client_web3signer_authenticator::Web3SignerAuthenticator;
+use miden_web3signer_authenticator::Web3SignerAuthenticator;
 
 let authenticator = Web3SignerAuthenticator::connect("http://127.0.0.1:9000").await?;
 
@@ -38,7 +38,7 @@ The authenticator provides other methods as well:
 
 ```rust
 use miden_client::auth::TransactionAuthenticator;
-use miden_client_web3signer_authenticator::Web3SignerAuthenticator;
+use miden_web3signer_authenticator::Web3SignerAuthenticator;
 
 let mut authenticator = Web3SignerAuthenticator::connect("http://127.0.0.1:9000").await?;
 

@@ -5,7 +5,7 @@
 //! `Web3Signer` can produce.
 //!
 //! ```no_run
-//! use miden_client_web3signer_authenticator::{Web3SignerAuthenticator, Web3SignerError};
+//! use miden_web3signer_authenticator::{Web3SignerAuthenticator, Web3SignerError};
 //!
 //! # async fn example() -> Result<(), Web3SignerError> {
 //! let authenticator = Web3SignerAuthenticator::connect("http://127.0.0.1:9000").await?;

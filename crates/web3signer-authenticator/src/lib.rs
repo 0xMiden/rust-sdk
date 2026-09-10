@@ -31,7 +31,7 @@ use miden_protocol::vm::FutureMaybeSend;
 use miden_tx::AuthenticationError;
 use miden_tx::auth::{SigningInputs, TransactionAuthenticator};
 
-use crate::decode::{decode_public_key, decode_signature, parse_string_array};
+use crate::decode::{Web3Signature, decode_public_key, parse_string_array};
 
 mod decode;
 mod error;
@@ -162,7 +162,7 @@ impl<T: SignerTransport> Web3SignerAuthenticator<T> {
         &self,
         entry: &Web3SignerPublicKey,
         message: Word,
-    ) -> Result<Signature, Web3SignerError> {
+    ) -> Result<Web3Signature, Web3SignerError> {
         // `Web3Signer` hashes the payload with keccak256 before signing, which is exactly what
         // `ecdsa_k256_keccak` signing does to the 32 bytes of a message word, so the payload is the
         // message word itself and nothing is hashed here.
@@ -171,7 +171,7 @@ impl<T: SignerTransport> Web3SignerAuthenticator<T> {
 
         let response = self.transport.post(&path, format!("{{\"data\":\"0x{data}\"}}")).await?;
 
-        decode_signature(&response)
+        Web3Signature::from_hex(&response)
     }
 }
 
@@ -198,9 +198,12 @@ impl<T: SignerTransport> TransactionAuthenticator for Web3SignerAuthenticator<T>
                 .get(&pub_key_commitment)
                 .ok_or(AuthenticationError::UnknownPublicKey(pub_key_commitment))?;
 
-            self.request_signature(entry, message).await.map_err(|err| {
-                AuthenticationError::other_with_source("web3signer failed to sign", err)
-            })
+            self.request_signature(entry, message)
+                .await
+                .and_then(Web3Signature::to_signature)
+                .map_err(|err| {
+                    AuthenticationError::other_with_source("web3signer failed to sign", err)
+                })
         }
     }
 

@@ -12,8 +12,11 @@ use crate::Web3SignerError;
 // CONSTANTS
 // ================================================================================================
 
+/// Length of the `r || s` scalars of a secp256k1 signature.
+const SCALARS_LEN: usize = 64;
+
 /// Length of a `Web3Signer` secp256k1 signature: `r || s || v`.
-pub(crate) const SIGNATURE_LEN: usize = 65;
+pub(crate) const SIGNATURE_LEN: usize = SCALARS_LEN + 1;
 
 /// Length of a public key in its compressed form.
 const COMPRESSED_KEY_LEN: usize = 33;
@@ -92,28 +95,56 @@ pub(crate) fn decode_hex(value: &str) -> Result<Vec<u8>, Web3SignerError> {
     })
 }
 
-/// Decodes an `r || s || v` signature as returned by `Web3Signer`.
-pub(crate) fn decode_signature(signature_hex: &str) -> Result<Signature, Web3SignerError> {
-    let decoded = decode_hex(signature_hex)?;
-    let signature_bytes: [u8; SIGNATURE_LEN] = decoded
-        .as_slice()
-        .try_into()
-        .map_err(|_| Web3SignerError::InvalidSignatureLength { length: decoded.len() })?;
+// WEB3 SIGNATURE
+// ================================================================================================
 
-    let mut scalars = [0u8; 64];
-    scalars.copy_from_slice(&signature_bytes[..64]);
-    let v = signature_bytes[64];
+/// A signature as `Web3Signer` returns it: the `r || s` scalars and the recovery id its `v`
+/// component carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Web3Signature {
+    scalars: [u8; SCALARS_LEN],
+    recovery_id: u8,
+}
 
-    let recovery_id = match v {
-        offset @ 27..=30 => offset - 27,
-        recovery_id => recovery_id,
-    };
+impl Web3Signature {
+    /// Decodes an `r || s || v` signature as returned by `Web3Signer`.
+    ///
+    /// `v` is a recovery id, which the signer may report offset by 27, so both forms decode to the
+    /// same recovery id.
+    ///
+    /// # Errors
+    /// Returns an error if the signature is not hex or is not [`SIGNATURE_LEN`] bytes long.
+    pub(crate) fn from_hex(signature_hex: &str) -> Result<Self, Web3SignerError> {
+        let decoded = decode_hex(signature_hex)?;
+        let signature_bytes: [u8; SIGNATURE_LEN] = decoded
+            .as_slice()
+            .try_into()
+            .map_err(|_| Web3SignerError::InvalidSignatureLength { length: decoded.len() })?;
 
-    let signature =
-        ecdsa_k256_keccak::Signature::from_sec1_bytes_and_recovery_id(scalars, recovery_id)
-            .map_err(|_| Web3SignerError::InvalidRecoveryId { v })?;
+        let mut scalars = [0u8; SCALARS_LEN];
+        scalars.copy_from_slice(&signature_bytes[..SCALARS_LEN]);
 
-    Ok(Signature::EcdsaK256Keccak(signature))
+        let recovery_id = match signature_bytes[SCALARS_LEN] {
+            offset @ 27..=30 => offset - 27,
+            recovery_id => recovery_id,
+        };
+
+        Ok(Self { scalars, recovery_id })
+    }
+
+    /// Converts the signature into the protocol's representation.
+    ///
+    /// # Errors
+    /// Returns an error if the recovery id is not one a secp256k1 signature can carry.
+    pub(crate) fn to_signature(self) -> Result<Signature, Web3SignerError> {
+        let signature = ecdsa_k256_keccak::Signature::from_sec1_bytes_and_recovery_id(
+            self.scalars,
+            self.recovery_id,
+        )
+        .map_err(|_| Web3SignerError::InvalidRecoveryId { v: self.recovery_id })?;
+
+        Ok(Signature::EcdsaK256Keccak(signature))
+    }
 }
 
 // TESTS
@@ -131,6 +162,17 @@ mod tests {
 
     /// The same key, compressed.
     const COMPRESSED: &str = "0x0209b02f8a5fddd222ade4ea4528faefc399623af3f736be3c44f03e2df22fb792";
+
+    #[test]
+    fn a_v_offset_by_27_decodes_to_the_same_recovery_id() {
+        let scalars = "11".repeat(SCALARS_LEN);
+
+        let offset = Web3Signature::from_hex(&format!("0x{scalars}1c")).expect("v = 28 decodes");
+        let plain = Web3Signature::from_hex(&format!("0x{scalars}01")).expect("v = 1 decodes");
+
+        assert_eq!(offset, plain);
+        assert_eq!(offset.recovery_id, 1);
+    }
 
     #[test]
     fn every_key_encoding_decodes_to_the_same_key() {

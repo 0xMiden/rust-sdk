@@ -69,7 +69,7 @@ let client = ClientBuilder::new()
 
 ## Protocol configuration
 
-Protocol 0.17 requires a protocol configuration for transaction execution and note screening. The node RPC does not provide this configuration. Obtain the serialized configuration from the network operator and register it before executing transactions:
+Transaction execution and note screening require the protocol configuration committed by the reference block. The node RPC does not provide this configuration. Obtain the serialized configuration from the network operator and register it before executing transactions:
 
 ```rust
 use miden_client::Deserializable;
@@ -82,7 +82,7 @@ client.add_protocol_config(config).await?;
 
 You can also register it during construction with `ClientBuilder::protocol_config(config)`. The client stores configurations by commitment and selects the one committed by the transaction reference block. Registration persists across client restarts. Register each new configuration before its protocol upgrade takes effect. A missing configuration returns `StoreError::ProtocolConfigNotFound`.
 
-For a local testing node, `make start-node-background` writes the configuration to `data/protocol-config.bin`. Use a new client database for protocol 0.17 because the serialized protocol data is incompatible with protocol 0.16.
+For a local testing node, `make start-node-background` writes the configuration to `data/protocol-config.bin`.
 
 ## Create local account
 

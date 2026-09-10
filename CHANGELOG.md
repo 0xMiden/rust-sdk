@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.16.1 (2026-09-10)
+
+### Changes
+
+* Updated workspace version to 0.16.1 ([#2526](https://github.com/0xMiden/rust-sdk/pull/2526)).
+
 ## 0.16.0 (2026-09-07)
 
 ### Breaking Changes

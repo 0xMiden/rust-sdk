@@ -20,7 +20,7 @@ use miden_protocol::errors::{
 };
 use miden_protocol::utils::HexParseError;
 use miden_protocol::utils::serde::DeserializationError;
-use miden_protocol::{MastForestScriptError as TransactionScriptError, Word, WordError};
+use miden_protocol::{MastForestScriptError, Word, WordError};
 use miden_tx::DataStoreError;
 use thiserror::Error;
 
@@ -95,8 +95,8 @@ pub enum StoreError {
     SmtProofError(#[from] SmtProofError),
     #[error("account storage map error")]
     StorageMapError(#[from] StorageMapError),
-    #[error("failed to instantiate transaction script")]
-    TransactionScriptError(#[from] TransactionScriptError),
+    #[error("failed to instantiate a script from its mast forest")]
+    MastForestScriptError(#[from] MastForestScriptError),
     #[error("account vault data for root {0} not found")]
     VaultDataNotFound(Word),
     #[error("vault key {0:?} (hashed to {1}) is not tracked in the vault")]

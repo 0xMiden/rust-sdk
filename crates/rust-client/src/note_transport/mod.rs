@@ -364,7 +364,7 @@ where
         let (note_files, new_cursor) =
             self.fetch_transport_notes(cursor, &note_tags, &mut id_by_commitment).await?;
 
-        self.import_note_records(&note_files).await?;
+        self.import_notes(&note_files).await?;
         self.store.update_note_transport_cursor(new_cursor).await?;
 
         Ok(())
@@ -576,11 +576,11 @@ where
     /// The notes are written before the covered-tag set and the cursor, so a crash between them
     /// re-fetches instead of skipping notes that were never written.
     ///
-    /// Returns the ids of the imported notes and the records written.
+    /// Returns the ids of the imported notes and the details commitments of the records written.
     pub(crate) async fn apply_note_transport_update(
         &mut self,
         update: NoteTransportLayerUpdate,
-    ) -> Result<(Vec<NoteId>, Vec<InputNoteRecord>), ClientError> {
+    ) -> Result<(Vec<NoteId>, Vec<NoteDetailsCommitment>), ClientError> {
         let NoteTransportLayerUpdate {
             note_files,
             id_by_commitment,
@@ -588,10 +588,10 @@ where
             cursor,
         } = update;
 
-        let written = self.import_note_records(&note_files).await?;
+        let written = self.import_notes(&note_files).await?;
         let mut imported_ids: Vec<NoteId> = written
             .iter()
-            .filter_map(|note| id_by_commitment.get(&note.details_commitment()).copied())
+            .filter_map(|commitment| id_by_commitment.get(commitment).copied())
             .collect();
 
         if let Some(covered_tags) = covered_tags {

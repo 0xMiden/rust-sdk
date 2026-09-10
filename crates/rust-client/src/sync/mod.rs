@@ -287,6 +287,8 @@ where
         // The chain sync built its note updates from a store snapshot taken before the import, so
         // the imported records are added here. Without them this sync has no record to apply its
         // verdicts to, and a note committed within this sync's own block range stays expected.
+        let imported_notes =
+            self.get_input_notes(NoteFilter::DetailsCommitments(imported_notes)).await?;
         chain_sync_data.note_updates.track_existing_input_notes(imported_notes);
 
         state_sync.derive_state_updates(&mut chain_sync_data).await?;

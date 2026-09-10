@@ -68,18 +68,6 @@ where
         &mut self,
         note_files: &[NoteFile],
     ) -> Result<Vec<NoteDetailsCommitment>, ClientError> {
-        let records = self.import_note_records(note_files).await?;
-        Ok(records.iter().map(InputNoteRecord::details_commitment).collect())
-    }
-
-    /// Imports `note_files` and returns the records written to the store.
-    ///
-    /// A caller that must act on the imported notes in the same operation needs the records, not
-    /// just their commitments: a sync uses them to extend its own note updates.
-    pub(crate) async fn import_note_records(
-        &mut self,
-        note_files: &[NoteFile],
-    ) -> Result<Vec<InputNoteRecord>, ClientError> {
         self.ensure_genesis_in_place().await?;
 
         // Deduplicate the incoming files, keeping note IDs and details commitments in separate
@@ -168,19 +156,20 @@ where
             imported_notes.extend(notes_by_proof);
         }
 
-        for note in &imported_notes {
-            // A record still expected needs its tag tracked so a later sync finds it. A committed
-            // one is no longer in that state, so it is skipped here.
+        let mut imported_commitments = Vec::with_capacity(imported_notes.len());
+        for note in imported_notes {
+            let details_commitment = note.details_commitment();
             if let InputNoteState::Expected(ExpectedNoteState { tag: Some(tag), .. }) = note.state()
             {
                 self.store
-                    .add_note_tag(NoteTagRecord::with_note_source(*tag, note.details_commitment()))
+                    .add_note_tag(NoteTagRecord::with_note_source(*tag, details_commitment))
                     .await?;
             }
+            self.store.upsert_input_notes(&[note]).await?;
+            imported_commitments.push(details_commitment);
         }
-        self.store.upsert_input_notes(&imported_notes).await?;
 
-        Ok(imported_notes)
+        Ok(imported_commitments)
     }
 
     // HELPERS

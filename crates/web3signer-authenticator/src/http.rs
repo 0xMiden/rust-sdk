@@ -13,6 +13,9 @@ use crate::{SignerTransport, Web3SignerError};
 /// Time a single request to the web3 signer is given before it is abandoned.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
+// HTTP TRANSPORT
+// ================================================================================================
+
 /// A [`SignerTransport`] that holds [`reqwest::Client`] as the internal HTTP client.
 #[derive(Clone, Debug)]
 pub struct HttpTransport {
@@ -86,6 +89,9 @@ impl HttpTransport {
     }
 }
 
+// SIGNER TRANSPORT IMPLEMENTATION
+// ================================================================================================
+
 impl SignerTransport for HttpTransport {
     fn get(&self, path: &str) -> impl FutureMaybeSend<Result<String, Web3SignerError>> {
         async move {
@@ -114,6 +120,9 @@ impl SignerTransport for HttpTransport {
         }
     }
 }
+
+// TESTS
+// ================================================================================================
 
 #[cfg(test)]
 mod tests {

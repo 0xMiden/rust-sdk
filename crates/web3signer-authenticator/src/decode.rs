@@ -9,6 +9,9 @@ use miden_protocol::utils::serde::Deserializable;
 
 use crate::Web3SignerError;
 
+// CONSTANTS
+// ================================================================================================
+
 /// Length of a `Web3Signer` secp256k1 signature: `r || s || v`.
 pub(crate) const SIGNATURE_LEN: usize = 65;
 
@@ -112,6 +115,9 @@ pub(crate) fn decode_signature(signature_hex: &str) -> Result<Signature, Web3Sig
 
     Ok(Signature::EcdsaK256Keccak(signature))
 }
+
+// TESTS
+// ================================================================================================
 
 #[cfg(test)]
 mod tests {

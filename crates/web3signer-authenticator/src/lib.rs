@@ -45,11 +45,17 @@ mod http;
 #[cfg(feature = "std")]
 pub use http::HttpTransport;
 
+// CONSTANTS
+// ================================================================================================
+
 /// Endpoint listing the keys the signer holds.
 const PUBLIC_KEYS_PATH: &str = "/api/v1/eth1/publicKeys";
 
 /// Endpoint prefix for a signing request; the key's identifier completes it.
 const SIGN_PATH_PREFIX: &str = "/api/v1/eth1/sign/";
+
+// WEB3SIGNER AUTHENTICATOR
+// ================================================================================================
 
 /// A `Web3Signer` public key and its hex identifier.
 #[derive(Debug, Clone)]
@@ -150,6 +156,9 @@ impl<T: SignerTransport> Web3SignerAuthenticator<T> {
     }
 }
 
+// TX AUTHENTICATOR IMPLEMENTATION
+// ================================================================================================
+
 impl<T: SignerTransport> TransactionAuthenticator for Web3SignerAuthenticator<T> {
     /// Requests a signature over the signing inputs from the `Web3Signer` instance.
     ///
@@ -189,6 +198,9 @@ impl<T: SignerTransport> TransactionAuthenticator for Web3SignerAuthenticator<T>
         async move { public_key }
     }
 }
+
+// TESTS
+// ================================================================================================
 
 #[cfg(test)]
 mod tests {

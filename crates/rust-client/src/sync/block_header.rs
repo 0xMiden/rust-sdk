@@ -133,7 +133,7 @@ impl<AUTH> Client<AUTH> {
     /// authentication nodes that tracking produced.
     pub(crate) async fn insert_note_blocks(
         &mut self,
-        blocks: Vec<ResolvedSyncNotesBlock>,
+        blocks: &[ResolvedSyncNotesBlock],
         partial_mmr: &mut PartialMmr,
     ) -> Result<(), ClientError> {
         let mut authenticated_blocks = Vec::with_capacity(blocks.len());
@@ -151,7 +151,7 @@ impl<AUTH> Client<AUTH> {
                 block.block_header.commitment(),
                 &block.mmr_path,
             )?;
-            authenticated_blocks.push((block.block_header, path_nodes));
+            authenticated_blocks.push((block.block_header.clone(), path_nodes));
         }
 
         for (block_header, path_nodes) in authenticated_blocks {

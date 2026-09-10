@@ -1647,7 +1647,9 @@ async fn fund_cli_account(
 ) -> Result<()> {
     let mut client = cli_funding_client(cli_path, store_path, endpoint).await?;
 
-    client.deploy_account(AccountId::from_hex(account_id)?).await
+    client.deploy_account(AccountId::from_hex(account_id)?).await?;
+
+    client.flush_funder().await
 }
 
 /// Builds a client over the CLI's own store and keystore, with a fee funder attached so it can pay
@@ -2442,7 +2444,8 @@ fn setup_remote_call_test() -> (PathBuf, String, PathBuf) {
     // since this one has to be committed on-chain on a fee-free chain too.
     block_on(async {
         let mut client = cli_funding_client(&target_dir, &target_store_path, &endpoint).await?;
-        client.deploy_account(AccountId::from_hex(&account_id)?).await
+        client.deploy_account(AccountId::from_hex(&account_id)?).await?;
+        client.flush_funder().await
     })
     .expect("failed to deploy the call-test account");
     sync_cli(&target_dir);

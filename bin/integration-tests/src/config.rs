@@ -125,6 +125,14 @@ impl ClientConfig {
         Ok(self.with_fee_funder(fee_funder))
     }
 
+    /// Waits until a block carries every payment the fee funder has submitted.
+    pub async fn flush_funder(&self) -> Result<()> {
+        match &self.fee_funder {
+            Some(funder) => funder.flush().await,
+            None => Ok(()),
+        }
+    }
+
     /// Creates a `TestClient` builder.
     ///
     /// The store is a `SQLite` database at a temporary location, and the keystore a temporary

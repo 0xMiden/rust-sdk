@@ -37,6 +37,7 @@ let client = ClientBuilder::for_testnet()
 The authenticator provides other methods as well:
 
 ```rust
+use miden_client::auth::TransactionAuthenticator;
 use miden_client_web3signer_authenticator::Web3SignerAuthenticator;
 
 let mut authenticator = Web3SignerAuthenticator::connect("http://127.0.0.1:9000").await?;
@@ -45,10 +46,14 @@ let mut authenticator = Web3SignerAuthenticator::connect("http://127.0.0.1:9000"
 let public_keys = authenticator.get_public_keys();
 
 // Get a public key by commitment
-let public_key = authenticator.get_public_key_by_commitment(public_keys[0].to_commitment());
+let public_key = authenticator.get_public_key(public_keys[0].to_commitment()).await;
 
 // Get a public key by the identifier the signer lists it under (its hex-encoded public key)
 let public_key = authenticator.get_public_key_by_identifier("0x09b02f8a...");
+
+// Sign data from a commitment
+let inputs = SigningInputs::Blind(Word::from([1u32, 2, 3, 4]));
+let signature = authenticator.get_signature(commitment, &inputs).await?;
 
 // The key list is read once, when the authenticator is built, so a key added to the signer
 // afterwards is only picked up by reading the list again

@@ -460,11 +460,8 @@ where
         Ok(note_records)
     }
 
-    /// Marks every record in `note_records` whose nullifier is already on chain as consumed.
-    ///
-    /// The query starts at the lowest block that committed one of these notes, so it also covers a
-    /// note spent below the client's checkpoint. A sync only queries nullifiers from its own
-    /// checkpoint forward and would never revisit that block.
+    /// Marks a record whose nullifier is already on chain as consumed, when the nullifier commit
+    /// height is at or below the client's sync height.
     ///
     /// Only a note the node reported as committed carries the metadata a nullifier is derived from,
     /// so the rest are skipped.
@@ -494,11 +491,14 @@ where
             .get_nullifier_commit_heights(nullifiers, lowest_commitment_block)
             .await?;
 
+        let sync_height = self.get_sync_height().await?;
         for note_record in note_records.iter_mut() {
             let Some(nullifier) = note_record.nullifier() else {
                 continue;
             };
-            if let Some(Some(spent_at)) = spent_heights.get(&nullifier) {
+            if let Some(Some(spent_at)) = spent_heights.get(&nullifier)
+                && *spent_at <= sync_height
+            {
                 note_record.consumed_externally(nullifier, *spent_at, None)?;
             }
         }

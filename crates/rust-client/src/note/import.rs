@@ -353,7 +353,7 @@ where
     /// the new information changed them.
     async fn import_note_records_by_details(
         &mut self,
-        requested_notes: Vec<NoteImportRequest>,
+        requested_notes: Vec<NoteImportByDetailsRequest>,
     ) -> Result<Vec<InputNoteRecord>, ClientError> {
         let mut lowest_request_block: BlockNumber = u32::MAX.into();
         let mut sync_tags = BTreeSet::new();
@@ -556,12 +556,10 @@ where
     }
 }
 
-// EXPECTED NOTE IMPORT
-// ================================================================================================
-
-/// A note to import: the stored record it updates when there is one, its details, the block from
-/// which to look for its commitment, and the tag to track it under.
-pub(crate) type NoteImportRequest = (Option<InputNoteRecord>, NoteDetails, BlockNumber, NoteTag);
+/// A note to import by details: the stored record it updates when there is one, its details, the
+/// block from which to look for its commitment, and the tag to track it under.
+pub(crate) type NoteImportByDetailsRequest =
+    (Option<InputNoteRecord>, NoteDetails, BlockNumber, NoteTag);
 
 // HELPERS
 // ================================================================================================

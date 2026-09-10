@@ -7,6 +7,9 @@ use crate::decode::SIGNATURE_LEN;
 /// Error returned while talking to a `Web3Signer` instance.
 #[derive(Debug, Error)]
 pub enum Web3SignerError {
+    /// The signer's URL is not a valid `http` or `https` URL.
+    #[error("`{url}` is not a valid web3 signer URL: {message}")]
+    InvalidUrl { url: String, message: String },
     /// The request could not be completed, or the signer answered with a non-success status.
     #[error("request to `{url}` failed: {message}")]
     Transport { url: String, message: String },

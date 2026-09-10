@@ -73,8 +73,8 @@ impl Web3SignerAuthenticator<HttpTransport> {
     /// authenticator from it.
     ///
     /// # Errors
-    /// Returns an error if the instance cannot be reached, holds no keys, or lists a key that is
-    /// not a secp256k1 public key.
+    /// Returns an error if `url` is not a valid `http` or `https` URL, if the instance cannot be
+    /// reached, holds no keys, or lists a key that is not a secp256k1 public key.
     pub async fn connect(url: &str) -> Result<Self, Web3SignerError> {
         Self::connect_with(HttpTransport::new(url)?).await
     }

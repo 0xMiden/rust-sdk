@@ -584,8 +584,8 @@ async fn deploy_fpi_fixture(
 }
 
 /// Tests that the `ClientDataStore` lazy-loads foreign account inputs via RPC when the foreign
-/// account is not specified in the `TransactionRequestBuilder`, and that a foreign account
-/// declared as [`ForeignAccount::Prefetched`] is served without any RPC call.
+/// account is not specified in the `TransactionRequestBuilder`, and that inputs passed through
+/// `TransactionRequestBuilder::foreign_account_inputs` are served without any RPC call.
 #[tokio::test]
 async fn lazy_foreign_account_loading() {
     let (mut client, rpc_api, keystore) = Box::pin(create_test_client()).await;
@@ -648,7 +648,7 @@ async fn lazy_foreign_account_loading() {
     );
     let tx_request = TransactionRequestBuilder::new()
         .custom_script(fpi.tx_script.clone())
-        .foreign_accounts(inputs.clone())
+        .foreign_account_inputs(inputs.clone())
         .build()
         .unwrap();
     Box::pin(client.submit_new_transaction(local_wallet.id(), tx_request))
@@ -660,7 +660,7 @@ async fn lazy_foreign_account_loading() {
     client.sync_state().await.unwrap();
     let tx_request = TransactionRequestBuilder::new()
         .custom_script(fpi.tx_script)
-        .foreign_accounts(inputs)
+        .foreign_account_inputs(inputs)
         .build()
         .unwrap();
     let error = Box::pin(client.execute_transaction(local_wallet.id(), tx_request))
@@ -668,9 +668,7 @@ async fn lazy_foreign_account_loading() {
         .unwrap_err();
     assert!(matches!(
         error,
-        ClientError::TransactionRequestError(
-            TransactionRequestError::ForeignAccountNotAtReferenceBlock { account_id, .. }
-        ) if account_id == foreign_account_id
+        ClientError::TransactionRequestError(TransactionRequestError::ForeignAccountDataMissing)
     ));
 }
 
@@ -701,7 +699,7 @@ async fn chain_anchor_execution_with_prefetched_foreign_account() {
         .unwrap();
     let prefetched_request = TransactionRequestBuilder::new()
         .custom_script(fpi.tx_script.clone())
-        .foreign_accounts(inputs)
+        .foreign_account_inputs(inputs)
         .build()
         .unwrap();
 

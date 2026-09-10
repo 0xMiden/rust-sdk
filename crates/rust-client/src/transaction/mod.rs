@@ -364,9 +364,9 @@ where
     /// [`ChainAnchor::block_commitment`] against an independently trusted value (e.g. the block
     /// commitment bound into the signed transaction summary).
     ///
-    /// Foreign accounts are fetched at the anchor's block unless declared as
-    /// [`ForeignAccount::Prefetched`], so a node that no longer serves account state at that block
-    /// only affects accounts that are not prefetched.
+    /// Foreign accounts are fetched at the anchor's block unless the request carries their inputs
+    /// (see [`TransactionRequestBuilder::foreign_account_inputs`]), so a node that no longer
+    /// serves account state at that block only affects accounts without inputs.
     ///
     /// # Errors
     ///
@@ -693,9 +693,11 @@ where
             None => self.store.get_sync_height().await?,
         };
 
-        let foreign_account_inputs = self
+        let mut foreign_account_inputs = self
             .get_foreign_account_inputs(foreign_accounts.into_values(), block_num)
             .await?;
+        foreign_account_inputs
+            .extend(transaction_request.foreign_account_inputs().values().cloned());
 
         let ignore_invalid_notes = transaction_request.ignore_invalid_input_notes();
 
@@ -710,16 +712,13 @@ where
             },
         };
 
-        // A witness opens against the account tree of exactly one block. Rejecting a mismatch here
-        // names the account and the block; inside the executor it would only be a kernel failure.
-        for inputs in &foreign_account_inputs {
-            if inputs.compute_account_root().ok() != Some(reference_header.account_root()) {
-                return Err(TransactionRequestError::ForeignAccountNotAtReferenceBlock {
-                    account_id: inputs.id(),
-                    block_num,
-                }
-                .into());
-            }
+        // A witness opens against the account tree of exactly one block. Inputs that do not open
+        // against the reference block are rejected here, where the fix is to fetch them again at
+        // that block; inside the executor the mismatch would only be a kernel failure.
+        if foreign_account_inputs.iter().any(|inputs| {
+            inputs.compute_account_root().ok() != Some(reference_header.account_root())
+        }) {
+            return Err(TransactionRequestError::ForeignAccountDataMissing.into());
         }
 
         attach_native_fee_conversion_info(
@@ -1196,12 +1195,12 @@ where
     ///
     /// For any [`ForeignAccount::Public`] in `foreign_accounts`, these pieces of data are retrieved
     /// from the network. For any [`ForeignAccount::Private`] account, inner data is used and only
-    /// a proof of the account's existence on the network is fetched. A
-    /// [`ForeignAccount::Prefetched`] account is returned as is.
+    /// a proof of the account's existence on the network is fetched.
     ///
     /// Each witness opens against the account tree of `block_num`, so the results are valid only
-    /// for a transaction whose reference block is exactly `block_num`. Declared as
-    /// [`ForeignAccount::Prefetched`], they are served from the request instead of being fetched.
+    /// for a transaction whose reference block is exactly `block_num`. Passed to
+    /// [`TransactionRequestBuilder::foreign_account_inputs`], they are served from the request
+    /// instead of being fetched.
     /// Under [`Self::execute_transaction_at`] the reference block is the anchor's block; otherwise
     /// it is the sync height at execution time, so do not sync between fetching and executing.
     /// Only the given accounts are fetched; this method does not discover the accounts a
@@ -1242,7 +1241,6 @@ where
                     let (witness, _) = account_proof.into_parts();
                     AccountInputs::new(partial_account, witness)
                 },
-                ForeignAccount::Prefetched(inputs) => inputs,
             };
 
             return_foreign_account_inputs.push(foreign_account_inputs);

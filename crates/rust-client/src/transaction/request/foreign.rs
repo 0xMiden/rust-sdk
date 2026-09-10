@@ -101,15 +101,6 @@ pub enum ForeignAccount {
     /// account witness will be retrieved from the network at execution time so that it can be
     /// used as inputs to the transaction kernel.
     Private(PartialAccount),
-    /// Account whose state and inclusion witness the caller supplies, so nothing is fetched for it
-    /// at execution time.
-    ///
-    /// The witness opens against the account tree of exactly one block, so inputs fetched at block
-    /// `N` are only valid for a transaction whose reference block is `N`: the anchor's block under
-    /// [`Client::execute_transaction_at`](crate::Client::execute_transaction_at), or the sync
-    /// height at execution time otherwise. Storage map keys and vault assets absent from the
-    /// inputs are still resolved lazily during execution.
-    Prefetched(AccountInputs),
 }
 
 impl ForeignAccount {
@@ -143,9 +134,7 @@ impl ForeignAccount {
             ForeignAccount::Public(_, account_storage_requirements) => {
                 account_storage_requirements.clone()
             },
-            ForeignAccount::Private(_) | ForeignAccount::Prefetched(_) => {
-                AccountStorageRequirements::default()
-            },
+            ForeignAccount::Private(_) => AccountStorageRequirements::default(),
         }
     }
 
@@ -154,14 +143,30 @@ impl ForeignAccount {
         match self {
             ForeignAccount::Public(account_id, _) => *account_id,
             ForeignAccount::Private(partial_account) => partial_account.id(),
-            ForeignAccount::Prefetched(inputs) => inputs.id(),
         }
     }
-}
 
-impl From<AccountInputs> for ForeignAccount {
-    fn from(inputs: AccountInputs) -> Self {
-        Self::Prefetched(inputs)
+    /// Reads the payload of a foreign account whose type tag was already consumed.
+    ///
+    /// Tag `0` is a [`ForeignAccount::Public`] entry and tag `1` a [`ForeignAccount::Private`]
+    /// entry. Any other tag is an error, so a caller that recognizes more tags must handle them
+    /// before delegating here.
+    pub(super) fn read_payload<R: miden_tx::utils::serde::ByteReader>(
+        account_type: u8,
+        source: &mut R,
+    ) -> Result<Self, DeserializationError> {
+        match account_type {
+            0 => {
+                let account_id = AccountId::read_from(source)?;
+                let storage_requirements = AccountStorageRequirements::read_from(source)?;
+                Ok(ForeignAccount::Public(account_id, storage_requirements))
+            },
+            1 => {
+                let foreign_inputs = PartialAccount::read_from(source)?;
+                Ok(ForeignAccount::Private(foreign_inputs))
+            },
+            _ => Err(DeserializationError::InvalidValue("Invalid account type".to_string())),
+        }
     }
 }
 
@@ -189,10 +194,6 @@ impl Serializable for ForeignAccount {
                 target.write(1u8);
                 partial_account.write_into(target);
             },
-            ForeignAccount::Prefetched(inputs) => {
-                target.write(2u8);
-                inputs.write_into(target);
-            },
         }
     }
 }
@@ -202,19 +203,7 @@ impl Deserializable for ForeignAccount {
         source: &mut R,
     ) -> Result<Self, miden_tx::utils::serde::DeserializationError> {
         let account_type: u8 = source.read_u8()?;
-        match account_type {
-            0 => {
-                let account_id = AccountId::read_from(source)?;
-                let storage_requirements = AccountStorageRequirements::read_from(source)?;
-                Ok(ForeignAccount::Public(account_id, storage_requirements))
-            },
-            1 => {
-                let foreign_inputs = PartialAccount::read_from(source)?;
-                Ok(ForeignAccount::Private(foreign_inputs))
-            },
-            2 => Ok(ForeignAccount::Prefetched(AccountInputs::read_from(source)?)),
-            _ => Err(DeserializationError::InvalidValue("Invalid account type".to_string())),
-        }
+        Self::read_payload(account_type, source)
     }
 }
 

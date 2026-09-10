@@ -25,7 +25,7 @@ use miden_protocol::note::{
     PartialNote,
     PartialNoteMetadata,
 };
-use miden_protocol::transaction::{InputNote, TransactionScript};
+use miden_protocol::transaction::{AccountInputs, InputNote, TransactionScript};
 use miden_protocol::vm::AdviceMap;
 use miden_protocol::{Felt, Word};
 use miden_standards::note::{P2idNote, P2ideNote, PswapNote, PswapNoteStorage, SwapNote};
@@ -78,6 +78,9 @@ pub struct TransactionRequestBuilder {
     /// the network, and injected as advice inputs. Additionally, the account's code will be
     /// added to the executor and prover.
     foreign_accounts: BTreeMap<AccountId, ForeignAccount>,
+    /// Foreign account inputs keyed by account ID. Nothing is fetched for these accounts at
+    /// execution time.
+    foreign_account_inputs: BTreeMap<AccountId, AccountInputs>,
     /// The number of blocks in relation to the transaction's reference block after which the
     /// transaction will expire. If `None`, the transaction will not expire.
     expiration_delta: Option<u16>,
@@ -120,6 +123,7 @@ impl TransactionRequestBuilder {
             merkle_store: MerkleStore::default(),
             expiration_delta: None,
             foreign_accounts: BTreeMap::default(),
+            foreign_account_inputs: BTreeMap::default(),
             ignore_invalid_input_notes: false,
             script_arg: None,
             auth_arg: None,
@@ -210,13 +214,12 @@ impl TransactionRequestBuilder {
     /// - **Private accounts**: the node retrieves a proof of the account's existence and injects
     ///   that as advice inputs. Private accounts must always be declared here with their
     ///   [`PartialAccount`](miden_protocol::account::PartialAccount) state.
-    /// - **Prefetched accounts**: the caller supplies the state and inclusion witness as
-    ///   [`ForeignAccount::Prefetched`] and nothing is fetched for them. The witness must open
-    ///   against the transaction's reference block.
-    ///   [`Client::get_foreign_account_inputs`](crate::Client::get_foreign_account_inputs) fetches
-    ///   inputs for a given block.
     ///
-    /// Declaring an account ID more than once keeps the last declaration.
+    /// To supply the state and inclusion witness yourself, so that nothing is fetched for an
+    /// account, use [`Self::foreign_account_inputs`] instead.
+    ///
+    /// Declaring an account ID more than once keeps the last declaration. A declaration replaces
+    /// inputs for the same account set through [`Self::foreign_account_inputs`].
     #[must_use]
     pub fn foreign_accounts(
         mut self,
@@ -224,7 +227,37 @@ impl TransactionRequestBuilder {
     ) -> Self {
         for account in foreign_accounts {
             let foreign_account: ForeignAccount = account.into();
-            self.foreign_accounts.insert(foreign_account.account_id(), foreign_account);
+            let account_id = foreign_account.account_id();
+            self.foreign_account_inputs.remove(&account_id);
+            self.foreign_accounts.insert(account_id, foreign_account);
+        }
+
+        self
+    }
+
+    /// Supplies the state and inclusion witness of foreign accounts, so nothing is fetched for
+    /// them at execution time.
+    ///
+    /// [`Client::get_foreign_account_inputs`](crate::Client::get_foreign_account_inputs) fetches
+    /// inputs for a set of declarations at a given block. A witness opens against the account
+    /// tree of exactly one block, so inputs fetched at block `N` are only valid for a transaction
+    /// whose reference block is `N`: the anchor's block under
+    /// [`Client::execute_transaction_at`](crate::Client::execute_transaction_at), or the sync
+    /// height at execution time otherwise. The client rejects a mismatch before execution.
+    /// Storage map keys and vault assets absent from the inputs are still resolved lazily during
+    /// execution.
+    ///
+    /// Inputs for an account replace an earlier declaration of that account through
+    /// [`Self::foreign_accounts`], and a later declaration replaces them.
+    #[must_use]
+    pub fn foreign_account_inputs(
+        mut self,
+        foreign_account_inputs: impl IntoIterator<Item = AccountInputs>,
+    ) -> Self {
+        for inputs in foreign_account_inputs {
+            let account_id = inputs.id();
+            self.foreign_accounts.remove(&account_id);
+            self.foreign_account_inputs.insert(account_id, inputs);
         }
 
         self
@@ -675,6 +708,7 @@ impl TransactionRequestBuilder {
             advice_map: self.advice_map,
             merkle_store: self.merkle_store,
             foreign_accounts: self.foreign_accounts,
+            foreign_account_inputs: self.foreign_account_inputs,
             expiration_delta: self.expiration_delta,
             ignore_invalid_input_notes: self.ignore_invalid_input_notes,
             script_arg: self.script_arg,

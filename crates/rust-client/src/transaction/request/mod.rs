@@ -31,7 +31,13 @@ use miden_protocol::note::{
     NoteTag,
     PartialNote,
 };
-use miden_protocol::transaction::{InputNote, InputNotes, TransactionArgs, TransactionScript};
+use miden_protocol::transaction::{
+    AccountInputs,
+    InputNote,
+    InputNotes,
+    TransactionArgs,
+    TransactionScript,
+};
 use miden_protocol::vm::AdviceMap;
 use miden_standards::account::auth::{FeeConversionInfo, commit_fee_conversion_info};
 use miden_standards::errors::CodeBuilderError;
@@ -115,6 +121,10 @@ pub struct TransactionRequest {
     /// will be retrieved from the network, and injected as advice inputs. Additionally, the
     /// account's code will be added to the executor and prover.
     foreign_accounts: BTreeMap<AccountId, ForeignAccount>,
+    /// Foreign account inputs keyed by account ID, set through
+    /// [`TransactionRequestBuilder::foreign_account_inputs`]. Each entry carries the account's
+    /// state and inclusion witness, so nothing is fetched for that account at execution time.
+    foreign_account_inputs: BTreeMap<AccountId, AccountInputs>,
     /// The number of blocks in relation to the transaction's reference block after which the
     /// transaction will expire. If `None`, the transaction will not expire.
     expiration_delta: Option<u16>,
@@ -224,6 +234,14 @@ impl TransactionRequest {
     /// Returns the required foreign accounts keyed by account ID.
     pub fn foreign_accounts(&self) -> &BTreeMap<AccountId, ForeignAccount> {
         &self.foreign_accounts
+    }
+
+    /// Returns the foreign account inputs the request carries, keyed by account ID.
+    ///
+    /// Nothing is fetched for these accounts at execution time. Each witness opens against the
+    /// account tree of exactly one block, so the request is only executable against that block.
+    pub fn foreign_account_inputs(&self) -> &BTreeMap<AccountId, AccountInputs> {
+        &self.foreign_account_inputs
     }
 
     /// Returns whether to ignore invalid input notes or not.
@@ -442,8 +460,16 @@ impl Serializable for TransactionRequest {
         self.expected_future_notes.write_into(target);
         self.advice_map.write_into(target);
         self.merkle_store.write_into(target);
-        let foreign_accounts: Vec<_> = self.foreign_accounts.values().cloned().collect();
-        foreign_accounts.write_into(target);
+        // Declared accounts and prefetched inputs share one list. A declared entry writes its own
+        // type tag, `0` or `1`; prefetched inputs use tag `2`.
+        target.write_usize(self.foreign_accounts.len() + self.foreign_account_inputs.len());
+        for foreign_account in self.foreign_accounts.values() {
+            foreign_account.write_into(target);
+        }
+        for inputs in self.foreign_account_inputs.values() {
+            target.write_u8(2);
+            inputs.write_into(target);
+        }
         self.expiration_delta.write_into(target);
         target.write_u8(u8::from(self.ignore_invalid_input_notes));
         self.script_arg.write_into(target);
@@ -490,8 +516,25 @@ impl Deserializable for TransactionRequest {
         let advice_map = AdviceMap::read_from(source)?;
         let merkle_store = MerkleStore::read_from(source)?;
         let mut foreign_accounts = BTreeMap::new();
-        for foreign_account in Vec::<ForeignAccount>::read_from(source)? {
-            foreign_accounts.entry(foreign_account.account_id()).or_insert(foreign_account);
+        let mut foreign_account_inputs = BTreeMap::new();
+        for _ in 0..source.read_usize()? {
+            match source.read_u8()? {
+                2 => {
+                    let inputs = AccountInputs::read_from(source)?;
+                    foreign_account_inputs.entry(inputs.id()).or_insert(inputs);
+                },
+                account_type => {
+                    let foreign_account = ForeignAccount::read_payload(account_type, source)?;
+                    foreign_accounts.entry(foreign_account.account_id()).or_insert(foreign_account);
+                },
+            }
+        }
+        if let Some(account_id) =
+            foreign_accounts.keys().find(|id| foreign_account_inputs.contains_key(*id))
+        {
+            return Err(DeserializationError::InvalidValue(format!(
+                "foreign account {account_id} is both declared and carried as inputs"
+            )));
         }
         let expiration_delta = Option::<u16>::read_from(source)?;
         let ignore_invalid_input_notes = source.read_u8()? == 1;
@@ -510,6 +553,7 @@ impl Deserializable for TransactionRequest {
             advice_map,
             merkle_store,
             foreign_accounts,
+            foreign_account_inputs,
             expiration_delta,
             ignore_invalid_input_notes,
             script_arg,
@@ -815,8 +859,16 @@ mod tests {
         let tree = AccountTree::with_entries([(account.id(), account.to_commitment())]).unwrap();
         let inputs = AccountInputs::new((&account).into(), tree.open(account.id()));
         let mut request = tx_request;
-        request.foreign_accounts.insert(inputs.id(), ForeignAccount::Prefetched(inputs));
+        request.foreign_accounts.remove(&inputs.id());
+        request.foreign_account_inputs.insert(inputs.id(), inputs.clone());
         let decoded = TransactionRequest::read_from_bytes(&request.to_bytes()).unwrap();
         assert_eq!(request, decoded);
+
+        // An account that is both declared and carried as inputs cannot come from the builder, so
+        // such bytes are rejected.
+        request
+            .foreign_accounts
+            .insert(inputs.id(), ForeignAccount::private(&account).unwrap());
+        assert!(TransactionRequest::read_from_bytes(&request.to_bytes()).is_err());
     }
 }

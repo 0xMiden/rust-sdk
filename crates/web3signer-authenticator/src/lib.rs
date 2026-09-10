@@ -95,21 +95,6 @@ impl<T: SignerTransport> Web3SignerAuthenticator<T> {
         Ok(Self { transport, public_keys_by_commitment })
     }
 
-    /// Requests the signer's key list and returns each key with the identifier it was listed under.
-    async fn list_public_keys(transport: &T) -> Result<Vec<Web3SignerPublicKey>, Web3SignerError> {
-        let body = transport.get(PUBLIC_KEYS_PATH).await?;
-
-        parse_string_array(&body)
-            .map(|identifier| {
-                let public_key = PublicKey::EcdsaK256Keccak(decode_public_key(identifier)?);
-                Ok(Web3SignerPublicKey {
-                    identifier: identifier.into(),
-                    public_key: Arc::new(public_key),
-                })
-            })
-            .collect()
-    }
-
     /// Returns the public keys the signer listed when the authenticator was built.
     pub fn get_public_keys(&self) -> Vec<PublicKey> {
         self.public_keys_by_commitment
@@ -130,6 +115,21 @@ impl<T: SignerTransport> Web3SignerAuthenticator<T> {
     /// Returns the public key commitments this authenticator can sign for.
     pub fn public_key_commitments(&self) -> impl Iterator<Item = PublicKeyCommitment> + '_ {
         self.public_keys_by_commitment.keys().copied()
+    }
+
+    /// Requests the signer's key list and returns each key with the identifier it was listed under.
+    async fn list_public_keys(transport: &T) -> Result<Vec<Web3SignerPublicKey>, Web3SignerError> {
+        let body = transport.get(PUBLIC_KEYS_PATH).await?;
+
+        parse_string_array(&body)
+            .map(|identifier| {
+                let public_key = PublicKey::EcdsaK256Keccak(decode_public_key(identifier)?);
+                Ok(Web3SignerPublicKey {
+                    identifier: identifier.into(),
+                    public_key: Arc::new(public_key),
+                })
+            })
+            .collect()
     }
 
     /// Requests a signature over `message` for one key of the key list.

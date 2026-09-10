@@ -5,7 +5,7 @@
 ### Breaking Changes
 
 * [BREAKING][type][rust] Added the `TransactionRequestError::SwapNoteWithZeroAsset` variant, so exhaustive matches on `TransactionRequestError` must handle it ([#2459](https://github.com/0xMiden/rust-sdk/pull/2459)).
-
+* [BREAKING][behavior][rust] A Note Transport Layer failure no longer fails `Client::sync_state`. The error is logged and the chain sync still applies; the transport cursor is left where it was, so the next sync requests the same page again ([#2453](https://github.com/0xMiden/rust-sdk/pull/2453)).
 
 ### Fixes
 
@@ -16,7 +16,7 @@
 
 ### Enhancements
 
-* [rust] The chain sync and the note transport sync are each split into a fetch phase and a store phase, so every NTL and RPC call happens before the first store write. `Client::sync_state` runs the two fetch phases concurrently and applies both sets of updates afterwards, instead of running a full note transport sync before the chain sync ([#2453](https://github.com/0xMiden/rust-sdk/pull/2453)).
+* [rust] `Client::sync_state` fetches a Note Transport Layer page and the node's chain update concurrently, instead of running a full note transport sync before the chain sync. The transport notes are imported first and their records join the chain sync's note updates, so a note delivered and committed within the same sync is reported by that sync ([#2453](https://github.com/0xMiden/rust-sdk/pull/2453)).
 
 ## 0.16.0 (2026-09-07)
 

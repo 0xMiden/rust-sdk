@@ -361,9 +361,8 @@ where
         let cursor = self.store.get_note_transport_cursor().await?;
 
         let mut id_by_commitment = BTreeMap::new();
-        let (note_files, new_cursor) = self
-            .fetch_note_transport_updates(cursor, &note_tags, &mut id_by_commitment)
-            .await?;
+        let (note_files, new_cursor) =
+            self.fetch_transport_notes(cursor, &note_tags, &mut id_by_commitment).await?;
 
         self.import_note_records(&note_files).await?;
         self.store.update_note_transport_cursor(new_cursor).await?;
@@ -410,7 +409,7 @@ where
 
     /// Drain a single tag's full history from the transport, paging until the cursor stops
     /// advancing. Uses a local cursor and never touches the global one, so it cannot regress
-    /// steady-state progress. Returns the updates from every fetched page, merged in page order and
+    /// steady-state progress. Returns the note files from every fetched page, in page order and
     /// none of them written.
     async fn backfill_tag(
         &self,
@@ -421,7 +420,7 @@ where
         let mut cursor = NoteTransportCursor::init();
         for _ in 0..Self::MAX_BACKFILL_ITERATIONS {
             let (page_files, new_cursor) =
-                self.fetch_note_transport_updates(cursor, &[tag], id_by_commitment).await?;
+                self.fetch_transport_notes(cursor, &[tag], id_by_commitment).await?;
             note_files.extend(page_files);
             // Terminate on any lack of forward progress. A well-behaved server returns `new_cursor
             // == cursor` when there are no new notes for this tag (since `rcursor = max(cursor,
@@ -442,18 +441,18 @@ where
     /// Fetches and returns one batch of notes from the note transport layer for the provided tags
     /// without applying any update to the store.
     ///
-    /// The server paginates; this method issues one RPC and returns the updates together with the
-    /// new cursor. The returned cursor equals the input cursor when the batch was empty (i.e. no
-    /// new notes). Callers that want to drain a tag's full backlog should loop until `new_cursor ==
-    /// cursor` (see [`Client::backfill_tag`]). Callers that do steady-state polling (see
-    /// [`Client::sync_state`] / [`Client::fetch_private_notes`]) should call this once per tick
-    /// with the stored cursor.
+    /// The server paginates; this method issues one transport call and returns the note files
+    /// together with the new cursor. The returned cursor equals the input cursor when the batch was
+    /// empty (i.e. no new notes). Callers that want to drain a tag's full backlog should loop until
+    /// `new_cursor == cursor` (see [`Client::backfill_tag`]). Callers that do steady-state polling
+    /// (see [`Client::sync_state`] / [`Client::fetch_private_notes`]) should call this once per
+    /// tick with the stored cursor.
     ///
     /// Each downloaded note's id is recorded in `id_by_commitment` so the caller can resolve the
     /// written records back to note ids once the final record set is known. Persistence of the
     /// returned cursor is left to the caller so that drain loops can guard against regression of an
     /// already-advanced stored cursor.
-    async fn fetch_note_transport_updates(
+    async fn fetch_transport_notes(
         &self,
         cursor: NoteTransportCursor,
         tags: &[NoteTag],
@@ -526,12 +525,12 @@ where
     /// imports the returned files and then persists the cursor and the covered-tag set.
     ///
     /// Returns empty data when note transport is not configured.
-    pub(crate) async fn fetch_note_transport_notes(
+    pub(crate) async fn fetch_note_transport_updates(
         &self,
-    ) -> Result<NoteTransportFetch, ClientError> {
-        let mut fetch = NoteTransportFetch::default();
+    ) -> Result<NoteTransportLayerUpdate, ClientError> {
+        let mut note_transport_update = NoteTransportLayerUpdate::default();
         if !self.is_note_transport_enabled() {
-            return Ok(fetch);
+            return Ok(note_transport_update);
         }
 
         // Drain any private notes whose previous relay attempt failed. A flush error is logged, not
@@ -547,42 +546,47 @@ where
         let (mut covered, pruned, new_tags) = self.plan_backfill().await?;
         let backfilled = !new_tags.is_empty();
         for tag in new_tags {
-            fetch
+            note_transport_update
                 .note_files
-                .extend(self.backfill_tag(tag, &mut fetch.id_by_commitment).await?);
+                .extend(self.backfill_tag(tag, &mut note_transport_update.id_by_commitment).await?);
             covered.insert(tag);
         }
         if pruned || backfilled {
-            fetch.covered_tags = Some(covered);
+            note_transport_update.covered_tags = Some(covered);
         }
 
         let cursor = self.store.get_note_transport_cursor().await?;
         let note_tags: Vec<NoteTag> =
             self.store.get_unique_note_tags().await?.into_iter().collect();
         let (note_files, new_cursor) = self
-            .fetch_note_transport_updates(cursor, &note_tags, &mut fetch.id_by_commitment)
+            .fetch_transport_notes(cursor, &note_tags, &mut note_transport_update.id_by_commitment)
             .await?;
-        fetch.note_files.extend(note_files);
-        fetch.cursor = Some(new_cursor);
+        note_transport_update.note_files.extend(note_files);
+        note_transport_update.cursor = Some(new_cursor);
 
-        Ok(fetch)
+        Ok(note_transport_update)
     }
 
-    /// Imports what [`Client::fetch_note_transport_notes`] returned, returning the ids of the
-    /// imported notes and the records written.
+    /// Writes everything [`Client::fetch_note_transport_updates`] returned, in three steps:
+    ///
+    /// 1. Imports the fetched notes, which resolves their on-chain state and stores the records.
+    /// 2. Saves the covered-tag set, when the backfill changed it.
+    /// 3. Advances the stored note transport cursor, when a page was fetched.
     ///
     /// The notes are written before the covered-tag set and the cursor, so a crash between them
     /// re-fetches instead of skipping notes that were never written.
-    pub(crate) async fn import_note_transport_notes(
+    ///
+    /// Returns the ids of the imported notes and the records written.
+    pub(crate) async fn apply_note_transport_update(
         &mut self,
-        fetch: NoteTransportFetch,
+        update: NoteTransportLayerUpdate,
     ) -> Result<(Vec<NoteId>, Vec<InputNoteRecord>), ClientError> {
-        let NoteTransportFetch {
+        let NoteTransportLayerUpdate {
             note_files,
             id_by_commitment,
             covered_tags,
             cursor,
-        } = fetch;
+        } = update;
 
         let written = self.import_note_records(&note_files).await?;
         let mut imported_ids: Vec<NoteId> = written
@@ -636,10 +640,10 @@ where
 
 /// What the note transport fetch returned, before anything is written.
 ///
-/// Built by [`Client::fetch_note_transport_notes`] and consumed by
-/// [`Client::import_note_transport_notes`].
+/// Built by [`Client::fetch_note_transport_updates`] and consumed by
+/// [`Client::apply_note_transport_update`].
 #[derive(Default)]
-pub(crate) struct NoteTransportFetch {
+pub(crate) struct NoteTransportLayerUpdate {
     /// Notes to import, backfill pages first and then the steady-state page.
     note_files: Vec<NoteFile>,
     /// Note ids by details commitment, taken from the note headers the transport returned. Used to

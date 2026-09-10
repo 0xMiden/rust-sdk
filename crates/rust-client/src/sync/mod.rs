@@ -232,9 +232,8 @@ where
         }
         self.ensure_genesis_in_place().await?;
 
-        let fetch = self.fetch_note_transport_notes().await?;
-
-        let (imported_ids, _) = self.import_note_transport_notes(fetch).await?;
+        let note_transport_update = self.fetch_note_transport_updates().await?;
+        let (imported_ids, _) = self.apply_note_transport_update(note_transport_update).await?;
         Ok(imported_ids)
     }
 
@@ -267,14 +266,16 @@ where
         self.ensure_rpc_limits_in_place().await?;
 
         let state_sync = self.state_sync();
-        let (transport_fetch, chain_sync_data) = futures::join!(
-            self.fetch_note_transport_notes(),
+        let (note_transport_update, chain_sync_data) = futures::join!(
+            self.fetch_note_transport_updates(),
             self.fetch_chain_updates(&state_sync),
         );
 
         // An NTL failure does not end the sync
-        let (new_private_notes, imported) = match transport_fetch {
-            Ok(fetch) => self.import_note_transport_notes(fetch).await?,
+        let (new_private_notes, imported_notes) = match note_transport_update {
+            Ok(note_transport_update) => {
+                self.apply_note_transport_update(note_transport_update).await?
+            },
             Err(err) => {
                 warn!(?err, "note transport fetch failed; syncing the chain without it");
                 (Vec::new(), Vec::new())
@@ -286,7 +287,7 @@ where
         // The chain sync built its note updates from a store snapshot taken before the import, so
         // the imported records are added here. Without them this sync has no record to apply its
         // verdicts to, and a note committed within this sync's own block range stays expected.
-        chain_sync_data.note_updates.track_existing_input_notes(imported);
+        chain_sync_data.note_updates.track_existing_input_notes(imported_notes);
 
         state_sync.derive_state_updates(&mut chain_sync_data).await?;
         state_sync.fetch_nullifiers(&mut chain_sync_data).await?;

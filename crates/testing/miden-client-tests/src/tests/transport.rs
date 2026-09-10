@@ -580,7 +580,7 @@ async fn fetch_private_notes_finds_note_committed_at_sync_height() {
     let details_bytes = details.to_bytes();
     mock_transport_node.write().add_note(*private_note.header(), details_bytes);
 
-    // 6. Second sync_state: fetch_transport_notes imports the note, then chain sync runs. The
+    // 6. Second sync_state: the transport page is imported, then chain sync runs. The
     // chain scan starts from a lookback window rather than from the sync height, so it still sees
     // the note at block 1.
     let summary = client.sync_state().await.unwrap();

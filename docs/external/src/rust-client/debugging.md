@@ -5,13 +5,6 @@ sidebar_position: 7
 
 # DAP Debugging
 
-DAP debugging is disabled in the protocol 0.17 release candidate. The client uses VM 0.32, while the available debugger uses VM 0.30. The `dap` feature, debugging methods, and CLI debugging flags are unavailable.
-
-The instructions below apply to client 0.16.
-
-<details>
-<summary>Client 0.16 debugging instructions</summary>
-
 The Miden client supports interactive debugging via the [Debug Adapter Protocol (DAP)](https://microsoft.github.io/debug-adapter-protocol/). You can debug both raw Miden Assembly scripts and Rust programs compiled to Miden via `midenc`. This lets you step through execution, set breakpoints, and inspect stack/memory state using any DAP-compatible client (e.g. VS Code, the `miden-debug` TUI).
 
 ## Feature flags
@@ -165,5 +158,3 @@ miden-debug --replay session.mdsnap
 The recorded events are fed back through the debugger's event-replay host, so you can step through
 the same execution, set breakpoints, and inspect the stack and memory exactly as during the live
 session. The snapshot carries no source files, so the debugger shows disassembly.
-
-</details>

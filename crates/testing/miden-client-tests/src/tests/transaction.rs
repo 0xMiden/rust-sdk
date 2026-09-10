@@ -1,9 +1,7 @@
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use std::collections::BTreeSet;
-#[cfg(any())]
 use std::net::TcpListener;
-#[cfg(any())]
 use std::time::Duration;
 
 use miden_client::assembly::CodeBuilder;
@@ -25,7 +23,6 @@ use miden_client::transaction::{
     TransactionRequestBuilder,
 };
 use miden_client::{ClientError, Deserializable, Serializable, async_trait};
-#[cfg(any())]
 use miden_debug::{DapClient, DapConfig, DapStopReason};
 use miden_protocol::account::{
     AccountBuilder,
@@ -54,7 +51,6 @@ use miden_standards::account::wallets::BasicWallet;
 use super::PaymentNoteDescription;
 use crate::tests::{create_test_client, setup_wallet_and_faucet};
 
-#[cfg(any())]
 #[tokio::test]
 async fn dap_transaction_execution_records_replay_data() {
     let (mut client, _, keystore) = Box::pin(create_test_client()).await;

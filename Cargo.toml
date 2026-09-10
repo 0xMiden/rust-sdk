@@ -55,6 +55,7 @@ miden-note-transport-proto-build = { default-features = false, version = "0.5.0-
 
 # Miden debug dependency
 miden-assembly-syntax = { default-features = false, version = "0.32" }
+miden-debug           = { default-features = false, features = ["dap", "std"], version = "0.15" }
 miden-mast-package    = { default-features = false, version = "0.32" }
 miden-processor       = { default-features = false, version = "0.32" }
 

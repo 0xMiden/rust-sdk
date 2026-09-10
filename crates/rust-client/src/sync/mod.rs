@@ -69,7 +69,7 @@ use miden_protocol::note::NoteId;
 use miden_protocol::transaction::TransactionId;
 use miden_tx::auth::TransactionAuthenticator;
 use miden_tx::utils::serde::{Deserializable, DeserializationError, Serializable};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::pswap::PswapChainObserver;
 use crate::store::{NoteFilter, TransactionFilter};
@@ -246,7 +246,8 @@ where
     ///
     /// 1. Concurrently: the note transport fetch and [`Client::fetch_chain_updates`]. Only node and
     ///    NTL calls happen here, which is all that benefits from overlapping.
-    /// 2. The transport writes, whose records are then tracked in the chain sync's note updates.
+    /// 2. The transport writes, when its fetch succeeded, whose records are then tracked in the
+    ///    chain sync's note updates.
     /// 3. [`StateSync::derive_state_updates`], which screens the node's notes against the store —
     ///    hence after step 2, so a transport-delivered note is recognised rather than discarded —
     ///    and applies a commitment reported this sync to those records.
@@ -256,7 +257,8 @@ where
     /// 5. The chain update, written last: a nullified transport-delivered note is saved as an
     ///    update to the row step 2 inserts.
     ///
-    /// Fails fast on the first error. Before step 2 nothing is written but the relay outbox, which
+    /// A transport failure is logged and the chain sync continues without it, leaving the transport
+    /// cursor for the next call to retry. Before step 2 but the relay outbox, which
     /// [`Client::flush_relay_outbox`] persists during the fetch and the next sync retries.
     pub async fn sync_state(&mut self) -> Result<SyncSummary, ClientError> {
         // Both fetch phases need genesis in place, and connecting here means the two concurrent
@@ -265,13 +267,21 @@ where
         self.ensure_rpc_limits_in_place().await?;
 
         let state_sync = self.state_sync();
-        let (transport_fetch, mut chain_sync_data) = futures::try_join!(
+        let (transport_fetch, chain_sync_data) = futures::join!(
             self.fetch_note_transport_notes(),
             self.fetch_chain_updates(&state_sync),
-        )?;
+        );
 
-        let (new_private_notes, imported) =
-            self.import_note_transport_notes(transport_fetch).await?;
+        // An NTL failure does not end the sync
+        let (new_private_notes, imported) = match transport_fetch {
+            Ok(fetch) => self.import_note_transport_notes(fetch).await?,
+            Err(err) => {
+                warn!(?err, "note transport fetch failed; syncing the chain without it");
+                (Vec::new(), Vec::new())
+            },
+        };
+
+        let mut chain_sync_data = chain_sync_data?;
 
         // The chain sync built its note updates from a store snapshot taken before the import, so
         // the imported records are added here. Without them this sync has no record to apply its

@@ -1149,8 +1149,8 @@ async fn transport_fetch_failure_leaves_cursor_for_retry() {
         .add_note(*note.header(), NoteDetails::from(note.clone()).to_bytes());
 
     faulty.fail_next_n_fetches(2);
-    recipient.sync_state().await.unwrap_err();
-    recipient.sync_state().await.unwrap_err();
+    recipient.sync_state().await.unwrap();
+    recipient.sync_state().await.unwrap();
     assert_eq!(faulty.fetch_attempts(), 2);
     assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 0);
 

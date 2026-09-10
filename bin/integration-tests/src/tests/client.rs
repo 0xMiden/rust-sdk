@@ -23,7 +23,7 @@ use miden_client::account::{
 };
 use miden_client::assembly::CodeBuilder;
 use miden_client::asset::{Asset, AssetAmount, FungibleAsset};
-use miden_client::auth::{AuthSchemeId, AuthSecretKey, AuthSingleSig};
+use miden_client::auth::{AuthSchemeId, AuthSecretKey, AuthSingleSig, ECDSA_K256_KECCAK_SCHEME_ID};
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;
 use miden_client::note::standards::NoteSyncHint;
@@ -57,6 +57,7 @@ use miden_client::transaction::{
 };
 use miden_client::{ClientError, Felt, Word};
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
+use rand::Rng;
 use tracing::info;
 
 use crate::{ClientConfig, create_test_auth_path};
@@ -1368,9 +1369,20 @@ pub async fn test_unused_rpc_api(client_config: ClientConfig) -> Result<()> {
         AccountComponentMetadata::new("miden::testing::custom_component"),
     )
     .map_err(|err| anyhow::anyhow!(err))?;
-    let (account_with_map_item, _) = client
-        .insert_account(AccountSetup::wallet(AccountType::Public).component(custom_component))
-        .await?;
+    // The account is built here rather than through a standard setup because it carries the custom
+    // component above on top of a basic wallet.
+    let (auth, key) = auth_component(ECDSA_K256_KECCAK_SCHEME_ID)?;
+    let mut init_seed = [0u8; 32];
+    client.rng().fill_bytes(&mut init_seed);
+    let wallet = AccountBuilder::new(init_seed)
+        .account_type(AccountType::Public)
+        .with_component(auth)
+        .with_component(BasicWallet)
+        .with_component(custom_component)
+        .build_with_schema_commitment()?;
+
+    let (account_with_map_item, _) =
+        client.insert_account(AccountSetup::prebuilt(wallet, key)).await?;
 
     client.sync_state().await.unwrap();
 

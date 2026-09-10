@@ -1,8 +1,15 @@
 use std::collections::BTreeMap;
 
 use anyhow::{Context, Result};
-use miden_client::account::{AccountType, build_wallet_id};
+use miden_client::account::component::BasicWallet;
+use miden_client::account::{
+    AccountBuilder,
+    AccountBuilderSchemaCommitmentExt,
+    AccountType,
+    build_wallet_id,
+};
 use miden_client::asset::{Asset, AssetAmount, FungibleAsset};
+use miden_client::auth::{ECDSA_K256_KECCAK_SCHEME_ID, RPO_FALCON_SCHEME_ID};
 use miden_client::keystore::Keystore;
 use miden_client::note::standards::NoteSyncHint;
 use miden_client::note::{
@@ -44,12 +51,24 @@ pub async fn test_onchain_notes_flow(client_config: ClientConfig) -> Result<()> 
     client_3.wait_for_node().await;
 
     // Create faucet account
-    let faucet_account = client_1.insert_faucet(AccountType::Private).await?;
+    let (faucet_account, _) = client_1
+        .insert_account(
+            AccountSetup::faucet(AccountType::Private).auth_scheme(RPO_FALCON_SCHEME_ID),
+        )
+        .await?;
     // Create regular accounts
-    let basic_wallet_1 = client_2.insert_wallet(AccountType::Private).await?;
+    let (basic_wallet_1, _) = client_2
+        .insert_account(
+            AccountSetup::wallet(AccountType::Private).auth_scheme(RPO_FALCON_SCHEME_ID),
+        )
+        .await?;
 
     // Create regular accounts
-    let basic_wallet_2 = client_3.insert_wallet(AccountType::Private).await?;
+    let (basic_wallet_2, _) = client_3
+        .insert_account(
+            AccountSetup::wallet(AccountType::Private).auth_scheme(RPO_FALCON_SCHEME_ID),
+        )
+        .await?;
     client_1.sync_state().await?;
     client_2.sync_state().await?;
 
@@ -329,9 +348,17 @@ pub async fn test_import_account_by_id(client_config: ClientConfig) -> Result<()
 
     let faucet_account_header = client_1.insert_faucet(AccountType::Public).await?;
 
-    let (first_regular_account, secret_key) = client_1
-        .insert_account(AccountSetup::wallet(AccountType::Public).seed(user_seed))
-        .await?;
+    // The account is built here rather than through a standard setup because the test re-derives
+    // its ID from `user_seed` further down, so it has to know the seed it was built from.
+    let (auth, key) = auth_component(ECDSA_K256_KECCAK_SCHEME_ID)?;
+    let wallet = AccountBuilder::new(user_seed)
+        .account_type(AccountType::Public)
+        .with_component(auth)
+        .with_component(BasicWallet)
+        .build_with_schema_commitment()?;
+
+    let (first_regular_account, secret_key) =
+        client_1.insert_account(AccountSetup::prebuilt(wallet, key)).await?;
 
     let target_account_id = first_regular_account.id();
     let faucet_account_id = faucet_account_header.id();

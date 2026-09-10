@@ -5,10 +5,9 @@ retries        = { backoff = "exponential", count = 2, delay = "1s", jitter = tr
 slow-timeout   = { period = "3m", terminate-after = 2 }
 status-level   = "skip"
 
-# The integration tests share a node instance and prove locally, so a test process spends part of
-# its time proving and part waiting for a block.
+# The integration tests share a node instance and prove locally, so concurrency is kept low.
 [test-groups.integration]
-max-threads = 6
+max-threads = 3
 
 [[profile.default.overrides]]
 filter           = "package(miden-client-unit-tests)"

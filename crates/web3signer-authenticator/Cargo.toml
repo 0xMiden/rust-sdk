@@ -24,7 +24,7 @@ miden-tx       = { workspace = true }
 # External dependencies
 hex       = { default-features = false, features = ["alloc"], version = "0.4" }
 k256      = { default-features = false, features = ["ecdsa"], version = "0.14" }
-reqwest   = { default-features = false, features = ["rustls-tls"], optional = true, version = "0.12" }
+reqwest   = { default-features = false, features = ["rustls-tls-native-roots"], optional = true, version = "0.12" }
 thiserror = { workspace = true }
 
 [dev-dependencies]

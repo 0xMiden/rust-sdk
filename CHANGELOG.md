@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- [FIX][cli] `notes --send` now rejects a recipient address whose network doesn't match the client's configured network, instead of silently sending to it.
+- [FIX][cli] `notes --send` now rejects a recipient address whose network doesn't match the client's configured network, instead of silently sending to it. ([#2525](https://github.com/0xMiden/rust-sdk/pull/2525)).
 
 ### Breaking Changes
 

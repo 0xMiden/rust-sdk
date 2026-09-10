@@ -21,7 +21,9 @@ use miden_protocol::account::{
     StorageMap,
     StorageMapKey,
 };
-use miden_protocol::asset::{Asset, AssetAmount, FungibleAsset, TokenSymbol};
+use miden_protocol::asset::{Asset, AssetAmount, AssetId, FungibleAsset, TokenSymbol};
+use miden_protocol::protocol_config::ProtocolConfig;
+use miden_protocol::utils::serde::Serializable;
 use miden_protocol::{ONE, Word};
 use miden_standards::account::access::AccessControl;
 use miden_standards::account::auth::{Approver, AuthSingleSig};
@@ -117,13 +119,8 @@ pub fn write_genesis_config(
         generate_faucet_operator().context("failed to create the native faucet operator")?;
     let native_faucet =
         generate_native_faucet(operator.id()).context("failed to create the native fee faucet")?;
-    let protocol_config = miden_protocol::protocol_config::ProtocolConfig::current(
-        miden_protocol::asset::AssetId::new_fungible(native_faucet.id()),
-    )?;
-    std::fs::write(
-        output_dir.join("protocol-config.bin"),
-        miden_protocol::utils::serde::Serializable::to_bytes(&protocol_config),
-    )?;
+    let protocol_config = ProtocolConfig::current(AssetId::new_fungible(native_faucet.id()))?;
+    std::fs::write(output_dir.join("protocol-config.bin"), protocol_config.to_bytes())?;
     let fee_balance: Asset =
         FungibleAsset::new(native_faucet.id(), GENESIS_ACCOUNT_FEE_BALANCE)?.into();
     AccountFile::new(into_genesis_account(native_faucet, fee_balance)?, vec![])

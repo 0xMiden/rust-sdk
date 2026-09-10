@@ -30,7 +30,7 @@ use miden_protocol::note::{
 };
 use miden_protocol::transaction::{InputNote, InputNotes, TransactionArgs, TransactionScript};
 use miden_protocol::vm::AdviceMap;
-use miden_protocol::{MastForestScriptError as TransactionScriptError, Word};
+use miden_protocol::{MastForestScriptError, Word};
 use miden_standards::account::auth::{FeeConversionInfo, commit_fee_conversion_info};
 use miden_standards::errors::CodeBuilderError;
 use miden_standards::tx_script::{SendNotesTransactionScript, SendNotesTransactionScriptError};
@@ -523,6 +523,9 @@ impl Deserializable for TransactionRequest {
 // ================================================================================================
 
 /// Accumulates fungible totals and collectable non-fungible assets from an iterator of assets.
+///
+/// An asset that is neither fungible nor non-fungible is left out of both buckets, since neither
+/// balance arithmetic applies to it. Execution judges such an asset instead.
 pub(crate) fn collect_assets<'a>(
     assets: impl Iterator<Item = &'a Asset>,
 ) -> (BTreeMap<AccountId, u64>, Vec<Asset>) {
@@ -536,7 +539,7 @@ pub(crate) fn collect_assets<'a>(
                 .entry(fungible.faucet_id())
                 .and_modify(|balance| *balance += amount)
                 .or_insert(amount);
-        } else if !non_fungible_set.contains(asset) {
+        } else if asset.is_non_fungible() && !non_fungible_set.contains(asset) {
             non_fungible_set.push(*asset);
         }
     }
@@ -595,7 +598,7 @@ pub enum TransactionRequestError {
     )]
     FeeConversionInfoRequired(String),
     #[error("invalid transaction script")]
-    InvalidTransactionScript(#[from] TransactionScriptError),
+    InvalidTransactionScript(#[from] MastForestScriptError),
     #[error("merkle proof error")]
     MerkleError(#[from] MerkleError),
     #[error("empty transaction: the request has no input notes and no account state changes")]

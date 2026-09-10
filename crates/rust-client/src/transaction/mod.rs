@@ -81,6 +81,7 @@ use miden_protocol::note::{
     NoteScript,
     NoteTag,
 };
+use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::transaction::{AccountInputs, PartialBlockchain};
 use miden_protocol::vm::MIN_STACK_DEPTH;
 use miden_protocol::{Felt, Word};
@@ -1524,7 +1525,7 @@ fn attach_native_fee_conversion_info(
     transaction_request: &mut TransactionRequest,
     account_code_interface: &AccountCodeInterface,
     reference_header: &BlockHeader,
-    protocol_config: &miden_protocol::protocol_config::ProtocolConfig,
+    protocol_config: &ProtocolConfig,
 ) -> Result<(), ClientError> {
     // An auth arg the caller set is the caller's business: it may carry a commitment the caller
     // computed itself, or something else entirely. An empty word commits nothing, so it does not
@@ -1641,7 +1642,7 @@ impl FeeAuth {
 pub(crate) fn native_fee_conversion_info(
     account_code_interface: &AccountCodeInterface,
     fee_parameters: &FeeParameters,
-    protocol_config: &miden_protocol::protocol_config::ProtocolConfig,
+    protocol_config: &ProtocolConfig,
 ) -> Option<FeeConversionInfo> {
     if fee_parameters.verification_base_fee() == 0 {
         return None;
@@ -1878,10 +1879,11 @@ mod tests {
         AccountId,
         AccountType,
     };
-    use miden_protocol::asset::FungibleAsset;
+    use miden_protocol::asset::{AssetId, FungibleAsset};
     use miden_protocol::block::{BlockHeader, BlockNumber, FeeParameters};
     use miden_protocol::crypto::rand::RandomCoin;
     use miden_protocol::note::{Note, NoteType};
+    use miden_protocol::protocol_config::ProtocolConfig;
     use miden_protocol::testing::account_id::{
         ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET,
         ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET,
@@ -2056,11 +2058,9 @@ mod tests {
     /// in so the two can be told apart.
     const NATIVE_FEE_FAUCET: u128 = ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET;
 
-    fn test_protocol_config() -> miden_protocol::protocol_config::ProtocolConfig {
-        miden_protocol::protocol_config::ProtocolConfig::current(
-            miden_protocol::asset::AssetId::new_fungible(NATIVE_FEE_FAUCET.try_into().unwrap()),
-        )
-        .unwrap()
+    fn test_protocol_config() -> ProtocolConfig {
+        ProtocolConfig::current(AssetId::new_fungible(NATIVE_FEE_FAUCET.try_into().unwrap()))
+            .unwrap()
     }
 
     /// Builds a block header with fees in the [`NATIVE_FEE_FAUCET`] asset.

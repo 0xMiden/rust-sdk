@@ -13,10 +13,11 @@ use miden_client::note_transport::{
     NOTE_TRANSPORT_DEVNET_ENDPOINT,
     NOTE_TRANSPORT_TESTNET_ENDPOINT,
 };
+use miden_client::protocol_config::ProtocolConfig;
 use miden_client::rpc::{Endpoint, GrpcClient, VerifyingRpcClient};
 use miden_client::testing::common::{FilesystemKeyStore, TestClient, create_test_store_path};
 use miden_client::testing::fee::FeeFunder;
-use miden_client::{Felt, RemoteTransactionProver};
+use miden_client::{Deserializable, Felt, RemoteTransactionProver};
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
 use rand::RngExt;
 use uuid::Uuid;
@@ -165,7 +166,7 @@ impl ClientConfig {
         if let Some(protocol_config_path) = protocol_config_path {
             let bytes = std::fs::read(&protocol_config_path)
                 .context("failed to read protocol configuration")?;
-            let config = <miden_client::protocol_config::ProtocolConfig as miden_client::Deserializable>::read_from_bytes(&bytes)?;
+            let config = ProtocolConfig::read_from_bytes(&bytes)?;
             builder = builder.protocol_config(config);
         }
 

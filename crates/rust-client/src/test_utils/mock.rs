@@ -23,6 +23,7 @@ use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::crypto::merkle::mmr::{Forest, Mmr, MmrProof};
 use miden_protocol::crypto::merkle::smt::PartialSmt;
 use miden_protocol::note::{NoteAttachments, NoteHeader, NoteId, NoteScript, NoteTag};
+use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::transaction::{OutputNote, ProvenTransaction};
 use miden_testing::{MockChain, MockChainNote};
 use miden_tx::utils::sync::RwLock;
@@ -160,11 +161,12 @@ impl MockRpcApi {
         self.mock_chain.read().blockchain().as_mmr().clone()
     }
 
-    /// Returns the chain tip block number.
-    pub fn protocol_config(&self) -> miden_protocol::protocol_config::ProtocolConfig {
+    /// Returns the protocol configuration the mock chain commits to.
+    pub fn protocol_config(&self) -> ProtocolConfig {
         self.mock_chain.read().protocol_config().clone()
     }
 
+    /// Returns the chain tip block number.
     pub fn get_chain_tip_block_num(&self) -> BlockNumber {
         self.mock_chain.read().latest_block_header().block_num()
     }

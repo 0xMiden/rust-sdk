@@ -113,6 +113,7 @@ pub trait StoreFactory {
 ///   transactions and account proofs to be considered valid. Configure via
 ///   [`max_block_number_delta()`](Self::max_block_number_delta).
 pub struct ClientBuilder<AUTH> {
+    /// An optional protocol configuration, registered in the store when the client is built.
     protocol_config: Option<ProtocolConfig>,
     /// An optional custom RPC client. If provided, this takes precedence over `rpc_endpoint`.
     rpc_api: Option<Arc<dyn NodeRpcClient>>,
@@ -338,6 +339,13 @@ where
     #[must_use]
     pub fn store(mut self, store: Arc<dyn Store>) -> Self {
         self.store = Some(StoreBuilder::Store(store));
+        self
+    }
+
+    /// Registers a protocol configuration for execution and note screening.
+    #[must_use]
+    pub fn protocol_config(mut self, config: ProtocolConfig) -> Self {
+        self.protocol_config = Some(config);
         self
     }
 
@@ -594,14 +602,5 @@ impl ClientBuilder<FilesystemKeyStore> {
         let keystore = FilesystemKeyStore::new(keystore_path.into())
             .map_err(|e| ClientError::ClientInitializationError(e.to_string()))?;
         Ok(self.authenticator(Arc::new(keystore)))
-    }
-}
-
-impl<AUTH> ClientBuilder<AUTH> {
-    /// Registers a protocol configuration for execution and note screening.
-    #[must_use]
-    pub fn protocol_config(mut self, config: ProtocolConfig) -> Self {
-        self.protocol_config = Some(config);
-        self
     }
 }

@@ -72,6 +72,7 @@ impl TryFrom<proto::blockchain::BlockHeader> for BlockHeader {
     type Error = RpcConversionError;
 
     fn try_from(value: proto::blockchain::BlockHeader) -> Result<Self, Self::Error> {
+        // Upstream builds only version 1 and keeps its constant private.
         if value.version != 1 {
             return Err(RpcConversionError::InvalidField(format!(
                 "unsupported block header version {}",
@@ -199,15 +200,21 @@ mod tests {
     }
 
     #[test]
-    fn block_header_rejects_invalid_version_quorum_and_upgrade_height() {
+    fn block_header_rejects_malformed_wire_fields() {
         let header = BlockHeader::mock(5, None, None, &[]);
         let wire: proto::blockchain::BlockHeader = (&header).into();
+
+        // A version the client does not support.
         let mut malformed = wire.clone();
         malformed.version = 256;
         assert!(BlockHeader::try_from(malformed).is_err());
+
+        // A quorum that does not match the validator count.
         let mut malformed = wire.clone();
         malformed.validator_config.as_mut().unwrap().quorum = 0;
         assert!(BlockHeader::try_from(malformed).is_err());
+
+        // An upgrade scheduled at the genesis height.
         let mut malformed = wire;
         malformed.next_protocol_config = Some(proto::blockchain::NextProtocolConfig {
             effective_from: 0,

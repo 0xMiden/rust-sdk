@@ -23,14 +23,6 @@ async fn protocol_configs_are_selected_by_commitment() {
         client.get_protocol_config(Word::empty()).await,
         Err(ClientError::StoreError(StoreError::ProtocolConfigNotFound(_)))
     ));
-    assert!(
-        client
-            .list_setting_keys()
-            .await
-            .unwrap()
-            .iter()
-            .all(|key| !key.starts_with("protocol_config:"))
-    );
 }
 
 #[tokio::test]

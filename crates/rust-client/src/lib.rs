@@ -121,6 +121,7 @@ pub mod grpc_support;
 pub mod keystore;
 pub mod note;
 pub mod note_transport;
+pub mod protocol_config;
 pub mod pswap;
 #[cfg(feature = "tonic")]
 pub mod remote_prover;
@@ -171,8 +172,6 @@ pub mod assembly {
     pub use miden_protocol::assembly::{Assembler, DefaultSourceManager, Module, ModuleKind, Path};
     pub use miden_standards::code_builder::CodeBuilder;
 }
-
-pub mod protocol_config;
 
 /// Provides types and utilities for working with assets within the Miden network.
 pub mod asset {

@@ -20,7 +20,7 @@ use miden_protocol::account::{
 use miden_protocol::address::NetworkId;
 use miden_protocol::batch::{ProposedBatch, ProvenBatch};
 use miden_protocol::block::account_tree::AccountWitness;
-use miden_protocol::block::{BlockHeader, BlockNumber, ProvenBlock};
+use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock};
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
     PublicKey as ValidatorPublicKey,
     Signature as ValidatorSignature,
@@ -800,7 +800,7 @@ impl NodeRpcClient for GrpcClient {
         &self,
         block_num: BlockNumber,
         include_proof: bool,
-    ) -> Result<ProvenBlock, RpcError> {
+    ) -> Result<SignedBlock, RpcError> {
         let request = proto::blockchain::BlockRequest {
             block_num: block_num.as_u32(),
             include_proof: Some(include_proof),
@@ -813,8 +813,10 @@ impl NodeRpcClient for GrpcClient {
             .await?;
 
         let response = response.into_inner();
+        // The response carries the signed block and its proof in separate fields, so the block
+        // bytes decode as a `SignedBlock` and never as a `ProvenBlock`.
         let block =
-            ProvenBlock::read_from_bytes(&response.block.ok_or(RpcError::ExpectedDataMissing(
+            SignedBlock::read_from_bytes(&response.block.ok_or(RpcError::ExpectedDataMissing(
                 "GetBlockByNumberResponse.block".to_string(),
             ))?)?;
 

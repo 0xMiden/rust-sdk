@@ -69,20 +69,7 @@ impl SqliteStore {
     }
 
     pub(super) fn get_sync_height(conn: &mut Connection) -> Result<BlockNumber, StoreError> {
-        const QUERY: &str = "SELECT block_num FROM blockchain_checkpoint";
-
-        conn.prepare_cached(QUERY)
-            .into_store_error()?
-            .query_map([], |row| row.get(0))
-            .expect("no binding parameters used in query")
-            .map(|result| {
-                let v: i64 = result.into_store_error()?;
-                Ok(BlockNumber::from(u32::try_from(v)?))
-            })
-            .next()
-            .unwrap_or_else(|| {
-                Err(StoreError::QueryError("the blockchain checkpoint row is missing".to_string()))
-            })
+        query_sync_height(conn)
     }
 
     pub(super) fn apply_state_sync(
@@ -210,6 +197,18 @@ pub(super) fn remove_note_tag_tx(
         .into_store_error()?;
 
     Ok(removed_tags)
+}
+
+/// Reads the sync height from the `blockchain_checkpoint` row.
+///
+/// The initial migration seeds the row, so a missing row is corruption and returns a
+/// [`StoreError::QueryError`].
+pub(crate) fn query_sync_height(conn: &Connection) -> Result<BlockNumber, StoreError> {
+    conn.query_row("SELECT block_num FROM blockchain_checkpoint LIMIT 1", [], |row| {
+        row.get::<_, u32>("block_num")
+    })
+    .into_store_error()
+    .map(BlockNumber::from)
 }
 
 #[cfg(test)]

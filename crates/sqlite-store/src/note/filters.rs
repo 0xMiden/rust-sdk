@@ -9,7 +9,6 @@ use miden_client::store::{InputNoteCursor, InputNoteState, NoteFilter, OutputNot
 use miden_client::utils::Serializable;
 use rusqlite::types::{ToSqlOutput, Value};
 
-use super::{INPUT_NOTE_COLUMNS, OUTPUT_NOTE_COLUMNS};
 use crate::blob_array;
 
 type NoteQueryParams = Vec<ToSqlOutput<'static>>;
@@ -30,17 +29,22 @@ fn in_rarray_condition(
 // NOTE FILTER (OUTPUT NOTES)
 // ================================================================================================
 
-fn output_notes_base_query() -> String {
-    format!(
-        "SELECT {OUTPUT_NOTE_COLUMNS} from output_notes AS note \
-         LEFT OUTER JOIN notes_scripts AS script ON note.script_root = script.script_root"
-    )
-}
+/// The column aliases match the names that `parse_output_note_columns` reads.
+const OUTPUT_NOTES_BASE_QUERY: &str = "SELECT \
+     note.recipient_digest AS recipient_digest, \
+     note.assets AS assets, \
+     note.metadata AS metadata, \
+     note.expected_height AS expected_height, \
+     note.state AS state, \
+     note.attachments AS attachments, \
+     script.serialized_note_script AS serialized_note_script \
+     from output_notes AS note \
+     LEFT OUTER JOIN notes_scripts AS script ON note.script_root = script.script_root";
 
 /// Returns the output notes query for a specific `NoteFilter`
 pub(super) fn note_filter_to_query_output_notes(filter: &NoteFilter) -> (String, NoteQueryParams) {
     let (condition, params) = note_filter_output_notes_condition(filter);
-    let query = format!("{} WHERE {condition}", output_notes_base_query());
+    let query = format!("{OUTPUT_NOTES_BASE_QUERY} WHERE {condition}");
 
     (query, params)
 }
@@ -103,25 +107,29 @@ pub(super) fn note_filter_output_notes_condition(filter: &NoteFilter) -> (String
 // NOTE FILTER (INPUT NOTES)
 // ================================================================================================
 
-fn input_notes_base_query() -> String {
-    format!(
-        "SELECT {INPUT_NOTE_COLUMNS} from input_notes AS note \
-         LEFT OUTER JOIN notes_scripts AS script ON note.script_root = script.script_root"
-    )
-}
+/// The column aliases match the names that `parse_input_note_columns` reads.
+const INPUT_NOTES_BASE_QUERY: &str = "SELECT \
+     note.assets AS assets, \
+     note.serial_number AS serial_number, \
+     note.inputs AS inputs, \
+     script.serialized_note_script AS serialized_note_script, \
+     note.state AS state, \
+     note.created_at AS created_at, \
+     note.attachments AS attachments \
+     from input_notes AS note \
+     LEFT OUTER JOIN notes_scripts AS script ON note.script_root = script.script_root";
 
 pub(super) fn note_filter_to_query_input_notes(filter: &NoteFilter) -> (String, NoteQueryParams) {
-    let base_query = input_notes_base_query();
     let (condition, params) = note_filter_input_notes_condition(filter);
     let query = if matches!(filter, NoteFilter::Consumed) {
         format!(
-            "{base_query} WHERE {condition} \
+            "{INPUT_NOTES_BASE_QUERY} WHERE {condition} \
              ORDER BY note.consumed_block_height ASC, \
                       note.consumed_tx_order IS NULL, note.consumed_tx_order ASC, \
                       note.details_commitment ASC"
         )
     } else {
-        format!("{base_query} WHERE {condition}")
+        format!("{INPUT_NOTES_BASE_QUERY} WHERE {condition}")
     };
 
     (query, params)
@@ -176,11 +184,10 @@ pub(super) fn note_filter_to_query_input_note_after(
     // `details_commitment` is the primary key of the `WITHOUT ROWID` table, so it trails every
     // index on it. Ordering by it makes the order total and keeps the seek index-served.
     let query = format!(
-        "{} WHERE {condition} \
+        "{INPUT_NOTES_BASE_QUERY} WHERE {condition} \
          ORDER BY note.consumed_block_height ASC, note.consumed_tx_order ASC, \
                   note.details_commitment ASC \
-         LIMIT 1",
-        input_notes_base_query()
+         LIMIT 1"
     );
 
     (query, params)

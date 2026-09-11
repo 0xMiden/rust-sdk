@@ -10,10 +10,11 @@ use miden_client::crypto::{Forest, InOrderIndex, MmrPeaks};
 use miden_client::note::BlockNumber;
 use miden_client::store::{BlockRelevance, PartialBlockchainFilter, StoreError};
 use miden_client::utils::{Deserializable, Serializable};
-use rusqlite::{Connection, OptionalExtension, Transaction, params, params_from_iter};
+use rusqlite::{Connection, Transaction, params, params_from_iter};
 
 use super::SqliteStore;
 use crate::sql_error::SqlResultExt;
+use crate::sync::query_sync_height;
 use crate::{insert_sql, int_array, subst, with_write_tx};
 
 struct SerializedBlockHeaderData {
@@ -134,21 +135,18 @@ impl SqliteStore {
         const QUERY: &str =
             "SELECT block_num, partial_blockchain_peaks FROM blockchain_checkpoint LIMIT 1";
 
-        let row: Option<(u32, Vec<u8>)> = conn
+        let (block_num, peaks_bytes): (u32, Vec<u8>) = conn
             .prepare(QUERY)
             .into_store_error()?
             .query_row(params![], |row| {
                 Ok((row.get("block_num")?, row.get("partial_blockchain_peaks")?))
             })
-            .optional()
             .into_store_error()?;
 
-        match row {
-            Some((block_num, peaks_bytes)) if !peaks_bytes.is_empty() => {
-                parse_partial_blockchain_peaks(block_num, &peaks_bytes)
-            },
-            _ => Ok(MmrPeaks::new(Forest::empty(), vec![])?),
+        if peaks_bytes.is_empty() {
+            return Ok(MmrPeaks::new(Forest::empty(), vec![])?);
         }
+        parse_partial_blockchain_peaks(block_num, &peaks_bytes)
     }
 
     pub(crate) fn insert_block_header(
@@ -164,9 +162,6 @@ impl SqliteStore {
     }
 
     /// Inserts a list of MMR authentication nodes to the Partial Blockchain nodes table.
-    ///
-    /// The insert statement is prepared once (through the statement cache) and reused for every
-    /// node, since sync regularly inserts many nodes per block.
     pub(crate) fn insert_partial_blockchain_nodes_tx(
         tx: &Transaction<'_>,
         nodes: &[(InOrderIndex, Word)],
@@ -240,22 +235,16 @@ impl SqliteStore {
 
             // 3. Delete irrelevant block headers.
             let genesis: u32 = BlockNumber::GENESIS.as_u32();
+            let sync_height = query_sync_height(tx)?.as_u32();
 
-            let sync_block: Option<u32> = tx
-                .query_row("SELECT block_num FROM blockchain_checkpoint LIMIT 1", [], |r| r.get(0))
-                .optional()
-                .into_store_error()?;
-
-            if let Some(sync_height) = sync_block {
-                tx.execute(
-                    "DELETE FROM block_headers \
-                     WHERE has_client_notes = 0 \
-                     AND block_num > ?1 \
-                     AND block_num < ?2",
-                    rusqlite::params![genesis, sync_height],
-                )
-                .into_store_error()?;
-            }
+            tx.execute(
+                "DELETE FROM block_headers \
+                 WHERE has_client_notes = 0 \
+                 AND block_num > ?1 \
+                 AND block_num < ?2",
+                rusqlite::params![genesis, sync_height],
+            )
+            .into_store_error()?;
 
             Ok(())
         })

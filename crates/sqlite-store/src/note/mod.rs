@@ -145,31 +145,6 @@ struct SerializedOutputNoteStateUpdate {
     pub state: Vec<u8>,
 }
 
-// COLUMN LISTS
-// ================================================================================================
-
-// Each SELECT list below is the single source of truth for its row mapper: the filter modules build
-// their queries from these constants and the mappers read the same columns by name, so the two
-// cannot drift apart.
-
-/// Columns read by [`parse_input_note_columns`].
-pub(super) const INPUT_NOTE_COLUMNS: &str = "note.assets AS assets, \
-     note.serial_number AS serial_number, \
-     note.inputs AS inputs, \
-     script.serialized_note_script AS serialized_note_script, \
-     note.state AS state, \
-     note.created_at AS created_at, \
-     note.attachments AS attachments";
-
-/// Columns read by [`parse_output_note_columns`].
-pub(super) const OUTPUT_NOTE_COLUMNS: &str = "note.recipient_digest AS recipient_digest, \
-     note.assets AS assets, \
-     note.metadata AS metadata, \
-     note.expected_height AS expected_height, \
-     note.state AS state, \
-     note.attachments AS attachments, \
-     script.serialized_note_script AS serialized_note_script";
-
 // NOTES STORE METHODS
 // ================================================================================================
 

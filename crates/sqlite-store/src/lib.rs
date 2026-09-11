@@ -668,8 +668,8 @@ pub(crate) fn with_write_tx<R>(
 }
 
 /// Runs `f` inside an `IMMEDIATE` rusqlite transaction, committing on `Ok` and rolling back on
-/// `Err`. Immediate transactions take the write lock up front, so writes that read current state
-/// first cannot be invalidated by a concurrent writer between the read and the write.
+/// `Err`. An `IMMEDIATE` transaction takes the write lock before the first read, so a concurrent
+/// writer cannot commit between a read and the write that depends on it.
 pub(crate) fn with_immediate_write_tx<R>(
     conn: &mut Connection,
     f: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<R, StoreError>,

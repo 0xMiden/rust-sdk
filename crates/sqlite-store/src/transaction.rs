@@ -67,7 +67,7 @@ struct SerializedTransactionParts {
 
 impl SqliteStore {
     /// Retrieves tracked transactions, filtered by [`TransactionFilter`].
-    pub(crate) fn get_transactions(
+    pub fn get_transactions(
         conn: &mut Connection,
         filter: &TransactionFilter,
     ) -> Result<Vec<TransactionRecord>, StoreError> {

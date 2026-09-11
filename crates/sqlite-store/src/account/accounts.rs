@@ -196,7 +196,7 @@ impl SqliteStore {
         Ok(Some(AccountRecord::new(account_record_data, status, client_account_type)))
     }
 
-    pub(crate) fn get_foreign_account_code(
+    pub fn get_foreign_account_code(
         conn: &mut Connection,
         account_ids: Vec<AccountId>,
     ) -> Result<BTreeMap<AccountId, AccountCode>, StoreError> {
@@ -218,7 +218,7 @@ impl SqliteStore {
     }
 
     /// Retrieves the full asset vault for a specific account.
-    pub(crate) fn get_account_vault(
+    pub fn get_account_vault(
         conn: &Connection,
         account_id: AccountId,
     ) -> Result<AssetVault, StoreError> {
@@ -227,7 +227,7 @@ impl SqliteStore {
     }
 
     /// Retrieves the full storage for a specific account.
-    pub(crate) fn get_account_storage(
+    pub fn get_account_storage(
         conn: &Connection,
         account_id: AccountId,
         filter: &AccountStorageFilter,

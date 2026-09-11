@@ -28,6 +28,10 @@ repository   = "https://github.com/0xMiden/rust-sdk"
 rust-version = "1.98.1"
 version      = "0.17.0-rc.1"
 
+# TODO: Remove this once a node allowlist branch implements the necessary proto definitions
+[patch."https://github.com/0xMiden/node"]
+miden-node-proto-build = { path = "../miden-node/proto" }
+
 [profile.dev]
 codegen-units = 16
 

@@ -41,6 +41,18 @@ impl Debug for proto::account::AccountId {
     }
 }
 
+// REGISTER ACCOUNT REQUEST
+// ================================================================================================
+
+/// Hides the invitation code, which is a secret that must not reach logs or error messages.
+impl Debug for proto::rpc::RegisterAccountRequest {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RegisterAccountRequest")
+            .field("account_id", &self.account_id)
+            .finish_non_exhaustive()
+    }
+}
+
 // INTO PROTO ACCOUNT ID
 // ================================================================================================
 

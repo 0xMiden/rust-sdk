@@ -1,5 +1,6 @@
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -85,6 +86,8 @@ pub struct MockRpcApi {
     /// [`MockRpcApi::fail_next_call`]. An entry is removed when served, so the call after it
     /// answers normally and a test can exercise a retry.
     next_call_failures: Arc<RwLock<BTreeMap<&'static str, RpcError>>>,
+    /// Invitation code each account was registered with, recorded by `register_account`.
+    registered_accounts: Arc<RwLock<BTreeMap<AccountId, String>>>,
 }
 
 impl Default for MockRpcApi {
@@ -109,6 +112,7 @@ impl MockRpcApi {
             sync_notes_mmr_path_overrides: Arc::new(RwLock::new(BTreeMap::new())),
             get_notes_by_id_calls: Arc::new(AtomicUsize::new(0)),
             next_call_failures: Arc::new(RwLock::new(BTreeMap::new())),
+            registered_accounts: Arc::new(RwLock::new(BTreeMap::new())),
         }
     }
 
@@ -124,6 +128,12 @@ impl MockRpcApi {
     /// Returns the failure staged for `endpoint`, removing it so it is served once.
     fn take_failure(&self, endpoint: RpcEndpoint) -> Option<RpcError> {
         self.next_call_failures.write().remove(endpoint.proto_name())
+    }
+
+    /// Returns the invitation code `account_id` was registered with, or `None` if this API served
+    /// no registration for it.
+    pub fn registered_invitation_code(&self, account_id: AccountId) -> Option<String> {
+        self.registered_accounts.read().get(&account_id).cloned()
     }
 
     /// Registers the attachment content for a private note so that subsequent `get_notes_by_id`
@@ -697,6 +707,24 @@ impl NodeRpcClient for MockRpcApi {
         let proof = AccountProof::new(witness, headers).unwrap();
 
         Ok((block_number, proof))
+    }
+
+    async fn register_account(
+        &self,
+        invitation_code: &str,
+        account_id: AccountId,
+    ) -> Result<(), RpcError> {
+        if let Some(error) = self.take_failure(RpcEndpoint::RegisterAccount) {
+            return Err(error);
+        }
+
+        // The mock holds no invitations, so it accepts any code and records the pair. Stage a
+        // failure with `fail_next_call` to exercise a rejection.
+        self.registered_accounts
+            .write()
+            .insert(account_id, String::from(invitation_code));
+
+        Ok(())
     }
 
     /// Returns the nullifiers created after the specified block number that match the provided

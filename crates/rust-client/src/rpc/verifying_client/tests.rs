@@ -307,6 +307,14 @@ impl NodeRpcClient for CannedTransport {
         self.canned(self.account.as_ref(), "test must set a canned get_account response")
     }
 
+    async fn register_account(
+        &self,
+        _invitation_code: &str,
+        _account_id: AccountId,
+    ) -> Result<(), RpcError> {
+        unimplemented!("not used in these tests")
+    }
+
     async fn get_note_script_by_root(&self, _root: Word) -> Result<Option<NoteScript>, RpcError> {
         if let Some(err) = self.failure() {
             return Err(err);

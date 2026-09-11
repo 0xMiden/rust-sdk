@@ -3030,7 +3030,6 @@ dependencies = [
 [[package]]
 name = "miden-node-proto-build"
 version = "0.17.0-rc.1"
-source = "git+https://github.com/0xMiden/node?rev=f64fe50f31ea58bcb791a35b826f71e99e74034c#f64fe50f31ea58bcb791a35b826f71e99e74034c"
 dependencies = [
  "build-rs",
  "codegen",

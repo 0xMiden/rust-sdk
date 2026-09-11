@@ -584,8 +584,7 @@ mod tests {
         let address = Address::new(account_id);
 
         let encoded_for_testnet = address.encode(NetworkId::Testnet);
-        let (decoded_network_id, _decoded_address) =
-            Address::decode(&encoded_for_testnet).unwrap();
+        let (decoded_network_id, _decoded_address) = Address::decode(&encoded_for_testnet).unwrap();
 
         assert_eq!(decoded_network_id, NetworkId::Testnet);
         assert_ne!(decoded_network_id, NetworkId::Mainnet);

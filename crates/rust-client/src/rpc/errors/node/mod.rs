@@ -4,7 +4,7 @@ mod note;
 mod sync;
 mod transaction;
 
-pub use account::GetAccountError;
+pub use account::{GetAccountError, RegisterAccountError};
 pub use block::{GetBlockByNumberError, GetBlockHeaderError};
 pub use note::{GetNoteScriptByRootError, GetNotesByIdError};
 pub use sync::{
@@ -18,6 +18,7 @@ use thiserror::Error;
 pub use transaction::AddTransactionError;
 
 use crate::rpc::RpcEndpoint;
+use crate::rpc::errors::GrpcError;
 
 /// Application-level error returned by the node for a specific RPC endpoint.
 ///
@@ -57,6 +58,9 @@ pub enum EndpointError {
     /// Error from the `GetAccount` endpoint
     #[error(transparent)]
     GetAccount(#[from] GetAccountError),
+    /// Error from the `RegisterAccount` endpoint
+    #[error(transparent)]
+    RegisterAccount(#[from] RegisterAccountError),
 }
 
 /// Parses the application-level error code into a typed error for the given endpoint.
@@ -105,6 +109,38 @@ pub fn parse_node_error(
         },
         // These endpoints don't have typed errors from the node
         RpcEndpoint::SyncChainMmr
+        | RpcEndpoint::Status
+        | RpcEndpoint::GetLimits
+        | RpcEndpoint::GetNetworkNoteStatus
+        | RpcEndpoint::GetTransactionEncryptionKey
+        | RpcEndpoint::RegisterAccount
+        | RpcEndpoint::SubmitProvenBatch => None,
+    }
+}
+
+/// Parses the gRPC status code into a typed error for the given endpoint.
+pub fn parse_status_error(
+    endpoint: &RpcEndpoint,
+    error_kind: &GrpcError,
+    message: &str,
+) -> Option<EndpointError> {
+    // The match is exhaustive on purpose, so a new endpoint has to be classified before it
+    // compiles.
+    match endpoint {
+        RpcEndpoint::RegisterAccount => RegisterAccountError::from_grpc_error(error_kind, message)
+            .map(EndpointError::RegisterAccount),
+        RpcEndpoint::SubmitProvenTx
+        | RpcEndpoint::GetBlockHeaderByNumber
+        | RpcEndpoint::GetBlockByNumber
+        | RpcEndpoint::SyncNotes
+        | RpcEndpoint::SyncNullifiers
+        | RpcEndpoint::SyncAccountVault
+        | RpcEndpoint::SyncStorageMaps
+        | RpcEndpoint::SyncTransactions
+        | RpcEndpoint::GetNotesById
+        | RpcEndpoint::GetNoteScriptByRoot
+        | RpcEndpoint::GetAccount
+        | RpcEndpoint::SyncChainMmr
         | RpcEndpoint::Status
         | RpcEndpoint::GetLimits
         | RpcEndpoint::GetNetworkNoteStatus

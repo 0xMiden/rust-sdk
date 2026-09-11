@@ -207,7 +207,9 @@ MIDEN_VERIFICATION_BASE_FEE=0 make start-node-background
 ```
 
 The suite never mints. It draws the native asset from pre-funded basic wallets named by `--funders`
-(or `MIDEN_FUNDER_ACCOUNTS_DIR`), either one `.mac` file or a directory of them.
+(or `MIDEN_FUNDER_ACCOUNTS_DIR`), either one `.mac` file or a directory of them. A path naming no
+`.mac` file means no funders (useful for fee-free chains) so the Make targets can pass the
+same path either way.
 
 ```bash
 # Local node: its genesis pre-funds the wallets and start-test-node.sh writes them here.
@@ -242,7 +244,8 @@ chain before every payment, which is what makes sharing one between test process
 
 ### Environment variables
 
-- `MIDEN_FUNDER_ACCOUNTS_DIR` - funder `.mac` file or directory, same as `--funders`
+- `MIDEN_FUNDER_ACCOUNTS_DIR` - funder `.mac` file or directory, same as `--funders`. Unset, empty
+  or naming no `.mac` file leaves the run without funders
 - `MIDEN_VERIFICATION_BASE_FEE` - genesis `verification_base_fee` for the testing node (default
   `500`; `0` runs the node fee-free and declares no funder wallets)
 - `MIDEN_NUM_FUNDER_WALLETS` - number of wallets a fee-charging genesis pre-funds (default `16`)

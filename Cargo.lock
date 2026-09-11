@@ -2704,6 +2704,7 @@ dependencies = [
 name = "miden-client-unit-tests"
 version = "0.16.0"
 dependencies = [
+ "anyhow",
  "miden-client",
  "miden-client-sqlite-store",
  "miden-debug",

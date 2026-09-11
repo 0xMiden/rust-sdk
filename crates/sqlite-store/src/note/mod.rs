@@ -373,7 +373,7 @@ pub(super) fn upsert_input_note_tx(
             nullifier,
             state_discriminant,
             state,
-            created_at,
+            u64_to_value(created_at),
             consumed_block_height,
             consumed_tx_order,
             consumer_account_id,

@@ -14,7 +14,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params, params_from_i
 
 use super::SqliteStore;
 use crate::sql_error::SqlResultExt;
-use crate::{column_value_as_u64, insert_sql, int_array, subst, with_write_tx};
+use crate::{insert_sql, int_array, subst, with_write_tx};
 
 struct SerializedBlockHeaderData {
     block_num: u32,
@@ -339,7 +339,7 @@ fn serialize_partial_blockchain_node(
 fn parse_partial_blockchain_nodes_columns(
     row: &rusqlite::Row<'_>,
 ) -> Result<SerializedPartialBlockchainNodeParts, rusqlite::Error> {
-    let id = column_value_as_u64(row, "id")?;
+    let id: u64 = row.get("id")?;
     let node = row.get("node")?;
     Ok(SerializedPartialBlockchainNodeParts { id, node })
 }

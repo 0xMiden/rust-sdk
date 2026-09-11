@@ -1181,7 +1181,7 @@ impl StateSync {
     ) -> Result<NoteBlockRelevance, ClientError> {
         let mut relevance = NoteBlockRelevance::default();
 
-        for (_, note) in notes {
+        for (_, mut note) in notes {
             // Observers run BEFORE the screener: they are a side-effect channel independent of the
             // Commit/Insert/Discard decision, and a failing screener must not rob them of the note.
             if !self.note_observers.is_empty() {
@@ -1200,24 +1200,18 @@ impl StateSync {
                 }
             }
 
-            // The screener works on the sync record, which carries the note's resolved attachments
-            // so that a screener implementation can read them.
-            let committed = note.to_committed_note();
-
-            let SyncedNote {
-                note_id: _,
-                metadata,
-                inclusion_proof,
-                details,
-                attachments,
-            } = note;
-
             // For a public note, pair its fetched body with the inclusion proof and metadata from
             // the sync record (the single source of truth) to build the candidate record.
-            let public_note = details.map(|details| {
-                let state = UnverifiedNoteState { metadata, inclusion_proof }.into();
-                InputNoteRecord::new(details, attachments.clone(), None, state)
+            let public_note = note.details.take().map(|details| {
+                let state = UnverifiedNoteState {
+                    metadata: note.metadata,
+                    inclusion_proof: note.inclusion_proof.clone(),
+                }
+                .into();
+                InputNoteRecord::new(details, note.attachments.clone(), None, state)
             });
+
+            let committed = note.into_committed_note();
 
             match self.note_screener.on_note_received(committed, public_note).await? {
                 NoteUpdateAction::Commit(committed_note) => {
@@ -1225,11 +1219,7 @@ impl StateSync {
                     // input note (output notes get marked as committed but we don't need the block
                     // for anything there)
                     relevance.has_client_note |= note_updates
-                        .apply_committed_note_state_transitions(
-                            &committed_note,
-                            block_header,
-                            &attachments,
-                        )?;
+                        .apply_committed_note_state_transitions(&committed_note, block_header)?;
                 },
                 NoteUpdateAction::Insert(public_note) => {
                     relevance.has_client_note = true;

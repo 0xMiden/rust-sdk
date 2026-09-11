@@ -505,17 +505,18 @@ impl SyncedNote {
         self.inclusion_proof.location().block_num()
     }
 
-    /// Returns the note's sync record together with the attachment content resolved for it.
+    /// Consumes the synced note and returns its sync record together with the attachment content
+    /// resolved for it. The note body, which the record does not hold, is dropped.
     ///
     /// The returned record reports its attachments as resolved, so
     /// [`CommittedNote::needs_attachment_fetch`] is always `false` for it. A note without
     /// attachments carries an empty set.
-    pub fn to_committed_note(&self) -> CommittedNote {
+    pub fn into_committed_note(self) -> CommittedNote {
         CommittedNote {
             note_id: self.note_id,
             metadata: self.metadata,
-            inclusion_proof: self.inclusion_proof.clone(),
-            attachments: Some(self.attachments.clone()),
+            inclusion_proof: self.inclusion_proof,
+            attachments: Some(self.attachments),
         }
     }
 }

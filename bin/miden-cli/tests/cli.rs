@@ -550,6 +550,52 @@ async fn show_untracked_public_account() -> Result<()> {
     Ok(())
 }
 
+/// `account --show` must format vault assets through the faucet metadata resolver, so the token
+/// symbol map applies to the asset table the same way it applies to `notes -s` and to the
+/// transaction preview.
+///
+/// The map deliberately names the faucet differently from its on-chain metadata (`TST` with 2
+/// decimals against `BTC` with 10), so the asset row can only carry `TST` and the amount scaled by
+/// 2 decimals if the map was consulted.
+#[tokio::test]
+async fn account_show_formats_vault_assets_with_the_token_symbol_map() -> Result<()> {
+    let (store_path, temp_dir, endpoint) = init_cli();
+
+    let wallet_account_id = new_wallet_cli(&temp_dir, AccountType::Private);
+    let fungible_faucet_account_id = new_faucet_cli(&temp_dir, AccountType::Private);
+    fund_cli_account(&temp_dir, &store_path, &endpoint, &fungible_faucet_account_id).await?;
+    fund_cli_account(&temp_dir, &store_path, &endpoint, &wallet_account_id).await?;
+    sync_cli(&temp_dir);
+
+    // Move 100 base units of the faucet's token into the wallet's vault.
+    let note_id = mint_cli(&temp_dir, &wallet_account_id, &fungible_faucet_account_id);
+    sync_until_committed_note(&temp_dir);
+    consume_note_cli(&temp_dir, &wallet_account_id, &[&note_id]);
+    sync_until_committed_transaction(&temp_dir);
+
+    // The map's `address` field accepts bech32 only, encoded with the NetworkId the CLI derives
+    // from its configured endpoint.
+    let faucet_id = AccountId::from_hex(&fungible_faucet_account_id)?;
+    let bech32_address = Address::new(faucet_id).encode(endpoint.to_network_id());
+    let token_symbol_map_path = temp_dir.join(MIDEN_DIR).join("token_symbol_map.toml");
+    fs::write(
+        &token_symbol_map_path,
+        format!(r#"TST = {{ address = "{bech32_address}", decimals = 2 }}"#),
+    )?;
+
+    let mut show_cmd = cargo_bin_cmd!("miden-client");
+    show_cmd.args(["account", "--show", &wallet_account_id]);
+    show_cmd
+        .current_dir(&temp_dir)
+        .assert()
+        .success()
+        // 100 base units at the 2 decimals the map declares.
+        .stdout(contains("TST").and(contains("1.00")))
+        .stdout(contains("BTC").not());
+
+    Ok(())
+}
+
 // INSPECT TESTS
 // ================================================================================================
 

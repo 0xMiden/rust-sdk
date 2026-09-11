@@ -13,18 +13,22 @@ use miden_client::account::{
     StorageSlotContent,
 };
 use miden_client::address::{Address, AddressInterface, NetworkId, RoutingParameters};
-use miden_client::asset::{Asset, TokenSymbol};
+use miden_client::asset::Asset;
 use miden_client::rpc::domain::account::GetAccountRequest;
 use miden_client::rpc::{GrpcClient, NodeRpcClient, VerifyingRpcClient};
 use miden_client::transaction::{AccountComponentInterface, AccountInterface};
-use miden_client::utils::base_units_to_tokens;
 use miden_client::vm::{Package, PackageExport};
 use miden_client::{Client, PrettyPrint, Word, ZERO};
 
 use crate::commands::new_account::load_packages;
 use crate::config::{CliConfig, RpcConfig};
 use crate::errors::CliError;
-use crate::utils::{parse_account_id, split_procedure_target};
+use crate::utils::{
+    load_faucet_metadata_resolver,
+    parse_account_id,
+    read_tracked_faucet_metadata,
+    split_procedure_target,
+};
 use crate::{client_binary_name, create_dynamic_table};
 
 pub const DEFAULT_ACCOUNT_ID_KEY: &str = "default_account_id";
@@ -164,10 +168,10 @@ async fn list_accounts<AUTH>(client: Client<AUTH>) -> Result<(), CliError> {
     for (acc, _acc_seed) in &accounts {
         let reader = client.account_reader(acc.id());
         let status = reader.status().await?.to_string();
-        let token_symbol = get_faucet_token_info(&client, acc.id())
+        let token_symbol = read_tracked_faucet_metadata(&client, acc.id())
             .await
             .ok()
-            .map(|(symbol, _)| symbol.to_string());
+            .map(|metadata| metadata.symbol);
 
         table.add_row(vec![
             acc.id().to_hex(),
@@ -203,18 +207,18 @@ async fn show_account<AUTH>(
         let assets = account.vault().assets();
         println!("Assets: ");
 
+        // A vault can hold assets from faucets that the client does not track. The resolver finds
+        // the metadata of such a faucet in the token symbol map, in the settings store, or on the
+        // network.
+        let faucet_metadata_resolver = load_faucet_metadata_resolver()?;
+
         let mut table = create_dynamic_table(&["Asset Type", "Faucet", "Amount"]);
         for asset in assets {
             let (asset_type, faucet, amount) = match asset {
                 Asset::Fungible(fungible_asset) => {
-                    let faucet_id = fungible_asset.faucet_id();
-                    let asset_amount = fungible_asset.amount();
-                    let (faucet, amount) = match get_faucet_token_info(client, faucet_id).await {
-                        Ok((symbol, decimals)) => {
-                            (symbol.to_string(), base_units_to_tokens(asset_amount, decimals))
-                        },
-                        Err(_) => (faucet_id.prefix().to_hex(), asset_amount.as_u64().to_string()),
-                    };
+                    let (faucet, amount) = faucet_metadata_resolver
+                        .format_fungible_asset(client, &fungible_asset)
+                        .await?;
                     ("Fungible Asset", faucet, amount)
                 },
                 Asset::NonFungible(non_fungible_asset) => {
@@ -571,33 +575,6 @@ fn print_summary_table(account: &Account, network_id: NetworkId, token_symbol: O
     ]);
 
     println!("{table}\n");
-}
-
-/// Reads the faucet's token symbol and decimals from its token config storage slot.
-///
-/// # Errors
-/// Returns an error if the account is not tracked by the client, has no token config slot (i.e.
-/// is not a fungible faucet), or the token config can't be decoded.
-async fn get_faucet_token_info<AUTH>(
-    client: &Client<AUTH>,
-    account_id: AccountId,
-) -> Result<(TokenSymbol, u8), CliError> {
-    let token_config = client
-        .account_reader(account_id)
-        .get_storage_item(FungibleFaucet::token_config_slot().clone())
-        .await?;
-
-    // Token config word layout: `[token_supply, max_supply, decimals, symbol]` (see
-    // `FungibleFaucet::token_config_slot_value`).
-    let [_token_supply, _max_supply, decimals, symbol] = *token_config;
-    let symbol = TokenSymbol::try_from(symbol).map_err(|err| {
-        CliError::Input(format!("failed to decode token symbol of faucet {account_id}: {err}"))
-    })?;
-    let decimals = u8::try_from(decimals.as_canonical_u64()).map_err(|err| {
-        CliError::Input(format!("failed to decode token decimals of faucet {account_id}: {err}"))
-    })?;
-
-    Ok((symbol, decimals))
 }
 
 /// Reconstructs the [`FungibleFaucet`] component from a materialized [`Account`].

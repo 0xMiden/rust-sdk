@@ -9,8 +9,8 @@ use crate::{Parser, Subcommand, create_dynamic_table};
 
 /// Mirrors [`AddressInterface`], enabling parsing for CLI commands.
 ///
-/// An interface specifies the set of procedures an account exposes, which determines
-/// which notes it is able to receive and consume.
+/// An interface specifies the set of procedures an account exposes, which determines which notes it
+/// is able to receive and consume.
 #[derive(Debug, Clone, ValueEnum)]
 pub enum CliAddressInterface {
     BasicWallet,
@@ -166,9 +166,12 @@ async fn remove_address<AUTH>(
     let address = decode_account_address(&address, account_id, &network_id)?;
     let note_tag = address.to_note_tag();
 
-    println!("removing address - Account Id {account_id} - Note tag: {note_tag}");
+    if client.remove_address(address, account_id).await? {
+        println!("Address removed - Account Id {account_id} - Note tag: {note_tag}");
+    } else {
+        println!("No address was tracked for Account Id {account_id}");
+    }
 
-    client.remove_address(address, account_id).await?;
     Ok(())
 }
 
@@ -184,7 +187,7 @@ async fn encode_address<AUTH>(
     let routing_params = match tag_len {
         Some(tag_len) => RoutingParameters::new(interface)
             .with_note_tag_len(tag_len)
-            .map_err(|e| CliError::Address(e, String::new()))?,
+            .map_err(|e| CliError::Address(e, format!("invalid tag_len {tag_len}")))?,
         None => RoutingParameters::new(interface),
     };
     let address = Address::new(account_id).with_routing_parameters(routing_params);

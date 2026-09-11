@@ -70,13 +70,20 @@ async fn list_tags<AUTH>(client: Client<AUTH>) -> Result<(), CliError> {
 async fn add_tag<AUTH>(mut client: Client<AUTH>, tag: u32) -> Result<(), CliError> {
     let tag: NoteTag = tag.into();
     info!("adding tag {tag}");
-    client.add_note_tag(tag).await?;
-    println!("Tag {tag} added");
+    if client.add_note_tag(tag).await? {
+        println!("Tag {tag} added");
+    } else {
+        println!("Tag {tag} is already being tracked");
+    }
     Ok(())
 }
 
 async fn remove_tag<AUTH>(mut client: Client<AUTH>, tag: u32) -> Result<(), CliError> {
-    client.remove_note_tag(tag.into()).await?;
-    println!("Tag {tag} removed");
+    let tag: NoteTag = tag.into();
+    if client.remove_note_tag(tag).await? {
+        println!("Tag {tag} removed");
+    } else {
+        println!("Tag {tag} wasn't being tracked");
+    }
     Ok(())
 }

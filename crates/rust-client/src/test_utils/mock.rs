@@ -2,12 +2,14 @@ use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use miden_protocol::Word;
 use miden_protocol::account::{
     AccountId,
     AccountUpdateDetails,
     AccountVaultPatch,
+    StorageMapKey,
     StorageMapPatchEntries,
     StorageSlot,
     StorageSlotContent,
@@ -19,6 +21,7 @@ use miden_protocol::batch::{ProposedBatch, ProvenBatch};
 use miden_protocol::block::{BlockHeader, BlockNumber, ProvenBlock};
 use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::crypto::merkle::mmr::{Forest, Mmr, MmrProof};
+use miden_protocol::crypto::merkle::smt::PartialSmt;
 use miden_protocol::note::{NoteAttachments, NoteHeader, NoteId, NoteScript, NoteTag};
 use miden_protocol::transaction::{OutputNote, ProvenTransaction};
 use miden_testing::{MockChain, MockChainNote};
@@ -45,7 +48,7 @@ use crate::rpc::domain::storage_map::StorageMapInfo;
 use crate::rpc::domain::sync::{ChainMmrInfo, SyncTarget};
 use crate::rpc::domain::transaction::TransactionRecord;
 use crate::rpc::encryption::{AttestedTransactionEncryptionKey, SealedTransactionInputs};
-use crate::rpc::{AccountStateAt, NodeRpcClient, RpcError, RpcStatusInfo};
+use crate::rpc::{AccountStateAt, NodeRpcClient, RpcEndpoint, RpcError, RpcStatusInfo};
 
 pub type MockClient<AUTH> = Client<AUTH>;
 
@@ -68,12 +71,19 @@ pub struct MockRpcApi {
     oversize_threshold: usize,
     /// Note headers to report as erased in sync transaction responses.
     erased_notes: Arc<RwLock<Vec<NoteHeader>>>,
-    /// Attachment content for private notes, keyed by note ID. The [`MockChain`] stores private
-    /// notes without their attachment content (only metadata), so tests that need
-    /// `get_notes_by_id` to return private-note attachments register them here.
+    /// Attachment content `get_notes_by_id` serves for private notes, populated by
+    /// `submit_proven_transaction` and by `register_private_note_attachments`. A note absent here
+    /// is served with empty attachments, which is how a test simulates a withholding node.
     private_note_attachments: Arc<RwLock<BTreeMap<NoteId, NoteAttachments>>>,
     /// Test overrides for the MMR paths returned by `sync_notes`, keyed by block number.
     sync_notes_mmr_path_overrides: Arc<RwLock<BTreeMap<BlockNumber, MerklePath>>>,
+    /// Number of `get_notes_by_id` requests served, so a test can assert that a flow avoided the
+    /// round trip.
+    get_notes_by_id_calls: Arc<AtomicUsize>,
+    /// Failures to serve instead of answering, keyed by [`RpcEndpoint::proto_name`] and set by
+    /// [`MockRpcApi::fail_next_call`]. An entry is removed when served, so the call after it
+    /// answers normally and a test can exercise a retry.
+    next_call_failures: Arc<RwLock<BTreeMap<&'static str, RpcError>>>,
 }
 
 impl Default for MockRpcApi {
@@ -96,7 +106,23 @@ impl MockRpcApi {
             erased_notes: Arc::new(RwLock::new(Vec::new())),
             private_note_attachments: Arc::new(RwLock::new(BTreeMap::new())),
             sync_notes_mmr_path_overrides: Arc::new(RwLock::new(BTreeMap::new())),
+            get_notes_by_id_calls: Arc::new(AtomicUsize::new(0)),
+            next_call_failures: Arc::new(RwLock::new(BTreeMap::new())),
         }
+    }
+
+    /// Makes the next call to `endpoint` fail with `error` instead of answering. The failure is
+    /// consumed, so the call after it answers normally and a test can exercise a retry.
+    ///
+    /// Staging a failure for an endpoint whose mock implementation does not look for one is a
+    /// silent no-op.
+    pub fn fail_next_call(&self, endpoint: RpcEndpoint, error: RpcError) {
+        self.next_call_failures.write().insert(endpoint.proto_name(), error);
+    }
+
+    /// Returns the failure staged for `endpoint`, removing it so it is served once.
+    fn take_failure(&self, endpoint: RpcEndpoint) -> Option<RpcError> {
+        self.next_call_failures.write().remove(endpoint.proto_name())
     }
 
     /// Registers the attachment content for a private note so that subsequent `get_notes_by_id`
@@ -105,14 +131,19 @@ impl MockRpcApi {
         self.private_note_attachments.write().insert(note_id, attachments);
     }
 
+    /// Returns how many `get_notes_by_id` requests this API has served.
+    pub fn get_notes_by_id_call_count(&self) -> usize {
+        self.get_notes_by_id_calls.load(Ordering::Relaxed)
+    }
+
     /// Overrides the MMR path returned by `sync_notes` for the specified block.
     pub fn set_sync_notes_mmr_path(&self, block_num: BlockNumber, path: MerklePath) {
         self.sync_notes_mmr_path_overrides.write().insert(block_num, path);
     }
 
-    /// Sets the oversize threshold for `get_account`. Any storage map with more entries than
-    /// this threshold, or a vault with more assets, will have the `too_many_entries` /
-    /// `too_many_assets` flags set in the response.
+    /// Sets the oversize threshold for `get_account`. A storage map whose entries were requested in
+    /// full comes back as `StorageMapEntries::LimitExceeded` past this threshold, and a vault with
+    /// more assets than it comes back with the `too_many_assets` flag set.
     #[must_use]
     pub fn with_oversize_threshold(mut self, threshold: usize) -> Self {
         self.oversize_threshold = threshold;
@@ -164,9 +195,8 @@ impl MockRpcApi {
         self.mock_chain.read().block_header(block_num.as_usize())
     }
 
-    /// Retrieves account vault updates in a given block range.
-    /// This method tries to simulate pagination by limiting the number of blocks processed per
-    /// request.
+    /// Retrieves account vault updates in a given block range. This method tries to simulate
+    /// pagination by limiting the number of blocks processed per request.
     fn get_sync_account_vault_request(
         &self,
         block_from: BlockNumber,
@@ -325,17 +355,22 @@ impl MockRpcApi {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl NodeRpcClient for MockRpcApi {
+    /// Always reports the commitment as unset, unlike a real client.
+    ///
+    /// A real client's RPC connection is its own, so whoever set the commitment also stored the
+    /// header. Tests share one mock across clients with separate stores, where a commitment set by
+    /// the first would stop every later client from storing genesis at all.
     fn has_genesis_commitment(&self) -> Option<Word> {
         None
     }
 
     async fn set_genesis_commitment(&self, _commitment: Word) -> Result<(), RpcError> {
-        // The mock client doesn't use accept headers, so we don't need to do anything here.
+        // The mock sends no request headers, so there is nothing to pin the commitment to.
         Ok(())
     }
 
-    /// Returns note updates in the inclusive block range `[block_from, block_to]`.
-    /// Only notes that match the provided tags will be returned, grouped by block.
+    /// Returns note updates in the inclusive block range `[block_from, block_to]`. Only notes that
+    /// match the provided tags will be returned, grouped by block.
     async fn sync_notes(
         &self,
         block_from: BlockNumber,
@@ -350,8 +385,16 @@ impl NodeRpcClient for MockRpcApi {
                 && note_block >= block_from
                 && note_block <= block_to
             {
-                let committed =
+                let mut committed =
                     CommittedNote::new(note.id(), *note.metadata(), note.inclusion_proof().clone());
+                // Mirror the node: a single-word attachment is sent verbatim and the record is
+                // complete. A larger one is sent as a commitment only.
+                let attachments = note.attachments();
+                if attachments.iter().all(|attachment| attachment.num_words() == 1) {
+                    committed = committed
+                        .with_attachments(attachments.clone())
+                        .expect("the note's own attachments match its commitment");
+                }
                 blocks_with_notes.entry(note_block).or_default().insert(note.id(), committed);
             }
         }
@@ -428,6 +471,8 @@ impl NodeRpcClient for MockRpcApi {
 
     /// Returns the node's tracked notes that match the provided note IDs.
     async fn get_notes_by_id(&self, note_ids: &[NoteId]) -> Result<Vec<FetchedNote>, RpcError> {
+        self.get_notes_by_id_calls.fetch_add(1, Ordering::Relaxed);
+
         // assume all public notes for now
         let notes = self.mock_chain.read().committed_notes().clone();
 
@@ -477,11 +522,13 @@ impl NodeRpcClient for MockRpcApi {
         _sealed_transaction_inputs: SealedTransactionInputs, /* Unnecessary for testing client
                                                               * itself. */
     ) -> Result<BlockNumber, RpcError> {
-        // TODO: add some basic validations to test error cases
+        if let Some(error) = self.take_failure(RpcEndpoint::SubmitProvenTx) {
+            return Err(error);
+        }
 
-        // Record private-note attachment content the way a real node does: attachments are
-        // stored on-chain even for private notes, so `get_notes_by_id` must be able to serve
-        // them. The mock chain itself only keeps private note headers.
+        // Record private-note attachment content the way a real node does: attachments are stored
+        // on-chain even for private notes, so `get_notes_by_id` must be able to serve them. The
+        // mock chain itself only keeps private note headers.
         for note in proven_transaction.output_notes().iter() {
             if let OutputNote::Private(private_note) = note
                 && !private_note.attachments().is_empty()
@@ -504,8 +551,8 @@ impl NodeRpcClient for MockRpcApi {
 
     /// Simulates the submission of a proven batch to the node by adding it to the mock chain's
     /// pending batches. The `proposed_batch` and `sealed_transaction_inputs` arguments are accepted
-    /// to match the trait signature but are unused — the mock relies on the `ProvenBatch`
-    /// alone, matching how `submit_proven_transaction` ignores its `sealed_transaction_inputs`.
+    /// to match the trait signature but are unused — the mock relies on the `ProvenBatch` alone,
+    /// matching how `submit_proven_transaction` ignores its `sealed_transaction_inputs`.
     async fn submit_proven_batch(
         &self,
         proven_batch: ProvenBatch,
@@ -521,8 +568,8 @@ impl NodeRpcClient for MockRpcApi {
         Ok(block_num)
     }
 
-    /// Returns the account proof for the specified account. The `known_code` and `vault` fields
-    /// are ignored: full account data is returned, with truncation flags set when it exceeds
+    /// Returns the account proof for the specified account. The `known_code` and `vault` fields are
+    /// ignored: full account data is returned, with truncation flags set when it exceeds
     /// `oversize_threshold`.
     async fn get_account(
         &self,
@@ -551,39 +598,56 @@ impl NodeRpcClient for MockRpcApi {
             let account = mock_chain.committed_account(account_id).unwrap();
 
             // `All` enumerates the account's map slots directly — the mock can introspect the
-            // account, so it simulates the (not-yet-on-the-wire) "all storage maps" request.
-            let requested_slots: Vec<_> = match &request.storage {
+            // account, so it simulates the (not-yet-on-the-wire) "all storage maps" request. A slot
+            // maps to the keys requested for it, empty meaning "every entry".
+            let requested_slots: Vec<(StorageSlotName, Vec<StorageMapKey>)> = match &request.storage
+            {
                 StorageMapFetch::Skip => Vec::new(),
-                StorageMapFetch::Slots(reqs) => reqs.inner().keys().cloned().collect(),
+                StorageMapFetch::Slots(reqs) => {
+                    reqs.inner().iter().map(|(name, keys)| (name.clone(), keys.clone())).collect()
+                },
                 StorageMapFetch::All => account
                     .storage()
                     .to_header()
                     .slots()
                     .filter(|slot| slot.slot_type() == StorageSlotType::Map)
-                    .map(|slot| slot.name().clone())
+                    .map(|slot| (slot.name().clone(), Vec::new()))
                     .collect(),
             };
 
             let mut map_details = vec![];
-            for slot_name in &requested_slots {
+            for (slot_name, requested_keys) in &requested_slots {
                 if let Some(StorageSlotContent::Map(storage_map)) =
                     account.storage().get(slot_name).map(StorageSlot::content)
                 {
-                    let entries: Vec<StorageMapEntry> = storage_map
-                        .entries()
-                        .map(|(key, value)| StorageMapEntry { key: *key, value: *value })
-                        .collect();
+                    // Mirror the node: named keys come back as one partial SMT covering them, and
+                    // an empty key list comes back as the whole map, or as `LimitExceeded` once it
+                    // grows past the threshold.
+                    let entries = if requested_keys.is_empty() {
+                        let entries: Vec<StorageMapEntry> = storage_map
+                            .entries()
+                            .map(|(key, value)| StorageMapEntry { key: *key, value: *value })
+                            .collect();
 
-                    // NOTE: The mock returns all entries even when too_many_entries is set.
-                    // In production, the node would return partial data for oversized maps.
-                    let too_many_entries = entries.len() > self.oversize_threshold;
-                    let account_storage_map_detail = AccountStorageMapDetails {
-                        slot_name: slot_name.clone(),
-                        too_many_entries,
-                        entries: StorageMapEntries::AllEntries(entries),
+                        if entries.len() > self.oversize_threshold {
+                            StorageMapEntries::LimitExceeded
+                        } else {
+                            StorageMapEntries::AllEntries(entries)
+                        }
+                    } else {
+                        let partial_smt = PartialSmt::from_proofs(
+                            requested_keys.iter().map(|key| storage_map.open(key).into()),
+                        )
+                        .expect("proofs from one map share a root");
+
+                        StorageMapEntries::PartialMap {
+                            map_keys: requested_keys.clone(),
+                            partial_smt,
+                        }
                     };
 
-                    map_details.push(account_storage_map_detail);
+                    map_details
+                        .push(AccountStorageMapDetails { slot_name: slot_name.clone(), entries });
                 } else {
                     panic!("Storage slot {slot_name} is not a map");
                 }

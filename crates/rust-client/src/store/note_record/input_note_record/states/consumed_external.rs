@@ -18,13 +18,12 @@ pub struct ConsumedExternalNoteState {
     pub nullifier_block_height: BlockNumber,
     /// The account that consumed the note, if it is tracked by this client.
     pub consumer_account: Option<AccountId>,
-    /// Per-account position of the consuming transaction within the account's execution chain
-    /// for the block. `None` if the order has not been determined yet.
+    /// Per-account position of the consuming transaction within the account's execution chain for
+    /// the block. `None` if the order has not been determined yet.
     pub consumed_tx_order: Option<u32>,
-    /// Metadata associated with the note (sender, note type, tag and other additional
-    /// information), retained through consumption so the note ID stays recoverable. `None` when
-    /// the prior state had no metadata (e.g. a note imported from bare
-    /// `NoteFile::NoteDetails`).
+    /// Metadata associated with the note (sender, note type, tag and other additional information),
+    /// retained through consumption so the note ID stays recoverable. `None` when the prior state
+    /// had no metadata (e.g. a note imported from bare `NoteFile::NoteDetails`).
     pub metadata: Option<NoteMetadata>,
 }
 

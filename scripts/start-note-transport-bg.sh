@@ -5,13 +5,13 @@
 
 set -euo pipefail
 
-REPO_URL=${REPO_URL:-https://github.com/0xMiden/miden-note-transport}
+NOTE_TRANSPORT_VERSION=${NOTE_TRANSPORT_VERSION:-0.5.0-rc.2}
 BINARY_NAME=miden-note-transport-node
 PID_FILE=.note-transport.pid
 
 if ! command -v "$BINARY_NAME" &>/dev/null; then
   echo "Installing note transport service..."
-  cargo install --git "$REPO_URL" --locked
+  cargo install --locked "miden-note-transport-node-bin@$NOTE_TRANSPORT_VERSION"
 fi
 
 echo "Starting note transport service in background..."

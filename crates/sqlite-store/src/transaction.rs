@@ -30,7 +30,6 @@ pub(crate) const UPSERT_TRANSACTION_QUERY: &str = insert_sql!(
         id,
         details,
         script_root,
-        block_num,
         status_variant,
         status
     } | REPLACE
@@ -51,8 +50,6 @@ struct SerializedTransactionData {
     tx_script: Option<Vec<u8>>,
     /// Transaction details
     details: Vec<u8>,
-    /// Block number
-    block_num: u32,
     /// Transaction status variant identifier
     status_variant: u8,
     /// Serialized transaction status
@@ -102,8 +99,8 @@ impl SqliteStore {
 
     /// Inserts a transaction and updates the current state based on the `tx_result` changes.
     ///
-    /// SQL writes and forest mutations go through the same rusqlite transaction, so they commit
-    /// or roll back atomically.
+    /// SQL writes and forest mutations go through the same rusqlite transaction, so they commit or
+    /// roll back atomically.
     pub fn apply_transaction(
         conn: &mut Connection,
         tx_update: &TransactionStoreUpdate,
@@ -118,9 +115,8 @@ impl SqliteStore {
         db_tx.commit().into_store_error()
     }
 
-    /// Applies a batch of [`TransactionStoreUpdate`]s atomically. Either every update in the
-    /// slice is persisted or none are. Executes in order inside a single
-    /// [`rusqlite::Transaction`].
+    /// Applies a batch of [`TransactionStoreUpdate`]s atomically. Either every update in the slice
+    /// is persisted or none are. Executes in order inside a single [`rusqlite::Transaction`].
     pub fn apply_transaction_batch(
         conn: &mut Connection,
         tx_updates: &[TransactionStoreUpdate],
@@ -137,11 +133,11 @@ impl SqliteStore {
         db_tx.commit().into_store_error()
     }
 
-    /// Applies a transaction's store update within the provided rusqlite transaction.
-    /// Does NOT commit — caller is responsible for commit/rollback.
+    /// Applies a transaction's store update within the provided rusqlite transaction. Does NOT
+    /// commit — caller is responsible for commit/rollback.
     ///
-    /// The storage-map-root pre-read is performed via the transaction so that each call sees
-    /// writes made by prior calls within the same outer transaction.
+    /// The storage-map-root pre-read is performed via the transaction so that each call sees writes
+    /// made by prior calls within the same outer transaction.
     pub(crate) fn apply_transaction_in_txn(
         db_tx: &Transaction<'_>,
         smt_forest: &mut ScopedAccountForest<'_, '_>,
@@ -212,7 +208,6 @@ pub(crate) fn upsert_transaction_record(
         script_root,
         tx_script,
         details,
-        block_num,
         status_variant,
         status,
     } = serialize_transaction_data(transaction);
@@ -224,7 +219,7 @@ pub(crate) fn upsert_transaction_record(
 
     tx.execute(
         UPSERT_TRANSACTION_QUERY,
-        params![id, details, script_root, block_num, status_variant, status],
+        params![id, details, script_root, status_variant, status],
     )
     .into_store_error()?;
 
@@ -243,7 +238,6 @@ fn serialize_transaction_data(transaction_record: &TransactionRecord) -> Seriali
         script_root,
         tx_script,
         details: transaction_record.details.to_bytes(),
-        block_num: transaction_record.details.block_num.as_u32(),
         status_variant: transaction_record.status.variant() as u8,
         status: transaction_record.status.to_bytes(),
     }
@@ -278,4 +272,110 @@ fn parse_transaction(
         script,
         status: TransactionStatus::read_from_bytes(&status)?,
     })
+}
+
+// TESTS
+// ================================================================================================
+
+#[cfg(test)]
+mod tests {
+    use miden_client::store::TransactionFilter;
+    use miden_client::transaction::{
+        DiscardCause,
+        RawOutputNotes,
+        TransactionDetails,
+        TransactionId,
+        TransactionRecord,
+        TransactionStatus,
+    };
+    use miden_client::{Felt, Word, ZERO};
+    use miden_protocol::account::AccountId;
+    use miden_protocol::block::BlockNumber;
+    use miden_protocol::testing::account_id::ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE;
+    use rusqlite::Connection;
+
+    use super::{SqliteStore, upsert_transaction_record};
+    use crate::db_management::migration::SqliteMigrator;
+
+    /// Builds a script-less transaction record with the given status.
+    fn create_transaction_record(index: u64, status: TransactionStatus) -> TransactionRecord {
+        const BLOCK_NUM: u32 = 5;
+
+        let account_id =
+            AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE).unwrap();
+        let details = TransactionDetails {
+            account_id,
+            init_account_state: Word::default(),
+            final_account_state: Word::default(),
+            input_note_nullifiers: vec![],
+            output_notes: RawOutputNotes::new(vec![]).unwrap(),
+            block_num: BlockNumber::from(BLOCK_NUM),
+            submission_height: BlockNumber::from(BLOCK_NUM),
+            expiration_block_num: BlockNumber::from(BLOCK_NUM + 1),
+            creation_timestamp: 0,
+        };
+
+        let id = TransactionId::from_raw([Felt::new_unchecked(index), ZERO, ZERO, ZERO].into());
+
+        TransactionRecord::new(id, details, None, status)
+    }
+
+    fn create_test_connection(records: &[TransactionRecord]) -> Connection {
+        let mut conn = Connection::open_in_memory().unwrap();
+        SqliteMigrator::client().apply(&mut conn).unwrap();
+
+        let db_tx = conn.transaction().unwrap();
+        for record in records {
+            upsert_transaction_record(&db_tx, record).unwrap();
+        }
+        db_tx.commit().unwrap();
+
+        conn
+    }
+
+    /// Returns the `detail` column of every step of the query plan for `query`.
+    fn query_plan(conn: &Connection, query: &str) -> Vec<String> {
+        let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {query}")).unwrap();
+        stmt.query_map([], |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn uncommitted_returns_only_pending_transactions() {
+        let pending = create_transaction_record(1, TransactionStatus::Pending);
+        let committed = create_transaction_record(
+            2,
+            TransactionStatus::Committed {
+                block_number: BlockNumber::from(6u32),
+                commit_timestamp: 0,
+            },
+        );
+        let discarded =
+            create_transaction_record(3, TransactionStatus::Discarded(DiscardCause::Expired));
+
+        let mut conn = create_test_connection(&[pending.clone(), committed, discarded]);
+
+        let records =
+            SqliteStore::get_transactions(&mut conn, &TransactionFilter::Uncommitted).unwrap();
+
+        let ids: Vec<_> = records.iter().map(|record| record.id).collect();
+        assert_eq!(ids, vec![pending.id]);
+    }
+
+    #[test]
+    fn uncommitted_is_served_by_the_pending_transactions_index() {
+        let conn = create_test_connection(&[]);
+
+        let query = TransactionFilter::Uncommitted.to_query();
+        let plan = query_plan(&conn, &query).join("\n");
+
+        // Every entry of the partial index is a pending transaction, so the search never touches a
+        // committed or discarded row.
+        assert!(
+            plan.contains("SEARCH tx USING INDEX idx_transactions_pending (status_variant=?)"),
+            "pending transactions must be read from the partial index: {plan}"
+        );
+    }
 }

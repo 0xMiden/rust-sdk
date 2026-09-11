@@ -11,21 +11,59 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum SqliteStoreError {
     #[error("Database error: {0}")]
-    DatabaseError(String),
+    Database(String),
     #[error("Migration error: {0}")]
-    MigrationError(String),
-    #[error("Database schema does not match the schema expected for its migration version")]
-    SchemaHashMismatch,
+    Migration(String),
+    #[error(
+        "stored schema at version {version} does not match the schema this client builds for that version (expected {expected}, found {actual})"
+    )]
+    SchemaDrift {
+        version: usize,
+        expected: String,
+        actual: String,
+    },
+    #[error(
+        "store is at schema version {found}, which is newer than the highest version this client supports ({supported})"
+    )]
+    SchemaTooNew { found: usize, supported: usize },
+    #[error(
+        "migrating to schema version {version} produced a schema this client does not expect (expected {expected}, found {actual})"
+    )]
+    MigratedSchemaMismatch {
+        version: usize,
+        expected: String,
+        actual: String,
+    },
+    #[error(
+        "the database is not empty and does not record a schema version, so it was not created by this client and will not be migrated into a store"
+    )]
+    NotAClientStore,
 }
 
 impl From<RusqliteError> for SqliteStoreError {
     fn from(err: RusqliteError) -> Self {
-        SqliteStoreError::DatabaseError(err.to_string())
+        SqliteStoreError::Database(err.to_string())
     }
 }
 
 impl From<MigrationError> for SqliteStoreError {
+    /// Renders a migration failure without reproducing the migration script.
     fn from(err: MigrationError) -> Self {
-        SqliteStoreError::MigrationError(err.to_string())
+        let message = match &err {
+            MigrationError::RusqliteError {
+                err: RusqliteError::SqlInputError { msg, .. },
+                ..
+            } => msg.clone(),
+            MigrationError::RusqliteError { err, .. } => err.to_string(),
+            MigrationError::ForeignKeyCheck(violations) => {
+                format!(
+                    "{} foreign key violation(s) after applying the migration",
+                    violations.len()
+                )
+            },
+            other => other.to_string(),
+        };
+
+        SqliteStoreError::Migration(message)
     }
 }

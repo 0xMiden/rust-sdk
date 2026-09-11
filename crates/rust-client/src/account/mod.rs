@@ -1,9 +1,9 @@
 //! The `account` module provides types and client APIs for managing accounts within the Miden
 //! network.
 //!
-//! Accounts are foundational entities of the Miden protocol. They store assets and define
-//! rules for manipulating them. Once an account is registered with the client, its state will
-//! be updated accordingly, and validated against the network state on every sync.
+//! Accounts are foundational entities of the Miden protocol. They store assets and define rules for
+//! manipulating them. Once an account is registered with the client, its state will be updated
+//! accordingly, and validated against the network state on every sync.
 //!
 //! # Example
 //!
@@ -90,8 +90,8 @@ use miden_tx::utils::serde::{
 
 /// Display-only metadata for a faucet account, persisted in the client's settings store.
 ///
-/// Populated lazily by the CLI resolver from the on-chain token config of a public faucet
-/// and persisted under a `faucet_metadata:<faucet-id>` key.
+/// Populated lazily by the CLI resolver from the on-chain token config of a public faucet and
+/// persisted under a `faucet_metadata:<faucet-id>` key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FaucetMetadata {
     pub symbol: String,
@@ -288,8 +288,8 @@ impl<AUTH> Client<AUTH> {
         self.add_account_inner(account, ClientAccountType::Native, overwrite).await
     }
 
-    /// Inserts `account` into the store (or overwrites it if `overwrite` is true) and registers
-    /// the per-account note tag if `client_account_type` is [`ClientAccountType::Native`].
+    /// Inserts `account` into the store (or overwrites it if `overwrite` is true) and registers the
+    /// per-account note tag if `client_account_type` is [`ClientAccountType::Native`].
     ///
     /// Switching the [`ClientAccountType`] of an already-tracked account is not supported and
     /// returns [`ClientError::AccountWatchedMismatch`].
@@ -379,8 +379,8 @@ impl<AUTH> Client<AUTH> {
     /// being tracked by the client, its state will be overwritten.
     ///
     /// To import an account as watched (state-tracking only, no note sync), use
-    /// [`Self::import_watched_account_by_id`] instead. Switching an already-tracked account
-    /// between Native and Watched is not supported.
+    /// [`Self::import_watched_account_by_id`] instead. Switching an already-tracked account between
+    /// Native and Watched is not supported.
     ///
     /// # Errors
     /// - If the account is not found on the network.
@@ -396,8 +396,8 @@ impl<AUTH> Client<AUTH> {
     ///
     /// Like [`Self::import_account_by_id`], the account is fetched from the network by its ID.
     /// Unlike `import_account_by_id`, the account is added without registering its derived note
-    /// tag: `sync_state` will keep the account's commitment, nonce and storage up to date but
-    /// will **not** pull notes targeted at it.
+    /// tag: `sync_state` will keep the account's commitment, nonce and storage up to date but will
+    /// **not** pull notes targeted at it.
     ///
     /// If the account is already being tracked as watched its state is overwritten. Switching an
     /// already-tracked native account to watched is not supported.
@@ -505,21 +505,25 @@ impl<AUTH> Client<AUTH> {
     }
 
     /// Removes an [`Address`] from the associated [`AccountId`], alongside its derived [`NoteTag`].
-    /// If no address was tracked for the given account, this is a no-op.
+    ///
+    /// Returns `true` if the address was tracked. If it wasn't, this is a no-op: the derived tag is
+    /// left in place, since it may have been registered by something other than this address.
     pub async fn remove_address(
         &mut self,
         address: Address,
         account_id: AccountId,
-    ) -> Result<(), ClientError> {
+    ) -> Result<bool, ClientError> {
         let derived_note_tag = address.to_note_tag();
         let note_tag_record = NoteTagRecord::with_account_source(derived_note_tag, account_id);
-        self.store.remove_address(address).await?;
+        if !self.store.remove_address(address).await? {
+            return Ok(false);
+        }
         // Remove the note tag if no other address are associated with it.
         let addresses = self.store.get_addresses_by_account_id(account_id).await?;
         if addresses.iter().all(|address| address.to_note_tag() != derived_note_tag) {
             self.store.remove_note_tag(note_tag_record).await?;
         }
-        Ok(())
+        Ok(true)
     }
 
     // ACCOUNT DATA RETRIEVAL
@@ -568,14 +572,22 @@ impl<AUTH> Client<AUTH> {
         self.store.get_account_headers().await.map_err(Into::into)
     }
 
+    /// Returns the [`AccountHeader`] of the account with the specified ID along with its status, or
+    /// `None` if the account isn't tracked by the client.
+    ///
+    /// Said account's state is the state after the last performed sync.
+    pub async fn get_account_header(
+        &self,
+        account_id: AccountId,
+    ) -> Result<Option<(AccountHeader, AccountStatus)>, ClientError> {
+        self.store.get_account_header(account_id).await.map_err(Into::into)
+    }
+
     /// Retrieves the full [`Account`] object from the store, returning `None` if not found.
     ///
-    /// This method loads the complete account state including vault, storage, and code.
-    ///
-    /// For lazy access that fetches only the data you need, use
-    /// [`Client::account_reader`] instead.
-    ///
-    /// Use [`Client::try_get_account`] if you want to error when the account is not found.
+    /// This method loads the complete account state including vault, storage, and code — including
+    /// building the vault's Merkle tree. For lazy access that fetches only the data you need
+    /// (existence checks, single fields, storage items), use [`Client::account_reader`] instead.
     pub async fn get_account(&self, account_id: AccountId) -> Result<Option<Account>, ClientError> {
         match self.store.get_account(account_id).await? {
             Some(record) => Ok(Some(record.try_into()?)),
@@ -583,21 +595,10 @@ impl<AUTH> Client<AUTH> {
         }
     }
 
-    /// Retrieves the full [`Account`] object from the store, erroring if not found.
-    ///
-    /// This method loads the complete account state including vault, storage, and code.
-    ///
-    /// Use [`Client::get_account`] if you want to handle missing accounts gracefully.
-    pub async fn try_get_account(&self, account_id: AccountId) -> Result<Account, ClientError> {
-        self.get_account(account_id)
-            .await?
-            .ok_or(ClientError::AccountDataNotFound(account_id))
-    }
-
     /// Creates an [`AccountReader`] for lazy access to account data.
     ///
-    /// The `AccountReader` provides lazy access to account state - each method call
-    /// fetches fresh data from storage, ensuring you always see the current state.
+    /// The `AccountReader` provides lazy access to account state - each method call fetches fresh
+    /// data from storage, ensuring you always see the current state.
     ///
     /// For loading the full [`Account`] object, use [`Client::get_account`] instead.
     ///
@@ -619,11 +620,11 @@ impl<AUTH> Client<AUTH> {
 
     /// Prunes historical account states for the specified account up to the given nonce.
     ///
-    /// Deletes all historical entries with `replaced_at_nonce <= up_to_nonce` and any
-    /// orphaned account code.
-    ///
-    /// Returns the total number of rows deleted, including historical entries and orphaned
+    /// Deletes all historical entries with `replaced_at_nonce <= up_to_nonce` and any orphaned
     /// account code.
+    ///
+    /// Returns the total number of rows deleted, including historical entries and orphaned account
+    /// code.
     pub async fn prune_account_history(
         &self,
         account_id: AccountId,

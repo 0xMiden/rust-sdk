@@ -244,6 +244,8 @@ pub enum ClientError {
     /// `From<MyFeatureError> for ClientError` returning `Observer(Box::new(err))`.
     #[error(transparent)]
     Observer(Box<dyn core::error::Error + Send + Sync + 'static>),
+    #[error("expected note blocks to be screened before state sync update is built")]
+    UnscreenedNoteBlocks,
 }
 
 // OBSERVER FAN-OUT
@@ -394,6 +396,14 @@ impl From<&TransactionRequestError> for Option<ErrorHint> {
             TransactionRequestError::P2IDNoteWithoutAsset => Some(ErrorHint {
                 message: "A pay-to-ID (P2ID) note transfers assets to a target account. \
                           Add at least one fungible or non-fungible asset to the note.".to_string(),
+                docs_url: Some(TROUBLESHOOTING_DOC),
+            }),
+            TransactionRequestError::SwapNoteWithZeroAsset(side) => Some(ErrorHint {
+                message: format!(
+                    "A swap note exchanges the offered asset for the requested one, and its \
+                     payback is a P2ID note carrying the requested asset. A zero {side} asset \
+                     leaves one side of that exchange empty. Set a non-zero amount."
+                ),
                 docs_url: Some(TROUBLESHOOTING_DOC),
             }),
             TransactionRequestError::OutputNoteSenderMismatch { expected, actual } => {

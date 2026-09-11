@@ -13,19 +13,17 @@ use crate::{insert_sql, subst};
 
 impl SqliteStore {
     pub(crate) fn get_setting<T: FromSql>(
-        conn: &mut Connection,
+        conn: &Connection,
         scope: SettingScope,
         name: &str,
     ) -> Result<Option<T>, StoreError> {
-        conn.transaction()
-            .into_store_error()?
-            .query_row(
-                "SELECT value FROM settings WHERE scope = $1 AND name = $2",
-                params![scope.as_u8(), name],
-                |row| row.get(0),
-            )
-            .optional()
-            .into_store_error()
+        conn.query_row(
+            "SELECT value FROM settings WHERE scope = $1 AND name = $2",
+            params![scope.as_u8(), name],
+            |row| row.get(0),
+        )
+        .optional()
+        .into_store_error()
     }
 
     pub(crate) fn set_setting<T: ToSql>(

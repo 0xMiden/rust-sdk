@@ -4,11 +4,26 @@
 
 ### Breaking Changes
 
+* [BREAKING][behavior][rust] Notes fetched from the Note Transport Layer are screened when their tag matches a tracked account's tag, discarding the ones no tracked account can consume ([#2474](https://github.com/0xMiden/rust-sdk/pull/2474)).
+* [BREAKING][behavior][rust] A Note Transport Layer failure no longer fails `Client::sync_state`. The error is logged and the chain sync still applies; the transport cursor is left where it was, so the next sync requests the same page again ([#2453](https://github.com/0xMiden/rust-sdk/pull/2453)).
+* [BREAKING][type][rust] Added the `TransactionRequestError::SwapNoteWithZeroAsset` variant, so exhaustive matches on `TransactionRequestError` must handle it ([#2459](https://github.com/0xMiden/rust-sdk/pull/2459)).
+* [BREAKING][removal][test] Loose helper functions in `miden_client::testing::common` are now methods on `TestClient`. `TestClient::keystore()` exposes the client's keystore, so `ClientConfig::into_client` and `into_unsynced_client` return just the `TestClient` instead of a client/keystore pair ([#2481](https://github.com/0xMiden/rust-sdk/pull/2481)).
 * [BREAKING][removal][rust] `tokens_to_base_units`, `base_units_to_tokens` and `TokenParseError` are removed from `miden_client::utils`. They format and parse fungible amounts for display against a faucet's decimals, which only the CLI needs, so they now live in the CLI crate ([#2515](https://github.com/0xMiden/rust-sdk/pull/2515)).
-* [BREAKING][rust] The workspace MSRV and the pinned toolchain are raised to Rust 1.98. Building the client now requires a 1.98 or newer compiler. The declared MSRV of 1.96 could not build the locked dependency graph, whose Miden packages require 1.96.1 ([#2471](https://github.com/0xMiden/rust-sdk/issues/2471)).
+
+### Fixes
+
+* [FIX][rust] Refreshed tracked input notes after transport imports so the same sync detects their consumption ([#2453](https://github.com/0xMiden/rust-sdk/pull/2453)).
+* [FIX][rust] A private note fetched from the Note Transport Layer whose nullifier is already on chain is now imported as consumed instead of committed, so `get_consumable_notes` no longer reports notes the node will reject ([#2453](https://github.com/0xMiden/rust-sdk/pull/2453)).
+* [FIX][rust] Added validation of cached transaction encryption keys during deserialization. Unsupported encryption schemes and empty or oversized key IDs are rejected before reading the key ID bytes ([#2411](https://github.com/0xMiden/rust-sdk/pull/2411)).
+* [FIX][cli] `notes --list consumable` now respects the `--account-id` filter ([#2449](https://github.com/0xMiden/rust-sdk/pull/2449)).
+* [store] Simplified `SqliteStore::get_setting` to take `&Connection` directly without opening an unnecessary transaction ([#2449](https://github.com/0xMiden/rust-sdk/pull/2449)).
+* [FIX][cli] `miden-client import` now rejects invocations without a file path instead of silently succeeding ([#2450](https://github.com/0xMiden/rust-sdk/pull/2450)).
+* [FIX][rust] `TransactionRequestBuilder::build_swap` and `build_pswap_create` now reject a zero-amount asset on either side of the exchange. A zero requested asset produced a payback P2ID note carrying nothing, and a zero offered asset produced a note whose consumer pays and receives nothing ([#2459](https://github.com/0xMiden/rust-sdk/pull/2459)).
+* [FIX][test] The integration tests run again on a chain that charges no fee. A `--funders` path (`MIDEN_FUNDER_ACCOUNTS_DIR`) that is unset, empty, missing, or holds no `.mac` file now leaves the run without funders instead of failing, which is all a fee-free genesis needs, since it declares no wallets for the path to hold. A `.mac` file that is present but unusable stays a hard error ([#2481](https://github.com/0xMiden/rust-sdk/pull/2481)).
 
 ### Enhancements
 
+* [rust] `Client::sync_state` fetches a Note Transport Layer page and the node's chain update concurrently, instead of running a full note transport sync before the chain sync. The transport notes are imported first and their records join the chain sync's note updates, so a note delivered and committed within the same sync is reported by that sync ([#2453](https://github.com/0xMiden/rust-sdk/pull/2453)).
 * [FEATURE][cli] `call` now takes an `account-id` argument as a bech32 address as well as a hex id, matching the spellings the rest of the CLI accepts for an account. This applies to the `account-id` type itself and to the faucet half of an `asset` token ([#2179](https://github.com/0xMiden/rust-sdk/pull/2179)).
 
 ## 0.16.0 (2026-09-07)
@@ -128,7 +143,6 @@
 * [FIX][cli] `miden-client notes --show` now prints the note sender in the `Sender` row; it was printing the note tag there ([#2412](https://github.com/0xMiden/rust-sdk/pull/2412)).
 * [FIX][cli] `miden-client tags --add` and `--remove` now report what actually happened instead of always printing that the tag was added or removed ([#2416](https://github.com/0xMiden/rust-sdk/pull/2416)).
 * [FIX][cli] `miden-client account --default none` now reports whether a default account was actually removed instead of always printing that it was. Removing an absent setting also no longer panics in debug builds ([#2439](https://github.com/0xMiden/rust-sdk/pull/2439)).
-* [FIX][cli] `miden-client import` now rejects invocations without a file path instead of silently succeeding.
 * [FIX][cli] `miden-client address remove` now reports whether the address was actually removed instead of always printing that it was being removed.
 * [FIX][rust] `VerifyingRpcClient::get_account` now validates that the returned `AccountProof` belongs to the requested account ID, rejecting a mismatch with `RpcError::InvalidResponse` ([#2419](https://github.com/0xMiden/rust-sdk/pull/2419)).
 * [FIX][rust] On wasm32 the node RPC and note transport gRPC clients now apply the configured request timeout instead of silently ignoring it, so a request whose response never arrives fails with `deadline_exceeded` rather than hanging forever. Long-lived note streams are exempt, as the fetch-level timeout would abort a stream that is still delivering updates ([#2452](https://github.com/0xMiden/rust-sdk/pull/2452)).

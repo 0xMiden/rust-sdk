@@ -25,7 +25,7 @@ use miden_protocol::note::{
 use miden_standards::note::NoteFile;
 use miden_tx::auth::TransactionAuthenticator;
 
-use crate::rpc::domain::note::{FetchedNote, SyncedNote};
+use crate::rpc::domain::note::{FetchedNote, ResolvedSyncNotesBlock};
 use crate::rpc::{NoteContentFetch, RpcError};
 use crate::store::input_note_states::ExpectedNoteState;
 use crate::store::{InputNoteRecord, InputNoteState, NoteFilter};
@@ -128,7 +128,7 @@ where
                         previous_note,
                         details,
                         sync_hint.after_block_num(),
-                        Some(sync_hint.tag()),
+                        sync_hint.tag(),
                     ));
                 },
                 NoteFile::Committed { note, proof } => {
@@ -342,47 +342,56 @@ where
     /// the new information changed them.
     async fn import_note_records_by_details(
         &mut self,
-        requested_notes: Vec<(Option<InputNoteRecord>, NoteDetails, BlockNumber, Option<NoteTag>)>,
+        requested_notes: Vec<NoteImportByDetailsRequest>,
     ) -> Result<Vec<InputNoteRecord>, ClientError> {
         let mut lowest_request_block: BlockNumber = u32::MAX.into();
         let mut note_requests = vec![];
         for (_, details, after_block_num, tag) in &requested_notes {
-            if let Some(tag) = tag {
-                note_requests.push((details.commitment(), *tag));
-                lowest_request_block = lowest_request_block.min(*after_block_num);
-            }
+            note_requests.push((details.commitment(), *tag));
+            lowest_request_block = lowest_request_block.min(*after_block_num);
         }
-        let mut committed_notes_data =
-            self.sync_expected_notes(lowest_request_block, note_requests).await?;
+        let blocks = self.sync_expected_notes(lowest_request_block, &note_requests).await?;
+
+        // The blocks arrive with the notes, so a committed note needs no further block lookup. They
+        // are stored first, so a record is never persisted as committed before the header that
+        // proves its inclusion is tracked and stored.
+        let mut partial_mmr = self.get_current_partial_mmr().await?;
+        self.insert_note_blocks(&blocks, &mut partial_mmr).await?;
+        self.cache_partial_mmr(partial_mmr).await?;
 
         let mut note_records = vec![];
-        let mut partial_mmr = self.get_current_partial_mmr().await?;
-
         for (previous_note, details, after_block_num, tag) in requested_notes {
             let mut note_record = previous_note.unwrap_or_else(|| {
                 InputNoteRecord::new(
                     details,
                     NoteAttachments::empty(),
                     self.store.get_current_timestamp(),
-                    ExpectedNoteState { metadata: None, after_block_num, tag }.into(),
+                    ExpectedNoteState {
+                        metadata: None,
+                        after_block_num,
+                        tag: Some(tag),
+                    }
+                    .into(),
                 )
             });
 
             // Notes the node has not reported as committed keep their expected record untouched.
-            let Some(SyncedNote {
-                committed: committed_note, attachments, ..
-            }) = committed_notes_data.remove(&note_record.details_commitment())
-            else {
+            let commitment = note_record.details_commitment();
+            let Some((sync_note, block_header)) = blocks.iter().find_map(|block| {
+                let sync_note = block.notes.values().find(|sync_note| {
+                    NoteId::new(commitment, sync_note.committed.metadata())
+                        == *sync_note.committed.note_id()
+                })?;
+                Some((sync_note, &block.block_header))
+            }) else {
                 note_records.push(note_record);
                 continue;
             };
+            let committed_note = &sync_note.committed;
 
             // A note that carries no attachments has nothing to apply to the record.
-            let attachments = (!attachments.is_empty()).then_some(attachments);
-
-            let block_header = self
-                .get_and_store_authenticated_block(committed_note.block_num(), &mut partial_mmr)
-                .await?;
+            let attachments =
+                (!sync_note.attachments.is_empty()).then(|| sync_note.attachments.clone());
 
             let metadata = *committed_note.metadata();
             let mut note_changed = note_record
@@ -393,7 +402,7 @@ where
             }
 
             // `block_header_received` transitions the record's state, so it must always run.
-            note_changed |= note_record.block_header_received(&block_header)?;
+            note_changed |= note_record.block_header_received(block_header)?;
 
             // Once committed, the note no longer needs its expected-note tag.
             if note_changed {
@@ -409,33 +418,77 @@ where
                 note_records.push(note_record);
             }
         }
-        self.cache_partial_mmr(partial_mmr).await?;
+
+        self.mark_externally_consumed(&mut note_records).await?;
 
         Ok(note_records)
     }
 
-    /// Checks whether the expected notes (identified by their details commitments and tags) have
-    /// been committed on chain between `request_block_num` and the current block, returning the
-    /// matching synced notes keyed by details commitment.
+    /// Marks a record whose nullifier is already on chain as consumed, when the nullifier commit
+    /// height is at or below the client's sync height.
     ///
-    /// Expected notes have no metadata and thus no `NoteId`, so each committed note is matched by
-    /// reconstructing the id from the committed metadata: `NoteId::new(details_commitment,
-    /// metadata)`.
+    /// Only a note the node reported as committed carries the metadata a nullifier is derived from,
+    /// so the rest are skipped.
+    async fn mark_externally_consumed(
+        &self,
+        note_records: &mut [InputNoteRecord],
+    ) -> Result<(), ClientError> {
+        let mut nullifiers = BTreeSet::new();
+        let mut lowest_commitment_block: BlockNumber = u32::MAX.into();
+        for note_record in note_records.iter() {
+            let (Some(nullifier), Some(inclusion_proof)) =
+                (note_record.nullifier(), note_record.inclusion_proof())
+            else {
+                continue;
+            };
+            nullifiers.insert(nullifier);
+            lowest_commitment_block =
+                lowest_commitment_block.min(inclusion_proof.location().block_num());
+        }
+
+        if nullifiers.is_empty() {
+            return Ok(());
+        }
+
+        let spent_heights = self
+            .rpc_api
+            .get_nullifier_commit_heights(nullifiers, lowest_commitment_block)
+            .await?;
+
+        let sync_height = self.get_sync_height().await?;
+        for note_record in note_records.iter_mut() {
+            let Some(nullifier) = note_record.nullifier() else {
+                continue;
+            };
+            if let Some(Some(spent_at)) = spent_heights.get(&nullifier)
+                && *spent_at <= sync_height
+            {
+                note_record.consumed_externally(nullifier, *spent_at, None)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Fetches every block between `request_block_num` and the client's sync height that holds a
+    /// note under one of `sync_tags`.
+    ///
+    /// Each block carries its header and the MMR path proving its inclusion at the sync height,
+    /// which is the forest the client's partial MMR is at, so a note found here needs no further
+    /// block lookup. Deciding which of the returned notes answer a request is the caller's.
     async fn sync_expected_notes(
-        &mut self,
+        &self,
         request_block_num: BlockNumber,
         // Expected notes' details commitments with their tags.
-        expected_notes: Vec<(NoteDetailsCommitment, NoteTag)>,
-    ) -> Result<BTreeMap<NoteDetailsCommitment, SyncedNote>, ClientError> {
+        expected_notes: &[(NoteDetailsCommitment, NoteTag)],
+    ) -> Result<Vec<ResolvedSyncNotesBlock>, ClientError> {
         let sync_tags: BTreeSet<NoteTag> = expected_notes.iter().map(|(_, tag)| *tag).collect();
-
-        let mut matched_notes = BTreeMap::new();
         let current_block_num = self.get_sync_height().await?;
 
         // Notes expected only after a block we have not reached can't be committed within our
         // synced view yet: skip the lookup and let them stay expected until a future sync.
         if request_block_num > current_block_num {
-            return Ok(matched_notes);
+            return Ok(Vec::new());
         }
 
         let blocks = self
@@ -449,12 +502,14 @@ where
             .await
             .map_err(ClientError::RpcError)?;
 
+        let mut matched_blocks = vec![];
         for block in blocks {
+            let mut block_matches = false;
             if block.block_header.block_num() > current_block_num {
                 break;
             }
 
-            for sync_note in block.notes.into_values() {
+            for sync_note in block.notes.values() {
                 let committed = &sync_note.committed;
 
                 // The note carries its own commit height in its inclusion proof, which is a
@@ -465,26 +520,35 @@ where
                     continue;
                 }
 
-                let Some((commitment, _)) = expected_notes.iter().find(|(commitment, _)| {
+                let Some((..)) = expected_notes.iter().find(|(commitment, _)| {
                     NoteId::new(*commitment, committed.metadata()) == *committed.note_id()
                 }) else {
                     continue;
                 };
 
-                matched_notes.insert(*commitment, sync_note);
+                block_matches = true;
+            }
+
+            if block_matches {
+                matched_blocks.push(block);
             }
         }
 
-        Ok(matched_notes)
+        Ok(matched_blocks)
     }
 }
+
+/// A note to import by details: the stored record it updates when there is one, its details, the
+/// block from which to look for its commitment, and the tag to track it under.
+pub(crate) type NoteImportByDetailsRequest =
+    (Option<InputNoteRecord>, NoteDetails, BlockNumber, NoteTag);
 
 // HELPERS
 // ================================================================================================
 
 /// Returns an error if the already-stored note is currently being processed by a local transaction,
 /// since an in-flight note can't be overwritten by an import.
-fn ensure_not_processing(previous_note: Option<&InputNoteRecord>) -> Result<(), ClientError> {
+pub fn ensure_not_processing(previous_note: Option<&InputNoteRecord>) -> Result<(), ClientError> {
     if let Some(note) = previous_note
         && note.is_processing()
     {

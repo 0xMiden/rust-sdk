@@ -116,6 +116,24 @@ fn verify_account_ids(
     Ok(())
 }
 
+/// Returns [`RpcError::InvalidResponse`] if any of the `returned` block numbers falls outside the
+/// inclusive `[block_from, block_to]` window that was requested.
+fn verify_block_range(
+    block_from: BlockNumber,
+    block_to: BlockNumber,
+    returned: impl IntoIterator<Item = BlockNumber>,
+) -> Result<(), RpcError> {
+    for block_num in returned {
+        if block_num < block_from || block_num > block_to {
+            return Err(RpcError::InvalidResponse(format!(
+                "node returned data for block {block_num} but blocks {block_from} to {block_to} \
+                 were requested"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Returns [`RpcError::InvalidResponse`] if `script`'s root does not equal the `requested` root.
 fn verify_note_script_root(requested: Word, script: &NoteScript) -> Result<(), RpcError> {
     let fetched_root = script.root();
@@ -147,6 +165,13 @@ fn verify_note_script_root(requested: Word, script: &NoteScript) -> Result<(), R
 ///   must match the requested one.
 /// - [`sync_transactions`](NodeRpcClient::sync_transactions): every returned transaction record's
 ///   account ID must have been requested.
+///
+/// The five methods scoped to a `block_from`/`block_to` window additionally reject responses that
+/// carry data stamped outside it: [`sync_notes`](NodeRpcClient::sync_notes),
+/// [`sync_nullifiers`](NodeRpcClient::sync_nullifiers),
+/// [`sync_storage_maps`](NodeRpcClient::sync_storage_maps),
+/// [`sync_account_vault`](NodeRpcClient::sync_account_vault) and
+/// [`sync_transactions`](NodeRpcClient::sync_transactions).
 ///
 /// All other methods delegate to the wrapped client unchanged.
 pub struct VerifyingRpcClient<T>(T);
@@ -246,6 +271,11 @@ impl<T: NodeRpcClient> NodeRpcClient for VerifyingRpcClient<T> {
             note_tags,
             blocks.iter().flat_map(|block| block.notes.values().map(CommittedNote::tag)),
         )?;
+        verify_block_range(
+            block_from,
+            block_to,
+            blocks.iter().map(|block| block.block_header.block_num()),
+        )?;
         Ok(blocks)
     }
 
@@ -258,6 +288,7 @@ impl<T: NodeRpcClient> NodeRpcClient for VerifyingRpcClient<T> {
         let nullifiers = self.0.sync_nullifiers(prefix, block_from, block_to).await?;
         let requested: BTreeSet<u16> = prefix.iter().copied().collect();
         verify_nullifier_prefixes(&requested, &nullifiers)?;
+        verify_block_range(block_from, block_to, nullifiers.iter().map(|update| update.block_num))?;
         Ok(nullifiers)
     }
 
@@ -296,7 +327,9 @@ impl<T: NodeRpcClient> NodeRpcClient for VerifyingRpcClient<T> {
         block_to: BlockNumber,
         account_id: AccountId,
     ) -> Result<StorageMapInfo, RpcError> {
-        self.0.sync_storage_maps(block_from, block_to, account_id).await
+        let info = self.0.sync_storage_maps(block_from, block_to, account_id).await?;
+        verify_block_range(block_from, block_to, [info.block_number])?;
+        Ok(info)
     }
 
     async fn sync_account_vault(
@@ -305,7 +338,9 @@ impl<T: NodeRpcClient> NodeRpcClient for VerifyingRpcClient<T> {
         block_to: BlockNumber,
         account_id: AccountId,
     ) -> Result<AccountVaultInfo, RpcError> {
-        self.0.sync_account_vault(block_from, block_to, account_id).await
+        let info = self.0.sync_account_vault(block_from, block_to, account_id).await?;
+        verify_block_range(block_from, block_to, [info.block_number])?;
+        Ok(info)
     }
 
     async fn sync_transactions(
@@ -317,6 +352,7 @@ impl<T: NodeRpcClient> NodeRpcClient for VerifyingRpcClient<T> {
         let requested: BTreeSet<AccountId> = account_ids.iter().copied().collect();
         let records = self.0.sync_transactions(block_from, block_to, account_ids).await?;
         verify_account_ids(&requested, &records)?;
+        verify_block_range(block_from, block_to, records.iter().map(|record| record.block_num))?;
         Ok(records)
     }
 

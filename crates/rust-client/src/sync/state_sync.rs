@@ -1113,6 +1113,18 @@ impl StateSync {
 
     /// Builds a [`PublicAccountUpdate::Patch`] by fetching incremental storage map and vault
     /// updates over the synced range and assembling the absolute [`AccountPatch`] from them.
+    ///
+    /// # Security
+    ///
+    /// The `VerifyingRpcClient` wrapper range-checks only the pagination cursor of the
+    /// `sync_storage_maps` and `sync_account_vault` responses. It does not range-check the block
+    /// height of each individual update, so the node can return an update stamped outside the
+    /// requested window. The store closes this gap when it applies the patch: it verifies the
+    /// resulting vault root and storage commitment against `details.header`. An update that moves
+    /// the account state away from that header fails the store update instead of being persisted.
+    /// The caller must authenticate `details.header` against the chain tip and pass the block of
+    /// that header as `block_to`. A caller that consumes these incremental updates without the same
+    /// header check must range-check each update height first.
     async fn build_patch_update(
         &self,
         account_id: AccountId,

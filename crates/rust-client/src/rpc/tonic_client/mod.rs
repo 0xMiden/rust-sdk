@@ -58,7 +58,7 @@ use crate::rpc::domain::status::NetworkNoteStatusInfo;
 use crate::rpc::domain::storage_map::StorageMapInfo;
 use crate::rpc::domain::sync::{ChainMmrInfo, SyncTarget};
 use crate::rpc::domain::transaction::TransactionRecord;
-use crate::rpc::errors::node::parse_node_error;
+use crate::rpc::errors::node::{parse_node_error, parse_status_error};
 use crate::rpc::errors::{AcceptHeaderContext, AcceptHeaderError, GrpcError, RpcConversionError};
 use crate::rpc::generated::rpc::BlockRange;
 use crate::rpc::{AccountStateAt, generated as proto};
@@ -491,6 +491,7 @@ impl NodeRpcClient for GrpcClient {
         let request = proto::rpc::BlockHeaderByNumberRequest {
             block_num: block_num.as_ref().map(BlockNumber::as_u32),
             include_mmr_proof: Some(include_mmr_proof),
+            include_protocol_config: None,
         };
 
         info!("Calling GetBlockHeaderByNumber: {:?}", request);
@@ -668,6 +669,26 @@ impl NodeRpcClient for GrpcClient {
             .map_err(|err| RpcError::InvalidResponse(err.to_string()))?;
 
         Ok((response_block_num, proof))
+    }
+
+    async fn register_account(
+        &self,
+        invitation_code: &str,
+        account_id: AccountId,
+    ) -> Result<(), RpcError> {
+        // The invitation code is a secret. Keep it out of logs and out of error messages.
+        let request = proto::rpc::RegisterAccountRequest {
+            invitation_code: invitation_code.to_string(),
+            account_id: Some(account_id.into()),
+        };
+
+        self.call_with_retry(RpcEndpoint::RegisterAccount, |mut rpc_api| {
+            let request = request.clone();
+            Box::pin(async move { rpc_api.register_account(request).await })
+        })
+        .await?;
+
+        Ok(())
     }
 
     /// Sends one or more `SyncNoteRequest`s to the node and merges the responses into a list of
@@ -1056,10 +1077,12 @@ impl RpcError {
             return Self::AcceptHeaderError(accept_error);
         }
 
-        // Parse application-level error from status details
-        let endpoint_error = parse_node_error(&endpoint, status.details(), status.message());
-
         let error_kind = GrpcError::from(&status);
+
+        // Parse the application-level error from the status details
+        let endpoint_error = parse_node_error(&endpoint, status.details(), status.message())
+            .or_else(|| parse_status_error(&endpoint, &error_kind, status.message()));
+
         let source = Box::new(status) as Box<dyn Error + Send + Sync + 'static>;
 
         Self::RequestError {

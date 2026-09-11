@@ -436,6 +436,14 @@ pub trait NodeRpcClient: Send + Sync {
         request: GetAccountRequest,
     ) -> Result<(BlockNumber, AccountProof), RpcError>;
 
+    /// Binds an invitation code to an account on the network, using the `/RegisterAccount`
+    /// endpoint.
+    async fn register_account(
+        &self,
+        invitation_code: &str,
+        account_id: AccountId,
+    ) -> Result<(), RpcError>;
+
     /// Fills in the asset list when the vault came back flagged `too_many_assets`, by querying
     /// [`NodeRpcClient::sync_account_vault`] over `[GENESIS, block_to]`. No-op when the flag isn't
     /// set.
@@ -694,6 +702,7 @@ pub enum RpcEndpoint {
     Status,
     SyncNullifiers,
     GetAccount,
+    RegisterAccount,
     GetBlockByNumber,
     GetBlockHeaderByNumber,
     GetNotesById,
@@ -717,6 +726,7 @@ impl RpcEndpoint {
             RpcEndpoint::Status => "Status",
             RpcEndpoint::SyncNullifiers => "SyncNullifiers",
             RpcEndpoint::GetAccount => "GetAccount",
+            RpcEndpoint::RegisterAccount => "RegisterAccount",
             RpcEndpoint::GetBlockByNumber => "GetBlockByNumber",
             RpcEndpoint::GetBlockHeaderByNumber => "GetBlockHeaderByNumber",
             RpcEndpoint::GetNotesById => "GetNotesById",
@@ -750,6 +760,7 @@ impl RpcEndpoint {
             RpcEndpoint::Status
             | RpcEndpoint::SyncNullifiers
             | RpcEndpoint::GetAccount
+            | RpcEndpoint::RegisterAccount
             | RpcEndpoint::GetBlockByNumber
             | RpcEndpoint::GetBlockHeaderByNumber
             | RpcEndpoint::GetNotesById
@@ -774,6 +785,7 @@ impl fmt::Display for RpcEndpoint {
                 write!(f, "sync_nullifiers")
             },
             RpcEndpoint::GetAccount => write!(f, "get_account"),
+            RpcEndpoint::RegisterAccount => write!(f, "register_account"),
             RpcEndpoint::GetBlockByNumber => write!(f, "get_block_by_number"),
             RpcEndpoint::GetBlockHeaderByNumber => {
                 write!(f, "get_block_header_by_number")

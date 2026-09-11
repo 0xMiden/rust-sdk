@@ -143,6 +143,17 @@ mod tests {
         }
     }
 
+    /// `RegisterAccount` changes state on the node, but the node treats a repeat with the same
+    /// invitation code and account as a no-op. A lost response is therefore safe to retry, unlike a
+    /// lost submission.
+    #[test]
+    fn register_account_retries_unavailable() {
+        let endpoint = RpcEndpoint::RegisterAccount;
+
+        assert!(is_retryable(endpoint, &Status::new(Code::Unavailable, "transport error")));
+        assert!(is_retryable(endpoint, &Status::new(Code::ResourceExhausted, "rate limited")));
+    }
+
     #[test]
     fn submissions_retry_resource_exhausted() {
         for endpoint in [RpcEndpoint::SubmitProvenTx, RpcEndpoint::SubmitProvenBatch] {

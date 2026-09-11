@@ -138,9 +138,11 @@ fn compile_tonic_client_proto(out_dir: &Path) -> miette::Result<()> {
     fs::create_dir_all(&std_out).into_diagnostic()?;
     fs::create_dir_all(&nostd_out).into_diagnostic()?;
 
-    let prost_config = canonical_object_config();
+    let mut prost_config = canonical_object_config();
+    prost_config.skip_debug(["RegisterAccountRequest"]);
 
     let mut web_tonic_prost_config = canonical_object_config();
+    web_tonic_prost_config.skip_debug(["RegisterAccountRequest"]);
 
     // Use BTreeMap so the no_std bindings don't depend on std::collections::HashMap
     web_tonic_prost_config.btree_map(["."]);

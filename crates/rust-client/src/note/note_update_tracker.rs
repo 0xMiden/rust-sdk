@@ -376,6 +376,20 @@ impl NoteUpdateTracker {
             })
     }
 
+    /// Refreshes the tracker with persisted input notes.
+    ///
+    /// Call this method before deriving state updates. Imported records can replace older records
+    /// from the initial store snapshot. The records are already persisted, so they need no store
+    /// update until their state changes.
+    pub(crate) fn track_existing_input_notes(
+        &mut self,
+        notes: impl IntoIterator<Item = InputNoteRecord>,
+    ) {
+        for note in notes {
+            self.insert_input_note(note, NoteUpdateType::None);
+        }
+    }
+
     /// Appends nullifiers to the per-account ordered nullifier list.
     ///
     /// Nullifiers from the same account must be in execution order; ordering across different

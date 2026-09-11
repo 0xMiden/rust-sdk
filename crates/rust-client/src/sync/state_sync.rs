@@ -1062,9 +1062,9 @@ impl StateSync {
     /// - the proof is for a different block than the sync target.
     /// - the witness is for a different account than the requested one.
     /// - the witness does not open under the sync target header's account root.
-    /// - the proof carries no account details. This is only called for public accounts, for which
-    ///   the node is expected to return details, but a malformed or malicious response can omit
-    ///   them, so it is rejected rather than trusted as an invariant.
+    ///
+    /// Returns [`ClientError::RpcError`] if the proof carries no account details. The node returns
+    /// details for every public account, so a missing value means the response is malformed.
     fn validate_account_proof(
         proof: AccountProof,
         proof_block_num: BlockNumber,
@@ -1102,9 +1102,9 @@ impl StateSync {
             })?;
 
         details.ok_or_else(|| {
-            ClientError::ChainValidationError(format!(
+            ClientError::RpcError(RpcError::ExpectedDataMissing(format!(
                 "get_account returned no details for public account {account_id}"
-            ))
+            )))
         })
     }
 
@@ -1822,8 +1822,7 @@ mod tests {
         assert!(matches!(result, Err(ClientError::ChainValidationError(_))));
     }
 
-    /// `validate_account_proof` rejects a proof that carries no account details rather than
-    /// panicking, since a malformed or malicious node response can omit them.
+    /// `validate_account_proof` rejects a proof that carries no account details.
     #[tokio::test]
     async fn validate_account_proof_rejects_missing_details() {
         let mut builder = MockChainBuilder::new();
@@ -1833,7 +1832,7 @@ mod tests {
 
         // An otherwise honest proof, but with the account details stripped.
         let (proof_block_num, proof) = get_account_proof(&rpc_api, account.id()).await;
-        let (witness, _details) = proof.into_parts();
+        let (witness, _) = proof.into_parts();
         let proof = AccountProof::new(witness, None).unwrap();
         let result = StateSync::validate_account_proof(
             proof,
@@ -1842,7 +1841,7 @@ mod tests {
             &chain_tip_header,
         );
 
-        assert!(matches!(result, Err(ClientError::ChainValidationError(_))));
+        assert!(matches!(result, Err(ClientError::RpcError(RpcError::ExpectedDataMissing(_)))));
     }
 
     /// `validate_account_proof` rejects a proof reported for a block other than the sync target.

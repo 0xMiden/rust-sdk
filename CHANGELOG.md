@@ -9,7 +9,7 @@
 ### Fixes
 
 * [FIX][cli] `miden-client import` now rejects invocations without a file path instead of silently succeeding ([#2450](https://github.com/0xMiden/rust-sdk/pull/2450)).
-* [FIX][rust] `StateSync::validate_account_proof` now returns a `ChainValidationError` when a `get_account` proof carries no account details, instead of panicking. The RPC layer allows the details to be absent, so a malformed or malicious node response could crash the client mid-sync ([#2502](https://github.com/0xMiden/rust-sdk/pull/2502)).
+* [FIX][rust] Public account sync now returns `RpcError::ExpectedDataMissing` instead of panicking when a `get_account` response carries no account details ([#2502](https://github.com/0xMiden/rust-sdk/pull/2502)).
 * [FIX][rust] `TransactionRequestBuilder::build_swap` and `build_pswap_create` now reject a zero-amount asset on either side of the exchange. A zero requested asset produced a payback P2ID note carrying nothing, and a zero offered asset produced a note whose consumer pays and receives nothing ([#2459](https://github.com/0xMiden/rust-sdk/pull/2459)).
 
 ## 0.16.0 (2026-09-07)

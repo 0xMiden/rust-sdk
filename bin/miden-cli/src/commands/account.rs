@@ -17,14 +17,13 @@ use miden_client::asset::{Asset, TokenSymbol};
 use miden_client::rpc::domain::account::GetAccountRequest;
 use miden_client::rpc::{GrpcClient, NodeRpcClient, VerifyingRpcClient};
 use miden_client::transaction::{AccountComponentInterface, AccountInterface};
-use miden_client::utils::base_units_to_tokens;
 use miden_client::vm::{Package, PackageExport};
 use miden_client::{Client, PrettyPrint, Word, ZERO};
 
 use crate::commands::new_account::load_packages;
 use crate::config::{CliConfig, RpcConfig};
 use crate::errors::CliError;
-use crate::utils::{parse_account_id, split_procedure_target};
+use crate::utils::{base_units_to_tokens, parse_account_id, split_procedure_target};
 use crate::{client_binary_name, create_dynamic_table};
 
 pub const DEFAULT_ACCOUNT_ID_KEY: &str = "default_account_id";

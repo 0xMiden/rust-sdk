@@ -239,8 +239,8 @@ for as long as it lives. A test that needs the funding to land in a particular t
 asserting on what a sync reports, say — should call `TestClient::take_funding` and consume the note
 itself.
 
-Funders must be **public** and carry their secret key: a public funder's state is re-read from the
-chain before every payment, which is what makes sharing one between test processes safe.
+Funders must be **public** and carry their secret key: a public funder's state is read from the
+chain by whichever process claims it, which is what makes sharing one between test processes safe.
 
 ### Environment variables
 

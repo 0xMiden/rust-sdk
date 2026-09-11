@@ -11,8 +11,11 @@
 
 ### Fixes
 
+* [FIX][rust] Refreshed tracked input notes after transport imports so the same sync detects their consumption ([#2453](https://github.com/0xMiden/rust-sdk/pull/2453)).
 * [FIX][rust] A private note fetched from the Note Transport Layer whose nullifier is already on chain is now imported as consumed instead of committed, so `get_consumable_notes` no longer reports notes the node will reject ([#2453](https://github.com/0xMiden/rust-sdk/pull/2453)).
 * [FIX][rust] Added validation of cached transaction encryption keys during deserialization. Unsupported encryption schemes and empty or oversized key IDs are rejected before reading the key ID bytes ([#2411](https://github.com/0xMiden/rust-sdk/pull/2411)).
+* [FIX][cli] `notes --list consumable` now respects the `--account-id` filter ([#2449](https://github.com/0xMiden/rust-sdk/pull/2449)).
+* [store] Simplified `SqliteStore::get_setting` to take `&Connection` directly without opening an unnecessary transaction ([#2449](https://github.com/0xMiden/rust-sdk/pull/2449)).
 * [FIX][cli] `miden-client import` now rejects invocations without a file path instead of silently succeeding ([#2450](https://github.com/0xMiden/rust-sdk/pull/2450)).
 * [FIX][rust] `TransactionRequestBuilder::build_swap` and `build_pswap_create` now reject a zero-amount asset on either side of the exchange. A zero requested asset produced a payback P2ID note carrying nothing, and a zero offered asset produced a note whose consumer pays and receives nothing ([#2459](https://github.com/0xMiden/rust-sdk/pull/2459)).
 * [FIX][test] The integration tests run again on a chain that charges no fee. A `--funders` path (`MIDEN_FUNDER_ACCOUNTS_DIR`) that is unset, empty, missing, or holds no `.mac` file now leaves the run without funders instead of failing, which is all a fee-free genesis needs, since it declares no wallets for the path to hold. A `.mac` file that is present but unusable stays a hard error ([#2481](https://github.com/0xMiden/rust-sdk/pull/2481)).

@@ -26,7 +26,7 @@ edition      = "2024"
 license      = "MIT"
 repository   = "https://github.com/0xMiden/rust-sdk"
 rust-version = "1.98.1"
-version      = "0.16.0"
+version      = "0.17.0-rc.1"
 
 [profile.dev]
 codegen-units = 16
@@ -37,20 +37,20 @@ opt-level = 1
 
 [workspace.dependencies]
 # Workspace crates
-miden-client                   = { default-features = false, path = "crates/rust-client", version = "0.16" }
-miden-client-integration-tests = { default-features = false, path = "bin/integration-tests", version = "0.16" }
-miden-client-sqlite-store      = { default-features = false, path = "crates/sqlite-store", version = "0.16" }
+miden-client                   = { default-features = false, path = "crates/rust-client", version = "0.17.0-rc.1" }
+miden-client-integration-tests = { default-features = false, path = "bin/integration-tests", version = "0.17.0-rc.1" }
+miden-client-sqlite-store      = { default-features = false, path = "crates/sqlite-store", version = "0.17.0-rc.1" }
 
 # Miden protocol dependencies
-miden-agglayer  = { default-features = false, version = "0.17.0-rc.3" }
-miden-protocol  = { default-features = false, version = "0.17.0-rc.3" }
-miden-standards = { default-features = false, version = "0.17.0-rc.3" }
-miden-testing   = { default-features = false, version = "0.17.0-rc.3" }
-miden-tx        = { default-features = false, version = "0.17.0-rc.3" }
-miden-tx-batch  = { default-features = false, version = "0.17.0-rc.3" }
+miden-agglayer  = { default-features = false, version = "0.17.0-rc.4" }
+miden-protocol  = { default-features = false, version = "0.17.0-rc.4" }
+miden-standards = { default-features = false, version = "0.17.0-rc.4" }
+miden-testing   = { default-features = false, version = "0.17.0-rc.4" }
+miden-tx        = { default-features = false, version = "0.17.0-rc.4" }
+miden-tx-batch  = { default-features = false, version = "0.17.0-rc.4" }
 
 # Miden node dependencies
-miden-node-proto-build           = { default-features = false, git = "https://github.com/0xMiden/node", rev = "d4062e64ec38ceca8c3044c87c18d70b3b7b4f74" } # TODO: switch to crates.io release once available
+miden-node-proto-build           = { default-features = false, git = "https://github.com/0xMiden/node", rev = "f64fe50f31ea58bcb791a35b826f71e99e74034c" } # TODO: switch to crates.io release once available
 miden-note-transport-proto-build = { default-features = false, version = "0.5.0-rc.2" }
 
 # Miden debug dependency

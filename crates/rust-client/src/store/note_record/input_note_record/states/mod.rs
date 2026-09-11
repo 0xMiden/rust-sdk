@@ -146,8 +146,8 @@ impl InputNoteState {
         }
     }
 
-    /// Returns the per-account position of the consuming transaction within the account's
-    /// execution chain for the block, if available.
+    /// Returns the per-account position of the consuming transaction within the account's execution
+    /// chain for the block, if available.
     pub fn consumed_tx_order(&self) -> Option<u32> {
         match self {
             InputNoteState::ConsumedAuthenticatedLocal(s) => s.consumed_tx_order,
@@ -157,8 +157,8 @@ impl InputNoteState {
         }
     }
 
-    /// Sets the consumed transaction order on the inner consumed state. No-op if the note is
-    /// not in a consumed state.
+    /// Sets the consumed transaction order on the inner consumed state. No-op if the note is not in
+    /// a consumed state.
     pub(crate) fn set_consumed_tx_order(&mut self, order: Option<u32>) {
         match self {
             InputNoteState::ConsumedAuthenticatedLocal(s) => s.consumed_tx_order = order,
@@ -189,9 +189,9 @@ impl InputNoteState {
         self.inner().consumed_externally(nullifier_block_height, consumer_account)
     }
 
-    /// Returns a new state to reflect that the note has received a block header.
-    /// This will mark the note as verified or invalid, depending on the block header
-    /// information and inclusion proof. If the note state doesn't change, `None` is returned.
+    /// Returns a new state to reflect that the note has received a block header. This will mark the
+    /// note as verified or invalid, depending on the block header information and inclusion proof.
+    /// If the note state doesn't change, `None` is returned.
     pub(crate) fn block_header_received(
         &self,
         note_id: NoteId,

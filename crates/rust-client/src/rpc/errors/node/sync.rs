@@ -17,8 +17,8 @@ pub enum NoteSyncError {
     /// Failed to deserialize data
     #[error("deserialization failed")]
     DeserializationFailed,
-    /// Error code not recognized by this client version. This can happen if the node
-    /// is newer than the client and has added new error variants.
+    /// Error code not recognized by this client version. This can happen if the node is newer than
+    /// the client and has added new error variants.
     #[error("unknown error code {code}: {message}")]
     Unknown { code: u8, message: String },
 }
@@ -52,8 +52,8 @@ pub enum SyncNullifiersError {
     /// Failed to deserialize data
     #[error("deserialization failed")]
     DeserializationFailed,
-    /// Error code not recognized by this client version. This can happen if the node
-    /// is newer than the client and has added new error variants.
+    /// Error code not recognized by this client version. This can happen if the node is newer than
+    /// the client and has added new error variants.
     #[error("unknown error code {code}: {message}")]
     Unknown { code: u8, message: String },
 }
@@ -88,8 +88,8 @@ pub enum SyncAccountVaultError {
     /// Account is not public
     #[error("account is not public")]
     AccountNotPublic,
-    /// Error code not recognized by this client version. This can happen if the node
-    /// is newer than the client and has added new error variants.
+    /// Error code not recognized by this client version. This can happen if the node is newer than
+    /// the client and has added new error variants.
     #[error("unknown error code {code}: {message}")]
     Unknown { code: u8, message: String },
 }
@@ -127,8 +127,8 @@ pub enum SyncAccountStorageMapsError {
     /// Account is not public
     #[error("account is not public")]
     AccountNotPublic,
-    /// Error code not recognized by this client version. This can happen if the node
-    /// is newer than the client and has added new error variants.
+    /// Error code not recognized by this client version. This can happen if the node is newer than
+    /// the client and has added new error variants.
     #[error("unknown error code {code}: {message}")]
     Unknown { code: u8, message: String },
 }
@@ -167,8 +167,8 @@ pub enum SyncTransactionsError {
     /// Witness error
     #[error("witness error")]
     WitnessError,
-    /// Error code not recognized by this client version. This can happen if the node
-    /// is newer than the client and has added new error variants.
+    /// Error code not recognized by this client version. This can happen if the node is newer than
+    /// the client and has added new error variants.
     #[error("unknown error code {code}: {message}")]
     Unknown { code: u8, message: String },
 }

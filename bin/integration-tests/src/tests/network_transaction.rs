@@ -31,7 +31,6 @@ use miden_client::account::{
 };
 use miden_client::assembly::{CodeBuilder, SourceManagerSync};
 use miden_client::asset::{AssetAmount, FungibleAsset, TokenSymbol};
-use miden_client::auth::RPO_FALCON_SCHEME_ID;
 use miden_client::block::BlockNumber;
 use miden_client::crypto::FeltRng;
 use miden_client::note::{
@@ -59,15 +58,7 @@ use miden_client::note::{
 };
 use miden_client::store::{InputNoteState, NoteFilter};
 use miden_client::sync::NoteTagSource;
-use miden_client::testing::common::{
-    TestClient,
-    assert_account_has_single_asset,
-    consume_notes,
-    execute_tx_and_sync,
-    insert_new_wallet,
-    wait_for_blocks,
-    wait_for_tx,
-};
+use miden_client::testing::common::TestClient;
 use miden_client::transaction::TransactionRequestBuilder;
 use miden_client::{Felt, Word, ZERO};
 use rand::{Rng, RngExt};
@@ -136,9 +127,9 @@ const INCR_NOTE_SCRIPT_CODE: &str = "
     end
 ";
 
-// Minimal no-op tx script: the faucet's `INCR_NONCE_AUTH_CODE` auth
-// procedure already increments the nonce, so the script itself needs
-// only to satisfy the builder's requirement that _some_ user code runs.
+// Minimal no-op tx script: the faucet's `INCR_NONCE_AUTH_CODE` auth procedure already increments
+// the nonce, so the script itself needs only to satisfy the builder's requirement that _some_ user
+// code runs.
 const NOOP_TX_SCRIPT: &str = "
     @transaction_script
     pub proc main
@@ -147,12 +138,12 @@ const NOOP_TX_SCRIPT: &str = "
 ";
 
 // A non-standard "claim to target" note script: it asserts the consuming account is the note's
-// target (read from the note's storage) and then moves all of the note's assets into that
-// account's vault. It is functionally similar to P2ID but hand-written, so its MAST root differs
-// from every standard note script — exactly the case the node's NTX builder cannot resolve without
-// the script being pre-registered. The `{nonce}` placeholder is replaced with a per-test value so
-// the compiled root is unique per run and can never collide with a previously registered script on
-// a shared node.
+// target (read from the note's storage) and then moves all of the note's assets into that account's
+// vault. It is functionally similar to P2ID but hand-written, so its MAST root differs from every
+// standard note script — exactly the case the node's NTX builder cannot resolve without the script
+// being pre-registered. The `{nonce}` placeholder is replaced with a per-test value so the compiled
+// root is unique per run and can never collide with a previously registered script on a shared
+// node.
 const NON_STANDARD_CLAIM_NOTE_SCRIPT: &str = r#"
     use miden::protocol::active_account
     use miden::protocol::account_id
@@ -369,8 +360,8 @@ async fn deploy_network_fungible_faucet(
 /// Waits for a public note to be observed as `Committed` on `observer`.
 ///
 /// Advances up to `max_blocks` blocks on `block_client`, syncing `observer` after each block and
-/// looking the note up by its details commitment. Returns `true` as soon as the note is observed
-/// as `Committed` and `false` if the window elapses first.
+/// looking the note up by its details commitment. Returns `true` as soon as the note is observed as
+/// `Committed` and `false` if the window elapses first.
 async fn wait_for_committed_note(
     block_client: &mut TestClient,
     observer: &mut TestClient,
@@ -378,7 +369,7 @@ async fn wait_for_committed_note(
     max_blocks: u32,
 ) -> Result<bool> {
     for _ in 0..max_blocks {
-        wait_for_blocks(block_client, 1).await;
+        block_client.wait_for_blocks(1).await?;
         observer.sync_state().await?;
         if let Some(rec) = observer
             .get_input_notes(NoteFilter::DetailsCommitments(vec![details_commitment]))
@@ -465,7 +456,7 @@ fn build_non_standard_mint(
 /// account consumes them and the counter is bumped.
 pub async fn test_counter_contract_ntx(client_config: ClientConfig) -> Result<()> {
     const BUMP_NOTE_NUMBER: u64 = 5;
-    let (mut client, keystore) = client_config.into_client().await?;
+    let mut client = client_config.into_client().await?;
     client.sync_state().await?;
 
     let incr_note_root = note_script_root(INCR_NOTE_SCRIPT_CODE, client.source_manager())?;
@@ -478,9 +469,7 @@ pub async fn test_counter_contract_ntx(client_config: ClientConfig) -> Result<()
         .context("failed to find network account after deployment")?;
     assert_eq!(counter_value, Word::from([ZERO, ZERO, ZERO, ZERO]));
 
-    let (native_account, ..) =
-        insert_new_wallet(&mut client, AccountType::Public, &keystore, RPO_FALCON_SCHEME_ID)
-            .await?;
+    let native_account = client.insert_wallet(AccountType::Public).await?;
 
     let mut network_notes = vec![];
 
@@ -497,7 +486,7 @@ pub async fn test_counter_contract_ntx(client_config: ClientConfig) -> Result<()
 
     let tx_request = TransactionRequestBuilder::new().own_output_notes(network_notes).build()?;
 
-    execute_tx_and_sync(&mut client, native_account.id(), tx_request).await?;
+    client.execute_tx_and_sync(native_account.id(), tx_request).await?;
 
     // Wait for the node to consume the network notes in subsequent blocks
     let expected_counter = Word::from([Felt::new_unchecked(BUMP_NOTE_NUMBER), ZERO, ZERO, ZERO]);
@@ -512,7 +501,7 @@ pub async fn test_counter_contract_ntx(client_config: ClientConfig) -> Result<()
             return Ok(());
         }
 
-        wait_for_blocks(&mut client, 1).await;
+        client.wait_for_blocks(1).await?;
     }
 
     let a = client
@@ -526,7 +515,7 @@ pub async fn test_counter_contract_ntx(client_config: ClientConfig) -> Result<()
 }
 
 pub async fn test_recall_note_before_ntx_consumes_it(client_config: ClientConfig) -> Result<()> {
-    let (mut client, keystore) = client_config.into_client().await?;
+    let mut client = client_config.into_client().await?;
     client.sync_state().await?;
 
     let incr_note_root = note_script_root(INCR_NOTE_SCRIPT_CODE, client.source_manager())?;
@@ -535,10 +524,7 @@ pub async fn test_recall_note_before_ntx_consumes_it(client_config: ClientConfig
     // ordinary public account: the node rejects user transactions against network accounts.
     let native_account = deploy_counter_contract(&mut client).await?;
 
-    let wallet =
-        insert_new_wallet(&mut client, AccountType::Public, &keystore, RPO_FALCON_SCHEME_ID)
-            .await?
-            .0;
+    let wallet = client.insert_wallet(AccountType::Public).await?;
 
     let network_note = get_network_note(
         wallet.id(),
@@ -571,7 +557,7 @@ pub async fn test_recall_note_before_ntx_consumes_it(client_config: ClientConfig
         client.submit_proven_transaction(consume_proven, &consume_result).await?;
     client.apply_transaction(&consume_result, consume_submission_height).await?;
 
-    wait_for_blocks(&mut client, 2).await;
+    client.wait_for_blocks(2).await?;
 
     // The network account should have original value
     let network_counter = client
@@ -591,22 +577,20 @@ pub async fn test_recall_note_before_ntx_consumes_it(client_config: ClientConfig
     Ok(())
 }
 
-/// After a network account consumes a note (potentially in the same batch it was created),
-/// the receiver's `InputNoteReader` should find it as consumed by that account. Validates
-/// the erased-notes detection flow end-to-end against a real node.
+/// After a network account consumes a note (potentially in the same batch it was created), the
+/// receiver's `InputNoteReader` should find it as consumed by that account. Validates the
+/// erased-notes detection flow end-to-end against a real node.
 pub async fn test_note_reader_finds_note_consumed_by_ntx(
     client_config: ClientConfig,
 ) -> Result<()> {
-    let (mut client, keystore) = client_config.into_client().await?;
+    let mut client = client_config.into_client().await?;
     client.sync_state().await?;
 
     let incr_note_root = note_script_root(INCR_NOTE_SCRIPT_CODE, client.source_manager())?;
     let network_account = deploy_network_counter_contract(&mut client, &[incr_note_root]).await?;
     let network_account_id = network_account.id();
 
-    let (sender_account, ..) =
-        insert_new_wallet(&mut client, AccountType::Public, &keystore, RPO_FALCON_SCHEME_ID)
-            .await?;
+    let sender_account = client.insert_wallet(AccountType::Public).await?;
 
     let network_note = get_network_note(
         sender_account.id(),
@@ -620,7 +604,7 @@ pub async fn test_note_reader_finds_note_consumed_by_ntx(
 
     let tx_request =
         TransactionRequestBuilder::new().own_output_notes(vec![network_note]).build()?;
-    execute_tx_and_sync(&mut client, sender_account.id(), tx_request).await?;
+    client.execute_tx_and_sync(sender_account.id(), tx_request).await?;
 
     // Wait for the network account to consume the note (check counter increment).
     let expected_counter = Word::from([Felt::from(2u32), ZERO, ZERO, ZERO]);
@@ -635,7 +619,7 @@ pub async fn test_note_reader_finds_note_consumed_by_ntx(
         if account_details.storage().get_item(&COUNTER_SLOT_NAME)? == expected_counter {
             break;
         }
-        wait_for_blocks(&mut client, 1).await;
+        client.wait_for_blocks(1).await?;
     }
 
     client.sync_state().await?;
@@ -668,16 +652,14 @@ pub async fn test_note_reader_finds_note_consumed_by_ntx(
 /// consumer rather than attributed to the network account. The test therefore asserts the note
 /// reaches a consumed state, not the consumer identity.
 pub async fn test_network_note_consumed_by_ntx(client_config: ClientConfig) -> Result<()> {
-    let (mut client, keystore) = client_config.into_client().await?;
+    let mut client = client_config.into_client().await?;
     client.sync_state().await?;
 
     let incr_note_root = note_script_root(INCR_NOTE_SCRIPT_CODE, client.source_manager())?;
     let network_account = deploy_network_counter_contract(&mut client, &[incr_note_root]).await?;
     let network_account_id = network_account.id();
 
-    let (sender_account, ..) =
-        insert_new_wallet(&mut client, AccountType::Public, &keystore, RPO_FALCON_SCHEME_ID)
-            .await?;
+    let sender_account = client.insert_wallet(AccountType::Public).await?;
 
     let network_note = get_network_note(
         sender_account.id(),
@@ -691,7 +673,7 @@ pub async fn test_network_note_consumed_by_ntx(client_config: ClientConfig) -> R
 
     let tx_request =
         TransactionRequestBuilder::new().own_output_notes(vec![network_note]).build()?;
-    execute_tx_and_sync(&mut client, sender_account.id(), tx_request).await?;
+    client.execute_tx_and_sync(sender_account.id(), tx_request).await?;
 
     // Wait for the network account to consume the note (check counter increment).
     let expected_counter = Word::from([Felt::from(2u32), ZERO, ZERO, ZERO]);
@@ -706,11 +688,11 @@ pub async fn test_network_note_consumed_by_ntx(client_config: ClientConfig) -> R
         if account_details.storage().get_item(&COUNTER_SLOT_NAME)? == expected_counter {
             break;
         }
-        wait_for_blocks(&mut client, 1).await;
+        client.wait_for_blocks(1).await?;
     }
 
-    // The note is consumed via same-batch erasure, so the consumer is not derivable and the note
-    // is recorded as consumed with an unknown consumer. Poll until the client records it consumed.
+    // The note is consumed via same-batch erasure, so the consumer is not derivable and the note is
+    // recorded as consumed with an unknown consumer. Poll until the client records it consumed.
     let mut consumed = false;
     for _ in 0..10 {
         client.sync_state().await?;
@@ -723,7 +705,7 @@ pub async fn test_network_note_consumed_by_ntx(client_config: ClientConfig) -> R
             consumed = true;
             break;
         }
-        wait_for_blocks(&mut client, 1).await;
+        client.wait_for_blocks(1).await?;
     }
 
     assert!(
@@ -737,15 +719,11 @@ pub async fn test_network_note_consumed_by_ntx(client_config: ClientConfig) -> R
 /// End-to-end integration test for the standard MINT note -> network faucet -> public P2ID output
 /// note flow.
 pub async fn test_ntx_mint_produces_public_p2id(client_config: ClientConfig) -> Result<()> {
-    let (mut client, keystore) = client_config.clone().into_client().await?;
-    let (mut client_2, keystore_2) = client_config.clone().into_client().await?;
+    let mut client = client_config.clone().into_client().await?;
+    let mut client_2 = client_config.clone().into_client().await?;
 
-    let (alice, ..) =
-        insert_new_wallet(&mut client, AccountType::Public, &keystore, RPO_FALCON_SCHEME_ID)
-            .await?;
-    let (bob, ..) =
-        insert_new_wallet(&mut client_2, AccountType::Public, &keystore_2, RPO_FALCON_SCHEME_ID)
-            .await?;
+    let alice = client.insert_wallet(AccountType::Public).await?;
+    let bob = client_2.insert_wallet(AccountType::Public).await?;
 
     let faucet = deploy_network_fungible_faucet(&mut client, alice.id()).await?;
 
@@ -780,7 +758,7 @@ pub async fn test_ntx_mint_produces_public_p2id(client_config: ClientConfig) -> 
         .into();
 
     let mint_tx = TransactionRequestBuilder::new().own_output_notes(vec![mint_note]).build()?;
-    execute_tx_and_sync(&mut client, alice.id(), mint_tx).await?;
+    client.execute_tx_and_sync(alice.id(), mint_tx).await?;
 
     ensure!(
         wait_for_committed_note(&mut client, &mut client_2, expected_output_commitment, 15).await?,
@@ -818,15 +796,11 @@ pub async fn test_ntx_mint_produces_public_p2id(client_config: ClientConfig) -> 
 pub async fn test_ntx_mint_produces_public_note_with_non_standard_script(
     client_config: ClientConfig,
 ) -> Result<()> {
-    let (mut client, keystore) = client_config.clone().into_client().await?;
-    let (mut client_2, keystore_2) = client_config.clone().into_client().await?;
+    let mut client = client_config.clone().into_client().await?;
+    let mut client_2 = client_config.clone().into_client().await?;
 
-    let (alice, ..) =
-        insert_new_wallet(&mut client, AccountType::Public, &keystore, RPO_FALCON_SCHEME_ID)
-            .await?;
-    let (bob, ..) =
-        insert_new_wallet(&mut client_2, AccountType::Public, &keystore_2, RPO_FALCON_SCHEME_ID)
-            .await?;
+    let alice = client.insert_wallet(AccountType::Public).await?;
+    let bob = client_2.insert_wallet(AccountType::Public).await?;
 
     let faucet = deploy_network_fungible_faucet(&mut client, alice.id()).await?;
 
@@ -835,10 +809,9 @@ pub async fn test_ntx_mint_produces_public_note_with_non_standard_script(
     let amount = Felt::new_unchecked(100);
 
     // Registered case: pre-register a non-standard output script via `expected_ntx_scripts` on a
-    // trivial no-op tx, then wait for the registration to commit. `execute_tx_and_sync` waits
-    // for the no-op tx (committed alongside the registration note) and the extra block adds
-    // an indexing margin, so the script is resolvable before the MINT's network transaction
-    // runs.
+    // trivial no-op tx, then wait for the registration to commit. `execute_tx_and_sync` waits for
+    // the no-op tx (committed alongside the registration note) and the extra block adds an indexing
+    // margin, so the script is resolvable before the MINT's network transaction runs.
     let registered_nonce: u32 = client.rng().random();
     let (registered_script, registered_mint, registered_output_commitment) =
         build_non_standard_mint(
@@ -858,13 +831,13 @@ pub async fn test_ntx_mint_produces_public_note_with_non_standard_script(
         .custom_script(noop_script)
         .expected_ntx_scripts(vec![registered_script])
         .build()?;
-    execute_tx_and_sync(&mut client, alice.id(), register_tx).await?;
-    wait_for_blocks(&mut client, 1).await;
+    client.execute_tx_and_sync(alice.id(), register_tx).await?;
+    client.wait_for_blocks(1).await?;
 
     let registered_mint_tx = TransactionRequestBuilder::new()
         .own_output_notes(vec![registered_mint])
         .build()?;
-    execute_tx_and_sync(&mut client, alice.id(), registered_mint_tx).await?;
+    client.execute_tx_and_sync(alice.id(), registered_mint_tx).await?;
 
     // The NTX builder resolves the registered script and emits the public note. Observe it
     // `Committed` on Bob's client.
@@ -881,15 +854,16 @@ pub async fn test_ntx_mint_produces_public_note_with_non_standard_script(
         .pop()
         .context("expected the committed public note to be present on Bob's client")?
         .try_into()?;
-    let consume_tx_id = consume_notes(&mut client_2, bob.id(), &[note]).await;
-    wait_for_tx(&mut client_2, consume_tx_id).await?;
+    let consume_tx_id = client_2.consume_notes(bob.id(), &[note]).await?;
+    client_2.wait_for_tx(consume_tx_id).await?;
 
-    assert_account_has_single_asset(&client_2, bob.id(), faucet.id(), amount.as_canonical_u64())
+    client_2
+        .assert_account_has_single_asset(bob.id(), faucet.id(), amount.as_canonical_u64())
         .await;
 
-    // Unregistered case: mint a note whose public output uses a different non-standard script
-    // that is never registered. The NTX builder cannot build the public output note, so it
-    // never reaches `Committed` over a bounded window.
+    // Unregistered case: mint a note whose public output uses a different non-standard script that
+    // is never registered. The NTX builder cannot build the public output note, so it never reaches
+    // `Committed` over a bounded window.
     let unregistered_nonce: u32 = client.rng().random();
     let (_unregistered_script, unregistered_mint, unregistered_output_id) =
         build_non_standard_mint(
@@ -903,7 +877,7 @@ pub async fn test_ntx_mint_produces_public_note_with_non_standard_script(
     let unregistered_mint_tx = TransactionRequestBuilder::new()
         .own_output_notes(vec![unregistered_mint])
         .build()?;
-    execute_tx_and_sync(&mut client, alice.id(), unregistered_mint_tx).await?;
+    client.execute_tx_and_sync(alice.id(), unregistered_mint_tx).await?;
 
     ensure!(
         !wait_for_committed_note(&mut client, &mut client_2, unregistered_output_id, 10).await?,
@@ -981,8 +955,8 @@ pub(crate) fn get_network_note_with_script<T: Rng>(
 pub async fn test_watch_network_account(client_config: ClientConfig) -> Result<()> {
     const BUMP_NOTE_NUMBER: u64 = 3;
 
-    let (mut client_1, keystore_1) = client_config.clone().into_client().await?;
-    let (mut client_2, _keystore_2) = client_config.clone().into_client().await?;
+    let mut client_1 = client_config.clone().into_client().await?;
+    let mut client_2 = client_config.clone().into_client().await?;
     client_1.sync_state().await?;
 
     let incr_note_root = note_script_root(INCR_NOTE_SCRIPT_CODE, client_1.source_manager())?;
@@ -1018,11 +992,9 @@ pub async fn test_watch_network_account(client_config: ClientConfig) -> Result<(
     let initial_watched_commitment =
         client_2.account_reader(network_account_id).commitment().await?;
 
-    // client_1 emits BUMP_NOTE_NUMBER network notes targeted at the counter; the node will
-    // consume them in subsequent blocks and bump the counter to BUMP_NOTE_NUMBER.
-    let (native_account, ..) =
-        insert_new_wallet(&mut client_1, AccountType::Public, &keystore_1, RPO_FALCON_SCHEME_ID)
-            .await?;
+    // client_1 emits BUMP_NOTE_NUMBER network notes targeted at the counter; the node will consume
+    // them in subsequent blocks and bump the counter to BUMP_NOTE_NUMBER.
+    let native_account = client_1.insert_wallet(AccountType::Public).await?;
 
     let source_manager = client_1.source_manager();
     let mut network_notes = vec![];
@@ -1037,13 +1009,13 @@ pub async fn test_watch_network_account(client_config: ClientConfig) -> Result<(
     }
 
     let tx_request = TransactionRequestBuilder::new().own_output_notes(network_notes).build()?;
-    execute_tx_and_sync(&mut client_1, native_account.id(), tx_request).await?;
+    client_1.execute_tx_and_sync(native_account.id(), tx_request).await?;
 
     // Poll the watched client until it observes the bumped counter.
     let expected_counter = Word::from([Felt::new_unchecked(BUMP_NOTE_NUMBER), ZERO, ZERO, ZERO]);
     let mut observed = false;
     for _ in 0..10 {
-        wait_for_blocks(&mut client_1, 1).await;
+        client_1.wait_for_blocks(1).await?;
         client_2.sync_state().await?;
         let counter = client_2
             .account_reader(network_account_id)

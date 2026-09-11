@@ -11,15 +11,15 @@ use miden_protocol::Felt;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
 
-use super::common::{TestClient, wait_for_tx};
+use super::common::TestClient;
 use crate::note::Note;
 use crate::transaction::{TransactionId, TransactionRequestBuilder};
 
 /// Makes accounts able to pay their own transaction fees.
 #[async_trait::async_trait(?Send)]
 pub trait FeeFunder: Send + Sync + fmt::Debug {
-    /// Pays every account in `account_ids` enough to cover its own fees, returning each paired
-    /// with the note carrying its funds.
+    /// Pays every account in `account_ids` enough to cover its own fees, returning each paired with
+    /// the note carrying its funds.
     ///
     /// Taken together so one transaction can pay them all; returned rather than consumed so each
     /// account's own next transaction spends its note.
@@ -78,8 +78,8 @@ impl TestClient {
         }
 
         if self.chain_charges_fees().await? {
-            // Deploying on demand means there is no later transaction to fold the funding into,
-            // so the notes are consumed here.
+            // Deploying on demand means there is no later transaction to fold the funding into, so
+            // the notes are consumed here.
             let mut funded = Vec::with_capacity(undeployed.len());
             for account_id in &undeployed {
                 match self.take_funding(*account_id) {
@@ -135,7 +135,7 @@ impl TestClient {
     /// deploys and funding notes in its own sync.
     async fn wait_for_deploys(&mut self, tx_ids: &[(AccountId, TransactionId)]) -> Result<()> {
         for (account_id, tx_id) in tx_ids.iter().copied() {
-            wait_for_tx(self, tx_id).await.with_context(|| {
+            self.wait_for_tx(tx_id).await.with_context(|| {
                 format!("the deploy transaction of account {account_id} never committed")
             })?;
         }
@@ -146,9 +146,9 @@ impl TestClient {
     /// Returns whether the chain charges a non-zero fee per transaction, read from the genesis
     /// header.
     ///
-    /// Exposed because a few invariants only hold fee-free: paying a fee is itself an account
-    /// state change, so asserting a transaction left a commitment untouched only holds on a
-    /// fee-free chain.
+    /// Exposed because a few invariants only hold fee-free: paying a fee is itself an account state
+    /// change, so asserting a transaction left a commitment untouched only holds on a fee-free
+    /// chain.
     pub async fn chain_charges_fees(&self) -> Result<bool> {
         let (genesis, _) = self
             .get_block_header_by_num(BlockNumber::GENESIS)

@@ -48,7 +48,7 @@ use crate::rpc::domain::storage_map::StorageMapInfo;
 use crate::rpc::domain::sync::{ChainMmrInfo, SyncTarget};
 use crate::rpc::domain::transaction::TransactionRecord;
 use crate::rpc::encryption::{AttestedTransactionEncryptionKey, SealedTransactionInputs};
-use crate::rpc::{AccountStateAt, NodeRpcClient, RpcError, RpcStatusInfo};
+use crate::rpc::{AccountStateAt, NodeRpcClient, RpcEndpoint, RpcError, RpcStatusInfo};
 
 pub type MockClient<AUTH> = Client<AUTH>;
 
@@ -80,6 +80,10 @@ pub struct MockRpcApi {
     /// Number of `get_notes_by_id` requests served, so a test can assert that a flow avoided the
     /// round trip.
     get_notes_by_id_calls: Arc<AtomicUsize>,
+    /// Failures to serve instead of answering, keyed by [`RpcEndpoint::proto_name`] and set by
+    /// [`MockRpcApi::fail_next_call`]. An entry is removed when served, so the call after it
+    /// answers normally and a test can exercise a retry.
+    next_call_failures: Arc<RwLock<BTreeMap<&'static str, RpcError>>>,
 }
 
 impl Default for MockRpcApi {
@@ -103,7 +107,22 @@ impl MockRpcApi {
             private_note_attachments: Arc::new(RwLock::new(BTreeMap::new())),
             sync_notes_mmr_path_overrides: Arc::new(RwLock::new(BTreeMap::new())),
             get_notes_by_id_calls: Arc::new(AtomicUsize::new(0)),
+            next_call_failures: Arc::new(RwLock::new(BTreeMap::new())),
         }
+    }
+
+    /// Makes the next call to `endpoint` fail with `error` instead of answering. The failure is
+    /// consumed, so the call after it answers normally and a test can exercise a retry.
+    ///
+    /// Staging a failure for an endpoint whose mock implementation does not look for one is a
+    /// silent no-op.
+    pub fn fail_next_call(&self, endpoint: RpcEndpoint, error: RpcError) {
+        self.next_call_failures.write().insert(endpoint.proto_name(), error);
+    }
+
+    /// Returns the failure staged for `endpoint`, removing it so it is served once.
+    fn take_failure(&self, endpoint: RpcEndpoint) -> Option<RpcError> {
+        self.next_call_failures.write().remove(endpoint.proto_name())
     }
 
     /// Registers the attachment content for a private note so that subsequent `get_notes_by_id`
@@ -122,9 +141,9 @@ impl MockRpcApi {
         self.sync_notes_mmr_path_overrides.write().insert(block_num, path);
     }
 
-    /// Sets the oversize threshold for `get_account`. A storage map whose entries were requested
-    /// in full comes back as `StorageMapEntries::LimitExceeded` past this threshold, and a vault
-    /// with more assets than it comes back with the `too_many_assets` flag set.
+    /// Sets the oversize threshold for `get_account`. A storage map whose entries were requested in
+    /// full comes back as `StorageMapEntries::LimitExceeded` past this threshold, and a vault with
+    /// more assets than it comes back with the `too_many_assets` flag set.
     #[must_use]
     pub fn with_oversize_threshold(mut self, threshold: usize) -> Self {
         self.oversize_threshold = threshold;
@@ -176,9 +195,8 @@ impl MockRpcApi {
         self.mock_chain.read().block_header(block_num.as_usize())
     }
 
-    /// Retrieves account vault updates in a given block range.
-    /// This method tries to simulate pagination by limiting the number of blocks processed per
-    /// request.
+    /// Retrieves account vault updates in a given block range. This method tries to simulate
+    /// pagination by limiting the number of blocks processed per request.
     fn get_sync_account_vault_request(
         &self,
         block_from: BlockNumber,
@@ -351,8 +369,8 @@ impl NodeRpcClient for MockRpcApi {
         Ok(())
     }
 
-    /// Returns note updates in the inclusive block range `[block_from, block_to]`.
-    /// Only notes that match the provided tags will be returned, grouped by block.
+    /// Returns note updates in the inclusive block range `[block_from, block_to]`. Only notes that
+    /// match the provided tags will be returned, grouped by block.
     async fn sync_notes(
         &self,
         block_from: BlockNumber,
@@ -504,11 +522,13 @@ impl NodeRpcClient for MockRpcApi {
         _sealed_transaction_inputs: SealedTransactionInputs, /* Unnecessary for testing client
                                                               * itself. */
     ) -> Result<BlockNumber, RpcError> {
-        // TODO: add some basic validations to test error cases
+        if let Some(error) = self.take_failure(RpcEndpoint::SubmitProvenTx) {
+            return Err(error);
+        }
 
-        // Record private-note attachment content the way a real node does: attachments are
-        // stored on-chain even for private notes, so `get_notes_by_id` must be able to serve
-        // them. The mock chain itself only keeps private note headers.
+        // Record private-note attachment content the way a real node does: attachments are stored
+        // on-chain even for private notes, so `get_notes_by_id` must be able to serve them. The
+        // mock chain itself only keeps private note headers.
         for note in proven_transaction.output_notes().iter() {
             if let OutputNote::Private(private_note) = note
                 && !private_note.attachments().is_empty()
@@ -531,8 +551,8 @@ impl NodeRpcClient for MockRpcApi {
 
     /// Simulates the submission of a proven batch to the node by adding it to the mock chain's
     /// pending batches. The `proposed_batch` and `sealed_transaction_inputs` arguments are accepted
-    /// to match the trait signature but are unused — the mock relies on the `ProvenBatch`
-    /// alone, matching how `submit_proven_transaction` ignores its `sealed_transaction_inputs`.
+    /// to match the trait signature but are unused — the mock relies on the `ProvenBatch` alone,
+    /// matching how `submit_proven_transaction` ignores its `sealed_transaction_inputs`.
     async fn submit_proven_batch(
         &self,
         proven_batch: ProvenBatch,
@@ -548,8 +568,8 @@ impl NodeRpcClient for MockRpcApi {
         Ok(block_num)
     }
 
-    /// Returns the account proof for the specified account. The `known_code` and `vault` fields
-    /// are ignored: full account data is returned, with truncation flags set when it exceeds
+    /// Returns the account proof for the specified account. The `known_code` and `vault` fields are
+    /// ignored: full account data is returned, with truncation flags set when it exceeds
     /// `oversize_threshold`.
     async fn get_account(
         &self,
@@ -578,8 +598,8 @@ impl NodeRpcClient for MockRpcApi {
             let account = mock_chain.committed_account(account_id).unwrap();
 
             // `All` enumerates the account's map slots directly — the mock can introspect the
-            // account, so it simulates the (not-yet-on-the-wire) "all storage maps" request.
-            // A slot maps to the keys requested for it, empty meaning "every entry".
+            // account, so it simulates the (not-yet-on-the-wire) "all storage maps" request. A slot
+            // maps to the keys requested for it, empty meaning "every entry".
             let requested_slots: Vec<(StorageSlotName, Vec<StorageMapKey>)> = match &request.storage
             {
                 StorageMapFetch::Skip => Vec::new(),
@@ -600,9 +620,9 @@ impl NodeRpcClient for MockRpcApi {
                 if let Some(StorageSlotContent::Map(storage_map)) =
                     account.storage().get(slot_name).map(StorageSlot::content)
                 {
-                    // Mirror the node: named keys come back as one partial SMT covering them,
-                    // and an empty key list comes back as the whole map, or as `LimitExceeded`
-                    // once it grows past the threshold.
+                    // Mirror the node: named keys come back as one partial SMT covering them, and
+                    // an empty key list comes back as the whole map, or as `LimitExceeded` once it
+                    // grows past the threshold.
                     let entries = if requested_keys.is_empty() {
                         let entries: Vec<StorageMapEntry> = storage_map
                             .entries()

@@ -11,8 +11,8 @@ pub enum GetBlockHeaderError {
     /// Internal server error (code 0)
     #[error("internal server error")]
     Internal,
-    /// Error code not recognized by this client version. This can happen if the node
-    /// is newer than the client and has added new error variants.
+    /// Error code not recognized by this client version. This can happen if the node is newer than
+    /// the client and has added new error variants.
     #[error("unknown error code {code}: {message}")]
     Unknown { code: u8, message: String },
 }
@@ -38,8 +38,8 @@ pub enum GetBlockByNumberError {
     /// Failed to deserialize data
     #[error("deserialization failed")]
     DeserializationFailed,
-    /// Error code not recognized by this client version. This can happen if the node
-    /// is newer than the client and has added new error variants.
+    /// Error code not recognized by this client version. This can happen if the node is newer than
+    /// the client and has added new error variants.
     #[error("unknown error code {code}: {message}")]
     Unknown { code: u8, message: String },
 }

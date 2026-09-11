@@ -36,14 +36,15 @@ struct CliArgs {
     #[arg(short, long, default_value = "localhost", env = "MIDEN_NETWORK", global = true)]
     network: Network,
 
-    /// Path to the persistent store directory. All commands share this directory
-    /// for the `SQLite` database and filesystem keystore.
+    /// Path to the persistent store directory. All commands share this directory for the `SQLite`
+    /// database and filesystem keystore.
     #[arg(long, global = true, default_value = DEFAULT_STORE_DIR)]
     store: String,
 
     /// Path to pre-funded basic wallets to draw transaction fees from: either one `.mac` account
-    /// file or a directory of them.
-    #[arg(long, global = true, env = fee_funding::FUNDER_ACCOUNTS_ENV)]
+    /// file or a directory of them. Defaults to `MIDEN_FUNDER_ACCOUNTS_DIR`. A path naming no such
+    /// file leaves the run without funders, which is all a fee-free chain needs.
+    #[arg(long, global = true)]
     funders: Option<PathBuf>,
 }
 
@@ -66,9 +67,9 @@ enum Command {
 impl Command {
     /// Returns whether the command needs the global startup sync against the network.
     ///
-    /// Only commands that read pre-existing chain state (deploy, expand, transaction)
-    /// require a synced client at startup. Import / export operate on a file or call
-    /// their own RPC and do not benefit from the pre-sync.
+    /// Only commands that read pre-existing chain state (deploy, expand, transaction) require a
+    /// synced client at startup. Import / export operate on a file or call their own RPC and do not
+    /// benefit from the pre-sync.
     fn startup_mode(&self) -> StartupMode {
         match self {
             Command::Deploy(_) | Command::Expand(_) | Command::Transaction(_) => {
@@ -100,10 +101,9 @@ struct TransactionArgs {
     #[arg(short, long)]
     account_id: String,
 
-    /// Maximum storage reads per transaction. When total entries exceed this limit,
-    /// reads are split across multiple transactions per benchmark iteration.
-    /// Each iteration's time is the sum across all transactions.
-    /// When omitted, all entries are read in a single transaction.
+    /// Maximum storage reads per transaction. When total entries exceed this limit, reads are split
+    /// across multiple transactions per benchmark iteration. Each iteration's time is the sum
+    /// across all transactions. When omitted, all entries are read in a single transaction.
     #[arg(short, long)]
     reads: Option<usize>,
 
@@ -259,11 +259,10 @@ async fn main() {
         .await
         .expect("Failed to create client");
 
-    let fee_funder = fee_funding::load(
-        &ClientConfig::new(endpoint.clone(), RPC_TIMEOUT_MS),
-        args.funders.as_deref(),
-    )
-    .expect("Failed to load the funder wallets");
+    let funders = args.funders.or_else(fee_funding::funders_path_from_env);
+    let fee_funder =
+        fee_funding::load(&ClientConfig::new(endpoint.clone(), RPC_TIMEOUT_MS), funders.as_deref())
+            .expect("Failed to load the funder wallets");
     let mut client = TestClient::from(client).with_fee_funder(fee_funder);
 
     match args.command.startup_mode() {

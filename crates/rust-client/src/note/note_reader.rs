@@ -10,14 +10,14 @@ use crate::store::{InputNoteCursor, InputNoteRecord, NoteFilter, Store};
 
 /// A lazy iterator over consumed input notes for a specific consumer account.
 ///
-/// Each call to [`InputNoteReader::next`] executes a store query and returns the
-/// next matching note. Use builder methods to configure filters before iterating.
+/// Each call to [`InputNoteReader::next`] executes a store query and returns the next matching
+/// note. Use builder methods to configure filters before iterating.
 ///
 /// # Ordering
 ///
-/// Notes are returned in on-chain consumption order: first by block number, then by
-/// per-account transaction order within the block. Notes consumed by the same transaction
-/// are returned in a deterministic order that is consistent across calls.
+/// Notes are returned in on-chain consumption order: first by block number, then by per-account
+/// transaction order within the block. Notes consumed by the same transaction are returned in a
+/// deterministic order that is consistent across calls.
 pub struct InputNoteReader {
     store: Arc<dyn Store>,
     consumer: AccountId,
@@ -26,11 +26,11 @@ pub struct InputNoteReader {
 }
 
 impl InputNoteReader {
-    /// Creates a new `InputNoteReader` that iterates over consumed input notes
-    /// for the given consumer account.
+    /// Creates a new `InputNoteReader` that iterates over consumed input notes for the given
+    /// consumer account.
     ///
-    /// The consumer is required because ordering is only guaranteed among notes
-    /// consumed by the same account.
+    /// The consumer is required because ordering is only guaranteed among notes consumed by the
+    /// same account.
     pub fn new(store: Arc<dyn Store>, consumer: AccountId) -> Self {
         Self {
             store,
@@ -52,8 +52,7 @@ impl InputNoteReader {
         self.cursor = None;
     }
 
-    /// Returns the next consumed input note, or `None` when all matching notes have been
-    /// returned.
+    /// Returns the next consumed input note, or `None` when all matching notes have been returned.
     ///
     /// Each call executes a single store query.
     pub async fn next(&mut self) -> Result<Option<InputNoteRecord>, ClientError> {

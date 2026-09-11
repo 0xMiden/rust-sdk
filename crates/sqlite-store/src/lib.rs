@@ -1,5 +1,5 @@
-//! SQLite-backed Store implementation for miden-client.
-//! This crate provides `SqliteStore` and its full implementation.
+//! SQLite-backed Store implementation for miden-client. This crate provides `SqliteStore` and its
+//! full implementation.
 //!
 //! [`SqliteStore`] enables the persistence of accounts, transactions, notes, block headers, and MMR
 //! nodes using an `SQLite` database.
@@ -106,8 +106,8 @@ impl SqliteStore {
 
         Self::migrate(&pool, SqliteMigrator::client()).await?;
 
-        // Account SMT data is persisted in the forest tables and read on demand, so no state
-        // needs to be rebuilt here.
+        // Account SMT data is persisted in the forest tables and read on demand, so no state needs
+        // to be rebuilt here.
         Ok(SqliteStore { pool, database_filepath })
     }
 
@@ -152,8 +152,8 @@ impl SqliteStore {
 
 // SQLite implementation of the Store trait
 //
-// To simplify, all implementations rely on inner SqliteStore functions that map 1:1 by name
-// This way, the actual implementations are grouped by entity types in their own sub-modules
+// To simplify, all implementations rely on inner SqliteStore functions that map 1:1 by name This
+// way, the actual implementations are grouped by entity types in their own sub-modules
 #[async_trait::async_trait]
 impl Store for SqliteStore {
     fn identifier(&self) -> &str {
@@ -612,8 +612,8 @@ pub(crate) fn current_timestamp_u64() -> u64 {
 
 /// Gets a `u64` value from the database.
 ///
-/// `Sqlite` uses `i64` as its internal representation format, and so when retrieving
-/// we need to make sure we cast as `u64` to get the original value
+/// `Sqlite` uses `i64` as its internal representation format, and so when retrieving we need to
+/// make sure we cast as `u64` to get the original value
 pub(crate) fn column_value_as_u64<I: rusqlite::RowIndex>(
     row: &rusqlite::Row<'_>,
     index: I,
@@ -638,12 +638,12 @@ pub(crate) fn u64_to_value(v: u64) -> Value {
     Value::Integer(v as i64)
 }
 
-/// Builds the value list for a `rarray(?)` parameter from serializable items, each stored as a
-/// BLOB of its canonical byte encoding.
+/// Builds the value list for a `rarray(?)` parameter from serializable items, each stored as a BLOB
+/// of its canonical byte encoding.
 ///
-/// Binding the list as a single table-valued parameter keeps the SQL text constant, so the
-/// prepared statement stays cacheable regardless of the list length (and the list is not subject
-/// to `SQLite`'s bound-parameter limit).
+/// Binding the list as a single table-valued parameter keeps the SQL text constant, so the prepared
+/// statement stays cacheable regardless of the list length (and the list is not subject to
+/// `SQLite`'s bound-parameter limit).
 pub(crate) fn blob_array<T: Serializable>(items: impl IntoIterator<Item = T>) -> Rc<Vec<Value>> {
     Rc::new(items.into_iter().map(|item| Value::Blob(item.to_bytes())).collect())
 }

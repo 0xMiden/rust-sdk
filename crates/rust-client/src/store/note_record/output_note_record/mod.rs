@@ -32,8 +32,8 @@ use super::NoteRecordError;
 // OUTPUT NOTE RECORD
 // ================================================================================================
 
-/// Represents a Note which was the result of executing some transaction of which the Store can
-/// keep track and retrieve.
+/// Represents a Note which was the result of executing some transaction of which the Store can keep
+/// track and retrieve.
 ///
 /// An [`OutputNoteRecord`] contains all the information of a [`Note`] while it allows for not
 /// knowing the recipient details (nullifier, script, inputs and serial number).
@@ -82,8 +82,8 @@ impl OutputNoteRecord {
         NoteId::new(self.details_commitment(), &self.metadata)
     }
 
-    /// Returns the commitment to the note's details (recipient + assets), independent of
-    /// note metadata.
+    /// Returns the commitment to the note's details (recipient + assets), independent of note
+    /// metadata.
     pub fn details_commitment(&self) -> NoteDetailsCommitment {
         NoteDetailsCommitment::from_raw_commitments(self.recipient_digest, self.assets.commitment())
     }
@@ -146,8 +146,8 @@ impl OutputNoteRecord {
         )
     }
 
-    /// Returns true while the note's on-chain inclusion is still unsettled (either expected
-    /// state), i.e. before the note is known to be committed or consumed.
+    /// Returns true while the note's on-chain inclusion is still unsettled (either expected state),
+    /// i.e. before the note is known to be committed or consumed.
     pub fn is_inclusion_pending(&self) -> bool {
         matches!(
             self.state,
@@ -336,8 +336,7 @@ pub enum OutputNoteState {
         /// Inclusion proof for the note inside the chain block.
         inclusion_proof: NoteInclusionProof,
     },
-    /// Note with known recipient has been committed on chain, and can be consumed in a
-    /// transaction.
+    /// Note with known recipient has been committed on chain, and can be consumed in a transaction.
     CommittedFull {
         /// Details needed to consume the note.
         recipient: NoteRecipient,

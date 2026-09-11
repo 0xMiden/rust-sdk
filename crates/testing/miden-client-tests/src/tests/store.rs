@@ -32,7 +32,7 @@ use miden_standards::account::wallets::BasicWallet;
 use miden_standards::testing::mock_account::MockAccountExt;
 use rand::Rng;
 
-use crate::tests::{create_test_client, insert_new_fungible_faucet, insert_new_wallet};
+use crate::tests::create_test_client;
 
 fn create_account_data(account_id: u128) -> AccountFile {
     let account = Account::mock(
@@ -83,7 +83,7 @@ pub fn create_ecdsa_initial_accounts_data() -> Vec<AccountFile> {
 #[tokio::test]
 pub async fn try_add_account() {
     // generate test client
-    let (mut client, _rpc_api, _) = Box::pin(create_test_client()).await;
+    let (mut client, _rpc_api) = Box::pin(create_test_client()).await;
 
     let account = Account::mock(
         ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET,
@@ -108,7 +108,7 @@ pub async fn try_add_account() {
 #[tokio::test]
 pub async fn try_add_ecdsa_account() {
     // generate test client
-    let (mut client, _rpc_api, _) = Box::pin(create_test_client()).await;
+    let (mut client, _rpc_api) = Box::pin(create_test_client()).await;
 
     let account = Account::mock(
         ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET,
@@ -183,9 +183,9 @@ async fn load_ecdsa_accounts_test() {
     assert_eq!(actual_commitments, expected_commitments);
 }
 
-/// Tests that pruning while a transaction is pending does not break the ability to
-/// commit that transaction. The pending tx's input state lives in the historical tables;
-/// pruning must not delete it, otherwise undo on discard would fail.
+/// Tests that pruning while a transaction is pending does not break the ability to commit that
+/// transaction. The pending tx's input state lives in the historical tables; pruning must not
+/// delete it, otherwise undo on discard would fail.
 ///
 /// Scenario:
 ///   1. Mint tx1 and commit it (nonce 0 to 1)
@@ -195,12 +195,10 @@ async fn load_ecdsa_accounts_test() {
 ///   5. Account state must be intact at nonce 2
 #[tokio::test]
 async fn prune_account_history_with_pending_transaction() {
-    let (mut client, mock_rpc_api, keystore) = Box::pin(create_test_client()).await;
+    let (mut client, mock_rpc_api) = Box::pin(create_test_client()).await;
 
-    let wallet = insert_new_wallet(&mut client, AccountType::Private, &keystore).await.unwrap();
-    let faucet = insert_new_fungible_faucet(&mut client, AccountType::Private, &keystore)
-        .await
-        .unwrap();
+    let wallet = client.insert_wallet(AccountType::Private).await.unwrap();
+    let faucet = client.insert_faucet(AccountType::Private).await.unwrap();
     let faucet_id = faucet.id();
 
     mock_rpc_api.prove_block();
@@ -226,9 +224,9 @@ async fn prune_account_history_with_pending_transaction() {
         .unwrap();
     Box::pin(client.submit_new_transaction(faucet_id, tx_request_2)).await.unwrap();
 
-    // Prune up to nonce 1 while tx2 is still pending.
-    // This should remove nonce-0 historical entries but must preserve nonce-1 entries
-    // (which tx2's undo would need if the transaction were discarded).
+    // Prune up to nonce 1 while tx2 is still pending. This should remove nonce-0 historical entries
+    // but must preserve nonce-1 entries (which tx2's undo would need if the transaction were
+    // discarded).
     let deleted = client.prune_account_history(faucet_id, Felt::from(1u32)).await.unwrap();
     assert!(deleted > 0, "Should have pruned nonce-0 historical entries");
 
@@ -287,12 +285,9 @@ const SLOTS_COMPONENT_MASM: &str = r#"
         end
     "#;
 
-/// Builds a custom account with three value slots (A, B, C) and MASM procedures
-/// to modify slots A and B individually. Returns the account and its ID.
-async fn build_three_slot_account(
-    client: &mut crate::tests::TestClient,
-    keystore: &miden_client::keystore::FilesystemKeyStore,
-) -> AccountId {
+/// Builds a custom account with three value slots (A, B, C) and MASM procedures to modify slots A
+/// and B individually. Returns the account and its ID.
+async fn build_three_slot_account(client: &mut crate::tests::TestClient) -> AccountId {
     let a_name = StorageSlotName::new(SLOT_A_NAME).unwrap();
     let b_name = StorageSlotName::new(SLOT_B_NAME).unwrap();
     let c_name = StorageSlotName::new(SLOT_C_NAME).unwrap();
@@ -339,7 +334,7 @@ async fn build_three_slot_account(
         .unwrap();
 
     let account_id = account.id();
-    keystore.add_key(&key_pair, account_id).await.unwrap();
+    client.keystore().add_key(&key_pair, account_id).await.unwrap();
     client.add_account(&account, false).await.unwrap();
 
     account_id
@@ -372,14 +367,14 @@ fn compile_slot_tx_script(
 ///   - Prune history
 ///   - Verify: A=10, B=20, C=3: slot C was never modified and must survive pruning
 ///
-/// With the `replaced_at` historical model, only slots that actually changed get recorded
-/// in the historical tables. Slot C is never in the historical table because it was never
-/// replaced, so pruning cannot lose it.
+/// With the `replaced_at` historical model, only slots that actually changed get recorded in the
+/// historical tables. Slot C is never in the historical table because it was never replaced, so
+/// pruning cannot lose it.
 #[tokio::test]
 async fn prune_preserves_unmodified_storage_slots() {
-    let (mut client, mock_rpc_api, keystore) = Box::pin(create_test_client()).await;
+    let (mut client, mock_rpc_api) = Box::pin(create_test_client()).await;
 
-    let account_id = build_three_slot_account(&mut client, &keystore).await;
+    let account_id = build_three_slot_account(&mut client).await;
 
     let source_manager = client.source_manager();
     let tx_script_set_a = compile_slot_tx_script("set_a_to_10", source_manager.clone());

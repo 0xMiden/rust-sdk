@@ -379,23 +379,21 @@ where
             let commitment = note_record.details_commitment();
             let Some((sync_note, block_header)) = blocks.iter().find_map(|block| {
                 let sync_note = block.notes.values().find(|sync_note| {
-                    NoteId::new(commitment, sync_note.committed.metadata())
-                        == *sync_note.committed.note_id()
+                    NoteId::new(commitment, &sync_note.metadata) == sync_note.note_id
                 })?;
                 Some((sync_note, &block.block_header))
             }) else {
                 note_records.push(note_record);
                 continue;
             };
-            let committed_note = &sync_note.committed;
 
             // A note that carries no attachments has nothing to apply to the record.
             let attachments =
                 (!sync_note.attachments.is_empty()).then(|| sync_note.attachments.clone());
 
-            let metadata = *committed_note.metadata();
+            let metadata = sync_note.metadata;
             let mut note_changed = note_record
-                .inclusion_proof_received(committed_note.inclusion_proof().clone(), metadata)?;
+                .inclusion_proof_received(sync_note.inclusion_proof.clone(), metadata)?;
 
             if let Some(attachments) = attachments {
                 note_changed |= note_record.attachments_received(attachments);
@@ -510,18 +508,16 @@ where
             }
 
             for sync_note in block.notes.values() {
-                let committed = &sync_note.committed;
-
                 // The note carries its own commit height in its inclusion proof, which is a
                 // separate field from the block header checked above. Authenticating the note later
                 // looks that height up in the partial MMR, so a height beyond our synced view has
                 // to be dropped here rather than trusted.
-                if committed.block_num() > current_block_num {
+                if sync_note.block_num() > current_block_num {
                     continue;
                 }
 
                 let Some((..)) = expected_notes.iter().find(|(commitment, _)| {
-                    NoteId::new(*commitment, committed.metadata()) == *committed.note_id()
+                    NoteId::new(*commitment, &sync_note.metadata) == sync_note.note_id
                 }) else {
                     continue;
                 };

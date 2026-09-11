@@ -1305,7 +1305,7 @@ impl StateSync {
     /// * Tracked notes that were being processed by a transaction that got committed.
     /// * Tracked notes that were nullified by an external transaction.
     ///
-    /// Each [`SyncedNote`] is self-contained: inclusion proof and metadata from `committed`,
+    /// Each [`SyncedNote`] is self-contained: inclusion proof and metadata from the sync record,
     /// attachments from the sync record or a `GetNotesById` follow-up, and the body from `details`.
     ///
     /// Attachments are stored on-chain for private and public notes alike, so they are applied to
@@ -1318,23 +1318,12 @@ impl StateSync {
     ) -> Result<NoteBlockRelevance, ClientError> {
         let mut relevance = NoteBlockRelevance::default();
 
-        for (_, SyncedNote { committed, details, attachments }) in notes {
-            // For a public note, pair its fetched body with the inclusion proof and metadata from
-            // `committed` (the single source of truth) to build the candidate record.
-            let public_note = details.map(|details| {
-                let state = UnverifiedNoteState {
-                    metadata: *committed.metadata(),
-                    inclusion_proof: committed.inclusion_proof().clone(),
-                }
-                .into();
-                InputNoteRecord::new(details, attachments.clone(), None, state)
-            });
-
+        for (_, mut note) in notes {
             // Observers run BEFORE the screener: they are a side-effect channel independent of the
             // Commit/Insert/Discard decision, and a failing screener must not rob them of the note.
             if !self.note_observers.is_empty() {
                 for obs in &self.note_observers {
-                    match obs.observe(&committed, &attachments).await {
+                    match obs.observe(&note).await {
                         Ok(true) => relevance.observer_requires_block = true,
                         Ok(false) => {},
                         Err(err) => {
@@ -1348,17 +1337,26 @@ impl StateSync {
                 }
             }
 
+            // For a public note, pair its fetched body with the inclusion proof and metadata from
+            // the sync record (the single source of truth) to build the candidate record.
+            let public_note = note.details.take().map(|details| {
+                let state = UnverifiedNoteState {
+                    metadata: note.metadata,
+                    inclusion_proof: note.inclusion_proof.clone(),
+                }
+                .into();
+                InputNoteRecord::new(details, note.attachments.clone(), None, state)
+            });
+
+            let committed = note.into_committed_note();
+
             match self.note_screener.on_note_received(committed, public_note).await? {
                 NoteUpdateAction::Commit(committed_note) => {
                     // Only mark the downloaded block header as relevant if we are talking about an
                     // input note (output notes get marked as committed but we don't need the block
                     // for anything there)
                     relevance.has_client_note |= note_updates
-                        .apply_committed_note_state_transitions(
-                            &committed_note,
-                            block_header,
-                            &attachments,
-                        )?;
+                        .apply_committed_note_state_transitions(&committed_note, block_header)?;
                 },
                 NoteUpdateAction::Insert(public_note) => {
                     relevance.has_client_note = true;
@@ -1653,11 +1651,7 @@ mod tests {
             "always-relevant"
         }
 
-        async fn observe(
-            &self,
-            _committed_note: &CommittedNote,
-            _attachments: &NoteAttachments,
-        ) -> Result<bool, ClientError> {
+        async fn observe(&self, _note: &SyncedNote) -> Result<bool, ClientError> {
             Ok(true)
         }
     }

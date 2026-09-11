@@ -1591,10 +1591,9 @@ impl FeeAuth {
     /// A single-sig component decides the answer wherever it sits in the component list, so the
     /// classification does not depend on the order components come back in.
     ///
-    /// Any other auth component is [`FeeAuth::Ignored`] and left alone: writing an argument such a
+    /// An unrecognized component is [`FeeAuth::Ignored`] and left alone: writing an argument such a
     /// component may read for its own purposes is worse than writing nothing. The component list is
-    /// inspected directly because `AccountInterface` needs an account id this function does not
-    /// have.
+    /// inspected directly because `AccountInterface::new` panics on exactly those components.
     fn of(account_code_interface: &AccountCodeInterface) -> Self {
         let procedures: Vec<_> = account_code_interface.procedures().iter().copied().collect();
         let components = AccountComponentInterface::from_procedures(&procedures);
@@ -1620,12 +1619,15 @@ impl FeeAuth {
         });
 
         caller_chosen_salt.unwrap_or_else(|| {
-            // The components that read the auth argument as conversion info are handled above, so
-            // whichever auth component is left names the reason the argument is left alone. An
-            // account that installs no auth component at all reaches this point too.
             let name = components
                 .iter()
-                .find(|component| component.is_auth_component())
+                .find(|component| {
+                    matches!(
+                        component,
+                        AccountComponentInterface::AuthNoAuth
+                            | AccountComponentInterface::AuthNetworkAccount
+                    )
+                })
                 .map_or_else(|| "unrecognized".into(), AccountComponentInterface::name);
 
             Self::Ignored(name)
@@ -2344,10 +2346,10 @@ mod tests {
         );
     }
 
-    /// A custom auth component reads the auth argument in a way the client cannot know, so a
-    /// request that declares conversion info is rejected and an empty one is left alone.
+    /// An account carrying a custom auth component names no recognized one, which
+    /// `AccountInterface::new` asserts on rather than reports.
     #[test]
-    fn a_custom_auth_component_is_rejected_rather_than_given_conversion_info() {
+    fn an_unrecognized_auth_component_is_rejected_rather_than_panicking() {
         const CUSTOM_AUTH: &str = "
             use miden::protocol::native_account
 
@@ -2374,7 +2376,7 @@ mod tests {
             &fee_conversion_request(),
             &account.code_interface(),
         )
-        .expect_err("an account with a custom auth component cannot read conversion info");
+        .expect_err("an account with no recognized auth component cannot read conversion info");
         assert!(matches!(
             err,
             ClientError::TransactionRequestError(

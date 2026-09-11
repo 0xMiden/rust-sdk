@@ -4,6 +4,7 @@
 
 ### Breaking Changes
 
+* [BREAKING][type][rust] `NodeRpcClient` gained a `register_account` method, which binds an invitation code to an account ID through the node's `RegisterAccount` endpoint ([#2532](https://github.com/0xMiden/rust-sdk/pull/2532)).
 * [BREAKING][type][rust] Added the `TransactionRequestError::SwapNoteWithZeroAsset` variant, so exhaustive matches on `TransactionRequestError` must handle it ([#2459](https://github.com/0xMiden/rust-sdk/pull/2459)).
 * [BREAKING][removal][test] Loose helper functions in `miden_client::testing::common` are now methods on `TestClient`. `TestClient::keystore()` exposes the client's keystore, so `ClientConfig::into_client` and `into_unsynced_client` return just the `TestClient` instead of a client/keystore pair ([#2481](https://github.com/0xMiden/rust-sdk/pull/2481)).
 * [BREAKING][rust,rpc,store] Updated protocol dependencies to `0.17.0-rc.3`, VM dependencies to `0.32`, and `miden-debug` to `0.15`. Updated node protobuf bindings to [#2570](https://github.com/0xMiden/node/pull/2570). Requires a compatible node and a new client database.

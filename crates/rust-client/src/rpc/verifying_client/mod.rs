@@ -282,6 +282,16 @@ impl<T: NodeRpcClient> NodeRpcClient for VerifyingRpcClient<T> {
         Ok((block_num, proof))
     }
 
+    async fn register_account(
+        &self,
+        invitation_code: &str,
+        account_id: AccountId,
+    ) -> Result<(), RpcError> {
+        // Nothing to verify here: a successful response carries no payload to check the request
+        // against.
+        self.0.register_account(invitation_code, account_id).await
+    }
+
     async fn get_note_script_by_root(&self, root: Word) -> Result<Option<NoteScript>, RpcError> {
         let script = self.0.get_note_script_by_root(root).await?;
         if let Some(script) = &script {

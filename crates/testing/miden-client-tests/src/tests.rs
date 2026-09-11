@@ -122,6 +122,7 @@ use rstest::rstest;
 
 mod batch;
 mod fees;
+mod rpc;
 pub mod store;
 mod transaction;
 mod transport;

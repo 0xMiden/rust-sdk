@@ -59,8 +59,8 @@ pub async fn test_swap_fully_onchain(client_config: ClientConfig) -> Result<()> 
     let tx_request = TransactionRequestBuilder::new().build_swap(
         &SwapTransactionData::new(
             account_a.id(),
-            Asset::Fungible(offered_asset),
-            Asset::Fungible(requested_asset),
+            Asset::from(offered_asset),
+            Asset::from(requested_asset),
         ),
         NoteType::Public,
         NoteType::Private,
@@ -77,8 +77,8 @@ pub async fn test_swap_fully_onchain(client_config: ClientConfig) -> Result<()> 
 
     let swap_note_tag = SwapNote::create_tag(
         NoteType::Public,
-        &Asset::Fungible(offered_asset),
-        &Asset::Fungible(requested_asset),
+        &Asset::from(offered_asset),
+        &Asset::from(requested_asset),
     );
 
     // add swap note's tag to client2, we could technically avoid this step, but for the first
@@ -180,8 +180,8 @@ pub async fn test_swap_private(client_config: ClientConfig) -> Result<()> {
     let tx_request = TransactionRequestBuilder::new().build_swap(
         &SwapTransactionData::new(
             account_a.id(),
-            Asset::Fungible(offered_asset),
-            Asset::Fungible(requested_asset),
+            Asset::from(offered_asset),
+            Asset::from(requested_asset),
         ),
         NoteType::Private,
         NoteType::Private,
@@ -204,8 +204,8 @@ pub async fn test_swap_private(client_config: ClientConfig) -> Result<()> {
 
     let tag = SwapNote::create_tag(
         NoteType::Private,
-        &Asset::Fungible(offered_asset),
-        &Asset::Fungible(requested_asset),
+        &Asset::from(offered_asset),
+        &Asset::from(requested_asset),
     );
     client2.add_note_tag(tag).await?;
     client2

@@ -190,7 +190,8 @@ where
 
         // 6. Execute the batch kernel, then prove synchronously.
         let executed_batch = BatchExecutor::new().execute(proposed_batch.clone())?;
-        let proven_batch = LocalBatchProver::new().prove(executed_batch)?;
+        let proven_batch =
+            LocalBatchProver::new(miden_tx::Prover::default()).prove(executed_batch)?;
 
         // 7. Seal each transaction's inputs, then submit via RPC. Each entry is sealed against its
         //    own transaction id.

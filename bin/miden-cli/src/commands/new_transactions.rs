@@ -414,8 +414,8 @@ impl PswapCmd {
         client: Client<AUTH>,
     ) -> Result<(), CliError> {
         match &self.action {
-            PswapAction::Create(cmd) => cmd.execute(client).await,
-            PswapAction::Consume(cmd) => cmd.execute(client).await,
+            PswapAction::Create(cmd) => Box::pin(cmd.execute(client)).await,
+            PswapAction::Consume(cmd) => Box::pin(cmd.execute(client)).await,
             PswapAction::Cancel(cmd) => cmd.execute(client).await,
         }
     }

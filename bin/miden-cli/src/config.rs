@@ -69,6 +69,8 @@ impl std::fmt::Display for ConfigDir {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CliConfig {
+    /// Native fee faucet for the current protocol configuration.
+    pub fee_faucet_id: Option<String>,
     /// The directory this configuration was loaded from. Not part of the TOML file.
     #[serde(skip)]
     pub config_dir: Option<ConfigDir>,
@@ -121,6 +123,7 @@ impl Default for CliConfig {
         // Create paths relative to the config file location (which is in .miden directory) These
         // will be resolved relative to the .miden directory when the config is loaded
         Self {
+            fee_faucet_id: None,
             config_dir: None,
             rpc: RpcConfig::default(),
             store_filepath: PathBuf::from(STORE_FILENAME),

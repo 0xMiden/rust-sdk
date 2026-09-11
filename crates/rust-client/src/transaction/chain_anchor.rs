@@ -205,7 +205,6 @@ pub enum ChainAnchorError {
 mod tests {
     use alloc::vec::Vec;
 
-    use miden_protocol::Word;
     use miden_protocol::block::BlockHeader;
     use miden_protocol::crypto::merkle::mmr::{Mmr, PartialMmr};
     use miden_protocol::transaction::PartialBlockchain;
@@ -219,13 +218,7 @@ mod tests {
         let mut mmr = Mmr::default();
         let mut headers = Vec::with_capacity(chain_length);
         for block_num in 0..chain_length {
-            let header = BlockHeader::mock(
-                u32::try_from(block_num).unwrap(),
-                None,
-                None,
-                &[],
-                Word::empty(),
-            );
+            let header = BlockHeader::mock(u32::try_from(block_num).unwrap(), None, None, &[]);
             mmr.add(header.commitment()).unwrap();
             headers.push(header);
         }
@@ -246,7 +239,6 @@ mod tests {
             Some(peaks.hash_peaks()),
             None,
             &[],
-            Word::empty(),
         );
 
         (header, chain)
@@ -266,8 +258,7 @@ mod tests {
     fn new_rejects_a_chain_length_that_does_not_match_the_header() {
         let (_, chain) = anchor_parts(8, &[3]);
         // Commit to the right chain, so the block number is the only defect.
-        let header =
-            BlockHeader::mock(9, Some(chain.peaks().hash_peaks()), None, &[], Word::empty());
+        let header = BlockHeader::mock(9, Some(chain.peaks().hash_peaks()), None, &[]);
 
         let err = ChainAnchor::new(header, chain).unwrap_err();
 
@@ -278,7 +269,7 @@ mod tests {
     fn new_rejects_peaks_that_do_not_hash_to_the_chain_commitment() {
         let (_, chain) = anchor_parts(8, &[3]);
         // Right block number, but a header committing to an unrelated chain commitment.
-        let header = BlockHeader::mock(8, None, None, &[], Word::empty());
+        let header = BlockHeader::mock(8, None, None, &[]);
 
         let err = ChainAnchor::new(header, chain).unwrap_err();
 
@@ -314,7 +305,7 @@ mod tests {
         let mut mmr = Mmr::default();
         let mut headers = Vec::new();
         for block_num in 0..4u32 {
-            let header = BlockHeader::mock(block_num, None, None, &[], Word::empty());
+            let header = BlockHeader::mock(block_num, None, None, &[]);
             mmr.add(header.commitment()).unwrap();
             headers.push(header);
         }
@@ -329,7 +320,7 @@ mod tests {
 
         let bytes = {
             let mut buf = Vec::new();
-            let header = BlockHeader::mock(4, Some(peaks.hash_peaks()), None, &[], Word::empty());
+            let header = BlockHeader::mock(4, Some(peaks.hash_peaks()), None, &[]);
             header.write_into(&mut buf);
             PartialBlockchain::new_unchecked(partial_mmr, [headers[3].clone()])
                 .unwrap()

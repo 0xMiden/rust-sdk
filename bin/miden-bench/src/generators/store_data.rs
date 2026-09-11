@@ -29,7 +29,7 @@ use miden_client::store::input_note_states::{
     NoteSubmissionData,
 };
 use miden_client::testing::account_id::ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE;
-use miden_client::transaction::{TransactionId, TransactionKernel};
+use miden_client::transaction::TransactionId;
 use miden_client::utils::Serializable;
 use miden_client::{EMPTY_WORD, Felt, Word, ZERO};
 
@@ -203,7 +203,7 @@ fn note_metadata(sender: AccountId, index: usize) -> NoteMetadata {
 // ================================================================================================
 
 fn mock_block_header(block_num: u32) -> BlockHeader {
-    BlockHeader::mock(block_num, None, None, &[], TransactionKernel.to_commitment())
+    BlockHeader::mock(block_num, None, None, &[])
 }
 
 // ACCOUNTS

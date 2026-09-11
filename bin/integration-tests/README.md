@@ -126,6 +126,7 @@ The following environment variables configure both the standalone binary and the
 - `TEST_MIDEN_PROVER_URL` - Overrides the prover: `devnet`, `testnet`, `localhost`, or a custom URL (default: derived from network)
 - `TEST_MIDEN_NOTE_TRANSPORT_URL` - Overrides note transport: `devnet`, `testnet`, or a custom URL (default: derived from network)
 - `MIDEN_TEST_TIMEOUT` - Test timeout in milliseconds (default: `10000`)
+- `MIDEN_PROTOCOL_CONFIG` - Path to the serialized protocol configuration for the target network. If unset, the tests load `data/protocol-config.bin` when it exists. The local node startup script generates this file. The integration test Make targets export its absolute path so CLI subprocesses can load it from their temporary directories.
 
 ### Network Presets
 

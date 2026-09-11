@@ -6,6 +6,12 @@
 
 * [BREAKING][type][rust] Added the `TransactionRequestError::SwapNoteWithZeroAsset` variant, so exhaustive matches on `TransactionRequestError` must handle it ([#2459](https://github.com/0xMiden/rust-sdk/pull/2459)).
 * [BREAKING][removal][test] Loose helper functions in `miden_client::testing::common` are now methods on `TestClient`. `TestClient::keystore()` exposes the client's keystore, so `ClientConfig::into_client` and `into_unsynced_client` return just the `TestClient` instead of a client/keystore pair ([#2481](https://github.com/0xMiden/rust-sdk/pull/2481)).
+* [BREAKING][rust,rpc,store] Updated protocol dependencies to `0.17.0-rc.3`, VM dependencies to `0.32`, and `miden-debug` to `0.15`. Updated node protobuf bindings to [#2570](https://github.com/0xMiden/node/pull/2570). Requires a compatible node and a new client database.
+* [BREAKING][rust] Added protocol configuration registration through `ClientBuilder::protocol_config` and `Client::add_protocol_config`. Execution and note screening require the configuration committed by the reference block. The node does not yet provide it over RPC. The CLI, benchmarks, and integration tests accept a serialized configuration through `MIDEN_PROTOCOL_CONFIG`; the CLI also accepts `fee_faucet_id` in its configuration to select the current protocol configuration.
+* [BREAKING][rust] Renamed the `ClientError::TransactionScriptError` and `StoreError::TransactionScriptError` variants to `MastForestScriptError`, matching the upstream type that now backs both note scripts and transaction scripts.
+* [BREAKING][rust] `AccountReader::get_balance` now returns an error instead of `AssetAmount::ZERO` when the stored asset cannot be read as a fungible asset. A missing asset still reports a zero balance.
+* [BREAKING][type][rust] `NodeRpcClient::get_block_by_number` returns a `SignedBlock` instead of a `ProvenBlock`. The response carries the block and its proof in separate fields, and the block field holds a signed block.
+* [BREAKING][rust] Replaced the `ValidatorKeys` re-export with `ValidatorConfig` and `ProvingOptions` with `Prover`. Removed the upstream `FungibleAssetDelta`, `NonFungibleAssetDelta`, `NonFungibleDeltaAction`, and `SmtForest` re-exports. `TransactionRequest::incoming_assets` now returns `Vec<Asset>` for assets without fungible amounts.
 
 ### Fixes
 

@@ -67,6 +67,23 @@ let client = ClientBuilder::new()
     .await?;
 ```
 
+## Protocol configuration
+
+Transaction execution and note screening require the protocol configuration committed by the reference block. The node RPC does not provide this configuration. Obtain the serialized configuration from the network operator and register it before executing transactions:
+
+```rust
+use miden_client::Deserializable;
+use miden_client::protocol_config::ProtocolConfig;
+
+let bytes = std::fs::read("protocol-config.bin")?;
+let config = ProtocolConfig::read_from_bytes(&bytes)?;
+client.add_protocol_config(config).await?;
+```
+
+You can also register it during construction with `ClientBuilder::protocol_config(config)`. The client stores configurations by commitment and selects the one committed by the transaction reference block. Registration persists across client restarts. Register each new configuration before its protocol upgrade takes effect. A missing configuration returns `StoreError::ProtocolConfigNotFound`.
+
+For a local testing node, `make start-node-background` writes the configuration to `data/protocol-config.bin`.
+
 ## Create local account
 
 With the Miden client, you can create and track any number of public and local accounts. For local accounts, the state is tracked locally, and the rollup only keeps commitments to the data, which in turn guarantees privacy.

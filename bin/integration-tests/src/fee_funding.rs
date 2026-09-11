@@ -200,7 +200,11 @@ impl Funder {
             .get_block_header_by_num(BlockNumber::GENESIS)
             .await?
             .context("genesis block header is not in the funder client's store")?;
-        let fee_faucet_id = genesis.fee_parameters().fee_faucet_id();
+        let fee_faucet_id = client
+            .get_protocol_config(genesis.protocol_config_commitment())
+            .await?
+            .fee_asset_id()
+            .faucet_id();
 
         // The callback flag is part of the vault key, and both the wallet's balance and `pay_fee`
         // use plain assets, so the note has to carry the same flag to be spendable.

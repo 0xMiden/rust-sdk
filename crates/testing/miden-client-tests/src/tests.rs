@@ -355,7 +355,7 @@ async fn get_account_by_id() {
         Ok(header_and_status) => header_and_status,
         Err(err) => panic!("Error retrieving account: {err}"),
     };
-    assert_eq!(AccountHeader::from(account), acc_from_db);
+    assert_eq!(AccountHeader::from(&account), acc_from_db);
 
     // Retrieving a non existing account should return error
     let invalid_id = AccountId::try_from(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2).unwrap();
@@ -1112,7 +1112,7 @@ async fn note_without_asset() {
     let error = TransactionRequestBuilder::new()
         .build_pay_to_id(
             PaymentNoteDescription::new(
-                vec![Asset::Fungible(FungibleAsset::new(faucet.id(), 0).unwrap())],
+                vec![Asset::from(FungibleAsset::new(faucet.id(), 0).unwrap())],
                 faucet.id(),
                 wallet.id(),
             ),
@@ -1148,8 +1148,8 @@ async fn swap_note_with_zero_asset() {
     // carrying the requested asset, so neither side may be zero.
     let other_faucet = client.insert_faucet(AccountType::Private).await.unwrap();
 
-    let zero_asset = Asset::Fungible(FungibleAsset::new(faucet.id(), 0).unwrap());
-    let some_asset = Asset::Fungible(FungibleAsset::new(other_faucet.id(), 100).unwrap());
+    let zero_asset = Asset::from(FungibleAsset::new(faucet.id(), 0).unwrap());
+    let some_asset = Asset::from(FungibleAsset::new(other_faucet.id(), 100).unwrap());
 
     let error = TransactionRequestBuilder::new()
         .build_swap(
@@ -1348,11 +1348,7 @@ async fn p2id_transfer() {
     println!("Running P2ID tx...");
     let tx_request = TransactionRequestBuilder::new()
         .build_pay_to_id(
-            PaymentNoteDescription::new(
-                vec![Asset::Fungible(asset)],
-                from_account_id,
-                to_account_id,
-            ),
+            PaymentNoteDescription::new(vec![Asset::from(asset)], from_account_id, to_account_id),
             NoteType::Private,
             client.rng(),
         )
@@ -1441,7 +1437,7 @@ async fn input_note_reader_finds_externally_consumed_notes() {
     let consumer = builder.add_existing_mock_account(miden_testing::Auth::IncrNonce).unwrap();
     let consumer_id = consumer.id();
 
-    let asset = Asset::Fungible(FungibleAsset::new(faucet_id, 100u64).unwrap());
+    let asset = Asset::from(FungibleAsset::new(faucet_id, 100u64).unwrap());
     let p2id_note = builder
         .add_p2id_note(sender_id, consumer_id, &[asset], NoteType::Public)
         .unwrap();
@@ -1548,7 +1544,7 @@ async fn import_by_id_already_consumed_note_is_findable_by_id() {
     let consumer = builder.add_existing_mock_account(miden_testing::Auth::IncrNonce).unwrap();
     let consumer_id = consumer.id();
 
-    let asset = Asset::Fungible(FungibleAsset::new(faucet_id, 100u64).unwrap());
+    let asset = Asset::from(FungibleAsset::new(faucet_id, 100u64).unwrap());
     let p2id_note = builder
         .add_p2id_note(sender_id, consumer_id, &[asset], NoteType::Public)
         .unwrap();
@@ -1787,11 +1783,7 @@ async fn p2id_transfer_failing_not_enough_balance() {
     println!("Running P2ID tx...");
     let tx_request = TransactionRequestBuilder::new()
         .build_pay_to_id(
-            PaymentNoteDescription::new(
-                vec![Asset::Fungible(asset)],
-                from_account_id,
-                to_account_id,
-            ),
+            PaymentNoteDescription::new(vec![Asset::from(asset)], from_account_id, to_account_id),
             NoteType::Private,
             client.rng(),
         )
@@ -1878,12 +1870,8 @@ async fn p2ide_transfer_consumed_by_target() {
     println!("Running P2IDE tx...");
     let tx_request = TransactionRequestBuilder::new()
         .build_pay_to_id(
-            PaymentNoteDescription::new(
-                vec![Asset::Fungible(asset)],
-                from_account_id,
-                to_account_id,
-            )
-            .with_reclaim_height(current_block_num + RECALL_HEIGHT_DELTA),
+            PaymentNoteDescription::new(vec![Asset::from(asset)], from_account_id, to_account_id)
+                .with_reclaim_height(current_block_num + RECALL_HEIGHT_DELTA),
             NoteType::Private,
             client.rng(),
         )
@@ -1970,12 +1958,8 @@ async fn p2ide_transfer_consumed_by_sender() {
     println!("Running P2IDE tx...");
     let tx_request = TransactionRequestBuilder::new()
         .build_pay_to_id(
-            PaymentNoteDescription::new(
-                vec![Asset::Fungible(asset)],
-                from_account_id,
-                to_account_id,
-            )
-            .with_reclaim_height(current_block_num + RECALL_HEIGHT_DELTA),
+            PaymentNoteDescription::new(vec![Asset::from(asset)], from_account_id, to_account_id)
+                .with_reclaim_height(current_block_num + RECALL_HEIGHT_DELTA),
             NoteType::Private,
             client.rng(),
         )
@@ -2073,13 +2057,9 @@ async fn p2ide_timelocked() {
     let asset = FungibleAsset::new(faucet_account_id, TRANSFER_AMOUNT).unwrap();
     let tx_request = TransactionRequestBuilder::new()
         .build_pay_to_id(
-            PaymentNoteDescription::new(
-                vec![Asset::Fungible(asset)],
-                from_account_id,
-                to_account_id,
-            )
-            .with_timelock_height(current_block_num + RECALL_HEIGHT_DELTA)
-            .with_reclaim_height(current_block_num),
+            PaymentNoteDescription::new(vec![Asset::from(asset)], from_account_id, to_account_id)
+                .with_timelock_height(current_block_num + RECALL_HEIGHT_DELTA)
+                .with_reclaim_height(current_block_num),
             NoteType::Public,
             client.rng(),
         )
@@ -2183,12 +2163,8 @@ async fn get_consumable_notes() {
     println!("Running P2IDE tx...");
     let tx_request = TransactionRequestBuilder::new()
         .build_pay_to_id(
-            PaymentNoteDescription::new(
-                vec![Asset::Fungible(asset)],
-                from_account_id,
-                to_account_id,
-            )
-            .with_reclaim_height(100.into()),
+            PaymentNoteDescription::new(vec![Asset::from(asset)], from_account_id, to_account_id)
+                .with_reclaim_height(100.into()),
             NoteType::Private,
             client.rng(),
         )
@@ -2441,7 +2417,7 @@ async fn get_output_notes() {
     let tx_request = TransactionRequestBuilder::new()
         .build_pay_to_id(
             PaymentNoteDescription::new(
-                vec![Asset::Fungible(asset)],
+                vec![Asset::from(asset)],
                 from_account_id,
                 random_account_id,
             ),
@@ -2501,7 +2477,7 @@ async fn account_rollback() {
 
     let tx_request = TransactionRequestBuilder::new()
         .build_pay_to_id(
-            PaymentNoteDescription::new(vec![Asset::Fungible(asset)], account_id, account_id),
+            PaymentNoteDescription::new(vec![Asset::from(asset)], account_id, account_id),
             NoteType::Public,
             client.rng(),
         )
@@ -2577,7 +2553,7 @@ async fn account_rollback() {
     // Apply a new transaction
     let tx_request = TransactionRequestBuilder::new()
         .build_pay_to_id(
-            PaymentNoteDescription::new(vec![Asset::Fungible(asset)], account_id, account_id),
+            PaymentNoteDescription::new(vec![Asset::from(asset)], account_id, account_id),
             NoteType::Public,
             client.rng(),
         )
@@ -2661,7 +2637,7 @@ async fn subsequent_discarded_transactions() {
     let tx_request = TransactionRequestBuilder::new()
         .expiration_delta(2)
         .build_pay_to_id(
-            PaymentNoteDescription::new(vec![Asset::Fungible(asset)], account_id, account_id),
+            PaymentNoteDescription::new(vec![Asset::from(asset)], account_id, account_id),
             NoteType::Public,
             client.rng(),
         )
@@ -2684,7 +2660,7 @@ async fn subsequent_discarded_transactions() {
     let asset = FungibleAsset::new(faucet_account_id, TRANSFER_AMOUNT).unwrap();
     let tx_request = TransactionRequestBuilder::new()
         .build_pay_to_id(
-            PaymentNoteDescription::new(vec![Asset::Fungible(asset)], account_id, account_id),
+            PaymentNoteDescription::new(vec![Asset::from(asset)], account_id, account_id),
             NoteType::Public,
             client.rng(),
         )
@@ -2876,8 +2852,8 @@ async fn swap_chain_test() {
             .build_swap(
                 &SwapTransactionData::new(
                     pairs[0].0.id(),
-                    Asset::Fungible(FungibleAsset::new(pairs[0].1.id(), 1).unwrap()),
-                    Asset::Fungible(FungibleAsset::new(pairs[1].1.id(), 1).unwrap()),
+                    Asset::from(FungibleAsset::new(pairs[0].1.id(), 1).unwrap()),
+                    Asset::from(FungibleAsset::new(pairs[1].1.id(), 1).unwrap()),
                 ),
                 NoteType::Private,
                 NoteType::Private,
@@ -2950,8 +2926,8 @@ async fn swap_public_payback_test() {
         .build_swap(
             &SwapTransactionData::new(
                 wallet_a.id(),
-                Asset::Fungible(FungibleAsset::new(faucet_a.id(), 1).unwrap()),
-                Asset::Fungible(FungibleAsset::new(faucet_b.id(), 1).unwrap()),
+                Asset::from(FungibleAsset::new(faucet_a.id(), 1).unwrap()),
+                Asset::from(FungibleAsset::new(faucet_b.id(), 1).unwrap()),
             ),
             NoteType::Private,
             NoteType::Public,
@@ -3024,8 +3000,8 @@ async fn partial_output_note_receives_inclusion_proof_after_sync() {
     client.sync_state().await.unwrap();
 
     // Wallet A creates a SWAP note: offers 1 unit of faucet_a, requests 1 unit of faucet_b.
-    let offered_asset = Asset::Fungible(FungibleAsset::new(faucet_a.id(), 1).unwrap());
-    let requested_asset = Asset::Fungible(FungibleAsset::new(faucet_b.id(), 1).unwrap());
+    let offered_asset = Asset::from(FungibleAsset::new(faucet_a.id(), 1).unwrap());
+    let requested_asset = Asset::from(FungibleAsset::new(faucet_b.id(), 1).unwrap());
 
     let swap_tx_request = TransactionRequestBuilder::new()
         .build_swap(
@@ -4689,7 +4665,7 @@ async fn sync_large_public_account() {
 
     let assets: Vec<Asset> = faucets
         .iter()
-        .map(|faucet| Asset::Fungible(FungibleAsset::new(faucet.id(), 100).unwrap()))
+        .map(|faucet| Asset::from(FungibleAsset::new(faucet.id(), 100).unwrap()))
         .collect();
 
     let mock_account = builder
@@ -4786,7 +4762,6 @@ async fn sync_large_public_account() {
 async fn prepare_offline_bootstrap_inserts_mock_chain_genesis() {
     use miden_protocol::block::account_tree::AccountTree;
     use miden_protocol::crypto::merkle::smt::Smt;
-    use miden_protocol::transaction::TransactionKernel;
 
     let mut rng_seed = rand::rng();
     let coin_seed: [u64; 4] = rng_seed.random();
@@ -4820,9 +4795,15 @@ async fn prepare_offline_bootstrap_inserts_mock_chain_genesis() {
 
     assert_eq!(stored_genesis.block_num(), BlockNumber::GENESIS);
     assert_eq!(stored_genesis.account_root(), expected_genesis.account_root());
-    assert_eq!(stored_genesis.tx_kernel_commitment(), expected_genesis.tx_kernel_commitment());
+    assert_eq!(
+        stored_genesis.protocol_config_commitment(),
+        expected_genesis.protocol_config_commitment()
+    );
     assert_eq!(stored_genesis.account_root(), AccountTree::<Smt>::default().root());
-    assert_eq!(stored_genesis.tx_kernel_commitment(), TransactionKernel.to_commitment());
+    assert_eq!(
+        stored_genesis.protocol_config_commitment(),
+        reference_rpc.protocol_config().to_commitment()
+    );
 }
 
 // HELPERS
@@ -4839,6 +4820,10 @@ pub async fn create_test_client() -> (TestClient, MockRpcApi) {
 
 /// Gives a mock-backed client the transaction encryption key that submission seals against.
 pub async fn seed_mock_transaction_encryption_key(client: &mut MockClient<FilesystemKeyStore>) {
+    client
+        .add_protocol_config(MockChain::new().protocol_config().clone())
+        .await
+        .unwrap();
     let genesis_commitment = client
         .get_block_header_by_num(BlockNumber::GENESIS)
         .await
@@ -4870,6 +4855,7 @@ pub async fn create_test_client_builder() -> (ClientBuilder<FilesystemKeyStore>,
     let arc_rpc_api = Arc::new(rpc_api.clone());
 
     let builder = ClientBuilder::new()
+        .protocol_config(rpc_api.protocol_config())
         .rpc(arc_rpc_api)
         .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
@@ -5248,3 +5234,5 @@ async fn execute_transaction_fails_for_watched_account() {
         other => panic!("expected AccountIsWatched, got {other:?}"),
     }
 }
+
+mod protocol_config;

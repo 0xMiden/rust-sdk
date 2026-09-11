@@ -3,7 +3,6 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::fmt;
 
-use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::crypto::merkle::MerkleError;
 pub use miden_protocol::errors::{
@@ -19,10 +18,10 @@ use miden_protocol::errors::{
     ProposedBatchError,
     ProvenBatchError,
     TransactionInputError,
-    TransactionScriptError,
 };
 use miden_protocol::note::NoteId;
 use miden_protocol::transaction::{ProvenTransaction, TransactionId, TransactionInputs};
+use miden_protocol::{MastForestScriptError, Word};
 // RE-EXPORTS
 // ================================================================================================
 pub use miden_standards::errors::CodeBuilderError;
@@ -195,8 +194,8 @@ pub enum ClientError {
     TransactionRequestError(#[from] TransactionRequestError),
     #[error("failed to build the send-notes transaction script")]
     SendNotesTransactionScriptError(#[from] SendNotesTransactionScriptError),
-    #[error("transaction script error")]
-    TransactionScriptError(#[source] TransactionScriptError),
+    #[error("mast forest script error")]
+    MastForestScriptError(#[source] MastForestScriptError),
     #[error("client initialization error: {0}")]
     ClientInitializationError(String),
     #[error("expected full account data for account {0}, but only partial data is available")]

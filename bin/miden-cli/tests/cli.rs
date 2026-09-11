@@ -1778,13 +1778,13 @@ fn call_nonexistent_procedure() {
 fn call_test_exports(package: &Package) -> Vec<PackageExport> {
     // The `account-id` core type as the compiler records it: a named record of two field elements.
     // Its name is what the CLI's `account-id` codec matches against.
-    let account_id = Type::Struct(Arc::new(StructType::named(
+    let account_id = Type::Struct(midenc_hir_type::StructRef::Plain(Arc::new(StructType::named(
         Arc::from("miden:base/core-types@1.0.0/account-id"),
         [
             (Arc::<str>::from("prefix"), Type::Felt),
             (Arc::<str>::from("suffix"), Type::Felt),
         ],
-    )));
+    ))));
 
     let signature_overrides: [(&str, FunctionType); 6] = [
         (

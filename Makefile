@@ -27,6 +27,11 @@ MIDEN_FUNDER_ACCOUNTS_DIR?=$(CURDIR)/data/funders
 # `start-test-node.sh`. Against a deployed network, point this at the accounts deployed there.
 AGGLAYER_ACCOUNTS_DIR?=$(CURDIR)/data
 
+# The test node writes the serialized protocol configuration to this path.
+MIDEN_PROTOCOL_CONFIG?=$(CURDIR)/data/protocol-config.bin
+
+integration-test integration-test-non-agglayer integration-test-agglayer integration-test-miden-bench integration-test-dev integration-test-binary: export MIDEN_PROTOCOL_CONFIG := $(MIDEN_PROTOCOL_CONFIG)
+
 # Sizes the SQL store scaling benchmark sweeps over. Kept small enough to run on every PR, and
 # overridable for a deeper local run.
 STORE_BENCH_ARGS?=--notes 1000,10000 --accounts 100,1000 --iterations 5

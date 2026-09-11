@@ -74,7 +74,9 @@ impl<AUTH> Client<AUTH> {
             return Ok(());
         }
 
-        *self.test_rpc_api() = Arc::new(MockRpcApi::default());
+        let rpc = MockRpcApi::default();
+        self.add_protocol_config(rpc.protocol_config()).await?;
+        *self.test_rpc_api() = Arc::new(rpc);
         self.ensure_genesis_in_place().await?;
         Ok(())
     }
@@ -247,7 +249,6 @@ mod tests {
     use miden_protocol::block::{BlockHeader, BlockNumber};
     use miden_protocol::crypto::merkle::MerklePath;
     use miden_protocol::crypto::merkle::mmr::{Forest, InOrderIndex, Mmr, PartialMmr};
-    use miden_protocol::transaction::TransactionKernel;
     use miden_protocol::{Felt, Word};
 
     use super::{adjust_merkle_path_for_forest, authenticated_block_nodes};
@@ -378,7 +379,7 @@ mod tests {
 
     #[test]
     fn authenticated_block_nodes_include_leaf_commitment() {
-        let block_header = BlockHeader::mock(4, None, None, &[], TransactionKernel.to_commitment());
+        let block_header = BlockHeader::mock(4, None, None, &[]);
         let path_nodes = vec![
             (InOrderIndex::from_leaf_pos(4).sibling(), word(10)),
             (InOrderIndex::from_leaf_pos(4).parent().sibling(), word(11)),

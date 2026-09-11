@@ -106,11 +106,11 @@ pub use miden_protocol::note::{
 pub use miden_protocol::transaction::ToInputNoteCommitments;
 /// Raw access to `miden-standards` note modules for items not curated by `miden-client`.
 pub use miden_standards::note as standards;
+pub use miden_standards::note::config::NetworkAccountConfigNote;
 pub use miden_standards::note::{
     FeeSponsorshipNote,
     MintNote,
     MintNoteStorage,
-    NetworkAccountConfigNote,
     NetworkAccountTarget,
     NoteConsumptionStatus,
     NoteExecutionHint,

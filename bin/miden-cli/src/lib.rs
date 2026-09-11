@@ -5,10 +5,12 @@ use std::sync::Arc;
 use clap::{Parser, Subcommand};
 use comfy_table::{Attribute, Cell, ContentArrangement, Table, presets};
 use errors::CliError;
-use miden_client::account::AccountHeader;
+use miden_client::account::{AccountHeader, AccountId};
+use miden_client::asset::AssetId;
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::{FilesystemKeyStore, Keystore};
 use miden_client::note_transport::grpc::GrpcNoteTransportClient;
+use miden_client::protocol_config::ProtocolConfig;
 use miden_client::rpc::{GrpcClient, VerifyingRpcClient};
 use miden_client::store::{NoteFilter as ClientNoteFilter, OutputNoteRecord};
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
@@ -142,6 +144,21 @@ impl CliClient {
             .authenticator(Arc::new(keystore))
             .tx_discard_delta(Some(TX_DISCARD_DELTA));
 
+        if let Some(faucet) = config.fee_faucet_id.as_deref() {
+            let faucet_id = AccountId::from_hex(faucet).map_err(|err| {
+                CliError::Config(Box::new(err), "invalid `fee_faucet_id`".to_string())
+            })?;
+            let protocol_config = ProtocolConfig::current(AssetId::new_fungible(faucet_id))
+                .map_err(|err| {
+                    CliError::Config(
+                        Box::new(err),
+                        "failed to derive the protocol configuration from `fee_faucet_id`"
+                            .to_string(),
+                    )
+                })?;
+            builder = builder.protocol_config(protocol_config);
+        }
+
         if let Some(delta) = config.max_block_number_delta {
             builder = builder.max_block_number_delta(delta);
         }
@@ -153,6 +170,16 @@ impl CliClient {
         }
 
         let client = builder.build().await.map_err(CliError::from)?;
+        if let Some(path) = std::env::var_os("MIDEN_PROTOCOL_CONFIG") {
+            let path = std::path::PathBuf::from(path);
+            let bytes = std::fs::read(&path).map_err(|err| {
+                CliError::Config(Box::new(err), format!("failed to read {}", path.display()))
+            })?;
+            let protocol_config = ProtocolConfig::read_from_bytes(&bytes).map_err(|err| {
+                CliError::Config(Box::new(err), format!("failed to decode {}", path.display()))
+            })?;
+            client.add_protocol_config(protocol_config).await.map_err(CliError::from)?;
+        }
         Ok(CliClient(client))
     }
 

@@ -10,6 +10,8 @@ use miden_client::note::{
     Note,
     NoteDetails,
     NoteExecutionHint,
+    NoteFile,
+    NoteSyncHint,
     NoteTag,
     NoteType,
 };
@@ -785,6 +787,97 @@ async fn ntl_note_already_spent_below_the_checkpoint_is_not_left_committed() {
         "a note whose nullifier is already on chain must not be imported as committed: \
          the forward-only nullifier query never revisits the block that spent it"
     );
+}
+
+/// A transport import can resolve an expected note below the checkpoint while the chain sync
+/// reports its consumption above the checkpoint.
+#[tokio::test]
+async fn ntl_refresh_of_expected_note_detects_consumption_in_same_sync() {
+    let sender_id: AccountId = ACCOUNT_ID_SENDER.try_into().unwrap();
+    let faucet_id: AccountId = ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET.try_into().unwrap();
+
+    let mut builder = MockChainBuilder::new();
+    let account = builder.add_existing_mock_account(Auth::IncrNonce).unwrap();
+    let asset = Asset::Fungible(FungibleAsset::new(faucet_id, 100u64).unwrap());
+    let note = builder
+        .add_p2id_note(sender_id, account.id(), &[asset], ProtocolNoteType::Private)
+        .unwrap();
+
+    let mut mock_chain = builder.build().unwrap();
+    mock_chain.prove_next_block().unwrap();
+
+    let consume_tx = Box::pin(
+        mock_chain
+            .build_transaction(MockTransactionInput::Account(account))
+            .unauthenticated_input_note(note.clone())
+            .build()
+            .unwrap()
+            .execute(),
+    )
+    .await
+    .unwrap();
+    let mock_transport_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
+    let rpc_api = Arc::new(MockRpcApi::new(mock_chain));
+    let transport_client = MockNoteTransportApi::new(mock_transport_node.clone());
+
+    let rng = RandomCoin::new([1, 2, 3, 4].map(Felt::new_unchecked).into());
+    let keystore = FilesystemKeyStore::new(temp_dir()).unwrap();
+
+    let builder: ClientBuilder<FilesystemKeyStore> = ClientBuilder::new()
+        .rpc(rpc_api.clone())
+        .rng(Box::new(rng))
+        .sqlite_store(create_test_store_path())
+        .authenticator(Arc::new(keystore))
+        .tx_discard_delta(None)
+        .note_transport(Arc::new(transport_client));
+
+    let mut client = builder.build().await.unwrap();
+    client.ensure_genesis_in_place().await.unwrap();
+    seed_mock_transaction_encryption_key(&mut client).await;
+    client.add_note_tag(note.metadata().tag()).await.unwrap();
+
+    client.sync_state().await.unwrap();
+    let checkpoint = client.get_sync_height().await.unwrap();
+    assert_eq!(checkpoint, BlockNumber::from(1));
+    // A later search floor keeps the initial import expected. The transport supplies an earlier
+    // floor that resolves its commitment.
+    client
+        .import_notes(&[NoteFile::ExpectedNote {
+            details: NoteDetails::from(note.clone()),
+            sync_hint: NoteSyncHint::new(checkpoint + 1, note.metadata().tag()),
+        }])
+        .await
+        .unwrap();
+    let expected = client.get_input_notes(NoteFilter::Expected).await.unwrap();
+    assert_eq!(expected.len(), 1);
+    assert_eq!(expected[0].details_commitment(), note.details_commitment());
+    assert!(expected[0].metadata().is_none());
+
+    // The spend is above the checkpoint. The chain sync must check the nullifier supplied by the
+    // transport import.
+    rpc_api
+        .mock_chain
+        .write()
+        .add_pending_executed_transaction(&consume_tx)
+        .unwrap();
+    rpc_api.prove_block();
+
+    let details_bytes = NoteDetails::from(note.clone()).to_bytes();
+    mock_transport_node.write().add_note_after(
+        *note.header(),
+        details_bytes,
+        Some(BlockNumber::GENESIS),
+    );
+
+    client.sync_state().await.unwrap();
+
+    let record = client.get_input_note(note.id()).await.unwrap().unwrap();
+    assert!(record.is_consumed(), "the refreshed note must be consumed in the same sync");
+    assert_eq!(client.get_sync_height().await.unwrap(), BlockNumber::from(2));
+
+    client.sync_state().await.unwrap();
+    let record = client.get_input_note(note.id()).await.unwrap().unwrap();
+    assert!(record.is_consumed());
 }
 
 /// A private note must reach the recipient even when the sender's first relay attempt fails,

@@ -577,10 +577,9 @@ mod tests {
         assert_eq!(summary.tag, tag.to_string());
     }
 
-    /// `notes --send` must reject an address whose network doesn't match the client's
-    /// configured network. This checks the underlying decode step that the fix relies on:
-    /// encoding an address for one network and decoding it must not report a match against a
-    /// different network.
+    /// `notes --send` must reject an address whose network doesn't match the client's configured
+    /// network. This checks the underlying decode step that the fix relies on: encoding an address
+    /// for one network and decoding it must not report a match against a different network.
     #[test]
     fn decoded_address_network_differs_across_networks() {
         let account_id =

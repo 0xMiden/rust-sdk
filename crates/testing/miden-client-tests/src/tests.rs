@@ -1,5 +1,3 @@
-use core::future::Future;
-use core::pin::Pin;
 use std::boxed::Box;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env::temp_dir;
@@ -10,7 +8,13 @@ use miden_client::ClientError;
 use miden_client::account::{Address, AddressInterface};
 use miden_client::address::RoutingParameters;
 use miden_client::assembly::CodeBuilder;
-use miden_client::auth::{AuthSchemeId, AuthSecretKey, AuthSingleSig, PublicKeyCommitment};
+use miden_client::auth::{
+    AuthSchemeId,
+    AuthSecretKey,
+    AuthSingleSig,
+    ECDSA_K256_KECCAK_SCHEME_ID,
+    PublicKeyCommitment,
+};
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::{FilesystemKeyStore, Keystore};
 use miden_client::note::{BlockNumber, NetworkAccountTarget, NoteExecutionHint};
@@ -36,7 +40,9 @@ use miden_client::testing::common::{
     RECALL_HEIGHT_DELTA,
     TRANSFER_AMOUNT,
     TestClient,
+    auth_component,
     create_test_store_path,
+    fungible_faucet_component,
 };
 use miden_client::testing::mock::{MockClient, MockRpcApi};
 use miden_client::transaction::{
@@ -210,46 +216,8 @@ async fn get_input_note() {
     assert_eq!(recorded_note.details_commitment(), retrieved_note.details_commitment());
 }
 
-type InsertAccountFuture<'client> =
-    Pin<Box<dyn Future<Output = anyhow::Result<Account>> + 'client>>;
-
-async fn assert_wallet_insertion<F>(insert_fn: F)
-where
-    F: for<'client> FnOnce(&'client mut TestClient, AccountType) -> InsertAccountFuture<'client>,
-{
-    let (mut client, _rpc_api) = Box::pin(create_test_client()).await;
-
-    let account = insert_fn(&mut client, AccountType::Private)
-        .await
-        .expect("account insertion should succeed");
-
-    let account_reader = client.account_reader(account.id());
-
-    // Verify account data via dedicated methods
-    assert_eq!(account.nonce(), account_reader.nonce().await.unwrap());
-    assert_eq!(account.vault().root(), account_reader.vault_root().await.unwrap());
-    assert_eq!(account.code().commitment(), account_reader.code_commitment().await.unwrap());
-    assert_eq!(
-        account.storage().to_commitment(),
-        account_reader.storage_commitment().await.unwrap()
-    );
-
-    // Verify seed
-    let account_seed = account.seed();
-    assert!(account_seed.is_some(), "newly built account should always contain a seed");
-    assert_eq!(account_seed, account_reader.status().await.unwrap().seed().copied());
-}
-
-async fn assert_faucet_insertion<F>(insert_fn: F)
-where
-    F: for<'client> FnOnce(&'client mut TestClient, AccountType) -> InsertAccountFuture<'client>,
-{
-    let (mut client, _rpc_api) = Box::pin(create_test_client()).await;
-
-    let account = insert_fn(&mut client, AccountType::Private)
-        .await
-        .expect("account insertion should succeed");
-
+/// Checks that the client reports back the account that was inserted into it.
+async fn assert_account_inserted(client: &TestClient, account: &Account) {
     let account_reader = client.account_reader(account.id());
 
     // Verify account data via dedicated methods
@@ -269,28 +237,40 @@ where
 
 #[tokio::test]
 async fn insert_basic_account() {
-    assert_wallet_insertion(|client, visibility| Box::pin(client.insert_wallet(visibility))).await;
+    let (mut client, _rpc_api) = Box::pin(create_test_client()).await;
+
+    let account = client.insert_wallet(AccountType::Private).await.unwrap();
+
+    assert_account_inserted(&client, &account).await;
 }
 
 #[tokio::test]
 async fn insert_ecdsa_account() {
-    assert_wallet_insertion(|client, visibility| {
-        Box::pin(insert_new_ecdsa_wallet(client, visibility))
-    })
-    .await;
+    let (mut client, _rpc_api) = Box::pin(create_test_client()).await;
+
+    let account = insert_new_ecdsa_wallet(&mut client, AccountType::Private).await.unwrap();
+
+    assert_account_inserted(&client, &account).await;
 }
 
 #[tokio::test]
 async fn insert_faucet_account() {
-    assert_faucet_insertion(|client, visibility| Box::pin(client.insert_faucet(visibility))).await;
+    let (mut client, _rpc_api) = Box::pin(create_test_client()).await;
+
+    let account = client.insert_faucet(AccountType::Private).await.unwrap();
+
+    assert_account_inserted(&client, &account).await;
 }
 
 #[tokio::test]
 async fn insert_ecdsa_faucet_account() {
-    assert_faucet_insertion(|client, visibility| {
-        Box::pin(insert_new_ecdsa_fungible_faucet(client, visibility))
-    })
-    .await;
+    let (mut client, _rpc_api) = Box::pin(create_test_client()).await;
+
+    let account = insert_new_ecdsa_fungible_faucet(&mut client, AccountType::Private)
+        .await
+        .unwrap();
+
+    assert_account_inserted(&client, &account).await;
 }
 
 #[tokio::test]
@@ -1051,9 +1031,22 @@ async fn note_without_asset() {
     let (mut client, _rpc_api) = Box::pin(create_test_client()).await;
 
     // A faucet with no wallet component, so the zero-asset note below goes through the faucet
-    // interface instead of being accepted by a wallet component's send path.
+    // interface instead of being accepted by a wallet component's send path. The standard faucet
+    // setup carries a basic wallet, so the account is built here instead.
+    let (auth, key) = auth_component(ECDSA_K256_KECCAK_SCHEME_ID).unwrap();
+    let (faucet_component, policy_manager) = fungible_faucet_component().unwrap();
+    let mut init_seed = [0u8; 32];
+    client.rng().fill_bytes(&mut init_seed);
+    let faucet_account = AccountBuilder::new(init_seed)
+        .account_type(AccountType::Private)
+        .with_component(auth)
+        .with_component(faucet_component)
+        .with_components(policy_manager)
+        .build_with_schema_commitment()
+        .unwrap();
+
     let (faucet, _) = client
-        .insert_account(AccountSetup::faucet(AccountType::Private).without_basic_wallet_component())
+        .insert_account(AccountSetup::prebuilt(faucet_account, key))
         .await
         .unwrap();
 

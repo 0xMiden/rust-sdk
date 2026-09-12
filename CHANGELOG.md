@@ -8,6 +8,7 @@
 * [BREAKING][behavior][rust] A Note Transport Layer failure no longer fails `Client::sync_state`. The error is logged and the chain sync still applies; the transport cursor is left where it was, so the next sync requests the same page again ([#2453](https://github.com/0xMiden/rust-sdk/pull/2453)).
 * [BREAKING][type][rust] Added the `TransactionRequestError::SwapNoteWithZeroAsset` variant, so exhaustive matches on `TransactionRequestError` must handle it ([#2459](https://github.com/0xMiden/rust-sdk/pull/2459)).
 * [BREAKING][removal][test] Loose helper functions in `miden_client::testing::common` are now methods on `TestClient`. `TestClient::keystore()` exposes the client's keystore, so `ClientConfig::into_client` and `into_unsynced_client` return just the `TestClient` instead of a client/keystore pair ([#2481](https://github.com/0xMiden/rust-sdk/pull/2481)).
+* [BREAKING][removal][rust] `tokens_to_base_units`, `base_units_to_tokens` and `TokenParseError` are removed from `miden_client::utils`. They format and parse fungible amounts for display against a faucet's decimals, which only the CLI needs, so they now live in the CLI crate ([#2515](https://github.com/0xMiden/rust-sdk/pull/2515)).
 
 ### Fixes
 
@@ -23,6 +24,7 @@
 ### Enhancements
 
 * [rust] `Client::sync_state` fetches a Note Transport Layer page and the node's chain update concurrently, instead of running a full note transport sync before the chain sync. The transport notes are imported first and their records join the chain sync's note updates, so a note delivered and committed within the same sync is reported by that sync ([#2453](https://github.com/0xMiden/rust-sdk/pull/2453)).
+* [FEATURE][cli] `call` now takes an `account-id` argument as a bech32 address as well as a hex id, matching the spellings the rest of the CLI accepts for an account. This applies to the `account-id` type itself and to the faucet half of an `asset` token ([#2179](https://github.com/0xMiden/rust-sdk/pull/2179)).
 
 ## 0.16.0 (2026-09-07)
 

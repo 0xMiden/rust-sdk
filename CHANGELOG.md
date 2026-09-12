@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- [FIX][cli] `notes --send` now rejects a recipient address whose network doesn't match the client's configured network, instead of silently sending to it. ([#2525](https://github.com/0xMiden/rust-sdk/pull/2525)).
+
 ### Breaking Changes
 
 * [BREAKING][behavior][rust] Notes fetched from the Note Transport Layer are screened when their tag matches a tracked account's tag, discarding the ones no tracked account can consume ([#2474](https://github.com/0xMiden/rust-sdk/pull/2474)).

@@ -11,7 +11,7 @@ use miden_protocol::Felt;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
 
-use super::common::{TestClient, wait_for_tx};
+use super::common::TestClient;
 use crate::note::Note;
 use crate::transaction::{TransactionId, TransactionRequestBuilder};
 
@@ -24,6 +24,11 @@ pub trait FeeFunder: Send + Sync + fmt::Debug {
     /// Taken together so one transaction can pay them all; returned rather than consumed so each
     /// account's own next transaction spends its note.
     async fn fund(&self, account_ids: &[AccountId]) -> Result<Vec<(AccountId, Note)>>;
+
+    /// Waits until a block carries every payment this funder has submitted.
+    async fn flush(&self) -> Result<()> {
+        Ok(())
+    }
 }
 
 impl TestClient {
@@ -40,6 +45,14 @@ impl TestClient {
         self.stash_funding(funded);
 
         Ok(())
+    }
+
+    /// Waits until a block carries every payment this client's funder has submitted.
+    pub async fn flush_funder(&self) -> Result<()> {
+        match self.fee_funder() {
+            Some(funder) => funder.flush().await,
+            None => Ok(()),
+        }
     }
 
     /// Returns the funder, or an error naming what to supply when the chain needs one.
@@ -81,11 +94,17 @@ impl TestClient {
             // Deploying on demand means there is no later transaction to fold the funding into, so
             // the notes are consumed here.
             let mut funded = Vec::with_capacity(undeployed.len());
-            for account_id in &undeployed {
-                match self.take_funding(*account_id) {
-                    Some(note) => funded.push((*account_id, note)),
-                    None => funded.extend(self.funder()?.fund(&[*account_id]).await?),
+            let mut unfunded = Vec::new();
+            for account_id in undeployed.iter().copied() {
+                match self.take_funding(account_id) {
+                    Some(note) => funded.push((account_id, note)),
+                    None => unfunded.push(account_id),
                 }
+            }
+
+            // Paid in one transaction rather than one apiece, which each cost a fee and a proof.
+            if !unfunded.is_empty() {
+                funded.extend(self.funder()?.fund(&unfunded).await?);
             }
 
             return self.deploy_by_consuming(&funded).await;
@@ -135,7 +154,7 @@ impl TestClient {
     /// deploys and funding notes in its own sync.
     async fn wait_for_deploys(&mut self, tx_ids: &[(AccountId, TransactionId)]) -> Result<()> {
         for (account_id, tx_id) in tx_ids.iter().copied() {
-            wait_for_tx(self, tx_id).await.with_context(|| {
+            self.wait_for_tx(tx_id).await.with_context(|| {
                 format!("the deploy transaction of account {account_id} never committed")
             })?;
         }

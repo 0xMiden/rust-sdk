@@ -52,8 +52,8 @@ pub const GENESIS_FAUCET_FILE: &str = "tst_faucet.mac";
 
 /// Number of funder wallets a fee-charging genesis declares when no count is given.
 ///
-/// A wallet is claimed only for the length of one payment, so this covers the payments in flight at
-/// once, which the test runner's thread cap bounds to a handful.
+/// A test process claims a wallet for as long as it runs, so this has to cover the processes
+/// running at once, which the test runner's thread cap bounds to a handful.
 pub const DEFAULT_NUM_FUNDER_WALLETS: u32 = 16;
 
 /// Balance, in base units of the native fee asset, each funder wallet holds at genesis. Covers the

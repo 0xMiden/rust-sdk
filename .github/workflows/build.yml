@@ -67,6 +67,28 @@ jobs:
       - name: make - build-wasm
         run: make build-wasm
 
+  build-no-std:
+    name: Build bare metal (no_std)
+    runs-on: warp-ubuntu-latest-x64-8x
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Cleanup large tools for build space
+        uses: ./.github/actions/cleanup-runner
+      - name: Install Rust toolchain
+        run: |
+          rustup update --no-self-update
+          rustup target add thumbv7em-none-eabihf
+      - name: Add Rust Cache
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: rust-release
+          prefix-key: ${{ env.RUST_CACHE_KEY }}
+          save-if: false
+      - name: make - build-no-std
+        run: make build-no-std
+
   install:
     name: Install ${{ matrix.target }}
     runs-on: ubuntu-latest

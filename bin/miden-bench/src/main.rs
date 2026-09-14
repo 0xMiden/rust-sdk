@@ -276,6 +276,8 @@ async fn main() {
     }
 
     dispatch_command(args.command, &mut client, store_path, endpoint, &store_flag).await;
+
+    client.flush_funder().await.expect("Failed to flush the fee funder");
 }
 
 async fn dispatch_command(

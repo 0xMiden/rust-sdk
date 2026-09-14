@@ -468,7 +468,12 @@ fn run_single_test_subprocess(args: &Args, test_name: &str) {
                 .with_prover_endpoint(base_config.prover_endpoint.clone())
                 .with_note_transport_endpoint(base_config.note_transport_endpoint.clone())
                 .with_funders(base_config.funders.as_deref())?;
-            (test.function)(config).await
+            // The funder answers a payment as soon as the node accepts it, so the wallet it paid
+            // from is left at a state the chain agrees with here, once the test no longer needs it.
+            // Reports the test's own error first, since that is the one worth reading.
+            let result = (test.function)(config.clone()).await;
+            let flushed = config.flush_funder().await;
+            result.and(flushed)
         })
     }));
 

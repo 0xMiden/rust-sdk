@@ -133,7 +133,7 @@ impl TryFrom<proto::blockchain::BlockHeader> for BlockHeader {
             value
                 .fee_parameters
                 .ok_or(proto::blockchain::BlockHeader::missing_field(stringify!(fee_parameters)))?
-                .try_into()?,
+                .into(),
             value
                 .protocol_config_commitment
                 .ok_or(proto::blockchain::BlockHeader::missing_field("protocol_config_commitment"))?
@@ -144,19 +144,9 @@ impl TryFrom<proto::blockchain::BlockHeader> for BlockHeader {
     }
 }
 
-impl TryFrom<&proto::blockchain::FeeParameters> for FeeParameters {
-    type Error = RpcConversionError;
-
-    fn try_from(value: &proto::blockchain::FeeParameters) -> Result<Self, Self::Error> {
-        Ok(FeeParameters::new(value.verification_base_fee))
-    }
-}
-
-impl TryFrom<proto::blockchain::FeeParameters> for FeeParameters {
-    type Error = RpcConversionError;
-
-    fn try_from(value: proto::blockchain::FeeParameters) -> Result<Self, Self::Error> {
-        FeeParameters::try_from(&value)
+impl From<proto::blockchain::FeeParameters> for FeeParameters {
+    fn from(value: proto::blockchain::FeeParameters) -> Self {
+        FeeParameters::new(value.verification_base_fee)
     }
 }
 

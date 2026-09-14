@@ -455,7 +455,7 @@ async fn create_client_account<AUTH: Keystore + Sync + 'static>(
 
     let mut builder = AccountBuilder::new(init_seed).account_type(account_type);
 
-    // Split to handle if a default auth component is needed.
+    // Only add the default auth component when no package provides one.
     let (auth_components, mut regular_components): (Vec<_>, Vec<_>) =
         process_packages(packages, &init_storage_data)?
             .into_iter()

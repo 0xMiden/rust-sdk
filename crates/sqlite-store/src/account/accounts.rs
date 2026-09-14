@@ -489,7 +489,7 @@ impl SqliteStore {
         }
 
         // Archive old header and insert the new one
-        Self::replace_account_header(tx, final_account_state, init_account_state)?;
+        Self::replace_account_header(tx, final_account_state, init_account_state, None)?;
 
         Self::apply_account_vault_patch(tx, account_id, final_account_state, patch.vault())?;
 
@@ -988,8 +988,11 @@ impl SqliteStore {
         )
         .into_store_error()?;
 
-        // Archive the old header to historical and write the new one to latest.
-        Self::replace_account_header(tx, &new_account_state.into(), &old_header)?;
+        // Archive the old header to historical and write the new one to latest. A state that is
+        // still undeployed keeps its seed: without it the account can neither be read back as a
+        // partial account nor deployed. A deployed state never needs one, whatever the caller set.
+        let new_seed = new_account_state.seed().filter(|_| new_account_state.is_new());
+        Self::replace_account_header(tx, &new_account_state.into(), &old_header, new_seed)?;
 
         Ok(())
     }
@@ -1106,12 +1109,15 @@ impl SqliteStore {
     /// Replaces an account's latest header, archiving the previous one to historical.
     ///
     /// Preserves the `watched` flag from the existing latest row (mode is a per-account property,
-    /// not per-state). The new latest row is written with `account_seed = NULL` and `locked =
-    /// false`; the previous seed and lock state move into the historical row.
+    /// not per-state). The new latest row is written with `account_seed = new_seed` and `locked =
+    /// false`; the previous seed and lock state move into the historical row. `new_seed` is only
+    /// `Some` while the new state is still undeployed (nonce zero), since a deployed account no
+    /// longer needs its seed.
     fn replace_account_header(
         tx: &Transaction<'_>,
         new_header: &AccountHeader,
         old_header: &AccountHeader,
+        new_seed: Option<Word>,
     ) -> Result<(), StoreError> {
         if new_header.id() != old_header.id() {
             return Err(StoreError::DatabaseError(format!(
@@ -1184,7 +1190,7 @@ impl SqliteStore {
         .into_store_error()?;
 
         // Write the new latest row.
-        Self::insert_new_account_header(tx, new_header, None, old_watched)
+        Self::insert_new_account_header(tx, new_header, new_seed, old_watched)
     }
 
     /// Prunes historical account states for a single account up to the given nonce.

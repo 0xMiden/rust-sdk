@@ -2747,3 +2747,50 @@ async fn remove_map_patch_deletes_slot() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+// PoC: overwriting a not-yet-deployed account with itself drops its seed
+// ================================================================================================
+
+#[tokio::test]
+async fn update_account_keeps_the_seed_of_a_new_account() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+
+    let account = AccountBuilder::new([7; 32])
+        .account_type(AccountType::Private)
+        .with_component(AuthSingleSig::new(Approver::new(
+            PublicKeyCommitment::from(EMPTY_WORD),
+            AuthSchemeId::Falcon512Poseidon2,
+        )))
+        .with_component(AccountComponent::new(
+            BasicWallet::code().as_package().clone(),
+            vec![],
+            AccountComponentMetadata::new("miden::testing::seed_kept"),
+        )?)
+        .build_with_schema_commitment()?;
+    assert!(account.is_new());
+    let seed = account.seed().expect("a new account carries its seed");
+
+    store
+        .insert_account(&account, Address::new(account.id()), ClientAccountType::Native)
+        .await?;
+
+    // Re-importing the same (still undeployed) account with `overwrite = true` goes through
+    // `update_account` with an unchanged nonce.
+    store.update_account(&account).await?;
+
+    let (_, status) =
+        store.get_account_header(account.id()).await?.context("account should be tracked")?;
+    assert_eq!(status.seed(), Some(&seed), "the seed must survive the overwrite");
+    let record = store.get_account(account.id()).await?.context("account should be tracked")?;
+    let stored: Account = record.try_into()?;
+    assert_eq!(stored.seed(), Some(seed));
+
+    // `PartialAccount::new` refuses a nonce-0 account without a seed, so without the seed every
+    // client operation that starts from the minimal partial account (including a second
+    // `add_account` that could repair the record) fails.
+    let partial = store.get_minimal_partial_account(account.id()).await?;
+    assert!(partial.is_some());
+
+    Ok(())
+}
+

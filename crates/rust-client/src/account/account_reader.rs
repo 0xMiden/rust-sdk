@@ -12,8 +12,7 @@ use miden_protocol::account::{
     StorageSlotName,
 };
 use miden_protocol::address::Address;
-use miden_protocol::asset::{Asset, AssetAmount, AssetComposition, AssetId};
-use miden_protocol::errors::AssetError;
+use miden_protocol::asset::{Asset, AssetAmount, AssetId, FungibleAsset};
 use miden_protocol::{Felt, Word};
 
 use crate::errors::ClientError;
@@ -151,13 +150,7 @@ impl AccountReader {
             return Ok(AssetAmount::ZERO);
         };
 
-        let fungible_asset = asset.as_fungible().ok_or_else(|| {
-            ClientError::AssetError(AssetError::AssetCompositionMismatch {
-                faucet_id,
-                expected: AssetComposition::Fungible,
-                actual: asset.id().composition(),
-            })
-        })?;
+        let fungible_asset = FungibleAsset::from_id_and_value(asset.id(), asset.to_value_word())?;
 
         Ok(fungible_asset.amount())
     }

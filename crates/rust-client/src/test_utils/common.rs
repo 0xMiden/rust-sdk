@@ -24,7 +24,6 @@ use tracing::{debug, info};
 use uuid::Uuid;
 
 use crate::account::component::{
-    AccountComponent,
     BasicWallet,
     BurnPolicy,
     FungibleFaucet,
@@ -32,7 +31,7 @@ use crate::account::component::{
     TokenPolicyManager,
 };
 use crate::account::{AccountBuilder, AccountBuilderSchemaCommitmentExt, AccountType};
-use crate::auth::{AuthSchemeId, RPO_FALCON_SCHEME_ID};
+use crate::auth::{AuthSchemeId, ECDSA_K256_KECCAK_SCHEME_ID};
 pub use crate::keystore::{FilesystemKeyStore, Keystore};
 use crate::note::{Note, NoteConsumability, P2idNote};
 use crate::rpc::RpcError;
@@ -178,8 +177,8 @@ impl DerefMut for TestClient {
 // ACCOUNT SETUP
 // ================================================================================================
 
-/// What kind of standard components a test account is built around.
-enum AccountKind {
+/// The standard component set a built test account is made of.
+enum StandardComponents {
     /// A [`BasicWallet`].
     Wallet,
     /// A [`FungibleFaucet`] with permissive mint/burn policies, plus a [`BasicWallet`] for its
@@ -188,52 +187,63 @@ enum AccountKind {
     Faucet,
 }
 
+/// How [`TestClient::insert_account`] gets the account it inserts.
+enum AccountKind {
+    /// The account is built from a standard component set.
+    Standard {
+        components: StandardComponents,
+        account_type: AccountType,
+        auth_scheme: AuthSchemeId,
+    },
+    /// The account was built by the caller.
+    Prebuilt {
+        account: Box<Account>,
+        key: AuthSecretKey,
+    },
+}
+
 /// Configuration for an account inserted through [`TestClient::insert_account`].
 pub struct AccountSetup {
     kind: AccountKind,
-    account_type: AccountType,
-    auth_scheme: AuthSchemeId,
-    seed: Option<[u8; 32]>,
     funded: bool,
-    with_basic_wallet_component: bool,
-    extra_components: Vec<AccountComponent>,
 }
 
 impl AccountSetup {
-    fn new(kind: AccountKind, account_type: AccountType) -> Self {
+    fn standard(components: StandardComponents, account_type: AccountType) -> Self {
         Self {
-            kind,
-            account_type,
-            auth_scheme: RPO_FALCON_SCHEME_ID,
-            seed: None,
+            kind: AccountKind::Standard {
+                components,
+                account_type,
+                auth_scheme: ECDSA_K256_KECCAK_SCHEME_ID,
+            },
             funded: true,
-            with_basic_wallet_component: true,
-            extra_components: Vec::new(),
         }
     }
 
     /// A basic wallet account.
     pub fn wallet(account_type: AccountType) -> Self {
-        Self::new(AccountKind::Wallet, account_type)
+        Self::standard(StandardComponents::Wallet, account_type)
     }
 
     /// A fungible faucet account.
     pub fn faucet(account_type: AccountType) -> Self {
-        Self::new(AccountKind::Faucet, account_type)
+        Self::standard(StandardComponents::Faucet, account_type)
     }
 
-    /// Signs with `auth_scheme` instead of the default [`RPO_FALCON_SCHEME_ID`].
+    /// An account the caller built, with the key its auth component commits to.
+    pub fn prebuilt(account: Account, key: AuthSecretKey) -> Self {
+        Self {
+            kind: AccountKind::Prebuilt { account: Box::new(account), key },
+            funded: true,
+        }
+    }
+
+    /// Signs with `auth_scheme` instead of the default [`ECDSA_K256_KECCAK_SCHEME_ID`].
     #[must_use]
     pub fn auth_scheme(mut self, auth_scheme: AuthSchemeId) -> Self {
-        self.auth_scheme = auth_scheme;
-        self
-    }
-
-    /// Builds the account from `seed` instead of a random one, for tests that re-derive the account
-    /// ID.
-    #[must_use]
-    pub fn seed(mut self, seed: [u8; 32]) -> Self {
-        self.seed = Some(seed);
+        if let AccountKind::Standard { auth_scheme: scheme, .. } = &mut self.kind {
+            *scheme = auth_scheme;
+        }
         self
     }
 
@@ -243,93 +253,82 @@ impl AccountSetup {
         self.funded = false;
         self
     }
+}
 
-    /// Builds a faucet without the [`BasicWallet`] ride-along, so the account exposes only the
-    /// faucet interface. Has no effect on a wallet setup.
-    #[must_use]
-    pub fn without_basic_wallet_component(mut self) -> Self {
-        self.with_basic_wallet_component = false;
-        self
-    }
+/// Creates a key pair for `auth_scheme`, and the authentication component that commits to it.
+pub fn auth_component(auth_scheme: AuthSchemeId) -> Result<(AuthSingleSig, AuthSecretKey)> {
+    let key_pair = match auth_scheme {
+        AuthSchemeId::Falcon512Poseidon2 => AuthSecretKey::new_falcon512_poseidon2(),
+        AuthSchemeId::EcdsaK256Keccak => AuthSecretKey::new_ecdsa_k256_keccak(),
+        other => anyhow::bail!("unsupported auth scheme: {}", other.as_u8()),
+    };
+    let component =
+        AuthSingleSig::new(Approver::new(key_pair.public_key().to_commitment(), auth_scheme));
 
-    /// Adds `component` on top of the standard ones.
-    #[must_use]
-    pub fn component(mut self, component: AccountComponent) -> Self {
-        self.extra_components.push(component);
-        self
-    }
+    Ok((component, key_pair))
+}
+
+/// Creates the fungible faucet component the test faucets are built from, with the token policies
+/// that go with it.
+pub fn fungible_faucet_component() -> Result<(FungibleFaucet, TokenPolicyManager)> {
+    let symbol = TokenSymbol::new("TEST").expect("TEST is a valid token symbol");
+    let name = TokenName::new(&symbol.to_string()).expect("token symbol is a valid token name");
+    let max_supply = 9_999_999_u64;
+    let faucet = FungibleFaucet::builder()
+        .name(name)
+        .symbol(symbol)
+        .decimals(10)
+        .max_supply(AssetAmount::new(max_supply).expect("max supply is a valid amount"))
+        .build()
+        .context("failed to build the fungible faucet component")?;
+
+    let policy_manager = TokenPolicyManager::builder()
+        .active_mint_policy(MintPolicy::allow_all())
+        .active_burn_policy(BurnPolicy::allow_all())
+        .build();
+
+    Ok((faucet, policy_manager))
 }
 
 impl TestClient {
-    /// Builds the account described by `setup`, adds its key to the keystore, and inserts it into
-    /// the client. Unless [`AccountSetup::unfunded`] was set, the account is also funded so its
-    /// first transaction can pay its own fee and double as its deploy.
+    /// Inserts the account described by `setup` into the client and adds its key to the keystore.
+    /// Unless [`AccountSetup::unfunded`] was set, the account is also funded so its first
+    /// transaction can pay its own fee and double as its deploy.
     pub async fn insert_account(
         &mut self,
         setup: AccountSetup,
     ) -> Result<(Account, AuthSecretKey)> {
-        let key_pair = match setup.auth_scheme {
-            AuthSchemeId::Falcon512Poseidon2 => AuthSecretKey::new_falcon512_poseidon2(),
-            AuthSchemeId::EcdsaK256Keccak => AuthSecretKey::new_ecdsa_k256_keccak(),
-            other => anyhow::bail!("unsupported auth scheme: {}", other.as_u8()),
-        };
-        let auth_component = AuthSingleSig::new(Approver::new(
-            key_pair.public_key().to_commitment(),
-            setup.auth_scheme,
-        ));
+        let (account, key_pair) = match setup.kind {
+            AccountKind::Prebuilt { account, key } => (*account, key),
+            AccountKind::Standard { components, account_type, auth_scheme } => {
+                let (auth, key_pair) = auth_component(auth_scheme)?;
 
-        let init_seed = setup.seed.unwrap_or_else(|| {
-            let mut seed = [0u8; 32];
-            self.rng().fill_bytes(&mut seed);
-            seed
-        });
+                let mut init_seed = [0u8; 32];
+                self.rng().fill_bytes(&mut init_seed);
 
-        let mut builder = AccountBuilder::new(init_seed)
-            .account_type(setup.account_type)
-            .with_component(auth_component);
+                let mut builder =
+                    AccountBuilder::new(init_seed).account_type(account_type).with_component(auth);
 
-        match setup.kind {
-            AccountKind::Wallet => {
-                builder = builder.with_component(BasicWallet);
-            },
-            AccountKind::Faucet => {
-                let symbol = TokenSymbol::new("TEST").expect("TEST is a valid token symbol");
-                let name = TokenName::new(&symbol.to_string())
-                    .expect("token symbol is a valid token name");
-                let max_supply = 9_999_999_u64;
-                let faucet = FungibleFaucet::builder()
-                    .name(name)
-                    .symbol(symbol)
-                    .decimals(10)
-                    .max_supply(AssetAmount::new(max_supply).expect("max supply is a valid amount"))
-                    .build()
-                    .context("failed to build the fungible faucet component")?;
-
-                // Only mint and burn policies are registered. A transfer (send/receive) policy
-                // installs asset callback slots on the faucet, which forces `FungibleAsset` keys to
-                // carry `AssetCallbackFlag::Enabled`. Tests build assets with `FungibleAsset::new`,
-                // which defaults to `Disabled`, so a transfer policy makes `mint_and_send` reject
-                // the mint with `ERR_FUNGIBLE_MINT_NOTE_ASSET_NOT_FROM_THIS_FAUCET`.
-                let policy_manager = TokenPolicyManager::builder()
-                    .active_mint_policy(MintPolicy::allow_all())
-                    .active_burn_policy(BurnPolicy::allow_all())
-                    .build();
-
-                builder = builder.with_component(faucet);
-                if setup.with_basic_wallet_component {
-                    builder = builder.with_component(BasicWallet);
+                match components {
+                    StandardComponents::Wallet => {
+                        builder = builder.with_component(BasicWallet);
+                    },
+                    StandardComponents::Faucet => {
+                        let (faucet, policy_manager) = fungible_faucet_component()?;
+                        builder = builder
+                            .with_component(faucet)
+                            .with_component(BasicWallet)
+                            .with_components(policy_manager);
+                    },
                 }
-                builder = builder.with_components(policy_manager);
+
+                let account = builder
+                    .build_with_schema_commitment()
+                    .context("failed to build the test account")?;
+
+                (account, key_pair)
             },
-        }
-
-        for component in setup.extra_components {
-            builder = builder.with_component(component);
-        }
-
-        let account = builder
-            .build_with_schema_commitment()
-            .context("failed to build the test account")?;
+        };
 
         self.keystore()
             .add_key(&key_pair, account.id())
@@ -338,7 +337,11 @@ impl TestClient {
 
         self.add_account(&account, false).await?;
 
-        info!(account_id = %account.id(), account_type = ?setup.account_type, "Inserted account");
+        info!(
+            account_id = %account.id(),
+            account_type = ?account.id().account_type(),
+            "Inserted account"
+        );
 
         if setup.funded {
             self.fund_if_needed(&[account.id()]).await?;

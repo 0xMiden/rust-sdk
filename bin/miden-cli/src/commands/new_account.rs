@@ -553,8 +553,8 @@ fn process_packages(
         // are built, so the whole init data is passed and only the missing values are prompted.
         let mut init_data = init_storage_data.clone();
         for (value_name, requirement) in component_metadata.schema_requirements() {
-            // A composite slot can be given as one slot-level value instead of one value per
-            // field. The schema applies `default_value` itself when no entry is present.
+            // A composite slot can be given as one slot-level value instead of one value per field.
+            // The schema applies `default_value` itself when no entry is present.
             if init_data.value_entry(&value_name).is_some()
                 || init_data.slot_value_entry(value_name.slot_name()).is_some()
                 || requirement.default_value.is_some()
@@ -598,9 +598,9 @@ fn process_packages(
 /// interface.
 ///
 /// Only exports marked with `@account_procedure` or `@auth_script` become account procedures. A
-/// package that exports unmarked procedures would produce a component with no procedures, and
-/// calls into it would fail at transaction execution. A package that exports no procedures at all
-/// is a storage-only component and is accepted.
+/// package that exports unmarked procedures would produce a component with no procedures, and calls
+/// into it would fail at transaction execution. A package that exports no procedures at all is a
+/// storage-only component and is accepted.
 fn ensure_procedures_are_marked(
     package: &Package,
     component: &AccountComponent,
@@ -727,8 +727,8 @@ mod tests {
             .build_storage_slots(&init_data)
             .unwrap();
 
-        // Without the slot-level check every field would be prompted on stdin, which is empty
-        // under the test runner, and the empty values would conflict with the slot-level value.
+        // Without the slot-level check every field would be prompted on stdin, which is empty under
+        // the test runner, and the empty values would conflict with the slot-level value.
         let components = process_packages(vec![package], &init_data)
             .expect("a slot-level value should satisfy every field of the slot");
 

@@ -52,7 +52,11 @@ dap = ["dep:miden-debug", "std"]
 default = ["std"]
 std = [
   "concurrent",
+  "dep:chrono",
   "dep:tempfile",
+  "dep:tonic",
+  "dep:tonic-health",
+  "dep:tonic-prost",
   "dep:tokio",
   "miden-agglayer/std",
   "miden-assembly-syntax/std",
@@ -72,7 +76,12 @@ testing = [
   "miden-standards/testing",
   "miden-tx/testing",
 ]
-tonic = []
+tonic = [
+  "dep:tonic",
+  "dep:tonic-health",
+  "dep:tonic-prost",
+  "dep:tonic-web-wasm-client",
+]
 
 [dependencies]
 # Miden dependencies
@@ -90,7 +99,7 @@ miden-tx-batch        = { workspace = true }
 # External dependencies
 anyhow       = { workspace = true }
 async-trait  = { workspace = true }
-chrono       = { workspace = true }
+chrono       = { optional = true, workspace = true }
 futures      = { version = "0.3" }
 prost        = { features = ["derive"], workspace = true }
 prost-types  = { version = "0.14" }
@@ -100,9 +109,9 @@ serde_json   = { workspace = true }
 tempfile     = { optional = true, workspace = true }
 thiserror    = { workspace = true }
 tokio        = { features = ["sync", "time"], optional = true, workspace = true }
-tonic        = { features = ["codegen"], workspace = true }
-tonic-health = { version = "0.14" }
-tonic-prost  = { version = "0.14" }
+tonic        = { features = ["codegen"], optional = true, workspace = true }
+tonic-health = { optional = true, version = "0.14" }
+tonic-prost  = { optional = true, version = "0.14" }
 tracing      = { workspace = true }
 uuid         = { features = ["js", "serde", "v4"], optional = true, workspace = true }
 
@@ -110,7 +119,7 @@ uuid         = { features = ["js", "serde", "v4"], optional = true, workspace = 
 getrandom             = { features = ["wasm_js"], version = "0.3" }
 gloo-timers           = { features = ["futures"], version = "0.3" }
 tokio                 = { default-features = false, features = ["sync"], version = "1.48" }
-tonic-web-wasm-client = { default-features = false, version = "0.9" }
+tonic-web-wasm-client = { default-features = false, optional = true, version = "0.9" }
 
 [build-dependencies]
 miden-node-proto-build = { workspace = true }

@@ -25,6 +25,7 @@ use miden_protocol::crypto::merkle::smt::PartialSmt;
 use miden_protocol::note::{NoteAttachments, NoteHeader, NoteId, NoteScript, NoteTag};
 use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::transaction::{OutputNote, ProvenTransaction};
+use miden_protocol::vm::ExecutionProof;
 use miden_testing::{MockChain, MockChainNote};
 use miden_tx::utils::sync::RwLock;
 
@@ -729,8 +730,8 @@ impl NodeRpcClient for MockRpcApi {
     async fn get_block_by_number(
         &self,
         block_num: BlockNumber,
-        _include_proof: bool,
-    ) -> Result<SignedBlock, RpcError> {
+        include_proof: bool,
+    ) -> Result<(SignedBlock, Option<ExecutionProof>), RpcError> {
         let block = self
             .mock_chain
             .read()
@@ -739,9 +740,12 @@ impl NodeRpcClient for MockRpcApi {
             .find(|b| b.header().block_num() == block_num)
             .unwrap()
             .clone();
-        let (header, body, signatures, _proof) = block.into_parts();
+        let (header, body, signatures, proof) = block.into_parts();
 
-        Ok(SignedBlock::new_unchecked(header, body, signatures))
+        Ok((
+            SignedBlock::new_unchecked(header, body, signatures),
+            include_proof.then_some(proof),
+        ))
     }
 
     async fn get_note_script_by_root(&self, root: Word) -> Result<Option<NoteScript>, RpcError> {

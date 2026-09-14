@@ -1289,7 +1289,8 @@ pub async fn test_unused_rpc_api(client_config: ClientConfig) -> Result<()> {
         .test_rpc_api()
         .get_block_header_by_number(Some(first_block_num), false)
         .await?;
-    let block = client.test_rpc_api().get_block_by_number(first_block_num, false).await.unwrap();
+    let (block, _proof) =
+        client.test_rpc_api().get_block_by_number(first_block_num, false).await.unwrap();
 
     assert_eq!(&block_header, block.header());
 

@@ -31,6 +31,7 @@ use miden_protocol::transaction::{
     ProvenTransaction,
     TransactionHeader,
 };
+use miden_protocol::vm::ExecutionProof;
 use miden_protocol::{Felt, Word};
 use miden_standards::note::StandardNote;
 
@@ -263,8 +264,10 @@ impl NodeRpcClient for CannedTransport {
         &self,
         _block_num: BlockNumber,
         _include_proof: bool,
-    ) -> Result<SignedBlock, RpcError> {
-        self.canned(self.block.as_ref(), "test must set a canned get_block_by_number response")
+    ) -> Result<(SignedBlock, Option<ExecutionProof>), RpcError> {
+        let block = self
+            .canned(self.block.as_ref(), "test must set a canned get_block_by_number response")?;
+        Ok((block, None))
     }
 
     async fn get_notes_by_id(&self, _note_ids: &[NoteId]) -> Result<Vec<FetchedNote>, RpcError> {
@@ -410,7 +413,7 @@ async fn get_block_by_number_verifies_block_num() {
         ..Default::default()
     });
 
-    let block = client
+    let (block, _proof) = client
         .get_block_by_number(BlockNumber::from(5u32), false)
         .await
         .expect("the requested block must be accepted");

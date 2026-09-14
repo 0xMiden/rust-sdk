@@ -25,6 +25,7 @@ use miden_client::store::{
     NoteFilter,
     OutputNoteRecord,
     OutputNoteState,
+    StaleUpdate,
     Store,
     StoreError,
 };
@@ -1034,4 +1035,124 @@ async fn input_note_state_update_persists_attachments() {
         &attachments,
         "a state update must persist the attachments resolved for the note"
     );
+}
+
+// STATE GUARD TESTS
+// ================================================================================================
+
+/// Returns an expected note that carries the same details, and therefore the same store key, as
+/// `note`.
+fn expected_copy_of(note: &InputNoteRecord) -> InputNoteRecord {
+    InputNoteRecord::new(
+        note.details().clone(),
+        NoteAttachments::empty(),
+        Some(0),
+        ExpectedNoteState {
+            metadata: None,
+            after_block_num: BlockNumber::from(0u32),
+            tag: None,
+        }
+        .into(),
+    )
+}
+
+/// An import built from a read taken before the note was consumed must not overwrite the consumed
+/// state.
+#[tokio::test]
+async fn upsert_input_notes_cannot_move_a_consumed_note_back() {
+    let store = create_test_store().await;
+
+    let consumed = create_consumed_external_input_note(0, 5, None, None);
+    store.upsert_input_notes(std::slice::from_ref(&consumed)).await.unwrap();
+
+    let stale = expected_copy_of(&consumed);
+    assert_eq!(stale.details_commitment(), consumed.details_commitment());
+
+    let result = store.upsert_input_notes(&[stale]).await;
+    assert!(
+        matches!(&result, Err(StoreError::StaleUpdate(StaleUpdate::InputNote { .. }))),
+        "expected a stale update conflict, got {result:?}"
+    );
+
+    let stored = store.get_input_notes(NoteFilter::All).await.unwrap();
+    assert_eq!(stored, vec![consumed]);
+}
+
+/// A sync working from a read taken before the note was consumed must not overwrite the consumed
+/// state.
+#[tokio::test]
+async fn state_sync_cannot_move_a_consumed_input_note_back() {
+    let store = create_test_store().await;
+
+    let consumed = create_consumed_external_input_note(0, 5, None, None);
+    store.upsert_input_notes(std::slice::from_ref(&consumed)).await.unwrap();
+
+    let state_sync_update = StateSyncUpdate::from_parts(
+        BlockNumber::from(0u32),
+        PartialBlockchainUpdates::default(),
+        NoteUpdateTracker::for_transaction_updates([], [expected_copy_of(&consumed)], []),
+        TransactionUpdateTracker::default(),
+        AccountUpdates::default(),
+    );
+
+    let result = store.apply_state_sync(state_sync_update).await;
+    assert!(
+        matches!(&result, Err(StoreError::StaleUpdate(StaleUpdate::InputNote { .. }))),
+        "expected a stale update conflict, got {result:?}"
+    );
+
+    let stored = store.get_input_notes(NoteFilter::All).await.unwrap();
+    assert_eq!(stored, vec![consumed]);
+}
+
+/// The same guard applies to output notes.
+#[tokio::test]
+async fn state_sync_cannot_move_a_consumed_output_note_back() {
+    let store = create_test_store().await;
+
+    let serial_number: Word = [Felt::new_unchecked(11_000), ZERO, ZERO, ZERO].into();
+    let recipient = NoteRecipient::new(
+        serial_number,
+        StandardNote::P2ID.script(),
+        NoteStorage::new(vec![]).unwrap(),
+    );
+    let sender = AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE).unwrap();
+    let metadata = create_note_metadata(sender, 0);
+
+    let output_note = |state| {
+        OutputNoteRecord::new(
+            recipient.digest(),
+            NoteAssets::new(vec![]).unwrap(),
+            metadata,
+            state,
+            BlockNumber::from(0u32),
+            NoteAttachments::empty(),
+        )
+    };
+    let consumed = output_note(OutputNoteState::Consumed {
+        block_height: BlockNumber::from(1u32),
+        recipient: recipient.clone(),
+    });
+    let stale = output_note(OutputNoteState::ExpectedFull { recipient: recipient.clone() });
+
+    let sync_update = |note: OutputNoteRecord| {
+        StateSyncUpdate::from_parts(
+            BlockNumber::from(0u32),
+            PartialBlockchainUpdates::default(),
+            NoteUpdateTracker::for_transaction_updates([], [], [note]),
+            TransactionUpdateTracker::default(),
+            AccountUpdates::default(),
+        )
+    };
+
+    store.apply_state_sync(sync_update(consumed.clone())).await.unwrap();
+
+    let result = store.apply_state_sync(sync_update(stale)).await;
+    assert!(
+        matches!(&result, Err(StoreError::StaleUpdate(StaleUpdate::OutputNote { .. }))),
+        "expected a stale update conflict, got {result:?}"
+    );
+
+    let stored = store.get_output_notes(NoteFilter::All).await.unwrap();
+    assert_eq!(stored, vec![consumed]);
 }

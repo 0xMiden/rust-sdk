@@ -1,6 +1,7 @@
 #![allow(clippy::items_after_statements)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 use std::string::ToString;
 use std::vec::Vec;
 
@@ -25,13 +26,14 @@ use miden_client::store::{
     NoteFilter,
     OutputNoteRecord,
     OutputNoteState,
+    StaleUpdate,
     StoreError,
 };
 use miden_client::utils::{Deserializable, DeserializationError, Serializable};
 use miden_client::{SliceReader, Word};
 use miden_protocol::note::NoteStorage;
 use rusqlite::types::Value;
-use rusqlite::{Connection, Transaction, params, params_from_iter};
+use rusqlite::{Connection, Transaction, TransactionBehavior, params, params_from_iter};
 
 use super::SqliteStore;
 use crate::chain_data::set_block_header_has_client_notes;
@@ -53,6 +55,112 @@ mod filters;
 const INPUT_NOTE_BATCH_SIZE: usize = 50;
 const OUTPUT_NOTE_BATCH_SIZE: usize = 80;
 const SCRIPT_BATCH_SIZE: usize = 200;
+
+// NOTE STATE GUARD
+// ================================================================================================
+
+/// Discriminants in which an input note is already nullified.
+const CONSUMED_INPUT_STATES: [u8; 3] = [
+    InputNoteState::STATE_CONSUMED_AUTHENTICATED_LOCAL,
+    InputNoteState::STATE_CONSUMED_UNAUTHENTICATED_LOCAL,
+    InputNoteState::STATE_CONSUMED_EXTERNAL,
+];
+
+/// Discriminants in which an output note is already consumed.
+const CONSUMED_OUTPUT_STATES: [u8; 1] = [OutputNoteState::STATE_CONSUMED];
+
+/// Returns the first write in `writes` that would move a stored consumed note out of its consumed
+/// state, as `(details commitment, stored discriminant, attempted discriminant)`.
+///
+/// Only a writer that read the note before it was consumed can produce such a write.
+fn find_consumed_note_regression(
+    tx: &Transaction<'_>,
+    table: &str,
+    consumed_states: &[u8],
+    writes: &[(Vec<u8>, u8)],
+) -> Result<Option<(Word, u8, u8)>, StoreError> {
+    let candidates: Vec<Value> = writes
+        .iter()
+        .filter(|(_, attempted)| !consumed_states.contains(attempted))
+        .map(|(commitment, _)| Value::Blob(commitment.clone()))
+        .collect();
+    if candidates.is_empty() {
+        return Ok(None);
+    }
+
+    let consumed_list = consumed_states.iter().map(u8::to_string).collect::<Vec<_>>().join(", ");
+    let query = format!(
+        "SELECT details_commitment, state_discriminant FROM {table} \
+         WHERE details_commitment IN rarray(?) AND state_discriminant IN ({consumed_list}) LIMIT 1"
+    );
+
+    let conflict = tx
+        .prepare(&query)
+        .into_store_error()?
+        .query_map(params![Rc::new(candidates)], |row| {
+            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, u8>(1)?))
+        })
+        .into_store_error()?
+        .next()
+        .transpose()
+        .into_store_error()?;
+
+    let Some((commitment, found)) = conflict else {
+        return Ok(None);
+    };
+    let attempted = writes
+        .iter()
+        .find(|(candidate, _)| *candidate == commitment)
+        .map(|(_, attempted)| *attempted)
+        .expect("the conflicting row was selected from the write list");
+
+    Ok(Some((Word::read_from_bytes(&commitment)?, found, attempted)))
+}
+
+/// Rejects input note writes that would move a stored note out of a consumed state.
+fn check_input_note_writes(
+    tx: &Transaction<'_>,
+    writes: &[(Vec<u8>, u8)],
+) -> Result<(), StoreError> {
+    match find_consumed_note_regression(tx, "input_notes", &CONSUMED_INPUT_STATES, writes)? {
+        Some((details_commitment, found, attempted)) => {
+            Err(StaleUpdate::InputNote { details_commitment, found, attempted }.into())
+        },
+        None => Ok(()),
+    }
+}
+
+/// Returns the block numbers that unspent input notes prove inclusion in.
+pub(crate) fn unspent_note_block_numbers(
+    tx: &Transaction<'_>,
+) -> Result<BTreeSet<u32>, StoreError> {
+    let (query, params) = note_filter_to_query_input_notes(&NoteFilter::Unspent);
+    tx.prepare(query.as_str())
+        .into_store_error()?
+        .query_map(params_from_iter(params), parse_input_note_columns)
+        .into_store_error()?
+        .map(|result| Ok(result.into_store_error()?).and_then(parse_input_note))
+        .filter_map(|note| match note {
+            Ok(note) => {
+                note.inclusion_proof().map(|proof| Ok(proof.location().block_num().as_u32()))
+            },
+            Err(err) => Some(Err(err)),
+        })
+        .collect()
+}
+
+/// Rejects output note writes that would move a stored note out of a consumed state.
+fn check_output_note_writes(
+    tx: &Transaction<'_>,
+    writes: &[(Vec<u8>, u8)],
+) -> Result<(), StoreError> {
+    match find_consumed_note_regression(tx, "output_notes", &CONSUMED_OUTPUT_STATES, writes)? {
+        Some((details_commitment, found, attempted)) => {
+            Err(StaleUpdate::OutputNote { details_commitment, found, attempted }.into())
+        },
+        None => Ok(()),
+    }
+}
 
 // NOTE SCRIPT UPSERT
 // ================================================================================================
@@ -221,7 +329,9 @@ impl SqliteStore {
         conn: &mut Connection,
         notes: &[InputNoteRecord],
     ) -> Result<(), StoreError> {
-        let tx = conn.transaction().into_store_error()?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .into_store_error()?;
 
         for note in notes {
             upsert_input_note_tx(&tx, note)?;
@@ -302,6 +412,12 @@ pub(super) fn upsert_input_note_tx(
     tx: &Transaction<'_>,
     note: &InputNoteRecord,
 ) -> Result<(), StoreError> {
+    let serialized = serialize_input_note(note);
+    check_input_note_writes(
+        tx,
+        &[(serialized.details_commitment.clone(), serialized.state_discriminant)],
+    )?;
+
     let SerializedInputNoteData {
         details_commitment,
         id,
@@ -318,7 +434,7 @@ pub(super) fn upsert_input_note_tx(
         consumed_block_height,
         consumed_tx_order,
         consumer_account_id,
-    } = serialize_input_note(note);
+    } = serialized;
 
     tx.prepare_cached(UPSERT_NOTE_SCRIPT_QUERY)
         .into_store_error()?
@@ -718,6 +834,28 @@ pub(crate) fn apply_note_updates_tx(
             NoteUpdateType::None => {},
         }
     }
+
+    let input_writes: Vec<(Vec<u8>, u8)> = input_inserts
+        .iter()
+        .map(|note| (note.details_commitment.clone(), note.state_discriminant))
+        .chain(
+            input_updates
+                .iter()
+                .map(|note| (note.details_commitment.clone(), note.state_discriminant)),
+        )
+        .collect();
+    check_input_note_writes(tx, &input_writes)?;
+
+    let output_writes: Vec<(Vec<u8>, u8)> = output_inserts
+        .iter()
+        .map(|note| (note.details_commitment.clone(), note.state_discriminant))
+        .chain(
+            output_updates
+                .iter()
+                .map(|note| (note.details_commitment.clone(), note.state_discriminant)),
+        )
+        .collect();
+    check_output_note_writes(tx, &output_writes)?;
 
     // Scripts must be inserted before the notes that reference them via foreign key.
     batch_upsert_scripts(tx, &scripts)?;

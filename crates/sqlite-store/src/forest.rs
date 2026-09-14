@@ -185,16 +185,14 @@ fn cached_columns<T, const N: usize>(
 ) -> impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T> {
     let mut columns = None;
     move |row| {
-        let indexes = match columns {
-            Some(indexes) => indexes,
-            None => {
-                let mut indexes = [0; N];
-                for (i, name) in names.iter().enumerate() {
-                    indexes[i] = row.as_ref().column_index(name)?;
-                }
-                columns = Some(indexes);
-                indexes
-            },
+        let indexes = if let Some(indexes) = columns {
+            indexes
+        } else {
+            let mut indexes = [0; N];
+            for (i, name) in names.iter().enumerate() {
+                indexes[i] = row.as_ref().column_index(name)?;
+            }
+            *columns.insert(indexes)
         };
         parse(row, indexes)
     }

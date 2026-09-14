@@ -29,9 +29,7 @@ use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::crypto::merkle::mmr::{Forest, MmrPath, MmrProof};
 use miden_protocol::note::{NoteId, NoteScript, NoteTag};
 use miden_protocol::transaction::ProvenTransaction;
-use miden_protocol::utils::serde::Deserializable;
 use miden_protocol::{EMPTY_WORD, Word};
-use miden_tx::utils::serde::Serializable;
 use miden_tx::utils::sync::RwLock;
 use tonic::Status;
 use tracing::{info, warn};
@@ -393,14 +391,18 @@ impl NodeRpcClient for GrpcClient {
             .attestations
             .into_iter()
             .filter_map(|attestation| {
-                let decoded =
-                    ValidatorPublicKey::read_from_bytes(&attestation.validator_public_key)
-                        .ok()
-                        .zip(ValidatorSignature::read_from_bytes(&attestation.signature).ok())
-                        .map(|(validator_key, signature)| ValidatorAttestation {
-                            validator_key,
-                            signature,
-                        });
+                let decoded = attestation
+                    .validator_public_key
+                    .and_then(|key| ValidatorPublicKey::try_from(key).ok())
+                    .zip(
+                        attestation
+                            .signature
+                            .and_then(|signature| ValidatorSignature::try_from(signature).ok()),
+                    )
+                    .map(|(validator_key, signature)| ValidatorAttestation {
+                        validator_key,
+                        signature,
+                    });
                 if decoded.is_none() {
                     warn!(
                         "skipping a transaction encryption key attestation that failed to decode"
@@ -443,8 +445,8 @@ impl NodeRpcClient for GrpcClient {
         proven_transaction: ProvenTransaction,
         sealed_transaction_inputs: SealedTransactionInputs,
     ) -> Result<BlockNumber, RpcError> {
-        let request = proto::transaction::ProvenTransaction {
-            transaction: proven_transaction.to_bytes(),
+        let request = proto::submission::ProvenTransactionSubmission {
+            transaction: Some((&proven_transaction).into()),
             sealed_transaction_inputs: Some(sealed_transaction_inputs.into()),
         };
 
@@ -464,9 +466,9 @@ impl NodeRpcClient for GrpcClient {
         proposed_batch: ProposedBatch,
         sealed_transaction_inputs: Vec<SealedTransactionInputs>,
     ) -> Result<BlockNumber, RpcError> {
-        let request = proto::transaction::TransactionBatch {
-            batch_proof: proven_batch.to_bytes(),
-            proposed_batch: Some(proposed_batch.to_bytes()),
+        let request = proto::submission::TransactionBatch {
+            batch: Some((&proven_batch).into()),
+            proposed_batch: Some((&proposed_batch).into()),
             sealed_transaction_inputs: sealed_transaction_inputs
                 .into_iter()
                 .map(Into::into)
@@ -491,6 +493,7 @@ impl NodeRpcClient for GrpcClient {
         let request = proto::rpc::BlockHeaderByNumberRequest {
             block_num: block_num.as_ref().map(BlockNumber::as_u32),
             include_mmr_proof: Some(include_mmr_proof),
+            include_protocol_config: None,
         };
 
         info!("Calling GetBlockHeaderByNumber: {:?}", request);
@@ -536,8 +539,8 @@ impl NodeRpcClient for GrpcClient {
         let limits = self.get_rpc_limits().await?;
         let mut notes = Vec::with_capacity(note_ids.len());
         for chunk in note_ids.chunks(limits.note_ids_limit as usize) {
-            let request = proto::note::NoteIdList {
-                ids: chunk.iter().map(|id| (*id).into()).collect(),
+            let request = proto::rpc::NotesByIdRequest {
+                note_ids: chunk.iter().map(Into::into).collect(),
             };
 
             let api_response = self
@@ -801,7 +804,7 @@ impl NodeRpcClient for GrpcClient {
         block_num: BlockNumber,
         include_proof: bool,
     ) -> Result<SignedBlock, RpcError> {
-        let request = proto::blockchain::BlockRequest {
+        let request = proto::rpc::BlockRequest {
             block_num: block_num.as_u32(),
             include_proof: Some(include_proof),
         };
@@ -816,7 +819,7 @@ impl NodeRpcClient for GrpcClient {
         // The response carries the signed block and its proof in separate fields, so the block
         // bytes decode as a `SignedBlock` and never as a `ProvenBlock`.
         let block =
-            SignedBlock::read_from_bytes(&response.block.ok_or(RpcError::ExpectedDataMissing(
+            SignedBlock::try_from(response.block.ok_or(RpcError::ExpectedDataMissing(
                 "GetBlockByNumberResponse.block".to_string(),
             ))?)?;
 
@@ -824,10 +827,11 @@ impl NodeRpcClient for GrpcClient {
     }
 
     async fn get_note_script_by_root(&self, root: Word) -> Result<Option<NoteScript>, RpcError> {
-        let request = proto::note::NoteScriptRoot { root: Some(root.into()) };
+        let request = proto::rpc::NoteScriptByRootRequest { root: Some(root.into()) };
 
         let response = self
             .call_with_retry(RpcEndpoint::GetNoteScriptByRoot, |mut rpc_api| {
+                let request = request.clone();
                 Box::pin(async move { rpc_api.get_note_script_by_root(request).await })
             })
             .await?;
@@ -1023,10 +1027,11 @@ impl NodeRpcClient for GrpcClient {
         &self,
         note_id: NoteId,
     ) -> Result<NetworkNoteStatusInfo, RpcError> {
-        let request = proto::note::NoteId { id: Some(note_id.into()) };
+        let request = proto::note::NoteId::from(&note_id);
 
         let response = self
             .call_with_retry(RpcEndpoint::GetNetworkNoteStatus, |mut rpc_api| {
+                let request = request.clone();
                 Box::pin(async move { rpc_api.get_network_note_status(request).await })
             })
             .await?;

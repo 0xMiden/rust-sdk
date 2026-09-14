@@ -2574,12 +2574,12 @@ dependencies = [
  "futures",
  "getrandom 0.3.4",
  "gloo-timers",
- "hex",
  "miden-agglayer",
  "miden-assembly-syntax",
  "miden-debug",
  "miden-node-proto-build",
  "miden-note-transport-proto-build",
+ "miden-objects",
  "miden-processor",
  "miden-protocol",
  "miden-standards",
@@ -3030,11 +3030,12 @@ dependencies = [
 [[package]]
 name = "miden-node-proto-build"
 version = "0.17.0-rc.1"
-source = "git+https://github.com/0xMiden/node?rev=f64fe50f31ea58bcb791a35b826f71e99e74034c#f64fe50f31ea58bcb791a35b826f71e99e74034c"
+source = "git+https://github.com/0xMiden/node?rev=8b1759f14d21185c664b427008bb1bc33b7e5c57#8b1759f14d21185c664b427008bb1bc33b7e5c57"
 dependencies = [
  "build-rs",
  "codegen",
  "fs-err",
+ "miden-objects",
  "miette",
  "protox",
  "tonic-prost-build",
@@ -3050,6 +3051,18 @@ dependencies = [
  "miette",
  "protox",
  "tonic-prost-build",
+]
+
+[[package]]
+name = "miden-objects"
+version = "0.17.0-rc.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ad8ade9bb1740dd09d9873fee7d51b9ea63d38aa0971b19455848681042d94e"
+dependencies = [
+ "miden-protocol",
+ "prost",
+ "prost-build",
+ "protox",
 ]
 
 [[package]]

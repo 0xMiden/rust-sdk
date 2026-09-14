@@ -128,6 +128,12 @@ impl From<RpcConversionError> for RpcError {
     }
 }
 
+impl From<miden_objects::ConversionError> for RpcError {
+    fn from(err: miden_objects::ConversionError) -> Self {
+        Self::DeserializationError(err.to_string())
+    }
+}
+
 // RPC CONVERSION ERROR
 // ================================================================================================
 
@@ -152,6 +158,8 @@ pub enum RpcConversionError {
         entity: &'static str,
         field_name: &'static str,
     },
+    #[error("failed to convert a canonical protobuf message")]
+    CanonicalConversion(#[from] miden_objects::ConversionError),
 }
 
 // GRPC ERROR KIND

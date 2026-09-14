@@ -69,6 +69,11 @@
 
 * [FEATURE][cli] Added a `--package` option to `exec` so a compiled transaction script package (`.masp`) can be run instead of MASM source. A path without an extension is resolved in the package directory, as with `call --package` ([#2470](https://github.com/0xMiden/rust-sdk/issues/2470)).
 
+### Features
+
+* [FEATURE][cli] Added `--invitation-code` to `new-wallet` and `new-account`, which registers the new account on the network allowlist, and `account --register <ID> --invitation-code <CODE>`, which registers an account that the client already tracks.
+* [FEATURE][rust] Added `Client::register_account`, which binds an invitation code to an account ID on the network allowlist.
+
 ### Fixes
 
 * [FIX][cli] `new-account` and `new-wallet` now reject a package that exports procedures without an `@account_procedure` or `@auth_script` attribute. They also reject packages whose target kind is not `account-component` and packages without an account component metadata section ([#2542](https://github.com/0xMiden/rust-sdk/pull/2542)).

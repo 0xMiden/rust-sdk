@@ -28,6 +28,7 @@ use miden_client::store::{
     AccountStorageFilter,
     AccountUpdate,
     ClientAccountType,
+    StaleUpdate,
     StoreError,
 };
 use miden_client::utils::{Deserializable, Serializable};
@@ -479,13 +480,12 @@ impl SqliteStore {
         // state and archive incorrect history).
         let stored_header = Self::require_latest_account_header(tx, account_id)?;
         if stored_header.to_commitment() != init_account_state.to_commitment() {
-            return Err(StoreError::DatabaseError(format!(
-                "apply_account_patch: stored state {} for account {} does not match the patch's \
-                 initial state {}",
-                stored_header.to_commitment(),
+            return Err(StaleUpdate::AccountCommitment {
                 account_id,
-                init_account_state.to_commitment(),
-            )));
+                initial_commitment: init_account_state.to_commitment(),
+                stored_commitment: stored_header.to_commitment(),
+            }
+            .into());
         }
 
         // Archive old header and insert the new one
@@ -613,6 +613,40 @@ impl SqliteStore {
             .next()
             .map(|(header, ..)| header)
             .ok_or(StoreError::AccountDataNotFound(account_id))
+    }
+
+    /// Rejects a full account state that the stored state is already at or past.
+    ///
+    /// A nonce alone does not identify a state, so an equal nonce must also carry the same
+    /// commitment.
+    fn check_state_is_not_older(
+        new_account_state: &Account,
+        old_header: &AccountHeader,
+    ) -> Result<(), StoreError> {
+        let account_id = new_account_state.id();
+        let new_nonce = new_account_state.nonce().as_canonical_u64();
+        let old_nonce = old_header.nonce().as_canonical_u64();
+
+        if new_nonce < old_nonce {
+            return Err(StaleUpdate::AccountNonce {
+                account_id,
+                new_nonce,
+                stored_nonce: old_nonce,
+            }
+            .into());
+        }
+
+        let new_commitment = new_account_state.to_commitment();
+        if new_nonce == old_nonce && new_commitment != old_header.to_commitment() {
+            return Err(StaleUpdate::AccountCommitment {
+                account_id,
+                initial_commitment: new_commitment,
+                stored_commitment: old_header.to_commitment(),
+            }
+            .into());
+        }
+
+        Ok(())
     }
 
     /// Returns the names of the map slots that currently have entries stored for an account.
@@ -894,14 +928,7 @@ impl SqliteStore {
             .map(|(header, ..)| header)
             .ok_or(StoreError::AccountDataNotFound(account_id))?;
 
-        if new_account_state.nonce().as_canonical_u64() < old_header.nonce().as_canonical_u64() {
-            return Err(StoreError::DatabaseError(format!(
-                "update_account_state: new nonce {} is less than old nonce {} for account {}",
-                new_account_state.nonce().as_canonical_u64(),
-                old_header.nonce().as_canonical_u64(),
-                account_id,
-            )));
-        }
+        Self::check_state_is_not_older(new_account_state, &old_header)?;
 
         let nonce_val = u64_to_value(new_account_state.nonce().as_canonical_u64());
 
@@ -1007,12 +1034,12 @@ impl SqliteStore {
         let init_header = Self::require_latest_account_header(tx, account_id)?;
 
         if new_header.nonce().as_canonical_u64() <= init_header.nonce().as_canonical_u64() {
-            return Err(StoreError::DatabaseError(format!(
-                "apply_sync_account_patch: new nonce {} is not greater than local nonce {} for account {}",
-                new_header.nonce().as_canonical_u64(),
-                init_header.nonce().as_canonical_u64(),
+            return Err(StaleUpdate::AccountNonce {
                 account_id,
-            )));
+                new_nonce: new_header.nonce().as_canonical_u64(),
+                stored_nonce: init_header.nonce().as_canonical_u64(),
+            }
+            .into());
         }
 
         // Transaction derefs to Connection, so we can pass it where Connection is expected.
@@ -1121,12 +1148,12 @@ impl SqliteStore {
             )));
         }
         if new_header.nonce().as_canonical_u64() < old_header.nonce().as_canonical_u64() {
-            return Err(StoreError::DatabaseError(format!(
-                "replace_account_header: new nonce {} is less than old nonce {} for account {}",
-                new_header.nonce().as_canonical_u64(),
-                old_header.nonce().as_canonical_u64(),
-                new_header.id(),
-            )));
+            return Err(StaleUpdate::AccountNonce {
+                account_id: new_header.id(),
+                new_nonce: new_header.nonce().as_canonical_u64(),
+                stored_nonce: old_header.nonce().as_canonical_u64(),
+            }
+            .into());
         }
 
         let id_bytes = new_header.id().to_bytes();

@@ -24,7 +24,7 @@ use miden_client::account::{
 use miden_client::assembly::CodeBuilder;
 use miden_client::asset::{Asset, FungibleAsset, NonFungibleAsset, NonFungibleAssetDetails};
 use miden_client::auth::{AuthSchemeId, AuthSingleSig, PublicKeyCommitment};
-use miden_client::store::{AccountUpdate, ClientAccountType, Store, StoreError};
+use miden_client::store::{AccountUpdate, ClientAccountType, StaleUpdate, Store, StoreError};
 use miden_client::testing::common::{ACCOUNT_ID_REGULAR, create_test_store_path};
 use miden_client::{EMPTY_WORD, Felt, ONE, Serializable, Word, ZERO};
 use miden_protocol::account::{
@@ -1004,6 +1004,7 @@ async fn prune_removes_orphaned_account_code() -> anyhow::Result<()> {
 // ================================================================================================
 
 /// Row counts across the account-related tables.
+#[derive(Debug, PartialEq, Eq)]
 struct StorageMetrics {
     latest_account_headers: usize,
     historical_account_headers: usize,
@@ -1091,6 +1092,46 @@ async fn setup_account_with_map(
     Ok(account)
 }
 
+/// Builds a patch that sets map entry key=1 to `value` and moves the nonce to `target_nonce`.
+fn single_entry_patch(
+    account: &Account,
+    map_slot_name: &StorageSlotName,
+    target_nonce: u64,
+    value: u64,
+) -> anyhow::Result<AccountPatch> {
+    let mut map_entries = StorageMapPatchEntries::new();
+    map_entries.insert(
+        StorageMapKey::new([Felt::from(1u32), ZERO, ZERO, ZERO].into()),
+        [Felt::new_unchecked(value), ZERO, ZERO, ZERO].into(),
+    );
+    let storage_patch = AccountStoragePatch::from_entries([(
+        map_slot_name.clone(),
+        StorageSlotPatch::Map(StorageMapPatch::Update { entries: map_entries }),
+    )])?;
+
+    Ok(AccountPatch::new(
+        account.id(),
+        storage_patch,
+        AccountVaultPatch::default(),
+        None,
+        Some(Felt::new_unchecked(target_nonce)),
+    )?)
+}
+
+/// Returns `account` advanced to `target_nonce` by [`single_entry_patch`], without writing to the
+/// store.
+fn advanced_account(
+    account: &Account,
+    map_slot_name: &StorageSlotName,
+    target_nonce: u64,
+    value: u64,
+) -> anyhow::Result<Account> {
+    let patch = single_entry_patch(account, map_slot_name, target_nonce, value)?;
+    let mut advanced = account.clone();
+    advanced.apply_patch(&patch)?;
+    Ok(advanced)
+}
+
 /// Applies a delta that changes a single map entry (key=1) and persists it. `target_nonce` must be
 /// strictly greater than the account's current nonce.
 async fn apply_single_entry_update(
@@ -1099,23 +1140,7 @@ async fn apply_single_entry_update(
     map_slot_name: &StorageSlotName,
     target_nonce: u64,
 ) -> anyhow::Result<()> {
-    let mut map_entries = StorageMapPatchEntries::new();
-    map_entries.insert(
-        StorageMapKey::new([Felt::from(1u32), ZERO, ZERO, ZERO].into()),
-        [Felt::new_unchecked(target_nonce * 1000), ZERO, ZERO, ZERO].into(),
-    );
-    let storage_patch = AccountStoragePatch::from_entries([(
-        map_slot_name.clone(),
-        StorageSlotPatch::Map(StorageMapPatch::Update { entries: map_entries }),
-    )])?;
-
-    let patch = AccountPatch::new(
-        account.id(),
-        storage_patch,
-        AccountVaultPatch::default(),
-        None,
-        Some(Felt::new_unchecked(target_nonce)),
-    )?;
+    let patch = single_entry_patch(account, map_slot_name, target_nonce, target_nonce * 1000)?;
 
     let prev_header: AccountHeader = (&*account).into();
     account.apply_patch(&patch)?;
@@ -1690,7 +1715,7 @@ async fn update_account_state_rejects_stale_full_snapshot_without_mutating() -> 
         })
         .await;
     assert!(
-        matches!(&result, Err(StoreError::DatabaseError(err)) if err.contains("new nonce 1 is less than old nonce 2")),
+        matches!(&result, Err(StoreError::StaleUpdate(StaleUpdate::AccountNonce { .. }))),
         "expected stale update to be rejected before mutating state, got {result:?}"
     );
 
@@ -2744,6 +2769,133 @@ async fn remove_map_patch_deletes_slot() -> anyhow::Result<()> {
     let m = get_storage_metrics(&store).await;
     assert_eq!(m.historical_account_storage, 1);
     assert_eq!(m.historical_storage_map_entries, 5);
+
+    Ok(())
+}
+
+// STATE GUARD TESTS
+// ================================================================================================
+
+/// A patch derived from a state the store has moved past must be rejected, and nothing written.
+#[tokio::test]
+async fn apply_account_patch_rejects_a_stale_basis_without_mutating() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+    let map_slot_name = StorageSlotName::new("test::stale_patch::map").expect("valid slot name");
+
+    let account = setup_account_with_map(&store, 3, &map_slot_name).await?;
+    let mut current = account.clone();
+    apply_single_entry_update(&store, &mut current, &map_slot_name, 2).await?;
+
+    let metrics_before = get_storage_metrics(&store).await;
+
+    // The patch is built from the nonce-1 state, which the store no longer holds.
+    let mut stale = account.clone();
+    let result = apply_single_entry_update(&store, &mut stale, &map_slot_name, 3).await;
+
+    let err = result.expect_err("a patch on a stale basis must be rejected");
+    assert!(
+        matches!(
+            err.downcast_ref::<StoreError>(),
+            Some(StoreError::StaleUpdate(StaleUpdate::AccountCommitment { .. }))
+        ),
+        "expected a stale update conflict, got {err:?}"
+    );
+
+    let persisted: Account = store
+        .get_account(account.id())
+        .await?
+        .context("account should exist after the rejected patch")?
+        .try_into()?;
+    assert_eq!(persisted, current);
+    assert_eq!(get_storage_metrics(&store).await, metrics_before);
+
+    Ok(())
+}
+
+/// A nonce alone does not identify a state, so a state with the stored nonce but a different
+/// commitment must be rejected.
+#[tokio::test]
+async fn update_account_state_rejects_an_equal_nonce_with_a_different_commitment()
+-> anyhow::Result<()> {
+    let store = create_test_store().await;
+    let map_slot_name = StorageSlotName::new("test::equal_nonce::map").expect("valid slot name");
+
+    let account = setup_account_with_map(&store, 3, &map_slot_name).await?;
+    let mut current = account.clone();
+    apply_single_entry_update(&store, &mut current, &map_slot_name, 2).await?;
+
+    let sibling = advanced_account(&account, &map_slot_name, 2, 7777)?;
+    assert_eq!(sibling.nonce(), current.nonce());
+    assert_ne!(sibling.to_commitment(), current.to_commitment());
+
+    let metrics_before = get_storage_metrics(&store).await;
+
+    let result = store
+        .interact_with_connection(move |conn| {
+            let tx = conn.transaction().into_store_error()?;
+            let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
+            SqliteStore::update_account_state(&tx, &mut smt_forest, &sibling)?;
+            drop(smt_forest);
+            tx.commit().into_store_error()?;
+            Ok(())
+        })
+        .await;
+
+    assert!(
+        matches!(&result, Err(StoreError::StaleUpdate(StaleUpdate::AccountCommitment { .. }))),
+        "expected a stale update conflict, got {result:?}"
+    );
+
+    let persisted: Account = store
+        .get_account(account.id())
+        .await?
+        .context("account should exist after the rejected update")?
+        .try_into()?;
+    assert_eq!(persisted, current);
+    assert_eq!(get_storage_metrics(&store).await, metrics_before);
+
+    Ok(())
+}
+
+/// A sync patch whose nonce is not newer than the stored one must be rejected.
+#[tokio::test]
+async fn apply_sync_account_patch_rejects_a_nonce_that_is_not_newer() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+    let map_slot_name = StorageSlotName::new("test::replayed_sync::map").expect("valid slot name");
+
+    let account = setup_account_with_map(&store, 3, &map_slot_name).await?;
+    let mut current = account.clone();
+    apply_single_entry_update(&store, &mut current, &map_slot_name, 2).await?;
+
+    // The same nonce-2 patch a lagging node would send again after it was already applied.
+    let patch = single_entry_patch(&account, &map_slot_name, 2, 2000)?;
+    let new_header: AccountHeader = (&current).into();
+
+    let metrics_before = get_storage_metrics(&store).await;
+
+    let result = store
+        .interact_with_connection(move |conn| {
+            let tx = conn.transaction().into_store_error()?;
+            let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
+            SqliteStore::apply_sync_account_patch(&tx, &mut smt_forest, &new_header, &patch)?;
+            drop(smt_forest);
+            tx.commit().into_store_error()?;
+            Ok(())
+        })
+        .await;
+
+    assert!(
+        matches!(&result, Err(StoreError::StaleUpdate(StaleUpdate::AccountNonce { .. }))),
+        "expected a stale update conflict, got {result:?}"
+    );
+
+    let persisted: Account = store
+        .get_account(account.id())
+        .await?
+        .context("account should exist after the rejected patch")?
+        .try_into()?;
+    assert_eq!(persisted, current);
+    assert_eq!(get_storage_metrics(&store).await, metrics_before);
 
     Ok(())
 }

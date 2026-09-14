@@ -182,6 +182,10 @@ build: ## Build the CLI binary, client library and tests binary in release mode
 build-wasm: ## Build the client library for wasm32 with no_std (no default features)
 	cargo build --package miden-client --target wasm32-unknown-unknown --no-default-features --locked
 
+.PHONY: build-no-std
+build-no-std: ## Build the client library for a bare-metal no_std target
+	cargo build --package miden-client --target thumbv7em-none-eabihf --no-default-features --locked
+
 # --- Check ---------------------------------------------------------------------------------------
 
 .PHONY: check

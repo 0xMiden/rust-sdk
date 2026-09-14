@@ -474,9 +474,17 @@ where
         let rng = if let Some(user_rng) = self.rng {
             user_rng
         } else {
-            let mut seed_rng = rand::rng();
-            let coin_seed: [u64; 4] = seed_rng.random();
-            Box::new(RandomCoin::new(coin_seed.map(Felt::new_unchecked).into()))
+            #[cfg(not(feature = "std"))]
+            return Err(ClientError::ClientInitializationError(
+                "RNG is required in no_std builds. Call `.rng(...)`.".into(),
+            ));
+
+            #[cfg(feature = "std")]
+            {
+                let mut seed_rng = rand::rng();
+                let coin_seed: [u64; 4] = seed_rng.random();
+                Box::new(RandomCoin::new(coin_seed.map(Felt::new_unchecked).into()))
+            }
         };
 
         let tx_prover: Arc<dyn TransactionProver + Send + Sync> =

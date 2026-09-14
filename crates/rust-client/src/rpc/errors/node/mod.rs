@@ -148,3 +148,51 @@ pub fn parse_status_error(
         | RpcEndpoint::SubmitProvenBatch => None,
     }
 }
+
+// TESTS
+// ================================================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `RegisterAccount` is the only endpoint that classifies a status code into a typed error. The
+    /// other endpoints must return `None` for the same code, so a rejection from one of them is
+    /// never reported as a registration decision.
+    #[test]
+    fn only_the_register_account_endpoint_classifies_a_status_code() {
+        let registration =
+            parse_status_error(&RpcEndpoint::RegisterAccount, &GrpcError::NotFound, "unknown");
+
+        assert!(matches!(
+            registration,
+            Some(EndpointError::RegisterAccount(RegisterAccountError::InvitationNotFound))
+        ));
+
+        for endpoint in [
+            RpcEndpoint::GetAccount,
+            RpcEndpoint::SubmitProvenTx,
+            RpcEndpoint::GetNotesById,
+            RpcEndpoint::Status,
+        ] {
+            assert!(
+                parse_status_error(&endpoint, &GrpcError::NotFound, "unknown").is_none(),
+                "{endpoint:?} must not classify a status code"
+            );
+        }
+    }
+
+    /// A transport failure on the registration endpoint carries no decision about the code, so it
+    /// must stay unclassified.
+    #[test]
+    fn a_transport_failure_on_the_registration_endpoint_stays_unclassified() {
+        assert!(
+            parse_status_error(
+                &RpcEndpoint::RegisterAccount,
+                &GrpcError::Unavailable,
+                "node is down"
+            )
+            .is_none()
+        );
+    }
+}

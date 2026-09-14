@@ -85,6 +85,12 @@ pub struct NewWalletCmd {
     #[cfg_attr(feature = "testing", arg(long, default_value_t = false))]
     #[cfg_attr(not(feature = "testing"), arg(skip = false))]
     pub offline: bool,
+    /// Invitation code that registers the new account on the network allowlist.
+    ///
+    /// The code is single use and binds to this account only.
+    #[cfg_attr(feature = "testing", arg(long, value_name = "CODE", conflicts_with = "offline"))]
+    #[cfg_attr(not(feature = "testing"), arg(long, value_name = "CODE"))]
+    pub invitation_code: Option<String>,
 }
 
 impl NewWalletCmd {
@@ -105,6 +111,7 @@ impl NewWalletCmd {
             &package_paths,
             self.init_storage_data_path.clone(),
             self.offline,
+            self.invitation_code.as_deref(),
         )
         .await?;
 
@@ -178,6 +185,12 @@ pub struct NewAccountCmd {
     #[cfg_attr(feature = "testing", arg(long, default_value_t = false))]
     #[cfg_attr(not(feature = "testing"), arg(skip = false))]
     pub offline: bool,
+    /// Invitation code that registers the new account on the network allowlist.
+    ///
+    /// The code is single use and binds to this account only.
+    #[cfg_attr(feature = "testing", arg(long, value_name = "CODE", conflicts_with = "offline"))]
+    #[cfg_attr(not(feature = "testing"), arg(long, value_name = "CODE"))]
+    pub invitation_code: Option<String>,
 }
 
 impl NewAccountCmd {
@@ -193,6 +206,7 @@ impl NewAccountCmd {
             &self.packages,
             self.init_storage_data_path.clone(),
             self.offline,
+            self.invitation_code.as_deref(),
         )
         .await?;
 
@@ -453,6 +467,7 @@ async fn create_client_account<AUTH: Keystore + Sync + 'static>(
     package_paths: &[PathBuf],
     init_storage_data_path: Option<PathBuf>,
     offline: bool,
+    invitation_code: Option<&str>,
 ) -> Result<Account, CliError> {
     if package_paths.is_empty() {
         return Err(CliError::InvalidArgument(
@@ -555,6 +570,23 @@ async fn create_client_account<AUTH: Keystore + Sync + 'static>(
     }
 
     client.add_account(&account, false).await?;
+
+    // The account is stored first. A failed registration then leaves a usable local account that
+    // `account --register` can retry. The reverse order would bind the single-use code to an
+    // account that was never stored.
+    if let Some(invitation_code) = invitation_code {
+        if let Err(error) = client.register_account(invitation_code, account.id()).await {
+            eprintln!(
+                "The account was created, but the registration failed. Retry with `{} account --register {} --invitation-code <CODE>`.",
+                client_binary_name().display(),
+                account.id().to_hex()
+            );
+
+            return Err(error.into());
+        }
+
+        println!("Registered account {} on the network allowlist.", account.id().to_hex());
+    }
 
     Ok(account)
 }

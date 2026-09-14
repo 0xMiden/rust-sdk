@@ -34,7 +34,7 @@ use thiserror::Error;
 
 use crate::note::NoteScreenerError;
 use crate::note_transport::NoteTransportError;
-use crate::rpc::RpcError;
+use crate::rpc::{EndpointError, RegisterAccountError, RpcError};
 use crate::store::{NoteRecordError, StoreError};
 use crate::transaction::{
     BatchBuilderError,
@@ -328,6 +328,10 @@ impl From<&ClientError> for Option<ErrorHint> {
                           Ensure your client version is compatible with the node version.".to_string(),
                 docs_url: Some(TROUBLESHOOTING_DOC),
             }),
+            ClientError::RpcError(RpcError::RequestError {
+                endpoint_error: Some(EndpointError::RegisterAccount(inner)),
+                ..
+            }) => Some(register_account_hint(inner)),
             ClientError::AddNewAccountWithoutSeed => Some(ErrorHint {
                 message: "New accounts require a seed to derive their initial state. \
                           Use `Client::new_account()` which generates the seed automatically, \
@@ -424,6 +428,29 @@ impl From<&TransactionRequestError> for Option<ErrorHint> {
 impl TransactionRequestError {
     pub fn error_hint(&self) -> Option<ErrorHint> {
         self.into()
+    }
+}
+
+/// Returns the hint for a registration that the node rejected.
+fn register_account_hint(err: &RegisterAccountError) -> ErrorHint {
+    let message = match err {
+        RegisterAccountError::InvitationNotFound => {
+            "The node does not know this invitation code. A code is case-sensitive. Send it \
+             exactly as you received it, and do not add or remove characters."
+        },
+        RegisterAccountError::AlreadyRegistered => {
+            "This invitation code is registered to a different account, or this account is \
+             already registered. A code binds to one account only."
+        },
+        RegisterAccountError::InvalidRequest(_) => {
+            "The node rejected the registration request. Check that the invitation code is not \
+             empty and that the account ID is correct."
+        },
+    };
+
+    ErrorHint {
+        message: message.to_string(),
+        docs_url: Some(TROUBLESHOOTING_DOC),
     }
 }
 

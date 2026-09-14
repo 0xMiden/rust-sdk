@@ -615,40 +615,6 @@ impl SqliteStore {
             .ok_or(StoreError::AccountDataNotFound(account_id))
     }
 
-    /// Rejects a full account state that the stored state is already at or past.
-    ///
-    /// A nonce alone does not identify a state, so an equal nonce must also carry the same
-    /// commitment.
-    fn check_state_is_not_older(
-        new_account_state: &Account,
-        old_header: &AccountHeader,
-    ) -> Result<(), StoreError> {
-        let account_id = new_account_state.id();
-        let new_nonce = new_account_state.nonce().as_canonical_u64();
-        let old_nonce = old_header.nonce().as_canonical_u64();
-
-        if new_nonce < old_nonce {
-            return Err(StaleUpdate::AccountNonce {
-                account_id,
-                new_nonce,
-                stored_nonce: old_nonce,
-            }
-            .into());
-        }
-
-        let new_commitment = new_account_state.to_commitment();
-        if new_nonce == old_nonce && new_commitment != old_header.to_commitment() {
-            return Err(StaleUpdate::AccountCommitment {
-                account_id,
-                initial_commitment: new_commitment,
-                stored_commitment: old_header.to_commitment(),
-            }
-            .into());
-        }
-
-        Ok(())
-    }
-
     /// Returns the names of the map slots that currently have entries stored for an account.
     fn query_map_slot_names(
         tx: &Transaction<'_>,
@@ -928,9 +894,14 @@ impl SqliteStore {
             .map(|(header, ..)| header)
             .ok_or(StoreError::AccountDataNotFound(account_id))?;
 
-        Self::check_state_is_not_older(new_account_state, &old_header)?;
+        let new_nonce = new_account_state.nonce().as_canonical_u64();
+        let stored_nonce = old_header.nonce().as_canonical_u64();
 
-        let nonce_val = u64_to_value(new_account_state.nonce().as_canonical_u64());
+        if new_nonce < stored_nonce {
+            return Err(StaleUpdate::AccountNonce { account_id, new_nonce, stored_nonce }.into());
+        }
+
+        let nonce_val = u64_to_value(new_nonce);
 
         // Reconcile the forest to the new full state before the latest tables are replaced below.
         Self::reconcile_account_forest(

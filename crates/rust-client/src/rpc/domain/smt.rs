@@ -1,6 +1,5 @@
-use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::collections::BTreeMap;
 use alloc::string::ToString;
-use alloc::vec::Vec;
 
 use miden_protocol::Word;
 use miden_protocol::crypto::merkle::NodeIndex;
@@ -151,10 +150,9 @@ impl TryFrom<proto::primitives::PartialSmt> for UniqueNodes {
             }
         }
 
-        let mut seen_leaf_indices = BTreeSet::new();
-        let mut decoded_leaves = Vec::with_capacity(leaves.len());
+        let mut decoded_leaves = BTreeMap::new();
         for indexed_leaf in leaves {
-            if !seen_leaf_indices.insert(indexed_leaf.index) {
+            if decoded_leaves.contains_key(&indexed_leaf.index) {
                 return Err(RpcConversionError::InvalidField(format!(
                     "partial SMT contains duplicate leaf index {}",
                     indexed_leaf.index
@@ -165,19 +163,18 @@ impl TryFrom<proto::primitives::PartialSmt> for UniqueNodes {
                 .as_ref()
                 .ok_or(proto::primitives::IndexedSmtLeaf::missing_field(stringify!(leaf)))?
                 .try_into()?;
-            decoded_leaves.push((indexed_leaf.index, leaf));
+            decoded_leaves.insert(indexed_leaf.index, leaf);
         }
 
-        let mut seen_value_only_indices = BTreeSet::new();
-        let mut decoded_value_only_leaves = Vec::with_capacity(value_only_leaves.len());
+        let mut decoded_value_only_leaves = BTreeMap::new();
         for indexed_digest in value_only_leaves {
-            if !seen_value_only_indices.insert(indexed_digest.index) {
+            if decoded_value_only_leaves.contains_key(&indexed_digest.index) {
                 return Err(RpcConversionError::InvalidField(format!(
                     "partial SMT contains duplicate value-only leaf index {}",
                     indexed_digest.index
                 )));
             }
-            if seen_leaf_indices.contains(&indexed_digest.index) {
+            if decoded_leaves.contains_key(&indexed_digest.index) {
                 return Err(RpcConversionError::InvalidField(format!(
                     "partial SMT leaf index {} has both a leaf and a value-only leaf",
                     indexed_digest.index
@@ -187,14 +184,14 @@ impl TryFrom<proto::primitives::PartialSmt> for UniqueNodes {
                 .value
                 .ok_or(proto::primitives::IndexedDigest::missing_field(stringify!(value)))?
                 .try_into()?;
-            decoded_value_only_leaves.push((indexed_digest.index, digest));
+            decoded_value_only_leaves.insert(indexed_digest.index, digest);
         }
 
         Ok(UniqueNodes {
             root,
             nodes: decoded_nodes,
-            leaves: decoded_leaves.into_iter().collect(),
-            value_only_leaves: decoded_value_only_leaves.into_iter().collect(),
+            leaves: decoded_leaves,
+            value_only_leaves: decoded_value_only_leaves,
         })
     }
 }

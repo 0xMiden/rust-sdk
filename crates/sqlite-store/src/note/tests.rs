@@ -13,6 +13,7 @@ use miden_client::note::{
     PartialNoteMetadata,
 };
 use miden_client::store::input_note_states::{
+    CommittedNoteState,
     ConsumedExternalNoteState,
     ConsumedUnauthenticatedLocalNoteState,
     ExpectedNoteState,
@@ -40,7 +41,14 @@ use miden_client::{Felt, ZERO};
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
-use miden_protocol::note::{NoteAttachment, NoteAttachmentScheme, NoteDetails, NoteScript};
+use miden_protocol::crypto::merkle::SparseMerklePath;
+use miden_protocol::note::{
+    NoteAttachment,
+    NoteAttachmentScheme,
+    NoteDetails,
+    NoteInclusionProof,
+    NoteScript,
+};
 use miden_protocol::testing::account_id::{
     ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET,
     ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE,
@@ -1155,4 +1163,97 @@ async fn state_sync_cannot_move_a_consumed_output_note_back() {
 
     let stored = store.get_output_notes(NoteFilter::All).await.unwrap();
     assert_eq!(stored, vec![consumed]);
+}
+
+/// An import built before the note committed must not drop its inclusion proof by writing the note
+/// back to `Expected`.
+#[tokio::test]
+async fn upsert_input_notes_cannot_move_a_committed_note_back_to_expected() {
+    let store = create_test_store().await;
+
+    let expected = create_expected_input_note(0);
+    let sender = AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE).unwrap();
+    let committed = InputNoteRecord::new(
+        expected.details().clone(),
+        NoteAttachments::empty(),
+        Some(0),
+        CommittedNoteState {
+            metadata: create_note_metadata(sender, 0),
+            inclusion_proof: NoteInclusionProof::new(
+                BlockNumber::from(3u32),
+                0,
+                SparseMerklePath::default(),
+            )
+            .unwrap(),
+            block_note_root: Word::default(),
+        }
+        .into(),
+    );
+    store.upsert_input_notes(std::slice::from_ref(&committed)).await.unwrap();
+
+    let result = store.upsert_input_notes(&[expected]).await;
+    assert!(
+        matches!(&result, Err(StoreError::StaleUpdate(StaleUpdate::InputNote { .. }))),
+        "expected a stale update conflict, got {result:?}"
+    );
+
+    let stored = store.get_input_notes(NoteFilter::All).await.unwrap();
+    assert_eq!(stored, vec![committed]);
+}
+
+/// Losing a committed output note's details counts as moving backwards too.
+#[tokio::test]
+async fn state_sync_cannot_move_a_committed_output_note_back() {
+    let store = create_test_store().await;
+
+    let serial_number: Word = [Felt::new_unchecked(12_000), ZERO, ZERO, ZERO].into();
+    let recipient = NoteRecipient::new(
+        serial_number,
+        StandardNote::P2ID.script(),
+        NoteStorage::new(vec![]).unwrap(),
+    );
+    let sender = AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE).unwrap();
+    let metadata = create_note_metadata(sender, 0);
+
+    let output_note = |state| {
+        OutputNoteRecord::new(
+            recipient.digest(),
+            NoteAssets::new(vec![]).unwrap(),
+            metadata,
+            state,
+            BlockNumber::from(0u32),
+            NoteAttachments::empty(),
+        )
+    };
+    let committed = output_note(OutputNoteState::CommittedFull {
+        recipient: recipient.clone(),
+        inclusion_proof: NoteInclusionProof::new(
+            BlockNumber::from(3u32),
+            0,
+            SparseMerklePath::default(),
+        )
+        .unwrap(),
+    });
+    let stale = output_note(OutputNoteState::ExpectedFull { recipient: recipient.clone() });
+
+    let sync_update = |note: OutputNoteRecord| {
+        StateSyncUpdate::from_parts(
+            BlockNumber::from(0u32),
+            PartialBlockchainUpdates::default(),
+            NoteUpdateTracker::for_transaction_updates([], [], [note]),
+            TransactionUpdateTracker::default(),
+            AccountUpdates::default(),
+        )
+    };
+
+    store.apply_state_sync(sync_update(committed.clone())).await.unwrap();
+
+    let result = store.apply_state_sync(sync_update(stale)).await;
+    assert!(
+        matches!(&result, Err(StoreError::StaleUpdate(StaleUpdate::OutputNote { .. }))),
+        "expected a stale update conflict, got {result:?}"
+    );
+
+    let stored = store.get_output_notes(NoteFilter::All).await.unwrap();
+    assert_eq!(stored, vec![committed]);
 }

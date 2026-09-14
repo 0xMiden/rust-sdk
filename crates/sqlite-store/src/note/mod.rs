@@ -8,6 +8,7 @@ use std::vec::Vec;
 use miden_client::account::AccountId;
 use miden_client::note::{
     BlockNumber,
+    InputNoteUpdate,
     NoteAssets,
     NoteAttachments,
     NoteDetails,
@@ -18,6 +19,7 @@ use miden_client::note::{
     NoteUpdateTracker,
     NoteUpdateType,
     Nullifier,
+    OutputNoteUpdate,
 };
 use miden_client::store::{
     InputNoteCursor,
@@ -31,7 +33,7 @@ use miden_client::store::{
 };
 use miden_client::utils::{Deserializable, DeserializationError, Serializable};
 use miden_client::{SliceReader, Word};
-use miden_protocol::note::NoteStorage;
+use miden_protocol::note::{NoteDetailsCommitment, NoteStorage};
 use rusqlite::types::Value;
 use rusqlite::{Connection, Transaction, TransactionBehavior, params, params_from_iter};
 
@@ -55,112 +57,6 @@ mod filters;
 const INPUT_NOTE_BATCH_SIZE: usize = 50;
 const OUTPUT_NOTE_BATCH_SIZE: usize = 80;
 const SCRIPT_BATCH_SIZE: usize = 200;
-
-// NOTE STATE GUARD
-// ================================================================================================
-
-/// Discriminants in which an input note is already nullified.
-const CONSUMED_INPUT_STATES: [u8; 3] = [
-    InputNoteState::STATE_CONSUMED_AUTHENTICATED_LOCAL,
-    InputNoteState::STATE_CONSUMED_UNAUTHENTICATED_LOCAL,
-    InputNoteState::STATE_CONSUMED_EXTERNAL,
-];
-
-/// Discriminants in which an output note is already consumed.
-const CONSUMED_OUTPUT_STATES: [u8; 1] = [OutputNoteState::STATE_CONSUMED];
-
-/// Returns the first write in `writes` that would move a stored consumed note out of its consumed
-/// state, as `(details commitment, stored discriminant, attempted discriminant)`.
-///
-/// Only a writer that read the note before it was consumed can produce such a write.
-fn find_consumed_note_regression(
-    tx: &Transaction<'_>,
-    table: &str,
-    consumed_states: &[u8],
-    writes: &[(Vec<u8>, u8)],
-) -> Result<Option<(Word, u8, u8)>, StoreError> {
-    let candidates: Vec<Value> = writes
-        .iter()
-        .filter(|(_, attempted)| !consumed_states.contains(attempted))
-        .map(|(commitment, _)| Value::Blob(commitment.clone()))
-        .collect();
-    if candidates.is_empty() {
-        return Ok(None);
-    }
-
-    let consumed_list = consumed_states.iter().map(u8::to_string).collect::<Vec<_>>().join(", ");
-    let query = format!(
-        "SELECT details_commitment, state_discriminant FROM {table} \
-         WHERE details_commitment IN rarray(?) AND state_discriminant IN ({consumed_list}) LIMIT 1"
-    );
-
-    let conflict = tx
-        .prepare(&query)
-        .into_store_error()?
-        .query_map(params![Rc::new(candidates)], |row| {
-            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, u8>(1)?))
-        })
-        .into_store_error()?
-        .next()
-        .transpose()
-        .into_store_error()?;
-
-    let Some((commitment, found)) = conflict else {
-        return Ok(None);
-    };
-    let attempted = writes
-        .iter()
-        .find(|(candidate, _)| *candidate == commitment)
-        .map(|(_, attempted)| *attempted)
-        .expect("the conflicting row was selected from the write list");
-
-    Ok(Some((Word::read_from_bytes(&commitment)?, found, attempted)))
-}
-
-/// Rejects input note writes that would move a stored note out of a consumed state.
-fn check_input_note_writes(
-    tx: &Transaction<'_>,
-    writes: &[(Vec<u8>, u8)],
-) -> Result<(), StoreError> {
-    match find_consumed_note_regression(tx, "input_notes", &CONSUMED_INPUT_STATES, writes)? {
-        Some((details_commitment, found, attempted)) => {
-            Err(StaleUpdate::InputNote { details_commitment, found, attempted }.into())
-        },
-        None => Ok(()),
-    }
-}
-
-/// Returns the block numbers that unspent input notes prove inclusion in.
-pub(crate) fn unspent_note_block_numbers(
-    tx: &Transaction<'_>,
-) -> Result<BTreeSet<u32>, StoreError> {
-    let (query, params) = note_filter_to_query_input_notes(&NoteFilter::Unspent);
-    tx.prepare(query.as_str())
-        .into_store_error()?
-        .query_map(params_from_iter(params), parse_input_note_columns)
-        .into_store_error()?
-        .map(|result| Ok(result.into_store_error()?).and_then(parse_input_note))
-        .filter_map(|note| match note {
-            Ok(note) => {
-                note.inclusion_proof().map(|proof| Ok(proof.location().block_num().as_u32()))
-            },
-            Err(err) => Some(Err(err)),
-        })
-        .collect()
-}
-
-/// Rejects output note writes that would move a stored note out of a consumed state.
-fn check_output_note_writes(
-    tx: &Transaction<'_>,
-    writes: &[(Vec<u8>, u8)],
-) -> Result<(), StoreError> {
-    match find_consumed_note_regression(tx, "output_notes", &CONSUMED_OUTPUT_STATES, writes)? {
-        Some((details_commitment, found, attempted)) => {
-            Err(StaleUpdate::OutputNote { details_commitment, found, attempted }.into())
-        },
-        None => Ok(()),
-    }
-}
 
 // NOTE SCRIPT UPSERT
 // ================================================================================================
@@ -407,16 +303,30 @@ impl SqliteStore {
 // ================================================================================================
 
 /// Inserts the provided input note into the database, if the note already exists, it will be
-/// replaced.
+/// replaced. Returns the block numbers that unspent input notes prove inclusion in.
+pub(crate) fn unspent_note_block_numbers(
+    tx: &Transaction<'_>,
+) -> Result<BTreeSet<u32>, StoreError> {
+    let (query, params) = note_filter_to_query_input_notes(&NoteFilter::Unspent);
+    tx.prepare(query.as_str())
+        .into_store_error()?
+        .query_map(params_from_iter(params), parse_input_note_columns)
+        .into_store_error()?
+        .map(|result| Ok(result.into_store_error()?).and_then(parse_input_note))
+        .filter_map(|note| match note {
+            Ok(note) => {
+                note.inclusion_proof().map(|proof| Ok(proof.location().block_num().as_u32()))
+            },
+            Err(err) => Some(Err(err)),
+        })
+        .collect()
+}
+
 pub(super) fn upsert_input_note_tx(
     tx: &Transaction<'_>,
     note: &InputNoteRecord,
 ) -> Result<(), StoreError> {
-    let serialized = serialize_input_note(note);
-    check_input_note_writes(
-        tx,
-        &[(serialized.details_commitment.clone(), serialized.state_discriminant)],
-    )?;
+    reject_stale_input_note_writes(tx, &[note])?;
 
     let SerializedInputNoteData {
         details_commitment,
@@ -434,7 +344,7 @@ pub(super) fn upsert_input_note_tx(
         consumed_block_height,
         consumed_tx_order,
         consumer_account_id,
-    } = serialized;
+    } = serialize_input_note(note);
 
     tx.prepare_cached(UPSERT_NOTE_SCRIPT_QUERY)
         .into_store_error()?
@@ -791,6 +701,21 @@ pub(crate) fn apply_note_updates_tx(
     tx: &Transaction,
     note_updates: &NoteUpdateTracker,
 ) -> Result<(), StoreError> {
+    // Reject the whole update if any note's stored state does not allow the write.
+    let input_notes: Vec<&InputNoteRecord> = note_updates
+        .updated_input_notes()
+        .filter(|update| update.update_type().is_modified())
+        .map(InputNoteUpdate::inner)
+        .collect();
+    reject_stale_input_note_writes(tx, &input_notes)?;
+
+    let output_notes: Vec<&OutputNoteRecord> = note_updates
+        .updated_output_notes()
+        .filter(|update| update.update_type().is_modified())
+        .map(OutputNoteUpdate::inner)
+        .collect();
+    reject_stale_output_note_writes(tx, &output_notes)?;
+
     // Split input notes into inserts and updates, collecting scripts from new notes.
     let mut input_inserts = Vec::new();
     let mut input_updates = Vec::new();
@@ -835,34 +760,130 @@ pub(crate) fn apply_note_updates_tx(
         }
     }
 
-    let input_writes: Vec<(Vec<u8>, u8)> = input_inserts
-        .iter()
-        .map(|note| (note.details_commitment.clone(), note.state_discriminant))
-        .chain(
-            input_updates
-                .iter()
-                .map(|note| (note.details_commitment.clone(), note.state_discriminant)),
-        )
-        .collect();
-    check_input_note_writes(tx, &input_writes)?;
-
-    let output_writes: Vec<(Vec<u8>, u8)> = output_inserts
-        .iter()
-        .map(|note| (note.details_commitment.clone(), note.state_discriminant))
-        .chain(
-            output_updates
-                .iter()
-                .map(|note| (note.details_commitment.clone(), note.state_discriminant)),
-        )
-        .collect();
-    check_output_note_writes(tx, &output_writes)?;
-
     // Scripts must be inserted before the notes that reference them via foreign key.
     batch_upsert_scripts(tx, &scripts)?;
     batch_insert_input_notes(tx, &input_inserts)?;
     batch_update_input_note_states(tx, &input_updates)?;
     batch_insert_output_notes(tx, &output_inserts)?;
     batch_update_output_note_states(tx, &output_updates)?;
+
+    Ok(())
+}
+
+// NOTE STATE GUARD
+// ================================================================================================
+
+/// Returns `true` when an input note stored in `old_discriminant` may be written to
+/// `new_discriminant`.
+///
+/// Apart from `Invalid`, the discriminants are ordered along the note lifecycle, and the lifecycle
+/// only moves forward. A note that stays in the same state is not a transition and is allowed, so
+/// applying the same update twice is not an error.
+fn input_note_transition_is_valid(old_discriminant: u8, new_discriminant: u8) -> bool {
+    // An invalid note can never be consumed, so no state follows `Invalid`. Its discriminant sits
+    // between `Committed` and `ProcessingAuthenticated`, so the comparison below does not cover it.
+    if old_discriminant == InputNoteState::STATE_INVALID {
+        return new_discriminant == InputNoteState::STATE_INVALID;
+    }
+
+    new_discriminant >= old_discriminant
+}
+
+/// Returns `true` when an output note stored in `old_discriminant` may be written to
+/// `new_discriminant`.
+///
+/// The discriminants are ordered along the note lifecycle, and the lifecycle only moves forward.
+fn output_note_transition_is_valid(old_discriminant: u8, new_discriminant: u8) -> bool {
+    new_discriminant >= old_discriminant
+}
+
+/// Returns the stored state discriminant of each note that already has a row in `table`. Notes with
+/// no row yet are absent from the result.
+fn stored_note_states(
+    tx: &Transaction<'_>,
+    table: &str,
+    commitments: impl Iterator<Item = NoteDetailsCommitment>,
+) -> Result<BTreeMap<NoteDetailsCommitment, u8>, StoreError> {
+    let keys: Vec<Value> = commitments.map(|c| Value::Blob(c.to_bytes())).collect();
+    if keys.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+
+    let query = format!(
+        "SELECT details_commitment, state_discriminant FROM {table} \
+         WHERE details_commitment IN rarray(?)"
+    );
+
+    tx.prepare(&query)
+        .into_store_error()?
+        .query_map(params![Rc::new(keys)], |row| {
+            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, u8>(1)?))
+        })
+        .into_store_error()?
+        .map(|row| {
+            let (commitment, discriminant) = row.into_store_error()?;
+            Ok((NoteDetailsCommitment::read_from_bytes(&commitment)?, discriminant))
+        })
+        .collect()
+}
+
+/// Rejects a write that the stored state of its note does not allow.
+///
+/// The note state machine already rejects an invalid transition when a record is advanced in
+/// memory, but it judges the snapshot the caller read. This runs against the stored rows inside the
+/// write transaction, so it also catches a writer whose snapshot went out of date.
+fn reject_stale_input_note_writes(
+    tx: &Transaction<'_>,
+    notes: &[&InputNoteRecord],
+) -> Result<(), StoreError> {
+    let stored =
+        stored_note_states(tx, "input_notes", notes.iter().map(|n| n.details_commitment()))?;
+
+    for note in notes {
+        let details_commitment = note.details_commitment();
+        let Some(&old_discriminant) = stored.get(&details_commitment) else {
+            continue;
+        };
+        let new_discriminant = note.state().discriminant();
+
+        if !input_note_transition_is_valid(old_discriminant, new_discriminant) {
+            return Err(StaleUpdate::InputNote {
+                details_commitment: details_commitment.as_word(),
+                found: old_discriminant,
+                attempted: new_discriminant,
+            }
+            .into());
+        }
+    }
+
+    Ok(())
+}
+
+/// Rejects a write that the stored state of its note does not allow. See
+/// [`reject_stale_input_note_writes`].
+fn reject_stale_output_note_writes(
+    tx: &Transaction<'_>,
+    notes: &[&OutputNoteRecord],
+) -> Result<(), StoreError> {
+    let stored =
+        stored_note_states(tx, "output_notes", notes.iter().map(|n| n.details_commitment()))?;
+
+    for note in notes {
+        let details_commitment = note.details_commitment();
+        let Some(&old_discriminant) = stored.get(&details_commitment) else {
+            continue;
+        };
+        let new_discriminant = note.state().discriminant();
+
+        if !output_note_transition_is_valid(old_discriminant, new_discriminant) {
+            return Err(StaleUpdate::OutputNote {
+                details_commitment: details_commitment.as_word(),
+                found: old_discriminant,
+                attempted: new_discriminant,
+            }
+            .into());
+        }
+    }
 
     Ok(())
 }

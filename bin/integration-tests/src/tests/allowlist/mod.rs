@@ -31,8 +31,39 @@ pub mod registration;
 // HELPERS
 // ================================================================================================
 
+/// Builds the request for an account's first transaction, which creates it on chain.
+///
+/// This is the submission the allowlist gates. `TestClient::submit_new_transaction` folds in the
+/// account's funding note, so the transaction pays its own fee out of the funds it consumes.
+fn deploy_request() -> Result<TransactionRequest> {
+    TransactionRequestBuilder::new()
+        .build()
+        .context("failed to build the deploy transaction request")
+}
+
+/// Inserts a funded wallet that has not been created on chain yet.
+async fn insert_undeployed_wallet(client: &mut TestClient) -> Result<Account> {
+    let (account, _) = client
+        .insert_account(AccountSetup::wallet(AccountType::Private))
+        .await
+        .context("failed to insert the wallet account")?;
+
+    Ok(account)
+}
+
+/// Asserts that `error` is the client refusing to create an unregistered account.
+///
+/// The client asks the node before it proves the transaction, so the account is never submitted.
+fn assert_rejected_before_submission(error: &ClientError, account: &Account) {
+    assert_matches!(
+        error,
+        ClientError::AccountNotAllowlisted(account_id) if *account_id == account.id(),
+        "expected the client to refuse to create the unregistered account, got: {error}"
+    );
+}
+
 /// Asserts that `error` is the node refusing to create an unregistered account.
-fn assert_rejected_as_unregistered(error: &ClientError, endpoint: RpcEndpoint) {
+fn assert_rejected_by_node(error: &ClientError, endpoint: RpcEndpoint) {
     assert_matches!(
         error,
         ClientError::RpcError(RpcError::RequestError {

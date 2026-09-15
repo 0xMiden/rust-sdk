@@ -105,6 +105,8 @@ pub enum ClientError {
     AccountWatchedMismatch(AccountId),
     #[error("account with id {0} not found on the network")]
     AccountNotFoundOnChain(AccountId),
+    #[error("account {0} is not registered on the network allowlist")]
+    AccountNotAllowlisted(AccountId),
     #[error(
         "cannot import account: the local account nonce is higher than the imported one, meaning the local state is newer"
     )]
@@ -305,6 +307,15 @@ impl From<&ClientError> for Option<ErrorHint> {
                     "Account {account_id} is locked because the client may be missing its latest \
                      state. This can happen when the account is shared and another client executed \
                      a transaction. Run `sync` to fetch the latest state from the network."
+                ),
+                docs_url: Some(TROUBLESHOOTING_DOC),
+            }),
+            ClientError::AccountNotAllowlisted(account_id) => Some(ErrorHint {
+                message: format!(
+                    "The network only creates accounts that are on its allowlist, and account \
+                     {account_id} is not on it. Register it with an invitation code through \
+                     `account --register {account_id} --invitation-code <CODE>`, or create the \
+                     account with `new-wallet --invitation-code <CODE>` from the start."
                 ),
                 docs_url: Some(TROUBLESHOOTING_DOC),
             }),

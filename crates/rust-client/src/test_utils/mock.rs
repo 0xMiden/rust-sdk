@@ -3,7 +3,7 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use miden_protocol::Word;
 use miden_protocol::account::{
@@ -89,10 +89,10 @@ pub struct MockRpcApi {
     next_call_failures: Arc<RwLock<BTreeMap<&'static str, RpcError>>>,
     /// Invitation code each account was registered with, recorded by `register_account`.
     registered_accounts: Arc<RwLock<BTreeMap<AccountId, String>>>,
-    /// Sealed inputs handed to `submit_proven_batch`, one entry per call and recorded before any
-    /// staged failure is served, so a test can assert that a resubmission sealed again instead of
-    /// reusing a cached ciphertext.
-    submitted_batch_sealed_inputs: Arc<RwLock<Vec<Vec<SealedTransactionInputs>>>>,
+    /// Whether `is_account_allowed` consults `registered_accounts`. A node that does not enforce
+    /// the allowlist answers `true` for every account, which is the default here so that tests
+    /// which deploy accounts need no registration.
+    allowlist_enforced: Arc<AtomicBool>,
 }
 
 impl Default for MockRpcApi {
@@ -118,30 +118,14 @@ impl MockRpcApi {
             get_notes_by_id_calls: Arc::new(AtomicUsize::new(0)),
             next_call_failures: Arc::new(RwLock::new(BTreeMap::new())),
             registered_accounts: Arc::new(RwLock::new(BTreeMap::new())),
-            submitted_batch_sealed_inputs: Arc::new(RwLock::new(Vec::new())),
+            allowlist_enforced: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    /// Id of the first account updated in the mock chain's proven blocks, in block then
-    /// within-block order. Tests use it to get hold of an account the chain already knows.
-    ///
-    /// Panics if the chain has no account updates.
-    pub fn first_account_id(&self) -> AccountId {
-        self.mock_chain
-            .read()
-            .proven_blocks()
-            .iter()
-            .flat_map(|block| block.body().updated_accounts())
-            .next()
-            .expect("the mock chain must have at least one account update")
-            .account_id()
-    }
-
-    /// Sealed inputs recorded by `submit_proven_batch`, one entry per call, including calls that
-    /// went on to be served a staged failure. Within an entry the order matches the batch's
-    /// transaction order.
-    pub fn submitted_batch_sealed_inputs(&self) -> Vec<Vec<SealedTransactionInputs>> {
-        self.submitted_batch_sealed_inputs.read().clone()
+    /// Makes `is_account_allowed` answer from the recorded registrations, modelling a node that
+    /// enforces the account allowlist. Without this the mock answers `true` for every account.
+    pub fn enforce_account_allowlist(&self) {
+        self.allowlist_enforced.store(true, Ordering::SeqCst);
     }
 
     /// Makes the next call to `endpoint` fail with `error` instead of answering. The failure is
@@ -482,36 +466,12 @@ impl NodeRpcClient for MockRpcApi {
             .unwrap();
 
         let block_header = self.get_block_by_num(target_block);
-        let block_signatures = self
-            .mock_chain
-            .read()
-            .proven_blocks()
-            .iter()
-            .find(|block| block.header().block_num() == target_block)
-            .expect("the mock chain contains the target block")
-            .signatures()
-            .clone();
-
-        // Mirrors the node: send the configuration when the caller starts at genesis, or when the
-        // commitment changed over the range. A caller already at the target gets nothing.
-        let protocol_config = if current_block_height == BlockNumber::GENESIS {
-            Some(self.protocol_config())
-        } else if current_block_height == target_block {
-            None
-        } else {
-            let commitment_at_start =
-                self.get_block_by_num(current_block_height).protocol_config_commitment();
-            (commitment_at_start != block_header.protocol_config_commitment())
-                .then(|| self.protocol_config())
-        };
 
         Ok(ChainMmrInfo {
             block_from: current_block_height,
             block_to: target_block,
             mmr_delta,
             block_header,
-            protocol_config,
-            block_signatures,
         })
     }
 
@@ -586,7 +546,7 @@ impl NodeRpcClient for MockRpcApi {
     /// just for the new transaction and return the block number of the newly created block.
     async fn submit_proven_transaction(
         &self,
-        proven_transaction: &ProvenTransaction,
+        proven_transaction: ProvenTransaction,
         _sealed_transaction_inputs: SealedTransactionInputs, /* Unnecessary for testing client
                                                               * itself. */
     ) -> Result<BlockNumber, RpcError> {
@@ -618,25 +578,17 @@ impl NodeRpcClient for MockRpcApi {
     }
 
     /// Simulates the submission of a proven batch to the node by adding it to the mock chain's
-    /// pending batches. The `proposed_batch` argument is accepted to match the trait signature but
-    /// is unused: the mock relies on the `ProvenBatch` alone. The sealed inputs are recorded rather
-    /// than decrypted, so a test can inspect what each attempt sent.
+    /// pending batches. The `proposed_batch` and `sealed_transaction_inputs` arguments are accepted
+    /// to match the trait signature but are unused — the mock relies on the `ProvenBatch` alone,
+    /// matching how `submit_proven_transaction` ignores its `sealed_transaction_inputs`.
     async fn submit_proven_batch(
         &self,
-        proven_batch: &ProvenBatch,
-        _proposed_batch: &ProposedBatch,
-        sealed_transaction_inputs: Vec<SealedTransactionInputs>,
+        proven_batch: ProvenBatch,
+        _proposed_batch: ProposedBatch,
+        _sealed_transaction_inputs: Vec<SealedTransactionInputs>,
     ) -> Result<BlockNumber, RpcError> {
-        // Recorded before the staged failure is served: a submission whose response is lost still
-        // reached the node, so a test can compare what that attempt sent against the retry.
-        self.submitted_batch_sealed_inputs.write().push(sealed_transaction_inputs);
-
-        if let Some(error) = self.take_failure(RpcEndpoint::SubmitProvenBatch) {
-            return Err(error);
-        }
-
         let mut mock_chain = self.mock_chain.write();
-        mock_chain.add_pending_batch(proven_batch.clone());
+        mock_chain.add_pending_batch(proven_batch);
         drop(mock_chain);
 
         let block_num = self.get_chain_tip_block_num();
@@ -785,6 +737,20 @@ impl NodeRpcClient for MockRpcApi {
             .insert(account_id, String::from(invitation_code));
 
         Ok(())
+    }
+
+    async fn is_account_allowed(&self, account_id: AccountId) -> Result<bool, RpcError> {
+        if let Some(error) = self.take_failure(RpcEndpoint::IsAccountAllowed) {
+            return Err(error);
+        }
+
+        // A node that does not enforce the allowlist allows every account. Call
+        // `enforce_account_allowlist` to answer from the recorded registrations instead.
+        if !self.allowlist_enforced.load(Ordering::SeqCst) {
+            return Ok(true);
+        }
+
+        Ok(self.registered_accounts.read().contains_key(&account_id))
     }
 
     /// Returns the nullifiers created after the specified block number that match the provided

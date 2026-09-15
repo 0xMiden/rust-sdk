@@ -318,6 +318,10 @@ impl NodeRpcClient for CannedTransport {
         unimplemented!("not used in these tests")
     }
 
+    async fn is_account_allowed(&self, _account_id: AccountId) -> Result<bool, RpcError> {
+        unimplemented!("not used in these tests")
+    }
+
     async fn get_note_script_by_root(&self, _root: Word) -> Result<Option<NoteScript>, RpcError> {
         if let Some(err) = self.failure() {
             return Err(err);

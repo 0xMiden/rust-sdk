@@ -1179,7 +1179,7 @@ impl StateSync {
         }
 
         let public_update = self
-            .build_account_update(account_id, &details, block_from, proof_block_num)
+            .build_account_update(account_id, details, block_from, proof_block_num)
             .await?;
 
         Ok(PublicAccountSync::Apply(Box::new(public_update)))
@@ -1249,7 +1249,7 @@ impl StateSync {
     async fn build_account_update(
         &self,
         account_id: AccountId,
-        details: &AccountDetails,
+        details: AccountDetails,
         block_from: BlockNumber,
         block_to: BlockNumber,
     ) -> Result<PublicAccountUpdate, ClientError> {
@@ -1260,7 +1260,7 @@ impl StateSync {
             .any(AccountStorageMapDetails::is_limit_exceeded);
 
         let storage = if any_map_oversized {
-            self.build_storage_patch_update(account_id, details, block_from, block_to)
+            self.build_storage_patch_update(account_id, &details, block_from, block_to)
                 .await?
         } else {
             let storage = AccountStorage::try_from(&details.storage_details)
@@ -1276,10 +1276,10 @@ impl StateSync {
                 .map_err(ClientError::RpcError)?;
             VaultUpdate::Patch(vault_info.vault_patch)
         } else {
-            VaultUpdate::Full(details.vault_details.assets.clone())
+            VaultUpdate::Full(details.vault_details.assets)
         };
 
-        Ok(PublicAccountUpdate::new(details.header.clone(), storage, vault))
+        Ok(PublicAccountUpdate::new(details.header, storage, vault))
     }
 
     /// Builds the storage update for an account with at least one oversized map.

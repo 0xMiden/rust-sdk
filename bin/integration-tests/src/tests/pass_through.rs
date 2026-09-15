@@ -34,6 +34,7 @@ use rand::Rng;
 use tracing::info;
 
 use crate::ClientConfig;
+use crate::fee_funding::fee_faucet_id;
 
 // PASS-THROUGH TRANSACTIONS (change sender from Alice -> Pass-through account)
 // ================================================================================================
@@ -248,11 +249,7 @@ async fn pass_through_fee_asset<AUTH: TransactionAuthenticator + Sync + 'static>
         return Ok(None);
     }
 
-    let fee_faucet_id = client
-        .get_protocol_config(genesis.protocol_config_commitment())
-        .await?
-        .fee_asset_id()
-        .faucet_id();
+    let fee_faucet_id = fee_faucet_id(client).await?;
 
     let worst_case_fee =
         TransactionFee::new(MAX_TX_EXECUTION_CYCLES)?.compute_fee(fee_parameters)?;

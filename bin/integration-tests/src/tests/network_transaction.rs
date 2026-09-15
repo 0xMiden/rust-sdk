@@ -31,7 +31,6 @@ use miden_client::account::{
 };
 use miden_client::assembly::{CodeBuilder, SourceManagerSync};
 use miden_client::asset::{AssetAmount, FungibleAsset, TokenSymbol};
-use miden_client::block::BlockNumber;
 use miden_client::crypto::FeltRng;
 use miden_client::note::{
     FeeSponsorshipNote,
@@ -64,6 +63,7 @@ use miden_client::{Felt, Word, ZERO};
 use rand::{Rng, RngExt};
 
 use crate::ClientConfig;
+use crate::fee_funding::fee_faucet_id;
 
 // HELPERS
 // ================================================================================================
@@ -199,18 +199,8 @@ pub(crate) async fn deploy_network_counter_contract(
         .copied()
         .chain([P2idNote::script_root()])
         .collect::<BTreeSet<NoteScriptRoot>>();
-    let (genesis, _) = client
-        .get_block_header_by_num(BlockNumber::GENESIS)
-        .await?
-        .context("genesis block header is not in the store")?;
-    let fee_policy_manager = zero_fee_policy_manager(
-        client
-            .get_protocol_config(genesis.protocol_config_commitment())
-            .await?
-            .fee_asset_id()
-            .faucet_id(),
-        roots.iter().copied(),
-    );
+    let fee_policy_manager =
+        zero_fee_policy_manager(fee_faucet_id(client).await?, roots.iter().copied());
     let auth = AuthNetworkAccount::new(roots, fee_policy_manager)
         .map_err(|err| anyhow::anyhow!(err))
         .context("failed to build network account auth component")?;
@@ -338,18 +328,8 @@ async fn deploy_network_fungible_faucet(
         .active_mint_policy(MintPolicy::owner_only())
         .active_burn_policy(BurnPolicy::allow_all())
         .build();
-    let (genesis, _) = client
-        .get_block_header_by_num(BlockNumber::GENESIS)
-        .await?
-        .context("genesis block header is not in the store")?;
-    let fee_policy_manager = zero_fee_policy_manager(
-        client
-            .get_protocol_config(genesis.protocol_config_commitment())
-            .await?
-            .fee_asset_id()
-            .faucet_id(),
-        allowed_roots.iter().copied(),
-    );
+    let fee_policy_manager =
+        zero_fee_policy_manager(fee_faucet_id(client).await?, allowed_roots.iter().copied());
     let faucet = NetworkAccount::builder(init_seed, allowed_roots, fee_policy_manager)?
         .with_component(faucet_component)
         .with_component(BasicWallet)

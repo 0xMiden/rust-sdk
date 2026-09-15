@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{Read, Write};
@@ -14,7 +13,6 @@ use miden_client::account::component::{
     InitStorageData,
     MIDEN_PACKAGE_EXTENSION,
     MintPolicy,
-    StorageSlotSchema,
     TokenName,
     TokenPolicyManager,
 };
@@ -28,7 +26,7 @@ use miden_client::asset::{AssetAmount, TokenSymbol};
 use miden_client::auth::{Approver, AuthSchemeId, AuthSecretKey, AuthSingleSig};
 use miden_client::keystore::Keystore;
 use miden_client::utils::Deserializable;
-use miden_client::vm::{Package, SectionId};
+use miden_client::vm::{Package, PackageExport, TargetType};
 use rand::Rng;
 use serde::Deserialize;
 use tracing::debug;
@@ -380,40 +378,6 @@ fn load_init_storage_data(
     Ok((init, faucet_metadata))
 }
 
-/// Separates account components into auth and regular components.
-///
-/// Returns a tuple of (`auth_component`, `regular_components`). Returns an error if multiple auth
-/// components are found.
-fn separate_auth_components(
-    components: Vec<AccountComponent>,
-) -> Result<(Option<AccountComponent>, Vec<AccountComponent>), CliError> {
-    let mut auth_component: Option<AccountComponent> = None;
-    let mut regular_components = Vec::new();
-
-    for component in components {
-        let auth_proc_count = component.procedures().filter(|(_, is_auth)| *is_auth).count();
-
-        match auth_proc_count {
-            0 => regular_components.push(component),
-            1 => {
-                if auth_component.is_some() {
-                    return Err(CliError::InvalidArgument(
-                        "Multiple auth components found in packages. Only one auth component is allowed per account.".to_string()
-                    ));
-                }
-                auth_component = Some(component);
-            },
-            _ => {
-                return Err(CliError::InvalidArgument(
-                    "Component has multiple auth procedures. Only one auth procedure is allowed per component.".to_string()
-                ));
-            },
-        }
-    }
-
-    Ok((auth_component, regular_components))
-}
-
 /// Returns `true` when the CLI should inject a default `TokenPolicyManager` for a fungible faucet
 /// account built from package components.
 ///
@@ -461,7 +425,6 @@ async fn create_client_account<AUTH: Keystore + Sync + 'static>(
     }
 
     // Load the component templates and initialization storage data.
-
     let cli_config = CliConfig::load()?;
     debug!("Loading packages...");
     let packages = load_packages(&cli_config, package_paths)?;
@@ -492,9 +455,11 @@ async fn create_client_account<AUTH: Keystore + Sync + 'static>(
 
     let mut builder = AccountBuilder::new(init_seed).account_type(account_type);
 
-    // Process packages and separate auth components from regular components
-    let account_components = process_packages(packages, &init_storage_data)?;
-    let (auth_component, mut regular_components) = separate_auth_components(account_components)?;
+    // Split to handle if a default auth component is needed.
+    let (auth_components, mut regular_components): (Vec<_>, Vec<_>) =
+        process_packages(packages, &init_storage_data)?
+            .into_iter()
+            .partition(AccountComponent::is_auth_component);
 
     // Inject the directly-built fungible faucet component (if any) so the rest of the flow (policy
     // manager injection, schema commitment build) treats it like any other regular component.
@@ -514,11 +479,7 @@ async fn create_client_account<AUTH: Keystore + Sync + 'static>(
         regular_components.extend(policy_manager);
     }
     // Add the auth component (either from packages or default Falcon)
-    let key_pair = if let Some(auth_component) = auth_component {
-        debug!("Adding auth component from package");
-        builder = builder.with_component(auth_component);
-        None
-    } else {
+    let key_pair = if auth_components.is_empty() {
         debug!("Adding default Falcon auth component");
         let kp = AuthSecretKey::new_falcon512_poseidon2_with_rng(client.rng());
         builder = builder.with_component(AuthSingleSig::new(Approver::new(
@@ -526,6 +487,12 @@ async fn create_client_account<AUTH: Keystore + Sync + 'static>(
             AuthSchemeId::Falcon512Poseidon2,
         )));
         Some(kp)
+    } else {
+        debug!("Adding auth component from package");
+        for component in auth_components {
+            builder = builder.with_component(component);
+        }
+        None
     };
 
     // Add all regular (non-auth) components
@@ -559,6 +526,8 @@ async fn create_client_account<AUTH: Keystore + Sync + 'static>(
     Ok(account)
 }
 
+/// Builds one [`AccountComponent`] from each package, prompting on stdin for the storage values
+/// that the init data does not provide and the schema has no default for.
 fn process_packages(
     packages: Vec<Package>,
     init_storage_data: &InitStorageData,
@@ -566,46 +535,30 @@ fn process_packages(
     let mut account_components = Vec::with_capacity(packages.len());
 
     for package in packages {
-        let mut value_entries = init_storage_data.values().clone();
-        let mut map_entries = BTreeMap::new();
+        if package.kind != TargetType::AccountComponent {
+            return Err(CliError::InvalidArgument(format!(
+                "package {} was built as a `{}`, not as an account component",
+                package.name, package.kind
+            )));
+        }
 
-        let Some(component_metadata_section) = package.sections.iter().find(|section| {
-            section.id.as_str() == (SectionId::ACCOUNT_COMPONENT_METADATA).as_str()
-        }) else {
-            continue;
-        };
-
-        let component_metadata = AccountComponentMetadata::read_from_bytes(
-            &component_metadata_section.data,
-        )
-        .map_err(|err| {
-            CliError::AccountComponentError(
-                Box::new(err),
-                format!(
-                    "Failed to deserialize Account Component Metadata from package {}",
-                    package.name
-                ),
+        let component_metadata = AccountComponentMetadata::try_from(&package).map_err(|err| {
+            CliError::Account(
+                err,
+                format!("failed to read account component metadata from package {}", package.name),
             )
         })?;
 
-        // Preserve any provided map entries for map slots.
-        for (slot_name, schema) in component_metadata.storage_schema().iter() {
-            if matches!(schema, StorageSlotSchema::Map(_))
-                && let Some(entries) = init_storage_data.map_entries(slot_name)
-            {
-                map_entries.insert(slot_name.clone(), entries.clone());
-            }
-        }
-
+        // Entries for slots that this package does not define are ignored when the storage slots
+        // are built, so the whole init data is passed and only the missing values are prompted.
+        let mut init_data = init_storage_data.clone();
         for (value_name, requirement) in component_metadata.schema_requirements() {
-            if value_entries.contains_key(&value_name) {
-                // The user provided it through the TOML file, so we can skip it
-                continue;
-            }
-
-            if let Some(default_value) = &requirement.default_value {
-                // Use the schema's default value without prompting the user
-                value_entries.insert(value_name, default_value.clone().into());
+            // A composite slot can be given as one slot-level value instead of one value per field.
+            // The schema applies `default_value` itself when no entry is present.
+            if init_data.value_entry(&value_name).is_some()
+                || init_data.slot_value_entry(value_name.slot_name()).is_some()
+                || requirement.default_value.is_some()
+            {
                 continue;
             }
 
@@ -618,16 +571,14 @@ fn process_packages(
 
             let mut input_value = String::new();
             std::io::stdin().read_line(&mut input_value)?;
-            let input_value = input_value.trim();
-            value_entries.insert(value_name, input_value.to_string().into());
+            init_data.insert_value(value_name, input_value.trim()).map_err(|e| {
+                CliError::AccountComponentError(
+                    Box::new(e),
+                    format!("error adding init storage value for Package {}", package.name),
+                )
+            })?;
         }
 
-        let init_data = InitStorageData::new(value_entries, map_entries).map_err(|e| {
-            CliError::AccountComponentError(
-                Box::new(e),
-                format!("error creating InitStorageData for Package {}", package.name),
-            )
-        })?;
         let account_component =
             AccountComponent::from_package(&package, &init_data).map_err(|e| {
                 CliError::Account(
@@ -635,6 +586,7 @@ fn process_packages(
                     format!("error instantiating component from Package {}", package.name),
                 )
             })?;
+        ensure_procedures_are_marked(&package, &account_component)?;
 
         account_components.push(account_component);
     }
@@ -642,12 +594,173 @@ fn process_packages(
     Ok(account_components)
 }
 
+/// Returns an error when `package` exports procedures but none of them is part of the component
+/// interface.
+///
+/// Only exports marked with `@account_procedure` or `@auth_script` become account procedures. A
+/// package that exports unmarked procedures would produce a component with no procedures, and calls
+/// into it would fail at transaction execution. A package that exports no procedures at all is a
+/// storage-only component and is accepted.
+fn ensure_procedures_are_marked(
+    package: &Package,
+    component: &AccountComponent,
+) -> Result<(), CliError> {
+    let exported_procedures =
+        package.manifest.exports().filter_map(PackageExport::as_procedure).count();
+    if exported_procedures > 0 && component.procedures().next().is_none() {
+        return Err(CliError::InvalidArgument(format!(
+            "package {} exports {exported_procedures} procedures but none of them is marked as an \
+             account procedure. Mark them with `#[account_procedure]` (Rust) or \
+             `@account_procedure` (MASM), or with `@auth_script` for an authentication procedure.",
+            package.name
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use miden_client::account::component::{BasicWallet, TokenName};
+    use miden_client::account::StorageSlotName;
+    use miden_client::account::component::{
+        BasicWallet,
+        FeltSchema,
+        SchemaType,
+        StorageSchema,
+        StorageSlotSchema,
+        TokenName,
+        ValueSlotSchema,
+        WordSchema,
+    };
+    use miden_client::assembly::CodeBuilder;
     use miden_client::asset::{AssetAmount, TokenSymbol};
+    use miden_client::utils::Serializable;
+    use miden_client::vm::{Section, SectionId};
+    use miden_client::{Felt, Word};
 
     use super::*;
+
+    const TEST_SLOT: &str = "miden::testing::marked_procs::slot";
+
+    /// Assembles `code` into an account component package with an empty storage schema.
+    fn test_component_package(code: &str) -> Package {
+        test_component_package_with_schema(code, StorageSchema::default())
+    }
+
+    /// Assembles `code` into an account component package with the given storage schema.
+    fn test_component_package_with_schema(code: &str, schema: StorageSchema) -> Package {
+        let mut package = CodeBuilder::default()
+            .compile_component_code("miden::testing::marked_procs", code)
+            .expect("component code should compile")
+            .into_package();
+        let metadata = AccountComponentMetadata::new("marked-procs").with_storage_schema(schema);
+        package.kind = TargetType::AccountComponent;
+        package.sections =
+            vec![Section::new(SectionId::ACCOUNT_COMPONENT_METADATA, metadata.to_bytes())];
+        package
+    }
+
+    #[test]
+    fn process_packages_rejects_unmarked_procedure_exports() {
+        let package = test_component_package("pub proc unmarked nop end");
+
+        let err = process_packages(vec![package], &InitStorageData::default())
+            .expect_err("a package with unmarked exports should be rejected");
+
+        assert!(
+            err.to_string().contains("none of them is marked as an account procedure"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn process_packages_accepts_marked_procedure_exports() {
+        let package = test_component_package("@account_procedure pub proc marked nop end");
+
+        let components = process_packages(vec![package], &InitStorageData::default())
+            .expect("a package with marked exports should be accepted");
+
+        assert_eq!(components.len(), 1);
+        assert_eq!(components[0].procedures().count(), 1);
+    }
+
+    #[test]
+    fn process_packages_rejects_non_component_package_kind() {
+        let mut package = test_component_package("@account_procedure pub proc marked nop end");
+        package.kind = TargetType::Library;
+
+        let err = process_packages(vec![package], &InitStorageData::default())
+            .expect_err("a library package should be rejected");
+
+        assert!(
+            err.to_string().contains("not as an account component"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// Builds a schema with one composite value slot whose four felts are named `a` to `d`.
+    fn composite_slot_schema(default: Option<Felt>) -> StorageSchema {
+        let felt = |name: &str| match default {
+            Some(value) => {
+                FeltSchema::new_typed_with_default(SchemaType::native_felt(), name, value)
+            },
+            None => FeltSchema::new_typed(SchemaType::native_felt(), name),
+        };
+        let word = WordSchema::new_value([felt("a"), felt("b"), felt("c"), felt("d")]);
+        StorageSchema::new([(
+            StorageSlotName::new(TEST_SLOT).unwrap(),
+            StorageSlotSchema::Value(ValueSlotSchema::new(None, word)),
+        )])
+        .unwrap()
+    }
+
+    #[test]
+    fn process_packages_accepts_slot_level_value_for_composite_slot() {
+        let package = test_component_package_with_schema(
+            "@account_procedure pub proc marked nop end",
+            composite_slot_schema(None),
+        );
+        let mut init_data = InitStorageData::default();
+        init_data.insert_value(TEST_SLOT, "0x1").unwrap();
+        let expected = AccountComponentMetadata::try_from(&package)
+            .unwrap()
+            .storage_schema()
+            .build_storage_slots(&init_data)
+            .unwrap();
+
+        // Without the slot-level check every field would be prompted on stdin, which is empty under
+        // the test runner, and the empty values would conflict with the slot-level value.
+        let components = process_packages(vec![package], &init_data)
+            .expect("a slot-level value should satisfy every field of the slot");
+
+        assert_eq!(components[0].storage_slots(), expected.as_slice());
+    }
+
+    #[test]
+    fn process_packages_applies_schema_defaults_without_prompting() {
+        let package = test_component_package_with_schema(
+            "@account_procedure pub proc marked nop end",
+            composite_slot_schema(Some(Felt::from(7u32))),
+        );
+
+        let components = process_packages(vec![package], &InitStorageData::default())
+            .expect("defaults should satisfy every field of the slot");
+
+        assert_eq!(components[0].storage_slots()[0].value(), Word::from([7u32, 7, 7, 7]));
+    }
+
+    #[test]
+    fn process_packages_rejects_package_without_metadata() {
+        let mut package = test_component_package("@account_procedure pub proc marked nop end");
+        package.sections.clear();
+
+        let err = process_packages(vec![package], &InitStorageData::default())
+            .expect_err("a package without metadata should be rejected");
+
+        assert!(
+            err.to_string().contains("failed to read account component metadata"),
+            "unexpected error: {err}"
+        );
+    }
 
     fn test_fungible_faucet_component() -> AccountComponent {
         FungibleFaucet::builder()

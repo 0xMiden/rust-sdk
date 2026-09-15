@@ -308,7 +308,7 @@ pub(super) fn upsert_input_note_tx(
     tx: &Transaction<'_>,
     note: &InputNoteRecord,
 ) -> Result<(), StoreError> {
-    reject_stale_input_note_writes(tx, &[note])?;
+    check_input_note_transitions_against_stored_states(tx, &[note])?;
 
     let SerializedInputNoteData {
         details_commitment,
@@ -708,14 +708,14 @@ pub(crate) fn apply_note_updates_tx(
         .filter(|update| update.update_type().is_modified())
         .map(InputNoteUpdate::inner)
         .collect();
-    reject_stale_input_note_writes(tx, &input_notes)?;
+    check_input_note_transitions_against_stored_states(tx, &input_notes)?;
 
     let output_notes: Vec<&OutputNoteRecord> = note_updates
         .updated_output_notes()
         .filter(|update| update.update_type().is_modified())
         .map(OutputNoteUpdate::inner)
         .collect();
-    reject_stale_output_note_writes(tx, &output_notes)?;
+    check_output_note_transitions_against_stored_states(tx, &output_notes)?;
 
     // Split input notes into inserts and updates, collecting scripts from new notes.
     let mut input_inserts = Vec::new();
@@ -804,12 +804,8 @@ fn stored_note_states(
         .collect()
 }
 
-/// Rejects a write that the stored state of its note does not allow.
-///
-/// The note state machine already rejects an invalid transition when a record is advanced in
-/// memory, but it judges the snapshot the caller read. This runs against the stored rows inside the
-/// write transaction, so it also catches a writer whose snapshot went out of date.
-fn reject_stale_input_note_writes(
+/// Returns an error if any input note would move to a state its stored state does not allow.
+fn check_input_note_transitions_against_stored_states(
     tx: &Transaction<'_>,
     notes: &[&InputNoteRecord],
 ) -> Result<(), StoreError> {
@@ -836,9 +832,8 @@ fn reject_stale_input_note_writes(
     Ok(())
 }
 
-/// Rejects a write that the stored state of its note does not allow. See
-/// [`reject_stale_input_note_writes`].
-fn reject_stale_output_note_writes(
+/// Returns an error if any output note would move to a state its stored state does not allow.
+fn check_output_note_transitions_against_stored_states(
     tx: &Transaction<'_>,
     notes: &[&OutputNoteRecord],
 ) -> Result<(), StoreError> {

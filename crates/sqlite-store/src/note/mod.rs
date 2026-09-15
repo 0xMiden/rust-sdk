@@ -817,16 +817,16 @@ fn reject_stale_input_note_writes(
 
     for note in notes {
         let details_commitment = note.details_commitment();
-        let Some(&old_discriminant) = stored.get(&details_commitment) else {
+        let Some(&stored_discriminant) = stored.get(&details_commitment) else {
             continue;
         };
         let new_discriminant = note.state().discriminant();
 
-        if !InputNoteState::is_valid_transition(old_discriminant, new_discriminant) {
-            return Err(StaleUpdate::InputNote {
+        if !InputNoteState::is_valid_transition(stored_discriminant, new_discriminant) {
+            return Err(StaleUpdate::InvalidInputNoteTransition {
                 details_commitment: details_commitment.as_word(),
-                found: old_discriminant,
-                attempted: new_discriminant,
+                stored_discriminant,
+                new_discriminant,
             }
             .into());
         }
@@ -846,16 +846,16 @@ fn reject_stale_output_note_writes(
 
     for note in notes {
         let details_commitment = note.details_commitment();
-        let Some(&old_discriminant) = stored.get(&details_commitment) else {
+        let Some(&stored_discriminant) = stored.get(&details_commitment) else {
             continue;
         };
         let new_discriminant = note.state().discriminant();
 
-        if !OutputNoteState::is_valid_transition(old_discriminant, new_discriminant) {
-            return Err(StaleUpdate::OutputNote {
+        if !OutputNoteState::is_valid_transition(stored_discriminant, new_discriminant) {
+            return Err(StaleUpdate::InvalidOutputNoteTransition {
                 details_commitment: details_commitment.as_word(),
-                found: old_discriminant,
-                attempted: new_discriminant,
+                stored_discriminant,
+                new_discriminant,
             }
             .into());
         }

@@ -1078,7 +1078,10 @@ async fn upsert_input_notes_cannot_move_a_consumed_note_back() {
 
     let result = store.upsert_input_notes(&[stale]).await;
     assert!(
-        matches!(&result, Err(StoreError::StaleUpdate(StaleUpdate::InputNote { .. }))),
+        matches!(
+            &result,
+            Err(StoreError::StaleUpdate(StaleUpdate::InvalidInputNoteTransition { .. }))
+        ),
         "expected a stale update conflict, got {result:?}"
     );
 
@@ -1105,7 +1108,10 @@ async fn state_sync_cannot_move_a_consumed_input_note_back() {
 
     let result = store.apply_state_sync(state_sync_update).await;
     assert!(
-        matches!(&result, Err(StoreError::StaleUpdate(StaleUpdate::InputNote { .. }))),
+        matches!(
+            &result,
+            Err(StoreError::StaleUpdate(StaleUpdate::InvalidInputNoteTransition { .. }))
+        ),
         "expected a stale update conflict, got {result:?}"
     );
 
@@ -1157,7 +1163,10 @@ async fn state_sync_cannot_move_a_consumed_output_note_back() {
 
     let result = store.apply_state_sync(sync_update(stale)).await;
     assert!(
-        matches!(&result, Err(StoreError::StaleUpdate(StaleUpdate::OutputNote { .. }))),
+        matches!(
+            &result,
+            Err(StoreError::StaleUpdate(StaleUpdate::InvalidOutputNoteTransition { .. }))
+        ),
         "expected a stale update conflict, got {result:?}"
     );
 
@@ -1193,7 +1202,10 @@ async fn upsert_input_notes_cannot_move_a_committed_note_back_to_expected() {
 
     let result = store.upsert_input_notes(&[expected]).await;
     assert!(
-        matches!(&result, Err(StoreError::StaleUpdate(StaleUpdate::InputNote { .. }))),
+        matches!(
+            &result,
+            Err(StoreError::StaleUpdate(StaleUpdate::InvalidInputNoteTransition { .. }))
+        ),
         "expected a stale update conflict, got {result:?}"
     );
 
@@ -1250,7 +1262,10 @@ async fn state_sync_cannot_move_a_committed_output_note_back() {
 
     let result = store.apply_state_sync(sync_update(stale)).await;
     assert!(
-        matches!(&result, Err(StoreError::StaleUpdate(StaleUpdate::OutputNote { .. }))),
+        matches!(
+            &result,
+            Err(StoreError::StaleUpdate(StaleUpdate::InvalidOutputNoteTransition { .. }))
+        ),
         "expected a stale update conflict, got {result:?}"
     );
 

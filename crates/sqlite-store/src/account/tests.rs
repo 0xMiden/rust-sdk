@@ -1715,7 +1715,7 @@ async fn update_account_state_rejects_stale_full_snapshot_without_mutating() -> 
         })
         .await;
     assert!(
-        matches!(&result, Err(StoreError::StaleUpdate(StaleUpdate::AccountNonce { .. }))),
+        matches!(&result, Err(StoreError::StaleUpdate(StaleUpdate::AccountNonceTooLow { .. }))),
         "expected stale update to be rejected before mutating state, got {result:?}"
     );
 
@@ -2796,7 +2796,7 @@ async fn apply_account_patch_rejects_a_stale_basis_without_mutating() -> anyhow:
     assert!(
         matches!(
             err.downcast_ref::<StoreError>(),
-            Some(StoreError::StaleUpdate(StaleUpdate::AccountCommitment { .. }))
+            Some(StoreError::StaleUpdate(StaleUpdate::AccountCommitmentMismatch { .. }))
         ),
         "expected a stale update conflict, got {err:?}"
     );
@@ -2842,7 +2842,10 @@ async fn update_account_state_rejects_an_equal_nonce_with_a_different_commitment
         .await;
 
     assert!(
-        matches!(&result, Err(StoreError::StaleUpdate(StaleUpdate::AccountCommitment { .. }))),
+        matches!(
+            &result,
+            Err(StoreError::StaleUpdate(StaleUpdate::AccountCommitmentMismatch { .. }))
+        ),
         "expected a stale update conflict, got {result:?}"
     );
 
@@ -2893,7 +2896,7 @@ async fn apply_sync_account_patch_rejects_a_nonce_that_is_not_newer() -> anyhow:
         .await;
 
     assert!(
-        matches!(&result, Err(StoreError::StaleUpdate(StaleUpdate::AccountNonce { .. }))),
+        matches!(&result, Err(StoreError::StaleUpdate(StaleUpdate::AccountNonceTooLow { .. }))),
         "expected a stale update conflict, got {result:?}"
     );
 
@@ -2946,7 +2949,10 @@ async fn apply_sync_account_patch_rejects_a_basis_the_store_moved_past() -> anyh
         .await;
 
     assert!(
-        matches!(&result, Err(StoreError::StaleUpdate(StaleUpdate::AccountCommitment { .. }))),
+        matches!(
+            &result,
+            Err(StoreError::StaleUpdate(StaleUpdate::AccountCommitmentMismatch { .. }))
+        ),
         "expected a stale update conflict, got {result:?}"
     );
 

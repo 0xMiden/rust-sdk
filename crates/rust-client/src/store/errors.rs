@@ -39,7 +39,7 @@ pub enum StaleUpdate {
     #[error(
         "account {account_id} update was derived from commitment {initial_commitment}, which the store no longer holds (now {stored_commitment})"
     )]
-    AccountCommitment {
+    AccountCommitmentMismatch {
         account_id: AccountId,
         initial_commitment: Word,
         stored_commitment: Word,
@@ -47,26 +47,26 @@ pub enum StaleUpdate {
     #[error(
         "account {account_id} update at nonce {new_nonce} is not newer than the stored nonce {stored_nonce}"
     )]
-    AccountNonce {
+    AccountNonceTooLow {
         account_id: AccountId,
         new_nonce: u64,
         stored_nonce: u64,
     },
     #[error(
-        "input note {details_commitment} is stored in state {found}, which state {attempted} would move backwards"
+        "input note {details_commitment} is stored in state {stored_discriminant}, which state {new_discriminant} would move backwards"
     )]
-    InputNote {
+    InvalidInputNoteTransition {
         details_commitment: Word,
-        found: u8,
-        attempted: u8,
+        stored_discriminant: u8,
+        new_discriminant: u8,
     },
     #[error(
-        "output note {details_commitment} is stored in state {found}, which state {attempted} would move backwards"
+        "output note {details_commitment} is stored in state {stored_discriminant}, which state {new_discriminant} would move backwards"
     )]
-    OutputNote {
+    InvalidOutputNoteTransition {
         details_commitment: Word,
-        found: u8,
-        attempted: u8,
+        stored_discriminant: u8,
+        new_discriminant: u8,
     },
     #[error("block {0} still holds an unspent note")]
     Block(BlockNumber),

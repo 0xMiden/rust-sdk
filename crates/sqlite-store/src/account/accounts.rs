@@ -480,7 +480,7 @@ impl SqliteStore {
         // state and archive incorrect history).
         let stored_header = Self::require_latest_account_header(tx, account_id)?;
         if stored_header.to_commitment() != init_account_state.to_commitment() {
-            return Err(StaleUpdate::AccountCommitment {
+            return Err(StaleUpdate::AccountCommitmentMismatch {
                 account_id,
                 initial_commitment: init_account_state.to_commitment(),
                 stored_commitment: stored_header.to_commitment(),
@@ -898,12 +898,14 @@ impl SqliteStore {
         let stored_nonce = old_header.nonce().as_canonical_u64();
 
         if new_nonce < stored_nonce {
-            return Err(StaleUpdate::AccountNonce { account_id, new_nonce, stored_nonce }.into());
+            return Err(
+                StaleUpdate::AccountNonceTooLow { account_id, new_nonce, stored_nonce }.into()
+            );
         }
 
         let new_commitment = new_account_state.to_commitment();
         if new_nonce == stored_nonce && new_commitment != old_header.to_commitment() {
-            return Err(StaleUpdate::AccountCommitment {
+            return Err(StaleUpdate::AccountCommitmentMismatch {
                 account_id,
                 initial_commitment: new_commitment,
                 stored_commitment: old_header.to_commitment(),
@@ -1016,7 +1018,7 @@ impl SqliteStore {
         let init_header = Self::require_latest_account_header(tx, account_id)?;
 
         if new_header.nonce().as_canonical_u64() <= init_header.nonce().as_canonical_u64() {
-            return Err(StaleUpdate::AccountNonce {
+            return Err(StaleUpdate::AccountNonceTooLow {
                 account_id,
                 new_nonce: new_header.nonce().as_canonical_u64(),
                 stored_nonce: init_header.nonce().as_canonical_u64(),
@@ -1128,7 +1130,7 @@ impl SqliteStore {
             )));
         }
         if new_header.nonce().as_canonical_u64() < old_header.nonce().as_canonical_u64() {
-            return Err(StaleUpdate::AccountNonce {
+            return Err(StaleUpdate::AccountNonceTooLow {
                 account_id: new_header.id(),
                 new_nonce: new_header.nonce().as_canonical_u64(),
                 stored_nonce: old_header.nonce().as_canonical_u64(),

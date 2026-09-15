@@ -1125,11 +1125,6 @@ impl StateSync {
     ///
     /// Must only be called when the local commitment for the account is known to differ from the
     /// network's, so an equal nonce always means a genuine fork.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the node response omits account details, since that would mean the account is not
-    /// public.
     async fn sync_public_account(
         &self,
         account_id: AccountId,
@@ -1204,11 +1199,8 @@ impl StateSync {
     /// - the proof is for a different block than the sync target.
     /// - the witness is for a different account than the requested one.
     /// - the witness does not open under the sync target header's account root.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the proof carries no account details, since this is only called for public
-    /// accounts and the node always returns details for them.
+    /// - the proof carries no account details. The node returns details for every public account,
+    ///   so a missing value means the response is malformed.
     fn validate_account_proof(
         proof: AccountProof,
         proof_block_num: BlockNumber,
@@ -1245,7 +1237,11 @@ impl StateSync {
                 ))
             })?;
 
-        Ok(details.expect("node returned no details for a public account"))
+        details.ok_or_else(|| {
+            ClientError::ChainValidationError(format!(
+                "get_account returned no details for public account {account_id}"
+            ))
+        })
     }
 
     /// Builds a [`PublicAccountUpdate::Patch`] by fetching incremental storage map and vault
@@ -1997,6 +1993,28 @@ mod tests {
         let (proof_block_num, proof) = get_account_proof(&rpc_api, account.id()).await;
         let result =
             StateSync::validate_account_proof(proof, proof_block_num, account.id(), &wrong_header);
+
+        assert!(matches!(result, Err(ClientError::ChainValidationError(_))));
+    }
+
+    /// `validate_account_proof` rejects a proof that carries no account details.
+    #[tokio::test]
+    async fn validate_account_proof_rejects_missing_details() {
+        let mut builder = MockChainBuilder::new();
+        let account = builder.add_existing_mock_account(miden_testing::Auth::IncrNonce).unwrap();
+        let rpc_api = MockRpcApi::new(builder.build().unwrap());
+        let chain_tip_header = rpc_api.mock_chain.read().latest_block_header();
+
+        // An otherwise honest proof, but with the account details stripped.
+        let (proof_block_num, proof) = get_account_proof(&rpc_api, account.id()).await;
+        let (witness, _) = proof.into_parts();
+        let proof = AccountProof::new(witness, None).unwrap();
+        let result = StateSync::validate_account_proof(
+            proof,
+            proof_block_num,
+            account.id(),
+            &chain_tip_header,
+        );
 
         assert!(matches!(result, Err(ClientError::ChainValidationError(_))));
     }

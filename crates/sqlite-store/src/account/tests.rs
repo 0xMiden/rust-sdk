@@ -2778,8 +2778,10 @@ async fn update_account_keeps_the_seed_of_a_new_account() -> anyhow::Result<()> 
     // `update_account` with an unchanged nonce.
     store.update_account(&account).await?;
 
-    let (_, status) =
-        store.get_account_header(account.id()).await?.context("account should be tracked")?;
+    let (_, status) = store
+        .get_account_header(account.id())
+        .await?
+        .context("account should be tracked")?;
     assert_eq!(status.seed(), Some(&seed), "the seed must survive the overwrite");
     let record = store.get_account(account.id()).await?.context("account should be tracked")?;
     let stored: Account = record.try_into()?;
@@ -2793,4 +2795,3 @@ async fn update_account_keeps_the_seed_of_a_new_account() -> anyhow::Result<()> 
 
     Ok(())
 }
-

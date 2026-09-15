@@ -29,6 +29,7 @@
 
 ### Enhancements
 
+* [rust] Syncing a public account with an oversized vault but no oversized storage map no longer calls `sync_storage_maps`. The storage maps that the `get_account` response carries in full are applied from that response, and only oversized maps are fetched as changes over the synced range ([#2217](https://github.com/0xMiden/rust-sdk/issues/2217)).
 * [rust] `Client::sync_state` fetches a Note Transport Layer page and the node's chain update concurrently, instead of running a full note transport sync before the chain sync. The transport notes are imported first and their records join the chain sync's note updates, so a note delivered and committed within the same sync is reported by that sync ([#2453](https://github.com/0xMiden/rust-sdk/pull/2453)).
 
 ## 0.16.0 (2026-09-07)

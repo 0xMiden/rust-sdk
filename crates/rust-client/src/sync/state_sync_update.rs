@@ -464,13 +464,17 @@ impl PublicAccountUpdate {
     }
 }
 
-/// Builds the absolute [`AccountPatch`] implied by the updates fetched from the node's incremental
-/// endpoints: the value-slot values, the absolute changed map entries per slot, and the absolute
-/// vault patch.
+/// Builds the absolute [`AccountPatch`] implied by the updates fetched from the node: the
+/// value-slot values, the absolute changed map entries per slot, the complete entries of the maps
+/// the node returned in full, and the absolute vault patch.
 ///
 /// The carried updates are already merged to the new absolute value of each changed storage slot,
 /// map entry, and vault asset, so the patch is assembled directly from them with no need to load
 /// the prior account state.
+///
+/// `changed_map_entries` become `Update` patches layered onto the local map. `complete_map_entries`
+/// become `Create` patches, which the store applies as a full replacement of the slot, so they need
+/// no removal information.
 ///
 /// An update of an existing account (final nonce > 1) yields a partial-state patch with no code. A
 /// newly created account (final nonce 1) cannot be represented as a partial-state patch, so the
@@ -479,7 +483,8 @@ impl PublicAccountUpdate {
 pub(crate) fn build_account_patch(
     new_header: &AccountHeader,
     value_slot_updates: Vec<(StorageSlotName, Word)>,
-    map_entries: BTreeMap<StorageSlotName, StorageMapPatchEntries>,
+    changed_map_entries: BTreeMap<StorageSlotName, StorageMapPatchEntries>,
+    complete_map_entries: BTreeMap<StorageSlotName, StorageMapPatchEntries>,
     vault_patch: AccountVaultPatch,
     code: AccountCode,
 ) -> Result<AccountPatch, AccountPatchError> {
@@ -494,7 +499,7 @@ pub(crate) fn build_account_patch(
         (slot_name, StorageSlotPatch::Value(value_patch))
     });
 
-    let map_entries = map_entries.into_iter().map(|(slot_name, entries)| {
+    let changed_maps = changed_map_entries.into_iter().map(|(slot_name, entries)| {
         let map_patch = if is_full_state {
             StorageMapPatch::Create { entries }
         } else {
@@ -503,7 +508,12 @@ pub(crate) fn build_account_patch(
         (slot_name, StorageSlotPatch::Map(map_patch))
     });
 
-    let storage = AccountStoragePatch::from_entries(value_entries.chain(map_entries))?;
+    let complete_maps = complete_map_entries.into_iter().map(|(slot_name, entries)| {
+        (slot_name, StorageSlotPatch::Map(StorageMapPatch::Create { entries }))
+    });
+
+    let storage =
+        AccountStoragePatch::from_entries(value_entries.chain(changed_maps).chain(complete_maps))?;
 
     let code = is_full_state.then_some(code);
 
@@ -605,9 +615,34 @@ mod tests {
             &header_with_nonce(new_nonce),
             value_slot_updates,
             map_entries,
+            BTreeMap::new(),
             AccountVaultPatch::default(),
             AccountCode::mock(),
         )
+    }
+
+    /// A map the node returned in full becomes a `Create` patch even for an existing account, so
+    /// the store replaces the slot instead of layering the entries onto it.
+    #[test]
+    fn build_patch_creates_complete_maps_for_existing_account() {
+        let map_slot = slot_name("miden::test::map");
+        let mut entries = StorageMapPatchEntries::new();
+        entries.insert(StorageMapKey::from_raw(word(1)), word(100));
+        let complete_map_entries = BTreeMap::from([(map_slot.clone(), entries)]);
+
+        let patch = build_account_patch(
+            &header_with_nonce(2),
+            vec![],
+            BTreeMap::new(),
+            complete_map_entries,
+            AccountVaultPatch::default(),
+            AccountCode::mock(),
+        )
+        .unwrap();
+
+        assert!(!patch.is_full_state());
+        let (_, map_patch) = patch.storage().maps().next().expect("patch should contain map slot");
+        assert!(matches!(map_patch, StorageMapPatch::Create { .. }));
     }
 
     #[test]

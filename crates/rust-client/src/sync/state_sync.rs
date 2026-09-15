@@ -7,7 +7,13 @@ use core::cmp::Ordering;
 use async_trait::async_trait;
 use futures::{StreamExt, TryStreamExt};
 use miden_protocol::Word;
-use miden_protocol::account::{Account, AccountHeader, AccountId, StorageSlotType};
+use miden_protocol::account::{
+    Account,
+    AccountHeader,
+    AccountId,
+    StorageMapPatchEntries,
+    StorageSlotType,
+};
 use miden_protocol::block::account_tree::AccountIdKey;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::merkle::MerklePath;
@@ -30,6 +36,7 @@ use crate::rpc::domain::account::{
     AccountProof,
     AccountStorageMapDetails,
     GetAccountRequest,
+    StorageMapEntries,
     StorageMapFetch,
     VaultFetch,
 };
@@ -1173,11 +1180,9 @@ impl StateSync {
             .iter()
             .any(AccountStorageMapDetails::is_limit_exceeded);
 
-        // TODO: we can handle vault and storage-map oversize independently. Today any oversize
-        // routes the whole account through the incremental patch path, which always fetches both
-        // `sync_storage_maps` and `sync_account_vault`, even if not needed.
         let public_update = if vault_oversized || any_map_oversized {
-            // Some part of the account is oversized — use incremental endpoints.
+            // Some part of the account is oversized. The parts the response carries in full are
+            // applied from it, and the rest is fetched with the incremental endpoints.
             self.build_patch_update(account_id, &details, block_from, proof_block_num)
                 .await?
         } else {
@@ -1244,8 +1249,14 @@ impl StateSync {
         })
     }
 
-    /// Builds a [`PublicAccountUpdate::Patch`] by fetching incremental storage map and vault
-    /// updates over the synced range and assembling the absolute [`AccountPatch`] from them.
+    /// Builds a [`PublicAccountUpdate::Patch`] for an account whose vault or storage maps are
+    /// oversized.
+    ///
+    /// Maps that the `get_account` response carries in full become `Create` patches, which the
+    /// store applies as a full replacement of the slot. Oversized maps are fetched as changes over
+    /// the synced range with `sync_storage_maps`, which is skipped when no map is oversized. The
+    /// vault changes are always fetched with `sync_account_vault`, because a vault patch cannot
+    /// express a full replacement.
     async fn build_patch_update(
         &self,
         account_id: AccountId,
@@ -1261,13 +1272,45 @@ impl StateSync {
             .map(|slot| (slot.name().clone(), slot.value()))
             .collect();
 
+        // Every map was requested with `StorageMapFetch::All`, so the node returns each one either
+        // in full or flagged as oversized. A partial map is a malformed response.
+        let mut complete_map_entries = BTreeMap::new();
+        let mut any_map_oversized = false;
+        for map_details in &details.storage_details.map_details {
+            let slot_name = &map_details.slot_name;
+            match &map_details.entries {
+                StorageMapEntries::AllEntries(entries) => {
+                    let entries: StorageMapPatchEntries =
+                        entries.iter().map(|entry| (entry.key, entry.value)).collect();
+                    complete_map_entries.insert(slot_name.clone(), entries);
+                },
+                StorageMapEntries::LimitExceeded => any_map_oversized = true,
+                StorageMapEntries::PartialMap { .. } => {
+                    return Err(ClientError::RpcError(RpcError::InvalidResponse(format!(
+                        "get_account returned a partial map for slot '{slot_name}' of account \
+                         {account_id}"
+                    ))));
+                },
+            }
+        }
+
         // The lower bound is inclusive at the node, so request from `block_from + 1` to skip the
         // block whose state we already have.
-        let map_info = self
-            .rpc_api
-            .sync_storage_maps(block_from + 1, block_to, account_id)
-            .await
-            .map_err(ClientError::RpcError)?;
+        let changed_map_entries = if any_map_oversized {
+            let mut map_entries = self
+                .rpc_api
+                .sync_storage_maps(block_from + 1, block_to, account_id)
+                .await
+                .map_err(ClientError::RpcError)?
+                .map_entries;
+            // The endpoint returns the changes of every map. The complete maps are already covered
+            // by the response, so only the oversized ones are kept.
+            map_entries.retain(|slot_name, _| !complete_map_entries.contains_key(slot_name));
+            map_entries
+        } else {
+            BTreeMap::new()
+        };
+
         let vault_info = self
             .rpc_api
             .sync_account_vault(block_from + 1, block_to, account_id)
@@ -1277,7 +1320,8 @@ impl StateSync {
         let patch = build_account_patch(
             &details.header,
             value_slot_updates,
-            map_info.map_entries,
+            changed_map_entries,
+            complete_map_entries,
             vault_info.vault_patch,
             details.code.clone(),
         )

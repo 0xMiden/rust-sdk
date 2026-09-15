@@ -13,6 +13,8 @@
 * [BREAKING][behavior][rust] Notes fetched from the Note Transport Layer are screened when their tag matches a tracked account's tag, discarding the ones no tracked account can consume ([#2474](https://github.com/0xMiden/rust-sdk/pull/2474)).
 * [BREAKING][behavior][rust] A Note Transport Layer failure no longer fails `Client::sync_state`. The error is logged and the chain sync still applies; the transport cursor is left where it was, so the next sync requests the same page again ([#2453](https://github.com/0xMiden/rust-sdk/pull/2453)).
 * [BREAKING][type][rust] `NodeRpcClient` gained a `register_account` method, which binds an invitation code to an account ID through the node's `RegisterAccount` endpoint ([#2532](https://github.com/0xMiden/rust-sdk/pull/2532)).
+* [BREAKING][type][rust] `NodeRpcClient` gained an `is_account_allowed` method, which reports whether the node's allowlist lets an account be created, through the node's `IsAccountAllowed` endpoint.
+* [BREAKING][type][rust] Added the `ClientError::AccountNotAllowlisted` variant, so exhaustive matches on `ClientError` must handle it.
 * [BREAKING][type][rust] Added the `TransactionRequestError::SwapNoteWithZeroAsset` variant, so exhaustive matches on `TransactionRequestError` must handle it ([#2459](https://github.com/0xMiden/rust-sdk/pull/2459)).
 * [BREAKING][removal][rust] Removed `TransactionFilter::to_query`. The method emitted `SQLite` text from the storage-agnostic `Store` module, so the query now lives in `miden-client-sqlite-store` next to the `NoteFilter` queries.
 * [BREAKING][removal][test] Loose helper functions in `miden_client::testing::common` are now methods on `TestClient`. `TestClient::keystore()` exposes the client's keystore, so `ClientConfig::into_client` and `into_unsynced_client` return just the `TestClient` instead of a client/keystore pair ([#2481](https://github.com/0xMiden/rust-sdk/pull/2481)).
@@ -38,11 +40,10 @@
 * [FEATURE][cli] `export --account` accepts a `--no-keys` flag, which leaves the account secret keys out of the exported `.mac` file. The file still carries the account seed while the account is undeployed ([#2556](https://github.com/0xMiden/rust-sdk/pull/2556)).
 * [FEATURE][rust] The committed note passed to the `OnNoteReceived` callback now always reports the note's resolved attachment content, whether the `SyncNotes` response carried it verbatim or a `GetNotesById` follow-up resolved it ([#2475](https://github.com/0xMiden/rust-sdk/pull/2475)).
 * [FEATURE][rust] Re-exported the fee pricing and note checking types that the client API already surfaces, so downstream crates no longer need a direct `miden-tx` dependency to price note consumption: `NetworkNotePricer`, `NotePricingError` and `NoteCheckerError` at the crate root, `TransactionFee` and `TransactionFeeError` from `transaction`, `NoteCost` and `NoteConsumptionCost` from `note`, and `MastForestStore` and `TransactionMastStore` from `testing` ([#2475](https://github.com/0xMiden/rust-sdk/pull/2475)).
-
-### Features
-
 * [FEATURE][cli] Added `--invitation-code` to `new-wallet` and `new-account`, which registers the new account on the network allowlist, and `account --register <ID> --invitation-code <CODE>`, which registers an account that the client already tracks.
 * [FEATURE][rust] Added `Client::register_account`, which binds an invitation code to an account ID on the network allowlist.
+* [FEATURE][rust] Added `Client::is_account_allowed`, which reports whether the network lets an account be created on chain. The node answers `true` when the account is on the allowlist and also when it does not enforce one.
+* [FEATURE][rust] A transaction that creates an account now checks the network allowlist before the account is proven, so an unregistered account fails with `ClientError::AccountNotAllowlisted` instead of paying for a proof the node rejects. Transactions against an account that already exists on chain, and those creating a network account, are not gated and cost no extra request. A node that cannot be reached leaves the transaction alone and decides at submission.
 
 ### Fixes
 

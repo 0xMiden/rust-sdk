@@ -114,6 +114,7 @@ pub fn parse_node_error(
         | RpcEndpoint::GetNetworkNoteStatus
         | RpcEndpoint::GetTransactionEncryptionKey
         | RpcEndpoint::RegisterAccount
+        | RpcEndpoint::IsAccountAllowed
         | RpcEndpoint::SubmitProvenBatch => None,
     }
 }
@@ -145,6 +146,7 @@ pub fn parse_status_error(
         | RpcEndpoint::GetLimits
         | RpcEndpoint::GetNetworkNoteStatus
         | RpcEndpoint::GetTransactionEncryptionKey
+        | RpcEndpoint::IsAccountAllowed
         | RpcEndpoint::SubmitProvenBatch => None,
     }
 }

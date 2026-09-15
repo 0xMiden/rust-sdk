@@ -3,7 +3,7 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use miden_protocol::Word;
 use miden_protocol::account::{
@@ -89,6 +89,10 @@ pub struct MockRpcApi {
     next_call_failures: Arc<RwLock<BTreeMap<&'static str, RpcError>>>,
     /// Invitation code each account was registered with, recorded by `register_account`.
     registered_accounts: Arc<RwLock<BTreeMap<AccountId, String>>>,
+    /// Whether `is_account_allowed` consults `registered_accounts`. A node that does not enforce
+    /// the allowlist answers `true` for every account, which is the default here so that tests
+    /// which deploy accounts need no registration.
+    allowlist_enforced: Arc<AtomicBool>,
 }
 
 impl Default for MockRpcApi {
@@ -114,7 +118,14 @@ impl MockRpcApi {
             get_notes_by_id_calls: Arc::new(AtomicUsize::new(0)),
             next_call_failures: Arc::new(RwLock::new(BTreeMap::new())),
             registered_accounts: Arc::new(RwLock::new(BTreeMap::new())),
+            allowlist_enforced: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Makes `is_account_allowed` answer from the recorded registrations, modelling a node that
+    /// enforces the account allowlist. Without this the mock answers `true` for every account.
+    pub fn enforce_account_allowlist(&self) {
+        self.allowlist_enforced.store(true, Ordering::SeqCst);
     }
 
     /// Makes the next call to `endpoint` fail with `error` instead of answering. The failure is
@@ -726,6 +737,20 @@ impl NodeRpcClient for MockRpcApi {
             .insert(account_id, String::from(invitation_code));
 
         Ok(())
+    }
+
+    async fn is_account_allowed(&self, account_id: AccountId) -> Result<bool, RpcError> {
+        if let Some(error) = self.take_failure(RpcEndpoint::IsAccountAllowed) {
+            return Err(error);
+        }
+
+        // A node that does not enforce the allowlist allows every account. Call
+        // `enforce_account_allowlist` to answer from the recorded registrations instead.
+        if !self.allowlist_enforced.load(Ordering::SeqCst) {
+            return Ok(true);
+        }
+
+        Ok(self.registered_accounts.read().contains_key(&account_id))
     }
 
     /// Returns the nullifiers created after the specified block number that match the provided

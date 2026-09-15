@@ -52,8 +52,19 @@ async fn insert_undeployed_wallet(client: &mut TestClient) -> Result<Account> {
     Ok(account)
 }
 
+/// Asserts that `error` is the client refusing to create an unregistered account.
+///
+/// The client asks the node before it proves the transaction, so the account is never submitted.
+fn assert_rejected_before_submission(error: &ClientError, account: &Account) {
+    assert_matches!(
+        error,
+        ClientError::AccountNotAllowlisted(account_id) if *account_id == account.id(),
+        "expected the client to refuse to create the unregistered account, got: {error}"
+    );
+}
+
 /// Asserts that `error` is the node refusing to create an unregistered account.
-fn assert_rejected_as_unregistered(error: &ClientError, endpoint: RpcEndpoint) {
+fn assert_rejected_by_node(error: &ClientError, endpoint: RpcEndpoint) {
     assert_matches!(
         error,
         ClientError::RpcError(RpcError::RequestError {

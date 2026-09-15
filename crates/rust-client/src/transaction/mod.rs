@@ -68,7 +68,13 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use miden_protocol::account::{AccountCode, AccountCodeInterface, AccountId, PartialAccount};
+use miden_protocol::account::{
+    Account,
+    AccountCode,
+    AccountCodeInterface,
+    AccountId,
+    PartialAccount,
+};
 use miden_protocol::asset::Asset;
 use miden_protocol::block::{BlockHeader, BlockNumber, FeeParameters};
 use miden_protocol::errors::AssetError;
@@ -85,7 +91,7 @@ use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::transaction::{AccountInputs, PartialBlockchain};
 use miden_protocol::vm::MIN_STACK_DEPTH;
 use miden_protocol::{Felt, Word};
-use miden_standards::account::auth::FeeConversionInfo;
+use miden_standards::account::auth::{FeeConversionInfo, NetworkAccount};
 use miden_standards::account::faucets::FungibleFaucet;
 use miden_standards::account::interface::AccountComponentInterfaceExt;
 use miden_standards::note::TxFeeNote;
@@ -280,6 +286,9 @@ where
         let tx_result = self.execute_transaction(account_id, transaction_request).await?;
         let tx_id = tx_result.executed_transaction().id();
 
+        // Ask the node about the allowlist before paying for it.
+        self.check_account_allowed(&tx_result).await?;
+
         let proven_transaction = self.prove_transaction_with(&tx_result, tx_prover).await?;
         let submission_height =
             self.submit_proven_transaction(proven_transaction, &tx_result).await?;
@@ -317,6 +326,30 @@ where
         }
 
         Ok(tx_id)
+    }
+
+    /// Returns [`ClientError::AccountNotAllowlisted`] if the network refuses to create the account
+    /// that `tx_result` creates.
+    async fn check_account_allowed(
+        &self,
+        tx_result: &TransactionResult,
+    ) -> Result<(), ClientError> {
+        if !creates_gated_account(tx_result) {
+            return Ok(());
+        }
+
+        let account_id = tx_result.executed_transaction().account_id();
+        match self.rpc_api.is_account_allowed(account_id).await {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(ClientError::AccountNotAllowlisted(account_id)),
+            Err(err) => {
+                info!(
+                    "could not check whether account {account_id} is on the network allowlist, \
+                     submitting anyway and letting the node decide: {err}"
+                );
+                Ok(())
+            },
+        }
     }
 
     /// Creates and executes a transaction specified by the request against the specified account,
@@ -1862,6 +1895,25 @@ pub(crate) fn validate_executed_transaction(
     }
 
     Ok(())
+}
+
+/// Returns whether `tx_result` creates an account that the network allowlist gates.
+///
+/// An account that already exists on chain is not gated, and neither is a network account.
+fn creates_gated_account(tx_result: &TransactionResult) -> bool {
+    let executed_transaction = tx_result.executed_transaction();
+    if !executed_transaction.initial_account().is_new() {
+        return false;
+    }
+
+    // A new account is only exempt when it is a valid network account. The node reads the full
+    // account out of the update it receives, which is only carried for a public account.
+    if !executed_transaction.account_id().is_public() {
+        return true;
+    }
+
+    !Account::try_from(tx_result.account_patch())
+        .is_ok_and(|account| NetworkAccount::new(account).is_ok())
 }
 
 // TESTS

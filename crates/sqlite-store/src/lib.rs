@@ -659,30 +659,18 @@ pub(crate) fn text_array(items: impl IntoIterator<Item = String>) -> Rc<Vec<Valu
     Rc::new(items.into_iter().map(Value::Text).collect())
 }
 
-/// Runs `f` inside a rusqlite transaction, committing on `Ok` and rolling back on `Err`.
+/// Runs `f` inside an `IMMEDIATE` rusqlite transaction. Commits on `Ok`, rolls back on `Err`.
+///
+/// The closure must write. An `IMMEDIATE` transaction takes the write lock at `BEGIN`, so a closure
+/// that reads and then writes cannot lose the lock upgrade in between. In WAL mode that upgrade
+/// fails with `SQLITE_BUSY_SNAPSHOT`, which the busy timeout does not retry.
 pub(crate) fn with_write_tx<R>(
     conn: &mut Connection,
     f: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<R, StoreError>,
 ) -> Result<R, StoreError> {
-    with_write_tx_behavior(conn, rusqlite::TransactionBehavior::Deferred, f)
-}
-
-/// Runs `f` inside an `IMMEDIATE` rusqlite transaction, committing on `Ok` and rolling back on
-/// `Err`. An `IMMEDIATE` transaction takes the write lock before the first read, so a concurrent
-/// writer cannot commit between a read and the write that depends on it.
-pub(crate) fn with_immediate_write_tx<R>(
-    conn: &mut Connection,
-    f: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<R, StoreError>,
-) -> Result<R, StoreError> {
-    with_write_tx_behavior(conn, rusqlite::TransactionBehavior::Immediate, f)
-}
-
-fn with_write_tx_behavior<R>(
-    conn: &mut Connection,
-    behavior: rusqlite::TransactionBehavior,
-    f: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<R, StoreError>,
-) -> Result<R, StoreError> {
-    let tx = conn.transaction_with_behavior(behavior).into_store_error()?;
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .into_store_error()?;
     let result = f(&tx)?;
     tx.commit().into_store_error()?;
     Ok(result)

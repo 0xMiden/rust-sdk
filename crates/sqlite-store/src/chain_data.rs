@@ -17,25 +17,6 @@ use crate::sql_error::SqlResultExt;
 use crate::sync::query_sync_height;
 use crate::{insert_sql, int_array, subst, with_write_tx};
 
-struct SerializedBlockHeaderData {
-    block_num: u32,
-    header: Vec<u8>,
-    has_client_notes: bool,
-}
-struct SerializedBlockHeaderParts {
-    header: Vec<u8>,
-    has_client_notes: bool,
-}
-
-struct SerializedPartialBlockchainNodeData {
-    id: i64,
-    node: Vec<u8>,
-}
-struct SerializedPartialBlockchainNodeParts {
-    id: u64,
-    node: Vec<u8>,
-}
-
 impl SqliteStore {
     pub(crate) fn get_block_headers(
         conn: &mut Connection,
@@ -51,11 +32,7 @@ impl SqliteStore {
             .into_store_error()?
             .query_map(params![block_number_list], parse_block_headers_columns)
             .into_store_error()?
-            .map(|result| {
-                let serialized_block_header_parts: SerializedBlockHeaderParts =
-                    result.into_store_error()?;
-                parse_block_header(&serialized_block_header_parts)
-            })
+            .map(|result| parse_block_header(result.into_store_error()?))
             .collect()
     }
 
@@ -70,11 +47,7 @@ impl SqliteStore {
             .into_store_error()?
             .query_map(params![], parse_block_headers_columns)
             .into_store_error()?
-            .map(|result| {
-                let serialized_block_header_parts: SerializedBlockHeaderParts =
-                    result.into_store_error()?;
-                parse_block_header(&serialized_block_header_parts).map(|(block, _)| block)
-            })
+            .map(|result| parse_block_header(result.into_store_error()?).map(|(block, _)| block))
             .collect()
     }
 
@@ -169,9 +142,7 @@ impl SqliteStore {
         const QUERY: &str = insert_sql!(partial_blockchain_nodes { id, node } | IGNORE);
         let mut stmt = tx.prepare_cached(QUERY).into_store_error()?;
         for (index, node) in nodes {
-            let SerializedPartialBlockchainNodeData { id, node } =
-                serialize_partial_blockchain_node(*index, *node);
-            stmt.execute(params![id, node]).into_store_error()?;
+            stmt.execute(params![index.inner(), node.to_bytes()]).into_store_error()?;
         }
         Ok(())
     }
@@ -185,11 +156,10 @@ impl SqliteStore {
         block_header: &BlockHeader,
         has_client_notes: bool,
     ) -> Result<(), StoreError> {
-        let SerializedBlockHeaderData { block_num, header, has_client_notes } =
-            serialize_block_header(block_header, has_client_notes);
         const QUERY: &str =
             insert_sql!(block_headers { block_num, header, has_client_notes } | IGNORE);
-        tx.execute(QUERY, params![block_num, header, has_client_notes])
+        let block_num = block_header.block_num().as_u32();
+        tx.execute(QUERY, params![block_num, block_header.to_bytes(), has_client_notes])
             .into_store_error()?;
 
         set_block_header_has_client_notes(tx, u64::from(block_num), has_client_notes)?;
@@ -261,11 +231,17 @@ fn query_partial_blockchain_nodes<P: rusqlite::Params>(
 ) -> Result<BTreeMap<InOrderIndex, Word>, StoreError> {
     let mut stmt = conn.prepare_cached(sql).into_store_error()?;
 
-    stmt.query_map(params, parse_partial_blockchain_nodes_columns)
+    stmt.query_map(params, |row| Ok((row.get::<_, usize>("id")?, row.get::<_, Vec<u8>>("node")?)))
         .into_store_error()?
         .map(|row_res| {
-            let parts: SerializedPartialBlockchainNodeParts = row_res.into_store_error()?;
-            parse_partial_blockchain_nodes(&parts)
+            let (id, node) = row_res.into_store_error()?;
+            // An in-order index is never zero. A zero value means the row is corrupt.
+            let id = NonZeroUsize::new(id).ok_or_else(|| {
+                StoreError::ParsingError(
+                    "stored partial blockchain node id must be non-zero".to_string(),
+                )
+            })?;
+            Ok((InOrderIndex::new(id), Word::read_from_bytes(&node)?))
         })
         .collect()
 }
@@ -284,64 +260,16 @@ fn parse_partial_blockchain_peaks(forest: u32, peaks_nodes: &[u8]) -> Result<Mmr
     MmrPeaks::new(forest, mmr_peaks_nodes).map_err(StoreError::MmrError)
 }
 
-fn serialize_block_header(
-    block_header: &BlockHeader,
-    has_client_notes: bool,
-) -> SerializedBlockHeaderData {
-    let block_num = block_header.block_num();
-    let header = block_header.to_bytes();
-
-    SerializedBlockHeaderData {
-        block_num: block_num.as_u32(),
-        header,
-        has_client_notes,
-    }
-}
-
 fn parse_block_headers_columns(
     row: &rusqlite::Row<'_>,
-) -> Result<SerializedBlockHeaderParts, rusqlite::Error> {
-    let header: Vec<u8> = row.get("header")?;
-    let has_client_notes: bool = row.get("has_client_notes")?;
-
-    Ok(SerializedBlockHeaderParts { header, has_client_notes })
+) -> Result<(Vec<u8>, bool), rusqlite::Error> {
+    Ok((row.get("header")?, row.get("has_client_notes")?))
 }
 
 fn parse_block_header(
-    serialized_block_header_parts: &SerializedBlockHeaderParts,
+    (header, has_client_notes): (Vec<u8>, bool),
 ) -> Result<(BlockHeader, BlockRelevance), StoreError> {
-    Ok((
-        BlockHeader::read_from_bytes(&serialized_block_header_parts.header)?,
-        serialized_block_header_parts.has_client_notes.into(),
-    ))
-}
-
-fn serialize_partial_blockchain_node(
-    id: InOrderIndex,
-    node: Word,
-) -> SerializedPartialBlockchainNodeData {
-    let id = i64::try_from(id.inner()).expect("id is a valid i64");
-    let node = node.to_bytes();
-    SerializedPartialBlockchainNodeData { id, node }
-}
-
-fn parse_partial_blockchain_nodes_columns(
-    row: &rusqlite::Row<'_>,
-) -> Result<SerializedPartialBlockchainNodeParts, rusqlite::Error> {
-    let id: u64 = row.get("id")?;
-    let node = row.get("node")?;
-    Ok(SerializedPartialBlockchainNodeParts { id, node })
-}
-
-fn parse_partial_blockchain_nodes(
-    serialized_partial_blockchain_node_parts: &SerializedPartialBlockchainNodeParts,
-) -> Result<(InOrderIndex, Word), StoreError> {
-    let id = usize::try_from(serialized_partial_blockchain_node_parts.id)?;
-    let id = NonZeroUsize::new(id).ok_or_else(|| {
-        StoreError::ParsingError("stored partial blockchain node id must be non-zero".to_string())
-    })?;
-    let node: Word = Word::read_from_bytes(&serialized_partial_blockchain_node_parts.node)?;
-    Ok((InOrderIndex::new(id), node))
+    Ok((BlockHeader::read_from_bytes(&header)?, has_client_notes.into()))
 }
 
 pub(crate) fn set_block_header_has_client_notes(

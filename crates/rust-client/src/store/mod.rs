@@ -60,7 +60,7 @@ use crate::note_transport::{NOTE_TRANSPORT_CURSOR_STORE_SETTING, NoteTransportCu
 use crate::rpc::encryption::{TRANSACTION_ENCRYPTION_KEY_STORE_SETTING, TransactionEncryptionKey};
 use crate::rpc::{RPC_LIMITS_STORE_SETTING, RpcLimits};
 use crate::sync::{NoteTagRecord, StateSyncUpdate};
-use crate::transaction::{TransactionRecord, TransactionStatusVariant, TransactionStoreUpdate};
+use crate::transaction::{TransactionRecord, TransactionStoreUpdate};
 
 /// Contains [`ClientDataStore`] to automatically implement [`DataStore`] for anything that
 /// implements [`Store`]. This isn't public because it's an implementation detail to instantiate the
@@ -879,29 +879,6 @@ pub enum TransactionFilter {
     Uncommitted,
     /// Return a list of the transaction that matches the provided [`TransactionId`]s.
     Ids(Vec<TransactionId>),
-}
-
-// TRANSACTIONS FILTER HELPERS
-// ================================================================================================
-
-impl TransactionFilter {
-    /// Returns a [String] containing the query for this Filter.
-    pub fn to_query(&self) -> String {
-        const QUERY: &str = "SELECT tx.id AS id, script.script AS script, tx.details AS details, \
-            tx.status AS status \
-            FROM transactions AS tx LEFT JOIN transaction_scripts AS script ON tx.script_root = script.script_root";
-        match self {
-            TransactionFilter::All => QUERY.to_string(),
-            TransactionFilter::Uncommitted => format!(
-                "{QUERY} WHERE tx.status_variant = {}",
-                TransactionStatusVariant::Pending as u8,
-            ),
-            TransactionFilter::Ids(_) => {
-                // Use SQLite's array parameter binding
-                format!("{QUERY} WHERE tx.id IN rarray(?)")
-            },
-        }
-    }
 }
 
 // NOTE FILTER

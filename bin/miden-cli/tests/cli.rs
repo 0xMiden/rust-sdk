@@ -48,7 +48,7 @@ use miden_client_cli::MIDEN_DIR;
 use miden_client_cli::config::{KEYSTORE_DIRECTORY, Network};
 use miden_client_integration_tests::{ClientConfig, fee_funding};
 use miden_client_sqlite_store::SqliteStore;
-use midenc_hir_type::{CallConv, FunctionType, StructType, Type};
+use midenc_hir_type::{CallConv, FunctionType, StructRef, StructType, Type};
 use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
 use rand::RngExt;
@@ -1780,7 +1780,7 @@ fn call_nonexistent_procedure() {
 fn call_test_exports(package: &Package) -> Vec<PackageExport> {
     // The `account-id` core type as the compiler records it: a named record of two field elements.
     // Its name is what the CLI's `account-id` codec matches against.
-    let account_id = Type::Struct(midenc_hir_type::StructRef::Plain(Arc::new(StructType::named(
+    let account_id = Type::Struct(StructRef::Plain(Arc::new(StructType::named(
         Arc::from("miden:base/core-types@1.0.0/account-id"),
         [
             (Arc::<str>::from("prefix"), Type::Felt),

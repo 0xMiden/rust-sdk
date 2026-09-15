@@ -24,24 +24,9 @@ impl From<&BlockHeader> for proto::blockchain::BlockHeader {
             nullifier_root: Some(header.nullifier_root().into()),
             note_root: Some(header.note_root().into()),
             tx_commitment: Some(header.tx_commitment().into()),
-            validator_config: Some(proto::blockchain::ValidatorConfig {
-                keys: header
-                    .validator_config()
-                    .keys()
-                    .iter()
-                    .map(|key| proto::blockchain::ValidatorPublicKey {
-                        validator_key: key.to_bytes(),
-                    })
-                    .collect(),
-                quorum: header.validator_config().quorum().into(),
-            }),
+            validator_config: Some(header.validator_config().into()),
             protocol_config_commitment: Some(header.protocol_config_commitment().into()),
-            next_protocol_config: header.next_protocol_config().map(|config| {
-                proto::blockchain::NextProtocolConfig {
-                    effective_from: config.effective_from().as_u32(),
-                    protocol_config: Some(config.protocol_config().into()),
-                }
-            }),
+            next_protocol_config: header.next_protocol_config().map(Into::into),
             fee_parameters: Some(header.fee_parameters().into()),
             timestamp: header.timestamp(),
         }
@@ -147,6 +132,34 @@ impl TryFrom<proto::blockchain::BlockHeader> for BlockHeader {
 impl From<proto::blockchain::FeeParameters> for FeeParameters {
     fn from(value: proto::blockchain::FeeParameters) -> Self {
         FeeParameters::new(value.verification_base_fee)
+    }
+}
+
+// VALIDATOR CONFIG
+// ================================================================================================
+
+impl From<&ValidatorConfig> for proto::blockchain::ValidatorConfig {
+    fn from(config: &ValidatorConfig) -> Self {
+        Self {
+            keys: config
+                .keys()
+                .iter()
+                .map(|key| proto::blockchain::ValidatorPublicKey { validator_key: key.to_bytes() })
+                .collect(),
+            quorum: config.quorum().into(),
+        }
+    }
+}
+
+// NEXT PROTOCOL CONFIG
+// ================================================================================================
+
+impl From<&NextProtocolConfig> for proto::blockchain::NextProtocolConfig {
+    fn from(config: &NextProtocolConfig) -> Self {
+        Self {
+            effective_from: config.effective_from().as_u32(),
+            protocol_config: Some(config.protocol_config().into()),
+        }
     }
 }
 

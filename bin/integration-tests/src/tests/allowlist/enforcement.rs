@@ -9,7 +9,8 @@ use miden_client::rpc::RpcEndpoint;
 
 use super::invitations::InvitationPool;
 use super::{
-    assert_rejected_as_unregistered,
+    assert_rejected_before_submission,
+    assert_rejected_by_node,
     deploy_request,
     insert_undeployed_wallet,
     is_deployed,
@@ -64,8 +65,8 @@ pub async fn test_allowlist_unregistered_account_is_rejected(
     let error = client
         .submit_new_transaction(account.id(), deploy_request()?)
         .await
-        .expect_err("the node should refuse to create an unregistered account");
-    assert_rejected_as_unregistered(&error, RpcEndpoint::SubmitProvenTx);
+        .expect_err("an unregistered account should not be created");
+    assert_rejected_before_submission(&error, &account);
 
     assert!(
         !is_deployed(&client, &account).await?,
@@ -129,7 +130,7 @@ pub async fn test_allowlist_is_enforced_per_batch_transaction(
         .submit()
         .await
         .expect_err("a batch creating an unregistered account should be rejected");
-    assert_rejected_as_unregistered(&error, RpcEndpoint::SubmitProvenBatch);
+    assert_rejected_by_node(&error, RpcEndpoint::SubmitProvenBatch);
 
     assert!(
         !is_deployed(&client, &unregistered).await?,

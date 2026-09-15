@@ -444,6 +444,9 @@ pub trait NodeRpcClient: Send + Sync {
         account_id: AccountId,
     ) -> Result<(), RpcError>;
 
+    /// Returns whether the account may be created on chain, using the `/IsAccountAllowed` endpoint.
+    async fn is_account_allowed(&self, account_id: AccountId) -> Result<bool, RpcError>;
+
     /// Fills in the asset list when the vault came back flagged `too_many_assets`, by querying
     /// [`NodeRpcClient::sync_account_vault`] over `[GENESIS, block_to]`. No-op when the flag isn't
     /// set.
@@ -703,6 +706,7 @@ pub enum RpcEndpoint {
     SyncNullifiers,
     GetAccount,
     RegisterAccount,
+    IsAccountAllowed,
     GetBlockByNumber,
     GetBlockHeaderByNumber,
     GetNotesById,
@@ -727,6 +731,7 @@ impl RpcEndpoint {
             RpcEndpoint::SyncNullifiers => "SyncNullifiers",
             RpcEndpoint::GetAccount => "GetAccount",
             RpcEndpoint::RegisterAccount => "RegisterAccount",
+            RpcEndpoint::IsAccountAllowed => "IsAccountAllowed",
             RpcEndpoint::GetBlockByNumber => "GetBlockByNumber",
             RpcEndpoint::GetBlockHeaderByNumber => "GetBlockHeaderByNumber",
             RpcEndpoint::GetNotesById => "GetNotesById",
@@ -761,6 +766,7 @@ impl RpcEndpoint {
             | RpcEndpoint::SyncNullifiers
             | RpcEndpoint::GetAccount
             | RpcEndpoint::RegisterAccount
+            | RpcEndpoint::IsAccountAllowed
             | RpcEndpoint::GetBlockByNumber
             | RpcEndpoint::GetBlockHeaderByNumber
             | RpcEndpoint::GetNotesById
@@ -786,6 +792,7 @@ impl fmt::Display for RpcEndpoint {
             },
             RpcEndpoint::GetAccount => write!(f, "get_account"),
             RpcEndpoint::RegisterAccount => write!(f, "register_account"),
+            RpcEndpoint::IsAccountAllowed => write!(f, "is_account_allowed"),
             RpcEndpoint::GetBlockByNumber => write!(f, "get_block_by_number"),
             RpcEndpoint::GetBlockHeaderByNumber => {
                 write!(f, "get_block_header_by_number")

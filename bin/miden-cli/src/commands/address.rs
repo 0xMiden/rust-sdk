@@ -4,7 +4,7 @@ use miden_client::account::AccountId;
 use miden_client::address::{Address, AddressId, AddressInterface, NetworkId, RoutingParameters};
 
 use crate::errors::CliError;
-use crate::utils::parse_account_id;
+use crate::utils::{parse_account_id, validate_network_eq};
 use crate::{Parser, Subcommand, create_dynamic_table};
 
 /// Mirrors [`AddressInterface`], enabling parsing for CLI commands.
@@ -218,11 +218,7 @@ fn decode_account_address(
         )));
     }
 
-    if &decoded_network_id != expected_network_id {
-        return Err(CliError::Input(format!(
-            "Address network `{decoded_network_id}` does not match configured network `{expected_network_id}`",
-        )));
-    }
+    validate_network_eq(&decoded_network_id, expected_network_id)?;
 
     Ok(address)
 }

@@ -1,6 +1,5 @@
 //! Vault/asset-related database operations for accounts.
 
-use std::rc::Rc;
 use std::vec::Vec;
 
 use miden_client::Serializable;
@@ -8,11 +7,10 @@ use miden_client::account::{AccountHeader, AccountId, AccountVaultPatch};
 use miden_client::asset::Asset;
 use miden_client::store::StoreError;
 use miden_protocol::asset::AssetId;
-use rusqlite::types::Value;
 use rusqlite::{OptionalExtension, Transaction, params};
 
 use crate::sql_error::SqlResultExt;
-use crate::{SqliteStore, insert_sql, subst, u64_to_value};
+use crate::{SqliteStore, blob_array, insert_sql, subst, u64_to_value};
 
 impl SqliteStore {
     // READER METHODS
@@ -132,15 +130,7 @@ impl SqliteStore {
                 "DELETE FROM latest_account_assets WHERE account_id = ? AND asset_id IN rarray(?)";
             tx.execute(
                 DELETE_LATEST_QUERY,
-                params![
-                    account_id_bytes,
-                    Rc::new(
-                        removed_asset_ids
-                            .iter()
-                            .map(|id| Value::Blob(id.to_bytes()))
-                            .collect::<Vec<Value>>(),
-                    ),
-                ],
+                params![account_id_bytes, blob_array(removed_asset_ids)],
             )
             .into_store_error()?;
         }

@@ -46,6 +46,22 @@ fn main() -> miette::Result<()> {
     Ok(())
 }
 
+// PROST CONFIGURATION
+// ===============================================================================================
+
+/// Builds a prost config that resolves the canonical object schemas to `miden-objects` types.
+///
+/// The node's descriptors embed the object schemas they import, so without these paths prost would
+/// emit a second set of Rust types for messages that `miden-objects` already defines, and the
+/// conversions it ships would not apply to them.
+fn canonical_object_config() -> tonic_prost_build::Config {
+    let mut config = tonic_prost_build::Config::new();
+    for (proto_path, rust_path) in miden_objects::EXTERN_PATHS {
+        config.extern_path(*proto_path, *rust_path);
+    }
+    config
+}
+
 // REMOTE PROVER CLIENT PROTO CODEGEN
 // ===============================================================================================
 
@@ -64,13 +80,13 @@ fn compile_tonic_remote_prover_proto(out_dir: &Path) -> miette::Result<()> {
         .build_transport(false)
         .build_server(false)
         .out_dir(&nostd_out)
-        .compile_fds_with_config(file_descriptors.clone(), tonic_prost_build::Config::new())
+        .compile_fds_with_config(file_descriptors.clone(), canonical_object_config())
         .into_diagnostic()?;
 
     tonic_prost_build::configure()
         .build_server(false)
         .out_dir(&std_out)
-        .compile_fds_with_config(file_descriptors, tonic_prost_build::Config::new())
+        .compile_fds_with_config(file_descriptors, canonical_object_config())
         .into_diagnostic()?;
 
     Ok(())
@@ -125,11 +141,9 @@ fn compile_tonic_client_proto(out_dir: &Path) -> miette::Result<()> {
     fs::create_dir_all(&std_out).into_diagnostic()?;
     fs::create_dir_all(&nostd_out).into_diagnostic()?;
 
-    let mut prost_config = tonic_prost_build::Config::new();
-    prost_config.skip_debug(["AccountId", "Digest"]);
+    let prost_config = canonical_object_config();
 
-    let mut web_tonic_prost_config = tonic_prost_build::Config::new();
-    web_tonic_prost_config.skip_debug(["AccountId", "Digest"]);
+    let mut web_tonic_prost_config = canonical_object_config();
 
     // Use BTreeMap so the no_std bindings don't depend on std::collections::HashMap
     web_tonic_prost_config.btree_map(["."]);

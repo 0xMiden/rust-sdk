@@ -2,8 +2,9 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use core::time::Duration;
 
+use miden_objects::ConversionError;
 use miden_protocol::transaction::{ProvenTransaction, TransactionInputs};
-use miden_protocol::utils::serde::{Deserializable, DeserializationError, Serializable};
+use miden_protocol::utils::serde::DeserializationError;
 use miden_protocol::vm::FutureMaybeSend;
 use miden_tx::TransactionProverError;
 use tokio::sync::Mutex;
@@ -109,15 +110,26 @@ impl TryFrom<proto::Proof> for ProvenTransaction {
     type Error = DeserializationError;
 
     fn try_from(response: proto::Proof) -> Result<Self, Self::Error> {
-        ProvenTransaction::read_from_bytes(&response.payload)
+        match response.proof {
+            Some(proto::proof::Proof::Transaction(transaction)) => {
+                transaction.try_into().map_err(|err: ConversionError| {
+                    DeserializationError::InvalidValue(alloc::format!("{err}"))
+                })
+            },
+            Some(proto::proof::Proof::Batch(_) | proto::proof::Proof::Block(_)) => {
+                Err(DeserializationError::InvalidValue(
+                    "prover answered a transaction request with another kind of proof".into(),
+                ))
+            },
+            None => Err(DeserializationError::InvalidValue("prover returned no proof".into())),
+        }
     }
 }
 
 impl From<&TransactionInputs> for proto::ProofRequest {
     fn from(tx_inputs: &TransactionInputs) -> Self {
         proto::ProofRequest {
-            proof_type: proto::ProofType::Transaction.into(),
-            payload: tx_inputs.to_bytes(),
+            request: Some(proto::proof_request::Request::Transaction(tx_inputs.into())),
         }
     }
 }

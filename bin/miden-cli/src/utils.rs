@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use miden_client::account::{AccountId, FaucetMetadata};
 use miden_client::address::{Address, AddressId};
-use miden_client::asset::{Asset, FungibleAsset};
+use miden_client::asset::FungibleAsset;
 use miden_client::transaction::{ExecutedTransaction, InputNote};
 use miden_client::utils::{base_units_to_tokens, tokens_to_base_units};
 use miden_client::vm::MIN_STACK_DEPTH;
@@ -183,16 +183,16 @@ pub async fn print_executed_transaction<AUTH>(
         let mut table = create_dynamic_table(&["Asset Type", "Faucet ID", "New Amount"]);
 
         for asset in patch.vault().updated_assets() {
-            match asset {
-                Asset::Fungible(fungible) => {
+            match asset.as_fungible() {
+                Some(fungible) => {
                     let (faucet_fmt, amount_fmt) =
                         resolver.format_fungible_asset(client, &fungible).await?;
                     table.add_row(vec!["Fungible Asset", &faucet_fmt, &amount_fmt]);
                 },
-                Asset::NonFungible(non_fungible) => {
+                None => {
                     table.add_row(vec![
                         "Non Fungible Asset",
-                        &non_fungible.faucet_id().prefix().to_hex(),
+                        &asset.faucet_id().prefix().to_hex(),
                         "1",
                     ]);
                 },

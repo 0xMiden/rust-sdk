@@ -20,7 +20,7 @@ use miden_protocol::account::{
 use miden_protocol::address::NetworkId;
 use miden_protocol::batch::{ProposedBatch, ProvenBatch};
 use miden_protocol::block::account_tree::AccountWitness;
-use miden_protocol::block::{BlockHeader, BlockNumber, ProvenBlock};
+use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock};
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
     PublicKey as ValidatorPublicKey,
     Signature as ValidatorSignature,
@@ -30,6 +30,7 @@ use miden_protocol::crypto::merkle::mmr::{Forest, MmrPath, MmrProof};
 use miden_protocol::note::{NoteId, NoteScript, NoteTag};
 use miden_protocol::transaction::ProvenTransaction;
 use miden_protocol::utils::serde::Deserializable;
+use miden_protocol::vm::ExecutionProof;
 use miden_protocol::{EMPTY_WORD, Word};
 use miden_tx::utils::serde::Serializable;
 use miden_tx::utils::sync::RwLock;
@@ -800,7 +801,7 @@ impl NodeRpcClient for GrpcClient {
         &self,
         block_num: BlockNumber,
         include_proof: bool,
-    ) -> Result<ProvenBlock, RpcError> {
+    ) -> Result<(SignedBlock, Option<ExecutionProof>), RpcError> {
         let request = proto::blockchain::BlockRequest {
             block_num: block_num.as_u32(),
             include_proof: Some(include_proof),
@@ -813,12 +814,21 @@ impl NodeRpcClient for GrpcClient {
             .await?;
 
         let response = response.into_inner();
+        // The response carries the signed block and its proof in separate fields, so the block
+        // bytes decode as a `SignedBlock` and never as a `ProvenBlock`.
         let block =
-            ProvenBlock::read_from_bytes(&response.block.ok_or(RpcError::ExpectedDataMissing(
+            SignedBlock::read_from_bytes(&response.block.ok_or(RpcError::ExpectedDataMissing(
                 "GetBlockByNumberResponse.block".to_string(),
             ))?)?;
 
-        Ok(block)
+        // The node omits the proof when it is not requested, and also when the block is not proven
+        // yet, so an absent proof is not an error.
+        let proof = response
+            .proof
+            .map(|bytes| ExecutionProof::read_from_bytes(&bytes))
+            .transpose()?;
+
+        Ok((block, proof))
     }
 
     async fn get_note_script_by_root(&self, root: Word) -> Result<Option<NoteScript>, RpcError> {

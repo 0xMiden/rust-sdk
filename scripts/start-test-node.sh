@@ -136,6 +136,7 @@ MIDEN_VERIFICATION_BASE_FEE="$VERIFICATION_BASE_FEE" "$GEN_GENESIS" "$DATA/genes
 # below once `miden-validator genesis` has generated them.
 rm -rf "$ROOT/data/funders"
 mkdir -p "$ROOT/data"
+cp "$DATA/genesis-config/protocol-config.bin" "$ROOT/data/protocol-config.bin"
 cp "$DATA/genesis-config/tst_faucet.mac" "$ROOT/data/account.mac"
 # Expose the agglayer accounts under ./data, where the tests read them via AGGLAYER_ACCOUNTS_DIR.
 for mac in bridge_admin.mac ger_manager.mac bridge.mac agglayer_faucet.mac \

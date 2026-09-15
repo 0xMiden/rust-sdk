@@ -31,7 +31,7 @@ use crate::account::component::{
     TokenPolicyManager,
 };
 use crate::account::{AccountBuilder, AccountBuilderSchemaCommitmentExt, AccountType};
-use crate::auth::{AuthSchemeId, ECDSA_K256_KECCAK_SCHEME_ID};
+use crate::auth::{AuthSchemeId, RPO_FALCON_SCHEME_ID};
 pub use crate::keystore::{FilesystemKeyStore, Keystore};
 use crate::note::{Note, NoteConsumability, P2idNote};
 use crate::rpc::RpcError;
@@ -214,7 +214,7 @@ impl AccountSetup {
             kind: AccountKind::Standard {
                 components,
                 account_type,
-                auth_scheme: ECDSA_K256_KECCAK_SCHEME_ID,
+                auth_scheme: RPO_FALCON_SCHEME_ID,
             },
             funded: true,
         }
@@ -238,7 +238,7 @@ impl AccountSetup {
         }
     }
 
-    /// Signs with `auth_scheme` instead of the default [`ECDSA_K256_KECCAK_SCHEME_ID`].
+    /// Signs with `auth_scheme` instead of the default [`RPO_FALCON_SCHEME_ID`].
     #[must_use]
     pub fn auth_scheme(mut self, auth_scheme: AuthSchemeId) -> Self {
         if let AccountKind::Standard { auth_scheme: scheme, .. } = &mut self.kind {

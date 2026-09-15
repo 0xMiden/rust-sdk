@@ -7,15 +7,16 @@
 * [BREAKING][behavior][rust] Notes fetched from the Note Transport Layer are screened when their tag matches a tracked account's tag, discarding the ones no tracked account can consume ([#2474](https://github.com/0xMiden/rust-sdk/pull/2474)).
 * [BREAKING][behavior][rust] A Note Transport Layer failure no longer fails `Client::sync_state`. The error is logged and the chain sync still applies; the transport cursor is left where it was, so the next sync requests the same page again ([#2453](https://github.com/0xMiden/rust-sdk/pull/2453)).
 * [BREAKING][type][rust] Added the `TransactionRequestError::SwapNoteWithZeroAsset` variant, so exhaustive matches on `TransactionRequestError` must handle it ([#2459](https://github.com/0xMiden/rust-sdk/pull/2459)).
+* [BREAKING][removal][rust] Removed `TransactionFilter::to_query`. The method emitted `SQLite` text from the storage-agnostic `Store` module, so the query now lives in `miden-client-sqlite-store` next to the `NoteFilter` queries.
 * [BREAKING][removal][test] Loose helper functions in `miden_client::testing::common` are now methods on `TestClient`. `TestClient::keystore()` exposes the client's keystore, so `ClientConfig::into_client` and `into_unsynced_client` return just the `TestClient` instead of a client/keystore pair ([#2481](https://github.com/0xMiden/rust-sdk/pull/2481)).
 
 ### Fixes
 
 * [FIX][rust] Refreshed tracked input notes after transport imports so the same sync detects their consumption ([#2453](https://github.com/0xMiden/rust-sdk/pull/2453)).
 * [FIX][rust] A private note fetched from the Note Transport Layer whose nullifier is already on chain is now imported as consumed instead of committed, so `get_consumable_notes` no longer reports notes the node will reject ([#2453](https://github.com/0xMiden/rust-sdk/pull/2453)).
-* [FIX][store] Resolved column names once per query execution in bulk forest reads to avoid repeated name lookups for each row.
 * [FIX][rust] Added validation of cached transaction encryption keys during deserialization. Unsupported encryption schemes and empty or oversized key IDs are rejected before reading the key ID bytes ([#2411](https://github.com/0xMiden/rust-sdk/pull/2411)).
 * [FIX][cli] `notes --list consumable` now respects the `--account-id` filter ([#2449](https://github.com/0xMiden/rust-sdk/pull/2449)).
+* [FIX][store] Every write transaction of the `SQLite` store begins as `IMMEDIATE`. A transaction that read before it wrote could fail the write-lock upgrade with `SQLITE_BUSY_SNAPSHOT`, which the busy timeout does not retry.
 * [store] Simplified `SqliteStore::get_setting` to take `&Connection` directly without opening an unnecessary transaction ([#2449](https://github.com/0xMiden/rust-sdk/pull/2449)).
 * [FIX][cli] `miden-client import` now rejects invocations without a file path instead of silently succeeding ([#2450](https://github.com/0xMiden/rust-sdk/pull/2450)).
 * [FIX][rust] `TransactionRequestBuilder::build_swap` and `build_pswap_create` now reject a zero-amount asset on either side of the exchange. A zero requested asset produced a payback P2ID note carrying nothing, and a zero offered asset produced a note whose consumer pays and receives nothing ([#2459](https://github.com/0xMiden/rust-sdk/pull/2459)).

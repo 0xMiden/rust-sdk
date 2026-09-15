@@ -55,7 +55,6 @@ use crate::{
     int_array,
     subst,
     u64_to_value,
-    with_immediate_write_tx,
     with_write_tx,
 };
 
@@ -245,9 +244,7 @@ impl SqliteStore {
     ) -> Result<Option<(Asset, AssetWitness)>, StoreError> {
         // Begin the transaction first so the header and forest reads share one snapshot.
         let db_tx = conn.transaction().into_store_error()?;
-        let header = Self::get_account_header(&db_tx, account_id)?
-            .ok_or(StoreError::AccountDataNotFound(account_id))?
-            .0;
+        let header = Self::require_latest_account_header(&db_tx, account_id)?;
         let smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&db_tx))?;
 
         match smt_forest.get_asset_and_witness(account_id, header.vault_root(), asset_id) {
@@ -267,9 +264,7 @@ impl SqliteStore {
     ) -> Result<(Word, StorageMapWitness), StoreError> {
         // Begin the transaction first so the slot root and forest reads share one snapshot.
         let db_tx = conn.transaction().into_store_error()?;
-        let header = Self::get_account_header(&db_tx, account_id)?
-            .ok_or(StoreError::AccountDataNotFound(account_id))?
-            .0;
+        let header = Self::require_latest_account_header(&db_tx, account_id)?;
 
         let mut storage_values = query_storage_values(&db_tx, account_id)?;
         let (slot_type, map_root) = storage_values
@@ -336,7 +331,7 @@ impl SqliteStore {
         initial_address: &Address,
         client_account_type: ClientAccountType,
     ) -> Result<(), StoreError> {
-        with_immediate_write_tx(conn, |tx| {
+        with_write_tx(conn, |tx| {
             let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(tx))?;
             Self::insert_account_code(tx, account.code())?;
 
@@ -361,7 +356,7 @@ impl SqliteStore {
         conn: &mut Connection,
         new_account_state: &Account,
     ) -> Result<(), StoreError> {
-        with_immediate_write_tx(conn, |tx| {
+        with_write_tx(conn, |tx| {
             let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(tx))?;
             Self::update_account_state(tx, &mut smt_forest, new_account_state)
         })
@@ -621,59 +616,40 @@ impl SqliteStore {
         let commitment_params =
             blob_array(discarded_states.iter().map(|(_, commitment)| commitment));
 
-        // Step 1: Resolve (account_id, nonce) pairs from both latest and historical headers. The
-        // most recent discarded state is in latest, older ones are in historical.
-        let mut id_nonce_pairs: Vec<(Vec<u8>, u64)> = Vec::new();
+        // Resolve (account_id, nonce) pairs from both latest and historical headers, and group the
+        // nonces by account. The most recent discarded state is in latest, older ones are in
+        // historical.
+        let mut nonces_by_account: BTreeMap<Vec<u8>, BTreeSet<u64>> = BTreeMap::new();
         for query in [
             "SELECT id, nonce FROM latest_account_headers WHERE account_commitment IN rarray(?)",
             "SELECT id, nonce FROM historical_account_headers WHERE account_commitment IN rarray(?)",
         ] {
-            let pairs = tx
-                .prepare(query)
-                .into_store_error()?
+            let mut stmt = tx.prepare(query).into_store_error()?;
+            let rows = stmt
                 .query_map(params![commitment_params.clone()], |row| {
                     let id: Vec<u8> = row.get("id")?;
                     let nonce: u64 = column_value_as_u64(row, "nonce")?;
                     Ok((id, nonce))
                 })
-                .into_store_error()?
-                .collect::<Result<Vec<_>, _>>()
                 .into_store_error()?;
-            id_nonce_pairs.extend(pairs);
+            for row in rows {
+                let (id, nonce) = row.into_store_error()?;
+                nonces_by_account.entry(id).or_default().insert(nonce);
+            }
         }
 
-        // Step 2: Group nonces by account, sort descending (undo most recent first). Descending
-        // order is needed because each nonce's old value is the state before that nonce —
-        // processing most recent first lets earlier nonces overwrite with the correct final value.
-        let mut nonces_by_account: BTreeMap<Vec<u8>, Vec<u64>> = BTreeMap::new();
-        for (id, nonce) in &id_nonce_pairs {
-            nonces_by_account.entry(id.clone()).or_default().push(*nonce);
-        }
-        for nonces in nonces_by_account.values_mut() {
-            nonces.sort_unstable();
-            nonces.dedup();
-            nonces.reverse();
-        }
-
-        // Capture each account's current map slots before the restore rewrites the latest tables.
-        let mut pre_undo_map_slots: BTreeMap<Vec<u8>, Vec<StorageSlotName>> = BTreeMap::new();
-        for account_id_bytes in nonces_by_account.keys() {
-            let account_id = AccountId::read_from_bytes(account_id_bytes)?;
-            pre_undo_map_slots
-                .insert(account_id_bytes.clone(), Self::query_map_slot_names(tx, account_id)?);
-        }
-
-        // Steps 3-5
+        // Undo one account at a time. Read the account's map slot names before the undo rewrites
+        // the latest tables, then reconcile its forest lineages to the restored state.
         for (account_id_bytes, nonces) in &nonces_by_account {
-            Self::undo_account_nonces(tx, account_id_bytes, nonces)?;
-        }
-
-        // Step 6: Reconcile the affected accounts' forest lineages to the restored state.
-        for account_id_bytes in nonces_by_account.keys() {
             let account_id = AccountId::read_from_bytes(account_id_bytes)?;
-            let stale_slots: &[StorageSlotName] =
-                pre_undo_map_slots.get(account_id_bytes).map_or(&[], Vec::as_slice);
-            Self::reconcile_account_forest_from_tables(tx, smt_forest, account_id, stale_slots)?;
+            let stale_map_slots = Self::query_map_slot_names(tx, account_id)?;
+            Self::undo_account_nonces(tx, account_id_bytes, nonces)?;
+            Self::reconcile_account_forest_from_tables(
+                tx,
+                smt_forest,
+                account_id,
+                &stale_map_slots,
+            )?;
         }
 
         Ok(())
@@ -684,20 +660,19 @@ impl SqliteStore {
     fn undo_account_nonces(
         tx: &Transaction<'_>,
         account_id_bytes: &[u8],
-        nonces: &[u64],
+        nonces: &BTreeSet<u64>,
     ) -> Result<(), StoreError> {
-        // Step 3: Undo each nonce in descending order
-        for &nonce in nonces {
+        // Undo each nonce in descending order. Each nonce's old value is the state before that
+        // nonce, so the most recent nonce must be undone first. Earlier nonces then overwrite it
+        // with the correct final value.
+        for &nonce in nonces.iter().rev() {
             let nonce_val = u64_to_value(nonce);
             Self::restore_old_values_for_nonce(tx, account_id_bytes, &nonce_val)?;
         }
 
-        // Step 4: Restore old header from the earliest discarded nonce
-        // SAFETY: `nonces` is non-empty because `undo_account_nonces` is only called for accounts
-        // that appear in `nonces_by_account`, which only contains entries built from at least one
-        // nonce being pushed — so the slice is guaranteed non-empty here.
-        let min_nonce = *nonces.last().unwrap();
-        let min_nonce_val = u64_to_value(min_nonce);
+        // Restore the old header from the earliest discarded nonce. The set always holds at least
+        // one nonce, because an entry is added to the map only when a nonce is inserted.
+        let min_nonce_val = u64_to_value(*nonces.first().expect("nonces is not empty"));
 
         let old_header_exists: bool = tx
             .query_row(
@@ -736,7 +711,7 @@ impl SqliteStore {
             }
         }
 
-        // Step 5: Delete all consumed historical entries at the discarded nonces
+        // Delete all consumed historical entries at the discarded nonces.
         let nonce_params = int_array(nonces.iter().copied());
         for table in [
             "historical_account_storage",
@@ -854,11 +829,7 @@ impl SqliteStore {
 
         // Read old header before mutating the SMT snapshot or database rows. Sync filters stale
         // full-account snapshots; if one still reaches storage, reject it before mutating.
-        let old_header = query_latest_account_headers(tx, "id = ?", params![&account_id_bytes])?
-            .into_iter()
-            .next()
-            .map(|(header, ..)| header)
-            .ok_or(StoreError::AccountDataNotFound(account_id))?;
+        let old_header = Self::require_latest_account_header(tx, account_id)?;
 
         if new_account_state.nonce().as_canonical_u64() < old_header.nonce().as_canonical_u64() {
             return Err(StoreError::DatabaseError(format!(

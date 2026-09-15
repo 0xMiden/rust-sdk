@@ -26,10 +26,16 @@ fn in_rarray_condition(
     format!("({column} IN rarray(?))")
 }
 
+/// Builds a `state_discriminant IN (...)` condition from the states that a filter selects.
+fn state_condition(discriminants: &[u8]) -> String {
+    let list = discriminants.iter().map(u8::to_string).collect::<Vec<_>>().join(", ");
+    format!("(state_discriminant IN ({list}))")
+}
+
 // NOTE FILTER (OUTPUT NOTES)
 // ================================================================================================
 
-/// The column aliases match the names that `parse_output_note_columns` reads.
+/// The column aliases match the names that `parse_output_note` reads.
 const OUTPUT_NOTES_BASE_QUERY: &str = "SELECT \
      note.recipient_digest AS recipient_digest, \
      note.assets AS assets, \
@@ -49,29 +55,21 @@ pub(super) fn note_filter_to_query_output_notes(filter: &NoteFilter) -> (String,
     (query, params)
 }
 
-/// Returns the WHERE clause  for a specific `NoteFilter`.
-pub(super) fn note_filter_output_notes_condition(filter: &NoteFilter) -> (String, NoteQueryParams) {
+/// Returns the WHERE clause for a specific `NoteFilter`.
+fn note_filter_output_notes_condition(filter: &NoteFilter) -> (String, NoteQueryParams) {
     let mut params = Vec::new();
     let condition = match filter {
-        NoteFilter::All => "1 = 1".to_string(),
-        NoteFilter::Committed => {
-            format!(
-                "state_discriminant in ({}, {})",
-                OutputNoteState::STATE_COMMITTED_PARTIAL,
-                OutputNoteState::STATE_COMMITTED_FULL
-            )
-        },
-        NoteFilter::Consumed => {
-            format!("state_discriminant = {}", OutputNoteState::STATE_CONSUMED)
-        },
-        NoteFilter::Expected => {
-            format!(
-                "state_discriminant in ({}, {})",
-                OutputNoteState::STATE_EXPECTED_PARTIAL,
-                OutputNoteState::STATE_EXPECTED_FULL
-            )
-        },
-        NoteFilter::Processing | NoteFilter::Unverified => "1 = 0".to_string(),
+        NoteFilter::All => "(1 = 1)".to_string(),
+        NoteFilter::Committed => state_condition(&[
+            OutputNoteState::STATE_COMMITTED_PARTIAL,
+            OutputNoteState::STATE_COMMITTED_FULL,
+        ]),
+        NoteFilter::Consumed => state_condition(&[OutputNoteState::STATE_CONSUMED]),
+        NoteFilter::Expected => state_condition(&[
+            OutputNoteState::STATE_EXPECTED_PARTIAL,
+            OutputNoteState::STATE_EXPECTED_FULL,
+        ]),
+        NoteFilter::Processing | NoteFilter::Unverified => "(1 = 0)".to_string(),
         NoteFilter::ScriptRoots(script_roots) => {
             // Notes without known details have a NULL script root and never match.
             in_rarray_condition("note.script_root", blob_array(script_roots), &mut params)
@@ -90,15 +88,12 @@ pub(super) fn note_filter_output_notes_condition(filter: &NoteFilter) -> (String
         NoteFilter::Nullifiers(nullifiers) => {
             in_rarray_condition("note.nullifier", blob_array(nullifiers), &mut params)
         },
-        NoteFilter::Unspent => {
-            format!(
-                "state_discriminant in ({}, {}, {}, {})",
-                OutputNoteState::STATE_EXPECTED_PARTIAL,
-                OutputNoteState::STATE_EXPECTED_FULL,
-                OutputNoteState::STATE_COMMITTED_PARTIAL,
-                OutputNoteState::STATE_COMMITTED_FULL,
-            )
-        },
+        NoteFilter::Unspent => state_condition(&[
+            OutputNoteState::STATE_EXPECTED_PARTIAL,
+            OutputNoteState::STATE_EXPECTED_FULL,
+            OutputNoteState::STATE_COMMITTED_PARTIAL,
+            OutputNoteState::STATE_COMMITTED_FULL,
+        ]),
     };
 
     (condition, params)
@@ -107,7 +102,7 @@ pub(super) fn note_filter_output_notes_condition(filter: &NoteFilter) -> (String
 // NOTE FILTER (INPUT NOTES)
 // ================================================================================================
 
-/// The column aliases match the names that `parse_input_note_columns` reads.
+/// The column aliases match the names that `parse_input_note` reads.
 const INPUT_NOTES_BASE_QUERY: &str = "SELECT \
      note.assets AS assets, \
      note.serial_number AS serial_number, \
@@ -198,27 +193,17 @@ pub(super) fn note_filter_input_notes_condition(filter: &NoteFilter) -> (String,
     let mut params = Vec::new();
     let condition = match filter {
         NoteFilter::All => "(1 = 1)".to_string(),
-        NoteFilter::Committed => {
-            format!("(state_discriminant = {})", InputNoteState::STATE_COMMITTED)
-        },
-        NoteFilter::Consumed => {
-            format!(
-                "(state_discriminant in ({}, {}, {}))",
-                InputNoteState::STATE_CONSUMED_AUTHENTICATED_LOCAL,
-                InputNoteState::STATE_CONSUMED_UNAUTHENTICATED_LOCAL,
-                InputNoteState::STATE_CONSUMED_EXTERNAL
-            )
-        },
-        NoteFilter::Expected => {
-            format!("(state_discriminant = {})", InputNoteState::STATE_EXPECTED)
-        },
-        NoteFilter::Processing => {
-            format!(
-                "(state_discriminant in ({}, {}))",
-                InputNoteState::STATE_PROCESSING_AUTHENTICATED,
-                InputNoteState::STATE_PROCESSING_UNAUTHENTICATED
-            )
-        },
+        NoteFilter::Committed => state_condition(&[InputNoteState::STATE_COMMITTED]),
+        NoteFilter::Consumed => state_condition(&[
+            InputNoteState::STATE_CONSUMED_AUTHENTICATED_LOCAL,
+            InputNoteState::STATE_CONSUMED_UNAUTHENTICATED_LOCAL,
+            InputNoteState::STATE_CONSUMED_EXTERNAL,
+        ]),
+        NoteFilter::Expected => state_condition(&[InputNoteState::STATE_EXPECTED]),
+        NoteFilter::Processing => state_condition(&[
+            InputNoteState::STATE_PROCESSING_AUTHENTICATED,
+            InputNoteState::STATE_PROCESSING_UNAUTHENTICATED,
+        ]),
         NoteFilter::Unique(note_id) => {
             in_rarray_condition("note.note_id", blob_array([note_id.as_word()]), &mut params)
         },
@@ -236,13 +221,8 @@ pub(super) fn note_filter_input_notes_condition(filter: &NoteFilter) -> (String,
         NoteFilter::ScriptRoots(script_roots) => {
             in_rarray_condition("note.script_root", blob_array(script_roots), &mut params)
         },
-        NoteFilter::Unverified => {
-            format!("(state_discriminant = {})", InputNoteState::STATE_UNVERIFIED)
-        },
-        NoteFilter::Unspent => {
-            let states = InputNoteState::UNSPENT_STATES.map(|state| state.to_string()).join(", ");
-            format!("(state_discriminant in ({states}))")
-        },
+        NoteFilter::Unverified => state_condition(&[InputNoteState::STATE_UNVERIFIED]),
+        NoteFilter::Unspent => state_condition(&InputNoteState::UNSPENT_STATES),
     };
 
     (condition, params)

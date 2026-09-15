@@ -16,7 +16,7 @@ use crate::forest::{ScopedAccountForest, SqliteForestBackend};
 use crate::note::apply_note_updates_tx;
 use crate::sql_error::SqlResultExt;
 use crate::transaction::upsert_transaction_record;
-use crate::{insert_sql, subst, with_immediate_write_tx, with_write_tx};
+use crate::{insert_sql, subst, with_write_tx};
 
 impl SqliteStore {
     pub(crate) fn get_note_tags(conn: &mut Connection) -> Result<Vec<NoteTagRecord>, StoreError> {
@@ -84,20 +84,16 @@ impl SqliteStore {
             account_updates,
         ) = state_sync_update.into_parts();
 
-        with_immediate_write_tx(conn, |db_tx| {
+        with_write_tx(conn, |db_tx| {
             let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(db_tx))?;
             // Update blockchain checkpoint (block number and peaks) only if moving forward.
             let new_peaks_bytes = partial_blockchain_updates.new_peaks.peaks().to_vec().to_bytes();
-            const BLOCKCHAIN_CHECKPOINT_QUERY: &str = "UPDATE blockchain_checkpoint SET block_num = ?, partial_blockchain_peaks = ? WHERE block_num < ?";
+            const BLOCKCHAIN_CHECKPOINT_QUERY: &str = "\
+                UPDATE blockchain_checkpoint \
+                SET block_num = ?1, partial_blockchain_peaks = ?2 \
+                WHERE block_num < ?1";
             db_tx
-                .execute(
-                    BLOCKCHAIN_CHECKPOINT_QUERY,
-                    params![
-                        i64::from(block_num.as_u32()),
-                        new_peaks_bytes,
-                        i64::from(block_num.as_u32())
-                    ],
-                )
+                .execute(BLOCKCHAIN_CHECKPOINT_QUERY, params![block_num.as_u32(), new_peaks_bytes])
                 .into_store_error()?;
 
             for (block_header, is_relevant) in

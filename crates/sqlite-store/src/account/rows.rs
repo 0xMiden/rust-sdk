@@ -34,35 +34,26 @@ pub(crate) struct SerializedHeaderData {
 
 /// Parse an account header from the provided serialized data.
 pub(crate) fn parse_accounts(
-    serialized_account_parts: SerializedHeaderData,
+    row: SerializedHeaderData,
 ) -> Result<(AccountHeader, AccountStatus), StoreError> {
-    let SerializedHeaderData {
-        id,
-        nonce,
-        vault_root,
-        storage_commitment,
-        code_commitment,
-        account_seed,
-        locked,
-    } = serialized_account_parts;
-    let account_seed = account_seed.map(|seed| Word::read_from_bytes(&seed[..])).transpose()?;
+    let account_seed = row.account_seed.map(|seed| Word::read_from_bytes(&seed[..])).transpose()?;
 
-    let status = match (account_seed, locked) {
+    let status = match (account_seed, row.locked) {
         (seed, true) => AccountStatus::Locked { seed },
         (Some(seed), _) => AccountStatus::New { seed },
         _ => AccountStatus::Tracked,
     };
 
-    let nonce = miden_client::Felt::new(nonce).map_err(|err| {
+    let nonce = miden_client::Felt::new(row.nonce).map_err(|err| {
         StoreError::ParsingError(format!("stored nonce is not a valid Felt: {err}"))
     })?;
     Ok((
         AccountHeader::new(
-            AccountId::read_from_bytes(&id)?,
+            AccountId::read_from_bytes(&row.id)?,
             nonce,
-            Word::read_from_bytes(&vault_root)?,
-            Word::read_from_bytes(&storage_commitment)?,
-            Word::read_from_bytes(&code_commitment)?,
+            Word::read_from_bytes(&row.vault_root)?,
+            Word::read_from_bytes(&row.storage_commitment)?,
+            Word::read_from_bytes(&row.code_commitment)?,
         ),
         status,
     ))

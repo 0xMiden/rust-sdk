@@ -1073,9 +1073,10 @@ impl StateSync {
     /// For each public account whose commitment changed, an updated snapshot is fetched with a
     /// single `get_account` call that requests every storage map and the vault.
     ///
-    /// Accounts whose vault or maps are too large to fit in a single response fall back to the
-    /// incremental [`PublicAccountUpdate::Delta`] path, which fetches vault and storage map updates
-    /// over the synced block range.
+    /// An account whose vault and maps all fit in that response becomes a
+    /// [`PublicAccountUpdate::Full`]. Otherwise it becomes a [`PublicAccountUpdate::Patch`]: the
+    /// parts the response carries in full are applied as replacements and only the oversized parts
+    /// are fetched as changes over the synced block range.
     async fn sync_public_accounts(
         &self,
         account_updates: &mut AccountUpdates,
@@ -1636,7 +1637,14 @@ mod tests {
     use alloc::sync::Arc;
 
     use async_trait::async_trait;
-    use miden_protocol::account::Account;
+    use miden_protocol::account::{
+        Account,
+        StorageMap,
+        StorageMapKey,
+        StorageMapPatch,
+        StorageSlot,
+        StorageSlotName,
+    };
     use miden_protocol::assembly::DefaultSourceManager;
     use miden_protocol::asset::{Asset, FungibleAsset};
     use miden_protocol::block::BlockNumber;
@@ -1668,7 +1676,7 @@ mod tests {
     use miden_protocol::{EMPTY_WORD, Felt, Word, ZERO};
     use miden_standards::code_builder::CodeBuilder;
     use miden_standards::note::{NetworkAccountTarget, NoteExecutionHint};
-    use miden_testing::{MockChainBuilder, MockTransactionInput};
+    use miden_testing::{MockChain, MockChainBuilder, MockTransactionInput};
 
     use super::*;
     use crate::store::{OutputNoteRecord, OutputNoteState};
@@ -1991,6 +1999,159 @@ mod tests {
             account_updates.updated_public_accounts().is_empty(),
             "the target state must not overwrite the local account"
         );
+    }
+
+    /// Builds a chain with a public account holding `num_map_entries` map entries and `num_assets`
+    /// fungible assets, then commits a transaction that only increments the account's nonce.
+    /// Returns the chain and the account's pre-transaction state.
+    async fn chain_with_updated_account(
+        num_map_entries: u64,
+        num_assets: u8,
+    ) -> (MockChain, Account) {
+        let map_slot = StorageSlot::with_map(
+            StorageSlotName::new("test::map").unwrap(),
+            StorageMap::with_entries(
+                (1..=num_map_entries)
+                    .map(|i| {
+                        let word = Word::from([Felt::new_unchecked(i), ZERO, ZERO, ZERO]);
+                        (StorageMapKey::new(word), word)
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap(),
+        );
+
+        let mut builder = MockChainBuilder::new();
+        let assets: Vec<Asset> = (0..num_assets)
+            .map(|i| {
+                let symbol = format!("TK{}", (b'A' + i) as char);
+                let faucet = builder
+                    .add_existing_basic_faucet(
+                        miden_testing::Auth::IncrNonce,
+                        &symbol,
+                        1_000_000,
+                        None,
+                    )
+                    .unwrap();
+                FungibleAsset::new(faucet.id(), 100).unwrap().into()
+            })
+            .collect();
+        let account = builder
+            .add_existing_mock_account_with_storage_and_assets(
+                miden_testing::Auth::IncrNonce,
+                [map_slot],
+                assets,
+            )
+            .unwrap();
+        let mut chain = builder.build().unwrap();
+
+        let tx = Box::pin(
+            chain
+                .build_transaction(MockTransactionInput::AccountId(account.id()))
+                .build()
+                .unwrap()
+                .execute(),
+        )
+        .await
+        .unwrap();
+        chain.add_pending_executed_transaction(&tx).unwrap();
+        chain.prove_next_block().unwrap();
+
+        (chain, account)
+    }
+
+    /// Syncs `local_account` against the chain behind `rpc_api` and returns the resulting update.
+    async fn sync_updated_account(
+        rpc_api: &MockRpcApi,
+        local_account: &Account,
+    ) -> PublicAccountUpdate {
+        let chain_tip_header = rpc_api.mock_chain.read().latest_block_header();
+        let on_chain_commitment = rpc_api
+            .mock_chain
+            .read()
+            .committed_account(local_account.id())
+            .unwrap()
+            .to_commitment();
+        let local_header: AccountHeader = local_account.into();
+        let state_sync = StateSync::new(Arc::new(rpc_api.clone()), Arc::new(MockScreener), None);
+
+        let mut account_updates = AccountUpdates::default();
+        state_sync
+            .sync_public_accounts(
+                &mut account_updates,
+                &[(local_account.id(), on_chain_commitment)],
+                &[&local_header],
+                BlockNumber::GENESIS,
+                &chain_tip_header,
+            )
+            .await
+            .unwrap();
+
+        let mut updates = account_updates.updated_public_accounts().to_vec();
+        assert_eq!(updates.len(), 1, "exactly one account must be updated");
+        updates.pop().unwrap()
+    }
+
+    /// An account whose vault and maps fit in the `get_account` response is synced from that single
+    /// response, without any incremental request.
+    #[tokio::test]
+    async fn sync_public_account_within_limits_uses_snapshot_only() {
+        let (chain, account) = chain_with_updated_account(3, 2).await;
+        let rpc_api = MockRpcApi::new(chain);
+
+        let update = sync_updated_account(&rpc_api, &account).await;
+
+        assert!(matches!(update, PublicAccountUpdate::Full(_)));
+        assert_eq!(rpc_api.sync_storage_maps_call_count(), 0);
+        assert_eq!(rpc_api.sync_account_vault_call_count(), 0);
+    }
+
+    /// When only the vault is oversized, the maps are taken from the `get_account` response as
+    /// replacements and `sync_storage_maps` is not called.
+    #[tokio::test]
+    async fn sync_public_account_with_oversized_vault_skips_storage_map_sync() {
+        // One map entry fits under the threshold; three assets exceed it.
+        let (chain, account) = chain_with_updated_account(1, 3).await;
+        let rpc_api = MockRpcApi::new(chain).with_oversize_threshold(2);
+
+        let update = sync_updated_account(&rpc_api, &account).await;
+
+        let PublicAccountUpdate::Patch { storage, vault, .. } = update else {
+            panic!("expected a patch update");
+        };
+        assert!(matches!(vault, VaultUpdate::Patch(_)));
+        let map_patches: Vec<_> = storage.maps().collect();
+        assert_eq!(map_patches.len(), 1);
+        let (_, StorageMapPatch::Create { entries }) = map_patches[0] else {
+            panic!("a complete map must be applied as a replacement");
+        };
+        assert_eq!(entries.as_map().len(), 1);
+        assert_eq!(rpc_api.sync_storage_maps_call_count(), 0);
+        assert_eq!(rpc_api.sync_account_vault_call_count(), 1);
+    }
+
+    /// When only a map is oversized, the vault is taken from the `get_account` response as a
+    /// replacement and `sync_account_vault` is not called.
+    #[tokio::test]
+    async fn sync_public_account_with_oversized_map_skips_vault_sync() {
+        // Three map entries exceed the threshold; one asset fits under it.
+        let (chain, account) = chain_with_updated_account(3, 1).await;
+        let rpc_api = MockRpcApi::new(chain).with_oversize_threshold(2);
+
+        let update = sync_updated_account(&rpc_api, &account).await;
+
+        let PublicAccountUpdate::Patch { storage, vault, .. } = update else {
+            panic!("expected a patch update");
+        };
+        let VaultUpdate::Full(assets) = vault else {
+            panic!("a complete vault must be applied as a replacement");
+        };
+        let expected_assets: Vec<Asset> = account.vault().assets().collect();
+        assert_eq!(assets, expected_assets);
+        // The transaction did not touch the map, so there are no changes to layer onto it.
+        assert_eq!(storage.maps().count(), 0);
+        assert_eq!(rpc_api.sync_storage_maps_call_count(), 1);
+        assert_eq!(rpc_api.sync_account_vault_call_count(), 0);
     }
 
     /// Builds an honest `get_account` response for `account_id`.

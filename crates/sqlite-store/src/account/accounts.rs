@@ -621,15 +621,16 @@ impl SqliteStore {
             "SELECT id, nonce FROM latest_account_headers WHERE account_commitment IN rarray(?)",
             "SELECT id, nonce FROM historical_account_headers WHERE account_commitment IN rarray(?)",
         ] {
-            let mut stmt = tx.prepare(query).into_store_error()?;
-            let rows = stmt
+            for row in tx
+                .prepare(query)
+                .into_store_error()?
                 .query_map(params![commitment_params.clone()], |row| {
                     let id: Vec<u8> = row.get("id")?;
                     let nonce: u64 = column_value_as_u64(row, "nonce")?;
                     Ok((id, nonce))
                 })
-                .into_store_error()?;
-            for row in rows {
+                .into_store_error()?
+            {
                 let (id, nonce) = row.into_store_error()?;
                 nonces_by_account.entry(id).or_default().insert(nonce);
             }

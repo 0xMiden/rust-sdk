@@ -288,6 +288,31 @@ impl<AUTH> Client<AUTH> {
         self.add_account_inner(account, ClientAccountType::Native, overwrite).await
     }
 
+    // ACCOUNT REGISTRATION
+    // --------------------------------------------------------------------------------------------
+
+    /// Binds an invitation code to `account_id` on the network allowlist.
+    ///
+    /// An invitation code is single use and binds to one account. A repeated call with the same
+    /// code and the same account succeeds and changes nothing, so the caller can retry the call
+    /// after a lost response.
+    ///
+    /// # Errors
+    ///
+    /// - If the invitation code does not exist.
+    /// - If the invitation code is registered to a different account.
+    /// - If the account is already registered.
+    /// - If the invitation code is empty.
+    pub async fn register_account(
+        &self,
+        invitation_code: &str,
+        account_id: AccountId,
+    ) -> Result<(), ClientError> {
+        self.rpc_api.register_account(invitation_code, account_id).await?;
+
+        Ok(())
+    }
+
     /// Inserts `account` into the store (or overwrites it if `overwrite` is true) and registers the
     /// per-account note tag if `client_account_type` is [`ClientAccountType::Native`].
     ///

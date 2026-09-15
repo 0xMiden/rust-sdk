@@ -28,6 +28,7 @@ use miden_client::store::{
     AccountStorageFilter,
     AccountUpdate,
     ClientAccountType,
+    StaleUpdate,
     StoreError,
 };
 use miden_client::utils::{Deserializable, Serializable};
@@ -479,13 +480,12 @@ impl SqliteStore {
         // state and archive incorrect history).
         let stored_header = Self::require_latest_account_header(tx, account_id)?;
         if stored_header.to_commitment() != init_account_state.to_commitment() {
-            return Err(StoreError::DatabaseError(format!(
-                "apply_account_patch: stored state {} for account {} does not match the patch's \
-                 initial state {}",
-                stored_header.to_commitment(),
+            return Err(StaleUpdate::AccountCommitmentMismatch {
                 account_id,
-                init_account_state.to_commitment(),
-            )));
+                initial_commitment: init_account_state.to_commitment(),
+                stored_commitment: stored_header.to_commitment(),
+            }
+            .into());
         }
 
         // Archive old header and insert the new one
@@ -894,16 +894,26 @@ impl SqliteStore {
             .map(|(header, ..)| header)
             .ok_or(StoreError::AccountDataNotFound(account_id))?;
 
-        if new_account_state.nonce().as_canonical_u64() < old_header.nonce().as_canonical_u64() {
-            return Err(StoreError::DatabaseError(format!(
-                "update_account_state: new nonce {} is less than old nonce {} for account {}",
-                new_account_state.nonce().as_canonical_u64(),
-                old_header.nonce().as_canonical_u64(),
-                account_id,
-            )));
+        let new_nonce = new_account_state.nonce().as_canonical_u64();
+        let stored_nonce = old_header.nonce().as_canonical_u64();
+
+        if new_nonce < stored_nonce {
+            return Err(
+                StaleUpdate::AccountNonceTooLow { account_id, new_nonce, stored_nonce }.into()
+            );
         }
 
-        let nonce_val = u64_to_value(new_account_state.nonce().as_canonical_u64());
+        let new_commitment = new_account_state.to_commitment();
+        if new_nonce == stored_nonce && new_commitment != old_header.to_commitment() {
+            return Err(StaleUpdate::AccountCommitmentMismatch {
+                account_id,
+                initial_commitment: new_commitment,
+                stored_commitment: old_header.to_commitment(),
+            }
+            .into());
+        }
+
+        let nonce_val = u64_to_value(new_nonce);
 
         // Reconcile the forest to the new full state before the latest tables are replaced below.
         Self::reconcile_account_forest(
@@ -998,6 +1008,7 @@ impl SqliteStore {
     pub(crate) fn apply_sync_account_patch(
         tx: &Transaction<'_>,
         smt_forest: &mut ScopedAccountForest<'_, '_>,
+        previous_header: &AccountHeader,
         new_header: &AccountHeader,
         patch: &AccountPatch,
     ) -> Result<(), StoreError> {
@@ -1007,17 +1018,15 @@ impl SqliteStore {
         let init_header = Self::require_latest_account_header(tx, account_id)?;
 
         if new_header.nonce().as_canonical_u64() <= init_header.nonce().as_canonical_u64() {
-            return Err(StoreError::DatabaseError(format!(
-                "apply_sync_account_patch: new nonce {} is not greater than local nonce {} for account {}",
-                new_header.nonce().as_canonical_u64(),
-                init_header.nonce().as_canonical_u64(),
+            return Err(StaleUpdate::AccountNonceTooLow {
                 account_id,
-            )));
+                new_nonce: new_header.nonce().as_canonical_u64(),
+                stored_nonce: init_header.nonce().as_canonical_u64(),
+            }
+            .into());
         }
-
         // Transaction derefs to Connection, so we can pass it where Connection is expected.
-
-        Self::apply_account_patch(tx, smt_forest, &init_header, new_header, patch)
+        Self::apply_account_patch(tx, smt_forest, previous_header, new_header, patch)
     }
 
     /// Locks the account if the mismatched digest doesn't belong to a previous account state (stale
@@ -1121,12 +1130,12 @@ impl SqliteStore {
             )));
         }
         if new_header.nonce().as_canonical_u64() < old_header.nonce().as_canonical_u64() {
-            return Err(StoreError::DatabaseError(format!(
-                "replace_account_header: new nonce {} is less than old nonce {} for account {}",
-                new_header.nonce().as_canonical_u64(),
-                old_header.nonce().as_canonical_u64(),
-                new_header.id(),
-            )));
+            return Err(StaleUpdate::AccountNonceTooLow {
+                account_id: new_header.id(),
+                new_nonce: new_header.nonce().as_canonical_u64(),
+                stored_nonce: old_header.nonce().as_canonical_u64(),
+            }
+            .into());
         }
 
         let id_bytes = new_header.id().to_bytes();

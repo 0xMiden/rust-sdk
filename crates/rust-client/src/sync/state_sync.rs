@@ -1178,7 +1178,7 @@ impl StateSync {
         // `sync_storage_maps` and `sync_account_vault`, even if not needed.
         let public_update = if vault_oversized || any_map_oversized {
             // Some part of the account is oversized — use incremental endpoints.
-            self.build_patch_update(account_id, &details, block_from, proof_block_num)
+            self.build_patch_update(account_id, local_header, &details, block_from, proof_block_num)
                 .await?
         } else {
             // The single response carries the full vault and every map's entries.
@@ -1249,6 +1249,7 @@ impl StateSync {
     async fn build_patch_update(
         &self,
         account_id: AccountId,
+        previous_header: &AccountHeader,
         details: &AccountDetails,
         block_from: BlockNumber,
         block_to: BlockNumber,
@@ -1284,6 +1285,7 @@ impl StateSync {
         .map_err(StoreError::AccountPatchError)?;
 
         Ok(PublicAccountUpdate::Patch {
+            previous_header: previous_header.clone(),
             new_header: details.header.clone(),
             patch,
         })

@@ -173,6 +173,8 @@ pub use miden_protocol::transaction::{
     RawOutputNote,
     RawOutputNotes,
     TransactionArgs,
+    TransactionFee,
+    TransactionFeeError,
     TransactionId,
     TransactionInputs,
     TransactionKernel,

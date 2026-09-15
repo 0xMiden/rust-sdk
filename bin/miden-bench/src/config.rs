@@ -60,8 +60,13 @@ pub async fn create_client(
         .build()
         .await?;
 
-    if let Some(path) = std::env::var_os("MIDEN_PROTOCOL_CONFIG") {
-        let bytes = std::fs::read(path)?;
+    let protocol_config_path =
+        std::env::var_os("MIDEN_PROTOCOL_CONFIG").map(PathBuf::from).or_else(|| {
+            let path = PathBuf::from("data/protocol-config.bin");
+            path.exists().then_some(path)
+        });
+    if let Some(protocol_config_path) = protocol_config_path {
+        let bytes = std::fs::read(&protocol_config_path)?;
         let config = ProtocolConfig::read_from_bytes(&bytes)?;
         client.add_protocol_config(config).await?;
     }

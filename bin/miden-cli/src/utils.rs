@@ -615,9 +615,13 @@ mod tests {
     use miden_client::asset::AssetAmount;
     use miden_client::testing::account_id::ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET;
 
-    use super::{FaucetMetadataResolver, RawFaucetEntry};
-
-    use super::{RawFaucetEntry, TokenParseError, base_units_to_tokens, tokens_to_base_units};
+    use super::{
+        FaucetMetadataResolver,
+        RawFaucetEntry,
+        TokenParseError,
+        base_units_to_tokens,
+        tokens_to_base_units,
+    };
 
     fn amount(units: u64) -> AssetAmount {
         AssetAmount::new(units).unwrap()

@@ -303,25 +303,7 @@ impl SqliteStore {
 // ================================================================================================
 
 /// Inserts the provided input note into the database, if the note already exists, it will be
-/// replaced. Returns the block numbers that unspent input notes prove inclusion in.
-pub(crate) fn unspent_note_block_numbers(
-    tx: &Transaction<'_>,
-) -> Result<BTreeSet<u32>, StoreError> {
-    let (query, params) = note_filter_to_query_input_notes(&NoteFilter::Unspent);
-    tx.prepare(query.as_str())
-        .into_store_error()?
-        .query_map(params_from_iter(params), parse_input_note_columns)
-        .into_store_error()?
-        .map(|result| Ok(result.into_store_error()?).and_then(parse_input_note))
-        .filter_map(|note| match note {
-            Ok(note) => {
-                note.inclusion_proof().map(|proof| Ok(proof.location().block_num().as_u32()))
-            },
-            Err(err) => Some(Err(err)),
-        })
-        .collect()
-}
-
+/// replaced.
 pub(super) fn upsert_input_note_tx(
     tx: &Transaction<'_>,
     note: &InputNoteRecord,
@@ -391,6 +373,25 @@ pub(super) fn upsert_input_note_tx(
         .into_store_error()?;
 
     Ok(())
+}
+
+// Returns the block numbers that unspent input notes prove inclusion in.
+pub(crate) fn unspent_note_block_numbers(
+    tx: &Transaction<'_>,
+) -> Result<BTreeSet<u32>, StoreError> {
+    let (query, params) = note_filter_to_query_input_notes(&NoteFilter::Unspent);
+    tx.prepare(query.as_str())
+        .into_store_error()?
+        .query_map(params_from_iter(params), parse_input_note_columns)
+        .into_store_error()?
+        .map(|result| Ok(result.into_store_error()?).and_then(parse_input_note))
+        .filter_map(|note| match note {
+            Ok(note) => {
+                note.inclusion_proof().map(|proof| Ok(proof.location().block_num().as_u32()))
+            },
+            Err(err) => Some(Err(err)),
+        })
+        .collect()
 }
 
 /// Parse input note columns from the provided row into native types.

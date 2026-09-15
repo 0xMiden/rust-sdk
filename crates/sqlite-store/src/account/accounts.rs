@@ -12,6 +12,7 @@ use miden_client::account::{
     AccountId,
     AccountPatch,
     AccountStorage,
+    AccountStoragePatch,
     Address,
     PartialAccount,
     PartialStorage,
@@ -29,6 +30,7 @@ use miden_client::store::{
     AccountUpdate,
     ClientAccountType,
     StoreError,
+    VaultUpdate,
 };
 use miden_client::utils::{Deserializable, Serializable};
 use miden_client::{AccountError, Felt, Word};
@@ -471,6 +473,27 @@ impl SqliteStore {
         final_account_state: &AccountHeader,
         patch: &AccountPatch,
     ) -> Result<(), StoreError> {
+        Self::apply_account_update(
+            tx,
+            smt_forest,
+            init_account_state,
+            final_account_state,
+            patch.storage(),
+            &VaultUpdate::Patch(patch.vault().clone()),
+        )
+    }
+
+    /// Applies a storage patch and a vault update to the account state.
+    ///
+    /// Archives old values from latest to historical and updates latest via INSERT OR REPLACE.
+    fn apply_account_update(
+        tx: &Transaction<'_>,
+        smt_forest: &mut ScopedAccountForest<'_, '_>,
+        init_account_state: &AccountHeader,
+        final_account_state: &AccountHeader,
+        storage: &AccountStoragePatch,
+        vault: &VaultUpdate,
+    ) -> Result<(), StoreError> {
         let account_id = final_account_state.id();
 
         // Reject patches for accounts the store does not track (forest updates for unknown accounts
@@ -491,13 +514,24 @@ impl SqliteStore {
         // Archive old header and insert the new one
         Self::replace_account_header(tx, final_account_state, init_account_state)?;
 
-        Self::apply_account_vault_patch(tx, account_id, final_account_state, patch.vault())?;
-
         // Build one forest update covering the vault and every changed map slot, and apply it at a
         // freshly allocated revision.
         let mut update = AccountUpdate::new();
-        update.vault_patch(account_id, patch.vault(), final_account_state.vault_root());
-        update.storage_patch(account_id, patch.storage());
+        match vault {
+            VaultUpdate::Full(assets) => {
+                Self::replace_account_vault(tx, account_id, final_account_state, assets)?;
+                update.full_vault(
+                    account_id,
+                    assets.iter().copied(),
+                    final_account_state.vault_root(),
+                );
+            },
+            VaultUpdate::Patch(vault_patch) => {
+                Self::apply_account_vault_patch(tx, account_id, final_account_state, vault_patch)?;
+                update.vault_patch(account_id, vault_patch, final_account_state.vault_root());
+            },
+        }
+        update.storage_patch(account_id, storage);
 
         let revision = allocate_forest_revision(tx).into_store_error()?;
         smt_forest.apply(revision, update)?;
@@ -507,7 +541,7 @@ impl SqliteStore {
             smt_forest,
             account_id,
             final_account_state.nonce().as_canonical_u64(),
-            patch.storage(),
+            storage,
         )?;
         Self::verify_storage_commitment(tx, account_id, final_account_state.storage_commitment())?;
 
@@ -931,14 +965,6 @@ impl SqliteStore {
             params![&nonce_val, &account_id_bytes],
         )
         .into_store_error()?;
-        tx.execute(
-            "INSERT OR REPLACE INTO historical_account_assets \
-             (account_id, replaced_at_nonce, asset_id, old_asset) \
-             SELECT account_id, ?, asset_id, asset \
-             FROM latest_account_assets WHERE account_id = ?",
-            params![&nonce_val, &account_id_bytes],
-        )
-        .into_store_error()?;
 
         // Delete all latest entries for this account
         tx.execute(
@@ -951,15 +977,9 @@ impl SqliteStore {
             params![&account_id_bytes],
         )
         .into_store_error()?;
-        tx.execute(
-            "DELETE FROM latest_account_assets WHERE account_id = ?",
-            params![&account_id_bytes],
-        )
-        .into_store_error()?;
 
         // Insert all new entries into latest only
         Self::insert_storage_slots(tx, account_id, new_account_state.storage().slots().iter())?;
-        Self::insert_assets(tx, account_id, new_account_state.vault().assets())?;
 
         // Write NULL historical entries for genuinely new entries that didn't exist in the old
         // state (INSERT OR IGNORE skips entries already archived above)
@@ -979,27 +999,24 @@ impl SqliteStore {
             params![&nonce_val, &account_id_bytes],
         )
         .into_store_error()?;
-        tx.execute(
-            "INSERT OR IGNORE INTO historical_account_assets \
-             (account_id, replaced_at_nonce, asset_id, old_asset) \
-             SELECT account_id, ?, asset_id, NULL \
-             FROM latest_account_assets WHERE account_id = ?",
-            params![&nonce_val, &account_id_bytes],
-        )
-        .into_store_error()?;
+
+        let new_header: AccountHeader = new_account_state.into();
+        let assets: Vec<Asset> = new_account_state.vault().assets().collect();
+        Self::replace_account_vault(tx, account_id, &new_header, &assets)?;
 
         // Archive the old header to historical and write the new one to latest.
-        Self::replace_account_header(tx, &new_account_state.into(), &old_header)?;
+        Self::replace_account_header(tx, &new_header, &old_header)?;
 
         Ok(())
     }
 
-    /// Applies an incremental patch to a public account's state during sync.
+    /// Applies a storage patch and a vault update to a public account's state during sync.
     pub(crate) fn apply_sync_account_patch(
         tx: &Transaction<'_>,
         smt_forest: &mut ScopedAccountForest<'_, '_>,
         new_header: &AccountHeader,
-        patch: &AccountPatch,
+        storage: &AccountStoragePatch,
+        vault: &VaultUpdate,
     ) -> Result<(), StoreError> {
         let account_id = new_header.id();
 
@@ -1015,9 +1032,7 @@ impl SqliteStore {
             )));
         }
 
-        // Transaction derefs to Connection, so we can pass it where Connection is expected.
-
-        Self::apply_account_patch(tx, smt_forest, &init_header, new_header, patch)
+        Self::apply_account_update(tx, smt_forest, &init_header, new_header, storage, vault)
     }
 
     /// Locks the account if the mismatched digest doesn't belong to a previous account state (stale

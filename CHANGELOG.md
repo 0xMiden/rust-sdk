@@ -10,6 +10,7 @@
 * [BREAKING][behavior][rust] A Note Transport Layer failure no longer fails `Client::sync_state`. The error is logged and the chain sync still applies; the transport cursor is left where it was, so the next sync requests the same page again ([#2453](https://github.com/0xMiden/rust-sdk/pull/2453)).
 * [BREAKING][type][rust] Added the `TransactionRequestError::SwapNoteWithZeroAsset` variant, so exhaustive matches on `TransactionRequestError` must handle it ([#2459](https://github.com/0xMiden/rust-sdk/pull/2459)).
 * [BREAKING][removal][test] Loose helper functions in `miden_client::testing::common` are now methods on `TestClient`. `TestClient::keystore()` exposes the client's keystore, so `ClientConfig::into_client` and `into_unsynced_client` return just the `TestClient` instead of a client/keystore pair ([#2481](https://github.com/0xMiden/rust-sdk/pull/2481)).
+* [BREAKING][type][rust] Syncing a public account with an oversized vault or storage map now fetches only the oversized parts from the incremental endpoints: `sync_storage_maps` is called only when a storage map is oversized and `sync_account_vault` only when the vault is. Storage maps that the `get_account` response carries in full are applied as slot replacements, and a vault carried in full is applied as a replacement. `PublicAccountUpdate::Patch` now carries `storage: AccountStoragePatch` and `vault: VaultUpdate` (`Full(Vec<Asset>)` or `Patch(AccountVaultPatch)`) instead of an `AccountPatch`, so `Store` implementations must apply a `Full` vault by replacing it ([#2217](https://github.com/0xMiden/rust-sdk/issues/2217)).
 
 ### Features
 
@@ -29,7 +30,6 @@
 
 ### Enhancements
 
-* [rust] Syncing a public account with an oversized vault but no oversized storage map no longer calls `sync_storage_maps`. The storage maps that the `get_account` response carries in full are applied from that response, and only oversized maps are fetched as changes over the synced range ([#2217](https://github.com/0xMiden/rust-sdk/issues/2217)).
 * [rust] `Client::sync_state` fetches a Note Transport Layer page and the node's chain update concurrently, instead of running a full note transport sync before the chain sync. The transport notes are imported first and their records join the chain sync's note updates, so a note delivered and committed within the same sync is reported by that sync ([#2453](https://github.com/0xMiden/rust-sdk/pull/2453)).
 
 ## 0.16.0 (2026-09-07)

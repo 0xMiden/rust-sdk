@@ -47,6 +47,49 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// Replaces the account's vault with `assets`.
+    ///
+    /// Every current asset is archived to historical and removed from latest, the new assets are
+    /// inserted, and assets that did not exist before get a NULL historical row.
+    ///
+    /// The corresponding forest update happens in `apply_account_patch`.
+    pub(crate) fn replace_account_vault(
+        tx: &Transaction<'_>,
+        account_id: AccountId,
+        final_account_state: &AccountHeader,
+        assets: &[Asset],
+    ) -> Result<(), StoreError> {
+        let account_id_bytes = account_id.to_bytes();
+        let nonce_val = u64_to_value(final_account_state.nonce().as_canonical_u64());
+
+        tx.execute(
+            "INSERT OR REPLACE INTO historical_account_assets \
+             (account_id, replaced_at_nonce, asset_id, old_asset) \
+             SELECT account_id, ?, asset_id, asset \
+             FROM latest_account_assets WHERE account_id = ?",
+            params![&nonce_val, &account_id_bytes],
+        )
+        .into_store_error()?;
+        tx.execute(
+            "DELETE FROM latest_account_assets WHERE account_id = ?",
+            params![&account_id_bytes],
+        )
+        .into_store_error()?;
+
+        Self::insert_assets(tx, account_id, assets.iter().copied())?;
+
+        tx.execute(
+            "INSERT OR IGNORE INTO historical_account_assets \
+             (account_id, replaced_at_nonce, asset_id, old_asset) \
+             SELECT account_id, ?, asset_id, NULL \
+             FROM latest_account_assets WHERE account_id = ?",
+            params![&nonce_val, &account_id_bytes],
+        )
+        .into_store_error()?;
+
+        Ok(())
+    }
+
     /// Persists vault patch changes to the asset tables, updating fungible and non-fungible assets.
     /// It archives old values from latest to historical, deletes removed assets from latest, then
     /// inserts updated assets.

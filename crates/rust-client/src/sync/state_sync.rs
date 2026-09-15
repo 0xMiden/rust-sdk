@@ -21,7 +21,7 @@ use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrDelta, PartialMmr};
 use miden_protocol::note::{NoteId, NoteTag, Nullifier};
 use tracing::info;
 
-use super::state_sync_update::{TransactionUpdateTracker, build_account_patch};
+use super::state_sync_update::{TransactionUpdateTracker, VaultUpdate, build_storage_patch};
 use super::{
     AccountUpdates,
     NoteObserver,
@@ -1254,9 +1254,11 @@ impl StateSync {
     ///
     /// Maps that the `get_account` response carries in full become `Create` patches, which the
     /// store applies as a full replacement of the slot. Oversized maps are fetched as changes over
-    /// the synced range with `sync_storage_maps`, which is skipped when no map is oversized. The
-    /// vault changes are always fetched with `sync_account_vault`, because a vault patch cannot
-    /// express a full replacement.
+    /// the synced range with `sync_storage_maps`, which is skipped when no map is oversized.
+    ///
+    /// A vault the response carries in full is passed to the store as [`VaultUpdate::Full`] and
+    /// replaces the local vault. An oversized vault is fetched as changes over the synced range
+    /// with `sync_account_vault`.
     async fn build_patch_update(
         &self,
         account_id: AccountId,
@@ -1311,25 +1313,29 @@ impl StateSync {
             BTreeMap::new()
         };
 
-        let vault_info = self
-            .rpc_api
-            .sync_account_vault(block_from + 1, block_to, account_id)
-            .await
-            .map_err(ClientError::RpcError)?;
+        let vault = if details.vault_details.too_many_assets {
+            let vault_info = self
+                .rpc_api
+                .sync_account_vault(block_from + 1, block_to, account_id)
+                .await
+                .map_err(ClientError::RpcError)?;
+            VaultUpdate::Patch(vault_info.vault_patch)
+        } else {
+            VaultUpdate::Full(details.vault_details.assets.clone())
+        };
 
-        let patch = build_account_patch(
+        let storage = build_storage_patch(
             &details.header,
             value_slot_updates,
             changed_map_entries,
             complete_map_entries,
-            vault_info.vault_patch,
-            details.code.clone(),
         )
         .map_err(StoreError::AccountPatchError)?;
 
         Ok(PublicAccountUpdate::Patch {
             new_header: details.header.clone(),
-            patch,
+            storage,
+            vault,
         })
     }
 

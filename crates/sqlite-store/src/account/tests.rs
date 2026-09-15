@@ -24,7 +24,7 @@ use miden_client::account::{
 use miden_client::assembly::CodeBuilder;
 use miden_client::asset::{Asset, FungibleAsset, NonFungibleAsset, NonFungibleAssetDetails};
 use miden_client::auth::{AuthSchemeId, AuthSingleSig, PublicKeyCommitment};
-use miden_client::store::{AccountUpdate, ClientAccountType, Store, StoreError};
+use miden_client::store::{AccountUpdate, ClientAccountType, Store, StoreError, VaultUpdate};
 use miden_client::testing::common::{ACCOUNT_ID_REGULAR, create_test_store_path};
 use miden_client::{EMPTY_WORD, Felt, ONE, Serializable, Word, ZERO};
 use miden_protocol::account::{
@@ -401,6 +401,82 @@ async fn apply_account_patch_removes_slots_and_assets() -> anyhow::Result<()> {
     assert!(read_slot_value(&store, account_id, &value_slot_name).await?.is_none());
     assert!(read_slot_value(&store, account_id, &map_slot_name).await?.is_none());
 
+    Ok(())
+}
+
+/// A sync update with a full vault replaces the vault: assets missing from the list are removed and
+/// the listed ones are inserted.
+#[tokio::test]
+async fn apply_sync_account_patch_replaces_vault() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+
+    let fungible_faucet = AccountId::try_from(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET)?;
+    let non_fungible: Asset = NonFungibleAsset::new(&NonFungibleAssetDetails::new(
+        AccountId::try_from(ACCOUNT_ID_PUBLIC_NON_FUNGIBLE_FAUCET)?,
+        NON_FUNGIBLE_ASSET_DATA.into(),
+    ))
+    .into();
+    let initial_assets: Vec<Asset> =
+        vec![FungibleAsset::new(fungible_faucet, 100)?.into(), non_fungible];
+
+    let account = AccountBuilder::new([0; 32])
+        .account_type(AccountType::Private)
+        .with_component(AuthSingleSig::new(Approver::new(
+            PublicKeyCommitment::from(EMPTY_WORD),
+            AuthSchemeId::Falcon512Poseidon2,
+        )))
+        .with_component(BasicWallet)
+        .with_assets(initial_assets)
+        .build_existing()?;
+    let account_id = account.id();
+    store
+        .insert_account(&account, Address::new(account_id), ClientAccountType::Native)
+        .await?;
+
+    // The on-chain state changed the fungible amount and removed the non-fungible asset.
+    let mut vault_patch = AccountVaultPatch::default();
+    vault_patch.insert_asset(FungibleAsset::new(fungible_faucet, 250)?.into());
+    vault_patch.remove_asset(non_fungible.id());
+    let state_patch = AccountPatch::new(
+        account_id,
+        AccountStoragePatch::default(),
+        vault_patch,
+        None,
+        Some(Felt::from(2u32)),
+    )?;
+    let mut account_after = account.clone();
+    account_after.apply_patch(&state_patch)?;
+    let new_header: AccountHeader = (&account_after).into();
+
+    // The vault arrives as the complete asset list and there are no storage changes.
+    let vault = VaultUpdate::Full(account_after.vault().assets().collect());
+
+    store
+        .interact_with_connection(move |conn| {
+            let tx = conn.transaction().into_store_error()?;
+            let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
+
+            SqliteStore::apply_sync_account_patch(
+                &tx,
+                &mut smt_forest,
+                &new_header,
+                &AccountStoragePatch::default(),
+                &vault,
+            )?;
+
+            drop(smt_forest);
+            tx.commit().into_store_error()?;
+            Ok(())
+        })
+        .await?;
+
+    let updated_account: Account = store
+        .get_account(account_id)
+        .await?
+        .context("failed to find inserted account")?
+        .try_into()?;
+
+    assert_eq!(updated_account, account_after);
     Ok(())
 }
 

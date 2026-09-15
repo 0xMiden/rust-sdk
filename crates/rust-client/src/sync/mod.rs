@@ -93,6 +93,7 @@ pub use state_sync_update::{
     PublicAccountUpdate,
     StateSyncUpdate,
     TransactionUpdateTracker,
+    VaultUpdate,
 };
 
 /// Untracks the given block leaves from `partial_mmr`, returning the authentication-node indices

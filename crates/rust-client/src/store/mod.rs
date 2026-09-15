@@ -85,7 +85,7 @@ pub use account::{
     ClientAccountType,
 };
 
-pub use crate::sync::PublicAccountUpdate;
+pub use crate::sync::{PublicAccountUpdate, VaultUpdate};
 mod note_record;
 pub use note_record::{
     InputNoteRecord,

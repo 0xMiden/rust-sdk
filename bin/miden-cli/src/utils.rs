@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use miden_client::account::{AccountId, FaucetMetadata};
-use miden_client::address::{Address, AddressId};
+use miden_client::address::{Address, AddressId, NetworkId};
 use miden_client::asset::{Asset, FungibleAsset};
 use miden_client::transaction::{ExecutedTransaction, InputNote};
 use miden_client::utils::{base_units_to_tokens, tokens_to_base_units};
@@ -48,12 +48,16 @@ pub(crate) async fn get_input_acc_id_by_prefix_or_default<AUTH>(
 ///
 /// - It's a hex prefix of an account ID of an account tracked by the client.
 /// - It's a full hex account ID.
-/// - It's a full bech32 account ID.
+/// - It's a full bech32 address.
+///
+/// An address encodes the network it belongs to. An address from another network refers to another
+/// chain, so it is rejected.
 ///
 /// # Errors
 ///
 /// - Will return a `IdPrefixFetchError` if the provided account ID string can't be parsed as an
 ///   `AccountId` and doesn't correspond to an account tracked by the client either.
+/// - Will return a `CliError::Input` if the address belongs to another network.
 pub(crate) async fn parse_account_id<AUTH>(
     client: &Client<AUTH>,
     account_id: &str,
@@ -68,9 +72,9 @@ pub(crate) async fn parse_account_id<AUTH>(
         .map_err(|_| CliError::Input(format!("Input account ID {account_id} is neither a valid Account ID nor a hex prefix of a known Account ID")))?
         .id())
     } else {
-        let address = Address::decode(account_id)
-            .map_err(|err| CliError::Input(format!("error parsing bech32 address: {err}")))?
-            .1;
+        let (address_network_id, address) = Address::decode(account_id)
+            .map_err(|err| CliError::Input(format!("error parsing bech32 address: {err}")))?;
+        validate_network_eq(&address_network_id, &client.network_id().await?)?;
         match address.id() {
             AddressId::AccountId(account_id_address) => Ok(account_id_address),
             _ => Err(CliError::Input(format!(
@@ -78,6 +82,25 @@ pub(crate) async fn parse_account_id<AUTH>(
             ))),
         }
     }
+}
+
+/// Rejects an address that belongs to a network other than the configured one.
+pub(crate) fn validate_network_eq(
+    address_network_id: &NetworkId,
+    client_network_id: &NetworkId,
+) -> Result<(), CliError> {
+    if address_network_id != client_network_id {
+        return Err(CliError::Input(format!(
+            "Address network `{address_network_id}` does not match configured network `{client_network_id}`",
+        )));
+    }
+
+    Ok(())
+}
+
+/// Returns true if the string can only be an account ID or an address, and not a token symbol.
+fn is_account_identifier(asset: &str) -> bool {
+    asset.starts_with("0x") || Address::decode(asset).is_ok()
 }
 
 /// Splits a `<ACCOUNT_ID>[:<PROCEDURE>]` target into its account ID and procedure parts.
@@ -109,7 +132,8 @@ pub(super) fn config_file_exists() -> Result<bool, CliError> {
 /// Returns the faucet metadata resolver using the config file.
 pub fn load_faucet_metadata_resolver() -> Result<FaucetMetadataResolver, CliError> {
     let config = CliConfig::load()?;
-    FaucetMetadataResolver::new(config.token_symbol_map_filepath)
+    let network_id = config.rpc.endpoint.0.to_network_id();
+    FaucetMetadataResolver::new(config.token_symbol_map_filepath, &network_id)
 }
 
 /// Prints the effects of an executed transaction: input notes, output notes, storage value changes,
@@ -298,7 +322,13 @@ impl FaucetMetadataResolver {
     /// Creates a new instance of the [`FaucetMetadataResolver`] by loading the token symbol map
     /// file from the specified `token_symbol_map_filepath`. If the file doesn't exist, an empty map
     /// is created.
-    pub fn new(token_symbol_map_filepath: PathBuf) -> Result<Self, CliError> {
+    ///
+    /// Every entry must hold an address of the `network_id` network. An entry of another network
+    /// names a faucet on another chain, so it is rejected when the map is loaded.
+    pub fn new(
+        token_symbol_map_filepath: PathBuf,
+        network_id: &NetworkId,
+    ) -> Result<Self, CliError> {
         let raw: BTreeMap<String, RawFaucetEntry> =
             match std::fs::read_to_string(token_symbol_map_filepath) {
                 Ok(content) => toml::from_str(&content).map_err(|err| {
@@ -319,7 +349,7 @@ impl FaucetMetadataResolver {
         let mut parsed: BTreeMap<String, FaucetTomlEntry> = BTreeMap::new();
         let mut seen: BTreeSet<AccountId> = BTreeSet::new();
         for (symbol, entry) in raw {
-            let account_id = parse_address(&entry.address).map_err(|err| {
+            let account_id = parse_address(&entry.address, network_id).map_err(|err| {
                 CliError::Config(
                     err.into(),
                     format!("Failed to parse `address` for token symbol {symbol}"),
@@ -432,20 +462,26 @@ impl FaucetMetadataResolver {
             "separator `::` not found".into(),
             "Failed to parse amount and asset".to_string(),
         ))?;
-        let (faucet_id, amount) = if let Ok(id) = parse_account_id(client, asset).await {
-            let amount = amount
-                .parse::<u64>()
-                .map_err(|err| CliError::Parse(err.into(), "Failed to parse u64".to_string()))?;
-            (id, amount)
-        } else {
-            let entry = self.toml.get(asset).ok_or(CliError::Config(
-                "Token symbol not found in the map file".to_string().into(),
-                asset.to_string(),
-            ))?;
-            let amount = tokens_to_base_units(amount, entry.decimals).map_err(|err| {
-                CliError::Parse(err.into(), "Failed to parse tokens to base units".to_string())
-            })?;
-            (entry.account_id, amount.as_u64())
+        let (faucet_id, amount) = match parse_account_id(client, asset).await {
+            Ok(faucet_id) => {
+                let amount = amount.parse::<u64>().map_err(|err| {
+                    CliError::Parse(err.into(), "Failed to parse u64".to_string())
+                })?;
+                (faucet_id, amount)
+            },
+            // A token symbol is never an account ID or an address, so the token symbol map cannot
+            // resolve this asset. Report why the account ID is invalid.
+            Err(err) if is_account_identifier(asset) => return Err(err),
+            Err(_) => {
+                let entry = self.toml.get(asset).ok_or(CliError::Config(
+                    "Token symbol not found in the map file".to_string().into(),
+                    asset.to_string(),
+                ))?;
+                let amount = tokens_to_base_units(amount, entry.decimals).map_err(|err| {
+                    CliError::Parse(err.into(), "Failed to parse tokens to base units".to_string())
+                })?;
+                (entry.account_id, amount.as_u64())
+            },
         };
 
         FungibleAsset::new(faucet_id, amount).map_err(CliError::Asset)
@@ -467,10 +503,11 @@ fn faucet_metadata_setting_key(faucet_id: AccountId) -> String {
     format!("{FAUCET_METADATA_SETTING_PREFIX}{}", faucet_id.to_hex())
 }
 
-/// Parses a bech32 address from the token symbol map.
-fn parse_address(address_str: &str) -> Result<AccountId, String> {
-    let (_, address) = Address::decode(address_str)
+/// Parses a bech32 address from the token symbol map and checks that it belongs to `network_id`.
+fn parse_address(address_str: &str, network_id: &NetworkId) -> Result<AccountId, String> {
+    let (address_network_id, address) = Address::decode(address_str)
         .map_err(|err| format!("`{address_str}` is not a valid bech32 address: {err}"))?;
+    validate_network_eq(&address_network_id, network_id).map_err(|err| err.to_string())?;
     if let AddressId::AccountId(account_id) = address.id() {
         return Ok(account_id);
     }
@@ -481,7 +518,11 @@ fn parse_address(address_str: &str) -> Result<AccountId, String> {
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::RawFaucetEntry;
+    use miden_client::account::AccountId;
+    use miden_client::address::{Address, NetworkId};
+    use miden_client::testing::account_id::ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET;
+
+    use super::{FaucetMetadataResolver, RawFaucetEntry};
 
     #[test]
     fn raw_faucet_entry_accepts_address_field() {
@@ -492,6 +533,27 @@ mod tests {
 
         assert_eq!(entries["BTC"].address, "mlcl1qru2e5yvx40ndgqqqzusrryr0ucyd0uj");
         assert_eq!(entries["BTC"].decimals, 8);
+    }
+
+    /// The token symbol map names faucets by address. An address of another network names a faucet
+    /// on another chain, so the map must not load.
+    #[test]
+    fn faucet_metadata_resolver_rejects_address_from_another_network() {
+        let faucet_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
+        let address = Address::new(faucet_id).encode(NetworkId::Testnet);
+        let path = std::env::temp_dir().join("token_symbol_map_network_mismatch.toml");
+        std::fs::write(&path, format!(r#"BTC = {{ address = "{address}", decimals = 8 }}"#))
+            .unwrap();
+
+        let result = FaucetMetadataResolver::new(path.clone(), &NetworkId::Mainnet);
+        std::fs::remove_file(&path).unwrap();
+
+        let err = result.unwrap_err();
+        let source = std::error::Error::source(&err).unwrap().to_string();
+        assert!(
+            source.contains("does not match configured network"),
+            "unexpected error: {source}"
+        );
     }
 
     #[test]

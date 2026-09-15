@@ -313,6 +313,11 @@ impl<AUTH> Client<AUTH> {
         Ok(())
     }
 
+    /// Returns whether the network lets `account_id` be created on chain.
+    pub async fn is_account_allowed(&self, account_id: AccountId) -> Result<bool, ClientError> {
+        Ok(self.rpc_api.is_account_allowed(account_id).await?)
+    }
+
     /// Inserts `account` into the store (or overwrites it if `overwrite` is true) and registers the
     /// per-account note tag if `client_account_type` is [`ClientAccountType::Native`].
     ///

@@ -691,6 +691,19 @@ impl NodeRpcClient for GrpcClient {
         Ok(())
     }
 
+    async fn is_account_allowed(&self, account_id: AccountId) -> Result<bool, RpcError> {
+        let request: proto::account::AccountId = account_id.into();
+
+        let response = self
+            .call_with_retry(RpcEndpoint::IsAccountAllowed, |mut rpc_api| {
+                let request = request.clone();
+                Box::pin(async move { rpc_api.is_account_allowed(request).await })
+            })
+            .await?;
+
+        Ok(response.into_inner().allowed)
+    }
+
     /// Sends one or more `SyncNoteRequest`s to the node and merges the responses into a list of
     /// [`SyncNotesBlock`]s.
     ///

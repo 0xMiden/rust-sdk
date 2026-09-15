@@ -593,14 +593,11 @@ impl SqliteStore {
             .query_map(params![account_id.to_bytes()], |row| row.get::<_, String>(0))
             .into_store_error()?;
 
-        let mut names = Vec::new();
-        for row in rows {
-            names.push(
-                StorageSlotName::new(row.into_store_error()?)
-                    .map_err(|e| StoreError::ParsingError(e.to_string()))?,
-            );
-        }
-        Ok(names)
+        rows.map(|row| {
+            StorageSlotName::new(row.into_store_error()?)
+                .map_err(|e| StoreError::ParsingError(e.to_string()))
+        })
+        .collect()
     }
 
     /// Undoes discarded account states by restoring old values from historical.
@@ -1153,38 +1150,20 @@ impl SqliteStore {
                 rows.collect::<Result<Vec<Vec<u8>>, _>>().into_store_error()?
             };
 
-            // Delete historical entries.
-            total_deleted += tx
-                .execute(
-                    "DELETE FROM historical_account_headers \
-                 WHERE id = ? AND replaced_at_nonce <= ?",
-                    params![&account_id_bytes, &boundary_val],
-                )
-                .into_store_error()?;
-
-            total_deleted += tx
-                .execute(
-                    "DELETE FROM historical_account_storage \
-                 WHERE account_id = ? AND replaced_at_nonce <= ?",
-                    params![&account_id_bytes, &boundary_val],
-                )
-                .into_store_error()?;
-
-            total_deleted += tx
-                .execute(
-                    "DELETE FROM historical_storage_map_entries \
-                 WHERE account_id = ? AND replaced_at_nonce <= ?",
-                    params![&account_id_bytes, &boundary_val],
-                )
-                .into_store_error()?;
-
-            total_deleted += tx
-                .execute(
-                    "DELETE FROM historical_account_assets \
-                 WHERE account_id = ? AND replaced_at_nonce <= ?",
-                    params![&account_id_bytes, &boundary_val],
-                )
-                .into_store_error()?;
+            // Delete historical entries. The headers table names the account column `id`.
+            for (table, account_column) in [
+                ("historical_account_headers", "id"),
+                ("historical_account_storage", "account_id"),
+                ("historical_storage_map_entries", "account_id"),
+                ("historical_account_assets", "account_id"),
+            ] {
+                let query = format!(
+                    "DELETE FROM {table} WHERE {account_column} = ? AND replaced_at_nonce <= ?"
+                );
+                total_deleted += tx
+                    .execute(&query, params![&account_id_bytes, &boundary_val])
+                    .into_store_error()?;
+            }
 
             // Delete orphaned code: only check commitments from the deleted headers, and only if
             // they are not referenced by any remaining header or foreign code.

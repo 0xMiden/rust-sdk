@@ -40,7 +40,7 @@ use crate::note::filters::{
     note_filter_to_query_output_notes,
 };
 use crate::sql_error::SqlResultExt;
-use crate::{column_value_as_u64, insert_sql, subst, u64_to_value, with_write_tx};
+use crate::{column_value_as_u64, u64_to_value, with_write_tx};
 
 mod filters;
 
@@ -189,10 +189,11 @@ impl SqliteStore {
         notes: &[InputNoteRecord],
     ) -> Result<(), StoreError> {
         with_write_tx(conn, |tx| {
-            for note in notes {
-                upsert_input_note_tx(tx, note)?;
+            let mut scripts: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
+            let mut serialized = Vec::with_capacity(notes.len());
 
-                // Whenever we insert a note, we also update block relevance
+            for note in notes {
+                // A note that carries an inclusion proof makes its block relevant to the client.
                 if let Some(inclusion_proof) = note.inclusion_proof() {
                     set_block_header_has_client_notes(
                         tx,
@@ -200,8 +201,15 @@ impl SqliteStore {
                         true,
                     )?;
                 }
+
+                let note_data = serialize_input_note(note);
+                scripts.insert(note_data.script_root.clone(), note_data.script.clone());
+                serialized.push(note_data);
             }
-            Ok(())
+
+            // Scripts must be written before the notes that reference them by foreign key.
+            batch_upsert_scripts(tx, &scripts)?;
+            batch_insert_input_notes(tx, &serialized)
         })
     }
 
@@ -260,77 +268,6 @@ impl SqliteStore {
 // HELPERS
 // ================================================================================================
 
-/// Inserts the provided input note into the database, if the note already exists, it will be
-/// replaced.
-pub(super) fn upsert_input_note_tx(
-    tx: &Transaction<'_>,
-    note: &InputNoteRecord,
-) -> Result<(), StoreError> {
-    let SerializedInputNoteData {
-        details_commitment,
-        id,
-        assets,
-        attachments,
-        serial_number,
-        inputs,
-        script_root,
-        script,
-        nullifier,
-        state_discriminant,
-        state,
-        created_at,
-        consumed_block_height,
-        consumed_tx_order,
-        consumer_account_id,
-    } = serialize_input_note(note);
-
-    tx.prepare_cached(UPSERT_NOTE_SCRIPT_QUERY)
-        .into_store_error()?
-        .execute(params![script_root, script])
-        .into_store_error()?;
-
-    const NOTE_QUERY: &str = insert_sql!(
-        input_notes {
-            details_commitment,
-            note_id,
-            assets,
-            attachments,
-            serial_number,
-            inputs,
-            script_root,
-            nullifier,
-            state_discriminant,
-            state,
-            created_at,
-            consumed_block_height,
-            consumed_tx_order,
-            consumer_account_id,
-        } | REPLACE
-    );
-
-    tx.prepare_cached(NOTE_QUERY)
-        .into_store_error()?
-        .execute(params![
-            details_commitment,
-            id,
-            assets,
-            attachments,
-            serial_number,
-            inputs,
-            script_root,
-            nullifier,
-            state_discriminant,
-            state,
-            u64_to_value(created_at),
-            consumed_block_height,
-            consumed_tx_order,
-            consumer_account_id,
-        ])
-        .into_store_error()?;
-
-    Ok(())
-}
-
 /// Builds an input note record from one row of the input notes query.
 fn parse_input_note(row: &rusqlite::Row<'_>) -> Result<InputNoteRecord, StoreError> {
     let assets: Vec<u8> = row.get("assets").into_store_error()?;
@@ -361,10 +298,7 @@ fn serialize_input_note(note: &InputNoteRecord) -> SerializedInputNoteData {
     // it. The columns are NULL-able and get populated once metadata arrives (via sync / inclusion
     // proof).
     let id = note.id().map(|id| id.as_word().to_bytes());
-    let nullifier = note.metadata().map(|metadata| {
-        miden_client::note::Nullifier::from_details_and_metadata(note.details(), metadata)
-            .to_bytes()
-    });
+    let nullifier = note.nullifier().map(|nullifier| nullifier.to_bytes());
     let created_at = note.created_at().unwrap_or(0);
 
     let details = note.details();
@@ -658,8 +592,8 @@ fn batch_upsert_scripts(
         );
         let mut param_values: Vec<Value> = Vec::with_capacity(chunk.len() * 2);
         for (root, script) in chunk {
-            param_values.push(Value::Blob((*root).clone()));
-            param_values.push(Value::Blob((*script).clone()));
+            param_values.push((*root).clone().into());
+            param_values.push((*script).clone().into());
         }
         tx.execute(&query, params_from_iter(param_values)).into_store_error()?;
     }
@@ -688,35 +622,20 @@ fn batch_insert_input_notes(
         );
         let mut param_values: Vec<Value> = Vec::with_capacity(chunk.len() * 14);
         for note in chunk {
-            param_values.push(Value::Blob(note.details_commitment.clone()));
-            match &note.id {
-                Some(id) => param_values.push(Value::Blob(id.clone())),
-                None => param_values.push(Value::Null),
-            }
-            param_values.push(Value::Blob(note.assets.clone()));
-            param_values.push(Value::Blob(note.attachments.clone()));
-            param_values.push(Value::Blob(note.serial_number.clone()));
-            param_values.push(Value::Blob(note.inputs.clone()));
-            param_values.push(Value::Blob(note.script_root.clone()));
-            match &note.nullifier {
-                Some(n) => param_values.push(Value::Blob(n.clone())),
-                None => param_values.push(Value::Null),
-            }
-            param_values.push(Value::Integer(i64::from(note.state_discriminant)));
-            param_values.push(Value::Blob(note.state.clone()));
+            param_values.push(note.details_commitment.clone().into());
+            param_values.push(note.id.clone().into());
+            param_values.push(note.assets.clone().into());
+            param_values.push(note.attachments.clone().into());
+            param_values.push(note.serial_number.clone().into());
+            param_values.push(note.inputs.clone().into());
+            param_values.push(note.script_root.clone().into());
+            param_values.push(note.nullifier.clone().into());
+            param_values.push(note.state_discriminant.into());
+            param_values.push(note.state.clone().into());
             param_values.push(u64_to_value(note.created_at));
-            match note.consumed_block_height {
-                Some(h) => param_values.push(Value::Integer(i64::from(h))),
-                None => param_values.push(Value::Null),
-            }
-            match note.consumed_tx_order {
-                Some(o) => param_values.push(Value::Integer(i64::from(o))),
-                None => param_values.push(Value::Null),
-            }
-            match &note.consumer_account_id {
-                Some(id) => param_values.push(Value::Blob(id.clone())),
-                None => param_values.push(Value::Null),
-            }
+            param_values.push(note.consumed_block_height.into());
+            param_values.push(note.consumed_tx_order.into());
+            param_values.push(note.consumer_account_id.clone().into());
         }
         tx.execute(&query, params_from_iter(param_values)).into_store_error()?;
     }
@@ -777,23 +696,17 @@ fn batch_insert_output_notes(
         );
         let mut param_values: Vec<Value> = Vec::with_capacity(chunk.len() * 11);
         for note in chunk {
-            param_values.push(Value::Blob(note.details_commitment.clone()));
-            param_values.push(Value::Blob(note.id.clone()));
-            param_values.push(Value::Blob(note.assets.clone()));
-            param_values.push(Value::Blob(note.recipient_digest.clone()));
-            param_values.push(Value::Blob(note.metadata.clone()));
-            match &note.nullifier {
-                Some(n) => param_values.push(Value::Blob(n.clone())),
-                None => param_values.push(Value::Null),
-            }
-            param_values.push(Value::Integer(i64::from(note.expected_height)));
-            match &note.script_root {
-                Some(root) => param_values.push(Value::Blob(root.clone())),
-                None => param_values.push(Value::Null),
-            }
-            param_values.push(Value::Integer(i64::from(note.state_discriminant)));
-            param_values.push(Value::Blob(note.state.clone()));
-            param_values.push(Value::Blob(note.attachments.clone()));
+            param_values.push(note.details_commitment.clone().into());
+            param_values.push(note.id.clone().into());
+            param_values.push(note.assets.clone().into());
+            param_values.push(note.recipient_digest.clone().into());
+            param_values.push(note.metadata.clone().into());
+            param_values.push(note.nullifier.clone().into());
+            param_values.push(note.expected_height.into());
+            param_values.push(note.script_root.clone().into());
+            param_values.push(note.state_discriminant.into());
+            param_values.push(note.state.clone().into());
+            param_values.push(note.attachments.clone().into());
         }
         tx.execute(&query, params_from_iter(param_values)).into_store_error()?;
     }

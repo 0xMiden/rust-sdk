@@ -17,7 +17,7 @@ use miden_client::asset::{Asset, AssetId};
 use miden_client::store::{AccountStatus, AccountStorageFilter, ClientAccountType, StoreError};
 use miden_client::{Deserializable, Serializable, Word};
 use rusqlite::types::{ToSqlOutput, Value};
-use rusqlite::{Connection, Params, params, params_from_iter};
+use rusqlite::{Connection, OptionalExtension, Params, params, params_from_iter};
 
 use crate::sql_error::SqlResultExt;
 use crate::{column_value_as_u64, text_array};
@@ -138,16 +138,10 @@ pub(super) fn query_account_code(
 
     conn.prepare_cached(CODE_QUERY)
         .into_store_error()?
-        .query_map(params![commitment.to_bytes()], |row| {
-            let code: Vec<u8> = row.get(0)?;
-            Ok(code)
-        })
+        .query_row(params![commitment.to_bytes()], |row| row.get::<_, Vec<u8>>(0))
+        .optional()
         .into_store_error()?
-        .map(|result| {
-            let bytes: Vec<u8> = result.into_store_error()?;
-            Ok(AccountCode::read_from_bytes(&bytes)?)
-        })
-        .next()
+        .map(|bytes| Ok(AccountCode::read_from_bytes(&bytes)?))
         .transpose()
 }
 
@@ -191,7 +185,7 @@ pub(crate) fn query_vault_assets(
             let (asset_id_bytes, asset_bytes): (Vec<u8>, Vec<u8>) = result.into_store_error()?;
             let asset_id = AssetId::read_from_bytes(&asset_id_bytes)?;
             let value_word = Word::read_from_bytes(&asset_bytes)?;
-            Ok(Asset::from_id_and_value_words(asset_id.to_word(), value_word)?)
+            Ok(Asset::from_id_and_value(asset_id, value_word)?)
         })
         .collect::<Result<Vec<Asset>, StoreError>>()
 }
@@ -201,52 +195,10 @@ pub(crate) fn query_storage_slots(
     account_id: AccountId,
     filter: &AccountStorageFilter,
 ) -> Result<BTreeMap<StorageSlotName, StorageSlot>, StoreError> {
-    // Build storage values query with filter pushed to SQL
-    let base_query =
-        "SELECT slot_name, slot_value, slot_type FROM latest_account_storage WHERE account_id = ?1";
-    let mut values_params: Vec<ToSqlOutput<'static>> =
-        vec![ToSqlOutput::Owned(Value::Blob(account_id.to_bytes()))];
-    let query = match filter {
-        AccountStorageFilter::All => base_query.to_string(),
-        AccountStorageFilter::SlotName(name) => {
-            values_params.push(ToSqlOutput::Owned(Value::Text(name.to_string())));
-            format!("{base_query} AND slot_name = ?2")
-        },
-        AccountStorageFilter::SlotNames(names) => {
-            if names.is_empty() {
-                return Ok(BTreeMap::new());
-            }
-            values_params
-                .push(ToSqlOutput::Array(text_array(names.iter().map(StorageSlotName::to_string))));
-            format!("{base_query} AND slot_name IN rarray(?2)")
-        },
-        AccountStorageFilter::Root(root) => {
-            values_params.push(ToSqlOutput::Owned(Value::Blob(root.to_bytes())));
-            format!("{base_query} AND slot_value = ?2")
-        },
-    };
+    let storage_values = query_filtered_storage_values(conn, account_id, filter)?;
 
-    let mut stmt = conn.prepare(&query).into_store_error()?;
-    let storage_values = stmt
-        .query_map(params_from_iter(values_params.iter()), |row| {
-            let slot_name: String = row.get("slot_name")?;
-            let value: Vec<u8> = row.get("slot_value")?;
-            let slot_type: u8 = row.get("slot_type")?;
-            Ok((slot_name, value, slot_type))
-        })
-        .into_store_error()?
-        .map(|result| {
-            let (slot_name, value, slot_type) = result.into_store_error()?;
-            let slot_name = StorageSlotName::new(slot_name)
-                .map_err(|err| StoreError::ParsingError(err.to_string()))?;
-            let slot_type = StorageSlotType::try_from(slot_type)
-                .map_err(|e| StoreError::ParsingError(e.to_string()))?;
-            Ok((slot_name, Word::read_from_bytes(&value)?, slot_type))
-        })
-        .collect::<Result<Vec<(StorageSlotName, Word, StorageSlotType)>, StoreError>>()?;
-
-    // Restrict map entries query by slot name(s) when the filter narrows by name, so we don't load
-    // map entries we'll discard.
+    // Restrict the map entries query by slot name when the filter narrows by name, so that entries
+    // the result discards are not read.
     let map_filter: Option<Vec<String>> = match filter {
         AccountStorageFilter::SlotName(name) => Some(vec![name.to_string()]),
         AccountStorageFilter::SlotNames(names) => {
@@ -255,7 +207,8 @@ pub(crate) fn query_storage_slots(
         AccountStorageFilter::All | AccountStorageFilter::Root(_) => None,
     };
 
-    let has_map_slots = storage_values.iter().any(|(_, _, t)| *t == StorageSlotType::Map);
+    let has_map_slots =
+        storage_values.values().any(|(slot_type, _)| *slot_type == StorageSlotType::Map);
     let mut storage_maps = if has_map_slots {
         query_storage_maps(conn, account_id, map_filter.as_deref())?
     } else {
@@ -264,16 +217,15 @@ pub(crate) fn query_storage_slots(
 
     Ok(storage_values
         .into_iter()
-        .map(|(slot_name, value, slot_type)| {
-            let key = slot_name.clone();
+        .map(|(slot_name, (slot_type, value))| {
             let slot = match slot_type {
-                StorageSlotType::Value => StorageSlot::with_value(slot_name, value),
+                StorageSlotType::Value => StorageSlot::with_value(slot_name.clone(), value),
                 StorageSlotType::Map => StorageSlot::with_map(
                     slot_name.clone(),
                     storage_maps.remove(&slot_name).unwrap_or(StorageMap::new()),
                 ),
             };
-            (key, slot)
+            (slot_name, slot)
         })
         .collect())
 }
@@ -299,29 +251,16 @@ pub(crate) fn query_storage_maps(
     };
 
     let mut stmt = conn.prepare(&query).into_store_error()?;
-    let map_entries = stmt
-        .query_map(params_from_iter(map_params.iter()), |row| {
-            let slot_name: String = row.get("slot_name")?;
-            let key: Vec<u8> = row.get("key")?;
-            let value: Vec<u8> = row.get("value")?;
-
-            Ok((slot_name, key, value))
-        })
-        .into_store_error()?
-        .map(|result| {
-            let (slot_name, key, value) = result.into_store_error()?;
-            let slot_name = StorageSlotName::new(slot_name)
-                .map_err(|err| StoreError::ParsingError(err.to_string()))?;
-            Ok((
-                slot_name,
-                StorageMapKey::new(Word::read_from_bytes(&key)?),
-                Word::read_from_bytes(&value)?,
-            ))
-        })
-        .collect::<Result<Vec<(StorageSlotName, StorageMapKey, Word)>, StoreError>>()?;
-
+    let mut rows = stmt.query(params_from_iter(map_params.iter())).into_store_error()?;
     let mut maps = BTreeMap::new();
-    for (slot_name, key, value) in map_entries {
+    while let Some(row) = rows.next().into_store_error()? {
+        let slot_name: String = row.get("slot_name").into_store_error()?;
+        let key: Vec<u8> = row.get("key").into_store_error()?;
+        let value: Vec<u8> = row.get("value").into_store_error()?;
+        let slot_name = StorageSlotName::new(slot_name)
+            .map_err(|err| StoreError::ParsingError(err.to_string()))?;
+        let key = StorageMapKey::new(Word::read_from_bytes(&key)?);
+        let value = Word::read_from_bytes(&value)?;
         let map = maps.entry(slot_name).or_insert_with(StorageMap::new);
         map.insert(key, value)?;
     }
@@ -329,16 +268,50 @@ pub(crate) fn query_storage_maps(
     Ok(maps)
 }
 
+/// Reads the type and the top-level value of every storage slot of the account. The value of a map
+/// slot is the root of the map.
 pub(crate) fn query_storage_values(
     conn: &Connection,
     account_id: AccountId,
 ) -> Result<BTreeMap<StorageSlotName, (StorageSlotType, Word)>, StoreError> {
-    const STORAGE_QUERY: &str =
-        "SELECT slot_name, slot_value, slot_type FROM latest_account_storage WHERE account_id = ?";
+    query_filtered_storage_values(conn, account_id, &AccountStorageFilter::All)
+}
 
-    conn.prepare(STORAGE_QUERY)
+/// Reads the type and the top-level value of the account storage slots that `filter` selects. The
+/// filter is applied in SQL, so rows that the caller discards are not read.
+fn query_filtered_storage_values(
+    conn: &Connection,
+    account_id: AccountId,
+    filter: &AccountStorageFilter,
+) -> Result<BTreeMap<StorageSlotName, (StorageSlotType, Word)>, StoreError> {
+    const BASE_QUERY: &str =
+        "SELECT slot_name, slot_value, slot_type FROM latest_account_storage WHERE account_id = ?1";
+
+    let mut values_params: Vec<ToSqlOutput<'static>> =
+        vec![ToSqlOutput::Owned(Value::Blob(account_id.to_bytes()))];
+    let query = match filter {
+        AccountStorageFilter::All => BASE_QUERY.to_string(),
+        AccountStorageFilter::SlotName(name) => {
+            values_params.push(ToSqlOutput::Owned(Value::Text(name.to_string())));
+            format!("{BASE_QUERY} AND slot_name = ?2")
+        },
+        AccountStorageFilter::SlotNames(names) => {
+            if names.is_empty() {
+                return Ok(BTreeMap::new());
+            }
+            values_params
+                .push(ToSqlOutput::Array(text_array(names.iter().map(StorageSlotName::to_string))));
+            format!("{BASE_QUERY} AND slot_name IN rarray(?2)")
+        },
+        AccountStorageFilter::Root(root) => {
+            values_params.push(ToSqlOutput::Owned(Value::Blob(root.to_bytes())));
+            format!("{BASE_QUERY} AND slot_value = ?2")
+        },
+    };
+
+    conn.prepare(&query)
         .into_store_error()?
-        .query_map(params![account_id.to_bytes()], |row| {
+        .query_map(params_from_iter(values_params.iter()), |row| {
             let slot_name: String = row.get("slot_name")?;
             let value: Vec<u8> = row.get("slot_value")?;
             let slot_type: u8 = row.get("slot_type")?;
@@ -350,7 +323,7 @@ pub(crate) fn query_storage_values(
             let slot_name = StorageSlotName::new(slot_name)
                 .map_err(|err| StoreError::ParsingError(err.to_string()))?;
             let slot_type = StorageSlotType::try_from(slot_type)
-                .map_err(|e| StoreError::ParsingError(e.to_string()))?;
+                .map_err(|err| StoreError::ParsingError(err.to_string()))?;
             Ok((slot_name, (slot_type, Word::read_from_bytes(&value)?)))
         })
         .collect()

@@ -428,15 +428,17 @@ fn compute_update_mutations(
         let leaf_index = LeafIndex::<SMT_DEPTH>::from(key);
         let position = leaf_index.position();
 
-        if let Entry::Vacant(entry) = leaves.entry(position) {
-            let entries = if bulk_loaded {
-                Vec::new()
-            } else {
-                load_leaf_entries(conn, lineage, position)?
-            };
-            entry.insert(entries);
-        }
-        let entries = leaves.get_mut(&position).expect("leaf loaded above");
+        let entries = match leaves.entry(position) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => {
+                let stored = if bulk_loaded {
+                    Vec::new()
+                } else {
+                    load_leaf_entries(conn, lineage, position)?
+                };
+                entry.insert(stored)
+            },
+        };
 
         let old_value = entries.iter().find(|(k, _)| *k == key).map_or(EMPTY_WORD, |(_, v)| *v);
         if value == old_value {

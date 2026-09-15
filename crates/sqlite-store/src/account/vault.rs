@@ -75,6 +75,7 @@ impl SqliteStore {
 
         let account_id_bytes = account_id.to_bytes();
         let nonce_val = u64_to_value(final_account_state.nonce().as_canonical_u64());
+        let mut read_stmt = tx.prepare_cached(READ_OLD_ASSET).into_store_error()?;
         let mut hist_stmt = tx.prepare_cached(HISTORICAL_INSERT).into_store_error()?;
         let mut latest_stmt = tx.prepare_cached(LATEST_INSERT).into_store_error()?;
 
@@ -92,10 +93,8 @@ impl SqliteStore {
 
         for (asset_id_bytes, new_asset) in removed.chain(updated) {
             // Read the value the entry held before this nonce. A NULL value marks a new entry.
-            let old_asset: Option<Vec<u8>> = tx
-                .query_row(READ_OLD_ASSET, params![&account_id_bytes, &asset_id_bytes], |row| {
-                    row.get(0)
-                })
+            let old_asset: Option<Vec<u8>> = read_stmt
+                .query_row(params![&account_id_bytes, &asset_id_bytes], |row| row.get(0))
                 .optional()
                 .into_store_error()?
                 .flatten();

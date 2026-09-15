@@ -773,30 +773,6 @@ pub(crate) fn apply_note_updates_tx(
 // NOTE STATE GUARD
 // ================================================================================================
 
-/// Returns `true` when an input note stored in `old_discriminant` may be written to
-/// `new_discriminant`.
-///
-/// Apart from `Invalid`, the discriminants are ordered along the note lifecycle, and the lifecycle
-/// only moves forward. A note that stays in the same state is not a transition and is allowed, so
-/// applying the same update twice is not an error.
-fn input_note_transition_is_valid(old_discriminant: u8, new_discriminant: u8) -> bool {
-    // An invalid note can never be consumed, so no state follows `Invalid`. Its discriminant sits
-    // between `Committed` and `ProcessingAuthenticated`, so the comparison below does not cover it.
-    if old_discriminant == InputNoteState::STATE_INVALID {
-        return new_discriminant == InputNoteState::STATE_INVALID;
-    }
-
-    new_discriminant >= old_discriminant
-}
-
-/// Returns `true` when an output note stored in `old_discriminant` may be written to
-/// `new_discriminant`.
-///
-/// The discriminants are ordered along the note lifecycle, and the lifecycle only moves forward.
-fn output_note_transition_is_valid(old_discriminant: u8, new_discriminant: u8) -> bool {
-    new_discriminant >= old_discriminant
-}
-
 /// Returns the stored state discriminant of each note that already has a row in `table`. Notes with
 /// no row yet are absent from the result.
 fn stored_note_states(
@@ -846,7 +822,7 @@ fn reject_stale_input_note_writes(
         };
         let new_discriminant = note.state().discriminant();
 
-        if !input_note_transition_is_valid(old_discriminant, new_discriminant) {
+        if !InputNoteState::is_valid_transition(old_discriminant, new_discriminant) {
             return Err(StaleUpdate::InputNote {
                 details_commitment: details_commitment.as_word(),
                 found: old_discriminant,
@@ -875,7 +851,7 @@ fn reject_stale_output_note_writes(
         };
         let new_discriminant = note.state().discriminant();
 
-        if !output_note_transition_is_valid(old_discriminant, new_discriminant) {
+        if !OutputNoteState::is_valid_transition(old_discriminant, new_discriminant) {
             return Err(StaleUpdate::OutputNote {
                 details_commitment: details_commitment.as_word(),
                 found: old_discriminant,

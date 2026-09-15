@@ -1006,6 +1006,7 @@ impl SqliteStore {
     pub(crate) fn apply_sync_account_patch(
         tx: &Transaction<'_>,
         smt_forest: &mut ScopedAccountForest<'_, '_>,
+        previous_header: &AccountHeader,
         new_header: &AccountHeader,
         patch: &AccountPatch,
     ) -> Result<(), StoreError> {
@@ -1022,10 +1023,8 @@ impl SqliteStore {
             }
             .into());
         }
-
         // Transaction derefs to Connection, so we can pass it where Connection is expected.
-
-        Self::apply_account_patch(tx, smt_forest, &init_header, new_header, patch)
+        Self::apply_account_patch(tx, smt_forest, previous_header, new_header, patch)
     }
 
     /// Locks the account if the mismatched digest doesn't belong to a previous account state (stale

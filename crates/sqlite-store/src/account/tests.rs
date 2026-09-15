@@ -2867,9 +2867,11 @@ async fn apply_sync_account_patch_rejects_a_nonce_that_is_not_newer() -> anyhow:
     let mut current = account.clone();
     apply_single_entry_update(&store, &mut current, &map_slot_name, 2).await?;
 
-    // The same nonce-2 patch a lagging node would send again after it was already applied.
+    // The same nonce-2 patch a lagging node would send again after it was already applied. The
+    // basis matches the stored state, so only the nonce check can reject it.
     let patch = single_entry_patch(&account, &map_slot_name, 2, 2000)?;
     let new_header: AccountHeader = (&current).into();
+    let previous_header: AccountHeader = (&current).into();
 
     let metrics_before = get_storage_metrics(&store).await;
 
@@ -2877,7 +2879,13 @@ async fn apply_sync_account_patch_rejects_a_nonce_that_is_not_newer() -> anyhow:
         .interact_with_connection(move |conn| {
             let tx = conn.transaction().into_store_error()?;
             let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
-            SqliteStore::apply_sync_account_patch(&tx, &mut smt_forest, &new_header, &patch)?;
+            SqliteStore::apply_sync_account_patch(
+                &tx,
+                &mut smt_forest,
+                &previous_header,
+                &new_header,
+                &patch,
+            )?;
             drop(smt_forest);
             tx.commit().into_store_error()?;
             Ok(())
@@ -2886,6 +2894,59 @@ async fn apply_sync_account_patch_rejects_a_nonce_that_is_not_newer() -> anyhow:
 
     assert!(
         matches!(&result, Err(StoreError::StaleUpdate(StaleUpdate::AccountNonce { .. }))),
+        "expected a stale update conflict, got {result:?}"
+    );
+
+    let persisted: Account = store
+        .get_account(account.id())
+        .await?
+        .context("account should exist after the rejected patch")?
+        .try_into()?;
+    assert_eq!(persisted, current);
+    assert_eq!(get_storage_metrics(&store).await, metrics_before);
+
+    Ok(())
+}
+
+/// A sync patch is only correct on top of the state it was derived from, so a store that moved on
+/// since the patch was built must reject it.
+#[tokio::test]
+async fn apply_sync_account_patch_rejects_a_basis_the_store_moved_past() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+    let map_slot_name = StorageSlotName::new("test::stale_sync_basis::map").expect("valid slot");
+
+    let account = setup_account_with_map(&store, 3, &map_slot_name).await?;
+    let mut current = account.clone();
+    apply_single_entry_update(&store, &mut current, &map_slot_name, 2).await?;
+
+    // The patch was built against the nonce-1 state, which the store has moved past. Its nonce is
+    // newer than the stored one, so only the basis check can reject it.
+    let previous_header: AccountHeader = (&account).into();
+    let patch = single_entry_patch(&account, &map_slot_name, 3, 3000)?;
+    let new_header: AccountHeader = (&advanced_account(&account, &map_slot_name, 3, 3000)?).into();
+    assert!(new_header.nonce().as_canonical_u64() > current.nonce().as_canonical_u64());
+
+    let metrics_before = get_storage_metrics(&store).await;
+
+    let result = store
+        .interact_with_connection(move |conn| {
+            let tx = conn.transaction().into_store_error()?;
+            let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
+            SqliteStore::apply_sync_account_patch(
+                &tx,
+                &mut smt_forest,
+                &previous_header,
+                &new_header,
+                &patch,
+            )?;
+            drop(smt_forest);
+            tx.commit().into_store_error()?;
+            Ok(())
+        })
+        .await;
+
+    assert!(
+        matches!(&result, Err(StoreError::StaleUpdate(StaleUpdate::AccountCommitment { .. }))),
         "expected a stale update conflict, got {result:?}"
     );
 

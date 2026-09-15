@@ -2,50 +2,15 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::ToString;
 use alloc::vec::Vec;
 
+use miden_objects::ConversionError;
 use miden_protocol::Word;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{NoteHeader, NoteId, NoteInclusionProof, Nullifier};
-use miden_protocol::transaction::{
-    InputNoteCommitment,
-    InputNotes,
-    TransactionHeader,
-    TransactionId,
-};
+use miden_protocol::transaction::{InputNoteCommitment, InputNotes, TransactionHeader};
 
-use super::note::CommittedNote;
+use super::note::{CommittedNote, note_id_from_proto, note_inclusion_proof_from_proto};
+use super::nullifier::nullifier_from_proto;
 use crate::rpc::{RpcConversionError, RpcError, generated as proto};
-
-// INTO TRANSACTION ID
-// ================================================================================================
-
-impl TryFrom<proto::primitives::Digest> for TransactionId {
-    type Error = RpcConversionError;
-
-    fn try_from(value: proto::primitives::Digest) -> Result<Self, Self::Error> {
-        let word: Word = value.try_into()?;
-        Ok(Self::from_raw(word))
-    }
-}
-
-impl TryFrom<proto::transaction::TransactionId> for TransactionId {
-    type Error = RpcConversionError;
-
-    fn try_from(value: proto::transaction::TransactionId) -> Result<Self, Self::Error> {
-        value
-            .id
-            .ok_or(RpcConversionError::MissingFieldInProtobufRepresentation {
-                entity: "TransactionId",
-                field_name: "id",
-            })?
-            .try_into()
-    }
-}
-
-impl From<TransactionId> for proto::transaction::TransactionId {
-    fn from(value: TransactionId) -> Self {
-        Self { id: Some(value.as_word().into()) }
-    }
-}
 
 // TRANSACTION RECORD
 // ================================================================================================
@@ -104,23 +69,22 @@ impl TryFrom<proto::rpc::TransactionRecord> for TransactionRecord {
             })?;
 
         let (transaction_header, output_notes, erased_output_notes) =
-            convert_transaction_header(proto_header, value.output_note_proofs)?;
+            convert_transaction_header(proto_header, &value.output_note_proofs)?;
 
-        let consumed_note_refs = value
-            .consumed_note_refs
-            .into_iter()
-            .map(|r| {
-                let nullifier: Nullifier = r
-                    .nullifier
-                    .ok_or(RpcError::ExpectedDataMissing("consumed_note_ref.nullifier".into()))?
-                    .try_into()?;
-                let note_id: NoteId = r
-                    .note_id
-                    .ok_or(RpcError::ExpectedDataMissing("consumed_note_ref.note_id".into()))?
-                    .try_into()?;
-                Ok((nullifier, note_id))
-            })
-            .collect::<Result<Vec<_>, RpcError>>()?;
+        let consumed_note_refs =
+            value
+                .consumed_note_refs
+                .into_iter()
+                .map(|r| {
+                    let nullifier = nullifier_from_proto(r.nullifier.ok_or(
+                        RpcError::ExpectedDataMissing("consumed_note_ref.nullifier".into()),
+                    )?)?;
+                    let note_id = note_id_from_proto(r.note_id.ok_or(
+                        RpcError::ExpectedDataMissing("consumed_note_ref.note_id".into()),
+                    )?)?;
+                    Ok((nullifier, note_id))
+                })
+                .collect::<Result<Vec<_>, RpcError>>()?;
 
         Ok(Self {
             block_num,
@@ -141,7 +105,7 @@ impl TryFrom<proto::rpc::TransactionRecord> for TransactionRecord {
 /// erased (created and consumed within the same batch).
 fn convert_transaction_header(
     value: proto::transaction::TransactionHeader,
-    output_note_proofs: Vec<proto::note::NoteInclusionInBlockProof>,
+    output_note_proofs: &[proto::note::NoteInclusionProof],
 ) -> Result<(TransactionHeader, Vec<CommittedNote>, Vec<NoteHeader>), RpcError> {
     let account_id =
         value
@@ -173,7 +137,7 @@ fn convert_transaction_header(
                 .nullifier
                 .ok_or(RpcError::ExpectedDataMissing("nullifier".into()))?
                 .try_into()
-                .map_err(|e: RpcConversionError| RpcError::InvalidResponse(e.to_string()))?;
+                .map_err(|e: ConversionError| RpcError::InvalidResponse(e.to_string()))?;
             Ok(InputNoteCommitment::from(Nullifier::from_raw(word)))
         })
         .collect::<Result<Vec<_>, RpcError>>()?;
@@ -186,22 +150,15 @@ fn convert_transaction_header(
         .map(|proto_header| {
             proto_header
                 .try_into()
-                .map_err(|e: RpcConversionError| RpcError::InvalidResponse(e.to_string()))
+                .map_err(|e: ConversionError| RpcError::InvalidResponse(e.to_string()))
         })
         .collect::<Result<Vec<_>, RpcError>>()?;
 
     // Build a map of note_id to inclusion_proof from the separate proofs field.
     let mut proof_map: BTreeMap<NoteId, NoteInclusionProof> = BTreeMap::new();
-    for mut proto_proof in output_note_proofs {
-        let note_id: NoteId = proto_proof
-            .note_id
-            .take()
-            .ok_or(RpcError::ExpectedDataMissing("output_note_proofs.note_id".into()))?
-            .try_into()
-            .map_err(|e: RpcConversionError| RpcError::InvalidResponse(e.to_string()))?;
-        let inclusion_proof: NoteInclusionProof = proto_proof
-            .try_into()
-            .map_err(|e: RpcConversionError| RpcError::InvalidResponse(e.to_string()))?;
+    for proto_proof in output_note_proofs {
+        let (note_id, inclusion_proof) = note_inclusion_proof_from_proto(proto_proof)
+            .map_err(|e| RpcError::InvalidResponse(e.to_string()))?;
         proof_map.insert(note_id, inclusion_proof);
     }
 

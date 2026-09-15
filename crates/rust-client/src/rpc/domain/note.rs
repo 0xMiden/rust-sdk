@@ -2,6 +2,7 @@ use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::vec::Vec;
 
+use miden_objects::ConversionError;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::SequentialCommit;
@@ -13,35 +14,44 @@ use miden_protocol::note::{
     NoteAttachmentScheme,
     NoteAttachments,
     NoteDetails,
-    NoteDetailsCommitment,
-    NoteHeader,
     NoteId,
     NoteInclusionProof,
     NoteMetadata,
-    NoteScript,
     NoteTag,
     NoteType,
     PartialNoteMetadata,
 };
-use miden_protocol::{Felt, MastForest, MastNodeId, Word};
-use miden_tx::utils::serde::Deserializable;
+use miden_protocol::{Felt, Word};
 
 use super::{MissingFieldHelper, RpcConversionError};
 use crate::rpc::{RpcError, generated as proto};
 
-impl From<NoteId> for proto::note::NoteId {
-    fn from(value: NoteId) -> Self {
-        proto::note::NoteId { id: Some(value.into()) }
-    }
+/// Reads a note ID off the wire. A free function because both types are foreign, so there can be no
+/// `TryFrom` impl.
+pub(crate) fn note_id_from_proto(value: proto::note::NoteId) -> Result<NoteId, RpcConversionError> {
+    Ok(NoteId::from_raw(Word::try_from(value)?))
 }
 
-impl TryFrom<proto::note::NoteId> for NoteId {
-    type Error = RpcConversionError;
+/// Reads a note inclusion proof and the ID of the note it proves.
+pub(crate) fn note_inclusion_proof_from_proto(
+    value: &proto::note::NoteInclusionProof,
+) -> Result<(NoteId, NoteInclusionProof), ConversionError> {
+    <(NoteId, NoteInclusionProof)>::try_from(value)
+}
 
-    fn try_from(value: proto::note::NoteId) -> Result<Self, Self::Error> {
-        let word =
-            Word::try_from(value.id.ok_or(proto::note::NoteId::missing_field(stringify!(id)))?)?;
-        Ok(Self::from_raw(word))
+/// Accepts only the note versions this client understands.
+///
+/// An unspecified version is a malformed response rather than an older note, so it is rejected
+/// instead of being read as version 1.
+fn validate_note_version(raw: i32) -> Result<(), RpcConversionError> {
+    match proto::note::NoteVersion::try_from(raw) {
+        Ok(proto::note::NoteVersion::V1) => Ok(()),
+        Ok(proto::note::NoteVersion::Unspecified) => {
+            Err(RpcConversionError::InvalidField("note metadata version is unspecified".into()))
+        },
+        Err(_) => Err(RpcConversionError::InvalidField(alloc::format!(
+            "unknown note metadata version {raw}"
+        ))),
     }
 }
 
@@ -54,80 +64,6 @@ fn note_type_from_proto(raw: i32) -> Result<NoteType, RpcConversionError> {
         proto::note::NoteType::Unspecified => {
             Err(RpcConversionError::InvalidField("note_type=NOTE_TYPE_UNSPECIFIED".into()))
         },
-    }
-}
-
-fn note_type_to_proto(note_type: NoteType) -> i32 {
-    let proto_note_type = match note_type {
-        NoteType::Public => proto::note::NoteType::Public,
-        NoteType::Private => proto::note::NoteType::Private,
-    };
-    proto_note_type as i32
-}
-
-/// Decodes the `attachment_schemes` slice from a proto `NoteMetadata` into the fixed-size header
-/// array expected by [`NoteMetadata::from_parts`]. Trailing absent slots may be omitted on the
-/// wire; we pad with absent headers to reach the protocol's `NoteAttachments::MAX_COUNT`.
-fn attachment_headers_from_proto(
-    schemes: &[u32],
-) -> Result<[NoteAttachmentHeader; NoteAttachments::MAX_COUNT], RpcConversionError> {
-    if schemes.len() > NoteAttachments::MAX_COUNT {
-        return Err(RpcConversionError::InvalidField(alloc::format!(
-            "attachment_schemes length {} exceeds NoteAttachments::MAX_COUNT",
-            schemes.len(),
-        )));
-    }
-    let mut headers = [NoteAttachmentHeader::absent(); NoteAttachments::MAX_COUNT];
-    for (slot, raw) in schemes.iter().enumerate() {
-        if *raw == 0 {
-            continue;
-        }
-        let raw_u16 = u16::try_from(*raw).map_err(|_| {
-            RpcConversionError::InvalidField(alloc::format!(
-                "attachment_schemes[{slot}]={raw} does not fit in u16",
-            ))
-        })?;
-        let scheme = NoteAttachmentScheme::new(raw_u16).map_err(|err| {
-            RpcConversionError::InvalidField(alloc::format!("attachment_schemes[{slot}]: {err}"))
-        })?;
-        headers[slot] = NoteAttachmentHeader::new(scheme);
-    }
-    Ok(headers)
-}
-
-fn attachment_schemes_to_proto(
-    headers: &[NoteAttachmentHeader; NoteAttachments::MAX_COUNT],
-) -> Vec<u32> {
-    // Encode each header as the scheme value, with `0` meaning absent. Trailing absent slots are
-    // stripped to match the wire convention.
-    let mut encoded: Vec<u32> = headers
-        .iter()
-        .map(|h| h.scheme().map_or(0, |s| u32::from(s.as_u16())))
-        .collect();
-    while matches!(encoded.last(), Some(0)) {
-        encoded.pop();
-    }
-    encoded
-}
-
-impl TryFrom<proto::note::NoteMetadata> for NoteMetadata {
-    type Error = RpcConversionError;
-
-    fn try_from(value: proto::note::NoteMetadata) -> Result<Self, Self::Error> {
-        let partial_metadata: PartialNoteMetadata = (&value).try_into()?;
-        let attachment_headers = attachment_headers_from_proto(&value.attachment_schemes)?;
-        let attachments_commitment = value
-            .attachments_commitment
-            .ok_or_else(|| {
-                proto::note::NoteMetadata::missing_field(stringify!(attachments_commitment))
-            })?
-            .try_into()?;
-
-        Ok(NoteMetadata::from_parts(
-            partial_metadata,
-            attachment_headers,
-            attachments_commitment,
-        ))
     }
 }
 
@@ -233,13 +169,17 @@ struct SyncNoteMetadata {
     attachments: ReportedAttachments,
 }
 
-impl TryFrom<proto::note::NoteSyncMetadata> for SyncNoteMetadata {
+impl TryFrom<proto::rpc::NoteSyncMetadata> for SyncNoteMetadata {
     type Error = RpcConversionError;
 
-    fn try_from(value: proto::note::NoteSyncMetadata) -> Result<Self, Self::Error> {
+    fn try_from(value: proto::rpc::NoteSyncMetadata) -> Result<Self, Self::Error> {
+        // The sync record carries the note version separately from the canonical metadata message,
+        // so it is checked here to reject the same versions `miden-objects` rejects.
+        validate_note_version(value.version)?;
+
         let sender = value
             .sender
-            .ok_or_else(|| proto::note::NoteSyncMetadata::missing_field(stringify!(sender)))?
+            .ok_or_else(|| proto::rpc::NoteSyncMetadata::missing_field(stringify!(sender)))?
             .try_into()?;
         let note_type = note_type_from_proto(value.note_type)?;
         let tag = NoteTag::new(value.tag);
@@ -268,20 +208,20 @@ impl TryFrom<proto::note::NoteSyncMetadata> for SyncNoteMetadata {
             attachment_headers[slot] = NoteAttachmentHeader::new(scheme);
 
             let payload = attachment.payload.ok_or_else(|| {
-                proto::note::NoteSyncAttachment::missing_field(stringify!(payload))
+                proto::rpc::NoteSyncAttachment::missing_field(stringify!(payload))
             })?;
             // An attachment that fits in a single word is sent verbatim, so it can be rebuilt in
             // full. A larger one is sent as a commitment to keep the sync response bounded. The
             // node may send a commitment even for a single-word one, so the choice is read off the
             // payload variant and never inferred from a word count.
             let report = match payload {
-                proto::note::note_sync_attachment::Payload::Value(value) => {
+                proto::rpc::note_sync_attachment::Payload::Value(value) => {
                     ReportedAttachment::Full(NoteAttachment::with_word(
                         scheme,
                         Word::try_from(value)?,
                     ))
                 },
-                proto::note::note_sync_attachment::Payload::Commitment(commitment) => {
+                proto::rpc::note_sync_attachment::Payload::Commitment(commitment) => {
                     ReportedAttachment::Commitment(Word::try_from(commitment)?)
                 },
             };
@@ -298,73 +238,6 @@ impl TryFrom<proto::note::NoteSyncMetadata> for SyncNoteMetadata {
             ),
             attachments,
         })
-    }
-}
-
-impl TryFrom<&proto::note::NoteMetadata> for PartialNoteMetadata {
-    type Error = RpcConversionError;
-
-    fn try_from(value: &proto::note::NoteMetadata) -> Result<Self, Self::Error> {
-        let sender = value
-            .sender
-            .clone()
-            .ok_or_else(|| proto::note::NoteMetadata::missing_field(stringify!(sender)))?
-            .try_into()?;
-        let note_type = note_type_from_proto(value.note_type)?;
-        let tag = NoteTag::new(value.tag);
-
-        Ok(PartialNoteMetadata::new(sender, note_type).with_tag(tag))
-    }
-}
-
-impl From<NoteMetadata> for proto::note::NoteMetadata {
-    fn from(value: NoteMetadata) -> Self {
-        proto::note::NoteMetadata {
-            sender: Some(value.sender().into()),
-            note_type: note_type_to_proto(value.note_type()),
-            tag: value.tag().as_u32(),
-            attachment_schemes: attachment_schemes_to_proto(value.attachment_headers()),
-            attachments_commitment: Some(value.attachments_commitment().into()),
-        }
-    }
-}
-
-impl TryFrom<proto::note::NoteHeader> for NoteHeader {
-    type Error = RpcConversionError;
-
-    fn try_from(value: proto::note::NoteHeader) -> Result<Self, Self::Error> {
-        let details_commitment_word: Word = value
-            .details_commitment
-            .ok_or(proto::note::NoteHeader::missing_field(stringify!(details_commitment)))?
-            .try_into()?;
-        let metadata = value
-            .metadata
-            .ok_or(proto::note::NoteHeader::missing_field(stringify!(metadata)))?
-            .try_into()?;
-        Ok(NoteHeader::new(
-            NoteDetailsCommitment::from_raw(details_commitment_word),
-            metadata,
-        ))
-    }
-}
-
-impl TryFrom<proto::note::NoteInclusionInBlockProof> for NoteInclusionProof {
-    type Error = RpcConversionError;
-
-    fn try_from(value: proto::note::NoteInclusionInBlockProof) -> Result<Self, Self::Error> {
-        Ok(NoteInclusionProof::new(
-            value.block_num.into(),
-            u16::try_from(value.note_index_in_block)
-                .map_err(|_| RpcConversionError::InvalidField("NoteIndexInBlock".into()))?,
-            value
-                .inclusion_path
-                .ok_or_else(|| {
-                    proto::note::NoteInclusionInBlockProof::missing_field(stringify!(
-                        inclusion_path
-                    ))
-                })?
-                .try_into()?,
-        )?)
     }
 }
 
@@ -627,10 +500,10 @@ impl CommittedNote {
     }
 }
 
-impl TryFrom<proto::note::NoteSyncRecord> for CommittedNote {
+impl TryFrom<proto::rpc::NoteSyncRecord> for CommittedNote {
     type Error = RpcConversionError;
 
-    fn try_from(note: proto::note::NoteSyncRecord) -> Result<Self, Self::Error> {
+    fn try_from(note: proto::rpc::NoteSyncRecord) -> Result<Self, Self::Error> {
         let proto_metadata = note
             .metadata
             .ok_or(proto::rpc::SyncNotesResponse::missing_field(stringify!(notes.metadata)))?;
@@ -640,14 +513,7 @@ impl TryFrom<proto::note::NoteSyncRecord> for CommittedNote {
             proto::rpc::SyncNotesResponse::missing_field(stringify!(notes.inclusion_proof)),
         )?;
 
-        let note_id: NoteId = proto_inclusion_proof
-            .note_id
-            .ok_or(proto::rpc::SyncNotesResponse::missing_field(stringify!(
-                notes.inclusion_proof.note_id
-            )))?
-            .try_into()?;
-
-        let inclusion_proof: NoteInclusionProof = proto_inclusion_proof.try_into()?;
+        let (note_id, inclusion_proof) = note_inclusion_proof_from_proto(&proto_inclusion_proof)?;
 
         let committed = CommittedNote::new(note_id, metadata, inclusion_proof);
 
@@ -708,63 +574,35 @@ impl FetchedNote {
     }
 }
 
-impl TryFrom<proto::note::CommittedNote> for FetchedNote {
+impl TryFrom<proto::rpc::CommittedNote> for FetchedNote {
     type Error = RpcConversionError;
 
-    fn try_from(value: proto::note::CommittedNote) -> Result<Self, Self::Error> {
-        let inclusion_proof = value.inclusion_proof.ok_or_else(|| {
-            proto::note::CommittedNote::missing_field(stringify!(inclusion_proof))
-        })?;
-
-        let note_id: NoteId = inclusion_proof
-            .note_id
-            .ok_or_else(|| {
-                proto::note::CommittedNote::missing_field(stringify!(inclusion_proof.note_id))
-            })?
-            .try_into()?;
-
-        let inclusion_proof = NoteInclusionProof::try_from(inclusion_proof)?;
+    fn try_from(value: proto::rpc::CommittedNote) -> Result<Self, Self::Error> {
+        let proto_inclusion_proof = value
+            .inclusion_proof
+            .ok_or_else(|| proto::rpc::CommittedNote::missing_field(stringify!(inclusion_proof)))?;
+        let (note_id, inclusion_proof) = note_inclusion_proof_from_proto(&proto_inclusion_proof)?;
 
         let note = value
             .note
-            .ok_or_else(|| proto::note::CommittedNote::missing_field(stringify!(note)))?;
+            .ok_or_else(|| proto::rpc::CommittedNote::missing_field(stringify!(note)))?;
 
-        let proto_metadata = note
-            .metadata
-            .ok_or_else(|| proto::note::CommittedNote::missing_field(stringify!(note.metadata)))?;
-        let metadata: NoteMetadata = proto_metadata.clone().try_into()?;
-        let partial_metadata: PartialNoteMetadata = (&proto_metadata).try_into()?;
-
-        let attachments = if note.attachments.is_empty() {
-            NoteAttachments::empty()
-        } else {
-            NoteAttachments::read_from_bytes(&note.attachments)?
-        };
-
-        if let Some(detail_bytes) = note.details {
-            let details = NoteDetails::read_from_bytes(&detail_bytes)?;
-            let (assets, recipient) = details.into_parts();
-
-            Ok(FetchedNote::Public(
-                Note::with_attachments(assets, partial_metadata, recipient, attachments),
-                inclusion_proof,
-            ))
-        } else {
-            Ok(FetchedNote::Private(note_id, metadata, attachments, inclusion_proof))
+        // Details are absent exactly for private notes.
+        if note.note_details.is_some() {
+            return Ok(FetchedNote::Public(note.try_into()?, inclusion_proof));
         }
-    }
-}
 
-// NOTE SCRIPT
-// ================================================================================================
+        let metadata: NoteMetadata = note
+            .metadata
+            .ok_or_else(|| proto::rpc::CommittedNote::missing_field(stringify!(note.metadata)))?
+            .try_into()?;
+        let attachments = note
+            .note_attachments
+            .map(NoteAttachments::try_from)
+            .transpose()?
+            .unwrap_or_else(NoteAttachments::empty);
 
-impl TryFrom<proto::note::NoteScript> for NoteScript {
-    type Error = RpcConversionError;
-
-    fn try_from(note_script: proto::note::NoteScript) -> Result<Self, Self::Error> {
-        let mast_forest = MastForest::read_from_bytes(&note_script.mast)?;
-        let entrypoint = MastNodeId::from_u32_safe(note_script.entrypoint, &mast_forest)?;
-        Ok(NoteScript::from_parts(alloc::sync::Arc::new(mast_forest), entrypoint)?)
+        Ok(FetchedNote::Private(note_id, metadata, attachments, inclusion_proof))
     }
 }
 
@@ -829,21 +667,21 @@ mod tests {
 
     /// Encodes attachments the way the node does in a sync response: single-word attachments carry
     /// their value, larger ones only their commitment.
-    fn sync_attachments(attachments: &NoteAttachments) -> Vec<proto::note::NoteSyncAttachment> {
+    fn sync_attachments(attachments: &NoteAttachments) -> Vec<proto::rpc::NoteSyncAttachment> {
         attachments
             .iter()
             .map(|attachment| {
                 let payload = if attachment.num_words() == 1 {
-                    proto::note::note_sync_attachment::Payload::Value(
+                    proto::rpc::note_sync_attachment::Payload::Value(
                         attachment.content().as_words()[0].into(),
                     )
                 } else {
-                    proto::note::note_sync_attachment::Payload::Commitment(
+                    proto::rpc::note_sync_attachment::Payload::Commitment(
                         attachment.to_commitment().into(),
                     )
                 };
 
-                proto::note::NoteSyncAttachment {
+                proto::rpc::NoteSyncAttachment {
                     scheme: u32::from(attachment.attachment_scheme().as_u16()),
                     payload: Some(payload),
                 }
@@ -852,13 +690,14 @@ mod tests {
     }
 
     fn sync_metadata(
-        attachments: Vec<proto::note::NoteSyncAttachment>,
-    ) -> proto::note::NoteSyncMetadata {
-        proto::note::NoteSyncMetadata {
+        attachments: Vec<proto::rpc::NoteSyncAttachment>,
+    ) -> proto::rpc::NoteSyncMetadata {
+        proto::rpc::NoteSyncMetadata {
             sender: Some(sender().into()),
-            note_type: note_type_to_proto(NoteType::Private),
+            note_type: proto::note::NoteType::from(NoteType::Private) as i32,
             tag: 7,
             attachments,
+            version: proto::note::NoteVersion::V1 as i32,
         }
     }
 
@@ -961,9 +800,9 @@ mod tests {
     #[test]
     fn sync_metadata_withholds_single_word_attachment_sent_as_commitment() {
         let attachment = single_word_attachment(42, 1);
-        let proto_attachments = vec![proto::note::NoteSyncAttachment {
+        let proto_attachments = vec![proto::rpc::NoteSyncAttachment {
             scheme: u32::from(attachment.attachment_scheme().as_u16()),
-            payload: Some(proto::note::note_sync_attachment::Payload::Commitment(
+            payload: Some(proto::rpc::note_sync_attachment::Payload::Commitment(
                 attachment.to_commitment().into(),
             )),
         }];
@@ -985,9 +824,9 @@ mod tests {
 
     #[test]
     fn sync_metadata_rejects_too_many_attachments() {
-        let attachment = proto::note::NoteSyncAttachment {
+        let attachment = proto::rpc::NoteSyncAttachment {
             scheme: 42,
-            payload: Some(proto::note::note_sync_attachment::Payload::Value(Word::empty().into())),
+            payload: Some(proto::rpc::note_sync_attachment::Payload::Value(Word::empty().into())),
         };
         let attachments = vec![attachment; NoteAttachments::MAX_COUNT + 1];
 
@@ -998,9 +837,9 @@ mod tests {
 
     #[test]
     fn sync_metadata_rejects_reserved_absent_scheme() {
-        let attachments = vec![proto::note::NoteSyncAttachment {
+        let attachments = vec![proto::rpc::NoteSyncAttachment {
             scheme: 0,
-            payload: Some(proto::note::note_sync_attachment::Payload::Value(Word::empty().into())),
+            payload: Some(proto::rpc::note_sync_attachment::Payload::Value(Word::empty().into())),
         }];
 
         let err = SyncNoteMetadata::try_from(sync_metadata(attachments)).unwrap_err();
@@ -1010,7 +849,7 @@ mod tests {
 
     #[test]
     fn sync_metadata_rejects_missing_attachment_payload() {
-        let attachments = vec![proto::note::NoteSyncAttachment { scheme: 42, payload: None }];
+        let attachments = vec![proto::rpc::NoteSyncAttachment { scheme: 42, payload: None }];
 
         let err = SyncNoteMetadata::try_from(sync_metadata(attachments)).unwrap_err();
 
@@ -1018,6 +857,18 @@ mod tests {
             matches!(err, RpcConversionError::MissingFieldInProtobufRepresentation { .. }),
             "got {err:?}"
         );
+    }
+
+    #[test]
+    fn sync_metadata_rejects_an_unusable_note_version() {
+        for version in [proto::note::NoteVersion::Unspecified as i32, 999] {
+            let mut wire = sync_metadata(Vec::new());
+            wire.version = version;
+
+            let err = SyncNoteMetadata::try_from(wire).unwrap_err();
+
+            assert!(matches!(err, RpcConversionError::InvalidField(_)), "got {err:?}");
+        }
     }
 
     #[test]

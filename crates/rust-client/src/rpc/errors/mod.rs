@@ -4,6 +4,7 @@ use core::error::Error;
 use core::fmt;
 use core::num::TryFromIntError;
 
+use miden_objects::ConversionError;
 use miden_protocol::account::AccountId;
 use miden_protocol::crypto::merkle::MerkleError;
 use miden_protocol::errors::NoteError;
@@ -128,6 +129,12 @@ impl From<RpcConversionError> for RpcError {
     }
 }
 
+impl From<ConversionError> for RpcError {
+    fn from(err: ConversionError) -> Self {
+        Self::DeserializationError(err.to_string())
+    }
+}
+
 // RPC CONVERSION ERROR
 // ================================================================================================
 
@@ -152,6 +159,8 @@ pub enum RpcConversionError {
         entity: &'static str,
         field_name: &'static str,
     },
+    #[error("failed to convert a canonical object message")]
+    CanonicalConversion(#[from] ConversionError),
 }
 
 // GRPC ERROR KIND

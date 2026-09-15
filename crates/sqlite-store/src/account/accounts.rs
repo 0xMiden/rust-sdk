@@ -901,6 +901,16 @@ impl SqliteStore {
             return Err(StaleUpdate::AccountNonce { account_id, new_nonce, stored_nonce }.into());
         }
 
+        let new_commitment = new_account_state.to_commitment();
+        if new_nonce == stored_nonce && new_commitment != old_header.to_commitment() {
+            return Err(StaleUpdate::AccountCommitment {
+                account_id,
+                initial_commitment: new_commitment,
+                stored_commitment: old_header.to_commitment(),
+            }
+            .into());
+        }
+
         let nonce_val = u64_to_value(new_nonce);
 
         // Reconcile the forest to the new full state before the latest tables are replaced below.

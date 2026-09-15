@@ -989,8 +989,7 @@ impl SqliteStore {
         .into_store_error()?;
 
         // Archive the old header to historical and write the new one to latest. A state that is
-        // still undeployed keeps its seed: without it the account can neither be read back as a
-        // partial account nor deployed. A deployed state never needs one, whatever the caller set.
+        // still undeployed keeps its seed
         let new_seed = new_account_state.seed().filter(|_| new_account_state.is_new());
         Self::replace_account_header(tx, &new_account_state.into(), &old_header, new_seed)?;
 

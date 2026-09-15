@@ -15,7 +15,7 @@ use thiserror::Error;
 use super::RpcEndpoint;
 
 pub mod node;
-pub use node::{AddTransactionError, EndpointError};
+pub use node::{AddTransactionError, EndpointError, RegisterAccountError};
 
 // RPC ERROR
 // ================================================================================================

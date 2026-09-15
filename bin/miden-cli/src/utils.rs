@@ -1,9 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
+use miden_client::account::component::FungibleFaucet;
 use miden_client::account::{AccountId, FaucetMetadata};
 use miden_client::address::{Address, AddressId};
-use miden_client::asset::{Asset, FungibleAsset};
+use miden_client::asset::{Asset, FungibleAsset, TokenSymbol};
 use miden_client::transaction::{ExecutedTransaction, InputNote};
 use miden_client::utils::{base_units_to_tokens, tokens_to_base_units};
 use miden_client::vm::MIN_STACK_DEPTH;
@@ -283,11 +284,13 @@ struct FaucetTomlEntry {
 
 /// Resolves faucet display metadata (symbol + decimals) for a given faucet `AccountId`.
 ///
-/// Lookup walks three sources in priority order:
+/// Lookup walks four sources in priority order:
 ///
 /// 1. The user's TOML symbol map (bech32 `address`).
 /// 2. The client's settings store, populated from previous RPC fetches.
-/// 3. A fresh RPC fetch from the network. Successful fetches are persisted back to the settings
+/// 3. The faucet account in the store, when the client tracks it. The node does not serve a private
+///    account, so the stored account is the only source of metadata for a private faucet.
+/// 4. A fresh RPC fetch from the network. Successful fetches are persisted back to the settings
 ///    store.
 #[derive(Debug)]
 pub struct FaucetMetadataResolver {
@@ -341,8 +344,9 @@ impl FaucetMetadataResolver {
         Ok(Self { toml: parsed })
     }
 
-    /// Looks up `(symbol, decimals)` for a faucet using only local sources: the TOML map and the
-    /// settings store. Returns `None` without performing any network request.
+    /// Looks up `(symbol, decimals)` for a faucet using only local sources: the TOML map, the
+    /// settings store, and the faucet account when the client tracks it. Returns `None` without
+    /// performing any network request.
     pub async fn resolve_local<AUTH>(
         &self,
         client: &Client<AUTH>,
@@ -354,11 +358,16 @@ impl FaucetMetadataResolver {
         }
         // 2) settings store
         let setting_key = faucet_metadata_setting_key(faucet_id);
-        Ok(client.get_setting::<FaucetMetadata>(setting_key).await?)
+        if let Some(metadata) = client.get_setting::<FaucetMetadata>(setting_key).await? {
+            return Ok(Some(metadata));
+        }
+        // 3) the faucet account in the store. The read fails for an account that the client does
+        // not track, and for an account that is not a fungible faucet. The RPC step resolves those.
+        Ok(read_tracked_faucet_metadata(client, faucet_id).await.ok())
     }
 
-    /// Looks up `(symbol, decimals)` for a faucet, walking TOML → settings store → RPC fetch. On
-    /// RPC success, the result is persisted to the settings store.
+    /// Looks up `(symbol, decimals)` for a faucet, walking TOML → settings store → tracked account
+    /// → RPC fetch. On RPC success, the result is persisted to the settings store.
     pub async fn resolve<AUTH>(
         &self,
         client: &Client<AUTH>,
@@ -457,6 +466,34 @@ impl FaucetMetadataResolver {
             .find(|(_, entry)| &entry.account_id == faucet_id)
             .map(|(symbol, entry)| (symbol.clone(), entry.decimals))
     }
+}
+
+/// Reads a faucet's token symbol and decimals from the token config storage slot of the account
+/// tracked in the client's store.
+///
+/// # Errors
+/// Returns an error if the account is not tracked by the client, has no token config slot (i.e.
+/// is not a fungible faucet), or the token config can't be decoded.
+pub(crate) async fn read_tracked_faucet_metadata<AUTH>(
+    client: &Client<AUTH>,
+    faucet_id: AccountId,
+) -> Result<FaucetMetadata, CliError> {
+    let token_config = client
+        .account_reader(faucet_id)
+        .get_storage_item(FungibleFaucet::token_config_slot().clone())
+        .await?;
+
+    // Token config word layout: `[token_supply, max_supply, decimals, symbol]` (see
+    // `FungibleFaucet::token_config_slot_value`).
+    let [_token_supply, _max_supply, decimals, symbol] = *token_config;
+    let symbol = TokenSymbol::try_from(symbol).map_err(|err| {
+        CliError::Input(format!("failed to decode token symbol of faucet {faucet_id}: {err}"))
+    })?;
+    let decimals = u8::try_from(decimals.as_canonical_u64()).map_err(|err| {
+        CliError::Input(format!("failed to decode token decimals of faucet {faucet_id}: {err}"))
+    })?;
+
+    Ok(FaucetMetadata { symbol: symbol.to_string(), decimals })
 }
 
 /// Settings key prefix under which faucet display metadata is persisted.

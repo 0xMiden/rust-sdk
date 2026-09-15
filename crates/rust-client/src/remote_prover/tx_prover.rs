@@ -116,11 +116,12 @@ impl TryFrom<proto::Proof> for ProvenTransaction {
                     DeserializationError::InvalidValue(alloc::format!("{err}"))
                 })
             },
-            Some(proto::proof::Proof::Batch(_) | proto::proof::Proof::Block(_)) => {
-                Err(DeserializationError::InvalidValue(
-                    "prover answered a transaction request with another kind of proof".into(),
-                ))
-            },
+            Some(proto::proof::Proof::Batch(_)) => Err(DeserializationError::InvalidValue(
+                "expected a transaction proof, got a batch proof".into(),
+            )),
+            Some(proto::proof::Proof::Block(_)) => Err(DeserializationError::InvalidValue(
+                "expected a transaction proof, got a block proof".into(),
+            )),
             None => Err(DeserializationError::InvalidValue("prover returned no proof".into())),
         }
     }

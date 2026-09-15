@@ -13,9 +13,9 @@ pub use std_gen::*;
 mod nostd_gen {
     include!(concat!(env!("OUT_DIR"), "/rpc_nostd.rs"));
 }
-// `build.rs` resolves the object schemas the node's descriptors import to `miden-objects`, so they
-// are not generated here. Re-exporting them keeps every `proto::<package>::` path valid. The list
-// mirrors `miden_objects::EXTERN_PATHS` even where the client uses only part of it.
+// These packages are not generated here. `build.rs` points prost at `miden-objects` for them, and
+// this re-export keeps every `proto::<package>::` path valid. The list mirrors
+// `miden_objects::EXTERN_PATHS`, which is why it carries packages no call site names yet.
 #[allow(unused_imports)]
 pub use miden_objects::proto::{
     account,

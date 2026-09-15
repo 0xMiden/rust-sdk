@@ -27,9 +27,8 @@ impl PartialEq for NullifierUpdate {
 // CONVERSIONS
 // ================================================================================================
 
-/// Reads a nullifier off the wire.
-///
-/// Both sides of this conversion are foreign types, so it cannot be a `TryFrom` impl.
+/// Reads a nullifier off the wire. A free function because both types are foreign, so there can be
+/// no `TryFrom` impl.
 pub(crate) fn nullifier_from_proto(
     value: proto::primitives::Word,
 ) -> Result<Nullifier, RpcConversionError> {

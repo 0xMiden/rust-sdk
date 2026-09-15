@@ -51,9 +51,8 @@ fn main() -> miette::Result<()> {
 
 /// Builds a prost config that resolves the canonical object schemas to `miden-objects` types.
 ///
-/// The node's descriptors embed the object schemas they import, so without these paths prost would
-/// emit a second set of Rust types for messages that `miden-objects` already defines, and the
-/// conversions it ships would not apply to them.
+/// The node's descriptors embed the object schemas they import. These paths make prost reference
+/// the types `miden-objects` already defines, so the conversions it ships apply to them.
 fn canonical_object_config() -> tonic_prost_build::Config {
     let mut config = tonic_prost_build::Config::new();
     for (proto_path, rust_path) in miden_objects::EXTERN_PATHS {
@@ -104,11 +103,9 @@ fn compile_tonic_note_transport_proto(out_dir: &Path) -> miette::Result<()> {
     fs::create_dir_all(&std_out).into_diagnostic()?;
     fs::create_dir_all(&nostd_out).into_diagnostic()?;
 
-    let mut prost_config = tonic_prost_build::Config::new();
-    prost_config.skip_debug(["AccountId", "Digest"]);
+    let prost_config = tonic_prost_build::Config::new();
 
     let mut web_tonic_prost_config = tonic_prost_build::Config::new();
-    web_tonic_prost_config.skip_debug(["AccountId", "Digest"]);
     // Use BTreeMap so the no_std bindings don't depend on std::collections::HashMap.
     web_tonic_prost_config.btree_map(["."]);
 

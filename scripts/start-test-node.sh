@@ -14,6 +14,8 @@
 #   MIDEN_VERIFICATION_BASE_FEE  genesis `verification_base_fee` (default 500; 0 disables fees)
 #   MIDEN_NUM_FUNDER_WALLETS     number of funder wallets a fee-charging genesis declares
 #   MIDEN_BATCH_BUILDER_WALLET   account that receives the batch builder's fees
+#   MIDEN_ACCOUNT_ALLOWLIST      1 enforces the account allowlist and seeds invitation codes;
+#                                0 (default) allows unrestricted account creation
 
 set -euo pipefail
 
@@ -38,6 +40,10 @@ PID_FILE="$CACHE/pids"
 RPC="127.0.0.1:57291"   # matches the client default (`MIDEN_NODE_PORT`)
 VALIDATOR="127.0.0.1:50101"
 NTX="127.0.0.1:50301"
+# Private administration API of the sequencer, bound only when allowlist enforcement is on. It is
+# the only way to seed the account allowlist, because no genesis option and no bootstrap
+# subcommand writes invitation codes.
+ADMIN="127.0.0.1:50100"
 PROVER_PORT=50051
 PROVER="127.0.0.1:$PROVER_PORT"
 # How long a single network transaction proof may take. The prover enforces it server-side and the
@@ -55,6 +61,17 @@ VERIFICATION_BASE_FEE="${MIDEN_VERIFICATION_BASE_FEE:-500}"
 # but never reads the account, so this is the same placeholder id the node repo uses for local
 # runs. No test consumes the fee notes.
 BATCH_BUILDER_WALLET="${MIDEN_BATCH_BUILDER_WALLET:-0xcc0000000000dd010000ee000000ff}"
+# Account allowlist enforcement. The node enforces it by default, which rejects every account
+# creation the integration tests do, so the default here is off and callers opt in.
+ACCOUNT_ALLOWLIST="${MIDEN_ACCOUNT_ALLOWLIST:-0}"
+# Invitation codes seeded when enforcement is on. A code is single use, and the nextest profile
+# retries a failed test twice, so every attempt claims a fresh code. The pool therefore has to
+# cover the accounts the allowlist tests register times the number of attempts.
+INVITATION_POOL_SIZE=64
+INVITATION_CODES_FILE="$ROOT/data/invitation-codes.txt"
+# Claim markers, one file per code taken by a test. Created next to the codes file and cleared
+# with it, so codes never carry a claim across node restarts.
+INVITATION_CLAIMS_DIR="$ROOT/data/invitation-claims"
 
 NODE_BINS=(miden-validator miden-node miden-ntx-builder miden-remote-prover miden-note-transport)
 
@@ -138,8 +155,12 @@ rm -rf "$DATA"
 mkdir -p "$LOG_DIR" "$DATA/validator" "$DATA/node" "$DATA/ntx-builder"
 MIDEN_VERIFICATION_BASE_FEE="$VERIFICATION_BASE_FEE" "$GEN_GENESIS" "$DATA/genesis-config"
 # Cleared up front so a fee-free run cannot leave a previous run's funders behind, and re-exposed
-# below once `miden-validator genesis` has generated them.
+# below once `miden-validator genesis` has generated them. The invitation codes are cleared for
+# the same reason: a run without allowlist enforcement must not leave codes that no longer exist
+# in the node's database.
 rm -rf "$ROOT/data/funders"
+rm -rf "$INVITATION_CLAIMS_DIR"
+rm -f "$INVITATION_CODES_FILE"
 mkdir -p "$ROOT/data"
 cp "$DATA/genesis-config/tst_faucet.mac" "$ROOT/data/account.mac"
 # Expose the agglayer accounts under ./data, where the tests read them via AGGLAYER_ACCOUNTS_DIR.
@@ -249,11 +270,21 @@ if ! {
     exit 1
 fi
 
+# The node enforces the account allowlist unless told otherwise, and enforcement rejects every
+# account-creating submission from an unregistered account. Only the allowlist tests want that.
+# The admin API is bound only alongside enforcement, because seeding the invitation codes is the
+# one thing it is needed for, and binding it otherwise would only add a port that can clash.
+SEQUENCER_ALLOWLIST_ARGS=()
+if [ "$ACCOUNT_ALLOWLIST" = "1" ]; then
+    SEQUENCER_ALLOWLIST_ARGS+=(--admin.listen "$ADMIN")
+else
+    SEQUENCER_ALLOWLIST_ARGS+=(--disable-account-allowlist)
+fi
 start sequencer   "$BIN/miden-node" sequencer --rpc.listen "$RPC" --data-directory "$DATA/node" \
     --validator.url "http://$VALIDATOR" --ntx-builder.url "http://$NTX" \
     --rpc.network-tx-auth-header-value "$NETWORK_TX_AUTH" \
     --batch.builder.wallet-account-id "$BATCH_BUILDER_WALLET" \
-    --disable-account-allowlist \
+    ${SEQUENCER_ALLOWLIST_ARGS[@]+"${SEQUENCER_ALLOWLIST_ARGS[@]}"} \
     --block.interval 3s --batch.interval 1s
 # A network transaction's proof runs well past the prover's 60s default on a shared CI runner, and
 # the default capacity of 1 rejects the ntx-builder's retry outright, so it never converges.
@@ -268,6 +299,53 @@ start ntx-builder "$BIN/miden-ntx-builder" start --listen "$NTX" --rpc.url "http
     --tx-prover.timeout "$PROVER_TIMEOUT" \
     --max-cycles "$((1 << 18))" \
     --data-directory "$DATA/ntx-builder"
+
+# Prints the lowercase hex SHA-256 of its argument. The node stores an invitation as
+# `sha256(code_bytes)`, so this is what the admin API expects in the request path.
+sha256_hex() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        printf '%s' "$1" | sha256sum | cut -d' ' -f1
+    else
+        printf '%s' "$1" | shasum -a 256 | cut -d' ' -f1
+    fi
+}
+
+# Seeds the account allowlist with unbound invitation codes and writes the plaintext codes to
+# `$INVITATION_CODES_FILE`, one per line. The allowlist database is created when the sequencer
+# starts, not during bootstrap, so this must run after the RPC is ready.
+seed_invitation_codes() {
+    local admin_url="http://$ADMIN/admin/allowlist/invitations"
+
+    # The admin API is served by its own task, which may bind slightly after the RPC does.
+    local ready=""
+    for _ in $(seq 1 30); do
+        if (exec 3<>"/dev/tcp/${ADMIN%:*}/${ADMIN##*:}") 2>/dev/null; then
+            exec 3>&- 3<&-
+            ready=1
+            break
+        fi
+        sleep 1
+    done
+    if [ -z "$ready" ]; then
+        echo "error: admin API did not become ready on $ADMIN within 30s; see $LOG_DIR" >&2
+        return 1
+    fi
+
+    mkdir -p "$(dirname "$INVITATION_CODES_FILE")" "$INVITATION_CLAIMS_DIR"
+    : > "$INVITATION_CODES_FILE"
+    local index code digest
+    for index in $(seq 1 "$INVITATION_POOL_SIZE"); do
+        code="$(printf 'miden-client-test-invitation-%02d' "$index")"
+        digest="$(sha256_hex "$code")"
+        # An unbound invitation carries no account: `register_account` binds it to the first
+        # account that presents the code.
+        curl -fsS -X PUT "$admin_url/$digest" \
+            -H 'content-type: application/json' \
+            -d '{"account_id":null}' >/dev/null
+        echo "$code" >> "$INVITATION_CODES_FILE"
+    done
+    echo "==> seeded $INVITATION_POOL_SIZE invitation codes in $INVITATION_CODES_FILE"
+}
 
 # Returns non-zero (with a message) if any started component is no longer running.
 check_components_alive() {
@@ -296,6 +374,11 @@ if [ -z "$READY" ]; then
     exit 1
 fi
 echo "==> node is up (RPC on http://$RPC); logs in $LOG_DIR"
+
+if [ "$ACCOUNT_ALLOWLIST" = "1" ]; then
+    echo "==> account allowlist enforcement is ON"
+    seed_invitation_codes
+fi
 
 if [ "$MODE" = "background" ]; then
     exit 0

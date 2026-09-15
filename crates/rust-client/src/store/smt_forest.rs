@@ -162,6 +162,19 @@ impl AccountUpdate {
         vault.exhaustive = true;
         vault.pairs.extend(assets.map(|a| (a.id().hash().into(), a.to_value_word())));
 
+        self.full_storage(account_id, slots);
+    }
+
+    /// Records that an account's map slots hold exactly the provided state.
+    ///
+    /// Slots that the account no longer has are not implied by `slots` and must be named with
+    /// [`Self::clear_map`]. No per-slot root is recorded: the store checks the resulting map roots
+    /// collectively against the account's storage commitment.
+    pub fn full_storage<'a>(
+        &mut self,
+        account_id: AccountId,
+        slots: impl Iterator<Item = &'a StorageSlot>,
+    ) {
         for slot in slots {
             if let StorageSlotContent::Map(map) = slot.content() {
                 let ops = self.entry(storage_map_lineage_id(account_id, slot.name()));

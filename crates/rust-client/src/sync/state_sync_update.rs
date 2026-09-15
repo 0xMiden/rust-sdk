@@ -2,9 +2,9 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
 use miden_protocol::account::{
-    Account,
     AccountHeader,
     AccountId,
+    AccountStorage,
     AccountStoragePatch,
     AccountVaultPatch,
     StorageMapPatch,
@@ -419,61 +419,73 @@ impl TransactionUpdateTracker {
 // PUBLIC ACCOUNT UPDATE
 // ================================================================================================
 
-/// Update to a single tracked public account.
+/// Update to a single tracked public account, produced by `StateSync` when the account's commitment
+/// changed on chain.
 ///
-/// `StateSync` emits one of two variants depending on whether the node could return the account's
-/// full state in a single response:
-///
-/// - [`PublicAccountUpdate::Full`] carries the new [`Account`] state directly (used when no storage
-///   map is oversized and the vault fits in the response). The store applies it by replacing the
-///   local state.
-/// - [`PublicAccountUpdate::Patch`] carries the new account header plus the absolute storage
-///   patch and the vault update (used when any part of the account is oversized). The oversized
-///   parts come from the node's incremental endpoints (`sync_storage_maps` and
-///   `sync_account_vault`), and the parts the response carried in full are applied as
-///   replacements. The header is included because the patches do not carry the final commitments.
+/// The storage and the vault are described independently. A part that the `get_account` response
+/// carried in full is a `Full` update, which the store applies as a replacement. A part the node
+/// reported as oversized is a `Patch` update, built from the changes fetched over the synced block
+/// range with `sync_storage_maps` or `sync_account_vault`. The header is included because the
+/// updates do not carry the final commitments.
 #[derive(Debug, Clone)]
-pub enum PublicAccountUpdate {
-    /// The account fits in a single proof response — the new full state is carried as-is.
-    Full(Account),
-    /// The account is oversized in some dimension. The new state is described by the absolute
-    /// storage patch and the vault update, which advance the local state to `new_header`.
-    Patch {
-        /// The new account header after applying the update.
-        new_header: AccountHeader,
-        /// The absolute storage patch to apply. Maps the node returned in full are `Create`
-        /// patches, which replace the slot.
-        storage: AccountStoragePatch,
-        /// The vault update to apply.
-        vault: VaultUpdate,
-    },
+pub struct PublicAccountUpdate {
+    /// The new account header after applying the update.
+    new_header: AccountHeader,
+    /// The storage update to apply.
+    storage: StorageUpdate,
+    /// The vault update to apply.
+    vault: VaultUpdate,
 }
 
-/// Vault part of a [`PublicAccountUpdate::Patch`].
+impl PublicAccountUpdate {
+    /// Creates a new update that advances the account to `new_header`.
+    pub fn new(new_header: AccountHeader, storage: StorageUpdate, vault: VaultUpdate) -> Self {
+        Self { new_header, storage, vault }
+    }
+
+    /// Returns the account ID for this update.
+    pub fn id(&self) -> AccountId {
+        self.new_header.id()
+    }
+
+    /// Returns the account nonce that this update advances the local state to.
+    pub fn nonce(&self) -> Felt {
+        self.new_header.nonce()
+    }
+
+    /// Returns the new account header after applying the update.
+    pub fn new_header(&self) -> &AccountHeader {
+        &self.new_header
+    }
+
+    /// Returns the storage update.
+    pub fn storage(&self) -> &StorageUpdate {
+        &self.storage
+    }
+
+    /// Returns the vault update.
+    pub fn vault(&self) -> &VaultUpdate {
+        &self.vault
+    }
+}
+
+/// Storage part of a [`PublicAccountUpdate`].
+#[derive(Debug, Clone)]
+pub enum StorageUpdate {
+    /// The complete storage. The store replaces every local slot with it.
+    Full(AccountStorage),
+    /// The absolute changes to the storage, layered onto the local one. Maps the node returned in
+    /// full are `Create` patches, which replace the slot.
+    Patch(AccountStoragePatch),
+}
+
+/// Vault part of a [`PublicAccountUpdate`].
 #[derive(Debug, Clone)]
 pub enum VaultUpdate {
     /// The complete vault contents. The store replaces the local vault with them.
     Full(Vec<Asset>),
     /// The absolute changes to the vault, layered onto the local one.
     Patch(AccountVaultPatch),
-}
-
-impl PublicAccountUpdate {
-    /// Returns the account ID for this update.
-    pub fn id(&self) -> AccountId {
-        match self {
-            Self::Full(account) => account.id(),
-            Self::Patch { new_header, .. } => new_header.id(),
-        }
-    }
-
-    /// Returns the account nonce that this update advances the local state to.
-    pub fn nonce(&self) -> Felt {
-        match self {
-            Self::Full(account) => account.nonce(),
-            Self::Patch { new_header, .. } => new_header.nonce(),
-        }
-    }
 }
 
 /// Builds the absolute [`AccountStoragePatch`] implied by the updates fetched from the node: the
@@ -530,7 +542,7 @@ pub(crate) fn build_storage_patch(
 #[derive(Debug, Clone, Default)]
 #[allow(clippy::struct_field_names)]
 pub struct AccountUpdates {
-    /// Updated public accounts, either as full state replacements or incremental patches.
+    /// Updated public accounts.
     updated_public_accounts: Vec<PublicAccountUpdate>,
     /// Account commitments received from the network that don't match the currently locally-tracked
     /// state of the private accounts.

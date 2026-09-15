@@ -92,6 +92,7 @@ pub use state_sync_update::{
     PartialBlockchainUpdates,
     PublicAccountUpdate,
     StateSyncUpdate,
+    StorageUpdate,
     TransactionUpdateTracker,
     VaultUpdate,
 };

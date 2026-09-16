@@ -4,11 +4,12 @@
 
 ### Breaking Changes
 
+* [BREAKING][behavior][store] Store writes now verify the state they were derived from inside the write transaction, so a stale account, note, or block update fails instead of overwriting newer state ([#2538](https://github.com/0xMiden/rust-sdk/pull/2538)).
+* [BREAKING][type][rust] `PublicAccountUpdate::Patch` carries a new `previous_header` field holding the account header the patch was derived from ([#2538](https://github.com/0xMiden/rust-sdk/pull/2538)).
+* [BREAKING][type][rust] Added the `StoreError::StaleUpdate` variant and the `StaleUpdate` enum, so exhaustive matches on `StoreError` must handle it  ([#2538](https://github.com/0xMiden/rust-sdk/pull/2538)).
 * [BREAKING][behavior][rust] Notes fetched from the Note Transport Layer are screened when their tag matches a tracked account's tag, discarding the ones no tracked account can consume ([#2474](https://github.com/0xMiden/rust-sdk/pull/2474)).
 * [BREAKING][behavior][rust] A Note Transport Layer failure no longer fails `Client::sync_state`. The error is logged and the chain sync still applies; the transport cursor is left where it was, so the next sync requests the same page again ([#2453](https://github.com/0xMiden/rust-sdk/pull/2453)).
 * [BREAKING][type][rust] Added the `TransactionRequestError::SwapNoteWithZeroAsset` variant, so exhaustive matches on `TransactionRequestError` must handle it ([#2459](https://github.com/0xMiden/rust-sdk/pull/2459)).
-* [BREAKING][type][rust] Added the `StoreError::StaleUpdate` variant and the `StaleUpdate` enum, so exhaustive matches on `StoreError` must handle it. Guarded `Store` writes return it instead of `StoreError::DatabaseError`, and callers can re-read the state and rebuild the update against it (#PR).
-* [BREAKING][behavior][store] `Store::update_account` rejects a state whose nonce equals the stored nonce but whose commitment differs. `Store::upsert_input_notes` and the note updates of `Store::apply_transaction` and `Store::apply_state_sync` reject writes that would move a note backwards along its lifecycle, such as a consumed note written back to committed, or a committed note written back to expected. `Store::untrack_and_prune_irrelevant_blocks` rejects a prune list naming a block an unspent note proves inclusion in (#PR).
 * [BREAKING][removal][test] Loose helper functions in `miden_client::testing::common` are now methods on `TestClient`. `TestClient::keystore()` exposes the client's keystore, so `ClientConfig::into_client` and `into_unsynced_client` return just the `TestClient` instead of a client/keystore pair ([#2481](https://github.com/0xMiden/rust-sdk/pull/2481)).
 
 ### Fixes

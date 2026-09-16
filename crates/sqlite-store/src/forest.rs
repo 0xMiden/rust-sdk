@@ -150,9 +150,9 @@ fn tree_meta(conn: &Connection, lineage: LineageId) -> Result<Option<(VersionId,
         params![lineage.as_bytes().as_slice()],
         |row| {
             Ok((
-                column_value_as_u64(row, 0)?,
-                row.get::<_, Vec<u8>>(1)?,
-                column_value_as_u64(row, 2)?,
+                column_value_as_u64(row, "version")?,
+                row.get::<_, Vec<u8>>("root")?,
+                column_value_as_u64(row, "entry_count")?,
             ))
         },
     )
@@ -178,14 +178,37 @@ fn decode_entry(lineage: LineageId, key_blob: &[u8], value_blob: &[u8]) -> Resul
     Ok((key, value))
 }
 
+/// Resolves column names on the first row and reuses their indexes for this query execution.
+fn cached_columns<T, const N: usize>(
+    names: [&'static str; N],
+    parse: impl Fn(&rusqlite::Row<'_>, [usize; N]) -> rusqlite::Result<T>,
+) -> impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T> {
+    let mut columns = None;
+    move |row| {
+        let indexes = if let Some(indexes) = columns {
+            indexes
+        } else {
+            let mut indexes = [0; N];
+            for (i, name) in names.iter().enumerate() {
+                indexes[i] = row.as_ref().column_index(name)?;
+            }
+            *columns.insert(indexes)
+        };
+        parse(row, indexes)
+    }
+}
+
 fn load_entries(conn: &Connection, lineage: LineageId) -> Result<Vec<(Word, Word)>> {
     let mut stmt = conn
         .prepare_cached("SELECT key, value FROM forest_entries WHERE lineage = ?1")
         .map_err(internal)?;
     let rows = stmt
-        .query_map(params![lineage.as_bytes().as_slice()], |row| {
-            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
-        })
+        .query_map(
+            params![lineage.as_bytes().as_slice()],
+            cached_columns(["key", "value"], |row, [key, value]| {
+                Ok((row.get::<_, Vec<u8>>(key)?, row.get::<_, Vec<u8>>(value)?))
+            }),
+        )
         .map_err(internal)?;
 
     let mut entries = Vec::new();
@@ -236,7 +259,7 @@ fn load_leaf_entries(
         .map_err(internal)?;
     let rows = stmt
         .query_map(params![lineage.as_bytes().as_slice(), u64_to_value(position)], |row| {
-            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+            Ok((row.get::<_, Vec<u8>>("key")?, row.get::<_, Vec<u8>>("value")?))
         })
         .map_err(internal)?;
 
@@ -396,13 +419,16 @@ fn compute_update_mutations(
             )
             .map_err(internal)?;
         let rows = stmt
-            .query_map(params![lineage.as_bytes().as_slice()], |row| {
-                Ok((
-                    row.get::<_, Vec<u8>>(0)?,
-                    row.get::<_, Vec<u8>>(1)?,
-                    column_value_as_u64(row, 2)?,
-                ))
-            })
+            .query_map(
+                params![lineage.as_bytes().as_slice()],
+                cached_columns(["key", "value", "leaf_position"], |row, [key, value, position]| {
+                    Ok((
+                        row.get::<_, Vec<u8>>(key)?,
+                        row.get::<_, Vec<u8>>(value)?,
+                        column_value_as_u64(row, position)?,
+                    ))
+                }),
+            )
             .map_err(internal)?;
         for row in rows {
             let (key_blob, value_blob, position) = row.map_err(internal)?;
@@ -765,9 +791,9 @@ impl BackendReader for SqliteForestBackend<'_, '_> {
         let rows = stmt
             .query_map([], |row| {
                 Ok((
-                    row.get::<_, Vec<u8>>(0)?,
-                    column_value_as_u64(row, 1)?,
-                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, Vec<u8>>("lineage")?,
+                    column_value_as_u64(row, "version")?,
+                    row.get::<_, Vec<u8>>("root")?,
                 ))
             })
             .map_err(internal)?;

@@ -320,12 +320,15 @@ where
         let uncommitted_transactions =
             self.store.get_transactions(TransactionFilter::Uncommitted).await?;
 
+        let validator_config = self.get_latest_block_header().await?.validator_config().clone();
+
         Ok(StateSyncInput {
             accounts,
             note_tags,
             input_notes,
             output_notes,
             uncommitted_transactions,
+            validator_config,
         })
     }
 

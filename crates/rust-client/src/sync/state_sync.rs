@@ -9,7 +9,7 @@ use futures::{StreamExt, TryStreamExt};
 use miden_protocol::Word;
 use miden_protocol::account::{Account, AccountHeader, AccountId, StorageSlotType};
 use miden_protocol::block::account_tree::AccountIdKey;
-use miden_protocol::block::{BlockHeader, BlockNumber};
+use miden_protocol::block::{BlockHeader, BlockNumber, BlockSignatures, ValidatorConfig};
 use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrDelta, PartialMmr};
 use miden_protocol::note::{NoteId, NoteTag, Nullifier};
@@ -67,6 +67,8 @@ struct FetchedSyncData {
     mmr_delta: MmrDelta,
     /// Chain tip block header.
     chain_tip_header: BlockHeader,
+    /// Validator signatures over the chain tip block header.
+    block_signatures: BlockSignatures,
     /// Blocks with matching notes that the client is interested in, each note carrying its
     /// attachments and, for a fetched public note, its body.
     note_blocks: Vec<ResolvedSyncNotesBlock>,
@@ -137,6 +139,12 @@ pub struct StateSyncInput {
     pub output_notes: Vec<OutputNoteRecord>,
     /// Transactions to track for commitment or discard during sync.
     pub uncommitted_transactions: Vec<TransactionRecord>,
+    /// Validator configuration committed by the locally stored block header at the sync height.
+    ///
+    /// It authenticates the chain tip block header the sync advances to. It must come from the
+    /// local store, so that a node response cannot provide the validator keys that check its own
+    /// signatures.
+    pub validator_config: ValidatorConfig,
 }
 
 // SYNC CALLBACKS
@@ -321,6 +329,7 @@ impl StateSync {
             input_notes,
             output_notes,
             uncommitted_transactions,
+            validator_config,
         } = input;
 
         let note_tags = Arc::new(note_tags);
@@ -335,6 +344,7 @@ impl StateSync {
             // No progress — already at the tip.
             return Ok(ChainSyncData {
                 block_from,
+                validator_config,
                 advance: None,
                 superseded_states: Vec::new(),
                 note_updates,
@@ -346,6 +356,7 @@ impl StateSync {
         let FetchedSyncData {
             mmr_delta,
             chain_tip_header,
+            block_signatures,
             note_blocks,
             transactions,
         } = sync_data;
@@ -363,8 +374,10 @@ impl StateSync {
 
         Ok(ChainSyncData {
             block_from,
+            validator_config,
             advance: Some(ChainAdvance {
                 chain_tip_header,
+                block_signatures,
                 mmr_delta,
                 note_blocks_awaiting_screening: note_blocks,
                 transactions,
@@ -433,6 +446,7 @@ impl StateSync {
     ) -> Result<StateSyncUpdate, ClientError> {
         let ChainSyncData {
             block_from,
+            validator_config,
             advance,
             note_updates,
             transaction_updates,
@@ -444,6 +458,7 @@ impl StateSync {
 
         let Some(ChainAdvance {
             chain_tip_header,
+            block_signatures,
             mmr_delta,
             note_blocks_awaiting_screening,
             relevant_note_blocks,
@@ -469,6 +484,8 @@ impl StateSync {
         Self::advance_mmr(
             mmr_delta,
             &chain_tip_header,
+            &block_signatures,
+            &validator_config,
             partial_mmr,
             &mut partial_blockchain_updates,
         )?;
@@ -653,6 +670,7 @@ impl StateSync {
         Ok(Some(FetchedSyncData {
             mmr_delta: chain_mmr_info.mmr_delta,
             chain_tip_header: chain_mmr_info.block_header,
+            block_signatures: chain_mmr_info.block_signatures,
             note_blocks,
             transactions: transaction_records,
         }))
@@ -769,10 +787,13 @@ impl StateSync {
     /// commitments, so the tip leaf has to be added separately.
     ///
     /// Before adding the chain-tip leaf, the post-delta peaks are checked against the chain tip
-    /// header's chain commitment to ensure the delta advanced the MMR to the expected state.
+    /// header's chain commitment to ensure the delta advanced the MMR to the expected state, and
+    /// the chain tip header is checked to carry the signatures of `validator_config`.
     fn advance_mmr(
         mmr_delta: MmrDelta,
         chain_tip_header: &BlockHeader,
+        block_signatures: &BlockSignatures,
+        validator_config: &ValidatorConfig,
         current_partial_mmr: &mut PartialMmr,
         partial_blockchain_updates: &mut PartialBlockchainUpdates,
     ) -> Result<(), ClientError> {
@@ -794,9 +815,16 @@ impl StateSync {
 
         partial_blockchain_updates.new_peaks = new_peaks;
 
-        // Note: we add the chain tip leaf to our MMR, but we cannot prove that it is effectively
-        // the chain tip. In the current context of centralized trusted node, we assume it is valid.
-        // Eventually, we will be able to validate that the resulting MMR root is "canonical".
+        // Check that the validator set signed the chain tip block header before its leaf is added.
+        block_signatures
+            .verify_against(chain_tip_header.commitment(), validator_config)
+            .map_err(|err| {
+                ClientError::ChainValidationError(format!(
+                    "chain tip block header {} does not carry valid validator signatures: {err}",
+                    chain_tip_header.block_num()
+                ))
+            })?;
+
         new_authentication_nodes.append(
             &mut current_partial_mmr
                 .add(chain_tip_header.commitment(), false)
@@ -1433,6 +1461,9 @@ impl StateSync {
 pub struct ChainSyncData {
     /// The chain tip the sync started from.
     pub(crate) block_from: BlockNumber,
+    /// Validator configuration committed by the locally stored genesis block header, used to
+    /// authenticate the chain tip block header.
+    validator_config: ValidatorConfig,
     /// What the node reported beyond `block_from`, or `None` when the client was already at the
     /// chain tip.
     advance: Option<ChainAdvance>,
@@ -1449,6 +1480,8 @@ pub struct ChainSyncData {
 struct ChainAdvance {
     /// Header of the chain tip the sync advanced to.
     chain_tip_header: BlockHeader,
+    /// Validator signatures over `chain_tip_header`.
+    block_signatures: BlockSignatures,
     /// MMR delta from `block_from` to the chain tip, excluding the chain-tip leaf.
     mmr_delta: MmrDelta,
     /// Note blocks as the node returned them. [`StateSync::derive_state_updates`] drains these into
@@ -1652,13 +1685,34 @@ mod tests {
         }
     }
 
-    fn empty() -> StateSyncInput {
+    /// The validator configuration committed by the mock chain's genesis block header. A sync that
+    /// starts from genesis authenticates the chain tip against it, because the store's block header
+    /// at the sync height is the genesis one.
+    fn genesis_validator_config(mock_rpc: &MockRpcApi) -> ValidatorConfig {
+        mock_rpc.mock_chain.read().block_header(0).validator_config().clone()
+    }
+
+    /// The signatures the mock chain produced for `block_num`.
+    fn block_signatures(mock_rpc: &MockRpcApi, block_num: BlockNumber) -> BlockSignatures {
+        mock_rpc
+            .mock_chain
+            .read()
+            .proven_blocks()
+            .iter()
+            .find(|block| block.header().block_num() == block_num)
+            .expect("the mock chain contains the block")
+            .signatures()
+            .clone()
+    }
+
+    fn empty(mock_rpc: &MockRpcApi) -> StateSyncInput {
         StateSyncInput {
             accounts: vec![],
             note_tags: BTreeSet::new(),
             input_notes: vec![],
             output_notes: vec![],
             uncommitted_transactions: vec![],
+            validator_config: genesis_validator_config(mock_rpc),
         }
     }
 
@@ -2320,6 +2374,7 @@ mod tests {
             input_notes,
             output_notes: vec![],
             uncommitted_transactions: vec![],
+            validator_config: genesis_validator_config(&mock_rpc),
         };
 
         let update = state_sync.sync_state(&mut partial_mmr, sync_input).await.unwrap();
@@ -2366,7 +2421,7 @@ mod tests {
         assert_eq!(partial_mmr.forest().num_leaves(), 1);
 
         // First sync
-        let update = state_sync.sync_state(&mut partial_mmr, empty()).await.unwrap();
+        let update = state_sync.sync_state(&mut partial_mmr, empty(&mock_rpc)).await.unwrap();
 
         assert_eq!(update.block_num(), chain_tip_1);
         let forest_1 = partial_mmr.forest();
@@ -2377,7 +2432,7 @@ mod tests {
         mock_rpc.advance_blocks(2);
         let chain_tip_2 = mock_rpc.get_chain_tip_block_num();
 
-        let update = state_sync.sync_state(&mut partial_mmr, empty()).await.unwrap();
+        let update = state_sync.sync_state(&mut partial_mmr, empty(&mock_rpc)).await.unwrap();
 
         assert_eq!(update.block_num(), chain_tip_2);
         let forest_2 = partial_mmr.forest();
@@ -2385,7 +2440,7 @@ mod tests {
         assert_eq!(forest_2.num_leaves(), chain_tip_2.as_u32() as usize + 1);
 
         // Third sync (no new blocks)
-        let update = state_sync.sync_state(&mut partial_mmr, empty()).await.unwrap();
+        let update = state_sync.sync_state(&mut partial_mmr, empty(&mock_rpc)).await.unwrap();
 
         assert_eq!(update.block_num(), chain_tip_2);
         assert_eq!(partial_mmr.forest(), forest_2);
@@ -2504,9 +2559,9 @@ mod tests {
             mock_rpc.get_mmr().peaks_at(Forest::new(1).expect("valid forest")).unwrap();
         let mut partial_mmr = PartialMmr::from_peaks(genesis_peaks);
 
+        let mut input = empty(&mock_rpc);
         let state_sync = StateSync::new(Arc::new(mock_rpc), Arc::new(MockScreener), None)
             .with_note_observer(Arc::new(AlwaysRelevantObserver));
-        let mut input = empty();
         input.note_tags = note_tags;
 
         let update = state_sync.sync_state(&mut partial_mmr, input).await.unwrap();
@@ -2782,6 +2837,7 @@ mod tests {
             input_notes: vec![],
             output_notes: vec![output_note],
             uncommitted_transactions: vec![],
+            validator_config: genesis_validator_config(&mock_rpc),
         };
 
         let update = state_sync.sync_state(&mut partial_mmr, sync_input).await.unwrap();
@@ -2890,6 +2946,8 @@ mod tests {
         let chain_tip = mock_rpc.get_chain_tip_block_num();
 
         let chain_tip_header = mock_rpc.mock_chain.read().block_header(chain_tip.as_usize());
+        let chain_tip_signatures = block_signatures(&mock_rpc, chain_tip);
+        let validator_config = genesis_validator_config(&mock_rpc);
         let genesis_partial_mmr = || {
             let peaks = mock_rpc.get_mmr().peaks_at(Forest::new(1).expect("valid forest")).unwrap();
             PartialMmr::from_peaks(peaks)
@@ -2903,6 +2961,8 @@ mod tests {
         StateSync::advance_mmr(
             full_delta,
             &chain_tip_header,
+            &chain_tip_signatures,
+            &validator_config,
             &mut genesis_partial_mmr(),
             &mut PartialBlockchainUpdates::default(),
         )
@@ -2916,6 +2976,8 @@ mod tests {
         let result = StateSync::advance_mmr(
             truncated_delta,
             &chain_tip_header,
+            &chain_tip_signatures,
+            &validator_config,
             &mut genesis_partial_mmr(),
             &mut PartialBlockchainUpdates::default(),
         );

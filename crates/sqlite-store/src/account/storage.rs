@@ -1,6 +1,6 @@
 //! Storage-related database operations for accounts.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::string::ToString;
 use std::vec::Vec;
 
@@ -15,7 +15,7 @@ use miden_client::account::{
     StorageSlotType,
 };
 use miden_client::store::StoreError;
-use miden_client::{EMPTY_WORD, Serializable, Word};
+use miden_client::{Deserializable, EMPTY_WORD, Serializable, Word};
 use rusqlite::{OptionalExtension, Transaction, params};
 
 use crate::forest::ScopedAccountForest;
@@ -194,6 +194,7 @@ impl SqliteStore {
         const DELETE_LATEST_SLOT: &str =
             "DELETE FROM latest_account_storage WHERE account_id = ? AND slot_name = ?";
 
+        let mut read_slot_stmt = tx.prepare_cached(READ_OLD_SLOT).into_store_error()?;
         let mut latest_slot_stmt = tx.prepare_cached(LATEST_SLOT_QUERY).into_store_error()?;
         let mut hist_slot_stmt = tx.prepare_cached(HISTORICAL_SLOT_QUERY).into_store_error()?;
         let mut latest_map_stmt = tx.prepare_cached(LATEST_MAP_ENTRY_QUERY).into_store_error()?;
@@ -222,10 +223,8 @@ impl SqliteStore {
             let slot_type_val = slot_type as u8;
 
             // Read old slot value from latest (NULL if slot is new)
-            let old_slot_value: Option<Vec<u8>> = tx
-                .query_row(READ_OLD_SLOT, params![&account_id_bytes, &slot_name_str], |row| {
-                    row.get(0)
-                })
+            let old_slot_value: Option<Vec<u8>> = read_slot_stmt
+                .query_row(params![&account_id_bytes, &slot_name_str], |row| row.get(0))
                 .optional()
                 .into_store_error()?
                 .flatten();
@@ -341,45 +340,32 @@ impl SqliteStore {
         slot_name_str: &str,
         new_entries: &[(Word, Word)],
     ) -> Result<(), StoreError> {
-        const READ_ALL_MAP_ENTRIES: &str = "SELECT key, value FROM latest_storage_map_entries WHERE account_id = ? AND slot_name = ?";
-        const DELETE_ALL_MAP_ENTRIES: &str =
-            "DELETE FROM latest_storage_map_entries WHERE account_id = ? AND slot_name = ?";
+        const READ_MAP_KEYS: &str =
+            "SELECT key FROM latest_storage_map_entries WHERE account_id = ? AND slot_name = ?";
 
-        let existing: BTreeMap<Vec<u8>, Vec<u8>> = {
-            let mut read_stmt = tx.prepare_cached(READ_ALL_MAP_ENTRIES).into_store_error()?;
+        // A replacement is the entry delta that removes every stored key and then writes the new
+        // entries over it. The empty word is the removal marker of the delta.
+        let mut changed: BTreeMap<Word, Word> = {
+            let mut read_stmt = tx.prepare_cached(READ_MAP_KEYS).into_store_error()?;
             let rows = read_stmt
                 .query_map(params![account_id_bytes, slot_name_str], |row| {
-                    Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+                    row.get::<_, Vec<u8>>("key")
                 })
                 .into_store_error()?;
-            rows.collect::<Result<_, _>>().into_store_error()?
+            rows.map(|row| Ok((Word::read_from_bytes(&row.into_store_error()?)?, EMPTY_WORD)))
+                .collect::<Result<_, StoreError>>()?
         };
+        changed.extend(new_entries.iter().filter(|(_, value)| *value != EMPTY_WORD).copied());
 
-        let new_map: BTreeMap<Vec<u8>, Vec<u8>> = new_entries
-            .iter()
-            .filter(|(_, value)| *value != EMPTY_WORD)
-            .map(|(key, value)| (key.to_bytes(), value.to_bytes()))
-            .collect();
-
-        // Archive each affected key once, recording the value it held before this nonce.
-        let mut affected: BTreeSet<&Vec<u8>> = existing.keys().collect();
-        affected.extend(new_map.keys());
-        for key_bytes in affected {
-            let old_value = existing.get(key_bytes).cloned();
-            hist_map_stmt
-                .execute(params![account_id_bytes, nonce_val, slot_name_str, key_bytes, old_value])
-                .into_store_error()?;
-        }
-
-        tx.execute(DELETE_ALL_MAP_ENTRIES, params![account_id_bytes, slot_name_str])
-            .into_store_error()?;
-        for (key_bytes, value_bytes) in &new_map {
-            latest_map_stmt
-                .execute(params![account_id_bytes, slot_name_str, key_bytes, value_bytes])
-                .into_store_error()?;
-        }
-
-        Ok(())
+        Self::write_map_entry_delta(
+            tx,
+            latest_map_stmt,
+            hist_map_stmt,
+            account_id_bytes,
+            nonce_val,
+            slot_name_str,
+            &changed.into_iter().collect::<Vec<_>>(),
+        )
     }
 
     /// Archives old map entry values to historical and updates latest for each changed entry.
@@ -395,16 +381,14 @@ impl SqliteStore {
         const READ_OLD_MAP_ENTRY: &str = "SELECT value FROM latest_storage_map_entries WHERE account_id = ? AND slot_name = ? AND key = ?";
         const DELETE_LATEST_MAP_ENTRY: &str = "DELETE FROM latest_storage_map_entries WHERE account_id = ? AND slot_name = ? AND key = ?";
 
+        let mut read_stmt = tx.prepare_cached(READ_OLD_MAP_ENTRY).into_store_error()?;
+        let mut delete_stmt = tx.prepare_cached(DELETE_LATEST_MAP_ENTRY).into_store_error()?;
         for (key, value) in changed_entries {
             let key_bytes = key.to_bytes();
 
             // Read old map entry value from latest (NULL if entry is new)
-            let old_entry_value: Option<Vec<u8>> = tx
-                .query_row(
-                    READ_OLD_MAP_ENTRY,
-                    params![account_id_bytes, slot_name_str, &key_bytes],
-                    |row| row.get(0),
-                )
+            let old_entry_value: Option<Vec<u8>> = read_stmt
+                .query_row(params![account_id_bytes, slot_name_str, &key_bytes], |row| row.get(0))
                 .optional()
                 .into_store_error()?
                 .flatten();
@@ -422,11 +406,9 @@ impl SqliteStore {
 
             // Update latest: delete for removals, replace for updates
             if *value == EMPTY_WORD {
-                tx.execute(
-                    DELETE_LATEST_MAP_ENTRY,
-                    params![account_id_bytes, slot_name_str, &key_bytes],
-                )
-                .into_store_error()?;
+                delete_stmt
+                    .execute(params![account_id_bytes, slot_name_str, &key_bytes])
+                    .into_store_error()?;
             } else {
                 latest_map_stmt
                     .execute(

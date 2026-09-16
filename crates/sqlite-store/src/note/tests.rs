@@ -1,19 +1,40 @@
 use std::sync::Arc;
 
 use miden_client::note::{
-    InputNoteReader, NoteAssets, NoteAttachments, NoteMetadata, NoteRecipient, NoteStorage,
-    NoteTag, NoteType, NoteUpdateTracker, PartialNoteMetadata,
+    InputNoteReader,
+    NoteAssets,
+    NoteAttachments,
+    NoteMetadata,
+    NoteRecipient,
+    NoteStorage,
+    NoteTag,
+    NoteType,
+    NoteUpdateTracker,
+    PartialNoteMetadata,
 };
 use miden_client::store::input_note_states::{
-    CommittedNoteState, ConsumedExternalNoteState, ConsumedUnauthenticatedLocalNoteState,
-    ExpectedNoteState, NoteSubmissionData,
+    CommittedNoteState,
+    ConsumedExternalNoteState,
+    ConsumedUnauthenticatedLocalNoteState,
+    ExpectedNoteState,
+    NoteSubmissionData,
 };
 use miden_client::store::{
-    InputNoteCursor, InputNoteRecord, InputNoteState, NoteFilter, OutputNoteRecord,
-    OutputNoteState, StaleUpdate, Store, StoreError,
+    InputNoteCursor,
+    InputNoteRecord,
+    InputNoteState,
+    NoteFilter,
+    OutputNoteRecord,
+    OutputNoteState,
+    StaleUpdate,
+    Store,
+    StoreError,
 };
 use miden_client::sync::{
-    AccountUpdates, PartialBlockchainUpdates, StateSyncUpdate, TransactionUpdateTracker,
+    AccountUpdates,
+    PartialBlockchainUpdates,
+    StateSyncUpdate,
+    TransactionUpdateTracker,
 };
 use miden_client::utils::{Deserializable, DeserializationError, Serializable};
 use miden_client::{Felt, ZERO};
@@ -22,10 +43,15 @@ use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::merkle::SparseMerklePath;
 use miden_protocol::note::{
-    NoteAttachment, NoteAttachmentScheme, NoteDetails, NoteInclusionProof, NoteScript,
+    NoteAttachment,
+    NoteAttachmentScheme,
+    NoteDetails,
+    NoteInclusionProof,
+    NoteScript,
 };
 use miden_protocol::testing::account_id::{
-    ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET, ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE,
+    ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET,
+    ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE,
 };
 use miden_protocol::transaction::TransactionId;
 use miden_standards::note::StandardNote;
@@ -1101,44 +1127,19 @@ async fn state_sync_cannot_move_a_consumed_input_note_back() {
 async fn state_sync_cannot_move_a_consumed_output_note_back() {
     let store = create_test_store().await;
 
-    let serial_number: Word = [Felt::new_unchecked(11_000), ZERO, ZERO, ZERO].into();
-    let recipient = NoteRecipient::new(
-        serial_number,
-        StandardNote::P2ID.script(),
-        NoteStorage::new(vec![]).unwrap(),
-    );
-    let sender = AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE).unwrap();
-    let metadata = create_note_metadata(sender, 0);
-
-    let output_note = |state| {
-        OutputNoteRecord::new(
-            recipient.digest(),
-            NoteAssets::new(vec![]).unwrap(),
-            metadata,
-            state,
-            BlockNumber::from(0u32),
-            NoteAttachments::empty(),
-        )
-    };
-    let consumed = output_note(OutputNoteState::Consumed {
+    let consumed_note = create_output_note_with_state(0, |recipient| OutputNoteState::Consumed {
         block_height: BlockNumber::from(1u32),
-        recipient: recipient.clone(),
+        recipient,
     });
-    let stale = output_note(OutputNoteState::ExpectedFull { recipient: recipient.clone() });
+    // Apply state sync update with the note in the 'Consumed' state
+    let state_sync_update_with_consumed_note = output_note_sync_update(consumed_note.clone());
+    store.apply_state_sync(state_sync_update_with_consumed_note).await.unwrap();
 
-    let sync_update = |note: OutputNoteRecord| {
-        StateSyncUpdate::from_parts(
-            BlockNumber::from(0u32),
-            PartialBlockchainUpdates::default(),
-            NoteUpdateTracker::for_transaction_updates([], [], [note]),
-            TransactionUpdateTracker::default(),
-            AccountUpdates::default(),
-        )
-    };
-
-    store.apply_state_sync(sync_update(consumed.clone())).await.unwrap();
-
-    let result = store.apply_state_sync(sync_update(stale)).await;
+    // Attempt to apply state sync update with the same note but in the 'Expected' state
+    let expected_note =
+        create_output_note_with_state(0, |recipient| OutputNoteState::ExpectedFull { recipient });
+    let state_sync_update_with_expected_note = output_note_sync_update(expected_note.clone());
+    let result = store.apply_state_sync(state_sync_update_with_expected_note).await;
     assert!(
         matches!(
             &result,
@@ -1148,7 +1149,7 @@ async fn state_sync_cannot_move_a_consumed_output_note_back() {
     );
 
     let stored = store.get_output_notes(NoteFilter::All).await.unwrap();
-    assert_eq!(stored, vec![consumed]);
+    assert_eq!(stored, vec![consumed_note]);
 }
 
 /// An import built before the note committed must not drop its inclusion proof by writing the note
@@ -1195,49 +1196,25 @@ async fn upsert_input_notes_cannot_move_a_committed_note_back_to_expected() {
 async fn state_sync_cannot_move_a_committed_output_note_back() {
     let store = create_test_store().await;
 
-    let serial_number: Word = [Felt::new_unchecked(12_000), ZERO, ZERO, ZERO].into();
-    let recipient = NoteRecipient::new(
-        serial_number,
-        StandardNote::P2ID.script(),
-        NoteStorage::new(vec![]).unwrap(),
-    );
-    let sender = AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE).unwrap();
-    let metadata = create_note_metadata(sender, 0);
+    let committed_note =
+        create_output_note_with_state(1, |recipient| OutputNoteState::CommittedFull {
+            recipient,
+            inclusion_proof: NoteInclusionProof::new(
+                BlockNumber::from(3u32),
+                0,
+                SparseMerklePath::default(),
+            )
+            .unwrap(),
+        });
+    // Apply state sync update with the output note in the 'Committed' state
+    let state_sync_update_with_committed_note = output_note_sync_update(committed_note.clone());
+    store.apply_state_sync(state_sync_update_with_committed_note).await.unwrap();
 
-    let output_note = |state| {
-        OutputNoteRecord::new(
-            recipient.digest(),
-            NoteAssets::new(vec![]).unwrap(),
-            metadata,
-            state,
-            BlockNumber::from(0u32),
-            NoteAttachments::empty(),
-        )
-    };
-    let committed = output_note(OutputNoteState::CommittedFull {
-        recipient: recipient.clone(),
-        inclusion_proof: NoteInclusionProof::new(
-            BlockNumber::from(3u32),
-            0,
-            SparseMerklePath::default(),
-        )
-        .unwrap(),
-    });
-    let stale = output_note(OutputNoteState::ExpectedFull { recipient: recipient.clone() });
-
-    let sync_update = |note: OutputNoteRecord| {
-        StateSyncUpdate::from_parts(
-            BlockNumber::from(0u32),
-            PartialBlockchainUpdates::default(),
-            NoteUpdateTracker::for_transaction_updates([], [], [note]),
-            TransactionUpdateTracker::default(),
-            AccountUpdates::default(),
-        )
-    };
-
-    store.apply_state_sync(sync_update(committed.clone())).await.unwrap();
-
-    let result = store.apply_state_sync(sync_update(stale)).await;
+    // Attempt to apply state sync update with the same note but in the 'Expected' state
+    let expected_note =
+        create_output_note_with_state(1, |recipient| OutputNoteState::ExpectedFull { recipient });
+    let state_sync_update_with_expected_note = output_note_sync_update(expected_note);
+    let result = store.apply_state_sync(state_sync_update_with_expected_note).await;
     assert!(
         matches!(
             &result,
@@ -1247,5 +1224,42 @@ async fn state_sync_cannot_move_a_committed_output_note_back() {
     );
 
     let stored = store.get_output_notes(NoteFilter::All).await.unwrap();
-    assert_eq!(stored, vec![committed]);
+    assert_eq!(stored, vec![committed_note]);
+}
+
+/// Helper to create an output note in a specific state. The state variants embed the note's
+/// recipient, so it is built from it. Two notes created here with the same index share a details
+/// commitment, which is what identifies an output note row.
+fn create_output_note_with_state(
+    index: u32,
+    state: impl FnOnce(NoteRecipient) -> OutputNoteState,
+) -> OutputNoteRecord {
+    let serial_number: Word =
+        [Felt::new_unchecked(u64::from(index) + 11_000), ZERO, ZERO, ZERO].into();
+    let recipient = NoteRecipient::new(
+        serial_number,
+        StandardNote::P2ID.script(),
+        NoteStorage::new(vec![]).unwrap(),
+    );
+    let sender = AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE).unwrap();
+
+    OutputNoteRecord::new(
+        recipient.digest(),
+        NoteAssets::new(vec![]).unwrap(),
+        create_note_metadata(sender, index),
+        state(recipient),
+        BlockNumber::from(0u32),
+        NoteAttachments::empty(),
+    )
+}
+
+/// Helper to build a state sync update that writes a single output note.
+fn output_note_sync_update(note: OutputNoteRecord) -> StateSyncUpdate {
+    StateSyncUpdate::from_parts(
+        BlockNumber::from(0u32),
+        PartialBlockchainUpdates::default(),
+        NoteUpdateTracker::for_transaction_updates([], [], [note]),
+        TransactionUpdateTracker::default(),
+        AccountUpdates::default(),
+    )
 }

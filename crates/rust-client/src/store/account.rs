@@ -4,7 +4,12 @@ use alloc::vec::Vec;
 use core::fmt::Display;
 
 use miden_protocol::account::{
-    Account, AccountHeader, AccountId, AccountStorage, AccountStoragePatch, AccountVaultPatch,
+    Account,
+    AccountHeader,
+    AccountId,
+    AccountStorage,
+    AccountStoragePatch,
+    AccountVaultPatch,
     PartialAccount,
 };
 use miden_protocol::asset::Asset;

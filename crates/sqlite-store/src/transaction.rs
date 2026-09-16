@@ -1,5 +1,6 @@
 #![allow(clippy::items_after_statements)]
 
+use std::rc::Rc;
 use std::vec::Vec;
 
 use miden_client::Word;
@@ -11,9 +12,11 @@ use miden_client::transaction::{
     TransactionRecord,
     TransactionScript,
     TransactionStatus,
+    TransactionStatusVariant,
     TransactionStoreUpdate,
 };
 use miden_client::utils::{Deserializable as _, Serializable as _};
+use rusqlite::types::Value;
 use rusqlite::{Connection, Transaction, params};
 
 use super::SqliteStore;
@@ -21,7 +24,7 @@ use super::note::apply_note_updates_tx;
 use super::sync::add_note_tag_tx;
 use crate::forest::{ScopedAccountForest, SqliteForestBackend};
 use crate::sql_error::SqlResultExt;
-use crate::{blob_array, insert_sql, subst, with_immediate_write_tx};
+use crate::{blob_array, insert_sql, subst, with_write_tx};
 
 pub(crate) const UPSERT_TRANSACTION_QUERY: &str = insert_sql!(
     transactions {
@@ -36,34 +39,38 @@ pub(crate) const UPSERT_TRANSACTION_QUERY: &str = insert_sql!(
 pub(crate) const INSERT_TRANSACTION_SCRIPT_QUERY: &str =
     insert_sql!(transaction_scripts { script_root, script } | IGNORE);
 
+/// The column aliases match the names that [`SqliteStore::get_transactions`] reads.
+const TRANSACTIONS_BASE_QUERY: &str = "SELECT \
+     tx.id AS id, \
+     script.script AS script, \
+     tx.details AS details, \
+     tx.status AS status \
+     FROM transactions AS tx \
+     LEFT JOIN transaction_scripts AS script ON tx.script_root = script.script_root";
+
+/// Returns the transactions query for a [`TransactionFilter`], and the value list it binds.
+///
+/// Only [`TransactionFilter::Ids`] binds a parameter. The ids are bound as one `rarray(?)` value,
+/// so the SQL text stays constant for any number of ids.
+fn transaction_filter_to_query(filter: &TransactionFilter) -> (String, Option<Rc<Vec<Value>>>) {
+    match filter {
+        TransactionFilter::All => (TRANSACTIONS_BASE_QUERY.to_string(), None),
+        TransactionFilter::Uncommitted => (
+            format!(
+                "{TRANSACTIONS_BASE_QUERY} WHERE tx.status_variant = {}",
+                TransactionStatusVariant::Pending as u8
+            ),
+            None,
+        ),
+        TransactionFilter::Ids(ids) => (
+            format!("{TRANSACTIONS_BASE_QUERY} WHERE tx.id IN rarray(?)"),
+            Some(blob_array(ids)),
+        ),
+    }
+}
+
 // TRANSACTIONS
 // ================================================================================================
-
-struct SerializedTransactionData {
-    /// Transaction ID
-    id: Vec<u8>,
-    /// Script root
-    script_root: Option<Vec<u8>>,
-    /// Transaction script
-    tx_script: Option<Vec<u8>>,
-    /// Transaction details
-    details: Vec<u8>,
-    /// Transaction status variant identifier
-    status_variant: u8,
-    /// Serialized transaction status
-    status: Vec<u8>,
-}
-
-struct SerializedTransactionParts {
-    /// Transaction ID
-    id: Vec<u8>,
-    /// Transaction script
-    tx_script: Option<Vec<u8>>,
-    /// Transaction details
-    details: Vec<u8>,
-    /// Serialized transaction status
-    status: Vec<u8>,
-}
 
 impl SqliteStore {
     /// Retrieves tracked transactions, filtered by [`TransactionFilter`].
@@ -71,17 +78,30 @@ impl SqliteStore {
         conn: &mut Connection,
         filter: &TransactionFilter,
     ) -> Result<Vec<TransactionRecord>, StoreError> {
-        // Only the `Ids` filter binds a parameter (the id list, as a single rarray value).
-        let id_list = match filter {
-            TransactionFilter::Ids(ids) => Some(blob_array(ids)),
-            _ => None,
-        };
+        let (query, id_list) = transaction_filter_to_query(filter);
 
-        conn.prepare(filter.to_query().as_ref())
+        conn.prepare(&query)
             .into_store_error()?
-            .query_map(rusqlite::params_from_iter(id_list), parse_transaction_columns)
+            .query_map(rusqlite::params_from_iter(id_list), |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>("id")?,
+                    row.get::<_, Option<Vec<u8>>>("script")?,
+                    row.get::<_, Vec<u8>>("details")?,
+                    row.get::<_, Vec<u8>>("status")?,
+                ))
+            })
             .into_store_error()?
-            .map(|result| Ok(result.into_store_error()?).and_then(parse_transaction))
+            .map(|result| {
+                let (id, script, details, status) = result.into_store_error()?;
+                Ok(TransactionRecord {
+                    id: TransactionId::read_from_bytes(&id)?,
+                    details: TransactionDetails::read_from_bytes(&details)?,
+                    script: script
+                        .map(|script| TransactionScript::read_from_bytes(&script))
+                        .transpose()?,
+                    status: TransactionStatus::read_from_bytes(&status)?,
+                })
+            })
             .collect::<Result<Vec<TransactionRecord>, _>>()
     }
 
@@ -93,7 +113,7 @@ impl SqliteStore {
         conn: &mut Connection,
         tx_update: &TransactionStoreUpdate,
     ) -> Result<(), StoreError> {
-        with_immediate_write_tx(conn, |tx| {
+        with_write_tx(conn, |tx| {
             let mut forest = ScopedAccountForest::new(SqliteForestBackend::new(tx))?;
             Self::apply_transaction_in_txn(tx, &mut forest, tx_update)
         })
@@ -105,7 +125,7 @@ impl SqliteStore {
         conn: &mut Connection,
         tx_updates: &[TransactionStoreUpdate],
     ) -> Result<(), StoreError> {
-        with_immediate_write_tx(conn, |tx| {
+        with_write_tx(conn, |tx| {
             let mut forest = ScopedAccountForest::new(SqliteForestBackend::new(tx))?;
             for update in tx_updates {
                 Self::apply_transaction_in_txn(tx, &mut forest, update)?;
@@ -184,75 +204,26 @@ pub(crate) fn upsert_transaction_record(
     tx: &Transaction<'_>,
     transaction: &TransactionRecord,
 ) -> Result<(), StoreError> {
-    let SerializedTransactionData {
-        id,
-        script_root,
-        tx_script,
-        details,
-        status_variant,
-        status,
-    } = serialize_transaction_data(transaction);
+    let script_root = transaction.script.as_ref().map(|script| script.root().to_bytes());
 
-    if let Some(root) = script_root.clone() {
-        tx.execute(INSERT_TRANSACTION_SCRIPT_QUERY, params![root, tx_script])
+    if let Some(script) = &transaction.script {
+        tx.execute(INSERT_TRANSACTION_SCRIPT_QUERY, params![script_root, script.to_bytes()])
             .into_store_error()?;
     }
 
     tx.execute(
         UPSERT_TRANSACTION_QUERY,
-        params![id, details, script_root, status_variant, status],
+        params![
+            transaction.id.to_bytes(),
+            transaction.details.to_bytes(),
+            script_root,
+            transaction.status.variant() as u8,
+            transaction.status.to_bytes(),
+        ],
     )
     .into_store_error()?;
 
     Ok(())
-}
-
-/// Serializes the transaction record into a format suitable for storage in the database.
-fn serialize_transaction_data(transaction_record: &TransactionRecord) -> SerializedTransactionData {
-    let transaction_id = transaction_record.id.to_bytes();
-
-    let script_root = transaction_record.script.as_ref().map(|script| script.root().to_bytes());
-    let tx_script = transaction_record.script.as_ref().map(TransactionScript::to_bytes);
-
-    SerializedTransactionData {
-        id: transaction_id,
-        script_root,
-        tx_script,
-        details: transaction_record.details.to_bytes(),
-        status_variant: transaction_record.status.variant() as u8,
-        status: transaction_record.status.to_bytes(),
-    }
-}
-
-fn parse_transaction_columns(
-    row: &rusqlite::Row<'_>,
-) -> Result<SerializedTransactionParts, rusqlite::Error> {
-    let id: Vec<u8> = row.get("id")?;
-    let tx_script: Option<Vec<u8>> = row.get("script")?;
-    let details: Vec<u8> = row.get("details")?;
-    let status: Vec<u8> = row.get("status")?;
-
-    Ok(SerializedTransactionParts { id, tx_script, details, status })
-}
-
-/// Parse a transaction from the provided parts.
-fn parse_transaction(
-    serialized_transaction: SerializedTransactionParts,
-) -> Result<TransactionRecord, StoreError> {
-    let SerializedTransactionParts { id, tx_script, details, status } = serialized_transaction;
-
-    let id = TransactionId::read_from_bytes(&id)?;
-
-    let script: Option<TransactionScript> = tx_script
-        .map(|script| TransactionScript::read_from_bytes(&script))
-        .transpose()?;
-
-    Ok(TransactionRecord {
-        id,
-        details: TransactionDetails::read_from_bytes(&details)?,
-        script,
-        status: TransactionStatus::read_from_bytes(&status)?,
-    })
 }
 
 // TESTS
@@ -275,7 +246,7 @@ mod tests {
     use miden_protocol::testing::account_id::ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE;
     use rusqlite::Connection;
 
-    use super::{SqliteStore, upsert_transaction_record};
+    use super::{SqliteStore, transaction_filter_to_query, upsert_transaction_record};
     use crate::db_management::migration::SqliteMigrator;
 
     /// Builds a script-less transaction record with the given status.
@@ -349,7 +320,7 @@ mod tests {
     fn uncommitted_is_served_by_the_pending_transactions_index() {
         let conn = create_test_connection(&[]);
 
-        let query = TransactionFilter::Uncommitted.to_query();
+        let (query, _) = transaction_filter_to_query(&TransactionFilter::Uncommitted);
         let plan = query_plan(&conn, &query).join("\n");
 
         // Every entry of the partial index is a pending transaction, so the search never touches a

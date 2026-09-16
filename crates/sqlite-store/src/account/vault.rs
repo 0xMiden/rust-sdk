@@ -46,8 +46,8 @@ impl SqliteStore {
     }
 
     /// Persists vault patch changes to the asset tables, updating fungible and non-fungible assets.
-    /// It archives old values from latest to historical, deletes removed assets from latest, then
-    /// inserts updated assets.
+    /// It archives the old value of every changed entry to the historical table, writes the updated
+    /// assets to the latest table, and deletes the removed assets from it.
     ///
     /// The corresponding forest update (and the verification that the resulting vault root matches
     /// the final header) happens in `apply_account_patch`, which applies all of an account's tree
@@ -57,37 +57,6 @@ impl SqliteStore {
         account_id: AccountId,
         final_account_state: &AccountHeader,
         vault_patch: &AccountVaultPatch,
-    ) -> Result<(), StoreError> {
-        let nonce = final_account_state.nonce().as_canonical_u64();
-        let account_id_bytes = account_id.to_bytes();
-        let nonce_val = u64_to_value(nonce);
-
-        // The patch carries the absolute final value of every changed entry, so updated assets are
-        // inserted verbatim and removed entries (empty value) are deleted. No prior balance lookup
-        // or signed-amount arithmetic is needed, and the asset value word already encodes the
-        // callback flag for both fungible and non-fungible assets.
-        let updated_assets_values: Vec<Asset> = vault_patch.updated_assets().collect();
-        let removed_asset_ids: Vec<AssetId> = vault_patch.removed_asset_ids().copied().collect();
-
-        Self::persist_vault_delta(
-            tx,
-            &account_id_bytes,
-            &nonce_val,
-            &removed_asset_ids,
-            &updated_assets_values,
-        )?;
-
-        Ok(())
-    }
-
-    /// Persists vault delta changes: archives old values from latest to historical, then updates
-    /// latest (deletes removed assets, inserts/updates changed assets).
-    fn persist_vault_delta(
-        tx: &Transaction<'_>,
-        account_id_bytes: &[u8],
-        nonce_val: &rusqlite::types::Value,
-        removed_asset_ids: &[AssetId],
-        updated_assets: &[Asset],
     ) -> Result<(), StoreError> {
         const READ_OLD_ASSET: &str =
             "SELECT asset FROM latest_account_assets WHERE account_id = ? AND asset_id = ?";
@@ -101,62 +70,49 @@ impl SqliteStore {
         );
         const LATEST_INSERT: &str =
             insert_sql!(latest_account_assets { account_id, asset_id, asset } | REPLACE);
+        const DELETE_LATEST: &str =
+            "DELETE FROM latest_account_assets WHERE account_id = ? AND asset_id IN rarray(?)";
 
+        let account_id_bytes = account_id.to_bytes();
+        let nonce_val = u64_to_value(final_account_state.nonce().as_canonical_u64());
+        let mut read_stmt = tx.prepare_cached(READ_OLD_ASSET).into_store_error()?;
         let mut hist_stmt = tx.prepare_cached(HISTORICAL_INSERT).into_store_error()?;
         let mut latest_stmt = tx.prepare_cached(LATEST_INSERT).into_store_error()?;
 
-        // Archive and delete removed assets
-        for asset_id in removed_asset_ids {
-            let asset_id_bytes = asset_id.to_bytes();
+        // The patch carries the absolute final value of every changed entry, so updated assets are
+        // inserted verbatim and removed entries (empty value) are deleted. No prior balance lookup
+        // or signed-amount arithmetic is needed, and the asset value word already encodes the
+        // callback flag for both fungible and non-fungible assets.
+        //
+        // The patch holds one value per asset id, so an id is either removed or updated, never
+        // both. The removed assets can therefore be deleted after the inserts.
+        let removed_asset_ids: Vec<AssetId> = vault_patch.removed_asset_ids().copied().collect();
+        let removed = removed_asset_ids.iter().map(|asset_id| (asset_id.to_bytes(), None::<Asset>));
+        let updated =
+            vault_patch.updated_assets().map(|asset| (asset.id().to_bytes(), Some(asset)));
 
-            // Read old asset value from latest (should exist since we're removing it)
-            let old_asset: Option<Vec<u8>> = tx
-                .query_row(READ_OLD_ASSET, params![account_id_bytes, &asset_id_bytes], |row| {
-                    row.get(0)
-                })
+        for (asset_id_bytes, new_asset) in removed.chain(updated) {
+            // Read the value the entry held before this nonce. A NULL value marks a new entry.
+            let old_asset: Option<Vec<u8>> = read_stmt
+                .query_row(params![&account_id_bytes, &asset_id_bytes], |row| row.get(0))
                 .optional()
                 .into_store_error()?
                 .flatten();
 
-            // Archive old value to historical
             hist_stmt
-                .execute(params![account_id_bytes, nonce_val, &asset_id_bytes, old_asset,])
+                .execute(params![&account_id_bytes, &nonce_val, &asset_id_bytes, old_asset])
                 .into_store_error()?;
+
+            if let Some(asset) = new_asset {
+                let asset_bytes = asset.to_value_word().to_bytes();
+                latest_stmt
+                    .execute(params![&account_id_bytes, &asset_id_bytes, &asset_bytes])
+                    .into_store_error()?;
+            }
         }
 
-        // Batch delete removed assets from latest
         if !removed_asset_ids.is_empty() {
-            const DELETE_LATEST_QUERY: &str =
-                "DELETE FROM latest_account_assets WHERE account_id = ? AND asset_id IN rarray(?)";
-            tx.execute(
-                DELETE_LATEST_QUERY,
-                params![account_id_bytes, blob_array(removed_asset_ids)],
-            )
-            .into_store_error()?;
-        }
-
-        // Archive old values and insert updated assets
-        for asset in updated_assets {
-            let asset_id_bytes = asset.id().to_bytes();
-            let asset_bytes = asset.to_value_word().to_bytes();
-
-            // Read old asset value from latest (NULL if asset is new)
-            let old_asset: Option<Vec<u8>> = tx
-                .query_row(READ_OLD_ASSET, params![account_id_bytes, &asset_id_bytes], |row| {
-                    row.get(0)
-                })
-                .optional()
-                .into_store_error()?
-                .flatten();
-
-            // Archive old value to historical (NULL old_asset = asset was new)
-            hist_stmt
-                .execute(params![account_id_bytes, nonce_val, &asset_id_bytes, old_asset,])
-                .into_store_error()?;
-
-            // Insert/update in latest
-            latest_stmt
-                .execute(params![account_id_bytes, &asset_id_bytes, &asset_bytes])
+            tx.execute(DELETE_LATEST, params![&account_id_bytes, blob_array(&removed_asset_ids)])
                 .into_store_error()?;
         }
 

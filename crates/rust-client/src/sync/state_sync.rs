@@ -140,10 +140,6 @@ pub struct StateSyncInput {
     /// Transactions to track for commitment or discard during sync.
     pub uncommitted_transactions: Vec<TransactionRecord>,
     /// Validator configuration committed by the locally stored block header at the sync height.
-    ///
-    /// It authenticates the chain tip block header the sync advances to. It must come from the
-    /// local store, so that a node response cannot provide the validator keys that check its own
-    /// signatures.
     pub validator_config: ValidatorConfig,
 }
 
@@ -824,7 +820,6 @@ impl StateSync {
                     chain_tip_header.block_num()
                 ))
             })?;
-
         new_authentication_nodes.append(
             &mut current_partial_mmr
                 .add(chain_tip_header.commitment(), false)

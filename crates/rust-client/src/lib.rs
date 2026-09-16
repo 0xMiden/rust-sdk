@@ -344,7 +344,7 @@ pub use miden_protocol::{
     Word,
     ZERO,
 };
-pub use miden_tx::ExecutionOptions;
+pub use miden_tx::{ExecutionOptions, NetworkNotePricer, NotePricingError};
 #[cfg(feature = "tonic")]
 pub use remote_prover::RemoteTransactionProver;
 
@@ -357,10 +357,10 @@ pub mod testing {
     pub use miden_standards::testing as standards;
     pub use miden_standards::testing::note::NoteBuilder;
     pub use miden_testing::*;
-    /// The data store the executor reads from, along with the trait whose methods it serves.
-    /// Exposed here so that tests can exercise it on its own, without going through a transaction
-    /// or a note screening pass.
-    pub use miden_tx::DataStore;
+    /// The data store the executor reads from, the MAST forest store trait it also serves, and the
+    /// MAST store that [`ClientDataStore::mast_store`] returns. Exposed here so that tests can
+    /// exercise them on their own, without going through a transaction or a note screening pass.
+    pub use miden_tx::{DataStore, MastForestStore, TransactionMastStore};
 
     pub use crate::store::data_store::ClientDataStore;
     pub use crate::test_utils::*;

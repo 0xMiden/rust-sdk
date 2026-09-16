@@ -1,40 +1,19 @@
 use std::sync::Arc;
 
 use miden_client::note::{
-    InputNoteReader,
-    NoteAssets,
-    NoteAttachments,
-    NoteMetadata,
-    NoteRecipient,
-    NoteStorage,
-    NoteTag,
-    NoteType,
-    NoteUpdateTracker,
-    PartialNoteMetadata,
+    InputNoteReader, NoteAssets, NoteAttachments, NoteMetadata, NoteRecipient, NoteStorage,
+    NoteTag, NoteType, NoteUpdateTracker, PartialNoteMetadata,
 };
 use miden_client::store::input_note_states::{
-    CommittedNoteState,
-    ConsumedExternalNoteState,
-    ConsumedUnauthenticatedLocalNoteState,
-    ExpectedNoteState,
-    NoteSubmissionData,
+    CommittedNoteState, ConsumedExternalNoteState, ConsumedUnauthenticatedLocalNoteState,
+    ExpectedNoteState, NoteSubmissionData,
 };
 use miden_client::store::{
-    InputNoteCursor,
-    InputNoteRecord,
-    InputNoteState,
-    NoteFilter,
-    OutputNoteRecord,
-    OutputNoteState,
-    StaleUpdate,
-    Store,
-    StoreError,
+    InputNoteCursor, InputNoteRecord, InputNoteState, NoteFilter, OutputNoteRecord,
+    OutputNoteState, StaleUpdate, Store, StoreError,
 };
 use miden_client::sync::{
-    AccountUpdates,
-    PartialBlockchainUpdates,
-    StateSyncUpdate,
-    TransactionUpdateTracker,
+    AccountUpdates, PartialBlockchainUpdates, StateSyncUpdate, TransactionUpdateTracker,
 };
 use miden_client::utils::{Deserializable, DeserializationError, Serializable};
 use miden_client::{Felt, ZERO};
@@ -43,15 +22,10 @@ use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::merkle::SparseMerklePath;
 use miden_protocol::note::{
-    NoteAttachment,
-    NoteAttachmentScheme,
-    NoteDetails,
-    NoteInclusionProof,
-    NoteScript,
+    NoteAttachment, NoteAttachmentScheme, NoteDetails, NoteInclusionProof, NoteScript,
 };
 use miden_protocol::testing::account_id::{
-    ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET,
-    ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE,
+    ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET, ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE,
 };
 use miden_protocol::transaction::TransactionId;
 use miden_standards::note::StandardNote;
@@ -1095,13 +1069,16 @@ async fn upsert_input_notes_cannot_move_a_consumed_note_back() {
 async fn state_sync_cannot_move_a_consumed_input_note_back() {
     let store = create_test_store().await;
 
-    let consumed = create_consumed_external_input_note(0, 5, None, None);
-    store.upsert_input_notes(std::slice::from_ref(&consumed)).await.unwrap();
+    let consumed_note = create_consumed_external_input_note(0, 5, None, None);
+    store.upsert_input_notes(std::slice::from_ref(&consumed_note)).await.unwrap();
 
+    // Create a state sync update with the same note but in 'Expected' state
+    let expected_note = expected_copy_of(&consumed_note);
+    let note_updates = NoteUpdateTracker::for_transaction_updates([], [expected_note], []);
     let state_sync_update = StateSyncUpdate::from_parts(
         BlockNumber::from(0u32),
         PartialBlockchainUpdates::default(),
-        NoteUpdateTracker::for_transaction_updates([], [expected_copy_of(&consumed)], []),
+        note_updates,
         TransactionUpdateTracker::default(),
         AccountUpdates::default(),
     );
@@ -1116,7 +1093,7 @@ async fn state_sync_cannot_move_a_consumed_input_note_back() {
     );
 
     let stored = store.get_input_notes(NoteFilter::All).await.unwrap();
-    assert_eq!(stored, vec![consumed]);
+    assert_eq!(stored, vec![consumed_note]);
 }
 
 /// The same guard applies to output notes.

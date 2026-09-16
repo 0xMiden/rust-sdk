@@ -422,15 +422,19 @@ mod test {
 
     use miden_client::account::AccountId;
     use miden_client::block::BlockHeader;
-    use miden_client::crypto::{Forest, InOrderIndex, MmrPeaks};
+    use miden_client::crypto::{Forest, InOrderIndex, MmrPeaks, SparseMerklePath};
     use miden_client::note::{
         BlockNumber,
         NoteAssets,
         NoteAttachments,
+        NoteDetails,
+        NoteInclusionProof,
         NoteMetadata,
         NoteRecipient,
+        NoteStorage,
         NoteType,
         PartialNoteMetadata,
+        StandardNote,
     };
     use miden_client::store::input_note_states::CommittedNoteState;
     use miden_client::store::{
@@ -440,14 +444,11 @@ mod test {
         Store,
         StoreError,
     };
+    use miden_client::testing::account_id::ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE;
     use miden_client::utils::Serializable;
     use miden_client::{EMPTY_WORD, Felt, Word, ZERO};
-    use miden_protocol::crypto::merkle::SparseMerklePath;
     use miden_protocol::crypto::merkle::mmr::Mmr;
-    use miden_protocol::note::{NoteDetails, NoteInclusionProof, NoteStorage};
-    use miden_protocol::testing::account_id::ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE;
     use miden_protocol::transaction::TransactionKernel;
-    use miden_standards::note::StandardNote;
     use rusqlite::params;
 
     use crate::SqliteStore;
@@ -807,33 +808,7 @@ mod test {
         let mut store = create_test_store().await;
         insert_dummy_block_headers(&mut store).await;
 
-        // A committed note is unspent and proves inclusion in NOTE_BLOCK.
-        let recipient = NoteRecipient::new(
-            [Felt::new_unchecked(1234), ZERO, ZERO, ZERO].into(),
-            StandardNote::P2ID.script(),
-            NoteStorage::new(vec![]).unwrap(),
-        );
-        let sender =
-            AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE).unwrap();
-        let state = CommittedNoteState {
-            metadata: NoteMetadata::new(
-                PartialNoteMetadata::new(sender, NoteType::Public),
-                &NoteAttachments::empty(),
-            ),
-            inclusion_proof: NoteInclusionProof::new(
-                BlockNumber::from(NOTE_BLOCK),
-                0,
-                SparseMerklePath::default(),
-            )
-            .unwrap(),
-            block_note_root: EMPTY_WORD,
-        };
-        let note = InputNoteRecord::new(
-            NoteDetails::new(NoteAssets::new(vec![]).unwrap(), recipient),
-            NoteAttachments::empty(),
-            Some(0),
-            state.into(),
-        );
+        let note = create_committed_input_note(BlockNumber::from(NOTE_BLOCK));
         store.upsert_input_notes(&[note]).await.unwrap();
 
         let result = store
@@ -847,5 +822,33 @@ mod test {
         // The block is still tracked, so the note's inclusion proof still has its header.
         let tracked = store.get_tracked_block_header_numbers().await.unwrap();
         assert!(tracked.contains(&(NOTE_BLOCK as usize)), "tracked blocks: {tracked:?}");
+    }
+
+    /// Builds a committed input note, which is unspent and proves inclusion in `block_num`.
+    pub fn create_committed_input_note(block_num: BlockNumber) -> InputNoteRecord {
+        let recipient = NoteRecipient::new(
+            [Felt::new_unchecked(1234), ZERO, ZERO, ZERO].into(),
+            StandardNote::P2ID.script(),
+            NoteStorage::new(vec![]).unwrap(),
+        );
+        let sender =
+            AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE).unwrap();
+
+        let state = CommittedNoteState {
+            metadata: NoteMetadata::new(
+                PartialNoteMetadata::new(sender, NoteType::Public),
+                &NoteAttachments::empty(),
+            ),
+            inclusion_proof: NoteInclusionProof::new(block_num, 0, SparseMerklePath::default())
+                .unwrap(),
+            block_note_root: EMPTY_WORD,
+        };
+
+        InputNoteRecord::new(
+            NoteDetails::new(NoteAssets::new(vec![]).unwrap(), recipient),
+            NoteAttachments::empty(),
+            Some(0),
+            state.into(),
+        )
     }
 }

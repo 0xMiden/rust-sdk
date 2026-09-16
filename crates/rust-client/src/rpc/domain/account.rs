@@ -351,7 +351,7 @@ impl AccountStorageDetails {
     /// Checks that every partial map covers exactly the keys that were requested for its slot.
     ///
     /// # Errors
-    /// - If a partial map covers a different number of keys than were requested for its slot.
+    /// - If a partial map does not cover a key that was requested for its slot.
     /// - If a partial map covers a key that was not requested.
     pub fn validate_against_request(
         &self,
@@ -363,12 +363,11 @@ impl AccountStorageDetails {
             };
 
             let requested_keys = storage_requirements.keys_for_slot(&map_detail.slot_name);
-            if map_keys.len() != requested_keys.len() {
+            if let Some(key) = requested_keys.iter().find(|key| !map_keys.contains(key)) {
                 return Err(RpcError::InvalidResponse(format!(
-                    "expected {} keys for storage map slot '{}', got {}",
-                    requested_keys.len(),
+                    "partial storage map for slot '{}' does not cover requested key {}",
                     map_detail.slot_name,
-                    map_keys.len(),
+                    key.to_hex(),
                 )));
             }
             if let Some(key) = map_keys.iter().find(|key| !requested_keys.contains(key)) {

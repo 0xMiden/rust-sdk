@@ -452,7 +452,7 @@ impl Store for SqliteStore {
         value: Vec<u8>,
     ) -> Result<(), StoreError> {
         self.interact_with_connection(move |conn| {
-            SqliteStore::set_setting(conn, scope, &key, &value).into_store_error()
+            SqliteStore::set_setting(conn, scope, &key, &value)
         })
         .await
     }
@@ -486,7 +486,7 @@ impl Store for SqliteStore {
                 for mutation in &mutations {
                     match mutation {
                         SettingMutation::Set { key, value } => {
-                            SqliteStore::set_setting(tx, scope, key, value).into_store_error()?;
+                            SqliteStore::set_setting(tx, scope, key, value)?;
                         },
                         SettingMutation::Remove { key } => {
                             SqliteStore::remove_setting(tx, scope, key)?;

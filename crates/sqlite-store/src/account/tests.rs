@@ -2786,34 +2786,33 @@ async fn apply_sync_account_patch_rejects_stale_patches() -> anyhow::Result<()> 
     // Initial account state (nonce = 1)
     let initial_account = setup_account_with_map(&store, 3, &map_slot_name).await?;
 
-    // Override the account state, advancing the nonce to 2
+    // Override the account state twice, advancing the nonce to 3
     let mut stored_account = initial_account.clone();
     apply_single_entry_update(&store, &mut stored_account, &map_slot_name, 2).await?;
+    apply_single_entry_update(&store, &mut stored_account, &map_slot_name, 3).await?;
 
     let metrics_before = get_storage_metrics(&store).await;
 
-    // Attempt applying a patch that changes the nonce back to 1 (it should fail with "account nonce
-    // too low")
-    let patch = single_entry_patch(&initial_account, &map_slot_name, 1, 1000)?;
-    let result = apply_sync_account_patch_to_store(
-        &store,
-        (&stored_account).into(),
-        (&initial_account).into(),
-        patch,
-    )
-    .await;
+    // Attempt applying a patch that changes the nonce back to 2 (it should fail with "account nonce
+    // too low"). A patch cannot target nonce 1, which identifies a new account and requires code.
+    let older_header: AccountHeader =
+        (&advanced_account(&initial_account, &map_slot_name, 2, 2000)?).into();
+    let patch = single_entry_patch(&initial_account, &map_slot_name, 2, 2000)?;
+    let result =
+        apply_sync_account_patch_to_store(&store, (&stored_account).into(), older_header, patch)
+            .await;
     assert!(
         matches!(&result, Err(StoreError::StaleUpdate(StaleUpdate::AccountNonceTooLow { .. }))),
         "expected a stale update conflict, got {result:?}"
     );
 
-    // Advance the account nonce to 3, without storing anything
+    // Advance the account nonce to 4, without storing anything
     let new_header: AccountHeader =
-        (&advanced_account(&initial_account, &map_slot_name, 3, 3000)?).into();
+        (&advanced_account(&initial_account, &map_slot_name, 4, 4000)?).into();
     assert!(new_header.nonce().as_canonical_u64() > stored_account.nonce().as_canonical_u64());
-    // Create a patch that advances the nonce to 3, but that is derived from the initial account
+    // Create a patch that advances the nonce to 4, but that is derived from the initial account
     // state
-    let patch = single_entry_patch(&initial_account, &map_slot_name, 3, 3000)?;
+    let patch = single_entry_patch(&initial_account, &map_slot_name, 4, 4000)?;
     // Applying the patch should fail because the stored state no longer matches the state the patch
     // has been derived from
     let result =

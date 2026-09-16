@@ -17,7 +17,9 @@ use miden_client::store::input_note_states::{
     ConsumedExternalNoteState,
     ConsumedUnauthenticatedLocalNoteState,
     ExpectedNoteState,
+    InvalidNoteState,
     NoteSubmissionData,
+    ProcessingAuthenticatedNoteState,
 };
 use miden_client::store::{
     InputNoteCursor,
@@ -1048,183 +1050,188 @@ async fn input_note_state_update_persists_attachments() {
 // STATE GUARD TESTS
 // ================================================================================================
 
-/// Returns an expected note that carries the same details, and therefore the same store key, as
-/// `note`.
-fn expected_copy_of(note: &InputNoteRecord) -> InputNoteRecord {
-    InputNoteRecord::new(
-        note.details().clone(),
-        NoteAttachments::empty(),
-        Some(0),
+/// The store must accept exactly the transitions the note state machine allows, and leave the row
+/// untouched when it rejects one.
+#[tokio::test]
+async fn upsert_input_notes_enforces_note_transitions() {
+    for stored_note in input_notes_in_each_state() {
+        for new_note in input_notes_in_each_state() {
+            let store = create_test_store().await;
+            store.upsert_input_notes(std::slice::from_ref(&stored_note)).await.unwrap();
+
+            let stored_discriminant = stored_note.state().discriminant();
+            let new_discriminant = new_note.state().discriminant();
+            let allowed =
+                InputNoteState::is_valid_transition(stored_discriminant, new_discriminant);
+
+            let result = store.upsert_input_notes(std::slice::from_ref(&new_note)).await;
+            assert_eq!(
+                result.is_ok(),
+                allowed,
+                "state {stored_discriminant} -> {new_discriminant}: {result:?}"
+            );
+            if !allowed {
+                assert!(matches!(
+                    result,
+                    Err(StoreError::StaleUpdate(StaleUpdate::InvalidInputNoteTransition { .. }))
+                ));
+            }
+
+            let persisted = store.get_input_notes(NoteFilter::All).await.unwrap();
+            let expected = if allowed { new_discriminant } else { stored_discriminant };
+            assert_eq!(persisted[0].state().discriminant(), expected);
+        }
+    }
+}
+
+/// The sync path enforces the same rule, for both note tables.
+#[tokio::test]
+async fn apply_state_sync_enforces_note_transitions() {
+    for stored_note in input_notes_in_each_state() {
+        for new_note in input_notes_in_each_state() {
+            let store = create_test_store().await;
+            store.upsert_input_notes(std::slice::from_ref(&stored_note)).await.unwrap();
+
+            let stored_discriminant = stored_note.state().discriminant();
+            let new_discriminant = new_note.state().discriminant();
+            let allowed =
+                InputNoteState::is_valid_transition(stored_discriminant, new_discriminant);
+
+            let result = store.apply_state_sync(input_note_sync_update(new_note.clone())).await;
+            assert_eq!(
+                result.is_ok(),
+                allowed,
+                "input note {stored_discriminant} -> {new_discriminant}: {result:?}"
+            );
+
+            let persisted = store.get_input_notes(NoteFilter::All).await.unwrap();
+            let expected = if allowed { new_discriminant } else { stored_discriminant };
+            assert_eq!(persisted[0].state().discriminant(), expected);
+        }
+    }
+
+    for stored_note in output_notes_in_each_state() {
+        for new_note in output_notes_in_each_state() {
+            let store = create_test_store().await;
+            store
+                .apply_state_sync(output_note_sync_update(stored_note.clone()))
+                .await
+                .unwrap();
+
+            let stored_discriminant = stored_note.state().discriminant();
+            let new_discriminant = new_note.state().discriminant();
+            let allowed =
+                OutputNoteState::is_valid_transition(stored_discriminant, new_discriminant);
+
+            let result = store.apply_state_sync(output_note_sync_update(new_note.clone())).await;
+            assert_eq!(
+                result.is_ok(),
+                allowed,
+                "output note {stored_discriminant} -> {new_discriminant}: {result:?}"
+            );
+
+            let persisted = store.get_output_notes(NoteFilter::All).await.unwrap();
+            let expected = if allowed { new_discriminant } else { stored_discriminant };
+            assert_eq!(persisted[0].state().discriminant(), expected);
+        }
+    }
+}
+
+/// Returns one input note record per state under test, all sharing a details commitment so each is
+/// a candidate write to the same row.
+fn input_notes_in_each_state() -> Vec<InputNoteRecord> {
+    let serial_number: Word = [Felt::new_unchecked(13_000), ZERO, ZERO, ZERO].into();
+    let recipient = NoteRecipient::new(
+        serial_number,
+        StandardNote::P2ID.script(),
+        NoteStorage::new(vec![]).unwrap(),
+    );
+    let details = NoteDetails::new(NoteAssets::new(vec![]).unwrap(), recipient);
+    let sender = AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE).unwrap();
+    let metadata = create_note_metadata(sender, 0);
+    let inclusion_proof =
+        NoteInclusionProof::new(BlockNumber::from(3u32), 0, SparseMerklePath::default()).unwrap();
+
+    let states: Vec<InputNoteState> = vec![
         ExpectedNoteState {
-            metadata: None,
+            metadata: Some(metadata),
             after_block_num: BlockNumber::from(0u32),
             tag: None,
         }
         .into(),
-    )
-}
-
-/// An import built from a read taken before the note was consumed must not overwrite the consumed
-/// state.
-#[tokio::test]
-async fn upsert_input_notes_cannot_move_a_consumed_note_back() {
-    let store = create_test_store().await;
-
-    let consumed = create_consumed_external_input_note(0, 5, None, None);
-    store.upsert_input_notes(std::slice::from_ref(&consumed)).await.unwrap();
-
-    let stale = expected_copy_of(&consumed);
-    assert_eq!(stale.details_commitment(), consumed.details_commitment());
-
-    let result = store.upsert_input_notes(&[stale]).await;
-    assert!(
-        matches!(
-            &result,
-            Err(StoreError::StaleUpdate(StaleUpdate::InvalidInputNoteTransition { .. }))
-        ),
-        "expected a stale update conflict, got {result:?}"
-    );
-
-    let stored = store.get_input_notes(NoteFilter::All).await.unwrap();
-    assert_eq!(stored, vec![consumed]);
-}
-
-/// A sync working from a read taken before the note was consumed must not overwrite the consumed
-/// state.
-#[tokio::test]
-async fn state_sync_cannot_move_a_consumed_input_note_back() {
-    let store = create_test_store().await;
-
-    let consumed_note = create_consumed_external_input_note(0, 5, None, None);
-    store.upsert_input_notes(std::slice::from_ref(&consumed_note)).await.unwrap();
-
-    // Create a state sync update with the same note but in 'Expected' state
-    let expected_note = expected_copy_of(&consumed_note);
-    let note_updates = NoteUpdateTracker::for_transaction_updates([], [expected_note], []);
-    let state_sync_update = StateSyncUpdate::from_parts(
-        BlockNumber::from(0u32),
-        PartialBlockchainUpdates::default(),
-        note_updates,
-        TransactionUpdateTracker::default(),
-        AccountUpdates::default(),
-    );
-
-    let result = store.apply_state_sync(state_sync_update).await;
-    assert!(
-        matches!(
-            &result,
-            Err(StoreError::StaleUpdate(StaleUpdate::InvalidInputNoteTransition { .. }))
-        ),
-        "expected a stale update conflict, got {result:?}"
-    );
-
-    let stored = store.get_input_notes(NoteFilter::All).await.unwrap();
-    assert_eq!(stored, vec![consumed_note]);
-}
-
-/// The same guard applies to output notes.
-#[tokio::test]
-async fn state_sync_cannot_move_a_consumed_output_note_back() {
-    let store = create_test_store().await;
-
-    let consumed_note = create_output_note_with_state(0, |recipient| OutputNoteState::Consumed {
-        block_height: BlockNumber::from(1u32),
-        recipient,
-    });
-    // Apply state sync update with the note in the 'Consumed' state
-    let state_sync_update_with_consumed_note = output_note_sync_update(consumed_note.clone());
-    store.apply_state_sync(state_sync_update_with_consumed_note).await.unwrap();
-
-    // Attempt to apply state sync update with the same note but in the 'Expected' state
-    let expected_note =
-        create_output_note_with_state(0, |recipient| OutputNoteState::ExpectedFull { recipient });
-    let state_sync_update_with_expected_note = output_note_sync_update(expected_note.clone());
-    let result = store.apply_state_sync(state_sync_update_with_expected_note).await;
-    assert!(
-        matches!(
-            &result,
-            Err(StoreError::StaleUpdate(StaleUpdate::InvalidOutputNoteTransition { .. }))
-        ),
-        "expected a stale update conflict, got {result:?}"
-    );
-
-    let stored = store.get_output_notes(NoteFilter::All).await.unwrap();
-    assert_eq!(stored, vec![consumed_note]);
-}
-
-/// An import built before the note committed must not drop its inclusion proof by writing the note
-/// back to `Expected`.
-#[tokio::test]
-async fn upsert_input_notes_cannot_move_a_committed_note_back_to_expected() {
-    let store = create_test_store().await;
-
-    let expected = create_expected_input_note(0);
-    let sender = AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE).unwrap();
-    let committed = InputNoteRecord::new(
-        expected.details().clone(),
-        NoteAttachments::empty(),
-        Some(0),
         CommittedNoteState {
-            metadata: create_note_metadata(sender, 0),
-            inclusion_proof: NoteInclusionProof::new(
-                BlockNumber::from(3u32),
-                0,
-                SparseMerklePath::default(),
-            )
-            .unwrap(),
+            metadata,
+            inclusion_proof: inclusion_proof.clone(),
             block_note_root: Word::default(),
         }
         .into(),
-    );
-    store.upsert_input_notes(std::slice::from_ref(&committed)).await.unwrap();
+        InvalidNoteState {
+            metadata,
+            invalid_inclusion_proof: inclusion_proof.clone(),
+            block_note_root: Word::default(),
+        }
+        .into(),
+        ProcessingAuthenticatedNoteState {
+            metadata,
+            inclusion_proof,
+            block_note_root: Word::default(),
+            submission_data: NoteSubmissionData {
+                submitted_at: Some(0),
+                consumer_account: sender,
+                consumer_transaction: TransactionId::from_raw(Word::default()),
+            },
+        }
+        .into(),
+        ConsumedExternalNoteState {
+            nullifier_block_height: BlockNumber::from(5u32),
+            consumer_account: None,
+            consumed_tx_order: None,
+            metadata: Some(metadata),
+        }
+        .into(),
+    ];
 
-    let result = store.upsert_input_notes(&[expected]).await;
-    assert!(
-        matches!(
-            &result,
-            Err(StoreError::StaleUpdate(StaleUpdate::InvalidInputNoteTransition { .. }))
-        ),
-        "expected a stale update conflict, got {result:?}"
-    );
-
-    let stored = store.get_input_notes(NoteFilter::All).await.unwrap();
-    assert_eq!(stored, vec![committed]);
+    states
+        .into_iter()
+        .map(|state| {
+            InputNoteRecord::new(details.clone(), NoteAttachments::empty(), Some(0), state)
+        })
+        .collect()
 }
 
-/// Losing a committed output note's details counts as moving backwards too.
-#[tokio::test]
-async fn state_sync_cannot_move_a_committed_output_note_back() {
-    let store = create_test_store().await;
+/// Returns one output note record per state, all sharing a details commitment.
+fn output_notes_in_each_state() -> Vec<OutputNoteRecord> {
+    let proof =
+        NoteInclusionProof::new(BlockNumber::from(3u32), 0, SparseMerklePath::default()).unwrap();
+    let committed_partial = proof.clone();
+    let committed_full = proof;
 
-    let committed_note =
-        create_output_note_with_state(1, |recipient| OutputNoteState::CommittedFull {
+    vec![
+        create_output_note_with_state(0, |_| OutputNoteState::ExpectedPartial),
+        create_output_note_with_state(0, |recipient| OutputNoteState::ExpectedFull { recipient }),
+        create_output_note_with_state(0, |_| OutputNoteState::CommittedPartial {
+            inclusion_proof: committed_partial,
+        }),
+        create_output_note_with_state(0, |recipient| OutputNoteState::CommittedFull {
             recipient,
-            inclusion_proof: NoteInclusionProof::new(
-                BlockNumber::from(3u32),
-                0,
-                SparseMerklePath::default(),
-            )
-            .unwrap(),
-        });
-    // Apply state sync update with the output note in the 'Committed' state
-    let state_sync_update_with_committed_note = output_note_sync_update(committed_note.clone());
-    store.apply_state_sync(state_sync_update_with_committed_note).await.unwrap();
+            inclusion_proof: committed_full,
+        }),
+        create_output_note_with_state(0, |recipient| OutputNoteState::Consumed {
+            block_height: BlockNumber::from(1u32),
+            recipient,
+        }),
+    ]
+}
 
-    // Attempt to apply state sync update with the same note but in the 'Expected' state
-    let expected_note =
-        create_output_note_with_state(1, |recipient| OutputNoteState::ExpectedFull { recipient });
-    let state_sync_update_with_expected_note = output_note_sync_update(expected_note);
-    let result = store.apply_state_sync(state_sync_update_with_expected_note).await;
-    assert!(
-        matches!(
-            &result,
-            Err(StoreError::StaleUpdate(StaleUpdate::InvalidOutputNoteTransition { .. }))
-        ),
-        "expected a stale update conflict, got {result:?}"
-    );
-
-    let stored = store.get_output_notes(NoteFilter::All).await.unwrap();
-    assert_eq!(stored, vec![committed_note]);
+/// Helper to build a state sync update that writes a single input note.
+fn input_note_sync_update(note: InputNoteRecord) -> StateSyncUpdate {
+    StateSyncUpdate::from_parts(
+        BlockNumber::from(0u32),
+        PartialBlockchainUpdates::default(),
+        NoteUpdateTracker::for_transaction_updates([], [note], []),
+        TransactionUpdateTracker::default(),
+        AccountUpdates::default(),
+    )
 }
 
 /// Helper to create an output note in a specific state. The state variants embed the note's

@@ -26,7 +26,10 @@ use miden_client::keystore::Keystore;
 use miden_client::note::NoteId;
 use miden_client::note_transport::NOTE_TRANSPORT_TESTNET_ENDPOINT;
 use miden_client::rpc::Endpoint;
-use miden_client::testing::account_id::ACCOUNT_ID_PRIVATE_SENDER;
+use miden_client::testing::account_id::{
+    ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET,
+    ACCOUNT_ID_PRIVATE_SENDER,
+};
 use miden_client::testing::common::{
     ACCOUNT_ID_REGULAR,
     FilesystemKeyStore,
@@ -1266,6 +1269,42 @@ async fn address_add_rejects_mismatched_network() -> Result<()> {
         stderr.contains("does not match configured network"),
         "unexpected stderr: {stderr}"
     );
+
+    Ok(())
+}
+
+/// `mint` must reject a bech32 address that belongs to a different network, both as the target
+/// account and as the faucet of the asset. The command fails before it builds the transaction, so
+/// the accounts do not need to exist.
+#[tokio::test]
+async fn mint_rejects_mismatched_network_addresses() -> Result<()> {
+    let (_, temp_dir, endpoint) = init_cli();
+
+    let other_network_id = if endpoint.to_network_id() == NetworkId::Mainnet {
+        NetworkId::Testnet
+    } else {
+        NetworkId::Mainnet
+    };
+    let target_id = AccountId::try_from(ACCOUNT_ID_REGULAR)?;
+    let faucet_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET)?;
+    let on_other_network = |id: AccountId| Address::new(id).encode(other_network_id.clone());
+
+    for (target, faucet) in [
+        (on_other_network(target_id), faucet_id.to_hex()),
+        (target_id.to_hex(), on_other_network(faucet_id)),
+    ] {
+        let mut mint_cmd = cargo_bin_cmd!("miden-client");
+        let asset = format!("100::{faucet}");
+        mint_cmd.args(["mint", "--target", &target, "--asset", &asset, "-n", "private", "--force"]);
+        let output = mint_cmd.current_dir(&temp_dir).output().unwrap();
+
+        assert!(!output.status.success(), "expected mint to fail for {target} and {asset}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("does not match configured network"),
+            "unexpected stderr: {stderr}"
+        );
+    }
 
     Ok(())
 }

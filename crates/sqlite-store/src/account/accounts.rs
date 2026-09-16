@@ -24,11 +24,11 @@ use miden_client::asset::{Asset, AssetVault, AssetWitness};
 use miden_client::store::{
     AccountRecord,
     AccountRecordData,
+    AccountStateUpdate,
     AccountStatus,
     AccountStorageFilter,
     AccountUpdate,
     ClientAccountType,
-    PublicAccountUpdate,
     StorageUpdate,
     StoreError,
     VaultUpdate,
@@ -474,7 +474,7 @@ impl SqliteStore {
         final_account_state: &AccountHeader,
         patch: &AccountPatch,
     ) -> Result<(), StoreError> {
-        let update = PublicAccountUpdate::new(
+        let update = AccountStateUpdate::new(
             final_account_state.clone(),
             StorageUpdate::Patch(patch.storage().clone()),
             VaultUpdate::Patch(patch.vault().clone()),
@@ -490,7 +490,7 @@ impl SqliteStore {
         tx: &Transaction<'_>,
         smt_forest: &mut ScopedAccountForest<'_, '_>,
         init_account_state: &AccountHeader,
-        update: &PublicAccountUpdate,
+        update: &AccountStateUpdate,
     ) -> Result<(), StoreError> {
         let final_account_state = update.new_header();
         let account_id = final_account_state.id();
@@ -961,7 +961,7 @@ impl SqliteStore {
             )));
         }
 
-        let update = PublicAccountUpdate::new(
+        let update = AccountStateUpdate::new(
             new_account_state.into(),
             StorageUpdate::Full(new_account_state.storage().clone()),
             VaultUpdate::Full(new_account_state.vault().assets().collect()),
@@ -973,7 +973,7 @@ impl SqliteStore {
     pub(crate) fn apply_sync_account_update(
         tx: &Transaction<'_>,
         smt_forest: &mut ScopedAccountForest<'_, '_>,
-        update: &PublicAccountUpdate,
+        update: &AccountStateUpdate,
     ) -> Result<(), StoreError> {
         let new_header = update.new_header();
         let account_id = new_header.id();

@@ -4,26 +4,24 @@ use alloc::vec::Vec;
 use miden_protocol::account::{
     AccountHeader,
     AccountId,
-    AccountStorage,
     AccountStoragePatch,
-    AccountVaultPatch,
     StorageMapPatch,
     StorageMapPatchEntries,
     StorageSlotName,
     StorageSlotPatch,
     StorageValuePatch,
 };
-use miden_protocol::asset::Asset;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrPeaks};
 use miden_protocol::errors::AccountPatchError;
 use miden_protocol::note::{NoteId, Nullifier};
 use miden_protocol::transaction::TransactionId;
-use miden_protocol::{Felt, ONE, Word};
+use miden_protocol::{ONE, Word};
 
 use super::SyncSummary;
 use crate::note::{NoteUpdateTracker, NoteUpdateType};
 use crate::rpc::domain::transaction::TransactionRecord as RpcTransactionRecord;
+use crate::store::{AccountStateUpdate, AccountUpdates};
 use crate::transaction::{DiscardCause, TransactionRecord, TransactionStatus};
 
 // STATE SYNC UPDATE
@@ -169,7 +167,7 @@ impl From<&StateSyncUpdate> for SyncSummary {
                 .account_updates
                 .updated_public_accounts()
                 .iter()
-                .map(PublicAccountUpdate::id)
+                .map(AccountStateUpdate::id)
                 .collect(),
             value
                 .account_updates
@@ -416,77 +414,8 @@ impl TransactionUpdateTracker {
     }
 }
 
-// PUBLIC ACCOUNT UPDATE
+// STORAGE PATCH BUILDER
 // ================================================================================================
-
-/// Update to a single tracked public account, produced by `StateSync` when the account's commitment
-/// changed on chain.
-///
-/// The storage and the vault are described independently. A part that the `get_account` response
-/// carried in full is a `Full` update, which the store applies as a replacement. A part the node
-/// reported as oversized is a `Patch` update, built from the changes fetched over the synced block
-/// range with `sync_storage_maps` or `sync_account_vault`. The header is included because the
-/// updates do not carry the final commitments.
-#[derive(Debug, Clone)]
-pub struct PublicAccountUpdate {
-    /// The new account header after applying the update.
-    new_header: AccountHeader,
-    /// The storage update to apply.
-    storage: StorageUpdate,
-    /// The vault update to apply.
-    vault: VaultUpdate,
-}
-
-impl PublicAccountUpdate {
-    /// Creates a new update that advances the account to `new_header`.
-    pub fn new(new_header: AccountHeader, storage: StorageUpdate, vault: VaultUpdate) -> Self {
-        Self { new_header, storage, vault }
-    }
-
-    /// Returns the account ID for this update.
-    pub fn id(&self) -> AccountId {
-        self.new_header.id()
-    }
-
-    /// Returns the account nonce that this update advances the local state to.
-    pub fn nonce(&self) -> Felt {
-        self.new_header.nonce()
-    }
-
-    /// Returns the new account header after applying the update.
-    pub fn new_header(&self) -> &AccountHeader {
-        &self.new_header
-    }
-
-    /// Returns the storage update.
-    pub fn storage(&self) -> &StorageUpdate {
-        &self.storage
-    }
-
-    /// Returns the vault update.
-    pub fn vault(&self) -> &VaultUpdate {
-        &self.vault
-    }
-}
-
-/// Storage part of a [`PublicAccountUpdate`].
-#[derive(Debug, Clone)]
-pub enum StorageUpdate {
-    /// The complete storage. The store replaces every local slot with it.
-    Full(AccountStorage),
-    /// The absolute changes to the storage, layered onto the local one. Maps the node returned in
-    /// full are `Create` patches, which replace the slot.
-    Patch(AccountStoragePatch),
-}
-
-/// Vault part of a [`PublicAccountUpdate`].
-#[derive(Debug, Clone)]
-pub enum VaultUpdate {
-    /// The complete vault contents. The store replaces the local vault with them.
-    Full(Vec<Asset>),
-    /// The absolute changes to the vault, layered onto the local one.
-    Patch(AccountVaultPatch),
-}
 
 /// Builds the absolute [`AccountStoragePatch`] implied by the updates fetched from the node: the
 /// value-slot values, the absolute changed map entries per slot, and the complete entries of the
@@ -535,52 +464,6 @@ pub(crate) fn build_storage_patch(
     AccountStoragePatch::from_entries(value_entries.chain(changed_maps).chain(complete_maps))
 }
 
-// ACCOUNT UPDATES
-// ================================================================================================
-
-/// Contains account changes to apply to the store after a sync request.
-#[derive(Debug, Clone, Default)]
-#[allow(clippy::struct_field_names)]
-pub struct AccountUpdates {
-    /// Updated public accounts.
-    updated_public_accounts: Vec<PublicAccountUpdate>,
-    /// Account commitments received from the network that don't match the currently locally-tracked
-    /// state of the private accounts.
-    ///
-    /// These updates may represent a stale account commitment (meaning that the latest local state
-    /// hasn't been committed). If this is not the case, the account may be locked until the state
-    /// is restored manually.
-    mismatched_private_accounts: Vec<(AccountId, Word)>,
-}
-
-impl AccountUpdates {
-    /// Creates a new instance of `AccountUpdates`.
-    pub fn new(
-        updated_public_accounts: Vec<PublicAccountUpdate>,
-        mismatched_private_accounts: Vec<(AccountId, Word)>,
-    ) -> Self {
-        Self {
-            updated_public_accounts,
-            mismatched_private_accounts,
-        }
-    }
-
-    /// Returns the updated public accounts.
-    pub fn updated_public_accounts(&self) -> &[PublicAccountUpdate] {
-        &self.updated_public_accounts
-    }
-
-    /// Returns the mismatched private accounts.
-    pub fn mismatched_private_accounts(&self) -> &[(AccountId, Word)] {
-        &self.mismatched_private_accounts
-    }
-
-    pub fn extend(&mut self, other: AccountUpdates) {
-        self.updated_public_accounts.extend(other.updated_public_accounts);
-        self.mismatched_private_accounts.extend(other.mismatched_private_accounts);
-    }
-}
-
 // TESTS
 // ================================================================================================
 
@@ -589,6 +472,7 @@ mod tests {
     use alloc::collections::BTreeMap;
     use alloc::vec;
 
+    use miden_protocol::Felt;
     use miden_protocol::account::{StorageMapKey, StorageMapPatchEntries};
     use miden_protocol::testing::account_id::ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE;
 

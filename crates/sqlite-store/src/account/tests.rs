@@ -25,9 +25,9 @@ use miden_client::assembly::CodeBuilder;
 use miden_client::asset::{Asset, FungibleAsset, NonFungibleAsset, NonFungibleAssetDetails};
 use miden_client::auth::{AuthSchemeId, AuthSingleSig, PublicKeyCommitment};
 use miden_client::store::{
+    AccountStateUpdate,
     AccountUpdate,
     ClientAccountType,
-    PublicAccountUpdate,
     StorageUpdate,
     Store,
     StoreError,
@@ -456,7 +456,7 @@ async fn apply_sync_account_update_replaces_vault() -> anyhow::Result<()> {
     account_after.apply_patch(&state_patch)?;
 
     // The vault arrives as the complete asset list and there are no storage changes.
-    let update = PublicAccountUpdate::new(
+    let update = AccountStateUpdate::new(
         (&account_after).into(),
         StorageUpdate::Patch(AccountStoragePatch::default()),
         VaultUpdate::Full(account_after.vault().assets().collect()),
@@ -546,7 +546,7 @@ async fn apply_sync_account_update_replaces_storage() -> anyhow::Result<()> {
     account_after.apply_patch(&state_patch)?;
 
     // The storage arrives complete and there are no vault changes.
-    let update = PublicAccountUpdate::new(
+    let update = AccountStateUpdate::new(
         (&account_after).into(),
         StorageUpdate::Full(account_after.storage().clone()),
         VaultUpdate::Patch(AccountVaultPatch::default()),

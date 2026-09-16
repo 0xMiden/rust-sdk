@@ -21,19 +21,8 @@ use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrDelta, PartialMmr};
 use miden_protocol::note::{NoteId, NoteTag, Nullifier};
 use tracing::info;
 
-use super::state_sync_update::{
-    StorageUpdate,
-    TransactionUpdateTracker,
-    VaultUpdate,
-    build_storage_patch,
-};
-use super::{
-    AccountUpdates,
-    NoteObserver,
-    PartialBlockchainUpdates,
-    PublicAccountUpdate,
-    StateSyncUpdate,
-};
+use super::state_sync_update::{TransactionUpdateTracker, build_storage_patch};
+use super::{NoteObserver, PartialBlockchainUpdates, StateSyncUpdate};
 use crate::ClientError;
 use crate::note::{NoteConsumption, NoteUpdateTracker};
 use crate::rpc::domain::account::{
@@ -50,7 +39,15 @@ use crate::rpc::domain::sync::{ChainMmrInfo, SyncTarget};
 use crate::rpc::domain::transaction::TransactionRecord as RpcTransactionRecord;
 use crate::rpc::{AccountStateAt, NodeRpcClient, NoteContentFetch, RpcError};
 use crate::store::input_note_states::UnverifiedNoteState;
-use crate::store::{InputNoteRecord, OutputNoteRecord, StoreError};
+use crate::store::{
+    AccountStateUpdate,
+    AccountUpdates,
+    InputNoteRecord,
+    OutputNoteRecord,
+    StorageUpdate,
+    StoreError,
+    VaultUpdate,
+};
 use crate::transaction::TransactionRecord;
 
 /// Maximum number of `get_account` requests kept in flight while syncing the state.
@@ -62,7 +59,7 @@ const MAX_CONCURRENT_ACCOUNT_FETCHES: usize = 4;
 /// How a node snapshot of a public account should be reconciled against the local state.
 enum PublicAccountSync {
     /// Node is newer — apply its state to the store.
-    Apply(Box<PublicAccountUpdate>),
+    Apply(Box<AccountStateUpdate>),
     /// Same nonce but different state — the local transaction lost the race and must be discarded.
     Superseded,
     /// Node is behind the local (potentially optimistic) state — leave the local state untouched.
@@ -1080,7 +1077,7 @@ impl StateSync {
     ///
     /// Each part of the account that fits in that response is applied as a replacement. An
     /// oversized part is fetched as changes over the synced block range instead. The result is a
-    /// [`PublicAccountUpdate`].
+    /// [`AccountStateUpdate`].
     async fn sync_public_accounts(
         &self,
         account_updates: &mut AccountUpdates,
@@ -1240,7 +1237,7 @@ impl StateSync {
         })
     }
 
-    /// Builds the [`PublicAccountUpdate`] for an account from its `get_account` response.
+    /// Builds the [`AccountStateUpdate`] for an account from its `get_account` response.
     ///
     /// A part the response carries in full becomes a `Full` update, which the store applies as a
     /// replacement. An oversized part is fetched as changes over the synced range: the storage maps
@@ -1252,7 +1249,7 @@ impl StateSync {
         details: AccountDetails,
         block_from: BlockNumber,
         block_to: BlockNumber,
-    ) -> Result<PublicAccountUpdate, ClientError> {
+    ) -> Result<AccountStateUpdate, ClientError> {
         let any_map_oversized = details
             .storage_details
             .map_details
@@ -1279,7 +1276,7 @@ impl StateSync {
             VaultUpdate::Full(details.vault_details.assets)
         };
 
-        Ok(PublicAccountUpdate::new(details.header, storage, vault))
+        Ok(AccountStateUpdate::new(details.header, storage, vault))
     }
 
     /// Builds the storage update for an account with at least one oversized map.
@@ -2069,7 +2066,7 @@ mod tests {
     async fn sync_updated_account(
         rpc_api: &MockRpcApi,
         local_account: &Account,
-    ) -> PublicAccountUpdate {
+    ) -> AccountStateUpdate {
         let chain_tip_header = rpc_api.mock_chain.read().latest_block_header();
         let on_chain_commitment = rpc_api
             .mock_chain

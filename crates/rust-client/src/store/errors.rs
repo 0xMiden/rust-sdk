@@ -66,14 +66,10 @@ pub enum StoreError {
     DataDeserializationError(#[from] DeserializationError),
     #[error("database-related non-query error: {0}")]
     DatabaseError(String),
-    #[error("the database file is busy: {0}")]
-    DatabaseBusy(String),
-    #[error("a database table is locked: {0}")]
-    DatabaseLocked(String),
-    #[error("a database constraint was violated: {0}")]
-    ConstraintViolation(String),
-    #[error("the database file is corrupt: {0}")]
-    DatabaseCorrupted(String),
+    #[error("transient database error, the operation can be retried: {0}")]
+    DatabaseTransientError(String),
+    #[error("permanent database error: {0}")]
+    DatabasePermanentError(String),
     #[error("failed to parse hex value")]
     HexParseError(#[from] HexParseError),
     #[error("integer conversion failed")]

@@ -774,36 +774,6 @@ pub(crate) fn apply_note_updates_tx(
 // NOTE STATE GUARD
 // ================================================================================================
 
-/// Returns the stored state discriminant of each note that already has a row in `table`. Notes with
-/// no row yet are absent from the result.
-fn stored_note_states(
-    tx: &Transaction<'_>,
-    table: &str,
-    commitments: impl Iterator<Item = NoteDetailsCommitment>,
-) -> Result<BTreeMap<NoteDetailsCommitment, u8>, StoreError> {
-    let keys: Vec<Value> = commitments.map(|c| Value::Blob(c.to_bytes())).collect();
-    if keys.is_empty() {
-        return Ok(BTreeMap::new());
-    }
-
-    let query = format!(
-        "SELECT details_commitment, state_discriminant FROM {table} \
-         WHERE details_commitment IN rarray(?)"
-    );
-
-    tx.prepare(&query)
-        .into_store_error()?
-        .query_map(params![Rc::new(keys)], |row| {
-            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, u8>(1)?))
-        })
-        .into_store_error()?
-        .map(|row| {
-            let (commitment, discriminant) = row.into_store_error()?;
-            Ok((NoteDetailsCommitment::read_from_bytes(&commitment)?, discriminant))
-        })
-        .collect()
-}
-
 /// Returns an error if any input note would move to a state its stored state does not allow.
 fn check_input_note_transitions_against_stored_states(
     tx: &Transaction<'_>,
@@ -858,6 +828,36 @@ fn check_output_note_transitions_against_stored_states(
     }
 
     Ok(())
+}
+
+/// Returns the stored state discriminant of each note that already has a row in `table`. Notes with
+/// no row yet are absent from the result.
+fn stored_note_states(
+    tx: &Transaction<'_>,
+    table: &str,
+    commitments: impl Iterator<Item = NoteDetailsCommitment>,
+) -> Result<BTreeMap<NoteDetailsCommitment, u8>, StoreError> {
+    let keys: Vec<Value> = commitments.map(|c| Value::Blob(c.to_bytes())).collect();
+    if keys.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+
+    let query = format!(
+        "SELECT details_commitment, state_discriminant FROM {table} \
+         WHERE details_commitment IN rarray(?)"
+    );
+
+    tx.prepare(&query)
+        .into_store_error()?
+        .query_map(params![Rc::new(keys)], |row| {
+            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, u8>(1)?))
+        })
+        .into_store_error()?
+        .map(|row| {
+            let (commitment, discriminant) = row.into_store_error()?;
+            Ok((NoteDetailsCommitment::read_from_bytes(&commitment)?, discriminant))
+        })
+        .collect()
 }
 
 /// Batch-upsert note scripts using a multi-row insert. Multi-row inserts reduce per-statement

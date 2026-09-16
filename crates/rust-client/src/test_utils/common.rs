@@ -219,6 +219,9 @@ pub struct AccountSetup {
 }
 
 impl AccountSetup {
+    // TODO: restore `ECDSA_K256_KECCAK_SCHEME_ID` as the default once protocol `0.17.0-rc.5` is
+    // released. ECDSA verification runs as a precompile, the local prover settles the precompile
+    // work, and a batch rejects a transaction proof that carries settled work.
     fn standard(components: StandardComponents, account_type: AccountType) -> Self {
         Self {
             kind: AccountKind::Standard {

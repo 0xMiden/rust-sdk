@@ -66,6 +66,10 @@ pub enum StoreError {
     DataDeserializationError(#[from] DeserializationError),
     #[error("database-related non-query error: {0}")]
     DatabaseError(String),
+    #[error("transient database error, the operation can be retried: {0}")]
+    DatabaseTransientError(String),
+    #[error("permanent database error: {0}")]
+    DatabasePermanentError(String),
     #[error("failed to parse hex value")]
     HexParseError(#[from] HexParseError),
     #[error("integer conversion failed")]

@@ -58,6 +58,7 @@ use crate::rpc::domain::status::NetworkNoteStatusInfo;
 use crate::rpc::domain::storage_map::StorageMapInfo;
 use crate::rpc::domain::sync::{ChainMmrInfo, SyncTarget};
 use crate::rpc::domain::transaction::TransactionRecord;
+use crate::rpc::domain::{build_unchecked_message, verify_message};
 use crate::rpc::errors::node::parse_node_error;
 use crate::rpc::errors::{AcceptHeaderContext, AcceptHeaderError, GrpcError, RpcConversionError};
 use crate::rpc::generated::rpc::BlockRange;
@@ -394,10 +395,10 @@ impl NodeRpcClient for GrpcClient {
             .filter_map(|attestation| {
                 let validator_key = attestation
                     .validator_public_key
-                    .and_then(|key| ValidatorPublicKey::try_from(key).ok());
+                    .and_then(|key| verify_message::<_, ValidatorPublicKey>(key).ok());
                 let signature = attestation
                     .signature
-                    .and_then(|signature| ValidatorSignature::try_from(signature).ok());
+                    .and_then(|signature| verify_message::<_, ValidatorSignature>(signature).ok());
                 let decoded = validator_key.zip(signature).map(|(validator_key, signature)| {
                     ValidatorAttestation { validator_key, signature }
                 });
@@ -491,6 +492,7 @@ impl NodeRpcClient for GrpcClient {
         let request = proto::rpc::BlockHeaderByNumberRequest {
             block_num: block_num.as_ref().map(BlockNumber::as_u32),
             include_mmr_proof: Some(include_mmr_proof),
+            include_protocol_config: None,
         };
 
         info!("Calling GetBlockHeaderByNumber: {:?}", request);
@@ -503,19 +505,19 @@ impl NodeRpcClient for GrpcClient {
 
         let response = api_response.into_inner();
 
-        let block_header: BlockHeader = response
-            .block_header
-            .ok_or(RpcError::ExpectedDataMissing("BlockHeader".into()))?
-            .try_into()?;
+        let block_header: BlockHeader = build_unchecked_message(
+            response
+                .block_header
+                .ok_or(RpcError::ExpectedDataMissing("BlockHeader".into()))?,
+        )?;
 
         let mmr_proof = if include_mmr_proof {
             let forest = response
                 .chain_length
                 .ok_or(RpcError::ExpectedDataMissing("ChainLength".into()))?;
-            let merkle_path: MerklePath = response
-                .mmr_path
-                .ok_or(RpcError::ExpectedDataMissing("MmrPath".into()))?
-                .try_into()?;
+            let merkle_path: MerklePath = verify_message(
+                response.mmr_path.ok_or(RpcError::ExpectedDataMissing("MmrPath".into()))?,
+            )?;
 
             let forest_size = usize::try_from(forest).expect("u64 should fit in usize");
             let forest = Forest::new(forest_size).map_err(|_| {
@@ -641,10 +643,11 @@ impl NodeRpcClient for GrpcClient {
             .await?
             .into_inner();
 
-        let account_witness: AccountWitness = response
-            .witness
-            .ok_or(RpcError::ExpectedDataMissing("AccountWitness".to_string()))?
-            .try_into()?;
+        let account_witness: AccountWitness = verify_message(
+            response
+                .witness
+                .ok_or(RpcError::ExpectedDataMissing("AccountWitness".to_string()))?,
+        )?;
 
         let response_block_num: BlockNumber = response
             .block_num
@@ -815,8 +818,8 @@ impl NodeRpcClient for GrpcClient {
         let response = response.into_inner();
         // The response carries the block and its proof in separate fields, so the block message
         // holds a signed block and never a proven one.
-        let block =
-            SignedBlock::try_from(response.block.ok_or(RpcError::ExpectedDataMissing(
+        let block: SignedBlock =
+            build_unchecked_message(response.block.ok_or(RpcError::ExpectedDataMissing(
                 "GetBlockByNumberResponse.block".to_string(),
             ))?)?;
 
@@ -841,7 +844,7 @@ impl NodeRpcClient for GrpcClient {
         let Some(script) = response.into_inner().script else {
             return Ok(None);
         };
-        let note_script = NoteScript::try_from(script)?;
+        let note_script: NoteScript = verify_message(script)?;
 
         Ok(Some(note_script))
     }
@@ -865,7 +868,6 @@ impl NodeRpcClient for GrpcClient {
             };
             let response = self
                 .call_with_retry(RpcEndpoint::SyncStorageMaps, |mut rpc_api| {
-                    let request = request.clone();
                     Box::pin(async move { rpc_api.sync_account_storage_maps(request).await })
                 })
                 .await?;
@@ -910,7 +912,6 @@ impl NodeRpcClient for GrpcClient {
             };
             let response = self
                 .call_with_retry(RpcEndpoint::SyncAccountVault, |mut rpc_api| {
-                    let request = request.clone();
                     Box::pin(async move { rpc_api.sync_account_vault(request).await })
                 })
                 .await?;

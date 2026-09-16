@@ -42,16 +42,16 @@ miden-client-integration-tests = { default-features = false, path = "bin/integra
 miden-client-sqlite-store      = { default-features = false, path = "crates/sqlite-store", version = "0.17.0-rc.1" }
 
 # Miden protocol dependencies
-miden-agglayer  = { default-features = false, version = "0.17.0-rc.3" }
-miden-objects   = { default-features = false, version = "0.17.0-rc.3" }
-miden-protocol  = { default-features = false, version = "0.17.0-rc.3" }
-miden-standards = { default-features = false, version = "0.17.0-rc.3" }
-miden-testing   = { default-features = false, version = "0.17.0-rc.3" }
-miden-tx        = { default-features = false, version = "0.17.0-rc.3" }
-miden-tx-batch  = { default-features = false, version = "0.17.0-rc.3" }
+miden-agglayer  = { default-features = false, version = "0.17.0-rc.4" }
+miden-objects   = { default-features = false, version = "0.17.0-rc.4" }
+miden-protocol  = { default-features = false, version = "0.17.0-rc.4" }
+miden-standards = { default-features = false, version = "0.17.0-rc.4" }
+miden-testing   = { default-features = false, version = "0.17.0-rc.4" }
+miden-tx        = { default-features = false, version = "0.17.0-rc.4" }
+miden-tx-batch  = { default-features = false, version = "0.17.0-rc.4" }
 
 # Miden node dependencies
-miden-node-proto-build           = { default-features = false, git = "https://github.com/0xMiden/node", rev = "5cce44e4a560c8491442b8bc7325c0b70b6a2c30" } # TODO: switch to crates.io release once available
+miden-node-proto-build           = { default-features = false, git = "https://github.com/0xMiden/node", rev = "de0de491beec692d9209fd0319abe97171a96959" } # TODO: switch to crates.io release once available
 miden-note-transport-proto-build = { default-features = false, version = "0.5.0-rc.2" }
 
 # Miden debug dependency

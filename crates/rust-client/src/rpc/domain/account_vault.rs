@@ -6,7 +6,7 @@ use miden_protocol::account::AccountVaultPatch;
 use miden_protocol::asset::{Asset, AssetId};
 use miden_protocol::block::BlockNumber;
 
-use crate::rpc::domain::MissingFieldHelper;
+use crate::rpc::domain::{MissingFieldHelper, verify_message};
 use crate::rpc::{RpcError, generated as proto};
 
 // ACCOUNT VAULT INFO
@@ -83,7 +83,7 @@ fn vault_update_from_proto(
     let asset_id =
         AssetId::try_from(asset_id).map_err(|e| RpcError::InvalidResponse(e.to_string()))?;
 
-    let asset = value.asset.map(Asset::try_from).transpose()?;
+    let asset: Option<Asset> = value.asset.map(verify_message).transpose()?;
 
     if let Some(ref asset) = asset
         && asset.id() != asset_id

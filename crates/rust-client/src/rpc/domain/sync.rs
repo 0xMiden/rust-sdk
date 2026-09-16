@@ -1,7 +1,7 @@
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::merkle::mmr::MmrDelta;
 
-use crate::rpc::domain::MissingFieldHelper;
+use crate::rpc::domain::{MissingFieldHelper, build_unchecked_message, verify_message};
 use crate::rpc::{RpcError, generated as proto};
 
 // SYNC TARGET
@@ -48,15 +48,16 @@ impl TryFrom<proto::rpc::SyncChainMmrResponse> for ChainMmrInfo {
             .block_range
             .ok_or(proto::rpc::SyncChainMmrResponse::missing_field(stringify!(block_range)))?;
 
-        let mmr_delta = value
-            .mmr_delta
-            .ok_or(proto::rpc::SyncChainMmrResponse::missing_field(stringify!(mmr_delta)))?
-            .try_into()?;
+        let mmr_delta: MmrDelta = verify_message(
+            value
+                .mmr_delta
+                .ok_or(proto::rpc::SyncChainMmrResponse::missing_field(stringify!(mmr_delta)))?,
+        )?;
 
-        let block_header = value
-            .block_header
-            .ok_or(proto::rpc::SyncChainMmrResponse::missing_field(stringify!(block_header)))?
-            .try_into()?;
+        let block_header: BlockHeader =
+            build_unchecked_message(value.block_header.ok_or(
+                proto::rpc::SyncChainMmrResponse::missing_field(stringify!(block_header)),
+            )?)?;
 
         Ok(Self {
             block_from: block_range.block_from.into(),

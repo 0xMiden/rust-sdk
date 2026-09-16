@@ -2,7 +2,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use core::time::Duration;
 
-use miden_objects::ConversionError;
+use miden_objects::{BuildUnchecked, DecodeMessage};
 use miden_protocol::transaction::{ProvenTransaction, TransactionInputs};
 use miden_protocol::utils::serde::DeserializationError;
 use miden_protocol::vm::FutureMaybeSend;
@@ -94,9 +94,10 @@ impl RemoteTransactionProver {
                 TransactionProverError::other_with_source("failed to prove transaction", err)
             })?;
 
-            ProvenTransaction::try_from(response.into_inner()).map_err(|_| {
-                TransactionProverError::other(
+            ProvenTransaction::try_from(response.into_inner()).map_err(|err| {
+                TransactionProverError::other_with_source(
                     "failed to deserialize received response from remote transaction prover",
+                    err,
                 )
             })
         }
@@ -112,9 +113,12 @@ impl TryFrom<proto::Proof> for ProvenTransaction {
     fn try_from(response: proto::Proof) -> Result<Self, Self::Error> {
         match response.proof {
             Some(proto::proof::Proof::Transaction(transaction)) => {
-                transaction.try_into().map_err(|err: ConversionError| {
-                    DeserializationError::InvalidValue(alloc::format!("{err}"))
-                })
+                let decoded = transaction
+                    .decode_fields()
+                    .map_err(|err| DeserializationError::InvalidValue(alloc::format!("{err}")))?;
+                decoded
+                    .build_unchecked()
+                    .map_err(|err| DeserializationError::InvalidValue(alloc::format!("{err}")))
             },
             Some(proto::proof::Proof::Batch(_)) => Err(DeserializationError::InvalidValue(
                 "expected a transaction proof, got a batch proof".into(),

@@ -5,6 +5,7 @@ use core::fmt;
 use core::num::TryFromIntError;
 
 use miden_objects::ConversionError;
+use miden_objects::decoded::VerificationError;
 use miden_protocol::account::AccountId;
 use miden_protocol::crypto::merkle::MerkleError;
 use miden_protocol::errors::NoteError;
@@ -159,8 +160,10 @@ pub enum RpcConversionError {
         entity: &'static str,
         field_name: &'static str,
     },
-    #[error("failed to convert a canonical object message")]
+    #[error("failed to convert a canonical object message: {0}")]
     CanonicalConversion(#[from] ConversionError),
+    #[error("a canonical object message failed verification: {0}")]
+    CanonicalVerification(#[from] VerificationError),
 }
 
 // GRPC ERROR KIND

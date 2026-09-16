@@ -1,13 +1,11 @@
 use alloc::collections::{BTreeMap, BTreeSet};
-use alloc::string::ToString;
 use alloc::vec::Vec;
 
-use miden_objects::ConversionError;
-use miden_protocol::Word;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{NoteHeader, NoteId, NoteInclusionProof, Nullifier};
-use miden_protocol::transaction::{InputNoteCommitment, InputNotes, TransactionHeader};
+use miden_protocol::transaction::{InputNoteCommitment, TransactionHeader};
 
+use super::build_unchecked_message;
 use super::note::{CommittedNote, note_id_from_proto, note_inclusion_proof_from_proto};
 use super::nullifier::nullifier_from_proto;
 use crate::rpc::{RpcConversionError, RpcError, generated as proto};
@@ -69,7 +67,7 @@ impl TryFrom<proto::rpc::TransactionRecord> for TransactionRecord {
             })?;
 
         let (transaction_header, output_notes, erased_output_notes) =
-            convert_transaction_header(proto_header, &value.output_note_proofs)?;
+            convert_transaction_header(proto_header, value.output_note_proofs)?;
 
         let consumed_note_refs =
             value
@@ -105,69 +103,24 @@ impl TryFrom<proto::rpc::TransactionRecord> for TransactionRecord {
 /// erased (created and consumed within the same batch).
 fn convert_transaction_header(
     value: proto::transaction::TransactionHeader,
-    output_note_proofs: &[proto::note::NoteInclusionProof],
+    output_note_proofs: Vec<proto::note::NoteInclusionProof>,
 ) -> Result<(TransactionHeader, Vec<CommittedNote>, Vec<NoteHeader>), RpcError> {
-    let account_id =
-        value
-            .account_id
-            .ok_or(RpcConversionError::MissingFieldInProtobufRepresentation {
-                entity: "TransactionHeader",
-                field_name: "account_id",
-            })?;
-
-    let initial_state_commitment = value.initial_state_commitment.ok_or(
-        RpcConversionError::MissingFieldInProtobufRepresentation {
-            entity: "TransactionHeader",
-            field_name: "initial_state_commitment",
-        },
-    )?;
-
-    let final_state_commitment = value.final_state_commitment.ok_or(
-        RpcConversionError::MissingFieldInProtobufRepresentation {
-            entity: "TransactionHeader",
-            field_name: "final_state_commitment",
-        },
-    )?;
-
-    let note_commitments = value
-        .input_notes
-        .into_iter()
-        .map(|d| {
-            let word: Word = d
-                .nullifier
-                .ok_or(RpcError::ExpectedDataMissing("nullifier".into()))?
-                .try_into()
-                .map_err(|e: ConversionError| RpcError::InvalidResponse(e.to_string()))?;
-            Ok(InputNoteCommitment::from(Nullifier::from_raw(word)))
-        })
-        .collect::<Result<Vec<_>, RpcError>>()?;
-    let input_notes = InputNotes::new_unchecked(note_commitments);
-
-    // Parse all output note headers from the transaction header.
-    let output_note_headers: Vec<NoteHeader> = value
-        .output_notes
-        .into_iter()
-        .map(|proto_header| {
-            proto_header
-                .try_into()
-                .map_err(|e: ConversionError| RpcError::InvalidResponse(e.to_string()))
-        })
-        .collect::<Result<Vec<_>, RpcError>>()?;
+    let transaction_header: TransactionHeader = build_unchecked_message(value)?;
 
     // Build a map of note_id to inclusion_proof from the separate proofs field.
     let mut proof_map: BTreeMap<NoteId, NoteInclusionProof> = BTreeMap::new();
     for proto_proof in output_note_proofs {
-        let (note_id, inclusion_proof) = note_inclusion_proof_from_proto(proto_proof)
-            .map_err(|e| RpcError::InvalidResponse(e.to_string()))?;
+        let (note_id, inclusion_proof) = note_inclusion_proof_from_proto(proto_proof)?;
         proof_map.insert(note_id, inclusion_proof);
     }
 
     // Join: notes with a matching proof are committed; notes without are erased.
+    let output_note_headers = transaction_header.output_notes();
     let mut committed_output_notes = Vec::with_capacity(proof_map.len());
     let mut erased_output_notes =
         Vec::with_capacity(output_note_headers.len().saturating_sub(proof_map.len()));
 
-    for header in &output_note_headers {
+    for header in output_note_headers {
         let note_id = header.id();
         if let Some(proof) = proof_map.remove(&note_id) {
             committed_output_notes.push(CommittedNote::new(note_id, *header.metadata(), proof));
@@ -176,13 +129,5 @@ fn convert_transaction_header(
         }
     }
 
-    let transaction_header = TransactionHeader::new(
-        account_id.try_into()?,
-        initial_state_commitment.try_into()?,
-        final_state_commitment.try_into()?,
-        input_notes,
-        output_note_headers,
-    )
-    .map_err(|err| RpcError::InvalidResponse(err.to_string()))?;
     Ok((transaction_header, committed_output_notes, erased_output_notes))
 }

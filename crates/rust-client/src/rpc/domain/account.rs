@@ -15,7 +15,7 @@ use thiserror::Error;
 
 use crate::alloc::string::ToString;
 use crate::rpc::{AccountStateAt, RpcError};
-use crate::rpc::domain::MissingFieldHelper;
+use crate::rpc::domain::{MissingFieldHelper, verify_message};
 use crate::rpc::generated::rpc::account_request::account_detail_request::storage_map_detail_request::{MapKeys, SlotData};
 use crate::rpc::generated::rpc::account_request::account_detail_request::{
     StorageMapDetailRequest, StorageMapDetailRequests, StorageRequest,
@@ -54,9 +54,9 @@ impl proto::rpc::account_response::AccountDetails {
             code,
             vault_details,
         } = self;
-        let header: AccountHeader = header
-            .ok_or(proto::rpc::account_response::AccountDetails::missing_field(stringify!(header)))?
-            .try_into()?;
+        let header: AccountHeader = verify_message(header.ok_or(
+            proto::rpc::account_response::AccountDetails::missing_field(stringify!(header)),
+        )?)?;
 
         let storage_details: AccountStorageDetails = storage_details
             .ok_or(proto::rpc::account_response::AccountDetails::missing_field(stringify!(
@@ -70,7 +70,7 @@ impl proto::rpc::account_response::AccountDetails {
         // valid. If it was not, it means we sent a code commitment that matched and so our code is
         // still valid
         let code = {
-            let received_code = code.map(AccountCode::try_from).transpose()?;
+            let received_code: Option<AccountCode> = code.map(verify_message).transpose()?;
             match received_code {
                 Some(code) => code,
                 None => known_account_codes
@@ -267,10 +267,11 @@ impl TryFrom<proto::rpc::AccountStorageDetails> for AccountStorageDetails {
     type Error = RpcError;
 
     fn try_from(value: proto::rpc::AccountStorageDetails) -> Result<Self, Self::Error> {
-        let header: AccountStorageHeader = value
-            .header
-            .ok_or(proto::account::AccountStorageHeader::missing_field(stringify!(header)))?
-            .try_into()?;
+        let header: AccountStorageHeader = verify_message(
+            value
+                .header
+                .ok_or(proto::account::AccountStorageHeader::missing_field(stringify!(header)))?,
+        )?;
         let map_details = value
             .map_details
             .into_iter()
@@ -390,12 +391,13 @@ impl TryFrom<proto::rpc::account_storage_details::AccountStorageMapDetails>
                     )));
                 }
 
-                let partial_smt: PartialSmt = partial_map
-                    .partial_smt
-                    .ok_or(proto::rpc::account_storage_details::account_storage_map_details::PartialStorageMap::missing_field(
-                        stringify!(partial_smt),
-                    ))?
-                    .try_into()?;
+                let partial_smt: PartialSmt = verify_message(
+                    partial_map
+                        .partial_smt
+                        .ok_or(proto::rpc::account_storage_details::account_storage_map_details::PartialStorageMap::missing_field(
+                            stringify!(partial_smt),
+                        ))?,
+                )?;
 
                 // The response sends the values only inside the tree, so a key the tree does not
                 // track carries no value at all and would fail later, at read time.
@@ -516,7 +518,7 @@ impl TryFrom<proto::rpc::AccountVaultDetails> for AccountVaultDetails {
         let assets = value
             .assets
             .into_iter()
-            .map(Asset::try_from)
+            .map(verify_message)
             .collect::<Result<Vec<Asset>, _>>()?;
 
         Ok(Self { too_many_assets, assets })
@@ -665,7 +667,7 @@ impl TryFrom<proto::rpc::AccountResponse> for AccountProof {
                 ),
             }
         };
-        AccountProof::new(witness.try_into()?, details)
+        AccountProof::new(verify_message(witness)?, details)
             .map_err(|err| RpcError::InvalidResponse(format!("{err}")))
     }
 }

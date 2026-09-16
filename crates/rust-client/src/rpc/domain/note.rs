@@ -2,7 +2,6 @@ use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::vec::Vec;
 
-use miden_objects::ConversionError;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::SequentialCommit;
@@ -23,20 +22,20 @@ use miden_protocol::note::{
 };
 use miden_protocol::{Felt, Word};
 
-use super::{MissingFieldHelper, RpcConversionError};
+use super::{MissingFieldHelper, RpcConversionError, build_unchecked_message, verify_message};
 use crate::rpc::{RpcError, generated as proto};
 
 /// Reads a note ID off the wire. A free function because both types are foreign, so there can be no
 /// `TryFrom` impl.
 pub(crate) fn note_id_from_proto(value: proto::note::NoteId) -> Result<NoteId, RpcConversionError> {
-    Ok(NoteId::from_raw(Word::try_from(value)?))
+    verify_message(value)
 }
 
 /// Reads a note inclusion proof and the ID of the note it proves.
 pub(crate) fn note_inclusion_proof_from_proto(
-    value: &proto::note::NoteInclusionProof,
-) -> Result<(NoteId, NoteInclusionProof), ConversionError> {
-    <(NoteId, NoteInclusionProof)>::try_from(value)
+    value: proto::note::NoteInclusionProof,
+) -> Result<(NoteId, NoteInclusionProof), RpcConversionError> {
+    verify_message(value)
 }
 
 /// Accepts only the note versions this client understands.
@@ -177,10 +176,11 @@ impl TryFrom<proto::rpc::NoteSyncMetadata> for SyncNoteMetadata {
         // so it is checked here to reject the same versions `miden-objects` rejects.
         validate_note_version(value.version)?;
 
-        let sender = value
-            .sender
-            .ok_or_else(|| proto::rpc::NoteSyncMetadata::missing_field(stringify!(sender)))?
-            .try_into()?;
+        let sender: AccountId = verify_message(
+            value
+                .sender
+                .ok_or_else(|| proto::rpc::NoteSyncMetadata::missing_field(stringify!(sender)))?,
+        )?;
         let note_type = note_type_from_proto(value.note_type)?;
         let tag = NoteTag::new(value.tag);
         let partial_metadata = PartialNoteMetadata::new(sender, note_type).with_tag(tag);
@@ -261,15 +261,14 @@ impl TryFrom<proto::rpc::sync_notes_response::NoteSyncBlock> for SyncNotesBlock 
     fn try_from(
         block: proto::rpc::sync_notes_response::NoteSyncBlock,
     ) -> Result<Self, Self::Error> {
-        let block_header = block
-            .block_header
-            .ok_or(proto::rpc::SyncNotesResponse::missing_field(stringify!(blocks.block_header)))?
-            .try_into()?;
+        let block_header: BlockHeader = build_unchecked_message(block.block_header.ok_or(
+            proto::rpc::SyncNotesResponse::missing_field(stringify!(blocks.block_header)),
+        )?)?;
 
-        let mmr_path = block
-            .mmr_path
-            .ok_or(proto::rpc::SyncNotesResponse::missing_field(stringify!(blocks.mmr_path)))?
-            .try_into()?;
+        let mmr_path: MerklePath =
+            verify_message(block.mmr_path.ok_or(proto::rpc::SyncNotesResponse::missing_field(
+                stringify!(blocks.mmr_path),
+            ))?)?;
 
         let notes: BTreeMap<NoteId, CommittedNote> = block
             .notes
@@ -513,7 +512,7 @@ impl TryFrom<proto::rpc::NoteSyncRecord> for CommittedNote {
             proto::rpc::SyncNotesResponse::missing_field(stringify!(notes.inclusion_proof)),
         )?;
 
-        let (note_id, inclusion_proof) = note_inclusion_proof_from_proto(&proto_inclusion_proof)?;
+        let (note_id, inclusion_proof) = note_inclusion_proof_from_proto(proto_inclusion_proof)?;
 
         let committed = CommittedNote::new(note_id, metadata, inclusion_proof);
 
@@ -581,7 +580,7 @@ impl TryFrom<proto::rpc::CommittedNote> for FetchedNote {
         let proto_inclusion_proof = value
             .inclusion_proof
             .ok_or_else(|| proto::rpc::CommittedNote::missing_field(stringify!(inclusion_proof)))?;
-        let (note_id, inclusion_proof) = note_inclusion_proof_from_proto(&proto_inclusion_proof)?;
+        let (note_id, inclusion_proof) = note_inclusion_proof_from_proto(proto_inclusion_proof)?;
 
         let note = value
             .note
@@ -589,18 +588,18 @@ impl TryFrom<proto::rpc::CommittedNote> for FetchedNote {
 
         // Details are absent exactly for private notes.
         if note.note_details.is_some() {
-            return Ok(FetchedNote::Public(note.try_into()?, inclusion_proof));
+            return Ok(FetchedNote::Public(verify_message(note)?, inclusion_proof));
         }
 
-        let metadata: NoteMetadata = note
-            .metadata
-            .ok_or_else(|| proto::rpc::CommittedNote::missing_field(stringify!(note.metadata)))?
-            .try_into()?;
-        let attachments = note
-            .note_attachments
-            .map(NoteAttachments::try_from)
-            .transpose()?
-            .unwrap_or_else(NoteAttachments::empty);
+        let partial_metadata: PartialNoteMetadata =
+            verify_message(note.metadata.ok_or_else(|| {
+                proto::rpc::CommittedNote::missing_field(stringify!(note.metadata))
+            })?)?;
+        let attachments: NoteAttachments =
+            verify_message(note.note_attachments.ok_or_else(|| {
+                proto::rpc::CommittedNote::missing_field(stringify!(note.note_attachments))
+            })?)?;
+        let metadata = NoteMetadata::new(partial_metadata, &attachments);
 
         Ok(FetchedNote::Private(note_id, metadata, attachments, inclusion_proof))
     }

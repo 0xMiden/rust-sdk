@@ -7,7 +7,6 @@ use std::vec::Vec;
 use miden_client::account::AccountId;
 use miden_client::note::{
     BlockNumber,
-    InputNoteUpdate,
     NoteAssets,
     NoteAttachments,
     NoteDetails,
@@ -193,6 +192,7 @@ impl SqliteStore {
         notes: &[InputNoteRecord],
     ) -> Result<(), StoreError> {
         with_write_tx(conn, |tx| {
+            check_input_note_transitions_against_stored_states(tx, notes)?;
             let mut scripts: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
             let mut serialized = Vec::with_capacity(notes.len());
 
@@ -540,10 +540,10 @@ pub(crate) fn apply_note_updates_tx(
     note_updates: &NoteUpdateTracker,
 ) -> Result<(), StoreError> {
     // Reject the whole update if any note's stored state does not allow the write.
-    let input_notes: Vec<&InputNoteRecord> = note_updates
+    let input_notes: Vec<InputNoteRecord> = note_updates
         .updated_input_notes()
         .filter(|update| update.update_type().is_modified())
-        .map(InputNoteUpdate::inner)
+        .map(|update| update.inner().clone())
         .collect();
     check_input_note_transitions_against_stored_states(tx, &input_notes)?;
 
@@ -614,10 +614,13 @@ pub(crate) fn apply_note_updates_tx(
 /// Returns an error if any input note would move to a state its stored state does not allow.
 fn check_input_note_transitions_against_stored_states(
     tx: &Transaction<'_>,
-    notes: &[&InputNoteRecord],
+    notes: &[InputNoteRecord],
 ) -> Result<(), StoreError> {
-    let stored =
-        stored_note_states(tx, "input_notes", notes.iter().map(|n| n.details_commitment()))?;
+    let stored = stored_note_states(
+        tx,
+        "input_notes",
+        notes.iter().map(InputNoteRecord::details_commitment),
+    )?;
 
     for note in notes {
         let details_commitment = note.details_commitment();

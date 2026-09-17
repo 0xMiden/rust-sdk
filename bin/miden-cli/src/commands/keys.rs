@@ -2,7 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use clap::ValueEnum;
-use miden_client::auth::{AuthSchemeId, AuthSecretKey};
+use miden_client::account::AccountId;
+use miden_client::auth::{AuthSchemeId, AuthSecretKey, PublicKeyCommitment};
 use miden_client::crypto::{ecdsa_k256_keccak, rpo_falcon512};
 use miden_client::keystore::FilesystemKeyStore;
 use miden_client::utils::{ByteReader, Deserializable, hex_to_bytes};
@@ -63,6 +64,20 @@ enum KeysSubcommand {
         /// Hex-encoded serialized public key.
         public_key: String,
     },
+    /// Associate a stored key with an account.
+    Associate {
+        /// Public key commitment of the stored key.
+        commitment: String,
+        /// Full hexadecimal account ID.
+        account_id: String,
+    },
+    /// Remove an association between a stored key and an account.
+    Disassociate {
+        /// Public key commitment of the stored key.
+        commitment: String,
+        /// Full hexadecimal account ID.
+        account_id: String,
+    },
 }
 
 #[derive(Clone, Debug, Parser)]
@@ -80,6 +95,12 @@ impl KeysCmd {
             KeysSubcommand::Import { file } => import_key(keystore, file),
             KeysSubcommand::Commitment { scheme, public_key } => {
                 print_commitment(*scheme, public_key)
+            },
+            KeysSubcommand::Associate { commitment, account_id } => {
+                associate_key(keystore, commitment, account_id)
+            },
+            KeysSubcommand::Disassociate { commitment, account_id } => {
+                disassociate_key(keystore, commitment, account_id)
             },
         }
     }
@@ -106,6 +127,39 @@ fn list_keys(keystore: &FilesystemKeyStore) -> Result<(), CliError> {
     }
 
     println!("\n{table}");
+    println!("Associated keys are included in account exports unless --no-keys is used.");
+    Ok(())
+}
+
+fn associate_key(
+    keystore: &FilesystemKeyStore,
+    commitment: &str,
+    account_id: &str,
+) -> Result<(), CliError> {
+    let commitment = parse_commitment(commitment)?;
+    let account_id = parse_account_id(account_id)?;
+    keystore.associate_key(commitment, account_id).map_err(CliError::KeyStore)?;
+    println!(
+        "Associated key {} with account {}.",
+        Word::from(commitment).to_hex(),
+        account_id.to_hex()
+    );
+    Ok(())
+}
+
+fn disassociate_key(
+    keystore: &FilesystemKeyStore,
+    commitment: &str,
+    account_id: &str,
+) -> Result<(), CliError> {
+    let commitment = parse_commitment(commitment)?;
+    let account_id = parse_account_id(account_id)?;
+    keystore.disassociate_key(commitment, account_id).map_err(CliError::KeyStore)?;
+    println!(
+        "Removed the association between key {} and account {}.",
+        Word::from(commitment).to_hex(),
+        account_id.to_hex()
+    );
     Ok(())
 }
 
@@ -169,6 +223,17 @@ fn print_commitment(scheme: KeyScheme, public_key: &str) -> Result<(), CliError>
 
 fn invalid_public_key(scheme: KeyScheme, err: impl std::fmt::Display) -> CliError {
     CliError::Input(format!("invalid {} public key: {err}", scheme.name()))
+}
+
+fn parse_commitment(value: &str) -> Result<PublicKeyCommitment, CliError> {
+    Word::try_from(value)
+        .map(PublicKeyCommitment::from)
+        .map_err(|err| CliError::Input(format!("invalid public key commitment `{value}`: {err}")))
+}
+
+fn parse_account_id(value: &str) -> Result<AccountId, CliError> {
+    AccountId::from_hex(value)
+        .map_err(|err| CliError::Input(format!("invalid account ID `{value}`: {err}")))
 }
 
 fn scheme_name(scheme: AuthSchemeId) -> String {

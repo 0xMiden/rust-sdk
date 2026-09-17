@@ -33,7 +33,7 @@
 
 ### Features
 
-* [FEATURE][cli] Added a `keys` command to list, generate, and import authentication keys and calculate a key commitment from a public key ([#2555](https://github.com/0xMiden/rust-sdk/issues/2555)).
+* [FEATURE][cli] Added a `keys` command to list, generate, and import authentication keys, manage their account associations, and calculate a key commitment from a public key ([#2555](https://github.com/0xMiden/rust-sdk/issues/2555)).
 * [FEATURE][cli] `export --account` accepts a `--no-keys` flag, which leaves the account secret keys out of the exported `.mac` file. The file still carries the account seed while the account is undeployed ([#2556](https://github.com/0xMiden/rust-sdk/pull/2556)).
 * [FEATURE][rust] The committed note passed to the `OnNoteReceived` callback now always reports the note's resolved attachment content, whether the `SyncNotes` response carried it verbatim or a `GetNotesById` follow-up resolved it ([#2475](https://github.com/0xMiden/rust-sdk/pull/2475)).
 * [FEATURE][rust] Re-exported the fee pricing and note checking types that the client API already surfaces, so downstream crates no longer need a direct `miden-tx` dependency to price note consumption: `NetworkNotePricer`, `NotePricingError` and `NoteCheckerError` at the crate root, `TransactionFee` and `TransactionFeeError` from `transaction`, `NoteCost` and `NoteConsumptionCost` from `note`, and `MastForestStore` and `TransactionMastStore` from `testing` ([#2475](https://github.com/0xMiden/rust-sdk/pull/2475)).

@@ -76,7 +76,7 @@ use rand::RngExt;
 // ================================================================================================
 
 #[test]
-fn cli_manages_standalone_keys() {
+fn cli_manages_keys() {
     const KEY_FILENAME: &str = "imported.key";
     const INVALID_KEY_FILENAME: &str = "invalid.key";
 
@@ -115,6 +115,11 @@ fn cli_manages_standalone_keys() {
         .success()
         .stdout(contains(&imported_commitment));
 
+    let account_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_SENDER).unwrap().to_hex();
+    let mut associate_cmd = cargo_bin_cmd!("miden-client");
+    associate_cmd.args(["keys", "associate", &imported_commitment, &account_id]);
+    associate_cmd.current_dir(&temp_dir).assert().success();
+
     let mut generate_cmd = cargo_bin_cmd!("miden-client");
     generate_cmd.args(["keys", "generate", "--scheme", "falcon512-poseidon2"]);
     generate_cmd
@@ -135,7 +140,21 @@ fn cli_manages_standalone_keys() {
         .success()
         .stdout(contains(&imported_commitment))
         .stdout(contains("ecdsa-k256-keccak"))
-        .stdout(contains("falcon512-poseidon2"));
+        .stdout(contains("falcon512-poseidon2"))
+        .stdout(contains(&account_id))
+        .stdout(contains("Associated keys are included in account exports"));
+
+    let mut disassociate_cmd = cargo_bin_cmd!("miden-client");
+    disassociate_cmd.args(["keys", "disassociate", &imported_commitment, &account_id]);
+    disassociate_cmd.current_dir(&temp_dir).assert().success();
+
+    let mut list_cmd = cargo_bin_cmd!("miden-client");
+    list_cmd.args(["keys", "list"]);
+    list_cmd
+        .current_dir(&temp_dir)
+        .assert()
+        .success()
+        .stdout(contains(&account_id).not());
 
     for (scheme, public_key, commitment) in [
         ("ecdsa-k256-keccak", public_key, imported_commitment),

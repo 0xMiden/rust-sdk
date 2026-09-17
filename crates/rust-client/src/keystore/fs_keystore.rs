@@ -54,6 +54,20 @@ impl KeyIndex {
         self.mappings.entry(account_id_hex).or_default().insert(pub_key_hex);
     }
 
+    /// Removes a mapping from an account ID to a public key commitment.
+    fn remove_mapping(&mut self, account_id: &AccountId, pub_key_commitment: PublicKeyCommitment) {
+        let account_id_hex = account_id.to_hex();
+        let pub_key_hex = Word::from(pub_key_commitment).to_hex();
+
+        let remove_account = self.mappings.get_mut(&account_id_hex).is_some_and(|commitments| {
+            commitments.remove(&pub_key_hex);
+            commitments.is_empty()
+        });
+        if remove_account {
+            self.mappings.remove(&account_id_hex);
+        }
+    }
+
     /// Removes all mappings for a given public key commitment.
     fn remove_all_mappings_for_key(&mut self, pub_key_commitment: PublicKeyCommitment) {
         let pub_key_hex = Word::from(pub_key_commitment).to_hex();
@@ -278,6 +292,39 @@ impl FilesystemKeyStore {
         pub_key_commitment: PublicKeyCommitment,
     ) -> Result<BTreeSet<AccountId>, KeyStoreError> {
         self.index.read().get_account_ids(pub_key_commitment)
+    }
+
+    /// Associates a stored key with an account.
+    pub fn associate_key(
+        &self,
+        pub_key_commitment: PublicKeyCommitment,
+        account_id: AccountId,
+    ) -> Result<(), KeyStoreError> {
+        let key = self.get_key_sync(pub_key_commitment)?.ok_or_else(|| {
+            KeyStoreError::StorageError(format!(
+                "secret key not found for commitment {}",
+                Word::from(pub_key_commitment).to_hex()
+            ))
+        })?;
+        if key.public_key().to_commitment() != pub_key_commitment {
+            return Err(KeyStoreError::DecodingError(format!(
+                "key file content does not match commitment {}",
+                Word::from(pub_key_commitment).to_hex()
+            )));
+        }
+
+        self.index.write().add_mapping(&account_id, pub_key_commitment);
+        self.save_index()
+    }
+
+    /// Removes the association between a stored key and an account.
+    pub fn disassociate_key(
+        &self,
+        pub_key_commitment: PublicKeyCommitment,
+        account_id: AccountId,
+    ) -> Result<(), KeyStoreError> {
+        self.index.write().remove_mapping(&account_id, pub_key_commitment);
+        self.save_index()
     }
 
     /// Retrieves a secret key from the keystore given the commitment of a public key.
@@ -534,6 +581,10 @@ mod tests {
 
         let commitments = keystore.get_account_key_commitments(&other_account_id()).await.unwrap();
         assert!(commitments.is_empty());
+
+        keystore.disassociate_key(commitment, test_account_id()).unwrap();
+        assert!(keystore.account_ids_for_key(commitment).unwrap().is_empty());
+        assert!(keystore.get_key_sync(commitment).unwrap().is_some());
     }
 
     #[tokio::test]

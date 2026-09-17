@@ -121,6 +121,7 @@ pub mod grpc_support;
 pub mod keystore;
 pub mod note;
 pub mod note_transport;
+pub mod protocol_config;
 pub mod pswap;
 #[cfg(feature = "tonic")]
 pub mod remote_prover;
@@ -174,12 +175,7 @@ pub mod assembly {
 
 /// Provides types and utilities for working with assets within the Miden network.
 pub mod asset {
-    pub use miden_protocol::account::delta::{
-        AccountVaultDelta,
-        FungibleAssetDelta,
-        NonFungibleAssetDelta,
-        NonFungibleDeltaAction,
-    };
+    pub use miden_protocol::account::delta::AccountVaultDelta;
     pub use miden_protocol::account::{
         AccountStorageHeader,
         AssetCallbackFlag,
@@ -235,7 +231,7 @@ pub mod auth {
 
 /// Provides types for working with blocks within the Miden network.
 pub mod block {
-    pub use miden_protocol::block::{BlockHeader, BlockNumber, FeeParameters, ValidatorKeys};
+    pub use miden_protocol::block::{BlockHeader, BlockNumber, FeeParameters, ValidatorConfig};
 }
 
 /// Provides cryptographic types and utilities used within the Miden rollup network. It re-exports
@@ -278,7 +274,6 @@ pub mod crypto {
         LeafIndex,
         SMT_DEPTH,
         Smt,
-        SmtForest,
         SmtLeaf,
         SmtProof,
         VersionId,

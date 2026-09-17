@@ -20,7 +20,7 @@ use miden_protocol::account::{
 use miden_protocol::address::NetworkId;
 use miden_protocol::batch::{ProposedBatch, ProvenBatch};
 use miden_protocol::block::account_tree::AccountWitness;
-use miden_protocol::block::{BlockHeader, BlockNumber, ProvenBlock};
+use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock};
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
     PublicKey as ValidatorPublicKey,
     Signature as ValidatorSignature,
@@ -30,6 +30,7 @@ use miden_protocol::crypto::merkle::mmr::{Forest, MmrPath, MmrProof};
 use miden_protocol::note::{NoteId, NoteScript, NoteTag};
 use miden_protocol::transaction::ProvenTransaction;
 use miden_protocol::utils::serde::Deserializable;
+use miden_protocol::vm::ExecutionProof;
 use miden_protocol::{EMPTY_WORD, Word};
 use miden_tx::utils::serde::Serializable;
 use miden_tx::utils::sync::RwLock;
@@ -800,7 +801,7 @@ impl NodeRpcClient for GrpcClient {
         &self,
         block_num: BlockNumber,
         include_proof: bool,
-    ) -> Result<ProvenBlock, RpcError> {
+    ) -> Result<(SignedBlock, Option<ExecutionProof>), RpcError> {
         let request = proto::blockchain::BlockRequest {
             block_num: block_num.as_u32(),
             include_proof: Some(include_proof),
@@ -812,13 +813,7 @@ impl NodeRpcClient for GrpcClient {
             })
             .await?;
 
-        let response = response.into_inner();
-        let block =
-            ProvenBlock::read_from_bytes(&response.block.ok_or(RpcError::ExpectedDataMissing(
-                "GetBlockByNumberResponse.block".to_string(),
-            ))?)?;
-
-        Ok(block)
+        decode_block_response(response.into_inner())
     }
 
     async fn get_note_script_by_root(&self, root: Word) -> Result<Option<NoteScript>, RpcError> {
@@ -1069,18 +1064,111 @@ impl From<&Status> for GrpcError {
     }
 }
 
+// HELPERS
+// ================================================================================================
+
+/// Decodes the response of `get_block_by_number`.
+///
+/// The response carries the signed block and its proof in separate fields, so the block bytes
+/// decode as a [`SignedBlock`] and never as a `ProvenBlock`. The node omits the proof when it is
+/// not requested, and also when the block is not proven yet, so an absent proof is not an error.
+fn decode_block_response(
+    response: proto::blockchain::MaybeBlock,
+) -> Result<(SignedBlock, Option<ExecutionProof>), RpcError> {
+    let block = SignedBlock::read_from_bytes(
+        &response
+            .block
+            .ok_or(RpcError::ExpectedDataMissing("GetBlockByNumberResponse.block".to_string()))?,
+    )?;
+
+    let proof = response
+        .proof
+        .map(|bytes| ExecutionProof::read_from_bytes(&bytes))
+        .transpose()?;
+
+    Ok((block, proof))
+}
+
 #[cfg(test)]
 mod tests {
     use std::boxed::Box;
+    use std::vec;
+    use std::vec::Vec;
 
     use miden_protocol::Word;
-    use miden_protocol::block::BlockNumber;
+    use miden_protocol::block::{BlockNumber, SignedBlock};
+    use miden_protocol::utils::serde::Serializable;
+    use miden_testing::MockChain;
 
-    use super::{BlockPagination, DEFAULT_MAX_RESPONSE_SIZE_BYTES, GrpcClient, PaginationResult};
+    use super::{
+        BlockPagination,
+        DEFAULT_MAX_RESPONSE_SIZE_BYTES,
+        GrpcClient,
+        PaginationResult,
+        decode_block_response,
+        proto,
+    };
     use crate::alloc::string::ToString;
     use crate::rpc::{Endpoint, NodeRpcClient, RpcError};
 
     fn assert_send_sync<T: Send + Sync>() {}
+
+    /// Returns the serialized signed block and proof of the mock chain's genesis block.
+    fn genesis_block_bytes() -> (Vec<u8>, Vec<u8>) {
+        let chain = MockChain::new();
+        let block = chain.proven_blocks().first().expect("the chain has a genesis block").clone();
+        let (header, body, signatures, proof) = block.into_parts();
+
+        (
+            SignedBlock::new_unchecked(header, body, signatures).to_bytes(),
+            proof.to_bytes(),
+        )
+    }
+
+    #[test]
+    fn decode_block_response_reads_a_requested_proof() {
+        let (block_bytes, proof_bytes) = genesis_block_bytes();
+        let response = proto::blockchain::MaybeBlock {
+            block: Some(block_bytes),
+            proof: Some(proof_bytes.clone()),
+        };
+
+        let (_block, proof) = decode_block_response(response).unwrap();
+
+        assert_eq!(proof.expect("the response carries a proof").to_bytes(), proof_bytes);
+    }
+
+    #[test]
+    fn decode_block_response_omits_an_absent_proof() {
+        let (block_bytes, _) = genesis_block_bytes();
+        let response = proto::blockchain::MaybeBlock { block: Some(block_bytes), proof: None };
+
+        let (_block, proof) = decode_block_response(response).unwrap();
+
+        assert!(proof.is_none());
+    }
+
+    #[test]
+    fn decode_block_response_rejects_malformed_proof_bytes() {
+        let (block_bytes, _) = genesis_block_bytes();
+        let response = proto::blockchain::MaybeBlock {
+            block: Some(block_bytes),
+            proof: Some(vec![0xff; 32]),
+        };
+
+        let res = decode_block_response(response);
+
+        assert!(matches!(res, Err(RpcError::DeserializationError(_))));
+    }
+
+    #[test]
+    fn decode_block_response_rejects_an_absent_block() {
+        let response = proto::blockchain::MaybeBlock { block: None, proof: None };
+
+        let res = decode_block_response(response);
+
+        assert!(matches!(res, Err(RpcError::ExpectedDataMissing(_))));
+    }
 
     #[test]
     fn is_send_sync() {

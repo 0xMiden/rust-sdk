@@ -244,15 +244,12 @@ impl FilesystemKeyStore {
             if file_name == INDEX_FILE_NAME {
                 continue;
             }
-            let file_name = file_name.to_str().ok_or_else(|| {
-                KeyStoreError::DecodingError(String::from("key filename is not valid UTF-8"))
-            })?;
-            let commitment =
-                Word::try_from(file_name).map(PublicKeyCommitment::from).map_err(|err| {
-                    KeyStoreError::DecodingError(format!(
-                        "error parsing key commitment from filename: {err:?}"
-                    ))
-                })?;
+            let Some(file_name) = file_name.to_str() else {
+                continue;
+            };
+            let Ok(commitment) = Word::try_from(file_name).map(PublicKeyCommitment::from) else {
+                continue;
+            };
             let key = self.get_key_sync(commitment)?.ok_or_else(|| {
                 KeyStoreError::StorageError(format!(
                     "key file disappeared while listing commitment {file_name}"

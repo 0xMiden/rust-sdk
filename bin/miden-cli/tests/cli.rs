@@ -78,6 +78,7 @@ use rand::RngExt;
 #[test]
 fn cli_manages_standalone_keys() {
     const KEY_FILENAME: &str = "imported.key";
+    const INVALID_KEY_FILENAME: &str = "invalid.key";
 
     let temp_dir = init_cli().1;
     let imported_key = AuthSecretKey::new_ecdsa_k256_keccak();
@@ -94,6 +95,18 @@ fn cli_manages_standalone_keys() {
     };
     fs::write(temp_dir.join(KEY_FILENAME), imported_key.to_bytes()).unwrap();
 
+    let mut invalid_key = imported_key.to_bytes();
+    invalid_key.push(0);
+    fs::write(temp_dir.join(INVALID_KEY_FILENAME), invalid_key).unwrap();
+
+    let mut invalid_import_cmd = cargo_bin_cmd!("miden-client");
+    invalid_import_cmd.args(["keys", "import", INVALID_KEY_FILENAME]);
+    invalid_import_cmd
+        .current_dir(&temp_dir)
+        .assert()
+        .failure()
+        .stderr(contains("contains trailing"));
+
     let mut import_cmd = cargo_bin_cmd!("miden-client");
     import_cmd.args(["keys", "import", KEY_FILENAME]);
     import_cmd
@@ -109,6 +122,10 @@ fn cli_manages_standalone_keys() {
         .assert()
         .success()
         .stdout(contains("Generated falcon512-poseidon2 key."));
+
+    let keystore_dir = temp_dir.join(MIDEN_DIR).join(KEYSTORE_DIRECTORY);
+    fs::write(keystore_dir.join(".DS_Store"), []).unwrap();
+    fs::write(keystore_dir.join(".tmpAbC123"), []).unwrap();
 
     let mut list_cmd = cargo_bin_cmd!("miden-client");
     list_cmd.args(["keys", "list"]);

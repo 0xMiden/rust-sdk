@@ -2,11 +2,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use clap::ValueEnum;
-use miden_client::Word;
 use miden_client::auth::{AuthSchemeId, AuthSecretKey};
 use miden_client::crypto::{ecdsa_k256_keccak, rpo_falcon512};
 use miden_client::keystore::FilesystemKeyStore;
-use miden_client::utils::{Deserializable, hex_to_bytes};
+use miden_client::utils::{ByteReader, Deserializable, hex_to_bytes};
+use miden_client::{SliceReader, Word};
 
 use crate::errors::CliError;
 use crate::{Parser, Subcommand, create_dynamic_table};
@@ -117,12 +117,19 @@ fn generate_key(keystore: &FilesystemKeyStore, scheme: KeyScheme) -> Result<(), 
 
 fn import_key(keystore: &FilesystemKeyStore, file: &Path) -> Result<(), CliError> {
     let bytes = fs::read(file)?;
-    let key = AuthSecretKey::read_from_bytes(&bytes).map_err(|err| {
+    let mut reader = SliceReader::new(&bytes);
+    let key = AuthSecretKey::read_from(&mut reader).map_err(|err| {
         CliError::Input(format!(
             "failed to decode authentication secret key from {}: {err}",
             file.display()
         ))
     })?;
+    if reader.has_more_bytes() {
+        return Err(CliError::Input(format!(
+            "authentication secret key in {} contains trailing bytes",
+            file.display()
+        )));
+    }
     store_and_report_key(keystore, &key, "Imported")
 }
 

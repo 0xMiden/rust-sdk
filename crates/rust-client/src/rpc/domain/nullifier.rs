@@ -27,10 +27,10 @@ impl PartialEq for NullifierUpdate {
 // CONVERSIONS
 // ================================================================================================
 
-impl TryFrom<proto::primitives::Digest> for Nullifier {
+impl TryFrom<proto::primitives::Word> for Nullifier {
     type Error = RpcConversionError;
 
-    fn try_from(value: proto::primitives::Digest) -> Result<Self, Self::Error> {
+    fn try_from(value: proto::primitives::Word) -> Result<Self, Self::Error> {
         let word: Word = value.try_into()?;
         Ok(Self::from_raw(word))
     }
@@ -45,6 +45,7 @@ impl TryFrom<&proto::rpc::sync_nullifiers_response::NullifierUpdate> for Nullifi
         Ok(Self {
             nullifier: value
                 .nullifier
+                .clone()
                 .ok_or(proto::rpc::sync_nullifiers_response::NullifierUpdate::missing_field(
                     stringify!(nullifier),
                 ))?

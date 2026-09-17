@@ -257,6 +257,23 @@ impl TransactionRequestBuilder {
         self
     }
 
+    /// Adds a bounded payload preimage for `miden::protocol::tx::add_log`.
+    pub fn log_payload(
+        mut self,
+        payload: impl AsRef<[Word]>,
+    ) -> Result<Self, miden_protocol::transaction::TransactionLogDataError> {
+        let payload = payload.as_ref();
+        if payload.len() > miden_protocol::MAX_LOG_PAYLOAD_WORDS {
+            return Err(miden_protocol::transaction::TransactionLogDataError::TooManyPayloadWords(
+                payload.len(),
+            ));
+        }
+        let elements = Word::words_as_elements(payload).to_vec();
+        let commitment = miden_protocol::Hasher::hash_elements(&elements);
+        self.advice_map.insert(commitment, elements);
+        Ok(self)
+    }
+
     /// Extends the advice map with the specified `([Word], Vec<[Felt]>)` pairs.
     #[must_use]
     pub fn extend_advice_map<I, V>(mut self, iter: I) -> Self

@@ -294,11 +294,10 @@ mod tests {
         assert!(ChainAnchor::read_from_bytes(&[0xaa; 64]).is_err());
     }
 
-    /// A tracked leaf whose ancestor siblings are absent makes `PartialBlockchain::new` panic on
-    /// the `expect` around `PartialMmr::open`; deserialization must reject it instead.
+    /// Rejects a tracked leaf whose serialized authentication path is incomplete.
     #[test]
     fn deserialization_rejects_a_tracked_leaf_with_a_missing_sibling() {
-        use alloc::collections::{BTreeMap, BTreeSet};
+        use alloc::collections::BTreeMap;
 
         use miden_protocol::crypto::merkle::mmr::InOrderIndex;
 
@@ -315,16 +314,16 @@ mod tests {
         let mut nodes = BTreeMap::new();
         nodes.insert(InOrderIndex::from_leaf_pos(3), headers[3].commitment());
 
-        let partial_mmr =
-            PartialMmr::from_parts(peaks.clone(), nodes, BTreeSet::from([3])).unwrap();
-
         let bytes = {
             let mut buf = Vec::new();
             let header = BlockHeader::mock(4, Some(peaks.hash_peaks()), None, &[]);
             header.write_into(&mut buf);
-            PartialBlockchain::new_unchecked(partial_mmr, [headers[3].clone()])
-                .unwrap()
-                .write_into(&mut buf);
+            peaks.num_leaves().write_into(&mut buf);
+            peaks.peaks().to_vec().write_into(&mut buf);
+            nodes.write_into(&mut buf);
+            buf.push(0xff);
+            vec![3usize].write_into(&mut buf);
+            BTreeMap::from([(headers[3].block_num(), headers[3].clone())]).write_into(&mut buf);
             buf
         };
 

@@ -484,7 +484,7 @@ where
         };
 
         // Use the provided RNG, or create a default one.
-        let rng = if let Some(user_rng) = self.rng {
+        let mut rng = if let Some(user_rng) = self.rng {
             user_rng
         } else {
             let mut seed_rng = rand::rng();
@@ -530,6 +530,7 @@ where
         // Construct and return the Client
         let client = Client {
             store,
+            log_rng: futures::lock::Mutex::new(RandomCoin::new(rng.draw_word())),
             rng: ClientRng::new(rng),
             rpc_api,
             tx_prover,

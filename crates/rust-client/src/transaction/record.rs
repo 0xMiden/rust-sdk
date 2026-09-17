@@ -98,6 +98,11 @@ pub struct TransactionDetails {
     pub expiration_block_num: BlockNumber,
     /// Timestamp indicating when the transaction was created by the client.
     pub creation_timestamp: u64,
+    /// Full records retained from local execution. Private records are absent from public
+    /// transaction data.
+    pub logs: miden_protocol::transaction::TransactionLogs,
+    /// Secret opening for private log commitments.
+    pub log_salt: Word,
 }
 
 impl Serializable for TransactionDetails {
@@ -111,6 +116,8 @@ impl Serializable for TransactionDetails {
         self.submission_height.write_into(target);
         self.expiration_block_num.write_into(target);
         self.creation_timestamp.write_into(target);
+        self.logs.write_into(target);
+        self.log_salt.write_into(target);
     }
 }
 
@@ -125,6 +132,8 @@ impl Deserializable for TransactionDetails {
         let submission_height = BlockNumber::read_from(source)?;
         let expiration_block_num = BlockNumber::read_from(source)?;
         let creation_timestamp = source.read_u64()?;
+        let logs = miden_protocol::transaction::TransactionLogs::read_from(source)?;
+        let log_salt = Word::read_from(source)?;
 
         Ok(Self {
             account_id,
@@ -136,6 +145,8 @@ impl Deserializable for TransactionDetails {
             submission_height,
             expiration_block_num,
             creation_timestamp,
+            logs,
+            log_salt,
         })
     }
 }

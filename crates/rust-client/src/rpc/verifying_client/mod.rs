@@ -309,6 +309,15 @@ impl<T: NodeRpcClient> NodeRpcClient for VerifyingRpcClient<T> {
         self.0.sync_account_vault(block_from, block_to, account_id).await
     }
 
+    async fn get_account_logs(
+        &self,
+        query: super::domain::AccountLogQuery,
+    ) -> Result<super::domain::AccountLogPage, RpcError> {
+        let page = self.0.get_account_logs(query.clone()).await?;
+        page.validate(&query)?;
+        Ok(page)
+    }
+
     async fn sync_transactions(
         &self,
         block_from: BlockNumber,

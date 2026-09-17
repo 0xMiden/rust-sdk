@@ -32,12 +32,12 @@ impl TryFrom<&proto::primitives::SmtLeafEntry> for (Word, Word) {
     type Error = RpcConversionError;
 
     fn try_from(value: &proto::primitives::SmtLeafEntry) -> Result<Self, Self::Error> {
-        let key = match value.key {
+        let key = match &value.key {
             Some(key) => key.try_into()?,
             None => return Err(proto::primitives::SmtLeafEntry::missing_field(stringify!(key))),
         };
 
-        let value: Word = match value.value {
+        let value: Word = match &value.value {
             Some(value) => value.try_into()?,
             None => return Err(proto::primitives::SmtLeafEntry::missing_field(stringify!(value))),
         };
@@ -123,33 +123,39 @@ impl TryFrom<proto::primitives::PartialSmt> for UniqueNodes {
     /// rather than left to it, so a malformed response is reported as a specific invalid field
     /// instead of an opaque reconstruction failure.
     fn try_from(value: proto::primitives::PartialSmt) -> Result<Self, Self::Error> {
-        let proto::primitives::PartialSmt { root, nodes, leaves, value_only_leaves } = value;
+        let proto::primitives::PartialSmt {
+            root,
+            node_levels,
+            leaves,
+            value_only_leaves,
+        } = value;
 
         let root: Word = root
             .ok_or(proto::primitives::PartialSmt::missing_field(stringify!(root)))?
             .try_into()?;
 
         let mut decoded_nodes = BTreeMap::new();
-        for node in nodes {
-            let depth = u8::try_from(node.depth)?;
-            if depth == 0 || depth >= SMT_DEPTH {
-                return Err(RpcConversionError::InvalidField(format!(
-                    "partial SMT node depth {depth} must be in the range 1..{SMT_DEPTH}"
-                )));
-            }
-            let index = NodeIndex::new(depth, node.position)?;
-            let value = node
-                .value
-                .ok_or(proto::primitives::PartialSmtNode::missing_field("value"))?
-                .try_into()?;
-            if decoded_nodes.insert(index, value).is_some() {
-                return Err(RpcConversionError::InvalidField(format!(
-                    "partial SMT contains duplicate node index {} at depth {depth}",
-                    node.position
-                )));
+        for level in node_levels {
+            for node in level.nodes {
+                let depth = u8::try_from(level.depth)?;
+                if depth == 0 || depth >= SMT_DEPTH {
+                    return Err(RpcConversionError::InvalidField(format!(
+                        "partial SMT node depth {depth} must be in the range 1..{SMT_DEPTH}"
+                    )));
+                }
+                let index = NodeIndex::new(depth, node.index)?;
+                let value = node
+                    .digest
+                    .ok_or(proto::primitives::PartialSmtNode::missing_field("value"))?
+                    .try_into()?;
+                if decoded_nodes.insert(index, value).is_some() {
+                    return Err(RpcConversionError::InvalidField(format!(
+                        "partial SMT contains duplicate node index {} at depth {depth}",
+                        node.index
+                    )));
+                }
             }
         }
-
         let mut decoded_leaves = BTreeMap::new();
         for indexed_leaf in leaves {
             if decoded_leaves.contains_key(&indexed_leaf.index) {

@@ -9,6 +9,7 @@ members = [
   "crates/sqlite-store",
   "crates/testing/miden-client-tests",
   "crates/testing/test-node-genesis",
+  "crates/testing/transaction-log-tests",
   "xtask",
 ]
 
@@ -42,22 +43,30 @@ miden-client-integration-tests = { default-features = false, path = "bin/integra
 miden-client-sqlite-store      = { default-features = false, path = "crates/sqlite-store", version = "0.17.0-rc.1" }
 
 # Miden protocol dependencies
-miden-agglayer  = { default-features = false, version = "0.17.0-rc.3" }
-miden-protocol  = { default-features = false, version = "0.17.0-rc.3" }
-miden-standards = { default-features = false, version = "0.17.0-rc.3" }
-miden-testing   = { default-features = false, version = "0.17.0-rc.3" }
-miden-tx        = { default-features = false, version = "0.17.0-rc.3" }
-miden-tx-batch  = { default-features = false, version = "0.17.0-rc.3" }
+miden-agglayer  = { default-features = false, version = "0.17.0-rc.5" }
+miden-objects   = { default-features = false, version = "0.17.0-rc.5" }
+miden-protocol  = { default-features = false, version = "0.17.0-rc.5" }
+miden-standards = { default-features = false, version = "0.17.0-rc.5" }
+miden-testing   = { default-features = false, version = "0.17.0-rc.5" }
+miden-tx        = { default-features = false, version = "0.17.0-rc.5" }
+miden-tx-batch  = { default-features = false, version = "0.17.0-rc.5" }
 
 # Miden node dependencies
-miden-node-proto-build           = { default-features = false, git = "https://github.com/0xMiden/node", rev = "f64fe50f31ea58bcb791a35b826f71e99e74034c" } # TODO: switch to crates.io release once available
+miden-node-proto-build           = { default-features = false, git = "https://github.com/0xMiden/node", rev = "e7d11730d9f5772038893be6fdafd3e797111624" }
 miden-note-transport-proto-build = { default-features = false, version = "0.5.0-rc.2" }
 
+miden-node-block-producer = { git = "https://github.com/0xMiden/node", rev = "e7d11730d9f5772038893be6fdafd3e797111624" }
+miden-node-proto          = { git = "https://github.com/0xMiden/node", rev = "e7d11730d9f5772038893be6fdafd3e797111624" }
+miden-node-rpc            = { git = "https://github.com/0xMiden/node", rev = "e7d11730d9f5772038893be6fdafd3e797111624" }
+miden-node-store          = { git = "https://github.com/0xMiden/node", rev = "e7d11730d9f5772038893be6fdafd3e797111624" }
+miden-node-utils          = { git = "https://github.com/0xMiden/node", rev = "e7d11730d9f5772038893be6fdafd3e797111624" }
+miden-validator           = { git = "https://github.com/0xMiden/node", rev = "e7d11730d9f5772038893be6fdafd3e797111624" }
+
 # Miden debug dependency
-miden-assembly-syntax = { default-features = false, version = "0.32" }
+miden-assembly-syntax = { default-features = false, version = "0.33" }
 miden-debug           = { default-features = false, features = ["dap", "std"], version = "0.15" }
-miden-mast-package    = { default-features = false, version = "0.32" }
-miden-processor       = { default-features = false, version = "0.32" }
+miden-mast-package    = { default-features = false, version = "0.33" }
+miden-processor       = { default-features = false, version = "0.33" }
 
 # External dependencies
 anyhow             = { default-features = false, version = "1.0" }
@@ -66,7 +75,6 @@ async-trait        = { version = "0.1" }
 chrono             = { version = "0.4" }
 clap               = { version = "4.5" }
 comfy-table        = { version = "7.1" }
-hex                = { version = "0.4" }
 miette             = { features = ["fancy"], version = "7.6" }
 predicates         = { version = "3.0" }
 prost              = { default-features = false, version = "0.14" }
@@ -84,6 +92,7 @@ toml               = { version = "0.9" }
 tonic              = { default-features = false, version = "0.14" }
 tracing            = { version = "0.1" }
 tracing-subscriber = { default-features = false, version = "0.3" }
+url                = { version = "2.5" }
 uuid               = { version = "1.10" }
 
 # Lints are set to warn for development, which are promoted to errors in CI.
@@ -98,3 +107,17 @@ module_name_repetitions     = "allow" # Many triggers, and is a stylistic choice
 must_use_candidate          = "allow" # This marks many fn's which isn't helpful.
 should_panic_without_expect = "allow" # We don't care about the specific panic message.
 # End of pedantic lints.
+
+# Transaction log protocol stack: https://github.com/0xMiden/protocol/pull/3905.
+[patch.crates-io]
+miden-agglayer             = { git = "https://github.com/0xMiden/protocol", rev = "a7b62927531c20ffede7ba24ec09261ed1349ec3" }
+miden-block-prover         = { git = "https://github.com/0xMiden/protocol", rev = "a7b62927531c20ffede7ba24ec09261ed1349ec3" }
+miden-objects              = { git = "https://github.com/0xMiden/protocol", rev = "a7b62927531c20ffede7ba24ec09261ed1349ec3" }
+miden-protobuf             = { git = "https://github.com/0xMiden/protocol", rev = "a7b62927531c20ffede7ba24ec09261ed1349ec3" }
+miden-protobuf-derive      = { git = "https://github.com/0xMiden/protocol", rev = "a7b62927531c20ffede7ba24ec09261ed1349ec3" }
+miden-protocol             = { git = "https://github.com/0xMiden/protocol", rev = "a7b62927531c20ffede7ba24ec09261ed1349ec3" }
+miden-protocol-build-utils = { git = "https://github.com/0xMiden/protocol", rev = "a7b62927531c20ffede7ba24ec09261ed1349ec3" }
+miden-standards            = { git = "https://github.com/0xMiden/protocol", rev = "a7b62927531c20ffede7ba24ec09261ed1349ec3" }
+miden-testing              = { git = "https://github.com/0xMiden/protocol", rev = "a7b62927531c20ffede7ba24ec09261ed1349ec3" }
+miden-tx                   = { git = "https://github.com/0xMiden/protocol", rev = "a7b62927531c20ffede7ba24ec09261ed1349ec3" }
+miden-tx-batch             = { git = "https://github.com/0xMiden/protocol", rev = "a7b62927531c20ffede7ba24ec09261ed1349ec3" }

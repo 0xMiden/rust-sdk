@@ -392,6 +392,8 @@ pub struct Client<AUTH> {
     /// An instance of [`FeltRng`] which provides randomness tools for generating new keys, serial
     /// numbers, etc.
     rng: ClientRng,
+    /// Independent secret randomness for transaction-log openings.
+    log_rng: futures::lock::Mutex<miden_protocol::crypto::rand::RandomCoin>,
     /// An instance of [`NodeRpcClient`] which provides a way for the client to connect to the Miden
     /// node.
     rpc_api: Arc<dyn NodeRpcClient>,

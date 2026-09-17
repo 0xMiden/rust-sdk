@@ -12,16 +12,17 @@ use miden_protocol::transaction::{
     TransactionId,
 };
 
+use super::MissingFieldHelper;
 use super::note::CommittedNote;
 use crate::rpc::{RpcConversionError, RpcError, generated as proto};
 
 // INTO TRANSACTION ID
 // ================================================================================================
 
-impl TryFrom<proto::primitives::Digest> for TransactionId {
+impl TryFrom<proto::primitives::Word> for TransactionId {
     type Error = RpcConversionError;
 
-    fn try_from(value: proto::primitives::Digest) -> Result<Self, Self::Error> {
+    fn try_from(value: proto::primitives::Word) -> Result<Self, Self::Error> {
         let word: Word = value.try_into()?;
         Ok(Self::from_raw(word))
     }
@@ -141,8 +142,13 @@ impl TryFrom<proto::rpc::TransactionRecord> for TransactionRecord {
 /// erased (created and consumed within the same batch).
 fn convert_transaction_header(
     value: proto::transaction::TransactionHeader,
-    output_note_proofs: Vec<proto::note::NoteInclusionInBlockProof>,
+    output_note_proofs: Vec<proto::note::NoteInclusionProof>,
 ) -> Result<(TransactionHeader, Vec<CommittedNote>, Vec<NoteHeader>), RpcError> {
+    let reported_id: TransactionId = value
+        .transaction_id
+        .clone()
+        .ok_or(proto::transaction::TransactionHeader::missing_field("transaction_id"))?
+        .try_into()?;
     let account_id =
         value
             .account_id
@@ -192,10 +198,10 @@ fn convert_transaction_header(
 
     // Build a map of note_id to inclusion_proof from the separate proofs field.
     let mut proof_map: BTreeMap<NoteId, NoteInclusionProof> = BTreeMap::new();
-    for mut proto_proof in output_note_proofs {
+    for proto_proof in output_note_proofs {
         let note_id: NoteId = proto_proof
             .note_id
-            .take()
+            .clone()
             .ok_or(RpcError::ExpectedDataMissing("output_note_proofs.note_id".into()))?
             .try_into()
             .map_err(|e: RpcConversionError| RpcError::InvalidResponse(e.to_string()))?;
@@ -225,7 +231,21 @@ fn convert_transaction_header(
         final_state_commitment.try_into()?,
         input_notes,
         output_note_headers,
+        value
+            .logs_commitment
+            .ok_or(proto::transaction::TransactionHeader::missing_field("logs_commitment"))?
+            .try_into()?,
     )
     .map_err(|err| RpcError::InvalidResponse(err.to_string()))?;
+    if transaction_header.id() != reported_id {
+        return Err(RpcError::InvalidResponse(
+            "transaction ID does not match its commitments".into(),
+        ));
+    }
+    if !proof_map.is_empty() {
+        return Err(RpcError::InvalidResponse(
+            "inclusion proof does not match an output note".into(),
+        ));
+    }
     Ok((transaction_header, committed_output_notes, erased_output_notes))
 }

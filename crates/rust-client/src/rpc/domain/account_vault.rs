@@ -1,31 +1,24 @@
 use alloc::string::ToString;
 use alloc::vec::Vec;
 
+use miden_objects::DecodeMessageExt;
 use miden_protocol::Word;
 use miden_protocol::account::AccountVaultPatch;
 use miden_protocol::asset::{Asset, AssetId};
 use miden_protocol::block::BlockNumber;
 
+use super::{canonical_error, wire_message};
 use crate::rpc::domain::MissingFieldHelper;
 use crate::rpc::{RpcConversionError, RpcError, generated as proto};
 
 // ASSET CONVERSION
 // ================================================================================================
 
-impl TryFrom<proto::primitives::Asset> for Asset {
+impl TryFrom<proto::asset::Asset> for Asset {
     type Error = RpcConversionError;
-
-    fn try_from(value: proto::primitives::Asset) -> Result<Self, Self::Error> {
-        let key_word: Word = value
-            .key
-            .ok_or(proto::primitives::Asset::missing_field(stringify!(key)))?
-            .try_into()?;
-        let value_word: Word = value
-            .value
-            .ok_or(proto::primitives::Asset::missing_field(stringify!(value)))?
-            .try_into()?;
-        Asset::from_id_and_value_words(key_word, value_word)
-            .map_err(|e| RpcConversionError::InvalidField(e.to_string()))
+    fn try_from(value: proto::asset::Asset) -> Result<Self, Self::Error> {
+        let canonical: miden_objects::proto::asset::Asset = wire_message(&value);
+        canonical.decode_and_verify().map_err(canonical_error)
     }
 }
 

@@ -60,6 +60,7 @@ use sql_error::SqlResultExt;
 use crate::account::rows::query_vault_assets;
 
 mod account;
+mod account_logs;
 mod builder;
 mod chain_data;
 mod db_management;
@@ -193,6 +194,22 @@ impl Store for SqliteStore {
             SqliteStore::apply_state_sync(conn, state_sync_update)
         })
         .await
+    }
+
+    async fn upsert_account_logs(
+        &self,
+        account: AccountId,
+        page: miden_client::rpc::domain::AccountLogPage,
+    ) -> Result<(), StoreError> {
+        self.interact_with_connection(move |conn| account_logs::upsert(conn, account, page))
+            .await
+    }
+
+    async fn get_account_logs(
+        &self,
+        query: miden_client::rpc::domain::AccountLogQuery,
+    ) -> Result<miden_client::rpc::domain::AccountLogPage, StoreError> {
+        self.interact_with_connection(move |conn| account_logs::get(conn, &query)).await
     }
 
     async fn get_transactions(

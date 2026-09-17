@@ -23,7 +23,7 @@ use miden_client::account::{
 };
 use miden_client::assembly::CodeBuilder;
 use miden_client::asset::{Asset, AssetAmount, FungibleAsset};
-use miden_client::auth::{AuthSchemeId, AuthSecretKey, AuthSingleSig, RPO_FALCON_SCHEME_ID};
+use miden_client::auth::{AuthSchemeId, AuthSecretKey, AuthSingleSig, ECDSA_K256_KECCAK_SCHEME_ID};
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;
 use miden_client::note::standards::NoteSyncHint;
@@ -1364,7 +1364,7 @@ pub async fn test_unused_rpc_api(client_config: ClientConfig) -> Result<()> {
     .map_err(|err| anyhow::anyhow!(err))?;
     // The account is built here rather than through a standard setup because it carries the custom
     // component above on top of a basic wallet.
-    let (auth, key) = auth_component(RPO_FALCON_SCHEME_ID)?;
+    let (auth, key) = auth_component(ECDSA_K256_KECCAK_SCHEME_ID)?;
     let mut init_seed = [0u8; 32];
     client.rng().fill_bytes(&mut init_seed);
     let wallet = AccountBuilder::new(init_seed)

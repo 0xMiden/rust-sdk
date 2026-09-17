@@ -661,8 +661,8 @@ async fn sync_persists_auth_nodes_for_skipped_blocks() {
                 input_notes: vec![],
                 output_notes: vec![],
                 uncommitted_transactions: vec![],
-                validator_config: genesis.validator_config().clone(),
             },
+            genesis.validator_config(),
         )
         .await
         .unwrap();
@@ -750,9 +750,11 @@ async fn sync_state_no_redundant_get_account_calls() {
         input_notes: vec![],
         output_notes: vec![],
         uncommitted_transactions: vec![],
-        validator_config: genesis.validator_config().clone(),
     };
-    let state_sync_update = state_sync.sync_state(&mut partial_mmr, input).await.unwrap();
+    let state_sync_update = state_sync
+        .sync_state(&mut partial_mmr, input, genesis.validator_config())
+        .await
+        .unwrap();
 
     // Only 1 updated public account entry, not N duplicates
     assert_eq!(

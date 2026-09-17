@@ -139,8 +139,6 @@ pub struct StateSyncInput {
     pub output_notes: Vec<OutputNoteRecord>,
     /// Transactions to track for commitment or discard during sync.
     pub uncommitted_transactions: Vec<TransactionRecord>,
-    /// Validator configuration committed by the locally stored block header at the sync height.
-    pub validator_config: ValidatorConfig,
 }
 
 // SYNC CALLBACKS
@@ -291,6 +289,7 @@ impl StateSync {
         &self,
         current_partial_mmr: &mut PartialMmr,
         input: StateSyncInput,
+        validator_config: &ValidatorConfig,
     ) -> Result<StateSyncUpdate, ClientError> {
         let block_num = block_num_from_forest(current_partial_mmr)?;
 
@@ -300,7 +299,7 @@ impl StateSync {
 
         // Work on a clone so any validation failure leaves `current_partial_mmr` untouched.
         let mut working_mmr = current_partial_mmr.clone();
-        let update = Self::build_update(chain_sync_data, &mut working_mmr)?;
+        let update = Self::build_update(chain_sync_data, &mut working_mmr, validator_config)?;
         *current_partial_mmr = working_mmr;
 
         Ok(update)
@@ -325,7 +324,6 @@ impl StateSync {
             input_notes,
             output_notes,
             uncommitted_transactions,
-            validator_config,
         } = input;
 
         let note_tags = Arc::new(note_tags);
@@ -340,7 +338,6 @@ impl StateSync {
             // No progress — already at the tip.
             return Ok(ChainSyncData {
                 block_from,
-                validator_config,
                 advance: None,
                 superseded_states: Vec::new(),
                 note_updates,
@@ -370,7 +367,6 @@ impl StateSync {
 
         Ok(ChainSyncData {
             block_from,
-            validator_config,
             advance: Some(ChainAdvance {
                 chain_tip_header,
                 block_signatures,
@@ -439,10 +435,10 @@ impl StateSync {
     pub fn build_update(
         chain_sync_data: ChainSyncData,
         partial_mmr: &mut PartialMmr,
+        validator_config: &ValidatorConfig,
     ) -> Result<StateSyncUpdate, ClientError> {
         let ChainSyncData {
             block_from,
-            validator_config,
             advance,
             note_updates,
             transaction_updates,
@@ -481,7 +477,7 @@ impl StateSync {
             mmr_delta,
             &chain_tip_header,
             &block_signatures,
-            &validator_config,
+            validator_config,
             partial_mmr,
             &mut partial_blockchain_updates,
         )?;
@@ -1456,9 +1452,6 @@ impl StateSync {
 pub struct ChainSyncData {
     /// The chain tip the sync started from.
     pub(crate) block_from: BlockNumber,
-    /// Validator configuration committed by the locally stored genesis block header, used to
-    /// authenticate the chain tip block header.
-    validator_config: ValidatorConfig,
     /// What the node reported beyond `block_from`, or `None` when the client was already at the
     /// chain tip.
     advance: Option<ChainAdvance>,
@@ -1700,14 +1693,13 @@ mod tests {
             .clone()
     }
 
-    fn empty(mock_rpc: &MockRpcApi) -> StateSyncInput {
+    fn empty() -> StateSyncInput {
         StateSyncInput {
             accounts: vec![],
             note_tags: BTreeSet::new(),
             input_notes: vec![],
             output_notes: vec![],
             uncommitted_transactions: vec![],
-            validator_config: genesis_validator_config(mock_rpc),
         }
     }
 
@@ -2369,10 +2361,12 @@ mod tests {
             input_notes,
             output_notes: vec![],
             uncommitted_transactions: vec![],
-            validator_config: genesis_validator_config(&mock_rpc),
         };
 
-        let update = state_sync.sync_state(&mut partial_mmr, sync_input).await.unwrap();
+        let update = state_sync
+            .sync_state(&mut partial_mmr, sync_input, &genesis_validator_config(&mock_rpc))
+            .await
+            .unwrap();
 
         let updated_notes: Vec<_> = update.note_updates().updated_input_notes().collect();
 
@@ -2416,7 +2410,10 @@ mod tests {
         assert_eq!(partial_mmr.forest().num_leaves(), 1);
 
         // First sync
-        let update = state_sync.sync_state(&mut partial_mmr, empty(&mock_rpc)).await.unwrap();
+        let update = state_sync
+            .sync_state(&mut partial_mmr, empty(), &genesis_validator_config(&mock_rpc))
+            .await
+            .unwrap();
 
         assert_eq!(update.block_num(), chain_tip_1);
         let forest_1 = partial_mmr.forest();
@@ -2427,7 +2424,10 @@ mod tests {
         mock_rpc.advance_blocks(2);
         let chain_tip_2 = mock_rpc.get_chain_tip_block_num();
 
-        let update = state_sync.sync_state(&mut partial_mmr, empty(&mock_rpc)).await.unwrap();
+        let update = state_sync
+            .sync_state(&mut partial_mmr, empty(), &genesis_validator_config(&mock_rpc))
+            .await
+            .unwrap();
 
         assert_eq!(update.block_num(), chain_tip_2);
         let forest_2 = partial_mmr.forest();
@@ -2435,7 +2435,10 @@ mod tests {
         assert_eq!(forest_2.num_leaves(), chain_tip_2.as_u32() as usize + 1);
 
         // Third sync (no new blocks)
-        let update = state_sync.sync_state(&mut partial_mmr, empty(&mock_rpc)).await.unwrap();
+        let update = state_sync
+            .sync_state(&mut partial_mmr, empty(), &genesis_validator_config(&mock_rpc))
+            .await
+            .unwrap();
 
         assert_eq!(update.block_num(), chain_tip_2);
         assert_eq!(partial_mmr.forest(), forest_2);
@@ -2554,12 +2557,14 @@ mod tests {
             mock_rpc.get_mmr().peaks_at(Forest::new(1).expect("valid forest")).unwrap();
         let mut partial_mmr = PartialMmr::from_peaks(genesis_peaks);
 
-        let mut input = empty(&mock_rpc);
+        let validator_config = genesis_validator_config(&mock_rpc);
+        let mut input = empty();
         let state_sync = StateSync::new(Arc::new(mock_rpc), Arc::new(MockScreener), None)
             .with_note_observer(Arc::new(AlwaysRelevantObserver));
         input.note_tags = note_tags;
 
-        let update = state_sync.sync_state(&mut partial_mmr, input).await.unwrap();
+        let update =
+            state_sync.sync_state(&mut partial_mmr, input, &validator_config).await.unwrap();
         let observed_non_tip_block = BlockNumber::from(1u32);
 
         assert!(
@@ -2832,10 +2837,12 @@ mod tests {
             input_notes: vec![],
             output_notes: vec![output_note],
             uncommitted_transactions: vec![],
-            validator_config: genesis_validator_config(&mock_rpc),
         };
 
-        let update = state_sync.sync_state(&mut partial_mmr, sync_input).await.unwrap();
+        let update = state_sync
+            .sync_state(&mut partial_mmr, sync_input, &genesis_validator_config(&mock_rpc))
+            .await
+            .unwrap();
 
         // The output note record should transition to consumed.
         let updated_output = update

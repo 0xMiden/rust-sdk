@@ -197,7 +197,11 @@ where
             )));
         }
 
-        let state_sync_update = StateSync::build_update(chain_sync_data, &mut partial_mmr)?;
+        // The validator configuration must come from the local store, so that a node response
+        // cannot provide the validator keys that check its own signatures.
+        let validator_config = self.get_latest_block_header().await?.validator_config().clone();
+        let state_sync_update =
+            StateSync::build_update(chain_sync_data, &mut partial_mmr, &validator_config)?;
 
         let sync_summary: SyncSummary = (&state_sync_update).into();
         debug!(sync_summary = ?sync_summary, "Sync summary computed");
@@ -320,15 +324,12 @@ where
         let uncommitted_transactions =
             self.store.get_transactions(TransactionFilter::Uncommitted).await?;
 
-        let validator_config = self.get_latest_block_header().await?.validator_config().clone();
-
         Ok(StateSyncInput {
             accounts,
             note_tags,
             input_notes,
             output_notes,
             uncommitted_transactions,
-            validator_config,
         })
     }
 

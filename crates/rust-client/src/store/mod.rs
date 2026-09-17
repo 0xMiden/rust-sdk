@@ -207,6 +207,19 @@ pub trait Store: Send + Sync {
     // TRANSACTIONS
     // --------------------------------------------------------------------------------------------
 
+    /// Persists a page of public records atomically. Repeated pages must be idempotent.
+    async fn upsert_account_logs(
+        &self,
+        account: AccountId,
+        page: crate::rpc::domain::AccountLogPage,
+    ) -> Result<(), StoreError>;
+
+    /// Returns a bounded page of cached public records for one emitter.
+    async fn get_account_logs(
+        &self,
+        query: crate::rpc::domain::AccountLogQuery,
+    ) -> Result<crate::rpc::domain::AccountLogPage, StoreError>;
+
     /// Retrieves stored transactions, filtered by [`TransactionFilter`].
     async fn get_transactions(
         &self,

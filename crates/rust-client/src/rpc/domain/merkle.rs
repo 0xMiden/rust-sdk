@@ -25,7 +25,7 @@ impl From<MerklePath> for proto::primitives::MerklePath {
 
 impl From<&MerklePath> for proto::primitives::MerklePath {
     fn from(value: &MerklePath) -> Self {
-        let siblings = value.nodes().iter().map(proto::primitives::Digest::from).collect();
+        let siblings = value.nodes().iter().map(proto::primitives::Word::from).collect();
         proto::primitives::MerklePath { siblings }
     }
 }
@@ -66,7 +66,7 @@ impl From<SparseMerklePath> for proto::primitives::SparseMerklePath {
         proto::primitives::SparseMerklePath {
             empty_nodes_mask,
 
-            siblings: siblings.into_iter().map(proto::primitives::Digest::from).collect(),
+            siblings: siblings.into_iter().map(proto::primitives::Word::from).collect(),
         }
     }
 }
@@ -93,10 +93,10 @@ impl TryFrom<MmrDelta> for proto::primitives::MmrDelta {
     type Error = RpcConversionError;
 
     fn try_from(value: MmrDelta) -> Result<Self, Self::Error> {
-        let data = value.data.into_iter().map(proto::primitives::Digest::from).collect();
+        let data = value.data.into_iter().map(proto::primitives::Word::from).collect();
         Ok(proto::primitives::MmrDelta {
             forest: u64::try_from(value.forest.num_leaves())?,
-            data,
+            update_data: data,
         })
     }
 }
@@ -106,7 +106,7 @@ impl TryFrom<proto::primitives::MmrDelta> for MmrDelta {
 
     fn try_from(value: proto::primitives::MmrDelta) -> Result<Self, Self::Error> {
         let data: Result<Vec<_>, RpcConversionError> =
-            value.data.into_iter().map(Word::try_from).collect();
+            value.update_data.into_iter().map(Word::try_from).collect();
 
         let num_leaves = usize::try_from(value.forest).map_err(|_| {
             RpcConversionError::InvalidField("MmrDelta forest value exceeds usize".into())
@@ -128,7 +128,7 @@ mod tests {
 
     fn proto_merkle_path(siblings: usize) -> proto::primitives::MerklePath {
         proto::primitives::MerklePath {
-            siblings: vec![proto::primitives::Digest::default(); siblings],
+            siblings: vec![Word::empty().into(); siblings],
         }
     }
 

@@ -55,6 +55,11 @@ impl TransactionResult {
         &self.transaction
     }
 
+    /// Returns all locally executed logs, including private records and foreign emitters.
+    pub fn logs(&self) -> &miden_protocol::transaction::TransactionLogs {
+        self.transaction.logs()
+    }
+
     /// Returns the output notes that were generated as a result of the transaction execution.
     pub fn created_notes(&self) -> &RawOutputNotes {
         self.transaction.output_notes()

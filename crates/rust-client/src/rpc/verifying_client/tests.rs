@@ -89,6 +89,9 @@ fn signed_block(block_num: u32) -> SignedBlock {
         Vec::new(),
         Vec::new(),
         Vec::new(),
+        miden_protocol::transaction::TransactionLogDataCollection::empty_for_headers(
+            &(OrderedTransactionHeaders::new_unchecked(Vec::new())),
+        ),
         OrderedTransactionHeaders::new_unchecked(Vec::new()),
     );
     let signatures = BlockSignatures::new(Vec::new()).expect("no signatures is a valid set");
@@ -148,6 +151,7 @@ fn transaction_record(account_id: AccountId) -> TransactionRecord {
             Word::default(),
             InputNotes::new_unchecked(vec![]),
             vec![],
+            miden_protocol::Word::empty(),
         )
         .unwrap(),
         output_notes: vec![],

@@ -166,6 +166,8 @@ impl SqliteStore {
             submission_height: tx_update.submission_height(),
             expiration_block_num: executed_transaction.expiration_block_num(),
             creation_timestamp: super::current_timestamp_u64(),
+            logs: executed_transaction.logs().clone(),
+            log_salt: executed_transaction.tx_args().log_salt(),
         };
 
         let transaction_record = TransactionRecord::new(
@@ -265,11 +267,49 @@ mod tests {
             submission_height: BlockNumber::from(BLOCK_NUM),
             expiration_block_num: BlockNumber::from(BLOCK_NUM + 1),
             creation_timestamp: 0,
+            logs: miden_client::transaction::TransactionLogs::default(),
+            log_salt: Word::empty(),
         };
 
         let id = TransactionId::from_raw([Felt::new_unchecked(index), ZERO, ZERO, ZERO].into());
 
         TransactionRecord::new(id, details, None, status)
+    }
+
+    #[test]
+    fn private_logs_and_opening_survive_reopen() {
+        use miden_client::transaction::{LogTopic, TransactionLog, TransactionLogs};
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("private.sqlite");
+        let mut record = create_transaction_record(1, TransactionStatus::Pending);
+        record.details.logs = TransactionLogs::new(vec![
+            TransactionLog::new(
+                record.details.account_id,
+                LogTopic::new([1u32.into(), 2u32.into()]),
+                vec![Word::from([73u32; 4])],
+            )
+            .unwrap(),
+        ])
+        .unwrap();
+        record.details.log_salt = Word::from([19u32, 31, 37, 41]);
+        {
+            let mut conn = Connection::open(&path).unwrap();
+            SqliteMigrator::client().apply(&mut conn).unwrap();
+            let tx = conn.transaction().unwrap();
+            upsert_transaction_record(&tx, &record).unwrap();
+            tx.commit().unwrap();
+        }
+        let mut conn = Connection::open(path).unwrap();
+        SqliteMigrator::client().apply(&mut conn).unwrap();
+        let records =
+            SqliteStore::get_transactions(&mut conn, &TransactionFilter::Uncommitted).unwrap();
+        assert_eq!(records[0].details.logs, record.details.logs);
+        assert_eq!(records[0].details.log_salt, record.details.log_salt);
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM account_logs", [], |row| row.get::<_, usize>(0))
+                .unwrap(),
+            0
+        );
     }
 
     fn create_test_connection(records: &[TransactionRecord]) -> Connection {

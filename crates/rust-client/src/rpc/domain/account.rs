@@ -1,10 +1,12 @@
+use miden_objects::DecodeMessageExt;
+use super::{canonical_error, wire_message};
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::fmt::{self, Debug, Display, Formatter};
 
 use miden_protocol::account::{
     Account, AccountCode, AccountHeader, AccountId, AccountStorage, AccountStorageHeader,
-    StorageMap, StorageMapKey, StorageSlot, StorageSlotHeader, StorageSlotName, StorageSlotType,
+    StorageMap, StorageMapKey, StorageSlot, StorageSlotName, StorageSlotType,
 };
 use miden_protocol::asset::{Asset, AssetVault};
 use miden_protocol::block::BlockNumber;
@@ -12,7 +14,7 @@ use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::crypto::merkle::SparseMerklePath;
 use miden_protocol::crypto::merkle::smt::PartialSmt;
 use miden_protocol::{EMPTY_WORD, Word};
-use miden_tx::utils::ToHex;
+
 use miden_tx::utils::serde::{Deserializable, Serializable};
 use thiserror::Error;
 
@@ -31,33 +33,27 @@ use crate::rpc::generated::{self as proto};
 
 impl Display for proto::account::AccountId {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.write_fmt(format_args!("0x{}", self.id.to_hex()))
+        match AccountId::try_from(*self) {
+            Ok(id) => Display::fmt(&id, f),
+            Err(_) => f.write_str("<invalid account id>"),
+        }
     }
 }
-
 impl Debug for proto::account::AccountId {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         Display::fmt(self, f)
     }
 }
-
-// INTO PROTO ACCOUNT ID
-// ================================================================================================
-
 impl From<AccountId> for proto::account::AccountId {
-    fn from(account_id: AccountId) -> Self {
-        Self { id: account_id.to_bytes() }
+    fn from(id: AccountId) -> Self {
+        wire_message(&miden_objects::proto::account::AccountId::from(id))
     }
 }
-
-// FROM PROTO ACCOUNT ID
-// ================================================================================================
-
 impl TryFrom<proto::account::AccountId> for AccountId {
     type Error = RpcConversionError;
-
-    fn try_from(account_id: proto::account::AccountId) -> Result<Self, Self::Error> {
-        AccountId::read_from_bytes(&account_id.id).map_err(|_| RpcConversionError::NotAValidFelt)
+    fn try_from(value: proto::account::AccountId) -> Result<Self, Self::Error> {
+        let canonical: miden_objects::proto::account::AccountId = wire_message(&value);
+        canonical.decode_and_verify().map_err(canonical_error)
     }
 }
 
@@ -66,41 +62,9 @@ impl TryFrom<proto::account::AccountId> for AccountId {
 
 impl TryInto<AccountHeader> for proto::account::AccountHeader {
     type Error = crate::rpc::RpcError;
-
     fn try_into(self) -> Result<AccountHeader, Self::Error> {
-        use miden_protocol::Felt;
-
-        use crate::rpc::domain::MissingFieldHelper;
-
-        let proto::account::AccountHeader {
-            account_id,
-            nonce,
-            vault_root,
-            storage_commitment,
-            code_commitment,
-        } = self;
-
-        let account_id: AccountId = account_id
-            .ok_or(proto::account::AccountHeader::missing_field(stringify!(account_id)))?
-            .try_into()?;
-        let vault_root = vault_root
-            .ok_or(proto::account::AccountHeader::missing_field(stringify!(vault_root)))?
-            .try_into()?;
-        let storage_commitment = storage_commitment
-            .ok_or(proto::account::AccountHeader::missing_field(stringify!(storage_commitment)))?
-            .try_into()?;
-        let code_commitment = code_commitment
-            .ok_or(proto::account::AccountHeader::missing_field(stringify!(code_commitment)))?
-            .try_into()?;
-
-        let nonce = Felt::new(nonce).map_err(|_| RpcConversionError::NotAValidFelt)?;
-        Ok(AccountHeader::new(
-            account_id,
-            nonce,
-            vault_root,
-            storage_commitment,
-            code_commitment,
-        ))
+        let canonical: miden_objects::proto::account::AccountHeader = wire_message(&self);
+        canonical.decode_and_verify().map_err(canonical_error).map_err(Into::into)
     }
 }
 
@@ -109,36 +73,9 @@ impl TryInto<AccountHeader> for proto::account::AccountHeader {
 
 impl TryInto<AccountStorageHeader> for proto::account::AccountStorageHeader {
     type Error = crate::rpc::RpcError;
-
     fn try_into(self) -> Result<AccountStorageHeader, Self::Error> {
-        use crate::rpc::RpcError;
-        use crate::rpc::domain::MissingFieldHelper;
-
-        let mut header_slots: Vec<StorageSlotHeader> = Vec::with_capacity(self.slots.len());
-
-        for slot in self.slots {
-            let slot_value: Word = slot
-                .commitment
-                .ok_or(proto::account::account_storage_header::StorageSlot::missing_field(
-                    stringify!(commitment),
-                ))?
-                .try_into()?;
-
-            let slot_type = u8::try_from(slot.slot_type)
-                .map_err(|e| RpcError::InvalidResponse(e.to_string()))
-                .and_then(|v| {
-                    StorageSlotType::try_from(v)
-                        .map_err(|e| RpcError::InvalidResponse(e.to_string()))
-                })?;
-            let slot_name = StorageSlotName::new(slot.slot_name)
-                .map_err(|err| RpcError::InvalidResponse(err.to_string()))?;
-
-            header_slots.push(StorageSlotHeader::new(slot_name, slot_type, slot_value));
-        }
-
-        header_slots.sort_by_key(StorageSlotHeader::id);
-        AccountStorageHeader::new(header_slots)
-            .map_err(|err| RpcError::InvalidResponse(err.to_string()))
+        let canonical: miden_objects::proto::account::AccountStorageHeader = wire_message(&self);
+        canonical.decode_and_verify().map_err(canonical_error).map_err(Into::into)
     }
 }
 
@@ -190,7 +127,12 @@ impl proto::rpc::account_response::AccountDetails {
         // valid. If it was not, it means we sent a code commitment that matched and so our code is
         // still valid
         let code = {
-            let received_code = code.map(|c| AccountCode::read_from_bytes(&c)).transpose()?;
+            let received_code = code
+                .map(|c| {
+                    let canonical: miden_objects::proto::account::AccountCode = wire_message(&c);
+                    canonical.decode_and_verify().map_err(canonical_error)
+                })
+                .transpose()?;
             match received_code {
                 Some(code) => code,
                 None => known_account_codes
@@ -924,7 +866,7 @@ pub enum VaultFetch {
     IfChangedFrom(Word),
 }
 
-impl From<VaultFetch> for Option<proto::primitives::Digest> {
+impl From<VaultFetch> for Option<proto::primitives::Word> {
     /// Encodes the policy as the request's `asset_vault_commitment`: `None` skips the vault, the
     /// empty word (which no real vault root equals) always fetches it, and a concrete commitment
     /// fetches only when it differs.

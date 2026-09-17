@@ -1,12 +1,8 @@
-use alloc::string::ToString;
-use alloc::vec::Vec;
-
+use miden_objects::DecodeMessageExt;
 use miden_protocol::block::{BlockHeader, BlockNumber, FeeParameters, ValidatorConfig};
-use miden_protocol::crypto::dsa::ecdsa_k256_keccak;
 use miden_protocol::protocol_config::NextProtocolConfig;
-use miden_protocol::utils::serde::{Deserializable, Serializable};
 
-use crate::rpc::domain::MissingFieldHelper;
+use super::{canonical_error, wire_message};
 use crate::rpc::errors::RpcConversionError;
 use crate::rpc::generated as proto;
 
@@ -15,21 +11,7 @@ use crate::rpc::generated as proto;
 
 impl From<&BlockHeader> for proto::blockchain::BlockHeader {
     fn from(header: &BlockHeader) -> Self {
-        Self {
-            version: header.version().into(),
-            prev_block_commitment: Some(header.prev_block_commitment().into()),
-            block_num: header.block_num().as_u32(),
-            chain_commitment: Some(header.chain_commitment().into()),
-            account_root: Some(header.account_root().into()),
-            nullifier_root: Some(header.nullifier_root().into()),
-            note_root: Some(header.note_root().into()),
-            tx_commitment: Some(header.tx_commitment().into()),
-            validator_config: Some(header.validator_config().into()),
-            protocol_config_commitment: Some(header.protocol_config_commitment().into()),
-            next_protocol_config: header.next_protocol_config().map(Into::into),
-            fee_parameters: Some(header.fee_parameters().into()),
-            timestamp: header.timestamp(),
-        }
+        wire_message(&miden_objects::proto::blockchain::BlockHeader::from(header))
     }
 }
 
@@ -55,77 +37,10 @@ impl From<BlockHeader> for proto::blockchain::BlockHeader {
 
 impl TryFrom<proto::blockchain::BlockHeader> for BlockHeader {
     type Error = RpcConversionError;
-
     fn try_from(value: proto::blockchain::BlockHeader) -> Result<Self, Self::Error> {
-        // Upstream builds only version 1 and keeps its constant private.
-        if value.version != 1 {
-            return Err(RpcConversionError::InvalidField(format!(
-                "unsupported block header version {}",
-                value.version
-            )));
-        }
-        let config = value
-            .validator_config
-            .ok_or(proto::blockchain::BlockHeader::missing_field("validator_config"))?;
-        let keys = config
-            .keys
-            .into_iter()
-            .map(|key| ecdsa_k256_keccak::PublicKey::read_from_bytes(&key.validator_key))
-            .collect::<Result<Vec<_>, _>>()?;
-        let validator_config = ValidatorConfig::new(keys, config.quorum.try_into()?)
-            .map_err(|err| RpcConversionError::InvalidField(err.to_string()))?;
-        let next_protocol_config = value
-            .next_protocol_config
-            .map(|config| {
-                let commitment = config
-                    .protocol_config
-                    .ok_or(proto::blockchain::NextProtocolConfig::missing_field("protocol_config"))?
-                    .try_into()?;
-                NextProtocolConfig::new(config.effective_from.into(), commitment)
-                    .map_err(|err| RpcConversionError::InvalidField(err.to_string()))
-            })
-            .transpose()?;
-
-        Ok(BlockHeader::new(
-            value
-                .prev_block_commitment
-                .ok_or(proto::blockchain::BlockHeader::missing_field(stringify!(
-                    prev_block_commitment
-                )))?
-                .try_into()?,
-            value.block_num.into(),
-            value
-                .chain_commitment
-                .ok_or(proto::blockchain::BlockHeader::missing_field(stringify!(chain_commitment)))?
-                .try_into()?,
-            value
-                .account_root
-                .ok_or(proto::blockchain::BlockHeader::missing_field(stringify!(account_root)))?
-                .try_into()?,
-            value
-                .nullifier_root
-                .ok_or(proto::blockchain::BlockHeader::missing_field(stringify!(nullifier_root)))?
-                .try_into()?,
-            value
-                .note_root
-                .ok_or(proto::blockchain::BlockHeader::missing_field(stringify!(note_root)))?
-                .try_into()?,
-            value
-                .tx_commitment
-                .ok_or(proto::blockchain::BlockHeader::missing_field(stringify!(tx_commitment)))?
-                .try_into()?,
-            validator_config,
-            value
-                .fee_parameters
-                .ok_or(proto::blockchain::BlockHeader::missing_field(stringify!(fee_parameters)))?
-                .into(),
-            value
-                .protocol_config_commitment
-                .ok_or(proto::blockchain::BlockHeader::missing_field("protocol_config_commitment"))?
-                .try_into()?,
-            next_protocol_config,
-            value.timestamp,
-        ))
+        let canonical: miden_objects::proto::blockchain::BlockHeader = wire_message(&value);
+        // Chain authentication is performed by VerifyingRpcClient.
+        canonical.decode_and_build_unchecked().map_err(canonical_error)
     }
 }
 
@@ -140,14 +55,7 @@ impl From<proto::blockchain::FeeParameters> for FeeParameters {
 
 impl From<&ValidatorConfig> for proto::blockchain::ValidatorConfig {
     fn from(config: &ValidatorConfig) -> Self {
-        Self {
-            keys: config
-                .keys()
-                .iter()
-                .map(|key| proto::blockchain::ValidatorPublicKey { validator_key: key.to_bytes() })
-                .collect(),
-            quorum: config.quorum().into(),
-        }
+        wire_message(&miden_objects::proto::blockchain::ValidatorConfig::from(config))
     }
 }
 
@@ -156,10 +64,7 @@ impl From<&ValidatorConfig> for proto::blockchain::ValidatorConfig {
 
 impl From<&NextProtocolConfig> for proto::blockchain::NextProtocolConfig {
     fn from(config: &NextProtocolConfig) -> Self {
-        Self {
-            effective_from: config.effective_from().as_u32(),
-            protocol_config: Some(config.protocol_config().into()),
-        }
+        wire_message(&miden_objects::proto::blockchain::NextProtocolConfig::from(config))
     }
 }
 
@@ -183,16 +88,9 @@ mod tests {
         let header = BlockHeader::mock(5, None, None, &[]);
         let mut wire: proto::blockchain::BlockHeader = (&header).into();
         let (_, validators) = ValidatorConfig::random_with_signers(3);
-        wire.validator_config = Some(proto::blockchain::ValidatorConfig {
-            keys: validators
-                .keys()
-                .iter()
-                .map(|key| proto::blockchain::ValidatorPublicKey { validator_key: key.to_bytes() })
-                .collect(),
-            quorum: validators.quorum().into(),
-        });
+        wire.validator_config = Some((&validators).into());
         wire.next_protocol_config = Some(proto::blockchain::NextProtocolConfig {
-            effective_from: 10,
+            effective_from: Some(BlockNumber::from(10u32).into()),
             protocol_config: Some(Word::from([1u32, 2, 3, 4]).into()),
         });
         let decoded = BlockHeader::try_from(wire.clone()).unwrap();
@@ -220,7 +118,7 @@ mod tests {
         // An upgrade scheduled at the genesis height.
         let mut malformed = wire;
         malformed.next_protocol_config = Some(proto::blockchain::NextProtocolConfig {
-            effective_from: 0,
+            effective_from: Some(BlockNumber::GENESIS.into()),
             protocol_config: Some(Word::empty().into()),
         });
         assert!(BlockHeader::try_from(malformed).is_err());

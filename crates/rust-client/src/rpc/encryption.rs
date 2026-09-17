@@ -51,7 +51,7 @@ use miden_tx::utils::serde::{
 };
 use rand::CryptoRng;
 
-use super::generated::transaction::IesScheme;
+use super::generated::submission::IesScheme;
 use super::{RpcError, generated as proto};
 
 // CONSTANTS
@@ -425,7 +425,7 @@ impl SealedTransactionInputs {
     }
 }
 
-impl From<SealedTransactionInputs> for proto::transaction::SealedTransactionInputs {
+impl From<SealedTransactionInputs> for proto::submission::SealedTransactionInputs {
     fn from(sealed: SealedTransactionInputs) -> Self {
         Self {
             key_id: sealed.key_id,
@@ -513,6 +513,7 @@ mod tests {
             Word::from([0, seed, 0, 0]),
             Word::from([0, 0, seed, 0]),
             Word::from([0, 0, 0, seed]),
+            miden_protocol::Word::empty(),
         )
     }
 

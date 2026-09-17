@@ -71,6 +71,7 @@ use alloc::vec::Vec;
 use miden_protocol::account::{AccountCode, AccountCodeInterface, AccountId, PartialAccount};
 use miden_protocol::asset::Asset;
 use miden_protocol::block::{BlockHeader, BlockNumber, FeeParameters};
+use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::errors::AssetError;
 use miden_protocol::note::{
     Note,
@@ -83,6 +84,12 @@ use miden_protocol::note::{
 };
 use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::transaction::{AccountInputs, PartialBlockchain};
+pub use miden_protocol::transaction::{
+    LogTopic,
+    TransactionLog,
+    TransactionLogData,
+    TransactionLogs,
+};
 use miden_protocol::vm::MIN_STACK_DEPTH;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::auth::FeeConversionInfo;
@@ -159,6 +166,7 @@ pub use request::{
 mod observer;
 pub use observer::TransactionObserver;
 
+mod logs;
 mod result;
 // RE-EXPORTS
 // ================================================================================================
@@ -712,7 +720,11 @@ where
             &self.get_protocol_config(reference_header.protocol_config_commitment()).await?,
         )?;
 
-        let tx_args = transaction_request.into_transaction_args(tx_script);
+        let mut salt = self.log_rng.lock().await.draw_word();
+        while salt.is_empty() {
+            salt = self.log_rng.lock().await.draw_word();
+        }
+        let tx_args = transaction_request.into_transaction_args(tx_script).with_log_salt(salt);
 
         Ok(PreparedTransaction {
             notes,

@@ -622,6 +622,16 @@ pub trait NodeRpcClient: Send + Sync {
         account_id: AccountId,
     ) -> Result<AccountVaultInfo, RpcError>;
 
+    /// Fetches one bounded page of public logs for a required emitter account.
+    async fn get_account_logs(
+        &self,
+        _query: domain::AccountLogQuery,
+    ) -> Result<domain::AccountLogPage, RpcError> {
+        Err(RpcError::InvalidResponse(
+            "RPC implementation does not support account logs".into(),
+        ))
+    }
+
     /// Fetches transaction records for specific accounts within a block range using the
     /// `/SyncTransactions` RPC endpoint.
     ///
@@ -705,6 +715,7 @@ pub enum RpcEndpoint {
     SyncStorageMaps,
     SyncAccountVault,
     SyncTransactions,
+    GetAccountLogs,
     GetLimits,
     GetNetworkNoteStatus,
     GetTransactionEncryptionKey,
@@ -729,6 +740,7 @@ impl RpcEndpoint {
             RpcEndpoint::SyncStorageMaps => "SyncStorageMaps",
             RpcEndpoint::SyncAccountVault => "SyncAccountVault",
             RpcEndpoint::SyncTransactions => "SyncTransactions",
+            RpcEndpoint::GetAccountLogs => "GetAccountLogs",
             RpcEndpoint::GetLimits => "GetLimits",
             RpcEndpoint::GetNetworkNoteStatus => "GetNetworkNoteStatus",
         }
@@ -758,6 +770,7 @@ impl RpcEndpoint {
             | RpcEndpoint::GetNoteScriptByRoot
             | RpcEndpoint::SyncStorageMaps
             | RpcEndpoint::SyncAccountVault
+            | RpcEndpoint::GetAccountLogs
             | RpcEndpoint::SyncTransactions
             | RpcEndpoint::GetLimits
             | RpcEndpoint::GetNetworkNoteStatus
@@ -790,6 +803,7 @@ impl fmt::Display for RpcEndpoint {
             RpcEndpoint::SyncStorageMaps => write!(f, "sync_storage_maps"),
             RpcEndpoint::SyncAccountVault => write!(f, "sync_account_vault"),
             RpcEndpoint::SyncTransactions => write!(f, "sync_transactions"),
+            RpcEndpoint::GetAccountLogs => write!(f, "get_account_logs"),
             RpcEndpoint::GetLimits => write!(f, "get_limits"),
             RpcEndpoint::GetNetworkNoteStatus => write!(f, "get_network_note_status"),
         }

@@ -2078,6 +2078,7 @@ mod tests {
                     word(final_state),
                     input_notes,
                     vec![],
+                    miden_protocol::Word::empty(),
                 )
                 .unwrap(),
                 output_notes: vec![],
@@ -2127,6 +2128,7 @@ mod tests {
                         Nullifier::from_raw(word(40)),
                     )]),
                     vec![],
+                    miden_protocol::Word::empty(),
                 )
                 .unwrap(),
                 output_notes: vec![],
@@ -2190,6 +2192,7 @@ mod tests {
                     word(final_state),
                     InputNotes::new_unchecked(vec![]),
                     vec![],
+                    miden_protocol::Word::empty(),
                 )
                 .unwrap(),
                 output_notes: vec![],
@@ -2932,6 +2935,7 @@ mod tests {
                 word(2),
                 InputNotes::new_unchecked(vec![]),
                 vec![],
+                miden_protocol::Word::empty(),
             )
             .unwrap(),
             output_notes: vec![],

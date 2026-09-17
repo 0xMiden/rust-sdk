@@ -6,7 +6,10 @@ use alloc::vec::Vec;
 use core::error::Error;
 use core::pin::Pin;
 
+use miden_objects::DecodeMessageExt;
 use miden_protocol::vm::FutureMaybeSend;
+
+use crate::rpc::domain::wire_message;
 
 type RpcFuture<T> = Pin<Box<dyn FutureMaybeSend<T>>>;
 
@@ -21,18 +24,12 @@ use miden_protocol::address::NetworkId;
 use miden_protocol::batch::{ProposedBatch, ProvenBatch};
 use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock};
-use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
-    PublicKey as ValidatorPublicKey,
-    Signature as ValidatorSignature,
-};
 use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::crypto::merkle::mmr::{Forest, MmrPath, MmrProof};
 use miden_protocol::note::{NoteId, NoteScript, NoteTag};
 use miden_protocol::transaction::ProvenTransaction;
-use miden_protocol::utils::serde::Deserializable;
 use miden_protocol::vm::ExecutionProof;
 use miden_protocol::{EMPTY_WORD, Word};
-use miden_tx::utils::serde::Serializable;
 use miden_tx::utils::sync::RwLock;
 use tonic::Status;
 use tracing::{info, warn};
@@ -141,9 +138,9 @@ impl BlockPagination {
 // GRPC CLIENT
 // ================================================================================================
 
-/// Default maximum size (in bytes) of a decoded gRPC response the client will accept: 15% above
-/// tonic's built-in 4 MiB receive limit. See [`GrpcClient::with_max_decoding_message_size`].
-const DEFAULT_MAX_RESPONSE_SIZE_BYTES: usize = 4 * 1024 * 1024 * 115 / 100;
+/// Bounded response capacity for blocks, including logs and protobuf overhead. See
+/// [`GrpcClient::with_max_decoding_message_size`].
+const DEFAULT_MAX_RESPONSE_SIZE_BYTES: usize = 64 * 1024 * 1024;
 
 /// Client for the Node RPC API using gRPC.
 ///
@@ -213,10 +210,7 @@ impl GrpcClient {
 
     /// Sets the maximum size (in bytes) of a decoded gRPC response the client will accept.
     ///
-    /// Defaults to 15% above [tonic's built-in 4 MiB receive limit][tonic-decode], leaving headroom
-    /// for responses that land slightly over 4 MiB.
-    ///
-    /// [tonic-decode]: https://github.com/hyperium/tonic/blob/6cb6056b5a748bc5a29bd48f4602dbc4e552bb7d/tonic/src/codec/decode.rs#L192-L218
+    /// Defaults to 64 MiB to accommodate blocks with public transaction logs.
     #[must_use]
     pub fn with_max_decoding_message_size(mut self, max_decoding_message_size: usize) -> Self {
         self.max_decoding_message_size = max_decoding_message_size;
@@ -394,14 +388,16 @@ impl NodeRpcClient for GrpcClient {
             .attestations
             .into_iter()
             .filter_map(|attestation| {
-                let decoded =
-                    ValidatorPublicKey::read_from_bytes(&attestation.validator_public_key)
-                        .ok()
-                        .zip(ValidatorSignature::read_from_bytes(&attestation.signature).ok())
-                        .map(|(validator_key, signature)| ValidatorAttestation {
-                            validator_key,
-                            signature,
-                        });
+                let decoded = (|| {
+                    let key: miden_objects::proto::primitives::PublicKey =
+                        wire_message(&attestation.validator_public_key?);
+                    let signature: miden_objects::proto::primitives::Signature =
+                        wire_message(&attestation.signature?);
+                    Some(ValidatorAttestation {
+                        validator_key: key.decode_and_verify().ok()?,
+                        signature: signature.decode_and_verify().ok()?,
+                    })
+                })();
                 if decoded.is_none() {
                     warn!(
                         "skipping a transaction encryption key attestation that failed to decode"
@@ -444,8 +440,10 @@ impl NodeRpcClient for GrpcClient {
         proven_transaction: ProvenTransaction,
         sealed_transaction_inputs: SealedTransactionInputs,
     ) -> Result<BlockNumber, RpcError> {
-        let request = proto::transaction::ProvenTransaction {
-            transaction: proven_transaction.to_bytes(),
+        let request = proto::submission::ProvenTransactionSubmission {
+            transaction: Some(wire_message(
+                &miden_objects::proto::transaction::ProvenTransaction::from(&proven_transaction),
+            )),
             sealed_transaction_inputs: Some(sealed_transaction_inputs.into()),
         };
 
@@ -465,9 +463,13 @@ impl NodeRpcClient for GrpcClient {
         proposed_batch: ProposedBatch,
         sealed_transaction_inputs: Vec<SealedTransactionInputs>,
     ) -> Result<BlockNumber, RpcError> {
-        let request = proto::transaction::TransactionBatch {
-            batch_proof: proven_batch.to_bytes(),
-            proposed_batch: Some(proposed_batch.to_bytes()),
+        let request = proto::submission::TransactionBatch {
+            batch: Some(wire_message(&miden_objects::proto::transaction::ProvenBatch::from(
+                &proven_batch,
+            ))),
+            proposed_batch: Some(wire_message(
+                &miden_objects::proto::transaction::ProposedBatch::from(&proposed_batch),
+            )),
             sealed_transaction_inputs: sealed_transaction_inputs
                 .into_iter()
                 .map(Into::into)
@@ -492,6 +494,7 @@ impl NodeRpcClient for GrpcClient {
         let request = proto::rpc::BlockHeaderByNumberRequest {
             block_num: block_num.as_ref().map(BlockNumber::as_u32),
             include_mmr_proof: Some(include_mmr_proof),
+            include_protocol_config: Some(false),
         };
 
         info!("Calling GetBlockHeaderByNumber: {:?}", request);
@@ -537,8 +540,8 @@ impl NodeRpcClient for GrpcClient {
         let limits = self.get_rpc_limits().await?;
         let mut notes = Vec::with_capacity(note_ids.len());
         for chunk in note_ids.chunks(limits.note_ids_limit as usize) {
-            let request = proto::note::NoteIdList {
-                ids: chunk.iter().map(|id| (*id).into()).collect(),
+            let request = proto::rpc::NotesByIdRequest {
+                note_ids: chunk.iter().map(|id| (*id).into()).collect(),
             };
 
             let api_response = self
@@ -802,7 +805,7 @@ impl NodeRpcClient for GrpcClient {
         block_num: BlockNumber,
         include_proof: bool,
     ) -> Result<(SignedBlock, Option<ExecutionProof>), RpcError> {
-        let request = proto::blockchain::BlockRequest {
+        let request = proto::rpc::BlockRequest {
             block_num: block_num.as_u32(),
             include_proof: Some(include_proof),
         };
@@ -817,10 +820,11 @@ impl NodeRpcClient for GrpcClient {
     }
 
     async fn get_note_script_by_root(&self, root: Word) -> Result<Option<NoteScript>, RpcError> {
-        let request = proto::note::NoteScriptRoot { root: Some(root.into()) };
+        let request = proto::rpc::NoteScriptByRootRequest { root: Some(root.into()) };
 
         let response = self
             .call_with_retry(RpcEndpoint::GetNoteScriptByRoot, |mut rpc_api| {
+                let request = request.clone();
                 Box::pin(async move { rpc_api.get_note_script_by_root(request).await })
             })
             .await?;
@@ -853,7 +857,6 @@ impl NodeRpcClient for GrpcClient {
             };
             let response = self
                 .call_with_retry(RpcEndpoint::SyncStorageMaps, |mut rpc_api| {
-                    let request = request.clone();
                     Box::pin(async move { rpc_api.sync_account_storage_maps(request).await })
                 })
                 .await?;
@@ -898,7 +901,6 @@ impl NodeRpcClient for GrpcClient {
             };
             let response = self
                 .call_with_retry(RpcEndpoint::SyncAccountVault, |mut rpc_api| {
-                    let request = request.clone();
                     Box::pin(async move { rpc_api.sync_account_vault(request).await })
                 })
                 .await?;
@@ -916,6 +918,82 @@ impl NodeRpcClient for GrpcClient {
         };
 
         Ok(AccountVaultInfo { chain_tip, block_number, vault_patch })
+    }
+
+    /// Fetches a bounded page of public records for one emitter.
+    async fn get_account_logs(
+        &self,
+        query: super::domain::AccountLogQuery,
+    ) -> Result<super::domain::AccountLogPage, RpcError> {
+        use miden_protocol::transaction::{LogTopic, TransactionLog};
+        use miden_protocol::utils::serde::{Deserializable, Serializable};
+
+        use super::domain::{AccountLogCursor, AccountLogPage, AccountLogRecord};
+        let request = proto::rpc::GetAccountLogsRequest {
+            account_id: Some(query.account_id.into()),
+            block_range: Some(BlockRange {
+                block_from: query.block_from.as_u32(),
+                block_to: query.block_to.as_u32(),
+            }),
+            topic: query.topic.as_ref().map(LogTopic::to_bytes),
+            after: query.after.map(|cursor| proto::rpc::AccountLogCursor {
+                block_num: cursor.block_num.as_u32(),
+                transaction_index: cursor.transaction_index,
+                log_index: cursor.log_index,
+            }),
+            page_size: query.page_size,
+        };
+        let response = self
+            .call_with_retry(RpcEndpoint::GetAccountLogs, |mut rpc_api| {
+                let request = request.clone();
+                Box::pin(async move { rpc_api.get_account_logs(request).await })
+            })
+            .await?
+            .into_inner();
+        let cursor = |cursor: proto::rpc::AccountLogCursor| AccountLogCursor {
+            block_num: cursor.block_num.into(),
+            transaction_index: cursor.transaction_index,
+            log_index: cursor.log_index,
+        };
+        if response.records.len() > 256
+            || response.records.iter().map(|record| record.log.len() + 192).sum::<usize>()
+                > 1024 * 1024
+        {
+            return Err(RpcError::InvalidResponse(
+                "account log page exceeds resource limits".into(),
+            ));
+        }
+        let mut records = Vec::new();
+        for record in response.records {
+            let log = TransactionLog::read_from_bytes(&record.log)
+                .map_err(|error| RpcError::DeserializationError(error.to_string()))?;
+            if log.to_bytes() != record.log {
+                return Err(RpcError::InvalidResponse("noncanonical log record".into()));
+            }
+            records.push(AccountLogRecord {
+                cursor: cursor(
+                    record
+                        .cursor
+                        .ok_or_else(|| RpcError::ExpectedDataMissing("log cursor".into()))?,
+                ),
+                transaction_id: record
+                    .transaction_id
+                    .ok_or_else(|| RpcError::ExpectedDataMissing("log transaction ID".into()))?
+                    .try_into()?,
+                native_account_id: record
+                    .native_account_id
+                    .ok_or_else(|| RpcError::ExpectedDataMissing("native account ID".into()))?
+                    .try_into()?,
+                log,
+            });
+        }
+        let page = AccountLogPage {
+            chain_tip: response.chain_tip.into(),
+            records,
+            next_cursor: response.next_cursor.map(cursor),
+        };
+        page.validate(&query)?;
+        Ok(page)
     }
 
     /// Sends one or more `SyncTransactions` requests to the node and concatenates the responses
@@ -1020,6 +1098,7 @@ impl NodeRpcClient for GrpcClient {
 
         let response = self
             .call_with_retry(RpcEndpoint::GetNetworkNoteStatus, |mut rpc_api| {
+                let request = request.clone();
                 Box::pin(async move { rpc_api.get_network_note_status(request).await })
             })
             .await?;
@@ -1073,17 +1152,22 @@ impl From<&Status> for GrpcError {
 /// decode as a [`SignedBlock`] and never as a `ProvenBlock`. The node omits the proof when it is
 /// not requested, and also when the block is not proven yet, so an absent proof is not an error.
 fn decode_block_response(
-    response: proto::blockchain::MaybeBlock,
+    response: proto::rpc::MaybeBlock,
 ) -> Result<(SignedBlock, Option<ExecutionProof>), RpcError> {
-    let block = SignedBlock::read_from_bytes(
+    let canonical: miden_objects::proto::blockchain::SignedBlock = wire_message(
         &response
             .block
-            .ok_or(RpcError::ExpectedDataMissing("GetBlockByNumberResponse.block".to_string()))?,
-    )?;
-
+            .ok_or(RpcError::ExpectedDataMissing("GetBlockByNumberResponse.block".into()))?,
+    );
+    let block = canonical
+        .decode_and_build_unchecked()
+        .map_err(crate::rpc::domain::canonical_error)?;
     let proof = response
         .proof
-        .map(|bytes| ExecutionProof::read_from_bytes(&bytes))
+        .map(|proof| {
+            let canonical: miden_objects::proto::primitives::ExecutionProof = wire_message(&proof);
+            ExecutionProof::try_from(canonical).map_err(crate::rpc::domain::canonical_error)
+        })
         .transpose()?;
 
     Ok((block, proof))
@@ -1097,7 +1181,6 @@ mod tests {
 
     use miden_protocol::Word;
     use miden_protocol::block::{BlockNumber, SignedBlock};
-    use miden_protocol::utils::serde::Serializable;
     use miden_testing::MockChain;
 
     use super::{
@@ -1114,13 +1197,15 @@ mod tests {
     fn assert_send_sync<T: Send + Sync>() {}
 
     /// Returns the serialized signed block and proof of the mock chain's genesis block.
-    fn genesis_block_bytes() -> (Vec<u8>, Vec<u8>) {
+    fn genesis_block_bytes() -> (proto::blockchain::SignedBlock, Vec<u8>) {
         let chain = MockChain::new();
         let block = chain.proven_blocks().first().expect("the chain has a genesis block").clone();
         let (header, body, signatures, proof) = block.into_parts();
 
         (
-            SignedBlock::new_unchecked(header, body, signatures).to_bytes(),
+            crate::rpc::domain::wire_message(&miden_objects::proto::blockchain::SignedBlock::from(
+                &SignedBlock::new_unchecked(header, body, signatures),
+            )),
             proof.to_bytes(),
         )
     }
@@ -1128,9 +1213,9 @@ mod tests {
     #[test]
     fn decode_block_response_reads_a_requested_proof() {
         let (block_bytes, proof_bytes) = genesis_block_bytes();
-        let response = proto::blockchain::MaybeBlock {
+        let response = proto::rpc::MaybeBlock {
             block: Some(block_bytes),
-            proof: Some(proof_bytes.clone()),
+            proof: Some(proto::primitives::ExecutionProof { encoded: proof_bytes.clone() }),
         };
 
         let (_block, proof) = decode_block_response(response).unwrap();
@@ -1141,7 +1226,7 @@ mod tests {
     #[test]
     fn decode_block_response_omits_an_absent_proof() {
         let (block_bytes, _) = genesis_block_bytes();
-        let response = proto::blockchain::MaybeBlock { block: Some(block_bytes), proof: None };
+        let response = proto::rpc::MaybeBlock { block: Some(block_bytes), proof: None };
 
         let (_block, proof) = decode_block_response(response).unwrap();
 
@@ -1151,19 +1236,19 @@ mod tests {
     #[test]
     fn decode_block_response_rejects_malformed_proof_bytes() {
         let (block_bytes, _) = genesis_block_bytes();
-        let response = proto::blockchain::MaybeBlock {
+        let response = proto::rpc::MaybeBlock {
             block: Some(block_bytes),
-            proof: Some(vec![0xff; 32]),
+            proof: Some(proto::primitives::ExecutionProof { encoded: vec![0xff; 32] }),
         };
 
         let res = decode_block_response(response);
 
-        assert!(matches!(res, Err(RpcError::DeserializationError(_))));
+        assert!(res.is_err());
     }
 
     #[test]
     fn decode_block_response_rejects_an_absent_block() {
-        let response = proto::blockchain::MaybeBlock { block: None, proof: None };
+        let response = proto::rpc::MaybeBlock { block: None, proof: None };
 
         let res = decode_block_response(response);
 

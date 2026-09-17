@@ -106,6 +106,7 @@ pub fn parse_node_error(
         // These endpoints don't have typed errors from the node
         RpcEndpoint::SyncChainMmr
         | RpcEndpoint::Status
+        | RpcEndpoint::GetAccountLogs
         | RpcEndpoint::GetLimits
         | RpcEndpoint::GetNetworkNoteStatus
         | RpcEndpoint::GetTransactionEncryptionKey

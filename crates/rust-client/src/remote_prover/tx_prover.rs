@@ -2,14 +2,16 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use core::time::Duration;
 
+use miden_objects::DecodeMessageExt;
 use miden_protocol::transaction::{ProvenTransaction, TransactionInputs};
-use miden_protocol::utils::serde::{Deserializable, DeserializationError, Serializable};
+use miden_protocol::utils::serde::DeserializationError;
 use miden_protocol::vm::FutureMaybeSend;
 use miden_tx::TransactionProverError;
 use tokio::sync::Mutex;
 
 use super::api_client::ApiClient;
 use super::{RemoteProverClientError, generated as proto};
+use crate::rpc::domain::wire_message;
 
 // REMOTE TRANSACTION PROVER
 // ================================================================================================
@@ -109,15 +111,25 @@ impl TryFrom<proto::Proof> for ProvenTransaction {
     type Error = DeserializationError;
 
     fn try_from(response: proto::Proof) -> Result<Self, Self::Error> {
-        ProvenTransaction::read_from_bytes(&response.payload)
+        match response.proof {
+            Some(proto::proof::Proof::Transaction(transaction)) => {
+                let canonical: miden_objects::proto::transaction::ProvenTransaction =
+                    wire_message(&transaction);
+                canonical
+                    .decode_and_build_unchecked()
+                    .map_err(|err| DeserializationError::InvalidValue(alloc::format!("{err}")))
+            },
+            _ => Err(DeserializationError::InvalidValue("expected a transaction proof".into())),
+        }
     }
 }
 
 impl From<&TransactionInputs> for proto::ProofRequest {
     fn from(tx_inputs: &TransactionInputs) -> Self {
         proto::ProofRequest {
-            proof_type: proto::ProofType::Transaction.into(),
-            payload: tx_inputs.to_bytes(),
+            request: Some(proto::proof_request::Request::Transaction(wire_message(
+                &miden_objects::proto::transaction::TransactionInputs::from(tx_inputs),
+            ))),
         }
     }
 }

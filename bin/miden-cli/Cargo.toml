@@ -50,7 +50,7 @@ assert_cmd                     = { workspace = true }
 miden-client                   = { features = ["testing"], workspace = true }
 miden-client-integration-tests = { workspace = true }
 miden-mast-package             = { features = ["std"], workspace = true }
-midenc-hir-type                = { version = "0.10" }
+midenc-hir-type                = { version = "0.14" }
 predicates                     = { workspace = true }
 regex                          = { workspace = true }
 serial_test                    = { features = ["file_locks"], version = "3.0" }

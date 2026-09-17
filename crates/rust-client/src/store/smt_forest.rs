@@ -229,7 +229,7 @@ impl<B: BackendReader> AccountSmtForest<B> {
             return Err(StoreError::VaultKeyNotTracked(asset_id, hashed_key));
         }
 
-        let asset = Asset::from_id_and_value(asset_id, asset_word)?;
+        let asset = Asset::new(asset_id, asset_word)?;
         let witness = AssetWitness::new(proof, [asset_id])?;
         Ok((asset, witness))
     }

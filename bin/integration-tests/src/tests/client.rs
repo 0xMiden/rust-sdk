@@ -23,7 +23,7 @@ use miden_client::account::{
 };
 use miden_client::assembly::CodeBuilder;
 use miden_client::asset::{Asset, AssetAmount, FungibleAsset};
-use miden_client::auth::{AuthSchemeId, AuthSecretKey, AuthSingleSig, ECDSA_K256_KECCAK_SCHEME_ID};
+use miden_client::auth::{AuthSchemeId, AuthSecretKey, AuthSingleSig, RPO_FALCON_SCHEME_ID};
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;
 use miden_client::note::standards::NoteSyncHint;
@@ -98,22 +98,14 @@ pub async fn test_multiple_tx_on_same_block(client_config: ClientConfig) -> Resu
     let asset = FungibleAsset::new(faucet_account_id, TRANSFER_AMOUNT).unwrap();
     let tx_request_1 = TransactionRequestBuilder::new()
         .build_pay_to_id(
-            PaymentNoteDescription::new(
-                vec![Asset::Fungible(asset)],
-                from_account_id,
-                to_account_id,
-            ),
+            PaymentNoteDescription::new(vec![Asset::from(asset)], from_account_id, to_account_id),
             NoteType::Private,
             client.rng(),
         )
         .unwrap();
     let tx_request_2 = TransactionRequestBuilder::new()
         .build_pay_to_id(
-            PaymentNoteDescription::new(
-                vec![Asset::Fungible(asset)],
-                from_account_id,
-                to_account_id,
-            ),
+            PaymentNoteDescription::new(vec![Asset::from(asset)], from_account_id, to_account_id),
             NoteType::Private,
             client.rng(),
         )
@@ -447,8 +439,8 @@ pub async fn test_get_account_update(client_config: ClientConfig) -> Result<()> 
     assert!(details1.is_none());
     assert_matches!(details2, Some(account) if {
         account.vault().assets().any(|asset| matches!(
-            asset,
-            miden_client::asset::Asset::Fungible(fa)
+            asset.as_fungible(),
+            Some(fa)
                 if fa.faucet_id() == faucet_account.id() && fa.amount().as_u64() == MINT_AMOUNT
         ))
     });
@@ -483,7 +475,7 @@ pub async fn test_sync_detail_values(client_config: ClientConfig) -> Result<()> 
     // Do a transfer with recall from first account to second account
     let asset = FungibleAsset::new(faucet_account_id, TRANSFER_AMOUNT).unwrap();
     let tx_request = TransactionRequestBuilder::new().build_pay_to_id(
-        PaymentNoteDescription::new(vec![Asset::Fungible(asset)], from_account_id, to_account_id)
+        PaymentNoteDescription::new(vec![Asset::from(asset)], from_account_id, to_account_id)
             .with_reclaim_height(new_details.block_num + 5),
         NoteType::Public,
         client1.rng(),
@@ -849,7 +841,7 @@ pub async fn test_import_consumed_note_with_proof(client_config: ClientConfig) -
 
     info!(from = %from_account_id, to = %to_account_id, "Running P2IDE transaction");
     let tx_request = TransactionRequestBuilder::new().build_pay_to_id(
-        PaymentNoteDescription::new(vec![Asset::Fungible(asset)], from_account_id, to_account_id)
+        PaymentNoteDescription::new(vec![Asset::from(asset)], from_account_id, to_account_id)
             .with_reclaim_height(current_block_num),
         NoteType::Private,
         client_1.rng(),
@@ -913,7 +905,7 @@ pub async fn test_import_consumed_note_with_id(client_config: ClientConfig) -> R
 
     info!(from = %from_account_id, to = %to_account_id, "Running P2IDE transaction (public)");
     let tx_request = TransactionRequestBuilder::new().build_pay_to_id(
-        PaymentNoteDescription::new(vec![Asset::Fungible(asset)], from_account_id, to_account_id)
+        PaymentNoteDescription::new(vec![Asset::from(asset)], from_account_id, to_account_id)
             .with_reclaim_height(current_block_num),
         NoteType::Public,
         client_1.rng(),
@@ -973,7 +965,7 @@ pub async fn test_import_note_with_proof(client_config: ClientConfig) -> Result<
 
     info!(from = %from_account_id, to = %to_account_id, "Running P2IDE transaction (with proof)");
     let tx_request = TransactionRequestBuilder::new().build_pay_to_id(
-        PaymentNoteDescription::new(vec![Asset::Fungible(asset)], from_account_id, to_account_id)
+        PaymentNoteDescription::new(vec![Asset::from(asset)], from_account_id, to_account_id)
             .with_reclaim_height(current_block_num),
         NoteType::Private,
         client_1.rng(),
@@ -1029,7 +1021,7 @@ pub async fn test_discarded_transaction(client_config: ClientConfig) -> Result<(
 
     info!(from = %from_account_id, to = %to_account_id, "Running P2IDE transaction (discarded)");
     let tx_request = TransactionRequestBuilder::new().build_pay_to_id(
-        PaymentNoteDescription::new(vec![Asset::Fungible(asset)], from_account_id, to_account_id)
+        PaymentNoteDescription::new(vec![Asset::from(asset)], from_account_id, to_account_id)
             .with_reclaim_height(current_block_num),
         NoteType::Public,
         client_1.rng(),
@@ -1298,7 +1290,8 @@ pub async fn test_unused_rpc_api(client_config: ClientConfig) -> Result<()> {
         .test_rpc_api()
         .get_block_header_by_number(Some(first_block_num), false)
         .await?;
-    let block = client.test_rpc_api().get_block_by_number(first_block_num, false).await.unwrap();
+    let (block, _proof) =
+        client.test_rpc_api().get_block_by_number(first_block_num, false).await.unwrap();
 
     assert_eq!(&block_header, block.header());
 
@@ -1371,7 +1364,7 @@ pub async fn test_unused_rpc_api(client_config: ClientConfig) -> Result<()> {
     .map_err(|err| anyhow::anyhow!(err))?;
     // The account is built here rather than through a standard setup because it carries the custom
     // component above on top of a basic wallet.
-    let (auth, key) = auth_component(ECDSA_K256_KECCAK_SCHEME_ID)?;
+    let (auth, key) = auth_component(RPO_FALCON_SCHEME_ID)?;
     let mut init_seed = [0u8; 32];
     client.rng().fill_bytes(&mut init_seed);
     let wallet = AccountBuilder::new(init_seed)
@@ -1745,7 +1738,7 @@ pub async fn test_get_account_returns_vault_details(client_config: ClientConfig)
 
     // The vault also holds the native fee asset where the chain charges one, so this checks for the
     // minted token rather than for it alone.
-    let minted = Asset::Fungible(FungibleAsset::new(faucet.id(), MINT_AMOUNT).unwrap());
+    let minted = Asset::from(FungibleAsset::new(faucet.id(), MINT_AMOUNT).unwrap());
     assert!(
         details.vault_details.assets.contains(&minted),
         "expected the minted token in the vault"

@@ -554,8 +554,11 @@ async fn standard_fpi(
     let block_before_wait = client2.get_sync_height().await.unwrap();
     client2.wait_for_blocks_no_sync(2).await?;
 
-    // Second client should be able to submit a transaction Without being synced to latest state
-    let _ = client2.submit_new_transaction(native_account.id(), tx_request).await?;
+    // Second client should be able to submit a transaction Without being synced to latest state.
+    // `TestClient::submit_new_transaction` syncs first, so this folds in the funding note and then
+    // calls the wrapped client directly.
+    let tx_request = client2.fund_request(native_account.id(), tx_request);
+    let _ = (*client2).submit_new_transaction(native_account.id(), tx_request).await?;
 
     // After the transaction the foreign account should be cached (for public accounts only)
     if account_type == AccountType::Public {

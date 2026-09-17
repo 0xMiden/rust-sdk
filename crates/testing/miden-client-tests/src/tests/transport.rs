@@ -714,7 +714,7 @@ async fn ntl_note_already_spent_below_the_checkpoint_is_not_left_committed() {
     // 1. Commit a private note to the account, then spend it — both far below the eventual tip.
     let mut builder = MockChainBuilder::new();
     let account = builder.add_existing_mock_account(Auth::IncrNonce).unwrap();
-    let asset = Asset::Fungible(FungibleAsset::new(faucet_id, 100u64).unwrap());
+    let asset = Asset::from(FungibleAsset::new(faucet_id, 100u64).unwrap());
     let note = builder
         .add_p2id_note(sender_id, account.id(), &[asset], ProtocolNoteType::Private)
         .unwrap();
@@ -799,7 +799,7 @@ async fn ntl_refresh_of_expected_note_detects_consumption_in_same_sync() {
 
     let mut builder = MockChainBuilder::new();
     let account = builder.add_existing_mock_account(Auth::IncrNonce).unwrap();
-    let asset = Asset::Fungible(FungibleAsset::new(faucet_id, 100u64).unwrap());
+    let asset = Asset::from(FungibleAsset::new(faucet_id, 100u64).unwrap());
     let note = builder
         .add_p2id_note(sender_id, account.id(), &[asset], ProtocolNoteType::Private)
         .unwrap();

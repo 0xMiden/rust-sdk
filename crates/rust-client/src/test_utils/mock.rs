@@ -18,12 +18,14 @@ use miden_protocol::account::{
 };
 use miden_protocol::address::NetworkId;
 use miden_protocol::batch::{ProposedBatch, ProvenBatch};
-use miden_protocol::block::{BlockHeader, BlockNumber, ProvenBlock};
+use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock};
 use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::crypto::merkle::mmr::{Forest, Mmr, MmrProof};
 use miden_protocol::crypto::merkle::smt::PartialSmt;
 use miden_protocol::note::{NoteAttachments, NoteHeader, NoteId, NoteScript, NoteTag};
+use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::transaction::{OutputNote, ProvenTransaction};
+use miden_protocol::vm::ExecutionProof;
 use miden_testing::{MockChain, MockChainNote};
 use miden_tx::utils::sync::RwLock;
 
@@ -158,6 +160,11 @@ impl MockRpcApi {
     /// Returns the current MMR of the blockchain.
     pub fn get_mmr(&self) -> Mmr {
         self.mock_chain.read().blockchain().as_mmr().clone()
+    }
+
+    /// Returns the protocol configuration the mock chain commits to.
+    pub fn protocol_config(&self) -> ProtocolConfig {
+        self.mock_chain.read().protocol_config().clone()
     }
 
     /// Returns the chain tip block number.
@@ -723,8 +730,8 @@ impl NodeRpcClient for MockRpcApi {
     async fn get_block_by_number(
         &self,
         block_num: BlockNumber,
-        _include_proof: bool,
-    ) -> Result<ProvenBlock, RpcError> {
+        include_proof: bool,
+    ) -> Result<(SignedBlock, Option<ExecutionProof>), RpcError> {
         let block = self
             .mock_chain
             .read()
@@ -733,8 +740,12 @@ impl NodeRpcClient for MockRpcApi {
             .find(|b| b.header().block_num() == block_num)
             .unwrap()
             .clone();
+        let (header, body, signatures, proof) = block.into_parts();
 
-        Ok(block)
+        Ok((
+            SignedBlock::new_unchecked(header, body, signatures),
+            include_proof.then_some(proof),
+        ))
     }
 
     async fn get_note_script_by_root(&self, root: Word) -> Result<Option<NoteScript>, RpcError> {

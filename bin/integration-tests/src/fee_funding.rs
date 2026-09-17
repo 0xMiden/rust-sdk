@@ -1,5 +1,5 @@
-//! Supplies the native fee asset to the accounts the test helpers create, so the suite can run
-//! against a chain that charges transaction fees.
+//! Resolves the faucet a chain charges fees in, and supplies that asset to the accounts the test
+//! helpers create, so the suite can run against a chain that charges transaction fees.
 //!
 //! Both runners give every test its own process, so a process claims a wallet before its first
 //! payment, taking the first advisory lock in the pool that is free, and holds it until it exits.
@@ -14,13 +14,14 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use miden_client::account::{AccountFile, AccountId};
 use miden_client::asset::FungibleAsset;
+use miden_client::auth::TransactionAuthenticator;
 use miden_client::block::BlockNumber;
 use miden_client::keystore::Keystore;
 use miden_client::note::{Note, NoteType, P2idNote};
 use miden_client::testing::common::TestClient;
 use miden_client::testing::fee::FeeFunder;
 use miden_client::transaction::{TransactionId, TransactionRequest, TransactionRequestBuilder};
-use miden_client::{ClientError, Deserializable};
+use miden_client::{Client, ClientError, Deserializable};
 use rand::RngExt;
 use rustix::fs::{FlockOperation, flock};
 use rustix::io::Errno;
@@ -41,6 +42,26 @@ const FUNDING_AMOUNT: u64 = 10_000_000;
 
 /// How long to wait before a rejected payment is submitted again.
 const STALE_WALLET_RETRY_DELAY: Duration = Duration::from_secs(5);
+
+// FEE FAUCET
+// ================================================================================================
+
+/// Returns the faucet the chain charges fees in, as the genesis header's protocol configuration
+/// names it.
+pub async fn fee_faucet_id<AUTH: TransactionAuthenticator + Sync + 'static>(
+    client: &Client<AUTH>,
+) -> Result<AccountId> {
+    let (genesis, _) = client
+        .get_block_header_by_num(BlockNumber::GENESIS)
+        .await?
+        .context("genesis block header is not in the client's store")?;
+
+    Ok(client
+        .get_protocol_config(genesis.protocol_config_commitment())
+        .await?
+        .fee_asset_id()
+        .faucet_id())
+}
 
 // LOADING
 // ================================================================================================
@@ -230,11 +251,7 @@ impl Funder {
                 .with_context(|| format!("failed to import funder {wallet_id}"))?;
         }
 
-        let (genesis, _) = client
-            .get_block_header_by_num(BlockNumber::GENESIS)
-            .await?
-            .context("genesis block header is not in the funder client's store")?;
-        let fee_faucet_id = genesis.fee_parameters().fee_faucet_id();
+        let fee_faucet_id = fee_faucet_id(client).await?;
 
         // The callback flag is part of the vault key, and both the wallet's balance and `pay_fee`
         // use plain assets, so the note has to carry the same flag to be spendable.

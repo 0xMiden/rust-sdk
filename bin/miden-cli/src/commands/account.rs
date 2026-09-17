@@ -13,18 +13,17 @@ use miden_client::account::{
     StorageSlotContent,
 };
 use miden_client::address::{Address, AddressInterface, NetworkId, RoutingParameters};
-use miden_client::asset::{Asset, TokenSymbol};
+use miden_client::asset::TokenSymbol;
 use miden_client::rpc::domain::account::GetAccountRequest;
 use miden_client::rpc::{GrpcClient, NodeRpcClient, VerifyingRpcClient};
 use miden_client::transaction::{AccountComponentInterface, AccountInterface};
-use miden_client::utils::base_units_to_tokens;
 use miden_client::vm::{Package, PackageExport};
 use miden_client::{Client, PrettyPrint, Word, ZERO};
 
 use crate::commands::new_account::load_packages;
 use crate::config::{CliConfig, RpcConfig};
 use crate::errors::CliError;
-use crate::utils::{parse_account_id, split_procedure_target};
+use crate::utils::{base_units_to_tokens, parse_account_id, split_procedure_target};
 use crate::{client_binary_name, create_dynamic_table};
 
 pub const DEFAULT_ACCOUNT_ID_KEY: &str = "default_account_id";
@@ -205,8 +204,8 @@ async fn show_account<AUTH>(
 
         let mut table = create_dynamic_table(&["Asset Type", "Faucet", "Amount"]);
         for asset in assets {
-            let (asset_type, faucet, amount) = match asset {
-                Asset::Fungible(fungible_asset) => {
+            let (asset_type, faucet, amount) = match asset.as_fungible() {
+                Some(fungible_asset) => {
                     let faucet_id = fungible_asset.faucet_id();
                     let asset_amount = fungible_asset.amount();
                     let (faucet, amount) = match get_faucet_token_info(client, faucet_id).await {
@@ -217,13 +216,9 @@ async fn show_account<AUTH>(
                     };
                     ("Fungible Asset", faucet, amount)
                 },
-                Asset::NonFungible(non_fungible_asset) => {
+                None => {
                     // TODO: Display non-fungible assets more clearly.
-                    (
-                        "Non Fungible Asset",
-                        non_fungible_asset.faucet_id().prefix().to_hex(),
-                        1.0.to_string(),
-                    )
+                    ("Non Fungible Asset", asset.faucet_id().prefix().to_hex(), 1.0.to_string())
                 },
             };
             table.add_row(vec![asset_type, &faucet, &amount.clone()]);

@@ -579,14 +579,17 @@ fn process_packages(
             })?;
         }
 
+        let package_name = package.name.clone();
+        let exported_procedures =
+            package.manifest.exports().filter_map(PackageExport::as_procedure).count();
         let account_component =
-            AccountComponent::from_package(&package, &init_data).map_err(|e| {
+            AccountComponent::from_package(package, &init_data).map_err(|e| {
                 CliError::Account(
                     e,
-                    format!("error instantiating component from Package {}", package.name),
+                    format!("error instantiating component from Package {package_name}"),
                 )
             })?;
-        ensure_procedures_are_marked(&package, &account_component)?;
+        ensure_procedures_are_marked(&package_name, exported_procedures, &account_component)?;
 
         account_components.push(account_component);
     }
@@ -594,7 +597,7 @@ fn process_packages(
     Ok(account_components)
 }
 
-/// Returns an error when `package` exports procedures but none of them is part of the component
+/// Returns an error when a package exports procedures but none of them is part of the component
 /// interface.
 ///
 /// Only exports marked with `@account_procedure` or `@auth_script` become account procedures. A
@@ -602,17 +605,15 @@ fn process_packages(
 /// into it would fail at transaction execution. A package that exports no procedures at all is a
 /// storage-only component and is accepted.
 fn ensure_procedures_are_marked(
-    package: &Package,
+    package_name: &str,
+    exported_procedures: usize,
     component: &AccountComponent,
 ) -> Result<(), CliError> {
-    let exported_procedures =
-        package.manifest.exports().filter_map(PackageExport::as_procedure).count();
     if exported_procedures > 0 && component.procedures().next().is_none() {
         return Err(CliError::InvalidArgument(format!(
-            "package {} exports {exported_procedures} procedures but none of them is marked as an \
-             account procedure. Mark them with `#[account_procedure]` (Rust) or \
+            "package {package_name} exports {exported_procedures} procedures but none of them is \
+             marked as an account procedure. Mark them with `#[account_procedure]` (Rust) or \
              `@account_procedure` (MASM), or with `@auth_script` for an authentication procedure.",
-            package.name
         )));
     }
     Ok(())

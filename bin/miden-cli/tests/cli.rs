@@ -2688,6 +2688,8 @@ fn create_account_with_no_auth() {
 /// Tests creating and exporting an account with the multisig-auth component.
 #[test]
 fn create_and_export_account_with_multisig_auth() {
+    const ACCOUNT_FILENAME: &str = "multisig_account.mac";
+
     let temp_dir = init_cli().1;
 
     // Create init storage data file for multisig:
@@ -2743,7 +2745,6 @@ fn create_and_export_account_with_multisig_auth() {
         .nth(1)
         .expect("Could not parse account ID from new-account output");
 
-    const ACCOUNT_FILENAME: &str = "multisig_account.mac";
     let mut export_account_cmd = cargo_bin_cmd!("miden-client");
     export_account_cmd
         .args(["export", account_id, "--account", "--filename", ACCOUNT_FILENAME])

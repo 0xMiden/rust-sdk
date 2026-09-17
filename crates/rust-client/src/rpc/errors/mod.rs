@@ -4,7 +4,6 @@ use core::error::Error;
 use core::fmt;
 
 pub use miden_objects::ConversionError;
-pub use miden_objects::decoded::VerificationError;
 use miden_protocol::account::AccountId;
 use miden_protocol::errors::NoteError;
 use miden_protocol::note::NoteId;
@@ -148,8 +147,6 @@ pub enum RpcConversionError {
     },
     #[error("failed to convert a canonical object message: {0}")]
     CanonicalConversion(#[from] ConversionError),
-    #[error("a canonical object message failed verification: {0}")]
-    CanonicalVerification(#[from] VerificationError),
 }
 
 // GRPC ERROR KIND

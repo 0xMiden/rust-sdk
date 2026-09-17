@@ -9,13 +9,14 @@ use miden_protocol::block::BlockNumber;
 use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::crypto::merkle::SparseMerklePath;
 use miden_protocol::crypto::merkle::smt::PartialSmt;
+use miden_objects::DecodeMessageExt;
 use miden_protocol::{EMPTY_WORD, Word};
 use miden_tx::utils::serde::{Deserializable, Serializable};
 use thiserror::Error;
 
 use crate::alloc::string::ToString;
 use crate::rpc::{AccountStateAt, RpcError};
-use crate::rpc::domain::{MissingFieldHelper, verify_message};
+use crate::rpc::domain::MissingFieldHelper;
 use crate::rpc::generated::rpc::account_request::account_detail_request::storage_map_detail_request::{MapKeys, SlotData};
 use crate::rpc::generated::rpc::account_request::account_detail_request::{
     StorageMapDetailRequest, StorageMapDetailRequests, StorageRequest,
@@ -54,9 +55,9 @@ impl proto::rpc::account_response::AccountDetails {
             code,
             vault_details,
         } = self;
-        let header: AccountHeader = verify_message(header.ok_or(
-            proto::rpc::account_response::AccountDetails::missing_field(stringify!(header)),
-        )?)?;
+        let header: AccountHeader = header
+            .ok_or(proto::rpc::account_response::AccountDetails::missing_field(stringify!(header)))?
+            .decode_and_verify()?;
 
         let storage_details: AccountStorageDetails = storage_details
             .ok_or(proto::rpc::account_response::AccountDetails::missing_field(stringify!(
@@ -70,7 +71,8 @@ impl proto::rpc::account_response::AccountDetails {
         // valid. If it was not, it means we sent a code commitment that matched and so our code is
         // still valid
         let code = {
-            let received_code: Option<AccountCode> = code.map(verify_message).transpose()?;
+            let received_code: Option<AccountCode> =
+                code.map(DecodeMessageExt::decode_and_verify).transpose()?;
             match received_code {
                 Some(code) => code,
                 None => known_account_codes
@@ -267,11 +269,10 @@ impl TryFrom<proto::rpc::AccountStorageDetails> for AccountStorageDetails {
     type Error = RpcError;
 
     fn try_from(value: proto::rpc::AccountStorageDetails) -> Result<Self, Self::Error> {
-        let header: AccountStorageHeader = verify_message(
-            value
-                .header
-                .ok_or(proto::account::AccountStorageHeader::missing_field(stringify!(header)))?,
-        )?;
+        let header: AccountStorageHeader = value
+            .header
+            .ok_or(proto::account::AccountStorageHeader::missing_field(stringify!(header)))?
+            .decode_and_verify()?;
         let map_details = value
             .map_details
             .into_iter()
@@ -391,13 +392,12 @@ impl TryFrom<proto::rpc::account_storage_details::AccountStorageMapDetails>
                     )));
                 }
 
-                let partial_smt: PartialSmt = verify_message(
-                    partial_map
+                let partial_smt: PartialSmt = partial_map
                         .partial_smt
                         .ok_or(proto::rpc::account_storage_details::account_storage_map_details::PartialStorageMap::missing_field(
                             stringify!(partial_smt),
-                        ))?,
-                )?;
+                        ))?
+                        .decode_and_verify()?;
 
                 // The response sends the values only inside the tree, so a key the tree does not
                 // track carries no value at all and would fail later, at read time.
@@ -518,7 +518,7 @@ impl TryFrom<proto::rpc::AccountVaultDetails> for AccountVaultDetails {
         let assets = value
             .assets
             .into_iter()
-            .map(verify_message)
+            .map(DecodeMessageExt::decode_and_verify)
             .collect::<Result<Vec<Asset>, _>>()?;
 
         Ok(Self { too_many_assets, assets })
@@ -667,7 +667,7 @@ impl TryFrom<proto::rpc::AccountResponse> for AccountProof {
                 ),
             }
         };
-        AccountProof::new(verify_message(witness)?, details)
+        AccountProof::new(witness.decode_and_verify()?, details)
             .map_err(|err| RpcError::InvalidResponse(format!("{err}")))
     }
 }

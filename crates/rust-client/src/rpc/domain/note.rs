@@ -2,6 +2,7 @@ use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::vec::Vec;
 
+use miden_objects::DecodeMessageExt;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::SequentialCommit;
@@ -22,20 +23,20 @@ use miden_protocol::note::{
 };
 use miden_protocol::{Felt, Word};
 
-use super::{MissingFieldHelper, RpcConversionError, build_unchecked_message, verify_message};
+use super::{MissingFieldHelper, RpcConversionError};
 use crate::rpc::{RpcError, generated as proto};
 
 /// Reads a note ID off the wire. A free function because both types are foreign, so there can be no
 /// `TryFrom` impl.
 pub(crate) fn note_id_from_proto(value: proto::note::NoteId) -> Result<NoteId, RpcConversionError> {
-    verify_message(value)
+    Ok(value.decode_and_verify()?)
 }
 
 /// Reads a note inclusion proof and the ID of the note it proves.
 pub(crate) fn note_inclusion_proof_from_proto(
     value: proto::note::NoteInclusionProof,
 ) -> Result<(NoteId, NoteInclusionProof), RpcConversionError> {
-    verify_message(value)
+    Ok(value.decode_and_verify()?)
 }
 
 /// Accepts only the note versions this client understands.
@@ -176,11 +177,10 @@ impl TryFrom<proto::rpc::NoteSyncMetadata> for SyncNoteMetadata {
         // so it is checked here to reject the same versions `miden-objects` rejects.
         validate_note_version(value.version)?;
 
-        let sender: AccountId = verify_message(
-            value
-                .sender
-                .ok_or_else(|| proto::rpc::NoteSyncMetadata::missing_field(stringify!(sender)))?,
-        )?;
+        let sender: AccountId = value
+            .sender
+            .ok_or_else(|| proto::rpc::NoteSyncMetadata::missing_field(stringify!(sender)))?
+            .decode_and_verify()?;
         let note_type = note_type_from_proto(value.note_type)?;
         let tag = NoteTag::new(value.tag);
         let partial_metadata = PartialNoteMetadata::new(sender, note_type).with_tag(tag);
@@ -261,14 +261,15 @@ impl TryFrom<proto::rpc::sync_notes_response::NoteSyncBlock> for SyncNotesBlock 
     fn try_from(
         block: proto::rpc::sync_notes_response::NoteSyncBlock,
     ) -> Result<Self, Self::Error> {
-        let block_header: BlockHeader = build_unchecked_message(block.block_header.ok_or(
-            proto::rpc::SyncNotesResponse::missing_field(stringify!(blocks.block_header)),
-        )?)?;
+        let block_header: BlockHeader = block
+            .block_header
+            .ok_or(proto::rpc::SyncNotesResponse::missing_field(stringify!(blocks.block_header)))?
+            .decode_and_build_unchecked()?;
 
-        let mmr_path: MerklePath =
-            verify_message(block.mmr_path.ok_or(proto::rpc::SyncNotesResponse::missing_field(
-                stringify!(blocks.mmr_path),
-            ))?)?;
+        let mmr_path: MerklePath = block
+            .mmr_path
+            .ok_or(proto::rpc::SyncNotesResponse::missing_field(stringify!(blocks.mmr_path)))?
+            .decode_and_verify()?;
 
         let notes: BTreeMap<NoteId, CommittedNote> = block
             .notes
@@ -586,10 +587,10 @@ impl TryFrom<proto::rpc::CommittedNote> for FetchedNote {
             .note
             .ok_or_else(|| proto::rpc::CommittedNote::missing_field(stringify!(note)))?;
 
-        let partial_metadata: PartialNoteMetadata =
-            verify_message(note.metadata.ok_or_else(|| {
-                proto::rpc::CommittedNote::missing_field(stringify!(note.metadata))
-            })?)?;
+        let partial_metadata: PartialNoteMetadata = note
+            .metadata
+            .ok_or_else(|| proto::rpc::CommittedNote::missing_field(stringify!(note.metadata)))?
+            .decode_and_verify()?;
 
         // The note type decides which variant the response describes. The details are checked
         // against it, since a note is not usable when the two disagree.
@@ -601,7 +602,7 @@ impl TryFrom<proto::rpc::CommittedNote> for FetchedNote {
                     )));
                 }
 
-                Ok(FetchedNote::Public(verify_message(note)?, inclusion_proof))
+                Ok(FetchedNote::Public(note.decode_and_verify()?, inclusion_proof))
             },
             NoteType::Private => {
                 if note.note_details.is_some() {
@@ -610,10 +611,12 @@ impl TryFrom<proto::rpc::CommittedNote> for FetchedNote {
                     )));
                 }
 
-                let attachments: NoteAttachments =
-                    verify_message(note.note_attachments.ok_or_else(|| {
+                let attachments: NoteAttachments = note
+                    .note_attachments
+                    .ok_or_else(|| {
                         proto::rpc::CommittedNote::missing_field(stringify!(note.note_attachments))
-                    })?)?;
+                    })?
+                    .decode_and_verify()?;
                 let metadata = NoteMetadata::new(partial_metadata, &attachments);
 
                 Ok(FetchedNote::Private(note_id, metadata, attachments, inclusion_proof))

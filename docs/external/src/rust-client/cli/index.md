@@ -391,7 +391,7 @@ If a remote prover is configured, the CLI can offload the proving process to it.
 
 ### `keys`
 
-Manage authentication keys in the configured filesystem keystore. These commands do not connect to a Miden node, so they can be used before the network is available.
+Manage authentication keys in the configured filesystem keystore. 
 
 Supported authentication schemes are `falcon512-poseidon2` and `ecdsa-k256-keccak`.
 

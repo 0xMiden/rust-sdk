@@ -20,7 +20,8 @@ pub struct ExportCmd {
     #[clap()]
     id: String,
 
-    /// Desired filename for the binary file. Defaults to the note ID if not provided.
+    /// Desired filename for the binary file. Defaults to the note ID for a note, and to the account
+    /// ID for an account.
     #[arg(short, long)]
     filename: Option<PathBuf>,
 
@@ -35,6 +36,10 @@ pub struct ExportCmd {
     /// Exported note type.
     #[arg(short, long, value_enum, conflicts_with = "account")]
     export_type: Option<ExportType>,
+
+    /// Leave the account secret keys out of the exported account file.
+    #[arg(long, requires = "account", conflicts_with_all = ["note", "export_type"])]
+    no_keys: bool,
 }
 
 #[derive(clap::ValueEnum, Clone, Debug)]
@@ -61,7 +66,14 @@ impl ExportCmd {
         keystore: FilesystemKeyStore,
     ) -> Result<(), CliError> {
         if self.account {
-            export_account(&client, &keystore, self.id.as_str(), self.filename.clone()).await?;
+            export_account(
+                &client,
+                &keystore,
+                self.id.as_str(),
+                self.filename.clone(),
+                self.no_keys,
+            )
+            .await?;
         } else if let Some(export_type) = &self.export_type {
             export_note(&mut client, self.id.as_str(), self.filename.clone(), export_type).await?;
         } else {
@@ -76,11 +88,21 @@ impl ExportCmd {
 // EXPORT ACCOUNT
 // ================================================================================================
 
+/// Writes the account to an account file.
+///
+/// The file carries the secret keys that the keystore holds for the account. The keystore can hold
+/// no key for the account, and `no_keys` leaves the keys out of a file that would otherwise carry
+/// them. Both cases produce a file that describes the account state without granting the right to
+/// sign for it.
+///
+/// The account itself is still sensitive. The file carries the account seed while the account is
+/// undeployed, and the seed is needed to deploy the account.
 async fn export_account<AUTH>(
     client: &Client<AUTH>,
     keystore: &FilesystemKeyStore,
     account_id: &str,
     filename: Option<PathBuf>,
+    no_keys: bool,
 ) -> Result<File, CliError> {
     let account_id = parse_account_id(client, account_id).await?;
 
@@ -89,13 +111,13 @@ async fn export_account<AUTH>(
         .await?
         .ok_or_else(|| CliError::Export(format!("Account with ID {account_id} not found")))?;
 
-    // Use the Keystore trait method to get all keys for this account
-    let key_pairs = keystore.get_keys_for_account(&account_id).await.map_err(CliError::KeyStore)?;
+    let key_pairs = if no_keys {
+        Vec::new()
+    } else {
+        keystore.get_keys_for_account(&account_id).await.map_err(CliError::KeyStore)?
+    };
 
-    if key_pairs.is_empty() {
-        return Err(CliError::Export("No keys found for account".to_string()));
-    }
-
+    let exported_key_count = key_pairs.len();
     let account_data = AccountFile::new(account, key_pairs);
 
     let file_path = if let Some(filename) = filename {
@@ -109,7 +131,13 @@ async fn export_account<AUTH>(
     let mut file = File::create(file_path)?;
     account_data.write_into(&mut file);
 
-    println!("Successfully exported account {account_id}");
+    if exported_key_count == 0 {
+        println!("Successfully exported account {account_id} without secret keys");
+    } else {
+        println!(
+            "Successfully exported account {account_id} with {exported_key_count} secret key(s)"
+        );
+    }
     Ok(file)
 }
 

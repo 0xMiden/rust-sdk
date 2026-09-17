@@ -405,6 +405,8 @@ miden-client keys --list
 
 Running `miden-client keys` without an action also lists the keys. The associated accounts column contains `-` for a standalone key. Associated keys are included in account exports unless `--no-keys` is used.
 
+The command reads the keystore directory and skips every file that does not hold a readable key, so a damaged file does not hide the keys that are readable.
+
 #### `keys --generate`
 
 Generate a key for the selected authentication scheme and store it in the keystore:
@@ -437,7 +439,9 @@ miden-client keys --associate <COMMITMENT> --account-id <ACCOUNT_ID>
 miden-client keys --disassociate <COMMITMENT> --account-id <ACCOUNT_ID>
 ```
 
-Use a full hexadecimal account ID. Association controls whether the key is included when that account is exported.
+`COMMITMENT` must be a `0x`-prefixed hexadecimal word, as `keys --list` prints it. Use a full hexadecimal account ID. Association controls whether the key is included when that account is exported.
+
+`--associate` fails if the keystore holds no key for the commitment. `--disassociate` accepts a commitment that is not associated with the account and reports that nothing changed, so it can be used to clear an association whose key file is gone.
 
 #### `keys --commitment`
 

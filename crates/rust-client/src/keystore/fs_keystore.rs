@@ -1,6 +1,7 @@
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;
+use alloc::vec::Vec;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -8,7 +9,13 @@ use std::sync::Arc;
 
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
-use miden_protocol::account::auth::{AuthSecretKey, PublicKey, PublicKeyCommitment, Signature};
+use miden_protocol::account::auth::{
+    AuthScheme,
+    AuthSecretKey,
+    PublicKey,
+    PublicKeyCommitment,
+    Signature,
+};
 use miden_tx::AuthenticationError;
 use miden_tx::auth::{SigningInputs, TransactionAuthenticator};
 use miden_tx::utils::serde::{Deserializable, Serializable};
@@ -118,6 +125,26 @@ impl KeyIndex {
         None
     }
 
+    /// Returns all account IDs associated with a public key commitment.
+    fn get_account_ids(
+        &self,
+        pub_key_commitment: PublicKeyCommitment,
+    ) -> Result<BTreeSet<AccountId>, KeyStoreError> {
+        let pub_key_hex = Word::from(pub_key_commitment).to_hex();
+
+        self.mappings
+            .iter()
+            .filter(|(_, commitments)| commitments.contains(&pub_key_hex))
+            .map(|(account_id_hex, _)| {
+                AccountId::from_hex(account_id_hex).map_err(|err| {
+                    KeyStoreError::DecodingError(format!(
+                        "error parsing account ID in key index: {err:?}"
+                    ))
+                })
+            })
+            .collect()
+    }
+
     /// Gets all public key commitments for an account ID.
     ///
     /// Returns an empty set if the index holds no mapping for the account. An account can hold keys
@@ -155,6 +182,14 @@ pub struct FilesystemKeyStore {
     index: RwLock<KeyIndex>,
 }
 
+/// Information about a secret key in a [`FilesystemKeyStore`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StoredKeyInfo {
+    pub commitment: PublicKeyCommitment,
+    pub scheme: AuthScheme,
+    pub account_ids: BTreeSet<AccountId>,
+}
+
 impl Clone for FilesystemKeyStore {
     fn clone(&self) -> Self {
         let index = self.index.read().clone();
@@ -181,13 +216,71 @@ impl FilesystemKeyStore {
         })
     }
 
-    /// Adds a secret key to the keystore without updating account mappings.
-    ///
-    /// This is an internal method. Use [`Keystore::add_key`] instead.
-    fn add_key_without_account(&self, key: &AuthSecretKey) -> Result<(), KeyStoreError> {
+    /// Stores a secret key without associating it with an account.
+    pub fn store_key(&self, key: &AuthSecretKey) -> Result<(), KeyStoreError> {
         let pub_key_commitment = key.public_key().to_commitment();
         let file_path = key_file_path(&self.keys_directory, pub_key_commitment);
         write_secret_key_file(&file_path, key)
+    }
+
+    /// Returns information about all secret keys in the keystore.
+    pub fn list_keys(&self) -> Result<Vec<StoredKeyInfo>, KeyStoreError> {
+        let index = self.index.read().clone();
+        let mut keys = Vec::new();
+
+        for entry in fs::read_dir(&self.keys_directory)
+            .map_err(keystore_error("error reading keys directory"))?
+        {
+            let entry = entry.map_err(keystore_error("error reading keys directory entry"))?;
+            if !entry
+                .file_type()
+                .map_err(keystore_error("error reading key file type"))?
+                .is_file()
+            {
+                continue;
+            }
+
+            let file_name = entry.file_name();
+            if file_name == INDEX_FILE_NAME {
+                continue;
+            }
+            let file_name = file_name.to_str().ok_or_else(|| {
+                KeyStoreError::DecodingError(String::from("key filename is not valid UTF-8"))
+            })?;
+            let commitment =
+                Word::try_from(file_name).map(PublicKeyCommitment::from).map_err(|err| {
+                    KeyStoreError::DecodingError(format!(
+                        "error parsing key commitment from filename: {err:?}"
+                    ))
+                })?;
+            let key = self.get_key_sync(commitment)?.ok_or_else(|| {
+                KeyStoreError::StorageError(format!(
+                    "key file disappeared while listing commitment {file_name}"
+                ))
+            })?;
+            if key.public_key().to_commitment() != commitment {
+                return Err(KeyStoreError::DecodingError(format!(
+                    "key file content does not match commitment {file_name}"
+                )));
+            }
+
+            keys.push(StoredKeyInfo {
+                commitment,
+                scheme: key.auth_scheme(),
+                account_ids: index.get_account_ids(commitment)?,
+            });
+        }
+
+        keys.sort_by_key(|key| Word::from(key.commitment).to_hex());
+        Ok(keys)
+    }
+
+    /// Returns all account IDs associated with a public key commitment.
+    pub fn account_ids_for_key(
+        &self,
+        pub_key_commitment: PublicKeyCommitment,
+    ) -> Result<BTreeSet<AccountId>, KeyStoreError> {
+        self.index.read().get_account_ids(pub_key_commitment)
     }
 
     /// Retrieves a secret key from the keystore given the commitment of a public key.
@@ -267,7 +360,7 @@ impl Keystore for FilesystemKeyStore {
     ) -> Result<(), KeyStoreError> {
         let pub_key_commitment = key.public_key().to_commitment();
 
-        self.add_key_without_account(key)?;
+        self.store_key(key)?;
 
         {
             let mut index = self.index.write();
@@ -394,6 +487,22 @@ mod tests {
             .expect("test account ID should be well formed")
     }
 
+    #[test]
+    fn standalone_key_is_listed_without_an_account() {
+        let (keystore, _dir) = test_keystore();
+        let key = AuthSecretKey::new_ecdsa_k256_keccak();
+        let commitment = key.public_key().to_commitment();
+
+        keystore.store_key(&key).unwrap();
+
+        let stored_keys = keystore.list_keys().unwrap();
+        assert_eq!(stored_keys.len(), 1);
+        assert_eq!(stored_keys[0].commitment, commitment);
+        assert_eq!(stored_keys[0].scheme, key.auth_scheme());
+        assert!(stored_keys[0].account_ids.is_empty());
+        assert!(keystore.account_ids_for_key(commitment).unwrap().is_empty());
+    }
+
     #[tokio::test]
     async fn key_commitments_of_untracked_account_are_empty() {
         let (keystore, _dir) = test_keystore();
@@ -422,6 +531,9 @@ mod tests {
         let commitments = keystore.get_account_key_commitments(&test_account_id()).await.unwrap();
         assert_eq!(commitments.len(), 1);
         assert!(commitments.contains(&commitment));
+
+        let account_ids = keystore.account_ids_for_key(commitment).unwrap();
+        assert_eq!(account_ids, BTreeSet::from([test_account_id()]));
 
         let commitments = keystore.get_account_key_commitments(&other_account_id()).await.unwrap();
         assert!(commitments.is_empty());

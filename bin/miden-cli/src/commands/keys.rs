@@ -1,0 +1,173 @@
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use clap::ValueEnum;
+use miden_client::Word;
+use miden_client::auth::{AuthSchemeId, AuthSecretKey};
+use miden_client::crypto::{ecdsa_k256_keccak, rpo_falcon512};
+use miden_client::keystore::FilesystemKeyStore;
+use miden_client::utils::{Deserializable, hex_to_bytes};
+
+use crate::errors::CliError;
+use crate::{Parser, Subcommand, create_dynamic_table};
+
+const ECDSA_PUBLIC_KEY_BYTES: usize = 33;
+const FALCON_PUBLIC_KEY_BYTES: usize = 897;
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum KeyScheme {
+    #[value(name = "falcon512-poseidon2")]
+    Falcon512Poseidon2,
+    #[value(name = "ecdsa-k256-keccak")]
+    EcdsaK256Keccak,
+}
+
+impl KeyScheme {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Falcon512Poseidon2 => "falcon512-poseidon2",
+            Self::EcdsaK256Keccak => "ecdsa-k256-keccak",
+        }
+    }
+}
+
+impl From<KeyScheme> for AuthSchemeId {
+    fn from(value: KeyScheme) -> Self {
+        match value {
+            KeyScheme::Falcon512Poseidon2 => Self::Falcon512Poseidon2,
+            KeyScheme::EcdsaK256Keccak => Self::EcdsaK256Keccak,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Subcommand)]
+enum KeysSubcommand {
+    /// List all keys in the keystore.
+    List,
+    /// Generate and store a new key.
+    Generate {
+        /// Authentication scheme for the new key.
+        #[arg(long, value_enum)]
+        scheme: KeyScheme,
+    },
+    /// Import a serialized authentication secret key.
+    Import {
+        /// File that contains a serialized authentication secret key.
+        file: PathBuf,
+    },
+    /// Calculate the commitment of a serialized public key.
+    Commitment {
+        /// Authentication scheme of the public key.
+        #[arg(long, value_enum)]
+        scheme: KeyScheme,
+        /// Hex-encoded serialized public key.
+        public_key: String,
+    },
+}
+
+#[derive(Clone, Debug, Parser)]
+#[command(about = "Manage authentication keys")]
+pub struct KeysCmd {
+    #[command(subcommand)]
+    command: KeysSubcommand,
+}
+
+impl KeysCmd {
+    pub fn execute(&self, keystore: &FilesystemKeyStore) -> Result<(), CliError> {
+        match &self.command {
+            KeysSubcommand::List => list_keys(keystore),
+            KeysSubcommand::Generate { scheme } => generate_key(keystore, *scheme),
+            KeysSubcommand::Import { file } => import_key(keystore, file),
+            KeysSubcommand::Commitment { scheme, public_key } => {
+                print_commitment(*scheme, public_key)
+            },
+        }
+    }
+}
+
+fn list_keys(keystore: &FilesystemKeyStore) -> Result<(), CliError> {
+    let mut table = create_dynamic_table(&["Commitment", "Scheme", "Associated accounts"]);
+
+    for key in keystore.list_keys().map_err(CliError::KeyStore)? {
+        let account_ids = if key.account_ids.is_empty() {
+            "-".to_string()
+        } else {
+            key.account_ids
+                .iter()
+                .map(|account_id| account_id.to_hex())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        table.add_row(vec![
+            Word::from(key.commitment).to_hex(),
+            scheme_name(key.scheme),
+            account_ids,
+        ]);
+    }
+
+    println!("\n{table}");
+    Ok(())
+}
+
+fn generate_key(keystore: &FilesystemKeyStore, scheme: KeyScheme) -> Result<(), CliError> {
+    let key = AuthSecretKey::with_scheme(scheme.into())
+        .map_err(|err| CliError::Input(format!("failed to generate key: {err}")))?;
+    store_and_report_key(keystore, &key, "Generated")
+}
+
+fn import_key(keystore: &FilesystemKeyStore, file: &Path) -> Result<(), CliError> {
+    let bytes = fs::read(file)?;
+    let key = AuthSecretKey::read_from_bytes(&bytes).map_err(|err| {
+        CliError::Input(format!(
+            "failed to decode authentication secret key from {}: {err}",
+            file.display()
+        ))
+    })?;
+    store_and_report_key(keystore, &key, "Imported")
+}
+
+fn store_and_report_key(
+    keystore: &FilesystemKeyStore,
+    key: &AuthSecretKey,
+    action: &str,
+) -> Result<(), CliError> {
+    keystore.store_key(key).map_err(CliError::KeyStore)?;
+    let commitment = Word::from(key.public_key().to_commitment()).to_hex();
+    println!("{action} {} key.", scheme_name(key.auth_scheme()));
+    println!("Public key commitment: {commitment}");
+    Ok(())
+}
+
+fn print_commitment(scheme: KeyScheme, public_key: &str) -> Result<(), CliError> {
+    let commitment = match scheme {
+        KeyScheme::Falcon512Poseidon2 => {
+            let bytes = hex_to_bytes::<FALCON_PUBLIC_KEY_BYTES>(public_key)
+                .map_err(|err| invalid_public_key(scheme, err))?;
+            rpo_falcon512::PublicKey::read_from_bytes(&bytes)
+                .map_err(|err| invalid_public_key(scheme, err))?
+                .to_commitment()
+        },
+        KeyScheme::EcdsaK256Keccak => {
+            let bytes = hex_to_bytes::<ECDSA_PUBLIC_KEY_BYTES>(public_key)
+                .map_err(|err| invalid_public_key(scheme, err))?;
+            ecdsa_k256_keccak::PublicKey::read_from_bytes(&bytes)
+                .map_err(|err| invalid_public_key(scheme, err))?
+                .to_commitment()
+        },
+    };
+
+    println!("{}", commitment.to_hex());
+    Ok(())
+}
+
+fn invalid_public_key(scheme: KeyScheme, err: impl std::fmt::Display) -> CliError {
+    CliError::Input(format!("invalid {} public key: {err}", scheme.name()))
+}
+
+fn scheme_name(scheme: AuthSchemeId) -> String {
+    match scheme {
+        AuthSchemeId::Falcon512Poseidon2 => "falcon512-poseidon2".to_string(),
+        AuthSchemeId::EcdsaK256Keccak => "ecdsa-k256-keccak".to_string(),
+        _ => scheme.to_string(),
+    }
+}

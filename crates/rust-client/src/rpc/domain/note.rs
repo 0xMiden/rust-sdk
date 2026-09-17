@@ -586,22 +586,39 @@ impl TryFrom<proto::rpc::CommittedNote> for FetchedNote {
             .note
             .ok_or_else(|| proto::rpc::CommittedNote::missing_field(stringify!(note)))?;
 
-        // Details are absent exactly for private notes.
-        if note.note_details.is_some() {
-            return Ok(FetchedNote::Public(verify_message(note)?, inclusion_proof));
-        }
-
         let partial_metadata: PartialNoteMetadata =
             verify_message(note.metadata.ok_or_else(|| {
                 proto::rpc::CommittedNote::missing_field(stringify!(note.metadata))
             })?)?;
-        let attachments: NoteAttachments =
-            verify_message(note.note_attachments.ok_or_else(|| {
-                proto::rpc::CommittedNote::missing_field(stringify!(note.note_attachments))
-            })?)?;
-        let metadata = NoteMetadata::new(partial_metadata, &attachments);
 
-        Ok(FetchedNote::Private(note_id, metadata, attachments, inclusion_proof))
+        // The note type decides which variant the response describes. The details are checked
+        // against it, since a note is not usable when the two disagree.
+        match partial_metadata.note_type() {
+            NoteType::Public => {
+                if note.note_details.is_none() {
+                    return Err(RpcConversionError::InvalidField(format!(
+                        "no note details were returned for public note {note_id}"
+                    )));
+                }
+
+                Ok(FetchedNote::Public(verify_message(note)?, inclusion_proof))
+            },
+            NoteType::Private => {
+                if note.note_details.is_some() {
+                    return Err(RpcConversionError::InvalidField(format!(
+                        "note details were returned for private note {note_id}"
+                    )));
+                }
+
+                let attachments: NoteAttachments =
+                    verify_message(note.note_attachments.ok_or_else(|| {
+                        proto::rpc::CommittedNote::missing_field(stringify!(note.note_attachments))
+                    })?)?;
+                let metadata = NoteMetadata::new(partial_metadata, &attachments);
+
+                Ok(FetchedNote::Private(note_id, metadata, attachments, inclusion_proof))
+            },
+        }
     }
 }
 

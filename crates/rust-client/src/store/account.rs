@@ -285,6 +285,7 @@ impl AccountUpdates {
         &self.mismatched_private_accounts
     }
 
+    /// Appends the public account updates and the private account mismatches of `other`.
     pub fn extend(&mut self, other: AccountUpdates) {
         self.updated_public_accounts.extend(other.updated_public_accounts);
         self.mismatched_private_accounts.extend(other.mismatched_private_accounts);

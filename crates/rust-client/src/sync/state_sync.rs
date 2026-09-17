@@ -1256,24 +1256,36 @@ impl StateSync {
             .iter()
             .any(AccountStorageMapDetails::is_limit_exceeded);
 
-        let storage = if any_map_oversized {
-            self.build_storage_patch_update(account_id, &details, block_from, block_to)
-                .await?
-        } else {
-            let storage = AccountStorage::try_from(&details.storage_details)
-                .map_err(ClientError::RpcError)?;
-            StorageUpdate::Full(storage)
+        let storage_update = async {
+            if any_map_oversized {
+                self.build_storage_patch_update(account_id, &details, block_from, block_to)
+                    .await
+            } else {
+                let storage = AccountStorage::try_from(&details.storage_details)
+                    .map_err(ClientError::RpcError)?;
+                Ok(StorageUpdate::Full(storage))
+            }
         };
 
-        let vault = if details.vault_details.too_many_assets {
-            let vault_info = self
-                .rpc_api
-                .sync_account_vault(block_from + 1, block_to, account_id)
-                .await
-                .map_err(ClientError::RpcError)?;
-            VaultUpdate::Patch(vault_info.vault_patch)
-        } else {
-            VaultUpdate::Full(details.vault_details.assets)
+        let vault_patch = async {
+            if details.vault_details.too_many_assets {
+                let vault_info = self
+                    .rpc_api
+                    .sync_account_vault(block_from + 1, block_to, account_id)
+                    .await
+                    .map_err(ClientError::RpcError)?;
+                Ok(Some(vault_info.vault_patch))
+            } else {
+                Ok(None)
+            }
+        };
+
+        // The storage and vault requests are independent, so they run concurrently.
+        let (storage, vault_patch) = futures::try_join!(storage_update, vault_patch)?;
+
+        let vault = match vault_patch {
+            Some(vault_patch) => VaultUpdate::Patch(vault_patch),
+            None => VaultUpdate::Full(details.vault_details.assets),
         };
 
         Ok(AccountStateUpdate::new(details.header, storage, vault))

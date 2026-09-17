@@ -410,8 +410,8 @@ Running `miden-client keys` without an action also lists the keys. The associate
 Generate a key for the selected authentication scheme and store it in the keystore:
 
 ```sh
-miden-client keys --generate --scheme falcon512-poseidon2
-miden-client keys --generate --scheme ecdsa-k256-keccak
+miden-client keys --generate falcon512-poseidon2
+miden-client keys --generate ecdsa-k256-keccak
 ```
 
 The command prints the public key commitment. It does not print the secret key.

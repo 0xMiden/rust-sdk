@@ -3,8 +3,8 @@ use alloc::string::{String, ToString};
 use core::error::Error;
 use core::fmt;
 
-use miden_objects::ConversionError;
-use miden_objects::decoded::VerificationError;
+pub use miden_objects::ConversionError;
+pub use miden_objects::decoded::VerificationError;
 use miden_protocol::account::AccountId;
 use miden_protocol::errors::NoteError;
 use miden_protocol::note::NoteId;

@@ -155,7 +155,7 @@ fn disassociate_key(
     let account_id = parse_account_id(account_id)?;
     keystore.disassociate_key(commitment, account_id).map_err(CliError::KeyStore)?;
     println!(
-        "Removed the association between key {} and account {}.",
+        "Association between key {} and account {} removed .",
         Word::from(commitment).to_hex(),
         account_id.to_hex()
     );

@@ -444,11 +444,10 @@ Use a full hexadecimal account ID. Association controls whether the key is inclu
 Calculate a public key commitment without storing the public key:
 
 ```sh
-miden-client keys --commitment <PUBLIC_KEY> --scheme falcon512-poseidon2
-miden-client keys --commitment <PUBLIC_KEY> --scheme ecdsa-k256-keccak
+miden-client keys --commitment <PUBLIC_KEY>
 ```
 
-`PUBLIC_KEY` must be a `0x`-prefixed hexadecimal serialization of the key. For ECDSA, provide the 33-byte compressed SEC1 public key. For Falcon, provide the 897-byte serialized Falcon public key.
+`PUBLIC_KEY` must be a `0x`-prefixed hexadecimal serialization of the key. The CLI identifies the scheme from the key length. For ECDSA, provide the 33-byte compressed SEC1 public key. For Falcon, provide the 897-byte serialized Falcon public key.
 
 ### Importing and exporting
 

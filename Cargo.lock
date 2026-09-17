@@ -1466,7 +1466,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3030,7 +3030,7 @@ dependencies = [
 [[package]]
 name = "miden-node-proto-build"
 version = "0.17.0-rc.1"
-source = "git+https://github.com/0xMiden/node?rev=de0de491beec692d9209fd0319abe97171a96959#de0de491beec692d9209fd0319abe97171a96959"
+source = "git+https://github.com/0xMiden/node?rev=d0b583362a8e91923c1f8f64c4a5c66a5e77d959#d0b583362a8e91923c1f8f64c4a5c66a5e77d959"
 dependencies = [
  "build-rs",
  "codegen",
@@ -4781,7 +4781,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5367,7 +5367,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6257,7 +6257,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

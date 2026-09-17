@@ -93,6 +93,9 @@ pub struct MockRpcApi {
     /// the allowlist answers `true` for every account, which is the default here so that tests
     /// which deploy accounts need no registration.
     allowlist_enforced: Arc<AtomicBool>,
+    /// Number of `is_account_allowed` requests served, so a test can assert that a flow avoided the
+    /// round trip.
+    is_account_allowed_calls: Arc<AtomicUsize>,
 }
 
 impl Default for MockRpcApi {
@@ -119,6 +122,7 @@ impl MockRpcApi {
             next_call_failures: Arc::new(RwLock::new(BTreeMap::new())),
             registered_accounts: Arc::new(RwLock::new(BTreeMap::new())),
             allowlist_enforced: Arc::new(AtomicBool::new(false)),
+            is_account_allowed_calls: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -157,6 +161,11 @@ impl MockRpcApi {
     /// Returns how many `get_notes_by_id` requests this API has served.
     pub fn get_notes_by_id_call_count(&self) -> usize {
         self.get_notes_by_id_calls.load(Ordering::Relaxed)
+    }
+
+    /// Returns how many `is_account_allowed` requests this API has served.
+    pub fn is_account_allowed_call_count(&self) -> usize {
+        self.is_account_allowed_calls.load(Ordering::Relaxed)
     }
 
     /// Overrides the MMR path returned by `sync_notes` for the specified block.
@@ -740,6 +749,8 @@ impl NodeRpcClient for MockRpcApi {
     }
 
     async fn is_account_allowed(&self, account_id: AccountId) -> Result<bool, RpcError> {
+        self.is_account_allowed_calls.fetch_add(1, Ordering::Relaxed);
+
         if let Some(error) = self.take_failure(RpcEndpoint::IsAccountAllowed) {
             return Err(error);
         }

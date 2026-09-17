@@ -34,12 +34,14 @@
 //! - A failed [`push`](BatchBuilder::push) leaves the batch exactly as it was, so the caller may
 //!   retry with a different request or submit the transactions accumulated so far.
 //!
-//! ## Error semantics around submission
+//! ## Account allowlist
 //!
-//! A submission that comes back without a definite outcome raises
-//! [`BatchBuilderError::BatchSubmissionOutcomeUnknown`]. The node may or may not have accepted the
-//! batch and nothing was recorded locally, so the error carries a [`ProvenBatchSubmission`] to
-//! resend with [`Client::retry_proven_batch`].
+//! A push whose transaction creates an account asks the network allowlist about that account before
+//! the transaction is proven, and refuses the push with
+//! [`crate::ClientError::AccountNotAllowlisted`] if the network does not accept it. Each account is
+//! asked about once per batch.
+//!
+//! ## Error semantics after RPC accept
 //!
 //! Once the node accepts the batch, the local store still needs to be updated. If that step fails,
 //! the caller receives one of two errors that both carry the accepted `block_num`:
@@ -81,6 +83,7 @@ use crate::transaction::{
     TransactionRequest,
     TransactionResult,
     TransactionStoreUpdate,
+    creates_gated_account,
     validate_executed_transaction,
 };
 use crate::{Client, ClientError};
@@ -128,6 +131,7 @@ pub struct BatchBuilder<'c, AUTH> {
     pub(crate) data_store: InMemoryBatchDataStore,
     pub(crate) pushed_txs: Vec<PushedTx>,
     pub(crate) consumed_input_notes: BTreeSet<NoteId>,
+    pub(crate) checked_accounts: BTreeSet<AccountId>,
 }
 
 impl<AUTH> BatchBuilder<'_, AUTH> {
@@ -369,6 +373,14 @@ where
         let tx_result =
             Box::pin(execute_transaction_for_batch(self.client, &self.data_store, account_id, req))
                 .await?;
+
+        // A transaction that creates an account is gated by the network allowlist. Ask before the
+        // transaction is proven, and only once per account.
+        if creates_gated_account(&tx_result) && !self.checked_accounts.contains(&account_id) {
+            self.client.check_account_id_allowed(account_id).await?;
+            self.checked_accounts.insert(account_id);
+        }
+
         let proven_tx = self.client.prove_transaction(&tx_result).await?;
 
         // 3. The transaction is final: fold it into the in-batch account state, record its consumed

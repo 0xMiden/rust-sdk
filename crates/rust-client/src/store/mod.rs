@@ -22,6 +22,7 @@
 
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::fmt::Debug;
@@ -56,6 +57,7 @@ use miden_protocol::transaction::TransactionId;
 use miden_protocol::{Felt, Word};
 use miden_tx::utils::serde::{Deserializable, Serializable};
 
+use crate::account::ALLOWLISTED_ACCOUNT_SETTING_PREFIX;
 use crate::note_transport::{NOTE_TRANSPORT_CURSOR_STORE_SETTING, NoteTransportCursor};
 use crate::rpc::encryption::{TRANSACTION_ENCRYPTION_KEY_STORE_SETTING, TransactionEncryptionKey};
 use crate::rpc::{RPC_LIMITS_STORE_SETTING, RpcLimits};
@@ -118,6 +120,12 @@ impl SettingScope {
     pub fn as_u8(self) -> u8 {
         self as u8
     }
+}
+
+/// Returns the settings key under which `account_id` is recorded as accepted by the network
+/// allowlist.
+fn allowlisted_account_setting_key(account_id: AccountId) -> String {
+    format!("{ALLOWLISTED_ACCOUNT_SETTING_PREFIX}{}", account_id.to_hex())
 }
 
 // SETTING MUTATION
@@ -618,6 +626,28 @@ pub trait Store: Send + Sync {
     async fn set_rpc_limits(&self, limits: RpcLimits) -> Result<(), StoreError> {
         self.set_setting(SettingScope::Client, RPC_LIMITS_STORE_SETTING.into(), limits.to_bytes())
             .await
+    }
+
+    // ACCOUNT ALLOWLIST
+    // --------------------------------------------------------------------------------------------
+
+    /// Records that the network allowlist accepts `account_id`.
+    async fn mark_account_allowlisted(&self, account_id: AccountId) -> Result<(), StoreError> {
+        self.set_setting(
+            SettingScope::Client,
+            allowlisted_account_setting_key(account_id),
+            account_id.to_bytes(),
+        )
+        .await
+    }
+
+    /// Returns whether this client recorded `account_id` as accepted by the network allowlist.
+    async fn is_account_allowlisted(&self, account_id: AccountId) -> Result<bool, StoreError> {
+        let value = self
+            .get_setting(SettingScope::Client, allowlisted_account_setting_key(account_id))
+            .await?;
+
+        Ok(value.is_some())
     }
 
     // TRANSACTION ENCRYPTION KEY

@@ -4,16 +4,11 @@
 //! the account is registered or is a network account, and refused otherwise. Registering an account
 //! in the first place is in [`super::registration`].
 
-use anyhow::{Context, Result};
-use miden_client::account::AccountType;
-use miden_client::rpc::RpcEndpoint;
-use miden_client::testing::common::AccountSetup;
-use miden_client::transaction::TransactionRequestBuilder;
+use anyhow::{Context, Result, bail};
 
 use super::invitations::InvitationPool;
 use super::{
     assert_rejected_before_submission,
-    assert_rejected_by_node,
     deploy_request,
     insert_undeployed_wallet,
     is_deployed,
@@ -100,14 +95,12 @@ pub async fn test_allowlist_network_account_needs_no_registration(
     Ok(())
 }
 
-/// Every transaction in a batch is checked, not only the first.
+/// Every account a batch creates is checked, not only the first.
 ///
-/// The node checks each transaction of a submitted batch separately, so a batch that pairs a
-/// registered account with an unregistered one is rejected as a whole. Without this the batch
-/// endpoint could stop enforcing and only the single-transaction tests would notice.
-pub async fn test_allowlist_is_enforced_per_batch_transaction(
-    client_config: ClientConfig,
-) -> Result<()> {
+/// A batch that pairs a registered account with an unregistered one is refused on the push that
+/// creates the unregistered account. The registered account is pushed first, so the test fails if
+/// the check only ever looks at the opening transaction of a batch.
+pub async fn test_allowlist_is_enforced_per_batch_push(client_config: ClientConfig) -> Result<()> {
     let mut client = client_config.into_client().await?;
     client.wait_for_node().await;
 
@@ -128,13 +121,12 @@ pub async fn test_allowlist_is_enforced_per_batch_transaction(
 
     let mut batch = client.new_transaction_batch();
     batch.push(registered.id(), registered_request).await?;
-    batch.push(unregistered.id(), unregistered_request).await?;
 
-    let error = batch
-        .submit()
-        .await
-        .expect_err("a batch creating an unregistered account should be rejected");
-    assert_rejected_by_node(&error, RpcEndpoint::SubmitProvenBatch);
+    let Err(error) = batch.push(unregistered.id(), unregistered_request).await else {
+        bail!("a batch creating an unregistered account should be refused")
+    };
+    assert_rejected_before_submission(&error, &unregistered);
+    assert_eq!(batch.len(), 1, "a refused push should leave the batch as it was");
 
     assert!(
         !is_deployed(&client, &unregistered).await?,

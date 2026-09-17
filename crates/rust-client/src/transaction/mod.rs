@@ -831,8 +831,7 @@ where
         // response cannot supply its own trust anchor.
         let genesis_commitment =
             self.trusted_block_header(BlockNumber::GENESIS).await?.commitment();
-        let chain_tip = self.store.get_sync_height().await?;
-        let validator_keys = self.trusted_block_header(chain_tip).await?.validator_config().clone();
+        let validator_keys = self.get_validator_config().await?;
 
         let key = attested.verify(genesis_commitment, &validator_keys)?;
         self.store.set_transaction_encryption_key(&key).await?;

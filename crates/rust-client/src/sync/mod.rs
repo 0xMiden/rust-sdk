@@ -197,9 +197,7 @@ where
             )));
         }
 
-        // The validator configuration must come from the local store, so that a node response
-        // cannot provide the validator keys that check its own signatures.
-        let validator_config = self.get_latest_block_header().await?.validator_config().clone();
+        let validator_config = self.get_validator_config().await?;
         let state_sync_update =
             StateSync::build_update(chain_sync_data, &mut partial_mmr, &validator_config)?;
 

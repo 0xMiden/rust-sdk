@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use clap::ValueEnum;
+use clap::{ArgGroup, ValueEnum};
 use miden_client::account::AccountId;
 use miden_client::auth::{AuthSchemeId, AuthSecretKey, PublicKeyCommitment};
 use miden_client::crypto::{ecdsa_k256_keccak, rpo_falcon512};
@@ -10,7 +10,7 @@ use miden_client::utils::{ByteReader, Deserializable, hex_to_bytes};
 use miden_client::{SliceReader, Word};
 
 use crate::errors::CliError;
-use crate::{Parser, Subcommand, create_dynamic_table};
+use crate::{Parser, create_dynamic_table};
 
 const ECDSA_PUBLIC_KEY_BYTES: usize = 33;
 const FALCON_PUBLIC_KEY_BYTES: usize = 897;
@@ -41,67 +41,75 @@ impl From<KeyScheme> for AuthSchemeId {
     }
 }
 
-#[derive(Clone, Debug, Subcommand)]
-enum KeysSubcommand {
-    /// List all keys in the keystore.
-    List,
-    /// Generate and store a new key.
-    Generate {
-        /// Authentication scheme for the new key.
-        #[arg(long, value_enum)]
-        scheme: KeyScheme,
-    },
-    /// Import a serialized authentication secret key.
-    Import {
-        /// File that contains a serialized authentication secret key.
-        file: PathBuf,
-    },
-    /// Calculate the commitment of a serialized public key.
-    Commitment {
-        /// Authentication scheme of the public key.
-        #[arg(long, value_enum)]
-        scheme: KeyScheme,
-        /// Hex-encoded serialized public key.
-        public_key: String,
-    },
-    /// Associate a stored key with an account.
-    Associate {
-        /// Public key commitment of the stored key.
-        commitment: String,
-        /// Full hexadecimal account ID.
-        account_id: String,
-    },
-    /// Remove an association between a stored key and an account.
-    Disassociate {
-        /// Public key commitment of the stored key.
-        commitment: String,
-        /// Full hexadecimal account ID.
-        account_id: String,
-    },
-}
-
 #[derive(Clone, Debug, Parser)]
-#[command(about = "Manage authentication keys")]
+#[command(
+    about = "Manage authentication keys. Defaults to --list",
+    group(ArgGroup::new("action").args([
+        "list",
+        "generate",
+        "import",
+        "commitment",
+        "associate",
+        "disassociate",
+    ])),
+    group(ArgGroup::new("scheme_action").args(["generate", "commitment"])),
+    group(ArgGroup::new("association_action").args(["associate", "disassociate"])),
+)]
 pub struct KeysCmd {
-    #[command(subcommand)]
-    command: KeysSubcommand,
+    /// List all keys in the keystore.
+    #[arg(long)]
+    list: bool,
+
+    /// Generate and store a new key.
+    #[arg(long, requires = "scheme")]
+    generate: bool,
+
+    /// Import a serialized authentication secret key.
+    #[arg(long, value_name = "FILE")]
+    import: Option<PathBuf>,
+
+    /// Calculate the commitment of a serialized public key.
+    #[arg(long, value_name = "PUBLIC_KEY", requires = "scheme")]
+    commitment: Option<String>,
+
+    /// Associate a stored key with an account.
+    #[arg(long, value_name = "COMMITMENT", requires = "account_id")]
+    associate: Option<String>,
+
+    /// Remove an association between a stored key and an account.
+    #[arg(long, value_name = "COMMITMENT", requires = "account_id")]
+    disassociate: Option<String>,
+
+    /// Authentication scheme for key generation or commitment calculation.
+    #[arg(long, value_enum, requires = "scheme_action")]
+    scheme: Option<KeyScheme>,
+
+    /// Full hexadecimal account ID for an association operation.
+    #[arg(long, value_name = "ACCOUNT_ID", requires = "association_action")]
+    account_id: Option<String>,
 }
 
 impl KeysCmd {
     pub fn execute(&self, keystore: &FilesystemKeyStore) -> Result<(), CliError> {
-        match &self.command {
-            KeysSubcommand::List => list_keys(keystore),
-            KeysSubcommand::Generate { scheme } => generate_key(keystore, *scheme),
-            KeysSubcommand::Import { file } => import_key(keystore, file),
-            KeysSubcommand::Commitment { scheme, public_key } => {
-                print_commitment(*scheme, public_key)
-            },
-            KeysSubcommand::Associate { commitment, account_id } => {
-                associate_key(keystore, commitment, account_id)
-            },
-            KeysSubcommand::Disassociate { commitment, account_id } => {
-                disassociate_key(keystore, commitment, account_id)
-            },
+        match self {
+            Self { generate: true, scheme: Some(scheme), .. } => generate_key(keystore, *scheme),
+            Self { import: Some(file), .. } => import_key(keystore, file),
+            Self {
+                commitment: Some(public_key),
+                scheme: Some(scheme),
+                ..
+            } => print_commitment(*scheme, public_key),
+            Self {
+                associate: Some(commitment),
+                account_id: Some(account_id),
+                ..
+            } => associate_key(keystore, commitment, account_id),
+            Self {
+                disassociate: Some(commitment),
+                account_id: Some(account_id),
+                ..
+            } => disassociate_key(keystore, commitment, account_id),
+            _ => list_keys(keystore),
         }
     }
 }

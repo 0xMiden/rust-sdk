@@ -100,7 +100,7 @@ fn cli_manages_keys() {
     fs::write(temp_dir.join(INVALID_KEY_FILENAME), invalid_key).unwrap();
 
     let mut invalid_import_cmd = cargo_bin_cmd!("miden-client");
-    invalid_import_cmd.args(["keys", "import", INVALID_KEY_FILENAME]);
+    invalid_import_cmd.args(["keys", "--import", INVALID_KEY_FILENAME]);
     invalid_import_cmd
         .current_dir(&temp_dir)
         .assert()
@@ -108,7 +108,7 @@ fn cli_manages_keys() {
         .stderr(contains("contains trailing"));
 
     let mut import_cmd = cargo_bin_cmd!("miden-client");
-    import_cmd.args(["keys", "import", KEY_FILENAME]);
+    import_cmd.args(["keys", "--import", KEY_FILENAME]);
     import_cmd
         .current_dir(&temp_dir)
         .assert()
@@ -117,11 +117,11 @@ fn cli_manages_keys() {
 
     let account_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_SENDER).unwrap().to_hex();
     let mut associate_cmd = cargo_bin_cmd!("miden-client");
-    associate_cmd.args(["keys", "associate", &imported_commitment, &account_id]);
+    associate_cmd.args(["keys", "--associate", &imported_commitment, "--account-id", &account_id]);
     associate_cmd.current_dir(&temp_dir).assert().success();
 
     let mut generate_cmd = cargo_bin_cmd!("miden-client");
-    generate_cmd.args(["keys", "generate", "--scheme", "falcon512-poseidon2"]);
+    generate_cmd.args(["keys", "--generate", "--scheme", "falcon512-poseidon2"]);
     generate_cmd
         .current_dir(&temp_dir)
         .assert()
@@ -133,7 +133,7 @@ fn cli_manages_keys() {
     fs::write(keystore_dir.join(".tmpAbC123"), []).unwrap();
 
     let mut list_cmd = cargo_bin_cmd!("miden-client");
-    list_cmd.args(["keys", "list"]);
+    list_cmd.args(["keys", "--list"]);
     list_cmd
         .current_dir(&temp_dir)
         .assert()
@@ -145,11 +145,17 @@ fn cli_manages_keys() {
         .stdout(contains("Associated keys are included in account exports"));
 
     let mut disassociate_cmd = cargo_bin_cmd!("miden-client");
-    disassociate_cmd.args(["keys", "disassociate", &imported_commitment, &account_id]);
+    disassociate_cmd.args([
+        "keys",
+        "--disassociate",
+        &imported_commitment,
+        "--account-id",
+        &account_id,
+    ]);
     disassociate_cmd.current_dir(&temp_dir).assert().success();
 
     let mut list_cmd = cargo_bin_cmd!("miden-client");
-    list_cmd.args(["keys", "list"]);
+    list_cmd.arg("keys");
     list_cmd
         .current_dir(&temp_dir)
         .assert()
@@ -161,7 +167,7 @@ fn cli_manages_keys() {
         ("falcon512-poseidon2", falcon_public_key, falcon_commitment),
     ] {
         let mut commitment_cmd = cargo_bin_cmd!("miden-client");
-        commitment_cmd.args(["keys", "commitment", "--scheme", scheme, &public_key]);
+        commitment_cmd.args(["keys", "--commitment", &public_key, "--scheme", scheme]);
         commitment_cmd
             .current_dir(&temp_dir)
             .assert()

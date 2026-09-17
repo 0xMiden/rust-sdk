@@ -12,22 +12,31 @@ use miden_client::{SliceReader, Word};
 use crate::errors::CliError;
 use crate::{Parser, create_dynamic_table};
 
+/// Length of a serialized ECDSA public key. It matches the compressed SEC1 form that
+/// `ecdsa_k256_keccak::PublicKey` reads.
 const ECDSA_PUBLIC_KEY_BYTES: usize = 33;
+/// Length of a serialized Falcon public key. It matches the form that `rpo_falcon512::PublicKey`
+/// reads.
 const FALCON_PUBLIC_KEY_BYTES: usize = 897;
+
+/// Name of the Falcon scheme in the command line and in the command output.
+const FALCON_SCHEME_NAME: &str = "falcon512-poseidon2";
+/// Name of the ECDSA scheme in the command line and in the command output.
+const ECDSA_SCHEME_NAME: &str = "ecdsa-k256-keccak";
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum KeyScheme {
-    #[value(name = "falcon512-poseidon2")]
+    #[value(name = FALCON_SCHEME_NAME)]
     Falcon512Poseidon2,
-    #[value(name = "ecdsa-k256-keccak")]
+    #[value(name = ECDSA_SCHEME_NAME)]
     EcdsaK256Keccak,
 }
 
 impl KeyScheme {
     fn name(self) -> &'static str {
         match self {
-            Self::Falcon512Poseidon2 => "falcon512-poseidon2",
-            Self::EcdsaK256Keccak => "ecdsa-k256-keccak",
+            Self::Falcon512Poseidon2 => FALCON_SCHEME_NAME,
+            Self::EcdsaK256Keccak => ECDSA_SCHEME_NAME,
         }
     }
 }
@@ -37,6 +46,18 @@ impl From<KeyScheme> for AuthSchemeId {
         match value {
             KeyScheme::Falcon512Poseidon2 => Self::Falcon512Poseidon2,
             KeyScheme::EcdsaK256Keccak => Self::EcdsaK256Keccak,
+        }
+    }
+}
+
+impl TryFrom<AuthSchemeId> for KeyScheme {
+    type Error = ();
+
+    fn try_from(value: AuthSchemeId) -> Result<Self, Self::Error> {
+        match value {
+            AuthSchemeId::Falcon512Poseidon2 => Ok(Self::Falcon512Poseidon2),
+            AuthSchemeId::EcdsaK256Keccak => Ok(Self::EcdsaK256Keccak),
+            _ => Err(()),
         }
     }
 }
@@ -153,12 +174,20 @@ fn disassociate_key(
 ) -> Result<(), CliError> {
     let commitment = parse_commitment(commitment)?;
     let account_id = parse_account_id(account_id)?;
-    keystore.disassociate_key(commitment, account_id).map_err(CliError::KeyStore)?;
-    println!(
-        "Association between key {} and account {} removed .",
-        Word::from(commitment).to_hex(),
-        account_id.to_hex()
-    );
+    let removed = keystore.disassociate_key(commitment, account_id).map_err(CliError::KeyStore)?;
+    if removed {
+        println!(
+            "Association between key {} and account {} removed.",
+            Word::from(commitment).to_hex(),
+            account_id.to_hex()
+        );
+    } else {
+        println!(
+            "Key {} wasn't associated with account {}.",
+            Word::from(commitment).to_hex(),
+            account_id.to_hex()
+        );
+    }
     Ok(())
 }
 
@@ -251,10 +280,10 @@ fn parse_account_id(value: &str) -> Result<AccountId, CliError> {
         .map_err(|err| CliError::Input(format!("invalid account ID `{value}`: {err}")))
 }
 
+/// Returns the command line name of an authentication scheme.
+///
+/// A scheme that the command cannot generate has no command line name. The upstream name is used
+/// for it, so that `--list` still reports the key.
 fn scheme_name(scheme: AuthSchemeId) -> String {
-    match scheme {
-        AuthSchemeId::Falcon512Poseidon2 => "falcon512-poseidon2".to_string(),
-        AuthSchemeId::EcdsaK256Keccak => "ecdsa-k256-keccak".to_string(),
-        _ => scheme.to_string(),
-    }
+    KeyScheme::try_from(scheme).map_or_else(|()| scheme.to_string(), |scheme| scheme.name().into())
 }

@@ -131,6 +131,13 @@ fn cli_manages_keys() {
     let keystore_dir = temp_dir.join(MIDEN_DIR).join(KEYSTORE_DIRECTORY);
     fs::write(keystore_dir.join(".DS_Store"), []).unwrap();
     fs::write(keystore_dir.join(".tmpAbC123"), []).unwrap();
+    // Named after a valid commitment but holding no readable key, as an interrupted write leaves
+    // behind. It must not hide the keys that are readable.
+    fs::write(
+        keystore_dir.join("0x1111111111111111111111111111111111111111111111111111111111111111"),
+        [1, 2, 3],
+    )
+    .unwrap();
 
     let mut list_cmd = cargo_bin_cmd!("miden-client");
     list_cmd.args(["keys", "--list"]);
@@ -152,7 +159,11 @@ fn cli_manages_keys() {
         "--account-id",
         &account_id,
     ]);
-    disassociate_cmd.current_dir(&temp_dir).assert().success();
+    disassociate_cmd
+        .current_dir(&temp_dir)
+        .assert()
+        .success()
+        .stdout(contains("removed."));
 
     let mut list_cmd = cargo_bin_cmd!("miden-client");
     list_cmd.arg("keys");

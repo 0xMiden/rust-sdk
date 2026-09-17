@@ -55,17 +55,27 @@ impl KeyIndex {
     }
 
     /// Removes a mapping from an account ID to a public key commitment.
-    fn remove_mapping(&mut self, account_id: &AccountId, pub_key_commitment: PublicKeyCommitment) {
+    ///
+    /// Returns `true` if the mapping was present. An account entry that keeps no commitment is
+    /// removed.
+    fn remove_mapping(
+        &mut self,
+        account_id: &AccountId,
+        pub_key_commitment: PublicKeyCommitment,
+    ) -> bool {
         let account_id_hex = account_id.to_hex();
         let pub_key_hex = Word::from(pub_key_commitment).to_hex();
 
-        let remove_account = self.mappings.get_mut(&account_id_hex).is_some_and(|commitments| {
-            commitments.remove(&pub_key_hex);
-            commitments.is_empty()
-        });
-        if remove_account {
+        let Some(commitments) = self.mappings.get_mut(&account_id_hex) else {
+            return false;
+        };
+
+        let removed = commitments.remove(&pub_key_hex);
+        if commitments.is_empty() {
             self.mappings.remove(&account_id_hex);
         }
+
+        removed
     }
 
     /// Removes all mappings for a given public key commitment.
@@ -127,6 +137,9 @@ impl KeyIndex {
     ///
     /// Iterates over all mappings to find which account contains the commitment. Returns `None` if
     /// no account is found.
+    ///
+    /// A key can be associated with more than one account. This method returns only the first
+    /// account in iteration order. Use [`KeyIndex::get_account_ids`] to get every account.
     fn get_account_id(&self, pub_key_commitment: PublicKeyCommitment) -> Option<AccountId> {
         let pub_key_hex = Word::from(pub_key_commitment).to_hex();
 
@@ -264,21 +277,20 @@ impl FilesystemKeyStore {
             let Ok(commitment) = Word::try_from(file_name).map(PublicKeyCommitment::from) else {
                 continue;
             };
-            let key = self.get_key_sync(commitment)?.ok_or_else(|| {
-                KeyStoreError::StorageError(format!(
-                    "key file disappeared while listing commitment {file_name}"
-                ))
-            })?;
+            // A file that does not hold a readable key must not hide the keys that are readable. An
+            // interrupted write leaves such a file behind, so `list_keys` skips it and reports the
+            // keys it can read.
+            let Ok(Some(key)) = self.get_key_sync(commitment) else {
+                continue;
+            };
             if key.public_key().to_commitment() != commitment {
-                return Err(KeyStoreError::DecodingError(format!(
-                    "key file content does not match commitment {file_name}"
-                )));
+                continue;
             }
 
             keys.push(StoredKeyInfo {
                 commitment,
                 scheme: key.auth_scheme(),
-                account_ids: index.get_account_ids(commitment)?,
+                account_ids: index.get_account_ids(commitment).unwrap_or_default(),
             });
         }
 
@@ -318,13 +330,20 @@ impl FilesystemKeyStore {
     }
 
     /// Removes the association between a stored key and an account.
+    ///
+    /// Returns `true` if the association was present. The index is written only when it changes.
     pub fn disassociate_key(
         &self,
         pub_key_commitment: PublicKeyCommitment,
         account_id: AccountId,
-    ) -> Result<(), KeyStoreError> {
-        self.index.write().remove_mapping(&account_id, pub_key_commitment);
-        self.save_index()
+    ) -> Result<bool, KeyStoreError> {
+        let removed = self.index.write().remove_mapping(&account_id, pub_key_commitment);
+        if !removed {
+            return Ok(false);
+        }
+
+        self.save_index()?;
+        Ok(true)
     }
 
     /// Retrieves a secret key from the keystore given the commitment of a public key.
@@ -526,6 +545,13 @@ mod tests {
             .expect("test account ID should be well formed")
     }
 
+    /// Returns a commitment that no generated key produces, so the keystore never holds a key for
+    /// it.
+    fn unused_commitment() -> Word {
+        Word::try_from("0x0000000000000000000000000000000000000000000000000000000000000001")
+            .expect("the test commitment is a valid word")
+    }
+
     fn other_account_id() -> AccountId {
         AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE)
             .expect("test account ID should be well formed")
@@ -600,5 +626,60 @@ mod tests {
             .await
             .expect("removing the last key of an account is not an error");
         assert!(commitments.is_empty());
+    }
+
+    /// A key can back more than one account. Removing one association must keep the others, and a
+    /// removal that changes nothing must say so.
+    #[tokio::test]
+    async fn disassociating_a_key_affects_only_the_named_account() {
+        let (keystore, _dir) = test_keystore();
+        let shared_key = AuthSecretKey::new_falcon512_poseidon2();
+        let shared_commitment = shared_key.public_key().to_commitment();
+
+        keystore.add_key(&shared_key, test_account_id()).await.unwrap();
+        keystore.add_key(&shared_key, other_account_id()).await.unwrap();
+
+        assert!(keystore.disassociate_key(shared_commitment, test_account_id()).unwrap());
+        assert_eq!(
+            keystore.account_ids_for_key(shared_commitment).unwrap(),
+            BTreeSet::from([other_account_id()]),
+            "the key must stay associated with the account that was not named"
+        );
+
+        assert!(
+            !keystore.disassociate_key(shared_commitment, test_account_id()).unwrap(),
+            "the association is already gone"
+        );
+        assert!(
+            !keystore
+                .disassociate_key(unused_commitment().into(), other_account_id())
+                .unwrap(),
+            "no key is stored for this commitment"
+        );
+        assert_eq!(
+            keystore.account_ids_for_key(shared_commitment).unwrap(),
+            BTreeSet::from([other_account_id()]),
+            "a call that changes nothing must not drop an existing association"
+        );
+    }
+
+    /// An interrupted write leaves a file that holds no readable key. The keys that are readable
+    /// must still be listed.
+    #[test]
+    fn unreadable_key_file_is_skipped_by_the_listing() {
+        let (keystore, dir) = test_keystore();
+        let key = AuthSecretKey::new_falcon512_poseidon2();
+        let commitment = key.public_key().to_commitment();
+
+        keystore.store_key(&key).unwrap();
+
+        // A truncated key file under a name that is a valid commitment.
+        fs::write(dir.path().join(unused_commitment().to_hex()), [1, 2, 3]).unwrap();
+        // A file whose name is not a commitment at all.
+        fs::write(dir.path().join(".DS_Store"), []).unwrap();
+
+        let listed = keystore.list_keys().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].commitment, commitment);
     }
 }

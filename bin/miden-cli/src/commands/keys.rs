@@ -68,7 +68,7 @@ pub struct KeysCmd {
     import: Option<PathBuf>,
 
     /// Calculate the commitment of a serialized public key.
-    #[arg(long, value_name = "PUBLIC_KEY", requires = "scheme")]
+    #[arg(long, value_name = "PUBLIC_KEY")]
     commitment: Option<String>,
 
     /// Associate a stored key with an account.
@@ -78,10 +78,6 @@ pub struct KeysCmd {
     /// Remove an association between a stored key and an account.
     #[arg(long, value_name = "COMMITMENT", requires = "account_id")]
     disassociate: Option<String>,
-
-    /// Authentication scheme for commitment calculation.
-    #[arg(long, value_enum, requires = "commitment")]
-    scheme: Option<KeyScheme>,
 
     /// Full hexadecimal account ID for an association operation.
     #[arg(long, value_name = "ACCOUNT_ID", requires = "association_action")]
@@ -93,11 +89,7 @@ impl KeysCmd {
         match self {
             Self { generate: Some(scheme), .. } => generate_key(keystore, *scheme),
             Self { import: Some(file), .. } => import_key(keystore, file),
-            Self {
-                commitment: Some(public_key),
-                scheme: Some(scheme),
-                ..
-            } => print_commitment(*scheme, public_key),
+            Self { commitment: Some(public_key), .. } => print_commitment(public_key),
             Self {
                 associate: Some(commitment),
                 account_id: Some(account_id),
@@ -206,7 +198,23 @@ fn store_and_report_key(
     Ok(())
 }
 
-fn print_commitment(scheme: KeyScheme, public_key: &str) -> Result<(), CliError> {
+fn print_commitment(public_key: &str) -> Result<(), CliError> {
+    let encoded_key = public_key.strip_prefix("0x").ok_or_else(|| {
+        CliError::Input("public key must use a 0x-prefixed hexadecimal encoding".to_string())
+    })?;
+    let scheme = match encoded_key.len() {
+        length if length == ECDSA_PUBLIC_KEY_BYTES * 2 => KeyScheme::EcdsaK256Keccak,
+        length if length == FALCON_PUBLIC_KEY_BYTES * 2 => KeyScheme::Falcon512Poseidon2,
+        length => {
+            return Err(CliError::Input(format!(
+                "unsupported public key length: expected {} or {} hexadecimal digits, got {}",
+                ECDSA_PUBLIC_KEY_BYTES * 2,
+                FALCON_PUBLIC_KEY_BYTES * 2,
+                length
+            )));
+        },
+    };
+
     let commitment = match scheme {
         KeyScheme::Falcon512Poseidon2 => {
             let bytes = hex_to_bytes::<FALCON_PUBLIC_KEY_BYTES>(public_key)

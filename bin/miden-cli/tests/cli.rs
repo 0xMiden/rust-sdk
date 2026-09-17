@@ -162,12 +162,11 @@ fn cli_manages_keys() {
         .success()
         .stdout(contains(&account_id).not());
 
-    for (scheme, public_key, commitment) in [
-        ("ecdsa-k256-keccak", public_key, imported_commitment),
-        ("falcon512-poseidon2", falcon_public_key, falcon_commitment),
-    ] {
+    for (public_key, commitment) in
+        [(public_key, imported_commitment), (falcon_public_key, falcon_commitment)]
+    {
         let mut commitment_cmd = cargo_bin_cmd!("miden-client");
-        commitment_cmd.args(["keys", "--commitment", &public_key, "--scheme", scheme]);
+        commitment_cmd.args(["keys", "--commitment", &public_key]);
         commitment_cmd
             .current_dir(&temp_dir)
             .assert()

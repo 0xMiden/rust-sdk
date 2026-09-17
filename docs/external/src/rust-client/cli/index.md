@@ -389,16 +389,98 @@ This confirmation can be skipped in non-interactive environments by providing th
 
 If a remote prover is configured, the CLI can offload the proving process to it. This is done by providing the `--delegate-proving` flag when creating a transaction. The CLI will then send the transaction to the remote prover for processing.
 
+### `keys`
+
+Manage authentication keys in the configured filesystem keystore. These commands do not connect to a Miden node, so they can be used before the network is available.
+
+Supported authentication schemes are `falcon512-poseidon2` and `ecdsa-k256-keccak`.
+
+#### `keys list`
+
+List each stored key's public key commitment, authentication scheme, and associated account IDs:
+
+```sh
+miden-client keys list
+```
+
+The associated accounts column contains `-` for a standalone key. A key generated or imported with the `keys` command is standalone because these operations do not associate it with an account.
+
+#### `keys generate`
+
+Generate a key for the selected authentication scheme and store it in the keystore:
+
+```sh
+miden-client keys generate --scheme falcon512-poseidon2
+miden-client keys generate --scheme ecdsa-k256-keccak
+```
+
+The command prints the public key commitment. It does not print the secret key.
+
+#### `keys import`
+
+Import and store one serialized authentication secret key:
+
+```sh
+miden-client keys import <FILE>
+```
+
+The file must contain exactly one `AuthSecretKey` in the Miden binary serialization format. PEM, DER, and raw secret-key files are not accepted. The command rejects data after the serialized key.
+
+#### `keys commitment`
+
+Calculate a public key commitment without storing the public key:
+
+```sh
+miden-client keys commitment --scheme falcon512-poseidon2 <PUBLIC_KEY>
+miden-client keys commitment --scheme ecdsa-k256-keccak <PUBLIC_KEY>
+```
+
+`PUBLIC_KEY` must be a `0x`-prefixed hexadecimal serialization of the key. For ECDSA, provide the 33-byte compressed SEC1 public key. For Falcon, provide the 897-byte serialized Falcon public key.
+
 ### Importing and exporting
 
 #### `export`
 
-Export input note data to a binary file .
+Export an output note or a local account to a binary file.
 
-| Flag                          | Description                           | Aliases |
-| ----------------------------- | ------------------------------------- | ------- |
-| `--filename <FILENAME>`       | Desired filename for the binary file. | `-f`    |
-| `--export-type <EXPORT_TYPE>` | Exported note type.                   | `-e`    |
+| Flag                          | Description                                              | Aliases |
+| ----------------------------- | -------------------------------------------------------- | ------- |
+| `--filename <FILENAME>`       | Desired filename for the binary file.                    | `-f`    |
+| `--account`                   | Export account data.                                     |         |
+| `--note`                      | Export note data.                                        |         |
+| `--export-type <EXPORT_TYPE>` | Exported note type. Required when exporting a note.      | `-e`    |
+| `--no-keys`                   | Leave secret keys out of an exported account file.       |         |
+
+##### Export an account
+
+Use `--account` to export a locally tracked account:
+
+```sh
+miden-client export <ACCOUNT_ID> --account
+miden-client export <ACCOUNT_ID> --account --filename account.mac
+```
+
+The default filename is `<ACCOUNT_ID>.mac`. A `.mac` file contains the account state and the authentication secret keys that the keystore associates with the account. If the keystore has no associated key, the export succeeds and the file contains no secret key.
+
+Use `--no-keys` to omit associated secret keys from the file:
+
+```sh
+miden-client export <ACCOUNT_ID> --account --no-keys
+```
+
+This option is useful when another party needs the account state but must not receive signing authority.
+
+:::warning
+An account file without secret keys can still contain sensitive data. An undeployed account file contains the account seed, which is required to deploy the account.
+:::
+
+##### Export a note
+
+Use `--note` and select an export type:
+
+```sh
+miden-client export <NOTE_ID> --note --export-type partial
+```
 
 ##### Export type
 
@@ -410,9 +492,19 @@ The user needs to specify how the note should be exported via the `--export-type
 
 #### `import`
 
-Import entities managed by the client, such as accounts and notes. The type of entities is inferred.
+Import one or more account or note files. The CLI infers each file type from its contents.
+
+```sh
+miden-client import <FILE>...
+```
+
+Importing a `.mac` account file adds the account to the client. The CLI also stores each secret key in the file and associates it with the account. A keyless account file still imports successfully, but it does not grant signing authority.
 
 The `--overwrite` flag can be used when importing accounts. It allows the user to overwrite existing accounts with the same ID. This is useful when you want to update the account's information or replace it with a new version.
+
+```sh
+miden-client import --overwrite account.mac
+```
 
 ### Executing scripts
 

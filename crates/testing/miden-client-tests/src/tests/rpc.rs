@@ -11,11 +11,19 @@ use miden_client::rpc::{
     RpcEndpoint,
     RpcError,
 };
+use miden_client::store::Store;
 use miden_client::testing::common::create_test_store_path;
 use miden_client::testing::mock::MockRpcApi;
-use miden_client::transaction::{TransactionRequest, TransactionRequestBuilder};
-use miden_client::{Client, ClientError, ErrorHint, Word};
-use miden_client_sqlite_store::ClientBuilderSqliteExt;
+use miden_client::transaction::{
+    ProvenTransaction,
+    TransactionInputs,
+    TransactionProver,
+    TransactionProverError,
+    TransactionRequest,
+    TransactionRequestBuilder,
+};
+use miden_client::{Client, ClientError, ErrorHint, Word, async_trait};
+use miden_client_sqlite_store::SqliteStore;
 use miden_protocol::crypto::rand::RandomCoin;
 use miden_testing::MockChain;
 
@@ -106,16 +114,26 @@ async fn register_account_accepts_a_repeated_binding() {
 // CLIENT METHOD
 // ================================================================================================
 
-/// Builds a client whose RPC layer is `rpc_api`.
+/// Builds a client whose RPC layer is `rpc_api`, over a store of its own.
 ///
-/// Registration does not read or write the store, so the client needs no genesis state.
+/// Registration reads no chain state, so the client needs no genesis state.
 async fn client_with_rpc(rpc_api: Arc<MockRpcApi>) -> Client<FilesystemKeyStore> {
+    let store = Arc::new(SqliteStore::new(create_test_store_path()).await.unwrap());
+    client_over_store(rpc_api, store).await
+}
+
+/// Builds a client whose RPC layer is `rpc_api` and whose store is `store`, so a test can read the
+/// same store back or hand it to a second client.
+async fn client_over_store(
+    rpc_api: Arc<MockRpcApi>,
+    store: Arc<dyn Store>,
+) -> Client<FilesystemKeyStore> {
     let keystore = FilesystemKeyStore::new(std::env::temp_dir()).unwrap();
 
     ClientBuilder::new()
         .rpc(rpc_api)
         .rng(Box::new(RandomCoin::new(Word::from([0xfeeu32, 1, 2, 3]))))
-        .sqlite_store(create_test_store_path())
+        .store(store)
         .authenticator(Arc::new(keystore))
         .tx_discard_delta(None)
         .build()
@@ -394,4 +412,94 @@ async fn a_failed_check_does_not_block_the_transaction() {
     Box::pin(client.submit_new_transaction(account.id(), deploy_request()))
         .await
         .unwrap();
+}
+
+/// A prover that always fails, so a test can reach the allowlist check without paying for a proof.
+struct AlwaysFailingProver;
+
+#[async_trait]
+impl TransactionProver for AlwaysFailingProver {
+    async fn prove(
+        &self,
+        _inputs: TransactionInputs,
+    ) -> Result<ProvenTransaction, TransactionProverError> {
+        Err(TransactionProverError::other("simulated prover failure"))
+    }
+}
+
+/// An answer that the network accepts an account is recorded, so a later attempt to create the same
+/// account asks nothing.
+///
+/// The account is never registered through the client, so the record can only come from the answer.
+/// Both attempts fail at proving, which is what leaves the account uncreated and gated for the
+/// second attempt, and what keeps this test cheap.
+#[tokio::test]
+async fn an_accepted_account_is_recorded_and_not_asked_about_again() {
+    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
+
+    let account = client.insert_wallet(AccountType::Private).await.unwrap();
+    let prover = Arc::new(AlwaysFailingProver);
+
+    let first = Box::pin(client.submit_new_transaction_with_prover(
+        account.id(),
+        deploy_request(),
+        prover.clone(),
+    ))
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(first, ClientError::TransactionProvingError(_)),
+        "the first attempt should have reached the prover, got: {first}"
+    );
+
+    assert_eq!(
+        rpc_api.is_account_allowed_call_count(),
+        1,
+        "the first attempt should have asked the node once"
+    );
+
+    let second =
+        Box::pin(client.submit_new_transaction_with_prover(account.id(), deploy_request(), prover))
+            .await
+            .unwrap_err();
+    assert!(
+        matches!(second, ClientError::TransactionProvingError(_)),
+        "the second attempt should have reached the prover, got: {second}"
+    );
+
+    assert_eq!(
+        rpc_api.is_account_allowed_call_count(),
+        1,
+        "the second attempt should have used the recorded answer"
+    );
+}
+
+/// A refusal is not recorded. The account is accepted as soon as it is registered, so a recorded
+/// refusal would outlive the state it described.
+///
+/// A recorded refusal would show up as the second attempt skipping the check and going on to prove,
+/// so this asserts that the second attempt asks again and is refused again. Neither attempt reaches
+/// the prover, which is what keeps this test cheap.
+#[tokio::test]
+async fn a_refusal_is_not_recorded() {
+    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
+    rpc_api.enforce_account_allowlist();
+
+    let account = client.insert_wallet(AccountType::Private).await.unwrap();
+
+    for attempt in 1..=2 {
+        let error = Box::pin(client.submit_new_transaction(account.id(), deploy_request()))
+            .await
+            .unwrap_err();
+        let ClientError::AccountNotAllowlisted(refused) = &error else {
+            panic!("attempt {attempt} should have been refused, got: {error}")
+        };
+        assert_eq!(*refused, account.id());
+
+        assert_eq!(
+            rpc_api.is_account_allowed_call_count(),
+            attempt,
+            "attempt {attempt} should have asked the node"
+        );
+    }
 }

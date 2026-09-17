@@ -241,6 +241,7 @@ where
             data_store: InMemoryBatchDataStore::new(inner_data_store),
             pushed_txs: Vec::new(),
             consumed_input_notes: BTreeSet::new(),
+            checked_accounts: BTreeSet::new(),
         }
     }
 
@@ -338,9 +339,32 @@ where
             return Ok(());
         }
 
-        let account_id = tx_result.executed_transaction().account_id();
+        self.check_account_id_allowed(tx_result.executed_transaction().account_id())
+            .await
+    }
+
+    /// Returns [`ClientError::AccountNotAllowlisted`] if the network refuses to create
+    /// `account_id`.
+    pub(crate) async fn check_account_id_allowed(
+        &self,
+        account_id: AccountId,
+    ) -> Result<(), ClientError> {
+        if self.store.is_account_allowlisted(account_id).await? {
+            return Ok(());
+        }
+
         match self.rpc_api.is_account_allowed(account_id).await {
-            Ok(true) => Ok(()),
+            Ok(true) => {
+                // Recording this is only an optimization, so a store failure leaves the transaction
+                // alone and costs one request the next time.
+                if let Err(err) = self.store.mark_account_allowlisted(account_id).await {
+                    info!(
+                        "the network accepts account {account_id} but the answer could not be \
+                         recorded locally: {err}"
+                    );
+                }
+                Ok(())
+            },
             Ok(false) => Err(ClientError::AccountNotAllowlisted(account_id)),
             Err(err) => {
                 info!(

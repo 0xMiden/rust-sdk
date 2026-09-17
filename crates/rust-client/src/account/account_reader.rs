@@ -12,7 +12,7 @@ use miden_protocol::account::{
     StorageSlotName,
 };
 use miden_protocol::address::Address;
-use miden_protocol::asset::{Asset, AssetAmount, AssetId};
+use miden_protocol::asset::{Asset, AssetAmount, AssetId, FungibleAsset};
 use miden_protocol::{Felt, Word};
 
 use crate::errors::ClientError;
@@ -135,20 +135,24 @@ impl AccountReader {
 
     /// Retrieves the balance of a fungible asset in the account's vault.
     ///
-    /// Returns [`AssetAmount::ZERO`] if the asset is not present in the vault or if the asset is
-    /// not a fungible asset.
+    /// Returns [`AssetAmount::ZERO`] if the asset is not present in the vault.
     ///
     /// To load the entire vault, use
     /// [`Client::get_account_vault`](crate::Client::get_account_vault).
+    ///
+    /// # Errors
+    /// Returns an error if the stored asset cannot be read as a fungible asset. The lookup key is
+    /// built as a fungible asset id, so that only happens for a stored value the protocol rejects.
     pub async fn get_balance(&self, faucet_id: AccountId) -> Result<AssetAmount, ClientError> {
         let asset_id = AssetId::new_fungible(faucet_id);
-        if let Some((Asset::Fungible(fungible_asset), _)) =
-            self.store.get_account_asset(self.account_id, asset_id).await?
-        {
-            Ok(fungible_asset.amount())
-        } else {
-            Ok(AssetAmount::ZERO)
-        }
+        let Some((asset, _)) = self.store.get_account_asset(self.account_id, asset_id).await?
+        else {
+            return Ok(AssetAmount::ZERO);
+        };
+
+        let fungible_asset = FungibleAsset::from_id_and_value(asset.id(), asset.to_value_word())?;
+
+        Ok(fungible_asset.amount())
     }
 
     // STORAGE ACCESS

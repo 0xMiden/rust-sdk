@@ -1676,7 +1676,6 @@ mod tests {
 
     fn header_with_account_root(header: &BlockHeader, account_root: Word) -> BlockHeader {
         BlockHeader::new(
-            header.version(),
             header.prev_block_commitment(),
             header.block_num(),
             header.chain_commitment(),
@@ -1684,9 +1683,10 @@ mod tests {
             header.nullifier_root(),
             header.note_root(),
             header.tx_commitment(),
-            header.tx_kernel_commitment(),
-            header.validator_keys().clone(),
+            header.validator_config().clone(),
             header.fee_parameters().clone(),
+            header.protocol_config_commitment(),
+            header.next_protocol_config().cloned(),
             header.timestamp(),
         )
     }
@@ -1862,7 +1862,6 @@ mod tests {
         // Same block number so the request resolves, but a tampered account root the witness cannot
         // verify against.
         let tampered_header = BlockHeader::new(
-            real_header.version(),
             real_header.prev_block_commitment(),
             real_header.block_num(),
             real_header.chain_commitment(),
@@ -1870,9 +1869,10 @@ mod tests {
             real_header.nullifier_root(),
             real_header.note_root(),
             real_header.tx_commitment(),
-            real_header.tx_kernel_commitment(),
-            real_header.validator_keys().clone(),
+            real_header.validator_config().clone(),
             real_header.fee_parameters().clone(),
+            real_header.protocol_config_commitment(),
+            real_header.next_protocol_config().cloned(),
             real_header.timestamp(),
         );
 
@@ -2080,7 +2080,8 @@ mod tests {
                     word(final_state),
                     input_notes,
                     vec![],
-                ),
+                )
+                .unwrap(),
                 output_notes: vec![],
                 erased_output_notes: vec![],
                 consumed_note_refs: vec![],
@@ -2128,7 +2129,8 @@ mod tests {
                         Nullifier::from_raw(word(40)),
                     )]),
                     vec![],
-                ),
+                )
+                .unwrap(),
                 output_notes: vec![],
                 erased_output_notes: vec![],
                 consumed_note_refs: vec![],
@@ -2190,7 +2192,8 @@ mod tests {
                     word(final_state),
                     InputNotes::new_unchecked(vec![]),
                     vec![],
-                ),
+                )
+                .unwrap(),
                 output_notes: vec![],
                 erased_output_notes: vec![],
                 consumed_note_refs: vec![],
@@ -2253,7 +2256,7 @@ mod tests {
         let account = builder.add_existing_mock_account(miden_testing::Auth::IncrNonce).unwrap();
         let account_id = account.id();
 
-        let asset = Asset::Fungible(FungibleAsset::new(faucet_id, 100u64).unwrap());
+        let asset = Asset::from(FungibleAsset::new(faucet_id, 100u64).unwrap());
         let note1 = builder
             .add_p2id_note(sender_id, account_id, &[asset], NoteType::Public)
             .unwrap();
@@ -2314,7 +2317,7 @@ mod tests {
 
         let account_id = account.id();
         let sync_input = StateSyncInput {
-            accounts: vec![AccountHeader::from(account)],
+            accounts: vec![AccountHeader::from(&account)],
             note_tags,
             input_notes,
             output_notes: vec![],
@@ -2707,7 +2710,7 @@ mod tests {
             builder.add_existing_mock_account(miden_testing::Auth::IncrNonce).unwrap();
         let sender_id = sender_account.id();
 
-        let asset = Asset::Fungible(FungibleAsset::new(faucet_id, 100u64).unwrap());
+        let asset = Asset::from(FungibleAsset::new(faucet_id, 100u64).unwrap());
         let note = builder
             .add_p2id_note(p2id_sender, sender_id, &[asset], NoteType::Public)
             .unwrap();
@@ -2776,7 +2779,7 @@ mod tests {
         let mut partial_mmr = PartialMmr::from_peaks(genesis_peaks);
 
         let sync_input = StateSyncInput {
-            accounts: vec![AccountHeader::from(sender_account), network_header],
+            accounts: vec![AccountHeader::from(&sender_account), network_header],
             note_tags: BTreeSet::new(),
             input_notes: vec![],
             output_notes: vec![output_note],
@@ -2931,7 +2934,8 @@ mod tests {
                 word(2),
                 InputNotes::new_unchecked(vec![]),
                 vec![],
-            ),
+            )
+            .unwrap(),
             output_notes: vec![],
             erased_output_notes: vec![],
             consumed_note_refs: vec![],

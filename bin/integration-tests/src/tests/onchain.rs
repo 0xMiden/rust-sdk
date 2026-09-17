@@ -9,7 +9,7 @@ use miden_client::account::{
     build_wallet_id,
 };
 use miden_client::asset::{Asset, AssetAmount, FungibleAsset};
-use miden_client::auth::{ECDSA_K256_KECCAK_SCHEME_ID, RPO_FALCON_SCHEME_ID};
+use miden_client::auth::RPO_FALCON_SCHEME_ID;
 use miden_client::keystore::Keystore;
 use miden_client::note::standards::NoteSyncHint;
 use miden_client::note::{
@@ -281,7 +281,7 @@ pub async fn test_onchain_accounts(client_config: ClientConfig) -> Result<()> {
 
     info!(from = %from_account_id, to = %to_account_id, amount = TRANSFER_AMOUNT, "Running P2ID transaction");
     let tx_request = TransactionRequestBuilder::new().build_pay_to_id(
-        PaymentNoteDescription::new(vec![Asset::Fungible(asset)], from_account_id, to_account_id),
+        PaymentNoteDescription::new(vec![Asset::from(asset)], from_account_id, to_account_id),
         NoteType::Public,
         client_1.rng(),
     )?;
@@ -350,7 +350,7 @@ pub async fn test_import_account_by_id(client_config: ClientConfig) -> Result<()
 
     // The account is built here rather than through a standard setup because the test re-derives
     // its ID from `user_seed` further down, so it has to know the seed it was built from.
-    let (auth, key) = auth_component(ECDSA_K256_KECCAK_SCHEME_ID)?;
+    let (auth, key) = auth_component(RPO_FALCON_SCHEME_ID)?;
     let wallet = AccountBuilder::new(user_seed)
         .account_type(AccountType::Public)
         .with_component(auth)

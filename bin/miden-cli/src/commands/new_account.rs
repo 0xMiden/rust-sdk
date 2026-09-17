@@ -628,11 +628,12 @@ fn process_packages(
                 format!("error creating InitStorageData for Package {}", package.name),
             )
         })?;
+        let package_name = package.name.clone();
         let account_component =
-            AccountComponent::from_package(&package, &init_data).map_err(|e| {
+            AccountComponent::from_package(package, &init_data).map_err(|e| {
                 CliError::Account(
                     e,
-                    format!("error instantiating component from Package {}", package.name),
+                    format!("error instantiating component from Package {package_name}"),
                 )
             })?;
 

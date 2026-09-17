@@ -182,7 +182,7 @@ async fn apply_account_patch_additions() -> anyhow::Result<()> {
             SqliteStore::apply_account_patch(
                 &tx,
                 &mut smt_forest,
-                &account.into(),
+                &(&account).into(),
                 &final_state,
                 &patch,
             )?;
@@ -282,7 +282,7 @@ async fn apply_account_patch_preserves_fungible_callback_flag() -> anyhow::Resul
             SqliteStore::apply_account_patch(
                 &tx,
                 &mut smt_forest,
-                &account.into(),
+                &(&account).into(),
                 &final_state,
                 &patch,
             )?;
@@ -379,7 +379,7 @@ async fn apply_account_patch_removes_slots_and_assets() -> anyhow::Result<()> {
             SqliteStore::apply_account_patch(
                 &tx,
                 &mut smt_forest,
-                &account.into(),
+                &(&account).into(),
                 &final_state,
                 &patch,
             )?;

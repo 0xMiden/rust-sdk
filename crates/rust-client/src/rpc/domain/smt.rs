@@ -1,12 +1,10 @@
-use alloc::collections::BTreeSet;
+use alloc::collections::BTreeMap;
 use alloc::string::ToString;
-use alloc::vec::Vec;
 
 use miden_protocol::Word;
 use miden_protocol::crypto::merkle::NodeIndex;
 use miden_protocol::crypto::merkle::smt::{
     LeafIndex,
-    NodeValue,
     PartialSmt,
     SMT_DEPTH,
     SmtLeaf,
@@ -125,68 +123,36 @@ impl TryFrom<proto::primitives::PartialSmt> for UniqueNodes {
     /// rather than left to it, so a malformed response is reported as a specific invalid field
     /// instead of an opaque reconstruction failure.
     fn try_from(value: proto::primitives::PartialSmt) -> Result<Self, Self::Error> {
-        use proto::primitives::partial_smt_node::Value;
-
-        let proto::primitives::PartialSmt {
-            root,
-            node_levels,
-            leaves,
-            value_only_leaves,
-        } = value;
+        let proto::primitives::PartialSmt { root, nodes, leaves, value_only_leaves } = value;
 
         let root: Word = root
             .ok_or(proto::primitives::PartialSmt::missing_field(stringify!(root)))?
             .try_into()?;
 
-        let mut seen_depths = BTreeSet::new();
-        let mut decoded_levels = Vec::with_capacity(node_levels.len());
-        for level in node_levels {
-            let depth = u8::try_from(level.depth)?;
-            // Depth 0 is the root, which is carried separately, and `SMT_DEPTH` is the leaf level.
-            // Only the strictly intermediate depths are boundary nodes.
+        let mut decoded_nodes = BTreeMap::new();
+        for node in nodes {
+            let depth = u8::try_from(node.depth)?;
             if depth == 0 || depth >= SMT_DEPTH {
                 return Err(RpcConversionError::InvalidField(format!(
                     "partial SMT node depth {depth} must be in the range 1..{SMT_DEPTH}"
                 )));
             }
-            if !seen_depths.insert(depth) {
+            let index = NodeIndex::new(depth, node.position)?;
+            let value = node
+                .value
+                .ok_or(proto::primitives::PartialSmtNode::missing_field("value"))?
+                .try_into()?;
+            if decoded_nodes.insert(index, value).is_some() {
                 return Err(RpcConversionError::InvalidField(format!(
-                    "partial SMT contains duplicate node depth {depth}"
+                    "partial SMT contains duplicate node index {} at depth {depth}",
+                    node.position
                 )));
             }
-
-            let mut seen_indices = BTreeSet::new();
-            let mut decoded_nodes = Vec::with_capacity(level.nodes.len());
-            for node in level.nodes {
-                NodeIndex::new(depth, node.index)?;
-                if !seen_indices.insert(node.index) {
-                    return Err(RpcConversionError::InvalidField(format!(
-                        "partial SMT contains duplicate node index {} at depth {depth}",
-                        node.index
-                    )));
-                }
-
-                let node_value = match node
-                    .value
-                    .ok_or(proto::primitives::PartialSmtNode::missing_field(stringify!(value)))?
-                {
-                    Value::Digest(digest) => NodeValue::Present(digest.try_into()?),
-                    Value::EmptySubtreeRoot(true) => NodeValue::EmptySubtreeRoot,
-                    Value::EmptySubtreeRoot(false) => {
-                        return Err(RpcConversionError::InvalidField(
-                            "partial SMT empty_subtree_root marker must be true".into(),
-                        ));
-                    },
-                };
-                decoded_nodes.push((node.index, node_value));
-            }
-            decoded_levels.push((depth, decoded_nodes));
         }
 
-        let mut seen_leaf_indices = BTreeSet::new();
-        let mut decoded_leaves = Vec::with_capacity(leaves.len());
+        let mut decoded_leaves = BTreeMap::new();
         for indexed_leaf in leaves {
-            if !seen_leaf_indices.insert(indexed_leaf.index) {
+            if decoded_leaves.contains_key(&indexed_leaf.index) {
                 return Err(RpcConversionError::InvalidField(format!(
                     "partial SMT contains duplicate leaf index {}",
                     indexed_leaf.index
@@ -197,19 +163,18 @@ impl TryFrom<proto::primitives::PartialSmt> for UniqueNodes {
                 .as_ref()
                 .ok_or(proto::primitives::IndexedSmtLeaf::missing_field(stringify!(leaf)))?
                 .try_into()?;
-            decoded_leaves.push((indexed_leaf.index, leaf));
+            decoded_leaves.insert(indexed_leaf.index, leaf);
         }
 
-        let mut seen_value_only_indices = BTreeSet::new();
-        let mut decoded_value_only_leaves = Vec::with_capacity(value_only_leaves.len());
+        let mut decoded_value_only_leaves = BTreeMap::new();
         for indexed_digest in value_only_leaves {
-            if !seen_value_only_indices.insert(indexed_digest.index) {
+            if decoded_value_only_leaves.contains_key(&indexed_digest.index) {
                 return Err(RpcConversionError::InvalidField(format!(
                     "partial SMT contains duplicate value-only leaf index {}",
                     indexed_digest.index
                 )));
             }
-            if seen_leaf_indices.contains(&indexed_digest.index) {
+            if decoded_leaves.contains_key(&indexed_digest.index) {
                 return Err(RpcConversionError::InvalidField(format!(
                     "partial SMT leaf index {} has both a leaf and a value-only leaf",
                     indexed_digest.index
@@ -219,12 +184,12 @@ impl TryFrom<proto::primitives::PartialSmt> for UniqueNodes {
                 .value
                 .ok_or(proto::primitives::IndexedDigest::missing_field(stringify!(value)))?
                 .try_into()?;
-            decoded_value_only_leaves.push((indexed_digest.index, digest));
+            decoded_value_only_leaves.insert(indexed_digest.index, digest);
         }
 
         Ok(UniqueNodes {
             root,
-            nodes: decoded_levels.into_iter().collect(),
+            nodes: decoded_nodes,
             leaves: decoded_leaves,
             value_only_leaves: decoded_value_only_leaves,
         })

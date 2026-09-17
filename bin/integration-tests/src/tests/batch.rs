@@ -52,11 +52,7 @@ pub async fn test_batch_builder_submits_two_p2id_on_one_account(
 
     let tx_request_1 = TransactionRequestBuilder::new()
         .build_pay_to_id(
-            PaymentNoteDescription::new(
-                vec![Asset::Fungible(asset)],
-                from_account_id,
-                to_account_id,
-            ),
+            PaymentNoteDescription::new(vec![Asset::from(asset)], from_account_id, to_account_id),
             NoteType::Private,
             client.rng(),
         )
@@ -64,11 +60,7 @@ pub async fn test_batch_builder_submits_two_p2id_on_one_account(
 
     let tx_request_2 = TransactionRequestBuilder::new()
         .build_pay_to_id(
-            PaymentNoteDescription::new(
-                vec![Asset::Fungible(asset)],
-                from_account_id,
-                to_account_id,
-            ),
+            PaymentNoteDescription::new(vec![Asset::from(asset)], from_account_id, to_account_id),
             NoteType::Private,
             client.rng(),
         )
@@ -185,7 +177,7 @@ pub async fn test_batch_builder_multiple_accounts(client_config: ClientConfig) -
     let asset = FungibleAsset::new(faucet_account_id, TRANSFER_AMOUNT).unwrap();
     let req_send = TransactionRequestBuilder::new()
         .build_pay_to_id(
-            PaymentNoteDescription::new(vec![Asset::Fungible(asset)], account_id_a, account_id_b),
+            PaymentNoteDescription::new(vec![Asset::from(asset)], account_id_a, account_id_b),
             NoteType::Private,
             client.rng(),
         )
@@ -322,21 +314,21 @@ pub async fn test_batch_builder_interleaved_pushes(client_config: ClientConfig) 
 
     let req_a_to_b_first = TransactionRequestBuilder::new()
         .build_pay_to_id(
-            PaymentNoteDescription::new(vec![Asset::Fungible(asset)], account_id_a, account_id_b),
+            PaymentNoteDescription::new(vec![Asset::from(asset)], account_id_a, account_id_b),
             NoteType::Private,
             client.rng(),
         )
         .unwrap();
     let req_b_to_a = TransactionRequestBuilder::new()
         .build_pay_to_id(
-            PaymentNoteDescription::new(vec![Asset::Fungible(asset)], account_id_b, account_id_a),
+            PaymentNoteDescription::new(vec![Asset::from(asset)], account_id_b, account_id_a),
             NoteType::Private,
             client.rng(),
         )
         .unwrap();
     let req_a_to_b_second = TransactionRequestBuilder::new()
         .build_pay_to_id(
-            PaymentNoteDescription::new(vec![Asset::Fungible(asset)], account_id_a, account_id_b),
+            PaymentNoteDescription::new(vec![Asset::from(asset)], account_id_a, account_id_b),
             NoteType::Private,
             client.rng(),
         )

@@ -225,6 +225,7 @@ fn convert_transaction_header(
         final_state_commitment.try_into()?,
         input_notes,
         output_note_headers,
-    );
+    )
+    .map_err(|err| RpcError::InvalidResponse(err.to_string()))?;
     Ok((transaction_header, committed_output_notes, erased_output_notes))
 }

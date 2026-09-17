@@ -8,11 +8,12 @@ use miden_client::Word;
 use miden_client::block::BlockHeader;
 use miden_client::crypto::{Forest, InOrderIndex, MmrPeaks};
 use miden_client::note::BlockNumber;
-use miden_client::store::{BlockRelevance, PartialBlockchainFilter, StoreError};
+use miden_client::store::{BlockRelevance, PartialBlockchainFilter, StaleUpdate, StoreError};
 use miden_client::utils::{Deserializable, Serializable};
 use rusqlite::{Connection, Transaction, params, params_from_iter};
 
 use super::SqliteStore;
+use crate::note::unspent_note_block_numbers;
 use crate::sql_error::SqlResultExt;
 use crate::sync::query_sync_height;
 use crate::{insert_sql, int_array, subst, with_write_tx};
@@ -181,6 +182,19 @@ impl SqliteStore {
         node_indices_to_remove: &[InOrderIndex],
     ) -> Result<(), StoreError> {
         with_write_tx(conn, |tx| {
+            // The caller picked `blocks_to_untrack` from a read taken before this transaction.
+            // Reject the whole prune if a note became unspent in one of those blocks since then,
+            // because deleting the header would leave that note's inclusion proof without a block.
+            if !blocks_to_untrack.is_empty() {
+                let blocks_with_unspent_notes = unspent_note_block_numbers(tx)?;
+                if let Some(block) = blocks_to_untrack
+                    .iter()
+                    .find(|block| blocks_with_unspent_notes.contains(&block.as_u32()))
+                {
+                    return Err(StaleUpdate::Block(*block).into());
+                }
+            }
+
             // 1. Delete stale MMR authentication nodes.
             if !node_indices_to_remove.is_empty() {
                 let id_values =
@@ -293,12 +307,33 @@ mod test {
     use std::collections::{BTreeMap, BTreeSet};
     use std::vec::Vec;
 
-    use miden_client::Word;
+    use miden_client::account::AccountId;
     use miden_client::block::BlockHeader;
-    use miden_client::crypto::{Forest, InOrderIndex, MmrPeaks};
-    use miden_client::note::BlockNumber;
-    use miden_client::store::{PartialBlockchainFilter, Store};
+    use miden_client::crypto::{Forest, InOrderIndex, MmrPeaks, SparseMerklePath};
+    use miden_client::note::{
+        BlockNumber,
+        NoteAssets,
+        NoteAttachments,
+        NoteDetails,
+        NoteInclusionProof,
+        NoteMetadata,
+        NoteRecipient,
+        NoteStorage,
+        NoteType,
+        PartialNoteMetadata,
+        StandardNote,
+    };
+    use miden_client::store::input_note_states::CommittedNoteState;
+    use miden_client::store::{
+        InputNoteRecord,
+        PartialBlockchainFilter,
+        StaleUpdate,
+        Store,
+        StoreError,
+    };
+    use miden_client::testing::account_id::ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE;
     use miden_client::utils::Serializable;
+    use miden_client::{EMPTY_WORD, Felt, Word, ZERO};
     use miden_protocol::crypto::merkle::mmr::Mmr;
     use rusqlite::params;
 
@@ -634,5 +669,58 @@ mod test {
 
         let proof_3 = rebuilt.open(3).expect("open succeeds");
         assert!(proof_3.is_none(), "block 3 should no longer be provable");
+    }
+
+    /// A prune list taken before a note was committed must not delete the block that note proves
+    /// inclusion in.
+    #[tokio::test]
+    async fn prune_irrelevant_blocks_rejects_a_block_with_an_unspent_note() {
+        const NOTE_BLOCK: u32 = 3;
+
+        let mut store = create_test_store().await;
+        insert_dummy_block_headers(&mut store).await;
+
+        let note = create_committed_input_note(BlockNumber::from(NOTE_BLOCK));
+        store.upsert_input_notes(&[note]).await.unwrap();
+
+        let result = store
+            .untrack_and_prune_irrelevant_blocks(&[BlockNumber::from(NOTE_BLOCK)], &[])
+            .await;
+        assert!(
+            matches!(&result, Err(StoreError::StaleUpdate(StaleUpdate::Block(_)))),
+            "expected a stale update conflict, got {result:?}"
+        );
+
+        // The block is still tracked, so the note's inclusion proof still has its header.
+        let tracked = store.get_tracked_block_header_numbers().await.unwrap();
+        assert!(tracked.contains(&(NOTE_BLOCK as usize)), "tracked blocks: {tracked:?}");
+    }
+
+    /// Builds a committed input note, which is unspent and proves inclusion in `block_num`.
+    pub fn create_committed_input_note(block_num: BlockNumber) -> InputNoteRecord {
+        let recipient = NoteRecipient::new(
+            [Felt::new_unchecked(1234), ZERO, ZERO, ZERO].into(),
+            StandardNote::P2ID.script(),
+            NoteStorage::new(vec![]).unwrap(),
+        );
+        let sender =
+            AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE).unwrap();
+
+        let state = CommittedNoteState {
+            metadata: NoteMetadata::new(
+                PartialNoteMetadata::new(sender, NoteType::Public),
+                &NoteAttachments::empty(),
+            ),
+            inclusion_proof: NoteInclusionProof::new(block_num, 0, SparseMerklePath::default())
+                .unwrap(),
+            block_note_root: EMPTY_WORD,
+        };
+
+        InputNoteRecord::new(
+            NoteDetails::new(NoteAssets::new(vec![]).unwrap(), recipient),
+            NoteAttachments::empty(),
+            Some(0),
+            state.into(),
+        )
     }
 }

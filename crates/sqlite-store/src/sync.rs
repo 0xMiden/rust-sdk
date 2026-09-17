@@ -154,8 +154,14 @@ impl SqliteStore {
                     PublicAccountUpdate::Full(account) => {
                         Self::update_account_state(db_tx, &mut smt_forest, account)?;
                     },
-                    PublicAccountUpdate::Patch { new_header, patch } => {
-                        Self::apply_sync_account_patch(db_tx, &mut smt_forest, new_header, patch)?;
+                    PublicAccountUpdate::Patch { previous_header, new_header, patch } => {
+                        Self::apply_sync_account_patch(
+                            db_tx,
+                            &mut smt_forest,
+                            previous_header,
+                            new_header,
+                            patch,
+                        )?;
                     },
                 }
             }

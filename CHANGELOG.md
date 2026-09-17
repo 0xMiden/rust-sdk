@@ -4,6 +4,9 @@
 
 ### Breaking Changes
 
+* [BREAKING][behavior][store] Store writes now verify the state they were derived from inside the write transaction, so a stale account, note, or block update fails instead of overwriting newer state ([#2538](https://github.com/0xMiden/rust-sdk/pull/2538)).
+* [BREAKING][type][rust] `PublicAccountUpdate::Patch` carries a new `previous_header` field holding the account header the patch was derived from ([#2538](https://github.com/0xMiden/rust-sdk/pull/2538)).
+* [BREAKING][type][rust] Added the `StoreError::StaleUpdate` variant and the `StaleUpdate` enum, so exhaustive matches on `StoreError` must handle it  ([#2538](https://github.com/0xMiden/rust-sdk/pull/2538)).
 * [BREAKING][type][rust] Added the `StoreError::DatabaseTransientError` and `StoreError::DatabasePermanentError` variants, so exhaustive matches on `StoreError` must handle them. The SQLite store returns the first for a busy or locked database and the second for a constraint violation or a corrupt database file, which it previously reported as `StoreError::DatabaseError` ([#2537](https://github.com/0xMiden/rust-sdk/pull/2537)).
 * [BREAKING][type][rust] Flattened `SyncedNote`, it now carries `note_id`, `metadata` and `inclusion_proof` directly, replacing the nested `committed: CommittedNote` field. Code that read that field can call `SyncedNote::into_committed_note` to get the sync record back, with the note's resolved attachments included ([#2475](https://github.com/0xMiden/rust-sdk/pull/2475)).
 * [BREAKING][param][rust] `NoteObserver::observe` now takes a single `&SyncedNote` instead of a `&CommittedNote` and its `&NoteAttachments` ([#2475](https://github.com/0xMiden/rust-sdk/pull/2475)).

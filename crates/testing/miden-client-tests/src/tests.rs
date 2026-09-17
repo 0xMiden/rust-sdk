@@ -551,7 +551,8 @@ async fn stale_cached_partial_mmr_is_rebuilt_from_store() {
     seed_mock_transaction_encryption_key(&mut client).await;
     client.insert_wallet(AccountType::Private).await.unwrap();
 
-    // Import the mock chain's public notes so a block becomes tracked after sync.
+    // Import the mock chain's public notes so a block becomes tracked after sync, which is what
+    // puts the authentication nodes of the blocks below it into the store.
     let notes: Vec<Note> = rpc_api
         .get_public_available_notes()
         .into_iter()
@@ -569,16 +570,17 @@ async fn stale_cached_partial_mmr_is_rebuilt_from_store() {
     client.sync_state().await.unwrap();
     assert!(client.test_has_cached_partial_mmr());
 
-    // Pick any tracked block. The mock chain has an unspent public note in block 1, so the tracked
-    // set is non-empty after the sync above.
-    let tracked: Vec<usize> = client
+    // Track genesis, which holds no client note. Untracking a block that still has an unspent note
+    // is refused, because deleting its header would leave that note's inclusion proof without a
+    // block to verify against.
+    let to_untrack = BlockNumber::GENESIS;
+    let (header, _) = client
         .test_store()
-        .get_tracked_block_header_numbers()
+        .get_block_header_by_num(to_untrack)
         .await
         .unwrap()
-        .into_iter()
-        .collect();
-    let to_untrack = BlockNumber::from(u32::try_from(tracked[0]).unwrap());
+        .expect("genesis is always stored");
+    client.test_store().insert_block_header(&header, &[], true).await.unwrap();
 
     // Confirm the cache currently sees the leaf as tracked.
     let cached_before = client.get_current_partial_mmr().await.unwrap();

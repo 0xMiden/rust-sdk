@@ -1,6 +1,7 @@
 #![allow(clippy::items_after_statements)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 use std::vec::Vec;
 
 use miden_client::account::AccountId;
@@ -16,6 +17,7 @@ use miden_client::note::{
     NoteUpdateTracker,
     NoteUpdateType,
     Nullifier,
+    OutputNoteUpdate,
 };
 use miden_client::store::{
     InputNoteCursor,
@@ -24,11 +26,12 @@ use miden_client::store::{
     NoteFilter,
     OutputNoteRecord,
     OutputNoteState,
+    StaleUpdate,
     StoreError,
 };
 use miden_client::utils::{Deserializable, DeserializationError, Serializable};
 use miden_client::{SliceReader, Word};
-use miden_protocol::note::NoteStorage;
+use miden_protocol::note::{NoteDetailsCommitment, NoteStorage};
 use rusqlite::types::Value;
 use rusqlite::{Connection, OptionalExtension, Transaction, params, params_from_iter};
 
@@ -189,6 +192,7 @@ impl SqliteStore {
         notes: &[InputNoteRecord],
     ) -> Result<(), StoreError> {
         with_write_tx(conn, |tx| {
+            check_input_note_transitions_against_stored_states(tx, notes)?;
             let mut scripts: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
             let mut serialized = Vec::with_capacity(notes.len());
 
@@ -267,6 +271,24 @@ impl SqliteStore {
 
 // HELPERS
 // ================================================================================================
+
+// Returns the block numbers that unspent input notes prove inclusion in.
+pub(crate) fn unspent_note_block_numbers(
+    tx: &Transaction<'_>,
+) -> Result<BTreeSet<u32>, StoreError> {
+    let (query, params) = note_filter_to_query_input_notes(&NoteFilter::Unspent);
+    let mut statement = tx.prepare(query.as_str()).into_store_error()?;
+    let mut rows = statement.query(params_from_iter(params)).into_store_error()?;
+
+    let mut block_numbers = BTreeSet::new();
+    while let Some(row) = rows.next().into_store_error()? {
+        if let Some(proof) = parse_input_note(row)?.inclusion_proof() {
+            block_numbers.insert(proof.location().block_num().as_u32());
+        }
+    }
+
+    Ok(block_numbers)
+}
 
 /// Builds an input note record from one row of the input notes query.
 fn parse_input_note(row: &rusqlite::Row<'_>) -> Result<InputNoteRecord, StoreError> {
@@ -517,6 +539,21 @@ pub(crate) fn apply_note_updates_tx(
     tx: &Transaction,
     note_updates: &NoteUpdateTracker,
 ) -> Result<(), StoreError> {
+    // Reject the whole update if any note's stored state does not allow the write.
+    let input_notes: Vec<InputNoteRecord> = note_updates
+        .updated_input_notes()
+        .filter(|update| update.update_type().is_modified())
+        .map(|update| update.inner().clone())
+        .collect();
+    check_input_note_transitions_against_stored_states(tx, &input_notes)?;
+
+    let output_notes: Vec<&OutputNoteRecord> = note_updates
+        .updated_output_notes()
+        .filter(|update| update.update_type().is_modified())
+        .map(OutputNoteUpdate::inner)
+        .collect();
+    check_output_note_transitions_against_stored_states(tx, &output_notes)?;
+
     // Split input notes into inserts and updates, collecting scripts from new notes.
     let mut input_inserts = Vec::new();
     let mut input_updates = Vec::new();
@@ -569,6 +606,98 @@ pub(crate) fn apply_note_updates_tx(
     batch_update_output_note_states(tx, &output_updates)?;
 
     Ok(())
+}
+
+// NOTE STATE GUARD
+// ================================================================================================
+
+/// Returns an error if any input note would move to a state its stored state does not allow.
+fn check_input_note_transitions_against_stored_states(
+    tx: &Transaction<'_>,
+    notes: &[InputNoteRecord],
+) -> Result<(), StoreError> {
+    let stored = stored_note_states(
+        tx,
+        "input_notes",
+        notes.iter().map(InputNoteRecord::details_commitment),
+    )?;
+
+    for note in notes {
+        let details_commitment = note.details_commitment();
+        let Some(&stored_discriminant) = stored.get(&details_commitment) else {
+            continue;
+        };
+        let new_discriminant = note.state().discriminant();
+
+        if !InputNoteState::is_valid_transition(stored_discriminant, new_discriminant) {
+            return Err(StaleUpdate::InvalidInputNoteTransition {
+                details_commitment: details_commitment.as_word(),
+                stored_discriminant,
+                new_discriminant,
+            }
+            .into());
+        }
+    }
+
+    Ok(())
+}
+
+/// Returns an error if any output note would move to a state its stored state does not allow.
+fn check_output_note_transitions_against_stored_states(
+    tx: &Transaction<'_>,
+    notes: &[&OutputNoteRecord],
+) -> Result<(), StoreError> {
+    let stored =
+        stored_note_states(tx, "output_notes", notes.iter().map(|n| n.details_commitment()))?;
+
+    for note in notes {
+        let details_commitment = note.details_commitment();
+        let Some(&stored_discriminant) = stored.get(&details_commitment) else {
+            continue;
+        };
+        let new_discriminant = note.state().discriminant();
+
+        if !OutputNoteState::is_valid_transition(stored_discriminant, new_discriminant) {
+            return Err(StaleUpdate::InvalidOutputNoteTransition {
+                details_commitment: details_commitment.as_word(),
+                stored_discriminant,
+                new_discriminant,
+            }
+            .into());
+        }
+    }
+
+    Ok(())
+}
+
+/// Returns the stored state discriminant of each note that already has a row in `table`. Notes with
+/// no row yet are absent from the result.
+fn stored_note_states(
+    tx: &Transaction<'_>,
+    table: &str,
+    commitments: impl Iterator<Item = NoteDetailsCommitment>,
+) -> Result<BTreeMap<NoteDetailsCommitment, u8>, StoreError> {
+    let keys: Vec<Value> = commitments.map(|c| Value::Blob(c.to_bytes())).collect();
+    if keys.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+
+    let query = format!(
+        "SELECT details_commitment, state_discriminant FROM {table} \
+         WHERE details_commitment IN rarray(?)"
+    );
+
+    tx.prepare(&query)
+        .into_store_error()?
+        .query_map(params![Rc::new(keys)], |row| {
+            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, u8>(1)?))
+        })
+        .into_store_error()?
+        .map(|row| {
+            let (commitment, discriminant) = row.into_store_error()?;
+            Ok((NoteDetailsCommitment::read_from_bytes(&commitment)?, discriminant))
+        })
+        .collect()
 }
 
 /// Batch-upsert note scripts using a multi-row insert. Multi-row inserts reduce per-statement

@@ -71,11 +71,11 @@ pub struct KeysCmd {
     #[arg(long, value_name = "PUBLIC_KEY")]
     commitment: Option<String>,
 
-    /// Associate a stored key with an account.
+    /// Associate a stored key with an account so account exports include it.
     #[arg(long, value_name = "COMMITMENT", requires = "account_id")]
     associate: Option<String>,
 
-    /// Remove an association between a stored key and an account.
+    /// Disassociate a stored key from an account so account exports omit it.
     #[arg(long, value_name = "COMMITMENT", requires = "account_id")]
     disassociate: Option<String>,
 

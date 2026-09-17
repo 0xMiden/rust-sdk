@@ -29,10 +29,8 @@ use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::crypto::merkle::mmr::{Forest, MmrPath, MmrProof};
 use miden_protocol::note::{NoteId, NoteScript, NoteTag};
 use miden_protocol::transaction::ProvenTransaction;
-use miden_protocol::utils::serde::Deserializable;
 use miden_protocol::vm::ExecutionProof;
 use miden_protocol::{EMPTY_WORD, Word};
-use miden_tx::utils::serde::Serializable;
 use miden_tx::utils::sync::RwLock;
 use tonic::Status;
 use tracing::{info, warn};
@@ -60,6 +58,7 @@ use crate::rpc::domain::status::NetworkNoteStatusInfo;
 use crate::rpc::domain::storage_map::StorageMapInfo;
 use crate::rpc::domain::sync::{ChainMmrInfo, SyncTarget};
 use crate::rpc::domain::transaction::TransactionRecord;
+use crate::rpc::domain::{build_unchecked_message, verify_message};
 use crate::rpc::errors::node::parse_node_error;
 use crate::rpc::errors::{AcceptHeaderContext, AcceptHeaderError, GrpcError, RpcConversionError};
 use crate::rpc::generated::rpc::BlockRange;
@@ -394,14 +393,15 @@ impl NodeRpcClient for GrpcClient {
             .attestations
             .into_iter()
             .filter_map(|attestation| {
-                let decoded =
-                    ValidatorPublicKey::read_from_bytes(&attestation.validator_public_key)
-                        .ok()
-                        .zip(ValidatorSignature::read_from_bytes(&attestation.signature).ok())
-                        .map(|(validator_key, signature)| ValidatorAttestation {
-                            validator_key,
-                            signature,
-                        });
+                let validator_key = attestation
+                    .validator_public_key
+                    .and_then(|key| verify_message::<_, ValidatorPublicKey>(key).ok());
+                let signature = attestation
+                    .signature
+                    .and_then(|signature| verify_message::<_, ValidatorSignature>(signature).ok());
+                let decoded = validator_key.zip(signature).map(|(validator_key, signature)| {
+                    ValidatorAttestation { validator_key, signature }
+                });
                 if decoded.is_none() {
                     warn!(
                         "skipping a transaction encryption key attestation that failed to decode"
@@ -444,8 +444,8 @@ impl NodeRpcClient for GrpcClient {
         proven_transaction: ProvenTransaction,
         sealed_transaction_inputs: SealedTransactionInputs,
     ) -> Result<BlockNumber, RpcError> {
-        let request = proto::transaction::ProvenTransaction {
-            transaction: proven_transaction.to_bytes(),
+        let request = proto::submission::ProvenTransactionSubmission {
+            transaction: Some((&proven_transaction).into()),
             sealed_transaction_inputs: Some(sealed_transaction_inputs.into()),
         };
 
@@ -465,9 +465,9 @@ impl NodeRpcClient for GrpcClient {
         proposed_batch: ProposedBatch,
         sealed_transaction_inputs: Vec<SealedTransactionInputs>,
     ) -> Result<BlockNumber, RpcError> {
-        let request = proto::transaction::TransactionBatch {
-            batch_proof: proven_batch.to_bytes(),
-            proposed_batch: Some(proposed_batch.to_bytes()),
+        let request = proto::submission::TransactionBatch {
+            batch: Some((&proven_batch).into()),
+            proposed_batch: Some((&proposed_batch).into()),
             sealed_transaction_inputs: sealed_transaction_inputs
                 .into_iter()
                 .map(Into::into)
@@ -492,6 +492,7 @@ impl NodeRpcClient for GrpcClient {
         let request = proto::rpc::BlockHeaderByNumberRequest {
             block_num: block_num.as_ref().map(BlockNumber::as_u32),
             include_mmr_proof: Some(include_mmr_proof),
+            include_protocol_config: None,
         };
 
         info!("Calling GetBlockHeaderByNumber: {:?}", request);
@@ -504,19 +505,19 @@ impl NodeRpcClient for GrpcClient {
 
         let response = api_response.into_inner();
 
-        let block_header: BlockHeader = response
-            .block_header
-            .ok_or(RpcError::ExpectedDataMissing("BlockHeader".into()))?
-            .try_into()?;
+        let block_header: BlockHeader = build_unchecked_message(
+            response
+                .block_header
+                .ok_or(RpcError::ExpectedDataMissing("BlockHeader".into()))?,
+        )?;
 
         let mmr_proof = if include_mmr_proof {
             let forest = response
                 .chain_length
                 .ok_or(RpcError::ExpectedDataMissing("ChainLength".into()))?;
-            let merkle_path: MerklePath = response
-                .mmr_path
-                .ok_or(RpcError::ExpectedDataMissing("MmrPath".into()))?
-                .try_into()?;
+            let merkle_path: MerklePath = verify_message(
+                response.mmr_path.ok_or(RpcError::ExpectedDataMissing("MmrPath".into()))?,
+            )?;
 
             let forest_size = usize::try_from(forest).expect("u64 should fit in usize");
             let forest = Forest::new(forest_size).map_err(|_| {
@@ -537,8 +538,8 @@ impl NodeRpcClient for GrpcClient {
         let limits = self.get_rpc_limits().await?;
         let mut notes = Vec::with_capacity(note_ids.len());
         for chunk in note_ids.chunks(limits.note_ids_limit as usize) {
-            let request = proto::note::NoteIdList {
-                ids: chunk.iter().map(|id| (*id).into()).collect(),
+            let request = proto::rpc::NotesByIdRequest {
+                note_ids: chunk.iter().map(proto::note::NoteId::from).collect(),
             };
 
             let api_response = self
@@ -642,10 +643,11 @@ impl NodeRpcClient for GrpcClient {
             .await?
             .into_inner();
 
-        let account_witness: AccountWitness = response
-            .witness
-            .ok_or(RpcError::ExpectedDataMissing("AccountWitness".to_string()))?
-            .try_into()?;
+        let account_witness: AccountWitness = verify_message(
+            response
+                .witness
+                .ok_or(RpcError::ExpectedDataMissing("AccountWitness".to_string()))?,
+        )?;
 
         let response_block_num: BlockNumber = response
             .block_num
@@ -802,7 +804,7 @@ impl NodeRpcClient for GrpcClient {
         block_num: BlockNumber,
         include_proof: bool,
     ) -> Result<(SignedBlock, Option<ExecutionProof>), RpcError> {
-        let request = proto::blockchain::BlockRequest {
+        let request = proto::rpc::BlockRequest {
             block_num: block_num.as_u32(),
             include_proof: Some(include_proof),
         };
@@ -817,10 +819,11 @@ impl NodeRpcClient for GrpcClient {
     }
 
     async fn get_note_script_by_root(&self, root: Word) -> Result<Option<NoteScript>, RpcError> {
-        let request = proto::note::NoteScriptRoot { root: Some(root.into()) };
+        let request = proto::rpc::NoteScriptByRootRequest { root: Some(root.into()) };
 
         let response = self
             .call_with_retry(RpcEndpoint::GetNoteScriptByRoot, |mut rpc_api| {
+                let request = request.clone();
                 Box::pin(async move { rpc_api.get_note_script_by_root(request).await })
             })
             .await?;
@@ -829,7 +832,7 @@ impl NodeRpcClient for GrpcClient {
         let Some(script) = response.into_inner().script else {
             return Ok(None);
         };
-        let note_script = NoteScript::try_from(script)?;
+        let note_script: NoteScript = verify_message(script)?;
 
         Ok(Some(note_script))
     }
@@ -853,7 +856,6 @@ impl NodeRpcClient for GrpcClient {
             };
             let response = self
                 .call_with_retry(RpcEndpoint::SyncStorageMaps, |mut rpc_api| {
-                    let request = request.clone();
                     Box::pin(async move { rpc_api.sync_account_storage_maps(request).await })
                 })
                 .await?;
@@ -898,7 +900,6 @@ impl NodeRpcClient for GrpcClient {
             };
             let response = self
                 .call_with_retry(RpcEndpoint::SyncAccountVault, |mut rpc_api| {
-                    let request = request.clone();
                     Box::pin(async move { rpc_api.sync_account_vault(request).await })
                 })
                 .await?;
@@ -1016,10 +1017,11 @@ impl NodeRpcClient for GrpcClient {
         &self,
         note_id: NoteId,
     ) -> Result<NetworkNoteStatusInfo, RpcError> {
-        let request = proto::note::NoteId { id: Some(note_id.into()) };
+        let request = proto::note::NoteId::from(&note_id);
 
         let response = self
             .call_with_retry(RpcEndpoint::GetNetworkNoteStatus, |mut rpc_api| {
+                let request = request.clone();
                 Box::pin(async move { rpc_api.get_network_note_status(request).await })
             })
             .await?;
@@ -1073,18 +1075,19 @@ impl From<&Status> for GrpcError {
 /// decode as a [`SignedBlock`] and never as a `ProvenBlock`. The node omits the proof when it is
 /// not requested, and also when the block is not proven yet, so an absent proof is not an error.
 fn decode_block_response(
-    response: proto::blockchain::MaybeBlock,
+    response: proto::rpc::MaybeBlock,
 ) -> Result<(SignedBlock, Option<ExecutionProof>), RpcError> {
-    let block = SignedBlock::read_from_bytes(
-        &response
+    // The response carries the block and its proof in separate fields, so the block message holds a
+    // signed block and never a proven one.
+    let block: SignedBlock = build_unchecked_message(
+        response
             .block
             .ok_or(RpcError::ExpectedDataMissing("GetBlockByNumberResponse.block".to_string()))?,
     )?;
 
-    let proof = response
-        .proof
-        .map(|bytes| ExecutionProof::read_from_bytes(&bytes))
-        .transpose()?;
+    // The node omits the proof when it is not requested, and also when the block is not proven yet,
+    // so an absent proof is not an error.
+    let proof = response.proof.map(ExecutionProof::try_from).transpose()?;
 
     Ok((block, proof))
 }
@@ -1093,11 +1096,9 @@ fn decode_block_response(
 mod tests {
     use std::boxed::Box;
     use std::vec;
-    use std::vec::Vec;
 
     use miden_protocol::Word;
     use miden_protocol::block::{BlockNumber, SignedBlock};
-    use miden_protocol::utils::serde::Serializable;
     use miden_testing::MockChain;
 
     use super::{
@@ -1113,35 +1114,35 @@ mod tests {
 
     fn assert_send_sync<T: Send + Sync>() {}
 
-    /// Returns the serialized signed block and proof of the mock chain's genesis block.
-    fn genesis_block_bytes() -> (Vec<u8>, Vec<u8>) {
+    /// Returns the signed block and proof messages of the mock chain's genesis block.
+    fn genesis_block_messages()
+    -> (proto::blockchain::SignedBlock, proto::primitives::ExecutionProof) {
         let chain = MockChain::new();
         let block = chain.proven_blocks().first().expect("the chain has a genesis block").clone();
         let (header, body, signatures, proof) = block.into_parts();
 
-        (
-            SignedBlock::new_unchecked(header, body, signatures).to_bytes(),
-            proof.to_bytes(),
-        )
+        (SignedBlock::new_unchecked(header, body, signatures).into(), proof.into())
     }
 
     #[test]
     fn decode_block_response_reads_a_requested_proof() {
-        let (block_bytes, proof_bytes) = genesis_block_bytes();
-        let response = proto::blockchain::MaybeBlock {
-            block: Some(block_bytes),
-            proof: Some(proof_bytes.clone()),
+        let (block, proof_message) = genesis_block_messages();
+        let response = proto::rpc::MaybeBlock {
+            block: Some(block),
+            proof: Some(proof_message.clone()),
         };
 
         let (_block, proof) = decode_block_response(response).unwrap();
 
-        assert_eq!(proof.expect("the response carries a proof").to_bytes(), proof_bytes);
+        let decoded: proto::primitives::ExecutionProof =
+            proof.expect("the response carries a proof").into();
+        assert_eq!(decoded, proof_message);
     }
 
     #[test]
     fn decode_block_response_omits_an_absent_proof() {
-        let (block_bytes, _) = genesis_block_bytes();
-        let response = proto::blockchain::MaybeBlock { block: Some(block_bytes), proof: None };
+        let (block, _) = genesis_block_messages();
+        let response = proto::rpc::MaybeBlock { block: Some(block), proof: None };
 
         let (_block, proof) = decode_block_response(response).unwrap();
 
@@ -1150,10 +1151,10 @@ mod tests {
 
     #[test]
     fn decode_block_response_rejects_malformed_proof_bytes() {
-        let (block_bytes, _) = genesis_block_bytes();
-        let response = proto::blockchain::MaybeBlock {
-            block: Some(block_bytes),
-            proof: Some(vec![0xff; 32]),
+        let (block, _) = genesis_block_messages();
+        let response = proto::rpc::MaybeBlock {
+            block: Some(block),
+            proof: Some(proto::primitives::ExecutionProof { encoded: vec![0xff; 32] }),
         };
 
         let res = decode_block_response(response);
@@ -1163,7 +1164,7 @@ mod tests {
 
     #[test]
     fn decode_block_response_rejects_an_absent_block() {
-        let response = proto::blockchain::MaybeBlock { block: None, proof: None };
+        let response = proto::rpc::MaybeBlock { block: None, proof: None };
 
         let res = decode_block_response(response);
 

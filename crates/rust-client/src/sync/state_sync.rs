@@ -1673,9 +1673,7 @@ mod tests {
         }
     }
 
-    /// The validator configuration committed by the mock chain's genesis block header. A sync that
-    /// starts from genesis authenticates the chain tip against it, because the store's block header
-    /// at the sync height is the genesis one.
+    /// The validator configuration committed by the mock chain's genesis block header.
     fn genesis_validator_config(mock_rpc: &MockRpcApi) -> ValidatorConfig {
         mock_rpc.mock_chain.read().block_header(0).validator_config().clone()
     }
@@ -2965,13 +2963,13 @@ mod tests {
                 .unwrap()
         };
 
-        // Signatures of another block: they do not verify against the chain tip commitment.
+        // Attempt advancing the MMR using invalid signatures (signatures from another block header)
         let parent = BlockNumber::from(chain_tip.as_u32() - 1);
-        let wrong_block_signatures = block_signatures(&mock_rpc, parent);
+        let invalid_signatures = block_signatures(&mock_rpc, parent);
         let wrong_block = StateSync::advance_mmr(
             mmr_delta(),
             &chain_tip_header,
-            &wrong_block_signatures,
+            &invalid_signatures,
             &validator_config,
             &mut genesis_partial_mmr(),
             &mut PartialBlockchainUpdates::default(),

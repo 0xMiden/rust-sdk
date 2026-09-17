@@ -2932,6 +2932,60 @@ mod tests {
         assert!(matches!(result, Err(ClientError::ChainValidationError(_))));
     }
 
+    /// Verifies that `advance_mmr` authenticates the chain tip header against the validator set, so
+    /// a header served without the signatures of that set is rejected.
+    #[test]
+    fn advance_mmr_rejects_chain_tip_without_valid_signatures() {
+        let mock_rpc = MockRpcApi::default();
+        mock_rpc.advance_blocks(3);
+        let chain_tip = mock_rpc.get_chain_tip_block_num();
+
+        let chain_tip_header = mock_rpc.mock_chain.read().block_header(chain_tip.as_usize());
+        let validator_config = genesis_validator_config(&mock_rpc);
+        assert!(!validator_config.is_empty(), "the mock chain must commit a validator set");
+
+        let genesis_partial_mmr = || {
+            let peaks = mock_rpc.get_mmr().peaks_at(Forest::new(1).expect("valid forest")).unwrap();
+            PartialMmr::from_peaks(peaks)
+        };
+
+        // Consistent with the chain tip header, so only the signature check can reject the calls
+        // below.
+        let mmr_delta = || {
+            mock_rpc
+                .get_mmr()
+                .get_delta(Forest::new(1).unwrap(), Forest::new(chain_tip.as_usize()).unwrap())
+                .unwrap()
+        };
+
+        // Signatures of another block: they do not verify against the chain tip commitment.
+        let parent = BlockNumber::from(chain_tip.as_u32() - 1);
+        let wrong_block_signatures = block_signatures(&mock_rpc, parent);
+        let wrong_block = StateSync::advance_mmr(
+            mmr_delta(),
+            &chain_tip_header,
+            &wrong_block_signatures,
+            &validator_config,
+            &mut genesis_partial_mmr(),
+            &mut PartialBlockchainUpdates::default(),
+        );
+        assert!(
+            matches!(wrong_block, Err(ClientError::ChainValidationError(_))),
+            "signatures of another block must be rejected, got {wrong_block:?}"
+        );
+
+        // The signatures the validator set produced for the chain tip are accepted.
+        StateSync::advance_mmr(
+            mmr_delta(),
+            &chain_tip_header,
+            &block_signatures(&mock_rpc, chain_tip),
+            &validator_config,
+            &mut genesis_partial_mmr(),
+            &mut PartialBlockchainUpdates::default(),
+        )
+        .unwrap();
+    }
+
     /// Verifies that `advance_mmr` rejects an MMR delta whose post-apply peaks don't match the
     /// chain tip header's chain commitment.
     #[test]

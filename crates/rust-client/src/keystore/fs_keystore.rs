@@ -119,10 +119,10 @@ impl KeyIndex {
     }
 
     /// Gets all public key commitments for an account ID.
-    fn get_commitments(
-        &self,
-        account_id: &AccountId,
-    ) -> Result<BTreeSet<PublicKeyCommitment>, KeyStoreError> {
+    ///
+    /// Returns an empty set if the index holds no mapping for the account. An account can hold keys
+    /// that this keystore does not have, so an absent mapping is a valid state.
+    fn get_commitments(&self, account_id: &AccountId) -> BTreeSet<PublicKeyCommitment> {
         let account_id_hex = account_id.to_hex();
 
         self.mappings
@@ -135,9 +135,7 @@ impl KeyIndex {
                     })
                     .collect()
             })
-            .ok_or_else(|| {
-                KeyStoreError::StorageError(format!("account not found {account_id_hex}"))
-            })
+            .unwrap_or_default()
     }
 }
 
@@ -323,7 +321,7 @@ impl Keystore for FilesystemKeyStore {
         account_id: &AccountId,
     ) -> Result<BTreeSet<PublicKeyCommitment>, KeyStoreError> {
         let index = self.index.read();
-        index.get_commitments(account_id)
+        Ok(index.get_commitments(account_id))
     }
 }
 
@@ -361,4 +359,86 @@ fn write_secret_key_file(file_path: &Path, key: &AuthSecretKey) -> Result<(), Ke
 
 fn keystore_error(context: &str) -> impl FnOnce(std::io::Error) -> KeyStoreError {
     move |err| KeyStoreError::StorageError(format!("{context}: {err:?}"))
+}
+
+// TESTS
+// ================================================================================================
+
+#[cfg(test)]
+mod tests {
+    use miden_protocol::account::auth::AuthSecretKey;
+    use miden_protocol::testing::account_id::{
+        ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE,
+        ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE,
+    };
+
+    use super::*;
+
+    /// Creates a keystore on a temporary directory. The directory is removed when the returned
+    /// guard is dropped, so the guard must stay alive for the whole test.
+    fn test_keystore() -> (FilesystemKeyStore, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("should create a temporary directory");
+        let keystore = FilesystemKeyStore::new(dir.path().to_path_buf())
+            .expect("should create a keystore on an existing directory");
+
+        (keystore, dir)
+    }
+
+    fn test_account_id() -> AccountId {
+        AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE)
+            .expect("test account ID should be well formed")
+    }
+
+    fn other_account_id() -> AccountId {
+        AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE)
+            .expect("test account ID should be well formed")
+    }
+
+    #[tokio::test]
+    async fn key_commitments_of_untracked_account_are_empty() {
+        let (keystore, _dir) = test_keystore();
+
+        let commitments = keystore
+            .get_account_key_commitments(&test_account_id())
+            .await
+            .expect("an account without keys is not an error");
+        assert!(commitments.is_empty());
+
+        let keys = keystore
+            .get_keys_for_account(&test_account_id())
+            .await
+            .expect("an account without keys is not an error");
+        assert!(keys.is_empty());
+    }
+
+    #[tokio::test]
+    async fn key_commitments_are_scoped_to_their_account() {
+        let (keystore, _dir) = test_keystore();
+        let key = AuthSecretKey::new_falcon512_poseidon2();
+        let commitment = key.public_key().to_commitment();
+
+        keystore.add_key(&key, test_account_id()).await.unwrap();
+
+        let commitments = keystore.get_account_key_commitments(&test_account_id()).await.unwrap();
+        assert_eq!(commitments.len(), 1);
+        assert!(commitments.contains(&commitment));
+
+        let commitments = keystore.get_account_key_commitments(&other_account_id()).await.unwrap();
+        assert!(commitments.is_empty());
+    }
+
+    #[tokio::test]
+    async fn key_commitments_are_empty_after_the_last_key_is_removed() {
+        let (keystore, _dir) = test_keystore();
+        let key = AuthSecretKey::new_falcon512_poseidon2();
+
+        keystore.add_key(&key, test_account_id()).await.unwrap();
+        keystore.remove_key(key.public_key().to_commitment()).await.unwrap();
+
+        let commitments = keystore
+            .get_account_key_commitments(&test_account_id())
+            .await
+            .expect("removing the last key of an account is not an error");
+        assert!(commitments.is_empty());
+    }
 }

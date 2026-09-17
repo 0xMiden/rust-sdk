@@ -99,6 +99,10 @@ impl TestClient {
 
     /// Submits a transaction for `account_id`, folding in its funding note when it has one.
     ///
+    /// Syncs first. A transaction expires a fixed number of blocks after its reference block, and
+    /// the client takes that block from its sync height, so every block produced since the last
+    /// sync is spent before proving starts.
+    ///
     /// Shadows [`Client::submit_new_transaction`], still reachable through [`Deref`] for callers
     /// that want the unfunded path.
     pub async fn submit_new_transaction(
@@ -106,6 +110,8 @@ impl TestClient {
         account_id: AccountId,
         transaction_request: TransactionRequest,
     ) -> Result<TransactionId, ClientError> {
+        self.sync_state().await?;
+
         let transaction_request = self.fund_request(account_id, transaction_request);
 
         Box::pin(self.client.submit_new_transaction(account_id, transaction_request)).await
@@ -113,12 +119,16 @@ impl TestClient {
 
     /// Executes a transaction for `account_id`, folding in its funding note when it has one.
     ///
+    /// Syncs first. Execution fixes the reference block the expiration window is counted from.
+    ///
     /// Takes `&mut self` where the wrapped method takes `&self`, since taking the note mutates.
     pub async fn execute_transaction(
         &mut self,
         account_id: AccountId,
         transaction_request: TransactionRequest,
     ) -> Result<TransactionResult, ClientError> {
+        self.sync_state().await?;
+
         let transaction_request = self.fund_request(account_id, transaction_request);
 
         Box::pin(self.client.execute_transaction(account_id, transaction_request)).await
@@ -209,6 +219,9 @@ pub struct AccountSetup {
 }
 
 impl AccountSetup {
+    // TODO: restore `ECDSA_K256_KECCAK_SCHEME_ID` as the default once protocol `0.17.0-rc.5` is
+    // released. ECDSA verification runs as a precompile, the local prover settles the precompile
+    // work, and a batch rejects a transaction proof that carries settled work.
     fn standard(components: StandardComponents, account_type: AccountType) -> Self {
         Self {
             kind: AccountKind::Standard {

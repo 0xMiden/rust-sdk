@@ -815,19 +815,7 @@ impl NodeRpcClient for GrpcClient {
             })
             .await?;
 
-        let response = response.into_inner();
-        // The response carries the block and its proof in separate fields, so the block message
-        // holds a signed block and never a proven one.
-        let block: SignedBlock =
-            build_unchecked_message(response.block.ok_or(RpcError::ExpectedDataMissing(
-                "GetBlockByNumberResponse.block".to_string(),
-            ))?)?;
-
-        // The node omits the proof when it is not requested, and also when the block is not proven
-        // yet, so an absent proof is not an error.
-        let proof = response.proof.map(ExecutionProof::try_from).transpose()?;
-
-        Ok((block, proof))
+        decode_block_response(response.into_inner())
     }
 
     async fn get_note_script_by_root(&self, root: Word) -> Result<Option<NoteScript>, RpcError> {
@@ -1078,18 +1066,113 @@ impl From<&Status> for GrpcError {
     }
 }
 
+// HELPERS
+// ================================================================================================
+
+/// Decodes the response of `get_block_by_number`.
+///
+/// The response carries the signed block and its proof in separate fields, so the block bytes
+/// decode as a [`SignedBlock`] and never as a `ProvenBlock`. The node omits the proof when it is
+/// not requested, and also when the block is not proven yet, so an absent proof is not an error.
+fn decode_block_response(
+    response: proto::rpc::MaybeBlock,
+) -> Result<(SignedBlock, Option<ExecutionProof>), RpcError> {
+    // The response carries the block and its proof in separate fields, so the block message holds a
+    // signed block and never a proven one.
+    let block: SignedBlock = build_unchecked_message(
+        response
+            .block
+            .ok_or(RpcError::ExpectedDataMissing("GetBlockByNumberResponse.block".to_string()))?,
+    )?;
+
+    // The node omits the proof when it is not requested, and also when the block is not proven yet,
+    // so an absent proof is not an error.
+    let proof = response.proof.map(ExecutionProof::try_from).transpose()?;
+
+    Ok((block, proof))
+}
+
 #[cfg(test)]
 mod tests {
     use std::boxed::Box;
+    use std::vec;
 
     use miden_protocol::Word;
-    use miden_protocol::block::BlockNumber;
+    use miden_protocol::block::{BlockNumber, SignedBlock};
+    use miden_testing::MockChain;
 
-    use super::{BlockPagination, DEFAULT_MAX_RESPONSE_SIZE_BYTES, GrpcClient, PaginationResult};
+    use super::{
+        BlockPagination,
+        DEFAULT_MAX_RESPONSE_SIZE_BYTES,
+        GrpcClient,
+        PaginationResult,
+        decode_block_response,
+        proto,
+    };
     use crate::alloc::string::ToString;
     use crate::rpc::{Endpoint, NodeRpcClient, RpcError};
 
     fn assert_send_sync<T: Send + Sync>() {}
+
+    /// Returns the signed block and proof messages of the mock chain's genesis block.
+    fn genesis_block_messages()
+    -> (proto::blockchain::SignedBlock, proto::primitives::ExecutionProof) {
+        let chain = MockChain::new();
+        let block = chain.proven_blocks().first().expect("the chain has a genesis block").clone();
+        let (header, body, signatures, proof) = block.into_parts();
+
+        (
+            SignedBlock::new_unchecked(header, body, signatures).into(),
+            proof.into(),
+        )
+    }
+
+    #[test]
+    fn decode_block_response_reads_a_requested_proof() {
+        let (block, proof_message) = genesis_block_messages();
+        let response = proto::rpc::MaybeBlock {
+            block: Some(block),
+            proof: Some(proof_message.clone()),
+        };
+
+        let (_block, proof) = decode_block_response(response).unwrap();
+
+        let decoded: proto::primitives::ExecutionProof =
+            proof.expect("the response carries a proof").into();
+        assert_eq!(decoded, proof_message);
+    }
+
+    #[test]
+    fn decode_block_response_omits_an_absent_proof() {
+        let (block, _) = genesis_block_messages();
+        let response = proto::rpc::MaybeBlock { block: Some(block), proof: None };
+
+        let (_block, proof) = decode_block_response(response).unwrap();
+
+        assert!(proof.is_none());
+    }
+
+    #[test]
+    fn decode_block_response_rejects_malformed_proof_bytes() {
+        let (block, _) = genesis_block_messages();
+        let response = proto::rpc::MaybeBlock {
+            block: Some(block),
+            proof: Some(proto::primitives::ExecutionProof { encoded: vec![0xff; 32] }),
+        };
+
+        let res = decode_block_response(response);
+
+        assert!(matches!(res, Err(RpcError::DeserializationError(_))));
+    }
+
+    #[test]
+    fn decode_block_response_rejects_an_absent_block() {
+        let response = proto::rpc::MaybeBlock { block: None, proof: None };
+
+        let res = decode_block_response(response);
+
+        assert!(matches!(res, Err(RpcError::ExpectedDataMissing(_))));
+    }
 
     #[test]
     fn is_send_sync() {

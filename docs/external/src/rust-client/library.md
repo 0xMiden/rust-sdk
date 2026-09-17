@@ -69,7 +69,7 @@ let client = ClientBuilder::new()
 
 ## Protocol configuration
 
-Transaction execution and note screening require the protocol configuration committed by the reference block. The client does not yet fetch this configuration from the node RPC. Obtain the serialized configuration from the network operator and register it before executing transactions:
+Transaction execution and note screening require the protocol configuration committed by the reference block. The node RPC does not provide this configuration. Obtain the serialized configuration from the network operator and register it before executing transactions:
 
 ```rust
 use miden_client::Deserializable;

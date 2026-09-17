@@ -11,7 +11,12 @@ use crate::ClientConfig;
 // ================================================================================================
 
 /// Test GER update flow, against the pre-deployed accounts (see [`AgglayerConfig`]).
-pub async fn test_agglayer_update_ger(client_config: ClientConfig) -> Result<()> {
+///
+/// Skipped: the node cannot prove the bridge's transactions, which settle precompile work that the
+/// transaction verifier rejects.
+///
+/// TODO: rename back to `test_agglayer_update_ger` once protocol `0.17.0-rc.5` is released.
+pub async fn ignored_test_agglayer_update_ger(client_config: ClientConfig) -> Result<()> {
     let agglayer_config = AgglayerConfig::from_env()?;
     let _agglayer_accounts = agglayer_config.claim()?;
     let (mut bridge_admin, mut ger_manager, mut user) =

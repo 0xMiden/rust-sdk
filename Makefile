@@ -147,11 +147,9 @@ integration-test-non-agglayer: ## Run every integration test except the agglayer
 	TEST_MIDEN_NOTE_TRANSPORT_URL=$(TEST_MIDEN_NOTE_TRANSPORT_URL) MIDEN_FUNDER_ACCOUNTS_DIR=$(MIDEN_FUNDER_ACCOUNTS_DIR) cargo nextest run --workspace --release --test=integration -E 'not test(/agglayer/)'
 	MIDEN_FUNDER_ACCOUNTS_DIR=$(MIDEN_FUNDER_ACCOUNTS_DIR) cargo nextest run --workspace --release --test=integration --run-ignored ignored-only -- import_genesis_accounts_can_be_used_for_transactions
 
-# TODO: drop `--no-tests=pass` once protocol `0.17.0-rc.5` is released. Every agglayer test is
-# skipped until then, and the filter matching none of them is an error by default.
 .PHONY: integration-test-agglayer
 integration-test-agglayer: ## Run only the agglayer integration tests
-	MIDEN_FUNDER_ACCOUNTS_DIR=$(MIDEN_FUNDER_ACCOUNTS_DIR) AGGLAYER_ACCOUNTS_DIR=$(AGGLAYER_ACCOUNTS_DIR) cargo nextest run --workspace --release --test=integration -E 'test(/agglayer/)' --no-tests=pass
+	MIDEN_FUNDER_ACCOUNTS_DIR=$(MIDEN_FUNDER_ACCOUNTS_DIR) AGGLAYER_ACCOUNTS_DIR=$(AGGLAYER_ACCOUNTS_DIR) cargo nextest run --workspace --release --test=integration -E 'test(/agglayer/)'
 
 .PHONY: integration-test-miden-bench
 integration-test-miden-bench: install-bench ## Run miden-bench smoke tests

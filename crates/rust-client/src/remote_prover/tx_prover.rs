@@ -4,7 +4,6 @@ use core::time::Duration;
 
 use miden_objects::{BuildUnchecked, DecodeMessage};
 use miden_protocol::transaction::{ProvenTransaction, TransactionInputs};
-use miden_protocol::utils::serde::DeserializationError;
 use miden_protocol::vm::FutureMaybeSend;
 use miden_tx::TransactionProverError;
 use tokio::sync::Mutex;
@@ -94,12 +93,7 @@ impl RemoteTransactionProver {
                 TransactionProverError::other_with_source("failed to prove transaction", err)
             })?;
 
-            ProvenTransaction::try_from(response.into_inner()).map_err(|err| {
-                TransactionProverError::other_with_source(
-                    "failed to deserialize received response from remote transaction prover",
-                    err,
-                )
-            })
+            ProvenTransaction::try_from(response.into_inner())
         }
     }
 }
@@ -108,25 +102,32 @@ impl RemoteTransactionProver {
 // ================================================================================================
 
 impl TryFrom<proto::Proof> for ProvenTransaction {
-    type Error = DeserializationError;
+    type Error = TransactionProverError;
 
     fn try_from(response: proto::Proof) -> Result<Self, Self::Error> {
         match response.proof {
-            Some(proto::proof::Proof::Transaction(transaction)) => {
-                let decoded = transaction
-                    .decode_fields()
-                    .map_err(|err| DeserializationError::InvalidValue(alloc::format!("{err}")))?;
-                decoded
-                    .build_unchecked()
-                    .map_err(|err| DeserializationError::InvalidValue(alloc::format!("{err}")))
-            },
-            Some(proto::proof::Proof::Batch(_)) => Err(DeserializationError::InvalidValue(
-                "expected a transaction proof, got a batch proof".into(),
+            Some(proto::proof::Proof::Transaction(transaction)) => transaction
+                .decode_fields()
+                .map_err(|err| {
+                    TransactionProverError::other_with_source(
+                        "failed to decode the transaction proof",
+                        err,
+                    )
+                })?
+                .build_unchecked()
+                .map_err(|err| {
+                    TransactionProverError::other_with_source(
+                        "failed to build the transaction proof",
+                        err,
+                    )
+                }),
+            Some(proto::proof::Proof::Batch(_)) => Err(TransactionProverError::other(
+                "expected a transaction proof, got a batch proof",
             )),
-            Some(proto::proof::Proof::Block(_)) => Err(DeserializationError::InvalidValue(
-                "expected a transaction proof, got a block proof".into(),
+            Some(proto::proof::Proof::Block(_)) => Err(TransactionProverError::other(
+                "expected a transaction proof, got a block proof",
             )),
-            None => Err(DeserializationError::InvalidValue("prover returned no proof".into())),
+            None => Err(TransactionProverError::other("prover returned no proof")),
         }
     }
 }

@@ -52,7 +52,6 @@ impl From<KeyScheme> for AuthSchemeId {
         "associate",
         "disassociate",
     ])),
-    group(ArgGroup::new("scheme_action").args(["generate", "commitment"])),
     group(ArgGroup::new("association_action").args(["associate", "disassociate"])),
 )]
 pub struct KeysCmd {
@@ -61,8 +60,8 @@ pub struct KeysCmd {
     list: bool,
 
     /// Generate and store a new key.
-    #[arg(long, requires = "scheme")]
-    generate: bool,
+    #[arg(long, value_name = "SCHEME")]
+    generate: Option<KeyScheme>,
 
     /// Import a serialized authentication secret key.
     #[arg(long, value_name = "FILE")]
@@ -80,8 +79,8 @@ pub struct KeysCmd {
     #[arg(long, value_name = "COMMITMENT", requires = "account_id")]
     disassociate: Option<String>,
 
-    /// Authentication scheme for key generation or commitment calculation.
-    #[arg(long, value_enum, requires = "scheme_action")]
+    /// Authentication scheme for commitment calculation.
+    #[arg(long, value_enum, requires = "commitment")]
     scheme: Option<KeyScheme>,
 
     /// Full hexadecimal account ID for an association operation.
@@ -92,7 +91,7 @@ pub struct KeysCmd {
 impl KeysCmd {
     pub fn execute(&self, keystore: &FilesystemKeyStore) -> Result<(), CliError> {
         match self {
-            Self { generate: true, scheme: Some(scheme), .. } => generate_key(keystore, *scheme),
+            Self { generate: Some(scheme), .. } => generate_key(keystore, *scheme),
             Self { import: Some(file), .. } => import_key(keystore, file),
             Self {
                 commitment: Some(public_key),

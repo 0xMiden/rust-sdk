@@ -121,7 +121,7 @@ fn cli_manages_keys() {
     associate_cmd.current_dir(&temp_dir).assert().success();
 
     let mut generate_cmd = cargo_bin_cmd!("miden-client");
-    generate_cmd.args(["keys", "--generate", "--scheme", "falcon512-poseidon2"]);
+    generate_cmd.args(["keys", "--generate", "falcon512-poseidon2"]);
     generate_cmd
         .current_dir(&temp_dir)
         .assert()

@@ -395,57 +395,57 @@ Manage authentication keys in the configured filesystem keystore. These commands
 
 Supported authentication schemes are `falcon512-poseidon2` and `ecdsa-k256-keccak`.
 
-#### `keys list`
+#### `keys --list`
 
 List each stored key's public key commitment, authentication scheme, and associated account IDs:
 
 ```sh
-miden-client keys list
+miden-client keys --list
 ```
 
-The associated accounts column contains `-` for a standalone key. Associated keys are included in account exports unless `--no-keys` is used.
+Running `miden-client keys` without an action also lists the keys. The associated accounts column contains `-` for a standalone key. Associated keys are included in account exports unless `--no-keys` is used.
 
-#### `keys generate`
+#### `keys --generate`
 
 Generate a key for the selected authentication scheme and store it in the keystore:
 
 ```sh
-miden-client keys generate --scheme falcon512-poseidon2
-miden-client keys generate --scheme ecdsa-k256-keccak
+miden-client keys --generate --scheme falcon512-poseidon2
+miden-client keys --generate --scheme ecdsa-k256-keccak
 ```
 
 The command prints the public key commitment. It does not print the secret key.
 
-#### `keys import`
+#### `keys --import`
 
 Import and store one serialized authentication secret key:
 
 ```sh
-miden-client keys import <FILE>
+miden-client keys --import <FILE>
 ```
 
 The file must contain exactly one `AuthSecretKey` in the Miden binary serialization format. PEM, DER, and raw secret-key files are not accepted. The command rejects data after the serialized key.
 
 Generated and imported keys are standalone until they are associated with an account.
 
-#### `keys associate` and `keys disassociate`
+#### `keys --associate` and `keys --disassociate`
 
 Add or remove an association between a stored key and an account:
 
 ```sh
-miden-client keys associate <COMMITMENT> <ACCOUNT_ID>
-miden-client keys disassociate <COMMITMENT> <ACCOUNT_ID>
+miden-client keys --associate <COMMITMENT> --account-id <ACCOUNT_ID>
+miden-client keys --disassociate <COMMITMENT> --account-id <ACCOUNT_ID>
 ```
 
 Use a full hexadecimal account ID. Association controls whether the key is included when that account is exported.
 
-#### `keys commitment`
+#### `keys --commitment`
 
 Calculate a public key commitment without storing the public key:
 
 ```sh
-miden-client keys commitment --scheme falcon512-poseidon2 <PUBLIC_KEY>
-miden-client keys commitment --scheme ecdsa-k256-keccak <PUBLIC_KEY>
+miden-client keys --commitment <PUBLIC_KEY> --scheme falcon512-poseidon2
+miden-client keys --commitment <PUBLIC_KEY> --scheme ecdsa-k256-keccak
 ```
 
 `PUBLIC_KEY` must be a `0x`-prefixed hexadecimal serialization of the key. For ECDSA, provide the 33-byte compressed SEC1 public key. For Falcon, provide the 897-byte serialized Falcon public key.

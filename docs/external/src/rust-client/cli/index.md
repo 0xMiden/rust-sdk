@@ -403,7 +403,7 @@ List each stored key's public key commitment, authentication scheme, and associa
 miden-client keys list
 ```
 
-The associated accounts column contains `-` for a standalone key. A key generated or imported with the `keys` command is standalone because these operations do not associate it with an account.
+The associated accounts column contains `-` for a standalone key. Associated keys are included in account exports unless `--no-keys` is used.
 
 #### `keys generate`
 
@@ -425,6 +425,19 @@ miden-client keys import <FILE>
 ```
 
 The file must contain exactly one `AuthSecretKey` in the Miden binary serialization format. PEM, DER, and raw secret-key files are not accepted. The command rejects data after the serialized key.
+
+Generated and imported keys are standalone until they are associated with an account.
+
+#### `keys associate` and `keys disassociate`
+
+Add or remove an association between a stored key and an account:
+
+```sh
+miden-client keys associate <COMMITMENT> <ACCOUNT_ID>
+miden-client keys disassociate <COMMITMENT> <ACCOUNT_ID>
+```
+
+Use a full hexadecimal account ID. Association controls whether the key is included when that account is exported.
 
 #### `keys commitment`
 

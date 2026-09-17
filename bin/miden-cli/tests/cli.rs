@@ -2685,9 +2685,9 @@ fn create_account_with_no_auth() {
     create_account_cmd.current_dir(&temp_dir).assert().success();
 }
 
-/// Tests creating an account with the multisig-auth component.
+/// Tests creating and exporting an account with the multisig-auth component.
 #[test]
-fn create_account_with_multisig_auth() {
+fn create_and_export_account_with_multisig_auth() {
     let temp_dir = init_cli().1;
 
     // Create init storage data file for multisig:
@@ -2729,7 +2729,32 @@ fn create_account_with_multisig_auth() {
         "multisig_init_data.toml",
     ]);
 
-    create_account_cmd.current_dir(&temp_dir).assert().success();
+    let output = create_account_cmd.current_dir(&temp_dir).output().unwrap();
+    assert!(
+        output.status.success(),
+        "Failed to create multisig account: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let account_id = stdout
+        .split_whitespace()
+        .skip_while(|&word| word != "-s")
+        .nth(1)
+        .expect("Could not parse account ID from new-account output");
+
+    const ACCOUNT_FILENAME: &str = "multisig_account.mac";
+    let mut export_account_cmd = cargo_bin_cmd!("miden-client");
+    export_account_cmd
+        .args(["export", account_id, "--account", "--filename", ACCOUNT_FILENAME])
+        .current_dir(&temp_dir)
+        .assert()
+        .success()
+        .stdout(contains("without secret keys"));
+
+    let account_file = AccountFile::read(temp_dir.join(ACCOUNT_FILENAME)).unwrap();
+    assert_eq!(account_file.account.id().to_hex(), account_id);
+    assert!(account_file.auth_secret_keys.is_empty());
 }
 
 /// Tests creating an account with the ecdsa-auth component.

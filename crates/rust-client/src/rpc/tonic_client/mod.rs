@@ -1121,10 +1121,7 @@ mod tests {
         let block = chain.proven_blocks().first().expect("the chain has a genesis block").clone();
         let (header, body, signatures, proof) = block.into_parts();
 
-        (
-            SignedBlock::new_unchecked(header, body, signatures).into(),
-            proof.into(),
-        )
+        (SignedBlock::new_unchecked(header, body, signatures).into(), proof.into())
     }
 
     #[test]

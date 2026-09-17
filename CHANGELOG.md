@@ -4,6 +4,8 @@
 
 ### Breaking Changes
 
+* [BREAKING][behavior][rust] State sync now authenticates the chain tip block header before advancing the partial MMR ([#2553](https://github.com/0xMiden/rust-sdk/pull/2553)).
+* [BREAKING][param][rust] `StateSync::build_update` and `StateSync::sync_state` take a `validator_config: &ValidatorConfig` argument, used to authenticate the chain tip block header. The validator config can be retrieved via the client with `Client::get_validator_config` ([#2553](https://github.com/0xMiden/rust-sdk/pull/2553)).
 * [BREAKING][type][rust] Added the `StoreError::DatabaseTransientError` and `StoreError::DatabasePermanentError` variants, so exhaustive matches on `StoreError` must handle them. The SQLite store returns the first for a busy or locked database and the second for a constraint violation or a corrupt database file, which it previously reported as `StoreError::DatabaseError` ([#2537](https://github.com/0xMiden/rust-sdk/pull/2537)).
 * [BREAKING][type][rust] Flattened `SyncedNote`, it now carries `note_id`, `metadata` and `inclusion_proof` directly, replacing the nested `committed: CommittedNote` field. Code that read that field can call `SyncedNote::into_committed_note` to get the sync record back, with the note's resolved attachments included ([#2475](https://github.com/0xMiden/rust-sdk/pull/2475)).
 * [BREAKING][param][rust] `NoteObserver::observe` now takes a single `&SyncedNote` instead of a `&CommittedNote` and its `&NoteAttachments` ([#2475](https://github.com/0xMiden/rust-sdk/pull/2475)).
@@ -24,6 +26,7 @@
 
 ### Features
 
+* [FEATURE][rust] Added `Client::get_validator_config`, which returns the validator configuration committed by the locally stored block header at the current sync height ([#2553](https://github.com/0xMiden/rust-sdk/pull/2553)).
 * [FEATURE][rust] The committed note passed to the `OnNoteReceived` callback now always reports the note's resolved attachment content, whether the `SyncNotes` response carried it verbatim or a `GetNotesById` follow-up resolved it ([#2475](https://github.com/0xMiden/rust-sdk/pull/2475)).
 * [FEATURE][rust] Re-exported the fee pricing and note checking types that the client API already surfaces, so downstream crates no longer need a direct `miden-tx` dependency to price note consumption: `NetworkNotePricer`, `NotePricingError` and `NoteCheckerError` at the crate root, `TransactionFee` and `TransactionFeeError` from `transaction`, `NoteCost` and `NoteConsumptionCost` from `note`, and `MastForestStore` and `TransactionMastStore` from `testing` ([#2475](https://github.com/0xMiden/rust-sdk/pull/2475)).
 

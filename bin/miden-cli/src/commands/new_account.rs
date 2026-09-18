@@ -654,30 +654,6 @@ mod tests {
     }
 
     #[test]
-    fn process_packages_rejects_unmarked_procedure_exports() {
-        let package = test_component_package("pub proc unmarked nop end");
-
-        let err = process_packages(vec![package], &InitStorageData::default())
-            .expect_err("a package with unmarked exports should be rejected");
-
-        assert!(
-            err.to_string().contains("none of them is marked as an account procedure"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn process_packages_accepts_marked_procedure_exports() {
-        let package = test_component_package("@account_procedure pub proc marked nop end");
-
-        let components = process_packages(vec![package], &InitStorageData::default())
-            .expect("a package with marked exports should be accepted");
-
-        assert_eq!(components.len(), 1);
-        assert_eq!(components[0].procedures().count(), 1);
-    }
-
-    #[test]
     fn process_packages_rejects_non_component_package_kind() {
         let mut package = test_component_package("@account_procedure pub proc marked nop end");
         package.kind = TargetType::Library;

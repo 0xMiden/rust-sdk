@@ -388,7 +388,7 @@ async fn checking_note_consumability_pays_the_fee_on_a_fee_charging_chain() {
 
     let error = failed.error();
     assert!(
-        matches!(error, Some(TransactionExecutorError::MissingAuthenticator)),
+        matches!(error, TransactionExecutorError::MissingAuthenticator),
         "the trial should get as far as requesting a signature rather than aborting on the unpaid \
          fee, got: {error:?}"
     );

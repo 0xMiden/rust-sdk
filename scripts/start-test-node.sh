@@ -13,6 +13,8 @@
 # Env vars:
 #   MIDEN_VERIFICATION_BASE_FEE  genesis `verification_base_fee` (default 500; 0 disables fees)
 #   MIDEN_NUM_FUNDER_WALLETS     number of funder wallets a fee-charging genesis declares
+#   MIDEN_TEST_NODE_BIN_DIR      run the node binaries in this directory instead of installing the
+#                                source pinned in Cargo.lock, to test a local node build
 
 set -euo pipefail
 
@@ -27,7 +29,7 @@ esac
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CACHE="$ROOT/target/test-node"
-BIN="$CACHE/install/bin"
+BIN="${MIDEN_TEST_NODE_BIN_DIR:-$CACHE/install/bin}"
 BUILD="$CACHE/build"
 GEN_GENESIS="${CARGO_TARGET_DIR:-$ROOT/target}/release/gen-genesis"
 DATA="$CACHE/data"
@@ -93,7 +95,15 @@ node_binaries_installed() {
     done
 }
 
-if node_binaries_installed; then
+if [ -n "${MIDEN_TEST_NODE_BIN_DIR:-}" ]; then
+    for bin in "${NODE_BINS[@]}"; do
+        [ -x "$BIN/$bin" ] || {
+            echo "error: MIDEN_TEST_NODE_BIN_DIR holds no executable '$bin'" >&2
+            exit 1
+        }
+    done
+    echo "==> using node binaries from $BIN"
+elif node_binaries_installed; then
     echo "==> using cached node binaries ($NODE_DESC)"
 else
     echo "==> installing node binaries ($NODE_DESC)"

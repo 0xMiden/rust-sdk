@@ -2,13 +2,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use clap::{ArgGroup, ValueEnum};
-use miden_client::account::AccountId;
 use miden_client::auth::{AuthSchemeId, AuthSecretKey, PublicKeyCommitment};
 use miden_client::crypto::{ecdsa_k256_keccak, rpo_falcon512};
 use miden_client::keystore::FilesystemKeyStore;
 use miden_client::utils::{ByteReader, Deserializable, hex_to_bytes};
 use miden_client::{SliceReader, Word};
 
+use crate::codecs::parse_account_id_token;
 use crate::errors::CliError;
 use crate::{Parser, create_dynamic_table};
 
@@ -100,7 +100,7 @@ pub struct KeysCmd {
     #[arg(long, value_name = "COMMITMENT", requires = "account_id")]
     disassociate: Option<String>,
 
-    /// Full hexadecimal account ID for an association operation.
+    /// Account ID for an association operation, as a hexadecimal ID or a bech32 address.
     #[arg(long, value_name = "ACCOUNT_ID", requires = "association_action")]
     account_id: Option<String>,
 }
@@ -157,7 +157,7 @@ fn associate_key(
     account_id: &str,
 ) -> Result<(), CliError> {
     let commitment = parse_commitment(commitment)?;
-    let account_id = parse_account_id(account_id)?;
+    let account_id = parse_account_id_token(account_id)?;
     keystore.associate_key(commitment, account_id).map_err(CliError::KeyStore)?;
     println!(
         "Associated key {} with account {}.",
@@ -173,7 +173,7 @@ fn disassociate_key(
     account_id: &str,
 ) -> Result<(), CliError> {
     let commitment = parse_commitment(commitment)?;
-    let account_id = parse_account_id(account_id)?;
+    let account_id = parse_account_id_token(account_id)?;
     let removed = keystore.disassociate_key(commitment, account_id).map_err(CliError::KeyStore)?;
     if removed {
         println!(
@@ -273,11 +273,6 @@ fn parse_commitment(value: &str) -> Result<PublicKeyCommitment, CliError> {
     Word::try_from(value)
         .map(PublicKeyCommitment::from)
         .map_err(|err| CliError::Input(format!("invalid public key commitment `{value}`: {err}")))
-}
-
-fn parse_account_id(value: &str) -> Result<AccountId, CliError> {
-    AccountId::from_hex(value)
-        .map_err(|err| CliError::Input(format!("invalid account ID `{value}`: {err}")))
 }
 
 /// Returns the command line name of an authentication scheme.

@@ -163,7 +163,7 @@ pub trait NodeRpcClient: Send + Sync {
     /// Returns the node's chain tip at submission (not the block the transaction is committed in).
     async fn submit_proven_transaction(
         &self,
-        proven_transaction: ProvenTransaction,
+        proven_transaction: &ProvenTransaction,
         sealed_transaction_inputs: SealedTransactionInputs,
     ) -> Result<BlockNumber, RpcError>;
 
@@ -180,8 +180,8 @@ pub trait NodeRpcClient: Send + Sync {
     /// Returns the node's chain tip at submission (not the block the batch is committed in).
     async fn submit_proven_batch(
         &self,
-        proven_batch: ProvenBatch,
-        proposed_batch: ProposedBatch,
+        proven_batch: &ProvenBatch,
+        proposed_batch: &ProposedBatch,
         transaction_inputs: Vec<SealedTransactionInputs>,
     ) -> Result<BlockNumber, RpcError>;
 

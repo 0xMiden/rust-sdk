@@ -181,7 +181,7 @@ impl<T: NodeRpcClient> NodeRpcClient for VerifyingRpcClient<T> {
 
     async fn submit_proven_transaction(
         &self,
-        proven_transaction: ProvenTransaction,
+        proven_transaction: &ProvenTransaction,
         sealed_transaction_inputs: SealedTransactionInputs,
     ) -> Result<BlockNumber, RpcError> {
         self.0
@@ -191,8 +191,8 @@ impl<T: NodeRpcClient> NodeRpcClient for VerifyingRpcClient<T> {
 
     async fn submit_proven_batch(
         &self,
-        proven_batch: ProvenBatch,
-        proposed_batch: ProposedBatch,
+        proven_batch: &ProvenBatch,
+        proposed_batch: &ProposedBatch,
         sealed_transaction_inputs: Vec<SealedTransactionInputs>,
     ) -> Result<BlockNumber, RpcError> {
         self.0

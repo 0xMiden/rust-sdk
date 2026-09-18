@@ -159,8 +159,9 @@ where
     ) -> Result<ChainSyncData, ClientError> {
         let input = self.build_sync_input().await?;
         let block_from = block_num_from_forest(&self.get_current_partial_mmr().await?)?;
+        let validator_config = self.get_validator_config().await?;
 
-        state_sync.fetch_state(block_from, input).await
+        state_sync.fetch_state(block_from, input, &validator_config).await
     }
 
     /// Builds the [`StateSync`] driving one chain sync.
@@ -197,9 +198,7 @@ where
             )));
         }
 
-        let validator_config = self.get_validator_config().await?;
-        let state_sync_update =
-            StateSync::build_update(chain_sync_data, &mut partial_mmr, &validator_config)?;
+        let state_sync_update = StateSync::build_update(chain_sync_data, &mut partial_mmr)?;
 
         let sync_summary: SyncSummary = (&state_sync_update).into();
         debug!(sync_summary = ?sync_summary, "Sync summary computed");

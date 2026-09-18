@@ -24,7 +24,10 @@ use miden_client::builder::ClientBuilder;
 use miden_client::crypto::RandomCoin;
 use miden_client::keystore::Keystore;
 use miden_client::note::NoteId;
-use miden_client::note_transport::NOTE_TRANSPORT_TESTNET_ENDPOINT;
+use miden_client::note_transport::{
+    NOTE_TRANSPORT_MAINNET_ENDPOINT,
+    NOTE_TRANSPORT_TESTNET_ENDPOINT,
+};
 use miden_client::rpc::Endpoint;
 use miden_client::testing::account_id::{
     ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET,
@@ -1319,6 +1322,31 @@ async fn init_with_testnet() -> Result<()> {
 
     assert!(config_file_str.contains(&Endpoint::testnet().to_string()));
     Ok(())
+}
+
+/// `init --network mainnet` must resolve the preset by name, so the config carries the mainnet RPC
+/// and note transport endpoints instead of a custom endpoint named `mainnet`.
+#[test]
+fn init_with_mainnet() {
+    let store_path = create_test_store_path();
+    let temp_dir = temp_dir().join(format!("cli-test-{}", rand::rng().random::<u64>()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let mut init_cmd = cargo_bin_cmd!("miden-client");
+    init_cmd.args([
+        "init",
+        "--local",
+        "--network",
+        "mainnet",
+        "--store-path",
+        store_path.to_str().unwrap(),
+    ]);
+    init_cmd.current_dir(&temp_dir).assert().success();
+
+    let config_file_str =
+        fs::read_to_string(temp_dir.join(MIDEN_DIR).join("miden-client.toml")).unwrap();
+    assert!(config_file_str.contains(&Endpoint::mainnet().to_string()));
+    assert!(config_file_str.contains(NOTE_TRANSPORT_MAINNET_ENDPOINT));
 }
 
 // ADDRESSES TESTS

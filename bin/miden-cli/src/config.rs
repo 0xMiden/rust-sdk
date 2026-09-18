@@ -9,6 +9,7 @@ use figment::value::{Dict, Map};
 use figment::{Figment, Metadata, Profile, Provider};
 use miden_client::note_transport::{
     NOTE_TRANSPORT_DEVNET_ENDPOINT,
+    NOTE_TRANSPORT_MAINNET_ENDPOINT,
     NOTE_TRANSPORT_TESTNET_ENDPOINT,
 };
 use miden_client::rpc::Endpoint;
@@ -443,6 +444,14 @@ impl Default for NoteTransportConfig {
 }
 
 impl NoteTransportConfig {
+    /// Returns a `NoteTransportConfig` for the mainnet network.
+    pub fn mainnet() -> Self {
+        Self {
+            endpoint: NOTE_TRANSPORT_MAINNET_ENDPOINT.to_string(),
+            timeout_ms: 10000,
+        }
+    }
+
     /// Returns a `NoteTransportConfig` for the devnet network.
     pub fn devnet() -> Self {
         Self {
@@ -530,6 +539,7 @@ pub enum Network {
     Custom(String),
     Devnet,
     Localhost,
+    Mainnet,
     Testnet,
 }
 
@@ -540,6 +550,7 @@ impl FromStr for Network {
         match s.to_lowercase().as_str() {
             "devnet" => Ok(Network::Devnet),
             "localhost" => Ok(Network::Localhost),
+            "mainnet" => Ok(Network::Mainnet),
             "testnet" => Ok(Network::Testnet),
             custom => Ok(Network::Custom(custom.to_string())),
         }
@@ -554,6 +565,7 @@ impl Network {
             Network::Custom(custom) => custom.clone(),
             Network::Devnet => Endpoint::devnet().to_string(),
             Network::Localhost => Endpoint::default().to_string(),
+            Network::Mainnet => Endpoint::mainnet().to_string(),
             Network::Testnet => Endpoint::testnet().to_string(),
         }
     }

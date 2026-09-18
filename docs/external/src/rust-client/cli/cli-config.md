@@ -88,7 +88,7 @@ An `rpc` section is used to configure the connection to the Miden node. It conta
 
 - `endpoint`: The Miden node endpoint as a URL, such as `"https://rpc.devnet.miden.io"`.
 
-This field can be set with the `--network` flag when running the `miden-client init` command. For example, to set the testnet endpoint, you can run: `miden-client init --network testnet`.
+This field can be set with the `--network` flag when running the `miden-client init` command. The flag accepts `mainnet`, `testnet`, `devnet`, `localhost` or a custom endpoint URL. For example, to set the testnet endpoint, you can run: `miden-client init --network testnet`.
 
 :::note
 

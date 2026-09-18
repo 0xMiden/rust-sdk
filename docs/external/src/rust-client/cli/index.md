@@ -28,6 +28,7 @@ Creates a global configuration file for the client. Pass `--local` to create one
 miden-client init
 
 # You can set up the CLI for any of the default networks
+miden-client init --network mainnet
 miden-client init --network testnet
 miden-client init --network devnet
 miden-client init --network localhost

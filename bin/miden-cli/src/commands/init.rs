@@ -102,8 +102,8 @@ pub struct InitCmd {
     #[clap(long)]
     local: bool,
 
-    /// Network configuration to use. Options are `devnet`, `testnet`, `localhost` or a custom RPC
-    /// endpoint. By default, the command uses the Testnet network.
+    /// Network configuration to use. Options are `mainnet`, `testnet`, `devnet`, `localhost` or a
+    /// custom RPC endpoint. By default, the command uses the Testnet network.
     #[clap(long, short)]
     network: Option<Network>,
 
@@ -213,6 +213,7 @@ impl InitCmd {
             // Auto-configure note transport for known networks
             match &self.network {
                 None | Some(Network::Testnet) => Some(NoteTransportConfig::default()),
+                Some(Network::Mainnet) => Some(NoteTransportConfig::mainnet()),
                 Some(Network::Devnet) => Some(NoteTransportConfig::devnet()),
                 Some(Network::Localhost | Network::Custom(_)) => None,
             }

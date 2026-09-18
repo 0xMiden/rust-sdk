@@ -14,8 +14,8 @@ pub const DEFAULT_GRPC_TIMEOUT_MS: u64 = 10_000;
 
 /// Configuration for lazy note transport initialization.
 ///
-/// Since `GrpcNoteTransportClient::connect()` is async, this struct allows us to defer
-/// the connection until `build()` is called.
+/// Since `GrpcNoteTransportClient::connect()` is async, this struct allows us to defer the
+/// connection until `build()` is called.
 pub struct NoteTransportConfig {
     pub endpoint: String,
     pub timeout_ms: u64,

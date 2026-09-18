@@ -37,8 +37,8 @@ pub(crate) mod api_client_wrapper {
     impl ApiClient {
         /// Connects to the Miden node API using the provided URL, timeout and genesis commitment.
         ///
-        /// When `bearer_token` is `Some`, an `authorization: Bearer <token>` header is
-        /// injected into every outbound request alongside the standard `accept` header.
+        /// When `bearer_token` is `Some`, an `authorization: Bearer <token>` header is injected
+        /// into every outbound request alongside the standard `accept` header.
         // Kept async for API parity with the native client; in WASM this is synchronous.
         #[allow(clippy::unused_async)]
         pub async fn new_client(
@@ -87,12 +87,12 @@ pub(crate) mod api_client_wrapper {
             })
         }
 
-        /// Returns a new `ApiClient` with an updated genesis commitment.
-        /// This creates a new client that shares the same underlying channel. Any
-        /// `bearer_token` passed to the constructor is preserved.
+        /// Returns a new `ApiClient` with an updated genesis commitment. This creates a new client
+        /// that shares the same underlying channel. Any `bearer_token` passed to the constructor is
+        /// preserved.
         pub fn set_genesis_commitment(&mut self, genesis_commitment: Word) -> &mut Self {
-            // The bearer token was validated at construction time; re-applying the same
-            // value here cannot fail.
+            // The bearer token was validated at construction time; re-applying the same value here
+            // cannot fail.
             let interceptor =
                 accept_header_interceptor(Some(genesis_commitment), self.bearer_token.as_deref())
                     .expect("bearer token already validated at construction time");
@@ -132,8 +132,8 @@ pub(crate) mod api_client_wrapper {
     impl ApiClient {
         /// Connects to the Miden node API using the provided URL, timeout and genesis commitment.
         ///
-        /// When `bearer_token` is `Some`, an `authorization: Bearer <token>` header is
-        /// injected into every outbound request alongside the standard `accept` header.
+        /// When `bearer_token` is `Some`, an `authorization: Bearer <token>` header is injected
+        /// into every outbound request alongside the standard `accept` header.
         pub async fn new_client(
             endpoint: String,
             timeout_ms: u64,
@@ -141,8 +141,8 @@ pub(crate) mod api_client_wrapper {
             bearer_token: Option<String>,
             max_decoding_message_size: usize,
         ) -> Result<ApiClient, RpcError> {
-            // Build the interceptor first so an invalid bearer token fails fast,
-            // before we attempt the network connection.
+            // Build the interceptor first so an invalid bearer token fails fast, before we attempt
+            // the network connection.
             let interceptor =
                 accept_header_interceptor(genesis_commitment, bearer_token.as_deref())?;
 
@@ -202,12 +202,12 @@ pub(crate) mod api_client_wrapper {
             })
         }
 
-        /// Returns a new `ApiClient` with an updated genesis commitment.
-        /// This creates a new client that shares the same underlying channel. Any
-        /// `bearer_token` passed to the constructor is preserved.
+        /// Returns a new `ApiClient` with an updated genesis commitment. This creates a new client
+        /// that shares the same underlying channel. Any `bearer_token` passed to the constructor is
+        /// preserved.
         pub fn set_genesis_commitment(&mut self, genesis_commitment: Word) -> &mut Self {
-            // The bearer token was validated at construction time; re-applying the same
-            // value here cannot fail.
+            // The bearer token was validated at construction time; re-applying the same value here
+            // cannot fail.
             let interceptor =
                 accept_header_interceptor(Some(genesis_commitment), self.bearer_token.as_deref())
                     .expect("bearer token already validated at construction time");
@@ -251,11 +251,11 @@ impl MetadataInterceptor {
         Ok(self)
     }
 
-    /// Adds or overwrites the `authorization: Bearer <token>` header on the interceptor.
-    /// A `None` token is a no-op.
+    /// Adds or overwrites the `authorization: Bearer <token>` header on the interceptor. A `None`
+    /// token is a no-op.
     ///
-    /// Returns [`RpcError::ConnectionError`] if the token is not a valid ASCII metadata
-    /// value, mirroring the behaviour of other transport-setup failures on the client.
+    /// Returns [`RpcError::ConnectionError`] if the token is not a valid ASCII metadata value,
+    /// mirroring the behaviour of other transport-setup failures on the client.
     pub(super) fn with_bearer_token(
         self,
         bearer_token: Option<&str>,
@@ -281,8 +281,8 @@ impl Interceptor for MetadataInterceptor {
 /// Returns the HTTP header [`MetadataInterceptor`] that is expected by Miden RPC.
 ///
 /// The interceptor sets the `accept` header to the Miden API version and optionally includes the
-/// genesis commitment. When `bearer_token` is `Some`, an `authorization: Bearer <token>` header
-/// is also attached.
+/// genesis commitment. When `bearer_token` is `Some`, an `authorization: Bearer <token>` header is
+/// also attached.
 fn accept_header_interceptor(
     genesis_digest: Option<Word>,
     bearer_token: Option<&str>,
@@ -309,8 +309,8 @@ mod tests {
 
     #[test]
     fn interceptor_injects_bearer_token_onto_request() {
-        // Build the same interceptor that the native/WASM clients would use, with a caller
-        // bearer token in addition to the standard `accept`.
+        // Build the same interceptor that the native/WASM clients would use, with a caller bearer
+        // token in addition to the standard `accept`.
         let mut interceptor =
             accept_header_interceptor(None, Some("test-token")).expect("build interceptor");
 
@@ -343,8 +343,8 @@ mod tests {
 
     #[test]
     fn with_bearer_token_rejects_invalid_ascii_values() {
-        // Control characters are not valid ASCII metadata values; the builder must reject
-        // them rather than silently dropping the header.
+        // Control characters are not valid ASCII metadata values; the builder must reject them
+        // rather than silently dropping the header.
         match MetadataInterceptor::default().with_bearer_token(Some("bad\nvalue")) {
             Err(crate::rpc::RpcError::ConnectionError(_)) => {},
             Err(other) => panic!("expected ConnectionError, got {other:?}"),

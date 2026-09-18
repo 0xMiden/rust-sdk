@@ -117,9 +117,9 @@ fn create_account_with_empty_maps(
     Ok((account, sk))
 }
 
-/// Creates and deploys a public wallet with empty storage maps to the network.
-/// Returns the account ID. The signing key and account data are persisted in the
-/// store directory for use by subsequent `expand` and `transaction` commands.
+/// Creates and deploys a public wallet with empty storage maps to the network. Returns the account
+/// ID. The signing key and account data are persisted in the store directory for use by subsequent
+/// `expand` and `transaction` commands.
 pub async fn deploy_account(
     client: &mut TestClient,
     store_path: &Path,

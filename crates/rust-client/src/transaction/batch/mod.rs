@@ -1,5 +1,5 @@
-//! Stacks multiple transactions across one or more local accounts and submits them as one
-//! proven batch via the node's `SubmitProvenBatch` endpoint.
+//! Stacks multiple transactions across one or more local accounts and submits them as one proven
+//! batch via the node's `SubmitProvenBatch` endpoint.
 //!
 //! ## Flow
 //!
@@ -12,17 +12,17 @@
 //!
 //! ## Multi-account semantics
 //!
-//! Each `push` specifies which local account the transaction targets. A single batch can
-//! contain transactions from any combination of local accounts. Per-account in-memory state
-//! stacks for repeated pushes against the same account.
+//! Each `push` specifies which local account the transaction targets. A single batch can contain
+//! transactions from any combination of local accounts. Per-account in-memory state stacks for
+//! repeated pushes against the same account.
 //!
 //! ## In-batch cross-account note flow
 //!
-//! A transaction in the batch may consume a note produced by an earlier transaction in the
-//! same batch — even if the producer and consumer target different accounts. The user
-//! extracts the expected output note from the producing request via
-//! [`TransactionRequest::expected_output_own_notes`] and feeds it as an input to the
-//! consuming request. Push order must respect producer-before-consumer.
+//! A transaction in the batch may consume a note produced by an earlier transaction in the same
+//! batch — even if the producer and consumer target different accounts. The user extracts the
+//! expected output note from the producing request via
+//! [`TransactionRequest::expected_output_own_notes`] and feeds it as an input to the consuming
+//! request. Push order must respect producer-before-consumer.
 //!
 //! ## Constraints
 //!
@@ -41,17 +41,17 @@
 //! batch and nothing was recorded locally, so the error carries a [`ProvenBatchSubmission`] to
 //! resend with [`Client::retry_proven_batch`].
 //!
-//! Once the node accepts the batch, the local store still needs to be updated. If that step
-//! fails, the caller receives one of two errors that both carry the accepted `block_num`:
+//! Once the node accepts the batch, the local store still needs to be updated. If that step fails,
+//! the caller receives one of two errors that both carry the accepted `block_num`:
 //!
 //! - [`BatchBuilderError::BatchSubmittedButUpdateBuildFailed`] — building one of the per-tx
 //!   [`TransactionStoreUpdate`]s failed.
 //! - [`BatchBuilderError::BatchSubmittedButApplyFailed`] — applying the updates atomically to the
 //!   local store failed.
 //!
-//! In all three cases `sync_state` reconciles the accounts with what the network holds. It does
-//! not create transaction records, though: syncing updates records the client already holds and
-//! never inserts missing ones. For the unknown outcome an accepted retry writes them; for the two
+//! In all three cases `sync_state` reconciles the accounts with what the network holds. It does not
+//! create transaction records, though: syncing updates records the client already holds and never
+//! inserts missing ones. For the unknown outcome an accepted retry writes them; for the two
 //! post-accept errors nothing will, since neither carries the updates that failed.
 
 mod data_store;
@@ -85,8 +85,8 @@ use crate::transaction::{
 };
 use crate::{Client, ClientError};
 
-/// A proven batch together with everything else its submission needs, so a submission whose
-/// outcome the node never confirmed can be retried without executing or proving again.
+/// A proven batch together with everything else its submission needs, so a submission whose outcome
+/// the node never confirmed can be retried without executing or proving again.
 ///
 /// Handed back by [`BatchBuilderError::BatchSubmissionOutcomeUnknown`] and accepted by
 /// [`Client::retry_proven_batch`].
@@ -94,8 +94,8 @@ use crate::{Client, ClientError};
 pub struct ProvenBatchSubmission {
     proven_batch: ProvenBatch,
     proposed_batch: Box<ProposedBatch>,
-    /// The validator set's key can rotate between attempts, so a retry has to seal these again,
-    /// and `BatchBuilder::submit` needs the whole results after the RPC for the store updates.
+    /// The validator set's key can rotate between attempts, so a retry has to seal these again, and
+    /// `BatchBuilder::submit` needs the whole results after the RPC for the store updates.
     tx_results: Vec<TransactionResult>,
 }
 
@@ -120,9 +120,9 @@ pub(crate) struct PushedTx {
     pub(crate) tx_result: TransactionResult,
 }
 
-/// Accumulates transactions from one or more local accounts and submits them as one proven
-/// batch via the node's `SubmitProvenBatch` endpoint. See the module-level docs for the full
-/// usage and error semantics.
+/// Accumulates transactions from one or more local accounts and submits them as one proven batch
+/// via the node's `SubmitProvenBatch` endpoint. See the module-level docs for the full usage and
+/// error semantics.
 pub struct BatchBuilder<'c, AUTH> {
     pub(crate) client: &'c mut Client<AUTH>,
     pub(crate) data_store: InMemoryBatchDataStore,
@@ -146,8 +146,7 @@ impl<AUTH> Client<AUTH>
 where
     AUTH: TransactionAuthenticator + Sync + 'static,
 {
-    /// Open a new [`BatchBuilder`] for accumulating transactions across one or more local
-    /// accounts.
+    /// Open a new [`BatchBuilder`] for accumulating transactions across one or more local accounts.
     ///
     /// See the module-level docs for usage and constraints.
     pub fn new_transaction_batch(&mut self) -> BatchBuilder<'_, AUTH> {
@@ -250,8 +249,8 @@ impl<AUTH> BatchBuilder<'_, AUTH>
 where
     AUTH: TransactionAuthenticator + Sync + 'static,
 {
-    /// Assemble the `ProposedBatch`, prove it, submit it via the client's RPC, and
-    /// atomically apply the per-transaction updates to the local store.
+    /// Assemble the `ProposedBatch`, prove it, submit it via the client's RPC, and atomically apply
+    /// the per-transaction updates to the local store.
     ///
     /// Returns the node's chain tip at submission (not the block the batch is committed). The
     /// submitted transactions are recorded locally as pending; call `sync_state` to get the block
@@ -317,8 +316,8 @@ where
             tx_results.push(pushed.tx_result);
         }
 
-        // TODO: field is left unused as of now because all txs in batch are already proven.
-        // This will be populated once a feature like remote proving in batches is implemented.
+        // TODO: field is left unused as of now because all txs in batch are already proven. This
+        // will be populated once a feature like remote proving in batches is implemented.
         let unauthenticated_note_proofs = BTreeMap::new();
         let proposed_batch = ProposedBatch::new(
             proven_txs,
@@ -330,7 +329,8 @@ where
 
         // 6. Execute the batch kernel, then prove synchronously.
         let executed_batch = BatchExecutor::new().execute(proposed_batch.clone())?;
-        let proven_batch = LocalBatchProver::new().prove(executed_batch)?;
+        let proven_batch =
+            LocalBatchProver::new(miden_tx::Prover::default()).prove(executed_batch)?;
 
         // 7. Submit via RPC and record what the node took. The proven batch is kept so an
         //    unconfirmed submission can be retried without executing or proving again.
@@ -344,13 +344,13 @@ where
         Ok(block_num)
     }
 
-    /// Execute `req` against the batch's in-memory state for `account_id`, prove it using
-    /// the client's configured prover, and append the resulting proven transaction to the
-    /// batch. The first push for a given account lazily loads its state from the store.
+    /// Execute `req` against the batch's in-memory state for `account_id`, prove it using the
+    /// client's configured prover, and append the resulting proven transaction to the batch. The
+    /// first push for a given account lazily loads its state from the store.
     ///
     /// The batch is only advanced once the transaction has both executed and been proven, so on
-    /// failure the builder still holds exactly the transactions it held before the call and
-    /// remains usable. Returns `&mut Self` so pushes can be chained.
+    /// failure the builder still holds exactly the transactions it held before the call and remains
+    /// usable. Returns `&mut Self` so pushes can be chained.
     pub async fn push(
         &mut self,
         account_id: AccountId,
@@ -387,8 +387,8 @@ where
     }
 }
 
-/// Executes a single transaction that is part of the batch to be sent to the node.
-/// The transaction runs against the current in-batch partial account state.
+/// Executes a single transaction that is part of the batch to be sent to the node. The transaction
+/// runs against the current in-batch partial account state.
 async fn execute_transaction_for_batch<AUTH>(
     client: &Client<AUTH>,
     data_store: &InMemoryBatchDataStore,

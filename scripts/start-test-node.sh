@@ -136,6 +136,7 @@ MIDEN_VERIFICATION_BASE_FEE="$VERIFICATION_BASE_FEE" "$GEN_GENESIS" "$DATA/genes
 # below once `miden-validator genesis` has generated them.
 rm -rf "$ROOT/data/funders"
 mkdir -p "$ROOT/data"
+cp "$DATA/genesis-config/protocol-config.bin" "$ROOT/data/protocol-config.bin"
 cp "$DATA/genesis-config/tst_faucet.mac" "$ROOT/data/account.mac"
 # Expose the agglayer accounts under ./data, where the tests read them via AGGLAYER_ACCOUNTS_DIR.
 for mac in bridge_admin.mac ger_manager.mac bridge.mac agglayer_faucet.mac \
@@ -144,22 +145,15 @@ for mac in bridge_admin.mac ger_manager.mac bridge.mac agglayer_faucet.mac \
 done
 
 # The validator's signing key and the set's shared transaction encryption key are passed on the
-# command line. The genesis header commits to the signing key's public half, so the key-pair has to
-# exist before the genesis block is built. A fresh pair per run is fine because `$DATA` is wiped
-# above, so no earlier chain state depends on the previous one.
-VALIDATOR_KEYS="$("$BIN/miden-validator" keygen)"
-validator_key() {
-    printf '%s\n' "$VALIDATOR_KEYS" | awk -v field="$1:" '$1 == field { print $2; exit }'
-}
-SIGNING_KEY="$(validator_key signing-key)"
-VALIDATOR_PUBLIC_KEY="$(validator_key validator-key)"
-ENCRYPTION_KEY="$(validator_key encryption-key)"
-for key in SIGNING_KEY VALIDATOR_PUBLIC_KEY ENCRYPTION_KEY; do
-    [ -n "${!key}" ] || {
-        echo "error: miden-validator keygen did not report a $key" >&2
-        exit 1
-    }
-done
+# command line. The genesis header commits to the signing key's public half, so the keys have to
+# exist before the genesis block is built. These are hardcoded INSECURE test-only fixtures (one
+# `miden-validator keygen` output, so the signing and validator keys pair up), like the
+# storage-key material below. A fixed key is safe here because `$DATA` is wiped above, so no
+# earlier chain state depends on it. If a node bump changes the key format, regenerate all three
+# with `miden-validator keygen`.
+SIGNING_KEY="9cbcf0fc18b2a4afeff56ef43ad96af92e804fae64615c9802cff2a182e9cae2"
+VALIDATOR_PUBLIC_KEY="020c06515b355a62133ae98e53e4b5d3e6ee9ff60ce620a436780e4e308a3ff3e9"
+ENCRYPTION_KEY="9964dbb2590adeb415d3291b64a0a9991fbcac5adacb05ee17efee5296d081d7"
 
 {
     # Genesis generation is separate from bootstrap: `genesis` builds the block once, then every
@@ -219,6 +213,7 @@ sleep 2
 start sequencer   "$BIN/miden-node" sequencer --rpc.listen "$RPC" --data-directory "$DATA/node" \
     --validator.url "http://$VALIDATOR" --ntx-builder.url "http://$NTX" \
     --rpc.network-tx-auth-header-value "$NETWORK_TX_AUTH" \
+    --disable-account-allowlist \
     --block.interval 3s --batch.interval 1s
 # A network transaction's proof runs well past the prover's 60s default on a shared CI runner, and
 # the default capacity of 1 rejects the ntx-builder's retry outright, so it never converges.

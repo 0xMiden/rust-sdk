@@ -56,9 +56,9 @@ impl NoteStateHandler for UnverifiedNoteState {
         note_id: NoteId,
         block_header: &BlockHeader,
     ) -> Result<Option<InputNoteState>, NoteRecordError> {
-        // The proof authenticates the note against the note root of the block it names, so a
-        // header for any other block cannot confirm it, however well the path verifies: with an
-        // honest node this should never trigger.
+        // The proof authenticates the note against the note root of the block it names, so a header
+        // for any other block cannot confirm it, however well the path verifies: with an honest
+        // node this should never trigger.
         let proof_authenticates_note = self.inclusion_proof.location().block_num()
             == block_header.block_num()
             && self
@@ -171,12 +171,11 @@ mod tests {
     use miden_protocol::account::{AccountIdVersion, AccountType, AssetCallbackFlag};
     use miden_protocol::crypto::merkle::SparseMerklePath;
     use miden_protocol::note::{NoteAttachments, NoteTag, NoteType, PartialNoteMetadata};
-    use miden_protocol::transaction::TransactionKernel;
 
     use super::*;
 
-    /// An unverified note whose empty path authenticates it against a note root equal to the
-    /// note's own ID, in the block the proof names.
+    /// An unverified note whose empty path authenticates it against a note root equal to the note's
+    /// own ID, in the block the proof names.
     fn unverified_note(proof_block: u32) -> (NoteId, UnverifiedNoteState) {
         let note_id = NoteId::from_raw(Word::from([1u32, 2, 3, 4]));
         let sender = AccountId::dummy(
@@ -202,7 +201,7 @@ mod tests {
     /// A header for `block_num` whose note root is `note_root`, so the same root can be placed in
     /// more than one block.
     fn header(block_num: u32, note_root: Word) -> BlockHeader {
-        BlockHeader::mock(block_num, None, Some(note_root), &[], TransactionKernel.to_commitment())
+        BlockHeader::mock(block_num, None, Some(note_root), &[])
     }
 
     #[test]

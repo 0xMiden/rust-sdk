@@ -34,12 +34,11 @@ static CLIENT_MIGRATOR: LazyLock<SqliteMigrator> =
 /// Rust code a migration runs on top of its SQL, taking the transaction the migration is applied
 /// in.
 ///
-/// This is the `fn` form of [`rusqlite_migration::MigrationHook`], which keeps a migration
-/// `Copy` and constructible in a `const`.
+/// This is the `fn` form of [`rusqlite_migration::MigrationHook`], which keeps a migration `Copy`
+/// and constructible in a `const`.
 pub(crate) type MigrationHook = fn(&Transaction<'_>) -> HookResult;
 
-/// Carries the rejection a verifying hook cannot return by value out to
-/// [`SqliteMigrator::apply`].
+/// Carries the rejection a verifying hook cannot return by value out to [`SqliteMigrator::apply`].
 type RejectionReport = Arc<Mutex<Option<SqliteStoreError>>>;
 
 /// One schema version: the SQL that builds it, optionally the Rust code that moves data the SQL

@@ -6,6 +6,7 @@ use alloc::vec::Vec;
 use miden_protocol::assembly::{DefaultSourceManager, SourceManagerSync};
 use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::rand::RandomCoin;
+use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::{Felt, MAX_TX_EXECUTION_CYCLES, MIN_TX_EXECUTION_CYCLES};
 use miden_tx::auth::TransactionAuthenticator;
 use miden_tx::{ExecutionOptions, LocalTransactionProver};
@@ -85,6 +86,8 @@ pub trait StoreFactory {
 /// - **Store** ([`Store`]): Provides persistence for accounts, notes, and transaction history.
 ///   Configure via [`store()`](Self::store).
 ///
+/// - **Protocol configuration** ([`ProtocolConfig`]): Defines the protocol parameters for transaction execution and note screening. Register it with [`protocol_config()`](Self::protocol_config), or use a store that already contains it.
+///
 /// - **RNG** ([`FeltRng`](miden_protocol::crypto::rand::FeltRng)): Provides randomness for
 ///   generating keys, serial numbers, and other cryptographic operations. If not provided, a random
 ///   seed-based RNG is created automatically. Configure via [`rng()`](Self::rng).
@@ -110,6 +113,8 @@ pub trait StoreFactory {
 ///   transactions and account proofs to be considered valid. Configure via
 ///   [`max_block_number_delta()`](Self::max_block_number_delta).
 pub struct ClientBuilder<AUTH> {
+    /// An optional protocol configuration, registered in the store when the client is built.
+    protocol_config: Option<ProtocolConfig>,
     /// An optional custom RPC client. If provided, this takes precedence over `rpc_endpoint`.
     rpc_api: Option<Arc<dyn NodeRpcClient>>,
     /// An optional store provided by the user.
@@ -118,11 +123,11 @@ pub struct ClientBuilder<AUTH> {
     rng: Option<ClientRngBox>,
     /// The authenticator provided by the user.
     authenticator: Option<Arc<AUTH>>,
-    /// Number of blocks after which pending transactions are considered stale and discarded.
-    /// If `None`, there is no limit and transactions will be kept indefinitely.
+    /// Number of blocks after which pending transactions are considered stale and discarded. If
+    /// `None`, there is no limit and transactions will be kept indefinitely.
     tx_discard_delta: Option<u32>,
-    /// Number of synced blocks between automatic pruning runs for irrelevant block data.
-    /// If `None`, automatic irrelevant-block pruning is disabled.
+    /// Number of synced blocks between automatic pruning runs for irrelevant block data. If `None`,
+    /// automatic irrelevant-block pruning is disabled.
     irrelevant_block_prune_interval: Option<u32>,
     /// Whether the current Partial MMR should be cached in memory between sync-related operations.
     cache_partial_mmr_in_memory: bool,
@@ -145,6 +150,7 @@ pub struct ClientBuilder<AUTH> {
 impl<AUTH> Default for ClientBuilder<AUTH> {
     fn default() -> Self {
         Self {
+            protocol_config: None,
             rpc_api: None,
             store: None,
             rng: None,
@@ -164,8 +170,8 @@ impl<AUTH> Default for ClientBuilder<AUTH> {
 
 /// Network-specific constructors for [`ClientBuilder`].
 ///
-/// These constructors automatically configure the builder for a specific network,
-/// including RPC endpoint, transaction prover, and note transport (where applicable).
+/// These constructors automatically configure the builder for a specific network, including RPC
+/// endpoint, transaction prover, and note transport (where applicable).
 #[cfg(feature = "tonic")]
 impl<AUTH> ClientBuilder<AUTH>
 where
@@ -183,8 +189,8 @@ where
     /// - A store (via `.store()`)
     /// - An authenticator (via `.authenticator()`)
     ///
-    /// All defaults can be overridden by calling the corresponding builder methods
-    /// after `for_testnet()`.
+    /// All defaults can be overridden by calling the corresponding builder methods after
+    /// `for_testnet()`.
     ///
     /// # Example
     ///
@@ -227,8 +233,8 @@ where
     /// - A store (via `.store()`)
     /// - An authenticator (via `.authenticator()`)
     ///
-    /// All defaults can be overridden by calling the corresponding builder methods
-    /// after `for_devnet()`.
+    /// All defaults can be overridden by calling the corresponding builder methods after
+    /// `for_devnet()`.
     ///
     /// # Example
     ///
@@ -271,8 +277,8 @@ where
     /// - A store (via `.store()`)
     /// - An authenticator (via `.authenticator()`)
     ///
-    /// All defaults can be overridden by calling the corresponding builder methods
-    /// after `for_localhost()`.
+    /// All defaults can be overridden by calling the corresponding builder methods after
+    /// `for_localhost()`.
     ///
     /// # Example
     ///
@@ -309,8 +315,8 @@ where
 
     /// Sets a custom RPC client directly.
     ///
-    /// The client is used as provided: wrap it in
-    /// [`VerifyingRpcClient`] to have node responses verified against the requests.
+    /// The client is used as provided: wrap it in [`VerifyingRpcClient`] to have node responses
+    /// verified against the requests.
     #[must_use]
     pub fn rpc(mut self, client: Arc<dyn NodeRpcClient>) -> Self {
         self.rpc_api = Some(client);
@@ -336,6 +342,13 @@ where
         self
     }
 
+    /// Registers a protocol configuration for execution and note screening.
+    #[must_use]
+    pub fn protocol_config(mut self, config: ProtocolConfig) -> Self {
+        self.protocol_config = Some(config);
+        self
+    }
+
     /// Optionally provide a custom RNG.
     #[must_use]
     pub fn rng(mut self, rng: ClientRngBox) -> Self {
@@ -353,21 +366,20 @@ where
     /// Overrides the source manager used to retain MASM source information for assembled programs.
     ///
     /// If not set, the client uses a default [`DefaultSourceManager`]. The same instance is
-    /// forwarded to the transaction executor and to every script compiled through the client
-    /// (e.g. via [`Client::code_builder`](crate::Client::code_builder)).
+    /// forwarded to the transaction executor and to every script compiled through the client (e.g.
+    /// via [`Client::code_builder`](crate::Client::code_builder)).
     ///
     /// Set this explicitly only when scripts or modules are compiled outside the client (for
     /// example, using an external [`Assembler`](miden_protocol::assembly::Assembler)): pass the
-    /// same `Arc` used by that external assembler so all source spans resolve correctly at
-    /// runtime.
+    /// same `Arc` used by that external assembler so all source spans resolve correctly at runtime.
     #[must_use]
     pub fn source_manager(mut self, sm: Arc<dyn SourceManagerSync>) -> Self {
         self.source_manager = Some(sm);
         self
     }
 
-    /// Optionally set a maximum number of blocks that the client can be behind the network.
-    /// By default, there's no maximum.
+    /// Optionally set a maximum number of blocks that the client can be behind the network. By
+    /// default, there's no maximum.
     #[must_use]
     pub fn max_block_number_delta(mut self, delta: u32) -> Self {
         self.max_block_number_delta = Some(delta);
@@ -399,9 +411,8 @@ where
 
     /// Enables or disables the in-memory Partial MMR cache.
     ///
-    /// When enabled, the client reuses the current Partial MMR between sync and pruning
-    /// operations. When disabled, it rebuilds the Partial MMR from the store each time it is
-    /// needed.
+    /// When enabled, the client reuses the current Partial MMR between sync and pruning operations.
+    /// When disabled, it rebuilds the Partial MMR from the store each time it is needed.
     #[must_use]
     pub fn cache_partial_mmr_in_memory(mut self, enabled: bool) -> Self {
         self.cache_partial_mmr_in_memory = enabled;
@@ -436,8 +447,8 @@ where
     /// Returns the endpoint configured for this builder, if any.
     ///
     /// This is set automatically when using network-specific constructors like
-    /// [`for_testnet()`](Self::for_testnet), [`for_devnet()`](Self::for_devnet),
-    /// or [`for_localhost()`](Self::for_localhost).
+    /// [`for_testnet()`](Self::for_testnet), [`for_devnet()`](Self::for_devnet), or
+    /// [`for_localhost()`](Self::for_localhost).
     #[must_use]
     pub fn endpoint(&self) -> Option<&Endpoint> {
         self.endpoint.as_ref()
@@ -481,11 +492,9 @@ where
             Box::new(RandomCoin::new(coin_seed.map(Felt::new_unchecked).into()))
         };
 
-        // Set default prover if not provided
         let tx_prover: Arc<dyn TransactionProver + Send + Sync> =
             self.tx_prover.unwrap_or_else(|| Arc::new(LocalTransactionProver::default()));
 
-        // Use the provided source manager, or create a default one.
         let source_manager: Arc<dyn SourceManagerSync> =
             self.source_manager.unwrap_or_else(|| Arc::new(DefaultSourceManager::default()));
 
@@ -494,8 +503,8 @@ where
             rpc_api.set_genesis_commitment(genesis.commitment()).await?;
         }
 
-        // Set the RPC client with persisted limits if available.
-        // If not present, they will be fetched from the node during sync_state.
+        // Set the RPC client with persisted limits if available. If not present, they will be
+        // fetched from the node during sync_state.
         if let Some(limits) = store.get_rpc_limits().await? {
             rpc_api.set_rpc_limits(limits).await;
         }
@@ -513,14 +522,13 @@ where
             self.note_transport_api = Some(Arc::new(transport) as Arc<dyn NoteTransportClient>);
         }
 
-        // Built-in transaction observers fired by `apply_transaction`.
-        // Additional observers can be attached via
-        // `Client::with_transaction_observer`.
+        // Built-in transaction observers fired by `apply_transaction`. Additional observers can be
+        // attached via `Client::with_transaction_observer`.
         let transaction_observers: Vec<Arc<dyn TransactionObserver>> =
             vec![Arc::new(PswapTransactionObserver::new(store.clone()))];
 
         // Construct and return the Client
-        Ok(Client {
+        let client = Client {
             store,
             rng: ClientRng::new(rng),
             rpc_api,
@@ -541,7 +549,11 @@ where
             cache_partial_mmr_in_memory: self.cache_partial_mmr_in_memory,
             partial_mmr: None,
             transaction_observers,
-        })
+        };
+        if let Some(config) = self.protocol_config {
+            client.add_protocol_config(config).await?;
+        }
+        Ok(client)
     }
 }
 
@@ -551,9 +563,9 @@ where
 /// Marker trait for the authenticator type parameter of [`ClientBuilder`].
 ///
 /// The builder stores the authenticator and passes it to the client. The client uses it only to
-/// sign transactions, so any [`TransactionAuthenticator`] with a `'static` lifetime qualifies.
-/// Key management is not required. A signer that holds no secret key, such as a remote signing
-/// service, can be used without implementing [`Keystore`](crate::keystore::Keystore).
+/// sign transactions, so any [`TransactionAuthenticator`] with a `'static` lifetime qualifies. Key
+/// management is not required. A signer that holds no secret key, such as a remote signing service,
+/// can be used without implementing [`Keystore`](crate::keystore::Keystore).
 pub trait BuilderAuthenticator: TransactionAuthenticator + 'static {}
 impl<T> BuilderAuthenticator for T where T: TransactionAuthenticator + 'static {}
 
@@ -566,8 +578,8 @@ impl ClientBuilder<FilesystemKeyStore> {
     /// Creates a [`FilesystemKeyStore`] from the given path and sets it as the authenticator.
     ///
     /// This is a convenience method that creates the keystore and configures it as the
-    /// authenticator in a single call. The keystore provides transaction signing capabilities
-    /// using keys stored on the filesystem.
+    /// authenticator in a single call. The keystore provides transaction signing capabilities using
+    /// keys stored on the filesystem.
     ///
     /// # Errors
     ///

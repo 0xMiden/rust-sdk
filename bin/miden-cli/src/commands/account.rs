@@ -13,18 +13,17 @@ use miden_client::account::{
     StorageSlotContent,
 };
 use miden_client::address::{Address, AddressInterface, NetworkId, RoutingParameters};
-use miden_client::asset::{Asset, TokenSymbol};
+use miden_client::asset::TokenSymbol;
 use miden_client::rpc::domain::account::GetAccountRequest;
 use miden_client::rpc::{GrpcClient, NodeRpcClient, VerifyingRpcClient};
 use miden_client::transaction::{AccountComponentInterface, AccountInterface};
-use miden_client::utils::base_units_to_tokens;
 use miden_client::vm::{Package, PackageExport};
 use miden_client::{Client, PrettyPrint, Word, ZERO};
 
 use crate::commands::new_account::load_packages;
 use crate::config::{CliConfig, RpcConfig};
 use crate::errors::CliError;
-use crate::utils::{parse_account_id, split_procedure_target};
+use crate::utils::{base_units_to_tokens, parse_account_id, split_procedure_target};
 use crate::{client_binary_name, create_dynamic_table};
 
 pub const DEFAULT_ACCOUNT_ID_KEY: &str = "default_account_id";
@@ -52,8 +51,7 @@ pub struct AccountCmd {
     /// Additional package files (`.masp`) used to resolve procedure MAST roots to names and
     /// signatures, on top of the packages in the configured packages directory.
     ///
-    /// May be passed multiple times. On a duplicate MAST root, the passed packages take
-    /// precedence.
+    /// May be passed multiple times. On a duplicate MAST root, the passed packages take precedence.
     #[arg(short, long, value_name = "FILE", requires = "inspect")]
     package: Vec<PathBuf>,
     /// When using --inspect, also print the MASM disassembly of each procedure.
@@ -61,9 +59,8 @@ pub struct AccountCmd {
     verbose: bool,
     /// Manages default account for transaction execution.
     ///
-    /// If no ID is provided it will display the current default account ID.
-    /// If "none" is provided it will remove the default account else it will set the default
-    /// account to the provided ID.
+    /// If no ID is provided it will display the current default account ID. If "none" is provided
+    /// it will remove the default account else it will set the default account to the provided ID.
     #[arg(short, long, group = "action", value_name = "ID")]
     default: Option<Option<String>>,
 }
@@ -91,9 +88,9 @@ impl AccountCmd {
                 let (id, procedure) = split_procedure_target(target);
                 let account_id = parse_account_id(&client, id).await?;
 
-                // Explicit `--package` files take precedence over the configured packages
-                // directory (on a duplicate MAST root the first package wins), but both are
-                // consulted so default names still resolve alongside the passed packages.
+                // Explicit `--package` files take precedence over the configured packages directory
+                // (on a duplicate MAST root the first package wins), but both are consulted so
+                // default names still resolve alongside the passed packages.
                 let mut packages = load_packages(&cli_config, &self.package)?;
                 packages.extend(load_packages_from_directory(&cli_config.package_directory)?);
 
@@ -207,8 +204,8 @@ async fn show_account<AUTH>(
 
         let mut table = create_dynamic_table(&["Asset Type", "Faucet", "Amount"]);
         for asset in assets {
-            let (asset_type, faucet, amount) = match asset {
-                Asset::Fungible(fungible_asset) => {
+            let (asset_type, faucet, amount) = match asset.as_fungible() {
+                Some(fungible_asset) => {
                     let faucet_id = fungible_asset.faucet_id();
                     let asset_amount = fungible_asset.amount();
                     let (faucet, amount) = match get_faucet_token_info(client, faucet_id).await {
@@ -219,13 +216,9 @@ async fn show_account<AUTH>(
                     };
                     ("Fungible Asset", faucet, amount)
                 },
-                Asset::NonFungible(non_fungible_asset) => {
+                None => {
                     // TODO: Display non-fungible assets more clearly.
-                    (
-                        "Non Fungible Asset",
-                        non_fungible_asset.faucet_id().prefix().to_hex(),
-                        1.0.to_string(),
-                    )
+                    ("Non Fungible Asset", asset.faucet_id().prefix().to_hex(), 1.0.to_string())
                 },
             };
             table.add_row(vec![asset_type, &faucet, &amount.clone()]);

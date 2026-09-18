@@ -7,14 +7,7 @@ use miden_protocol::account::AccountId;
 use miden_protocol::address::NetworkId;
 use miden_protocol::batch::{ProposedBatch, ProvenBatch};
 use miden_protocol::block::account_tree::AccountWitness;
-use miden_protocol::block::{
-    BlockBody,
-    BlockHeader,
-    BlockNumber,
-    BlockProof,
-    BlockSignatures,
-    ProvenBlock,
-};
+use miden_protocol::block::{BlockBody, BlockHeader, BlockNumber, BlockSignatures, SignedBlock};
 use miden_protocol::crypto::merkle::mmr::MmrProof;
 use miden_protocol::crypto::merkle::{MerklePath, SparseMerklePath};
 use miden_protocol::note::{
@@ -37,8 +30,8 @@ use miden_protocol::transaction::{
     OrderedTransactionHeaders,
     ProvenTransaction,
     TransactionHeader,
-    TransactionKernel,
 };
+use miden_protocol::vm::ExecutionProof;
 use miden_protocol::{Felt, Word};
 use miden_standards::note::StandardNote;
 
@@ -88,10 +81,10 @@ fn nullifier_update(prefix: u16, block_num: u32) -> NullifierUpdate {
 }
 
 fn block_header(block_num: u32) -> BlockHeader {
-    BlockHeader::mock(block_num, None, None, &[], TransactionKernel.to_commitment())
+    BlockHeader::mock(block_num, None, None, &[])
 }
 
-fn proven_block(block_num: u32) -> ProvenBlock {
+fn signed_block(block_num: u32) -> SignedBlock {
     let body = BlockBody::new_unchecked(
         Vec::new(),
         Vec::new(),
@@ -100,7 +93,7 @@ fn proven_block(block_num: u32) -> ProvenBlock {
     );
     let signatures = BlockSignatures::new(Vec::new()).expect("no signatures is a valid set");
 
-    ProvenBlock::new_unchecked(block_header(block_num), body, signatures, BlockProof::new_dummy())
+    SignedBlock::new_unchecked(block_header(block_num), body, signatures)
 }
 
 fn inclusion_proof() -> NoteInclusionProof {
@@ -117,9 +110,9 @@ fn note_metadata(tag: NoteTag) -> NoteMetadata {
     )
 }
 
-/// Wraps `note_id` in the shape `get_notes_by_id` responds with. The `Private` variant reports
-/// the ID it was handed instead of deriving it from the note's contents, so the surrounding
-/// fixtures do not constrain which ID a test can plant.
+/// Wraps `note_id` in the shape `get_notes_by_id` responds with. The `Private` variant reports the
+/// ID it was handed instead of deriving it from the note's contents, so the surrounding fixtures do
+/// not constrain which ID a test can plant.
 fn fetched_note(note_id: NoteId) -> FetchedNote {
     FetchedNote::Private(
         note_id,
@@ -155,7 +148,8 @@ fn transaction_record(account_id: AccountId) -> TransactionRecord {
             Word::default(),
             InputNotes::new_unchecked(vec![]),
             vec![],
-        ),
+        )
+        .unwrap(),
         output_notes: vec![],
         erased_output_notes: vec![],
         consumed_note_refs: vec![],
@@ -174,9 +168,8 @@ fn account_proof() -> AccountProof {
 // CANNED TRANSPORT
 // ================================================================================================
 
-/// The canned `get_note_script_by_root` response. An enum rather than a nested [`Option`] so
-/// that a test setting no response stays distinct from a node reporting no script for the
-/// requested root.
+/// The canned `get_note_script_by_root` response. An enum rather than a nested [`Option`] so that a
+/// test setting no response stays distinct from a node reporting no script for the requested root.
 #[derive(Default)]
 enum CannedScript {
     #[default]
@@ -187,13 +180,13 @@ enum CannedScript {
 
 /// A transport that answers with canned responses regardless of the request, so that
 /// [`VerifyingRpcClient`] can be exercised against responses a well-behaved node would never
-/// produce. Ignoring the arguments is what lets a test drive one response into both an
-/// accepting and a rejecting request. Methods whose slot is left unset are unreachable: each
-/// test sets only what it exercises.
+/// produce. Ignoring the arguments is what lets a test drive one response into both an accepting
+/// and a rejecting request. Methods whose slot is left unset are unreachable: each test sets only
+/// what it exercises.
 #[derive(Default)]
 struct CannedTransport {
     block_header: Option<(BlockHeader, Option<MmrProof>)>,
-    block: Option<ProvenBlock>,
+    block: Option<SignedBlock>,
     /// Note IDs to report from `get_notes_by_id`, wrapped into notes on each call because
     /// [`FetchedNote`] is not [`Clone`].
     note_ids: Option<Vec<NoteId>>,
@@ -271,8 +264,10 @@ impl NodeRpcClient for CannedTransport {
         &self,
         _block_num: BlockNumber,
         _include_proof: bool,
-    ) -> Result<ProvenBlock, RpcError> {
-        self.canned(self.block.as_ref(), "test must set a canned get_block_by_number response")
+    ) -> Result<(SignedBlock, Option<ExecutionProof>), RpcError> {
+        let block = self
+            .canned(self.block.as_ref(), "test must set a canned get_block_by_number response")?;
+        Ok((block, None))
     }
 
     async fn get_notes_by_id(&self, _note_ids: &[NoteId]) -> Result<Vec<FetchedNote>, RpcError> {
@@ -414,11 +409,11 @@ async fn get_block_header_by_number_verifies_block_num() {
 #[tokio::test]
 async fn get_block_by_number_verifies_block_num() {
     let client = VerifyingRpcClient::new(CannedTransport {
-        block: Some(proven_block(5)),
+        block: Some(signed_block(5)),
         ..Default::default()
     });
 
-    let block = client
+    let (block, _proof) = client
         .get_block_by_number(BlockNumber::from(5u32), false)
         .await
         .expect("the requested block must be accepted");
@@ -573,8 +568,8 @@ async fn get_account_verifies_block_num_only_for_pinned_requests() {
 
 #[tokio::test]
 async fn get_account_rejects_proof_for_wrong_account_id() {
-    // account_proof() is built for test_account_id() (ACCOUNT_ID_SENDER),
-    // but we request a different account ID -- the verifying client must reject it.
+    // account_proof() is built for test_account_id() (ACCOUNT_ID_SENDER), but we request a
+    // different account ID -- the verifying client must reject it.
     let client = VerifyingRpcClient::new(CannedTransport {
         account: Some((BlockNumber::from(1u32), account_proof())),
         ..Default::default()

@@ -13,19 +13,17 @@ use crate::{insert_sql, subst};
 
 impl SqliteStore {
     pub(crate) fn get_setting<T: FromSql>(
-        conn: &mut Connection,
+        conn: &Connection,
         scope: SettingScope,
         name: &str,
     ) -> Result<Option<T>, StoreError> {
-        conn.transaction()
-            .into_store_error()?
-            .query_row(
-                "SELECT value FROM settings WHERE scope = $1 AND name = $2",
-                params![scope.as_u8(), name],
-                |row| row.get(0),
-            )
-            .optional()
-            .into_store_error()
+        conn.query_row(
+            "SELECT value FROM settings WHERE scope = $1 AND name = $2",
+            params![scope.as_u8(), name],
+            |row| row.get(0),
+        )
+        .optional()
+        .into_store_error()
     }
 
     pub(crate) fn set_setting<T: ToSql>(
@@ -33,13 +31,19 @@ impl SqliteStore {
         scope: SettingScope,
         name: &str,
         value: &T,
-    ) -> rusqlite::Result<()> {
-        let count = conn.execute(
-            insert_sql!(settings { scope, name, value } | REPLACE),
-            params![scope.as_u8(), name, value],
-        )?;
+    ) -> Result<(), StoreError> {
+        let count = conn
+            .execute(
+                insert_sql!(settings { scope, name, value } | REPLACE),
+                params![scope.as_u8(), name, value],
+            )
+            .into_store_error()?;
 
-        debug_assert_eq!(count, 1);
+        if count != 1 {
+            return Err(StoreError::DatabaseError(format!(
+                "writing setting {name:?} in scope {scope:?} affected {count} rows, expected 1"
+            )));
+        }
 
         Ok(())
     }
@@ -57,7 +61,14 @@ impl SqliteStore {
             )
             .into_store_error()?;
 
-        Ok(count > 0)
+        if count > 1 {
+            return Err(StoreError::DatabaseError(format!(
+                "removing setting {name:?} in scope {scope:?} affected {count} rows, expected at \
+                 most 1"
+            )));
+        }
+
+        Ok(count == 1)
     }
 
     pub(crate) fn list_setting_keys(
@@ -82,7 +93,6 @@ mod tests {
     use miden_client::store::{SettingScope, Store};
 
     use super::SqliteStore;
-    use crate::sql_error::SqlResultExt;
     use crate::tests::create_test_store;
 
     const KEY: &str = "a-key";
@@ -92,7 +102,7 @@ mod tests {
         let value = value.to_vec();
         store
             .interact_with_connection(move |conn| {
-                SqliteStore::set_setting(conn, SettingScope::Client, KEY, &value).into_store_error()
+                SqliteStore::set_setting(conn, SettingScope::Client, KEY, &value)
             })
             .await
             .unwrap();

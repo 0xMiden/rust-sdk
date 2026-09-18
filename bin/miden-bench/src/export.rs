@@ -11,10 +11,10 @@ use miden_client::{Client, Serializable};
 
 use crate::report::format_size;
 
-/// Exports an account from the client's store to a `.mac` file. The file contains
-/// the [`Account`] alongside its auth secret keys retrieved from the filesystem
-/// keystore. When `filename` is `None`, the file is written to the current working
-/// directory as `<account_id>.mac`.
+/// Exports an account from the client's store to a `.mac` file. The file contains the [`Account`]
+/// alongside the auth secret keys that the filesystem keystore holds for it, which can be none.
+/// When `filename` is `None`, the file is written to the current working directory as
+/// `<account_id>.mac`.
 pub async fn export_account(
     client: &Client<FilesystemKeyStore>,
     store_path: &Path,
@@ -41,9 +41,6 @@ pub async fn export_account(
     let keystore = FilesystemKeyStore::new(keystore_path)
         .map_err(|e| anyhow::anyhow!("Failed to create keystore: {e}"))?;
     let key_pairs = keystore.get_keys_for_account(&account_id).await?;
-    if key_pairs.is_empty() {
-        anyhow::bail!("No keys found for account {account_id}");
-    }
 
     let account_data = AccountFile::new(account, key_pairs);
     let mut file = File::create(&file_path)?;

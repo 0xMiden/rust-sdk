@@ -1,7 +1,6 @@
 use clap::ValueEnum;
 use comfy_table::{Attribute, Cell, ContentArrangement, Table, presets};
 use miden_client::address::Address;
-use miden_client::asset::Asset;
 use miden_client::keystore::Keystore;
 use miden_client::note::{
     Note,
@@ -16,7 +15,7 @@ use miden_client::store::{InputNoteRecord, NoteFilter as ClientNoteFilter, Outpu
 use miden_client::{Client, ClientError, IdPrefixFetchError, PrettyPrint};
 
 use crate::errors::CliError;
-use crate::utils::{load_faucet_metadata_resolver, parse_account_id};
+use crate::utils::{load_faucet_metadata_resolver, parse_account_id, validate_network_eq};
 use crate::{Parser, create_dynamic_table, get_output_note_with_id_prefix};
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -60,13 +59,13 @@ pub struct NotesCmd {
     /// consumable by this account will be shown.
     #[arg(short, long, value_name = "account_id")]
     account_id: Option<String>,
-    /// Send a stored private note through the note transport network.
-    /// Define both the note ID (as hex string, in full or a prefix) and address (as Bech32 string)
-    /// such as: `--send 0xc1234567 mm1qpkdyek2c0ywwvzupakc7zlzty8qn2qnfc`
+    /// Send a stored private note through the note transport network. Define both the note ID (as
+    /// hex string, in full or a prefix) and address (as Bech32 string) such as: `--send 0xc1234567
+    /// mm1qpkdyek2c0ywwvzupakc7zlzty8qn2qnfc`
     #[arg(long, group = "action", num_args = 2, value_names = ["note_id", "address"])]
     send: Option<Vec<String>>,
-    /// Fetch notes from the note transport network.
-    /// Fetched notes for tracked note tags will be added to the store.
+    /// Fetch notes from the note transport network. Fetched notes for tracked note tags will be
+    /// added to the store.
     #[arg(long, group = "action")]
     fetch: bool,
 }
@@ -77,8 +76,12 @@ impl NotesCmd {
         mut client: Client<AUTH>,
     ) -> Result<(), CliError> {
         match self {
-            NotesCmd { list: Some(NoteFilter::Consumable), .. } => {
-                list_consumable_notes(client, None).await?;
+            NotesCmd {
+                list: Some(NoteFilter::Consumable),
+                account_id,
+                ..
+            } => {
+                list_consumable_notes(client, account_id.as_ref()).await?;
             },
             NotesCmd { list: Some(filter), .. } => {
                 list_notes(
@@ -264,17 +267,13 @@ async fn show_note<AUTH: Keystore + Sync>(
     let assets = assets.iter();
 
     for asset in assets {
-        let (asset_type, faucet, amount) = match asset {
-            Asset::Fungible(fungible_asset) => {
+        let (asset_type, faucet, amount) = match asset.as_fungible() {
+            Some(fungible_asset) => {
                 let (faucet, amount) =
-                    resolver.format_fungible_asset(client, fungible_asset).await?;
+                    resolver.format_fungible_asset(client, &fungible_asset).await?;
                 ("Fungible Asset", faucet, amount)
             },
-            Asset::NonFungible(non_fungible_asset) => (
-                "Non Fungible Asset",
-                non_fungible_asset.faucet_id().prefix().to_hex(),
-                1.0.to_string(),
-            ),
+            None => ("Non Fungible Asset", asset.faucet_id().prefix().to_hex(), 1.0.to_string()),
         };
         table.add_row(vec![asset_type, &faucet, &amount.clone()]);
     }
@@ -349,7 +348,9 @@ async fn send<AUTH: Keystore + Sync>(
     let note: Note = note_record
         .try_into()
         .map_err(|e| CliError::from(ClientError::NoteRecordConversionError(e)))?;
-    let (_netid, address) = Address::decode(address).map_err(|e| CliError::Input(e.to_string()))?;
+    let (address_network_id, address) =
+        Address::decode(address).map_err(|e| CliError::Input(e.to_string()))?;
+    validate_network_eq(&address_network_id, &client.network_id().await?)?;
 
     match block_hint {
         Some(block_hint) => {

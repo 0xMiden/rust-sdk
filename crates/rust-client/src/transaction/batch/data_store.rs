@@ -22,6 +22,7 @@ use miden_protocol::asset::{AssetId, AssetWitness, PartialVault};
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::merkle::smt::{PartialSmt, SmtProof};
 use miden_protocol::note::{NoteScript, NoteScriptRoot};
+use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::transaction::{AccountInputs, ExecutedTransaction, PartialBlockchain};
 use miden_protocol::vm::FutureMaybeSend;
 use miden_protocol::{EMPTY_WORD, Word, ZERO};
@@ -40,9 +41,9 @@ use crate::store::data_store::ClientDataStore;
 // IN-MEMORY BATCH DATA STORE
 // ================================================================================================
 
-/// A [`DataStore`] that lets a [`crate::transaction::BatchBuilder`] stack in-memory account
-/// state for any number of local accounts. For each account pushed into the batch, the executor
-/// sees the in-batch [`PartialAccount`] state instead of the stale store state.
+/// A [`DataStore`] that lets a [`crate::transaction::BatchBuilder`] stack in-memory account state
+/// for any number of local accounts. For each account pushed into the batch, the executor sees the
+/// in-batch [`PartialAccount`] state instead of the stale store state.
 ///
 /// Witnesses for the in-batch state are served entirely client-side: each account SMT (the vault
 /// and every map slot) is viewed through a [`StagedSmt`] that replays the batch's accumulated
@@ -54,8 +55,8 @@ pub(crate) struct InMemoryBatchDataStore {
     current_accounts: BTreeMap<AccountId, CachedAccountState>,
 }
 
-/// The in-batch state of one account: the partial account served to the executor, plus the
-/// staged view of each of its SMTs from which witnesses at the in-batch roots are opened.
+/// The in-batch state of one account: the partial account served to the executor, plus the staged
+/// view of each of its SMTs from which witnesses at the in-batch roots are opened.
 ///
 /// Cloned to apply a transaction's writes atomically; the staged trees only hold the paths the
 /// batch has touched, so a copy stays proportional to the batch rather than to the account.
@@ -67,8 +68,8 @@ struct CachedAccountState {
 }
 
 impl CachedAccountState {
-    /// Anchors the staged trees at the committed account state — the initial account of the
-    /// first in-batch transaction, which is exactly what the store served for it.
+    /// Anchors the staged trees at the committed account state — the initial account of the first
+    /// in-batch transaction, which is exactly what the store served for it.
     fn new(committed: &PartialAccount) -> Self {
         let vault = StagedSmt::new(committed.vault().root());
         let maps = committed
@@ -82,8 +83,8 @@ impl CachedAccountState {
         Self { account: committed.clone(), vault, maps }
     }
 
-    /// Folds a transaction's vault writes into the staged vault and returns the new in-batch
-    /// vault root.
+    /// Folds a transaction's vault writes into the staged vault and returns the new in-batch vault
+    /// root.
     async fn fold_vault_writes(
         &mut self,
         inner: &ClientDataStore,
@@ -259,14 +260,14 @@ impl InMemoryBatchDataStore {
         Ok(())
     }
 
-    /// Returns the inner [`ClientDataStore`]'s MAST store so callers can load account
-    /// or note code prior to execution.
+    /// Returns the inner [`ClientDataStore`]'s MAST store so callers can load account or note code
+    /// prior to execution.
     pub(crate) fn mast_store(&self) -> Arc<TransactionMastStore> {
         self.inner.mast_store()
     }
 
-    /// Registers foreign account inputs on the inner [`ClientDataStore`] so the executor
-    /// can resolve foreign-procedure invocations during transaction execution.
+    /// Registers foreign account inputs on the inner [`ClientDataStore`] so the executor can
+    /// resolve foreign-procedure invocations during transaction execution.
     pub(crate) fn register_foreign_account_inputs(
         &self,
         foreign_accounts: impl IntoIterator<Item = AccountInputs>,
@@ -274,14 +275,14 @@ impl InMemoryBatchDataStore {
         self.inner.register_foreign_account_inputs(foreign_accounts);
     }
 
-    /// Registers note scripts on the inner [`ClientDataStore`] so the executor can resolve
-    /// the request's output note scripts during transaction execution.
+    /// Registers note scripts on the inner [`ClientDataStore`] so the executor can resolve the
+    /// request's output note scripts during transaction execution.
     pub(crate) fn register_note_scripts(&self, note_scripts: impl IntoIterator<Item = NoteScript>) {
         self.inner.register_note_scripts(note_scripts);
     }
 
-    /// Returns the in-batch account state if a transaction earlier in the batch cached one.
-    /// `None` means the caller should fall back to the account's persisted state.
+    /// Returns the in-batch account state if a transaction earlier in the batch cached one. `None`
+    /// means the caller should fall back to the account's persisted state.
     pub(crate) fn cached_account(&self, account_id: AccountId) -> Option<PartialAccount> {
         self.current_accounts.get(&account_id).map(|state| state.account.clone())
     }
@@ -307,13 +308,13 @@ fn ensure_matches(
     .into())
 }
 
-/// Batch-private helpers for fetching the committed-root proofs that anchor staged SMT views.
-/// The methods stay private to this module so the anchoring semantics don't leak into the
-/// store's public surface.
+/// Batch-private helpers for fetching the committed-root proofs that anchor staged SMT views. The
+/// methods stay private to this module so the anchoring semantics don't leak into the store's
+/// public surface.
 impl ClientDataStore {
     /// Fetches the committed-root proofs anchoring `asset_ids` in a staged vault view. A view
-    /// anchored at the empty tree needs none: an account created in-batch has no committed vault
-    /// in the store, and every key of the empty tree is implicitly provable anyway.
+    /// anchored at the empty tree needs none: an account created in-batch has no committed vault in
+    /// the store, and every key of the empty tree is implicitly provable anyway.
     async fn committed_vault_proofs(
         &self,
         account_id: AccountId,
@@ -328,8 +329,8 @@ impl ClientDataStore {
         Ok(witnesses.into_iter().map(SmtProof::from).collect())
     }
 
-    /// Fetches the committed-root proof anchoring `map_key` in a staged map view, or `None` for
-    /// a view anchored at the empty tree. See [`Self::committed_vault_proofs`].
+    /// Fetches the committed-root proof anchoring `map_key` in a staged map view, or `None` for a
+    /// view anchored at the empty tree. See [`Self::committed_vault_proofs`].
     async fn committed_map_proof(
         &self,
         account_id: AccountId,
@@ -352,15 +353,16 @@ impl DataStore for InMemoryBatchDataStore {
         &self,
         account_id: AccountId,
         ref_blocks: BTreeSet<BlockNumber>,
-    ) -> Result<(PartialAccount, BlockHeader, PartialBlockchain), DataStoreError> {
-        let (mut partial_account, block_header, partial_blockchain) =
+    ) -> Result<(PartialAccount, BlockHeader, ProtocolConfig, PartialBlockchain), DataStoreError>
+    {
+        let (mut partial_account, block_header, protocol_config, partial_blockchain) =
             self.inner.get_transaction_inputs(account_id, ref_blocks).await?;
 
         if let Some(state) = self.current_accounts.get(&account_id) {
             partial_account = state.account.clone();
         }
 
-        Ok((partial_account, block_header, partial_blockchain))
+        Ok((partial_account, block_header, protocol_config, partial_blockchain))
     }
 
     async fn get_vault_asset_witnesses(

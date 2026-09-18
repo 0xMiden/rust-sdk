@@ -1,8 +1,6 @@
+@AGENTS.md
+
 # Claude Code Guidelines for miden-client
-
-## Code Comments
-
-**Never reference the previous state of the code in comments.** No "previous version did X", "used to do Y", "changed from Z", "the old pattern was", etc. Comments must describe the CURRENT code's rationale — the invariant, constraint, or subtle correctness reason that isn't obvious from the code itself. If context about a change matters, put it in the PR description or commit message, not in the source. The source gets read long after the diff stops being relevant, and stale "previously" comments become actively misleading.
 
 ## Important: Always Format Code
 

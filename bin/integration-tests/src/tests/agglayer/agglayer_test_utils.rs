@@ -23,8 +23,8 @@ use serde::Deserialize;
 
 /// Deserializes a JSON value that may be either a number or a string into a `String`.
 ///
-/// Foundry's `vm.serializeUint` outputs JSON numbers for uint256 values.
-/// This deserializer accepts both `"100"` (string) and `100` (number) forms.
+/// Foundry's `vm.serializeUint` outputs JSON numbers for uint256 values. This deserializer accepts
+/// both `"100"` (string) and `100` (number) forms.
 fn deserialize_uint_to_string<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -72,8 +72,8 @@ impl LeafValueVector {
     }
 }
 
-/// Deserialized proof value test vector from Solidity-generated JSON.
-/// Contains SMT proofs, exit roots, global index, and expected global exit root.
+/// Deserialized proof value test vector from Solidity-generated JSON. Contains SMT proofs, exit
+/// roots, global index, and expected global exit root.
 #[derive(Debug, Deserialize)]
 pub struct ProofValueVector {
     pub smt_proof_local_exit_root: Vec<String>,
@@ -120,8 +120,8 @@ impl ProofValueVector {
     }
 }
 
-/// Deserialized claim asset test vector from Solidity-generated JSON.
-/// Contains both LeafData and ProofData from a real claimAsset transaction.
+/// Deserialized claim asset test vector from Solidity-generated JSON. Contains both LeafData and
+/// ProofData from a real claimAsset transaction.
 #[derive(Debug, Deserialize)]
 pub struct ClaimAssetVector {
     #[serde(flatten)]
@@ -134,8 +134,8 @@ pub struct ClaimAssetVector {
 // FOUNDRY TEST VECTOR GENERATION
 // ================================================================================================
 
-/// Maximum random deposit offset to keep foundry execution fast.
-/// Each offset adds one hash operation in the Solidity test.
+/// Maximum random deposit offset to keep foundry execution fast. Each offset adds one hash
+/// operation in the Solidity test.
 const MAX_DEPOSIT_OFFSET: u32 = 1000;
 
 /// Path to the foundry project directory, relative to the crate's manifest directory.
@@ -163,8 +163,8 @@ pub fn generate_claim_data_for_account(
         account_id, destination_hex
     );
 
-    // Determine the foundry project directory using CARGO_MANIFEST_DIR.
-    // This ensures the path is correct regardless of the test binary's working directory.
+    // Determine the foundry project directory using CARGO_MANIFEST_DIR. This ensures the path is
+    // correct regardless of the test binary's working directory.
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let foundry_dir = std::path::Path::new(manifest_dir).join(FOUNDRY_PROJECT_SUBDIR);
     ensure!(
@@ -173,16 +173,16 @@ pub fn generate_claim_data_for_account(
         foundry_dir.display()
     );
 
-    // Ensure the test-vectors output directory exists (it is gitignored so may not
-    // be present in a fresh checkout).
+    // Ensure the test-vectors output directory exists (it is gitignored so may not be present in a
+    // fresh checkout).
     let output_dir = foundry_dir.join("test-vectors");
     std::fs::create_dir_all(&output_dir).with_context(|| {
         format!("failed to create test-vectors directory at {}", output_dir.display())
     })?;
 
-    // Generate a random deposit offset so each test run gets a unique leaf_index.
-    // This prevents the bridge from rejecting the CLAIM as already spent when
-    // running the test multiple times against the same node instance.
+    // Generate a random deposit offset so each test run gets a unique leaf_index. This prevents the
+    // bridge from rejecting the CLAIM as already spent when running the test multiple times against
+    // the same node instance.
     let deposit_offset: u32 = rand::random::<u32>() % MAX_DEPOSIT_OFFSET;
     println!("[foundry] Using deposit offset: {}", deposit_offset);
 

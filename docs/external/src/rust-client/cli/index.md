@@ -389,16 +389,116 @@ This confirmation can be skipped in non-interactive environments by providing th
 
 If a remote prover is configured, the CLI can offload the proving process to it. This is done by providing the `--delegate-proving` flag when creating a transaction. The CLI will then send the transaction to the remote prover for processing.
 
+### `keys`
+
+Manage authentication keys in the configured filesystem keystore.
+
+Supported authentication schemes are `falcon512-poseidon2` and `ecdsa-k256-keccak`.
+
+#### `keys --list`
+
+List each stored key's public key commitment, authentication scheme, and associated account IDs:
+
+```sh
+miden-client keys --list
+```
+
+Running `miden-client keys` without an action also lists the keys. The associated accounts column contains `-` for a standalone key. Associated keys are included in account exports unless `--no-keys` is used.
+
+The command reads the keystore directory and skips every file that does not hold a readable key, so a damaged file does not hide the keys that are readable.
+
+#### `keys --generate`
+
+Generate a key for the selected authentication scheme and store it in the keystore:
+
+```sh
+miden-client keys --generate falcon512-poseidon2
+miden-client keys --generate ecdsa-k256-keccak
+```
+
+The command prints the public key commitment. It does not print the secret key.
+
+#### `keys --import`
+
+Import and store one serialized authentication secret key:
+
+```sh
+miden-client keys --import <FILE>
+```
+
+The file must contain exactly one `AuthSecretKey` in the Miden binary serialization format. PEM, DER, and raw secret-key files are not accepted. The command rejects data after the serialized key.
+
+Generated and imported keys are standalone until they are associated with an account.
+
+#### `keys --associate` and `keys --disassociate`
+
+Add or remove an association between a stored key and an account:
+
+```sh
+miden-client keys --associate <COMMITMENT> --account-id <ACCOUNT_ID>
+miden-client keys --disassociate <COMMITMENT> --account-id <ACCOUNT_ID>
+```
+
+`COMMITMENT` must be a `0x`-prefixed hexadecimal word, as `keys --list` prints it. `ACCOUNT_ID` accepts a hexadecimal account ID or a bech32 address.
+
+An association is client bookkeeping. It selects the keys that an account export includes. It does not change the authentication component of the account, and it does not give the key the right to authorize a transaction for that account.
+
+`--associate` fails if the keystore holds no key for the commitment. `--disassociate` accepts a commitment that is not associated with the account and reports that nothing changed, so it can be used to clear an association whose key file is gone.
+
+#### `keys --commitment`
+
+Calculate a public key commitment without storing the public key:
+
+```sh
+miden-client keys --commitment <PUBLIC_KEY>
+```
+
+`PUBLIC_KEY` must be a `0x`-prefixed hexadecimal serialization of the key. The CLI identifies the scheme from the key length. For ECDSA, provide the 33-byte compressed SEC1 public key. For Falcon, provide the 897-byte serialized Falcon public key.
+
 ### Importing and exporting
 
 #### `export`
 
-Export input note data to a binary file .
+Export an output note or a local account to a binary file.
 
-| Flag                          | Description                           | Aliases |
-| ----------------------------- | ------------------------------------- | ------- |
-| `--filename <FILENAME>`       | Desired filename for the binary file. | `-f`    |
-| `--export-type <EXPORT_TYPE>` | Exported note type.                   | `-e`    |
+| Flag                          | Description                                              | Aliases |
+| ----------------------------- | -------------------------------------------------------- | ------- |
+| `--filename <FILENAME>`       | Desired filename for the binary file.                    | `-f`    |
+| `--account`                   | Export account data.                                     |         |
+| `--note`                      | Export note data.                                        |         |
+| `--export-type <EXPORT_TYPE>` | Exported note type. Required when exporting a note.      | `-e`    |
+| `--no-keys`                   | Leave secret keys out of an exported account file.       |         |
+
+##### Export an account
+
+Use `--account` to export a locally tracked account:
+
+```sh
+miden-client export <ACCOUNT_ID> --account
+miden-client export <ACCOUNT_ID> --account --filename account.mac
+```
+
+The default filename is `<ACCOUNT_ID>.mac`. A `.mac` file contains the account state and the authentication secret keys that the keystore associates with the account. If the keystore has no associated key, the export succeeds and the file contains no secret key.
+
+Use `--no-keys` to omit associated secret keys from the file:
+
+```sh
+miden-client export <ACCOUNT_ID> --account --no-keys
+```
+
+This option is useful when another party needs the account state but must not receive signing authority.
+
+:::warning
+An account file without secret keys can still contain sensitive data. An undeployed account file contains the account seed, which is required to deploy the account.
+:::
+
+##### Export a note
+
+Use `--note` and select an export type:
+
+```sh
+miden-client export <NOTE_ID> --note --export-type partial
+```
 
 ##### Export type
 
@@ -410,9 +510,19 @@ The user needs to specify how the note should be exported via the `--export-type
 
 #### `import`
 
-Import entities managed by the client, such as accounts and notes. The type of entities is inferred.
+Import one or more account or note files. The CLI infers each file type from its contents.
+
+```sh
+miden-client import <FILE>...
+```
+
+Importing a `.mac` account file adds the account to the client. The CLI also stores each secret key in the file and associates it with the account. A keyless account file still imports successfully, but it does not grant signing authority.
 
 The `--overwrite` flag can be used when importing accounts. It allows the user to overwrite existing accounts with the same ID. This is useful when you want to update the account's information or replace it with a new version.
+
+```sh
+miden-client import --overwrite account.mac
+```
 
 ### Executing scripts
 
@@ -458,9 +568,11 @@ Arguments are passed positionally after the target, one token per value in the p
 | integers (`u8`…`u128`, `i8`…`i128`) | decimal, range-checked against the type | `-1` |
 | `bool` | `true`, `false`, `1` or `0` | `true` |
 | `word` | hex | `0x00..` |
-| `account-id` | hex account ID | `0x4614b8bf575eab71455e97bd394e90` |
-| `asset` | `<AMOUNT>::<FAUCET_ID>`, fungible only | `100::0xabcdef0123456789` |
+| `account-id` | hex account ID, or a bech32 address naming one | `0x4614b8bf575eab71455e97bd394e90` |
+| `asset` | `<AMOUNT>::<FAUCET_ID>`, fungible only, the faucet in either account ID spelling | `100::0xabcdef0123456789` |
 | records and fixed arrays | one token per field, in order | `3 4` for `point { x, y }` |
+
+An `account-id` argument takes the same two spellings the target does, so both can be written the same way in one command line. A hex prefix of a tracked account is not one of them: resolving a prefix reads the client's store, and an argument is read on its own.
 
 Only procedures exported from a WIT interface carry a signature. A procedure without one is still called, with one raw field element per argument written in decimal (a `0x` hex literal is not accepted); the argument count is not checked and the result is printed as a stack dump.
 

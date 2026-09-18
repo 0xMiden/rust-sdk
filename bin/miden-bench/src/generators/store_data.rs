@@ -1,8 +1,8 @@
 //! Synthetic store contents for the SQL store scaling benchmark.
 //!
 //! Every record is built through public client APIs, so the seeded database is the same shape a
-//! real client would produce, and the measurements below it stay honest about what the store has
-//! to do.
+//! real client would produce, and the measurements below it stay honest about what the store has to
+//! do.
 
 use miden_client::account::component::BasicWallet;
 use miden_client::account::{Account, AccountBuilder, AccountId, AccountType};
@@ -29,7 +29,7 @@ use miden_client::store::input_note_states::{
     NoteSubmissionData,
 };
 use miden_client::testing::account_id::ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE;
-use miden_client::transaction::{TransactionId, TransactionKernel};
+use miden_client::transaction::TransactionId;
 use miden_client::utils::Serializable;
 use miden_client::{EMPTY_WORD, Felt, Word, ZERO};
 
@@ -60,8 +60,8 @@ pub struct NoteSeed {
     pub consumed: Vec<InputNoteRecord>,
     /// Notes that have not been consumed.
     pub unspent: Vec<InputNoteRecord>,
-    /// One header per block the consumed notes were consumed in, paired with the
-    /// `has_client_notes` flag it is stored under.
+    /// One header per block the consumed notes were consumed in, paired with the `has_client_notes`
+    /// flag it is stored under.
     pub block_headers: Vec<(BlockHeader, bool)>,
 }
 
@@ -203,7 +203,7 @@ fn note_metadata(sender: AccountId, index: usize) -> NoteMetadata {
 // ================================================================================================
 
 fn mock_block_header(block_num: u32) -> BlockHeader {
-    BlockHeader::mock(block_num, None, None, &[], TransactionKernel.to_commitment())
+    BlockHeader::mock(block_num, None, None, &[])
 }
 
 // ACCOUNTS

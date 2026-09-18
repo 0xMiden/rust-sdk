@@ -64,3 +64,5 @@ consumes, so this crate stays decoupled from the node's internal crates.
 ## License
 
 This project is [MIT licensed](../../../LICENSE).
+
+The generator writes `protocol-config.bin` with the configuration for the native fee faucet. The node startup script copies it to `data/protocol-config.bin`. Set `MIDEN_PROTOCOL_CONFIG` to this file when using the CLI or network benchmarks. Integration tests use `data/protocol-config.bin` by default. The client checks the configuration against the reference block commitment before execution.

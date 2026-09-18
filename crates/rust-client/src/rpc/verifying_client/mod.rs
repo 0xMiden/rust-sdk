@@ -7,10 +7,11 @@ use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::address::NetworkId;
 use miden_protocol::batch::{ProposedBatch, ProvenBatch};
-use miden_protocol::block::{BlockHeader, BlockNumber, ProvenBlock};
+use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock};
 use miden_protocol::crypto::merkle::mmr::MmrProof;
 use miden_protocol::note::{NoteId, NoteScript, NoteTag};
 use miden_protocol::transaction::ProvenTransaction;
+use miden_protocol::vm::ExecutionProof;
 
 use super::domain::account::{AccountProof, GetAccountRequest};
 use super::domain::account_vault::AccountVaultInfo;
@@ -172,9 +173,9 @@ impl<T: NodeRpcClient> NodeRpcClient for VerifyingRpcClient<T> {
     async fn get_transaction_encryption_key(
         &self,
     ) -> Result<AttestedTransactionEncryptionKey, RpcError> {
-        // Nothing to verify here: the request carries no payload to check the response against,
-        // and trust in the served key comes from the validator attestation, which the caller
-        // verifies via `AttestedTransactionEncryptionKey::verify`.
+        // Nothing to verify here: the request carries no payload to check the response against, and
+        // trust in the served key comes from the validator attestation, which the caller verifies
+        // via `AttestedTransactionEncryptionKey::verify`.
         self.0.get_transaction_encryption_key().await
     }
 
@@ -214,10 +215,10 @@ impl<T: NodeRpcClient> NodeRpcClient for VerifyingRpcClient<T> {
         &self,
         block_num: BlockNumber,
         include_proof: bool,
-    ) -> Result<ProvenBlock, RpcError> {
-        let block = self.0.get_block_by_number(block_num, include_proof).await?;
+    ) -> Result<(SignedBlock, Option<ExecutionProof>), RpcError> {
+        let (block, proof) = self.0.get_block_by_number(block_num, include_proof).await?;
         verify_block_num(Some(block_num), block.header().block_num())?;
-        Ok(block)
+        Ok((block, proof))
     }
 
     async fn get_notes_by_id(&self, note_ids: &[NoteId]) -> Result<Vec<FetchedNote>, RpcError> {

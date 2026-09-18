@@ -43,6 +43,7 @@
 
 ### Fixes
 
+* [FIX][store] `SqliteStore::update_account` keeps the seed of an account whose nonce is still zero, so overwriting an undeployed account (for example with `import --overwrite`) no longer leaves it undeployable ([#2541](https://github.com/0xMiden/rust-sdk/pull/2541)).
 * [FIX][cli] Packages resolved from the package directory are read with the trusted package reader ([#2568](https://github.com/0xMiden/rust-sdk/pull/2568)).
 * [FIX][rust] Refreshed tracked input notes after transport imports so the same sync detects their consumption ([#2453](https://github.com/0xMiden/rust-sdk/pull/2453)).
 * [FIX][rust] A private note fetched from the Note Transport Layer whose nullifier is already on chain is now imported as consumed instead of committed, so `get_consumable_notes` no longer reports notes the node will reject ([#2453](https://github.com/0xMiden/rust-sdk/pull/2453)).

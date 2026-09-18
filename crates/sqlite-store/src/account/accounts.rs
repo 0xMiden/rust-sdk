@@ -11,8 +11,6 @@ use miden_client::account::{
     AccountId,
     AccountPatch,
     AccountStorage,
-    AccountStoragePatch,
-    AccountVaultPatch,
     Address,
     PartialAccount,
     PartialStorage,
@@ -62,45 +60,6 @@ use crate::{
     u64_to_value,
     with_write_tx,
 };
-
-// UPDATE PARTS
-// ================================================================================================
-
-/// Borrowed storage part of an account update.
-#[derive(Clone, Copy)]
-enum StorageUpdateRef<'a> {
-    /// The complete storage. It replaces every local slot.
-    Full(&'a AccountStorage),
-    /// The absolute changes to the storage, layered onto the local one.
-    Patch(&'a AccountStoragePatch),
-}
-
-impl<'a> From<&'a StorageUpdate> for StorageUpdateRef<'a> {
-    fn from(update: &'a StorageUpdate) -> Self {
-        match update {
-            StorageUpdate::Full(storage) => Self::Full(storage),
-            StorageUpdate::Patch(patch) => Self::Patch(patch),
-        }
-    }
-}
-
-/// Borrowed vault part of an account update.
-#[derive(Clone, Copy)]
-enum VaultUpdateRef<'a> {
-    /// The complete vault contents. They replace the local vault.
-    Full(&'a [Asset]),
-    /// The absolute changes to the vault, layered onto the local one.
-    Patch(&'a AccountVaultPatch),
-}
-
-impl<'a> From<&'a VaultUpdate> for VaultUpdateRef<'a> {
-    fn from(update: &'a VaultUpdate) -> Self {
-        match update {
-            VaultUpdate::Full(assets) => Self::Full(assets),
-            VaultUpdate::Patch(patch) => Self::Patch(patch),
-        }
-    }
-}
 
 impl SqliteStore {
     // READER METHODS
@@ -479,28 +438,25 @@ impl SqliteStore {
         final_account_state: &AccountHeader,
         patch: &AccountPatch,
     ) -> Result<(), StoreError> {
-        Self::apply_account_update(
-            tx,
-            smt_forest,
-            init_account_state,
-            final_account_state,
-            StorageUpdateRef::Patch(patch.storage()),
-            VaultUpdateRef::Patch(patch.vault()),
-        )
+        let update = AccountStateUpdate::new(
+            final_account_state.clone(),
+            StorageUpdate::Patch(patch.storage().clone()),
+            VaultUpdate::Patch(patch.vault().clone()),
+        );
+        Self::apply_account_update(tx, smt_forest, init_account_state, &update)
     }
 
-    /// Applies an account update to the account state, replacing or patching the vault and the
-    /// storage according to each part's variant.
+    /// Applies a public account update to the account state, replacing or patching the vault and
+    /// the storage according to each part's variant.
     ///
     /// Archives old values from latest to historical and updates latest via INSERT OR REPLACE.
     fn apply_account_update(
         tx: &Transaction<'_>,
         smt_forest: &mut ScopedAccountForest<'_, '_>,
         init_account_state: &AccountHeader,
-        final_account_state: &AccountHeader,
-        storage: StorageUpdateRef<'_>,
-        vault: VaultUpdateRef<'_>,
+        update: &AccountStateUpdate,
     ) -> Result<(), StoreError> {
+        let final_account_state = update.new_header();
         let account_id = final_account_state.id();
 
         // Reject updates for accounts the store does not track (forest updates for unknown accounts
@@ -524,8 +480,8 @@ impl SqliteStore {
         // Build one forest update covering the vault and the map slots, and apply it at a freshly
         // allocated revision.
         let mut forest_update = AccountUpdate::new();
-        match vault {
-            VaultUpdateRef::Full(assets) => {
+        match update.vault() {
+            VaultUpdate::Full(assets) => {
                 Self::replace_account_vault(tx, account_id, final_account_state, assets)?;
                 forest_update.full_vault(
                     account_id,
@@ -533,7 +489,7 @@ impl SqliteStore {
                     final_account_state.vault_root(),
                 );
             },
-            VaultUpdateRef::Patch(vault_patch) => {
+            VaultUpdate::Patch(vault_patch) => {
                 Self::apply_account_vault_patch(tx, account_id, final_account_state, vault_patch)?;
                 forest_update.vault_patch(
                     account_id,
@@ -542,8 +498,8 @@ impl SqliteStore {
                 );
             },
         }
-        match storage {
-            StorageUpdateRef::Full(storage) => {
+        match update.storage() {
+            StorageUpdate::Full(storage) => {
                 forest_update.full_storage(account_id, storage.slots().iter());
                 // Map slots that disappeared from the state must be emptied. They are enumerated
                 // from the latest tables, so this runs before those rows are replaced below.
@@ -551,7 +507,7 @@ impl SqliteStore {
                     forest_update.clear_map(account_id, &slot_name);
                 }
             },
-            StorageUpdateRef::Patch(storage_patch) => {
+            StorageUpdate::Patch(storage_patch) => {
                 forest_update.storage_patch(account_id, storage_patch);
             },
         }
@@ -561,11 +517,11 @@ impl SqliteStore {
 
         // The patch writer reads the new map roots from the forest, so the storage rows are written
         // after the forest update.
-        match storage {
-            StorageUpdateRef::Full(storage) => {
+        match update.storage() {
+            StorageUpdate::Full(storage) => {
                 Self::replace_account_storage(tx, account_id, final_account_state, storage)?;
             },
-            StorageUpdateRef::Patch(storage_patch) => {
+            StorageUpdate::Patch(storage_patch) => {
                 Self::write_storage_patch(
                     tx,
                     smt_forest,
@@ -939,15 +895,12 @@ impl SqliteStore {
             )));
         }
 
-        let assets: Vec<Asset> = new_account_state.vault().assets().collect();
-        Self::apply_account_update(
-            tx,
-            smt_forest,
-            &old_header,
-            &new_account_state.into(),
-            StorageUpdateRef::Full(new_account_state.storage()),
-            VaultUpdateRef::Full(&assets),
-        )
+        let update = AccountStateUpdate::new(
+            new_account_state.into(),
+            StorageUpdate::Full(new_account_state.storage().clone()),
+            VaultUpdate::Full(new_account_state.vault().assets().collect()),
+        );
+        Self::apply_account_update(tx, smt_forest, &old_header, &update)
     }
 
     /// Applies a public account update received during sync.
@@ -971,14 +924,7 @@ impl SqliteStore {
             )));
         }
 
-        Self::apply_account_update(
-            tx,
-            smt_forest,
-            &init_header,
-            new_header,
-            update.storage().into(),
-            update.vault().into(),
-        )
+        Self::apply_account_update(tx, smt_forest, &init_header, update)
     }
 
     /// Locks the account if the mismatched digest doesn't belong to a previous account state (stale

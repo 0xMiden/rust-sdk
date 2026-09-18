@@ -32,20 +32,26 @@
 * [BREAKING][rename][rust] Replaced the `ValidatorKeys` re-export with `ValidatorConfig` and `ProvingOptions` with `Prover` ([#2530](https://github.com/0xMiden/rust-sdk/pull/2530)).
 * [BREAKING][removal][rust] Removed the upstream `FungibleAssetDelta`, `NonFungibleAssetDelta`, `NonFungibleDeltaAction`, and `SmtForest` re-exports ([#2530](https://github.com/0xMiden/rust-sdk/pull/2530)).
 * [BREAKING][type][rust] `TransactionRequest::incoming_assets` now returns `Vec<Asset>` for assets without fungible amounts ([#2530](https://github.com/0xMiden/rust-sdk/pull/2530)).
+* [BREAKING][behavior][rust] `BatchBuilder::submit` returns the new `BatchBuilderError::BatchSubmissionOutcomeUnknown` when a submission comes back without a definite outcome, instead of `ClientError::RpcError`. It carries a `ProvenBatchSubmission` to resend with `Client::retry_proven_batch`. Rejections the node issues deliberately are unaffected, so code matching `ClientError::RpcError` still compiles but stops matching these cases ([#2508](https://github.com/0xMiden/rust-sdk/pull/2508)).
+* [BREAKING][type][rust] Added the `BatchBuilderError::BatchSubmissionOutcomeUnknown` variant, so exhaustive matches on `BatchBuilderError` must handle it ([#2508](https://github.com/0xMiden/rust-sdk/pull/2508)).
+* [BREAKING][param][rust] `NodeRpcClient` takes the submitted payload by reference instead of by value: `submit_proven_transaction` takes `&ProvenTransaction` instead of `ProvenTransaction`, and `submit_proven_batch` takes `&ProvenBatch` and `&ProposedBatch` instead of `ProvenBatch` and `ProposedBatch`. An implementation that needs to own the payload must clone it itself ([#2508](https://github.com/0xMiden/rust-sdk/pull/2508)).
 
 ### Features
 
-<<<<<<< HEAD
 * [FEATURE][rust] Added `Client::get_validator_config`, which returns the validator configuration committed by the locally stored block header at the current sync height ([#2553](https://github.com/0xMiden/rust-sdk/pull/2553)).
-=======
+* [FEATURE][rust] Added `Endpoint::mainnet()`, `ClientBuilder::for_mainnet()`, `MAINNET_PROVER_ENDPOINT` and `NOTE_TRANSPORT_MAINNET_ENDPOINT`. The mainnet RPC endpoint maps to `NetworkId::Mainnet`, so addresses derived from it use the `mm` prefix ([#2569](https://github.com/0xMiden/rust-sdk/pull/2569)).
+* [FEATURE][cli] `init --network mainnet` configures the client for the Miden mainnet, including its note transport endpoint ([#2569](https://github.com/0xMiden/rust-sdk/pull/2569)).
+* [FEATURE][cli] Added the optional `network_id` setting under `[rpc]` and the `init --network-id <HRP>` flag. They set the bech32 prefix the CLI renders and accepts for a node that is not one of the built-in endpoints, which otherwise maps to `mcst` ([#2569](https://github.com/0xMiden/rust-sdk/pull/2569)).
 * [FEATURE][cli] Added a `keys` command to list, generate, and import authentication keys, manage their account associations, and calculate a key commitment from a public key ([#2559](https://github.com/0xMiden/rust-sdk/issues/2559)).
 * [FEATURE][cli] `export --account` accepts a `--no-keys` flag, which leaves the account secret keys out of the exported `.mac` file. The file still carries the account seed while the account is undeployed ([#2556](https://github.com/0xMiden/rust-sdk/pull/2556)).
->>>>>>> next
 * [FEATURE][rust] The committed note passed to the `OnNoteReceived` callback now always reports the note's resolved attachment content, whether the `SyncNotes` response carried it verbatim or a `GetNotesById` follow-up resolved it ([#2475](https://github.com/0xMiden/rust-sdk/pull/2475)).
 * [FEATURE][rust] Re-exported the fee pricing and note checking types that the client API already surfaces, so downstream crates no longer need a direct `miden-tx` dependency to price note consumption: `NetworkNotePricer`, `NotePricingError` and `NoteCheckerError` at the crate root, `TransactionFee` and `TransactionFeeError` from `transaction`, `NoteCost` and `NoteConsumptionCost` from `note`, and `MastForestStore` and `TransactionMastStore` from `testing` ([#2475](https://github.com/0xMiden/rust-sdk/pull/2475)).
+* [FEATURE][rust] `Client::retry_proven_batch` resends a batch whose outcome was never confirmed, sealing the transaction inputs again on every attempt so nothing is executed or proven twice. It takes the `ProvenBatchSubmission` from `BatchBuilderError::BatchSubmissionOutcomeUnknown`, which has no public constructor, so that error is the only way to obtain one ([#2508](https://github.com/0xMiden/rust-sdk/pull/2508)).
 
 ### Fixes
 
+* [FIX][store] `SqliteStore::update_account` keeps the seed of an account whose nonce is still zero, so overwriting an undeployed account (for example with `import --overwrite`) no longer leaves it undeployable ([#2541](https://github.com/0xMiden/rust-sdk/pull/2541)).
+* [FIX][cli] Packages resolved from the package directory are read with the trusted package reader ([#2568](https://github.com/0xMiden/rust-sdk/pull/2568)).
 * [FIX][rust] Refreshed tracked input notes after transport imports so the same sync detects their consumption ([#2453](https://github.com/0xMiden/rust-sdk/pull/2453)).
 * [FIX][rust] A private note fetched from the Note Transport Layer whose nullifier is already on chain is now imported as consumed instead of committed, so `get_consumable_notes` no longer reports notes the node will reject ([#2453](https://github.com/0xMiden/rust-sdk/pull/2453)).
 * [FIX][rust] Added validation of cached transaction encryption keys during deserialization. Unsupported encryption schemes and empty or oversized key IDs are rejected before reading the key ID bytes ([#2411](https://github.com/0xMiden/rust-sdk/pull/2411)).

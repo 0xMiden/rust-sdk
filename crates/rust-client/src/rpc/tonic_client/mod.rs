@@ -435,11 +435,11 @@ impl NodeRpcClient for GrpcClient {
 
     async fn submit_proven_transaction(
         &self,
-        proven_transaction: ProvenTransaction,
+        proven_transaction: &ProvenTransaction,
         sealed_transaction_inputs: SealedTransactionInputs,
     ) -> Result<BlockNumber, RpcError> {
         let request = proto::submission::ProvenTransactionSubmission {
-            transaction: Some((&proven_transaction).into()),
+            transaction: Some(proven_transaction.into()),
             sealed_transaction_inputs: Some(sealed_transaction_inputs.into()),
         };
 
@@ -455,13 +455,13 @@ impl NodeRpcClient for GrpcClient {
 
     async fn submit_proven_batch(
         &self,
-        proven_batch: ProvenBatch,
-        proposed_batch: ProposedBatch,
+        proven_batch: &ProvenBatch,
+        proposed_batch: &ProposedBatch,
         sealed_transaction_inputs: Vec<SealedTransactionInputs>,
     ) -> Result<BlockNumber, RpcError> {
         let request = proto::submission::TransactionBatch {
-            batch: Some((&proven_batch).into()),
-            proposed_batch: Some((&proposed_batch).into()),
+            batch: Some(proven_batch.into()),
+            proposed_batch: Some(proposed_batch.into()),
             sealed_transaction_inputs: sealed_transaction_inputs
                 .into_iter()
                 .map(Into::into)

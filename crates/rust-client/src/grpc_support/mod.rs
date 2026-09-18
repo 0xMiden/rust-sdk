@@ -3,6 +3,9 @@ use alloc::string::String;
 #[cfg(feature = "tonic")]
 pub use crate::RemoteTransactionProver;
 
+/// Default remote prover endpoint for mainnet.
+pub const MAINNET_PROVER_ENDPOINT: &str = "https://tx-prover.mainnet.miden.io";
+
 /// Default remote prover endpoint for testnet.
 pub const TESTNET_PROVER_ENDPOINT: &str = "https://tx-prover.testnet.miden.io";
 

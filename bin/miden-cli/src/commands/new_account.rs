@@ -26,7 +26,7 @@ use miden_client::asset::{AssetAmount, TokenSymbol};
 use miden_client::auth::{Approver, AuthSchemeId, AuthSecretKey, AuthSingleSig};
 use miden_client::keystore::Keystore;
 use miden_client::utils::Deserializable;
-use miden_client::vm::{Package, PackageExport, TargetType};
+use miden_client::vm::{Package, TargetType};
 use rand::Rng;
 use serde::Deserialize;
 use tracing::debug;

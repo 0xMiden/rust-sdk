@@ -234,7 +234,7 @@ impl NodeRpcClient for CannedTransport {
 
     async fn submit_proven_transaction(
         &self,
-        _proven_transaction: ProvenTransaction,
+        _proven_transaction: &ProvenTransaction,
         _sealed_transaction_inputs: SealedTransactionInputs,
     ) -> Result<BlockNumber, RpcError> {
         unimplemented!("not used in these tests")
@@ -242,8 +242,8 @@ impl NodeRpcClient for CannedTransport {
 
     async fn submit_proven_batch(
         &self,
-        _proven_batch: ProvenBatch,
-        _proposed_batch: ProposedBatch,
+        _proven_batch: &ProvenBatch,
+        _proposed_batch: &ProposedBatch,
         _transaction_inputs: Vec<SealedTransactionInputs>,
     ) -> Result<BlockNumber, RpcError> {
         unimplemented!("not used in these tests")

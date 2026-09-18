@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-#[cfg(feature = "dap")]
+#[cfg(any())]
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
@@ -42,7 +42,7 @@ pub struct ExecCmd {
 
     /// Start a DAP debug adapter server on the given address (e.g. "127.0.0.1:4711") and wait for a
     /// DAP client to connect before executing.
-    #[cfg(feature = "dap")]
+    #[cfg(any())]
     #[arg(long = "start-debug-adapter")]
     start_debug_adapter: Option<SocketAddr>,
 
@@ -52,7 +52,7 @@ pub struct ExecCmd {
     /// produced by the transaction host's event handlers, so the same execution can be replayed
     /// offline with `miden-debug --replay <FILE>`. Only meaningful together with
     /// `--start-debug-adapter`.
-    #[cfg(feature = "dap")]
+    #[cfg(any())]
     #[arg(long = "record", value_name = "FILE", requires = "start_debug_adapter")]
     record: Option<PathBuf>,
 }
@@ -107,7 +107,7 @@ impl ExecCmd {
     ) -> Result<[Felt; MIN_STACK_DEPTH], CliError> {
         let foreign_accounts = BTreeMap::<AccountId, ForeignAccount>::new();
 
-        #[cfg(feature = "dap")]
+        #[cfg(any())]
         if let Some(addr) = self.start_debug_adapter.as_ref() {
             let mut config = miden_debug::DapConfig::new(addr.to_string());
             // The DAP executor is created and consumed inside the transaction executor, so the
@@ -183,10 +183,10 @@ impl ExecCmd {
 // SOURCE FILE RELOADING
 // ================================================================================================
 
-#[cfg(feature = "dap")]
+#[cfg(any())]
 use source_reload::reload_source_file;
 
-#[cfg(feature = "dap")]
+#[cfg(any())]
 mod source_reload {
     use std::path::Path;
     use std::sync::Arc;

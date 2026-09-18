@@ -35,6 +35,7 @@ let client = ClientBuilder::for_testnet()
 ```
 
 Other network constructors are available:
+- `ClientBuilder::for_mainnet()` - Pre-configured for Miden mainnet
 - `ClientBuilder::for_testnet()` - Pre-configured for Miden testnet
 - `ClientBuilder::for_devnet()` - Pre-configured for Miden devnet
 - `ClientBuilder::for_localhost()` - Pre-configured for local development
@@ -66,6 +67,37 @@ let client = ClientBuilder::new()
     .build()
     .await?;
 ```
+
+## Protocol configuration
+
+Transaction execution and note screening require the protocol configuration committed by the reference block. The node RPC does not provide this configuration. Obtain the serialized configuration from the network operator and register it before executing transactions:
+
+```rust
+use miden_client::Deserializable;
+use miden_client::protocol_config::ProtocolConfig;
+
+let bytes = std::fs::read("protocol-config.bin")?;
+let config = ProtocolConfig::read_from_bytes(&bytes)?;
+client.add_protocol_config(config).await?;
+```
+
+You can also register it during construction with `ClientBuilder::protocol_config(config)`. The client stores configurations by commitment and selects the one committed by the transaction reference block. Registration persists across client restarts. Register each new configuration before its protocol upgrade takes effect. A missing configuration returns `StoreError::ProtocolConfigNotFound`.
+
+A network that runs the standard protocol parameters needs only one value, the account ID of the native fee faucet, which the operator publishes together with the network endpoints:
+
+```rust
+use miden_client::account::AccountId;
+use miden_client::asset::AssetId;
+use miden_client::protocol_config::ProtocolConfig;
+
+let fee_faucet_id = AccountId::from_hex("0x...")?;
+let config = ProtocolConfig::current(AssetId::new_fungible(fee_faucet_id))?;
+client.add_protocol_config(config).await?;
+```
+
+`ProtocolConfig::current` takes the fee faucet ID and reads the kernel and proof verification parameters from the kernels linked into your binary. It describes the protocol your build implements, not the protocol the network runs. Use it when the two match. When they differ, the derived commitment does not match the one in the block header, and you need the serialized configuration from the operator.
+
+For a local testing node, `make start-node-background` writes the configuration to `data/protocol-config.bin`.
 
 ## Create local account
 

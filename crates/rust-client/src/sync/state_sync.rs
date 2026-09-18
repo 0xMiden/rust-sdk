@@ -1125,11 +1125,6 @@ impl StateSync {
     ///
     /// Must only be called when the local commitment for the account is known to differ from the
     /// network's, so an equal nonce always means a genuine fork.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the node response omits account details, since that would mean the account is not
-    /// public.
     async fn sync_public_account(
         &self,
         account_id: AccountId,
@@ -1204,11 +1199,8 @@ impl StateSync {
     /// - the proof is for a different block than the sync target.
     /// - the witness is for a different account than the requested one.
     /// - the witness does not open under the sync target header's account root.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the proof carries no account details, since this is only called for public
-    /// accounts and the node always returns details for them.
+    /// - the proof carries no account details. The node returns details for every public account,
+    ///   so a missing value means the response is malformed.
     fn validate_account_proof(
         proof: AccountProof,
         proof_block_num: BlockNumber,
@@ -1245,7 +1237,11 @@ impl StateSync {
                 ))
             })?;
 
-        Ok(details.expect("node returned no details for a public account"))
+        details.ok_or_else(|| {
+            ClientError::ChainValidationError(format!(
+                "get_account returned no details for public account {account_id}"
+            ))
+        })
     }
 
     /// Builds a [`PublicAccountUpdate::Patch`] by fetching incremental storage map and vault
@@ -1305,7 +1301,7 @@ impl StateSync {
     /// * Tracked notes that were being processed by a transaction that got committed.
     /// * Tracked notes that were nullified by an external transaction.
     ///
-    /// Each [`SyncedNote`] is self-contained: inclusion proof and metadata from `committed`,
+    /// Each [`SyncedNote`] is self-contained: inclusion proof and metadata from the sync record,
     /// attachments from the sync record or a `GetNotesById` follow-up, and the body from `details`.
     ///
     /// Attachments are stored on-chain for private and public notes alike, so they are applied to
@@ -1318,23 +1314,12 @@ impl StateSync {
     ) -> Result<NoteBlockRelevance, ClientError> {
         let mut relevance = NoteBlockRelevance::default();
 
-        for (_, SyncedNote { committed, details, attachments }) in notes {
-            // For a public note, pair its fetched body with the inclusion proof and metadata from
-            // `committed` (the single source of truth) to build the candidate record.
-            let public_note = details.map(|details| {
-                let state = UnverifiedNoteState {
-                    metadata: *committed.metadata(),
-                    inclusion_proof: committed.inclusion_proof().clone(),
-                }
-                .into();
-                InputNoteRecord::new(details, attachments.clone(), None, state)
-            });
-
+        for (_, mut note) in notes {
             // Observers run BEFORE the screener: they are a side-effect channel independent of the
             // Commit/Insert/Discard decision, and a failing screener must not rob them of the note.
             if !self.note_observers.is_empty() {
                 for obs in &self.note_observers {
-                    match obs.observe(&committed, &attachments).await {
+                    match obs.observe(&note).await {
                         Ok(true) => relevance.observer_requires_block = true,
                         Ok(false) => {},
                         Err(err) => {
@@ -1348,17 +1333,26 @@ impl StateSync {
                 }
             }
 
+            // For a public note, pair its fetched body with the inclusion proof and metadata from
+            // the sync record (the single source of truth) to build the candidate record.
+            let public_note = note.details.take().map(|details| {
+                let state = UnverifiedNoteState {
+                    metadata: note.metadata,
+                    inclusion_proof: note.inclusion_proof.clone(),
+                }
+                .into();
+                InputNoteRecord::new(details, note.attachments.clone(), None, state)
+            });
+
+            let committed = note.into_committed_note();
+
             match self.note_screener.on_note_received(committed, public_note).await? {
                 NoteUpdateAction::Commit(committed_note) => {
                     // Only mark the downloaded block header as relevant if we are talking about an
                     // input note (output notes get marked as committed but we don't need the block
                     // for anything there)
                     relevance.has_client_note |= note_updates
-                        .apply_committed_note_state_transitions(
-                            &committed_note,
-                            block_header,
-                            &attachments,
-                        )?;
+                        .apply_committed_note_state_transitions(&committed_note, block_header)?;
                 },
                 NoteUpdateAction::Insert(public_note) => {
                     relevance.has_client_note = true;
@@ -1653,11 +1647,7 @@ mod tests {
             "always-relevant"
         }
 
-        async fn observe(
-            &self,
-            _committed_note: &CommittedNote,
-            _attachments: &NoteAttachments,
-        ) -> Result<bool, ClientError> {
+        async fn observe(&self, _note: &SyncedNote) -> Result<bool, ClientError> {
             Ok(true)
         }
     }
@@ -1684,7 +1674,6 @@ mod tests {
 
     fn header_with_account_root(header: &BlockHeader, account_root: Word) -> BlockHeader {
         BlockHeader::new(
-            header.version(),
             header.prev_block_commitment(),
             header.block_num(),
             header.chain_commitment(),
@@ -1692,9 +1681,10 @@ mod tests {
             header.nullifier_root(),
             header.note_root(),
             header.tx_commitment(),
-            header.tx_kernel_commitment(),
-            header.validator_keys().clone(),
+            header.validator_config().clone(),
             header.fee_parameters().clone(),
+            header.protocol_config_commitment(),
+            header.next_protocol_config().cloned(),
             header.timestamp(),
         )
     }
@@ -1870,7 +1860,6 @@ mod tests {
         // Same block number so the request resolves, but a tampered account root the witness cannot
         // verify against.
         let tampered_header = BlockHeader::new(
-            real_header.version(),
             real_header.prev_block_commitment(),
             real_header.block_num(),
             real_header.chain_commitment(),
@@ -1878,9 +1867,10 @@ mod tests {
             real_header.nullifier_root(),
             real_header.note_root(),
             real_header.tx_commitment(),
-            real_header.tx_kernel_commitment(),
-            real_header.validator_keys().clone(),
+            real_header.validator_config().clone(),
             real_header.fee_parameters().clone(),
+            real_header.protocol_config_commitment(),
+            real_header.next_protocol_config().cloned(),
             real_header.timestamp(),
         );
 
@@ -2007,6 +1997,28 @@ mod tests {
         assert!(matches!(result, Err(ClientError::ChainValidationError(_))));
     }
 
+    /// `validate_account_proof` rejects a proof that carries no account details.
+    #[tokio::test]
+    async fn validate_account_proof_rejects_missing_details() {
+        let mut builder = MockChainBuilder::new();
+        let account = builder.add_existing_mock_account(miden_testing::Auth::IncrNonce).unwrap();
+        let rpc_api = MockRpcApi::new(builder.build().unwrap());
+        let chain_tip_header = rpc_api.mock_chain.read().latest_block_header();
+
+        // An otherwise honest proof, but with the account details stripped.
+        let (proof_block_num, proof) = get_account_proof(&rpc_api, account.id()).await;
+        let (witness, _) = proof.into_parts();
+        let proof = AccountProof::new(witness, None).unwrap();
+        let result = StateSync::validate_account_proof(
+            proof,
+            proof_block_num,
+            account.id(),
+            &chain_tip_header,
+        );
+
+        assert!(matches!(result, Err(ClientError::ChainValidationError(_))));
+    }
+
     /// `validate_account_proof` rejects a proof reported for a block other than the sync target.
     #[tokio::test]
     async fn validate_account_proof_rejects_wrong_block() {
@@ -2066,7 +2078,8 @@ mod tests {
                     word(final_state),
                     input_notes,
                     vec![],
-                ),
+                )
+                .unwrap(),
                 output_notes: vec![],
                 erased_output_notes: vec![],
                 consumed_note_refs: vec![],
@@ -2114,7 +2127,8 @@ mod tests {
                         Nullifier::from_raw(word(40)),
                     )]),
                     vec![],
-                ),
+                )
+                .unwrap(),
                 output_notes: vec![],
                 erased_output_notes: vec![],
                 consumed_note_refs: vec![],
@@ -2176,7 +2190,8 @@ mod tests {
                     word(final_state),
                     InputNotes::new_unchecked(vec![]),
                     vec![],
-                ),
+                )
+                .unwrap(),
                 output_notes: vec![],
                 erased_output_notes: vec![],
                 consumed_note_refs: vec![],
@@ -2239,7 +2254,7 @@ mod tests {
         let account = builder.add_existing_mock_account(miden_testing::Auth::IncrNonce).unwrap();
         let account_id = account.id();
 
-        let asset = Asset::Fungible(FungibleAsset::new(faucet_id, 100u64).unwrap());
+        let asset = Asset::from(FungibleAsset::new(faucet_id, 100u64).unwrap());
         let note1 = builder
             .add_p2id_note(sender_id, account_id, &[asset], NoteType::Public)
             .unwrap();
@@ -2300,7 +2315,7 @@ mod tests {
 
         let account_id = account.id();
         let sync_input = StateSyncInput {
-            accounts: vec![AccountHeader::from(account)],
+            accounts: vec![AccountHeader::from(&account)],
             note_tags,
             input_notes,
             output_notes: vec![],
@@ -2693,7 +2708,7 @@ mod tests {
             builder.add_existing_mock_account(miden_testing::Auth::IncrNonce).unwrap();
         let sender_id = sender_account.id();
 
-        let asset = Asset::Fungible(FungibleAsset::new(faucet_id, 100u64).unwrap());
+        let asset = Asset::from(FungibleAsset::new(faucet_id, 100u64).unwrap());
         let note = builder
             .add_p2id_note(p2id_sender, sender_id, &[asset], NoteType::Public)
             .unwrap();
@@ -2762,7 +2777,7 @@ mod tests {
         let mut partial_mmr = PartialMmr::from_peaks(genesis_peaks);
 
         let sync_input = StateSyncInput {
-            accounts: vec![AccountHeader::from(sender_account), network_header],
+            accounts: vec![AccountHeader::from(&sender_account), network_header],
             note_tags: BTreeSet::new(),
             input_notes: vec![],
             output_notes: vec![output_note],
@@ -2917,7 +2932,8 @@ mod tests {
                 word(2),
                 InputNotes::new_unchecked(vec![]),
                 vec![],
-            ),
+            )
+            .unwrap(),
             output_notes: vec![],
             erased_output_notes: vec![],
             consumed_note_refs: vec![],

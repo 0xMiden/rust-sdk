@@ -13,7 +13,7 @@ ifneq ($(BUILD_TARGET),)
 TARGET_FLAG = --target $(BUILD_TARGET)
 endif
 
-FEATURES_CLIENT=--features "std dap"
+FEATURES_CLIENT=--features "std"
 WARNINGS=RUSTDOCFLAGS="-D warnings"
 
 TEST_MIDEN_NOTE_TRANSPORT_URL?=http://127.0.0.1:57292
@@ -26,6 +26,11 @@ MIDEN_FUNDER_ACCOUNTS_DIR?=$(CURDIR)/data/funders
 # Pre-deployed agglayer accounts the agglayer tests transact with, written here by
 # `start-test-node.sh`. Against a deployed network, point this at the accounts deployed there.
 AGGLAYER_ACCOUNTS_DIR?=$(CURDIR)/data
+
+# The test node writes the serialized protocol configuration to this path.
+MIDEN_PROTOCOL_CONFIG?=$(CURDIR)/data/protocol-config.bin
+
+integration-test integration-test-non-agglayer integration-test-agglayer integration-test-miden-bench integration-test-dev integration-test-binary: export MIDEN_PROTOCOL_CONFIG := $(MIDEN_PROTOCOL_CONFIG)
 
 # Sizes the SQL store scaling benchmark sweeps over. Kept small enough to run on every PR, and
 # overridable for a deeper local run.

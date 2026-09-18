@@ -6,9 +6,8 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::num::NonZeroU16;
 
-use miden_protocol::Word;
 use miden_protocol::account::{AccountCodeInterface, AccountId};
-use miden_protocol::asset::{Asset, NonFungibleAsset};
+use miden_protocol::asset::Asset;
 use miden_protocol::crypto::merkle::MerkleError;
 use miden_protocol::crypto::merkle::store::MerkleStore;
 use miden_protocol::errors::{
@@ -18,7 +17,6 @@ use miden_protocol::errors::{
     NoteError,
     StorageMapError,
     TransactionInputError,
-    TransactionScriptError,
 };
 use miden_protocol::note::{
     Note,
@@ -32,6 +30,7 @@ use miden_protocol::note::{
 };
 use miden_protocol::transaction::{InputNote, InputNotes, TransactionArgs, TransactionScript};
 use miden_protocol::vm::AdviceMap;
+use miden_protocol::{MastForestScriptError, Word};
 use miden_standards::account::auth::{FeeConversionInfo, commit_fee_conversion_info};
 use miden_standards::errors::CodeBuilderError;
 use miden_standards::tx_script::{SendNotesTransactionScript, SendNotesTransactionScriptError};
@@ -150,7 +149,7 @@ impl TransactionRequest {
     }
 
     /// Returns the assets held by the transaction's input notes.
-    pub fn incoming_assets(&self) -> (BTreeMap<AccountId, u64>, Vec<NonFungibleAsset>) {
+    pub fn incoming_assets(&self) -> (BTreeMap<AccountId, u64>, Vec<Asset>) {
         collect_assets(self.input_notes.iter().flat_map(|note| note.assets().iter()))
     }
 
@@ -524,26 +523,26 @@ impl Deserializable for TransactionRequest {
 // ================================================================================================
 
 /// Accumulates fungible totals and collectable non-fungible assets from an iterator of assets.
+///
+/// An asset that is neither fungible nor non-fungible is left out of both buckets, since neither
+/// balance arithmetic applies to it. Execution judges such an asset instead.
 pub(crate) fn collect_assets<'a>(
     assets: impl Iterator<Item = &'a Asset>,
-) -> (BTreeMap<AccountId, u64>, Vec<NonFungibleAsset>) {
+) -> (BTreeMap<AccountId, u64>, Vec<Asset>) {
     let mut fungible_balance_map = BTreeMap::new();
     let mut non_fungible_set = Vec::new();
 
-    assets.for_each(|asset| match asset {
-        Asset::Fungible(fungible) => {
+    for asset in assets {
+        if let Some(fungible) = asset.as_fungible() {
             let amount = fungible.amount().as_u64();
             fungible_balance_map
                 .entry(fungible.faucet_id())
                 .and_modify(|balance| *balance += amount)
                 .or_insert(amount);
-        },
-        Asset::NonFungible(non_fungible) => {
-            if !non_fungible_set.contains(non_fungible) {
-                non_fungible_set.push(*non_fungible);
-            }
-        },
-    });
+        } else if asset.is_non_fungible() && !non_fungible_set.contains(asset) {
+            non_fungible_set.push(*asset);
+        }
+    }
 
     (fungible_balance_map, non_fungible_set)
 }
@@ -599,7 +598,7 @@ pub enum TransactionRequestError {
     )]
     FeeConversionInfoRequired(String),
     #[error("invalid transaction script")]
-    InvalidTransactionScript(#[from] TransactionScriptError),
+    InvalidTransactionScript(#[from] MastForestScriptError),
     #[error("merkle proof error")]
     MerkleError(#[from] MerkleError),
     #[error("empty transaction: the request has no input notes and no account state changes")]

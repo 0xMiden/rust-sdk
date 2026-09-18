@@ -72,10 +72,10 @@ fn storage_map_update_from_proto(
     let slot_name = StorageSlotName::new(value.slot_name)
         .map_err(|err| RpcError::InvalidResponse(err.to_string()))?;
 
-    let key: StorageMapKey = value
-        .key
-        .ok_or(proto::rpc::StorageMapUpdate::missing_field(stringify!(key)))?
-        .try_into()?;
+    let key = Word::try_from(
+        value.key.ok_or(proto::rpc::StorageMapUpdate::missing_field(stringify!(key)))?,
+    )
+    .map(StorageMapKey::new)?;
 
     let map_value: Word = value
         .value

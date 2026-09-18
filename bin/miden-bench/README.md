@@ -16,6 +16,8 @@ After installation, the `miden-bench` binary will be available in your PATH.
 
 ## Commands
 
+Network commands require the protocol configuration for the target network. Set `MIDEN_PROTOCOL_CONFIG` to the serialized configuration file before deploying an account. For the local testing node, use `export MIDEN_PROTOCOL_CONFIG="$PWD/data/protocol-config.bin"` after `make start-node-background`. The benchmark client stores the configuration for later commands. The `store` benchmark does not require this file.
+
 ### `deploy`
 
 Deploys a public wallet with empty storage maps to the network. This is the first step in preparing an account for benchmarking. Storage maps are created empty; use `expand` to fill them with entries.

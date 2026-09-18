@@ -4,6 +4,7 @@
 
 ### Breaking Changes
 
+* [BREAKING][arch][rust,cli] Added back the `miden-debug` dependency on version `0.16` and enabled the `dap` feature. The CLI exposes `--start-debug-adapter` and `--record` again ([#2575](https://github.com/0xMiden/rust-sdk/pull/2575)).
 * [BREAKING][arch][rust] Updated `miden-node-proto-build` to `0.17.0-rc.1`, protocol dependencies to `0.17.0-rc.5` and VM dependencies to `0.33` ([#2562](https://github.com/0xMiden/rust-sdk/pull/2562)).
 * [BREAKING][removal][rust,cli] Disabled the `dap` feature and the debugger entry points while `miden-debug` uses an incompatible VM version. The CLI no longer exposes `--start-debug-adapter` or `--record` ([#2562](https://github.com/0xMiden/rust-sdk/pull/2562)).
 * [BREAKING][behavior][rust] `Keystore::get_account_key_commitments` returns an empty set for an account the keystore holds no key for, instead of an error. An account can use keys that are held elsewhere, so this is a valid state. Code that read the error as "this account is unknown" must check for an empty set instead. `export --account` now exports such an account instead of failing with "No keys found for account" ([#2556](https://github.com/0xMiden/rust-sdk/pull/2556)).

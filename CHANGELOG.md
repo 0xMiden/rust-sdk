@@ -1,9 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.17.0.rc-1 (2026-09-17)
 
 ### Breaking Changes
 
+* [BREAKING][arch][rust] Updated `miden-node-proto-build` to `0.17.0-rc.1`, protocol dependencies to `0.17.0-rc.5` and VM dependencies to `0.33` ([#2562](https://github.com/0xMiden/rust-sdk/pull/2562)).
+* [BREAKING][removal][rust,cli] Disabled the `dap` feature and the debugger entry points while `miden-debug` uses an incompatible VM version. The CLI no longer exposes `--start-debug-adapter` or `--record` ([#2562](https://github.com/0xMiden/rust-sdk/pull/2562)).
 * [BREAKING][type][rust] Added the `StoreError::DatabaseTransientError` and `StoreError::DatabasePermanentError` variants, so exhaustive matches on `StoreError` must handle them. The SQLite store returns the first for a busy or locked database and the second for a constraint violation or a corrupt database file, which it previously reported as `StoreError::DatabaseError` ([#2537](https://github.com/0xMiden/rust-sdk/pull/2537)).
 * [BREAKING][type][rust] Flattened `SyncedNote`, it now carries `note_id`, `metadata` and `inclusion_proof` directly, replacing the nested `committed: CommittedNote` field. Code that read that field can call `SyncedNote::into_committed_note` to get the sync record back, with the note's resolved attachments included ([#2475](https://github.com/0xMiden/rust-sdk/pull/2475)).
 * [BREAKING][param][rust] `NoteObserver::observe` now takes a single `&SyncedNote` instead of a `&CommittedNote` and its `&NoteAttachments` ([#2475](https://github.com/0xMiden/rust-sdk/pull/2475)).

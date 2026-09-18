@@ -813,6 +813,9 @@ impl StateSync {
 
         partial_blockchain_updates.new_peaks = new_peaks;
 
+        // Note: we add the chain tip leaf to our MMR, but we cannot prove that it is effectively
+        // the chain tip. In the current context of centralized trusted node, we assume it is valid.
+        // Eventually, we will be able to validate that the resulting MMR root is "canonical".
         new_authentication_nodes.append(
             &mut current_partial_mmr
                 .add(chain_tip_header.commitment(), false)

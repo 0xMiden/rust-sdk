@@ -2795,3 +2795,121 @@ async fn update_account_keeps_the_seed_of_a_new_account() -> anyhow::Result<()> 
 
     Ok(())
 }
+
+#[tokio::test]
+async fn repeated_account_snapshot_preserves_rollback_history() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+    let slot = StorageSlotName::new("test::repeated_update::map")?;
+    let original = setup_account_with_map(&store, 3, &slot).await?;
+    let mut current = original.clone();
+    apply_single_entry_update(&store, &mut current, &slot, 2).await?;
+    store.update_account(&current).await?;
+    store.update_account(&current).await?;
+    let id = current.id();
+    let commitment = current.to_commitment();
+    store
+        .interact_with_connection(move |conn| {
+            crate::with_write_tx(conn, |tx| {
+                let mut forest = ScopedAccountForest::new(SqliteForestBackend::new(tx))?;
+                SqliteStore::undo_account_state(tx, &mut forest, &[(id, commitment)])
+            })
+        })
+        .await?;
+    let restored: Account = store.get_account(id).await?.unwrap().try_into()?;
+    assert_eq!(restored, original);
+    Ok(())
+}
+
+#[tokio::test]
+async fn account_import_rejects_changed_checkpoint_or_commitment() -> anyhow::Result<()> {
+    use miden_protocol::block::BlockNumber;
+    let store = create_test_store().await;
+    let slot = StorageSlotName::new("test::import_guard::map")?;
+    let original = setup_account_with_map(&store, 3, &slot).await?;
+    let mut current = original.clone();
+    apply_single_entry_update(&store, &mut current, &slot, 2).await?;
+    let height = store.get_sync_height().await?;
+    let result = store
+        .import_account(&current, ClientAccountType::Native, height, Some(original.to_commitment()))
+        .await;
+    assert!(matches!(result, Err(StoreError::AccountCommitmentMismatch(_))));
+    let result = store
+        .import_account(
+            &current,
+            ClientAccountType::Native,
+            BlockNumber::from(height.as_u32() + 1),
+            Some(current.to_commitment()),
+        )
+        .await;
+    assert!(matches!(result, Err(StoreError::DatabaseError(_))));
+    let persisted: Account = store.get_account(current.id()).await?.unwrap().try_into()?;
+    assert_eq!(persisted, current);
+    assert_eq!(store.get_sync_height().await?, height);
+    Ok(())
+}
+
+#[tokio::test]
+async fn delayed_sync_rejects_changed_account_state_before_advancing_checkpoint()
+-> anyhow::Result<()> {
+    use miden_client::note::NoteUpdateTracker;
+    use miden_client::sync::{
+        AccountUpdates,
+        PartialBlockchainUpdates,
+        PublicAccountUpdate,
+        StateSyncUpdate,
+        TransactionUpdateTracker,
+    };
+    use miden_protocol::block::BlockNumber;
+    let store = create_test_store().await;
+    let slot = StorageSlotName::new("test::sync_guard::map")?;
+    let original = setup_account_with_map(&store, 3, &slot).await?;
+    let height = store.get_sync_height().await?;
+    let update = StateSyncUpdate::from_parts(
+        BlockNumber::from(height.as_u32() + 1),
+        PartialBlockchainUpdates::default(),
+        NoteUpdateTracker::default(),
+        TransactionUpdateTracker::default(),
+        AccountUpdates::new(vec![PublicAccountUpdate::Full(original.clone())], vec![])
+            .with_base(height, vec![(&original).into()]),
+    );
+    let mut current = original.clone();
+    apply_single_entry_update(&store, &mut current, &slot, 2).await?;
+    assert!(matches!(
+        store.apply_state_sync(update).await,
+        Err(StoreError::AccountCommitmentMismatch(_))
+    ));
+    assert_eq!(store.get_sync_height().await?, height);
+    let persisted: Account = store.get_account(current.id()).await?.unwrap().try_into()?;
+    assert_eq!(persisted, current);
+    Ok(())
+}
+
+#[tokio::test]
+async fn delayed_sync_rejects_accounts_added_after_its_snapshot() -> anyhow::Result<()> {
+    use miden_client::note::NoteUpdateTracker;
+    use miden_client::sync::{
+        AccountUpdates,
+        PartialBlockchainUpdates,
+        StateSyncUpdate,
+        TransactionUpdateTracker,
+    };
+    use miden_protocol::block::BlockNumber;
+    let store = create_test_store().await;
+    let height = store.get_sync_height().await?;
+    let update = StateSyncUpdate::from_parts(
+        BlockNumber::from(height.as_u32() + 1),
+        PartialBlockchainUpdates::default(),
+        NoteUpdateTracker::default(),
+        TransactionUpdateTracker::default(),
+        AccountUpdates::default().with_base(height, vec![]),
+    );
+    let slot = StorageSlotName::new("test::account_set_guard::map")?;
+    let account = setup_account_with_map(&store, 3, &slot).await?;
+    assert!(matches!(
+        store.apply_state_sync(update).await,
+        Err(StoreError::DatabaseError(_))
+    ));
+    assert_eq!(store.get_sync_height().await?, height);
+    assert!(store.get_account(account.id()).await?.is_some());
+    Ok(())
+}

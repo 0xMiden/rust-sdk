@@ -275,19 +275,12 @@ async fn insert_ecdsa_faucet_account() {
 
 #[tokio::test]
 async fn insert_same_account_twice_fails() {
-    // generate test client with a random store name
-    let (mut client, _rpc_api) = Box::pin(create_test_client()).await;
-
-    let account = Account::mock(
-        ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2,
-        [AuthSingleSig::new(Approver::new(
-            PublicKeyCommitment::from(EMPTY_WORD),
-            AuthSchemeId::Falcon512Poseidon2,
-        ))],
-    );
-
-    assert!(client.add_account(&account, false).await.is_ok());
-    assert!(client.add_account(&account, false).await.is_err());
+    let (mut client, _) = Box::pin(create_test_client()).await;
+    let account = client.insert_wallet(AccountType::Public).await.unwrap();
+    assert!(matches!(
+        client.add_account(&account, false).await,
+        Err(ClientError::AccountAlreadyTracked(_))
+    ));
 }
 
 #[tokio::test]
@@ -310,7 +303,7 @@ async fn account_code() {
     let reconstructed_code = AccountCode::read_from_bytes(&account_code_bytes).unwrap();
     assert_eq!(*account_code, reconstructed_code);
 
-    client.add_account(&account, false).await.unwrap();
+    insert_fixture_account(&mut client, &account).await;
     let retrieved_code = client.get_account_code(account.id()).await.unwrap().unwrap();
     assert_eq!(*account.code(), retrieved_code);
 }
@@ -328,7 +321,7 @@ async fn get_account_by_id() {
         ))],
     );
 
-    client.add_account(&account, false).await.unwrap();
+    insert_fixture_account(&mut client, &account).await;
 
     // Retrieving an existing account should succeed
     let (acc_from_db, _account_seed) = match client.account_reader(account.id()).header().await {
@@ -1437,31 +1430,25 @@ async fn input_note_reader_finds_externally_consumed_notes() {
     let p2id_details_commitment = p2id_note.details_commitment();
     let p2id_tag = p2id_note.metadata().tag();
 
-    let mut chain = builder.build().unwrap();
-    // Block 1: makes the note consumable.
-    chain.prove_next_block().unwrap();
+    let mock_rpc = MockRpcApi::new(builder.build().unwrap());
+    mock_rpc.prove_block();
 
-    // Consumer consumes the note directly on the chain (bypassing any client).
-    let tx = Box::pin(
-        chain
-            .build_transaction(miden_testing::MockTransactionInput::Account(consumer.clone()))
-            .unauthenticated_input_note(p2id_note.clone())
-            .build()
-            .unwrap()
-            .execute(),
-    )
-    .await
-    .unwrap();
-    chain.add_pending_executed_transaction(&tx).unwrap();
-    // Block 2: includes the consume transaction.
-    chain.prove_next_block().unwrap();
+    let context = mock_rpc
+        .mock_chain
+        .read()
+        .build_transaction(miden_testing::MockTransactionInput::Account(consumer.clone()))
+        .unauthenticated_input_note(p2id_note.clone())
+        .build()
+        .unwrap();
+    let tx = Box::pin(context.execute()).await.unwrap();
+    mock_rpc.mock_chain.write().add_pending_executed_transaction(&tx).unwrap();
+    mock_rpc.prove_block();
 
     // Build a client backed by this chain.
     let rng =
         RandomCoin::new(rand::random::<[u64; 4]>().map(|v| Felt::new_unchecked(v >> 1)).into());
     let keystore_path = std::env::temp_dir();
     let keystore = FilesystemKeyStore::new(keystore_path).unwrap();
-    let mock_rpc = MockRpcApi::new(chain);
 
     let mut client = ClientBuilder::new()
         .rpc(Arc::new(mock_rpc))
@@ -4102,7 +4089,7 @@ async fn account_addresses_basic_wallet() {
         ))],
     );
 
-    client.add_account(&account, false).await.unwrap();
+    insert_fixture_account(&mut client, &account).await;
     let addresses = client.account_reader(account.id()).addresses().await.unwrap();
 
     let unspecified_default_address = Address::new(account.id());
@@ -4121,7 +4108,7 @@ async fn account_addresses_non_basic_wallet() {
 
     let account = Account::mock_non_fungible_faucet(ACCOUNT_ID_PUBLIC_NON_FUNGIBLE_FAUCET);
 
-    client.add_account(&account, false).await.unwrap();
+    insert_fixture_account(&mut client, &account).await;
     let addresses = client.account_reader(account.id()).addresses().await.unwrap();
 
     let unspecified_default_address = Address::new(account.id());
@@ -4145,7 +4132,7 @@ async fn account_add_address_after_creation() {
         ))],
     );
 
-    client.add_account(&account, false).await.unwrap();
+    insert_fixture_account(&mut client, &account).await;
 
     let default_address = Address::new(account.id());
 
@@ -4669,7 +4656,7 @@ async fn sync_large_public_account() {
         )
         .unwrap();
     let original_account = mock_account.clone();
-    let mut mock_chain = builder.build().unwrap();
+    let mock_chain = builder.build().unwrap();
 
     // 2. Execute a transaction that increments the account's nonce.
     // This changes the on-chain commitment so sync detects a mismatch.
@@ -4682,12 +4669,9 @@ async fn sync_large_public_account() {
     )
     .await
     .unwrap();
-    mock_chain.add_pending_executed_transaction(&tx).unwrap();
-    mock_chain.prove_next_block().unwrap();
-
-    // 3. Create MockRpcApi with a low oversize threshold so the storage map comes back as
-    // `LimitExceeded` and the vault with the `too_many_assets` flag set.
     let rpc_api = MockRpcApi::new(mock_chain).with_oversize_threshold(OVERSIZE_THRESHOLD);
+    rpc_api.mock_chain.write().add_pending_executed_transaction(&tx).unwrap();
+    rpc_api.prove_block();
     let arc_rpc_api = Arc::new(rpc_api.clone());
 
     // 4. Build a client and add the ORIGINAL (pre-tx) account.
@@ -4799,8 +4783,100 @@ async fn prepare_offline_bootstrap_inserts_mock_chain_genesis() {
     );
 }
 
+#[tokio::test]
+async fn account_import_stays_at_checkpoint_before_partial_sync() {
+    let mut chain_builder = MockChainBuilder::new();
+    let initial = chain_builder.add_existing_mock_account(miden_testing::Auth::IncrNonce).unwrap();
+    let rpc = MockRpcApi::new(chain_builder.build().unwrap());
+    let (builder, _) = Box::pin(create_test_client_builder()).await;
+    let mut client = TestClient::from(builder.rpc(Arc::new(rpc.clone())).build().await.unwrap());
+    client.ensure_genesis_in_place().await.unwrap();
+    let checkpoint = client.test_store().get_sync_height().await.unwrap();
+
+    {
+        let context = rpc
+            .mock_chain
+            .read()
+            .build_transaction(MockTransactionInput::AccountId(initial.id()))
+            .build()
+            .unwrap();
+        let tx = Box::pin(context.execute()).await.unwrap();
+        rpc.mock_chain.write().add_pending_executed_transaction(&tx).unwrap();
+        rpc.prove_block();
+    }
+    let intermediate_chain = rpc.mock_chain.read().clone();
+    let intermediate = intermediate_chain.committed_account(initial.id()).unwrap().clone();
+    let context = rpc
+        .mock_chain
+        .read()
+        .build_transaction(MockTransactionInput::AccountId(initial.id()))
+        .build()
+        .unwrap();
+    let tx = Box::pin(context.execute()).await.unwrap();
+    rpc.mock_chain.write().add_pending_executed_transaction(&tx).unwrap();
+    rpc.prove_block();
+    let future = rpc.mock_chain.read().committed_account(initial.id()).unwrap().clone();
+
+    assert!(matches!(
+        client.add_account(&future, false).await,
+        Err(ClientError::AccountCommitmentMismatch(_))
+    ));
+    assert!(client.test_store().get_account(initial.id()).await.unwrap().is_none());
+    assert_eq!(client.test_store().get_sync_height().await.unwrap(), checkpoint);
+
+    client.import_account_by_id(initial.id()).await.unwrap();
+    let imported: Account = client
+        .test_store()
+        .get_account(initial.id())
+        .await
+        .unwrap()
+        .unwrap()
+        .try_into()
+        .unwrap();
+    assert_eq!(imported.to_commitment(), initial.to_commitment());
+    assert!(matches!(
+        client.add_account(&future, true).await,
+        Err(ClientError::AccountCommitmentMismatch(_))
+    ));
+
+    *client.test_rpc_api() = Arc::new(MockRpcApi::new(intermediate_chain));
+    client.sync_state().await.unwrap();
+    let synced: Account = client
+        .test_store()
+        .get_account(initial.id())
+        .await
+        .unwrap()
+        .unwrap()
+        .try_into()
+        .unwrap();
+    assert_eq!(synced.to_commitment(), intermediate.to_commitment());
+    assert_ne!(synced.to_commitment(), future.to_commitment());
+
+    *client.test_rpc_api() = Arc::new(rpc);
+    client.sync_state().await.unwrap();
+    let synced: Account = client
+        .test_store()
+        .get_account(initial.id())
+        .await
+        .unwrap()
+        .unwrap()
+        .try_into()
+        .unwrap();
+    assert_eq!(synced.to_commitment(), future.to_commitment());
+}
+
 // HELPERS
 // ================================================================================================
+
+/// Inserts synthetic state for tests that exercise local account reads and address management.
+async fn insert_fixture_account(client: &mut TestClient, account: &Account) {
+    let height = client.test_store().get_sync_height().await.unwrap();
+    client
+        .test_store()
+        .import_account(account, ClientAccountType::Native, height, None)
+        .await
+        .unwrap();
+}
 
 pub async fn create_test_client() -> (TestClient, MockRpcApi) {
     let (builder, rpc_api) = Box::pin(create_test_client_builder()).await;

@@ -138,7 +138,7 @@ async fn load_accounts_test() {
     let created_accounts_data = create_initial_accounts_data();
 
     for account_data in created_accounts_data.clone() {
-        client.add_account(&account_data.account, false).await.unwrap();
+        super::insert_fixture_account(&mut client, &account_data.account).await;
     }
 
     let expected_accounts: Vec<Account> = created_accounts_data
@@ -164,7 +164,7 @@ async fn load_ecdsa_accounts_test() {
 
     let created_accounts_data = create_ecdsa_initial_accounts_data();
     for account_data in created_accounts_data.clone() {
-        client.add_account(&account_data.account, false).await.unwrap();
+        super::insert_fixture_account(&mut client, &account_data.account).await;
     }
 
     let expected_accounts: Vec<Account> = created_accounts_data

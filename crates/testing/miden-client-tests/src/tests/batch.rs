@@ -755,8 +755,8 @@ async fn register_mock_chain_account(client: &mut TestClient, rpc_api: &MockRpcA
     let account_id = rpc_api.first_account_id();
 
     let account = rpc_api.mock_chain.read().committed_account(account_id).unwrap().clone();
-    client.add_account(&account, false).await.unwrap();
     client.sync_state().await.unwrap();
+    client.add_account(&account, false).await.unwrap();
 
     account_id
 }

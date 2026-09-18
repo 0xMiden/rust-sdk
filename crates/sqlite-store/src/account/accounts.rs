@@ -29,10 +29,12 @@ use miden_client::store::{
     ClientAccountType,
     StoreError,
 };
+use miden_client::sync::NoteTagRecord;
 use miden_client::utils::{Deserializable, Serializable};
 use miden_client::{AccountError, Felt, Word};
 use miden_protocol::account::{AccountStorageHeader, StorageMapWitness, StorageSlotHeader};
 use miden_protocol::asset::{AssetId, PartialVault};
+use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::merkle::MerkleError;
 use rusqlite::{Connection, OptionalExtension, Transaction, named_params, params};
 
@@ -47,6 +49,7 @@ use crate::account::rows::{
 };
 use crate::forest::{ScopedAccountForest, SqliteForestBackend, allocate_forest_revision};
 use crate::sql_error::SqlResultExt;
+use crate::sync::{add_note_tag_tx, query_sync_height};
 use crate::{
     SqliteStore,
     blob_array,
@@ -332,23 +335,69 @@ impl SqliteStore {
         client_account_type: ClientAccountType,
     ) -> Result<(), StoreError> {
         with_write_tx(conn, |tx| {
-            let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(tx))?;
-            Self::insert_account_code(tx, account.code())?;
+            Self::insert_account_tx(tx, account, initial_address, client_account_type)
+        })
+    }
 
-            let account_id = account.id();
-            Self::insert_storage_slots(tx, account_id, account.storage().slots().iter())?;
-            Self::insert_assets(tx, account_id, account.vault().assets())?;
-            let watched = matches!(client_account_type, ClientAccountType::Watched);
-            Self::insert_new_account_header(tx, &account.into(), account.seed(), watched)?;
-            Self::insert_address_tx(tx, initial_address, account.id())?;
+    fn insert_account_tx(
+        tx: &Transaction<'_>,
+        account: &Account,
+        initial_address: &Address,
+        client_account_type: ClientAccountType,
+    ) -> Result<(), StoreError> {
+        let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(tx))?;
+        Self::insert_account_code(tx, account.code())?;
 
-            Self::reconcile_account_forest(
-                tx,
-                &mut smt_forest,
-                account_id,
-                account.vault(),
-                account.storage(),
-            )
+        let account_id = account.id();
+        Self::insert_storage_slots(tx, account_id, account.storage().slots().iter())?;
+        Self::insert_assets(tx, account_id, account.vault().assets())?;
+        let watched = matches!(client_account_type, ClientAccountType::Watched);
+        Self::insert_new_account_header(tx, &account.into(), account.seed(), watched)?;
+        Self::insert_address_tx(tx, initial_address, account.id())?;
+
+        Self::reconcile_account_forest(
+            tx,
+            &mut smt_forest,
+            account_id,
+            account.vault(),
+            account.storage(),
+        )
+    }
+
+    pub(crate) fn import_account(
+        conn: &mut Connection,
+        account: &Account,
+        client_account_type: ClientAccountType,
+        expected_height: BlockNumber,
+        expected_commitment: Option<Word>,
+    ) -> Result<(), StoreError> {
+        with_write_tx(conn, |tx| {
+            if query_sync_height(tx)? != expected_height {
+                return Err(StoreError::DatabaseError(
+                    "account import checkpoint changed; retry the import".into(),
+                ));
+            }
+            let current =
+                query_latest_account_headers(tx, "id = ?", params![account.id().to_bytes()])?
+                    .into_iter()
+                    .next();
+            if current.as_ref().map(|(header, ..)| header.to_commitment()) != expected_commitment {
+                return Err(StoreError::AccountCommitmentMismatch(account.id()));
+            }
+            if current.is_some() {
+                let mut forest = ScopedAccountForest::new(SqliteForestBackend::new(tx))?;
+                Self::update_account_state(tx, &mut forest, account)
+            } else {
+                let address = Address::new(account.id());
+                Self::insert_account_tx(tx, account, &address, client_account_type)?;
+                if matches!(client_account_type, ClientAccountType::Native) {
+                    add_note_tag_tx(
+                        tx,
+                        &NoteTagRecord::with_account_source(address.to_note_tag(), account.id()),
+                    )?;
+                }
+                Ok(())
+            }
         })
     }
 
@@ -568,7 +617,7 @@ impl SqliteStore {
 
     /// Returns the stored latest header of an account, or [`StoreError::AccountDataNotFound`] if
     /// the store does not track it.
-    fn require_latest_account_header(
+    pub(crate) fn require_latest_account_header(
         tx: &Transaction<'_>,
         account_id: AccountId,
     ) -> Result<AccountHeader, StoreError> {
@@ -829,6 +878,15 @@ impl SqliteStore {
         // full-account snapshots; if one still reaches storage, reject it before mutating.
         let old_header = Self::require_latest_account_header(tx, account_id)?;
 
+        if new_account_state.to_commitment() == old_header.to_commitment() {
+            tx.execute(
+                "UPDATE latest_account_headers SET locked = false WHERE id = ?",
+                params![&account_id_bytes],
+            )
+            .into_store_error()?;
+            return Ok(());
+        }
+
         if new_account_state.nonce().as_canonical_u64() < old_header.nonce().as_canonical_u64() {
             return Err(StoreError::DatabaseError(format!(
                 "update_account_state: new nonce {} is less than old nonce {} for account {}",
@@ -942,6 +1000,10 @@ impl SqliteStore {
 
         // Read current header from the store.
         let init_header = Self::require_latest_account_header(tx, account_id)?;
+
+        if new_header.to_commitment() == init_header.to_commitment() {
+            return Ok(());
+        }
 
         if new_header.nonce().as_canonical_u64() <= init_header.nonce().as_canonical_u64() {
             return Err(StoreError::DatabaseError(format!(

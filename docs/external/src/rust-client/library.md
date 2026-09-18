@@ -116,6 +116,13 @@ let new_account = AccountBuilder::new(init_seed) // Seed should be random for ea
 keystore.add_key(&AuthSecretKey::RpoFalcon512(key_pair), new_account.id()).await?;
 client.add_account(&new_account, false).await?;
 ```
+
+Existing account imports use the current client checkpoint. Call `sync_state()` before importing
+an account that was created or updated at a later block. `import_account_by_id()` fetches the state
+at that checkpoint. `add_account()` verifies that an existing account matches a proof at the same
+checkpoint. A mismatch returns an error without changing the account. New accounts with a seed can
+still be added offline.
+
 Once an account is created, it is kept locally and its state is automatically tracked by the client.
 
 To create a public account, specify `AccountType::Public`:

@@ -136,7 +136,7 @@ async fn transaction_creates_two_notes() {
 
     client.keystore().add_key(&secret_key, account.id()).await.unwrap();
 
-    client.add_account(&account, false).await.unwrap();
+    super::insert_fixture_account(&mut client, &account).await;
     client.sync_state().await.unwrap();
     let tx_request = TransactionRequestBuilder::new()
         .build_pay_to_id(
@@ -933,7 +933,7 @@ async fn indeterminate_submission_is_retryable_with_the_attached_payload() {
         .build_existing()
         .unwrap();
     client.keystore().add_key(&secret_key, account.id()).await.unwrap();
-    client.add_account(&account, false).await.unwrap();
+    super::insert_fixture_account(&mut client, &account).await;
     client.sync_state().await.unwrap();
 
     // A transaction that does nothing but advance the nonce, proven with a dummy proof: the

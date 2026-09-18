@@ -85,6 +85,27 @@ impl SqliteStore {
         ) = state_sync_update.into_parts();
 
         with_write_tx(conn, |db_tx| {
+            if let Some((expected_height, headers)) = account_updates.base() {
+                if query_sync_height(db_tx)? != expected_height {
+                    return Err(StoreError::DatabaseError(
+                        "state sync checkpoint changed; retry sync".into(),
+                    ));
+                }
+                let count: usize = db_tx
+                    .query_row("SELECT COUNT(*) FROM latest_account_headers", [], |row| row.get(0))
+                    .into_store_error()?;
+                if count != headers.len() {
+                    return Err(StoreError::DatabaseError(
+                        "tracked account set changed; retry sync".into(),
+                    ));
+                }
+                for expected in headers {
+                    let current = Self::require_latest_account_header(db_tx, expected.id())?;
+                    if current.to_commitment() != expected.to_commitment() {
+                        return Err(StoreError::AccountCommitmentMismatch(expected.id()));
+                    }
+                }
+            }
             let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(db_tx))?;
             // Update blockchain checkpoint (block number and peaks) only if moving forward.
             let new_peaks_bytes = partial_blockchain_updates.new_peaks.peaks().to_vec().to_bytes();

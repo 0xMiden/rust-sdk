@@ -637,7 +637,11 @@ impl NodeRpcClient for MockRpcApi {
         let mock_chain = historical_chain.as_deref().unwrap_or(&*current_chain);
 
         let headers = if account_id.is_public() {
-            let account = mock_chain.committed_account(account_id).unwrap();
+            let account = mock_chain.committed_account(account_id).map_err(|_| {
+                RpcError::InvalidResponse(format!(
+                    "account {account_id} is absent at block {block_number}"
+                ))
+            })?;
 
             // `All` enumerates the account's map slots directly — the mock can introspect the
             // account, so it simulates the (not-yet-on-the-wire) "all storage maps" request. A slot

@@ -517,6 +517,7 @@ pub(crate) fn build_account_patch(
 #[derive(Debug, Clone, Default)]
 #[allow(clippy::struct_field_names)]
 pub struct AccountUpdates {
+    base: Option<(BlockNumber, Vec<AccountHeader>)>,
     /// Updated public accounts, either as full state replacements or incremental patches.
     updated_public_accounts: Vec<PublicAccountUpdate>,
     /// Account commitments received from the network that don't match the currently locally-tracked
@@ -535,9 +536,27 @@ impl AccountUpdates {
         mismatched_private_accounts: Vec<(AccountId, Word)>,
     ) -> Self {
         Self {
+            base: None,
             updated_public_accounts,
             mismatched_private_accounts,
         }
+    }
+
+    /// Returns the checkpoint and account headers used to derive these updates.
+    ///
+    /// The headers contain the complete tracked account set. The store must check this state before
+    /// it applies any part of the sync transaction.
+    pub fn base(&self) -> Option<(BlockNumber, &[AccountHeader])> {
+        self.base.as_ref().map(|(block, headers)| (*block, headers.as_slice()))
+    }
+
+    /// Attaches the checkpoint and complete tracked account set used to derive these updates.
+    ///
+    /// The store must reject the sync if this state changed before application.
+    #[must_use]
+    pub fn with_base(mut self, block: BlockNumber, headers: Vec<AccountHeader>) -> Self {
+        self.base = Some((block, headers));
+        self
     }
 
     /// Returns the updated public accounts.

@@ -82,6 +82,8 @@ pub use tag::{NoteTagRecord, NoteTagSource};
 mod note_observer;
 pub use note_observer::NoteObserver;
 
+mod account_update_tracker;
+pub(crate) use account_update_tracker::verify_account_proof;
 mod state_sync;
 pub(crate) use state_sync::block_num_from_forest;
 pub use state_sync::{ChainSyncData, NoteUpdateAction, OnNoteReceived, StateSync, StateSyncInput};

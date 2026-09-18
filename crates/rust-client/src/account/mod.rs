@@ -154,7 +154,8 @@ use miden_standards::account::wallets::BasicWallet;
 use super::Client;
 use crate::asset::TokenSymbol;
 use crate::errors::ClientError;
-use crate::rpc::domain::account::GetAccountRequest;
+use crate::rpc::AccountStateAt;
+use crate::rpc::domain::account::{GetAccountRequest, StorageMapFetch, VaultFetch};
 use crate::rpc::node::{EndpointError, GetAccountError};
 use crate::store::{AccountStatus, AccountStorageFilter, ClientAccountType};
 use crate::sync::NoteTagRecord;
@@ -266,7 +267,10 @@ impl<AUTH> Client<AUTH> {
     // ACCOUNT CREATION
     // --------------------------------------------------------------------------------------------
 
-    /// Adds the provided [Account] in the store so it can start being tracked by the client.
+    /// Adds the provided [Account] to the store so the client can track it.
+    ///
+    /// Existing accounts must match a proof at the current client checkpoint. Sync the client
+    /// before importing a state from a later block. New accounts do not require a network proof.
     ///
     /// If the account is already being tracked and `overwrite` is set to `true`, the account will
     /// be overwritten. Newly created accounts must embed their seed (`account.seed()` must return
@@ -313,70 +317,53 @@ impl<AUTH> Client<AUTH> {
         }
 
         let tracked_account = self.store.get_minimal_partial_account(account.id()).await?;
-
-        match tracked_account {
-            None => {
-                let default_address = Address::new(account.id());
-
-                self.store
-                    .insert_account(account, default_address.clone(), client_account_type)
-                    .await
-                    .map_err(ClientError::StoreError)?;
-
-                if matches!(client_account_type, ClientAccountType::Native) {
-                    // Set the default address note tag so sync pulls notes.
-                    let default_address_note_tag = default_address.to_note_tag();
-                    let note_tag_record =
-                        NoteTagRecord::with_account_source(default_address_note_tag, account.id());
-                    self.store.add_note_tag(note_tag_record).await?;
-                }
-
-                Ok(())
-            },
-            Some(tracked_account) => {
-                if !overwrite {
-                    // Only overwrite the account if the flag is set to `true`
-                    return Err(ClientError::AccountAlreadyTracked(account.id()));
-                }
-
-                if client_account_type != tracked_account.client_account_type() {
-                    // Switching between Watched and Native after the account is tracked is not
-                    // supported: the per-account note tag and any client-side state derived from
-                    // that mode are set up at insertion time and not migrated on the fly.
-                    return Err(ClientError::AccountWatchedMismatch(account.id()));
-                }
-
-                if tracked_account.nonce().as_canonical_u64() > account.nonce().as_canonical_u64() {
-                    // If the new account is older than the one being tracked, return an error
-                    return Err(ClientError::AccountNonceTooLow);
-                }
-
-                if tracked_account.is_locked() {
-                    // If the tracked account is locked, check that the account commitment matches
-                    // the one in the network
-                    let network_account_commitment = self
-                        .rpc_api
-                        .get_account(account.id(), GetAccountRequest::new())
-                        .await?
-                        .1
-                        .account_commitment();
-                    if network_account_commitment != account.to_commitment() {
-                        return Err(ClientError::AccountCommitmentMismatch(
-                            network_account_commitment,
-                        ));
-                    }
-                }
-
-                self.store.update_account(account).await?;
-
-                Ok(())
-            },
+        if let Some(ref tracked) = tracked_account {
+            if !overwrite {
+                return Err(ClientError::AccountAlreadyTracked(account.id()));
+            }
+            if client_account_type != tracked.client_account_type() {
+                return Err(ClientError::AccountWatchedMismatch(account.id()));
+            }
+            if tracked.nonce().as_canonical_u64() > account.nonce().as_canonical_u64() {
+                return Err(ClientError::AccountNonceTooLow);
+            }
         }
+
+        if !account.is_new() {
+            self.ensure_genesis_in_place().await?;
+        }
+        let checkpoint = self.store.get_sync_height().await?;
+        if !account.is_new() {
+            let (header, _) = self.store.get_block_header_by_num(checkpoint).await?.ok_or(
+                ClientError::StoreError(crate::store::StoreError::BlockHeaderNotFound(checkpoint)),
+            )?;
+            let (height, proof) = self
+                .rpc_api
+                .get_account(
+                    account.id(),
+                    GetAccountRequest::new().at(AccountStateAt::Block(checkpoint)),
+                )
+                .await?;
+            let (commitment, _) =
+                crate::sync::verify_account_proof(proof, height, account.id(), &header)?;
+            if commitment != account.to_commitment() {
+                return Err(ClientError::AccountCommitmentMismatch(commitment));
+            }
+        }
+        let expected_commitment = tracked_account
+            .map(PartialAccount::try_from)
+            .transpose()?
+            .map(|account| account.to_commitment());
+        self.store
+            .import_account(account, client_account_type, checkpoint, expected_commitment)
+            .await?;
+        Ok(())
     }
 
-    /// Imports an account from the network to the client's store. The account needs to be public
-    /// and be tracked by the network, it will be fetched by its ID. If the account was already
-    /// being tracked by the client, its state will be overwritten.
+    /// Imports a public account at the current client checkpoint.
+    ///
+    /// The account must exist at that checkpoint. Sync the client first to import a more recent
+    /// state. The import replaces an existing tracked state if it does not lower its nonce.
     ///
     /// To import an account as watched (state-tracking only, no note sync), use
     /// [`Self::import_watched_account_by_id`] instead. Switching an already-tracked account between
@@ -417,18 +404,45 @@ impl<AUTH> Client<AUTH> {
 
     /// Fetches a public [`Account`] from the network, returning a typed error when the account
     /// doesn't exist on chain or is private.
-    async fn fetch_public_account(&self, account_id: AccountId) -> Result<Account, ClientError> {
-        let fetched_account =
-            self.rpc_api.get_account_details(account_id).await.map_err(|err| {
-                match err.endpoint_error() {
-                    Some(EndpointError::GetAccount(GetAccountError::AccountNotFound)) => {
-                        ClientError::AccountNotFoundOnChain(account_id)
-                    },
-                    _ => ClientError::RpcError(err),
-                }
+    async fn fetch_public_account(
+        &mut self,
+        account_id: AccountId,
+    ) -> Result<Account, ClientError> {
+        if !account_id.is_public() {
+            return Err(ClientError::AccountIsPrivate(account_id));
+        }
+        self.ensure_genesis_in_place().await?;
+        let header = self.get_latest_block_header().await?;
+        let checkpoint = header.block_num();
+        let (height, proof) = self
+            .rpc_api
+            .get_account(
+                account_id,
+                GetAccountRequest::new()
+                    .at(AccountStateAt::Block(checkpoint))
+                    .with_storage(StorageMapFetch::All)
+                    .with_vault(VaultFetch::Always),
+            )
+            .await
+            .map_err(|err| match err.endpoint_error() {
+                Some(EndpointError::GetAccount(GetAccountError::AccountNotFound)) => {
+                    ClientError::AccountNotFoundOnChain(account_id)
+                },
+                _ => ClientError::RpcError(err),
             })?;
-
-        fetched_account.ok_or(ClientError::AccountIsPrivate(account_id))
+        let (_, details) = crate::sync::verify_account_proof(proof, height, account_id, &header)?;
+        let mut details = details.ok_or_else(|| {
+            ClientError::ChainValidationError(format!(
+                "get_account returned no details for public account {account_id}"
+            ))
+        })?;
+        self.rpc_api
+            .resolve_oversize_vault(account_id, checkpoint, &mut details)
+            .await?;
+        self.rpc_api
+            .resolve_oversize_storage_maps(account_id, checkpoint, &mut details)
+            .await?;
+        Account::try_from(&details).map_err(ClientError::RpcError)
     }
 
     /// Fetches a public faucet's display metadata from the network.

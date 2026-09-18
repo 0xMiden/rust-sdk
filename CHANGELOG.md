@@ -4,6 +4,9 @@
 
 ### Breaking Changes
 
+* [BREAKING][behavior][rust] Pinned existing-account imports to the client checkpoint and verified their account proofs. Sync the client before importing a state from a later block.
+* [BREAKING][trait][rust] Added `Store::import_account` for atomic imports with checkpoint and account-state preconditions.
+
 * [BREAKING][arch][rust] Updated `miden-node-proto-build` to `0.17.0-rc.1`, protocol dependencies to `0.17.0-rc.5` and VM dependencies to `0.33` ([#2562](https://github.com/0xMiden/rust-sdk/pull/2562)).
 * [BREAKING][removal][rust,cli] Disabled the `dap` feature and the debugger entry points while `miden-debug` uses an incompatible VM version. The CLI no longer exposes `--start-debug-adapter` or `--record` ([#2562](https://github.com/0xMiden/rust-sdk/pull/2562)).
 * [BREAKING][behavior][rust] `Keystore::get_account_key_commitments` returns an empty set for an account the keystore holds no key for, instead of an error. An account can use keys that are held elsewhere, so this is a valid state. Code that read the error as "this account is unknown" must check for an empty set instead. `export --account` now exports such an account instead of failing with "No keys found for account" ([#2556](https://github.com/0xMiden/rust-sdk/pull/2556)).
@@ -46,6 +49,9 @@
 * [FEATURE][rust] `Client::retry_proven_batch` resends a batch whose outcome was never confirmed, sealing the transaction inputs again on every attempt so nothing is executed or proven twice. It takes the `ProvenBatchSubmission` from `BatchBuilderError::BatchSubmissionOutcomeUnknown`, which has no public constructor, so that error is the only way to obtain one ([#2508](https://github.com/0xMiden/rust-sdk/pull/2508)).
 
 ### Fixes
+
+* Added account update tracking with pending-transaction ancestry checks and rejected sync writes when the starting checkpoint or tracked accounts changed.
+* Preserved account rollback history when applying the same snapshot repeatedly.
 
 * [FIX][store] `SqliteStore::update_account` keeps the seed of an account whose nonce is still zero, so overwriting an undeployed account (for example with `import --overwrite`) no longer leaves it undeployable ([#2541](https://github.com/0xMiden/rust-sdk/pull/2541)).
 * [FIX][cli] Packages resolved from the package directory are read with the trusted package reader ([#2568](https://github.com/0xMiden/rust-sdk/pull/2568)).

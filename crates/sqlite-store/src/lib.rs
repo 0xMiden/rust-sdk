@@ -371,6 +371,26 @@ impl Store for SqliteStore {
         .await
     }
 
+    async fn import_account(
+        &self,
+        account: &Account,
+        client_account_type: ClientAccountType,
+        expected_height: BlockNumber,
+        expected_commitment: Option<Word>,
+    ) -> Result<(), StoreError> {
+        let account = account.clone();
+        self.interact_with_connection(move |conn| {
+            SqliteStore::import_account(
+                conn,
+                &account,
+                client_account_type,
+                expected_height,
+                expected_commitment,
+            )
+        })
+        .await
+    }
+
     async fn update_account(&self, account: &Account) -> Result<(), StoreError> {
         let cloned_account = account.clone();
 

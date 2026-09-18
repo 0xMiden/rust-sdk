@@ -450,6 +450,19 @@ pub trait Store: Send + Sync {
         client_account_type: ClientAccountType,
     ) -> Result<(), StoreError>;
 
+    /// Imports an account and registers its default address and native note tag atomically.
+    ///
+    /// The caller must verify existing account state against the expected checkpoint. The store
+    /// must reject the import if its checkpoint or the account commitment changed. A missing
+    /// expected commitment requires the account to be absent.
+    async fn import_account(
+        &self,
+        account: &Account,
+        client_account_type: ClientAccountType,
+        expected_height: BlockNumber,
+        expected_commitment: Option<Word>,
+    ) -> Result<(), StoreError>;
+
     /// Upserts the account code for a foreign account. This value will be used as a cache of known
     /// script roots and added to the `GetForeignAccountCode` request.
     async fn upsert_foreign_account_code(
@@ -562,6 +575,10 @@ pub trait Store: Send + Sync {
     ///     locked.
     /// - Storing new MMR authentication nodes.
     /// - Updating the tracked public accounts.
+    ///
+    /// If [`crate::sync::AccountUpdates::base`] is present, verify its checkpoint and complete
+    /// account set inside the write transaction before applying any updates. Reject the sync if the
+    /// checkpoint, account set, or any account commitment changed.
     async fn apply_state_sync(&self, state_sync_update: StateSyncUpdate) -> Result<(), StoreError>;
 
     // TRANSPORT

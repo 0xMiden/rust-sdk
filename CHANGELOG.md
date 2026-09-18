@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Breaking Changes
+
+* [BREAKING][type][rust] Added the `TransactionRequestError::InputNoteBeingProcessed` variant, so exhaustive matches on `TransactionRequestError` must handle it ([#2583](https://github.com/0xMiden/rust-sdk/pull/2583)).
+
+### Fixes
+
+* [FIX][rust] A request that consumes a note already held by a pending local transaction is now rejected with `TransactionRequestError::InputNoteBeingProcessed` before it is executed. Previously the transaction was executed, proven and submitted to the node, and only the local store update failed, leaving a submitted transaction without a local record ([#2583](https://github.com/0xMiden/rust-sdk/pull/2583)).
+
 ## 0.17.0.rc-1 (2026-09-17)
 
 ### Breaking Changes

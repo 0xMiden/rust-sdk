@@ -4814,7 +4814,7 @@ pub async fn create_test_client() -> (TestClient, MockRpcApi) {
 /// Gives a mock-backed client the transaction encryption key that submission seals against.
 pub async fn seed_mock_transaction_encryption_key(client: &mut MockClient<FilesystemKeyStore>) {
     client
-        .add_protocol_config(MockChain::new().protocol_config().clone())
+        .seed_protocol_config(MockChain::new().protocol_config().clone())
         .await
         .unwrap();
     let genesis_commitment = client
@@ -4848,7 +4848,6 @@ pub async fn create_test_client_builder() -> (ClientBuilder<FilesystemKeyStore>,
     let arc_rpc_api = Arc::new(rpc_api.clone());
 
     let builder = ClientBuilder::new()
-        .protocol_config(rpc_api.protocol_config())
         .rpc(arc_rpc_api)
         .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())

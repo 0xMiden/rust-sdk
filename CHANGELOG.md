@@ -4,8 +4,8 @@
 
 ### Breaking Changes
 
-* [BREAKING][behavior][rust] State sync now authenticates the chain tip block header before advancing the partial MMR ([#2553](https://github.com/0xMiden/rust-sdk/pull/2553)).
-* [BREAKING][param][rust] `StateSync::build_update` and `StateSync::sync_state` take a `validator_config: &ValidatorConfig` argument, used to authenticate the chain tip block header. The validator config can be retrieved from the client with `Client::get_validator_config` ([#2553](https://github.com/0xMiden/rust-sdk/pull/2553)).
+* [BREAKING][behavior][rust] State sync now authenticates the chain tip by verifying the block signatures against the validator configuration ([#2553](https://github.com/0xMiden/rust-sdk/pull/2553)).
+* [BREAKING][param][rust] `StateSync::sync_state` and `StateSync::fetch_state` now take a `validator_config: &ValidatorConfig` argument, used to authenticate the chain tip block header. The validator configuration can be retrieved from the client with `Client::get_validator_config` ([#2553](https://github.com/0xMiden/rust-sdk/pull/2553)).
 * [BREAKING][arch][rust] Updated `miden-node-proto-build` to `0.17.0-rc.1`, protocol dependencies to `0.17.0-rc.5` and VM dependencies to `0.33` ([#2562](https://github.com/0xMiden/rust-sdk/pull/2562)).
 * [BREAKING][removal][rust,cli] Disabled the `dap` feature and the debugger entry points while `miden-debug` uses an incompatible VM version. The CLI no longer exposes `--start-debug-adapter` or `--record` ([#2562](https://github.com/0xMiden/rust-sdk/pull/2562)).
 * [BREAKING][behavior][rust] `Keystore::get_account_key_commitments` returns an empty set for an account the keystore holds no key for, instead of an error. An account can use keys that are held elsewhere, so this is a valid state. Code that read the error as "this account is unknown" must check for an empty set instead. `export --account` now exports such an account instead of failing with "No keys found for account" ([#2556](https://github.com/0xMiden/rust-sdk/pull/2556)).

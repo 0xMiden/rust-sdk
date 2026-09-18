@@ -6,6 +6,7 @@
 
 * [BREAKING][arch][rust] Updated `miden-node-proto-build` to `0.17.0-rc.1`, protocol dependencies to `0.17.0-rc.5` and VM dependencies to `0.33` ([#2562](https://github.com/0xMiden/rust-sdk/pull/2562)).
 * [BREAKING][removal][rust,cli] Disabled the `dap` feature and the debugger entry points while `miden-debug` uses an incompatible VM version. The CLI no longer exposes `--start-debug-adapter` or `--record` ([#2562](https://github.com/0xMiden/rust-sdk/pull/2562)).
+* [BREAKING][behavior][rust] `Keystore::get_account_key_commitments` returns an empty set for an account the keystore holds no key for, instead of an error. An account can use keys that are held elsewhere, so this is a valid state. Code that read the error as "this account is unknown" must check for an empty set instead. `export --account` now exports such an account instead of failing with "No keys found for account" ([#2556](https://github.com/0xMiden/rust-sdk/pull/2556)).
 * [BREAKING][type][rust] Added the `StoreError::DatabaseTransientError` and `StoreError::DatabasePermanentError` variants, so exhaustive matches on `StoreError` must handle them. The SQLite store returns the first for a busy or locked database and the second for a constraint violation or a corrupt database file, which it previously reported as `StoreError::DatabaseError` ([#2537](https://github.com/0xMiden/rust-sdk/pull/2537)).
 * [BREAKING][type][rust] Flattened `SyncedNote`, it now carries `note_id`, `metadata` and `inclusion_proof` directly, replacing the nested `committed: CommittedNote` field. Code that read that field can call `SyncedNote::into_committed_note` to get the sync record back, with the note's resolved attachments included ([#2475](https://github.com/0xMiden/rust-sdk/pull/2475)).
 * [BREAKING][param][rust] `NoteObserver::observe` now takes a single `&SyncedNote` instead of a `&CommittedNote` and its `&NoteAttachments` ([#2475](https://github.com/0xMiden/rust-sdk/pull/2475)).
@@ -32,6 +33,7 @@
 
 ### Features
 
+* [FEATURE][cli] `export --account` accepts a `--no-keys` flag, which leaves the account secret keys out of the exported `.mac` file. The file still carries the account seed while the account is undeployed ([#2556](https://github.com/0xMiden/rust-sdk/pull/2556)).
 * [FEATURE][rust] The committed note passed to the `OnNoteReceived` callback now always reports the note's resolved attachment content, whether the `SyncNotes` response carried it verbatim or a `GetNotesById` follow-up resolved it ([#2475](https://github.com/0xMiden/rust-sdk/pull/2475)).
 * [FEATURE][rust] Re-exported the fee pricing and note checking types that the client API already surfaces, so downstream crates no longer need a direct `miden-tx` dependency to price note consumption: `NetworkNotePricer`, `NotePricingError` and `NoteCheckerError` at the crate root, `TransactionFee` and `TransactionFeeError` from `transaction`, `NoteCost` and `NoteConsumptionCost` from `note`, and `MastForestStore` and `TransactionMastStore` from `testing` ([#2475](https://github.com/0xMiden/rust-sdk/pull/2475)).
 

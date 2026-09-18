@@ -47,7 +47,8 @@ pub trait Keystore: TransactionAuthenticator {
 
     /// Returns all public key commitments associated with the given account ID.
     ///
-    /// Returns an error if the account is not found.
+    /// Returns an empty set if the keystore holds no key for the account. An account can use keys
+    /// that are held elsewhere, so this is a valid state and not an error.
     async fn get_account_key_commitments(
         &self,
         account_id: &AccountId,
@@ -66,8 +67,8 @@ pub trait Keystore: TransactionAuthenticator {
     /// This is a convenience method that calls `get_account_key_commitments` followed by `get_key`
     /// for each commitment.
     ///
-    /// Returns an empty vector if the account has no associated keys. Returns an error if any key
-    /// lookup fails.
+    /// Returns an empty vector if the keystore holds no key for the account. Returns an error if
+    /// any key lookup fails.
     async fn get_keys_for_account(
         &self,
         account_id: &AccountId,

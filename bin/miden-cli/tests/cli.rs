@@ -16,7 +16,7 @@ use miden_client::account::component::{
     ValueSlotSchema,
     WordSchema,
 };
-use miden_client::account::{AccountId, AccountType, FaucetMetadata, StorageSlotName};
+use miden_client::account::{AccountFile, AccountId, AccountType, FaucetMetadata, StorageSlotName};
 use miden_client::address::{Address, NetworkId};
 use miden_client::assembly::CodeBuilder;
 use miden_client::auth::TransactionAuthenticator;
@@ -858,6 +858,7 @@ async fn cli_export_import_note() -> Result<()> {
 async fn cli_export_import_account() -> Result<()> {
     const FAUCET_FILENAME: &str = "test_faucet.mac";
     const WALLET_FILENAME: &str = "test_wallet.wal";
+    const KEYLESS_WALLET_FILENAME: &str = "test_wallet_no_keys.mac";
 
     let (store_path_1, temp_dir_1, endpoint_1) = init_cli();
     let (store_path_2, temp_dir_2, endpoint_2) = init_cli();
@@ -877,6 +878,26 @@ async fn cli_export_import_account() -> Result<()> {
     let mut export_cmd = cargo_bin_cmd!("miden-client");
     export_cmd.args(["export", &wallet_id, "--account", "--filename", WALLET_FILENAME]);
     export_cmd.current_dir(&temp_dir_1).assert().success();
+
+    // Export the wallet again without its secret keys. The account file must hold the same account
+    // and no key, so it can be shared with a party that must not be able to sign for the account.
+    let mut export_cmd = cargo_bin_cmd!("miden-client");
+    export_cmd.args([
+        "export",
+        &wallet_id,
+        "--account",
+        "--no-keys",
+        "--filename",
+        KEYLESS_WALLET_FILENAME,
+    ]);
+    export_cmd.current_dir(&temp_dir_1).assert().success();
+
+    let keyless_file = AccountFile::read(temp_dir_1.join(KEYLESS_WALLET_FILENAME))?;
+    assert!(keyless_file.auth_secret_keys.is_empty());
+    assert_eq!(keyless_file.account.id(), AccountId::from_hex(&wallet_id)?);
+
+    let with_keys_file = AccountFile::read(temp_dir_1.join(WALLET_FILENAME))?;
+    assert!(!with_keys_file.auth_secret_keys.is_empty());
 
     // Copy the account files
     for filename in &[FAUCET_FILENAME, WALLET_FILENAME] {
@@ -917,6 +938,7 @@ async fn cli_export_import_account() -> Result<()> {
     let faucet_pks = cli_keystore
         .get_account_key_commitments(&AccountId::from_hex(&faucet_id)?)
         .await?;
+    assert!(!faucet_pks.is_empty());
 
     for stored_pk_commitment in faucet_pks {
         let matching_secret_key = cli_keystore.get_key_sync(stored_pk_commitment).unwrap();
@@ -931,6 +953,7 @@ async fn cli_export_import_account() -> Result<()> {
     let wallet_pks = cli_keystore
         .get_account_key_commitments(&AccountId::from_hex(&wallet_id)?)
         .await?;
+    assert!(!wallet_pks.is_empty());
 
     for stored_pk_commitment in wallet_pks {
         let matching_secret_key = cli_keystore.get_key_sync(stored_pk_commitment).unwrap();
@@ -943,6 +966,39 @@ async fn cli_export_import_account() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// `--no-keys` only applies to an account export, so the CLI must reject it on every other path
+/// instead of accepting a flag that it ignores.
+///
+/// Each case asserts the argument parser rejected the command. Without that assertion the test also
+/// passes when the parser accepts the flag and the command fails later for an unrelated reason.
+#[test]
+fn cli_export_no_keys_requires_an_account_export() {
+    let temp_dir = init_cli().1;
+
+    let cases: [(&[&str], &str); 3] = [
+        (&["export", "0x0", "--no-keys"], "required arguments were not provided"),
+        (
+            &["export", "0x0", "--no-keys", "--export-type", "partial"],
+            "cannot be used with",
+        ),
+        (
+            &["export", "0x0", "--no-keys", "--note", "--export-type", "partial"],
+            "cannot be used with",
+        ),
+    ];
+
+    for (args, expected_error) in cases {
+        let mut export_cmd = cargo_bin_cmd!("miden-client");
+        export_cmd
+            .args(args)
+            .current_dir(&temp_dir)
+            .assert()
+            .failure()
+            .code(2)
+            .stderr(contains(expected_error));
+    }
 }
 
 #[test]
@@ -2629,9 +2685,11 @@ fn create_account_with_no_auth() {
     create_account_cmd.current_dir(&temp_dir).assert().success();
 }
 
-/// Tests creating an account with the multisig-auth component.
+/// Tests creating and exporting an account with the multisig-auth component.
 #[test]
-fn create_account_with_multisig_auth() {
+fn create_and_export_account_with_multisig_auth() {
+    const ACCOUNT_FILENAME: &str = "multisig_account.mac";
+
     let temp_dir = init_cli().1;
 
     // Create init storage data file for multisig:
@@ -2673,7 +2731,31 @@ fn create_account_with_multisig_auth() {
         "multisig_init_data.toml",
     ]);
 
-    create_account_cmd.current_dir(&temp_dir).assert().success();
+    let output = create_account_cmd.current_dir(&temp_dir).output().unwrap();
+    assert!(
+        output.status.success(),
+        "Failed to create multisig account: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let account_id = stdout
+        .split_whitespace()
+        .skip_while(|&word| word != "-s")
+        .nth(1)
+        .expect("Could not parse account ID from new-account output");
+
+    let mut export_account_cmd = cargo_bin_cmd!("miden-client");
+    export_account_cmd
+        .args(["export", account_id, "--account", "--filename", ACCOUNT_FILENAME])
+        .current_dir(&temp_dir)
+        .assert()
+        .success()
+        .stdout(contains("without secret keys"));
+
+    let account_file = AccountFile::read(temp_dir.join(ACCOUNT_FILENAME)).unwrap();
+    assert_eq!(account_file.account.id().to_hex(), account_id);
+    assert!(account_file.auth_secret_keys.is_empty());
 }
 
 /// Tests creating an account with the ecdsa-auth component.

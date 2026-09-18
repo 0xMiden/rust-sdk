@@ -38,7 +38,12 @@ pub struct ExportCmd {
     export_type: Option<ExportType>,
 
     /// Leave the account secret keys out of the exported account file.
-    #[arg(long, requires = "account", conflicts_with_all = ["note", "export_type"])]
+    #[arg(
+        long,
+        default_value_t = false,
+        requires = "account",
+        conflicts_with_all = ["note", "export_type"]
+    )]
     no_keys: bool,
 }
 

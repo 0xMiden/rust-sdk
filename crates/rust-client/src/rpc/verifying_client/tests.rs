@@ -7,14 +7,7 @@ use miden_protocol::account::{AccountId, AccountVaultPatch};
 use miden_protocol::address::NetworkId;
 use miden_protocol::batch::{ProposedBatch, ProvenBatch};
 use miden_protocol::block::account_tree::AccountWitness;
-use miden_protocol::block::{
-    BlockBody,
-    BlockHeader,
-    BlockNumber,
-    BlockProof,
-    BlockSignatures,
-    ProvenBlock,
-};
+use miden_protocol::block::{BlockBody, BlockHeader, BlockNumber, BlockSignatures, SignedBlock};
 use miden_protocol::crypto::merkle::mmr::MmrProof;
 use miden_protocol::crypto::merkle::{MerklePath, SparseMerklePath};
 use miden_protocol::note::{
@@ -37,8 +30,8 @@ use miden_protocol::transaction::{
     OrderedTransactionHeaders,
     ProvenTransaction,
     TransactionHeader,
-    TransactionKernel,
 };
+use miden_protocol::vm::ExecutionProof;
 use miden_protocol::{Felt, Word};
 use miden_standards::note::StandardNote;
 
@@ -88,10 +81,10 @@ fn nullifier_update(prefix: u16, block_num: u32) -> NullifierUpdate {
 }
 
 fn block_header(block_num: u32) -> BlockHeader {
-    BlockHeader::mock(block_num, None, None, &[], TransactionKernel.to_commitment())
+    BlockHeader::mock(block_num, None, None, &[])
 }
 
-fn proven_block(block_num: u32) -> ProvenBlock {
+fn signed_block(block_num: u32) -> SignedBlock {
     let body = BlockBody::new_unchecked(
         Vec::new(),
         Vec::new(),
@@ -100,7 +93,7 @@ fn proven_block(block_num: u32) -> ProvenBlock {
     );
     let signatures = BlockSignatures::new(Vec::new()).expect("no signatures is a valid set");
 
-    ProvenBlock::new_unchecked(block_header(block_num), body, signatures, BlockProof::new_dummy())
+    SignedBlock::new_unchecked(block_header(block_num), body, signatures)
 }
 
 fn inclusion_proof() -> NoteInclusionProof {
@@ -155,7 +148,8 @@ fn transaction_record(account_id: AccountId) -> TransactionRecord {
             Word::default(),
             InputNotes::new_unchecked(vec![]),
             vec![],
-        ),
+        )
+        .unwrap(),
         output_notes: vec![],
         erased_output_notes: vec![],
         consumed_note_refs: vec![],
@@ -210,7 +204,7 @@ enum CannedScript {
 #[derive(Default)]
 struct CannedTransport {
     block_header: Option<(BlockHeader, Option<MmrProof>)>,
-    block: Option<ProvenBlock>,
+    block: Option<SignedBlock>,
     /// Note IDs to report from `get_notes_by_id`, wrapped into notes on each call because
     /// [`FetchedNote`] is not [`Clone`].
     note_ids: Option<Vec<NoteId>>,
@@ -262,7 +256,7 @@ impl NodeRpcClient for CannedTransport {
 
     async fn submit_proven_transaction(
         &self,
-        _proven_transaction: ProvenTransaction,
+        _proven_transaction: &ProvenTransaction,
         _sealed_transaction_inputs: SealedTransactionInputs,
     ) -> Result<BlockNumber, RpcError> {
         unimplemented!("not used in these tests")
@@ -270,8 +264,8 @@ impl NodeRpcClient for CannedTransport {
 
     async fn submit_proven_batch(
         &self,
-        _proven_batch: ProvenBatch,
-        _proposed_batch: ProposedBatch,
+        _proven_batch: &ProvenBatch,
+        _proposed_batch: &ProposedBatch,
         _transaction_inputs: Vec<SealedTransactionInputs>,
     ) -> Result<BlockNumber, RpcError> {
         unimplemented!("not used in these tests")
@@ -292,8 +286,10 @@ impl NodeRpcClient for CannedTransport {
         &self,
         _block_num: BlockNumber,
         _include_proof: bool,
-    ) -> Result<ProvenBlock, RpcError> {
-        self.canned(self.block.as_ref(), "test must set a canned get_block_by_number response")
+    ) -> Result<(SignedBlock, Option<ExecutionProof>), RpcError> {
+        let block = self
+            .canned(self.block.as_ref(), "test must set a canned get_block_by_number response")?;
+        Ok((block, None))
     }
 
     async fn get_notes_by_id(&self, _note_ids: &[NoteId]) -> Result<Vec<FetchedNote>, RpcError> {
@@ -445,11 +441,11 @@ async fn get_block_header_by_number_verifies_block_num() {
 #[tokio::test]
 async fn get_block_by_number_verifies_block_num() {
     let client = VerifyingRpcClient::new(CannedTransport {
-        block: Some(proven_block(5)),
+        block: Some(signed_block(5)),
         ..Default::default()
     });
 
-    let block = client
+    let (block, _proof) = client
         .get_block_by_number(BlockNumber::from(5u32), false)
         .await
         .expect("the requested block must be accepted");

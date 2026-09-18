@@ -1,7 +1,6 @@
 use clap::ValueEnum;
 use comfy_table::{Attribute, Cell, ContentArrangement, Table, presets};
 use miden_client::address::Address;
-use miden_client::asset::Asset;
 use miden_client::keystore::Keystore;
 use miden_client::note::{
     Note,
@@ -16,7 +15,12 @@ use miden_client::store::{InputNoteRecord, NoteFilter as ClientNoteFilter, Outpu
 use miden_client::{Client, ClientError, IdPrefixFetchError, PrettyPrint};
 
 use crate::errors::CliError;
-use crate::utils::{load_faucet_metadata_resolver, parse_account_id};
+use crate::utils::{
+    configured_network_id,
+    load_faucet_metadata_resolver,
+    parse_account_id,
+    validate_network_eq,
+};
 use crate::{Parser, create_dynamic_table, get_output_note_with_id_prefix};
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -268,17 +272,13 @@ async fn show_note<AUTH: Keystore + Sync>(
     let assets = assets.iter();
 
     for asset in assets {
-        let (asset_type, faucet, amount) = match asset {
-            Asset::Fungible(fungible_asset) => {
+        let (asset_type, faucet, amount) = match asset.as_fungible() {
+            Some(fungible_asset) => {
                 let (faucet, amount) =
-                    resolver.format_fungible_asset(client, fungible_asset).await?;
+                    resolver.format_fungible_asset(client, &fungible_asset).await?;
                 ("Fungible Asset", faucet, amount)
             },
-            Asset::NonFungible(non_fungible_asset) => (
-                "Non Fungible Asset",
-                non_fungible_asset.faucet_id().prefix().to_hex(),
-                1.0.to_string(),
-            ),
+            None => ("Non Fungible Asset", asset.faucet_id().prefix().to_hex(), 1.0.to_string()),
         };
         table.add_row(vec![asset_type, &faucet, &amount.clone()]);
     }
@@ -353,7 +353,9 @@ async fn send<AUTH: Keystore + Sync>(
     let note: Note = note_record
         .try_into()
         .map_err(|e| CliError::from(ClientError::NoteRecordConversionError(e)))?;
-    let (_netid, address) = Address::decode(address).map_err(|e| CliError::Input(e.to_string()))?;
+    let (address_network_id, address) =
+        Address::decode(address).map_err(|e| CliError::Input(e.to_string()))?;
+    validate_network_eq(&address_network_id, &configured_network_id()?)?;
 
     match block_hint {
         Some(block_hint) => {

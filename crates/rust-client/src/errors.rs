@@ -3,7 +3,6 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::fmt;
 
-use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::crypto::merkle::MerkleError;
 pub use miden_protocol::errors::{
@@ -19,18 +18,18 @@ use miden_protocol::errors::{
     ProposedBatchError,
     ProvenBatchError,
     TransactionInputError,
-    TransactionScriptError,
 };
 use miden_protocol::note::NoteId;
 use miden_protocol::transaction::{ProvenTransaction, TransactionId, TransactionInputs};
+use miden_protocol::{MastForestScriptError, Word};
 // RE-EXPORTS
 // ================================================================================================
 pub use miden_standards::errors::CodeBuilderError;
 use miden_standards::tx_script::SendNotesTransactionScriptError;
 use miden_tx::utils::HexParseError;
 use miden_tx::utils::serde::DeserializationError;
-pub use miden_tx::{AuthenticationError, TransactionExecutorError};
-use miden_tx::{DataStoreError, NoteCheckerError, TransactionProverError};
+pub use miden_tx::{AuthenticationError, NoteCheckerError, TransactionExecutorError};
+use miden_tx::{DataStoreError, TransactionProverError};
 use thiserror::Error;
 
 use crate::note::NoteScreenerError;
@@ -195,8 +194,8 @@ pub enum ClientError {
     TransactionRequestError(#[from] TransactionRequestError),
     #[error("failed to build the send-notes transaction script")]
     SendNotesTransactionScriptError(#[from] SendNotesTransactionScriptError),
-    #[error("transaction script error")]
-    TransactionScriptError(#[source] TransactionScriptError),
+    #[error("mast forest script error")]
+    MastForestScriptError(#[source] MastForestScriptError),
     #[error("client initialization error: {0}")]
     ClientInitializationError(String),
     #[error("expected full account data for account {0}, but only partial data is available")]
@@ -365,6 +364,23 @@ impl From<&ClientError> for Option<ErrorHint> {
                     docs_url: Some(TROUBLESHOOTING_DOC),
                 })
             },
+            ClientError::BatchBuilder(BatchBuilderError::BatchSubmissionOutcomeUnknown {
+                submission,
+                ..
+            }) => Some(ErrorHint {
+                message: format!(
+                    "Do not rebuild the batch: re-executing produces new transaction ids over \
+                     the same notes, so if the original did land you would be left with ids that \
+                     can never commit. Neither option can apply the batch twice, since both \
+                     consume the same nullifiers. Either retry with the `submission` attached to \
+                     this error, which carries the proven batch and each transaction's inputs and \
+                     records the batch if the node accepts it, or sync and see whether the \
+                     accounts moved: until a retry is accepted the {} ids in \
+                     `submission.transaction_ids()` have no record to look up.",
+                    submission.transaction_count()
+                ),
+                docs_url: Some(TROUBLESHOOTING_DOC),
+            }),
             _ => None,
         }
     }

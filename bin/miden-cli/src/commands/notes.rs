@@ -15,7 +15,12 @@ use miden_client::store::{InputNoteRecord, NoteFilter as ClientNoteFilter, Outpu
 use miden_client::{Client, ClientError, IdPrefixFetchError, PrettyPrint};
 
 use crate::errors::CliError;
-use crate::utils::{load_faucet_metadata_resolver, parse_account_id, validate_network_eq};
+use crate::utils::{
+    configured_network_id,
+    load_faucet_metadata_resolver,
+    parse_account_id,
+    validate_network_eq,
+};
 use crate::{Parser, create_dynamic_table, get_output_note_with_id_prefix};
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -350,7 +355,7 @@ async fn send<AUTH: Keystore + Sync>(
         .map_err(|e| CliError::from(ClientError::NoteRecordConversionError(e)))?;
     let (address_network_id, address) =
         Address::decode(address).map_err(|e| CliError::Input(e.to_string()))?;
-    validate_network_eq(&address_network_id, &client.network_id().await?)?;
+    validate_network_eq(&address_network_id, &configured_network_id()?)?;
 
     match block_hint {
         Some(block_hint) => {

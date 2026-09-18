@@ -47,6 +47,8 @@
 
 ### Fixes
 
+* [FIX][cli] `new-account` and `new-wallet` now reject a package that exports procedures without an `@account_procedure` or `@auth_script` attribute. They also reject packages whose target kind is not `account-component` and packages without an account component metadata section ([#2542](https://github.com/0xMiden/rust-sdk/pull/2542)).
+* [FIX][cli] `new-account` and `new-wallet` accept a composite storage slot given as a single slot-level value in the init data file, instead of prompting for each field and then failing with a conflict ([#2534](https://github.com/0xMiden/rust-sdk/issues/2534)).
 * [FIX][store] `SqliteStore::update_account` keeps the seed of an account whose nonce is still zero, so overwriting an undeployed account (for example with `import --overwrite`) no longer leaves it undeployable ([#2541](https://github.com/0xMiden/rust-sdk/pull/2541)).
 * [FIX][cli] Packages resolved from the package directory are read with the trusted package reader ([#2568](https://github.com/0xMiden/rust-sdk/pull/2568)).
 * [FIX][rust] Refreshed tracked input notes after transport imports so the same sync detects their consumption ([#2453](https://github.com/0xMiden/rust-sdk/pull/2453)).

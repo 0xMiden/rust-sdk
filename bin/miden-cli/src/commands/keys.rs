@@ -147,7 +147,6 @@ fn list_keys(keystore: &FilesystemKeyStore) -> Result<(), CliError> {
     }
 
     println!("\n{table}");
-    println!("Associated keys are included in account exports unless --no-keys is used.");
     Ok(())
 }
 

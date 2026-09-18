@@ -148,8 +148,7 @@ fn cli_manages_keys() {
         .stdout(contains(&imported_commitment))
         .stdout(contains("ecdsa-k256-keccak"))
         .stdout(contains("falcon512-poseidon2"))
-        .stdout(contains(&account_id))
-        .stdout(contains("Associated keys are included in account exports"));
+        .stdout(contains(&account_id));
 
     let mut disassociate_cmd = cargo_bin_cmd!("miden-client");
     disassociate_cmd.args([

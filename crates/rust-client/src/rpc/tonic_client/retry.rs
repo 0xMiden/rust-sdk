@@ -134,29 +134,26 @@ mod tests {
         Status::with_metadata(Code::ResourceExhausted, "Too Many Requests! Wait for 0s", metadata)
     }
 
-    /// A submission whose response was lost may already have been accepted, so repeating it would
-    /// surface the resulting conflict instead of the original success.
+    /// A call that changes state and whose response was lost may already have been applied, so
+    /// repeating it would surface the resulting conflict instead of the original success.
     #[test]
-    fn submissions_do_not_retry_unavailable() {
-        for endpoint in [RpcEndpoint::SubmitProvenTx, RpcEndpoint::SubmitProvenBatch] {
+    fn state_changing_calls_do_not_retry_unavailable() {
+        for endpoint in [
+            RpcEndpoint::SubmitProvenTx,
+            RpcEndpoint::SubmitProvenBatch,
+            RpcEndpoint::RegisterAccount,
+        ] {
             assert!(!is_retryable(endpoint, &Status::new(Code::Unavailable, "transport error")));
         }
     }
 
-    /// `RegisterAccount` changes state on the node, but the node treats a repeat with the same
-    /// invitation code and account as a no-op. A lost response is therefore safe to retry, unlike a
-    /// lost submission.
     #[test]
-    fn register_account_retries_unavailable() {
-        let endpoint = RpcEndpoint::RegisterAccount;
-
-        assert!(is_retryable(endpoint, &Status::new(Code::Unavailable, "transport error")));
-        assert!(is_retryable(endpoint, &Status::new(Code::ResourceExhausted, "rate limited")));
-    }
-
-    #[test]
-    fn submissions_retry_resource_exhausted() {
-        for endpoint in [RpcEndpoint::SubmitProvenTx, RpcEndpoint::SubmitProvenBatch] {
+    fn state_changing_calls_retry_resource_exhausted() {
+        for endpoint in [
+            RpcEndpoint::SubmitProvenTx,
+            RpcEndpoint::SubmitProvenBatch,
+            RpcEndpoint::RegisterAccount,
+        ] {
             assert!(is_retryable(endpoint, &Status::new(Code::ResourceExhausted, "rate limited")));
         }
     }

@@ -74,10 +74,10 @@ async fn register_account_reports_a_consumed_code() {
     ));
 }
 
-/// The node treats a repeat with the same code and account as a no-op, which is what lets the
-/// endpoint be retried after a lost response.
+/// The node treats a repeat with the same code and account as a no-op, so a caller that registers
+/// the same binding twice gets a success both times.
 #[tokio::test]
-async fn register_account_is_retryable() {
+async fn register_account_accepts_a_repeated_binding() {
     let rpc_api = MockRpcApi::new(MockChain::new());
 
     rpc_api.register_account(INVITATION_CODE, account_id()).await.unwrap();

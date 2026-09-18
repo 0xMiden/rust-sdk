@@ -7,10 +7,11 @@ use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::address::NetworkId;
 use miden_protocol::batch::{ProposedBatch, ProvenBatch};
-use miden_protocol::block::{BlockHeader, BlockNumber, ProvenBlock};
+use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock};
 use miden_protocol::crypto::merkle::mmr::MmrProof;
 use miden_protocol::note::{NoteId, NoteScript, NoteTag};
 use miden_protocol::transaction::ProvenTransaction;
+use miden_protocol::vm::ExecutionProof;
 
 use super::domain::account::{AccountProof, GetAccountRequest};
 use super::domain::account_vault::AccountVaultInfo;
@@ -180,7 +181,7 @@ impl<T: NodeRpcClient> NodeRpcClient for VerifyingRpcClient<T> {
 
     async fn submit_proven_transaction(
         &self,
-        proven_transaction: ProvenTransaction,
+        proven_transaction: &ProvenTransaction,
         sealed_transaction_inputs: SealedTransactionInputs,
     ) -> Result<BlockNumber, RpcError> {
         self.0
@@ -190,8 +191,8 @@ impl<T: NodeRpcClient> NodeRpcClient for VerifyingRpcClient<T> {
 
     async fn submit_proven_batch(
         &self,
-        proven_batch: ProvenBatch,
-        proposed_batch: ProposedBatch,
+        proven_batch: &ProvenBatch,
+        proposed_batch: &ProposedBatch,
         sealed_transaction_inputs: Vec<SealedTransactionInputs>,
     ) -> Result<BlockNumber, RpcError> {
         self.0
@@ -214,10 +215,10 @@ impl<T: NodeRpcClient> NodeRpcClient for VerifyingRpcClient<T> {
         &self,
         block_num: BlockNumber,
         include_proof: bool,
-    ) -> Result<ProvenBlock, RpcError> {
-        let block = self.0.get_block_by_number(block_num, include_proof).await?;
+    ) -> Result<(SignedBlock, Option<ExecutionProof>), RpcError> {
+        let (block, proof) = self.0.get_block_by_number(block_num, include_proof).await?;
         verify_block_num(Some(block_num), block.header().block_num())?;
-        Ok(block)
+        Ok((block, proof))
     }
 
     async fn get_notes_by_id(&self, note_ids: &[NoteId]) -> Result<Vec<FetchedNote>, RpcError> {

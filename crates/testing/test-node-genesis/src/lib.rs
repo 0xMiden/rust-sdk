@@ -21,7 +21,9 @@ use miden_protocol::account::{
     StorageMap,
     StorageMapKey,
 };
-use miden_protocol::asset::{Asset, AssetAmount, FungibleAsset, TokenSymbol};
+use miden_protocol::asset::{Asset, AssetAmount, AssetId, FungibleAsset, TokenSymbol};
+use miden_protocol::protocol_config::ProtocolConfig;
+use miden_protocol::utils::serde::Serializable;
 use miden_protocol::{ONE, Word};
 use miden_standards::account::access::AccessControl;
 use miden_standards::account::auth::{Approver, AuthSingleSig};
@@ -117,6 +119,8 @@ pub fn write_genesis_config(
         generate_faucet_operator().context("failed to create the native faucet operator")?;
     let native_faucet =
         generate_native_faucet(operator.id()).context("failed to create the native fee faucet")?;
+    let protocol_config = ProtocolConfig::current(AssetId::new_fungible(native_faucet.id()))?;
+    std::fs::write(output_dir.join("protocol-config.bin"), protocol_config.to_bytes())?;
     let fee_balance: Asset =
         FungibleAsset::new(native_faucet.id(), GENESIS_ACCOUNT_FEE_BALANCE)?.into();
     AccountFile::new(into_genesis_account(native_faucet, fee_balance)?, vec![])
@@ -171,13 +175,13 @@ pub fn write_genesis_config(
     // public keys on the command line, and `start-test-node.sh` generates the key-pair it passes
     // there alongside the matching signing key.
     let config = GenesisConfig {
-        version: 1,
         timestamp,
         native_faucet: NATIVE_FAUCET_FILE.to_string(),
         fee_parameters: FeeParametersEntry { verification_base_fee },
         accounts: account_files.into_iter().map(|path| AccountEntry { path }).collect(),
         wallets: (0..num_funder_wallets)
-            .map(|_| WalletEntry {
+            .map(|index| WalletEntry {
+                name: format!("wallet_{index}"),
                 account_type: "public".to_string(),
                 assets: vec![AssetEntry {
                     amount: FUNDER_WALLET_BALANCE,
@@ -203,7 +207,6 @@ pub fn write_genesis_config(
 /// table, so the scalars have to stay above `fee_parameters` and the two arrays of tables.
 #[derive(Serialize)]
 struct GenesisConfig {
-    version: u32,
     timestamp: u32,
     /// File name of the faucet whose asset the chain charges fees in.
     native_faucet: String,
@@ -228,6 +231,7 @@ struct AccountEntry {
 
 #[derive(Serialize)]
 struct WalletEntry {
+    name: String,
     account_type: String,
     assets: Vec<AssetEntry>,
 }
@@ -442,7 +446,7 @@ fn create_test_account_with_many_assets(faucets: &[Account]) -> anyhow::Result<A
     .expect("basic wallet component should satisfy account component requirements");
 
     let assets = faucets.iter().map(|faucet| {
-        Asset::Fungible(
+        Asset::from(
             FungibleAsset::new(faucet.id(), ASSET_AMOUNT_PER_FAUCET)
                 .expect("faucet id should be valid for asset creation"),
         )

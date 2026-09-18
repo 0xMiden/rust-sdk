@@ -4,13 +4,9 @@ use super::errors::RpcConversionError;
 
 pub mod account;
 pub mod account_vault;
-pub mod block;
-pub mod digest;
 pub mod limits;
-pub mod merkle;
 pub mod note;
 pub mod nullifier;
-pub mod smt;
 pub mod status;
 pub mod storage_map;
 pub mod sync;

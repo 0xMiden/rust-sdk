@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use miden_client::account::component::FungibleFaucet;
 use miden_client::account::{AccountId, FaucetMetadata};
 use miden_client::address::{Address, AddressId, NetworkId};
-use miden_client::asset::{Asset, AssetAmount, FungibleAsset};
+use miden_client::asset::{AssetAmount, FungibleAsset};
 use miden_client::transaction::{ExecutedTransaction, InputNote};
 use miden_client::vm::MIN_STACK_DEPTH;
 use miden_client::{AssetError, Client, Felt, WORD_SIZE, Word};
@@ -75,7 +75,7 @@ pub(crate) async fn parse_account_id<AUTH>(
     } else {
         let (address_network_id, address) = Address::decode(account_id)
             .map_err(|err| CliError::Input(format!("error parsing bech32 address: {err}")))?;
-        validate_network_eq(&address_network_id, &client.network_id().await?)?;
+        validate_network_eq(&address_network_id, &configured_network_id()?)?;
         match address.id() {
             AddressId::AccountId(account_id_address) => Ok(account_id_address),
             _ => Err(CliError::Input(format!(
@@ -133,8 +133,13 @@ pub(super) fn config_file_exists() -> Result<bool, CliError> {
 /// Returns the faucet metadata resolver using the config file.
 pub fn load_faucet_metadata_resolver() -> Result<FaucetMetadataResolver, CliError> {
     let config = CliConfig::load()?;
-    let network_id = config.rpc.endpoint.0.to_network_id();
+    let network_id = config.network_id()?;
     FaucetMetadataResolver::new(config.token_symbol_map_filepath, &network_id)
+}
+
+/// Returns the network ID of the configured network. See [`CliConfig::network_id`].
+pub(crate) fn configured_network_id() -> Result<NetworkId, CliError> {
+    CliConfig::load()?.network_id()
 }
 
 /// Prints the effects of an executed transaction: input notes, output notes, storage value changes,
@@ -208,16 +213,16 @@ pub async fn print_executed_transaction<AUTH>(
         let mut table = create_dynamic_table(&["Asset Type", "Faucet ID", "New Amount"]);
 
         for asset in patch.vault().updated_assets() {
-            match asset {
-                Asset::Fungible(fungible) => {
+            match asset.as_fungible() {
+                Some(fungible) => {
                     let (faucet_fmt, amount_fmt) =
                         resolver.format_fungible_asset(client, &fungible).await?;
                     table.add_row(vec!["Fungible Asset", &faucet_fmt, &amount_fmt]);
                 },
-                Asset::NonFungible(non_fungible) => {
+                None => {
                     table.add_row(vec![
                         "Non Fungible Asset",
-                        &non_fungible.faucet_id().prefix().to_hex(),
+                        &asset.faucet_id().prefix().to_hex(),
                         "1",
                     ]);
                 },
@@ -520,7 +525,7 @@ impl FaucetMetadataResolver {
         if let Some(meta) = self.resolve(client, asset.faucet_id()).await? {
             return Ok((meta.symbol, base_units_to_tokens(asset.amount(), meta.decimals)));
         }
-        let network_id = client.network_id().await?;
+        let network_id = configured_network_id()?;
         let address_str = Address::new(asset.faucet_id()).encode(network_id);
         Ok((address_str, asset.amount().to_string()))
     }

@@ -139,7 +139,7 @@ mod tests {
         // real `ExecutedTransaction`.
         let sender_id = ACCOUNT_ID_SENDER.try_into().unwrap();
         let faucet_id = ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET.try_into().unwrap();
-        let asset = Asset::Fungible(FungibleAsset::new(faucet_id, 100u64).unwrap());
+        let asset = Asset::from(FungibleAsset::new(faucet_id, 100u64).unwrap());
 
         let mut builder = MockChainBuilder::new();
         let account = builder.add_existing_mock_account(miden_testing::Auth::IncrNonce).unwrap();

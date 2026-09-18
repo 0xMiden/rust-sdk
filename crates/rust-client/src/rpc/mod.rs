@@ -66,7 +66,7 @@ use miden_protocol::Word;
 use miden_protocol::account::{Account, AccountId};
 use miden_protocol::address::NetworkId;
 use miden_protocol::batch::{ProposedBatch, ProvenBatch};
-use miden_protocol::block::{BlockHeader, BlockNumber, ProvenBlock};
+use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock};
 use miden_protocol::crypto::merkle::mmr::MmrProof;
 use miden_protocol::note::{
     NoteAttachments,
@@ -78,6 +78,7 @@ use miden_protocol::note::{
     Nullifier,
 };
 use miden_protocol::transaction::ProvenTransaction;
+use miden_protocol::vm::ExecutionProof;
 
 use crate::rpc::domain::storage_map::StorageMapInfo;
 
@@ -162,7 +163,7 @@ pub trait NodeRpcClient: Send + Sync {
     /// Returns the node's chain tip at submission (not the block the transaction is committed in).
     async fn submit_proven_transaction(
         &self,
-        proven_transaction: ProvenTransaction,
+        proven_transaction: &ProvenTransaction,
         sealed_transaction_inputs: SealedTransactionInputs,
     ) -> Result<BlockNumber, RpcError>;
 
@@ -179,8 +180,8 @@ pub trait NodeRpcClient: Send + Sync {
     /// Returns the node's chain tip at submission (not the block the batch is committed in).
     async fn submit_proven_batch(
         &self,
-        proven_batch: ProvenBatch,
-        proposed_batch: ProposedBatch,
+        proven_batch: &ProvenBatch,
+        proposed_batch: &ProposedBatch,
         transaction_inputs: Vec<SealedTransactionInputs>,
     ) -> Result<BlockNumber, RpcError>;
 
@@ -202,7 +203,9 @@ pub trait NodeRpcClient: Send + Sync {
     /// Given a block number, fetches the block corresponding to that height from the node using the
     /// `/GetBlockByNumber` RPC endpoint.
     ///
-    /// If `include_proof` is set to true, the block proof will be included in the response.
+    /// The node returns the block and its proof in separate fields, so the proof is returned
+    /// alongside the signed block. It is [`None`] when `include_proof` is false, and also when the
+    /// node has not proven the block yet.
     ///
     /// The returned block is not verified against the requested `block_num`; [`VerifyingRpcClient`]
     /// performs that check.
@@ -210,7 +213,7 @@ pub trait NodeRpcClient: Send + Sync {
         &self,
         block_num: BlockNumber,
         include_proof: bool,
-    ) -> Result<ProvenBlock, RpcError>;
+    ) -> Result<(SignedBlock, Option<ExecutionProof>), RpcError>;
 
     /// Fetches note-related data for a list of [`NoteId`] using the `/GetNotesById` RPC endpoint.
     ///

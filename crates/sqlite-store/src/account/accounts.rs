@@ -443,18 +443,21 @@ impl SqliteStore {
             StorageUpdate::Patch(patch.storage().clone()),
             VaultUpdate::Patch(patch.vault().clone()),
         );
-        Self::apply_account_update(tx, smt_forest, init_account_state, &update)
+        Self::apply_account_update(tx, smt_forest, init_account_state, &update, None)
     }
 
     /// Applies a public account update to the account state, replacing or patching the vault and
     /// the storage according to each part's variant.
     ///
     /// Archives old values from latest to historical and updates latest via INSERT OR REPLACE.
+    /// `new_seed` is stored on the new latest header row. It is only `Some` while the new state is
+    /// still undeployed.
     fn apply_account_update(
         tx: &Transaction<'_>,
         smt_forest: &mut ScopedAccountForest<'_, '_>,
         init_account_state: &AccountHeader,
         update: &AccountStateUpdate,
+        new_seed: Option<Word>,
     ) -> Result<(), StoreError> {
         let final_account_state = update.new_header();
         let account_id = final_account_state.id();
@@ -475,7 +478,7 @@ impl SqliteStore {
         }
 
         // Archive old header and insert the new one
-        Self::replace_account_header(tx, final_account_state, init_account_state)?;
+        Self::replace_account_header(tx, final_account_state, init_account_state, new_seed)?;
 
         // Build one forest update covering the vault and the map slots, and apply it at a freshly
         // allocated revision.
@@ -895,12 +898,14 @@ impl SqliteStore {
             )));
         }
 
+        // A state that is still undeployed keeps its seed.
+        let new_seed = new_account_state.seed().filter(|_| new_account_state.is_new());
         let update = AccountStateUpdate::new(
             new_account_state.into(),
             StorageUpdate::Full(new_account_state.storage().clone()),
             VaultUpdate::Full(new_account_state.vault().assets().collect()),
         );
-        Self::apply_account_update(tx, smt_forest, &old_header, &update)
+        Self::apply_account_update(tx, smt_forest, &old_header, &update, new_seed)
     }
 
     /// Applies a public account update received during sync.
@@ -924,7 +929,7 @@ impl SqliteStore {
             )));
         }
 
-        Self::apply_account_update(tx, smt_forest, &init_header, update)
+        Self::apply_account_update(tx, smt_forest, &init_header, update, None)
     }
 
     /// Locks the account if the mismatched digest doesn't belong to a previous account state (stale
@@ -1013,12 +1018,15 @@ impl SqliteStore {
     /// Replaces an account's latest header, archiving the previous one to historical.
     ///
     /// Preserves the `watched` flag from the existing latest row (mode is a per-account property,
-    /// not per-state). The new latest row is written with `account_seed = NULL` and `locked =
-    /// false`; the previous seed and lock state move into the historical row.
+    /// not per-state). The new latest row is written with `account_seed = new_seed` and `locked =
+    /// false`; the previous seed and lock state move into the historical row. `new_seed` is only
+    /// `Some` while the new state is still undeployed (nonce zero), since a deployed account no
+    /// longer needs its seed.
     fn replace_account_header(
         tx: &Transaction<'_>,
         new_header: &AccountHeader,
         old_header: &AccountHeader,
+        new_seed: Option<Word>,
     ) -> Result<(), StoreError> {
         if new_header.id() != old_header.id() {
             return Err(StoreError::DatabaseError(format!(
@@ -1091,7 +1099,7 @@ impl SqliteStore {
         .into_store_error()?;
 
         // Write the new latest row.
-        Self::insert_new_account_header(tx, new_header, None, old_watched)
+        Self::insert_new_account_header(tx, new_header, new_seed, old_watched)
     }
 
     /// Prunes historical account states for a single account up to the given nonce.

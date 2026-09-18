@@ -185,7 +185,7 @@ pub(crate) fn query_vault_assets(
             let (asset_id_bytes, asset_bytes): (Vec<u8>, Vec<u8>) = result.into_store_error()?;
             let asset_id = AssetId::read_from_bytes(&asset_id_bytes)?;
             let value_word = Word::read_from_bytes(&asset_bytes)?;
-            Ok(Asset::from_id_and_value(asset_id, value_word)?)
+            Ok(Asset::from_id_and_value_words(asset_id.into(), value_word)?)
         })
         .collect::<Result<Vec<Asset>, StoreError>>()
 }

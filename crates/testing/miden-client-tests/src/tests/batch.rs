@@ -9,9 +9,14 @@ use miden_client::auth::{AuthSchemeId, AuthSecretKey, AuthSingleSig};
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::{FilesystemKeyStore, Keystore};
 use miden_client::note::{NoteType, NoteUpdateTracker};
-use miden_client::rpc::NodeRpcClient;
+use miden_client::rpc::{GrpcError, NodeRpcClient, RpcEndpoint, RpcError};
 use miden_client::store::{StoreError, TransactionFilter};
-use miden_client::testing::common::{MINT_AMOUNT, TRANSFER_AMOUNT, create_test_store_path};
+use miden_client::testing::common::{
+    MINT_AMOUNT,
+    TRANSFER_AMOUNT,
+    TestClient,
+    create_test_store_path,
+};
 use miden_client::testing::mock::MockRpcApi;
 use miden_client::transaction::{
     BatchBuilderError,
@@ -25,6 +30,7 @@ use miden_protocol::account::{
     AccountBuilder,
     AccountComponent,
     AccountComponentMetadata,
+    AccountId,
     StorageMap,
     StorageMapKey,
     StorageSlot,
@@ -41,23 +47,14 @@ use crate::tests::{create_test_client, seed_mock_transaction_encryption_key};
 
 /// Exercises the mock `submit_proven_batch` path end-to-end: build a real `ProvenBatch` from a
 /// proven transaction produced against a `MockChain`, submit it via `MockRpcApi`, and verify the
-/// returned block number equals the chain tip. The mock ignores `proposed_batch` and
-/// `transaction_inputs`, so we pass a cloned `ProposedBatch` and an empty inputs vector — good
-/// enough to exercise the trait wiring.
+/// returned block number equals the chain tip. The mock does not read `proposed_batch` and only
+/// records `transaction_inputs`, so an empty inputs vector is good enough to exercise the trait
+/// wiring.
 #[tokio::test]
 async fn submit_proven_batch_returns_chain_tip() {
     let (_client, rpc_api) = Box::pin(create_test_client()).await;
 
-    // Pick the first account recorded in the prebuilt mock chain.
-    let account_id = rpc_api
-        .mock_chain
-        .read()
-        .proven_blocks()
-        .iter()
-        .flat_map(|block| block.body().updated_accounts())
-        .next()
-        .unwrap()
-        .account_id();
+    let account_id = rpc_api.first_account_id();
 
     // Execute and prove a trivial transaction against that account.
     let tx_context = rpc_api
@@ -81,9 +78,10 @@ async fn submit_proven_batch_returns_chain_tip() {
     };
 
     let expected_tip = rpc_api.get_chain_tip_block_num();
-    let returned = Box::pin(rpc_api.submit_proven_batch(proven_batch, proposed_for_submit, vec![]))
-        .await
-        .unwrap();
+    let returned =
+        Box::pin(rpc_api.submit_proven_batch(&proven_batch, &proposed_for_submit, vec![]))
+            .await
+            .unwrap();
 
     assert_eq!(returned, expected_tip);
 }
@@ -95,24 +93,7 @@ async fn submit_proven_batch_returns_chain_tip() {
 async fn batch_builder_submits_two_txs_on_one_account() {
     let (mut client, rpc_api) = Box::pin(create_test_client()).await;
 
-    // Pick the first tracked account in the mock chain (same pattern as the existing test above).
-    let account_id = rpc_api
-        .mock_chain
-        .read()
-        .proven_blocks()
-        .iter()
-        .flat_map(|block| block.body().updated_accounts())
-        .next()
-        .unwrap()
-        .account_id();
-
-    // Retrieve the committed account state from the mock chain and register it with the client
-    // store so that `new_transaction_batch` can find it.
-    let account = rpc_api.mock_chain.read().committed_account(account_id).unwrap().clone();
-    client.add_account(&account, false).await.unwrap();
-
-    // Sync so the client's store reflects the on-chain state.
-    client.sync_state().await.unwrap();
+    let account_id = register_mock_chain_account(&mut client, &rpc_api).await;
 
     // Build two minimal no-op TransactionRequests for the same account. The mock account uses
     // IncrNonce auth which requires no signing key — a bare
@@ -299,7 +280,7 @@ async fn batch_builder_push_succeeds_when_balance_depends_on_prior_push() {
     let push2 = TransactionRequestBuilder::new()
         .build_pay_to_id(
             PaymentNoteDescription::new(
-                vec![Asset::Fungible(oversend)],
+                vec![Asset::from(oversend)],
                 from_account_id,
                 to_account_id,
             ),
@@ -484,7 +465,7 @@ async fn batch_builder_serves_witnesses_for_state_untouched_by_prior_push() {
     let held_asset = FungibleAsset::new(held_faucet_id, TRANSFER_AMOUNT).unwrap();
     let push2 = TransactionRequestBuilder::new()
         .build_pay_to_id(
-            PaymentNoteDescription::new(vec![Asset::Fungible(held_asset)], from_id, to_id),
+            PaymentNoteDescription::new(vec![Asset::from(held_asset)], from_id, to_id),
             NoteType::Private,
             client.rng(),
         )
@@ -511,18 +492,7 @@ async fn batch_builder_serves_witnesses_for_state_untouched_by_prior_push() {
 /// Verify that submitting an empty batch (no pushes) returns `BatchBuilderError::Empty`.
 #[tokio::test]
 async fn batch_builder_empty_submit_returns_empty_error() {
-    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
-
-    // Pick the first tracked account in the mock chain.
-    let _account_id = rpc_api
-        .mock_chain
-        .read()
-        .proven_blocks()
-        .iter()
-        .flat_map(|block| block.body().updated_accounts())
-        .next()
-        .unwrap()
-        .account_id();
+    let (mut client, _rpc_api) = Box::pin(create_test_client()).await;
 
     let batch = client.new_transaction_batch();
     assert_eq!(batch.len(), 0);
@@ -669,17 +639,9 @@ async fn batch_builder_submits_txs_across_multiple_accounts() {
 async fn batch_builder_push_for_unknown_account_returns_error() {
     let (mut client, rpc_api) = Box::pin(create_test_client()).await;
 
-    // Pick an account that EXISTS on the mock chain but is NOT registered with the client store (we
+    // An account that EXISTS on the mock chain but is NOT registered with the client store (we
     // never call `client.add_account` for it).
-    let account_id = rpc_api
-        .mock_chain
-        .read()
-        .proven_blocks()
-        .iter()
-        .flat_map(|block| block.body().updated_accounts())
-        .next()
-        .unwrap()
-        .account_id();
+    let account_id = rpc_api.first_account_id();
 
     // Build a no-op request; we never get to submission — the push itself must fail.
     let req = TransactionRequestBuilder::new().build().unwrap();
@@ -732,7 +694,7 @@ async fn batch_builder_cross_account_note_flow() {
     let asset = FungibleAsset::new(faucet_account_id, MINT_AMOUNT).unwrap();
     let req_send = TransactionRequestBuilder::new()
         .build_pay_to_id(
-            PaymentNoteDescription::new(vec![Asset::Fungible(asset)], account_id_a, account_id_b),
+            PaymentNoteDescription::new(vec![Asset::from(asset)], account_id_a, account_id_b),
             NoteType::Private,
             client.rng(),
         )
@@ -783,6 +745,143 @@ async fn batch_builder_cross_account_note_flow() {
         b_balance,
         AssetAmount::new(2 * MINT_AMOUNT).unwrap(),
         "B should hold its prior MINT_AMOUNT + A's transfer"
+    );
+}
+
+/// Registers the mock chain's first account with `client`, syncing so the store reflects the
+/// on-chain state, and returns its id so a batch can be pushed against it. The account uses
+/// `IncrNonce` auth, so no signing key is needed.
+async fn register_mock_chain_account(client: &mut TestClient, rpc_api: &MockRpcApi) -> AccountId {
+    let account_id = rpc_api.first_account_id();
+
+    let account = rpc_api.mock_chain.read().committed_account(account_id).unwrap().clone();
+    client.add_account(&account, false).await.unwrap();
+    client.sync_state().await.unwrap();
+
+    account_id
+}
+
+/// A batch submission that comes back without a definite outcome must hand the caller a payload
+/// that submits again as-is, with nothing recorded locally in between.
+#[tokio::test]
+async fn indeterminate_batch_submission_is_retryable_with_the_attached_payload() {
+    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
+    let account_id = register_mock_chain_account(&mut client, &rpc_api).await;
+
+    // The connection breaks while the response is in flight, so the node may or may not have taken
+    // the batch.
+    rpc_api.fail_next_call(
+        RpcEndpoint::SubmitProvenBatch,
+        RpcError::RequestError {
+            endpoint: RpcEndpoint::SubmitProvenBatch,
+            error_kind: GrpcError::Unknown("transport error".into()),
+            endpoint_error: None,
+            source: None,
+        },
+    );
+
+    let err = Box::pin(async {
+        let mut batch = client.new_transaction_batch();
+        batch
+            .push(account_id, TransactionRequestBuilder::new().build().unwrap())
+            .await?;
+        batch
+            .push(account_id, TransactionRequestBuilder::new().build().unwrap())
+            .await?;
+        batch.submit().await
+    })
+    .await
+    .unwrap_err();
+
+    let ClientError::BatchBuilder(BatchBuilderError::BatchSubmissionOutcomeUnknown {
+        submission,
+        ..
+    }) = err
+    else {
+        panic!("expected BatchSubmissionOutcomeUnknown, got: {err:?}");
+    };
+
+    // The payload describes the whole batch, not just one of its transactions.
+    assert_eq!(submission.transaction_count(), 2);
+    let ids: BTreeSet<_> = submission.transaction_ids().collect();
+    assert_eq!(ids.len(), 2, "the payload must expose one distinct id per transaction");
+
+    // Nothing was recorded, so the payload is all the caller has left to work with.
+    assert!(client.get_transactions(TransactionFilter::All).await.unwrap().is_empty());
+
+    Box::pin(client.retry_proven_batch(&submission))
+        .await
+        .expect("the attached payload must be enough to submit again");
+
+    // A retry the node accepted records the batch, so the ids the payload handed over are the ones
+    // now in the store. Nothing else can write them: they have no record until this point.
+    let recorded: BTreeSet<_> = client
+        .get_transactions(TransactionFilter::All)
+        .await
+        .unwrap()
+        .iter()
+        .map(|tx| tx.id)
+        .collect();
+    assert_eq!(recorded, ids, "the retry must record exactly the payload's transactions");
+
+    // The retry seals again rather than resending the ciphertext the first attempt sent, which is
+    // what lets it survive a rotation of the validator set's encryption key.
+    // `seal_transaction_inputs` draws a fresh ephemeral key per call, so the same inputs seal to
+    // different bytes.
+    let attempts = rpc_api.submitted_batch_sealed_inputs();
+    assert_eq!(attempts.len(), 2, "the mock must have seen the lost attempt and the retry");
+    assert_eq!(attempts[0].len(), 2, "one sealed entry per transaction in the batch");
+    assert_eq!(attempts[1].len(), attempts[0].len());
+    for (lost, retry) in attempts[0].iter().zip(attempts[1].iter()) {
+        assert_eq!(lost.key_id(), retry.key_id(), "both attempts seal against the same key");
+        assert_ne!(
+            lost.ciphertext(),
+            retry.ciphertext(),
+            "the retry must seal again instead of reusing the first attempt's ciphertext"
+        );
+    }
+}
+
+/// A deliberate rejection stays a plain `ClientError::RpcError` instead of promoting to
+/// `BatchSubmissionOutcomeUnknown`. `FailedPrecondition` also evicts the cached encryption key.
+#[tokio::test]
+async fn deliberately_rejected_batch_submission_stays_an_rpc_error() {
+    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
+    let account_id = register_mock_chain_account(&mut client, &rpc_api).await;
+
+    rpc_api.fail_next_call(
+        RpcEndpoint::SubmitProvenBatch,
+        RpcError::RequestError {
+            endpoint: RpcEndpoint::SubmitProvenBatch,
+            error_kind: GrpcError::FailedPrecondition,
+            endpoint_error: None,
+            source: None,
+        },
+    );
+
+    let err = Box::pin(async {
+        let mut batch = client.new_transaction_batch();
+        batch
+            .push(account_id, TransactionRequestBuilder::new().build().unwrap())
+            .await?;
+        batch.submit().await
+    })
+    .await
+    .unwrap_err();
+
+    match err {
+        ClientError::RpcError(RpcError::RequestError {
+            error_kind: GrpcError::FailedPrecondition,
+            ..
+        }) => {},
+        other => panic!("expected ClientError::RpcError(FailedPrecondition), got: {other:?}"),
+    }
+
+    // A `FailedPrecondition` from a submit endpoint evicts the cached encryption key
+    // unconditionally; this test pins that.
+    assert!(
+        client.test_store().get_transaction_encryption_key().await.unwrap().is_none(),
+        "a rejected submission must evict the stale encryption key"
     );
 }
 

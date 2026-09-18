@@ -555,6 +555,8 @@ Usage: `miden-client call <ACCOUNT_ID>:<PROCEDURE> [ARGS]... [--package <PACKAGE
 | ----------------------------- | ------------------------------------------------------------- | ------- |
 | `--package <PACKAGE>`         | The `.masp` package that exports the procedure, as a path or a name resolved in the packages directory. Optional. | `-p`    |
 | `--inputs-path <INPUTS_PATH>` | Path to a TOML file with advice map entries.                  | `-i`    |
+| `--trace`                     | Print the hierarchy of procedure calls the execution made. Needs a build with the `trace` feature. |         |
+| `--verbose`                   | With `--trace`, widen what is shown: `-v` adds library functions, `-vv` shows every frame. | `-v`    |
 
 The target is a single argument of the form `<ACCOUNT_ID>:<PROCEDURE>`. For an account tracked by the client, the ID may be given as a partial ID; an account that isn't tracked has to be named by its full hex ID or its bech32 address, since a prefix is resolved against the local store. The procedure name is matched against the package's exports with `_` and `-` treated as equivalent, so it can be written in either snake_case or kebab-case (`get_count` matches the export `get-count`).
 
@@ -618,6 +620,31 @@ A procedure that only reads leaves the transaction with no effects at all, which
 :::note
 The call is executed locally. No proof is generated, nothing is submitted to the network, and the account's stored state is left unchanged.
 :::
+
+##### Tracing the calls a procedure makes
+
+`--trace` prints, under the result, the procedures the call went through, nested the way they called each other, with each call's arguments, its return value and the cycles it took:
+
+```sh
+miden-client call 0x4614b8bf575eab71455e97bd394e90:apply-op 1 5 --package target/miden/dev/counter-contract.masp --trace
+```
+
+```sh
+Result: 6
+
+Replay: 4213 cycles
+
+Call trace:
+  apply_op(op=1, amount=5) -> 6  1187 cycles
+    compute_update(op=1, amount=5) -> 6  412 cycles
+    commit_update(value=6) -> 6  301 cycles
+
+17 frame(s) hidden; show library functions with -v, everything with -vv.
+```
+
+By default only the contract's own procedures are shown; every other frame is counted and hidden, and the frames it called are printed in its place so the nesting between the shown ones is kept. `-v` also shows library functions (the Rust SDK and other crates the package pulls in), and `-vv` shows every frame, including hand-written MASM intrinsics and frames that could not be named. A call that fails is traced up to the failure: the frames that were still running are marked `did not return`, and the innermost one, where execution stopped, is marked `stopped here`.
+
+Names and arguments come from the debug information in the package given with `--package`.
 
 ##### Calling an account that isn't tracked locally
 

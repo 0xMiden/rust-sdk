@@ -17,8 +17,10 @@ name = "miden-client"
 path = "src/main.rs"
 
 [features]
+dap     = ["dep:miden-debug", "miden-client/dap"]
 default = []
 testing = ["miden-client/testing"]
+trace   = ["dep:rustc-demangle", "miden-client/trace"]
 
 [dependencies]
 # Workspace dependencies
@@ -30,8 +32,10 @@ clap               = { features = ["derive"], workspace = true }
 comfy-table        = { workspace = true }
 dirs               = { version = "6.0" }
 figment            = { features = ["env", "toml"], version = "0.10" }
+miden-debug        = { optional = true, workspace = true }
 miette             = { workspace = true }
 rand               = { workspace = true }
+rustc-demangle     = { optional = true, version = "0.1" }
 serde              = { workspace = true }
 thiserror          = { workspace = true }
 tokio              = { workspace = true }

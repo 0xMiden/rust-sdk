@@ -707,6 +707,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
+name = "castaway"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dec551ab6e7578819132c713a93c022a05d60159dc86e7a7050223577484c55a"
+dependencies = [
+ "rustversion",
+]
+
+[[package]]
 name = "cc"
 version = "1.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -843,6 +852,20 @@ dependencies = [
  "crossterm",
  "unicode-segmentation",
  "unicode-width 0.2.2",
+]
+
+[[package]]
+name = "compact_str"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9dfdd1c2274d9aa354115b09dc9a901d6c5576818cdf70d14cae2bdb47df00ab"
+dependencies = [
+ "castaway",
+ "cfg-if",
+ "itoa",
+ "rustversion",
+ "ryu",
+ "static_assertions",
 ]
 
 [[package]]
@@ -2192,6 +2215,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "inventory"
+version = "0.3.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4f0c30c76f2f4ccee3fe55a2435f691ca00c0e4bd87abe4f4a851b1d4dac39b"
+dependencies = [
+ "rustversion",
+]
+
+[[package]]
 name = "is_ci"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2664,6 +2696,8 @@ dependencies = [
  "gloo-timers",
  "miden-agglayer",
  "miden-assembly-syntax",
+ "miden-debug",
+ "miden-debug-engine",
  "miden-node-proto-build",
  "miden-note-transport-proto-build",
  "miden-objects",
@@ -2722,12 +2756,14 @@ dependencies = [
  "miden-client",
  "miden-client-integration-tests",
  "miden-client-sqlite-store",
+ "miden-debug",
  "miden-mast-package",
  "midenc-hir-type",
  "miette",
  "predicates",
  "rand 0.10.2",
  "regex",
+ "rustc-demangle",
  "serde",
  "serial_test",
  "thiserror",
@@ -2787,6 +2823,7 @@ dependencies = [
  "anyhow",
  "miden-client",
  "miden-client-sqlite-store",
+ "miden-debug",
  "miden-protocol",
  "miden-standards",
  "miden-testing",
@@ -2907,6 +2944,65 @@ checksum = "1d543d0ec3e2206bf8e332a2957f04e9c33145dd445d7e3ddee3135d8d9573dd"
 dependencies = [
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "miden-debug"
+version = "0.15.0"
+dependencies = [
+ "clap",
+ "compact_str",
+ "env_logger",
+ "futures-executor",
+ "log",
+ "miden-assembly",
+ "miden-assembly-syntax",
+ "miden-core",
+ "miden-debug-engine",
+ "miden-debug-types",
+ "miden-mast-package",
+ "miden-package-registry",
+ "miden-processor",
+ "miden-project",
+ "thiserror",
+]
+
+[[package]]
+name = "miden-debug-dap"
+version = "0.15.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "miden-debug-engine"
+version = "0.15.0"
+dependencies = [
+ "clap",
+ "hashbrown 0.17.1",
+ "inventory",
+ "log",
+ "miden-assembly-syntax",
+ "miden-core",
+ "miden-debug-dap",
+ "miden-debug-types",
+ "miden-mast-package",
+ "miden-package-registry",
+ "miden-processor",
+ "miden-utils-sync",
+ "num-traits",
+ "regex",
+ "regex-syntax",
+ "rustc-demangle",
+ "rustc-hash",
+ "serde",
+ "serde_json",
+ "smallvec",
+ "socket2",
+ "thiserror",
+ "toml 1.1.6+spec-1.1.0",
 ]
 
 [[package]]
@@ -4868,6 +4964,12 @@ name = "rustversion"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
+
+[[package]]
+name = "ryu"
+version = "1.0.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
 name = "same-file"

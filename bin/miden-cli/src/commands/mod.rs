@@ -1,6 +1,8 @@
 pub mod account;
 pub mod address;
 pub mod call;
+#[cfg(feature = "trace")]
+pub mod call_trace;
 pub mod clear_config;
 pub mod exec;
 pub mod export;
@@ -16,10 +18,10 @@ pub mod sync;
 pub mod tags;
 pub mod transactions;
 
-#[cfg(any())]
+#[cfg(feature = "dap")]
 use crate::errors::CliError;
 
-#[cfg(any())]
+#[cfg(feature = "dap")]
 fn report_replay_snapshot_write(
     recorder: &miden_debug::ReplaySnapshotRecorder,
     requested_path: &std::path::Path,

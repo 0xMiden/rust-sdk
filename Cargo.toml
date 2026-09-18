@@ -56,6 +56,8 @@ miden-note-transport-proto-build = { default-features = false, version = "0.5.0-
 
 # Miden debug dependency
 miden-assembly-syntax = { default-features = false, version = "0.33" }
+miden-debug           = { default-features = false, features = ["dap", "std"], version = "0.15" }
+miden-debug-engine    = { default-features = false, features = ["std"], version = "0.15" }
 miden-mast-package    = { default-features = false, version = "0.33" }
 miden-processor       = { default-features = false, version = "0.33" }
 
@@ -97,3 +99,9 @@ module_name_repetitions     = "allow" # Many triggers, and is a stylistic choice
 must_use_candidate          = "allow" # This marks many fn's which isn't helpful.
 should_panic_without_expect = "allow" # We don't care about the specific panic message.
 # End of pedantic lints.
+
+# The call-trace support in the debug engine is not published yet; point at the local checkout
+# until it is, then drop this entry so the caret requirement above picks it up from crates.io.
+[patch.crates-io]
+miden-debug        = { path = "../miden-debug" }
+miden-debug-engine = { path = "../miden-debug/crates/engine" }

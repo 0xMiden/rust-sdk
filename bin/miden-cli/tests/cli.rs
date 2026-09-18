@@ -2330,6 +2330,42 @@ fn call_shows_nonce_delta() {
     );
 }
 
+/// `--trace` prints the trace after the result. The MASM test package has no frame markers, so the
+/// tree is empty and only the replay is checked.
+#[cfg(feature = "trace")]
+#[test]
+fn call_trace_prints_call_trace() {
+    let (temp_dir, account_id, masp_path) = setup_call_test_account();
+
+    let mut cmd = cargo_bin_cmd!("miden-client");
+    cmd.args([
+        "call",
+        &format!("{account_id}:add"),
+        "1",
+        "2",
+        "--package",
+        masp_path.to_str().unwrap(),
+        "--trace",
+    ]);
+
+    let output = cmd.current_dir(&temp_dir).output().unwrap();
+    assert!(
+        output.status.success(),
+        "Call failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output_line(&stdout, "Result:"), "Result: 3felt");
+    let result = stdout.find("Result:").expect("expected the result in output");
+    let trace = stdout.find("Call trace:").expect("expected the call trace in output");
+    assert!(result < trace, "the trace should be printed after the result:\n{stdout}");
+    assert!(
+        !stdout.contains("Warning: the replay"),
+        "the replay should not stop with an error:\n{stdout}"
+    );
+}
+
 /// Tests calling `set_value` and verifying storage delta is shown.
 #[test]
 fn call_set_value_shows_storage_delta() {

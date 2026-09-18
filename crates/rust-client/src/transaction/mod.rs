@@ -84,6 +84,8 @@ use miden_protocol::note::{
 use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::transaction::{AccountInputs, PartialBlockchain};
 use miden_protocol::vm::MIN_STACK_DEPTH;
+#[cfg(feature = "trace")]
+use miden_protocol::vm::Package;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::auth::FeeConversionInfo;
 use miden_standards::account::faucets::FungibleFaucet;
@@ -125,9 +127,13 @@ pub use batch::{BatchBuilder, BatchBuilderError};
 mod chain_anchor;
 pub use chain_anchor::{ChainAnchor, ChainAnchorError};
 
-#[cfg(any())]
+#[cfg(feature = "dap")]
 mod dap_executor;
+#[cfg(any(feature = "dap", feature = "trace"))]
+mod package;
 mod prover;
+#[cfg(feature = "trace")]
+pub mod trace;
 pub use prover::TransactionProver;
 
 mod record;
@@ -511,7 +517,7 @@ where
     ///
     /// This applies the same request preparation and output-recipient validation as
     /// [`Self::execute_transaction`], and returns the corresponding [`ClientError`] on failure.
-    #[cfg(any())]
+    #[cfg(feature = "dap")]
     pub async fn execute_transaction_with_dap(
         &self,
         account_id: AccountId,
@@ -574,7 +580,7 @@ where
                     .execute_transaction(account_id, prep.block_num, notes, prep.tx_args)
                     .await?
             },
-            #[cfg(any())]
+            #[cfg(feature = "dap")]
             TransactionExecutionMode::Dap => {
                 self.build_dap_executor(&data_store)?
                     .execute_transaction(account_id, prep.block_num, notes, prep.tx_args)
@@ -984,7 +990,7 @@ where
 
     /// Executes the provided transaction script with a DAP debug adapter listening for connections,
     /// allowing interactive debugging via any DAP-compatible client.
-    #[cfg(any())]
+    #[cfg(feature = "dap")]
     pub async fn execute_program_with_dap(
         &self,
         account_id: AccountId,
@@ -999,6 +1005,44 @@ where
             .build_dap_executor(&data_store)?
             .execute_tx_view_script(account_id, block_ref, tx_script, advice_inputs)
             .await?)
+    }
+
+    /// Runs the transaction script, records it, and replays it in the debug engine for the call
+    /// tree.
+    ///
+    /// A failed run keeps the trace up to the failure. The replay is `None` if the program never
+    /// ran. Without `package` the frames have no names, since account code from the store has no
+    /// debug info.
+    #[cfg(feature = "trace")]
+    pub async fn execute_program_with_trace(
+        &self,
+        account_id: AccountId,
+        tx_script: TransactionScript,
+        advice_inputs: AdviceInputs,
+        foreign_accounts: BTreeMap<AccountId, ForeignAccount>,
+        package: Option<&Package>,
+    ) -> (Result<[Felt; MIN_STACK_DEPTH], ClientError>, Option<trace::CallTraceReplay>) {
+        // Drop a recording left by an earlier run.
+        drop(trace::take_recording());
+
+        let outcome = async {
+            let (data_store, block_ref) =
+                self.prepare_program_execution(account_id, foreign_accounts).await?;
+
+            // Same procedure roots as the account code, so this forest with debug info wins.
+            if let Some(package) = package {
+                data_store.mast_store().insert_package(package);
+            }
+
+            Ok(self
+                .build_executor(&data_store)?
+                .with_program_executor::<trace::TraceProgramExecutor>()
+                .execute_tx_view_script(account_id, block_ref, tx_script, advice_inputs)
+                .await?)
+        }
+        .await;
+
+        (outcome, trace::take_recording().map(trace::replay_call_trace))
     }
 
     // HELPERS
@@ -1292,7 +1336,7 @@ where
     }
 
     /// Creates a transaction executor configured for DAP (Debug Adapter Protocol) debugging.
-    #[cfg(any())]
+    #[cfg(feature = "dap")]
     pub(crate) fn build_dap_executor<'store, 'auth, STORE: DataStore + Sync>(
         &'auth self,
         data_store: &'store STORE,
@@ -1457,7 +1501,7 @@ pub enum TransactionStoreUpdateError {
 #[derive(Clone, Copy, Debug)]
 enum TransactionExecutionMode {
     Standard,
-    #[cfg(any())]
+    #[cfg(feature = "dap")]
     Dap,
 }
 

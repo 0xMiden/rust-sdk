@@ -13,7 +13,10 @@ ifneq ($(BUILD_TARGET),)
 TARGET_FLAG = --target $(BUILD_TARGET)
 endif
 
-FEATURES_CLIENT=--features "std"
+FEATURES_CLIENT=--features "std dap trace"
+# The debugger features are off by default, so the lints must ask for them. Without this the DAP
+# and call trace code is never checked.
+FEATURES_LINT=--features "testing std dap trace"
 WARNINGS=RUSTDOCFLAGS="-D warnings"
 
 TEST_MIDEN_NOTE_TRANSPORT_URL?=http://127.0.0.1:57292
@@ -40,11 +43,11 @@ STORE_BENCH_ARGS?=--notes 1000,10000 --accounts 100,1000 --iterations 5
 
 .PHONY: clippy
 clippy: ## Run Clippy with configs
-	cargo clippy --workspace --features "testing std" --all-targets -- -D warnings
+	cargo clippy --workspace $(FEATURES_LINT) --all-targets -- -D warnings
 
 .PHONY: fix
 fix: ## Run Fix with configs
-	cargo fix --workspace --features "testing std" --all-targets --allow-staged --allow-dirty
+	cargo fix --workspace $(FEATURES_LINT) --all-targets --allow-staged --allow-dirty
 
 .PHONY: format
 format: ## Run format using nightly toolchain, then reflow comments

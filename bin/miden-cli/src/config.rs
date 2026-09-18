@@ -7,8 +7,10 @@ use std::time::Duration;
 use figment::providers::{Format, Toml};
 use figment::value::{Dict, Map};
 use figment::{Figment, Metadata, Profile, Provider};
+use miden_client::address::NetworkId;
 use miden_client::note_transport::{
     NOTE_TRANSPORT_DEVNET_ENDPOINT,
+    NOTE_TRANSPORT_MAINNET_ENDPOINT,
     NOTE_TRANSPORT_TESTNET_ENDPOINT,
 };
 use miden_client::rpc::Endpoint;
@@ -153,6 +155,17 @@ impl CliConfig {
     /// (when local config is not available).
     pub fn is_global(&self) -> bool {
         matches!(&self.config_dir, Some(ConfigDir { kind: ConfigKind::Global, .. }))
+    }
+
+    /// Returns the network ID the CLI uses to encode and validate bech32 addresses.
+    ///
+    /// This is the `rpc.network_id` setting when it is set. Otherwise the network ID is derived
+    /// from the RPC endpoint, see [`Endpoint::to_network_id`].
+    pub fn network_id(&self) -> Result<NetworkId, CliError> {
+        match &self.rpc.network_id {
+            Some(hrp) => Ok(NetworkId::new(hrp)?),
+            None => Ok(self.rpc.endpoint.0.to_network_id()),
+        }
     }
 
     /// Loads configuration from a specific `.miden` directory.
@@ -410,6 +423,11 @@ pub struct RpcConfig {
     pub endpoint: CliEndpoint,
     /// Timeout for the RPC api requests, in milliseconds.
     pub timeout_ms: u64,
+    /// Bech32 human-readable part of the network the node serves, such as `mm`. When set, it
+    /// replaces the network ID derived from `endpoint`, which is `mcst` for an endpoint that is not
+    /// one of the built-in networks.
+    #[serde(default)]
+    pub network_id: Option<String>,
 }
 
 impl Default for RpcConfig {
@@ -417,6 +435,7 @@ impl Default for RpcConfig {
         Self {
             endpoint: Endpoint::testnet().into(),
             timeout_ms: 10000,
+            network_id: None,
         }
     }
 }
@@ -443,6 +462,14 @@ impl Default for NoteTransportConfig {
 }
 
 impl NoteTransportConfig {
+    /// Returns a `NoteTransportConfig` for the mainnet network.
+    pub fn mainnet() -> Self {
+        Self {
+            endpoint: NOTE_TRANSPORT_MAINNET_ENDPOINT.to_string(),
+            timeout_ms: 10000,
+        }
+    }
+
     /// Returns a `NoteTransportConfig` for the devnet network.
     pub fn devnet() -> Self {
         Self {
@@ -530,6 +557,7 @@ pub enum Network {
     Custom(String),
     Devnet,
     Localhost,
+    Mainnet,
     Testnet,
 }
 
@@ -540,6 +568,7 @@ impl FromStr for Network {
         match s.to_lowercase().as_str() {
             "devnet" => Ok(Network::Devnet),
             "localhost" => Ok(Network::Localhost),
+            "mainnet" => Ok(Network::Mainnet),
             "testnet" => Ok(Network::Testnet),
             custom => Ok(Network::Custom(custom.to_string())),
         }
@@ -554,6 +583,7 @@ impl Network {
             Network::Custom(custom) => custom.clone(),
             Network::Devnet => Endpoint::devnet().to_string(),
             Network::Localhost => Endpoint::default().to_string(),
+            Network::Mainnet => Endpoint::mainnet().to_string(),
             Network::Testnet => Endpoint::testnet().to_string(),
         }
     }

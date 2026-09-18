@@ -17,14 +17,17 @@ use miden_client::account::component::{
     WordSchema,
 };
 use miden_client::account::{AccountFile, AccountId, AccountType, FaucetMetadata, StorageSlotName};
-use miden_client::address::{Address, NetworkId};
+use miden_client::address::{Address, AddressId, NetworkId};
 use miden_client::assembly::CodeBuilder;
 use miden_client::auth::{AuthSecretKey, PublicKey, TransactionAuthenticator};
 use miden_client::builder::ClientBuilder;
 use miden_client::crypto::RandomCoin;
 use miden_client::keystore::Keystore;
 use miden_client::note::NoteId;
-use miden_client::note_transport::NOTE_TRANSPORT_TESTNET_ENDPOINT;
+use miden_client::note_transport::{
+    NOTE_TRANSPORT_MAINNET_ENDPOINT,
+    NOTE_TRANSPORT_TESTNET_ENDPOINT,
+};
 use miden_client::rpc::Endpoint;
 use miden_client::testing::account_id::{
     ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET,
@@ -1318,6 +1321,81 @@ async fn init_with_testnet() -> Result<()> {
     config_file.read_to_string(&mut config_file_str).unwrap();
 
     assert!(config_file_str.contains(&Endpoint::testnet().to_string()));
+    Ok(())
+}
+
+/// `init --network mainnet` must resolve the preset by name, so the config carries the mainnet RPC
+/// and note transport endpoints instead of a custom endpoint named `mainnet`.
+#[test]
+fn init_with_mainnet() {
+    let store_path = create_test_store_path();
+    let temp_dir = temp_dir().join(format!("cli-test-{}", rand::rng().random::<u64>()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let mut init_cmd = cargo_bin_cmd!("miden-client");
+    init_cmd.args([
+        "init",
+        "--local",
+        "--network",
+        "mainnet",
+        "--store-path",
+        store_path.to_str().unwrap(),
+    ]);
+    init_cmd.current_dir(&temp_dir).assert().success();
+
+    let config_file_str =
+        fs::read_to_string(temp_dir.join(MIDEN_DIR).join("miden-client.toml")).unwrap();
+    assert!(config_file_str.contains(&Endpoint::mainnet().to_string()));
+    assert!(config_file_str.contains(NOTE_TRANSPORT_MAINNET_ENDPOINT));
+}
+
+/// The `network_id` setting decides the bech32 prefix of the addresses the CLI prints. The endpoint
+/// is a custom one, which maps to `mcst` on its own, and it is never contacted: the wallet is
+/// created and shown from the local store.
+#[test]
+fn account_show_uses_configured_network_id() -> Result<()> {
+    let store_path = create_test_store_path();
+    let temp_dir = temp_dir().join(format!("cli-test-{}", rand::rng().random::<u64>()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let mut init_cmd = cargo_bin_cmd!("miden-client");
+    init_cmd.args([
+        "init",
+        "--local",
+        "--network",
+        "http://127.0.0.1:1",
+        "--network-id",
+        "mm",
+        "--store-path",
+        store_path.to_str().unwrap(),
+    ]);
+    init_cmd.current_dir(&temp_dir).assert().success();
+
+    let config_file_str = fs::read_to_string(temp_dir.join(MIDEN_DIR).join("miden-client.toml"))?;
+    assert!(
+        config_file_str.contains("network_id = \"mm\""),
+        "unexpected config:\n{config_file_str}"
+    );
+
+    let account_id = new_wallet_cli(&temp_dir, AccountType::Private);
+
+    let mut show_cmd = cargo_bin_cmd!("miden-client");
+    show_cmd.args(["account", "--show", &account_id]);
+    let output = show_cmd.current_dir(&temp_dir).output()?;
+    assert!(
+        output.status.success(),
+        "account --show failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8(output.stdout)?;
+    let encoded = stdout
+        .split_whitespace()
+        .find(|word| word.starts_with("mm1"))
+        .unwrap_or_else(|| panic!("no `mm1...` address in `account --show` output:\n{stdout}"));
+    let (network_id, address) = Address::decode(encoded)?;
+    assert_eq!(network_id, NetworkId::Mainnet);
+    assert_eq!(address.id(), AddressId::AccountId(AccountId::from_hex(&account_id)?));
     Ok(())
 }
 

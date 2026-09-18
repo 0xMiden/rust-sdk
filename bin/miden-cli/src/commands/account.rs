@@ -76,7 +76,7 @@ impl AccountCmd {
                 ..
             } => {
                 let account_id = parse_account_id(&client, id).await?;
-                show_account(&client, account_id, &cli_config.rpc).await?;
+                show_account(&client, account_id, &cli_config).await?;
             },
             AccountCmd {
                 list: false,
@@ -187,11 +187,11 @@ async fn list_accounts<AUTH>(client: Client<AUTH>) -> Result<(), CliError> {
 async fn show_account<AUTH>(
     client: &Client<AUTH>,
     account_id: AccountId,
-    rpc_config: &RpcConfig,
+    cli_config: &CliConfig,
 ) -> Result<(), CliError> {
-    let account = load_account(client, account_id, rpc_config).await?;
+    let account = load_account(client, account_id, &cli_config.rpc).await?;
 
-    let network_id = rpc_config.endpoint.0.to_network_id();
+    let network_id = cli_config.network_id()?;
     let token_symbol = faucet_component_from_account(&account)
         .ok()
         .map(|faucet| faucet.symbol().to_string());

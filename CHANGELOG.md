@@ -33,6 +33,9 @@
 
 ### Features
 
+* [FEATURE][rust] Added `Endpoint::mainnet()`, `ClientBuilder::for_mainnet()`, `MAINNET_PROVER_ENDPOINT` and `NOTE_TRANSPORT_MAINNET_ENDPOINT`. The mainnet RPC endpoint maps to `NetworkId::Mainnet`, so addresses derived from it use the `mm` prefix ([#2569](https://github.com/0xMiden/rust-sdk/pull/2569)).
+* [FEATURE][cli] `init --network mainnet` configures the client for the Miden mainnet, including its note transport endpoint ([#2569](https://github.com/0xMiden/rust-sdk/pull/2569)).
+* [FEATURE][cli] Added the optional `network_id` setting under `[rpc]` and the `init --network-id <HRP>` flag. They set the bech32 prefix the CLI renders and accepts for a node that is not one of the built-in endpoints, which otherwise maps to `mcst` ([#2569](https://github.com/0xMiden/rust-sdk/pull/2569)).
 * [FEATURE][cli] Added a `keys` command to list, generate, and import authentication keys, manage their account associations, and calculate a key commitment from a public key ([#2559](https://github.com/0xMiden/rust-sdk/issues/2559)).
 * [FEATURE][cli] `export --account` accepts a `--no-keys` flag, which leaves the account secret keys out of the exported `.mac` file. The file still carries the account seed while the account is undeployed ([#2556](https://github.com/0xMiden/rust-sdk/pull/2556)).
 * [FEATURE][rust] The committed note passed to the `OnNoteReceived` callback now always reports the note's resolved attachment content, whether the `SyncNotes` response carried it verbatim or a `GetNotesById` follow-up resolved it ([#2475](https://github.com/0xMiden/rust-sdk/pull/2475)).

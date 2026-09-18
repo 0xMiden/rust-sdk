@@ -194,6 +194,9 @@ pub struct StateSync {
     /// If true, queries the node for consumption of tracked unspent-note nullifiers each sync and
     /// discards local transactions whose inputs were nullified.
     sync_nullifiers: bool,
+    /// The validator set and quorum that the chain tip block header must be signed by. A sync
+    /// validates every `sync_chain_mmr` response against it.
+    validator_config: ValidatorConfig,
 }
 
 impl StateSync {
@@ -207,10 +210,12 @@ impl StateSync {
     /// * `rpc_api` - The RPC client used to communicate with the node.
     /// * `note_screener` - The note screener used to check the relevance of notes.
     /// * `tx_discard_delta` - Number of blocks after which pending transactions are discarded.
+    /// * `validator_config` - The validator set and quorum the chain tip header must be signed by.
     pub fn new(
         rpc_api: Arc<dyn NodeRpcClient>,
         note_screener: Arc<dyn OnNoteReceived>,
         tx_discard_delta: Option<u32>,
+        validator_config: ValidatorConfig,
     ) -> Self {
         Self {
             rpc_api,
@@ -218,6 +223,7 @@ impl StateSync {
             note_observers: Vec::new(),
             tx_discard_delta,
             sync_nullifiers: true,
+            validator_config,
         }
     }
 
@@ -287,11 +293,10 @@ impl StateSync {
         &self,
         current_partial_mmr: &mut PartialMmr,
         input: StateSyncInput,
-        validator_config: &ValidatorConfig,
     ) -> Result<StateSyncUpdate, ClientError> {
         let block_num = block_num_from_forest(current_partial_mmr)?;
 
-        let mut chain_sync_data = self.fetch_state(block_num, input, validator_config).await?;
+        let mut chain_sync_data = self.fetch_state(block_num, input).await?;
         self.derive_state_updates(&mut chain_sync_data).await?;
         self.fetch_nullifiers(&mut chain_sync_data).await?;
 
@@ -315,7 +320,6 @@ impl StateSync {
         &self,
         block_from: BlockNumber,
         input: StateSyncInput,
-        validator_config: &ValidatorConfig,
     ) -> Result<ChainSyncData, ClientError> {
         let StateSyncInput {
             accounts,
@@ -332,9 +336,7 @@ impl StateSync {
         let transaction_updates = TransactionUpdateTracker::new(uncommitted_transactions);
         let mut account_updates = AccountUpdates::default();
 
-        let Some(sync_data) = self
-            .fetch_sync_data(block_from, &account_ids, &note_tags, validator_config)
-            .await?
+        let Some(sync_data) = self.fetch_sync_data(block_from, &account_ids, &note_tags).await?
         else {
             // No progress — already at the tip.
             return Ok(ChainSyncData {
@@ -608,7 +610,6 @@ impl StateSync {
         current_block_num: BlockNumber,
         account_ids: &[AccountId],
         note_tags: &Arc<BTreeSet<NoteTag>>,
-        validator_config: &ValidatorConfig,
     ) -> Result<Option<FetchedSyncData>, ClientError> {
         // Step 1: Fetch the MMR delta and chain tip header.
         let chain_mmr_info = self
@@ -618,7 +619,11 @@ impl StateSync {
         let chain_tip = chain_mmr_info.block_to;
 
         // Validate the response covers the range we requested and is signed by the validator set.
-        Self::validate_chain_mmr_response(&chain_mmr_info, current_block_num, validator_config)?;
+        Self::validate_chain_mmr_response(
+            &chain_mmr_info,
+            current_block_num,
+            &self.validator_config,
+        )?;
 
         // No progress — already at the tip.
         if chain_tip == current_block_num {
@@ -1732,7 +1737,9 @@ mod tests {
         let account = builder.add_existing_mock_account(miden_testing::Auth::IncrNonce).unwrap();
         let rpc_api = MockRpcApi::new(builder.build().unwrap());
         let chain_tip_header = rpc_api.mock_chain.read().latest_block_header();
-        let state_sync = StateSync::new(Arc::new(rpc_api), Arc::new(MockScreener), None);
+        let validator_config = genesis_validator_config(&rpc_api);
+        let state_sync =
+            StateSync::new(Arc::new(rpc_api), Arc::new(MockScreener), None, validator_config);
 
         // Local state is at a higher nonce than the node's snapshot (our own tx isn't committed
         // there yet), so the node snapshot must be ignored.
@@ -1769,7 +1776,9 @@ mod tests {
         let account = builder.add_existing_mock_account(miden_testing::Auth::IncrNonce).unwrap();
         let rpc_api = MockRpcApi::new(builder.build().unwrap());
         let chain_tip_header = rpc_api.mock_chain.read().latest_block_header();
-        let state_sync = StateSync::new(Arc::new(rpc_api), Arc::new(MockScreener), None);
+        let validator_config = genesis_validator_config(&rpc_api);
+        let state_sync =
+            StateSync::new(Arc::new(rpc_api), Arc::new(MockScreener), None, validator_config);
 
         // Local state is at the same nonce as the node's but with a different commitment: a fork
         // where the local transaction lost the race and must be discarded.
@@ -1843,7 +1852,9 @@ mod tests {
         let rpc_api = MockRpcApi::new(builder.build().unwrap());
         let chain_tip_header = rpc_api.mock_chain.read().latest_block_header();
         let on_chain_commitment = account.to_commitment();
-        let state_sync = StateSync::new(Arc::new(rpc_api), Arc::new(MockScreener), None);
+        let validator_config = genesis_validator_config(&rpc_api);
+        let state_sync =
+            StateSync::new(Arc::new(rpc_api), Arc::new(MockScreener), None, validator_config);
 
         let result = state_sync
             .verify_private_account_mismatch(account.id(), on_chain_commitment, &chain_tip_header)
@@ -1865,7 +1876,9 @@ mod tests {
         let rpc_api = MockRpcApi::new(builder.build().unwrap());
         let chain_tip_header = rpc_api.mock_chain.read().latest_block_header();
         let on_chain_commitment = account.to_commitment();
-        let state_sync = StateSync::new(Arc::new(rpc_api), Arc::new(MockScreener), None);
+        let validator_config = genesis_validator_config(&rpc_api);
+        let state_sync =
+            StateSync::new(Arc::new(rpc_api), Arc::new(MockScreener), None, validator_config);
         let stale_local_commitment = word(0xdead_beef);
 
         let result = state_sync
@@ -1892,7 +1905,9 @@ mod tests {
         let account = builder.add_existing_mock_account(miden_testing::Auth::IncrNonce).unwrap();
         let rpc_api = MockRpcApi::new(builder.build().unwrap());
         let real_header = rpc_api.mock_chain.read().latest_block_header();
-        let state_sync = StateSync::new(Arc::new(rpc_api), Arc::new(MockScreener), None);
+        let validator_config = genesis_validator_config(&rpc_api);
+        let state_sync =
+            StateSync::new(Arc::new(rpc_api), Arc::new(MockScreener), None, validator_config);
 
         // Same block number so the request resolves, but a tampered account root the witness cannot
         // verify against.
@@ -1956,7 +1971,9 @@ mod tests {
                 .to_commitment(),
             local_header.to_commitment()
         );
-        let state_sync = StateSync::new(Arc::new(rpc_api), Arc::new(MockScreener), None);
+        let validator_config = genesis_validator_config(&rpc_api);
+        let state_sync =
+            StateSync::new(Arc::new(rpc_api), Arc::new(MockScreener), None, validator_config);
 
         let current_public_accounts = vec![&local_header];
         let commitment_updates = vec![(account.id(), account.to_commitment())];
@@ -2335,8 +2352,12 @@ mod tests {
         let (chain, account, [note1, note2, note3]) = build_chain_with_chained_consume_txs().await;
 
         let mock_rpc = MockRpcApi::new(chain);
-        let state_sync =
-            StateSync::new(Arc::new(mock_rpc.clone()), Arc::new(CommitAllScreener), None);
+        let state_sync = StateSync::new(
+            Arc::new(mock_rpc.clone()),
+            Arc::new(CommitAllScreener),
+            None,
+            genesis_validator_config(&mock_rpc),
+        );
 
         let genesis_peaks =
             mock_rpc.get_mmr().peaks_at(Forest::new(1).expect("valid forest")).unwrap();
@@ -2359,10 +2380,7 @@ mod tests {
             uncommitted_transactions: vec![],
         };
 
-        let update = state_sync
-            .sync_state(&mut partial_mmr, sync_input, &genesis_validator_config(&mock_rpc))
-            .await
-            .unwrap();
+        let update = state_sync.sync_state(&mut partial_mmr, sync_input).await.unwrap();
 
         let updated_notes: Vec<_> = update.note_updates().updated_input_notes().collect();
 
@@ -2397,7 +2415,12 @@ mod tests {
         mock_rpc.advance_blocks(3);
         let chain_tip_1 = mock_rpc.get_chain_tip_block_num();
 
-        let state_sync = StateSync::new(Arc::new(mock_rpc.clone()), Arc::new(MockScreener), None);
+        let state_sync = StateSync::new(
+            Arc::new(mock_rpc.clone()),
+            Arc::new(MockScreener),
+            None,
+            genesis_validator_config(&mock_rpc),
+        );
 
         // Build the initial PartialMmr from genesis (only 1 leaf).
         let genesis_peaks =
@@ -2406,10 +2429,7 @@ mod tests {
         assert_eq!(partial_mmr.forest().num_leaves(), 1);
 
         // First sync
-        let update = state_sync
-            .sync_state(&mut partial_mmr, empty(), &genesis_validator_config(&mock_rpc))
-            .await
-            .unwrap();
+        let update = state_sync.sync_state(&mut partial_mmr, empty()).await.unwrap();
 
         assert_eq!(update.block_num(), chain_tip_1);
         let forest_1 = partial_mmr.forest();
@@ -2420,10 +2440,7 @@ mod tests {
         mock_rpc.advance_blocks(2);
         let chain_tip_2 = mock_rpc.get_chain_tip_block_num();
 
-        let update = state_sync
-            .sync_state(&mut partial_mmr, empty(), &genesis_validator_config(&mock_rpc))
-            .await
-            .unwrap();
+        let update = state_sync.sync_state(&mut partial_mmr, empty()).await.unwrap();
 
         assert_eq!(update.block_num(), chain_tip_2);
         let forest_2 = partial_mmr.forest();
@@ -2431,10 +2448,7 @@ mod tests {
         assert_eq!(forest_2.num_leaves(), chain_tip_2.as_u32() as usize + 1);
 
         // Third sync (no new blocks)
-        let update = state_sync
-            .sync_state(&mut partial_mmr, empty(), &genesis_validator_config(&mock_rpc))
-            .await
-            .unwrap();
+        let update = state_sync.sync_state(&mut partial_mmr, empty()).await.unwrap();
 
         assert_eq!(update.block_num(), chain_tip_2);
         assert_eq!(partial_mmr.forest(), forest_2);
@@ -2555,12 +2569,12 @@ mod tests {
 
         let validator_config = genesis_validator_config(&mock_rpc);
         let mut input = empty();
-        let state_sync = StateSync::new(Arc::new(mock_rpc), Arc::new(MockScreener), None)
-            .with_note_observer(Arc::new(AlwaysRelevantObserver));
+        let state_sync =
+            StateSync::new(Arc::new(mock_rpc), Arc::new(MockScreener), None, validator_config)
+                .with_note_observer(Arc::new(AlwaysRelevantObserver));
         input.note_tags = note_tags;
 
-        let update =
-            state_sync.sync_state(&mut partial_mmr, input, &validator_config).await.unwrap();
+        let update = state_sync.sync_state(&mut partial_mmr, input).await.unwrap();
         let observed_non_tip_block = BlockNumber::from(1u32);
 
         assert!(
@@ -2609,19 +2623,19 @@ mod tests {
 
         // Test that fetch_sync_data returns note blocks with valid MMR paths that can be used to
         // track blocks in the partial MMR.
-        let state_sync = StateSync::new(Arc::new(mock_rpc.clone()), Arc::new(MockScreener), None);
+        let state_sync = StateSync::new(
+            Arc::new(mock_rpc.clone()),
+            Arc::new(MockScreener),
+            None,
+            genesis_validator_config(&mock_rpc),
+        );
 
         let genesis_peaks =
             mock_rpc.get_mmr().peaks_at(Forest::new(1).expect("valid forest")).unwrap();
         let mut partial_mmr = PartialMmr::from_peaks(genesis_peaks);
 
         let sync_data = state_sync
-            .fetch_sync_data(
-                BlockNumber::GENESIS,
-                &[],
-                &Arc::new(note_tags.clone()),
-                &genesis_validator_config(&mock_rpc),
-            )
+            .fetch_sync_data(BlockNumber::GENESIS, &[], &Arc::new(note_tags.clone()))
             .await
             .unwrap()
             .expect("should have progressed past genesis");
@@ -2826,7 +2840,12 @@ mod tests {
         let network_header =
             AccountHeader::new(network_account_id, ZERO, EMPTY_WORD, EMPTY_WORD, EMPTY_WORD);
 
-        let state_sync = StateSync::new(Arc::new(mock_rpc.clone()), Arc::new(MockScreener), None);
+        let state_sync = StateSync::new(
+            Arc::new(mock_rpc.clone()),
+            Arc::new(MockScreener),
+            None,
+            genesis_validator_config(&mock_rpc),
+        );
 
         let genesis_peaks =
             mock_rpc.get_mmr().peaks_at(Forest::new(1).expect("valid forest")).unwrap();
@@ -2840,10 +2859,7 @@ mod tests {
             uncommitted_transactions: vec![],
         };
 
-        let update = state_sync
-            .sync_state(&mut partial_mmr, sync_input, &genesis_validator_config(&mock_rpc))
-            .await
-            .unwrap();
+        let update = state_sync.sync_state(&mut partial_mmr, sync_input).await.unwrap();
 
         // The output note record should transition to consumed.
         let updated_output = update

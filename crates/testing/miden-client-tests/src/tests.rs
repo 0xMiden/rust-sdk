@@ -646,7 +646,12 @@ async fn sync_persists_auth_nodes_for_skipped_blocks() {
     partial_mmr.add(genesis.commitment(), true).unwrap(); // track genesis
 
     // Create a StateSync that discards all notes so intermediate blocks are skipped
-    let state_sync = StateSync::new(Arc::new(rpc_api.clone()), Arc::new(DiscardAllNotes), None);
+    let state_sync = StateSync::new(
+        Arc::new(rpc_api.clone()),
+        Arc::new(DiscardAllNotes),
+        None,
+        genesis.validator_config().clone(),
+    );
 
     // Use the note tag from the prebuilt chain (tag 0) so the mock RPC returns blocks step-by-step
     // (block 1, then block 4, then the chain tip) instead of jumping directly to the chain tip.
@@ -662,7 +667,6 @@ async fn sync_persists_auth_nodes_for_skipped_blocks() {
                 output_notes: vec![],
                 uncommitted_transactions: vec![],
             },
-            genesis.validator_config(),
         )
         .await
         .unwrap();
@@ -739,7 +743,12 @@ async fn sync_state_no_redundant_get_account_calls() {
     let mut partial_mmr = PartialMmr::from_peaks(MmrPeaks::new(Forest::empty(), vec![]).unwrap());
     partial_mmr.add(genesis.commitment(), true).unwrap();
 
-    let state_sync = StateSync::new(Arc::new(rpc_api.clone()), Arc::new(DiscardAllNotes), None);
+    let state_sync = StateSync::new(
+        Arc::new(rpc_api.clone()),
+        Arc::new(DiscardAllNotes),
+        None,
+        genesis.validator_config().clone(),
+    );
 
     // Use tag 0 to force multiple sync steps (notes exist in blocks 1 and 4)
     let note_tags = BTreeSet::from([NoteTag::new(0)]);
@@ -751,10 +760,7 @@ async fn sync_state_no_redundant_get_account_calls() {
         output_notes: vec![],
         uncommitted_transactions: vec![],
     };
-    let state_sync_update = state_sync
-        .sync_state(&mut partial_mmr, input, genesis.validator_config())
-        .await
-        .unwrap();
+    let state_sync_update = state_sync.sync_state(&mut partial_mmr, input).await.unwrap();
 
     // Only 1 updated public account entry, not N duplicates
     assert_eq!(

@@ -1,10 +1,8 @@
-#[cfg(feature = "tonic")]
 use alloc::collections::BTreeMap;
 use alloc::string::ToString;
 use alloc::vec::Vec;
 
 use miden_objects::DecodeMessageExt;
-#[cfg(feature = "tonic")]
 use miden_protocol::account::{AccountCode, AccountHeader};
 use miden_protocol::account::{AccountStorageHeader, StorageMapKey, StorageSlotName, StorageSlotType};
 use miden_protocol::asset::Asset;
@@ -13,7 +11,6 @@ use miden_protocol::{EMPTY_WORD, Word};
 
 use super::MissingFieldHelper;
 use crate::rpc::RpcError;
-#[cfg(feature = "tonic")]
 use crate::rpc::domain::account::{AccountDetails, AccountProof};
 use crate::rpc::domain::account::{
     AccountStorageDetails,
@@ -36,7 +33,6 @@ use crate::rpc::generated::{self as proto};
 // FROM PROTO ACCOUNT HEADERS
 // ================================================================================================
 
-#[cfg(feature = "tonic")]
 impl proto::rpc::account_response::AccountDetails {
     /// Converts the RPC response into `AccountDetails`.
     ///
@@ -292,7 +288,6 @@ impl TryFrom<proto::rpc::AccountVaultDetails> for AccountVaultDetails {
 // ACCOUNT PROOF
 // ================================================================================================
 
-#[cfg(feature = "tonic")]
 impl TryFrom<proto::rpc::AccountResponse> for AccountProof {
     type Error = RpcError;
     fn try_from(account_proof: proto::rpc::AccountResponse) -> Result<Self, Self::Error> {

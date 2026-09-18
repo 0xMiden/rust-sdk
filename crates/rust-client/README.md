@@ -10,14 +10,14 @@ In order to utilize the `miden-client` library, you can add the dependency to yo
 miden-client = { version = "0.16.0-alpha.1", features = ["tonic"] }
 ````
 
-Talking to a node requires the `tonic` feature, which is not part of the default set. Leave it out only when supplying your own `NodeRpcClient` and `TransactionProver` implementations.
+Talking to a node requires the `tonic` feature, which is not part of the default set. Leave it out only when supplying your own `NodeRpcClient` and `TransactionProver` implementations; the crate then builds without any gRPC dependency.
 
 ## Crate Features
 
 | Features  | Description |
 | --------- | ----------- |
-| `tonic`   | Includes the gRPC pieces that communicate with a Miden node: `GrpcClient`, `RemoteTransactionProver`, the gRPC note transport client, and the `ClientBuilder` methods that wire them up (`for_mainnet`, `for_testnet`, `for_devnet`, `for_localhost`, `grpc_client`). Uses `tonic` transport with TLS on native targets and `tonic-web-wasm-client` on `wasm32`. **Disabled by default.** |
-| `std`     | Enables `std` support and concurrent execution in `miden-tx`. Enabled by default for native targets. It turns on the `tonic` dependency's transport and TLS features, which is not the same as the `tonic` feature above: gRPC support still has to be requested explicitly. |
+| `tonic`   | Includes the gRPC pieces that talk to a node: `GrpcClient`, `RemoteTransactionProver`, the gRPC note transport client, the generated protobuf bindings, and the `ClientBuilder` methods that wire them up (`for_mainnet`, `for_testnet`, `for_devnet`, `for_localhost`, `grpc_client`). This is the only feature that pulls in the `tonic` and `prost` dependencies and runs the protobuf code generation at build time. Uses `tonic` transport with TLS on native targets and `tonic-web-wasm-client` on `wasm32`. **Disabled by default.** |
+| `std`   | Enables `std` support and concurrent execution in `miden-tx`. Enabled by default for native targets. When `tonic` is also enabled, it turns on the `tonic` dependency's transport and TLS features. |
 | `concurrent` | Enables Rayon-parallel proving in `miden-tx` without the rest of `std`, for `wasm32` consumers that cannot enable it. Native builds get this through `std`. |
 | `testing` | Enables functions meant for testing environments. **Disabled by default.** |
 | `dap`     | Enables running a transaction under a Debug Adapter Protocol client instead of proving it. Implies `std`. **Disabled by default.** |

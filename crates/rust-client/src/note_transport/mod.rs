@@ -1,4 +1,5 @@
 pub mod errors;
+#[cfg(feature = "tonic")]
 pub mod generated;
 #[cfg(feature = "tonic")]
 pub mod grpc;

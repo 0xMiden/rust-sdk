@@ -11,7 +11,7 @@ In your project's `Cargo.toml`, add:
 miden-client = { version = "0.16.0-alpha.1", features = ["tonic"] }
 ```
 
-The `tonic` feature is not enabled by default and gates everything that speaks gRPC to a node: `GrpcClient`, `RemoteTransactionProver`, the gRPC note transport client, and the `ClientBuilder` methods that wire them up. Leave it out only when supplying your own `NodeRpcClient` and `TransactionProver` implementations. See [Features](./features.md#crate-features) for the full list.
+The `tonic` feature is not enabled by default and gates everything that speaks gRPC to a node: `GrpcClient`, `RemoteTransactionProver`, the gRPC note transport client, and the `ClientBuilder` methods that wire them up. Leave it out only when supplying your own `NodeRpcClient` and `TransactionProver` implementations; the crate then builds without any gRPC dependency. See [Features](./features.md#crate-features) for the full list.
 
 ## Client instantiation
 

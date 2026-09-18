@@ -86,6 +86,7 @@ use crate::rpc::domain::storage_map::StorageMapInfo;
 pub mod domain;
 pub mod encryption;
 
+#[cfg(feature = "tonic")]
 mod conversions;
 
 mod errors;
@@ -97,9 +98,9 @@ pub use domain::limits::RpcLimits;
 pub use domain::status::{NetworkNoteStatus, NetworkNoteStatusInfo, RpcStatusInfo};
 pub use endpoint::Endpoint;
 
-#[cfg(not(feature = "testing"))]
+#[cfg(all(feature = "tonic", not(feature = "testing")))]
 mod generated;
-#[cfg(feature = "testing")]
+#[cfg(all(feature = "tonic", feature = "testing"))]
 pub mod generated;
 
 #[cfg(feature = "tonic")]

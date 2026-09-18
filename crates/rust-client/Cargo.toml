@@ -59,9 +59,9 @@ std = [
   "miden-processor/std",
   "miden-protocol/std",
   "miden-tx/std",
-  "tonic/tls-native-roots",
-  "tonic/tls-ring",
-  "tonic/transport",
+  "tonic?/tls-native-roots",
+  "tonic?/tls-ring",
+  "tonic?/transport",
 ]
 testing = [
   "dep:miden-testing",
@@ -71,7 +71,22 @@ testing = [
   "miden-standards/testing",
   "miden-tx/testing",
 ]
-tonic = []
+# gRPC support: `GrpcClient`, `RemoteTransactionProver`, the gRPC note transport client and the
+# generated protobuf bindings. This is the only feature that pulls in the `tonic` and `prost`
+# dependencies and runs the protobuf code generation in `build.rs`. Without it the crate exposes
+# the `NodeRpcClient` and `NoteTransportClient` traits and their domain types only.
+tonic = [
+  "dep:gloo-timers",
+  "dep:miden-node-proto-build",
+  "dep:miden-note-transport-proto-build",
+  "dep:prost",
+  "dep:prost-types",
+  "dep:tonic",
+  "dep:tonic-health",
+  "dep:tonic-prost",
+  "dep:tonic-prost-build",
+  "dep:tonic-web-wasm-client",
+]
 
 [dependencies]
 # Miden dependencies
@@ -90,35 +105,34 @@ anyhow       = { workspace = true }
 async-trait  = { workspace = true }
 chrono       = { workspace = true }
 futures      = { version = "0.3" }
-prost        = { features = ["derive"], workspace = true }
-prost-types  = { version = "0.14" }
+prost        = { features = ["derive"], optional = true, workspace = true }
+prost-types  = { optional = true, version = "0.14" }
 rand         = { workspace = true }
 serde        = { workspace = true }
 serde_json   = { workspace = true }
 tempfile     = { optional = true, workspace = true }
 thiserror    = { workspace = true }
 tokio        = { features = ["sync", "time"], optional = true, workspace = true }
-tonic        = { features = ["codegen"], workspace = true }
-tonic-health = { version = "0.14" }
-tonic-prost  = { version = "0.14" }
+tonic        = { features = ["codegen"], optional = true, workspace = true }
+tonic-health = { optional = true, version = "0.14" }
+tonic-prost  = { optional = true, version = "0.14" }
 tracing      = { workspace = true }
 uuid         = { features = ["js", "serde", "v4"], optional = true, workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom             = { features = ["wasm_js"], version = "0.3" }
-gloo-timers           = { features = ["futures"], version = "0.3" }
+gloo-timers           = { features = ["futures"], optional = true, version = "0.3" }
 tokio                 = { default-features = false, features = ["sync"], version = "1.48" }
-tonic-web-wasm-client = { default-features = false, version = "0.9" }
+tonic-web-wasm-client = { default-features = false, optional = true, version = "0.9" }
 
 [build-dependencies]
-miden-node-proto-build           = { workspace = true }
-miden-note-transport-proto-build = { workspace = true }
+miden-node-proto-build           = { optional = true, workspace = true }
+miden-note-transport-proto-build = { optional = true, workspace = true }
 miden-objects                    = { workspace = true }
 miden-protocol                   = { workspace = true }
 miden-standards                  = { workspace = true }
-miette                           = { workspace = true }
-prost                            = { features = ["derive"], workspace = true }
-tonic-prost-build                = { version = "0.14" }
+prost                            = { features = ["derive"], optional = true, workspace = true }
+tonic-prost-build                = { optional = true, version = "0.14" }
 
 [dev-dependencies]
 miden-protocol  = { default-features = false, features = ["testing"], workspace = true }

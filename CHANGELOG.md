@@ -35,6 +35,7 @@
 * [BREAKING][param][rust] `NodeRpcClient` takes the submitted payload by reference instead of by value: `submit_proven_transaction` takes `&ProvenTransaction` instead of `ProvenTransaction`, and `submit_proven_batch` takes `&ProvenBatch` and `&ProposedBatch` instead of `ProvenBatch` and `ProposedBatch`. An implementation that needs to own the payload must clone it itself ([#2508](https://github.com/0xMiden/rust-sdk/pull/2508)).
 * [BREAKING][removal][rust] Removed `NodeRpcClient::get_public_note_records`. It had no callers; build an `InputNoteRecord` from the `FetchedNote::Public` values that `get_notes_by_id` returns instead ([#XXXX](https://github.com/0xMiden/rust-sdk/pull/XXXX)).
 * [BREAKING][removal][rust] `rpc::domain::MissingFieldHelper` is no longer public. The conversions between the RPC domain types and the generated protobuf messages moved out of `rpc::domain` into a private module, so the domain types no longer depend on the wire format ([#XXXX](https://github.com/0xMiden/rust-sdk/pull/XXXX)).
+* [BREAKING][arch][rust] The `tonic` feature now gates the gRPC dependencies and the protobuf code generation. Without it, `miden-client` builds without `tonic`, `prost`, `tonic-web-wasm-client` and the node's proto-build crates, and the `rpc::generated` and `note_transport::generated` modules are absent. Talking to a node still requires the feature, as before ([#XXXX](https://github.com/0xMiden/rust-sdk/pull/XXXX)).
 
 ### Features
 

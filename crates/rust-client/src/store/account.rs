@@ -3,11 +3,19 @@
 use alloc::vec::Vec;
 use core::fmt::Display;
 
-use miden_protocol::account::{Account, AccountId, PartialAccount};
+use miden_protocol::account::{
+    Account,
+    AccountHeader,
+    AccountId,
+    AccountStorage,
+    AccountStoragePatch,
+    AccountVaultPatch,
+    PartialAccount,
+};
+use miden_protocol::asset::Asset;
 use miden_protocol::{Felt, Word};
 
 use crate::ClientError;
-use crate::sync::PublicAccountUpdate;
 
 // ACCOUNT RECORD DATA
 // ================================================================================================
@@ -178,18 +186,87 @@ impl Display for AccountStatus {
 // ACCOUNT UPDATES
 // ================================================================================================
 
-/// Contains account changes to apply to the store.
+/// Update to a single account's state: the new header plus how the storage and the vault reach it.
+#[derive(Debug, Clone)]
+pub struct AccountStateUpdate {
+    /// The new account header after applying the update.
+    new_header: AccountHeader,
+    /// The storage update to apply.
+    storage: StorageUpdate,
+    /// The vault update to apply.
+    vault: VaultUpdate,
+}
+
+impl AccountStateUpdate {
+    /// Creates a new update that advances the account to `new_header`.
+    pub fn new(new_header: AccountHeader, storage: StorageUpdate, vault: VaultUpdate) -> Self {
+        Self { new_header, storage, vault }
+    }
+
+    /// Returns the account ID for this update.
+    pub fn id(&self) -> AccountId {
+        self.new_header.id()
+    }
+
+    /// Returns the account nonce that this update advances the local state to.
+    pub fn nonce(&self) -> Felt {
+        self.new_header.nonce()
+    }
+
+    /// Returns the new account header after applying the update.
+    pub fn new_header(&self) -> &AccountHeader {
+        &self.new_header
+    }
+
+    /// Returns the storage update.
+    pub fn storage(&self) -> &StorageUpdate {
+        &self.storage
+    }
+
+    /// Returns the vault update.
+    pub fn vault(&self) -> &VaultUpdate {
+        &self.vault
+    }
+}
+
+/// Storage part of a [`AccountStateUpdate`].
+#[derive(Debug, Clone)]
+pub enum StorageUpdate {
+    /// The complete storage. The store replaces every local slot with it.
+    Full(AccountStorage),
+    /// The absolute changes to the storage, layered onto the local one. Maps the node returned in
+    /// full are `Create` patches, which replace the slot.
+    Patch(AccountStoragePatch),
+}
+
+/// Vault part of a [`AccountStateUpdate`].
+#[derive(Debug, Clone)]
+pub enum VaultUpdate {
+    /// The complete vault contents. The store replaces the local vault with them.
+    Full(Vec<Asset>),
+    /// The absolute changes to the vault, layered onto the local one.
+    Patch(AccountVaultPatch),
+}
+
+/// Contains account changes to apply to the store after a sync request.
+#[derive(Debug, Clone, Default)]
+#[allow(clippy::struct_field_names)]
 pub struct AccountUpdates {
-    /// Updated public accounts, either as full state replacements or incremental deltas.
-    updated_public_accounts: Vec<PublicAccountUpdate>,
-    /// Network account commitments that don't match the current tracked state for private accounts.
+    /// Updated public accounts.
+    updated_public_accounts: Vec<AccountStateUpdate>,
+    /// Account commitments received from the network that don't match the currently locally-tracked
+    /// state of the private accounts.
+    ///
+    /// These updates may represent a stale account commitment (meaning that the latest local state
+    /// hasn't been committed). If this is not the case, the account may be locked until the state
+    /// is restored manually.
     mismatched_private_accounts: Vec<(AccountId, Word)>,
 }
 
 impl AccountUpdates {
     /// Creates a new instance of `AccountUpdates`.
     pub fn new(
-        updated_public_accounts: Vec<PublicAccountUpdate>,
+        updated_public_accounts: Vec<AccountStateUpdate>,
         mismatched_private_accounts: Vec<(AccountId, Word)>,
     ) -> Self {
         Self {
@@ -199,12 +276,18 @@ impl AccountUpdates {
     }
 
     /// Returns the updated public accounts.
-    pub fn updated_public_accounts(&self) -> &[PublicAccountUpdate] {
+    pub fn updated_public_accounts(&self) -> &[AccountStateUpdate] {
         &self.updated_public_accounts
     }
 
     /// Returns the mismatched private accounts.
     pub fn mismatched_private_accounts(&self) -> &[(AccountId, Word)] {
         &self.mismatched_private_accounts
+    }
+
+    /// Appends the public account updates and the private account mismatches of `other`.
+    pub fn extend(&mut self, other: AccountUpdates) {
+        self.updated_public_accounts.extend(other.updated_public_accounts);
+        self.mismatched_private_accounts.extend(other.mismatched_private_accounts);
     }
 }

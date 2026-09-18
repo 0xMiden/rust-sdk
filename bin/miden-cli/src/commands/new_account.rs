@@ -211,6 +211,10 @@ impl NewAccountCmd {
 // ================================================================================================
 
 /// Reads [[`miden_core::vm::Package`]]s from the given file paths.
+///
+/// A bare name resolves to a package in the configured package directory. The CLI writes those
+/// packages itself, so they are read as trusted. A path with the `.masp` extension is used as is
+/// and is read as untrusted, so its MAST forest is validated.
 pub(crate) fn load_packages(
     cli_config: &CliConfig,
     package_paths: &[PathBuf],
@@ -221,14 +225,14 @@ pub(crate) fn load_packages(
     for path in package_paths {
         // If a user passes in a file with the `.masp` file extension, then we leave the path as is;
         // since it probably is a full path (this is the case with cargo-miden for instance).
-        let path = match path.extension() {
+        let (path, trusted) = match path.extension() {
             None => {
                 let path = path.with_extension(MIDEN_PACKAGE_EXTENSION);
-                Ok(packages_dir.join(path))
+                Ok((packages_dir.join(path), true))
             },
             Some(extension) => {
                 if extension == OsStr::new(MIDEN_PACKAGE_EXTENSION) {
-                    Ok(path.clone())
+                    Ok((path.clone(), false))
                 } else {
                     let error = std::io::Error::new(
                         std::io::ErrorKind::InvalidFilename,
@@ -254,7 +258,12 @@ pub(crate) fn load_packages(
             )
         })?;
 
-        let package = Package::read_from_bytes(&bytes).map_err(|e| {
+        let package = if trusted {
+            Package::read_from_bytes_trusted(&bytes)
+        } else {
+            Package::read_from_bytes(&bytes)
+        }
+        .map_err(|e| {
             CliError::AccountComponentError(
                 Box::new(e),
                 format!("failed to deserialize Package in {}", path.display()),

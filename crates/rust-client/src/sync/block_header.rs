@@ -76,7 +76,7 @@ impl<AUTH> Client<AUTH> {
         }
 
         let rpc = MockRpcApi::default();
-        self.add_protocol_config(rpc.protocol_config()).await?;
+        self.seed_protocol_config(rpc.protocol_config()).await?;
         *self.test_rpc_api() = Arc::new(rpc);
         self.ensure_genesis_in_place().await?;
         Ok(())

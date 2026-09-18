@@ -6,17 +6,58 @@ use miden_client::transaction::TransactionRequestBuilder;
 use miden_client::{ClientError, Serializable, Word};
 use miden_protocol::testing::account_id::ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2;
 
-use super::create_test_client;
+use super::{TestClient, create_test_client, create_test_client_builder};
+
+/// Returns a configuration no mock chain uses, for a test that needs one the node never sends.
+fn unrelated_protocol_config() -> ProtocolConfig {
+    ProtocolConfig::current(AssetId::new_fungible(
+        ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2.try_into().unwrap(),
+    ))
+    .unwrap()
+}
+
+#[tokio::test]
+async fn the_first_sync_stores_the_protocol_config() {
+    let (builder, rpc) = create_test_client_builder().await;
+    let mut client = TestClient::from(builder.build().await.unwrap());
+    let config = rpc.protocol_config();
+
+    // Nothing seeded this client, so the store starts without the configuration.
+    assert!(matches!(
+        client.get_protocol_config(config.to_commitment()).await,
+        Err(ClientError::StoreError(StoreError::ProtocolConfigNotFound(_)))
+    ));
+
+    client.sync_state().await.unwrap();
+
+    assert_eq!(client.get_protocol_config(config.to_commitment()).await.unwrap(), config);
+}
+
+#[tokio::test]
+async fn a_sync_stores_a_configuration_the_store_does_not_hold() {
+    let (builder, rpc) = create_test_client_builder().await;
+    let mut client = TestClient::from(builder.build().await.unwrap());
+
+    // The store holds a configuration the node never sends, so the one the sync returns is new.
+    let held = unrelated_protocol_config();
+    client.seed_protocol_config(held.clone()).await.unwrap();
+    let returned = rpc.protocol_config();
+    assert_ne!(returned.to_commitment(), held.to_commitment());
+
+    client.sync_state().await.unwrap();
+
+    // Both are readable: a configuration is keyed by its own commitment, so storing one never
+    // replaces another.
+    assert_eq!(client.get_protocol_config(returned.to_commitment()).await.unwrap(), returned);
+    assert_eq!(client.get_protocol_config(held.to_commitment()).await.unwrap(), held);
+}
 
 #[tokio::test]
 async fn protocol_configs_are_selected_by_commitment() {
     let (client, rpc) = create_test_client().await;
     let original = rpc.protocol_config();
-    let other = ProtocolConfig::current(AssetId::new_fungible(
-        ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2.try_into().unwrap(),
-    ))
-    .unwrap();
-    client.add_protocol_config(other.clone()).await.unwrap();
+    let other = unrelated_protocol_config();
+    client.seed_protocol_config(other.clone()).await.unwrap();
     assert_eq!(client.get_protocol_config(original.to_commitment()).await.unwrap(), original);
     assert_eq!(client.get_protocol_config(other.to_commitment()).await.unwrap(), other);
     assert!(matches!(
@@ -29,10 +70,7 @@ async fn protocol_configs_are_selected_by_commitment() {
 async fn protocol_config_rejects_a_substituted_preimage() {
     let (mut client, rpc) = create_test_client().await;
     let commitment = rpc.protocol_config().to_commitment();
-    let other = ProtocolConfig::current(AssetId::new_fungible(
-        ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2.try_into().unwrap(),
-    ))
-    .unwrap();
+    let other = unrelated_protocol_config();
     assert_ne!(other.to_commitment(), commitment);
     client
         .test_store()
@@ -61,12 +99,9 @@ async fn execution_requires_the_reference_block_protocol_config() {
         .remove_setting(SettingScope::Client, format!("protocol_config:{commitment}"))
         .await
         .unwrap();
-    let other = ProtocolConfig::current(AssetId::new_fungible(
-        ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2.try_into().unwrap(),
-    ))
-    .unwrap();
+    let other = unrelated_protocol_config();
     assert_ne!(other.to_commitment(), commitment);
-    client.add_protocol_config(other).await.unwrap();
+    client.seed_protocol_config(other).await.unwrap();
 
     let request = TransactionRequestBuilder::new().build().unwrap();
     assert!(matches!(
@@ -75,6 +110,6 @@ async fn execution_requires_the_reference_block_protocol_config() {
             if missing == commitment
     ));
 
-    client.add_protocol_config(config).await.unwrap();
+    client.seed_protocol_config(config).await.unwrap();
     client.execute_transaction(wallet.id(), request).await.unwrap();
 }

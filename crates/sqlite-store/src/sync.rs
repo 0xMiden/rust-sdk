@@ -6,7 +6,8 @@ use std::vec::Vec;
 use miden_client::Word;
 use miden_client::account::AccountId;
 use miden_client::note::{BlockNumber, NoteTag};
-use miden_client::store::StoreError;
+use miden_client::protocol_config::protocol_config_setting_key;
+use miden_client::store::{SettingScope, StoreError};
 use miden_client::sync::{NoteTagRecord, NoteTagSource, PublicAccountUpdate, StateSyncUpdate};
 use miden_client::utils::{Deserializable, Serializable};
 use rusqlite::{Connection, Transaction, params};
@@ -82,6 +83,7 @@ impl SqliteStore {
             note_updates,
             transaction_updates,
             account_updates,
+            protocol_config,
         ) = state_sync_update.into_parts();
 
         with_write_tx(conn, |db_tx| {
@@ -162,6 +164,15 @@ impl SqliteStore {
 
             for (account_id, digest) in account_updates.mismatched_private_accounts() {
                 Self::lock_account_on_unexpected_commitment(db_tx, account_id, digest)?;
+            }
+
+            if let Some(config) = &protocol_config {
+                Self::set_setting(
+                    db_tx,
+                    SettingScope::Client,
+                    &protocol_config_setting_key(config.to_commitment()),
+                    &config.to_bytes(),
+                )?;
             }
 
             Ok(())

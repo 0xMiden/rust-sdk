@@ -41,6 +41,7 @@ use miden_client::store::{
     InputNoteState,
     NoteFilter,
     OutputNoteState,
+    StoreError,
     TransactionFilter,
 };
 use miden_client::testing::account_id::AccountIdBuilder;
@@ -75,6 +76,28 @@ pub async fn test_client_builder_initializes_client_with_endpoint(
     let sync_summary = client.sync_state().await?;
 
     assert!(sync_summary.block_num.as_u32() > 0);
+    Ok(())
+}
+
+/// A client is given no protocol configuration by hand, so the first sync has to provide the one
+/// the chain tip commits to.
+pub async fn test_first_sync_stores_the_protocol_config(client_config: ClientConfig) -> Result<()> {
+    let mut client = client_config.into_client().await?;
+
+    let (tip, _) = client.test_rpc_api().get_block_header_by_number(None, false).await?;
+    let commitment = tip.protocol_config_commitment();
+    assert_matches!(
+        client.get_protocol_config(commitment).await,
+        Err(ClientError::StoreError(StoreError::ProtocolConfigNotFound(_))),
+        "a fresh store must not hold a protocol configuration"
+    );
+
+    client.sync_state().await?;
+
+    // The stored header is what transaction execution resolves a configuration against.
+    let synced = client.get_latest_block_header().await?;
+    let config = client.get_protocol_config(synced.protocol_config_commitment()).await?;
+    assert_eq!(config.to_commitment(), synced.protocol_config_commitment());
     Ok(())
 }
 

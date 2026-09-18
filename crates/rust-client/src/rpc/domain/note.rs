@@ -2,6 +2,7 @@ use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::vec::Vec;
 
+use miden_objects::DecodeMessageExt;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::SequentialCommit;
@@ -22,48 +23,20 @@ use miden_protocol::note::{
 };
 use miden_protocol::{Felt, Word};
 
-use super::{MissingFieldHelper, RpcConversionError, build_unchecked_message, verify_message};
+use super::{MissingFieldHelper, RpcConversionError};
 use crate::rpc::{RpcError, generated as proto};
 
 /// Reads a note ID off the wire. A free function because both types are foreign, so there can be no
 /// `TryFrom` impl.
 pub(crate) fn note_id_from_proto(value: proto::note::NoteId) -> Result<NoteId, RpcConversionError> {
-    verify_message(value)
+    Ok(value.decode_and_verify()?)
 }
 
 /// Reads a note inclusion proof and the ID of the note it proves.
 pub(crate) fn note_inclusion_proof_from_proto(
     value: proto::note::NoteInclusionProof,
 ) -> Result<(NoteId, NoteInclusionProof), RpcConversionError> {
-    verify_message(value)
-}
-
-/// Accepts only the note versions this client understands.
-///
-/// An unspecified version is a malformed response rather than an older note, so it is rejected
-/// instead of being read as version 1.
-fn validate_note_version(raw: i32) -> Result<(), RpcConversionError> {
-    match proto::note::NoteVersion::try_from(raw) {
-        Ok(proto::note::NoteVersion::V1) => Ok(()),
-        Ok(proto::note::NoteVersion::Unspecified) => {
-            Err(RpcConversionError::InvalidField("note metadata version is unspecified".into()))
-        },
-        Err(_) => Err(RpcConversionError::InvalidField(alloc::format!(
-            "unknown note metadata version {raw}"
-        ))),
-    }
-}
-
-fn note_type_from_proto(raw: i32) -> Result<NoteType, RpcConversionError> {
-    let proto_note_type = proto::note::NoteType::try_from(raw)
-        .map_err(|_| RpcConversionError::InvalidField(alloc::format!("note_type={raw}")))?;
-    match proto_note_type {
-        proto::note::NoteType::Public => Ok(NoteType::Public),
-        proto::note::NoteType::Private => Ok(NoteType::Private),
-        proto::note::NoteType::Unspecified => {
-            Err(RpcConversionError::InvalidField("note_type=NOTE_TYPE_UNSPECIFIED".into()))
-        },
-    }
+    Ok(value.decode_and_verify()?)
 }
 
 /// Aggregates individual attachment commitments into the note's attachments commitment.
@@ -172,18 +145,15 @@ impl TryFrom<proto::rpc::NoteSyncMetadata> for SyncNoteMetadata {
     type Error = RpcConversionError;
 
     fn try_from(value: proto::rpc::NoteSyncMetadata) -> Result<Self, Self::Error> {
-        // The sync record carries the note version separately from the canonical metadata message,
-        // so it is checked here to reject the same versions `miden-objects` rejects.
-        validate_note_version(value.version)?;
-
-        let sender: AccountId = verify_message(
-            value
-                .sender
-                .ok_or_else(|| proto::rpc::NoteSyncMetadata::missing_field(stringify!(sender)))?,
-        )?;
-        let note_type = note_type_from_proto(value.note_type)?;
-        let tag = NoteTag::new(value.tag);
-        let partial_metadata = PartialNoteMetadata::new(sender, note_type).with_tag(tag);
+        // The sync record spreads the canonical metadata fields over its own message, so they are
+        // gathered back into that message and verified as a whole.
+        let partial_metadata: PartialNoteMetadata = proto::note::PartialNoteMetadata {
+            version: value.version,
+            sender: value.sender,
+            note_type: value.note_type,
+            tag: value.tag,
+        }
+        .decode_and_verify()?;
 
         if value.attachments.len() > NoteAttachments::MAX_COUNT {
             return Err(RpcConversionError::InvalidField(format!(
@@ -261,14 +231,15 @@ impl TryFrom<proto::rpc::sync_notes_response::NoteSyncBlock> for SyncNotesBlock 
     fn try_from(
         block: proto::rpc::sync_notes_response::NoteSyncBlock,
     ) -> Result<Self, Self::Error> {
-        let block_header: BlockHeader = build_unchecked_message(block.block_header.ok_or(
-            proto::rpc::SyncNotesResponse::missing_field(stringify!(blocks.block_header)),
-        )?)?;
+        let block_header: BlockHeader = block
+            .block_header
+            .ok_or(proto::rpc::SyncNotesResponse::missing_field(stringify!(blocks.block_header)))?
+            .decode_and_build_unchecked()?;
 
-        let mmr_path: MerklePath =
-            verify_message(block.mmr_path.ok_or(proto::rpc::SyncNotesResponse::missing_field(
-                stringify!(blocks.mmr_path),
-            ))?)?;
+        let mmr_path: MerklePath = block
+            .mmr_path
+            .ok_or(proto::rpc::SyncNotesResponse::missing_field(stringify!(blocks.mmr_path)))?
+            .decode_and_verify()?;
 
         let notes: BTreeMap<NoteId, CommittedNote> = block
             .notes
@@ -586,10 +557,10 @@ impl TryFrom<proto::rpc::CommittedNote> for FetchedNote {
             .note
             .ok_or_else(|| proto::rpc::CommittedNote::missing_field(stringify!(note)))?;
 
-        let partial_metadata: PartialNoteMetadata =
-            verify_message(note.metadata.ok_or_else(|| {
-                proto::rpc::CommittedNote::missing_field(stringify!(note.metadata))
-            })?)?;
+        let partial_metadata: PartialNoteMetadata = note
+            .metadata
+            .ok_or_else(|| proto::rpc::CommittedNote::missing_field(stringify!(note.metadata)))?
+            .decode_and_verify()?;
 
         // The note type decides which variant the response describes. The details are checked
         // against it, since a note is not usable when the two disagree.
@@ -601,7 +572,7 @@ impl TryFrom<proto::rpc::CommittedNote> for FetchedNote {
                     )));
                 }
 
-                Ok(FetchedNote::Public(verify_message(note)?, inclusion_proof))
+                Ok(FetchedNote::Public(note.decode_and_verify()?, inclusion_proof))
             },
             NoteType::Private => {
                 if note.note_details.is_some() {
@@ -610,10 +581,12 @@ impl TryFrom<proto::rpc::CommittedNote> for FetchedNote {
                     )));
                 }
 
-                let attachments: NoteAttachments =
-                    verify_message(note.note_attachments.ok_or_else(|| {
+                let attachments: NoteAttachments = note
+                    .note_attachments
+                    .ok_or_else(|| {
                         proto::rpc::CommittedNote::missing_field(stringify!(note.note_attachments))
-                    })?)?;
+                    })?
+                    .decode_and_verify()?;
                 let metadata = NoteMetadata::new(partial_metadata, &attachments);
 
                 Ok(FetchedNote::Private(note_id, metadata, attachments, inclusion_proof))
@@ -883,7 +856,7 @@ mod tests {
 
             let err = SyncNoteMetadata::try_from(wire).unwrap_err();
 
-            assert!(matches!(err, RpcConversionError::InvalidField(_)), "got {err:?}");
+            assert!(matches!(err, RpcConversionError::CanonicalConversion(_)), "got {err:?}");
         }
     }
 

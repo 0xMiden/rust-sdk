@@ -59,12 +59,7 @@ const TEST_L1_DESTINATION: &str = "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd";
 /// Everything but the destination account is pre-deployed and imported (see [`AgglayerConfig`]).
 /// The destination is created fresh on every run, so a claim always targets an account that has
 /// never claimed before.
-///
-/// Skipped: the node cannot prove the bridge's transactions, which settle precompile work that the
-/// transaction verifier rejects.
-///
-/// TODO: rename back to `test_agglayer_bridge_in_out` once protocol `0.17.0-rc.5` is released.
-pub async fn ignored_test_agglayer_bridge_in_out(client_config: ClientConfig) -> Result<()> {
+pub async fn test_agglayer_bridge_in_out(client_config: ClientConfig) -> Result<()> {
     let agglayer_config = AgglayerConfig::from_env()?;
     let _agglayer_accounts = agglayer_config.claim()?;
     let (mut bridge_admin, mut ger_manager, mut user) =

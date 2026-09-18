@@ -1,7 +1,8 @@
+use miden_objects::DecodeMessageExt;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::merkle::mmr::MmrDelta;
 
-use crate::rpc::domain::{MissingFieldHelper, build_unchecked_message, verify_message};
+use crate::rpc::domain::MissingFieldHelper;
 use crate::rpc::{RpcError, generated as proto};
 
 // SYNC TARGET
@@ -48,16 +49,15 @@ impl TryFrom<proto::rpc::SyncChainMmrResponse> for ChainMmrInfo {
             .block_range
             .ok_or(proto::rpc::SyncChainMmrResponse::missing_field(stringify!(block_range)))?;
 
-        let mmr_delta: MmrDelta = verify_message(
-            value
-                .mmr_delta
-                .ok_or(proto::rpc::SyncChainMmrResponse::missing_field(stringify!(mmr_delta)))?,
-        )?;
+        let mmr_delta: MmrDelta = value
+            .mmr_delta
+            .ok_or(proto::rpc::SyncChainMmrResponse::missing_field(stringify!(mmr_delta)))?
+            .decode_and_verify()?;
 
-        let block_header: BlockHeader =
-            build_unchecked_message(value.block_header.ok_or(
-                proto::rpc::SyncChainMmrResponse::missing_field(stringify!(block_header)),
-            )?)?;
+        let block_header: BlockHeader = value
+            .block_header
+            .ok_or(proto::rpc::SyncChainMmrResponse::missing_field(stringify!(block_header)))?
+            .decode_and_build_unchecked()?;
 
         Ok(Self {
             block_from: block_range.block_from.into(),

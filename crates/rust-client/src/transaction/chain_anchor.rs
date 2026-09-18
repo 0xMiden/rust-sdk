@@ -315,8 +315,10 @@ mod tests {
         let mut nodes = BTreeMap::new();
         nodes.insert(InOrderIndex::from_leaf_pos(3), headers[3].commitment());
 
+        // `from_parts` rejects the missing authentication path, so the malformed value has to be
+        // built unchecked to reach the deserialization path under test.
         let partial_mmr =
-            PartialMmr::from_parts(peaks.clone(), nodes, BTreeSet::from([3])).unwrap();
+            PartialMmr::from_parts_unchecked(peaks.clone(), nodes, BTreeSet::from([3]));
 
         let bytes = {
             let mut buf = Vec::new();

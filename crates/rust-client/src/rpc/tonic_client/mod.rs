@@ -10,6 +10,7 @@ use miden_protocol::vm::FutureMaybeSend;
 
 type RpcFuture<T> = Pin<Box<dyn FutureMaybeSend<T>>>;
 
+use miden_objects::DecodeMessageExt;
 use miden_protocol::account::{
     AccountCode,
     AccountId,
@@ -21,10 +22,6 @@ use miden_protocol::address::NetworkId;
 use miden_protocol::batch::{ProposedBatch, ProvenBatch};
 use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock};
-use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
-    PublicKey as ValidatorPublicKey,
-    Signature as ValidatorSignature,
-};
 use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::crypto::merkle::mmr::{Forest, MmrPath, MmrProof};
 use miden_protocol::note::{NoteId, NoteScript, NoteTag};
@@ -58,7 +55,6 @@ use crate::rpc::domain::status::NetworkNoteStatusInfo;
 use crate::rpc::domain::storage_map::StorageMapInfo;
 use crate::rpc::domain::sync::{ChainMmrInfo, SyncTarget};
 use crate::rpc::domain::transaction::TransactionRecord;
-use crate::rpc::domain::{build_unchecked_message, verify_message};
 use crate::rpc::errors::node::parse_node_error;
 use crate::rpc::errors::{AcceptHeaderContext, AcceptHeaderError, GrpcError, RpcConversionError};
 use crate::rpc::generated::rpc::BlockRange;
@@ -393,12 +389,10 @@ impl NodeRpcClient for GrpcClient {
             .attestations
             .into_iter()
             .filter_map(|attestation| {
-                let validator_key = attestation
-                    .validator_public_key
-                    .and_then(|key| verify_message::<_, ValidatorPublicKey>(key).ok());
-                let signature = attestation
-                    .signature
-                    .and_then(|signature| verify_message::<_, ValidatorSignature>(signature).ok());
+                let validator_key =
+                    attestation.validator_public_key.and_then(|key| key.decode_and_verify().ok());
+                let signature =
+                    attestation.signature.and_then(|signature| signature.decode_and_verify().ok());
                 let decoded = validator_key.zip(signature).map(|(validator_key, signature)| {
                     ValidatorAttestation { validator_key, signature }
                 });
@@ -505,19 +499,19 @@ impl NodeRpcClient for GrpcClient {
 
         let response = api_response.into_inner();
 
-        let block_header: BlockHeader = build_unchecked_message(
-            response
-                .block_header
-                .ok_or(RpcError::ExpectedDataMissing("BlockHeader".into()))?,
-        )?;
+        let block_header: BlockHeader = response
+            .block_header
+            .ok_or(RpcError::ExpectedDataMissing("BlockHeader".into()))?
+            .decode_and_build_unchecked()?;
 
         let mmr_proof = if include_mmr_proof {
             let forest = response
                 .chain_length
                 .ok_or(RpcError::ExpectedDataMissing("ChainLength".into()))?;
-            let merkle_path: MerklePath = verify_message(
-                response.mmr_path.ok_or(RpcError::ExpectedDataMissing("MmrPath".into()))?,
-            )?;
+            let merkle_path: MerklePath = response
+                .mmr_path
+                .ok_or(RpcError::ExpectedDataMissing("MmrPath".into()))?
+                .decode_and_verify()?;
 
             let forest_size = usize::try_from(forest).expect("u64 should fit in usize");
             let forest = Forest::new(forest_size).map_err(|_| {
@@ -643,11 +637,10 @@ impl NodeRpcClient for GrpcClient {
             .await?
             .into_inner();
 
-        let account_witness: AccountWitness = verify_message(
-            response
-                .witness
-                .ok_or(RpcError::ExpectedDataMissing("AccountWitness".to_string()))?,
-        )?;
+        let account_witness: AccountWitness = response
+            .witness
+            .ok_or(RpcError::ExpectedDataMissing("AccountWitness".to_string()))?
+            .decode_and_verify()?;
 
         let response_block_num: BlockNumber = response
             .block_num
@@ -832,7 +825,7 @@ impl NodeRpcClient for GrpcClient {
         let Some(script) = response.into_inner().script else {
             return Ok(None);
         };
-        let note_script: NoteScript = verify_message(script)?;
+        let note_script: NoteScript = script.decode_and_verify()?;
 
         Ok(Some(note_script))
     }
@@ -1079,11 +1072,10 @@ fn decode_block_response(
 ) -> Result<(SignedBlock, Option<ExecutionProof>), RpcError> {
     // The response carries the block and its proof in separate fields, so the block message holds a
     // signed block and never a proven one.
-    let block: SignedBlock = build_unchecked_message(
-        response
-            .block
-            .ok_or(RpcError::ExpectedDataMissing("GetBlockByNumberResponse.block".to_string()))?,
-    )?;
+    let block: SignedBlock = response
+        .block
+        .ok_or(RpcError::ExpectedDataMissing("GetBlockByNumberResponse.block".to_string()))?
+        .decode_and_build_unchecked()?;
 
     // The node omits the proof when it is not requested, and also when the block is not proven yet,
     // so an absent proof is not an error.

@@ -1,11 +1,11 @@
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
+use miden_objects::DecodeMessageExt;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{NoteHeader, NoteId, NoteInclusionProof, Nullifier};
 use miden_protocol::transaction::{InputNoteCommitment, TransactionHeader};
 
-use super::build_unchecked_message;
 use super::note::{CommittedNote, note_id_from_proto, note_inclusion_proof_from_proto};
 use super::nullifier::nullifier_from_proto;
 use crate::rpc::{RpcConversionError, RpcError, generated as proto};
@@ -105,7 +105,7 @@ fn convert_transaction_header(
     value: proto::transaction::TransactionHeader,
     output_note_proofs: Vec<proto::note::NoteInclusionProof>,
 ) -> Result<(TransactionHeader, Vec<CommittedNote>, Vec<NoteHeader>), RpcError> {
-    let transaction_header: TransactionHeader = build_unchecked_message(value)?;
+    let transaction_header: TransactionHeader = value.decode_and_build_unchecked()?;
 
     // Build a map of note_id to inclusion_proof from the separate proofs field.
     let mut proof_map: BTreeMap<NoteId, NoteInclusionProof> = BTreeMap::new();

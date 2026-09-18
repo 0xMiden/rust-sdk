@@ -5,12 +5,12 @@
 //! [`super::enforcement`].
 
 use anyhow::{Context, Result};
-use miden_client::rpc::{RegisterAccountError, RpcEndpoint};
+use miden_client::rpc::RegisterAccountError;
 
 use super::invitations::InvitationPool;
 use super::{
     assert_registration_rejected,
-    assert_rejected_as_unregistered,
+    assert_rejected_before_submission,
     deploy_request,
     insert_undeployed_wallet,
 };
@@ -72,8 +72,8 @@ pub async fn test_allowlist_code_is_single_use(client_config: ClientConfig) -> R
     let error = client
         .submit_new_transaction(second.id(), deploy_request()?)
         .await
-        .expect_err("the node should refuse to create the unregistered second account");
-    assert_rejected_as_unregistered(&error, RpcEndpoint::SubmitProvenTx);
+        .expect_err("the unregistered second account should not be created");
+    assert_rejected_before_submission(&error, &second);
 
     Ok(())
 }

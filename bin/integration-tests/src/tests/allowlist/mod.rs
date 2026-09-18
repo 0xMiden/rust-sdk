@@ -14,13 +14,12 @@
 //!
 //! - Only account-creating submissions are checked. An account that already exists is not.
 //! - Network accounts are exempt.
-//! - A rejected submission comes back as `PermissionDenied`.
 //! - An invitation code binds to one account and cannot be reused for another.
 
 use anyhow::{Context, Result};
 use assert_matches::assert_matches;
 use miden_client::account::{Account, AccountType};
-use miden_client::rpc::{EndpointError, GrpcError, RegisterAccountError, RpcEndpoint, RpcError};
+use miden_client::rpc::{EndpointError, RegisterAccountError, RpcEndpoint, RpcError};
 use miden_client::testing::common::*;
 use miden_client::transaction::{TransactionRequest, TransactionRequestBuilder};
 use miden_client::{ClientError, Felt};
@@ -52,16 +51,14 @@ async fn insert_undeployed_wallet(client: &mut TestClient) -> Result<Account> {
     Ok(account)
 }
 
-/// Asserts that `error` is the node refusing to create an unregistered account.
-fn assert_rejected_as_unregistered(error: &ClientError, endpoint: RpcEndpoint) {
+/// Asserts that `error` is the client refusing to create an unregistered account.
+///
+/// The client asks the node before it proves the transaction, so the account is never submitted.
+fn assert_rejected_before_submission(error: &ClientError, account: &Account) {
     assert_matches!(
         error,
-        ClientError::RpcError(RpcError::RequestError {
-            endpoint: actual_endpoint,
-            error_kind: GrpcError::PermissionDenied,
-            ..
-        }) if actual_endpoint.proto_name() == endpoint.proto_name(),
-        "expected the node to reject the account creation as unregistered, got: {error}"
+        ClientError::AccountNotAllowlisted(account_id) if *account_id == account.id(),
+        "expected the client to refuse to create the unregistered account, got: {error}"
     );
 }
 

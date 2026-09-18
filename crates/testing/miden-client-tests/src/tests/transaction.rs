@@ -23,6 +23,7 @@ use miden_client::transaction::{
     TransactionProver,
     TransactionProverError,
     TransactionRequestBuilder,
+    TransactionRequestError,
 };
 use miden_client::{ClientError, Deserializable, Serializable, async_trait};
 #[cfg(any())]
@@ -975,4 +976,69 @@ async fn indeterminate_submission_is_retryable_with_the_attached_payload() {
     Box::pin(client.submit_proven_transaction(*transaction, *transaction_inputs))
         .await
         .expect("the attached payload must be enough to submit again");
+}
+
+/// A note that a pending local transaction is already consuming is not a valid input for another
+/// request. The request has to be rejected up front, while the store still knows the note is being
+/// processed: once the second transaction reaches the node there is no local record of it, and if
+/// the first one is dropped from the mempool the second commits and the account state diverges.
+#[tokio::test]
+async fn consuming_a_processing_note_is_rejected_before_submission() {
+    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
+    let (wallet, faucet) = client.setup_wallet_and_faucet(AccountType::Private).await.unwrap();
+
+    let note = client.mint_note(wallet.id(), faucet.id(), NoteType::Private).await.unwrap().1;
+    rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+
+    // The first consume is submitted but never included: the note is now being processed.
+    let first_tx_id =
+        client.consume_notes(wallet.id(), std::slice::from_ref(&note)).await.unwrap();
+    let record = client
+        .get_input_notes(NoteFilter::Unique(note.id()))
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert!(record.is_processing(), "the first consume must leave the note processing");
+    assert_eq!(record.consumer_transaction_id(), Some(&first_tx_id));
+    let transactions_before = client.get_transactions(TransactionFilter::All).await.unwrap().len();
+
+    // If the second request ever reaches the node, this staged failure surfaces it as a
+    // submission error instead of letting the mock chain accept a double consume.
+    rpc_api.fail_next_call(
+        RpcEndpoint::SubmitProvenTx,
+        RpcError::RequestError {
+            endpoint: RpcEndpoint::SubmitProvenTx,
+            error_kind: GrpcError::Unknown("transport error".into()),
+            endpoint_error: None,
+            source: None,
+        },
+    );
+
+    let second_request =
+        TransactionRequestBuilder::new().build_consume_notes(vec![note.clone()]).unwrap();
+    let err = Box::pin(client.submit_new_transaction(wallet.id(), second_request))
+        .await
+        .unwrap_err();
+    let ClientError::TransactionRequestError(TransactionRequestError::InputNoteBeingProcessed {
+        note: rejected_note,
+        transaction_id,
+    }) = err
+    else {
+        panic!("expected the request to be rejected before execution, got: {err:?}");
+    };
+    assert_eq!(rejected_note, note.details_commitment());
+    assert_eq!(transaction_id, first_tx_id);
+
+    // No second transaction was recorded, and the note is still held by the first one.
+    let transactions = client.get_transactions(TransactionFilter::All).await.unwrap();
+    assert_eq!(transactions.len(), transactions_before);
+    let record = client
+        .get_input_notes(NoteFilter::Unique(note.id()))
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(record.consumer_transaction_id(), Some(&first_tx_id));
 }

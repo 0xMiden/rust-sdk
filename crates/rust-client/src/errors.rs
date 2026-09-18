@@ -409,6 +409,16 @@ impl From<&TransactionRequestError> for Option<ErrorHint> {
                 ),
                 docs_url: Some(TROUBLESHOOTING_DOC),
             }),
+            TransactionRequestError::InputNoteBeingProcessed { transaction_id, .. } => {
+                Some(ErrorHint {
+                    message: format!(
+                        "The note is an input of pending transaction {transaction_id}. Run `sync` \
+                         until that transaction is committed or discarded before consuming the \
+                         note again."
+                    ),
+                    docs_url: Some(TROUBLESHOOTING_DOC),
+                })
+            },
             TransactionRequestError::P2IDNoteWithoutAsset => Some(ErrorHint {
                 message: "A pay-to-ID (P2ID) note transfers assets to a target account. \
                           Add at least one fungible or non-fungible asset to the note.".to_string(),

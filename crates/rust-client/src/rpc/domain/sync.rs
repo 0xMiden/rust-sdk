@@ -1,10 +1,9 @@
 use alloc::string::ToString;
 use alloc::vec::Vec;
 
+use miden_objects::DecodeMessageExt;
 use miden_protocol::block::{BlockHeader, BlockNumber, BlockSignatures};
-use miden_protocol::crypto::dsa::ecdsa_k256_keccak;
 use miden_protocol::crypto::merkle::mmr::MmrDelta;
-use miden_protocol::utils::serde::Deserializable;
 
 use crate::rpc::domain::MissingFieldHelper;
 use crate::rpc::errors::RpcConversionError;
@@ -56,22 +55,21 @@ impl TryFrom<proto::rpc::SyncChainMmrResponse> for ChainMmrInfo {
             .block_range
             .ok_or(proto::rpc::SyncChainMmrResponse::missing_field(stringify!(block_range)))?;
 
-        let mmr_delta = value
+        let mmr_delta: MmrDelta = value
             .mmr_delta
             .ok_or(proto::rpc::SyncChainMmrResponse::missing_field(stringify!(mmr_delta)))?
-            .try_into()?;
+            .decode_and_verify()?;
 
-        let block_header = value
+        let block_header: BlockHeader = value
             .block_header
             .ok_or(proto::rpc::SyncChainMmrResponse::missing_field(stringify!(block_header)))?
-            .try_into()?;
+            .decode_and_build_unchecked()?;
 
         let signatures = value
             .block_signatures
             .into_iter()
-            .map(|signature| ecdsa_k256_keccak::Signature::read_from_bytes(&signature.signature))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(RpcConversionError::from)?;
+            .map(DecodeMessageExt::decode_and_verify)
+            .collect::<Result<Vec<_>, _>>()?;
         let block_signatures = BlockSignatures::new(signatures)
             .map_err(|err| RpcConversionError::InvalidField(err.to_string()))?;
 

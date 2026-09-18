@@ -2,10 +2,9 @@ use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use core::error::Error;
 use core::fmt;
-use core::num::TryFromIntError;
 
+pub use miden_objects::ConversionError;
 use miden_protocol::account::AccountId;
-use miden_protocol::crypto::merkle::MerkleError;
 use miden_protocol::errors::NoteError;
 use miden_protocol::note::NoteId;
 use miden_protocol::utils::serde::DeserializationError;
@@ -128,30 +127,26 @@ impl From<RpcConversionError> for RpcError {
     }
 }
 
+impl From<ConversionError> for RpcError {
+    fn from(err: ConversionError) -> Self {
+        Self::DeserializationError(err.to_string())
+    }
+}
+
 // RPC CONVERSION ERROR
 // ================================================================================================
 
 #[derive(Debug, Error)]
 pub enum RpcConversionError {
-    #[error("failed to deserialize")]
-    DeserializationError(#[from] DeserializationError),
-    #[error(
-        "invalid field element: value is outside the valid range (0..modulus, where modulus = 2^64 - 2^32 + 1)"
-    )]
-    NotAValidFelt,
-    #[error("invalid note type in node response")]
-    NoteTypeError(#[from] NoteError),
-    #[error("merkle proof error in node response")]
-    MerkleError(#[from] MerkleError),
     #[error("invalid field in node response: {0}")]
     InvalidField(String),
-    #[error("integer conversion failed in node response")]
-    InvalidInt(#[from] TryFromIntError),
     #[error("field `{field_name}` expected to be present in protobuf representation of {entity}")]
     MissingFieldInProtobufRepresentation {
         entity: &'static str,
         field_name: &'static str,
     },
+    #[error("failed to convert a canonical object message: {0}")]
+    CanonicalConversion(#[from] ConversionError),
 }
 
 // GRPC ERROR KIND

@@ -125,7 +125,7 @@ pub use batch::{BatchBuilder, BatchBuilderError};
 mod chain_anchor;
 pub use chain_anchor::{ChainAnchor, ChainAnchorError};
 
-#[cfg(feature = "dap")]
+#[cfg(any())]
 mod dap_executor;
 mod prover;
 pub use prover::TransactionProver;
@@ -511,7 +511,7 @@ where
     ///
     /// This applies the same request preparation and output-recipient validation as
     /// [`Self::execute_transaction`], and returns the corresponding [`ClientError`] on failure.
-    #[cfg(feature = "dap")]
+    #[cfg(any())]
     pub async fn execute_transaction_with_dap(
         &self,
         account_id: AccountId,
@@ -574,7 +574,7 @@ where
                     .execute_transaction(account_id, prep.block_num, notes, prep.tx_args)
                     .await?
             },
-            #[cfg(feature = "dap")]
+            #[cfg(any())]
             TransactionExecutionMode::Dap => {
                 self.build_dap_executor(&data_store)?
                     .execute_transaction(account_id, prep.block_num, notes, prep.tx_args)
@@ -983,7 +983,7 @@ where
 
     /// Executes the provided transaction script with a DAP debug adapter listening for connections,
     /// allowing interactive debugging via any DAP-compatible client.
-    #[cfg(feature = "dap")]
+    #[cfg(any())]
     pub async fn execute_program_with_dap(
         &self,
         account_id: AccountId,
@@ -1291,7 +1291,7 @@ where
     }
 
     /// Creates a transaction executor configured for DAP (Debug Adapter Protocol) debugging.
-    #[cfg(feature = "dap")]
+    #[cfg(any())]
     pub(crate) fn build_dap_executor<'store, 'auth, STORE: DataStore + Sync>(
         &'auth self,
         data_store: &'store STORE,
@@ -1456,7 +1456,7 @@ pub enum TransactionStoreUpdateError {
 #[derive(Clone, Copy, Debug)]
 enum TransactionExecutionMode {
     Standard,
-    #[cfg(feature = "dap")]
+    #[cfg(any())]
     Dap,
 }
 

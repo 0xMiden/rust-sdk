@@ -911,10 +911,11 @@ impl StateSync {
             .apply_sync_height_update(chain_tip_header.block_num(), self.tx_discard_delta);
 
         for transaction in transactions {
-            // Transition tracked output notes to Committed using inclusion proofs from the
-            // transaction sync response. This covers output notes regardless of whether their tags
-            // were tracked in the note sync.
-            note_updates.apply_output_note_inclusion_proofs(&transaction.output_notes)?;
+            // Apply the note commitments the transaction sync reports. It carries no block header,
+            // so an input-note record keeps the proof unverified until the note sync delivers one.
+            for committed_note in &transaction.output_notes {
+                note_updates.note_committed(committed_note, None)?;
+            }
 
             // Detect output notes erased by same-batch note erasure.
             Self::mark_erased_notes_as_consumed(note_updates, transaction);
@@ -1351,8 +1352,8 @@ impl StateSync {
                     // Only mark the downloaded block header as relevant if we are talking about an
                     // input note (output notes get marked as committed but we don't need the block
                     // for anything there)
-                    relevance.has_client_note |= note_updates
-                        .apply_committed_note_state_transitions(&committed_note, block_header)?;
+                    relevance.has_client_note |=
+                        note_updates.note_committed(&committed_note, Some(block_header))?;
                 },
                 NoteUpdateAction::Insert(public_note) => {
                     relevance.has_client_note = true;

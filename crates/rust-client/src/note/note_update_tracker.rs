@@ -419,12 +419,20 @@ impl NoteUpdateTracker {
         Ok(())
     }
 
-    /// Applies the necessary state transitions to the [`NoteUpdateTracker`] when a note is
-    /// committed in a block and returns whether the committed note is tracked as input note.
-    pub(crate) fn apply_committed_note_state_transitions(
+    /// Applies a note commitment observed on chain to every record of that note, and returns
+    /// whether the note is tracked as an input note.
+    ///
+    /// The inclusion proof reaches the input-note record, which needs it to consume the note, and
+    /// the output-note record, which reports it as created on chain. Both describe the same
+    /// on-chain note, so neither may be left behind by the source that reported the commitment.
+    ///
+    /// `block_header` is the header of the block that holds the note, which only a source that
+    /// reports notes per block can supply. Without it the input-note record keeps the proof
+    /// unverified, since the proof cannot be checked against the block's note root.
+    pub(crate) fn note_committed(
         &mut self,
         committed_note: &CommittedNote,
-        block_header: &BlockHeader,
+        block_header: Option<&BlockHeader>,
     ) -> Result<bool, ClientError> {
         let inclusion_proof = committed_note.inclusion_proof().clone();
         let metadata = *committed_note.metadata();
@@ -435,7 +443,9 @@ impl NoteUpdateTracker {
         let is_tracked_as_input_note =
             if let Some(input_note_record) = self.get_input_note_by_id(note_id) {
                 input_note_record.inclusion_proof_received(inclusion_proof.clone(), metadata)?;
-                input_note_record.block_header_received(block_header)?;
+                if let Some(block_header) = block_header {
+                    input_note_record.block_header_received(block_header)?;
+                }
                 if let Some(attachments) = attachments {
                     input_note_record.attachments_received(attachments.clone());
                 }
@@ -451,7 +461,9 @@ impl NoteUpdateTracker {
                         .expect("commitment was just matched against the tracked notes");
                     let record = &mut update.note;
                     record.inclusion_proof_received(inclusion_proof.clone(), metadata)?;
-                    record.block_header_received(block_header)?;
+                    if let Some(block_header) = block_header {
+                        record.block_header_received(block_header)?;
+                    }
                     if let Some(attachments) = attachments {
                         record.attachments_received(attachments.clone());
                     }
@@ -475,23 +487,6 @@ impl NoteUpdateTracker {
         self.try_commit_output_note(note_id, inclusion_proof)?;
 
         Ok(is_tracked_as_input_note)
-    }
-
-    /// Applies inclusion proofs from the transaction sync response to tracked output notes.
-    ///
-    /// This transitions output notes from `Expected` to `Committed` state using the inclusion
-    /// proofs returned by `SyncTransactions`.
-    pub(crate) fn apply_output_note_inclusion_proofs(
-        &mut self,
-        committed_notes: &[CommittedNote],
-    ) -> Result<(), ClientError> {
-        for committed_note in committed_notes {
-            self.try_commit_output_note(
-                *committed_note.note_id(),
-                committed_note.inclusion_proof().clone(),
-            )?;
-        }
-        Ok(())
     }
 
     /// Marks an erased note as consumed.
@@ -872,11 +867,13 @@ mod tests {
 
     use miden_protocol::account::AccountId;
     use miden_protocol::block::BlockNumber;
+    use miden_protocol::crypto::merkle::SparseMerklePath;
     use miden_protocol::note::{
         NoteAssets,
         NoteAttachments,
         NoteDetails,
         NoteId,
+        NoteInclusionProof,
         NoteMetadata,
         NoteRecipient,
         NoteStorage,
@@ -890,7 +887,7 @@ mod tests {
     use miden_standards::note::StandardNote;
 
     use super::{NoteConsumption, NoteUpdateTracker};
-    use crate::store::InputNoteRecord;
+    use crate::rpc::domain::note::CommittedNote;
     use crate::store::input_note_states::{
         ConsumedExternalNoteState,
         ConsumedUnauthenticatedLocalNoteState,
@@ -898,6 +895,7 @@ mod tests {
         NoteSubmissionData,
         ProcessingUnauthenticatedNoteState,
     };
+    use crate::store::{InputNoteRecord, InputNoteState, OutputNoteRecord, OutputNoteState};
     use crate::transaction::TransactionRecord;
 
     // HELPERS
@@ -972,6 +970,58 @@ mod tests {
 
     // TESTS
     // --------------------------------------------------------------------------------------------
+
+    /// A note the client created and can consume has an output-note and an input-note record. One
+    /// commitment has to advance both, whichever source reported it.
+    #[test]
+    fn note_committed_advances_every_record_of_the_note() {
+        let sender: AccountId = ACCOUNT_ID_SENDER.try_into().unwrap();
+        let details = note_details(1);
+        let metadata = note_metadata(sender);
+
+        let input_note = InputNoteRecord::new(
+            details.clone(),
+            NoteAttachments::empty(),
+            Some(0),
+            ExpectedNoteState {
+                metadata: Some(metadata),
+                after_block_num: BlockNumber::from(0u32),
+                tag: Some(metadata.tag()),
+            }
+            .into(),
+        );
+        let output_note = OutputNoteRecord::new(
+            details.recipient().digest(),
+            details.assets().clone(),
+            metadata,
+            OutputNoteState::ExpectedFull { recipient: details.recipient().clone() },
+            BlockNumber::from(0u32),
+            NoteAttachments::empty(),
+        );
+        let mut tracker = NoteUpdateTracker::new(vec![input_note], vec![output_note]);
+
+        let committed_note = CommittedNote::new(
+            NoteId::new(details.commitment(), &metadata),
+            metadata,
+            NoteInclusionProof::new(BlockNumber::from(1u32), 0, SparseMerklePath::default())
+                .unwrap(),
+        );
+
+        // A source that carries no block header, as the transaction sync does.
+        assert!(tracker.note_committed(&committed_note, None).unwrap());
+
+        assert!(
+            matches!(
+                tracker.updated_input_notes().next().unwrap().inner().state(),
+                InputNoteState::Unverified(_),
+            ),
+            "the input-note record must take the proof, unverified without the block header",
+        );
+        assert!(
+            tracker.updated_output_notes().next().unwrap().inner().is_committed(),
+            "the output-note record must not be left behind by the same commitment",
+        );
+    }
 
     #[test]
     fn consumed_input_note_ids_reports_metadata_bearing_consumed_note() {

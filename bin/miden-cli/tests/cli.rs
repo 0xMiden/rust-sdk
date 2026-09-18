@@ -19,7 +19,7 @@ use miden_client::account::component::{
 use miden_client::account::{AccountFile, AccountId, AccountType, FaucetMetadata, StorageSlotName};
 use miden_client::address::{Address, NetworkId};
 use miden_client::assembly::CodeBuilder;
-use miden_client::auth::TransactionAuthenticator;
+use miden_client::auth::{AuthSecretKey, PublicKey, TransactionAuthenticator};
 use miden_client::builder::ClientBuilder;
 use miden_client::crypto::RandomCoin;
 use miden_client::keystore::Keystore;
@@ -46,7 +46,7 @@ use miden_client::vm::{
     SectionId,
     TargetType,
 };
-use miden_client::{self, Deserializable, Felt};
+use miden_client::{self, Deserializable, Felt, Word};
 use miden_client_cli::MIDEN_DIR;
 use miden_client_cli::config::{KEYSTORE_DIRECTORY, Network};
 use miden_client_integration_tests::{ClientConfig, fee_funding};
@@ -71,6 +71,119 @@ use rand::RngExt;
 /// temporary directory (check existing tests to see how). You'll also need to make the commands run
 /// as if they were spawned on that directory. `std::env::set_current_dir` shouldn't be used as it
 /// impacts on other tests and instead you should use `assert_cmd::Command::current_dir`.
+
+// KEY TESTS
+// ================================================================================================
+
+#[test]
+fn cli_manages_keys() {
+    const KEY_FILENAME: &str = "imported.key";
+    const INVALID_KEY_FILENAME: &str = "invalid.key";
+
+    let temp_dir = init_cli().1;
+    let imported_key = AuthSecretKey::new_ecdsa_k256_keccak();
+    let imported_commitment = Word::from(imported_key.public_key().to_commitment()).to_hex();
+    let public_key = match imported_key.public_key() {
+        PublicKey::EcdsaK256Keccak(public_key) => public_key.to_string(),
+        _ => unreachable!("the test key uses ECDSA"),
+    };
+    let falcon_key = AuthSecretKey::new_falcon512_poseidon2();
+    let falcon_commitment = Word::from(falcon_key.public_key().to_commitment()).to_hex();
+    let falcon_public_key = match falcon_key.public_key() {
+        PublicKey::Falcon512Poseidon2(public_key) => public_key.to_string(),
+        _ => unreachable!("the test key uses Falcon"),
+    };
+    fs::write(temp_dir.join(KEY_FILENAME), imported_key.to_bytes()).unwrap();
+
+    let mut invalid_key = imported_key.to_bytes();
+    invalid_key.push(0);
+    fs::write(temp_dir.join(INVALID_KEY_FILENAME), invalid_key).unwrap();
+
+    let mut invalid_import_cmd = cargo_bin_cmd!("miden-client");
+    invalid_import_cmd.args(["keys", "--import", INVALID_KEY_FILENAME]);
+    invalid_import_cmd
+        .current_dir(&temp_dir)
+        .assert()
+        .failure()
+        .stderr(contains("contains trailing"));
+
+    let mut import_cmd = cargo_bin_cmd!("miden-client");
+    import_cmd.args(["keys", "--import", KEY_FILENAME]);
+    import_cmd
+        .current_dir(&temp_dir)
+        .assert()
+        .success()
+        .stdout(contains(&imported_commitment));
+
+    let account_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_SENDER).unwrap().to_hex();
+    let mut associate_cmd = cargo_bin_cmd!("miden-client");
+    associate_cmd.args(["keys", "--associate", &imported_commitment, "--account-id", &account_id]);
+    associate_cmd.current_dir(&temp_dir).assert().success();
+
+    let mut generate_cmd = cargo_bin_cmd!("miden-client");
+    generate_cmd.args(["keys", "--generate", "falcon512-poseidon2"]);
+    generate_cmd
+        .current_dir(&temp_dir)
+        .assert()
+        .success()
+        .stdout(contains("Generated falcon512-poseidon2 key."));
+
+    let keystore_dir = temp_dir.join(MIDEN_DIR).join(KEYSTORE_DIRECTORY);
+    fs::write(keystore_dir.join(".DS_Store"), []).unwrap();
+    fs::write(keystore_dir.join(".tmpAbC123"), []).unwrap();
+    // Named after a valid commitment but holding no readable key, as an interrupted write leaves
+    // behind. It must not hide the keys that are readable.
+    fs::write(
+        keystore_dir.join("0x1111111111111111111111111111111111111111111111111111111111111111"),
+        [1, 2, 3],
+    )
+    .unwrap();
+
+    let mut list_cmd = cargo_bin_cmd!("miden-client");
+    list_cmd.args(["keys", "--list"]);
+    list_cmd
+        .current_dir(&temp_dir)
+        .assert()
+        .success()
+        .stdout(contains(&imported_commitment))
+        .stdout(contains("ecdsa-k256-keccak"))
+        .stdout(contains("falcon512-poseidon2"))
+        .stdout(contains(&account_id));
+
+    let mut disassociate_cmd = cargo_bin_cmd!("miden-client");
+    disassociate_cmd.args([
+        "keys",
+        "--disassociate",
+        &imported_commitment,
+        "--account-id",
+        &account_id,
+    ]);
+    disassociate_cmd
+        .current_dir(&temp_dir)
+        .assert()
+        .success()
+        .stdout(contains("removed."));
+
+    let mut list_cmd = cargo_bin_cmd!("miden-client");
+    list_cmd.arg("keys");
+    list_cmd
+        .current_dir(&temp_dir)
+        .assert()
+        .success()
+        .stdout(contains(&account_id).not());
+
+    for (public_key, commitment) in
+        [(public_key, imported_commitment), (falcon_public_key, falcon_commitment)]
+    {
+        let mut commitment_cmd = cargo_bin_cmd!("miden-client");
+        commitment_cmd.args(["keys", "--commitment", &public_key]);
+        commitment_cmd
+            .current_dir(&temp_dir)
+            .assert()
+            .success()
+            .stdout(format!("{commitment}\n"));
+    }
+}
 
 // INIT TESTS
 // ================================================================================================

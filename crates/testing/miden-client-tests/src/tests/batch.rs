@@ -47,9 +47,9 @@ use crate::tests::{create_test_client, seed_mock_transaction_encryption_key};
 
 /// Exercises the mock `submit_proven_batch` path end-to-end: build a real `ProvenBatch` from a
 /// proven transaction produced against a `MockChain`, submit it via `MockRpcApi`, and verify the
-/// returned block number equals the chain tip. The mock ignores `proposed_batch` and
-/// `transaction_inputs`, so we pass a cloned `ProposedBatch` and an empty inputs vector — good
-/// enough to exercise the trait wiring.
+/// returned block number equals the chain tip. The mock does not read `proposed_batch` and only
+/// records `transaction_inputs`, so an empty inputs vector is good enough to exercise the trait
+/// wiring.
 #[tokio::test]
 async fn submit_proven_batch_returns_chain_tip() {
     let (_client, rpc_api) = Box::pin(create_test_client()).await;
@@ -78,9 +78,10 @@ async fn submit_proven_batch_returns_chain_tip() {
     };
 
     let expected_tip = rpc_api.get_chain_tip_block_num();
-    let returned = Box::pin(rpc_api.submit_proven_batch(proven_batch, proposed_for_submit, vec![]))
-        .await
-        .unwrap();
+    let returned =
+        Box::pin(rpc_api.submit_proven_batch(&proven_batch, &proposed_for_submit, vec![]))
+            .await
+            .unwrap();
 
     assert_eq!(returned, expected_tip);
 }

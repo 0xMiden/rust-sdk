@@ -775,19 +775,19 @@ where
         // inputs cannot be recovered from the proven transaction, which only commits to them, and
         // sealing draws fresh randomness so every attempt has to seal again.
         let transaction_inputs = transaction_inputs.into();
-        let submitted = proven_transaction.clone();
 
         let sealed_inputs =
             seal_transaction_inputs(&mut self.rng, &key, tx_id, &transaction_inputs)?;
 
         let result =
-            self.rpc_api.submit_proven_transaction(proven_transaction, sealed_inputs).await;
+            self.rpc_api.submit_proven_transaction(&proven_transaction, sealed_inputs).await;
         if let Err(err) = &result {
             self.forget_stale_transaction_encryption_key(err).await;
         }
 
-        let block_num = result
-            .map_err(|err| promote_indeterminate_submission(err, submitted, transaction_inputs))?;
+        let block_num = result.map_err(|err| {
+            promote_indeterminate_submission(err, proven_transaction, transaction_inputs)
+        })?;
         info!("Transaction submitted.");
 
         Ok(block_num)

@@ -552,7 +552,7 @@ impl NodeRpcClient for MockRpcApi {
     /// just for the new transaction and return the block number of the newly created block.
     async fn submit_proven_transaction(
         &self,
-        proven_transaction: ProvenTransaction,
+        proven_transaction: &ProvenTransaction,
         _sealed_transaction_inputs: SealedTransactionInputs, /* Unnecessary for testing client
                                                               * itself. */
     ) -> Result<BlockNumber, RpcError> {
@@ -589,8 +589,8 @@ impl NodeRpcClient for MockRpcApi {
     /// than decrypted, so a test can inspect what each attempt sent.
     async fn submit_proven_batch(
         &self,
-        proven_batch: ProvenBatch,
-        _proposed_batch: ProposedBatch,
+        proven_batch: &ProvenBatch,
+        _proposed_batch: &ProposedBatch,
         sealed_transaction_inputs: Vec<SealedTransactionInputs>,
     ) -> Result<BlockNumber, RpcError> {
         // Recorded before the staged failure is served: a submission whose response is lost still
@@ -602,7 +602,7 @@ impl NodeRpcClient for MockRpcApi {
         }
 
         let mut mock_chain = self.mock_chain.write();
-        mock_chain.add_pending_batch(proven_batch);
+        mock_chain.add_pending_batch(proven_batch.clone());
         drop(mock_chain);
 
         let block_num = self.get_chain_tip_block_num();

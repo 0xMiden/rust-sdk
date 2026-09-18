@@ -210,8 +210,8 @@ where
         let result = self
             .rpc_api
             .submit_proven_batch(
-                submission.proven_batch.clone(),
-                (*submission.proposed_batch).clone(),
+                &submission.proven_batch,
+                &submission.proposed_batch,
                 sealed_inputs,
             )
             .await;

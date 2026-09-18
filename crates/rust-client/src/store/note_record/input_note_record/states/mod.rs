@@ -221,6 +221,16 @@ impl InputNoteState {
     ) -> Result<Option<InputNoteState>, NoteRecordError> {
         self.inner().transaction_committed(transaction_id, block_height)
     }
+
+    /// Returns a new state to reflect that the transaction currently consuming the note was
+    /// discarded, which makes the note available again. Only a note being processed by that
+    /// transaction changes state; for any other state `None` is returned.
+    pub(crate) fn transaction_discarded(
+        &self,
+        transaction_id: TransactionId,
+    ) -> Result<Option<InputNoteState>, NoteRecordError> {
+        self.inner().transaction_discarded(transaction_id)
+    }
 }
 
 impl Serializable for InputNoteState {
@@ -392,6 +402,15 @@ pub trait NoteStateHandler {
         transaction_id: TransactionId,
         block_height: BlockNumber,
     ) -> Result<Option<InputNoteState>, NoteRecordError>;
+
+    /// Reverts the note to its pre-processing state when the transaction consuming it is
+    /// discarded. States that are not being processed leave the note as is.
+    fn transaction_discarded(
+        &self,
+        _transaction_id: TransactionId,
+    ) -> Result<Option<InputNoteState>, NoteRecordError> {
+        Ok(None)
+    }
 }
 
 /// Information about a locally consumed note submitted to the node.

@@ -434,11 +434,18 @@ impl StateSync {
         let ChainSyncData {
             block_from,
             advance,
-            note_updates,
+            mut note_updates,
             transaction_updates,
             account_updates,
             ..
         } = chain_sync_data;
+
+        // A discarded transaction never commits, so the notes it was consuming must become
+        // available again. This runs after the nullifier check so a note that was consumed on
+        // chain in the meantime is left as consumed.
+        for transaction in transaction_updates.discarded_transactions() {
+            note_updates.apply_transaction_discarded(transaction.id)?;
+        }
 
         let mut partial_blockchain_updates = PartialBlockchainUpdates::default();
 

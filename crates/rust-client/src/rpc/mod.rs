@@ -82,10 +82,11 @@ use miden_protocol::vm::ExecutionProof;
 
 use crate::rpc::domain::storage_map::StorageMapInfo;
 
-/// Contains domain types related to RPC requests and responses, as well as utility functions for
-/// dealing with them.
+/// Contains the domain types for RPC requests and responses.
 pub mod domain;
 pub mod encryption;
+
+mod conversions;
 
 mod errors;
 pub use errors::*;
@@ -111,8 +112,6 @@ pub use verifying_client::VerifyingRpcClient;
 
 use crate::rpc::domain::account_vault::AccountVaultInfo;
 use crate::rpc::domain::transaction::TransactionRecord;
-use crate::store::InputNoteRecord;
-use crate::store::input_note_states::UnverifiedNoteState;
 
 /// Represents the state that we want to retrieve from the network
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -509,8 +508,7 @@ pub trait NodeRpcClient: Send + Sync {
         requested_nullifiers: BTreeSet<Nullifier>,
         block_from: BlockNumber,
     ) -> Result<BTreeMap<Nullifier, Option<BlockNumber>>, RpcError> {
-        let prefixes: Vec<u16> =
-            requested_nullifiers.iter().map(crate::note::Nullifier::prefix).collect();
+        let prefixes: Vec<u16> = requested_nullifiers.iter().map(Nullifier::prefix).collect();
         let (chain_tip, _) = self.get_block_header_by_number(None, false).await?;
         let retrieved_nullifiers =
             self.sync_nullifiers(&prefixes, block_from, chain_tip.block_num()).await?;
@@ -527,40 +525,6 @@ pub trait NodeRpcClient: Send + Sync {
         }
 
         Ok(nullifiers_height)
-    }
-
-    /// Fetches public note-related data for a list of [`NoteId`] and builds [`InputNoteRecord`]s
-    /// with it. If a note is not found or it's private, it is ignored and will not be included in
-    /// the returned list.
-    ///
-    /// The default implementation of this method uses [`NodeRpcClient::get_notes_by_id`].
-    async fn get_public_note_records(
-        &self,
-        note_ids: &[NoteId],
-        current_timestamp: Option<u64>,
-    ) -> Result<Vec<InputNoteRecord>, RpcError> {
-        if note_ids.is_empty() {
-            return Ok(vec![]);
-        }
-
-        let mut public_notes = Vec::with_capacity(note_ids.len());
-        let note_details = self.get_notes_by_id(note_ids).await?;
-
-        for detail in note_details {
-            if let FetchedNote::Public(note, inclusion_proof) = detail {
-                let state = UnverifiedNoteState {
-                    metadata: *note.metadata(),
-                    inclusion_proof,
-                }
-                .into();
-                let attachments = note.attachments().clone();
-                let note = InputNoteRecord::new(note.into(), attachments, current_timestamp, state);
-
-                public_notes.push(note);
-            }
-        }
-
-        Ok(public_notes)
     }
 
     /// Given a block number, fetches the block header corresponding to that height from the node

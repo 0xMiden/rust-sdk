@@ -26,9 +26,9 @@ use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::crypto::merkle::mmr::{Forest, MmrPath, MmrProof};
 use miden_protocol::note::{NoteId, NoteScript, NoteTag};
 use miden_protocol::transaction::ProvenTransaction;
+use miden_protocol::utils::sync::RwLock;
 use miden_protocol::vm::ExecutionProof;
 use miden_protocol::{EMPTY_WORD, Word};
-use miden_tx::utils::sync::RwLock;
 use tonic::Status;
 use tracing::{info, warn};
 

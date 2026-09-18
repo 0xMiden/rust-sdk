@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+* [FEATURE][cli] Added `call --trace`, which prints the hierarchy of procedure calls the execution made, with each call's arguments, return value and cycle count. By default only the contract's own procedures are shown; `-v` adds library functions and `-vv` shows every frame. Behind the new `trace` cargo feature ([#0000](https://github.com/0xMiden/rust-sdk/pull/0000)).
+* [FEATURE][rust] Added `Client::execute_program_with_trace` and the `trace` feature, which records a program execution against the transaction host and replays it through the debug engine to produce a `CallTrace` ([#0000](https://github.com/0xMiden/rust-sdk/pull/0000)).
+
 ## 0.18.0 (2026-10-27)
 
 ### Breaking Changes
@@ -24,6 +31,7 @@
 ### Fixes
 
 * [FIX][rust] Preserved the genesis commitment in RPC headers when it is set during a native connection handshake ([#2748](https://github.com/0xMiden/rust-sdk/pull/2748)).
+
 ## 0.17.5 (2026-10-21)
 
 ### Fixes

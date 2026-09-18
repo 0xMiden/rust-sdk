@@ -391,7 +391,7 @@ If a remote prover is configured, the CLI can offload the proving process to it.
 
 ### `keys`
 
-Manage authentication keys in the configured filesystem keystore. 
+Manage authentication keys in the configured filesystem keystore.
 
 Supported authentication schemes are `falcon512-poseidon2` and `ecdsa-k256-keccak`.
 
@@ -439,7 +439,9 @@ miden-client keys --associate <COMMITMENT> --account-id <ACCOUNT_ID>
 miden-client keys --disassociate <COMMITMENT> --account-id <ACCOUNT_ID>
 ```
 
-`COMMITMENT` must be a `0x`-prefixed hexadecimal word, as `keys --list` prints it. Use a full hexadecimal account ID. Association controls whether the key is included when that account is exported.
+`COMMITMENT` must be a `0x`-prefixed hexadecimal word, as `keys --list` prints it. `ACCOUNT_ID` accepts a hexadecimal account ID or a bech32 address.
+
+An association is client bookkeeping. It selects the keys that an account export includes. It does not change the authentication component of the account, and it does not give the key the right to authorize a transaction for that account.
 
 `--associate` fails if the keystore holds no key for the commitment. `--disassociate` accepts a commitment that is not associated with the account and reports that nothing changed, so it can be used to clear an association whose key file is gone.
 

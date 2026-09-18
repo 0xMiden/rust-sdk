@@ -7,7 +7,7 @@
 use anyhow::{Context, Result};
 use miden_client::rpc::RpcEndpoint;
 
-use super::invitations::InvitationPool;
+use super::invitations::create_invitation_code;
 use super::{
     assert_rejected_as_unregistered,
     deploy_request,
@@ -27,7 +27,7 @@ pub async fn test_allowlist_registered_account_can_deploy(
     let mut client = client_config.into_client().await?;
     client.wait_for_node().await;
 
-    let invitation_code = InvitationPool::from_env()?.claim()?;
+    let invitation_code = create_invitation_code().await?;
     let account = insert_undeployed_wallet(&mut client).await?;
 
     client
@@ -108,7 +108,7 @@ pub async fn test_allowlist_is_enforced_per_batch_transaction(
     let mut client = client_config.into_client().await?;
     client.wait_for_node().await;
 
-    let invitation_code = InvitationPool::from_env()?.claim()?;
+    let invitation_code = create_invitation_code().await?;
     let registered = insert_undeployed_wallet(&mut client).await?;
     let unregistered = insert_undeployed_wallet(&mut client).await?;
 
@@ -134,6 +134,11 @@ pub async fn test_allowlist_is_enforced_per_batch_transaction(
     assert!(
         !is_deployed(&client, &unregistered).await?,
         "the unregistered account should not have been created on chain"
+    );
+    // The batch is refused as a whole, so the registered account is not created either.
+    assert!(
+        !is_deployed(&client, &registered).await?,
+        "the rejected batch should not have created the registered account"
     );
 
     Ok(())

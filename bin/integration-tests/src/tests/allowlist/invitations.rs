@@ -1,106 +1,91 @@
 //! Invitation codes the account allowlist tests register accounts with.
 //!
-//! `scripts/start-test-node.sh` seeds the node's allowlist with a pool of unbound invitation codes
-//! when `MIDEN_ACCOUNT_ALLOWLIST=1`, and writes the plaintext codes to the file named by
-//! [`INVITATION_CODES_ENV`]. A test claims one code per account it registers.
-//!
-//! A code binds to the first account that presents it and cannot be reused, so a claim must outlive
-//! the test that took it. The claim is therefore a marker file created exclusively, not an advisory
-//! lock: an advisory lock releases when the test ends and would hand a consumed code to the next
-//! caller. This also keeps a retried test correct, because the retry claims a fresh code instead of
-//! the consumed one that its previous attempt took.
+//! An invitation code binds to the first account that presents it and cannot be reused, so every
+//! test needs a code of its own. Each call to [`create_invitation_code`] creates one on the node
+//! through the sequencer administration API, which `scripts/start-test-node.sh` binds when it is
+//! started with `MIDEN_ACCOUNT_ALLOWLIST=1`. Creating the code on demand also keeps a retried test
+//! correct, because the retry creates a fresh code instead of reusing the one its previous attempt
+//! consumed.
 
-use std::path::{Path, PathBuf};
+use std::fmt::Write;
+use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, ensure};
+use sha2::{Digest, Sha256};
+use uuid::Uuid;
 
 // CONSTANTS
 // ================================================================================================
 
-/// Env var naming the file of seeded invitation codes, one code per line.
-pub const INVITATION_CODES_ENV: &str = "MIDEN_INVITATION_CODES_FILE";
+/// Env var naming the sequencer administration API, for example `http://127.0.0.1:50100`.
+pub const ADMIN_API_ENV: &str = "MIDEN_NODE_ADMIN_URL";
 
-/// Directory of claim markers, next to the codes file. `start-test-node.sh` creates it when it
-/// seeds the pool and clears it when the node restarts.
-const CLAIMS_DIR_NAME: &str = "invitation-claims";
+/// How many times a request waits for the administration API to accept connections. The node serves
+/// it from its own task, which can bind after the RPC does.
+const CONNECT_ATTEMPTS: usize = 10;
 
-// INVITATION POOL
+/// How long a request waits between connection attempts.
+const CONNECT_RETRY_DELAY: Duration = Duration::from_millis(500);
+
+// INVITATION CODES
 // ================================================================================================
 
-/// The pool of invitation codes seeded for this node.
-#[derive(Debug, Clone)]
-pub struct InvitationPool {
-    codes: Vec<String>,
-    claims_dir: PathBuf,
+/// Creates an invitation code that is bound to no account and returns its plaintext.
+///
+/// Fails when [`ADMIN_API_ENV`] is unset or the administration API refuses the request, because a
+/// test that needs a code cannot run against a node that was started without allowlist enforcement.
+pub async fn create_invitation_code() -> Result<String> {
+    let admin_url = std::env::var(ADMIN_API_ENV).with_context(|| {
+        format!("{ADMIN_API_ENV} is not set; start the node with MIDEN_ACCOUNT_ALLOWLIST=1")
+    })?;
+
+    // The code is unique per call, so no two tests can hold the same one.
+    let code = format!("miden-client-test-invitation-{}", Uuid::new_v4());
+    let url = format!(
+        "{}/admin/allowlist/invitations/{}",
+        admin_url.trim_end_matches('/'),
+        digest_of(&code)
+    );
+
+    // The node stores the digest alone and binds the code to the first account that registers with
+    // it, so the entry is created without an account.
+    let request = serde_json::json!({ "account_id": null });
+    let http = reqwest::Client::new();
+
+    let mut attempt = 1;
+    let response = loop {
+        match http.put(&url).json(&request).send().await {
+            Ok(response) => break response,
+            Err(error) if error.is_connect() && attempt < CONNECT_ATTEMPTS => {
+                tokio::time::sleep(CONNECT_RETRY_DELAY).await;
+                attempt += 1;
+            },
+            Err(error) => {
+                return Err(anyhow::Error::new(error).context(format!(
+                    "failed to reach the node administration API at {url}; start the node with \
+                     MIDEN_ACCOUNT_ALLOWLIST=1"
+                )));
+            },
+        }
+    };
+
+    let status = response.status();
+    ensure!(
+        status.is_success(),
+        "the node refused to create an invitation code: {status} {}",
+        response.text().await.unwrap_or_default()
+    );
+
+    Ok(code)
 }
 
-impl InvitationPool {
-    /// Loads the pool named by [`INVITATION_CODES_ENV`].
-    ///
-    /// Fails when the env var is unset or the file is missing, because a test that needs a code
-    /// cannot run against a node that was started without allowlist enforcement.
-    pub fn from_env() -> Result<Self> {
-        let path = std::env::var_os(INVITATION_CODES_ENV).map(PathBuf::from).with_context(|| {
-            format!(
-                "{INVITATION_CODES_ENV} is not set; start the node with MIDEN_ACCOUNT_ALLOWLIST=1"
-            )
-        })?;
-
-        Self::load(&path)
+/// Returns the lowercase hex SHA-256 of `code`. The node stores an invitation code as its digest
+/// and takes the digest in the request path.
+fn digest_of(code: &str) -> String {
+    let mut digest = String::with_capacity(64);
+    for byte in Sha256::digest(code.as_bytes()) {
+        write!(digest, "{byte:02x}").expect("writing to a string never fails");
     }
 
-    /// Loads the pool at `path`.
-    pub fn load(path: &Path) -> Result<Self> {
-        let contents = std::fs::read_to_string(path).with_context(|| {
-            format!(
-                "failed to read invitation codes from {}; start the node with \
-                 MIDEN_ACCOUNT_ALLOWLIST=1",
-                path.display()
-            )
-        })?;
-
-        let codes: Vec<String> = contents
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .map(String::from)
-            .collect();
-        if codes.is_empty() {
-            bail!("no invitation codes in {}", path.display());
-        }
-
-        let claims_dir = path.parent().unwrap_or_else(|| Path::new(".")).join(CLAIMS_DIR_NAME);
-
-        Ok(Self { codes, claims_dir })
-    }
-
-    /// Claims a code that no other test has taken.
-    ///
-    /// The claim is permanent for the life of the node, so each call yields a code that is still
-    /// unbound on the node's allowlist.
-    pub fn claim(&self) -> Result<String> {
-        std::fs::create_dir_all(&self.claims_dir).with_context(|| {
-            format!("failed to create claims directory {}", self.claims_dir.display())
-        })?;
-
-        for (index, code) in self.codes.iter().enumerate() {
-            let marker = self.claims_dir.join(index.to_string());
-            // `create_new` fails when the file is already there, which makes the claim atomic
-            // across the test processes nextest runs in parallel.
-            match std::fs::File::options().create_new(true).write(true).open(&marker) {
-                Ok(_) => return Ok(code.clone()),
-                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(err) => {
-                    return Err(anyhow::Error::new(err)
-                        .context(format!("failed to claim invitation code {}", marker.display())));
-                },
-            }
-        }
-
-        bail!(
-            "every one of the {} seeded invitation codes is claimed; raise INVITATION_POOL_SIZE in \
-             scripts/start-test-node.sh",
-            self.codes.len()
-        )
-    }
+    digest
 }

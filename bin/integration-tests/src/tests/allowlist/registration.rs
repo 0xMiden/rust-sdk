@@ -7,7 +7,7 @@
 use anyhow::{Context, Result};
 use miden_client::rpc::{RegisterAccountError, RpcEndpoint};
 
-use super::invitations::InvitationPool;
+use super::invitations::create_invitation_code;
 use super::{
     assert_registration_rejected,
     assert_rejected_as_unregistered,
@@ -16,7 +16,7 @@ use super::{
 };
 use crate::ClientConfig;
 
-/// A code the node was never seeded with. Long enough that it cannot collide with the pool.
+/// A code the node was never given. Long enough that it cannot collide with a created code.
 const UNKNOWN_INVITATION_CODE: &str = "miden-client-test-invitation-that-was-never-seeded";
 
 /// A code the node does not know is refused, and refusing it consumes nothing.
@@ -36,7 +36,7 @@ pub async fn test_allowlist_unknown_code_is_rejected(client_config: ClientConfig
     assert_registration_rejected(&error, &RegisterAccountError::InvitationNotFound);
 
     // The rejection consumed nothing, so a real code still registers the same account.
-    let invitation_code = InvitationPool::from_env()?.claim()?;
+    let invitation_code = create_invitation_code().await?;
     client
         .register_account(&invitation_code, account.id())
         .await
@@ -53,7 +53,7 @@ pub async fn test_allowlist_code_is_single_use(client_config: ClientConfig) -> R
     let mut client = client_config.into_client().await?;
     client.wait_for_node().await;
 
-    let invitation_code = InvitationPool::from_env()?.claim()?;
+    let invitation_code = create_invitation_code().await?;
     let first = insert_undeployed_wallet(&mut client).await?;
     let second = insert_undeployed_wallet(&mut client).await?;
 

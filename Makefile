@@ -30,9 +30,9 @@ AGGLAYER_ACCOUNTS_DIR?=$(CURDIR)/data
 # The test node writes the serialized protocol configuration to this path.
 MIDEN_PROTOCOL_CONFIG?=$(CURDIR)/data/protocol-config.bin
 
-# Invitation codes the account allowlist tests register accounts with, written here by
-# `start-test-node.sh` when it is started with `MIDEN_ACCOUNT_ALLOWLIST=1`.
-MIDEN_INVITATION_CODES_FILE?=$(CURDIR)/data/invitation-codes.txt
+# Sequencer administration API, which the account allowlist tests create their invitation codes
+# through. `start-test-node.sh` binds it when it is started with `MIDEN_ACCOUNT_ALLOWLIST=1`.
+MIDEN_NODE_ADMIN_URL?=http://127.0.0.1:50100
 
 integration-test integration-test-non-agglayer integration-test-agglayer integration-test-allowlist integration-test-miden-bench integration-test-dev integration-test-binary: export MIDEN_PROTOCOL_CONFIG := $(MIDEN_PROTOCOL_CONFIG)
 
@@ -160,7 +160,7 @@ integration-test-agglayer: ## Run only the agglayer integration tests
 # `MIDEN_ACCOUNT_ALLOWLIST=1`, and every other target above filters them out.
 .PHONY: integration-test-allowlist
 integration-test-allowlist: ## Run only the account allowlist integration tests (requires MIDEN_ACCOUNT_ALLOWLIST=1 on the node)
-	MIDEN_FUNDER_ACCOUNTS_DIR=$(MIDEN_FUNDER_ACCOUNTS_DIR) MIDEN_INVITATION_CODES_FILE=$(MIDEN_INVITATION_CODES_FILE) cargo nextest run --workspace --release --test=integration -E 'test(/allowlist/)'
+	MIDEN_FUNDER_ACCOUNTS_DIR=$(MIDEN_FUNDER_ACCOUNTS_DIR) MIDEN_NODE_ADMIN_URL=$(MIDEN_NODE_ADMIN_URL) cargo nextest run --workspace --release --test=integration -E 'test(/allowlist/)'
 
 .PHONY: integration-test-miden-bench
 integration-test-miden-bench: install-bench ## Run miden-bench smoke tests

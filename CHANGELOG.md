@@ -38,11 +38,8 @@
 * [FEATURE][cli] `export --account` accepts a `--no-keys` flag, which leaves the account secret keys out of the exported `.mac` file. The file still carries the account seed while the account is undeployed ([#2556](https://github.com/0xMiden/rust-sdk/pull/2556)).
 * [FEATURE][rust] The committed note passed to the `OnNoteReceived` callback now always reports the note's resolved attachment content, whether the `SyncNotes` response carried it verbatim or a `GetNotesById` follow-up resolved it ([#2475](https://github.com/0xMiden/rust-sdk/pull/2475)).
 * [FEATURE][rust] Re-exported the fee pricing and note checking types that the client API already surfaces, so downstream crates no longer need a direct `miden-tx` dependency to price note consumption: `NetworkNotePricer`, `NotePricingError` and `NoteCheckerError` at the crate root, `TransactionFee` and `TransactionFeeError` from `transaction`, `NoteCost` and `NoteConsumptionCost` from `note`, and `MastForestStore` and `TransactionMastStore` from `testing` ([#2475](https://github.com/0xMiden/rust-sdk/pull/2475)).
-
-### Features
-
-* [FEATURE][cli] Added `--invitation-code` to `new-wallet` and `new-account`, which registers the new account on the network allowlist, and `account --register <ID> --invitation-code <CODE>`, which registers an account that the client already tracks.
-* [FEATURE][rust] Added `Client::register_account`, which binds an invitation code to an account ID on the network allowlist.
+* [FEATURE][cli] Added `--invitation-code` to `new-wallet` and `new-account`, which registers the new account on the network allowlist, and `account --register <ID> --invitation-code <CODE>`, which registers an account that the client already tracks ([#2545](https://github.com/0xMiden/rust-sdk/pull/2545)).
+* [FEATURE][rust] Added `Client::register_account`, which binds an invitation code to an account ID on the network allowlist ([#2545](https://github.com/0xMiden/rust-sdk/pull/2545)).
 
 ### Fixes
 

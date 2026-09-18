@@ -1,13 +1,13 @@
 //! Account allowlist tests against a live node that enforces it.
 //!
 //! These tests need a node started with `MIDEN_ACCOUNT_ALLOWLIST=1`, which enforces the allowlist
-//! and seeds the invitation codes they claim. Every other integration test needs the opposite,
-//! because enforcement rejects the account creations they all do, so these tests run in their own
-//! job against their own node and every other target filters them out. Run them with `make
-//! integration-test-allowlist`.
+//! and binds the administration API they create invitation codes through. Every other integration
+//! test needs the opposite, because enforcement rejects the account creations they all do, so these
+//! tests run in their own job against their own node and every other target filters them out. Run
+//! them with `make integration-test-allowlist`.
 //!
 //! [`registration`] covers the `RegisterAccount` endpoint, and [`enforcement`] covers what the node
-//! does with a submission once an account is registered or not. [`invitations`] hands out the codes
+//! does with a submission once an account is registered or not. [`invitations`] creates the codes
 //! both of them register with.
 //!
 //! What the node enforces, and therefore what these tests pin down:

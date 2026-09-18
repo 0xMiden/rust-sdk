@@ -73,12 +73,14 @@ testing = [
   "miden-tx/testing",
 ]
 tonic = []
+trace = ["dep:miden-debug-engine", "std"]
 
 [dependencies]
 # Miden dependencies
 miden-agglayer        = { workspace = true }
 miden-assembly-syntax = { workspace = true }
 miden-debug           = { optional = true, workspace = true }
+miden-debug-engine    = { optional = true, workspace = true }
 miden-objects         = { workspace = true }
 miden-processor       = { workspace = true }
 miden-protocol        = { workspace = true }

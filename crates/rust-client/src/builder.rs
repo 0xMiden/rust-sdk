@@ -66,13 +66,14 @@ pub trait StoreFactory {
 /// ## Network-Aware Constructors
 ///
 /// Use one of the network-specific constructors to get sensible defaults for a specific network:
+/// - [`for_mainnet()`](Self::for_mainnet) - Pre-configured for Miden mainnet
 /// - [`for_testnet()`](Self::for_testnet) - Pre-configured for Miden testnet
 /// - [`for_devnet()`](Self::for_devnet) - Pre-configured for Miden devnet
 /// - [`for_localhost()`](Self::for_localhost) - Pre-configured for local development
 ///
 /// The builder provides defaults for:
 /// - **RPC endpoint**: Automatically configured based on the network
-/// - **Transaction prover**: Remote for testnet/devnet, local for localhost
+/// - **Transaction prover**: Remote for mainnet/testnet/devnet, local for localhost
 /// - **RNG**: Random seed-based prover randomness
 ///
 /// ## Components
@@ -177,6 +178,50 @@ impl<AUTH> ClientBuilder<AUTH>
 where
     AUTH: BuilderAuthenticator,
 {
+    /// Creates a `ClientBuilder` pre-configured for Miden mainnet.
+    ///
+    /// This automatically configures:
+    /// - **RPC**: [`Endpoint::mainnet()`]
+    /// - **Prover**: Remote prover at [`MAINNET_PROVER_ENDPOINT`]
+    /// - **Note transport**:
+    ///   [`NOTE_TRANSPORT_MAINNET_ENDPOINT`](crate::note_transport::NOTE_TRANSPORT_MAINNET_ENDPOINT)
+    ///
+    /// You still need to provide:
+    /// - A store (via `.store()`)
+    /// - An authenticator (via `.authenticator()`)
+    ///
+    /// All defaults can be overridden by calling the corresponding builder methods after
+    /// `for_mainnet()`.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let client = ClientBuilder::for_mainnet()
+    ///     .store(store)
+    ///     .authenticator(Arc::new(keystore))
+    ///     .build()
+    ///     .await?;
+    /// ```
+    #[must_use]
+    pub fn for_mainnet() -> Self {
+        let endpoint = Endpoint::mainnet();
+        Self {
+            rpc_api: Some(Arc::new(VerifyingRpcClient::new(GrpcClient::new(
+                &endpoint,
+                DEFAULT_GRPC_TIMEOUT_MS,
+            )))),
+            tx_prover: Some(Arc::new(RemoteTransactionProver::new(
+                MAINNET_PROVER_ENDPOINT.to_string(),
+            ))),
+            note_transport_config: Some(NoteTransportConfig {
+                endpoint: crate::note_transport::NOTE_TRANSPORT_MAINNET_ENDPOINT.to_string(),
+                timeout_ms: DEFAULT_GRPC_TIMEOUT_MS,
+            }),
+            endpoint: Some(endpoint),
+            ..Self::default()
+        }
+    }
+
     /// Creates a `ClientBuilder` pre-configured for Miden testnet.
     ///
     /// This automatically configures:
@@ -447,8 +492,8 @@ where
     /// Returns the endpoint configured for this builder, if any.
     ///
     /// This is set automatically when using network-specific constructors like
-    /// [`for_testnet()`](Self::for_testnet), [`for_devnet()`](Self::for_devnet), or
-    /// [`for_localhost()`](Self::for_localhost).
+    /// [`for_mainnet()`](Self::for_mainnet), [`for_testnet()`](Self::for_testnet),
+    /// [`for_devnet()`](Self::for_devnet), or [`for_localhost()`](Self::for_localhost).
     #[must_use]
     pub fn endpoint(&self) -> Option<&Endpoint> {
         self.endpoint.as_ref()

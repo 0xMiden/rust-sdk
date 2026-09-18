@@ -17,13 +17,7 @@ use crate::ClientConfig;
 /// network transaction within the same batch it's created, so the note is erased from the block
 /// body. The same client then reads them back via `input_note_reader(bridge_id)` in consumption
 /// order. Consumed notes have no id, so they're matched by their details commitment.
-///
-/// Skipped: the node cannot prove the bridge's transactions, which settle precompile work that the
-/// transaction verifier rejects.
-///
-/// TODO: rename back to `test_agglayer_note_reader_reads_consumed_notes` once protocol
-/// `0.17.0-rc.5` is released.
-pub async fn ignored_test_agglayer_note_reader_reads_consumed_notes(
+pub async fn test_agglayer_note_reader_reads_consumed_notes(
     client_config: ClientConfig,
 ) -> Result<()> {
     let agglayer_config = AgglayerConfig::from_env()?;

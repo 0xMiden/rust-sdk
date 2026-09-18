@@ -35,6 +35,7 @@ let client = ClientBuilder::for_testnet()
 ```
 
 Other network constructors are available:
+- `ClientBuilder::for_mainnet()` - Pre-configured for Miden mainnet
 - `ClientBuilder::for_testnet()` - Pre-configured for Miden testnet
 - `ClientBuilder::for_devnet()` - Pre-configured for Miden devnet
 - `ClientBuilder::for_localhost()` - Pre-configured for local development

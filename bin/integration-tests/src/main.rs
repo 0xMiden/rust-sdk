@@ -297,8 +297,6 @@ impl std::fmt::Debug for TestCase {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum TestCategory {
-    // No agglayer test is discovered while they are skipped, so nothing builds this variant.
-    #[allow(dead_code)]
     Agglayer,
     Batch,
     Client,

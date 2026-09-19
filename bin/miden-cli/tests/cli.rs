@@ -700,10 +700,20 @@ async fn tx_show_and_list_filters() -> Result<()> {
 fn tx_list_filters_conflict_with_show() {
     let temp_dir = init_cli().1;
 
-    for filter in [["--account-id", "0x1234"], ["--status", "pending"], ["--limit", "1"]] {
+    // The command also fails when the prefix matches no transaction, so the conflict is checked
+    // against the parser's message instead of the exit code alone.
+    let conflicts = [
+        (["--account-id", "0x1234"], "--account-id <ID>"),
+        (["--status", "pending"], "--status <status>"),
+        (["--limit", "1"], "--limit <count>"),
+    ];
+
+    for (filter, rejected_flag) in conflicts {
         let mut show_cmd = cargo_bin_cmd!("miden-client");
         show_cmd.args(["tx", "--show", "0x1234"]).args(filter);
-        show_cmd.current_dir(&temp_dir).assert().failure();
+        show_cmd.current_dir(&temp_dir).assert().failure().stderr(contains(format!(
+            "the argument '--show <ID>' cannot be used with '{rejected_flag}'"
+        )));
     }
 }
 
@@ -1966,8 +1976,8 @@ fn mint_cli(cli_path: &Path, target_account_id: &str, faucet_id: &str) -> String
         .to_string()
 }
 
-/// Returns the ID of the most recently created transaction, read off the first column of
-/// `tx --list --limit 1`.
+/// Returns the ID of the most recently created transaction, read off the first column of `tx --list
+/// --limit 1`.
 fn latest_transaction_id_cli(cli_path: &Path) -> String {
     let mut list_cmd = cargo_bin_cmd!("miden-client");
     list_cmd.args(["tx", "--list", "--limit", "1"]);

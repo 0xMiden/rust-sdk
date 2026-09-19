@@ -513,7 +513,7 @@ impl NodeRpcClient for GrpcClient {
                 .ok_or(RpcError::ExpectedDataMissing("MmrPath".into()))?
                 .decode_and_verify()?;
 
-            let forest_size = usize::try_from(forest).expect("u64 should fit in usize");
+            let forest_size = usize::try_from(forest).expect("u32 should fit in usize");
             let forest = Forest::new(forest_size).map_err(|_| {
                 RpcError::InvalidResponse(format!("invalid forest size: {forest_size}"))
             })?;

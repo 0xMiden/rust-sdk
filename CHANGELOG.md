@@ -61,6 +61,7 @@
 * [FIX][rust] `TransactionRequestBuilder::build_swap` and `build_pswap_create` now reject a zero-amount asset on either side of the exchange. A zero requested asset produced a payback P2ID note carrying nothing, and a zero offered asset produced a note whose consumer pays and receives nothing ([#2459](https://github.com/0xMiden/rust-sdk/pull/2459)).
 * [FIX][test] The integration tests run again on a chain that charges no fee. A `--funders` path (`MIDEN_FUNDER_ACCOUNTS_DIR`) that is unset, empty, missing, or holds no `.mac` file now leaves the run without funders instead of failing, which is all a fee-free genesis needs, since it declares no wallets for the path to hold. A `.mac` file that is present but unusable stays a hard error ([#2481](https://github.com/0xMiden/rust-sdk/pull/2481)).
 * [FIX][store] `set_setting` and `remove_setting` return an error when the number of affected rows does not match the expected count ([#2537](https://github.com/0xMiden/rust-sdk/pull/2537)).
+* [FIX][rust] Corrected the panic message on the `forest_size` conversion in `get_block_header_by_number`, which said "u64 should fit in usize" although the field is a `u32`. The message text is fixed; the behavior is unchanged ([#2586](https://github.com/0xMiden/rust-sdk/pull/2586)).
 
 ### Enhancements
 

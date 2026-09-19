@@ -4,7 +4,6 @@ use chrono::{Local, TimeZone};
 use clap::ValueEnum;
 use comfy_table::{Cell, ContentArrangement, presets};
 use miden_client::Client;
-use miden_client::asset::Asset;
 use miden_client::block::BlockNumber;
 use miden_client::keystore::Keystore;
 use miden_client::note::{NoteAssets, Nullifier, StandardNote};
@@ -63,8 +62,8 @@ pub struct TransactionCmd {
     /// (only has effect on `--list`) Only list transactions in this status.
     #[arg(long, value_name = "status", conflicts_with = "show")]
     status: Option<TransactionStatusFilter>,
-    /// (only has effect on `--list`) Only list the most recently created transactions, at most
-    /// this many.
+    /// (only has effect on `--list`) Only list the most recently created transactions, at most this
+    /// many.
     #[arg(long, value_name = "count", conflicts_with = "show")]
     limit: Option<usize>,
 }
@@ -72,10 +71,10 @@ pub struct TransactionCmd {
 impl TransactionCmd {
     pub async fn execute<AUTH: Keystore + Sync + 'static>(
         &self,
-        mut client: Client<AUTH>,
+        client: Client<AUTH>,
     ) -> Result<(), CliError> {
         match &self.show {
-            Some(transaction_id) => show_transaction(&mut client, transaction_id).await,
+            Some(transaction_id) => show_transaction(&client, transaction_id).await,
             None => {
                 list_transactions(
                     &client,
@@ -108,9 +107,20 @@ async fn list_transactions<AUTH: Keystore + Sync + 'static>(
             && status.is_none_or(|status| status.matches(&transaction.status))
     });
 
-    // The store returns transactions in an unspecified order, so sort them by creation time to
-    // make the listing chronological and give `--limit` a well-defined tail to keep.
-    transactions.sort_by_key(|transaction| transaction.details.creation_timestamp);
+    // The store returns transactions in an unspecified order, so sort them to make the listing
+    // chronological and give `--limit` a well-defined tail to keep. The creation timestamp has a
+    // resolution of one second, so the submission height and the ID break a tie between
+    // transactions created in the same second and keep the order stable.
+    transactions.sort_by(|left, right| {
+        let key = |transaction: &TransactionRecord| {
+            (
+                transaction.details.creation_timestamp,
+                transaction.details.submission_height,
+                transaction.id.to_hex(),
+            )
+        };
+        key(left).cmp(&key(right))
+    });
     if let Some(limit) = limit {
         transactions.drain(..transactions.len().saturating_sub(limit));
     }
@@ -122,7 +132,7 @@ async fn list_transactions<AUTH: Keystore + Sync + 'static>(
 // SHOW TRANSACTION
 // ================================================================================================
 async fn show_transaction<AUTH: Keystore + Sync + 'static>(
-    client: &mut Client<AUTH>,
+    client: &Client<AUTH>,
     transaction_id_prefix: &str,
 ) -> Result<(), CliError> {
     let transaction = get_transaction_with_id_prefix(client, transaction_id_prefix).await?;
@@ -189,7 +199,7 @@ fn print_transaction_details(transaction: &TransactionRecord) {
         table.add_row(vec![Cell::new("Standard Script"), Cell::new(name)]);
     }
 
-    table.add_row(vec![Cell::new("Block Number"), Cell::new(details.block_num.to_string())]);
+    table.add_row(vec![Cell::new("Reference Block"), Cell::new(details.block_num.to_string())]);
     table.add_row(vec![
         Cell::new("Submission Height"),
         Cell::new(details.submission_height.to_string()),
@@ -212,10 +222,10 @@ fn print_transaction_details(transaction: &TransactionRecord) {
 
 /// Prints the notes the transaction consumed.
 ///
-/// A note ID can't be derived from a nullifier, so it's recovered by looking the nullifier up
-/// among the client's tracked notes; an unresolved one is marked as private.
+/// A note ID can't be derived from a nullifier, so it's recovered by looking the nullifier up among
+/// the client's tracked notes; an unresolved one is marked as private.
 async fn print_input_notes<AUTH: Keystore + Sync>(
-    client: &mut Client<AUTH>,
+    client: &Client<AUTH>,
     resolver: &FaucetMetadataResolver,
     transaction: &TransactionRecord,
 ) -> Result<(), CliError> {
@@ -265,7 +275,7 @@ async fn print_input_notes<AUTH: Keystore + Sync>(
 
 /// Prints the notes the transaction created.
 async fn print_output_notes<AUTH: Keystore + Sync>(
-    client: &mut Client<AUTH>,
+    client: &Client<AUTH>,
     resolver: &FaucetMetadataResolver,
     transaction: &TransactionRecord,
 ) -> Result<(), CliError> {
@@ -338,8 +348,8 @@ fn standard_transaction_script_name(root: TransactionScriptRoot) -> Option<&'sta
     None
 }
 
-/// Formats the expiration block; [`BlockNumber::MAX`] marks a transaction that can't expire, and
-/// is shown as the empty-value placeholder.
+/// Formats the expiration block; [`BlockNumber::MAX`] marks a transaction that can't expire, and is
+/// shown as the empty-value placeholder.
 fn format_expiration_block(expiration_block_num: BlockNumber) -> String {
     if expiration_block_num == BlockNumber::MAX {
         NO_VALUE.to_string()
@@ -359,20 +369,20 @@ fn format_timestamp(timestamp: u64) -> String {
 
 /// Renders a note's assets one per line, so they fit a single table cell.
 async fn format_assets<AUTH: Keystore + Sync>(
-    client: &mut Client<AUTH>,
+    client: &Client<AUTH>,
     resolver: &FaucetMetadataResolver,
     assets: &NoteAssets,
 ) -> Result<String, CliError> {
     let mut formatted = Vec::with_capacity(assets.num_assets());
     for asset in assets.iter() {
-        formatted.push(match asset {
-            Asset::Fungible(fungible_asset) => {
+        formatted.push(match asset.as_fungible() {
+            Some(fungible_asset) => {
                 let (faucet, amount) =
-                    resolver.format_fungible_asset(client, fungible_asset).await?;
+                    resolver.format_fungible_asset(client, &fungible_asset).await?;
                 format!("{amount} {faucet}")
             },
-            Asset::NonFungible(non_fungible_asset) => {
-                format!("1 {} (non-fungible)", non_fungible_asset.faucet_id().prefix().to_hex())
+            None => {
+                format!("1 {} (non-fungible)", asset.faucet_id().prefix().to_hex())
             },
         });
     }

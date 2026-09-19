@@ -317,9 +317,10 @@ The `--list` flag accepts filters that narrow the listing, which is ordered by c
 | `--limit <count>`   | Only list at most this many of the newest transactions  |         |
 
 The `--show` flag prints the transaction's metadata — its status (with the expiration block while
-it's still pending), account ID, script root, block number, submission height, creation time, and
-the account state commitment before and after — followed by a table per side of the notes it
-consumed and created, with each note's ID, standard name, type and assets.
+it's still pending), account ID, script root, reference block, submission height, creation time,
+and the account state commitment before and after — followed by a table per side of the notes it
+consumed and created, with each note's ID, standard name, type and assets. The reference block is
+the block the transaction executed against, which is not the block it was included in.
 
 Like `notes --show`, it also accepts a partial ID instead of the full one:
 

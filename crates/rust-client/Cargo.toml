@@ -108,7 +108,7 @@ chrono       = { optional = true, workspace = true }
 futures      = { default-features = false, features = ["alloc", "async-await"], version = "0.3" }
 prost        = { features = ["derive"], workspace = true }
 prost-types  = { version = "0.14" }
-rand         = { default-features = false, workspace = true }
+rand         = { default-features = false, version = "0.10" }
 serde        = { default-features = false, features = ["derive"], workspace = true }
 tempfile     = { optional = true, workspace = true }
 thiserror    = { workspace = true }
@@ -116,7 +116,7 @@ tokio        = { features = ["sync", "time"], optional = true, workspace = true 
 tonic        = { features = ["codegen"], optional = true, workspace = true }
 tonic-health = { optional = true, version = "0.14" }
 tonic-prost  = { optional = true, version = "0.14" }
-tracing      = { default-features = false, workspace = true }
+tracing      = { default-features = false, version = "0.1" }
 uuid         = { features = ["js", "serde", "v4"], optional = true, workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

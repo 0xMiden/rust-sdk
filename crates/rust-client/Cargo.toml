@@ -109,7 +109,7 @@ futures      = { default-features = false, features = ["alloc", "async-await"], 
 prost        = { features = ["derive"], workspace = true }
 prost-types  = { version = "0.14" }
 rand         = { default-features = false, version = "0.10" }
-serde        = { default-features = false, features = ["derive"], workspace = true }
+serde        = { default-features = false, features = ["derive"], version = "1.0" }
 tempfile     = { optional = true, workspace = true }
 thiserror    = { workspace = true }
 tokio        = { features = ["sync", "time"], optional = true, workspace = true }

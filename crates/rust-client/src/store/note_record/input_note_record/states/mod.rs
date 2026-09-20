@@ -1,7 +1,6 @@
-use alloc::string::{String, ToString};
+use alloc::string::ToString;
 use core::fmt::{self, Display};
 
-#[cfg(feature = "std")]
 use chrono::{Local, TimeZone};
 use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber};
@@ -309,7 +308,17 @@ impl Display for InputNoteState {
                 write!(
                     f,
                     "Processing (submitted at {} by account {})",
-                    submission_data.submitted_at.map_or("?".to_string(), format_timestamp),
+                    submission_data.submitted_at.map_or("?".to_string(), |submitted_at| {
+                        Local
+                            .timestamp_opt(
+                                i64::try_from(submitted_at)
+                                    .expect("i64::MAX as timestamp is year 2262"),
+                                0,
+                            )
+                            .single()
+                            .expect("timestamp should be valid")
+                            .to_string()
+                    }),
                     submission_data.consumer_account
                 )
             },
@@ -344,23 +353,6 @@ impl Display for InputNoteState {
             },
         }
     }
-}
-
-#[cfg(feature = "std")]
-fn format_timestamp(timestamp: u64) -> String {
-    Local
-        .timestamp_opt(
-            i64::try_from(timestamp).expect("i64::MAX as timestamp is year 2262"),
-            0,
-        )
-        .single()
-        .expect("timestamp should be valid")
-        .to_string()
-}
-
-#[cfg(not(feature = "std"))]
-fn format_timestamp(timestamp: u64) -> String {
-    timestamp.to_string()
 }
 
 pub trait NoteStateHandler {

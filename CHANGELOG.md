@@ -33,6 +33,7 @@
 * [BREAKING][behavior][rust] `BatchBuilder::submit` returns the new `BatchBuilderError::BatchSubmissionOutcomeUnknown` when a submission comes back without a definite outcome, instead of `ClientError::RpcError`. It carries a `ProvenBatchSubmission` to resend with `Client::retry_proven_batch`. Rejections the node issues deliberately are unaffected, so code matching `ClientError::RpcError` still compiles but stops matching these cases ([#2508](https://github.com/0xMiden/rust-sdk/pull/2508)).
 * [BREAKING][type][rust] Added the `BatchBuilderError::BatchSubmissionOutcomeUnknown` variant, so exhaustive matches on `BatchBuilderError` must handle it ([#2508](https://github.com/0xMiden/rust-sdk/pull/2508)).
 * [BREAKING][param][rust] `NodeRpcClient` takes the submitted payload by reference instead of by value: `submit_proven_transaction` takes `&ProvenTransaction` instead of `ProvenTransaction`, and `submit_proven_batch` takes `&ProvenBatch` and `&ProposedBatch` instead of `ProvenBatch` and `ProposedBatch`. An implementation that needs to own the payload must clone it itself ([#2508](https://github.com/0xMiden/rust-sdk/pull/2508)).
+* [BREAKING][removal][rust] `rpc::domain::MissingFieldHelper` is no longer public. The conversions between the RPC domain types and the generated protobuf messages moved out of `rpc::domain` into a private module, so the domain types no longer depend on the wire format ([#XXXX](https://github.com/0xMiden/rust-sdk/pull/XXXX)).
 
 ### Features
 

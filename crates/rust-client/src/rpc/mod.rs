@@ -82,10 +82,11 @@ use miden_protocol::vm::ExecutionProof;
 
 use crate::rpc::domain::storage_map::StorageMapInfo;
 
-/// Contains domain types related to RPC requests and responses, as well as utility functions for
-/// dealing with them.
+/// Contains the domain types for RPC requests and responses.
 pub mod domain;
 pub mod encryption;
+
+mod conversions;
 
 mod errors;
 pub use errors::*;

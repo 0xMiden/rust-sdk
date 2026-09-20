@@ -60,6 +60,7 @@ use crate::rpc::errors::{AcceptHeaderContext, AcceptHeaderError, GrpcError, RpcC
 use crate::rpc::generated::rpc::BlockRange;
 use crate::rpc::{AccountStateAt, generated as proto};
 
+mod account_response;
 mod api_client;
 mod retry;
 

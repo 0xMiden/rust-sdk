@@ -51,8 +51,7 @@ use miden_tx::utils::serde::{
 };
 use rand::CryptoRng;
 
-use super::generated::submission::IesScheme;
-use super::{RpcError, generated as proto};
+use super::RpcError;
 
 // CONSTANTS
 // ================================================================================================
@@ -74,7 +73,10 @@ const TX_INPUT_SEAL_DOMAIN: &[u8] = b"MIDEN_TX_INPUT_SEAL_V1";
 const ATTESTATION_DOMAIN: &[u8] = b"MIDEN_TX_ENCRYPTION_KEY_ATTESTATION_V1";
 
 /// Wire identifier of the only IES scheme this client seals for.
-const SUPPORTED_SCHEME: u32 = IesScheme::X25519Xchacha20Poly1305 as u32;
+///
+/// This is the `X25519Xchacha20Poly1305` value of the node's `IesScheme` protobuf enum. The
+/// protobuf conversion module asserts that the two values are equal.
+pub(crate) const SUPPORTED_SCHEME: u32 = 1;
 
 /// Longest key identifier accepted from the RPC, in bytes.
 ///
@@ -409,8 +411,8 @@ fn transaction_inputs_associated_data(
 /// key they were sealed against.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SealedTransactionInputs {
-    key_id: Vec<u8>,
-    ciphertext: Vec<u8>,
+    pub(crate) key_id: Vec<u8>,
+    pub(crate) ciphertext: Vec<u8>,
 }
 
 impl SealedTransactionInputs {
@@ -422,15 +424,6 @@ impl SealedTransactionInputs {
     /// Returns the sealed bytes.
     pub fn ciphertext(&self) -> &[u8] {
         &self.ciphertext
-    }
-}
-
-impl From<SealedTransactionInputs> for proto::submission::SealedTransactionInputs {
-    fn from(sealed: SealedTransactionInputs) -> Self {
-        Self {
-            key_id: sealed.key_id,
-            ciphertext: sealed.ciphertext,
-        }
     }
 }
 

@@ -58,15 +58,20 @@ std = [
   "dep:tonic-health",
   "dep:tonic-prost",
   "dep:tokio",
+  "futures/std",
   "miden-agglayer/std",
   "miden-assembly-syntax/std",
   "miden-objects/std",
   "miden-processor/std",
   "miden-protocol/std",
   "miden-tx/std",
+  "rand/std",
+  "rand/thread_rng",
+  "serde/std",
   "tonic/tls-native-roots",
   "tonic/tls-ring",
   "tonic/transport",
+  "tracing/std",
 ]
 testing = [
   "dep:miden-testing",
@@ -100,19 +105,18 @@ miden-tx-batch        = { workspace = true }
 anyhow       = { workspace = true }
 async-trait  = { workspace = true }
 chrono       = { optional = true, workspace = true }
-futures      = { version = "0.3" }
+futures      = { default-features = false, features = ["alloc", "async-await"], version = "0.3" }
 prost        = { features = ["derive"], workspace = true }
 prost-types  = { version = "0.14" }
-rand         = { workspace = true }
-serde        = { workspace = true }
-serde_json   = { workspace = true }
+rand         = { default-features = false, workspace = true }
+serde        = { default-features = false, features = ["derive"], workspace = true }
 tempfile     = { optional = true, workspace = true }
 thiserror    = { workspace = true }
 tokio        = { features = ["sync", "time"], optional = true, workspace = true }
 tonic        = { features = ["codegen"], optional = true, workspace = true }
 tonic-health = { optional = true, version = "0.14" }
 tonic-prost  = { optional = true, version = "0.14" }
-tracing      = { workspace = true }
+tracing      = { default-features = false, workspace = true }
 uuid         = { features = ["js", "serde", "v4"], optional = true, workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

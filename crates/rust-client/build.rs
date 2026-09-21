@@ -66,8 +66,7 @@ fn canonical_object_config() -> tonic_prost_build::Config {
 
 /// Whether transport-capable client bindings are requested.
 fn tonic_client_codegen_enabled() -> bool {
-    std::env::var_os("CARGO_FEATURE_STD").is_some()
-        || std::env::var_os("CARGO_FEATURE_TONIC").is_some()
+    std::env::var_os("CARGO_FEATURE_TONIC").is_some()
 }
 
 // REMOTE PROVER CLIENT PROTO CODEGEN

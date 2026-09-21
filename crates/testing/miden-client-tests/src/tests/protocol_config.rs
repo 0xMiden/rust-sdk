@@ -1,6 +1,6 @@
 use miden_client::account::AccountType;
 use miden_client::asset::AssetId;
-use miden_client::protocol_config::ProtocolConfig;
+use miden_client::protocol_config::{ProtocolConfig, protocol_config_setting_key};
 use miden_client::store::{SettingScope, StoreError};
 use miden_client::transaction::TransactionRequestBuilder;
 use miden_client::{ClientError, Serializable, Word};
@@ -31,11 +31,10 @@ async fn the_first_sync_stores_the_protocol_config() {
 }
 
 #[tokio::test]
-async fn a_sync_stores_a_configuration_the_store_does_not_hold() {
+async fn storing_a_configuration_does_not_replace_another() {
     let (builder, rpc) = create_test_client_builder().await;
     let mut client = TestClient::from(builder.build().await.unwrap());
 
-    // The store holds a configuration the node never sends, so the one the sync returns is new.
     let held = protocol_config_for(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2);
     client.seed_protocol_config(held.clone()).await.unwrap();
     let returned = rpc.protocol_config();
@@ -74,7 +73,7 @@ async fn protocol_config_rejects_a_substituted_preimage() {
         .test_store()
         .set_setting(
             SettingScope::Client,
-            format!("protocol_config:{commitment}"),
+            protocol_config_setting_key(commitment),
             other.to_bytes(),
         )
         .await
@@ -94,7 +93,7 @@ async fn execution_requires_the_reference_block_protocol_config() {
     let commitment = config.to_commitment();
     client
         .test_store()
-        .remove_setting(SettingScope::Client, format!("protocol_config:{commitment}"))
+        .remove_setting(SettingScope::Client, protocol_config_setting_key(commitment))
         .await
         .unwrap();
     let other = protocol_config_for(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2);

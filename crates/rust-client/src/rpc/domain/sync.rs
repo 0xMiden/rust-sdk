@@ -107,7 +107,8 @@ mod tests {
 
     use super::*;
 
-    fn config_for(faucet: u128) -> ProtocolConfig {
+    /// Returns the current protocol configuration for `faucet`.
+    fn protocol_config_for(faucet: u128) -> ProtocolConfig {
         ProtocolConfig::current(AssetId::new_fungible(faucet.try_into().unwrap())).unwrap()
     }
 
@@ -148,8 +149,8 @@ mod tests {
 
     #[test]
     fn a_protocol_config_must_match_the_header_it_arrives_with() {
-        let committed = config_for(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_1);
-        let other = config_for(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2);
+        let committed = protocol_config_for(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_1);
+        let other = protocol_config_for(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2);
         assert_ne!(committed.to_commitment(), other.to_commitment());
 
         let matching = ChainMmrInfo::try_from(response(&committed, Some(&committed))).unwrap();

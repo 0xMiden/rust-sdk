@@ -562,9 +562,7 @@ pub trait Store: Send + Sync {
     ///     locked.
     /// - Storing new MMR authentication nodes.
     /// - Updating the tracked public accounts.
-    /// - Storing the protocol configuration the update carries, under
-    ///   [`crate::protocol_config::protocol_config_setting_key`] in [`SettingScope::Client`]. The
-    ///   sync height must not advance without it.
+    /// - Storing the protocol configuration the update carries, before the sync height advances.
     async fn apply_state_sync(&self, state_sync_update: StateSyncUpdate) -> Result<(), StoreError>;
 
     // TRANSPORT

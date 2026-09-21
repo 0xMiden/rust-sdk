@@ -642,10 +642,11 @@ async fn public_faucet_metadata_is_fetched_and_persisted() -> Result<()> {
 /// single-transaction view and the listing filters against the same mint.
 #[tokio::test]
 async fn tx_show_and_list_filters() -> Result<()> {
-    let temp_dir = init_cli().1;
+    let (store_path, temp_dir, endpoint) = init_cli();
 
     let wallet_account_id = new_wallet_cli(&temp_dir, AccountType::Private);
     let fungible_faucet_account_id = new_faucet_cli(&temp_dir, AccountType::Private);
+    fund_cli_account(&temp_dir, &store_path, &endpoint, &fungible_faucet_account_id).await?;
 
     sync_cli(&temp_dir);
 

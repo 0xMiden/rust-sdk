@@ -49,13 +49,10 @@ crate-type = ["lib"]
 # each consumer can pick the smallest feature set they need.
 concurrent = ["miden-tx/concurrent"]
 dap = ["dep:miden-debug", "std"]
-default = ["std"]
+default = ["std", "tonic"]
 std = [
   "concurrent",
   "dep:tempfile",
-  "dep:tonic",
-  "dep:tonic-health",
-  "dep:tonic-prost",
   "dep:tokio",
   "miden-agglayer/std",
   "miden-assembly-syntax/std",
@@ -75,12 +72,7 @@ testing = [
   "miden-standards/testing",
   "miden-tx/testing",
 ]
-tonic = [
-  "dep:tonic",
-  "dep:tonic-health",
-  "dep:tonic-prost",
-  "dep:tonic-web-wasm-client",
-]
+tonic = ["dep:tonic", "dep:tonic-health", "dep:tonic-prost", "dep:tonic-web-wasm-client"]
 
 [dependencies]
 # Miden dependencies

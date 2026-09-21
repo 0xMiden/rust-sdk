@@ -227,7 +227,7 @@ async fn create_pass_through_account<AUTH: TransactionAuthenticator>(
         .build_with_schema_commitment()
         .unwrap();
 
-    client.add_account(&account, false).await?;
+    client.add_account(&account, false, None).await?;
     Ok(account)
 }
 

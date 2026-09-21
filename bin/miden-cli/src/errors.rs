@@ -133,16 +133,6 @@ pub enum CliError {
     Transaction(#[source] SourceError, String),
     #[error("expected full account, but got partial account: {0}")]
     InvalidAccount(AccountId),
-    #[error("account {0} is not tracked by this client")]
-    #[diagnostic(
-        code(cli::account_not_tracked),
-        help(
-            "Only a tracked account can be registered. Add an existing account with `{} import <FILE>`, or create and register a new one with `{} new-wallet --invitation-code <CODE>`.",
-            client_binary_name().display(),
-            client_binary_name().display()
-        )
-    )]
-    AccountNotTracked(AccountId),
 }
 
 impl From<ClientError> for CliError {

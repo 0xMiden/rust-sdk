@@ -3121,29 +3121,25 @@ async fn test_load_local_priority() -> Result<()> {
 // ================================================================================================
 
 #[test]
-fn account_register_requires_an_invitation_code() {
-    let temp_dir = temp_dir().join(format!("cli-test-{}", rand::rng().random::<u64>()));
-    std::fs::create_dir_all(&temp_dir).unwrap();
-
+fn new_wallet_offers_an_invitation_code() {
     let mut cmd = cargo_bin_cmd!("miden-client");
-    cmd.args(["account", "--register", "0x1234"]);
-    // The message is asserted so that a missing configuration cannot pass this test in place of the
-    // argument check.
-    cmd.current_dir(&temp_dir)
-        .assert()
-        .failure()
-        .stderr(contains("--invitation-code <CODE>"));
+    cmd.args(["new-wallet", "--help"]);
+    cmd.assert().success().stdout(contains("--invitation-code <CODE>"));
 }
 
 #[test]
-fn account_invitation_code_requires_register() {
-    let temp_dir = temp_dir().join(format!("cli-test-{}", rand::rng().random::<u64>()));
-    std::fs::create_dir_all(&temp_dir).unwrap();
+fn new_account_offers_an_invitation_code() {
+    let mut cmd = cargo_bin_cmd!("miden-client");
+    cmd.args(["new-account", "--help"]);
+    cmd.assert().success().stdout(contains("--invitation-code <CODE>"));
+}
 
+/// Registration only happens when an account is created, so `account` takes no invitation code.
+#[test]
+fn account_does_not_offer_an_invitation_code() {
     let mut cmd = cargo_bin_cmd!("miden-client");
     cmd.args(["account", "--invitation-code", "Mi-DEN-1234"]);
-    cmd.current_dir(&temp_dir)
-        .assert()
+    cmd.assert()
         .failure()
-        .stderr(contains("--register <ID>"));
+        .stderr(contains("unexpected argument '--invitation-code'"));
 }

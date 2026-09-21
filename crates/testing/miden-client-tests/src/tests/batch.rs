@@ -157,7 +157,7 @@ async fn apply_transaction_batch_rolls_back_on_mid_batch_failure() {
 
     // Register ONLY account A. Account B stays unknown to the client store, so applying its patch
     // fails with `AccountDataNotFound` and poisons the batch.
-    client.add_account(&account_a, false).await.unwrap();
+    client.add_account(&account_a, false, None).await.unwrap();
 
     // Execute a trivial transaction against A and another against B, both via the mock chain. Both
     // produce valid `ExecutedTransaction`s; the failure happens only at store-apply time. Build
@@ -425,7 +425,7 @@ async fn batch_builder_serves_witnesses_for_state_untouched_by_prior_push() {
     let from_id = from_account.id();
 
     client.keystore().add_key(&key_pair, from_id).await.unwrap();
-    client.add_account(&from_account, false).await.unwrap();
+    client.add_account(&from_account, false, None).await.unwrap();
 
     let to_account = client.insert_wallet(AccountType::Private).await.unwrap();
     let to_id = to_account.id();
@@ -598,8 +598,8 @@ async fn batch_builder_submits_txs_across_multiple_accounts() {
     seed_mock_transaction_encryption_key(&mut client).await;
 
     // Register both accounts with the client.
-    client.add_account(&account_a, false).await.unwrap();
-    client.add_account(&account_b, false).await.unwrap();
+    client.add_account(&account_a, false, None).await.unwrap();
+    client.add_account(&account_b, false, None).await.unwrap();
 
     client.sync_state().await.unwrap();
 
@@ -755,7 +755,7 @@ async fn register_mock_chain_account(client: &mut TestClient, rpc_api: &MockRpcA
     let account_id = rpc_api.first_account_id();
 
     let account = rpc_api.mock_chain.read().committed_account(account_id).unwrap().clone();
-    client.add_account(&account, false).await.unwrap();
+    client.add_account(&account, false, None).await.unwrap();
     client.sync_state().await.unwrap();
 
     account_id

@@ -318,20 +318,7 @@ impl From<&ClientError> for Option<ErrorHint> {
                 ),
                 docs_url: Some(TROUBLESHOOTING_DOC),
             }),
-            ClientError::RpcError(RpcError::ConnectionError(_)) => Some(ErrorHint {
-                message: "Could not reach the Miden node. Check that the node endpoint in your \
-                          configuration is correct and that the node is running.".to_string(),
-                docs_url: Some(TROUBLESHOOTING_DOC),
-            }),
-            ClientError::RpcError(RpcError::AcceptHeaderError(_)) => Some(ErrorHint {
-                message: "The node rejected the request due to a version mismatch. \
-                          Ensure your client version is compatible with the node version.".to_string(),
-                docs_url: Some(TROUBLESHOOTING_DOC),
-            }),
-            ClientError::RpcError(RpcError::RequestError {
-                endpoint_error: Some(EndpointError::RegisterAccount(inner)),
-                ..
-            }) => Some(register_account_hint(inner)),
+            ClientError::RpcError(inner) => rpc_hint(inner),
             ClientError::AddNewAccountWithoutSeed => Some(ErrorHint {
                 message: "New accounts require a seed to derive their initial state. \
                           Use `Client::new_account()` which generates the seed automatically, \
@@ -455,6 +442,29 @@ impl From<&TransactionRequestError> for Option<ErrorHint> {
 impl TransactionRequestError {
     pub fn error_hint(&self) -> Option<ErrorHint> {
         self.into()
+    }
+}
+
+/// Returns the hint for an error the node or the transport returned.
+fn rpc_hint(err: &RpcError) -> Option<ErrorHint> {
+    match err {
+        RpcError::ConnectionError(_) => Some(ErrorHint {
+            message: "Could not reach the Miden node. Check that the node endpoint in your \
+                      configuration is correct and that the node is running."
+                .to_string(),
+            docs_url: Some(TROUBLESHOOTING_DOC),
+        }),
+        RpcError::AcceptHeaderError(_) => Some(ErrorHint {
+            message: "The node rejected the request due to a version mismatch. \
+                      Ensure your client version is compatible with the node version."
+                .to_string(),
+            docs_url: Some(TROUBLESHOOTING_DOC),
+        }),
+        RpcError::RequestError {
+            endpoint_error: Some(EndpointError::RegisterAccount(inner)),
+            ..
+        } => Some(register_account_hint(inner)),
+        _ => None,
     }
 }
 

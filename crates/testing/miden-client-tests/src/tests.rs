@@ -291,8 +291,8 @@ async fn insert_same_account_twice_fails() {
         ))],
     );
 
-    assert!(client.add_account(&account, false).await.is_ok());
-    assert!(client.add_account(&account, false).await.is_err());
+    assert!(client.add_account(&account, false, None).await.is_ok());
+    assert!(client.add_account(&account, false, None).await.is_err());
 }
 
 #[tokio::test]
@@ -315,7 +315,7 @@ async fn account_code() {
     let reconstructed_code = AccountCode::read_from_bytes(&account_code_bytes).unwrap();
     assert_eq!(*account_code, reconstructed_code);
 
-    client.add_account(&account, false).await.unwrap();
+    client.add_account(&account, false, None).await.unwrap();
     let retrieved_code = client.get_account_code(account.id()).await.unwrap().unwrap();
     assert_eq!(*account.code(), retrieved_code);
 }
@@ -333,7 +333,7 @@ async fn get_account_by_id() {
         ))],
     );
 
-    client.add_account(&account, false).await.unwrap();
+    client.add_account(&account, false, None).await.unwrap();
 
     // Retrieving an existing account should succeed
     let (acc_from_db, _account_seed) = match client.account_reader(account.id()).header().await {
@@ -1520,7 +1520,7 @@ async fn input_note_reader_finds_externally_consumed_notes() {
     seed_mock_transaction_encryption_key(&mut client).await;
 
     // Register the consumer account so sync_transactions returns its transactions.
-    client.add_account(&consumer, false).await.unwrap();
+    client.add_account(&consumer, false, None).await.unwrap();
 
     // Import the P2ID note as an input note so the client tracks it. The tag lets the import
     // resolve the note's on-chain commitment (and thus its metadata) so it can later be matched
@@ -3941,7 +3941,7 @@ async fn empty_storage_map() {
 
     client.keystore().add_key(&key_pair, account_id).await.unwrap();
 
-    client.add_account(&account, false).await.unwrap();
+    client.add_account(&account, false, None).await.unwrap();
 
     let fetched_storage_commitment =
         client.account_reader(account_id).storage_commitment().await.unwrap();
@@ -4056,7 +4056,7 @@ async fn storage_and_vault_proofs() {
 
     client.keystore().add_key(&key_pair, account.id()).await.unwrap();
 
-    client.add_account(&account, false).await.unwrap();
+    client.add_account(&account, false, None).await.unwrap();
 
     let account_id = account.id();
 
@@ -4146,7 +4146,7 @@ async fn account_addresses_basic_wallet() {
         ))],
     );
 
-    client.add_account(&account, false).await.unwrap();
+    client.add_account(&account, false, None).await.unwrap();
     let addresses = client.account_reader(account.id()).addresses().await.unwrap();
 
     let unspecified_default_address = Address::new(account.id());
@@ -4165,7 +4165,7 @@ async fn account_addresses_non_basic_wallet() {
 
     let account = Account::mock_non_fungible_faucet(ACCOUNT_ID_PUBLIC_NON_FUNGIBLE_FAUCET);
 
-    client.add_account(&account, false).await.unwrap();
+    client.add_account(&account, false, None).await.unwrap();
     let addresses = client.account_reader(account.id()).addresses().await.unwrap();
 
     let unspecified_default_address = Address::new(account.id());
@@ -4189,7 +4189,7 @@ async fn account_add_address_after_creation() {
         ))],
     );
 
-    client.add_account(&account, false).await.unwrap();
+    client.add_account(&account, false, None).await.unwrap();
 
     let default_address = Address::new(account.id());
 
@@ -4248,7 +4248,7 @@ async fn import_watched_account_by_id_rejects_already_tracked_native_account() {
     client.ensure_genesis_in_place().await.unwrap();
     seed_mock_transaction_encryption_key(&mut client).await;
 
-    client.add_account(&account, false).await.unwrap();
+    client.add_account(&account, false, None).await.unwrap();
 
     let default_note_tag_record =
         NoteTagRecord::with_account_source(Address::new(account_id).to_note_tag(), account_id);
@@ -4753,7 +4753,7 @@ async fn sync_large_public_account() {
         .unwrap();
     client.ensure_genesis_in_place().await.unwrap();
     seed_mock_transaction_encryption_key(&mut client).await;
-    client.add_account(&original_account, false).await.unwrap();
+    client.add_account(&original_account, false, None).await.unwrap();
 
     // 5. Sync — the client detects a commitment mismatch, fetches full account state.
     client.sync_state().await.unwrap();
@@ -5008,7 +5008,7 @@ async fn insert_new_ecdsa_wallet(
 
     client.keystore().add_key(&key_pair, account.id()).await.unwrap();
 
-    client.add_account(&account, false).await?;
+    client.add_account(&account, false, None).await?;
 
     Ok(account)
 }
@@ -5057,7 +5057,7 @@ async fn insert_new_ecdsa_fungible_faucet(
 
     client.keystore().add_key(&key_pair, account.id()).await.unwrap();
 
-    client.add_account(&account, false).await?;
+    client.add_account(&account, false, None).await?;
     Ok(account)
 }
 
@@ -5129,7 +5129,7 @@ async fn storage_and_vault_proofs_ecdsa() {
 
     client.keystore().add_key(&key_pair, account.id()).await.unwrap();
 
-    client.add_account(&account, false).await.unwrap();
+    client.add_account(&account, false, None).await.unwrap();
 
     let account_id = account.id();
 

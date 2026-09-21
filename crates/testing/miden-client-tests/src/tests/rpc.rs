@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use miden_client::account::AccountId;
+use miden_client::auth::{AuthSchemeId, AuthSingleSig, PublicKeyCommitment};
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;
 use miden_client::rpc::{
@@ -15,7 +16,11 @@ use miden_client::testing::common::create_test_store_path;
 use miden_client::testing::mock::MockRpcApi;
 use miden_client::{Client, ClientError, ErrorHint, Word};
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
+use miden_protocol::account::Account;
 use miden_protocol::crypto::rand::RandomCoin;
+use miden_protocol::{EMPTY_WORD, ZERO};
+use miden_standards::account::auth::Approver;
+use miden_standards::testing::mock_account::MockAccountExt;
 use miden_testing::MockChain;
 
 use super::ACCOUNT_ID_REGULAR;
@@ -24,6 +29,24 @@ const INVITATION_CODE: &str = "Mi-DEN-1234";
 
 fn account_id() -> AccountId {
     AccountId::try_from(ACCOUNT_ID_REGULAR).unwrap()
+}
+
+/// Builds an account that was never created on chain, which is the only kind `add_account` accepts
+/// an invitation code for.
+fn new_account() -> Account {
+    let account = Account::mock(
+        ACCOUNT_ID_REGULAR,
+        [AuthSingleSig::new(Approver::new(
+            PublicKeyCommitment::from(EMPTY_WORD),
+            AuthSchemeId::Falcon512Poseidon2,
+        ))],
+    );
+
+    // `Account::mock` returns an account at nonce 1. A new account is at nonce 0 and carries a
+    // seed.
+    let (id, vault, storage, code, ..) = account.into_parts();
+
+    Account::new_unchecked(id, vault, storage, code, ZERO, Some(Word::default()))
 }
 
 fn rejection(error_kind: GrpcError, endpoint_error: RegisterAccountError) -> RpcError {
@@ -97,12 +120,10 @@ async fn register_account_accepts_a_repeated_binding() {
     );
 }
 
-// CLIENT METHOD
+// ACCOUNT REGISTRATION THROUGH `add_account`
 // ================================================================================================
 
 /// Builds a client whose RPC layer is `rpc_api`.
-///
-/// Registration does not read or write the store, so the client needs no genesis state.
 async fn client_with_rpc(rpc_api: Arc<MockRpcApi>) -> Client<FilesystemKeyStore> {
     let keystore = FilesystemKeyStore::new(std::env::temp_dir()).unwrap();
 
@@ -118,28 +139,46 @@ async fn client_with_rpc(rpc_api: Arc<MockRpcApi>) -> Client<FilesystemKeyStore>
 }
 
 #[tokio::test]
-async fn client_register_account_forwards_the_code_unchanged() {
+async fn add_account_forwards_the_invitation_code() {
     let rpc_api = Arc::new(MockRpcApi::new(MockChain::new()));
-    let client = client_with_rpc(rpc_api.clone()).await;
+    let mut client = client_with_rpc(rpc_api.clone()).await;
 
-    client.register_account(INVITATION_CODE, account_id()).await.unwrap();
+    client.add_account(&new_account(), false, Some(INVITATION_CODE)).await.unwrap();
 
     assert_eq!(
         rpc_api.registered_invitation_code(account_id()).as_deref(),
         Some(INVITATION_CODE)
     );
+    assert!(client.get_account_header(account_id()).await.unwrap().is_some());
 }
 
+/// Without a code the account is stored and the registration endpoint is never called, which is
+/// what leaves every caller that passes `None` unaffected.
 #[tokio::test]
-async fn client_register_account_reports_an_unknown_code() {
+async fn add_account_without_an_invitation_code_does_not_register() {
+    let rpc_api = Arc::new(MockRpcApi::new(MockChain::new()));
+    let mut client = client_with_rpc(rpc_api.clone()).await;
+
+    client.add_account(&new_account(), false, None).await.unwrap();
+
+    assert!(rpc_api.registered_invitation_code(account_id()).is_none());
+    assert!(client.get_account_header(account_id()).await.unwrap().is_some());
+}
+
+/// The registration runs before the store write, so a refused code leaves no account behind.
+#[tokio::test]
+async fn add_account_reports_an_unknown_code_and_stores_nothing() {
     let rpc_api = Arc::new(MockRpcApi::new(MockChain::new()));
     rpc_api.fail_next_call(
         RpcEndpoint::RegisterAccount,
         rejection(GrpcError::NotFound, RegisterAccountError::InvitationNotFound),
     );
-    let client = client_with_rpc(rpc_api.clone()).await;
+    let mut client = client_with_rpc(rpc_api.clone()).await;
 
-    let error = client.register_account(INVITATION_CODE, account_id()).await.unwrap_err();
+    let error = client
+        .add_account(&new_account(), false, Some(INVITATION_CODE))
+        .await
+        .unwrap_err();
 
     let ClientError::RpcError(rpc_error) = &error else {
         panic!("expected an RPC error, got {error:?}");
@@ -149,26 +188,29 @@ async fn client_register_account_reports_an_unknown_code() {
         Some(EndpointError::RegisterAccount(RegisterAccountError::InvitationNotFound))
     ));
     assert!(rpc_api.registered_invitation_code(account_id()).is_none());
+    assert!(client.get_account_header(account_id()).await.unwrap().is_none());
 }
 
-/// The store is never touched, so a rejected registration leaves no trace and the same account can
-/// be registered again with another code.
+/// A rejected call leaves no trace, so the same account is added again with another code and
+/// without the `overwrite` flag. This is the whole reason the registration precedes the store
+/// write.
 #[tokio::test]
-async fn client_register_account_can_be_retried_after_a_rejection() {
+async fn add_account_can_be_retried_after_a_rejection() {
     let rpc_api = Arc::new(MockRpcApi::new(MockChain::new()));
     rpc_api.fail_next_call(
         RpcEndpoint::RegisterAccount,
         rejection(GrpcError::NotFound, RegisterAccountError::InvitationNotFound),
     );
-    let client = client_with_rpc(rpc_api.clone()).await;
+    let mut client = client_with_rpc(rpc_api.clone()).await;
 
-    client.register_account("wrong-code", account_id()).await.unwrap_err();
-    client.register_account(INVITATION_CODE, account_id()).await.unwrap();
+    client.add_account(&new_account(), false, Some("wrong-code")).await.unwrap_err();
+    client.add_account(&new_account(), false, Some(INVITATION_CODE)).await.unwrap();
 
     assert_eq!(
         rpc_api.registered_invitation_code(account_id()).as_deref(),
         Some(INVITATION_CODE)
     );
+    assert!(client.get_account_header(account_id()).await.unwrap().is_some());
 }
 
 // REGISTRATION STATUS CODE MAPPING

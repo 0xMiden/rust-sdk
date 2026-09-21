@@ -1,7 +1,8 @@
 //! Registering an account on the network allowlist.
 //!
 //! These cover the `RegisterAccount` endpoint itself: which codes it accepts, which it refuses, and
-//! what a refusal leaves behind. What the node then does with a submission is in
+//! what a refusal leaves behind. [`Client::add_account`] is the only caller, and it registers the
+//! account before it writes it to the store. What the node then does with a submission is in
 //! [`super::enforcement`].
 
 use anyhow::{Context, Result};
@@ -11,8 +12,11 @@ use super::invitations::create_invitation_code;
 use super::{
     assert_registration_rejected,
     assert_rejected_as_unregistered,
+    build_wallet,
+    client_error,
     deploy_request,
     insert_undeployed_wallet,
+    insert_wallet,
 };
 use crate::ClientConfig;
 
@@ -21,24 +25,28 @@ const UNKNOWN_INVITATION_CODE: &str = "miden-client-test-invitation-that-was-nev
 
 /// A code the node does not know is refused, and refusing it consumes nothing.
 ///
-/// The account stays registerable afterwards, which is what lets the CLI tell the user to retry
-/// with `account --register`.
+/// The registration runs before the store write, so the refusal also leaves the account untracked.
+/// The same account is then added again with a real code and deploys.
 pub async fn test_allowlist_unknown_code_is_rejected(client_config: ClientConfig) -> Result<()> {
     let mut client = client_config.into_client().await?;
     client.wait_for_node().await;
 
-    let account = insert_undeployed_wallet(&mut client).await?;
+    let (account, key) = build_wallet()?;
 
-    let error = client
-        .register_account(UNKNOWN_INVITATION_CODE, account.id())
-        .await
-        .expect_err("the node should not know this invitation code");
-    assert_registration_rejected(&error, &RegisterAccountError::InvitationNotFound);
+    let error =
+        insert_wallet(&mut client, account.clone(), key.clone(), Some(UNKNOWN_INVITATION_CODE))
+            .await
+            .expect_err("the node should not know this invitation code");
+    assert_registration_rejected(client_error(&error), &RegisterAccountError::InvitationNotFound);
+
+    assert!(
+        client.get_account_header(account.id()).await?.is_none(),
+        "a refused registration should leave no account tracked"
+    );
 
     // The rejection consumed nothing, so a real code still registers the same account.
     let invitation_code = create_invitation_code().await?;
-    client
-        .register_account(&invitation_code, account.id())
+    insert_wallet(&mut client, account.clone(), key, Some(&invitation_code))
         .await
         .context("a rejected registration should leave the account registerable")?;
 
@@ -54,21 +62,21 @@ pub async fn test_allowlist_code_is_single_use(client_config: ClientConfig) -> R
     client.wait_for_node().await;
 
     let invitation_code = create_invitation_code().await?;
-    let first = insert_undeployed_wallet(&mut client).await?;
-    let second = insert_undeployed_wallet(&mut client).await?;
-
-    client
-        .register_account(&invitation_code, first.id())
+    insert_undeployed_wallet(&mut client, Some(&invitation_code))
         .await
         .context("failed to register the first account")?;
 
-    let error = client
-        .register_account(&invitation_code, second.id())
-        .await
-        .expect_err("a code already bound to an account should not register another");
-    assert_registration_rejected(&error, &RegisterAccountError::AlreadyRegistered);
+    let (second, second_key) = build_wallet()?;
+    let error =
+        insert_wallet(&mut client, second.clone(), second_key.clone(), Some(&invitation_code))
+            .await
+            .expect_err("a code already bound to an account should not register another");
+    assert_registration_rejected(client_error(&error), &RegisterAccountError::AlreadyRegistered);
 
-    // The second account was never registered, so it still cannot be created on chain.
+    // The refusal left the second account untracked, so it is added again without a code. It is
+    // still unregistered, so the node refuses to create it on chain.
+    let second = insert_wallet(&mut client, second, second_key, None).await?;
+
     let error = client
         .submit_new_transaction(second.id(), deploy_request()?)
         .await

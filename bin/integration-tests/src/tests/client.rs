@@ -1192,7 +1192,7 @@ pub async fn test_locked_account(client_config: ClientConfig) -> Result<()> {
 
     // Import private account in client 2
     let mut client_2 = client_config.clone().into_client().await?;
-    client_2.add_account(&private_account, false).await.unwrap();
+    client_2.add_account(&private_account, false, None).await.unwrap();
 
     client_2.wait_for_node().await;
 
@@ -1215,7 +1215,7 @@ pub async fn test_locked_account(client_config: ClientConfig) -> Result<()> {
     // Get updated account from client 1 and import it in client 2 with `overwrite` flag
     let updated_private_account: Account =
         client_1.get_account(from_account_id).await?.context("Account not found")?;
-    client_2.add_account(&updated_private_account, true).await.unwrap();
+    client_2.add_account(&updated_private_account, true, None).await.unwrap();
 
     // After sync the private account shouldn't be locked in client 2
     client_2.sync_state().await.unwrap();
@@ -1601,7 +1601,7 @@ pub async fn test_get_account_storage_map_key_filtering(client_config: ClientCon
         .add_key(&key_pair, account_id)
         .await
         .context("failed to add key")?;
-    client.add_account(&account, false).await?;
+    client.add_account(&account, false, None).await?;
 
     // Deploy the account (first tx updates nonce)
     client.deploy_account(account_id).await?;

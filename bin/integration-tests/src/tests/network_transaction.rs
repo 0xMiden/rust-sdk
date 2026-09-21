@@ -206,7 +206,7 @@ pub(crate) async fn deploy_network_counter_contract(
         .context("failed to build network account auth component")?;
 
     let account = build_counter_account(client, auth, true)?;
-    client.add_account(&account, false).await?;
+    client.add_account(&account, false, None).await?;
     client.deploy_account(account.id()).await?;
 
     Ok(account)
@@ -252,7 +252,7 @@ pub(crate) async fn deploy_counter_contract(client: &mut TestClient) -> Result<A
     // The auth component pays the fee from the account's vault. The wallet component lets its
     // deploy transaction consume the funding note that supplies that vault.
     let account = build_counter_account(client, [incr_nonce_auth], true)?;
-    client.add_account(&account, false).await?;
+    client.add_account(&account, false, None).await?;
     client.deploy_account(account.id()).await?;
 
     Ok(account)
@@ -338,7 +338,7 @@ async fn deploy_network_fungible_faucet(
         .with_component(PausableManager)
         .build_with_schema_commitment()
         .map_err(|e| anyhow!("failed to build network faucet: {e}"))?;
-    client.add_account(&faucet, false).await?;
+    client.add_account(&faucet, false, None).await?;
 
     // Scriptless deploy, which `AuthNetworkAccount` authorizes on its own: it consumes a funding
     // note where the chain charges a fee, and is an empty transaction where it does not.

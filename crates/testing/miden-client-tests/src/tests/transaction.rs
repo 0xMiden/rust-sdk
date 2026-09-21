@@ -133,7 +133,7 @@ async fn transaction_creates_two_notes() {
 
     client.keystore().add_key(&secret_key, account.id()).await.unwrap();
 
-    client.add_account(&account, false).await.unwrap();
+    client.add_account(&account, false, None).await.unwrap();
     client.sync_state().await.unwrap();
     let tx_request = TransactionRequestBuilder::new()
         .build_pay_to_id(
@@ -499,7 +499,7 @@ async fn lazy_foreign_account_loading() {
     let foreign_account_id = foreign_account.id();
 
     client.keystore().add_key(&secret_key, foreign_account_id).await.unwrap();
-    client.add_account(&foreign_account, false).await.unwrap();
+    client.add_account(&foreign_account, false, None).await.unwrap();
 
     // Deploy the foreign account (sets nonce from 0 to 1).
     let deploy_request = TransactionRequestBuilder::new().build().unwrap();
@@ -930,7 +930,7 @@ async fn indeterminate_submission_is_retryable_with_the_attached_payload() {
         .build_existing()
         .unwrap();
     client.keystore().add_key(&secret_key, account.id()).await.unwrap();
-    client.add_account(&account, false).await.unwrap();
+    client.add_account(&account, false, None).await.unwrap();
     client.sync_state().await.unwrap();
 
     // A transaction that does nothing but advance the nonce, proven with a dummy proof: the

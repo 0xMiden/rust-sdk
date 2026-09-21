@@ -99,7 +99,7 @@ async fn import_account<AUTH>(
         keystore.add_key(&key, account_id).await.map_err(CliError::KeyStore)?;
     }
 
-    client.add_account(&account, overwrite).await?;
+    client.add_account(&account, overwrite, None).await?;
 
     Ok(account_id)
 }

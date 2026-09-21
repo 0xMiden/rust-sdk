@@ -545,22 +545,9 @@ async fn create_client_account<AUTH: Keystore + Sync + 'static>(
         println!("Offline mode enabled for local account creation.");
     }
 
-    client.add_account(&account, false).await?;
+    client.add_account(&account, false, invitation_code).await?;
 
-    // The account is stored first. A failed registration then leaves a usable local account that
-    // `account --register` can retry. The reverse order would bind the single-use code to an
-    // account that was never stored.
-    if let Some(invitation_code) = invitation_code {
-        if let Err(error) = client.register_account(invitation_code, account.id()).await {
-            eprintln!(
-                "The account was created, but the registration failed. Retry with `{} account --register {} --invitation-code <CODE>`.",
-                client_binary_name().display(),
-                account.id().to_hex()
-            );
-
-            return Err(error.into());
-        }
-
+    if invitation_code.is_some() {
         println!("Registered account {} on the network allowlist.", account.id().to_hex());
     }
 

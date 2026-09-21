@@ -79,8 +79,7 @@ pub async fn test_client_builder_initializes_client_with_endpoint(
     Ok(())
 }
 
-/// A client is given no protocol configuration by hand, so the first sync has to provide the one
-/// the chain tip commits to.
+/// The first sync provides the protocol configuration the chain tip commits to.
 pub async fn test_first_sync_stores_the_protocol_config(client_config: ClientConfig) -> Result<()> {
     let mut client = client_config.into_client().await?;
 

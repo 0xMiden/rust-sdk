@@ -40,9 +40,8 @@ pub struct ChainMmrInfo {
     pub mmr_delta: MmrDelta,
     /// The block header at `block_to`.
     pub block_header: BlockHeader,
-    /// The protocol configuration active at `block_to`. The node sends it when the client syncs
-    /// from genesis, or when the configuration commitment changed between `block_from` and
-    /// `block_to`. It is absent when the client already holds the configuration.
+    /// The protocol configuration active at `block_to`. The node sends it when `block_from` is
+    /// genesis, or when `block_from` and `block_to` commit to different configurations.
     pub protocol_config: Option<ProtocolConfig>,
 }
 

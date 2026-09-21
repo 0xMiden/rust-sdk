@@ -47,9 +47,8 @@ pub struct StateSyncUpdate {
     transaction_updates: TransactionUpdateTracker,
     /// Public account updates and mismatched private accounts after the sync.
     account_updates: AccountUpdates,
-    /// The protocol configuration active at `block_num`, when the node sent it. The node sends it
-    /// only when the client does not already hold it, so `None` means the store already has the
-    /// configuration this block commits to.
+    /// The protocol configuration active at `block_num`. The node sends it when the sync starts at
+    /// genesis, or when the starting block and `block_num` commit to different configurations.
     protocol_config: Option<ProtocolConfig>,
 }
 

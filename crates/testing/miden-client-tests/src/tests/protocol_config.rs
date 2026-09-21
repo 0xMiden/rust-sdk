@@ -8,12 +8,9 @@ use miden_protocol::testing::account_id::ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2;
 
 use super::{TestClient, create_test_client, create_test_client_builder};
 
-/// Returns a configuration no mock chain uses, for a test that needs one the node never sends.
-fn unrelated_protocol_config() -> ProtocolConfig {
-    ProtocolConfig::current(AssetId::new_fungible(
-        ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2.try_into().unwrap(),
-    ))
-    .unwrap()
+/// Returns the current protocol configuration for `faucet`.
+fn protocol_config_for(faucet: u128) -> ProtocolConfig {
+    ProtocolConfig::current(AssetId::new_fungible(faucet.try_into().unwrap())).unwrap()
 }
 
 #[tokio::test]
@@ -39,7 +36,7 @@ async fn a_sync_stores_a_configuration_the_store_does_not_hold() {
     let mut client = TestClient::from(builder.build().await.unwrap());
 
     // The store holds a configuration the node never sends, so the one the sync returns is new.
-    let held = unrelated_protocol_config();
+    let held = protocol_config_for(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2);
     client.seed_protocol_config(held.clone()).await.unwrap();
     let returned = rpc.protocol_config();
     assert_ne!(returned.to_commitment(), held.to_commitment());
@@ -56,7 +53,8 @@ async fn a_sync_stores_a_configuration_the_store_does_not_hold() {
 async fn protocol_configs_are_selected_by_commitment() {
     let (client, rpc) = create_test_client().await;
     let original = rpc.protocol_config();
-    let other = unrelated_protocol_config();
+    let other = protocol_config_for(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2);
+    assert_ne!(other.to_commitment(), original.to_commitment());
     client.seed_protocol_config(other.clone()).await.unwrap();
     assert_eq!(client.get_protocol_config(original.to_commitment()).await.unwrap(), original);
     assert_eq!(client.get_protocol_config(other.to_commitment()).await.unwrap(), other);
@@ -70,7 +68,7 @@ async fn protocol_configs_are_selected_by_commitment() {
 async fn protocol_config_rejects_a_substituted_preimage() {
     let (mut client, rpc) = create_test_client().await;
     let commitment = rpc.protocol_config().to_commitment();
-    let other = unrelated_protocol_config();
+    let other = protocol_config_for(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2);
     assert_ne!(other.to_commitment(), commitment);
     client
         .test_store()
@@ -99,7 +97,7 @@ async fn execution_requires_the_reference_block_protocol_config() {
         .remove_setting(SettingScope::Client, format!("protocol_config:{commitment}"))
         .await
         .unwrap();
-    let other = unrelated_protocol_config();
+    let other = protocol_config_for(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2);
     assert_ne!(other.to_commitment(), commitment);
     client.seed_protocol_config(other).await.unwrap();
 

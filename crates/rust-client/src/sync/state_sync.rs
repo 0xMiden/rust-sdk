@@ -73,8 +73,9 @@ struct FetchedSyncData {
     note_blocks: Vec<ResolvedSyncNotesBlock>,
     /// Transaction records for the synced range, as returned by `sync_transactions`.
     transactions: Vec<RpcTransactionRecord>,
-    /// The protocol configuration active at the chain tip. The node sends it only when the client
-    /// does not already hold it.
+    /// The protocol configuration active at the chain tip. The node sends it when the sync starts
+    /// at genesis, or when the starting block and the chain tip commit to different
+    /// configurations.
     protocol_config: Option<ProtocolConfig>,
 }
 

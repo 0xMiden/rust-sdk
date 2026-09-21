@@ -1,5 +1,6 @@
 //! Account-related database operations.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::string::ToString;
 use std::vec::Vec;
@@ -446,12 +447,12 @@ impl SqliteStore {
         Self::apply_account_update(tx, smt_forest, init_account_state, &update, None)
     }
 
-    /// Applies a public account update to the account state, replacing or patching the vault and
-    /// the storage according to each part's variant.
+    /// Applies a public account update to the account state.
     ///
-    /// Archives old values from latest to historical and updates latest via INSERT OR REPLACE.
-    /// `new_seed` is stored on the new latest header row. It is only `Some` while the new state is
-    /// still undeployed.
+    /// A part the update carries in full is first turned into the patch that takes the stored state
+    /// to it, so every update is written through the patch writers. Archives old values from latest
+    /// to historical and updates latest via INSERT OR REPLACE. `new_seed` is stored on the new
+    /// latest header row. It is only `Some` while the new state is still undeployed.
     fn apply_account_update(
         tx: &Transaction<'_>,
         smt_forest: &mut ScopedAccountForest<'_, '_>,
@@ -477,63 +478,43 @@ impl SqliteStore {
             )));
         }
 
+        // The full-state patches are derived from the latest tables, so they are built before any
+        // row is replaced.
+        let vault_patch = match update.vault() {
+            VaultUpdate::Full(assets) => {
+                Cow::Owned(Self::full_vault_patch(tx, account_id, assets)?)
+            },
+            VaultUpdate::Patch(vault_patch) => Cow::Borrowed(vault_patch),
+        };
+        let storage_patch = match update.storage() {
+            StorageUpdate::Full(storage) => {
+                Cow::Owned(Self::full_storage_patch(tx, account_id, storage)?)
+            },
+            StorageUpdate::Patch(storage_patch) => Cow::Borrowed(storage_patch),
+        };
+
         // Archive old header and insert the new one
         Self::replace_account_header(tx, final_account_state, init_account_state, new_seed)?;
+
+        Self::apply_account_vault_patch(tx, account_id, final_account_state, &vault_patch)?;
 
         // Build one forest update covering the vault and the map slots, and apply it at a freshly
         // allocated revision.
         let mut forest_update = AccountUpdate::new();
-        match update.vault() {
-            VaultUpdate::Full(assets) => {
-                Self::replace_account_vault(tx, account_id, final_account_state, assets)?;
-                forest_update.full_vault(
-                    account_id,
-                    assets.iter().copied(),
-                    final_account_state.vault_root(),
-                );
-            },
-            VaultUpdate::Patch(vault_patch) => {
-                Self::apply_account_vault_patch(tx, account_id, final_account_state, vault_patch)?;
-                forest_update.vault_patch(
-                    account_id,
-                    vault_patch,
-                    final_account_state.vault_root(),
-                );
-            },
-        }
-        match update.storage() {
-            StorageUpdate::Full(storage) => {
-                forest_update.full_storage(account_id, storage.slots().iter());
-                // Map slots that disappeared from the state must be emptied. They are enumerated
-                // from the latest tables, so this runs before those rows are replaced below.
-                for slot_name in Self::query_map_slot_names(tx, account_id)? {
-                    forest_update.clear_map(account_id, &slot_name);
-                }
-            },
-            StorageUpdate::Patch(storage_patch) => {
-                forest_update.storage_patch(account_id, storage_patch);
-            },
-        }
-
+        forest_update.vault_patch(account_id, &vault_patch, final_account_state.vault_root());
+        forest_update.storage_patch(account_id, &storage_patch);
         let revision = allocate_forest_revision(tx).into_store_error()?;
         smt_forest.apply(revision, forest_update)?;
 
         // The patch writer reads the new map roots from the forest, so the storage rows are written
         // after the forest update.
-        match update.storage() {
-            StorageUpdate::Full(storage) => {
-                Self::replace_account_storage(tx, account_id, final_account_state, storage)?;
-            },
-            StorageUpdate::Patch(storage_patch) => {
-                Self::write_storage_patch(
-                    tx,
-                    smt_forest,
-                    account_id,
-                    final_account_state.nonce().as_canonical_u64(),
-                    storage_patch,
-                )?;
-            },
-        }
+        Self::write_storage_patch(
+            tx,
+            smt_forest,
+            account_id,
+            final_account_state.nonce().as_canonical_u64(),
+            &storage_patch,
+        )?;
         Self::verify_storage_commitment(tx, account_id, final_account_state.storage_commitment())?;
 
         Ok(())

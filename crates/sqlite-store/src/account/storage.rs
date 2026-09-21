@@ -5,19 +5,22 @@ use std::string::ToString;
 use std::vec::Vec;
 
 use miden_client::account::{
-    AccountHeader,
     AccountId,
     AccountStorage,
     AccountStoragePatch,
     StorageMapPatch,
     StorageSlot,
     StorageSlotContent,
+    StorageSlotName,
+    StorageSlotPatch,
     StorageSlotType,
+    StorageValuePatch,
 };
 use miden_client::store::StoreError;
 use miden_client::{Deserializable, EMPTY_WORD, Serializable, Word};
 use rusqlite::{OptionalExtension, Transaction, params};
 
+use crate::account::rows::query_storage_values;
 use crate::forest::ScopedAccountForest;
 use crate::sql_error::SqlResultExt;
 use crate::{SqliteStore, insert_sql, subst, u64_to_value};
@@ -29,70 +32,34 @@ impl SqliteStore {
     // MUTATOR/WRITER METHODS
     // --------------------------------------------------------------------------------------------
 
-    /// Replaces the account's storage with `storage`.
+    /// Builds the storage patch that takes the stored storage of an account to `storage`.
     ///
-    /// Every current slot and map entry is archived to historical and removed from latest, the new
-    /// slots are inserted, and slots and entries that did not exist before get a NULL historical
-    /// row.
-    ///
-    /// The corresponding forest update happens in `apply_account_update`.
-    pub(crate) fn replace_account_storage(
+    /// Every slot of `storage` becomes a `Create` patch, which the patch writer applies as a
+    /// replacement of the slot. Stored slots that `storage` does not have become `Remove` patches.
+    pub(crate) fn full_storage_patch(
         tx: &Transaction<'_>,
         account_id: AccountId,
-        final_account_state: &AccountHeader,
         storage: &AccountStorage,
-    ) -> Result<(), StoreError> {
-        let account_id_bytes = account_id.to_bytes();
-        let nonce_val = u64_to_value(final_account_state.nonce().as_canonical_u64());
+    ) -> Result<AccountStoragePatch, StoreError> {
+        let mut slot_patches: BTreeMap<StorageSlotName, StorageSlotPatch> =
+            query_storage_values(tx, account_id)?
+                .into_iter()
+                .map(|(slot_name, (slot_type, _))| {
+                    let removal = match slot_type {
+                        StorageSlotType::Value => {
+                            StorageSlotPatch::Value(StorageValuePatch::Remove)
+                        },
+                        StorageSlotType::Map => StorageSlotPatch::Map(StorageMapPatch::Remove),
+                    };
+                    (slot_name, removal)
+                })
+                .collect();
+        for slot in storage.slots() {
+            slot_patches
+                .insert(slot.name().clone(), StorageSlotPatch::from(slot.content().clone()));
+        }
 
-        tx.execute(
-            "INSERT OR REPLACE INTO historical_account_storage \
-             (account_id, replaced_at_nonce, slot_name, old_slot_value, slot_type) \
-             SELECT account_id, ?, slot_name, slot_value, slot_type \
-             FROM latest_account_storage WHERE account_id = ?",
-            params![&nonce_val, &account_id_bytes],
-        )
-        .into_store_error()?;
-        tx.execute(
-            "INSERT OR REPLACE INTO historical_storage_map_entries \
-             (account_id, replaced_at_nonce, slot_name, key, old_value) \
-             SELECT account_id, ?, slot_name, key, value \
-             FROM latest_storage_map_entries WHERE account_id = ?",
-            params![&nonce_val, &account_id_bytes],
-        )
-        .into_store_error()?;
-
-        tx.execute(
-            "DELETE FROM latest_account_storage WHERE account_id = ?",
-            params![&account_id_bytes],
-        )
-        .into_store_error()?;
-        tx.execute(
-            "DELETE FROM latest_storage_map_entries WHERE account_id = ?",
-            params![&account_id_bytes],
-        )
-        .into_store_error()?;
-
-        Self::insert_storage_slots(tx, account_id, storage.slots().iter())?;
-
-        tx.execute(
-            "INSERT OR IGNORE INTO historical_account_storage \
-             (account_id, replaced_at_nonce, slot_name, old_slot_value, slot_type) \
-             SELECT account_id, ?, slot_name, NULL, slot_type \
-             FROM latest_account_storage WHERE account_id = ?",
-            params![&nonce_val, &account_id_bytes],
-        )
-        .into_store_error()?;
-        tx.execute(
-            "INSERT OR IGNORE INTO historical_storage_map_entries \
-             (account_id, replaced_at_nonce, slot_name, key, old_value) \
-             SELECT account_id, ?, slot_name, key, NULL \
-             FROM latest_storage_map_entries WHERE account_id = ?",
-            params![&nonce_val, &account_id_bytes],
-        )
-        .into_store_error()?;
-
-        Ok(())
+        AccountStoragePatch::from_raw(slot_patches).map_err(StoreError::AccountPatchError)
     }
 
     /// Inserts storage slots into the latest tables only.

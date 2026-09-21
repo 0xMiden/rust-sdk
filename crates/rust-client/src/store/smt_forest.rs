@@ -107,25 +107,6 @@ impl AccountUpdate {
             .extend(patch.removed_asset_ids().map(|id| (id.hash().into(), EMPTY_WORD)));
     }
 
-    /// Records that an account's vault holds exactly the provided assets, along with the vault root
-    /// the new account header carries.
-    ///
-    /// [`apply`] checks the resulting root against `expected_root`, as it does for
-    /// [`Self::vault_patch`].
-    ///
-    /// [`apply`]: AccountSmtForest::apply
-    pub fn full_vault(
-        &mut self,
-        account_id: AccountId,
-        assets: impl Iterator<Item = Asset>,
-        expected_root: Word,
-    ) {
-        let vault = self.entry(vault_lineage_id(account_id));
-        vault.expect_root = Some(expected_root);
-        vault.exhaustive = true;
-        vault.pairs.extend(assets.map(|a| (a.id().hash().into(), a.to_value_word())));
-    }
-
     /// Records an account's storage patch.
     ///
     /// Map slots are layered onto their current tree for `Update` patches and replaced wholesale

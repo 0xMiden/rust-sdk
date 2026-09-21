@@ -9,6 +9,7 @@ use miden_client::store::StoreError;
 use miden_protocol::asset::AssetId;
 use rusqlite::{OptionalExtension, Transaction, params};
 
+use crate::account::rows::query_vault_assets;
 use crate::sql_error::SqlResultExt;
 use crate::{SqliteStore, blob_array, insert_sql, subst, u64_to_value};
 
@@ -45,47 +46,23 @@ impl SqliteStore {
         Ok(())
     }
 
-    /// Replaces the account's vault with `assets`.
+    /// Builds the vault patch that takes the stored vault of an account to `assets`.
     ///
-    /// Every current asset is archived to historical and removed from latest, the new assets are
-    /// inserted, and assets that did not exist before get a NULL historical row.
-    ///
-    /// The corresponding forest update happens in `apply_account_update`.
-    pub(crate) fn replace_account_vault(
+    /// Stored assets that `assets` does not have are marked as removed.
+    pub(crate) fn full_vault_patch(
         tx: &Transaction<'_>,
         account_id: AccountId,
-        final_account_state: &AccountHeader,
         assets: &[Asset],
-    ) -> Result<(), StoreError> {
-        let account_id_bytes = account_id.to_bytes();
-        let nonce_val = u64_to_value(final_account_state.nonce().as_canonical_u64());
+    ) -> Result<AccountVaultPatch, StoreError> {
+        let mut vault_patch = AccountVaultPatch::default();
+        for stored_asset in query_vault_assets(tx, account_id)? {
+            vault_patch.remove_asset(stored_asset.id());
+        }
+        for asset in assets {
+            vault_patch.insert_asset(*asset);
+        }
 
-        tx.execute(
-            "INSERT OR REPLACE INTO historical_account_assets \
-             (account_id, replaced_at_nonce, asset_id, old_asset) \
-             SELECT account_id, ?, asset_id, asset \
-             FROM latest_account_assets WHERE account_id = ?",
-            params![&nonce_val, &account_id_bytes],
-        )
-        .into_store_error()?;
-        tx.execute(
-            "DELETE FROM latest_account_assets WHERE account_id = ?",
-            params![&account_id_bytes],
-        )
-        .into_store_error()?;
-
-        Self::insert_assets(tx, account_id, assets.iter().copied())?;
-
-        tx.execute(
-            "INSERT OR IGNORE INTO historical_account_assets \
-             (account_id, replaced_at_nonce, asset_id, old_asset) \
-             SELECT account_id, ?, asset_id, NULL \
-             FROM latest_account_assets WHERE account_id = ?",
-            params![&nonce_val, &account_id_bytes],
-        )
-        .into_store_error()?;
-
-        Ok(())
+        Ok(vault_patch)
     }
 
     /// Persists vault patch changes to the asset tables, updating fungible and non-fungible assets.

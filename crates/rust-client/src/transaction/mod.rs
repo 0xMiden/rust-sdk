@@ -117,10 +117,9 @@ use crate::store::{
     TransactionFilter,
 };
 use crate::sync::NoteTagRecord;
-use crate::transaction::batch::InMemoryBatchDataStore;
 
 pub mod batch;
-pub use batch::{BatchBuilder, BatchBuilderError};
+pub use batch::{BatchBuilder, BatchBuilderError, ProvenBatchSubmission};
 
 mod chain_anchor;
 pub use chain_anchor::{ChainAnchor, ChainAnchorError};
@@ -220,22 +219,6 @@ where
         filter: TransactionFilter,
     ) -> Result<Vec<TransactionRecord>, ClientError> {
         self.store.get_transactions(filter).await.map_err(Into::into)
-    }
-
-    // TRANSACTION BATCH
-    // --------------------------------------------------------------------------------------------
-
-    /// Open a new [`BatchBuilder`] for accumulating transactions across one or more local accounts.
-    ///
-    /// See [`crate::transaction::batch`] for usage and constraints.
-    pub fn new_transaction_batch(&mut self) -> BatchBuilder<'_, AUTH> {
-        let inner_data_store = ClientDataStore::new(self.store.clone(), self.rpc_api.clone());
-        BatchBuilder {
-            client: self,
-            data_store: InMemoryBatchDataStore::new(inner_data_store),
-            pushed_txs: Vec::new(),
-            consumed_input_notes: BTreeSet::new(),
-        }
     }
 
     // TRANSACTION
@@ -792,19 +775,19 @@ where
         // inputs cannot be recovered from the proven transaction, which only commits to them, and
         // sealing draws fresh randomness so every attempt has to seal again.
         let transaction_inputs = transaction_inputs.into();
-        let submitted = proven_transaction.clone();
 
         let sealed_inputs =
             seal_transaction_inputs(&mut self.rng, &key, tx_id, &transaction_inputs)?;
 
         let result =
-            self.rpc_api.submit_proven_transaction(proven_transaction, sealed_inputs).await;
+            self.rpc_api.submit_proven_transaction(&proven_transaction, sealed_inputs).await;
         if let Err(err) = &result {
             self.forget_stale_transaction_encryption_key(err).await;
         }
 
-        let block_num = result
-            .map_err(|err| promote_indeterminate_submission(err, submitted, transaction_inputs))?;
+        let block_num = result.map_err(|err| {
+            promote_indeterminate_submission(err, proven_transaction, transaction_inputs)
+        })?;
         info!("Transaction submitted.");
 
         Ok(block_num)

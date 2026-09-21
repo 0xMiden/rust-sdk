@@ -180,7 +180,8 @@ pub fn write_genesis_config(
         fee_parameters: FeeParametersEntry { verification_base_fee },
         accounts: account_files.into_iter().map(|path| AccountEntry { path }).collect(),
         wallets: (0..num_funder_wallets)
-            .map(|_| WalletEntry {
+            .map(|index| WalletEntry {
+                name: format!("wallet_{index}"),
                 account_type: "public".to_string(),
                 assets: vec![AssetEntry {
                     amount: FUNDER_WALLET_BALANCE,
@@ -230,6 +231,7 @@ struct AccountEntry {
 
 #[derive(Serialize)]
 struct WalletEntry {
+    name: String,
     account_type: String,
     assets: Vec<AssetEntry>,
 }

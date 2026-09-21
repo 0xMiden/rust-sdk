@@ -42,22 +42,23 @@ miden-client-integration-tests = { default-features = false, path = "bin/integra
 miden-client-sqlite-store      = { default-features = false, path = "crates/sqlite-store", version = "0.17.0-rc.1" }
 
 # Miden protocol dependencies
-miden-agglayer  = { default-features = false, version = "0.17.0-rc.3" }
-miden-protocol  = { default-features = false, version = "0.17.0-rc.3" }
-miden-standards = { default-features = false, version = "0.17.0-rc.3" }
-miden-testing   = { default-features = false, version = "0.17.0-rc.3" }
-miden-tx        = { default-features = false, version = "0.17.0-rc.3" }
-miden-tx-batch  = { default-features = false, version = "0.17.0-rc.3" }
+miden-agglayer  = { default-features = false, version = "0.17.0-rc.5" }
+miden-objects   = { default-features = false, version = "0.17.0-rc.5" }
+miden-protocol  = { default-features = false, version = "0.17.0-rc.5" }
+miden-standards = { default-features = false, version = "0.17.0-rc.5" }
+miden-testing   = { default-features = false, version = "0.17.0-rc.5" }
+miden-tx        = { default-features = false, version = "0.17.0-rc.5" }
+miden-tx-batch  = { default-features = false, version = "0.17.0-rc.5" }
 
 # Miden node dependencies
-miden-node-proto-build           = { default-features = false, git = "https://github.com/0xMiden/node", rev = "f64fe50f31ea58bcb791a35b826f71e99e74034c" } # TODO: switch to crates.io release once available
+miden-node-proto-build           = { default-features = false, version = "0.17.0-rc.1" }
 miden-note-transport-proto-build = { default-features = false, version = "0.5.0-rc.2" }
 
 # Miden debug dependency
-miden-assembly-syntax = { default-features = false, version = "0.32" }
-miden-debug           = { default-features = false, features = ["dap", "std"], version = "0.15" }
-miden-mast-package    = { default-features = false, version = "0.32" }
-miden-processor       = { default-features = false, version = "0.32" }
+miden-assembly-syntax = { default-features = false, version = "0.33" }
+miden-debug           = { default-features = false, features = ["dap", "std"], version = "0.16" }
+miden-mast-package    = { default-features = false, version = "0.33" }
+miden-processor       = { default-features = false, version = "0.33" }
 
 # External dependencies
 anyhow             = { default-features = false, version = "1.0" }
@@ -66,7 +67,6 @@ async-trait        = { version = "0.1" }
 chrono             = { version = "0.4" }
 clap               = { version = "4.5" }
 comfy-table        = { version = "7.1" }
-hex                = { version = "0.4" }
 miette             = { features = ["fancy"], version = "7.6" }
 predicates         = { version = "3.0" }
 prost              = { default-features = false, version = "0.14" }

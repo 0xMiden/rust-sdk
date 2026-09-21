@@ -16,15 +16,18 @@ use miden_client::account::component::{
     ValueSlotSchema,
     WordSchema,
 };
-use miden_client::account::{AccountId, AccountType, FaucetMetadata, StorageSlotName};
-use miden_client::address::{Address, NetworkId};
+use miden_client::account::{AccountFile, AccountId, AccountType, FaucetMetadata, StorageSlotName};
+use miden_client::address::{Address, AddressId, NetworkId};
 use miden_client::assembly::CodeBuilder;
-use miden_client::auth::TransactionAuthenticator;
+use miden_client::auth::{AuthSecretKey, PublicKey, TransactionAuthenticator};
 use miden_client::builder::ClientBuilder;
 use miden_client::crypto::RandomCoin;
 use miden_client::keystore::Keystore;
 use miden_client::note::NoteId;
-use miden_client::note_transport::NOTE_TRANSPORT_TESTNET_ENDPOINT;
+use miden_client::note_transport::{
+    NOTE_TRANSPORT_MAINNET_ENDPOINT,
+    NOTE_TRANSPORT_TESTNET_ENDPOINT,
+};
 use miden_client::rpc::Endpoint;
 use miden_client::testing::account_id::{
     ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET,
@@ -46,7 +49,7 @@ use miden_client::vm::{
     SectionId,
     TargetType,
 };
-use miden_client::{self, Deserializable, Felt};
+use miden_client::{self, Deserializable, Felt, Word};
 use miden_client_cli::MIDEN_DIR;
 use miden_client_cli::config::{KEYSTORE_DIRECTORY, Network};
 use miden_client_integration_tests::{ClientConfig, fee_funding};
@@ -71,6 +74,119 @@ use rand::RngExt;
 /// temporary directory (check existing tests to see how). You'll also need to make the commands run
 /// as if they were spawned on that directory. `std::env::set_current_dir` shouldn't be used as it
 /// impacts on other tests and instead you should use `assert_cmd::Command::current_dir`.
+
+// KEY TESTS
+// ================================================================================================
+
+#[test]
+fn cli_manages_keys() {
+    const KEY_FILENAME: &str = "imported.key";
+    const INVALID_KEY_FILENAME: &str = "invalid.key";
+
+    let temp_dir = init_cli().1;
+    let imported_key = AuthSecretKey::new_ecdsa_k256_keccak();
+    let imported_commitment = Word::from(imported_key.public_key().to_commitment()).to_hex();
+    let public_key = match imported_key.public_key() {
+        PublicKey::EcdsaK256Keccak(public_key) => public_key.to_string(),
+        _ => unreachable!("the test key uses ECDSA"),
+    };
+    let falcon_key = AuthSecretKey::new_falcon512_poseidon2();
+    let falcon_commitment = Word::from(falcon_key.public_key().to_commitment()).to_hex();
+    let falcon_public_key = match falcon_key.public_key() {
+        PublicKey::Falcon512Poseidon2(public_key) => public_key.to_string(),
+        _ => unreachable!("the test key uses Falcon"),
+    };
+    fs::write(temp_dir.join(KEY_FILENAME), imported_key.to_bytes()).unwrap();
+
+    let mut invalid_key = imported_key.to_bytes();
+    invalid_key.push(0);
+    fs::write(temp_dir.join(INVALID_KEY_FILENAME), invalid_key).unwrap();
+
+    let mut invalid_import_cmd = cargo_bin_cmd!("miden-client");
+    invalid_import_cmd.args(["keys", "--import", INVALID_KEY_FILENAME]);
+    invalid_import_cmd
+        .current_dir(&temp_dir)
+        .assert()
+        .failure()
+        .stderr(contains("contains trailing"));
+
+    let mut import_cmd = cargo_bin_cmd!("miden-client");
+    import_cmd.args(["keys", "--import", KEY_FILENAME]);
+    import_cmd
+        .current_dir(&temp_dir)
+        .assert()
+        .success()
+        .stdout(contains(&imported_commitment));
+
+    let account_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_SENDER).unwrap().to_hex();
+    let mut associate_cmd = cargo_bin_cmd!("miden-client");
+    associate_cmd.args(["keys", "--associate", &imported_commitment, "--account-id", &account_id]);
+    associate_cmd.current_dir(&temp_dir).assert().success();
+
+    let mut generate_cmd = cargo_bin_cmd!("miden-client");
+    generate_cmd.args(["keys", "--generate", "falcon512-poseidon2"]);
+    generate_cmd
+        .current_dir(&temp_dir)
+        .assert()
+        .success()
+        .stdout(contains("Generated falcon512-poseidon2 key."));
+
+    let keystore_dir = temp_dir.join(MIDEN_DIR).join(KEYSTORE_DIRECTORY);
+    fs::write(keystore_dir.join(".DS_Store"), []).unwrap();
+    fs::write(keystore_dir.join(".tmpAbC123"), []).unwrap();
+    // Named after a valid commitment but holding no readable key, as an interrupted write leaves
+    // behind. It must not hide the keys that are readable.
+    fs::write(
+        keystore_dir.join("0x1111111111111111111111111111111111111111111111111111111111111111"),
+        [1, 2, 3],
+    )
+    .unwrap();
+
+    let mut list_cmd = cargo_bin_cmd!("miden-client");
+    list_cmd.args(["keys", "--list"]);
+    list_cmd
+        .current_dir(&temp_dir)
+        .assert()
+        .success()
+        .stdout(contains(&imported_commitment))
+        .stdout(contains("ecdsa-k256-keccak"))
+        .stdout(contains("falcon512-poseidon2"))
+        .stdout(contains(&account_id));
+
+    let mut disassociate_cmd = cargo_bin_cmd!("miden-client");
+    disassociate_cmd.args([
+        "keys",
+        "--disassociate",
+        &imported_commitment,
+        "--account-id",
+        &account_id,
+    ]);
+    disassociate_cmd
+        .current_dir(&temp_dir)
+        .assert()
+        .success()
+        .stdout(contains("removed."));
+
+    let mut list_cmd = cargo_bin_cmd!("miden-client");
+    list_cmd.arg("keys");
+    list_cmd
+        .current_dir(&temp_dir)
+        .assert()
+        .success()
+        .stdout(contains(&account_id).not());
+
+    for (public_key, commitment) in
+        [(public_key, imported_commitment), (falcon_public_key, falcon_commitment)]
+    {
+        let mut commitment_cmd = cargo_bin_cmd!("miden-client");
+        commitment_cmd.args(["keys", "--commitment", &public_key]);
+        commitment_cmd
+            .current_dir(&temp_dir)
+            .assert()
+            .success()
+            .stdout(format!("{commitment}\n"));
+    }
+}
 
 // INIT TESTS
 // ================================================================================================
@@ -858,6 +974,7 @@ async fn cli_export_import_note() -> Result<()> {
 async fn cli_export_import_account() -> Result<()> {
     const FAUCET_FILENAME: &str = "test_faucet.mac";
     const WALLET_FILENAME: &str = "test_wallet.wal";
+    const KEYLESS_WALLET_FILENAME: &str = "test_wallet_no_keys.mac";
 
     let (store_path_1, temp_dir_1, endpoint_1) = init_cli();
     let (store_path_2, temp_dir_2, endpoint_2) = init_cli();
@@ -877,6 +994,26 @@ async fn cli_export_import_account() -> Result<()> {
     let mut export_cmd = cargo_bin_cmd!("miden-client");
     export_cmd.args(["export", &wallet_id, "--account", "--filename", WALLET_FILENAME]);
     export_cmd.current_dir(&temp_dir_1).assert().success();
+
+    // Export the wallet again without its secret keys. The account file must hold the same account
+    // and no key, so it can be shared with a party that must not be able to sign for the account.
+    let mut export_cmd = cargo_bin_cmd!("miden-client");
+    export_cmd.args([
+        "export",
+        &wallet_id,
+        "--account",
+        "--no-keys",
+        "--filename",
+        KEYLESS_WALLET_FILENAME,
+    ]);
+    export_cmd.current_dir(&temp_dir_1).assert().success();
+
+    let keyless_file = AccountFile::read(temp_dir_1.join(KEYLESS_WALLET_FILENAME))?;
+    assert!(keyless_file.auth_secret_keys.is_empty());
+    assert_eq!(keyless_file.account.id(), AccountId::from_hex(&wallet_id)?);
+
+    let with_keys_file = AccountFile::read(temp_dir_1.join(WALLET_FILENAME))?;
+    assert!(!with_keys_file.auth_secret_keys.is_empty());
 
     // Copy the account files
     for filename in &[FAUCET_FILENAME, WALLET_FILENAME] {
@@ -917,6 +1054,7 @@ async fn cli_export_import_account() -> Result<()> {
     let faucet_pks = cli_keystore
         .get_account_key_commitments(&AccountId::from_hex(&faucet_id)?)
         .await?;
+    assert!(!faucet_pks.is_empty());
 
     for stored_pk_commitment in faucet_pks {
         let matching_secret_key = cli_keystore.get_key_sync(stored_pk_commitment).unwrap();
@@ -931,6 +1069,7 @@ async fn cli_export_import_account() -> Result<()> {
     let wallet_pks = cli_keystore
         .get_account_key_commitments(&AccountId::from_hex(&wallet_id)?)
         .await?;
+    assert!(!wallet_pks.is_empty());
 
     for stored_pk_commitment in wallet_pks {
         let matching_secret_key = cli_keystore.get_key_sync(stored_pk_commitment).unwrap();
@@ -943,6 +1082,39 @@ async fn cli_export_import_account() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// `--no-keys` only applies to an account export, so the CLI must reject it on every other path
+/// instead of accepting a flag that it ignores.
+///
+/// Each case asserts the argument parser rejected the command. Without that assertion the test also
+/// passes when the parser accepts the flag and the command fails later for an unrelated reason.
+#[test]
+fn cli_export_no_keys_requires_an_account_export() {
+    let temp_dir = init_cli().1;
+
+    let cases: [(&[&str], &str); 3] = [
+        (&["export", "0x0", "--no-keys"], "required arguments were not provided"),
+        (
+            &["export", "0x0", "--no-keys", "--export-type", "partial"],
+            "cannot be used with",
+        ),
+        (
+            &["export", "0x0", "--no-keys", "--note", "--export-type", "partial"],
+            "cannot be used with",
+        ),
+    ];
+
+    for (args, expected_error) in cases {
+        let mut export_cmd = cargo_bin_cmd!("miden-client");
+        export_cmd
+            .args(args)
+            .current_dir(&temp_dir)
+            .assert()
+            .failure()
+            .code(2)
+            .stderr(contains(expected_error));
+    }
 }
 
 #[test]
@@ -1149,6 +1321,81 @@ async fn init_with_testnet() -> Result<()> {
     config_file.read_to_string(&mut config_file_str).unwrap();
 
     assert!(config_file_str.contains(&Endpoint::testnet().to_string()));
+    Ok(())
+}
+
+/// `init --network mainnet` must resolve the preset by name, so the config carries the mainnet RPC
+/// and note transport endpoints instead of a custom endpoint named `mainnet`.
+#[test]
+fn init_with_mainnet() {
+    let store_path = create_test_store_path();
+    let temp_dir = temp_dir().join(format!("cli-test-{}", rand::rng().random::<u64>()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let mut init_cmd = cargo_bin_cmd!("miden-client");
+    init_cmd.args([
+        "init",
+        "--local",
+        "--network",
+        "mainnet",
+        "--store-path",
+        store_path.to_str().unwrap(),
+    ]);
+    init_cmd.current_dir(&temp_dir).assert().success();
+
+    let config_file_str =
+        fs::read_to_string(temp_dir.join(MIDEN_DIR).join("miden-client.toml")).unwrap();
+    assert!(config_file_str.contains(&Endpoint::mainnet().to_string()));
+    assert!(config_file_str.contains(NOTE_TRANSPORT_MAINNET_ENDPOINT));
+}
+
+/// The `network_id` setting decides the bech32 prefix of the addresses the CLI prints. The endpoint
+/// is a custom one, which maps to `mcst` on its own, and it is never contacted: the wallet is
+/// created and shown from the local store.
+#[test]
+fn account_show_uses_configured_network_id() -> Result<()> {
+    let store_path = create_test_store_path();
+    let temp_dir = temp_dir().join(format!("cli-test-{}", rand::rng().random::<u64>()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let mut init_cmd = cargo_bin_cmd!("miden-client");
+    init_cmd.args([
+        "init",
+        "--local",
+        "--network",
+        "http://127.0.0.1:1",
+        "--network-id",
+        "mm",
+        "--store-path",
+        store_path.to_str().unwrap(),
+    ]);
+    init_cmd.current_dir(&temp_dir).assert().success();
+
+    let config_file_str = fs::read_to_string(temp_dir.join(MIDEN_DIR).join("miden-client.toml"))?;
+    assert!(
+        config_file_str.contains("network_id = \"mm\""),
+        "unexpected config:\n{config_file_str}"
+    );
+
+    let account_id = new_wallet_cli(&temp_dir, AccountType::Private);
+
+    let mut show_cmd = cargo_bin_cmd!("miden-client");
+    show_cmd.args(["account", "--show", &account_id]);
+    let output = show_cmd.current_dir(&temp_dir).output()?;
+    assert!(
+        output.status.success(),
+        "account --show failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8(output.stdout)?;
+    let encoded = stdout
+        .split_whitespace()
+        .find(|word| word.starts_with("mm1"))
+        .unwrap_or_else(|| panic!("no `mm1...` address in `account --show` output:\n{stdout}"));
+    let (network_id, address) = Address::decode(encoded)?;
+    assert_eq!(network_id, NetworkId::Mainnet);
+    assert_eq!(address.id(), AddressId::AccountId(AccountId::from_hex(&account_id)?));
     Ok(())
 }
 
@@ -2629,9 +2876,11 @@ fn create_account_with_no_auth() {
     create_account_cmd.current_dir(&temp_dir).assert().success();
 }
 
-/// Tests creating an account with the multisig-auth component.
+/// Tests creating and exporting an account with the multisig-auth component.
 #[test]
-fn create_account_with_multisig_auth() {
+fn create_and_export_account_with_multisig_auth() {
+    const ACCOUNT_FILENAME: &str = "multisig_account.mac";
+
     let temp_dir = init_cli().1;
 
     // Create init storage data file for multisig:
@@ -2673,7 +2922,31 @@ fn create_account_with_multisig_auth() {
         "multisig_init_data.toml",
     ]);
 
-    create_account_cmd.current_dir(&temp_dir).assert().success();
+    let output = create_account_cmd.current_dir(&temp_dir).output().unwrap();
+    assert!(
+        output.status.success(),
+        "Failed to create multisig account: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let account_id = stdout
+        .split_whitespace()
+        .skip_while(|&word| word != "-s")
+        .nth(1)
+        .expect("Could not parse account ID from new-account output");
+
+    let mut export_account_cmd = cargo_bin_cmd!("miden-client");
+    export_account_cmd
+        .args(["export", account_id, "--account", "--filename", ACCOUNT_FILENAME])
+        .current_dir(&temp_dir)
+        .assert()
+        .success()
+        .stdout(contains("without secret keys"));
+
+    let account_file = AccountFile::read(temp_dir.join(ACCOUNT_FILENAME)).unwrap();
+    assert_eq!(account_file.account.id().to_hex(), account_id);
+    assert!(account_file.auth_secret_keys.is_empty());
 }
 
 /// Tests creating an account with the ecdsa-auth component.

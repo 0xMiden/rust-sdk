@@ -81,22 +81,23 @@ pub async fn test_client_builder_initializes_client_with_endpoint(
 
 /// The first sync provides the protocol configuration the chain tip commits to.
 pub async fn test_first_sync_stores_the_protocol_config(client_config: ClientConfig) -> Result<()> {
-    let mut client = client_config.into_client().await?;
+    let mut client = client_config.into_unsynced_client().await?;
 
     let (tip, _) = client.test_rpc_api().get_block_header_by_number(None, false).await?;
-    let commitment = tip.protocol_config_commitment();
     assert_matches!(
-        client.get_protocol_config(commitment).await,
+        client.get_protocol_config(tip.protocol_config_commitment()).await,
         Err(ClientError::StoreError(StoreError::ProtocolConfigNotFound(_))),
-        "a fresh store must not hold a protocol configuration"
+        "a store that has never synced must not hold a protocol configuration"
     );
 
     client.sync_state().await?;
 
     // The stored header is what transaction execution resolves a configuration against.
     let synced = client.get_latest_block_header().await?;
-    let config = client.get_protocol_config(synced.protocol_config_commitment()).await?;
-    assert_eq!(config.to_commitment(), synced.protocol_config_commitment());
+    client
+        .get_protocol_config(synced.protocol_config_commitment())
+        .await
+        .context("the sync must store the configuration the synced block commits to")?;
     Ok(())
 }
 

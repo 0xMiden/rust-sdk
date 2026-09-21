@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Features
+
+* [FEATURE][cli] Added the `--ecdsa-public-key` flag to `new-wallet` and `new-account`. It creates the account with an ECDSA authentication component committing to an externally-held secp256k1 key (e.g. one generated on a Ledger device), accepting the SEC1 compressed or uncompressed encoding with a `0x` prefix. No secret key is generated or stored, so transactions must be signed by the external key holder (#TBD).
+
 ### Enhancements
 
 * [test] CI uses smaller runners for short jobs and cancels superseded pull request runs. Pull requests skip specialty system tests when unrelated files change, while pushes to `main` and `next` still run every test ([#2610](https://github.com/0xMiden/rust-sdk/pull/2610)).

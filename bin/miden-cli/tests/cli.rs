@@ -19,7 +19,13 @@ use miden_client::account::component::{
 use miden_client::account::{AccountFile, AccountId, AccountType, FaucetMetadata, StorageSlotName};
 use miden_client::address::{Address, AddressId, NetworkId};
 use miden_client::assembly::CodeBuilder;
-use miden_client::auth::{AuthSecretKey, PublicKey, TransactionAuthenticator};
+use miden_client::auth::{
+    AuthSchemeId,
+    AuthSecretKey,
+    AuthSingleSig,
+    PublicKey,
+    TransactionAuthenticator,
+};
 use miden_client::builder::ClientBuilder;
 use miden_client::crypto::RandomCoin;
 use miden_client::keystore::Keystore;
@@ -1595,6 +1601,95 @@ async fn list_addresses_remove() -> Result<()> {
     assert_eq!(formatted_output.matches("Unspecified").count(), 0);
 
     Ok(())
+}
+
+// EXTERNAL ECDSA KEY TESTS
+// ================================================================================================
+
+/// The secp256k1 point 6·G in both SEC1 encodings, as an external signer would export it.
+const EXTERNAL_ECDSA_KEY_UNCOMPRESSED: &str = "0x04fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057a1460297556ae12777aacfbb620f3be96\
+    017f45c560de80f0f6518fe4a03c870c36b075f297";
+const EXTERNAL_ECDSA_KEY_COMPRESSED: &str =
+    "0x03fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057a1460297556";
+
+#[tokio::test]
+async fn cli_creates_wallet_with_external_ecdsa_key() -> Result<()> {
+    let (store_path, temp_dir, endpoint) = init_cli();
+
+    let mut create_cmd = cargo_bin_cmd!("miden-client");
+    create_cmd.args(["new-wallet", "--ecdsa-public-key", EXTERNAL_ECDSA_KEY_UNCOMPRESSED]);
+    let output = create_cmd.current_dir(&temp_dir).output().unwrap();
+    assert!(
+        output.status.success(),
+        "wallet creation failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("external ECDSA"), "unexpected output: {stdout}");
+
+    let account_id = stdout
+        .split_whitespace()
+        .skip_while(|&word| word != "-s")
+        .nth(1)
+        .expect("output should name the new account id")
+        .to_string();
+
+    // The secret key never touches this machine, so nothing may land in the keystore.
+    let keystore_dir = temp_dir.join(MIDEN_DIR).join(KEYSTORE_DIRECTORY);
+    let keystore_entries = fs::read_dir(&keystore_dir).unwrap().count();
+    assert_eq!(keystore_entries, 0, "keystore should hold no key for an external ECDSA account");
+
+    // The account's auth component must commit to the provided public key under the ECDSA scheme.
+    let expected_key = miden_client::crypto::ecdsa_k256_keccak::PublicKey::read_from_bytes(
+        &miden_client::utils::hex_to_bytes::<33>(EXTERNAL_ECDSA_KEY_COMPRESSED).unwrap(),
+    )
+    .unwrap();
+    let (client, _) = create_rust_client_with_store_path(&store_path, endpoint).await?;
+    let account = client
+        .get_account(AccountId::from_hex(&account_id)?)
+        .await?
+        .expect("the new account should be tracked");
+    let storage = account.storage();
+    assert_eq!(
+        storage.get_item(AuthSingleSig::public_key_slot())?,
+        expected_key.to_commitment(),
+    );
+    assert_eq!(
+        storage.get_item(AuthSingleSig::scheme_id_slot())?,
+        Word::from([AuthSchemeId::EcdsaK256Keccak.as_u8(), 0, 0, 0]),
+    );
+
+    Ok(())
+}
+
+#[test]
+fn cli_rejects_external_ecdsa_key_alongside_auth_package() {
+    let temp_dir = init_cli().1;
+
+    let mut create_cmd = cargo_bin_cmd!("miden-client");
+    create_cmd.args([
+        "new-account",
+        "-p",
+        "auth/no-auth",
+        "-p",
+        "basic-wallet",
+        "--ecdsa-public-key",
+        EXTERNAL_ECDSA_KEY_COMPRESSED,
+    ]);
+    create_cmd
+        .current_dir(&temp_dir)
+        .assert()
+        .failure()
+        .stderr(contains("auth component").and(contains("--ecdsa-public-key")));
+}
+
+#[test]
+fn cli_rejects_invalid_external_ecdsa_key() {
+    let temp_dir = init_cli().1;
+
+    let mut create_cmd = cargo_bin_cmd!("miden-client");
+    create_cmd.args(["new-wallet", "--ecdsa-public-key", "0xdeadbeef"]);
+    create_cmd.current_dir(&temp_dir).assert().failure().stderr(contains("length"));
 }
 
 // HELPERS

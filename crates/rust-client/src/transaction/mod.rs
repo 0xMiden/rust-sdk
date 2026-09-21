@@ -334,7 +334,7 @@ where
         &self,
         tx_result: &TransactionResult,
     ) -> Result<(), ClientError> {
-        if !creates_gated_account(tx_result) {
+        if !creates_allowlist_checked_account(tx_result) {
             return Ok(());
         }
 
@@ -1935,7 +1935,7 @@ pub(crate) fn validate_executed_transaction(
 /// Returns whether `tx_result` creates an account that the network allowlist gates.
 ///
 /// An account that already exists on chain is not gated, and neither is a network account.
-fn creates_gated_account(tx_result: &TransactionResult) -> bool {
+fn creates_allowlist_checked_account(tx_result: &TransactionResult) -> bool {
     let executed_transaction = tx_result.executed_transaction();
     if !executed_transaction.initial_account().is_new() {
         return false;

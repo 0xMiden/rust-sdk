@@ -83,7 +83,7 @@ use crate::transaction::{
     TransactionRequest,
     TransactionResult,
     TransactionStoreUpdate,
-    creates_gated_account,
+    creates_allowlist_checked_account,
     validate_executed_transaction,
 };
 use crate::{Client, ClientError};
@@ -376,7 +376,9 @@ where
 
         // A transaction that creates an account is gated by the network allowlist. Ask before the
         // transaction is proven, and only once per account.
-        if creates_gated_account(&tx_result) && !self.checked_accounts.contains(&account_id) {
+        if creates_allowlist_checked_account(&tx_result)
+            && !self.checked_accounts.contains(&account_id)
+        {
             self.client.check_account_id_allowed(account_id).await?;
             self.checked_accounts.insert(account_id);
         }

@@ -78,9 +78,11 @@ fn verify_note_tags(
 }
 
 /// Returns [`RpcError::InvalidResponse`] if any update carries a nullifier whose prefix was not in
-/// `requested_prefixes`.
-fn verify_nullifier_prefixes(
+/// `requested_prefixes`, or a block number outside the inclusive `[block_from, block_to]` window.
+fn verify_nullifier_updates(
     requested_prefixes: &BTreeSet<u16>,
+    block_from: BlockNumber,
+    block_to: BlockNumber,
     batch: &[NullifierUpdate],
 ) -> Result<(), RpcError> {
     for update in batch {
@@ -93,6 +95,14 @@ fn verify_nullifier_prefixes(
                 .join(", ");
             return Err(RpcError::InvalidResponse(format!(
                 "node returned nullifier with prefix {prefix} but [{requested}] were requested"
+            )));
+        }
+        if update.block_num < block_from || update.block_num > block_to {
+            return Err(RpcError::InvalidResponse(format!(
+                "node returned nullifier {} at block {} but blocks {block_from} to {block_to} were \
+                 requested",
+                update.nullifier.to_hex(),
+                update.block_num
             )));
         }
     }
@@ -111,24 +121,6 @@ fn verify_account_ids(
             let list = requested.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ");
             return Err(RpcError::InvalidResponse(format!(
                 "node returned transaction for account {id} but [{list}] were requested"
-            )));
-        }
-    }
-    Ok(())
-}
-
-/// Returns [`RpcError::InvalidResponse`] if any of the `returned` block numbers falls outside the
-/// inclusive `[block_from, block_to]` window that was requested.
-fn verify_block_range(
-    block_from: BlockNumber,
-    block_to: BlockNumber,
-    returned: impl IntoIterator<Item = BlockNumber>,
-) -> Result<(), RpcError> {
-    for block_num in returned {
-        if block_num < block_from || block_num > block_to {
-            return Err(RpcError::InvalidResponse(format!(
-                "node returned data for block {block_num} but blocks {block_from} to {block_to} \
-                 were requested"
             )));
         }
     }
@@ -159,20 +151,13 @@ fn verify_note_script_root(requested: Word, script: &NoteScript) -> Result<(), R
 ///   requested.
 /// - [`sync_notes`](NodeRpcClient::sync_notes): every returned note's tag must have been requested.
 /// - [`sync_nullifiers`](NodeRpcClient::sync_nullifiers): every returned nullifier's prefix must
-///   have been requested.
+///   have been requested, and its block number must fall in the requested window.
 /// - [`get_account`](NodeRpcClient::get_account): when the state at a specific block was requested,
 ///   the response must be for that block.
 /// - [`get_note_script_by_root`](NodeRpcClient::get_note_script_by_root): a returned script's root
 ///   must match the requested one.
 /// - [`sync_transactions`](NodeRpcClient::sync_transactions): every returned transaction record's
 ///   account ID must have been requested.
-///
-/// The five methods scoped to a `block_from`/`block_to` window additionally reject responses that
-/// carry data stamped outside it: [`sync_notes`](NodeRpcClient::sync_notes),
-/// [`sync_nullifiers`](NodeRpcClient::sync_nullifiers),
-/// [`sync_storage_maps`](NodeRpcClient::sync_storage_maps),
-/// [`sync_account_vault`](NodeRpcClient::sync_account_vault) and
-/// [`sync_transactions`](NodeRpcClient::sync_transactions).
 ///
 /// All other methods delegate to the wrapped client unchanged.
 pub struct VerifyingRpcClient<T>(T);
@@ -272,11 +257,6 @@ impl<T: NodeRpcClient> NodeRpcClient for VerifyingRpcClient<T> {
             note_tags,
             blocks.iter().flat_map(|block| block.notes.values().map(CommittedNote::tag)),
         )?;
-        verify_block_range(
-            block_from,
-            block_to,
-            blocks.iter().map(|block| block.block_header.block_num()),
-        )?;
         Ok(blocks)
     }
 
@@ -288,8 +268,7 @@ impl<T: NodeRpcClient> NodeRpcClient for VerifyingRpcClient<T> {
     ) -> Result<Vec<NullifierUpdate>, RpcError> {
         let nullifiers = self.0.sync_nullifiers(prefix, block_from, block_to).await?;
         let requested: BTreeSet<u16> = prefix.iter().copied().collect();
-        verify_nullifier_prefixes(&requested, &nullifiers)?;
-        verify_block_range(block_from, block_to, nullifiers.iter().map(|update| update.block_num))?;
+        verify_nullifier_updates(&requested, block_from, block_to, &nullifiers)?;
         Ok(nullifiers)
     }
 
@@ -328,9 +307,7 @@ impl<T: NodeRpcClient> NodeRpcClient for VerifyingRpcClient<T> {
         block_to: BlockNumber,
         account_id: AccountId,
     ) -> Result<StorageMapInfo, RpcError> {
-        let info = self.0.sync_storage_maps(block_from, block_to, account_id).await?;
-        verify_block_range(block_from, block_to, [info.block_number])?;
-        Ok(info)
+        self.0.sync_storage_maps(block_from, block_to, account_id).await
     }
 
     async fn sync_account_vault(
@@ -339,9 +316,7 @@ impl<T: NodeRpcClient> NodeRpcClient for VerifyingRpcClient<T> {
         block_to: BlockNumber,
         account_id: AccountId,
     ) -> Result<AccountVaultInfo, RpcError> {
-        let info = self.0.sync_account_vault(block_from, block_to, account_id).await?;
-        verify_block_range(block_from, block_to, [info.block_number])?;
-        Ok(info)
+        self.0.sync_account_vault(block_from, block_to, account_id).await
     }
 
     async fn sync_transactions(
@@ -353,7 +328,6 @@ impl<T: NodeRpcClient> NodeRpcClient for VerifyingRpcClient<T> {
         let requested: BTreeSet<AccountId> = account_ids.iter().copied().collect();
         let records = self.0.sync_transactions(block_from, block_to, account_ids).await?;
         verify_account_ids(&requested, &records)?;
-        verify_block_range(block_from, block_to, records.iter().map(|record| record.block_num))?;
         Ok(records)
     }
 

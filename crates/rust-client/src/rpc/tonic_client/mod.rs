@@ -121,6 +121,15 @@ impl BlockPagination {
             ));
         }
 
+        // The node must not answer with a page that ends past the requested window. The cursor is
+        // trusted downstream, so an out-of-window cursor is rejected here.
+        if block_num > self.block_to {
+            return Err(RpcError::PaginationError(format!(
+                "invalid pagination: block_num {block_num} is past the requested block_to {}",
+                self.block_to
+            )));
+        }
+
         let target_block = self.block_to.min(chain_tip);
 
         if block_num >= target_block {
@@ -1174,6 +1183,14 @@ mod tests {
         let mut pagination = BlockPagination::new(10_u32.into(), 20_u32.into());
 
         let res = pagination.advance(9_u32.into(), 20_u32.into());
+        assert!(matches!(res, Err(RpcError::PaginationError(_))));
+    }
+
+    #[test]
+    fn block_pagination_errors_when_block_num_passes_block_to() {
+        let mut pagination = BlockPagination::new(10_u32.into(), 20_u32.into());
+
+        let res = pagination.advance(21_u32.into(), 100_u32.into());
         assert!(matches!(res, Err(RpcError::PaginationError(_))));
     }
 

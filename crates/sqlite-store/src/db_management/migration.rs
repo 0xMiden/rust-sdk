@@ -24,7 +24,7 @@ pub(crate) const CLIENT_MIGRATIONS: [SqliteMigration; 3] = [
     ),
     SqliteMigration::new(
         include_str!("../migrations/0003_account_witnesses.sql"),
-        "0xf5785ebeb126c7f98d951efa90a60a452182ecb733f0a02fd160a5b9ce959da6",
+        "0xe6d8b85e78b58065fb6e4af16e9e21a0926dc79a238c587d02aaab27068ad810",
     ),
 ];
 

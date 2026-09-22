@@ -118,15 +118,14 @@ use crate::store::{
     TransactionFilter,
 };
 use crate::sync::NoteTagRecord;
-use crate::transaction::batch::InMemoryBatchDataStore;
 
 pub mod batch;
-pub use batch::{BatchBuilder, BatchBuilderError};
+pub use batch::{BatchBuilder, BatchBuilderError, ProvenBatchSubmission};
 
 mod chain_anchor;
 pub use chain_anchor::{ChainAnchor, ChainAnchorError};
 
-#[cfg(any())]
+#[cfg(feature = "dap")]
 mod dap_executor;
 mod prover;
 pub use prover::TransactionProver;
@@ -221,22 +220,6 @@ where
         filter: TransactionFilter,
     ) -> Result<Vec<TransactionRecord>, ClientError> {
         self.store.get_transactions(filter).await.map_err(Into::into)
-    }
-
-    // TRANSACTION BATCH
-    // --------------------------------------------------------------------------------------------
-
-    /// Open a new [`BatchBuilder`] for accumulating transactions across one or more local accounts.
-    ///
-    /// See [`crate::transaction::batch`] for usage and constraints.
-    pub fn new_transaction_batch(&mut self) -> BatchBuilder<'_, AUTH> {
-        let inner_data_store = ClientDataStore::new(self.store.clone(), self.rpc_api.clone());
-        BatchBuilder {
-            client: self,
-            data_store: InMemoryBatchDataStore::new(inner_data_store),
-            pushed_txs: Vec::new(),
-            consumed_input_notes: BTreeSet::new(),
-        }
     }
 
     // TRANSACTION
@@ -512,7 +495,7 @@ where
     ///
     /// This applies the same request preparation and output-recipient validation as
     /// [`Self::execute_transaction`], and returns the corresponding [`ClientError`] on failure.
-    #[cfg(any())]
+    #[cfg(feature = "dap")]
     pub async fn execute_transaction_with_dap(
         &self,
         account_id: AccountId,
@@ -575,7 +558,7 @@ where
                     .execute_transaction(account_id, prep.block_num, notes, prep.tx_args)
                     .await?
             },
-            #[cfg(any())]
+            #[cfg(feature = "dap")]
             TransactionExecutionMode::Dap => {
                 self.build_dap_executor(&data_store)?
                     .execute_transaction(account_id, prep.block_num, notes, prep.tx_args)
@@ -793,19 +776,19 @@ where
         // inputs cannot be recovered from the proven transaction, which only commits to them, and
         // sealing draws fresh randomness so every attempt has to seal again.
         let transaction_inputs = transaction_inputs.into();
-        let submitted = proven_transaction.clone();
 
         let sealed_inputs =
             seal_transaction_inputs(&mut self.rng, &key, tx_id, &transaction_inputs)?;
 
         let result =
-            self.rpc_api.submit_proven_transaction(proven_transaction, sealed_inputs).await;
+            self.rpc_api.submit_proven_transaction(&proven_transaction, sealed_inputs).await;
         if let Err(err) = &result {
             self.forget_stale_transaction_encryption_key(err).await;
         }
 
-        let block_num = result
-            .map_err(|err| promote_indeterminate_submission(err, submitted, transaction_inputs))?;
+        let block_num = result.map_err(|err| {
+            promote_indeterminate_submission(err, proven_transaction, transaction_inputs)
+        })?;
         info!("Transaction submitted.");
 
         Ok(block_num)
@@ -832,8 +815,7 @@ where
         // response cannot supply its own trust anchor.
         let genesis_commitment =
             self.trusted_block_header(BlockNumber::GENESIS).await?.commitment();
-        let chain_tip = self.store.get_sync_height().await?;
-        let validator_keys = self.trusted_block_header(chain_tip).await?.validator_config().clone();
+        let validator_keys = self.get_validator_config().await?;
 
         let key = attested.verify(genesis_commitment, &validator_keys)?;
         self.store.set_transaction_encryption_key(&key).await?;
@@ -985,7 +967,7 @@ where
 
     /// Executes the provided transaction script with a DAP debug adapter listening for connections,
     /// allowing interactive debugging via any DAP-compatible client.
-    #[cfg(any())]
+    #[cfg(feature = "dap")]
     pub async fn execute_program_with_dap(
         &self,
         account_id: AccountId,
@@ -1311,7 +1293,7 @@ where
     }
 
     /// Creates a transaction executor configured for DAP (Debug Adapter Protocol) debugging.
-    #[cfg(any())]
+    #[cfg(feature = "dap")]
     pub(crate) fn build_dap_executor<'store, 'auth, STORE: DataStore + Sync>(
         &'auth self,
         data_store: &'store STORE,
@@ -1476,7 +1458,7 @@ pub enum TransactionStoreUpdateError {
 #[derive(Clone, Copy, Debug)]
 enum TransactionExecutionMode {
     Standard,
-    #[cfg(any())]
+    #[cfg(feature = "dap")]
     Dap,
 }
 

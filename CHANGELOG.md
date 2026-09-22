@@ -1,9 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Breaking Changes
+
+* [BREAKING][type][rust] Added the `TransactionRequestError::InputNoteBeingProcessed` variant, so exhaustive matches on `TransactionRequestError` must handle it ([#2583](https://github.com/0xMiden/rust-sdk/pull/2583)).
+
+### Fixes
+
+* [FIX][rust] A request that consumes a note already held by a pending local transaction is now rejected with `TransactionRequestError::InputNoteBeingProcessed` before it is executed. Previously the transaction was executed, proven and submitted to the node, and only the local store update failed, leaving a submitted transaction without a local record ([#2583](https://github.com/0xMiden/rust-sdk/pull/2583)).
+
 ## 0.17.0.rc-1 (2026-09-17)
 
 ### Breaking Changes
 
+* [BREAKING][behavior][rust,cli] The client now gets its protocol configuration from the node during `Client::sync_state` instead of being given one. `SyncChainMmr` carries the configuration when the client syncs from genesis or when the configuration commitment changed over the synced range, and the client verifies it against the block header before storing it ([#2591](https://github.com/0xMiden/rust-sdk/pull/2591)).
+* [BREAKING][removal][rust] Removed `ClientBuilder::protocol_config` and `Client::add_protocol_config`. A client gets its configurations by syncing, so there is no longer a way to supply one ([#2591](https://github.com/0xMiden/rust-sdk/pull/2591)).
+* [BREAKING][behavior][rust] State sync now authenticates the chain tip by verifying the block signatures against the validator configuration ([#2553](https://github.com/0xMiden/rust-sdk/pull/2553)).
+* [BREAKING][param][rust] `StateSync::new` now takes a `validator_config: ValidatorConfig` argument, used to authenticate the chain tip block header on every sync. The validator configuration can be retrieved from the client with `Client::get_validator_config` ([#2553](https://github.com/0xMiden/rust-sdk/pull/2553)).
 * [BREAKING][type][rust] Added the `KeyStoreError::EncryptionError` and `KeyStoreError::InvalidPassword` variants, so exhaustive matches on `KeyStoreError` must handle them. `FilesystemKeyStore::new` now fails on a directory that holds an encrypted keystore ([#30](https://github.com/0xMiden/rust-sdk/issues/30)).
 * [BREAKING][behavior][cli] The keystore is now encrypted by default. The first command that opens it asks for a password, read from `MIDEN_KEYSTORE_PASSWORD` or prompted on the terminal. Pass `init --plaintext-keystore` or set `keystore_encrypted = false` to keep plaintext keys, which is only recommended for development. The new `keystore_encrypted` field is required, so an existing configuration file does not load until it is added: `false` keeps the plaintext keys, `true` followed by `keys --encrypt` encrypts them ([#30](https://github.com/0xMiden/rust-sdk/issues/30)).
 * [BREAKING][arch][rust] Updated `miden-node-proto-build` to `0.17.0-rc.1`, protocol dependencies to `0.17.0-rc.5` and VM dependencies to `0.33` ([#2562](https://github.com/0xMiden/rust-sdk/pull/2562)).
@@ -37,6 +51,7 @@
 
 ### Features
 
+* [FEATURE][rust] Added `Client::get_validator_config`, which returns the validator configuration committed by the locally stored block header at the current sync height ([#2553](https://github.com/0xMiden/rust-sdk/pull/2553)).
 * [FEATURE][rust] Added `FilesystemKeyStore::new_encrypted`, which encrypts each key file with XChaCha20-Poly1305 under a key that Argon2id derives from a password, and `FilesystemKeyStore::encrypt_plaintext_keystore`, which encrypts an existing plaintext keystore in place. `FilesystemKeyStore::new` still stores keys in plaintext and is documented as a development-only option ([#30](https://github.com/0xMiden/rust-sdk/issues/30)).
 * [FEATURE][cli] Added the `keystore_encrypted` configuration field, the `init --plaintext-keystore` flag, and `keys --encrypt`, which encrypts the plaintext keystore of the current configuration and marks it as encrypted ([#30](https://github.com/0xMiden/rust-sdk/issues/30)).
 * [FEATURE][rust] Added `Endpoint::mainnet()`, `ClientBuilder::for_mainnet()`, `MAINNET_PROVER_ENDPOINT` and `NOTE_TRANSPORT_MAINNET_ENDPOINT`. The mainnet RPC endpoint maps to `NetworkId::Mainnet`, so addresses derived from it use the `mm` prefix ([#2569](https://github.com/0xMiden/rust-sdk/pull/2569)).
@@ -48,10 +63,15 @@
 * [FEATURE][rust] Re-exported the fee pricing and note checking types that the client API already surfaces, so downstream crates no longer need a direct `miden-tx` dependency to price note consumption: `NetworkNotePricer`, `NotePricingError` and `NoteCheckerError` at the crate root, `TransactionFee` and `TransactionFeeError` from `transaction`, `NoteCost` and `NoteConsumptionCost` from `note`, and `MastForestStore` and `TransactionMastStore` from `testing` ([#2475](https://github.com/0xMiden/rust-sdk/pull/2475)).
 * [FEATURE][rust] `Client::retry_proven_batch` resends a batch whose outcome was never confirmed, sealing the transaction inputs again on every attempt so nothing is executed or proven twice. It takes the `ProvenBatchSubmission` from `BatchBuilderError::BatchSubmissionOutcomeUnknown`, which has no public constructor, so that error is the only way to obtain one ([#2508](https://github.com/0xMiden/rust-sdk/pull/2508)).
 
+### Enhancements
+
+* [FEATURE][cli] Added a `--package` option to `exec` so a compiled transaction script package (`.masp`) can be run instead of MASM source. A path without an extension is resolved in the package directory, as with `call --package` ([#2470](https://github.com/0xMiden/rust-sdk/issues/2470)).
+
 ### Fixes
 
 * [FIX][cli] `new-account` and `new-wallet` now reject a package that exports procedures without an `@account_procedure` or `@auth_script` attribute. They also reject packages whose target kind is not `account-component` and packages without an account component metadata section ([#2542](https://github.com/0xMiden/rust-sdk/pull/2542)).
 * [FIX][cli] `new-account` and `new-wallet` accept a composite storage slot given as a single slot-level value in the init data file, instead of prompting for each field and then failing with a conflict ([#2534](https://github.com/0xMiden/rust-sdk/issues/2534)).
+* [FIX][rust] `TransactionRequestBuilder::expiration_delta` is now applied to requests without own output notes, such as `build_consume_notes` or a bare `build()`. Such a request runs the standard `ExpirationTransactionScript` with the delta as its script argument, where the delta was previously dropped and the transaction never expired ([#2580](https://github.com/0xMiden/rust-sdk/pull/2580)).
 * [FIX][store] `SqliteStore::update_account` keeps the seed of an account whose nonce is still zero, so overwriting an undeployed account (for example with `import --overwrite`) no longer leaves it undeployable ([#2541](https://github.com/0xMiden/rust-sdk/pull/2541)).
 * [FIX][cli] Packages resolved from the package directory are read with the trusted package reader ([#2568](https://github.com/0xMiden/rust-sdk/pull/2568)).
 * [FIX][rust] Refreshed tracked input notes after transport imports so the same sync detects their consumption ([#2453](https://github.com/0xMiden/rust-sdk/pull/2453)).

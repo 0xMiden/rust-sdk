@@ -626,11 +626,24 @@ where
             .get_input_notes(NoteFilter::List(transaction_request.input_note_ids().collect()))
             .await?;
 
-        // Verify that none of the stored input notes are already consumed.
+        // Verify that none of the stored input notes are already consumed or held by a pending
+        // local transaction. A processing note is rejected here, before anything is executed or
+        // submitted: the store could not record a second consumer, so a transaction spending it
+        // would reach the node without a local record of it.
         for note in &stored_note_records {
             if note.is_consumed() {
                 return Err(ClientError::TransactionRequestError(
                     TransactionRequestError::InputNoteAlreadyConsumed(note.details_commitment()),
+                ));
+            }
+            if let Some(transaction_id) = note.consumer_transaction_id()
+                && note.is_processing()
+            {
+                return Err(ClientError::TransactionRequestError(
+                    TransactionRequestError::InputNoteBeingProcessed {
+                        note: note.details_commitment(),
+                        transaction_id: *transaction_id,
+                    },
                 ));
             }
         }
@@ -814,8 +827,7 @@ where
         // response cannot supply its own trust anchor.
         let genesis_commitment =
             self.trusted_block_header(BlockNumber::GENESIS).await?.commitment();
-        let chain_tip = self.store.get_sync_height().await?;
-        let validator_keys = self.trusted_block_header(chain_tip).await?.validator_config().clone();
+        let validator_keys = self.get_validator_config().await?;
 
         let key = attested.verify(genesis_commitment, &validator_keys)?;
         self.store.set_transaction_encryption_key(&key).await?;

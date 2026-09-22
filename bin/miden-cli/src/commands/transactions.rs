@@ -20,7 +20,7 @@ use miden_client::transaction::{
 use crate::commands::notes::note_record_type;
 use crate::errors::CliError;
 use crate::utils::{FaucetMetadataResolver, load_faucet_metadata_resolver, parse_account_id};
-use crate::{Parser, create_dynamic_table};
+use crate::{Parser, create_dynamic_table, get_transaction_with_id_prefix};
 
 /// Placeholder shown for a field that the client can't fill in for the transaction at hand.
 const NO_VALUE: &str = "-";
@@ -135,7 +135,9 @@ async fn show_transaction<AUTH: Keystore + Sync + 'static>(
     client: &Client<AUTH>,
     transaction_id_prefix: &str,
 ) -> Result<(), CliError> {
-    let transaction = get_transaction_with_id_prefix(client, transaction_id_prefix).await?;
+    let transaction = get_transaction_with_id_prefix(client, transaction_id_prefix)
+        .await
+        .map_err(|err| CliError::Input(err.to_string()))?;
     let resolver = load_faucet_metadata_resolver()?;
 
     print_transaction_details(&transaction);
@@ -143,29 +145,6 @@ async fn show_transaction<AUTH: Keystore + Sync + 'static>(
     print_output_notes(client, &resolver, &transaction).await?;
 
     Ok(())
-}
-
-/// Returns the tracked transaction whose ID starts with `transaction_id_prefix`.
-async fn get_transaction_with_id_prefix<AUTH: Keystore + Sync + 'static>(
-    client: &Client<AUTH>,
-    transaction_id_prefix: &str,
-) -> Result<TransactionRecord, CliError> {
-    let mut matches = client
-        .get_transactions(TransactionFilter::All)
-        .await?
-        .into_iter()
-        .filter(|transaction| transaction.id.to_hex().starts_with(transaction_id_prefix))
-        .collect::<Vec<_>>();
-
-    match matches.len() {
-        0 => Err(CliError::Input(format!(
-            "The specified transaction ID hex prefix {transaction_id_prefix} did not match any transaction"
-        ))),
-        1 => Ok(matches.pop().expect("matches has exactly one element")),
-        _ => Err(CliError::Input(format!(
-            "The specified transaction ID hex prefix {transaction_id_prefix} matched with more than one transaction"
-        ))),
-    }
 }
 
 /// Prints the transaction's own metadata.

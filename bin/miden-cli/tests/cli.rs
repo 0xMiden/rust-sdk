@@ -1617,7 +1617,7 @@ async fn cli_creates_wallet_with_external_ecdsa_key() -> Result<()> {
     let (store_path, temp_dir, endpoint) = init_cli();
 
     let mut create_cmd = cargo_bin_cmd!("miden-client");
-    create_cmd.args(["new-wallet", "--ecdsa-public-key", EXTERNAL_ECDSA_KEY_UNCOMPRESSED]);
+    create_cmd.args(["new-wallet", "--ecdsa-k256-keccak", EXTERNAL_ECDSA_KEY_UNCOMPRESSED]);
     let output = create_cmd.current_dir(&temp_dir).output().unwrap();
     assert!(
         output.status.success(),
@@ -1663,6 +1663,23 @@ async fn cli_creates_wallet_with_external_ecdsa_key() -> Result<()> {
 }
 
 #[test]
+fn cli_generates_ecdsa_key_when_no_public_key_is_given() {
+    let temp_dir = init_cli().1;
+
+    let mut create_cmd = cargo_bin_cmd!("miden-client");
+    create_cmd.args(["new-wallet", "--ecdsa"]);
+    create_cmd
+        .current_dir(&temp_dir)
+        .assert()
+        .success()
+        .stdout(contains("Generated and stored ecdsa-k256-keccak authentication key"));
+
+    let keystore_dir = temp_dir.join(MIDEN_DIR).join(KEYSTORE_DIRECTORY);
+    let keystore_entries = fs::read_dir(&keystore_dir).unwrap().count();
+    assert_ne!(keystore_entries, 0, "the generated ECDSA key should land in the keystore");
+}
+
+#[test]
 fn cli_rejects_external_ecdsa_key_alongside_auth_package() {
     let temp_dir = init_cli().1;
 
@@ -1673,14 +1690,27 @@ fn cli_rejects_external_ecdsa_key_alongside_auth_package() {
         "auth/no-auth",
         "-p",
         "basic-wallet",
-        "--ecdsa-public-key",
+        "--ecdsa-k256-keccak",
         EXTERNAL_ECDSA_KEY_COMPRESSED,
     ]);
     create_cmd
         .current_dir(&temp_dir)
         .assert()
         .failure()
-        .stderr(contains("auth component").and(contains("--ecdsa-public-key")));
+        .stderr(contains("auth component").and(contains("--ecdsa-k256-keccak")));
+}
+
+#[test]
+fn cli_rejects_conflicting_auth_scheme_flags() {
+    let temp_dir = init_cli().1;
+
+    let mut create_cmd = cargo_bin_cmd!("miden-client");
+    create_cmd.args(["new-wallet", "--ecdsa", "--falcon"]);
+    create_cmd
+        .current_dir(&temp_dir)
+        .assert()
+        .failure()
+        .stderr(contains("cannot be used with"));
 }
 
 #[test]
@@ -1688,8 +1718,31 @@ fn cli_rejects_invalid_external_ecdsa_key() {
     let temp_dir = init_cli().1;
 
     let mut create_cmd = cargo_bin_cmd!("miden-client");
-    create_cmd.args(["new-wallet", "--ecdsa-public-key", "0xdeadbeef"]);
+    create_cmd.args(["new-wallet", "--ecdsa-k256-keccak", "0xdeadbeef"]);
     create_cmd.current_dir(&temp_dir).assert().failure().stderr(contains("length"));
+}
+
+#[test]
+fn cli_keys_commitment_accepts_uncompressed_ecdsa_key() {
+    let temp_dir = init_cli().1;
+
+    let commitment_for = |key: &str| {
+        let mut cmd = cargo_bin_cmd!("miden-client");
+        cmd.args(["keys", "--commitment", key]);
+        let output = cmd.current_dir(&temp_dir).output().unwrap();
+        assert!(
+            output.status.success(),
+            "keys --commitment failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap()
+    };
+
+    // Both encodings of the same point must resolve to the same commitment.
+    assert_eq!(
+        commitment_for(EXTERNAL_ECDSA_KEY_UNCOMPRESSED),
+        commitment_for(EXTERNAL_ECDSA_KEY_COMPRESSED),
+    );
 }
 
 // HELPERS

@@ -4,7 +4,7 @@
 
 ### Features
 
-* [FEATURE][cli] Added the `--ecdsa-public-key` flag to `new-wallet` and `new-account`. It creates the account with an ECDSA authentication component committing to an externally-held secp256k1 key (e.g. one generated on a Ledger device), accepting the SEC1 compressed or uncompressed encoding with a `0x` prefix. No secret key is generated or stored, so transactions must be signed by the external key holder ([#2590](https://github.com/0xMiden/rust-sdk/pull/2590)).
+* [FEATURE][cli] Added the mutually exclusive authentication scheme flags `--ecdsa-k256-keccak [PUBLIC_KEY]` and `--falcon512-poseidon2` (aliases `--ecdsa`, `--falcon`) to `new-wallet` and `new-account`. With a public key (SEC1 compressed or uncompressed, `0x`-prefixed — e.g. one generated on a Ledger device), the account commits to the externally-held key and no secret key is generated or stored, so transactions must be signed by the external key holder. Without one, a key of the selected scheme is generated and stored in the keystore. `keys --commitment` now also accepts the 65-byte uncompressed SEC1 encoding ([#2590](https://github.com/0xMiden/rust-sdk/pull/2590)).
 
 ### Enhancements
 

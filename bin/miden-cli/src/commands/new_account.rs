@@ -23,18 +23,20 @@ use miden_client::account::{
     AccountType,
 };
 use miden_client::asset::{AssetAmount, TokenSymbol};
-use miden_client::auth::{Approver, AuthSchemeId, AuthSecretKey, AuthSingleSig};
+use miden_client::auth::{AuthSchemeId, AuthSecretKey, AuthSingleSig};
 use miden_client::crypto::ecdsa_k256_keccak;
 use miden_client::keystore::Keystore;
-use miden_client::utils::{Deserializable, hex_to_bytes};
+use miden_client::utils::Deserializable;
 use miden_client::vm::{Package, TargetType};
-use rand::Rng;
+use rand::{CryptoRng, Rng};
 use serde::Deserialize;
 use tracing::debug;
 
 use crate::commands::account::set_default_account_if_unset;
+use crate::commands::keys::scheme_name;
 use crate::config::CliConfig;
 use crate::errors::CliError;
+use crate::utils::parse_ecdsa_public_key;
 use crate::{CliKeyStore, client_binary_name};
 
 // CLI TYPES
@@ -84,14 +86,32 @@ pub struct NewWalletCmd {
     #[cfg_attr(feature = "testing", arg(long, default_value_t = false))]
     #[cfg_attr(not(feature = "testing"), arg(skip = false))]
     pub offline: bool,
-    /// Hex-encoded secp256k1 public key of an external signer (e.g. a Ledger device), in SEC1
-    /// compressed (33-byte) or uncompressed (65-byte) form, `0x`-prefixed.
+    /// Use the ECDSA k256/Keccak authentication scheme, optionally committing to an externally-held
+    /// public key.
     ///
-    /// The wallet is created with an ECDSA authentication component committing to this key. No
-    /// secret key is generated or stored, so transactions must be signed by the external key
-    /// holder. Cannot be combined with a package that contributes an auth component.
-    #[arg(long, value_name = "HEX")]
-    pub ecdsa_public_key: Option<String>,
+    /// With a `PUBLIC_KEY` (SEC1 compressed 33-byte or uncompressed 65-byte hex, `0x`-prefixed —
+    /// the form external signers such as a Ledger device export), the account commits to that key
+    /// and no secret key is generated or stored, so transactions must be signed by the external key
+    /// holder. Without a value, a new ECDSA secret key is generated and stored in the keystore.
+    /// Cannot be combined with a package that contributes an auth component.
+    // The nested option is clap's idiom for a flag with an optional value: the outer level says
+    // whether the flag is present, the inner one whether a value was given.
+    #[allow(clippy::option_option)]
+    #[arg(
+        long = "ecdsa-k256-keccak",
+        visible_alias = "ecdsa",
+        value_name = "PUBLIC_KEY",
+        num_args = 0..=1,
+        conflicts_with = "falcon512_poseidon2"
+    )]
+    pub ecdsa_k256_keccak: Option<Option<String>>,
+    /// Use the Falcon512/Poseidon2 authentication scheme: generate a new secret key and store it in
+    /// the keystore.
+    ///
+    /// This is the default when no scheme flag and no auth component package is given. Cannot be
+    /// combined with a package that contributes an auth component.
+    #[arg(long = "falcon512-poseidon2", visible_alias = "falcon", default_value_t = false)]
+    pub falcon512_poseidon2: bool,
 }
 
 impl NewWalletCmd {
@@ -112,7 +132,7 @@ impl NewWalletCmd {
             &package_paths,
             self.init_storage_data_path.clone(),
             self.offline,
-            self.ecdsa_public_key.as_deref(),
+            AuthChoice::from_flags(self.falcon512_poseidon2, self.ecdsa_k256_keccak.as_ref())?,
         )
         .await?;
 
@@ -142,6 +162,12 @@ impl NewWalletCmd {
 /// If a package with an authentication component is provided via `-p`, it will be used for the
 /// account. Otherwise, a default `RpoFalcon512` authentication component will be added
 /// automatically.
+///
+/// An authentication scheme can also be selected explicitly with `--ecdsa-k256-keccak [PUBLIC_KEY]`
+/// or `--falcon512-poseidon2` (aliases: `--ecdsa`, `--falcon`). These flags are mutually exclusive
+/// with each other and with auth component packages. When a public key is given, the account
+/// commits to that externally-held key and no secret key is stored; otherwise a key of the selected
+/// scheme is generated and stored in the keystore.
 ///
 /// Each account can only have one authentication component. If multiple packages contain
 /// authentication components, an error will be returned. By default, authentication-related
@@ -186,14 +212,32 @@ pub struct NewAccountCmd {
     #[cfg_attr(feature = "testing", arg(long, default_value_t = false))]
     #[cfg_attr(not(feature = "testing"), arg(skip = false))]
     pub offline: bool,
-    /// Hex-encoded secp256k1 public key of an external signer (e.g. a Ledger device), in SEC1
-    /// compressed (33-byte) or uncompressed (65-byte) form, `0x`-prefixed.
+    /// Use the ECDSA k256/Keccak authentication scheme, optionally committing to an externally-held
+    /// public key.
     ///
-    /// The account is created with an ECDSA authentication component committing to this key. No
-    /// secret key is generated or stored, so transactions must be signed by the external key
-    /// holder. Cannot be combined with a package that contributes an auth component.
-    #[arg(long, value_name = "HEX")]
-    pub ecdsa_public_key: Option<String>,
+    /// With a `PUBLIC_KEY` (SEC1 compressed 33-byte or uncompressed 65-byte hex, `0x`-prefixed —
+    /// the form external signers such as a Ledger device export), the account commits to that key
+    /// and no secret key is generated or stored, so transactions must be signed by the external key
+    /// holder. Without a value, a new ECDSA secret key is generated and stored in the keystore.
+    /// Cannot be combined with a package that contributes an auth component.
+    // The nested option is clap's idiom for a flag with an optional value: the outer level says
+    // whether the flag is present, the inner one whether a value was given.
+    #[allow(clippy::option_option)]
+    #[arg(
+        long = "ecdsa-k256-keccak",
+        visible_alias = "ecdsa",
+        value_name = "PUBLIC_KEY",
+        num_args = 0..=1,
+        conflicts_with = "falcon512_poseidon2"
+    )]
+    pub ecdsa_k256_keccak: Option<Option<String>>,
+    /// Use the Falcon512/Poseidon2 authentication scheme: generate a new secret key and store it in
+    /// the keystore.
+    ///
+    /// This is the default when no scheme flag and no auth component package is given. Cannot be
+    /// combined with a package that contributes an auth component.
+    #[arg(long = "falcon512-poseidon2", visible_alias = "falcon", default_value_t = false)]
+    pub falcon512_poseidon2: bool,
 }
 
 impl NewAccountCmd {
@@ -209,7 +253,7 @@ impl NewAccountCmd {
             &self.packages,
             self.init_storage_data_path.clone(),
             self.offline,
-            self.ecdsa_public_key.as_deref(),
+            AuthChoice::from_flags(self.falcon512_poseidon2, self.ecdsa_k256_keccak.as_ref())?,
         )
         .await?;
 
@@ -406,67 +450,77 @@ fn load_init_storage_data(
     Ok((init, faucet_metadata))
 }
 
-/// Byte length of a SEC1-compressed secp256k1 public key (parity prefix plus x coordinate).
-const ECDSA_COMPRESSED_KEY_BYTES: usize = 33;
-/// Byte length of a SEC1-uncompressed secp256k1 public key (`0x04` prefix plus both coordinates).
-const ECDSA_UNCOMPRESSED_KEY_BYTES: usize = 65;
-
-/// SPKI (RFC 5280) ASN.1 DER header declaring an uncompressed secp256k1 EC public key. The 65-byte
-/// SEC1 point follows these bytes directly. Layout:
-///
-/// ```text
-/// 30 56           SEQUENCE (86 bytes)
-///   30 10         SEQUENCE, AlgorithmIdentifier (16 bytes)
-///     06 07 2a 86 48 ce 3d 02 01   OID 1.2.840.10045.2.1 (ecPublicKey)
-///     06 05 2b 81 04 00 0a         OID 1.3.132.0.10 (secp256k1)
-///   03 42 00      BIT STRING (66 bytes, no unused bits): the SEC1 point
-/// ```
-const SECP256K1_SPKI_HEADER: [u8; 23] = [
-    0x30, 0x56, 0x30, 0x10, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x05, 0x2b,
-    0x81, 0x04, 0x00, 0x0a, 0x03, 0x42, 0x00,
-];
-
-/// Parses a hex-encoded secp256k1 public key in SEC1 format.
-///
-/// Accepts the 33-byte compressed and the 65-byte uncompressed encoding (the form Ledger and other
-/// Ethereum-style signers export), both with a mandatory `0x` prefix. The point is fully validated:
-/// an uncompressed key whose coordinates do not lie on the curve is rejected.
-fn invalid_ecdsa_key(err: impl core::fmt::Display) -> CliError {
-    CliError::InvalidArgument(format!("invalid ECDSA public key: {err}"))
+/// The user's authentication scheme selection for a new account, from the mutually exclusive
+/// `--ecdsa-k256-keccak` and `--falcon512-poseidon2` flags.
+enum AuthChoice {
+    /// No scheme flag given: an auth component from the packages wins, otherwise a Falcon key is
+    /// generated.
+    Default,
+    /// An explicitly selected scheme with a freshly generated, keystore-held secret key.
+    Generate(AuthSchemeId),
+    /// An externally-held ECDSA public key: the account commits to it and no key is stored.
+    ExternalEcdsa(ecdsa_k256_keccak::PublicKey),
 }
 
-fn parse_ecdsa_public_key(encoded: &str) -> Result<ecdsa_k256_keccak::PublicKey, CliError> {
-    let hex_digits = encoded.strip_prefix("0x").ok_or_else(|| {
-        CliError::InvalidArgument(
-            "ECDSA public key must use a 0x-prefixed hexadecimal encoding".to_string(),
-        )
-    })?;
-
-    match hex_digits.len() {
-        len if len == ECDSA_COMPRESSED_KEY_BYTES * 2 => {
-            let bytes =
-                hex_to_bytes::<ECDSA_COMPRESSED_KEY_BYTES>(encoded).map_err(invalid_ecdsa_key)?;
-            ecdsa_k256_keccak::PublicKey::read_from_bytes(&bytes).map_err(invalid_ecdsa_key)
-        },
-        len if len == ECDSA_UNCOMPRESSED_KEY_BYTES * 2 => {
-            let bytes =
-                hex_to_bytes::<ECDSA_UNCOMPRESSED_KEY_BYTES>(encoded).map_err(invalid_ecdsa_key)?;
-            // Wrapping the point in an SPKI document lets the DER constructor validate both
-            // coordinates against the curve equation. Compressing the point locally instead would
-            // drop the y coordinate and silently accept a corrupted key whose y parity happens to
-            // match.
-            let mut der = Vec::with_capacity(SECP256K1_SPKI_HEADER.len() + bytes.len());
-            der.extend_from_slice(&SECP256K1_SPKI_HEADER);
-            der.extend_from_slice(&bytes);
-            ecdsa_k256_keccak::PublicKey::from_der(&der).map_err(invalid_ecdsa_key)
-        },
-        len => Err(CliError::InvalidArgument(format!(
-            "unsupported ECDSA public key length: expected {} (compressed) or {} (uncompressed) \
-            hexadecimal digits after the 0x prefix, got {len}",
-            ECDSA_COMPRESSED_KEY_BYTES * 2,
-            ECDSA_UNCOMPRESSED_KEY_BYTES * 2,
-        ))),
+impl AuthChoice {
+    /// Builds the selection from the command line flags. Clap enforces that at most one scheme flag
+    /// is present.
+    fn from_flags(falcon: bool, ecdsa: Option<&Option<String>>) -> Result<Self, CliError> {
+        match (falcon, ecdsa) {
+            (true, _) => Ok(Self::Generate(AuthSchemeId::Falcon512Poseidon2)),
+            (false, Some(Some(key))) => Ok(Self::ExternalEcdsa(parse_ecdsa_public_key(key)?)),
+            (false, Some(None)) => Ok(Self::Generate(AuthSchemeId::EcdsaK256Keccak)),
+            (false, None) => Ok(Self::Default),
+        }
     }
+}
+
+/// Adds the authentication component selected by `auth_choice`: one committing to the external
+/// ECDSA key, one with a freshly generated key of the selected scheme, or the one contributed by
+/// the packages. Without an explicit selection, packages win and Falcon is the generated fallback.
+/// An explicit selection combined with a package auth component is rejected.
+///
+/// Returns the updated builder and the generated secret key, when one was created.
+fn add_auth_component<R: Rng + CryptoRng>(
+    mut builder: AccountBuilder,
+    auth_choice: AuthChoice,
+    auth_components: Vec<AccountComponent>,
+    rng: &mut R,
+) -> Result<(AccountBuilder, Option<AuthSecretKey>), CliError> {
+    if !matches!(auth_choice, AuthChoice::Default) && !auth_components.is_empty() {
+        return Err(CliError::InvalidArgument(
+            "the given packages contribute an auth component, which cannot be combined with \
+            --ecdsa-k256-keccak or --falcon512-poseidon2"
+                .to_string(),
+        ));
+    }
+
+    let scheme_to_generate = match &auth_choice {
+        AuthChoice::Generate(scheme) => Some(*scheme),
+        AuthChoice::Default if auth_components.is_empty() => Some(AuthSchemeId::Falcon512Poseidon2),
+        AuthChoice::Default | AuthChoice::ExternalEcdsa(_) => None,
+    };
+
+    let key_pair = if let AuthChoice::ExternalEcdsa(public_key) = auth_choice {
+        debug!("Adding ECDSA auth component for the external public key");
+        builder = builder.with_component(AuthSingleSig::ecdsa_k256_keccak(public_key));
+        None
+    } else if let Some(scheme) = scheme_to_generate {
+        debug!("Adding auth component with a generated {scheme} key");
+        let kp = AuthSecretKey::with_scheme_and_rng(scheme, rng).map_err(|err| {
+            CliError::InvalidArgument(format!("failed to generate a {scheme} key: {err}"))
+        })?;
+        builder = builder.with_component(AuthSingleSig::from_public_key(kp.public_key()));
+        Some(kp)
+    } else {
+        debug!("Adding auth component from package");
+        for component in auth_components {
+            builder = builder.with_component(component);
+        }
+        None
+    };
+
+    Ok((builder, key_pair))
 }
 
 /// Returns `true` when the CLI should inject a default `TokenPolicyManager` for a fungible faucet
@@ -500,9 +554,10 @@ fn should_add_implicit_token_policy_manager(regular_components: &[AccountCompone
 /// Helper function to create the seed, initialize the account builder, add the given components,
 /// and build the account.
 ///
-/// When `ecdsa_public_key` is given, an ECDSA auth component committing to that externally-held key
-/// is added and no secret key is generated or stored. Otherwise, if no auth component is detected
-/// in the packages, a Falcon-based auth component will be added.
+/// The auth component follows `auth_choice`: an explicitly selected scheme either commits to the
+/// given external ECDSA key (storing no secret key) or generates and stores a key of that scheme.
+/// With no explicit selection, an auth component from the packages wins, and a Falcon key is
+/// generated when the packages provide none.
 async fn create_client_account<AUTH: Keystore + Sync + 'static>(
     client: &mut Client<AUTH>,
     keystore: &CliKeyStore,
@@ -510,15 +565,13 @@ async fn create_client_account<AUTH: Keystore + Sync + 'static>(
     package_paths: &[PathBuf],
     init_storage_data_path: Option<PathBuf>,
     offline: bool,
-    ecdsa_public_key: Option<&str>,
+    auth_choice: AuthChoice,
 ) -> Result<Account, CliError> {
     if package_paths.is_empty() {
         return Err(CliError::InvalidArgument(
             "Account must contain at least one component".to_string(),
         ));
     }
-
-    let external_key = ecdsa_public_key.map(parse_ecdsa_public_key).transpose()?;
 
     // Load the component templates and initialization storage data.
     let cli_config = CliConfig::load()?;
@@ -549,7 +602,7 @@ async fn create_client_account<AUTH: Keystore + Sync + 'static>(
     let mut init_seed = [0u8; 32];
     client.rng().fill_bytes(&mut init_seed);
 
-    let mut builder = AccountBuilder::new(init_seed).account_type(account_type);
+    let builder = AccountBuilder::new(init_seed).account_type(account_type);
 
     // Only add the default auth component when no package provides one.
     let (auth_components, mut regular_components): (Vec<_>, Vec<_>) =
@@ -574,36 +627,9 @@ async fn create_client_account<AUTH: Keystore + Sync + 'static>(
             .build();
         regular_components.extend(policy_manager);
     }
-    if external_key.is_some() && !auth_components.is_empty() {
-        return Err(CliError::InvalidArgument(
-            "the given packages contribute an auth component, which cannot be combined with \
-            --ecdsa-public-key"
-                .to_string(),
-        ));
-    }
-
-    // Add the auth component: one committing to the external ECDSA key, one from the packages, or a
-    // generated default Falcon key.
-    let uses_external_key = external_key.is_some();
-    let key_pair = if let Some(public_key) = external_key {
-        debug!("Adding ECDSA auth component for the external public key");
-        builder = builder.with_component(AuthSingleSig::ecdsa_k256_keccak(public_key));
-        None
-    } else if auth_components.is_empty() {
-        debug!("Adding default Falcon auth component");
-        let kp = AuthSecretKey::new_falcon512_poseidon2_with_rng(client.rng());
-        builder = builder.with_component(AuthSingleSig::new(Approver::new(
-            kp.public_key().to_commitment(),
-            AuthSchemeId::Falcon512Poseidon2,
-        )));
-        Some(kp)
-    } else {
-        debug!("Adding auth component from package");
-        for component in auth_components {
-            builder = builder.with_component(component);
-        }
-        None
-    };
+    let uses_external_key = matches!(auth_choice, AuthChoice::ExternalEcdsa(_));
+    let (mut builder, key_pair) =
+        add_auth_component(builder, auth_choice, auth_components, client.rng())?;
 
     // Add all regular (non-auth) components
     for component in regular_components {
@@ -614,11 +640,14 @@ async fn create_client_account<AUTH: Keystore + Sync + 'static>(
         .build_with_schema_commitment()
         .map_err(|err| CliError::Account(err, "failed to build account".into()))?;
 
-    // Only add the key to the keystore if we generated a default key type (Falcon)
+    // Only add the key to the keystore if we generated it ourselves
     if let Some(key_pair) = key_pair {
         // Use the Keystore trait method which handles both key storage and account association
         keystore.add_key(&key_pair, account.id()).await.map_err(CliError::KeyStore)?;
-        println!("Generated and stored Falcon512 authentication key in keystore.");
+        println!(
+            "Generated and stored {} authentication key in keystore.",
+            scheme_name(key_pair.auth_scheme())
+        );
     } else if uses_external_key {
         println!(
             "Using external ECDSA public key for authentication (no key was generated or \
@@ -733,7 +762,7 @@ mod tests {
     };
     use miden_client::assembly::CodeBuilder;
     use miden_client::asset::{AssetAmount, TokenSymbol};
-    use miden_client::utils::{Serializable, hex_to_bytes};
+    use miden_client::utils::Serializable;
     use miden_client::vm::{Section, SectionId};
     use miden_client::{Felt, Word};
 
@@ -873,82 +902,5 @@ mod tests {
         let regular_components = vec![AccountComponent::from(BasicWallet)];
 
         assert!(!should_add_implicit_token_policy_manager(&regular_components));
-    }
-
-    // ECDSA PUBLIC KEY PARSING
-    // --------------------------------------------------------------------------------------------
-
-    /// The secp256k1 generator point (even y coordinate) in both SEC1 encodings.
-    const GEN_COMPRESSED: &str =
-        "0x0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
-    const GEN_UNCOMPRESSED: &str = "0x0479be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b1\
-        6f81798483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8";
-
-    /// The point 6·G (odd y coordinate), so the odd-parity branch of the uncompressed encoding is
-    /// exercised as well.
-    const SIX_GEN_COMPRESSED: &str =
-        "0x03fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057a1460297556";
-    const SIX_GEN_UNCOMPRESSED: &str = "0x04fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057\
-        a1460297556ae12777aacfbb620f3be96017f45c560de80f0f6518fe4a03c870c36b075f297";
-
-    #[test]
-    fn parse_ecdsa_public_key_accepts_compressed_key() {
-        let key = parse_ecdsa_public_key(GEN_COMPRESSED).expect("compressed key should parse");
-
-        let expected = hex_to_bytes::<33>(GEN_COMPRESSED).unwrap();
-        assert_eq!(key.to_bytes(), expected);
-    }
-
-    #[test]
-    fn parse_ecdsa_public_key_accepts_uncompressed_key_with_even_y() {
-        let from_uncompressed =
-            parse_ecdsa_public_key(GEN_UNCOMPRESSED).expect("uncompressed key should parse");
-        let from_compressed = parse_ecdsa_public_key(GEN_COMPRESSED).unwrap();
-
-        assert_eq!(from_uncompressed, from_compressed);
-    }
-
-    #[test]
-    fn parse_ecdsa_public_key_accepts_uncompressed_key_with_odd_y() {
-        let from_uncompressed =
-            parse_ecdsa_public_key(SIX_GEN_UNCOMPRESSED).expect("uncompressed key should parse");
-        let from_compressed = parse_ecdsa_public_key(SIX_GEN_COMPRESSED).unwrap();
-
-        assert_eq!(from_uncompressed, from_compressed);
-    }
-
-    #[test]
-    fn parse_ecdsa_public_key_rejects_missing_hex_prefix() {
-        let err = parse_ecdsa_public_key(&GEN_COMPRESSED[2..])
-            .expect_err("a key without the 0x prefix should be rejected");
-
-        assert!(err.to_string().contains("0x"), "unexpected error: {err}");
-    }
-
-    #[test]
-    fn parse_ecdsa_public_key_rejects_invalid_length() {
-        let err = parse_ecdsa_public_key("0x1234")
-            .expect_err("a key with an unsupported length should be rejected");
-
-        assert!(err.to_string().contains("length"), "unexpected error: {err}");
-    }
-
-    #[test]
-    fn parse_ecdsa_public_key_rejects_compressed_x_not_on_curve() {
-        // x = 5 has no square root of x³ + 7 on secp256k1, so no point has this x coordinate.
-        let not_on_curve = "0x020000000000000000000000000000000000000000000000000000000000000005";
-
-        parse_ecdsa_public_key(not_on_curve)
-            .expect_err("a compressed key with no matching curve point should be rejected");
-    }
-
-    #[test]
-    fn parse_ecdsa_public_key_rejects_uncompressed_point_not_on_curve() {
-        // (1, 1) does not satisfy the curve equation.
-        let not_on_curve =
-            format!("0x04{}{}", format_args!("{:064x}", 1), format_args!("{:064x}", 1));
-
-        parse_ecdsa_public_key(&not_on_curve)
-            .expect_err("an uncompressed point off the curve should be rejected");
     }
 }

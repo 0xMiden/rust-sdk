@@ -23,7 +23,7 @@ ignored = ["getrandom", "prost-types", "tonic-prost"]
 [package.metadata.cargo-shear]
 # getrandom is used through rand's wasm backend selection. The other entries are used by
 # generated proto bindings and std-only keystore code that shear does not fully resolve.
-ignored = ["getrandom", "prost-types", "serde", "serde_json", "tempfile", "tonic-prost"]
+ignored = ["getrandom", "prost-types", "serde_json", "tempfile", "tonic-prost"]
 
 [lib]
 crate-type = ["lib"]
@@ -48,8 +48,10 @@ crate-type = ["lib"]
 # `std`; the duplication in the `std` feature list is intentional so
 # each consumer can pick the smallest feature set they need.
 concurrent = ["miden-tx/concurrent"]
-dap = ["dep:miden-debug", "std"]
-default = ["std"]
+dap        = ["dep:miden-debug", "std"]
+default    = ["std"]
+# Development faucet access, with native Tokio and browser Fetch support.
+funding = ["dep:reqwest", "dep:tokio"]
 std = [
   "concurrent",
   "dep:tempfile",
@@ -95,16 +97,19 @@ futures      = { version = "0.3" }
 prost        = { features = ["derive"], workspace = true }
 prost-types  = { version = "0.14" }
 rand         = { workspace = true }
+reqwest      = { default-features = false, features = ["json", "rustls-tls"], optional = true, version = "0.12.28" }
 serde        = { workspace = true }
 serde_json   = { workspace = true }
 tempfile     = { optional = true, workspace = true }
 thiserror    = { workspace = true }
-tokio        = { features = ["sync", "time"], optional = true, workspace = true }
 tonic        = { features = ["codegen"], workspace = true }
 tonic-health = { version = "0.14" }
 tonic-prost  = { version = "0.14" }
 tracing      = { workspace = true }
 uuid         = { features = ["js", "serde", "v4"], optional = true, workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { features = ["sync", "time"], optional = true, workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom             = { features = ["wasm_js"], version = "0.3" }

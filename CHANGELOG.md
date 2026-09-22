@@ -39,6 +39,7 @@
 
 ### Features
 
+* [FEATURE][rust] Added `Client::fund_account` and `Client::request_funding_note` behind the opt-in `funding` feature for development faucet funding with the native fee asset. Fresh wallets can consume the funding note and pay their first fee from its assets ([#2592](https://github.com/0xMiden/rust-sdk/issues/2592)).
 * [FEATURE][rust] Added `Client::get_validator_config`, which returns the validator configuration committed by the locally stored block header at the current sync height ([#2553](https://github.com/0xMiden/rust-sdk/pull/2553)).
 * [FEATURE][rust] Added `Endpoint::mainnet()`, `ClientBuilder::for_mainnet()`, `MAINNET_PROVER_ENDPOINT` and `NOTE_TRANSPORT_MAINNET_ENDPOINT`. The mainnet RPC endpoint maps to `NetworkId::Mainnet`, so addresses derived from it use the `mm` prefix ([#2569](https://github.com/0xMiden/rust-sdk/pull/2569)).
 * [FEATURE][cli] `init --network mainnet` configures the client for the Miden mainnet, including its note transport endpoint ([#2569](https://github.com/0xMiden/rust-sdk/pull/2569)).

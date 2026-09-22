@@ -1258,7 +1258,7 @@ where
     /// transaction's native account. Errors out if the account is not tracked or if it is watched.
     /// The full account state is never loaded: the executor reads it lazily through the
     /// [`DataStore`].
-    async fn get_native_account_record(
+    pub(crate) async fn get_native_account_record(
         &self,
         account_id: AccountId,
     ) -> Result<AccountRecord, ClientError> {

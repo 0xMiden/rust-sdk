@@ -6,7 +6,10 @@
 //! turns fee collection on.
 
 use std::env::temp_dir;
+use std::io::{BufRead, BufReader, Write};
+use std::net::TcpListener;
 use std::sync::Arc;
+use std::time::Duration;
 
 use miden_client::ClientError;
 use miden_client::account::component::{FeeConversionInfo, commit_fee_conversion_info};
@@ -14,14 +17,18 @@ use miden_client::account::{Account, AccountComponentInterface, AccountId};
 use miden_client::asset::{Asset, FungibleAsset};
 use miden_client::auth::{AuthSchemeId, AuthSecretKey};
 use miden_client::builder::ClientBuilder;
+use miden_client::funding::{FundingError, FundingOptions};
 use miden_client::keystore::{FilesystemKeyStore, Keystore};
-use miden_client::store::NoteFilter;
+use miden_client::note::{Note, NoteId, NoteType};
+use miden_client::store::{NoteFilter, TransactionFilter};
 use miden_client::testing::common::{TestClient, create_test_store_path};
 use miden_client::testing::mock::MockRpcApi;
 use miden_client::transaction::{
+    RawOutputNote,
     TransactionExecutorError,
     TransactionRequestBuilder,
     TransactionRequestError,
+    TransactionStatus,
 };
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
 use miden_protocol::account::{AccountBuilder, AccountComponent, AccountType};
@@ -37,7 +44,9 @@ use miden_standards::account::auth::{
     AuthSingleSig,
 };
 use miden_standards::account::wallets::BasicWallet;
+use miden_standards::note::P2idNote;
 use miden_standards::testing::note::NoteBuilder;
+use miden_standards::tx_script::SendNotesTransactionScript;
 use miden_testing::{Auth, MockChain, MockChainBuilder};
 
 use super::seed_mock_transaction_encryption_key;
@@ -420,4 +429,225 @@ async fn a_multisig_account_is_told_to_declare_its_own_conversion_info() {
         ) => assert_eq!(auth_component, AccountComponentInterface::AuthMultisig.name()),
         other => panic!("expected FeeConversionInfoRequired(Multisig), got {other:?}"),
     }
+}
+
+/// A new wallet consumes only the requested faucet note and pays its first fee from that note.
+#[tokio::test]
+async fn fund_account_deploys_an_empty_wallet_on_a_fee_charging_chain() {
+    let key = AuthSecretKey::new_falcon512_poseidon2();
+    let account = AccountBuilder::new([42; 32])
+        .account_type(AccountType::Public)
+        .with_component(AuthSingleSig::new(Approver::new(
+            key.public_key().to_commitment(),
+            AuthSchemeId::Falcon512Poseidon2,
+        )))
+        .with_component(BasicWallet)
+        .build_with_schema_commitment()
+        .unwrap();
+    let (mut chain, sender, faucet_id) = fee_charging_chain(3 * FEE_ASSET_BALANCE);
+    let mut rng = RandomCoin::new(Word::from([42u32; 4]));
+    let [note, unrelated]: [Note; 2] = core::array::from_fn(|_| {
+        P2idNote::builder()
+            .sender(sender.id())
+            .target(account.id())
+            .assets([FungibleAsset::new(faucet_id, FEE_ASSET_BALANCE).unwrap()])
+            .note_type(NoteType::Public)
+            .generate_serial_number(&mut rng)
+            .build()
+            .unwrap()
+            .into()
+    });
+    let script = SendNotesTransactionScript::new(
+        &sender.code_interface(),
+        &[note.clone().into(), unrelated.clone().into()],
+    )
+    .unwrap();
+    let (auth_args, preimage) =
+        commit_fee_conversion_info(FeeConversionInfo::one_to_one(faucet_id), Word::default());
+    let funding_transaction = Box::pin(
+        chain
+            .build_transaction(sender.id())
+            .send_notes_script(&script)
+            .expected_output_notes(vec![
+                RawOutputNote::Full(note.clone()),
+                RawOutputNote::Full(unrelated.clone()),
+            ])
+            .auth_args(auth_args)
+            .add_advice_map_entry(auth_args, preimage)
+            .build()
+            .unwrap()
+            .execute(),
+    )
+    .await
+    .unwrap();
+    // Commit the funding notes in a later block so the helper must discover them through sync.
+    chain.add_pending_executed_transaction(&funding_transaction).unwrap();
+    let config = chain.protocol_config().clone();
+    let rpc = MockRpcApi::new(chain);
+    let keystore_dir = tempfile::tempdir().unwrap();
+    let keystore = FilesystemKeyStore::new(keystore_dir.path().to_path_buf()).unwrap();
+    keystore.add_key(&key, account.id()).await.unwrap();
+    let mut client = TestClient::from(
+        ClientBuilder::new()
+            .rpc(Arc::new(rpc.clone()))
+            .protocol_config(config)
+            .sqlite_store(create_test_store_path())
+            .authenticator(Arc::new(keystore))
+            .tx_discard_delta(None)
+            .build()
+            .await
+            .unwrap(),
+    );
+    client.ensure_genesis_in_place().await.unwrap();
+    seed_mock_transaction_encryption_key(&mut client).await;
+    client.add_account(&account, false).await.unwrap();
+    assert_eq!(
+        u64::from(client.account_reader(account.id()).get_balance(faucet_id).await.unwrap()),
+        0
+    );
+
+    let (endpoint, server) = funding_faucet(faucet_id, note.id());
+    assert!(client.get_input_note(note.id()).await.unwrap().is_none());
+    assert!(client.get_input_note(unrelated.id()).await.unwrap().is_none());
+    let options = FundingOptions {
+        faucet_url: Some(endpoint),
+        timeout: Duration::from_secs(120),
+        poll_interval: Duration::from_millis(50),
+        ..FundingOptions::default()
+    };
+    let result = tokio::select! {
+        result = Box::pin(client.fund_account(account.id(), &options)) => result.unwrap(),
+        () = async { loop { tokio::time::sleep(Duration::from_secs(1)).await; rpc.prove_block(); } } => unreachable!(),
+    };
+    server.join().unwrap();
+    assert_eq!(result.note_id, note.id());
+    assert!(u64::from(result.balance) > 0);
+    assert!(
+        u64::from(result.balance) < FEE_ASSET_BALANCE,
+        "consumption must pay a nonzero fee"
+    );
+    assert!(client.get_input_note(note.id()).await.unwrap().unwrap().is_consumed());
+    assert!(!client.get_input_note(unrelated.id()).await.unwrap().unwrap().is_consumed());
+    let transactions = client
+        .get_transactions(TransactionFilter::Ids(vec![result.transaction_id]))
+        .await
+        .unwrap();
+    assert!(matches!(transactions[0].status, TransactionStatus::Committed { .. }));
+}
+
+/// Reject accounts that cannot execute transactions before contacting the faucet.
+#[tokio::test]
+async fn fund_account_rejects_untracked_and_watched_accounts_before_requesting_funds() {
+    let (chain, account, _) = fee_charging_chain(FEE_ASSET_BALANCE);
+    let config = chain.protocol_config().clone();
+    let temp = tempfile::tempdir().unwrap();
+    let keystore = FilesystemKeyStore::new(temp.path().join("keys")).unwrap();
+    let mut client = ClientBuilder::new()
+        .rpc(Arc::new(MockRpcApi::new(chain)))
+        .protocol_config(config)
+        .sqlite_store(temp.path().join("client.sqlite3"))
+        .authenticator(Arc::new(keystore))
+        .build()
+        .await
+        .unwrap();
+    client.ensure_genesis_in_place().await.unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let options = FundingOptions {
+        faucet_url: Some(format!("http://{}", listener.local_addr().unwrap())),
+        timeout: Duration::from_millis(100),
+        ..FundingOptions::default()
+    };
+
+    assert!(matches!(
+        client.fund_account(account.id(), &options).await,
+        Err(FundingError::Client(ClientError::AccountDataNotFound(id))) if id == account.id()
+    ));
+    client.import_watched_account_by_id(account.id()).await.unwrap();
+    assert!(matches!(
+        client.fund_account(account.id(), &options).await,
+        Err(FundingError::Client(ClientError::AccountIsWatched(id))) if id == account.id()
+    ));
+    assert_eq!(listener.accept().unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
+}
+
+/// Errors after minting retain the note ID so callers can recover without requesting again.
+#[tokio::test]
+async fn funding_note_timeout_retains_the_receipt() {
+    let (chain, account, faucet_id) = fee_charging_chain(FEE_ASSET_BALANCE);
+    let config = chain.protocol_config().clone();
+    let rpc = MockRpcApi::new(chain);
+    let keystore_dir = tempfile::tempdir().unwrap();
+    let keystore = FilesystemKeyStore::new(keystore_dir.path().to_path_buf()).unwrap();
+    let mut client = TestClient::from(
+        ClientBuilder::new()
+            .rpc(Arc::new(rpc))
+            .protocol_config(config)
+            .sqlite_store(create_test_store_path())
+            .authenticator(Arc::new(keystore))
+            .build()
+            .await
+            .unwrap(),
+    );
+    client.ensure_genesis_in_place().await.unwrap();
+    client.add_account(&account, false).await.unwrap();
+    let note_id = NoteId::try_from_hex(&Word::default().to_string()).unwrap();
+    let (endpoint, server) = funding_faucet(faucet_id, note_id);
+    let options = FundingOptions {
+        faucet_url: Some(endpoint),
+        timeout: Duration::from_secs(1),
+        // The stage deadline must interrupt this sleep.
+        poll_interval: Duration::from_secs(60),
+        ..FundingOptions::default()
+    };
+    let error = client.fund_account(account.id(), &options).await.unwrap_err();
+    server.join().unwrap();
+    match error {
+        FundingError::AfterRequest { note_id: actual, transaction_id, source } => {
+            assert_eq!(actual, note_id);
+            assert_eq!(transaction_id, None);
+            assert!(matches!(*source, FundingError::Timeout("the funding note")));
+        },
+        other => panic!("expected the minted note ID, got {other:?}"),
+    }
+    assert!(client.get_transactions(TransactionFilter::All).await.unwrap().is_empty());
+}
+
+/// Supplies the receipt for a public note without creating a separate faucet transaction.
+fn funding_faucet(faucet_id: AccountId, note_id: NoteId) -> (String, std::thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        let replies = [
+            (
+                "/get_metadata",
+                format!(r#"{{"id":"{}","base_amount":{FEE_ASSET_BALANCE}}}"#, faucet_id.to_hex()),
+            ),
+            ("/pow?", r#"{"challenge":"0102","target":18446744073709551615}"#.to_string()),
+            (
+                "/get_tokens?",
+                format!(r#"{{"note_id":"{note_id}","tx_id":"{}"}}"#, Word::default()),
+            ),
+        ];
+        for (path, body) in replies {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            let mut reader = BufReader::new(&mut stream);
+            let mut request = String::new();
+            loop {
+                let mut line = String::new();
+                assert_ne!(reader.read_line(&mut line).unwrap(), 0);
+                if line == "\r\n" {
+                    break;
+                }
+                request.push_str(&line);
+            }
+            assert!(request.starts_with(&format!("GET {path}")), "{request}");
+            if path == "/get_tokens?" {
+                assert!(request.contains("is_private_note=false"));
+            }
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        }
+    });
+    (endpoint, server)
 }

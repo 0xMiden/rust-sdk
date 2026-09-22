@@ -154,6 +154,25 @@ let tx_id = client.submit_new_transaction(network_account.id(), deploy).await?;
 
 After deployment the account is a network account, so the node rejects user-submitted transactions against it; all further state changes happen through network transactions.
 
+## Fund a development account
+
+Enable the optional `funding` feature on `miden-client`. The account must be tracked and expose `BasicWallet::receive_asset`. The helper uses the client's configured signer and prover.
+
+```rust
+use miden_client::funding::FundingOptions;
+
+let funding = client.fund_account(new_account.id(), &FundingOptions::default()).await?;
+println!("{}: {}", funding.transaction_id, funding.balance);
+```
+
+The helper requests the native fee asset, consumes only the returned public note, and waits for confirmation. It returns the note ID, consumption transaction ID and balance after paying the fee. An empty vault can pay its first fee from the received funds.
+
+Testnet and devnet have default faucets; set `FundingOptions::faucet_url` for a local faucet. The default amount comes from the faucet. Each request, note-discovery and confirmation stage has a 60-second timeout. Signing and proving use the client's existing configuration.
+
+Use `request_funding_note` to request funds for a separate consumption or signing flow. Requests are not retried automatically. If minting times out, sync before requesting again: the note may still arrive. `FundingError::AfterRequest` preserves the note ID and any known consumption transaction ID for recovery.
+
+Run the complete [example](https://github.com/0xMiden/rust-sdk/blob/next/crates/testing/miden-client-tests/examples/fund_account.rs) with `MIDEN_FEE_FAUCET_ID=0x... cargo run -p miden-client-unit-tests --example fund_account`, using your deployment's fee faucet ID.
+
 ## Execute transaction
 
 In order to execute a transaction, you first need to define which type of transaction is to be executed. This may be done with the `TransactionRequest` which represents a general definition of a transaction. Some standardized constructors are available for common transaction types.

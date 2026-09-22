@@ -117,6 +117,8 @@ use alloc::boxed::Box;
 extern crate std;
 
 pub mod account;
+#[cfg(feature = "funding")]
+pub mod funding;
 pub mod grpc_support;
 pub mod keystore;
 pub mod note;

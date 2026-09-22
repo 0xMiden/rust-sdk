@@ -4,6 +4,10 @@
 
 ### Breaking Changes
 
+* [BREAKING][arch][rust] Updated protocol dependencies to `0.17.0-rc.6` ([#2594](https://github.com/0xMiden/rust-sdk/pull/2594)).
+* [BREAKING][arch][rust] `AccountFile` and `NoteFile` moved from `miden-protocol` and `miden-standards` to `miden-objects`. Both are re-exported from `miden_client::account` and `miden_client::note` as before ([#2594](https://github.com/0xMiden/rust-sdk/pull/2594)).
+* [BREAKING][type][rust] `AccountFile` and `NoteFile` are encoded as Protobuf, so files written by earlier versions no longer decode. `Deserializable::read_from_bytes` is replaced by `try_from_bytes`, which reports the new `AccountFileError` and `NoteFileError` ([#2594](https://github.com/0xMiden/rust-sdk/pull/2594)).
+* [BREAKING][type][rust] The `AccountFile` fields `account` and `auth_secret_keys` are private. Use `account()`, `auth_secret_keys()` or `into_parts()`. `NoteSyncHint` likewise exposes `after_block_num()` and `tag()`
 * [BREAKING][arch][rust] Updated `miden-node-proto-build` to `0.17.0-rc.1`, protocol dependencies to `0.17.0-rc.5` and VM dependencies to `0.33` ([#2562](https://github.com/0xMiden/rust-sdk/pull/2562)).
 * [BREAKING][behavior][rust] `Keystore::get_account_key_commitments` returns an empty set for an account the keystore holds no key for, instead of an error. An account can use keys that are held elsewhere, so this is a valid state. Code that read the error as "this account is unknown" must check for an empty set instead. `export --account` now exports such an account instead of failing with "No keys found for account" ([#2556](https://github.com/0xMiden/rust-sdk/pull/2556)).
 * [BREAKING][type][rust] Added the `StoreError::DatabaseTransientError` and `StoreError::DatabasePermanentError` variants, so exhaustive matches on `StoreError` must handle them. The SQLite store returns the first for a busy or locked database and the second for a constraint violation or a corrupt database file, which it previously reported as `StoreError::DatabaseError` ([#2537](https://github.com/0xMiden/rust-sdk/pull/2537)).

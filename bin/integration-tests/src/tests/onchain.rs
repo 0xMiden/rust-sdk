@@ -11,7 +11,6 @@ use miden_client::account::{
 use miden_client::asset::{Asset, AssetAmount, FungibleAsset};
 use miden_client::auth::{ECDSA_K256_KECCAK_SCHEME_ID, RPO_FALCON_SCHEME_ID};
 use miden_client::keystore::Keystore;
-use miden_client::note::standards::NoteSyncHint;
 use miden_client::note::{
     BlockNumber,
     Note,
@@ -19,6 +18,7 @@ use miden_client::note::{
     NoteAttachmentScheme,
     NoteAttachments,
     NoteFile,
+    NoteSyncHint,
     NoteType,
     P2idNote,
 };

@@ -17,7 +17,13 @@ use miden_client::auth::{
 };
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::{FilesystemKeyStore, Keystore};
-use miden_client::note::{BlockNumber, NetworkAccountTarget, NoteExecutionHint};
+use miden_client::note::{
+    BlockNumber,
+    NetworkAccountTarget,
+    NoteExecutionHint,
+    NoteFile,
+    NoteSyncHint,
+};
 use miden_client::pswap::PswapLineageState;
 use miden_client::rpc::NodeRpcClient;
 use miden_client::rpc::encryption::TransactionEncryptionKey;
@@ -110,8 +116,6 @@ use miden_standards::account::policies::{BurnPolicy, MintPolicy, TokenPolicyMana
 use miden_standards::account::wallets::BasicWallet;
 use miden_standards::note::{
     NoteConsumptionStatus,
-    NoteFile,
-    NoteSyncHint,
     P2idNote,
     P2idNoteStorage,
     PswapNote,

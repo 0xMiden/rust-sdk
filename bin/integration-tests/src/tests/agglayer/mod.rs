@@ -1,7 +1,6 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use miden_client::Deserializable;
 use miden_client::account::{AccountFile, AccountId};
 use miden_client::keystore::Keystore;
 use miden_client::testing::common::TestClient;
@@ -66,19 +65,19 @@ impl AgglayerConfig {
     }
 
     pub fn bridge_admin_id(&self) -> AccountId {
-        self.bridge_admin.account.id()
+        self.bridge_admin.account().id()
     }
 
     pub fn ger_manager_id(&self) -> AccountId {
-        self.ger_manager.account.id()
+        self.ger_manager.account().id()
     }
 
     pub fn bridge_id(&self) -> AccountId {
-        self.bridge.account.id()
+        self.bridge.account().id()
     }
 
     pub fn faucet_id(&self) -> AccountId {
-        self.faucet.account.id()
+        self.faucet.account().id()
     }
 
     /// Imports a single account (by ID) into the given client and its keystore. Fetches the latest
@@ -90,7 +89,7 @@ impl AgglayerConfig {
     ) -> Result<()> {
         let account_file = [&self.bridge_admin, &self.ger_manager, &self.bridge, &self.faucet]
             .into_iter()
-            .find(|f| f.account.id() == account_id)
+            .find(|f| f.account().id() == account_id)
             .with_context(|| format!("account {account_id} not found in agglayer config"))?;
 
         client
@@ -98,7 +97,7 @@ impl AgglayerConfig {
             .await
             .with_context(|| format!("failed to import account {account_id} from network"))?;
 
-        for secret_key in &account_file.auth_secret_keys {
+        for secret_key in account_file.auth_secret_keys() {
             client.keystore().add_key(secret_key, account_id).await.with_context(|| {
                 format!("failed to add key for account {account_id} to keystore")
             })?;
@@ -110,8 +109,8 @@ impl AgglayerConfig {
         let path = dir.join(filename);
         let bytes =
             std::fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?;
-        AccountFile::read_from_bytes(&bytes)
-            .map_err(|e| anyhow::anyhow!("failed to deserialize {}: {}", path.display(), e))
+        AccountFile::try_from_bytes(&bytes)
+            .with_context(|| format!("failed to deserialize {}", path.display()))
     }
 }
 

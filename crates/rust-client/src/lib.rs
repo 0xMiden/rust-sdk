@@ -117,6 +117,8 @@ use alloc::boxed::Box;
 extern crate std;
 
 pub mod account;
+#[cfg(feature = "funding")]
+pub mod funding;
 pub mod grpc_support;
 pub mod keystore;
 pub mod note;
@@ -138,9 +140,6 @@ pub mod builder;
 mod test_utils;
 
 pub mod errors;
-
-#[cfg(feature = "funding")]
-pub mod funding;
 
 pub use miden_protocol::utils::serde::{Deserializable, Serializable, SliceReader};
 

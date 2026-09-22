@@ -123,7 +123,8 @@ impl TryFrom<&AccountDetails> for Account {
     ///
     /// This conversion fails if the account details are incomplete, i.e., when the account's
     /// storage maps or vault exceed the node's size threshold, or when only specific map keys were
-    /// requested.
+    /// requested. It also fails if the rebuilt account does not commit to the same value as the
+    /// account header in the details.
     fn try_from(details: &AccountDetails) -> Result<Self, Self::Error> {
         if details.vault_details.too_many_assets {
             return Err(RpcError::ExpectedDataMissing(
@@ -194,7 +195,7 @@ impl TryFrom<&AccountDetails> for Account {
             RpcError::InvalidResponse(format!("rpc api returned non-valid storage slots: {err}"))
         })?;
 
-        Account::new(
+        let account = Account::new(
             details.header.id(),
             asset_vault,
             account_storage,
@@ -206,7 +207,20 @@ impl TryFrom<&AccountDetails> for Account {
             RpcError::InvalidResponse(format!(
                 "failed to construct account from rpc api response: {err}"
             ))
-        })
+        })?;
+
+        // Only the header is authenticated (through the account witness). The vault assets, the
+        // storage values and the map entries must be the ones it commits to.
+        let commitment = account.to_commitment();
+        if commitment != details.header.to_commitment() {
+            return Err(RpcError::InvalidResponse(format!(
+                "account contents returned by the rpc api commit to {commitment} but the account \
+                 header commits to {}",
+                details.header.to_commitment(),
+            )));
+        }
+
+        Ok(account)
     }
 }
 
@@ -545,7 +559,7 @@ impl AccountProof {
     ) -> Result<Self, AccountProofError> {
         if let Some(AccountDetails {
             header: account_header,
-            storage_details: _,
+            storage_details,
             code,
             ..
         }) = &account_details
@@ -558,6 +572,9 @@ impl AccountProof {
             }
             if code.commitment() != account_header.code_commitment() {
                 return Err(AccountProofError::InconsistentCodeCommitment);
+            }
+            if storage_details.header.to_commitment() != account_header.storage_commitment() {
+                return Err(AccountProofError::InconsistentStorageCommitment);
             }
         }
 
@@ -899,4 +916,9 @@ pub enum AccountProofError {
         "the received code commitment doesn't match the received account header's code commitment"
     )]
     InconsistentCodeCommitment,
+    #[error(
+        "the received storage header's commitment doesn't match the received account header's \
+         storage commitment"
+    )]
+    InconsistentStorageCommitment,
 }

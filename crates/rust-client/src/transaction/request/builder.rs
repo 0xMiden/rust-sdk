@@ -177,12 +177,7 @@ impl TransactionRequestBuilder {
     /// [`TransactionRequestBuilder::build`] method will return an error.
     #[must_use]
     pub fn own_output_notes(mut self, notes: impl IntoIterator<Item = Note>) -> Self {
-        for note in notes {
-            self.expected_output_recipients
-                .insert(note.recipient().digest(), note.recipient().clone());
-            self.own_output_notes.push(note);
-        }
-
+        self.own_output_notes.extend(notes);
         self
     }
 
@@ -652,6 +647,7 @@ impl TransactionRequestBuilder {
             return Err(TransactionRequestError::ZeroExpirationDelta);
         }
 
+        let mut expected_output_recipients = self.expected_output_recipients;
         let script_template = match (self.custom_script, self.own_output_notes.is_empty()) {
             (Some(_), false) => {
                 return Err(TransactionRequestError::ScriptTemplateError(
@@ -668,6 +664,12 @@ impl TransactionRequestBuilder {
                 Some(TransactionScriptTemplate::CustomScript(script))
             },
             (None, false) => {
+                // Added here rather than in `own_output_notes`, so that a later call to
+                // `expected_output_recipients` does not drop them.
+                for note in &self.own_output_notes {
+                    expected_output_recipients
+                        .insert(note.recipient().digest(), note.recipient().clone());
+                }
                 let partial_notes: Vec<PartialNote> =
                     self.own_output_notes.into_iter().map(Into::into).collect();
 
@@ -681,7 +683,7 @@ impl TransactionRequestBuilder {
             input_notes_args: self.input_notes_args,
             explicit_input_notes: self.explicit_input_notes,
             script_template,
-            expected_output_recipients: self.expected_output_recipients,
+            expected_output_recipients,
             expected_future_notes: self.expected_future_notes,
             advice_map: self.advice_map,
             merkle_store: self.merkle_store,

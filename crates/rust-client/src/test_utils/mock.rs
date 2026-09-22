@@ -491,11 +491,25 @@ impl NodeRpcClient for MockRpcApi {
             .signatures()
             .clone();
 
+        // Mirrors the node: send the configuration when the caller starts at genesis, or when the
+        // commitment changed over the range. A caller already at the target gets nothing.
+        let protocol_config = if current_block_height == BlockNumber::GENESIS {
+            Some(self.protocol_config())
+        } else if current_block_height == target_block {
+            None
+        } else {
+            let commitment_at_start =
+                self.get_block_by_num(current_block_height).protocol_config_commitment();
+            (commitment_at_start != block_header.protocol_config_commitment())
+                .then(|| self.protocol_config())
+        };
+
         Ok(ChainMmrInfo {
             block_from: current_block_height,
             block_to: target_block,
             mmr_delta,
             block_header,
+            protocol_config,
             block_signatures,
         })
     }

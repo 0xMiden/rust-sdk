@@ -1,10 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Breaking Changes
+
+* [BREAKING][type][rust] Added the `TransactionRequestError::InputNoteBeingProcessed` variant, so exhaustive matches on `TransactionRequestError` must handle it ([#2583](https://github.com/0xMiden/rust-sdk/pull/2583)).
+
+### Fixes
+
+* [FIX][rust] A request that consumes a note already held by a pending local transaction is now rejected with `TransactionRequestError::InputNoteBeingProcessed` before it is executed. Previously the transaction was executed, proven and submitted to the node, and only the local store update failed, leaving a submitted transaction without a local record ([#2583](https://github.com/0xMiden/rust-sdk/pull/2583)).
+
 ## 0.17.0.rc-1 (2026-09-17)
 
 ### Breaking Changes
 
 * [BREAKING][param][rust] The `Store` trait requires five account-witness registry methods: `track_account_witness`, `untrack_account_witness`, `tracked_account_witnesses`, `get_account_witness` and `update_account_witness`. They have no default bodies, so every out-of-tree implementation must provide them ([#2476](https://github.com/0xMiden/rust-sdk/pull/2476)).
+* [BREAKING][behavior][rust,cli] The client now gets its protocol configuration from the node during `Client::sync_state` instead of being given one. `SyncChainMmr` carries the configuration when the client syncs from genesis or when the configuration commitment changed over the synced range, and the client verifies it against the block header before storing it ([#2591](https://github.com/0xMiden/rust-sdk/pull/2591)).
+* [BREAKING][removal][rust] Removed `ClientBuilder::protocol_config` and `Client::add_protocol_config`. A client gets its configurations by syncing, so there is no longer a way to supply one ([#2591](https://github.com/0xMiden/rust-sdk/pull/2591)).
 * [BREAKING][behavior][rust] State sync now authenticates the chain tip by verifying the block signatures against the validator configuration ([#2553](https://github.com/0xMiden/rust-sdk/pull/2553)).
 * [BREAKING][param][rust] `StateSync::new` now takes a `validator_config: ValidatorConfig` argument, used to authenticate the chain tip block header on every sync. The validator configuration can be retrieved from the client with `Client::get_validator_config` ([#2553](https://github.com/0xMiden/rust-sdk/pull/2553)).
 * [BREAKING][arch][rust] Updated `miden-node-proto-build` to `0.17.0-rc.1`, protocol dependencies to `0.17.0-rc.5` and VM dependencies to `0.33` ([#2562](https://github.com/0xMiden/rust-sdk/pull/2562)).
@@ -47,6 +59,10 @@
 * [FEATURE][rust] The committed note passed to the `OnNoteReceived` callback now always reports the note's resolved attachment content, whether the `SyncNotes` response carried it verbatim or a `GetNotesById` follow-up resolved it ([#2475](https://github.com/0xMiden/rust-sdk/pull/2475)).
 * [FEATURE][rust] Re-exported the fee pricing and note checking types that the client API already surfaces, so downstream crates no longer need a direct `miden-tx` dependency to price note consumption: `NetworkNotePricer`, `NotePricingError` and `NoteCheckerError` at the crate root, `TransactionFee` and `TransactionFeeError` from `transaction`, `NoteCost` and `NoteConsumptionCost` from `note`, and `MastForestStore` and `TransactionMastStore` from `testing` ([#2475](https://github.com/0xMiden/rust-sdk/pull/2475)).
 * [FEATURE][rust] `Client::retry_proven_batch` resends a batch whose outcome was never confirmed, sealing the transaction inputs again on every attempt so nothing is executed or proven twice. It takes the `ProvenBatchSubmission` from `BatchBuilderError::BatchSubmissionOutcomeUnknown`, which has no public constructor, so that error is the only way to obtain one ([#2508](https://github.com/0xMiden/rust-sdk/pull/2508)).
+
+### Enhancements
+
+* [FEATURE][cli] Added a `--package` option to `exec` so a compiled transaction script package (`.masp`) can be run instead of MASM source. A path without an extension is resolved in the package directory, as with `call --package` ([#2470](https://github.com/0xMiden/rust-sdk/issues/2470)).
 
 ### Fixes
 

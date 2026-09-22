@@ -789,6 +789,7 @@ async fn output_notes_filtered_by_script_root() {
         ),
         TransactionUpdateTracker::default(),
         AccountUpdates::default(),
+        None,
     );
     store.apply_state_sync(state_sync_update).await.unwrap();
 
@@ -842,6 +843,7 @@ async fn output_note_state_blob_does_not_embed_script() {
         NoteUpdateTracker::for_transaction_updates([], [], [note.clone()]),
         TransactionUpdateTracker::default(),
         AccountUpdates::default(),
+        None,
     );
     store.apply_state_sync(state_sync_update).await.unwrap();
 
@@ -875,6 +877,7 @@ async fn consumed_output_note_round_trips() {
         NoteUpdateTracker::for_transaction_updates([], [], [note.clone()]),
         TransactionUpdateTracker::default(),
         AccountUpdates::default(),
+        None,
     );
     store.apply_state_sync(state_sync_update).await.unwrap();
 
@@ -906,6 +909,7 @@ async fn state_sync_stores_scripts_of_new_input_notes() {
             NoteUpdateTracker::for_transaction_updates(notes.clone(), [], []),
             TransactionUpdateTracker::default(),
             AccountUpdates::default(),
+            None,
         );
         store.apply_state_sync(state_sync_update).await.unwrap();
 
@@ -1040,6 +1044,7 @@ async fn input_note_state_update_persists_attachments() {
         NoteUpdateTracker::for_transaction_updates([], [updated], []),
         TransactionUpdateTracker::default(),
         AccountUpdates::default(),
+        None,
     );
     store.apply_state_sync(state_sync_update).await.unwrap();
 

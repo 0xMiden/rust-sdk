@@ -13,6 +13,7 @@ use miden_protocol::block::{BlockHeader, BlockNumber, ValidatorConfig};
 use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrDelta, PartialMmr};
 use miden_protocol::note::{NoteId, NoteTag, Nullifier};
+use miden_protocol::protocol_config::ProtocolConfig;
 use tracing::info;
 
 use super::state_sync_update::{TransactionUpdateTracker, build_account_patch};
@@ -72,6 +73,9 @@ struct FetchedSyncData {
     note_blocks: Vec<ResolvedSyncNotesBlock>,
     /// Transaction records for the synced range, as returned by `sync_transactions`.
     transactions: Vec<RpcTransactionRecord>,
+    /// The protocol configuration active at the chain tip. The node sends it when the sync starts
+    /// at genesis, or when the starting block and the chain tip commit to different configurations.
+    protocol_config: Option<ProtocolConfig>,
 }
 
 /// A note a watched account consumed, carrying what recovery needs to validate and attribute it.
@@ -354,6 +358,7 @@ impl StateSync {
             chain_tip_header,
             note_blocks,
             transactions,
+            protocol_config,
         } = sync_data;
 
         let new_commitments = derive_account_commitments(&transactions);
@@ -375,6 +380,7 @@ impl StateSync {
                 note_blocks_awaiting_screening: note_blocks,
                 transactions,
                 relevant_note_blocks: Vec::new(),
+                protocol_config,
             }),
             superseded_states,
             note_updates,
@@ -453,6 +459,7 @@ impl StateSync {
             mmr_delta,
             note_blocks_awaiting_screening,
             relevant_note_blocks,
+            protocol_config,
             ..
         }) = advance
         else {
@@ -463,6 +470,7 @@ impl StateSync {
                 note_updates,
                 transaction_updates,
                 account_updates,
+                None,
             ));
         };
         // Check the note blocks have been screened before building the update
@@ -495,6 +503,7 @@ impl StateSync {
             note_updates,
             transaction_updates,
             account_updates,
+            protocol_config,
         ))
     }
 
@@ -665,6 +674,7 @@ impl StateSync {
             chain_tip_header: chain_mmr_info.block_header,
             note_blocks,
             transactions: transaction_records,
+            protocol_config: chain_mmr_info.protocol_config,
         }))
     }
 
@@ -1485,6 +1495,8 @@ struct ChainAdvance {
     transactions: Vec<RpcTransactionRecord>,
     /// Screened blocks holding a client-relevant note, each with its `sync_notes` MMR path.
     relevant_note_blocks: Vec<RelevantNoteBlock>,
+    /// The protocol configuration active at `chain_tip_header`, when the node sent it.
+    protocol_config: Option<ProtocolConfig>,
 }
 
 // HELPERS

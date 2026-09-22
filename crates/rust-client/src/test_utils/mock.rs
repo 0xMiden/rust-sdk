@@ -472,6 +472,15 @@ impl NodeRpcClient for MockRpcApi {
             .unwrap();
 
         let block_header = self.get_block_by_num(target_block);
+        let block_signatures = self
+            .mock_chain
+            .read()
+            .proven_blocks()
+            .iter()
+            .find(|block| block.header().block_num() == target_block)
+            .expect("the mock chain contains the target block")
+            .signatures()
+            .clone();
 
         // Mirrors the node: send the configuration when the caller starts at genesis, or when the
         // commitment changed over the range. A caller already at the target gets nothing.
@@ -492,6 +501,7 @@ impl NodeRpcClient for MockRpcApi {
             mmr_delta,
             block_header,
             protocol_config,
+            block_signatures,
         })
     }
 

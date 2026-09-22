@@ -646,7 +646,12 @@ async fn sync_persists_auth_nodes_for_skipped_blocks() {
     partial_mmr.add(genesis.commitment(), true).unwrap(); // track genesis
 
     // Create a StateSync that discards all notes so intermediate blocks are skipped
-    let state_sync = StateSync::new(Arc::new(rpc_api.clone()), Arc::new(DiscardAllNotes), None);
+    let state_sync = StateSync::new(
+        Arc::new(rpc_api.clone()),
+        Arc::new(DiscardAllNotes),
+        None,
+        genesis.validator_config().clone(),
+    );
 
     // Use the note tag from the prebuilt chain (tag 0) so the mock RPC returns blocks step-by-step
     // (block 1, then block 4, then the chain tip) instead of jumping directly to the chain tip.
@@ -738,7 +743,12 @@ async fn sync_state_no_redundant_get_account_calls() {
     let mut partial_mmr = PartialMmr::from_peaks(MmrPeaks::new(Forest::empty(), vec![]).unwrap());
     partial_mmr.add(genesis.commitment(), true).unwrap();
 
-    let state_sync = StateSync::new(Arc::new(rpc_api.clone()), Arc::new(DiscardAllNotes), None);
+    let state_sync = StateSync::new(
+        Arc::new(rpc_api.clone()),
+        Arc::new(DiscardAllNotes),
+        None,
+        genesis.validator_config().clone(),
+    );
 
     // Use tag 0 to force multiple sync steps (notes exist in blocks 1 and 4)
     let note_tags = BTreeSet::from([NoteTag::new(0)]);
@@ -972,6 +982,35 @@ async fn transaction_request_expiration() {
     let (_, tx_outputs, ..) = transaction_result.executed_transaction().clone().into_parts();
 
     assert_eq!(tx_outputs.expiration_block_num(), current_height + 5);
+}
+
+/// The expiration delta must bound every request it is set on, not only those that create notes. A
+/// consume request has no output notes and therefore no `SendNotes` script, so the delta has to be
+/// applied through a dedicated expiration script.
+#[tokio::test]
+async fn expiration_delta_applies_to_request_without_own_output_notes() {
+    let (mut client, mock_rpc_api) = Box::pin(create_test_client()).await;
+    let (wallet, faucet) = client.setup_wallet_and_faucet(AccountType::Private).await.unwrap();
+    client.sync_state().await.unwrap();
+
+    let (_, note) = client.mint_note(wallet.id(), faucet.id(), NoteType::Private).await.unwrap();
+    mock_rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+
+    let current_height = client.get_sync_height().await.unwrap();
+    let transaction_request = TransactionRequestBuilder::new()
+        .expiration_delta(7)
+        .build_consume_notes(vec![note])
+        .unwrap();
+
+    let transaction_result = Box::pin(client.execute_transaction(wallet.id(), transaction_request))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        transaction_result.executed_transaction().expiration_block_num(),
+        current_height + 7
+    );
 }
 
 #[tokio::test]

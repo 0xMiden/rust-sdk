@@ -34,6 +34,23 @@ let client = ClientBuilder::for_testnet()
     .await?;
 ```
 
+`filesystem_keystore` stores the secret keys in plaintext and is only recommended for development. For keys that control real funds, create an encrypted keystore and pass it as the authenticator:
+
+```rust
+use std::sync::Arc;
+
+use miden_client::keystore::FilesystemKeyStore;
+
+let keystore = FilesystemKeyStore::new_encrypted("path/to/keys".into(), password.as_bytes())?;
+let client = ClientBuilder::for_testnet()
+    .store(store)
+    .authenticator(Arc::new(keystore))
+    .build()
+    .await?;
+```
+
+The encrypted keystore derives its key from the password with Argon2id and encrypts each key file with XChaCha20-Poly1305. The derived key stays in memory while the keystore is open. An existing plaintext keystore is encrypted in place with `FilesystemKeyStore::encrypt_plaintext_keystore`.
+
 Other network constructors are available:
 - `ClientBuilder::for_mainnet()` - Pre-configured for Miden mainnet
 - `ClientBuilder::for_testnet()` - Pre-configured for Miden testnet

@@ -54,6 +54,8 @@ The keystore is responsible for storing and managing the private keys of the acc
 
 These private keys are used by the executor to sign and authenticate transactions. Implementations for both rust and web keystores are provided.
 
+The Rust `FilesystemKeyStore` stores each key in a file. It can store the keys in plaintext, which is only recommended for development, or encrypt them with a key derived from a password. The CLI configures an encrypted keystore by default.
+
 ## Note Screener
 
 The note screener is used to check the consumability of notes by tracked accounts. It can find the tracked accounts that can consume a note, and whether the note can be consumed at the moment or in the future.

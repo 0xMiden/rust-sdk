@@ -626,6 +626,12 @@ impl ClientBuilder<FilesystemKeyStore> {
     /// authenticator in a single call. The keystore provides transaction signing capabilities using
     /// keys stored on the filesystem.
     ///
+    /// # Security
+    ///
+    /// The keystore writes the secret keys to disk in plaintext, so this method is only recommended
+    /// for development. For keys that control real funds, create the keystore with
+    /// [`FilesystemKeyStore::new_encrypted`] and pass it to [`ClientBuilder::authenticator`].
+    ///
     /// # Errors
     ///
     /// Returns an error if the keystore cannot be created from the given path.

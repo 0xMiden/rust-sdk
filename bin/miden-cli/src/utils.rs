@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::IsTerminal;
 use std::num::ParseIntError;
 use std::path::PathBuf;
 
@@ -11,10 +12,60 @@ use miden_client::vm::MIN_STACK_DEPTH;
 use miden_client::{AssetError, Client, Felt, WORD_SIZE, Word};
 use serde::Deserialize;
 
-use super::{CLIENT_CONFIG_FILE_NAME, create_dynamic_table, get_account_with_id_prefix};
+use super::{
+    CLIENT_CONFIG_FILE_NAME,
+    CliKeyStore,
+    KEYSTORE_PASSWORD_ENV,
+    create_dynamic_table,
+    get_account_with_id_prefix,
+};
 use crate::commands::account::DEFAULT_ACCOUNT_ID_KEY;
 use crate::config::{CliConfig, get_global_miden_dir, get_local_miden_dir};
 use crate::errors::CliError;
+
+/// Opens the keystore that the configuration describes.
+///
+/// An encrypted keystore needs its password. It is read from the [`KEYSTORE_PASSWORD_ENV`]
+/// environment variable, or prompted for on the terminal when the variable is not set.
+pub(crate) fn open_keystore(config: &CliConfig) -> Result<CliKeyStore, CliError> {
+    let keys_directory = config.secret_keys_directory.clone();
+    if !config.keystore_encrypted {
+        return CliKeyStore::new(keys_directory).map_err(CliError::KeyStore);
+    }
+
+    // A new keystore has no password yet, so a typed password is confirmed before it is used.
+    let confirm = !keys_directory.exists() || std::fs::read_dir(&keys_directory)?.next().is_none();
+    let password = read_keystore_password(confirm)?;
+    CliKeyStore::new_encrypted(keys_directory, password.as_bytes()).map_err(CliError::KeyStore)
+}
+
+/// Reads the keystore password from [`KEYSTORE_PASSWORD_ENV`], or prompts for it when the variable
+/// is not set and the standard input is a terminal.
+///
+/// When `confirm` is set, a prompted password must be typed twice.
+pub(crate) fn read_keystore_password(confirm: bool) -> Result<String, CliError> {
+    if let Some(password) = std::env::var_os(KEYSTORE_PASSWORD_ENV) {
+        return password.into_string().map_err(|_| {
+            CliError::Input(format!("{KEYSTORE_PASSWORD_ENV} does not contain valid UTF-8"))
+        });
+    }
+
+    if !std::io::stdin().is_terminal() {
+        return Err(CliError::Input(format!(
+            "the keystore is encrypted: set {KEYSTORE_PASSWORD_ENV} or run the command in a terminal to enter the password"
+        )));
+    }
+
+    let password = rpassword::prompt_password("Keystore password: ")?;
+    if password.is_empty() {
+        return Err(CliError::Input("the keystore password must not be empty".to_string()));
+    }
+    if confirm && rpassword::prompt_password("Confirm keystore password: ")? != password {
+        return Err(CliError::Input("the keystore passwords do not match".to_string()));
+    }
+
+    Ok(password)
+}
 
 pub(crate) const SHARED_TOKEN_DOCUMENTATION: &str = "There are two accepted formats for the asset:
 - `<AMOUNT>::<FAUCET_ID>` where `<AMOUNT>` is in the faucet base units.

@@ -52,10 +52,12 @@ dap = ["dep:miden-debug", "std"]
 default = ["std"]
 std = [
   "concurrent",
+  "dep:argon2",
   "dep:tempfile",
   "dep:tokio",
   "miden-agglayer/std",
   "miden-assembly-syntax/std",
+  "miden-crypto/std",
   "miden-objects/std",
   "miden-processor/std",
   "miden-protocol/std",
@@ -78,6 +80,7 @@ tonic = []
 # Miden dependencies
 miden-agglayer        = { workspace = true }
 miden-assembly-syntax = { workspace = true }
+miden-crypto          = { workspace = true }
 miden-debug           = { optional = true, workspace = true }
 miden-objects         = { workspace = true }
 miden-processor       = { workspace = true }
@@ -89,6 +92,7 @@ miden-tx-batch        = { workspace = true }
 
 # External dependencies
 anyhow       = { workspace = true }
+argon2       = { optional = true, workspace = true }
 async-trait  = { workspace = true }
 chrono       = { workspace = true }
 futures      = { version = "0.3" }

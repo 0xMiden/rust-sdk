@@ -92,7 +92,7 @@ impl AccountCmd {
                 // (on a duplicate MAST root the first package wins), but both are consulted so
                 // default names still resolve alongside the passed packages.
                 let mut packages = load_packages(&cli_config, &self.package)?;
-                packages.extend(load_packages_from_directory(&cli_config.package_directory)?);
+                packages.extend(load_packages_from_directory(&cli_config)?);
 
                 inspect_account(
                     &client,
@@ -433,9 +433,11 @@ fn collect_package_procedure_exports(packages: &[Package]) -> HashMap<Word, Proc
     exports
 }
 
-/// Reads every `.masp` package found recursively under `dir`. A missing directory yields no
-/// packages rather than an error, so inspection still falls back to bare MAST roots.
-fn load_packages_from_directory(dir: &Path) -> Result<Vec<Package>, CliError> {
+/// Reads every `.masp` package found recursively under the configured packages directory. A missing
+/// directory yields no packages rather than an error, so inspection still falls back to bare MAST
+/// roots.
+fn load_packages_from_directory(cli_config: &CliConfig) -> Result<Vec<Package>, CliError> {
+    let dir = &cli_config.package_directory;
     if !dir.exists() {
         return Ok(Vec::new());
     }
@@ -443,9 +445,7 @@ fn load_packages_from_directory(dir: &Path) -> Result<Vec<Package>, CliError> {
     let mut package_paths = Vec::new();
     collect_masp_files(dir, &mut package_paths)?;
 
-    // Paths already carry the `.masp` extension, so `load_packages` uses them as-is and never
-    // consults the config's packages directory.
-    load_packages(&CliConfig::default(), &package_paths)
+    load_packages(cli_config, &package_paths)
 }
 
 /// Recursively collects the paths of all `.masp` files under `dir` into `paths`.

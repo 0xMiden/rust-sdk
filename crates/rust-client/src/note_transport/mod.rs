@@ -9,7 +9,6 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use futures::Stream;
 use miden_protocol::address::Address;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{Note, NoteDetails, NoteDetailsCommitment, NoteHeader, NoteId, NoteTag};
@@ -32,13 +31,12 @@ use crate::{Client, ClientError};
 pub const NOTE_TRANSPORT_MAINNET_ENDPOINT: &str = "https://transport.mainnet.miden.io";
 pub const NOTE_TRANSPORT_TESTNET_ENDPOINT: &str = "https://transport.miden.io";
 pub const NOTE_TRANSPORT_DEVNET_ENDPOINT: &str = "https://transport.devnet.miden.io";
-pub const NOTE_TRANSPORT_CURSOR_STORE_SETTING: &str = "note_transport_cursor";
+pub const NOTE_TRANSPORT_CURSOR_STORE_SETTING: &str = "note_transport_cursor_v2";
 
-/// Settings key for the note-transport backfill bookkeeping: a serialized `Vec<NoteTag>` of the
-/// `User`- and `Account`-source tags whose full history has already been fetched up to the global
-/// cursor. [`Client::sync_note_transport`] diffs the currently tracked tags against this set to
-/// find tags added after the cursor advanced, and backfills only those. Reusing the settings k/v
-/// avoids a Store-trait schema change while surviving process restarts.
+/// Settings key for the note transport tags associated with the stored cursor.
+///
+/// The node requires a cursor to be used with the same set of tags. The client resets the cursor
+/// when this set changes. The set also identifies new tags that require a history backfill.
 pub const NOTE_TRANSPORT_COVERED_TAGS_KEY: &str = "note_transport_covered_tags";
 
 /// Settings key for the durable relay outbox: a serialized `Vec<NoteInfo>` of private notes whose
@@ -258,25 +256,9 @@ impl<AUTH> Client<AUTH> {
             .map_err(ClientError::StoreError)
     }
 
-    /// The set of tracked tags eligible for history backfill.
-    ///
-    /// Only `User`- and `Account`-source tags qualify: those are the tags a consumer explicitly
-    /// started tracking (via [`Client::add_note_tag`], account import, or address creation) and may
-    /// therefore have historical private notes sitting below the global cursor. `Note`-source tags
-    /// are created by transport delivery and note import, so backfilling them would re-fetch tags
-    /// the fetch path itself just registered; `Subscription` tags are excluded for the same reason.
+    /// Returns the set of tags used by note transport requests.
     async fn backfill_candidate_tags(&self) -> Result<BTreeSet<NoteTag>, ClientError> {
-        let tags = self
-            .store
-            .get_note_tags()
-            .await?
-            .into_iter()
-            .filter(|record| {
-                matches!(record.source, NoteTagSource::User | NoteTagSource::Account(_))
-            })
-            .map(|record| record.tag)
-            .collect();
-        Ok(tags)
+        self.store.get_unique_note_tags().await.map_err(Into::into)
     }
 
     /// Load the set of tags whose history has already been fetched up to the global cursor.
@@ -332,9 +314,7 @@ impl<AUTH> Client<AUTH>
 where
     AUTH: TransactionAuthenticator + Sync + 'static,
 {
-    /// Per-sync cap on the number of newly tracked tags to backfill. Bounds the burst when many
-    /// tags are registered at once (e.g. restoring many accounts or addresses). Deferred tags stay
-    /// uncovered and are picked up on subsequent syncs.
+    /// Per-sync cap on targeted tag backfills. A cursor reset still fetches the complete tag set.
     pub const MAX_BACKFILL_TAGS_PER_SYNC: usize = 64;
 
     /// Safety cap on the per-tag backfill drain. A well-behaved server eventually returns no
@@ -357,15 +337,21 @@ where
     pub async fn fetch_private_notes(&mut self) -> Result<(), ClientError> {
         self.ensure_genesis_in_place().await?;
 
-        let note_tags: Vec<NoteTag> =
-            self.store.get_unique_note_tags().await?.into_iter().collect();
-        let cursor = self.store.get_note_transport_cursor().await?;
+        let note_tags = self.store.get_unique_note_tags().await?;
+        let cursor = if self.load_covered_tags().await? == note_tags {
+            self.store.get_note_transport_cursor().await?
+        } else {
+            NoteTransportCursor::init()
+        };
+        let note_tags_vec: Vec<NoteTag> = note_tags.iter().copied().collect();
 
         let mut id_by_commitment = BTreeMap::new();
-        let (note_files, new_cursor) =
-            self.fetch_transport_notes(cursor, &note_tags, &mut id_by_commitment).await?;
+        let (note_files, new_cursor) = self
+            .fetch_transport_notes(cursor, &note_tags_vec, &mut id_by_commitment)
+            .await?;
 
         self.import_notes(&note_files).await?;
+        self.save_covered_tags(&note_tags).await?;
         self.store.update_note_transport_cursor(new_cursor).await?;
 
         Ok(())
@@ -376,21 +362,17 @@ where
     ///
     /// The global transport cursor is shared across all tracked tags and only moves forward, so a
     /// tag that starts being tracked late never sees its notes that already sit below the cursor.
-    /// This diffs the tracked `User`/`Account` tags (see [`Self::backfill_candidate_tags`]) against
-    /// the persisted covered set (see [`NOTE_TRANSPORT_COVERED_TAGS_KEY`]) and drains each newly
-    /// tracked tag from the start, fetching only that tag's own history rather than re-scanning
-    /// everything. Tags no longer tracked are dropped from the covered set so a later re-add
-    /// backfills again instead of resuming from a stale mark. Imports dedupe, so the overlap with
-    /// the steady-state stream is harmless.
+    /// This diffs the transport request tags (see [`Self::backfill_candidate_tags`]) against the
+    /// persisted covered set (see [`NOTE_TRANSPORT_COVERED_TAGS_KEY`]) and drains each newly
+    /// tracked tag from the start. Tags no longer tracked are dropped from the covered set so a
+    /// later re-add backfills again instead of resuming from a stale mark. Imports remove
+    /// duplicates.
     ///
     /// At most [`Self::MAX_BACKFILL_TAGS_PER_SYNC`] tags are backfilled per call; any remainder
     /// stays uncovered and is picked up on the next sync.
     ///
-    /// Returns the pruned covered set, whether pruning changed it, and the tags to backfill. Reads
-    /// only: persisting the covered set is left to the apply phase, which writes it after the
-    /// imported notes so a crash re-backfills instead of skipping a tag whose notes were never
-    /// written.
-    async fn plan_backfill(&self) -> Result<(BTreeSet<NoteTag>, bool, Vec<NoteTag>), ClientError> {
+    /// Returns whether a tag was removed and the tags to backfill.
+    async fn plan_backfill(&self) -> Result<(bool, Vec<NoteTag>), ClientError> {
         let candidates = self.backfill_candidate_tags().await?;
         let loaded = self.load_covered_tags().await?;
 
@@ -405,7 +387,7 @@ where
             .take(Self::MAX_BACKFILL_TAGS_PER_SYNC)
             .collect();
 
-        Ok((covered, pruned, new_tags))
+        Ok((pruned, new_tags))
     }
 
     /// Drain a single tag's full history from the transport, paging until the cursor stops
@@ -586,23 +568,31 @@ where
 
         // Recover historical private notes for any tag added after the global cursor advanced. This
         // drains each newly tracked tag from the start, fetching only that tag's own history.
-        let (mut covered, pruned, new_tags) = self.plan_backfill().await?;
+        let (pruned, new_tags) = self.plan_backfill().await?;
         let backfilled = !new_tags.is_empty();
         for tag in new_tags {
             note_transport_update
                 .note_files
                 .extend(self.backfill_tag(tag, &mut note_transport_update.id_by_commitment).await?);
-            covered.insert(tag);
-        }
-        if pruned || backfilled {
-            note_transport_update.covered_tags = Some(covered);
         }
 
-        let cursor = self.store.get_note_transport_cursor().await?;
-        let note_tags: Vec<NoteTag> =
-            self.store.get_unique_note_tags().await?.into_iter().collect();
+        let note_tags = self.store.get_unique_note_tags().await?;
+        let note_tags_vec: Vec<NoteTag> = note_tags.iter().copied().collect();
+
+        // The node associates a cursor with one exact tag set. Reset it when a tag was added or
+        // removed. The per-tag backfill above makes the overlap from this reset safe.
+        let cursor = if pruned || backfilled {
+            note_transport_update.covered_tags = Some(note_tags);
+            NoteTransportCursor::init()
+        } else {
+            self.store.get_note_transport_cursor().await?
+        };
         let (note_files, new_cursor) = self
-            .fetch_transport_notes(cursor, &note_tags, &mut note_transport_update.id_by_commitment)
+            .fetch_transport_notes(
+                cursor,
+                &note_tags_vec,
+                &mut note_transport_update.id_by_commitment,
+            )
             .await?;
         note_transport_update.note_files.extend(note_files);
         note_transport_update.cursor = Some(new_cursor);
@@ -700,10 +690,9 @@ pub(crate) struct NoteTransportLayerUpdate {
 
 /// Note transport cursor
 ///
-/// Pagination integer used to reduce the number of fetched notes from the note transport network,
-/// avoiding duplicate downloads.
+/// Identifies a position in the note transport service's stored-note sequence.
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Eq, Ord)]
-pub struct NoteTransportCursor(u64);
+pub struct NoteTransportCursor(Option<(u64, u64)>);
 
 /// Note Transport update
 pub struct NoteTransportUpdate {
@@ -714,16 +703,28 @@ pub struct NoteTransportUpdate {
 }
 
 impl NoteTransportCursor {
+    /// Creates a cursor with a sequence value and a zero nonce.
+    ///
+    /// This constructor supports custom transport implementations. The node transport assigns a
+    /// nonce when it returns the first page.
     pub fn new(value: u64) -> Self {
-        Self(value)
+        Self(Some((0, value)))
     }
 
     pub fn init() -> Self {
-        Self::new(0)
+        Self(None)
+    }
+
+    pub fn from_parts(nonce: u64, sequence: u64) -> Self {
+        Self(Some((nonce, sequence)))
+    }
+
+    pub fn parts(&self) -> Option<(u64, u64)> {
+        self.0
     }
 
     pub fn value(&self) -> u64 {
-        self.0
+        self.0.map_or(0, |(_, sequence)| sequence)
     }
 }
 
@@ -733,11 +734,11 @@ impl From<u64> for NoteTransportCursor {
     }
 }
 
-/// The main transport client trait for sending and receiving encrypted notes
+/// The main transport client trait for sending and receiving private notes.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 pub trait NoteTransportClient: Send + Sync {
-    /// Send a note with optionally encrypted details
+    /// Sends a note with serialized details.
     async fn send_note(
         &self,
         header: NoteHeader,
@@ -759,36 +760,23 @@ pub trait NoteTransportClient: Send + Sync {
         self.send_note(header, details).await
     }
 
-    /// Fetch notes for given tags
+    /// Fetches notes for the given tags.
     ///
-    /// Downloads notes for given tags. Returns notes labelled after the provided cursor
-    /// (pagination), and an updated cursor.
+    /// Downloads notes for the given tags. Returns notes after the provided cursor (pagination),
+    /// and an updated cursor.
     async fn fetch_notes(
         &self,
         tag: &[NoteTag],
         cursor: NoteTransportCursor,
     ) -> Result<(Vec<NoteInfo>, NoteTransportCursor), NoteTransportError>;
-
-    /// Stream notes for a given tag
-    async fn stream_notes(
-        &self,
-        tag: NoteTag,
-        cursor: NoteTransportCursor,
-    ) -> Result<Box<dyn NoteStream>, NoteTransportError>;
-}
-
-/// Stream trait for note streaming
-pub trait NoteStream:
-    Stream<Item = Result<Vec<NoteInfo>, NoteTransportError>> + Send + Unpin
-{
 }
 
 /// Information about a note fetched from the note transport network
 #[derive(Debug, Clone)]
 pub struct NoteInfo {
-    /// Note header
+    /// Note header.
     pub header: NoteHeader,
-    /// Note details, can be encrypted
+    /// Serialized note details.
     pub details_bytes: Vec<u8>,
     /// Sender-provided block hint: the block from which the recipient should start scanning for the
     /// note's on-chain commitment, instead of applying its default lookback window. `None` when the
@@ -797,7 +785,7 @@ pub struct NoteInfo {
 }
 
 impl NoteInfo {
-    /// Build a [`NoteInfo`] without a block hint (`block_hint` is `None`).
+    /// Builds a [`NoteInfo`] without a block hint (`block_hint` is `None`).
     ///
     /// Use the [`NoteInfo::block_hint`] field directly to attach a hint.
     pub fn new(header: NoteHeader, details_bytes: Vec<u8>) -> Self {
@@ -833,8 +821,7 @@ impl Serializable for NoteTransportCursor {
 
 impl Deserializable for NoteTransportCursor {
     fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
-        let value = u64::read_from(source)?;
-        Ok(Self::new(value))
+        Ok(Self(Option::<(u64, u64)>::read_from(source)?))
     }
 }
 

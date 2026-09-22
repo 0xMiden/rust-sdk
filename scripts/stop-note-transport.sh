@@ -2,7 +2,8 @@
 
 set -euo pipefail
 
-PID_FILE=.note-transport.pid
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PID_FILE="$ROOT/.note-transport.pid"
 
 if [ -f "$PID_FILE" ]; then
   PID=$(cat "$PID_FILE")
@@ -13,7 +14,6 @@ if [ -f "$PID_FILE" ]; then
 fi
 
 # Fallback kill by process name
-pkill -f "miden-note-transport" || true
+pkill -f "$ROOT/target/test-node/install/bin/miden-note-transport" || true
 sleep 1
 echo "Note transport service stopped"
-

@@ -4,17 +4,15 @@
 //! `tonic` channel. On WASM, a `tonic_web_wasm_client` is created on demand.
 
 use alloc::boxed::Box;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use core::pin::Pin;
-use core::task::{Context, Poll};
 
-use futures::Stream;
+use miden_objects::DecodeMessageExt;
 use miden_protocol::block::BlockNumber;
-use miden_protocol::note::{NoteHeader, NoteTag};
+use miden_protocol::note::{NoteDetails, NoteHeader, NoteTag};
 use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_tx::utils::sync::RwLock;
-use tonic::{Request, Streaming};
+use tonic::{Code, Request};
 use tonic_health::pb::HealthCheckRequest;
 use tonic_health::pb::health_client::HealthClient;
 #[cfg(target_arch = "wasm32")]
@@ -25,15 +23,14 @@ use {
     tonic::transport::{Channel, ClientTlsConfig},
 };
 
-use super::generated::miden_note_transport::miden_note_transport_client::MidenNoteTransportClient;
-use super::generated::miden_note_transport::{
+use super::generated::note_transport::api_client::ApiClient;
+use super::generated::note_transport::{
+    FetchNotesCursor,
     FetchNotesRequest,
     SendNoteRequest,
-    StreamNotesRequest,
-    StreamNotesUpdate,
     TransportNote,
 };
-use super::{NoteInfo, NoteStream, NoteTransportCursor, NoteTransportError};
+use super::{NoteInfo, NoteTransportCursor, NoteTransportError};
 
 #[cfg(not(target_arch = "wasm32"))]
 type Service = Channel;
@@ -57,15 +54,12 @@ async fn connect_channel(
         .await
         .map_err(|e| NoteTransportError::Connection(Box::new(e)))?;
     Ok(ConnectedClient {
-        client: MidenNoteTransportClient::new(channel.clone()),
-        streaming_client: MidenNoteTransportClient::new(channel.clone()),
+        client: ApiClient::new(channel.clone()),
         health_client: HealthClient::new(channel),
     })
 }
 
-/// Establishes note transport clients with timed unary requests and untimed streams.
-///
-/// Fetch timeouts include response bodies and would otherwise terminate long-lived streams.
+/// Establishes note transport clients with timed requests.
 #[cfg(target_arch = "wasm32")]
 #[allow(clippy::unused_async)]
 async fn connect_channel(
@@ -75,10 +69,8 @@ async fn connect_channel(
     let fetch_options = FetchOptions::new().timeout(Duration::from_millis(timeout_ms));
     let wasm_client =
         tonic_web_wasm_client::Client::new_with_options(String::from(endpoint), fetch_options);
-    let streaming_wasm_client = tonic_web_wasm_client::Client::new(String::from(endpoint));
     Ok(ConnectedClient {
-        client: MidenNoteTransportClient::new(wasm_client.clone()),
-        streaming_client: MidenNoteTransportClient::new(streaming_wasm_client),
+        client: ApiClient::new(wasm_client.clone()),
         health_client: HealthClient::new(wasm_client),
     })
 }
@@ -86,8 +78,7 @@ async fn connect_channel(
 /// Inner state holding the connected gRPC clients.
 #[derive(Clone)]
 struct ConnectedClient {
-    client: MidenNoteTransportClient<Service>,
-    streaming_client: MidenNoteTransportClient<Service>,
+    client: ApiClient<Service>,
     health_client: HealthClient<Service>,
 }
 
@@ -123,13 +114,8 @@ impl GrpcNoteTransportClient {
     }
 
     /// Get a clone of the main client, connecting if needed.
-    async fn api(&self) -> Result<MidenNoteTransportClient<Service>, NoteTransportError> {
+    async fn api(&self) -> Result<ApiClient<Service>, NoteTransportError> {
         Ok(self.ensure_connected().await?.client)
-    }
-
-    /// Gets a clone of the streaming client, connecting if needed.
-    async fn streaming_api(&self) -> Result<MidenNoteTransportClient<Service>, NoteTransportError> {
-        Ok(self.ensure_connected().await?.streaming_client)
     }
 
     /// Get a clone of the health client, connecting if needed.
@@ -139,7 +125,7 @@ impl GrpcNoteTransportClient {
 
     /// Pushes a note to the note transport network.
     ///
-    /// While the note header goes in plaintext, the provided note details can be encrypted.
+    /// The note header and details use the node's typed Protobuf messages.
     pub async fn send_note(
         &self,
         header: NoteHeader,
@@ -150,8 +136,8 @@ impl GrpcNoteTransportClient {
 
     /// Pushes a note to the note transport network, relaying a block hint for the recipient.
     ///
-    /// `block_hint` is forwarded to the server (as the `TransportNote`'s `after_block_num`) as the
-    /// block from which the recipient should start scanning for the note's commitment.
+    /// `block_hint` is forwarded as the request's `after_block_num`. It identifies the block from
+    /// which the recipient should start scanning for the note's commitment.
     pub async fn send_note_with_block_hint(
         &self,
         header: NoteHeader,
@@ -161,19 +147,20 @@ impl GrpcNoteTransportClient {
         self.send_note_inner(header, details, Some(block_hint.as_u32())).await
     }
 
-    /// Sends a note, passing the optional block hint straight through to the wire `TransportNote`.
+    /// Sends a note with an optional block hint.
     async fn send_note_inner(
         &self,
         header: NoteHeader,
         details: Vec<u8>,
         after_block_num: Option<u32>,
     ) -> Result<(), NoteTransportError> {
+        let details = NoteDetails::read_from_bytes(&details)?;
         let request = SendNoteRequest {
             note: Some(TransportNote {
-                header: header.to_bytes(),
-                details,
-                after_block_num,
+                header: Some(header.into()),
+                details: Some(details.into()),
             }),
+            after_block_num: after_block_num.map(BlockNumber::from).map(Into::into),
         };
 
         self.api()
@@ -194,59 +181,65 @@ impl GrpcNoteTransportClient {
         cursor: NoteTransportCursor,
     ) -> Result<(Vec<NoteInfo>, NoteTransportCursor), NoteTransportError> {
         let tags_int = tags.iter().map(NoteTag::as_u32).collect();
-        let request = FetchNotesRequest { tags: tags_int, cursor: cursor.value() };
+        let request = FetchNotesRequest {
+            tags: tags_int,
+            cursor: cursor.parts().map(|(nonce, sequence)| FetchNotesCursor { nonce, sequence }),
+        };
 
-        let response = self
-            .api()
-            .await?
-            .fetch_notes(Request::new(request))
-            .await
-            .map_err(|e| NoteTransportError::Network(format!("Fetch notes failed: {e:?}")))?;
+        let mut api = self.api().await?;
+        let response = match api.fetch_notes(Request::new(request.clone())).await {
+            Ok(response) => response,
+            Err(status)
+                if status.code() == Code::FailedPrecondition && request.cursor.is_some() =>
+            {
+                let retry = FetchNotesRequest { cursor: None, ..request };
+                api.fetch_notes(Request::new(retry)).await.map_err(|error| {
+                    NoteTransportError::Network(format!("Fetch notes failed: {error:?}"))
+                })?
+            },
+            Err(error) => {
+                return Err(NoteTransportError::Network(format!("Fetch notes failed: {error:?}")));
+            },
+        };
 
         let response = response.into_inner();
 
-        // Convert protobuf notes to internal format and track the most recent received timestamp
+        // Convert the Protobuf notes to the client format.
         let mut notes = Vec::new();
 
         for pnote in response.notes {
-            let header = NoteHeader::read_from_bytes(&pnote.header)?;
+            let header: NoteHeader = pnote
+                .header
+                .ok_or_else(|| NoteTransportError::Network("fetched note has no header".into()))?
+                .decode_and_verify()
+                .map_err(|error| NoteTransportError::Network(error.to_string()))?;
+            let details: NoteDetails = pnote
+                .details
+                .ok_or_else(|| NoteTransportError::Network("fetched note has no details".into()))?
+                .decode_and_verify()
+                .map_err(|error| NoteTransportError::Network(error.to_string()))?;
+            let block_hint = pnote
+                .committed_in_block
+                .or(pnote.after_block_num)
+                .map(|block_num| BlockNumber::from(block_num.block_num));
 
             notes.push(NoteInfo {
                 header,
-                details_bytes: pnote.details,
-                block_hint: pnote.after_block_num.map(BlockNumber::from),
+                details_bytes: details.to_bytes(),
+                block_hint,
             });
         }
 
-        Ok((notes, response.cursor.into()))
-    }
-
-    /// Stream notes from the note transport network.
-    ///
-    /// Subscribes to a given tag. New notes are received periodically.
-    pub async fn stream_notes(
-        &self,
-        tag: NoteTag,
-        cursor: NoteTransportCursor,
-    ) -> Result<NoteStreamAdapter, NoteTransportError> {
-        let request = StreamNotesRequest {
-            tag: tag.as_u32(),
-            cursor: cursor.value(),
-        };
-
-        let response = self
-            .streaming_api()
-            .await?
-            .stream_notes(request)
-            .await
-            .map_err(|e| NoteTransportError::Network(format!("Stream notes failed: {e:?}")))?;
-        Ok(NoteStreamAdapter::new(response.into_inner()))
+        let cursor = response
+            .cursor
+            .ok_or_else(|| NoteTransportError::Network("fetch response has no cursor".into()))?;
+        Ok((notes, NoteTransportCursor::from_parts(cursor.nonce, cursor.sequence)))
     }
 
     /// gRPC-standardized server health-check.
     ///
-    /// Checks if the note transport node and respective gRPC services are serving requests.
-    /// Currently the grPC server operates only one service labelled `MidenNoteTransport`.
+    /// Checks if the note transport node and respective gRPC services are serving requests. The
+    /// gRPC server operates the `note_transport.Api` service.
     pub async fn health_check(&mut self) -> Result<(), NoteTransportError> {
         let request = tonic::Request::new(HealthCheckRequest {
             service: String::new(), // empty string -> whole server
@@ -270,7 +263,6 @@ impl GrpcNoteTransportClient {
             .ok_or_else(|| NoteTransportError::Network("Service is not serving".into()))
     }
 }
-
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl super::NoteTransportClient for GrpcNoteTransportClient {
@@ -298,55 +290,4 @@ impl super::NoteTransportClient for GrpcNoteTransportClient {
     ) -> Result<(Vec<NoteInfo>, NoteTransportCursor), NoteTransportError> {
         self.fetch_notes(tags, cursor).await
     }
-
-    async fn stream_notes(
-        &self,
-        tag: NoteTag,
-        cursor: NoteTransportCursor,
-    ) -> Result<Box<dyn NoteStream>, NoteTransportError> {
-        let stream = self.stream_notes(tag, cursor).await?;
-        Ok(Box::new(stream))
-    }
 }
-
-/// Convert from `tonic::Streaming<StreamNotesUpdate>` to [`NoteStream`]
-pub struct NoteStreamAdapter {
-    inner: Streaming<StreamNotesUpdate>,
-}
-
-impl NoteStreamAdapter {
-    /// Create a new [`NoteStreamAdapter`]
-    pub fn new(stream: Streaming<StreamNotesUpdate>) -> Self {
-        Self { inner: stream }
-    }
-}
-
-impl Stream for NoteStreamAdapter {
-    type Item = Result<Vec<NoteInfo>, NoteTransportError>;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        match Pin::new(&mut self.inner).poll_next(cx) {
-            Poll::Ready(Some(Ok(update))) => {
-                // Convert StreamNotesUpdate to Vec<NoteInfo>
-                let mut notes = Vec::new();
-                for pnote in update.notes {
-                    let header = NoteHeader::read_from_bytes(&pnote.header)?;
-
-                    notes.push(NoteInfo {
-                        header,
-                        details_bytes: pnote.details,
-                        block_hint: pnote.after_block_num.map(BlockNumber::from),
-                    });
-                }
-                Poll::Ready(Some(Ok(notes)))
-            },
-            Poll::Ready(Some(Err(status))) => Poll::Ready(Some(Err(NoteTransportError::Network(
-                format!("tonic status: {status}"),
-            )))),
-            Poll::Ready(None) => Poll::Ready(None),
-            Poll::Pending => Poll::Pending,
-        }
-    }
-}
-
-impl NoteStream for NoteStreamAdapter {}

@@ -56,7 +56,7 @@ VERIFICATION_BASE_FEE="${MIDEN_VERIFICATION_BASE_FEE:-500}"
 # runs. No test consumes the fee notes.
 BATCH_BUILDER_WALLET="${MIDEN_BATCH_BUILDER_WALLET:-0xcc0000000000dd010000ee000000ff}"
 
-NODE_BINS=(miden-validator miden-node miden-ntx-builder miden-remote-prover)
+NODE_BINS=(miden-validator miden-node miden-ntx-builder miden-remote-prover miden-note-transport)
 
 # Resolve the pinned node source from Cargo.lock: a git pin takes precedence, otherwise use the
 # crates.io version locked for `miden-node-proto-build`.

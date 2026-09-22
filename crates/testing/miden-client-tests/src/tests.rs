@@ -974,6 +974,35 @@ async fn transaction_request_expiration() {
     assert_eq!(tx_outputs.expiration_block_num(), current_height + 5);
 }
 
+/// The expiration delta must bound every request it is set on, not only those that create notes. A
+/// consume request has no output notes and therefore no `SendNotes` script, so the delta has to be
+/// applied through a dedicated expiration script.
+#[tokio::test]
+async fn expiration_delta_applies_to_request_without_own_output_notes() {
+    let (mut client, mock_rpc_api) = Box::pin(create_test_client()).await;
+    let (wallet, faucet) = client.setup_wallet_and_faucet(AccountType::Private).await.unwrap();
+    client.sync_state().await.unwrap();
+
+    let (_, note) = client.mint_note(wallet.id(), faucet.id(), NoteType::Private).await.unwrap();
+    mock_rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+
+    let current_height = client.get_sync_height().await.unwrap();
+    let transaction_request = TransactionRequestBuilder::new()
+        .expiration_delta(7)
+        .build_consume_notes(vec![note])
+        .unwrap();
+
+    let transaction_result = Box::pin(client.execute_transaction(wallet.id(), transaction_request))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        transaction_result.executed_transaction().expiration_block_num(),
+        current_height + 7
+    );
+}
+
 #[tokio::test]
 async fn import_processing_note_returns_error() {
     // generate test client with a random store name

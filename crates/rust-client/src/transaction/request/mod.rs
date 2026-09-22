@@ -674,7 +674,6 @@ mod tests {
         StorageSlotName,
     };
     use miden_protocol::asset::FungibleAsset;
-    use miden_protocol::crypto::rand::{FeltRng, RandomCoin};
     use miden_protocol::note::{NoteTag, NoteType};
     use miden_protocol::testing::account_id::{
         ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET,
@@ -687,6 +686,8 @@ mod tests {
     use miden_standards::note::P2idNote;
     use miden_standards::testing::account_component::MockAccountComponent;
     use miden_tx::utils::serde::{Deserializable, Serializable};
+    use rand::SeedableRng;
+    use rand_chacha::ChaCha20Rng;
 
     use super::{
         ExpirationTransactionScript,
@@ -695,6 +696,7 @@ mod tests {
         TransactionRequestBuilder,
         TransactionScript,
     };
+    use crate::rng::draw_word;
     use crate::rpc::domain::account::AccountStorageRequirements;
     use crate::transaction::ForeignAccount;
 
@@ -754,12 +756,13 @@ mod tests {
         let target_id =
             AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE).unwrap();
         let faucet_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
+        let mut rng = ChaCha20Rng::seed_from_u64(0);
         let note = P2idNote::builder()
             .sender(sender_id)
             .target(target_id)
             .assets(vec![FungibleAsset::new(faucet_id, 100).unwrap()])
             .note_type(NoteType::Private)
-            .generate_serial_number(&mut RandomCoin::new(Word::default()))
+            .serial_number(draw_word(&mut rng))
             .build()
             .unwrap();
 
@@ -783,7 +786,7 @@ mod tests {
         let target_id =
             AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE).unwrap();
         let faucet_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
-        let mut rng = RandomCoin::new(Word::default());
+        let mut rng = ChaCha20Rng::seed_from_u64(0);
 
         let mut notes = vec![];
         for i in 0..7 {
@@ -792,7 +795,7 @@ mod tests {
                 .target(target_id)
                 .assets(vec![FungibleAsset::new(faucet_id, 100 + i).unwrap()])
                 .note_type(NoteType::Private)
-                .generate_serial_number(&mut rng)
+                .serial_number(draw_word(&mut rng))
                 .build()
                 .expect("note creation failed");
             notes.push(note.into());
@@ -800,7 +803,7 @@ mod tests {
 
         let mut advice_vec: Vec<(Word, Vec<Felt>)> = vec![];
         for i in 0u32..10 {
-            advice_vec.push((rng.draw_word(), vec![Felt::from(i)]));
+            advice_vec.push((draw_word(&mut rng), vec![Felt::from(i)]));
         }
 
         let account = AccountBuilder::new(Default::default())
@@ -815,7 +818,7 @@ mod tests {
             .input_notes(vec![(notes.pop().unwrap(), None)])
             .explicit_input_notes(vec![(
                 InputNote::unauthenticated(notes.pop().unwrap()),
-                Some(rng.draw_word()),
+                Some(draw_word(&mut rng)),
             )])
             .expected_output_recipients(vec![notes.pop().unwrap().recipient().clone()])
             .expected_future_notes(vec![(
@@ -835,8 +838,8 @@ mod tests {
                 ForeignAccount::private(&account).unwrap(),
             ])
             .own_output_notes(vec![notes.pop().unwrap(), notes.pop().unwrap()])
-            .script_arg(rng.draw_word())
-            .auth_arg(rng.draw_word())
+            .script_arg(draw_word(&mut rng))
+            .auth_arg(draw_word(&mut rng))
             .expected_ntx_scripts(vec![notes.first().unwrap().recipient().script().clone()])
             .build()
             .unwrap();

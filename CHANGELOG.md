@@ -4,6 +4,8 @@
 
 ### Breaking Changes
 
+* [BREAKING][removal][rust] Removed the `miden_client::crypto::RandomCoin` re-export. Use a `rand` CSPRNG such as `ChaCha20Rng`, plus the new `miden_client::rng::{draw_felt, draw_word}` helpers where a `Felt` or `Word` is needed from a generator that does not implement `FeltRng` ([#2414](https://github.com/0xMiden/rust-sdk/pull/2414)).
+* [BREAKING][type][rust] `ClientBuilder::rng` is now only available under the `testing` feature and requires `CryptoRng + Send + Sync`; the marker trait `ClientFeltRng` is renamed to `ClientCryptoRng`. Outside of tests the client's RNG is always an OS-seeded `ChaCha20Rng`; drop the `rng()` call ([#2414](https://github.com/0xMiden/rust-sdk/pull/2414)).
 * [BREAKING][behavior][rust] State sync now authenticates the chain tip by verifying the block signatures against the validator configuration ([#2553](https://github.com/0xMiden/rust-sdk/pull/2553)).
 * [BREAKING][param][rust] `StateSync::new` now takes a `validator_config: ValidatorConfig` argument, used to authenticate the chain tip block header on every sync. The validator configuration can be retrieved from the client with `Client::get_validator_config` ([#2553](https://github.com/0xMiden/rust-sdk/pull/2553)).
 * [BREAKING][arch][rust] Updated `miden-node-proto-build` to `0.17.0-rc.1`, protocol dependencies to `0.17.0-rc.5` and VM dependencies to `0.33` ([#2562](https://github.com/0xMiden/rust-sdk/pull/2562)).

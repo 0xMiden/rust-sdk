@@ -138,7 +138,7 @@ where
         self.ensure_genesis_in_place().await?;
         self.ensure_rpc_limits_in_place().await?;
 
-        let state_sync = self.state_sync();
+        let state_sync = self.state_sync().await?;
         let mut chain_sync_data = self.fetch_chain_updates(&state_sync).await?;
         state_sync.derive_state_updates(&mut chain_sync_data).await?;
         state_sync.fetch_nullifiers(&mut chain_sync_data).await?;
@@ -167,9 +167,16 @@ where
     ///
     /// Each `NoteObserver` owns its own per-sync state, so this must be called once per sync rather
     /// than shared; `with_note_observer` just attaches it.
-    fn state_sync(&self) -> StateSync {
-        StateSync::new(self.rpc_api.clone(), Arc::new(self.note_screener()), self.tx_discard_delta)
-            .with_note_observer(Arc::new(PswapChainObserver::new(self.store.clone())))
+    async fn state_sync(&self) -> Result<StateSync, ClientError> {
+        let validator_config = self.get_validator_config().await?;
+
+        Ok(StateSync::new(
+            self.rpc_api.clone(),
+            Arc::new(self.note_screener()),
+            self.tx_discard_delta,
+            validator_config,
+        )
+        .with_note_observer(Arc::new(PswapChainObserver::new(self.store.clone()))))
     }
 
     /// Verifies fetched chain data against the client's partial MMR and saves the resulting update
@@ -265,7 +272,7 @@ where
         self.ensure_genesis_in_place().await?;
         self.ensure_rpc_limits_in_place().await?;
 
-        let state_sync = self.state_sync();
+        let state_sync = self.state_sync().await?;
         let (note_transport_update, chain_sync_data) = futures::join!(
             self.fetch_note_transport_updates(),
             self.fetch_chain_updates(&state_sync),

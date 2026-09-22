@@ -430,7 +430,9 @@ impl<AUTH> Client<AUTH> {
     ///
     /// The account is not validated against the network here. Registering an already registered
     /// account is a no-op and keeps any cached witness.
-    pub async fn track_account_witness(&self, account_id: AccountId) -> Result<(), ClientError> {
+    ///
+    /// Returns `true` if the account was not registered before this call.
+    pub async fn track_account_witness(&self, account_id: AccountId) -> Result<bool, ClientError> {
         self.store.track_account_witness(account_id).await.map_err(Into::into)
     }
 

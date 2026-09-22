@@ -445,7 +445,7 @@ impl Store for SqliteStore {
         .await
     }
 
-    async fn track_account_witness(&self, account_id: AccountId) -> Result<(), StoreError> {
+    async fn track_account_witness(&self, account_id: AccountId) -> Result<bool, StoreError> {
         self.interact_with_connection(move |conn| {
             SqliteStore::track_account_witness(conn, account_id)
         })

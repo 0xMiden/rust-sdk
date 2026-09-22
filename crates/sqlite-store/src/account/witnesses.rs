@@ -16,16 +16,17 @@ impl SqliteStore {
     pub(crate) fn track_account_witness(
         conn: &mut Connection,
         account_id: AccountId,
-    ) -> Result<(), StoreError> {
+    ) -> Result<bool, StoreError> {
         // IGNORE rather than REPLACE: re-registering must not drop an already cached witness.
         const QUERY: &str = insert_sql!(account_witnesses { account_id } | IGNORE);
 
-        conn.prepare_cached(QUERY)
+        let inserted = conn
+            .prepare_cached(QUERY)
             .into_store_error()?
             .execute(params![account_id.to_bytes()])
             .into_store_error()?;
 
-        Ok(())
+        Ok(inserted > 0)
     }
 
     pub(crate) fn untrack_account_witness(

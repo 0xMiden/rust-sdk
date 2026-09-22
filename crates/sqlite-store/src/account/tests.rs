@@ -2778,7 +2778,10 @@ async fn account_witness_registry_round_trip() -> anyhow::Result<()> {
         "an unregistered account has no cached witness"
     );
 
-    store.track_account_witness(account_id).await?;
+    assert!(
+        store.track_account_witness(account_id).await?,
+        "the account was not registered yet"
+    );
 
     // Registered, but no sync has run.
     assert_eq!(store.tracked_account_witnesses().await?, vec![account_id]);
@@ -2821,7 +2824,10 @@ async fn tracking_an_already_tracked_account_keeps_its_witness() -> anyhow::Resu
     store.update_account_witness(account_id, &witness, cached_block).await?;
 
     // Registering the same account a second time.
-    store.track_account_witness(account_id).await?;
+    assert!(
+        !store.track_account_witness(account_id).await?,
+        "re-registering reports no new registration"
+    );
 
     let (_, cached_at) = store
         .get_account_witness(account_id)

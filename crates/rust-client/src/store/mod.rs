@@ -500,7 +500,9 @@ pub trait Store: Send + Sync {
     ///
     /// No-op if the account is already registered; a cached witness is left in place. The witness
     /// itself is filled in by the next sync.
-    async fn track_account_witness(&self, account_id: AccountId) -> Result<(), StoreError>;
+    ///
+    /// Returns `true` if the account was not registered before this call.
+    async fn track_account_witness(&self, account_id: AccountId) -> Result<bool, StoreError>;
 
     /// Stops refreshing the account's witness and drops any cached one.
     ///

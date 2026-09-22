@@ -59,6 +59,10 @@
 * [FEATURE][rust] Re-exported the fee pricing and note checking types that the client API already surfaces, so downstream crates no longer need a direct `miden-tx` dependency to price note consumption: `NetworkNotePricer`, `NotePricingError` and `NoteCheckerError` at the crate root, `TransactionFee` and `TransactionFeeError` from `transaction`, `NoteCost` and `NoteConsumptionCost` from `note`, and `MastForestStore` and `TransactionMastStore` from `testing` ([#2475](https://github.com/0xMiden/rust-sdk/pull/2475)).
 * [FEATURE][rust] `Client::retry_proven_batch` resends a batch whose outcome was never confirmed, sealing the transaction inputs again on every attempt so nothing is executed or proven twice. It takes the `ProvenBatchSubmission` from `BatchBuilderError::BatchSubmissionOutcomeUnknown`, which has no public constructor, so that error is the only way to obtain one ([#2508](https://github.com/0xMiden/rust-sdk/pull/2508)).
 
+### Enhancements
+
+* [FEATURE][cli] Added a `--package` option to `exec` so a compiled transaction script package (`.masp`) can be run instead of MASM source. A path without an extension is resolved in the package directory, as with `call --package` ([#2470](https://github.com/0xMiden/rust-sdk/issues/2470)).
+
 ### Fixes
 
 * [FIX][cli] `new-account` and `new-wallet` now reject a package that exports procedures without an `@account_procedure` or `@auth_script` attribute. They also reject packages whose target kind is not `account-component` and packages without an account component metadata section ([#2542](https://github.com/0xMiden/rust-sdk/pull/2542)).

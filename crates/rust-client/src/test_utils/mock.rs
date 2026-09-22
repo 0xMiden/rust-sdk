@@ -472,12 +472,22 @@ impl NodeRpcClient for MockRpcApi {
             .unwrap();
 
         let block_header = self.get_block_by_num(target_block);
+        let block_signatures = self
+            .mock_chain
+            .read()
+            .proven_blocks()
+            .iter()
+            .find(|block| block.header().block_num() == target_block)
+            .expect("the mock chain contains the target block")
+            .signatures()
+            .clone();
 
         Ok(ChainMmrInfo {
             block_from: current_block_height,
             block_to: target_block,
             mmr_delta,
             block_header,
+            block_signatures,
         })
     }
 

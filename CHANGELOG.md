@@ -4,6 +4,8 @@
 
 ### Breaking Changes
 
+* [BREAKING][behavior][rust] State sync now authenticates the chain tip by verifying the block signatures against the validator configuration ([#2553](https://github.com/0xMiden/rust-sdk/pull/2553)).
+* [BREAKING][param][rust] `StateSync::new` now takes a `validator_config: ValidatorConfig` argument, used to authenticate the chain tip block header on every sync. The validator configuration can be retrieved from the client with `Client::get_validator_config` ([#2553](https://github.com/0xMiden/rust-sdk/pull/2553)).
 * [BREAKING][arch][rust] Updated `miden-node-proto-build` to `0.17.0-rc.1`, protocol dependencies to `0.17.0-rc.5` and VM dependencies to `0.33` ([#2562](https://github.com/0xMiden/rust-sdk/pull/2562)).
 * [BREAKING][behavior][rust] `Keystore::get_account_key_commitments` returns an empty set for an account the keystore holds no key for, instead of an error. An account can use keys that are held elsewhere, so this is a valid state. Code that read the error as "this account is unknown" must check for an empty set instead. `export --account` now exports such an account instead of failing with "No keys found for account" ([#2556](https://github.com/0xMiden/rust-sdk/pull/2556)).
 * [BREAKING][type][rust] Added the `StoreError::DatabaseTransientError` and `StoreError::DatabasePermanentError` variants, so exhaustive matches on `StoreError` must handle them. The SQLite store returns the first for a busy or locked database and the second for a constraint violation or a corrupt database file, which it previously reported as `StoreError::DatabaseError` ([#2537](https://github.com/0xMiden/rust-sdk/pull/2537)).
@@ -35,6 +37,7 @@
 
 ### Features
 
+* [FEATURE][rust] Added `Client::get_validator_config`, which returns the validator configuration committed by the locally stored block header at the current sync height ([#2553](https://github.com/0xMiden/rust-sdk/pull/2553)).
 * [FEATURE][rust] Added `Endpoint::mainnet()`, `ClientBuilder::for_mainnet()`, `MAINNET_PROVER_ENDPOINT` and `NOTE_TRANSPORT_MAINNET_ENDPOINT`. The mainnet RPC endpoint maps to `NetworkId::Mainnet`, so addresses derived from it use the `mm` prefix ([#2569](https://github.com/0xMiden/rust-sdk/pull/2569)).
 * [FEATURE][cli] `init --network mainnet` configures the client for the Miden mainnet, including its note transport endpoint ([#2569](https://github.com/0xMiden/rust-sdk/pull/2569)).
 * [FEATURE][cli] Added the optional `network_id` setting under `[rpc]` and the `init --network-id <HRP>` flag. They set the bech32 prefix the CLI renders and accepts for a node that is not one of the built-in endpoints, which otherwise maps to `mcst` ([#2569](https://github.com/0xMiden/rust-sdk/pull/2569)).

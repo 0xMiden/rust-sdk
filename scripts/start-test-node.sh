@@ -13,6 +13,7 @@
 # Env vars:
 #   MIDEN_VERIFICATION_BASE_FEE  genesis `verification_base_fee` (default 500; 0 disables fees)
 #   MIDEN_NUM_FUNDER_WALLETS     number of funder wallets a fee-charging genesis declares
+#   MIDEN_BATCH_BUILDER_WALLET   account that receives the batch builder's fees
 
 set -euo pipefail
 
@@ -50,6 +51,10 @@ NETWORK_TX_AUTH="${MIDEN_NETWORK_TX_AUTH:-miden-client-testing-ntx-secret}"
 # Genesis `verification_base_fee`. Every transaction pays out of its own account's vault, as on a
 # real chain. At 0 fees are never charged.
 VERIFICATION_BASE_FEE="${MIDEN_VERIFICATION_BASE_FEE:-500}"
+# Account that receives the batch builder's fees in a P2ID note. The sequencer requires the value
+# but never reads the account, so this is the same placeholder id the node repo uses for local
+# runs. No test consumes the fee notes.
+BATCH_BUILDER_WALLET="${MIDEN_BATCH_BUILDER_WALLET:-0xcc0000000000dd010000ee000000ff}"
 
 NODE_BINS=(miden-validator miden-node miden-ntx-builder miden-remote-prover)
 
@@ -213,6 +218,7 @@ sleep 2
 start sequencer   "$BIN/miden-node" sequencer --rpc.listen "$RPC" --data-directory "$DATA/node" \
     --validator.url "http://$VALIDATOR" --ntx-builder.url "http://$NTX" \
     --rpc.network-tx-auth-header-value "$NETWORK_TX_AUTH" \
+    --batch.builder.wallet-account-id "$BATCH_BUILDER_WALLET" \
     --disable-account-allowlist \
     --block.interval 3s --batch.interval 1s
 # A network transaction's proof runs well past the prover's 60s default on a shared CI runner, and

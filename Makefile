@@ -31,6 +31,13 @@ AGGLAYER_ACCOUNTS_DIR?=$(CURDIR)/data
 # through. `start-test-node.sh` binds it when it is started with `MIDEN_ACCOUNT_ALLOWLIST=1`.
 MIDEN_NODE_ADMIN_URL?=http://127.0.0.1:50100
 
+# Funding service of the test node, which the account allowlist tests pay their unregistered
+# accounts through. `start-test-node.sh` starts it when it is started with
+# `MIDEN_ACCOUNT_ALLOWLIST=1`.
+MIDEN_FUNDING_SERVICE_URL?=http://127.0.0.1:50401
+
+integration-test integration-test-non-agglayer integration-test-agglayer integration-test-allowlist integration-test-miden-bench integration-test-dev integration-test-binary: export MIDEN_PROTOCOL_CONFIG := $(MIDEN_PROTOCOL_CONFIG)
+
 # Sizes the SQL store scaling benchmark sweeps over. Kept small enough to run on every PR, and
 # overridable for a deeper local run.
 STORE_BENCH_ARGS?=--notes 1000,10000 --accounts 100,1000 --iterations 5
@@ -152,10 +159,12 @@ integration-test-agglayer: ## Run only the agglayer integration tests
 
 # The allowlist tests need a node that enforces the account allowlist, which rejects the account
 # creations every other test does. They run in their own job against their own node, started with
-# `MIDEN_ACCOUNT_ALLOWLIST=1`, and every other target above filters them out.
+# `MIDEN_ACCOUNT_ALLOWLIST=1`, and every other target above filters them out. That node also pays
+# each account that registers through its funding service, and the tests pay every other account
+# they create through the same service. They use no funder wallets.
 .PHONY: integration-test-allowlist
 integration-test-allowlist: ## Run only the account allowlist integration tests (requires MIDEN_ACCOUNT_ALLOWLIST=1 on the node)
-	MIDEN_FUNDER_ACCOUNTS_DIR=$(MIDEN_FUNDER_ACCOUNTS_DIR) MIDEN_NODE_ADMIN_URL=$(MIDEN_NODE_ADMIN_URL) cargo nextest run --workspace --release --test=integration -E 'test(/allowlist/)'
+	MIDEN_NODE_ADMIN_URL=$(MIDEN_NODE_ADMIN_URL) MIDEN_FUNDING_SERVICE_URL=$(MIDEN_FUNDING_SERVICE_URL) cargo nextest run --workspace --release --test=integration -E 'test(/allowlist/)'
 
 .PHONY: integration-test-miden-bench
 integration-test-miden-bench: install-bench ## Run miden-bench smoke tests

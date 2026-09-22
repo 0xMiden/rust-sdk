@@ -68,9 +68,13 @@ pub const NATIVE_FAUCET_FILE: &str = "native_faucet.mac";
 pub const FAUCET_OPERATOR_FILE: &str = "faucet_operator.mac";
 
 /// File name of the public funding account, written with its secret key. `miden-validator genesis`
-/// requires one: it is the account the node's funding service pays out of. The testing node runs no
-/// funding service, so the wallet only has to exist and be deployed.
+/// requires one. It is the account the node's funding service pays out of, and `start-test-node.sh`
+/// starts the service with this file.
 pub const FUNDING_ACCOUNT_FILE: &str = "funding_account.mac";
+
+/// Balance, in base units of the native fee asset, the funding account holds at genesis. The
+/// service pays out of this one account for every account registered during a run.
+const FUNDING_ACCOUNT_BALANCE: u64 = 100_000_000_000;
 
 /// Token symbol, decimals and max supply of the native fee faucet, matching what the node would
 /// generate for it if genesis left it unset.
@@ -121,8 +125,9 @@ pub fn write_genesis_config(output_dir: &Path, num_funder_wallets: u32) -> Resul
         generate_wallet().context("failed to create the native faucet operator")?;
     let native_faucet =
         generate_native_faucet(operator.id()).context("failed to create the native fee faucet")?;
+    let native_faucet_id = native_faucet.id();
     let fee_balance: Asset =
-        FungibleAsset::new(native_faucet.id(), GENESIS_ACCOUNT_FEE_BALANCE)?.into();
+        FungibleAsset::new(native_faucet_id, GENESIS_ACCOUNT_FEE_BALANCE)?.into();
     AccountFile::new(into_genesis_account(native_faucet, fee_balance)?, vec![])
         .write(output_dir.join(NATIVE_FAUCET_FILE))
         .with_context(|| format!("failed to write {NATIVE_FAUCET_FILE}"))?;
@@ -134,7 +139,9 @@ pub fn write_genesis_config(output_dir: &Path, num_funder_wallets: u32) -> Resul
     // Genesis loads the funding account from its own flag, so it is not listed in `accounts.toml`.
     let (funding_account, funding_secret) =
         generate_wallet().context("failed to create the funding account")?;
-    AccountFile::new(into_genesis_account(funding_account, fee_balance)?, vec![funding_secret])
+    let funding_balance: Asset =
+        FungibleAsset::new(native_faucet_id, FUNDING_ACCOUNT_BALANCE)?.into();
+    AccountFile::new(into_genesis_account(funding_account, funding_balance)?, vec![funding_secret])
         .write(output_dir.join(FUNDING_ACCOUNT_FILE))
         .with_context(|| format!("failed to write {FUNDING_ACCOUNT_FILE}"))?;
 
@@ -214,7 +221,7 @@ struct AccountsConfig {
     /// Rendered as `[[account]]` entries, each naming a `.mac` file the node loads verbatim.
     #[serde(rename = "account")]
     accounts: Vec<AccountEntry>,
-    /// Rendered as `[[wallet]]` entries the node creates and writes out as `wallet_<index>.mac`.
+    /// Rendered as `[[wallet]]` entries the node creates and writes out as `<name>.mac`.
     #[serde(rename = "wallet")]
     wallets: Vec<WalletEntry>,
 }

@@ -38,7 +38,7 @@ pub const FUNDER_ACCOUNTS_ENV: &str = "MIDEN_FUNDER_ACCOUNTS_DIR";
 
 /// Amount of the native fee asset, in base units, each funded account receives. A fee runs a few
 /// tens of thousands of base units, so this covers far more than any one test spends.
-const FUNDING_AMOUNT: u64 = 10_000_000;
+pub const FUNDING_AMOUNT: u64 = 10_000_000;
 
 /// How long to wait before a rejected payment is submitted again.
 const STALE_WALLET_RETRY_DELAY: Duration = Duration::from_secs(5);

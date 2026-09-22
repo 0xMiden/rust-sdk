@@ -33,7 +33,11 @@ use miden_protocol::vm::AdviceMap;
 use miden_protocol::{MastForestScriptError, Word};
 use miden_standards::account::auth::{FeeConversionInfo, commit_fee_conversion_info};
 use miden_standards::errors::CodeBuilderError;
-use miden_standards::tx_script::{SendNotesTransactionScript, SendNotesTransactionScriptError};
+use miden_standards::tx_script::{
+    ExpirationTransactionScript,
+    SendNotesTransactionScript,
+    SendNotesTransactionScriptError,
+};
 use miden_tx::utils::serde::{
     ByteReader,
     ByteWriter,
@@ -386,6 +390,10 @@ impl TransactionRequest {
     /// no such constraint and yields `None`, so the request's own
     /// [`TransactionRequestBuilder::script_arg`] applies to it.
     ///
+    /// A request without a script template normally runs without a transaction script. When such a
+    /// request sets an expiration delta, the standard [`ExpirationTransactionScript`] is used so
+    /// that the delta is enforced; the script reads the delta from its own `TX_SCRIPT_ARGS`.
+    ///
     /// Scripts supplied by the caller via [`TransactionScriptTemplate::CustomScript`] are expected
     /// to have already been compiled against the client's source manager (e.g. via
     /// [`Client::code_builder`](crate::Client::code_builder)).
@@ -408,7 +416,13 @@ impl TransactionRequest {
                 };
                 Ok(Some((script.tx_script().clone(), Some(script.tx_script_args()))))
             },
-            None => Ok(None),
+            None => match self.expiration_delta.and_then(NonZeroU16::new) {
+                Some(delta) => {
+                    let script = ExpirationTransactionScript::new(delta);
+                    Ok(Some((script.into(), Some(script.tx_script_args()))))
+                },
+                None => Ok(None),
+            },
         }
     }
 }
@@ -674,7 +688,13 @@ mod tests {
     use miden_standards::testing::account_component::MockAccountComponent;
     use miden_tx::utils::serde::{Deserializable, Serializable};
 
-    use super::{TransactionRequest, TransactionRequestBuilder};
+    use super::{
+        ExpirationTransactionScript,
+        NonZeroU16,
+        TransactionRequest,
+        TransactionRequestBuilder,
+        TransactionScript,
+    };
     use crate::rpc::domain::account::AccountStorageRequirements;
     use crate::transaction::ForeignAccount;
 
@@ -698,6 +718,34 @@ mod tests {
             ))
             .into()
         });
+    }
+
+    #[test]
+    fn expiration_delta_without_script_template_builds_expiration_script() {
+        let account = AccountBuilder::new(Default::default())
+            .with_component(MockAccountComponent::with_empty_slots())
+            .with_component(AuthSingleSig::new(Approver::new(
+                PublicKeyCommitment::from(EMPTY_WORD),
+                AuthScheme::Falcon512Poseidon2,
+            )))
+            .account_type(AccountType::Private)
+            .build_existing()
+            .unwrap();
+        let code_interface = account.code_interface();
+
+        let delta = NonZeroU16::new(9).unwrap();
+        let tx_request =
+            TransactionRequestBuilder::new().expiration_delta(delta.get()).build().unwrap();
+
+        let (script, script_args) =
+            tx_request.build_transaction_script(&code_interface).unwrap().unwrap();
+        let expected = ExpirationTransactionScript::new(delta);
+        assert_eq!(script.root(), TransactionScript::from(expected).root());
+        assert_eq!(script_args, Some(expected.tx_script_args()));
+
+        // Without a delta there is still no script to run.
+        let tx_request = TransactionRequestBuilder::new().build().unwrap();
+        assert!(tx_request.build_transaction_script(&code_interface).unwrap().is_none());
     }
 
     #[test]

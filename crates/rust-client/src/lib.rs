@@ -139,6 +139,9 @@ mod test_utils;
 
 pub mod errors;
 
+#[cfg(feature = "funding")]
+pub mod funding;
+
 pub use miden_protocol::utils::serde::{Deserializable, Serializable, SliceReader};
 
 // RE-EXPORTS

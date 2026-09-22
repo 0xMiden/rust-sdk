@@ -4,6 +4,8 @@
 
 ### Breaking Changes
 
+* [BREAKING][behavior][rust,cli] The client now gets its protocol configuration from the node during `Client::sync_state` instead of being given one. `SyncChainMmr` carries the configuration when the client syncs from genesis or when the configuration commitment changed over the synced range, and the client verifies it against the block header before storing it ([#2591](https://github.com/0xMiden/rust-sdk/pull/2591)).
+* [BREAKING][removal][rust] Removed `ClientBuilder::protocol_config` and `Client::add_protocol_config`. A client gets its configurations by syncing, so there is no longer a way to supply one ([#2591](https://github.com/0xMiden/rust-sdk/pull/2591)).
 * [BREAKING][behavior][rust] State sync now authenticates the chain tip by verifying the block signatures against the validator configuration ([#2553](https://github.com/0xMiden/rust-sdk/pull/2553)).
 * [BREAKING][param][rust] `StateSync::new` now takes a `validator_config: ValidatorConfig` argument, used to authenticate the chain tip block header on every sync. The validator configuration can be retrieved from the client with `Client::get_validator_config` ([#2553](https://github.com/0xMiden/rust-sdk/pull/2553)).
 * [BREAKING][arch][rust] Updated `miden-node-proto-build` to `0.17.0-rc.1`, protocol dependencies to `0.17.0-rc.5` and VM dependencies to `0.33` ([#2562](https://github.com/0xMiden/rust-sdk/pull/2562)).

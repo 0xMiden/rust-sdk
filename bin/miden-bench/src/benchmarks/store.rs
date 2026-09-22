@@ -220,6 +220,7 @@ async fn note_write_measurements(
                     NoteUpdateTracker::for_transaction_updates(notes, [], []),
                     TransactionUpdateTracker::default(),
                     AccountUpdates::default(),
+                    None,
                 );
                 store.apply_state_sync(update).await?;
                 Ok(())

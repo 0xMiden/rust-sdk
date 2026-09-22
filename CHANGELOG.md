@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.17.0 (TBD)
+
+### Features
+
+* [FEATURE][cli] Added `tx --show <ID>` to print a single transaction: its ID, status (with the expiration block while it's pending), account ID, script root, reference block, submission height, creation time, and the account state commitment before and after, followed by a table per side of its notes with each note's ID, standard name, type and assets. A consumed note is only recorded by its nullifier, so its ID is recovered from the client's tracked notes; a private note that isn't the client's own can't be resolved and is marked as private. A transaction script matching a Miden standard is named alongside its root, and a note script matching one is named in the note tables. `tx --list` also gained `--account-id`, `--status` and `--limit` filters, and now lists transactions ordered by creation time ([#2589](https://github.com/0xMiden/rust-sdk/pull/2589)).
+* [FEATURE][rust] Added the `SendNotesTransactionScript` re-export to `miden_client::transaction` ([#2589](https://github.com/0xMiden/rust-sdk/pull/2589)).
+
+### Fixes
+
+* [FIX][rust] `IdPrefixFetchError::NoMatch` names the kind of entry that was looked up, instead of always saying "notes" ([#2589](https://github.com/0xMiden/rust-sdk/pull/2589)).
+
 ## 0.17.0-rc.3 (2026-09-24)
 
 ### Breaking Changes
@@ -196,8 +207,6 @@
 * [rust] `BatchBuilder` now stacks in-batch account state as a `PartialAccount` updated with each transaction's `AccountPatch` instead of reconstructing the full `Account` after every push. Witnesses at the in-batch state are built by replaying the batch's writes onto committed-state proofs, so any `Store` backend supports batches through the witness methods it already implements ([#2277](https://github.com/0xMiden/rust-sdk/pull/2277)).
 * [FEATURE][cli] Added `account --inspect <ID>[:<PROCEDURE>]` to list the procedures an account exposes, grouped into resolved procedures (with their names and signatures) and unresolved ones (listed by MAST root). Names and signatures are resolved from the `.masp` packages in the configured packages directory plus any passed via `--package` (`-p`). `--verbose` prints each procedure's MASM disassembly. ([#2312](https://github.com/0xMiden/rust-sdk/issues/2312)).
 * Improved the output of the `miden-client init` command when a configuration already exists ([#2357](https://github.com/0xMiden/rust-sdk/pull/2357)).
-* [FEATURE][cli] Added `tx --show <ID>` to print a single transaction: its ID, status (with the expiration block while it's pending), account ID, script root, reference block, submission height, creation time, and the account state commitment before and after, followed by a table per side of its notes with each note's ID, standard name, type and assets. A consumed note is only recorded by its nullifier, so its ID is recovered from the client's tracked notes; a private note that isn't the client's own can't be resolved and is marked as private. A transaction script matching a Miden standard is named alongside its root, and a note script matching one is named in the note tables. `tx --list` also gained `--account-id`, `--status` and `--limit` filters, and now lists transactions ordered by creation time ([#2425](https://github.com/0xMiden/rust-sdk/issues/2425)).
-* [FEATURE][rust] Added the `SendNotesTransactionScript` re-export to `miden_client::transaction` ([#2425](https://github.com/0xMiden/rust-sdk/issues/2425)).
 * [FEATURE][cli] Added DAP-based transaction debugging with offline record/replay. `miden-client exec` and `consume-notes` accept `--start-debug-adapter <ADDR>` to run a transaction — script, kernel, note scripts, and account code — under a DAP client (e.g. the `miden-debug` TUI) instead of proving and submitting it (`consume-notes` is backed by a new `Client::execute_transaction_with_dap`). During the session the advice mutations produced by the transaction host's event handlers are recorded — readable via the handle from `DapConfig::record_event_mutations()`, and reported by the CLI — and `--record <FILE>` writes a self-contained replay snapshot (program, inputs, resolved code, and event log) that can be replayed offline with `miden-debug --replay <FILE>`, with no node, client, or account state. This uses the `miden-debug` 0.9.2 release ([#2306](https://github.com/0xMiden/rust-sdk/pull/2306)).
 * [FEATURE][rust] Added `miden_client::transaction::build_fpi_script`, which builds a transaction script that invokes a procedure on a foreign account ([#2187](https://github.com/0xMiden/rust-sdk/pull/2187)).
 * [FEATURE][rust] Added `Client::get_account_header`, which reads a single account's header and status from the store instead of loading every tracked account's ([#2187](https://github.com/0xMiden/rust-sdk/pull/2187)).

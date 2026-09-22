@@ -446,11 +446,17 @@ impl StateSync {
         let ChainSyncData {
             block_from,
             advance,
-            note_updates,
+            mut note_updates,
             transaction_updates,
             account_updates,
             ..
         } = chain_sync_data;
+
+        // Release notes after the nullifier check. Keep notes consumed on chain in their consumed
+        // state.
+        for transaction in transaction_updates.discarded_transactions() {
+            note_updates.apply_transaction_discarded(transaction.id)?;
+        }
 
         let mut partial_blockchain_updates = PartialBlockchainUpdates::default();
 

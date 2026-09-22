@@ -1459,7 +1459,17 @@ pub struct ChainSyncData {
     /// built has to track them here, or this sync's verdicts have no record to apply to.
     pub(crate) note_updates: NoteUpdateTracker,
     transaction_updates: TransactionUpdateTracker,
-    account_updates: AccountUpdates,
+    /// Account updates as the sync derived them. The client adds the witnesses of the accounts it
+    /// keeps fresh, which the sync only queries when their state changed.
+    pub(crate) account_updates: AccountUpdates,
+}
+
+impl ChainSyncData {
+    /// Returns the header of the chain tip this sync advances to, or `None` when the client was
+    /// already at the tip.
+    pub(crate) fn chain_tip_header(&self) -> Option<&BlockHeader> {
+        self.advance.as_ref().map(|advance| &advance.chain_tip_header)
+    }
 }
 
 /// The part of a [`ChainSyncData`] that only exists when the node reported progress.

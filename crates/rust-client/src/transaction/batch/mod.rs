@@ -36,12 +36,16 @@
 //!
 //! ## Account allowlist
 //!
-//! A push whose transaction creates an account asks the network allowlist about that account before
-//! the transaction is proven, and refuses the push with
-//! [`crate::ClientError::AccountNotAllowlisted`] if the network does not accept it. Each account is
-//! asked about once per batch.
+//! [`BatchBuilder::submit`] asks the network allowlist about each account that the batch creates
+//! before the batch is proven. It fails with [`crate::ClientError::AccountNotAllowlisted`] if the
+//! network does not accept one of them. [`Client::retry_proven_batch`] does not ask again.
 //!
-//! ## Error semantics after RPC accept
+//! ## Error semantics around submission
+//!
+//! A submission that comes back without a definite outcome raises
+//! [`BatchBuilderError::BatchSubmissionOutcomeUnknown`]. The node may or may not have accepted the
+//! batch and nothing was recorded locally, so the error carries a [`ProvenBatchSubmission`] to
+//! resend with [`Client::retry_proven_batch`].
 //!
 //! Once the node accepts the batch, the local store still needs to be updated. If that step fails,
 //! the caller receives one of two errors that both carry the accepted `block_num`:
@@ -131,7 +135,6 @@ pub struct BatchBuilder<'c, AUTH> {
     pub(crate) data_store: InMemoryBatchDataStore,
     pub(crate) pushed_txs: Vec<PushedTx>,
     pub(crate) consumed_input_notes: BTreeSet<NoteId>,
-    pub(crate) checked_accounts: BTreeSet<AccountId>,
 }
 
 impl<AUTH> BatchBuilder<'_, AUTH> {
@@ -276,6 +279,18 @@ where
             .filter(|&r| r < ref_block_num)
             .collect();
 
+        // Accounts that the batch creates are gated by the network allowlist. Ask before the batch
+        // is proven.
+        let gated_accounts: BTreeSet<AccountId> = self
+            .pushed_txs
+            .iter()
+            .filter(|p| creates_allowlist_checked_account(&p.proven_tx))
+            .map(|p| p.proven_tx.account_id())
+            .collect();
+        for account_id in gated_accounts {
+            self.client.check_account_id_allowed(account_id).await?;
+        }
+
         let store = self.client.store.clone();
 
         // 2. Fetch the reference block header (from the store).
@@ -373,15 +388,6 @@ where
         let tx_result =
             Box::pin(execute_transaction_for_batch(self.client, &self.data_store, account_id, req))
                 .await?;
-
-        // A transaction that creates an account is gated by the network allowlist. Ask before the
-        // transaction is proven, and only once per account.
-        if creates_allowlist_checked_account(&tx_result)
-            && !self.checked_accounts.contains(&account_id)
-        {
-            self.client.check_account_id_allowed(account_id).await?;
-            self.checked_accounts.insert(account_id);
-        }
 
         let proven_tx = self.client.prove_transaction(&tx_result).await?;
 

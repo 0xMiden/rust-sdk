@@ -73,6 +73,7 @@ use miden_protocol::account::{
     AccountCode,
     AccountCodeInterface,
     AccountId,
+    AccountUpdateDetails,
     PartialAccount,
 };
 use miden_protocol::asset::Asset;
@@ -286,9 +287,6 @@ where
         let tx_result = self.execute_transaction(account_id, transaction_request).await?;
         let tx_id = tx_result.executed_transaction().id();
 
-        // Ask the node about the allowlist before paying for it.
-        self.check_account_allowed(&tx_result).await?;
-
         let proven_transaction = self.prove_transaction_with(&tx_result, tx_prover).await?;
         let submission_height =
             self.submit_proven_transaction(proven_transaction, &tx_result).await?;
@@ -328,42 +326,14 @@ where
         Ok(tx_id)
     }
 
-    /// Returns [`ClientError::AccountNotAllowlisted`] if the network refuses to create the account
-    /// that `tx_result` creates.
-    async fn check_account_allowed(
-        &self,
-        tx_result: &TransactionResult,
-    ) -> Result<(), ClientError> {
-        if !creates_allowlist_checked_account(tx_result) {
-            return Ok(());
-        }
-
-        self.check_account_id_allowed(tx_result.executed_transaction().account_id())
-            .await
-    }
-
     /// Returns [`ClientError::AccountNotAllowlisted`] if the network refuses to create
     /// `account_id`.
     pub(crate) async fn check_account_id_allowed(
         &self,
         account_id: AccountId,
     ) -> Result<(), ClientError> {
-        if self.store.is_account_allowlisted(account_id).await? {
-            return Ok(());
-        }
-
         match self.rpc_api.is_account_allowed(account_id).await {
-            Ok(true) => {
-                // Recording this is only an optimization, so a store failure leaves the transaction
-                // alone and costs one request the next time.
-                if let Err(err) = self.store.mark_account_allowlisted(account_id).await {
-                    info!(
-                        "the network accepts account {account_id} but the answer could not be \
-                         recorded locally: {err}"
-                    );
-                }
-                Ok(())
-            },
+            Ok(true) => Ok(()),
             Ok(false) => Err(ClientError::AccountNotAllowlisted(account_id)),
             Err(err) => {
                 info!(
@@ -853,6 +823,11 @@ where
         proven_transaction: ProvenTransaction,
         transaction_inputs: impl Into<TransactionInputs>,
     ) -> Result<BlockNumber, ClientError> {
+        // A transaction that creates an account is gated by the network allowlist.
+        if creates_allowlist_checked_account(&proven_transaction) {
+            self.check_account_id_allowed(proven_transaction.account_id()).await?;
+        }
+
         info!("Submitting transaction to the network...");
         let tx_id = proven_transaction.id();
         let key = self.transaction_encryption_key().await?;
@@ -1932,23 +1907,22 @@ pub(crate) fn validate_executed_transaction(
     Ok(())
 }
 
-/// Returns whether `tx_result` creates an account that the network allowlist gates.
+/// Returns whether `proven_transaction` creates an account that the network allowlist gates.
 ///
 /// An account that already exists on chain is not gated, and neither is a network account.
-fn creates_allowlist_checked_account(tx_result: &TransactionResult) -> bool {
-    let executed_transaction = tx_result.executed_transaction();
-    if !executed_transaction.initial_account().is_new() {
+fn creates_allowlist_checked_account(proven_transaction: &ProvenTransaction) -> bool {
+    let account_update = proven_transaction.account_update();
+    if !account_update.initial_state_commitment().is_empty() {
         return false;
     }
 
-    // A new account is only exempt when it is a valid network account. The node reads the full
-    // account out of the update it receives, which is only carried for a public account.
-    if !executed_transaction.account_id().is_public() {
+    // A new account is only exempt when it is a valid network account. The full account is only
+    // carried in the update of a public account.
+    let AccountUpdateDetails::Public(patch) = account_update.details() else {
         return true;
-    }
+    };
 
-    !Account::try_from(tx_result.account_patch())
-        .is_ok_and(|account| NetworkAccount::new(account).is_ok())
+    !Account::try_from(patch).is_ok_and(|account| NetworkAccount::new(account).is_ok())
 }
 
 // TESTS

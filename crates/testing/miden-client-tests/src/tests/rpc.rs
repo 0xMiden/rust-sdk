@@ -1,8 +1,6 @@
-use std::sync::Arc;
-
 use miden_client::account::{AccountId, AccountType};
-use miden_client::builder::ClientBuilder;
-use miden_client::keystore::FilesystemKeyStore;
+use miden_client::auth::{AuthSchemeId, AuthSingleSig, PublicKeyCommitment};
+use miden_client::block::BlockNumber;
 use miden_client::rpc::{
     EndpointError,
     GrpcError,
@@ -11,20 +9,19 @@ use miden_client::rpc::{
     RpcEndpoint,
     RpcError,
 };
-use miden_client::store::Store;
-use miden_client::testing::common::create_test_store_path;
+use miden_client::testing::common::{AccountSetup, TestClient};
 use miden_client::testing::mock::MockRpcApi;
 use miden_client::transaction::{
-    ProvenTransaction,
-    TransactionInputs,
-    TransactionProver,
-    TransactionProverError,
+    LocalTransactionProver,
     TransactionRequest,
     TransactionRequestBuilder,
+    TransactionResult,
 };
-use miden_client::{Client, ClientError, ErrorHint, Word, async_trait};
-use miden_client_sqlite_store::SqliteStore;
-use miden_protocol::crypto::rand::RandomCoin;
+use miden_client::{ClientError, ErrorHint, Word};
+use miden_protocol::account::Account;
+use miden_protocol::{EMPTY_WORD, ZERO};
+use miden_standards::account::auth::Approver;
+use miden_standards::testing::mock_account::MockAccountExt;
 use miden_testing::MockChain;
 
 use super::{ACCOUNT_ID_REGULAR, create_test_client};
@@ -117,36 +114,10 @@ async fn register_account_reports_a_consumed_code() {
 // ACCOUNT REGISTRATION THROUGH `Client::register_account`
 // ================================================================================================
 
-/// Builds a client whose RPC layer is `rpc_api`, over a store of its own.
-///
-/// Registration reads no chain state, so the client needs no genesis state.
-async fn client_with_rpc(rpc_api: Arc<MockRpcApi>) -> Client<FilesystemKeyStore> {
-    let store = Arc::new(SqliteStore::new(create_test_store_path()).await.unwrap());
-    client_over_store(rpc_api, store).await
-}
-
-/// Builds a client whose RPC layer is `rpc_api` and whose store is `store`, so a test can read the
-/// same store back or hand it to a second client.
-async fn client_over_store(
-    rpc_api: Arc<MockRpcApi>,
-    store: Arc<dyn Store>,
-) -> Client<FilesystemKeyStore> {
-    let keystore = FilesystemKeyStore::new(std::env::temp_dir()).unwrap();
-
-    ClientBuilder::new()
-        .rpc(rpc_api)
-        .rng(Box::new(RandomCoin::new(Word::from([0xfeeu32, 1, 2, 3]))))
-        .store(store)
-        .authenticator(Arc::new(keystore))
-        .tx_discard_delta(None)
-        .build()
-        .await
-        .unwrap()
-}
-
 #[tokio::test]
 async fn client_register_account_forwards_the_invitation_code() {
     let (mut client, rpc_api) = Box::pin(create_test_client()).await;
+    rpc_api.enforce_account_allowlist();
     client.add_account(&new_account(), false).await.unwrap();
 
     client.register_account(account_id(), INVITATION_CODE).await.unwrap();
@@ -162,6 +133,7 @@ async fn client_register_account_forwards_the_invitation_code() {
 #[tokio::test]
 async fn client_register_account_can_be_retried_after_a_rejection() {
     let (mut client, rpc_api) = Box::pin(create_test_client()).await;
+    rpc_api.enforce_account_allowlist();
     client.add_account(&new_account(), false).await.unwrap();
     rpc_api.fail_next_call(
         RpcEndpoint::RegisterAccount,
@@ -319,22 +291,53 @@ async fn is_account_allowed_is_true_when_the_node_does_not_enforce() {
 // ALLOWLIST CHECK BEFORE SUBMISSION
 // ================================================================================================
 
-/// An unregistered account is refused before the transaction is proven.
+/// Executes the first transaction of `account_id` and submits it with a dummy proof. The submission
+/// path does not verify proofs, and a real proof is the expensive part.
+async fn submit_deploy(
+    client: &mut TestClient,
+    account_id: AccountId,
+) -> Result<(TransactionResult, BlockNumber), ClientError> {
+    let tx_result = Box::pin(client.execute_transaction(account_id, deploy_request())).await?;
+    let proven = LocalTransactionProver::default()
+        .prove_dummy(tx_result.executed_transaction().clone())
+        .unwrap();
+    let submission_height = Box::pin(client.submit_proven_transaction(proven, &tx_result)).await?;
+
+    Ok((tx_result, submission_height))
+}
+
+/// An unregistered account is refused before the transaction is submitted.
 #[tokio::test]
-async fn creating_an_unregistered_account_is_refused_before_proving() {
+async fn creating_an_unregistered_account_is_refused_before_submission() {
+    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
+    rpc_api.enforce_account_allowlist();
+
+    for account_type in [AccountType::Private, AccountType::Public] {
+        let account = client.insert_wallet(account_type).await.unwrap();
+
+        let error = submit_deploy(&mut client, account.id()).await.unwrap_err();
+
+        let ClientError::AccountNotAllowlisted(refused) = &error else {
+            panic!("expected the {account_type:?} account creation to be refused, got: {error}");
+        };
+        assert_eq!(*refused, account.id());
+    }
+}
+
+/// The allowlist is only checked at submission, so a transaction for an unregistered account can
+/// still be executed to inspect its effects.
+#[tokio::test]
+async fn executing_a_transaction_does_not_check_the_allowlist() {
     let (mut client, rpc_api) = Box::pin(create_test_client()).await;
     rpc_api.enforce_account_allowlist();
 
     let account = client.insert_wallet(AccountType::Private).await.unwrap();
 
-    let error = Box::pin(client.submit_new_transaction(account.id(), deploy_request()))
+    Box::pin(client.execute_transaction(account.id(), deploy_request()))
         .await
-        .unwrap_err();
+        .unwrap();
 
-    let ClientError::AccountNotAllowlisted(account_id) = &error else {
-        panic!("expected the account creation to be refused, got: {error}");
-    };
-    assert_eq!(*account_id, account.id());
+    assert_eq!(rpc_api.is_account_allowed_call_count(), 0);
 }
 
 /// A registered account is created as usual.
@@ -343,12 +346,14 @@ async fn creating_a_registered_account_is_allowed() {
     let (mut client, rpc_api) = Box::pin(create_test_client()).await;
     rpc_api.enforce_account_allowlist();
 
-    let account = client.insert_wallet(AccountType::Private).await.unwrap();
-    client.register_account(INVITATION_CODE, account.id()).await.unwrap();
-
-    Box::pin(client.submit_new_transaction(account.id(), deploy_request()))
+    let (account, _) = client
+        .insert_account(AccountSetup::wallet(AccountType::Private).invitation_code(INVITATION_CODE))
         .await
         .unwrap();
+
+    submit_deploy(&mut client, account.id()).await.unwrap();
+
+    assert_eq!(rpc_api.is_account_allowed_call_count(), 2);
 }
 
 /// The allowlist only gates account creation, so an account that already exists is never asked
@@ -359,17 +364,17 @@ async fn an_existing_account_is_not_checked() {
     let (mut client, rpc_api) = Box::pin(create_test_client()).await;
 
     let account = client.insert_wallet(AccountType::Private).await.unwrap();
-    Box::pin(client.submit_new_transaction(account.id(), deploy_request()))
-        .await
-        .unwrap();
+    let (tx_result, submission_height) = submit_deploy(&mut client, account.id()).await.unwrap();
+    client.apply_transaction(&tx_result, submission_height).await.unwrap();
     rpc_api.prove_block();
     client.sync_state().await.unwrap();
 
     rpc_api.enforce_account_allowlist();
+    let calls_before = rpc_api.is_account_allowed_call_count();
 
-    Box::pin(client.submit_new_transaction(account.id(), deploy_request()))
-        .await
-        .unwrap();
+    submit_deploy(&mut client, account.id()).await.unwrap();
+
+    assert_eq!(rpc_api.is_account_allowed_call_count(), calls_before);
 }
 
 /// A node that cannot answer is not an answer about the account, so the transaction is left alone
@@ -391,97 +396,24 @@ async fn a_failed_check_does_not_block_the_transaction() {
 
     let account = client.insert_wallet(AccountType::Private).await.unwrap();
 
-    Box::pin(client.submit_new_transaction(account.id(), deploy_request()))
-        .await
-        .unwrap();
+    submit_deploy(&mut client, account.id()).await.unwrap();
 }
 
-/// A prover that always fails, so a test can reach the allowlist check without paying for a proof.
-struct AlwaysFailingProver;
-
-#[async_trait]
-impl TransactionProver for AlwaysFailingProver {
-    async fn prove(
-        &self,
-        _inputs: TransactionInputs,
-    ) -> Result<ProvenTransaction, TransactionProverError> {
-        Err(TransactionProverError::other("simulated prover failure"))
-    }
-}
-
-/// An answer that the network accepts an account is recorded, so a later attempt to create the same
-/// account asks nothing.
-///
-/// The account is never registered through the client, so the record can only come from the answer.
-/// Both attempts fail at proving, which is what leaves the account uncreated and gated for the
-/// second attempt, and what keeps this test cheap.
+/// A refusal is not remembered. Each attempt asks the node again, so an account that is registered
+/// after a refusal can be created.
 #[tokio::test]
-async fn an_accepted_account_is_recorded_and_not_asked_about_again() {
-    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
-
-    let account = client.insert_wallet(AccountType::Private).await.unwrap();
-    let prover = Arc::new(AlwaysFailingProver);
-
-    let first = Box::pin(client.submit_new_transaction_with_prover(
-        account.id(),
-        deploy_request(),
-        prover.clone(),
-    ))
-    .await
-    .unwrap_err();
-    assert!(
-        matches!(first, ClientError::TransactionProvingError(_)),
-        "the first attempt should have reached the prover, got: {first}"
-    );
-
-    assert_eq!(
-        rpc_api.is_account_allowed_call_count(),
-        1,
-        "the first attempt should have asked the node once"
-    );
-
-    let second =
-        Box::pin(client.submit_new_transaction_with_prover(account.id(), deploy_request(), prover))
-            .await
-            .unwrap_err();
-    assert!(
-        matches!(second, ClientError::TransactionProvingError(_)),
-        "the second attempt should have reached the prover, got: {second}"
-    );
-
-    assert_eq!(
-        rpc_api.is_account_allowed_call_count(),
-        1,
-        "the second attempt should have used the recorded answer"
-    );
-}
-
-/// A refusal is not recorded. The account is accepted as soon as it is registered, so a recorded
-/// refusal would outlive the state it described.
-///
-/// A recorded refusal would show up as the second attempt skipping the check and going on to prove,
-/// so this asserts that the second attempt asks again and is refused again. Neither attempt reaches
-/// the prover, which is what keeps this test cheap.
-#[tokio::test]
-async fn a_refusal_is_not_recorded() {
+async fn a_refusal_is_not_remembered() {
     let (mut client, rpc_api) = Box::pin(create_test_client()).await;
     rpc_api.enforce_account_allowlist();
 
     let account = client.insert_wallet(AccountType::Private).await.unwrap();
 
-    for attempt in 1..=2 {
-        let error = Box::pin(client.submit_new_transaction(account.id(), deploy_request()))
-            .await
-            .unwrap_err();
-        let ClientError::AccountNotAllowlisted(refused) = &error else {
-            panic!("attempt {attempt} should have been refused, got: {error}")
-        };
-        assert_eq!(*refused, account.id());
+    let error = submit_deploy(&mut client, account.id()).await.unwrap_err();
+    assert!(matches!(error, ClientError::AccountNotAllowlisted(_)), "got: {error}");
 
-        assert_eq!(
-            rpc_api.is_account_allowed_call_count(),
-            attempt,
-            "attempt {attempt} should have asked the node"
-        );
-    }
+    client.register_account(account.id(), INVITATION_CODE).await.unwrap();
+
+    submit_deploy(&mut client, account.id()).await.unwrap();
+
+    assert_eq!(rpc_api.is_account_allowed_call_count(), 3);
 }

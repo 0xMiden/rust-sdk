@@ -52,7 +52,7 @@ async fn insert_undeployed_wallet(client: &mut TestClient) -> Result<Account> {
 
 /// Asserts that `error` is the client refusing to create an unregistered account.
 ///
-/// The client asks the node before it proves the transaction, so the account is never submitted.
+/// The client asks the node before it submits the transaction, so the node never receives it.
 fn assert_rejected_before_submission(error: &ClientError, account: &Account) {
     assert_matches!(
         error,

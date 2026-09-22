@@ -97,10 +97,10 @@ pub async fn test_allowlist_network_account_needs_no_registration(
 
 /// Every account a batch creates is checked, not only the first.
 ///
-/// A batch that pairs a registered account with an unregistered one is refused on the push that
-/// creates the unregistered account. The registered account is pushed first, so the test fails if
-/// the check only ever looks at the opening transaction of a batch.
-pub async fn test_allowlist_is_enforced_per_batch_push(client_config: ClientConfig) -> Result<()> {
+/// A batch that pairs a registered account with an unregistered one is refused at submission. The
+/// registered account is pushed first, so the test fails if the check only ever looks at the
+/// opening transaction of a batch.
+pub async fn test_allowlist_is_enforced_per_batch(client_config: ClientConfig) -> Result<()> {
     let mut client = client_config.into_client().await?;
     client.wait_for_node().await;
 
@@ -121,12 +121,12 @@ pub async fn test_allowlist_is_enforced_per_batch_push(client_config: ClientConf
 
     let mut batch = client.new_transaction_batch();
     batch.push(registered.id(), registered_request).await?;
+    batch.push(unregistered.id(), unregistered_request).await?;
 
-    let Err(error) = batch.push(unregistered.id(), unregistered_request).await else {
+    let Err(error) = batch.submit().await else {
         bail!("a batch creating an unregistered account should be refused")
     };
     assert_rejected_before_submission(&error, &unregistered);
-    assert_eq!(batch.len(), 1, "a refused push should leave the batch as it was");
 
     assert!(
         !is_deployed(&client, &unregistered).await?,

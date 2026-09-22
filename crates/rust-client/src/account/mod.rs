@@ -88,10 +88,6 @@ use miden_tx::utils::serde::{
     Serializable,
 };
 
-/// Prefix of the settings key under which an account is recorded as accepted by the network
-/// allowlist. The account ID in hexadecimal form completes the key.
-pub(crate) const ALLOWLISTED_ACCOUNT_SETTING_PREFIX: &str = "allowlisted_account:";
-
 /// Display-only metadata for a faucet account, persisted in the client's settings store.
 ///
 /// Populated lazily by the CLI resolver from the on-chain token config of a public faucet and
@@ -332,13 +328,6 @@ impl<AUTH> Client<AUTH> {
         }
 
         self.rpc_api.register_account(invitation_code, account_id).await?;
-
-        if let Err(err) = self.store.mark_account_allowlisted(account_id).await {
-            tracing::warn!(
-                "registered account {account_id} on the network allowlist but could not record it \
-                 locally, the next transaction asks the network again: {err}"
-            );
-        }
 
         Ok(())
     }

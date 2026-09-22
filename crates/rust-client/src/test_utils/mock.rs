@@ -82,6 +82,9 @@ pub struct MockRpcApi {
     /// Number of `get_notes_by_id` requests served, so a test can assert that a flow avoided the
     /// round trip.
     get_notes_by_id_calls: Arc<AtomicUsize>,
+    /// Number of `get_account` requests served, so a test can assert that a flow avoided the round
+    /// trip.
+    get_account_calls: Arc<AtomicUsize>,
     /// Failures to serve instead of answering, keyed by [`RpcEndpoint::proto_name`] and set by
     /// [`MockRpcApi::fail_next_call`]. An entry is removed when served, so the call after it
     /// answers normally and a test can exercise a retry.
@@ -113,6 +116,7 @@ impl MockRpcApi {
             private_note_attachments: Arc::new(RwLock::new(BTreeMap::new())),
             sync_notes_mmr_path_overrides: Arc::new(RwLock::new(BTreeMap::new())),
             get_notes_by_id_calls: Arc::new(AtomicUsize::new(0)),
+            get_account_calls: Arc::new(AtomicUsize::new(0)),
             next_call_failures: Arc::new(RwLock::new(BTreeMap::new())),
             submitted_batch_sealed_inputs: Arc::new(RwLock::new(Vec::new())),
         }
@@ -163,6 +167,11 @@ impl MockRpcApi {
     /// Returns how many `get_notes_by_id` requests this API has served.
     pub fn get_notes_by_id_call_count(&self) -> usize {
         self.get_notes_by_id_calls.load(Ordering::Relaxed)
+    }
+
+    /// Returns how many `get_account` requests this API has served.
+    pub fn get_account_call_count(&self) -> usize {
+        self.get_account_calls.load(Ordering::Relaxed)
     }
 
     /// Overrides the MMR path returned by `sync_notes` for the specified block.
@@ -642,6 +651,8 @@ impl NodeRpcClient for MockRpcApi {
         account_id: AccountId,
         request: GetAccountRequest,
     ) -> Result<(BlockNumber, AccountProof), RpcError> {
+        self.get_account_calls.fetch_add(1, Ordering::Relaxed);
+
         let current_chain = self.mock_chain.read();
         let current_block_number = current_chain.latest_block_header().block_num();
         let block_number = match request.at {

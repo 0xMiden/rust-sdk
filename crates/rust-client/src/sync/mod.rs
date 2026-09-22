@@ -62,8 +62,10 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::cmp::max;
 
+use futures::StreamExt;
 use miden_protocol::account::AccountId;
-use miden_protocol::block::BlockNumber;
+use miden_protocol::block::account_tree::AccountWitness;
+use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::merkle::mmr::{InOrderIndex, PartialMmr};
 use miden_protocol::note::NoteId;
 use miden_protocol::transaction::TransactionId;
@@ -72,6 +74,8 @@ use miden_tx::utils::serde::{Deserializable, DeserializationError, Serializable}
 use tracing::{debug, info, warn};
 
 use crate::pswap::PswapChainObserver;
+use crate::rpc::AccountStateAt;
+use crate::rpc::domain::account::GetAccountRequest;
 use crate::store::{NoteFilter, TransactionFilter};
 use crate::{Client, ClientError};
 mod block_header;
@@ -83,8 +87,12 @@ mod note_observer;
 pub use note_observer::NoteObserver;
 
 mod state_sync;
-pub(crate) use state_sync::block_num_from_forest;
 pub use state_sync::{ChainSyncData, NoteUpdateAction, OnNoteReceived, StateSync, StateSyncInput};
+pub(crate) use state_sync::{
+    MAX_CONCURRENT_ACCOUNT_FETCHES,
+    block_num_from_forest,
+    validate_account_witness,
+};
 
 mod state_sync_update;
 pub use state_sync_update::{
@@ -149,9 +157,10 @@ where
     /// Fetches the node's view of everything that changed since the client's chain tip, without
     /// storing anything or modifying the partial MMR.
     ///
-    /// Builds the default sync input and runs [`StateSync::fetch_state`]. The state updates must be
-    /// derived with [`StateSync::derive_state_updates`]. The nullifier check is not part of this:
-    /// run [`StateSync::fetch_nullifiers`] on the result before applying it, so it can also cover
+    /// Builds the default sync input and runs [`StateSync::fetch_state`], then adds the account
+    /// witnesses the registered accounts still need. The state updates must be derived with
+    /// [`StateSync::derive_state_updates`]. The nullifier check is not part of this: run
+    /// [`StateSync::fetch_nullifiers`] on the result before applying it, so it can also cover
     /// transport-delivered notes another sync path fetched in the same call.
     pub async fn fetch_chain_updates(
         &self,
@@ -160,7 +169,10 @@ where
         let input = self.build_sync_input().await?;
         let block_from = block_num_from_forest(&self.get_current_partial_mmr().await?)?;
 
-        state_sync.fetch_state(block_from, input).await
+        let mut chain_sync_data = state_sync.fetch_state(block_from, input).await?;
+        self.collect_account_witnesses(&mut chain_sync_data).await;
+
+        Ok(chain_sync_data)
     }
 
     /// Builds the [`StateSync`] driving one chain sync.
@@ -433,6 +445,112 @@ where
         let limits = self.rpc_api.get_rpc_limits().await?;
         self.store.set_rpc_limits(limits).await?;
         Ok(())
+    }
+
+    // ACCOUNT WITNESS PREFETCHING
+    // --------------------------------------------------------------------------------------------
+
+    /// Adds to `chain_sync_data` the account witness of every registered account the sync did not
+    /// already fetch one for, so that all of them are stored with the rest of the update.
+    ///
+    /// Every account needs a witness at the new chain tip, whether or not its own state changed,
+    /// since a witness breaks when any other account in the tree moves.
+    ///
+    /// A failed fetch is logged and skipped rather than failing the sync. A witness is only a
+    /// cache: the transaction path falls back to the node when it finds none for its reference
+    /// block, so a miss costs one request later.
+    async fn collect_account_witnesses(&self, chain_sync_data: &mut ChainSyncData) {
+        let account_ids = match self.store.tracked_account_witnesses().await {
+            Ok(account_ids) if account_ids.is_empty() => return,
+            Ok(account_ids) => account_ids,
+            Err(err) => {
+                warn!(%err, "failed to read the tracked account witness registry");
+                return;
+            },
+        };
+
+        // The header of the block the witnesses must open under. The sync only carries it when it
+        // advanced; otherwise the client is already at that block and the store holds its header.
+        let chain_tip_header = match chain_sync_data.chain_tip_header() {
+            Some(header) => header.clone(),
+            None => match self.get_latest_block_header().await {
+                Ok(header) => header,
+                Err(err) => {
+                    warn!(%err, "failed to read the synced block header; skipping witness fetch");
+                    return;
+                },
+            },
+        };
+
+        let already_fetched: BTreeSet<AccountId> = chain_sync_data
+            .account_updates
+            .account_witnesses()
+            .iter()
+            .map(|(account_id, _)| *account_id)
+            .collect();
+        let to_fetch: Vec<AccountId> = account_ids
+            .into_iter()
+            .filter(|account_id| !already_fetched.contains(account_id))
+            .collect();
+
+        // Bounded fan-out, under the same limit the sync uses for its own `get_account` requests.
+        // Each future resolves to a `Result` so that one failure does not cancel the others.
+        let header = &chain_tip_header;
+        let witnesses: Vec<(AccountId, AccountWitness)> = futures::stream::iter(to_fetch)
+            .map(|account_id| async move {
+                (account_id, self.fetch_account_witness(account_id, header).await)
+            })
+            .buffered(MAX_CONCURRENT_ACCOUNT_FETCHES)
+            .filter_map(|(account_id, result)| async move {
+                match result {
+                    Ok(witness) => witness.map(|witness| (account_id, witness)),
+                    Err(err) => {
+                        warn!(%account_id, %err, "failed to fetch the account witness to cache");
+                        None
+                    },
+                }
+            })
+            .collect()
+            .await;
+
+        chain_sync_data
+            .account_updates
+            .extend(AccountUpdates::default().with_account_witnesses(witnesses));
+    }
+
+    /// Fetches a single account's witness at `chain_tip_header`'s block.
+    ///
+    /// Returns `None` without a request when the store already holds a witness at that block, which
+    /// is the case when the client syncs again and the chain has not advanced.
+    async fn fetch_account_witness(
+        &self,
+        account_id: AccountId,
+        chain_tip_header: &BlockHeader,
+    ) -> Result<Option<AccountWitness>, ClientError> {
+        let chain_tip = chain_tip_header.block_num();
+
+        if let Some((_, cached_at)) = self.store.get_account_witness(account_id).await?
+            && cached_at == chain_tip
+        {
+            return Ok(None);
+        }
+
+        // The minimal request: no vault, no storage map entries, only the witness is wanted.
+        let (proof_block_num, proof) = self
+            .rpc_api
+            .get_account(account_id, GetAccountRequest::new().at(AccountStateAt::Block(chain_tip)))
+            .await?;
+
+        if proof_block_num != chain_tip {
+            return Err(ClientError::ChainValidationError(format!(
+                "get_account returned a proof at block {proof_block_num}, expected {chain_tip}"
+            )));
+        }
+
+        let (witness, _) = proof.into_parts();
+        validate_account_witness(&witness, account_id, chain_tip_header)?;
+
+        Ok(Some(witness))
     }
 }
 

@@ -231,6 +231,7 @@ pub mod auth {
 
 /// Provides types for working with blocks within the Miden network.
 pub mod block {
+    pub use miden_protocol::block::account_tree::AccountWitness;
     pub use miden_protocol::block::{BlockHeader, BlockNumber, FeeParameters, ValidatorConfig};
 }
 

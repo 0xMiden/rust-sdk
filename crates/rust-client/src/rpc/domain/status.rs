@@ -53,8 +53,8 @@ impl core::fmt::Display for NetworkNoteStatus {
 
 /// Information about the processing status of a note submitted to the network.
 ///
-/// This is returned by the `GetNetworkNoteStatus` RPC endpoint and provides details
-/// about how the node is handling a note, including retry attempts and error diagnostics.
+/// This is returned by the `GetNetworkNoteStatus` RPC endpoint and provides details about how the
+/// node is handling a note, including retry attempts and error diagnostics.
 pub struct NetworkNoteStatusInfo {
     /// The current processing status of the note.
     pub status: NetworkNoteStatus,

@@ -20,8 +20,8 @@ pub enum GetNotesByIdError {
     /// Note is not public
     #[error("note is not public")]
     NoteNotPublic,
-    /// Error code not recognized by this client version. This can happen if the node
-    /// is newer than the client and has added new error variants.
+    /// Error code not recognized by this client version. This can happen if the node is newer than
+    /// the client and has added new error variants.
     #[error("unknown error code {code}: {message}")]
     Unknown { code: u8, message: String },
 }
@@ -53,8 +53,8 @@ pub enum GetNoteScriptByRootError {
     /// Script was not found
     #[error("script not found")]
     ScriptNotFound,
-    /// Error code not recognized by this client version. This can happen if the node
-    /// is newer than the client and has added new error variants.
+    /// Error code not recognized by this client version. This can happen if the node is newer than
+    /// the client and has added new error variants.
     #[error("unknown error code {code}: {message}")]
     Unknown { code: u8, message: String },
 }

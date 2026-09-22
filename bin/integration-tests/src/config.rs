@@ -13,10 +13,11 @@ use miden_client::note_transport::{
     NOTE_TRANSPORT_DEVNET_ENDPOINT,
     NOTE_TRANSPORT_TESTNET_ENDPOINT,
 };
+use miden_client::protocol_config::ProtocolConfig;
 use miden_client::rpc::{Endpoint, GrpcClient, VerifyingRpcClient};
 use miden_client::testing::common::{FilesystemKeyStore, TestClient, create_test_store_path};
 use miden_client::testing::fee::FeeFunder;
-use miden_client::{Felt, RemoteTransactionProver};
+use miden_client::{Deserializable, Felt, RemoteTransactionProver};
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
 use rand::RngExt;
 use uuid::Uuid;
@@ -118,21 +119,30 @@ impl ClientConfig {
     }
 
     /// Loads the pre-funded wallets at `funders`, one `.mac` account file or a directory of them,
-    /// as the fee funder. `None` leaves the config without one, which is all a fee-free chain
-    /// needs.
+    /// as the fee funder. A path naming no funder file leaves the config without one, which is all
+    /// a fee-free chain needs.
     pub fn with_funders(self, funders: Option<&Path>) -> Result<Self> {
         let fee_funder = fee_funding::load(&self, funders)?;
         Ok(self.with_fee_funder(fee_funder))
     }
 
-    /// Creates a `TestClient` builder and keystore.
+    /// Waits until a block carries every payment the fee funder has submitted.
+    pub async fn flush_funder(&self) -> Result<()> {
+        match &self.fee_funder {
+            Some(funder) => funder.flush().await,
+            None => Ok(()),
+        }
+    }
+
+    /// Creates a `TestClient` without syncing it, for tests that have to wait for the node first.
     ///
-    /// The store is a `SQLite` database at a temporary location, and the keystore a temporary
-    /// directory, both created here rather than held on the config, so every client this is called
-    /// on gets its own.
-    pub fn into_client_builder(
-        self,
-    ) -> Result<(ClientBuilder<FilesystemKeyStore>, FilesystemKeyStore)> {
+    /// The client gets its own store and keystore, the latter reachable through
+    /// `TestClient::keystore`. The store is a `SQLite` database at a temporary location, and the
+    /// keystore a temporary directory, both created here rather than held on the config, so every
+    /// client this is called on gets its own.
+    pub async fn into_unsynced_client(self) -> Result<TestClient> {
+        let fee_funder = self.fee_funder.clone();
+
         let store_config = create_test_store_path();
         let auth_path = create_test_auth_path();
 
@@ -154,8 +164,20 @@ impl ClientConfig {
             .rpc(rpc_client)
             .rng(Box::new(rng))
             .sqlite_store(store_config)
-            .authenticator(Arc::new(keystore.clone()))
+            .authenticator(Arc::new(keystore))
             .tx_discard_delta(None);
+
+        let protocol_config_path =
+            std::env::var_os("MIDEN_PROTOCOL_CONFIG").map(PathBuf::from).or_else(|| {
+                let path = PathBuf::from("data/protocol-config.bin");
+                path.exists().then_some(path)
+            });
+        if let Some(protocol_config_path) = protocol_config_path {
+            let bytes = std::fs::read(&protocol_config_path)
+                .context("failed to read protocol configuration")?;
+            let config = ProtocolConfig::read_from_bytes(&bytes)?;
+            builder = builder.protocol_config(config);
+        }
 
         if let Some(prover_url) = &self.prover_endpoint {
             builder = builder.prover(Arc::new(RemoteTransactionProver::new(prover_url)));
@@ -172,31 +194,21 @@ impl ClientConfig {
             builder = builder.note_transport(nt_client);
         }
 
-        Ok((builder, keystore))
-    }
-
-    /// Creates a `TestClient` without syncing it, for tests that have to wait for the node first.
-    ///
-    /// The client gets its own store and keystore.
-    pub async fn into_unsynced_client(self) -> Result<(TestClient, FilesystemKeyStore)> {
-        let fee_funder = self.fee_funder.clone();
-        let (builder, keystore) = self.into_client_builder()?;
-
         let client = builder.build().await.with_context(|| "failed to build test client")?;
 
-        Ok((TestClient::from(client).with_fee_funder(fee_funder), keystore))
+        Ok(TestClient::from(client).with_fee_funder(fee_funder))
     }
 
     /// Creates a `TestClient`.
     ///
     /// The client gets its own store and keystore, and is synced to the current state before being
     /// returned.
-    pub async fn into_client(self) -> Result<(TestClient, FilesystemKeyStore)> {
-        let (mut client, keystore) = self.into_unsynced_client().await?;
+    pub async fn into_client(self) -> Result<TestClient> {
+        let mut client = self.into_unsynced_client().await?;
 
         client.sync_state().await.with_context(|| "failed to sync client state")?;
 
-        Ok((client, keystore))
+        Ok(client)
     }
 }
 
@@ -217,8 +229,8 @@ impl Default for ClientConfig {
         let network = std::env::var("TEST_MIDEN_NETWORK").ok();
         let network_lower = network.map(|n| n.to_lowercase());
 
-        // Resolve RPC endpoint: TEST_MIDEN_RPC_URL overrides network preset.
-        // When no network is set, defaults to localhost.
+        // Resolve RPC endpoint: TEST_MIDEN_RPC_URL overrides network preset. When no network is
+        // set, defaults to localhost.
         let endpoint = if let Ok(rpc_url) = std::env::var("TEST_MIDEN_RPC_URL") {
             Endpoint::try_from(rpc_url.as_str()).unwrap()
         } else {
@@ -230,8 +242,8 @@ impl Default for ClientConfig {
             }
         };
 
-        // Resolve prover: TEST_MIDEN_PROVER_URL overrides network preset.
-        // "localhost" forces local prover. Named values resolve to their URLs.
+        // Resolve prover: TEST_MIDEN_PROVER_URL overrides network preset. "localhost" forces local
+        // prover. Named values resolve to their URLs.
         let prover_endpoint = if let Ok(url) = std::env::var("TEST_MIDEN_PROVER_URL") {
             match url.to_lowercase().as_str() {
                 NETWORK_LOCALHOST => None,

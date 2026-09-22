@@ -1,5 +1,5 @@
-//! Builds the agglayer genesis accounts (bridge admin, GER manager, bridge, faucet) included in
-//! the genesis configuration when agglayer support is requested.
+//! Builds the agglayer genesis accounts (bridge admin, GER manager, bridge, faucet) included in the
+//! genesis configuration when agglayer support is requested.
 
 use std::collections::BTreeSet;
 
@@ -13,14 +13,13 @@ use miden_protocol::account::{
     AccountComponent,
     AccountComponentMetadata,
     AccountFile,
-    AccountId,
     AccountType,
 };
 use miden_protocol::asset::{Asset, AssetAmount};
 use miden_protocol::note::NoteScriptRoot;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::auth::{Approver, AuthSingleSig};
-use miden_standards::account::fees::{BasicConstantFeePolicy, FeePolicy, FeePolicyManager};
+use miden_standards::account::fees::BasicConstantFeePolicy;
 use miden_standards::account::wallets::BasicWallet;
 use rand_chacha::ChaCha20Rng;
 use rand_chacha::rand_core::SeedableRng;
@@ -40,8 +39,8 @@ pub const GER_MANAGER_ACCOUNT_FILE: &str = "ger_manager.mac";
 pub const BRIDGE_ACCOUNT_FILE: &str = "bridge.mac";
 pub const AGGLAYER_FAUCET_ACCOUNT_FILE: &str = "agglayer_faucet.mac";
 
-/// Account files to include in genesis and save to disk (account + secret keys).
-/// Each entry is (filename, `AccountFile`).
+/// Account files to include in genesis and save to disk (account + secret keys). Each entry is
+/// (filename, `AccountFile`).
 pub type AgglayerGenesisAccounts = Vec<(&'static str, AccountFile)>;
 
 /// Creates all agglayer genesis accounts:
@@ -81,6 +80,8 @@ pub fn create_agglayer_genesis_accounts(fee_balance: Asset) -> Result<AgglayerGe
         BTreeSet::from([admin_account.id()]),
         BTreeSet::from([ger_account.id()]),
         BTreeSet::from([ger_account.id()]),
+        BTreeSet::from([admin_account.id()]),
+        BTreeSet::from([admin_account.id()]),
     )
     .context("failed to build bridge roles")?;
     let bridge = AggLayerBridge::account_builder(
@@ -88,25 +89,29 @@ pub fn create_agglayer_genesis_accounts(fee_balance: Asset) -> Result<AgglayerGe
         admin_account.id(),
         roles,
         MIDEN_NETWORK_ID,
-        zero_fee_policy_manager(fee_balance.faucet_id(), AggLayerBridge::allowed_notes()),
+        fee_balance.faucet_id(),
+        zero_fee_policy(AggLayerBridge::allowed_notes()),
     )
     .build()
     .context("failed to build bridge account")?;
     let bridge = into_genesis_account(bridge, fee_balance)?;
 
-    // 4. Create and deploy the Faucet. In protocol 0.15 the faucet no longer stores conversion
-    // metadata (origin token address, network, scale, metadata hash); that data lives on the
-    // bridge's `faucet_metadata_map` and is written by the CONFIG_AGG_BRIDGE note at test time.
+    // 4. Create and deploy the Faucet. The faucet does not store conversion metadata (origin token
+    // address, network, scale, metadata hash); that data lives on the bridge's
+    // `faucet_metadata_map` and is written by the CONFIG_AGG_BRIDGE note at test time.
     let faucet_seed: Word = rng.random::<[u32; 4]>().map(Felt::from).into();
     let faucet = AggLayerFaucet::account_builder(
         faucet_seed,
-        "AGG",
+        miden_standards::account::faucets::TokenName::new("AggLayer Token").unwrap(),
+        miden_protocol::asset::TokenSymbol::new("AGG").unwrap(),
         12,
-        Felt::from(1_000_000_000u32),
-        Felt::ZERO,
+        AssetAmount::new(1_000_000_000).unwrap(),
+        AssetAmount::ZERO,
+        admin_account.id(),
         admin_account.id(),
         bridge.id(),
-        zero_fee_policy_manager(fee_balance.faucet_id(), AggLayerFaucet::allowed_notes()),
+        fee_balance.faucet_id(),
+        zero_fee_policy(AggLayerFaucet::allowed_notes()),
     )
     .build()
     .context("failed to build agglayer faucet account")?;
@@ -135,18 +140,9 @@ pub fn create_agglayer_genesis_accounts(fee_balance: Asset) -> Result<AgglayerGe
 ///
 /// Every allowlisted script needs an entry, including a zero one: a script root missing from the
 /// schedule aborts fee estimation rather than defaulting to free.
-fn zero_fee_policy_manager(
-    fee_faucet_id: AccountId,
-    allowed_notes: BTreeSet<NoteScriptRoot>,
-) -> FeePolicyManager {
-    let fee_policy: FeePolicy = BasicConstantFeePolicy::new()
+fn zero_fee_policy(allowed_notes: BTreeSet<NoteScriptRoot>) -> BasicConstantFeePolicy {
+    BasicConstantFeePolicy::new()
         .with_fees(allowed_notes.into_iter().map(|root| (root, AssetAmount::ZERO)))
-        .into();
-
-    FeePolicyManager::builder()
-        .fee_faucet_id(fee_faucet_id)
-        .active_fee_policy(fee_policy)
-        .build()
 }
 
 fn build_wallet_account(rng: &mut ChaCha20Rng, secret: &AuthSecretKey) -> Result<Account> {

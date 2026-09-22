@@ -62,16 +62,16 @@ impl From<CliAccountType> for AccountType {
 
 /// Creates a new wallet account and store it locally.
 ///
-/// A wallet account exposes functionality to sign transactions and
-/// manage asset transfers. Additionally, more component templates can be added by specifying
-/// a list of component template files.
+/// A wallet account exposes functionality to sign transactions and manage asset transfers.
+/// Additionally, more component templates can be added by specifying a list of component template
+/// files.
 #[derive(Debug, Parser, Clone)]
 pub struct NewWalletCmd {
     /// Account type (`private` or `public`).
     #[arg(value_enum, short = 't', long = "account-type", default_value_t = CliAccountType::Private)]
     pub account_type: CliAccountType,
-    /// Optional list of paths specifying additional components in the form of
-    /// packages to add to the account.
+    /// Optional list of paths specifying additional components in the form of packages to add to
+    /// the account.
     #[arg(short, long)]
     pub extra_packages: Vec<PathBuf>,
     /// Optional file path to a TOML file containing a list of key/values used for initializing
@@ -131,8 +131,8 @@ impl NewWalletCmd {
 ///
 /// # Authentication Components
 ///
-/// If a package with an authentication component is provided via `-p`, it will be used for
-/// the account. Otherwise, a default `RpoFalcon512` authentication component will be added
+/// If a package with an authentication component is provided via `-p`, it will be used for the
+/// account. Otherwise, a default `RpoFalcon512` authentication component will be added
 /// automatically.
 ///
 /// Each account can only have one authentication component. If multiple packages contain
@@ -161,11 +161,11 @@ pub struct NewAccountCmd {
     /// Account type (`private` or `public`).
     #[arg(value_enum, short = 't', long = "account-type", default_value_t = CliAccountType::Private)]
     pub account_type: CliAccountType,
-    /// List of files specifying package files used to create account components for the
-    /// account. If any package contributes a `FungibleFaucet` component, the resulting account
-    /// is treated as a fungible faucet (and an implicit `TokenPolicyManager` is installed when
-    /// not already provided).
-    #[arg(short, long)]
+    /// List of files specifying package files used to create account components for the account. If
+    /// any package contributes a `FungibleFaucet` component, the resulting account is treated as a
+    /// fungible faucet (and an implicit `TokenPolicyManager` is installed when not already
+    /// provided).
+    #[arg(short, long, required = true)]
     pub packages: Vec<PathBuf>,
     /// Optional file path to a TOML file containing a list of key/values used for initializing
     /// storage. Each of these keys should map to the templated storage values within the passed
@@ -211,6 +211,10 @@ impl NewAccountCmd {
 // ================================================================================================
 
 /// Reads [[`miden_core::vm::Package`]]s from the given file paths.
+///
+/// A bare name resolves to a package in the configured package directory. The CLI writes those
+/// packages itself, so they are read as trusted. A path with the `.masp` extension is used as is
+/// and is read as untrusted, so its MAST forest is validated.
 pub(crate) fn load_packages(
     cli_config: &CliConfig,
     package_paths: &[PathBuf],
@@ -219,17 +223,16 @@ pub(crate) fn load_packages(
 
     let packages_dir = &cli_config.package_directory;
     for path in package_paths {
-        // If a user passes in a file with the `.masp` file extension, then we
-        // leave the path as is; since it probably is a full path (this is the
-        // case with cargo-miden for instance).
-        let path = match path.extension() {
+        // If a user passes in a file with the `.masp` file extension, then we leave the path as is;
+        // since it probably is a full path (this is the case with cargo-miden for instance).
+        let (path, trusted) = match path.extension() {
             None => {
                 let path = path.with_extension(MIDEN_PACKAGE_EXTENSION);
-                Ok(packages_dir.join(path))
+                Ok((packages_dir.join(path), true))
             },
             Some(extension) => {
                 if extension == OsStr::new(MIDEN_PACKAGE_EXTENSION) {
-                    Ok(path.clone())
+                    Ok((path.clone(), false))
                 } else {
                     let error = std::io::Error::new(
                         std::io::ErrorKind::InvalidFilename,
@@ -255,7 +258,12 @@ pub(crate) fn load_packages(
             )
         })?;
 
-        let package = Package::read_from_bytes(&bytes).map_err(|e| {
+        let package = if trusted {
+            Package::read_from_bytes_trusted(&bytes)
+        } else {
+            Package::read_from_bytes(&bytes)
+        }
+        .map_err(|e| {
             CliError::AccountComponentError(
                 Box::new(e),
                 format!("failed to deserialize Package in {}", path.display()),
@@ -281,10 +289,10 @@ struct FungibleFaucetMetadata {
 /// Builds a fully-populated [`FungibleFaucet`] [`AccountComponent`] from the user-supplied
 /// `[fungible-faucet-metadata]` block.
 ///
-/// `FungibleFaucet` embeds the token metadata and requires every storage slot to be initialized
-/// to deploy the `basic-fungible-faucet` package. Rather than encode the schema's field-level
-/// layout here, the component is built directly from the high-level metadata via the typed
-/// builder, which produces the same code and storage layout the package would have.
+/// `FungibleFaucet` embeds the token metadata and requires every storage slot to be initialized to
+/// deploy the `basic-fungible-faucet` package. Rather than encode the schema's field-level layout
+/// here, the component is built directly from the high-level metadata via the typed builder, which
+/// produces the same code and storage layout the package would have.
 fn build_fungible_faucet_component(
     metadata: &FungibleFaucetMetadata,
 ) -> Result<AccountComponent, CliError> {
@@ -316,8 +324,8 @@ fn build_fungible_faucet_component(
     Ok(faucet.into())
 }
 
-/// Removes any package whose component name matches the upstream `FungibleFaucet` from the
-/// list, since we'll inject the equivalent component directly from the user-supplied
+/// Removes any package whose component name matches the upstream `FungibleFaucet` from the list,
+/// since we'll inject the equivalent component directly from the user-supplied
 /// `[fungible-faucet-metadata]` instead of going through the package's prompt-driven init-data
 /// path. (The package files are typically distributed as `basic-fungible-faucet.masp` but the
 /// `Package.name` field stores the component's full canonical name from `FungibleFaucet::NAME`.)
@@ -327,8 +335,8 @@ fn drop_basic_fungible_faucet_packages(packages: &mut Vec<Package>) -> bool {
     packages.len() != before
 }
 
-/// Loads the initialization storage data from an optional TOML file.
-/// If None is passed, an empty object is returned.
+/// Loads the initialization storage data from an optional TOML file. If None is passed, an empty
+/// object is returned.
 fn load_init_storage_data(
     path: Option<&PathBuf>,
 ) -> Result<(InitStorageData, Option<FungibleFaucetMetadata>), CliError> {
@@ -383,8 +391,8 @@ fn load_init_storage_data(
 
 /// Separates account components into auth and regular components.
 ///
-/// Returns a tuple of (`auth_component`, `regular_components`).
-/// Returns an error if multiple auth components are found.
+/// Returns a tuple of (`auth_component`, `regular_components`). Returns an error if multiple auth
+/// components are found.
 fn separate_auth_components(
     components: Vec<AccountComponent>,
 ) -> Result<(Option<AccountComponent>, Vec<AccountComponent>), CliError> {
@@ -415,8 +423,8 @@ fn separate_auth_components(
     Ok((auth_component, regular_components))
 }
 
-/// Returns `true` when the CLI should inject a default `TokenPolicyManager` for a fungible
-/// faucet account built from package components.
+/// Returns `true` when the CLI should inject a default `TokenPolicyManager` for a fungible faucet
+/// account built from package components.
 ///
 /// Why this exists:
 /// - Fungible faucets require a token policy manager (with mint and burn policies) in addition to
@@ -456,10 +464,9 @@ async fn create_client_account<AUTH: Keystore + Sync + 'static>(
     offline: bool,
 ) -> Result<Account, CliError> {
     if package_paths.is_empty() {
-        return Err(CliError::InvalidArgument(format!(
-            "Account must contain at least one component. To provide one, pass a package with the -p flag, like so:
-{} -p <package_name>
-            ", client_binary_name().display())));
+        return Err(CliError::InvalidArgument(
+            "Account must contain at least one component".to_string(),
+        ));
     }
 
     // Load the component templates and initialization storage data.
@@ -473,10 +480,10 @@ async fn create_client_account<AUTH: Keystore + Sync + 'static>(
         load_init_storage_data(init_storage_data_path.as_ref())?;
     debug!("Loaded initialization storage data");
 
-    // `FungibleFaucet` requires every storage slot to be initialized. When the user provides
-    // a `[fungible-faucet-metadata]` TOML block, drop the `basic-fungible-faucet` package and
-    // inject a fully-populated component built directly from that metadata, rather than
-    // synthesizing the schema-driven init entries.
+    // `FungibleFaucet` requires every storage slot to be initialized. When the user provides a
+    // `[fungible-faucet-metadata]` TOML block, drop the `basic-fungible-faucet` package and inject
+    // a fully-populated component built directly from that metadata, rather than synthesizing the
+    // schema-driven init entries.
     let mut packages = packages;
     let injected_fungible_faucet = if let Some(metadata) = faucet_metadata.as_ref() {
         if drop_basic_fungible_faucet_packages(&mut packages) {
@@ -498,16 +505,15 @@ async fn create_client_account<AUTH: Keystore + Sync + 'static>(
     let account_components = process_packages(packages, &init_storage_data)?;
     let (auth_component, mut regular_components) = separate_auth_components(account_components)?;
 
-    // Inject the directly-built fungible faucet component (if any) so the rest of the flow
-    // (policy manager injection, schema commitment build) treats it like any other regular
-    // component.
+    // Inject the directly-built fungible faucet component (if any) so the rest of the flow (policy
+    // manager injection, schema commitment build) treats it like any other regular component.
     if let Some(component) = injected_fungible_faucet {
         regular_components.push(component);
     }
 
     // Faucet accounts require a token policy manager component. The CLI's standard
-    // `basic-fungible-faucet` package only provides the faucet component itself, so add the
-    // default `allow_all` policy manager implicitly.
+    // `basic-fungible-faucet` package only provides the faucet component itself, so add the default
+    // `allow_all` policy manager implicitly.
     if should_add_implicit_token_policy_manager(&regular_components) {
         debug!("Adding implicit TokenPolicyManager component for fungible faucet");
         let policy_manager = TokenPolicyManager::builder()
@@ -631,11 +637,12 @@ fn process_packages(
                 format!("error creating InitStorageData for Package {}", package.name),
             )
         })?;
+        let package_name = package.name.clone();
         let account_component =
-            AccountComponent::from_package(&package, &init_data).map_err(|e| {
+            AccountComponent::from_package(package, &init_data).map_err(|e| {
                 CliError::Account(
                     e,
-                    format!("error instantiating component from Package {}", package.name),
+                    format!("error instantiating component from Package {package_name}"),
                 )
             })?;
 

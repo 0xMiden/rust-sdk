@@ -1,9 +1,9 @@
 //! The `account` module provides types and client APIs for managing accounts within the Miden
 //! network.
 //!
-//! Accounts are foundational entities of the Miden protocol. They store assets and define
-//! rules for manipulating them. Once an account is registered with the client, its state will
-//! be updated accordingly, and validated against the network state on every sync.
+//! Accounts are foundational entities of the Miden protocol. They store assets and define rules for
+//! manipulating them. Once an account is registered with the client, its state will be updated
+//! accordingly, and validated against the network state on every sync.
 //!
 //! # Example
 //!
@@ -90,8 +90,8 @@ use miden_tx::utils::serde::{
 
 /// Display-only metadata for a faucet account, persisted in the client's settings store.
 ///
-/// Populated lazily by the CLI resolver from the on-chain token config of a public faucet
-/// and persisted under a `faucet_metadata:<faucet-id>` key.
+/// Populated lazily by the CLI resolver from the on-chain token config of a public faucet and
+/// persisted under a `faucet_metadata:<faucet-id>` key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FaucetMetadata {
     pub symbol: String,
@@ -111,6 +111,24 @@ impl Deserializable for FaucetMetadata {
         let decimals = source.read_u8()?;
         Ok(Self { symbol, decimals })
     }
+}
+
+/// Decodes a fungible faucet token config slot value into display metadata.
+///
+/// Returns `None` when the value does not describe a fungible faucet config the protocol would
+/// accept: the symbol must decode as a [`TokenSymbol`], and the decimals must be within
+/// [`FungibleFaucet::MAX_DECIMALS`], which is what [`FungibleFaucet`] enforces when the component
+/// is built.
+fn faucet_metadata_from_token_config(token_config: [Felt; 4]) -> Option<FaucetMetadata> {
+    let [_token_supply, _max_supply, decimals, symbol] = token_config;
+
+    let symbol = TokenSymbol::try_from(symbol).ok()?;
+    let decimals = u8::try_from(decimals.as_canonical_u64()).ok()?;
+    if decimals > FungibleFaucet::MAX_DECIMALS {
+        return None;
+    }
+
+    Some(FaucetMetadata { symbol: symbol.to_string(), decimals })
 }
 
 mod account_reader;
@@ -270,8 +288,8 @@ impl<AUTH> Client<AUTH> {
         self.add_account_inner(account, ClientAccountType::Native, overwrite).await
     }
 
-    /// Inserts `account` into the store (or overwrites it if `overwrite` is true) and registers
-    /// the per-account note tag if `client_account_type` is [`ClientAccountType::Native`].
+    /// Inserts `account` into the store (or overwrites it if `overwrite` is true) and registers the
+    /// per-account note tag if `client_account_type` is [`ClientAccountType::Native`].
     ///
     /// Switching the [`ClientAccountType`] of an already-tracked account is not supported and
     /// returns [`ClientError::AccountWatchedMismatch`].
@@ -361,8 +379,8 @@ impl<AUTH> Client<AUTH> {
     /// being tracked by the client, its state will be overwritten.
     ///
     /// To import an account as watched (state-tracking only, no note sync), use
-    /// [`Self::import_watched_account_by_id`] instead. Switching an already-tracked account
-    /// between Native and Watched is not supported.
+    /// [`Self::import_watched_account_by_id`] instead. Switching an already-tracked account between
+    /// Native and Watched is not supported.
     ///
     /// # Errors
     /// - If the account is not found on the network.
@@ -378,8 +396,8 @@ impl<AUTH> Client<AUTH> {
     ///
     /// Like [`Self::import_account_by_id`], the account is fetched from the network by its ID.
     /// Unlike `import_account_by_id`, the account is added without registering its derived note
-    /// tag: `sync_state` will keep the account's commitment, nonce and storage up to date but
-    /// will **not** pull notes targeted at it.
+    /// tag: `sync_state` will keep the account's commitment, nonce and storage up to date but will
+    /// **not** pull notes targeted at it.
     ///
     /// If the account is already being tracked as watched its state is overwritten. Switching an
     /// already-tracked native account to watched is not supported.
@@ -483,14 +501,7 @@ impl<AUTH> Client<AUTH> {
             return Ok(None);
         };
 
-        let [_token_supply, _max_supply, decimals, symbol] = *slot_header.value();
-        let Ok(symbol) = TokenSymbol::try_from(symbol) else {
-            return Ok(None);
-        };
-        let Ok(decimals) = u8::try_from(decimals.as_canonical_u64()) else {
-            return Ok(None);
-        };
-        Ok(Some(FaucetMetadata { symbol: symbol.to_string(), decimals }))
+        Ok(faucet_metadata_from_token_config(*slot_header.value()))
     }
 
     /// Adds an [`Address`] to the associated [`AccountId`], alongside its derived [`NoteTag`]. If
@@ -596,8 +607,8 @@ impl<AUTH> Client<AUTH> {
         self.store.get_account_headers().await.map_err(Into::into)
     }
 
-    /// Returns the [`AccountHeader`] of the account with the specified ID along with its status,
-    /// or `None` if the account isn't tracked by the client.
+    /// Returns the [`AccountHeader`] of the account with the specified ID along with its status, or
+    /// `None` if the account isn't tracked by the client.
     ///
     /// Said account's state is the state after the last performed sync.
     pub async fn get_account_header(
@@ -609,10 +620,9 @@ impl<AUTH> Client<AUTH> {
 
     /// Retrieves the full [`Account`] object from the store, returning `None` if not found.
     ///
-    /// This method loads the complete account state including vault, storage, and code —
-    /// including building the vault's Merkle tree. For lazy access that fetches only the data
-    /// you need (existence checks, single fields, storage items), use
-    /// [`Client::account_reader`] instead.
+    /// This method loads the complete account state including vault, storage, and code — including
+    /// building the vault's Merkle tree. For lazy access that fetches only the data you need
+    /// (existence checks, single fields, storage items), use [`Client::account_reader`] instead.
     pub async fn get_account(&self, account_id: AccountId) -> Result<Option<Account>, ClientError> {
         match self.store.get_account(account_id).await? {
             Some(record) => Ok(Some(record.try_into()?)),
@@ -622,8 +632,8 @@ impl<AUTH> Client<AUTH> {
 
     /// Creates an [`AccountReader`] for lazy access to account data.
     ///
-    /// The `AccountReader` provides lazy access to account state - each method call
-    /// fetches fresh data from storage, ensuring you always see the current state.
+    /// The `AccountReader` provides lazy access to account state - each method call fetches fresh
+    /// data from storage, ensuring you always see the current state.
     ///
     /// For loading the full [`Account`] object, use [`Client::get_account`] instead.
     ///
@@ -645,11 +655,11 @@ impl<AUTH> Client<AUTH> {
 
     /// Prunes historical account states for the specified account up to the given nonce.
     ///
-    /// Deletes all historical entries with `replaced_at_nonce <= up_to_nonce` and any
-    /// orphaned account code.
-    ///
-    /// Returns the total number of rows deleted, including historical entries and orphaned
+    /// Deletes all historical entries with `replaced_at_nonce <= up_to_nonce` and any orphaned
     /// account code.
+    ///
+    /// Returns the total number of rows deleted, including historical entries and orphaned account
+    /// code.
     pub async fn prune_account_history(
         &self,
         account_id: AccountId,
@@ -729,5 +739,59 @@ mod schema_commitment_tests {
             .get_item(AccountSchemaCommitment::schema_commitment_slot())
             .expect("schema commitment slot");
         assert_ne!(commitment, EMPTY_WORD);
+    }
+}
+
+#[cfg(test)]
+mod faucet_metadata_tests {
+    use miden_protocol::Felt;
+
+    use super::{FungibleFaucet, TokenSymbol, faucet_metadata_from_token_config};
+
+    /// Builds a token config slot value carrying the given decimals and the symbol "TST".
+    fn token_config(decimals: u32) -> [Felt; 4] {
+        [
+            Felt::from(0u32),
+            Felt::from(0u32),
+            Felt::from(decimals),
+            TokenSymbol::new("TST").unwrap().as_element(),
+        ]
+    }
+
+    #[test]
+    fn decodes_a_config_within_the_protocol_bounds() {
+        let metadata = faucet_metadata_from_token_config(token_config(8)).unwrap();
+
+        assert_eq!(metadata.symbol, "TST");
+        assert_eq!(metadata.decimals, 8);
+    }
+
+    #[test]
+    fn accepts_the_maximum_supported_decimals() {
+        let max = u32::from(FungibleFaucet::MAX_DECIMALS);
+        let metadata = faucet_metadata_from_token_config(token_config(max)).unwrap();
+
+        assert_eq!(metadata.decimals, FungibleFaucet::MAX_DECIMALS);
+    }
+
+    #[test]
+    fn rejects_decimals_above_the_maximum() {
+        let above_max = u32::from(FungibleFaucet::MAX_DECIMALS) + 1;
+
+        assert!(faucet_metadata_from_token_config(token_config(above_max)).is_none());
+        assert!(faucet_metadata_from_token_config(token_config(200)).is_none());
+    }
+
+    #[test]
+    fn rejects_decimals_that_do_not_fit_a_u8() {
+        assert!(faucet_metadata_from_token_config(token_config(300)).is_none());
+    }
+
+    #[test]
+    fn rejects_a_symbol_that_is_not_a_token_symbol() {
+        let mut config = token_config(8);
+        config[3] = Felt::from(0u32);
+
+        assert!(faucet_metadata_from_token_config(config).is_none());
     }
 }

@@ -6,11 +6,11 @@
 //! only reads tree metadata) and dropped before the transaction is committed. Rolling back the
 //! transaction discards all forest changes; there is no separate in-memory state to reconcile.
 //!
-//! Trees are stored per lineage as their full set of key-value entries, their inner nodes packed
-//! as 8-level subtree blobs (the same layout as miden-crypto's persistent forest backend), and a
-//! metadata row (latest version, root, and entry count). Witness reads load one leaf plus the
-//! eight subtree blobs on its path, so their cost is independent of the tree size. Mutations load
-//! the affected lineage's SMT on demand, so memory usage is bounded by the trees touched by an
+//! Trees are stored per lineage as their full set of key-value entries, their inner nodes packed as
+//! 8-level subtree blobs (the same layout as miden-crypto's persistent forest backend), and a
+//! metadata row (latest version, root, and entry count). Witness reads load one leaf plus the eight
+//! subtree blobs on its path, so their cost is independent of the tree size. Mutations load the
+//! affected lineage's SMT on demand, so memory usage is bounded by the trees touched by an
 //! operation rather than by the total account state.
 
 use std::collections::hash_map::Entry;
@@ -96,27 +96,7 @@ impl fmt::Debug for SqliteForestBackend<'_, '_> {
     }
 }
 
-/// Read-only view over the same transaction.
-///
-/// A separate type because the [`Backend::Reader`] contract requires a view that implements
-/// [`BackendReader`] but not [`Backend`]; every method delegates to the wrapped backend. The
-/// view observes the transaction's current (uncommitted) state, intentionally, so that later
-/// forest queries within a store operation see earlier writes of the same transaction. This
-/// deviates from the upstream contract's point-in-time snapshot wording (like the no-IO
-/// wording on `entry_count`); both deviations are safe for this crate-private backend, whose
-/// forests live only inside a single store operation, and are raised in the upstream API
-/// discussion.
-#[derive(Clone, Copy)]
-pub(crate) struct SqliteForestBackendReader<'a, 'conn>(SqliteForestBackend<'a, 'conn>);
-
-impl fmt::Debug for SqliteForestBackendReader<'_, '_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SqliteForestBackendReader").finish_non_exhaustive()
-    }
-}
-
-/// Backend-prepared data for two-phase mutations: one forward SMT mutation set per touched
-/// lineage.
+/// Backend-prepared data for two-phase mutations: one forward SMT mutation set per touched lineage.
 pub(crate) struct SqlitePreparedMutations {
     entries: Vec<PreparedLineage>,
 }
@@ -152,9 +132,9 @@ fn tree_meta(conn: &Connection, lineage: LineageId) -> Result<Option<(VersionId,
         params![lineage.as_bytes().as_slice()],
         |row| {
             Ok((
-                column_value_as_u64(row, 0)?,
-                row.get::<_, Vec<u8>>(1)?,
-                column_value_as_u64(row, 2)?,
+                column_value_as_u64(row, "version")?,
+                row.get::<_, Vec<u8>>("root")?,
+                column_value_as_u64(row, "entry_count")?,
             ))
         },
     )
@@ -186,7 +166,7 @@ fn load_entries(conn: &Connection, lineage: LineageId) -> Result<Vec<(Word, Word
         .map_err(internal)?;
     let rows = stmt
         .query_map(params![lineage.as_bytes().as_slice()], |row| {
-            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+            Ok((row.get::<_, Vec<u8>>("key")?, row.get::<_, Vec<u8>>("value")?))
         })
         .map_err(internal)?;
 
@@ -198,8 +178,7 @@ fn load_entries(conn: &Connection, lineage: LineageId) -> Result<Vec<(Word, Word
     Ok(entries)
 }
 
-/// Rejects stored empty values as corruption; the write path deletes them instead of storing
-/// them.
+/// Rejects stored empty values as corruption; the write path deletes them instead of storing them.
 fn require_non_empty_value(lineage: LineageId, key: Word, value: Word) -> Result<()> {
     if value == EMPTY_WORD {
         return Err(BackendError::CorruptedData(format!(
@@ -224,9 +203,9 @@ fn require_consistent_position(lineage: LineageId, key: Word, position: u64) -> 
 
 /// Loads the sorted key-value entries of the SMT leaf at `position`.
 ///
-/// Entries are sorted by key because a multi-entry leaf's hash is order-sensitive and `SQLite`
-/// row order is unspecified; sorting by [`Word`] matches the canonical order the SMT maintains
-/// inside its leaves.
+/// Entries are sorted by key because a multi-entry leaf's hash is order-sensitive and `SQLite` row
+/// order is unspecified; sorting by [`Word`] matches the canonical order the SMT maintains inside
+/// its leaves.
 fn load_leaf_entries(
     conn: &Connection,
     lineage: LineageId,
@@ -239,7 +218,7 @@ fn load_leaf_entries(
         .map_err(internal)?;
     let rows = stmt
         .query_map(params![lineage.as_bytes().as_slice(), u64_to_value(position)], |row| {
-            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+            Ok((row.get::<_, Vec<u8>>("key")?, row.get::<_, Vec<u8>>("value")?))
         })
         .map_err(internal)?;
 
@@ -312,8 +291,8 @@ fn load_subtree(conn: &Connection, lineage: LineageId, root_index: NodeIndex) ->
 
 /// Computes the Merkle path for `leaf_index` from the stored subtree blobs on its path.
 ///
-/// One subtree per 8-level band is loaded (roots at depths 56, 48, ..., 0); siblings of nodes
-/// that are not present in a blob are empty subtree roots.
+/// One subtree per 8-level band is loaded (roots at depths 56, 48, ..., 0); siblings of nodes that
+/// are not present in a blob are empty subtree roots.
 fn compute_merkle_path(
     conn: &Connection,
     lineage: LineageId,
@@ -344,8 +323,8 @@ fn compute_merkle_path(
         .map_err(|e| BackendError::CorruptedData(format!("invalid Merkle path: {e}")))
 }
 
-/// Returns the inner node of an empty subtree at `node_depth` (both children are the empty
-/// subtree root one level below).
+/// Returns the inner node of an empty subtree at `node_depth` (both children are the empty subtree
+/// root one level below).
 fn empty_inner_node(node_depth: u8) -> InnerNode {
     let child = *EmptySubtreeRoots::entry(SMT_DEPTH, node_depth + 1);
     InnerNode { left: child, right: child }
@@ -364,15 +343,15 @@ struct ComputedLineageMutations {
 /// Computes the forward and reverse mutation sets for `kv_ops` on an existing lineage by reading
 /// only the affected leaves and the subtree blobs on their paths.
 ///
-/// This mirrors `SparseMerkleTree::compute_mutations_sequential` (and the reverse-set
-/// construction of `apply_mutations_with_reversion`) over persisted state, so its cost scales
-/// with the change set instead of the tree size. Because the new root is derived from stored
-/// subtree data, every touched leaf's stored path is first authenticated against `old_root`
-/// (both node halves per level); a missing or diverged blob is reported as corruption instead
-/// of silently producing a wrong root. Corruption on untouched paths is not detectable without
-/// a full scan and remains covered by the read-time root check. The stored `entry_count` is
-/// trusted within representable range (deltas are applied to it, not recounted), and the
-/// bulk-load heuristic keys off raw op count, not distinct leaf positions.
+/// This mirrors `SparseMerkleTree::compute_mutations_sequential` (and the reverse-set construction
+/// of `apply_mutations_with_reversion`) over persisted state, so its cost scales with the change
+/// set instead of the tree size. Because the new root is derived from stored subtree data, every
+/// touched leaf's stored path is first authenticated against `old_root` (both node halves per
+/// level); a missing or diverged blob is reported as corruption instead of silently producing a
+/// wrong root. Corruption on untouched paths is not detectable without a full scan and remains
+/// covered by the read-time root check. The stored `entry_count` is trusted within representable
+/// range (deltas are applied to it, not recounted), and the bulk-load heuristic keys off raw op
+/// count, not distinct leaf positions.
 #[allow(clippy::too_many_lines)]
 fn compute_update_mutations(
     conn: &Connection,
@@ -383,13 +362,13 @@ fn compute_update_mutations(
 ) -> Result<ComputedLineageMutations> {
     let kv_ops: Vec<(Word, Word)> = kv_ops.collect();
 
-    // Stored subtrees on touched paths; never mutated during compute, so lookups through this
-    // cache always observe the pre-update state.
+    // Stored subtrees on touched paths; never mutated during compute, so lookups through this cache
+    // always observe the pre-update state.
     let mut subtrees: HashMap<NodeIndex, Subtree> = HashMap::new();
     // Effective (batch-mutated) sorted entries of each touched leaf. Small batches load each
     // touched leaf with a point query; batches comparable to the tree size (full-state
-    // presentations) load every leaf in one scan instead, which is far cheaper than one point
-    // query per op. When bulk-loaded, a position absent from the map is a stored-empty leaf.
+    // presentations) load every leaf in one scan instead, which is far cheaper than one point query
+    // per op. When bulk-loaded, a position absent from the map is a stored-empty leaf.
     let mut leaves: HashMap<u64, Vec<(Word, Word)>> = HashMap::new();
     let bulk_loaded = kv_ops.len() > 64 && kv_ops.len() * 4 >= entry_count;
     if bulk_loaded {
@@ -401,9 +380,9 @@ fn compute_update_mutations(
         let rows = stmt
             .query_map(params![lineage.as_bytes().as_slice()], |row| {
                 Ok((
-                    row.get::<_, Vec<u8>>(0)?,
-                    row.get::<_, Vec<u8>>(1)?,
-                    column_value_as_u64(row, 2)?,
+                    row.get::<_, Vec<u8>>("key")?,
+                    row.get::<_, Vec<u8>>("value")?,
+                    column_value_as_u64(row, "leaf_position")?,
                 ))
             })
             .map_err(internal)?;
@@ -418,8 +397,7 @@ fn compute_update_mutations(
         }
     }
     let mut forward_nodes: HashMap<NodeIndex, NodeMutation> = HashMap::new();
-    // The stored node at each mutated index, captured once before any overlay, for the reverse
-    // set.
+    // The stored node at each mutated index, captured once before any overlay, for the reverse set.
     let mut original_nodes: HashMap<NodeIndex, Option<InnerNode>> = HashMap::new();
     let mut forward_pairs: Vec<(Word, Word)> = Vec::new();
     let mut reverse_pairs: Vec<(Word, Word)> = Vec::new();
@@ -450,15 +428,17 @@ fn compute_update_mutations(
         let leaf_index = LeafIndex::<SMT_DEPTH>::from(key);
         let position = leaf_index.position();
 
-        if let Entry::Vacant(entry) = leaves.entry(position) {
-            let entries = if bulk_loaded {
-                Vec::new()
-            } else {
-                load_leaf_entries(conn, lineage, position)?
-            };
-            entry.insert(entries);
-        }
-        let entries = leaves.get_mut(&position).expect("leaf loaded above");
+        let entries = match leaves.entry(position) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => {
+                let stored = if bulk_loaded {
+                    Vec::new()
+                } else {
+                    load_leaf_entries(conn, lineage, position)?
+                };
+                entry.insert(stored)
+            },
+        };
 
         let old_value = entries.iter().find(|(k, _)| *k == key).map_or(EMPTY_WORD, |(_, v)| *v);
         if value == old_value {
@@ -467,9 +447,9 @@ fn compute_update_mutations(
 
         // First mutation of a leaf: authenticate its stored entries and stored path against the
         // pre-update root, so a missing or diverged blob is reported as corruption instead of
-        // silently producing a wrong new root. The cached entries are still the stored state
-        // here (no earlier op mutated this leaf), and the subtree cache always is. Deferring
-        // this to the first actual mutation keeps no-op ops at one point query.
+        // silently producing a wrong new root. The cached entries are still the stored state here
+        // (no earlier op mutated this leaf), and the subtree cache always is. Deferring this to the
+        // first actual mutation keeps no-op ops at one point query.
         if !verified_leaves.contains(&position) {
             let leaf = leaf_from_entries(lineage, leaf_index, entries.clone())?;
             let mut hash = leaf.hash();
@@ -479,8 +459,8 @@ fn compute_update_mutations(
                 node_index = node_index.parent();
                 let node = stored_inner_node(&mut subtrees, node_index)?
                     .unwrap_or_else(|| empty_inner_node(node_index.depth()));
-                // Both halves are checked: the on-path child must match the hash derived so far
-                // (a diverged on-path node would otherwise be silently healed forward while its
+                // Both halves are checked: the on-path child must match the hash derived so far (a
+                // diverged on-path node would otherwise be silently healed forward while its
                 // corrupt value leaks into the reverse set), and the sibling feeds the next hash.
                 let on_path_child = if is_right { node.right } else { node.left };
                 if on_path_child != hash {
@@ -579,8 +559,8 @@ fn compute_update_mutations(
     Ok(ComputedLineageMutations { forward, reverse, entry_count_delta })
 }
 
-/// Writes the changed key-value pairs of a forward mutation set to the entries table. Values
-/// equal to the empty word are deletions.
+/// Writes the changed key-value pairs of a forward mutation set to the entries table. Values equal
+/// to the empty word are deletions.
 fn write_pairs(conn: &Connection, lineage: LineageId, forward: &SmtMutationSet) -> Result<()> {
     let mut upsert = conn
         .prepare_cached(
@@ -616,9 +596,9 @@ fn write_pairs(conn: &Connection, lineage: LineageId, forward: &SmtMutationSet) 
 /// Applies the inner-node mutations of a forward mutation set to the stored subtree blobs.
 ///
 /// Mutations are grouped by containing subtree so each affected blob is loaded, patched with one
-/// batch call, and written back (or deleted once empty) exactly once. A removal that targets a
-/// node absent from its blob means the stored subtrees have diverged from the stored entries,
-/// which is corruption of backend data.
+/// batch call, and written back (or deleted once empty) exactly once. A removal that targets a node
+/// absent from its blob means the stored subtrees have diverged from the stored entries, which is
+/// corruption of backend data.
 fn write_subtrees(conn: &Connection, lineage: LineageId, forward: &SmtMutationSet) -> Result<()> {
     // A `BTreeMap` (rather than a hash map) keeps the write order deterministic.
     let mut groups: BTreeMap<NodeIndex, Vec<(&NodeIndex, &NodeMutation)>> = BTreeMap::new();
@@ -704,6 +684,9 @@ fn upsert_tree_meta(
 // BACKEND READER
 // ================================================================================================
 
+/// Every method reads through the borrowed transaction, so the values reflect the transaction's
+/// current, uncommitted state. `entry_count` reads the tree metadata row, so it does disk I/O; the
+/// upstream contract asks for a cached value that does no I/O.
 impl BackendReader for SqliteForestBackend<'_, '_> {
     fn open(&self, lineage: LineageId, key: Word) -> Result<SmtProof> {
         let (_version, stored_root, _count) = require_tree_meta(self.tx, lineage)?;
@@ -718,8 +701,8 @@ impl BackendReader for SqliteForestBackend<'_, '_> {
             ))
         })?;
 
-        // The proof is assembled from two redundant representations (entry rows and subtree
-        // blobs), so verify it against the stored root to catch any divergence between them.
+        // The proof is assembled from two redundant representations (entry rows and subtree blobs),
+        // so verify it against the stored root to catch any divergence between them.
         let computed_root = proof.compute_root();
         if computed_root != stored_root {
             return Err(BackendError::CorruptedData(format!(
@@ -769,9 +752,9 @@ impl BackendReader for SqliteForestBackend<'_, '_> {
         let rows = stmt
             .query_map([], |row| {
                 Ok((
-                    row.get::<_, Vec<u8>>(0)?,
-                    column_value_as_u64(row, 1)?,
-                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, Vec<u8>>("lineage")?,
+                    column_value_as_u64(row, "version")?,
+                    row.get::<_, Vec<u8>>("root")?,
                 ))
             })
             .map_err(internal)?;
@@ -802,49 +785,22 @@ impl BackendReader for SqliteForestBackend<'_, '_> {
     }
 }
 
-impl BackendReader for SqliteForestBackendReader<'_, '_> {
-    fn open(&self, lineage: LineageId, key: Word) -> Result<SmtProof> {
-        self.0.open(lineage, key)
-    }
-
-    fn get_leaf(&self, lineage: LineageId, leaf_index: LeafIndex<SMT_DEPTH>) -> Result<SmtLeaf> {
-        self.0.get_leaf(lineage, leaf_index)
-    }
-
-    fn get(&self, lineage: LineageId, key: Word) -> Result<Option<Word>> {
-        self.0.get(lineage, key)
-    }
-
-    fn version(&self, lineage: LineageId) -> Result<VersionId> {
-        self.0.version(lineage)
-    }
-
-    fn lineages(&self) -> Result<impl Iterator<Item = LineageId>> {
-        self.0.lineages()
-    }
-
-    fn trees(&self) -> Result<impl Iterator<Item = TreeWithRoot>> {
-        self.0.trees()
-    }
-
-    fn entry_count(&self, lineage: LineageId) -> Result<usize> {
-        self.0.entry_count(lineage)
-    }
-
-    fn entries(&self, lineage: LineageId) -> Result<impl Iterator<Item = Result<TreeEntry>>> {
-        self.0.entries(lineage)
-    }
-}
-
 // BACKEND
 // ================================================================================================
 
-impl<'a, 'conn> Backend for SqliteForestBackend<'a, 'conn> {
-    type Reader = SqliteForestBackendReader<'a, 'conn>;
+impl Backend for SqliteForestBackend<'_, '_> {
+    /// The backend is its own reader. [`Backend::Reader`] is bound only by [`BackendReader`], so a
+    /// separate read-only type is not required. The upstream contract asks for a type that is not a
+    /// [`Backend`]. This crate accepts the deviation because the backend is crate-private and a
+    /// forest built on it lives only inside one store operation.
+    type Reader = Self;
     type PreparedMutations = SqlitePreparedMutations;
 
+    /// The reader observes the transaction's current, uncommitted state, so a later forest query in
+    /// the same store operation sees the earlier writes of that transaction. The upstream contract
+    /// describes a point-in-time snapshot instead.
     fn reader(&self) -> Result<Self::Reader> {
-        Ok(SqliteForestBackendReader(*self))
+        Ok(*self)
     }
 
     fn compute_mutations(
@@ -859,13 +815,13 @@ impl<'a, 'conn> Backend for SqliteForestBackend<'a, 'conn> {
             let kv_ops = ops.into_iter().map(Into::into);
             let (old_version, kind, computed) =
                 if let Some((version, root, count)) = tree_meta(self.tx, lineage)? {
-                    // Path-local computation: reads only the affected leaves and the subtree
-                    // blobs on their paths, so cost scales with the change set.
+                    // Path-local computation: reads only the affected leaves and the subtree blobs
+                    // on their paths, so cost scales with the change set.
                     let computed = compute_update_mutations(self.tx, lineage, root, count, kv_ops)?;
                     (Some(version), LineageMutationKind::UpdateTree, computed)
                 } else {
-                    // A new lineage starts from the empty tree, so there is no stored state to
-                    // read and the in-memory computation is already proportional to the batch.
+                    // A new lineage starts from the empty tree, so there is no stored state to read
+                    // and the in-memory computation is already proportional to the batch.
                     let forward = Smt::new().compute_mutations(kv_ops)?;
                     let computed = ComputedLineageMutations {
                         forward,
@@ -919,8 +875,8 @@ impl<'a, 'conn> Backend for SqliteForestBackend<'a, 'conn> {
                         });
                     }
                     if root != p.forward.old_root() {
-                        // Stale prepared mutations are a user-derived error, matching the
-                        // in-memory backend's classification.
+                        // Stale prepared mutations are a user-derived error, matching the in-memory
+                        // backend's classification.
                         return Err(BackendError::Merkle(MerkleError::ConflictingRoots {
                             expected_root: p.forward.old_root(),
                             actual_root: root,
@@ -950,8 +906,8 @@ impl<'a, 'conn> Backend for SqliteForestBackend<'a, 'conn> {
 }
 
 impl SqliteForestBackend<'_, '_> {
-    /// Applies already-validated prepared mutations. Must run inside the `forest_apply`
-    /// savepoint so a mid-application error does not leave partial writes visible.
+    /// Applies already-validated prepared mutations. Must run inside the `forest_apply` savepoint
+    /// so a mid-application error does not leave partial writes visible.
     fn apply_validated_mutations(
         &mut self,
         mutations: SqlitePreparedMutations,
@@ -1073,8 +1029,8 @@ mod tests {
         assert!(second > first);
         drop(tx); // rollback
 
-        // A rolled-back allocation may reuse values, which is fine: the allocation always
-        // happens in the same transaction as the mutation that uses it.
+        // A rolled-back allocation may reuse values, which is fine: the allocation always happens
+        // in the same transaction as the mutation that uses it.
         let tx = conn.transaction().unwrap();
         let third = allocate_forest_revision(&tx).unwrap();
         assert_eq!(third, first);
@@ -1285,8 +1241,8 @@ mod tests {
 
         // Every round does an explicit quota of 7 inserts and up to 3 removals, so both kinds of
         // operation are guaranteed to occur, unlike a pure coin flip on LCG bits (whose low bits
-        // have short cycles). Positions mix a clustered range (frequent leaf collisions and
-        // shared subtrees), the full u64 range (distinct subtrees in every band), and boundaries.
+        // have short cycles). Positions mix a clustered range (frequent leaf collisions and shared
+        // subtrees), the full u64 range (distinct subtrees in every band), and boundaries.
         let mut entries: Vec<(Word, Word)> = vec![(wp(1, 1), w(1))];
         let mut removals = 0u32;
         for round in 2..=6u64 {
@@ -1320,8 +1276,8 @@ mod tests {
             }
             forest.update_forest(round, b).unwrap();
 
-            // Check present keys, plus a key that was never inserted (position 40 is outside
-            // the clustered range and not a boundary).
+            // Check present keys, plus a key that was never inserted (position 40 is outside the
+            // clustered range and not a boundary).
             for (key, _) in entries.iter().take(5) {
                 assert_open_matches_reference(&tx, lid(1), *key, &entries);
             }
@@ -1336,8 +1292,8 @@ mod tests {
         let tx = conn.transaction().unwrap();
         let mut forest = LargeSmtForest::new(SqliteForestBackend::new(&tx)).unwrap();
         // Two leaves whose paths diverge at depth 1, so the depth-0 subtree holds a non-empty
-        // sibling of the queried path (a missing blob whose siblings were all empty would leave
-        // the proof unchanged and is undetectable by design).
+        // sibling of the queried path (a missing blob whose siblings were all empty would leave the
+        // proof unchanged and is undetectable by design).
         forest
             .add_lineages(1, batch(lid(1), &[(wp(1, 1), w(100)), (wp(1 << 63, 2), w(200))]))
             .unwrap();
@@ -1428,11 +1384,10 @@ mod tests {
         let mut forest = LargeSmtForest::new(SqliteForestBackend::new(&tx)).unwrap();
         forest.add_lineages(1, batch(lid(1), &[(w(10), w(100))])).unwrap();
 
-        // A well-formed but diverged blob must be caught by the pre-mutation path
-        // authentication, not persisted into a wrong new root. The divergence has to sit on a
-        // sibling (the right child here; the stored key lives on the left half): on-path values
-        // are recomputed from the leaf and overwritten anyway, so only sibling divergence can
-        // corrupt a new root.
+        // A well-formed but diverged blob must be caught by the pre-mutation path authentication,
+        // not persisted into a wrong new root. The divergence has to sit on a sibling (the right
+        // child here; the stored key lives on the left half): on-path values are recomputed from
+        // the leaf and overwritten anyway, so only sibling divergence can corrupt a new root.
         let other = Smt::with_entries([(w(10), w(555))]).unwrap();
         let mut divergent = Subtree::new(NodeIndex::root());
         let root_inner = InnerNode {
@@ -1448,8 +1403,8 @@ mod tests {
 
         let err = forest.update_forest(2, batch(lid(1), &[(w(10), w(999))])).unwrap_err();
         // Replacing the whole blob also drops the stored on-path nodes at depths 1..7, so the
-        // on-path consistency check fires before the final root comparison; either rejection is
-        // the corruption being caught at compute time.
+        // on-path consistency check fires before the final root comparison; either rejection is the
+        // corruption being caught at compute time.
         assert!(err.to_string().contains("corruption"), "unexpected error: {err}");
         assert_eq!(SqliteForestBackend::new(&tx).version(lid(1)).unwrap(), 1);
     }
@@ -1462,8 +1417,8 @@ mod tests {
         forest.add_lineages(1, batch(lid(1), &[(w(10), w(100))])).unwrap();
 
         // Corrupt the ON-PATH half of the root node (the stored key lives on the left half).
-        // Forward computation would silently heal this, but the corrupt value would leak into
-        // the reverse set, so authentication must reject it.
+        // Forward computation would silently heal this, but the corrupt value would leak into the
+        // reverse set, so authentication must reject it.
         let other = Smt::with_entries([(w(10), w(555))]).unwrap();
         let mut divergent = Subtree::new(NodeIndex::root());
         let root_inner = InnerNode {
@@ -1498,8 +1453,8 @@ mod tests {
         b.operations(lid(1)).add_insert(wp(5, 4), w(400));
         forest.update_forest(2, b).unwrap();
 
-        // Historical opens at version 1 are served through the reverse sets this backend
-        // produced; presence, collision-sibling presence, and absence must all verify.
+        // Historical opens at version 1 are served through the reverse sets this backend produced;
+        // presence, collision-sibling presence, and absence must all verify.
         for (key, value) in [(wp(7, 1), Some(w(100))), (wp(9, 3), Some(w(300))), (wp(5, 4), None)] {
             let proof = forest.open(TreeId::new(lid(1), 1), key).unwrap();
             assert_eq!(proof.compute_root(), reference_v1.root(), "root mismatch for {key}");

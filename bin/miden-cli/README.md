@@ -4,7 +4,7 @@ This binary allows the user to interact with the Miden rollup via a simple comma
 
 ## Usage
 
-Before you can use the Miden client, you'll need to make sure you have [Rust](https://www.rust-lang.org/tools/install) installed. Miden client requires rust version **1.96** or higher.
+Before you can use the Miden client, you'll need to make sure you have [Rust](https://www.rust-lang.org/tools/install) installed. Miden client requires rust version **1.98.1** or higher.
 
 ### Running `miden-client`'s CLI
 
@@ -29,7 +29,7 @@ These actions can also be executed when inside the repository via the Makefile w
 To have a fully-functional client CLI, you would need to set it up first. You can accomplish that with:
 
 ```sh
-miden-client init --network {localhost/devnet/testnet/custom_rpc_endpoint}
+miden-client init --network {mainnet/testnet/devnet/localhost/custom_rpc_endpoint}
 ```
 
 This would generate the `miden-client.toml` file, which contains useful information for the client like RPC provider's URL and database path.

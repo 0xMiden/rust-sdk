@@ -2,10 +2,9 @@
 //! notes that are available to be consumed ([`InputNoteRecord`]) and notes that have been produced
 //! as a result of executing a transaction ([`OutputNoteRecord`]).
 //!
-//! Both structs are similar in terms of the data they carry, but are differentiated semantically
-//! as they are involved in very different flows. As such, known states are modeled differently for
-//! the two structures, with [`InputNoteRecord`] having states described by the [`InputNoteState`]
-//! enum.
+//! Both structs are similar in terms of the data they carry, but are differentiated semantically as
+//! they are involved in very different flows. As such, known states are modeled differently for the
+//! two structures, with [`InputNoteRecord`] having states described by the [`InputNoteState`] enum.
 //!
 //! ## Serialization / Deserialization
 //!

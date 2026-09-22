@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-#[cfg(feature = "dap")]
+#[cfg(any())]
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
@@ -40,9 +40,9 @@ pub struct ExecCmd {
     #[arg(long, default_value_t = false)]
     hex_words: bool,
 
-    /// Start a DAP debug adapter server on the given address (e.g. "127.0.0.1:4711")
-    /// and wait for a DAP client to connect before executing.
-    #[cfg(feature = "dap")]
+    /// Start a DAP debug adapter server on the given address (e.g. "127.0.0.1:4711") and wait for a
+    /// DAP client to connect before executing.
+    #[cfg(any())]
     #[arg(long = "start-debug-adapter")]
     start_debug_adapter: Option<SocketAddr>,
 
@@ -52,7 +52,7 @@ pub struct ExecCmd {
     /// produced by the transaction host's event handlers, so the same execution can be replayed
     /// offline with `miden-debug --replay <FILE>`. Only meaningful together with
     /// `--start-debug-adapter`.
-    #[cfg(feature = "dap")]
+    #[cfg(any())]
     #[arg(long = "record", value_name = "FILE", requires = "start_debug_adapter")]
     record: Option<PathBuf>,
 }
@@ -80,10 +80,10 @@ impl ExecCmd {
 
         let advice_inputs = AdviceInputs::default().with_map(inputs);
 
-        // Pass the path rather than the source string so the assembler's source manager
-        // records the real filesystem URI in every `AssemblyOp`'s location. Without this,
-        // DAP clients (VS Code, Zed) get `Source { path: None }` in stack traces and can't
-        // highlight the current line or open the file.
+        // Pass the path rather than the source string so the assembler's source manager records the
+        // real filesystem URI in every `AssemblyOp`'s location. Without this, DAP clients (VS Code,
+        // Zed) get `Source { path: None }` in stack traces and can't highlight the current line or
+        // open the file.
         let tx_script = client.code_builder().compile_tx_script(script_path.as_path())?;
 
         let output_stack =
@@ -107,12 +107,12 @@ impl ExecCmd {
     ) -> Result<[Felt; MIN_STACK_DEPTH], CliError> {
         let foreign_accounts = BTreeMap::<AccountId, ForeignAccount>::new();
 
-        #[cfg(feature = "dap")]
+        #[cfg(any())]
         if let Some(addr) = self.start_debug_adapter.as_ref() {
             let mut config = miden_debug::DapConfig::new(addr.to_string());
             // The DAP executor is created and consumed inside the transaction executor, so the
-            // advice mutations recorded during the session are read through this shared handle
-            // once execution returns.
+            // advice mutations recorded during the session are read through this shared handle once
+            // execution returns.
             let recorder = config.record_event_mutations();
             // When requested, the executor also writes a self-contained replay snapshot of the
             // session (program, inputs, resolved code, and event log) to the given path, so the
@@ -126,8 +126,8 @@ impl ExecCmd {
 
             let script_path = PathBuf::from(&self.script_path);
             loop {
-                // DAP restart can happen after the user edits the script. Refresh the cached
-                // source before compiling again so execution uses the current file contents.
+                // DAP restart can happen after the user edits the script. Refresh the cached source
+                // before compiling again so execution uses the current file contents.
                 reload_source_file(&client.source_manager(), script_path.as_path())?;
 
                 let tx_script = client.code_builder().compile_tx_script(script_path.as_path())?;
@@ -147,9 +147,9 @@ impl ExecCmd {
                     continue;
                 }
 
-                // The recording describes the final run of the session and is what an
-                // event-replay debug session needs to re-execute this transaction without the
-                // live transaction host.
+                // The recording describes the final run of the session and is what an event-replay
+                // debug session needs to re-execute this transaction without the live transaction
+                // host.
                 let mutation_sets = recorder.take();
                 if !mutation_sets.is_empty() {
                     println!(
@@ -183,10 +183,10 @@ impl ExecCmd {
 // SOURCE FILE RELOADING
 // ================================================================================================
 
-#[cfg(feature = "dap")]
+#[cfg(any())]
 use source_reload::reload_source_file;
 
-#[cfg(feature = "dap")]
+#[cfg(any())]
 mod source_reload {
     use std::path::Path;
     use std::sync::Arc;

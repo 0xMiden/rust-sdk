@@ -1,146 +1,27 @@
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use core::fmt::{self, Debug, Display, Formatter};
-
 use miden_protocol::account::{
     Account, AccountCode, AccountHeader, AccountId, AccountStorage, AccountStorageHeader,
-    StorageMap, StorageMapKey, StorageSlot, StorageSlotHeader, StorageSlotName, StorageSlotType,
+    StorageMap, StorageMapKey, StorageSlot, StorageSlotName, StorageSlotType,
 };
 use miden_protocol::asset::{Asset, AssetVault};
 use miden_protocol::block::BlockNumber;
 use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::crypto::merkle::SparseMerklePath;
 use miden_protocol::crypto::merkle::smt::PartialSmt;
+use miden_objects::DecodeMessageExt;
 use miden_protocol::{EMPTY_WORD, Word};
-use miden_tx::utils::ToHex;
 use miden_tx::utils::serde::{Deserializable, Serializable};
 use thiserror::Error;
 
 use crate::alloc::string::ToString;
 use crate::rpc::{AccountStateAt, RpcError};
 use crate::rpc::domain::MissingFieldHelper;
-use crate::rpc::errors::RpcConversionError;
 use crate::rpc::generated::rpc::account_request::account_detail_request::storage_map_detail_request::{MapKeys, SlotData};
 use crate::rpc::generated::rpc::account_request::account_detail_request::{
     StorageMapDetailRequest, StorageMapDetailRequests, StorageRequest,
 };
 use crate::rpc::generated::{self as proto};
-
-// ACCOUNT ID
-// ================================================================================================
-
-impl Display for proto::account::AccountId {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.write_fmt(format_args!("0x{}", self.id.to_hex()))
-    }
-}
-
-impl Debug for proto::account::AccountId {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        Display::fmt(self, f)
-    }
-}
-
-// INTO PROTO ACCOUNT ID
-// ================================================================================================
-
-impl From<AccountId> for proto::account::AccountId {
-    fn from(account_id: AccountId) -> Self {
-        Self { id: account_id.to_bytes() }
-    }
-}
-
-// FROM PROTO ACCOUNT ID
-// ================================================================================================
-
-impl TryFrom<proto::account::AccountId> for AccountId {
-    type Error = RpcConversionError;
-
-    fn try_from(account_id: proto::account::AccountId) -> Result<Self, Self::Error> {
-        AccountId::read_from_bytes(&account_id.id).map_err(|_| RpcConversionError::NotAValidFelt)
-    }
-}
-
-// ACCOUNT HEADER
-// ================================================================================================
-
-impl TryInto<AccountHeader> for proto::account::AccountHeader {
-    type Error = crate::rpc::RpcError;
-
-    fn try_into(self) -> Result<AccountHeader, Self::Error> {
-        use miden_protocol::Felt;
-
-        use crate::rpc::domain::MissingFieldHelper;
-
-        let proto::account::AccountHeader {
-            account_id,
-            nonce,
-            vault_root,
-            storage_commitment,
-            code_commitment,
-        } = self;
-
-        let account_id: AccountId = account_id
-            .ok_or(proto::account::AccountHeader::missing_field(stringify!(account_id)))?
-            .try_into()?;
-        let vault_root = vault_root
-            .ok_or(proto::account::AccountHeader::missing_field(stringify!(vault_root)))?
-            .try_into()?;
-        let storage_commitment = storage_commitment
-            .ok_or(proto::account::AccountHeader::missing_field(stringify!(storage_commitment)))?
-            .try_into()?;
-        let code_commitment = code_commitment
-            .ok_or(proto::account::AccountHeader::missing_field(stringify!(code_commitment)))?
-            .try_into()?;
-
-        let nonce = Felt::new(nonce).map_err(|_| RpcConversionError::NotAValidFelt)?;
-        Ok(AccountHeader::new(
-            account_id,
-            nonce,
-            vault_root,
-            storage_commitment,
-            code_commitment,
-        ))
-    }
-}
-
-// ACCOUNT STORAGE HEADER
-// ================================================================================================
-
-impl TryInto<AccountStorageHeader> for proto::account::AccountStorageHeader {
-    type Error = crate::rpc::RpcError;
-
-    fn try_into(self) -> Result<AccountStorageHeader, Self::Error> {
-        use crate::rpc::RpcError;
-        use crate::rpc::domain::MissingFieldHelper;
-
-        let mut header_slots: Vec<StorageSlotHeader> = Vec::with_capacity(self.slots.len());
-
-        for slot in self.slots {
-            let slot_value: Word = slot
-                .commitment
-                .ok_or(proto::account::account_storage_header::StorageSlot::missing_field(
-                    stringify!(commitment),
-                ))?
-                .try_into()?;
-
-            let slot_type = u8::try_from(slot.slot_type)
-                .map_err(|e| RpcError::InvalidResponse(e.to_string()))
-                .and_then(|v| {
-                    StorageSlotType::try_from(v)
-                        .map_err(|e| RpcError::InvalidResponse(e.to_string()))
-                })?;
-            let slot_name = StorageSlotName::new(slot.slot_name)
-                .map_err(|err| RpcError::InvalidResponse(err.to_string()))?;
-
-            header_slots.push(StorageSlotHeader::new(slot_name, slot_type, slot_value));
-        }
-
-        header_slots.sort_by_key(StorageSlotHeader::id);
-        AccountStorageHeader::new(header_slots)
-            .map_err(|err| RpcError::InvalidResponse(err.to_string()))
-    }
-}
 
 // FROM PROTO ACCOUNT HEADERS
 // ================================================================================================
@@ -150,11 +31,11 @@ impl proto::rpc::account_response::AccountDetails {
     /// Converts the RPC response into `AccountDetails`.
     ///
     /// The RPC response may omit unchanged account codes. If so, this function uses
-    /// `known_account_codes` to fill in the missing code. If a required code cannot be found in
-    /// the response or `known_account_codes`, an error is returned.
+    /// `known_account_codes` to fill in the missing code. If a required code cannot be found in the
+    /// response or `known_account_codes`, an error is returned.
     ///
-    /// `storage_requirements` is the request this response answers, used to check that each
-    /// partial map covers exactly the keys that were asked for.
+    /// `storage_requirements` is the request this response answers, used to check that each partial
+    /// map covers exactly the keys that were asked for.
     ///
     /// # Errors
     /// - If account code is missing both on `self` and `known_account_codes`
@@ -176,7 +57,7 @@ impl proto::rpc::account_response::AccountDetails {
         } = self;
         let header: AccountHeader = header
             .ok_or(proto::rpc::account_response::AccountDetails::missing_field(stringify!(header)))?
-            .try_into()?;
+            .decode_and_verify()?;
 
         let storage_details: AccountStorageDetails = storage_details
             .ok_or(proto::rpc::account_response::AccountDetails::missing_field(stringify!(
@@ -187,10 +68,11 @@ impl proto::rpc::account_response::AccountDetails {
         storage_details.validate_against_request(storage_requirements)?;
 
         // If an account code was received, it means the previously known account code is no longer
-        // valid. If it was not, it means we sent a code commitment that matched and so our code
-        // is still valid
+        // valid. If it was not, it means we sent a code commitment that matched and so our code is
+        // still valid
         let code = {
-            let received_code = code.map(|c| AccountCode::read_from_bytes(&c)).transpose()?;
+            let received_code: Option<AccountCode> =
+                code.map(DecodeMessageExt::decode_and_verify).transpose()?;
             match received_code {
                 Some(code) => code,
                 None => known_account_codes
@@ -240,8 +122,8 @@ impl TryFrom<&AccountDetails> for Account {
     /// Builds an [`Account`] from [`AccountDetails`].
     ///
     /// This conversion fails if the account details are incomplete, i.e., when the account's
-    /// storage maps or vault exceed the node's size threshold, or when only specific map keys
-    /// were requested.
+    /// storage maps or vault exceed the node's size threshold, or when only specific map keys were
+    /// requested.
     fn try_from(details: &AccountDetails) -> Result<Self, Self::Error> {
         if details.vault_details.too_many_assets {
             return Err(RpcError::ExpectedDataMissing(
@@ -351,7 +233,7 @@ impl AccountStorageDetails {
     /// Checks that every partial map covers exactly the keys that were requested for its slot.
     ///
     /// # Errors
-    /// - If a partial map covers a different number of keys than were requested for its slot.
+    /// - If a partial map does not cover a key that was requested for its slot.
     /// - If a partial map covers a key that was not requested.
     pub fn validate_against_request(
         &self,
@@ -363,12 +245,11 @@ impl AccountStorageDetails {
             };
 
             let requested_keys = storage_requirements.keys_for_slot(&map_detail.slot_name);
-            if map_keys.len() != requested_keys.len() {
+            if let Some(key) = requested_keys.iter().find(|key| !map_keys.contains(key)) {
                 return Err(RpcError::InvalidResponse(format!(
-                    "expected {} keys for storage map slot '{}', got {}",
-                    requested_keys.len(),
+                    "partial storage map for slot '{}' does not cover requested key {}",
                     map_detail.slot_name,
-                    map_keys.len(),
+                    key.to_hex(),
                 )));
             }
             if let Some(key) = map_keys.iter().find(|key| !requested_keys.contains(key)) {
@@ -391,7 +272,7 @@ impl TryFrom<proto::rpc::AccountStorageDetails> for AccountStorageDetails {
         let header: AccountStorageHeader = value
             .header
             .ok_or(proto::account::AccountStorageHeader::missing_field(stringify!(header)))?
-            .try_into()?;
+            .decode_and_verify()?;
         let map_details = value
             .map_details
             .into_iter()
@@ -399,8 +280,8 @@ impl TryFrom<proto::rpc::AccountStorageDetails> for AccountStorageDetails {
             .collect::<Result<Vec<AccountStorageMapDetails>, RpcError>>()?;
 
         // A partial map is only worth anything if it is anchored to the slot root the account
-        // commitment covers. Without this check the node could serve a self-consistent tree of
-        // its own making.
+        // commitment covers. Without this check the node could serve a self-consistent tree of its
+        // own making.
         for map_detail in &map_details {
             let StorageMapEntries::PartialMap { partial_smt, .. } = &map_detail.entries else {
                 continue;
@@ -453,8 +334,8 @@ impl AccountStorageMapDetails {
     /// this across all slots of a request, so honouring it per slot is a conservative bound.
     pub const MAX_PARTIAL_MAP_KEYS: usize = 64;
 
-    /// Returns `true` when the node reported that this slot has more entries than it will return
-    /// in a single response, meaning the entries have to be fetched through
+    /// Returns `true` when the node reported that this slot has more entries than it will return in
+    /// a single response, meaning the entries have to be fetched through
     /// [`crate::rpc::NodeRpcClient::sync_storage_maps`] instead.
     pub fn is_limit_exceeded(&self) -> bool {
         matches!(self.entries, StorageMapEntries::LimitExceeded)
@@ -512,11 +393,11 @@ impl TryFrom<proto::rpc::account_storage_details::AccountStorageMapDetails>
                 }
 
                 let partial_smt: PartialSmt = partial_map
-                    .partial_smt
-                    .ok_or(proto::rpc::account_storage_details::account_storage_map_details::PartialStorageMap::missing_field(
-                        stringify!(partial_smt),
-                    ))?
-                    .try_into()?;
+                        .partial_smt
+                        .ok_or(proto::rpc::account_storage_details::account_storage_map_details::PartialStorageMap::missing_field(
+                            stringify!(partial_smt),
+                        ))?
+                        .decode_and_verify()?;
 
                 // The response sends the values only inside the tree, so a key the tree does not
                 // track carries no value at all and would fail later, at read time.
@@ -544,8 +425,8 @@ impl TryFrom<proto::rpc::account_storage_details::AccountStorageMapDetails>
 
 /// Returns the first key that appears more than once, if any.
 ///
-/// The key lists this guards are bounded by [`AccountStorageMapDetails::MAX_PARTIAL_MAP_KEYS`],
-/// so the quadratic scan avoids allocating a set.
+/// The key lists this guards are bounded by [`AccountStorageMapDetails::MAX_PARTIAL_MAP_KEYS`], so
+/// the quadratic scan avoids allocating a set.
 fn first_duplicate_key(keys: &[StorageMapKey]) -> Option<&StorageMapKey> {
     keys.iter()
         .enumerate()
@@ -568,8 +449,8 @@ impl TryFrom<proto::rpc::account_storage_details::account_storage_map_details::a
     type Error = RpcError;
 
     fn try_from(value: proto::rpc::account_storage_details::account_storage_map_details::all_map_entries::StorageMapEntry) -> Result<Self, Self::Error> {
-        let key: StorageMapKey =
-            value.key.ok_or(RpcError::ExpectedDataMissing("key".into()))?.try_into()?;
+        let key = Word::try_from(value.key.ok_or(RpcError::ExpectedDataMissing("key".into()))?)
+            .map(StorageMapKey::new)?;
         let value = value.value.ok_or(RpcError::ExpectedDataMissing("value".into()))?.try_into()?;
         Ok(Self { key, value })
     }
@@ -622,12 +503,10 @@ impl StorageMapEntries {
 
 #[derive(Clone, Debug)]
 pub struct AccountVaultDetails {
-    /// A flag that is set to true if the account contains too many assets. This indicates
-    /// to the user that `SyncAccountVault` endpoint should be used to retrieve the
-    /// account's assets
+    /// A flag that is set to true if the account contains too many assets. This indicates to the
+    /// user that `SyncAccountVault` endpoint should be used to retrieve the account's assets
     pub too_many_assets: bool,
-    /// When `too_many_assets` == false, this will contain the list of assets in the
-    /// account's vault
+    /// When `too_many_assets` == false, this will contain the list of assets in the account's vault
     pub assets: Vec<Asset>,
 }
 
@@ -639,7 +518,7 @@ impl TryFrom<proto::rpc::AccountVaultDetails> for AccountVaultDetails {
         let assets = value
             .assets
             .into_iter()
-            .map(Asset::try_from)
+            .map(DecodeMessageExt::decode_and_verify)
             .collect::<Result<Vec<Asset>, _>>()?;
 
         Ok(Self { too_many_assets, assets })
@@ -788,42 +667,16 @@ impl TryFrom<proto::rpc::AccountResponse> for AccountProof {
                 ),
             }
         };
-        AccountProof::new(witness.try_into()?, details)
+        AccountProof::new(witness.decode_and_verify()?, details)
             .map_err(|err| RpcError::InvalidResponse(format!("{err}")))
-    }
-}
-
-// ACCOUNT WITNESS
-// ================================================================================================
-
-impl TryFrom<proto::account::AccountWitness> for AccountWitness {
-    type Error = RpcError;
-
-    fn try_from(account_witness: proto::account::AccountWitness) -> Result<Self, Self::Error> {
-        let state_commitment = account_witness
-            .commitment
-            .ok_or(proto::account::AccountWitness::missing_field(stringify!(state_commitment)))?
-            .try_into()?;
-        let merkle_path = account_witness
-            .path
-            .ok_or(proto::account::AccountWitness::missing_field(stringify!(merkle_path)))?
-            .try_into()?;
-        let account_id = account_witness
-            .witness_id
-            .ok_or(proto::account::AccountWitness::missing_field(stringify!(witness_id)))?
-            .try_into()?;
-
-        let witness = AccountWitness::new(account_id, state_commitment, merkle_path)
-            .map_err(|err| RpcError::InvalidResponse(format!("{err}")))?;
-        Ok(witness)
     }
 }
 
 // ACCOUNT STORAGE REQUEST
 // ================================================================================================
 
-/// Per-slot map data to include in a `/GetAccount` response. Slots absent here are omitted
-/// from `map_details` (the storage header still lists every slot).
+/// Per-slot map data to include in a `/GetAccount` response. Slots absent here are omitted from
+/// `map_details` (the storage header still lists every slot).
 ///
 /// - Empty key list: all entries, no proof. May come back as [`StorageMapEntries::LimitExceeded`].
 /// - Non-empty key list: just those keys, covered by one partial SMT.
@@ -922,13 +775,12 @@ pub enum VaultFetch {
     Always,
     /// Include vault data only if the account's current vault root differs from this commitment.
     ///
-    /// An omitted asset list is byte-identical to a genuinely empty vault, so callers must keep
-    /// the vault whose root they send and verify any reconstruction against the header's vault
-    /// root.
+    /// An omitted asset list is byte-identical to a genuinely empty vault, so callers must keep the
+    /// vault whose root they send and verify any reconstruction against the header's vault root.
     IfChangedFrom(Word),
 }
 
-impl From<VaultFetch> for Option<proto::primitives::Digest> {
+impl From<VaultFetch> for Option<proto::primitives::Word> {
     /// Encodes the policy as the request's `asset_vault_commitment`: `None` skips the vault, the
     /// empty word (which no real vault root equals) always fetches it, and a concrete commitment
     /// fetches only when it differs.
@@ -944,8 +796,8 @@ impl From<VaultFetch> for Option<proto::primitives::Digest> {
 /// Which storage map entries to include in a `/GetAccount` response.
 ///
 /// Mirrors the node's `AccountDetailRequest` storage request: the storage header (slot roots) is
-/// always returned; this only controls which map *entries* come with it. The variants are
-/// mutually exclusive.
+/// always returned; this only controls which map *entries* come with it. The variants are mutually
+/// exclusive.
 #[derive(Clone, Debug, Default)]
 pub enum StorageMapFetch {
     /// Don't request any map entries; only the storage header is returned.
@@ -955,8 +807,8 @@ pub enum StorageMapFetch {
     /// maps come back as [`StorageMapEntries::LimitExceeded`], to be resolved via
     /// [`crate::rpc::NodeRpcClient::sync_storage_maps`].
     All,
-    /// Request entries only for the explicitly named slots. See [`AccountStorageRequirements`]
-    /// for the per-slot semantics.
+    /// Request entries only for the explicitly named slots. See [`AccountStorageRequirements`] for
+    /// the per-slot semantics.
     Slots(AccountStorageRequirements),
 }
 
@@ -981,17 +833,17 @@ pub struct GetAccountRequest {
     pub storage: StorageMapFetch,
     /// Block at which to retrieve the proof.
     pub at: AccountStateAt,
-    /// Code commitment the client already has. When the on-chain commitment matches, the node
-    /// skips re-sending the code.
+    /// Code commitment the client already has. When the on-chain commitment matches, the node skips
+    /// re-sending the code.
     pub known_code: Option<AccountCode>,
     /// Vault data retrieval policy.
     pub vault: VaultFetch,
 }
 
 impl GetAccountRequest {
-    /// Creates a request for the minimal account data: the account commitment and storage header
-    /// at the chain tip, with no map entries, no known code, and no vault data. Opt into
-    /// additional data with the builder methods.
+    /// Creates a request for the minimal account data: the account commitment and storage header at
+    /// the chain tip, with no map entries, no known code, and no vault data. Opt into additional
+    /// data with the builder methods.
     #[must_use]
     pub fn new() -> Self {
         Self {

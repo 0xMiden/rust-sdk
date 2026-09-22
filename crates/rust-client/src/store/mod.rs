@@ -5,9 +5,9 @@
 //!
 //! ## Overview
 //!
-//! The storage module is central to the Miden client’s persistence layer. It defines the
-//! [`Store`] trait which abstracts over any concrete storage implementation. The trait exposes
-//! methods to (among others):
+//! The storage module is central to the Miden client’s persistence layer. It defines the [`Store`]
+//! trait which abstracts over any concrete storage implementation. The trait exposes methods to
+//! (among others):
 //!
 //! - Retrieve and update transactions, notes, and accounts.
 //! - Store and query block headers along with MMR peaks and authentication nodes.
@@ -61,7 +61,7 @@ use crate::note_transport::{NOTE_TRANSPORT_CURSOR_STORE_SETTING, NoteTransportCu
 use crate::rpc::encryption::{TRANSACTION_ENCRYPTION_KEY_STORE_SETTING, TransactionEncryptionKey};
 use crate::rpc::{RPC_LIMITS_STORE_SETTING, RpcLimits};
 use crate::sync::{NoteTagRecord, StateSyncUpdate};
-use crate::transaction::{TransactionRecord, TransactionStatusVariant, TransactionStoreUpdate};
+use crate::transaction::{TransactionRecord, TransactionStoreUpdate};
 
 /// Contains [`ClientDataStore`] to automatically implement [`DataStore`] for anything that
 /// implements [`Store`]. This isn't public because it's an implementation detail to instantiate the
@@ -98,6 +98,29 @@ pub use note_record::{
     input_note_states,
 };
 
+// SETTING SCOPE
+// ================================================================================================
+
+/// Which side of the client/user boundary a `settings` row belongs to.
+///
+/// The discriminants are what a store persists, so they are part of its schema.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum SettingScope {
+    /// Owned by the client itself. A store persists these rows but the public settings API on
+    /// [`Client`](crate::Client) never reaches them.
+    Client = 0,
+    /// Owned by the user of the client.
+    User = 1,
+}
+
+impl SettingScope {
+    /// Returns the value this scope is stored as.
+    pub fn as_u8(self) -> u8 {
+        self as u8
+    }
+}
+
 // SETTING MUTATION
 // ================================================================================================
 
@@ -116,8 +139,8 @@ pub enum SettingMutation {
 
 /// Identifies a position in the per-account consumption order of input notes.
 ///
-/// Obtained from a record returned by [`Store::get_input_note_after`] and passed back to fetch
-/// the note that follows it.
+/// Obtained from a record returned by [`Store::get_input_note_after`] and passed back to fetch the
+/// note that follows it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct InputNoteCursor {
     consumed_block_height: BlockNumber,
@@ -162,8 +185,8 @@ impl InputNoteCursor {
 /// changes that might have happened up to that point need to be rolled back and discarded.
 ///
 /// Because the [`Store`]'s ownership is shared between the executor and the client, interior
-/// mutability is expected to be implemented, which is why all methods receive `&self` and
-/// not `&mut self`.
+/// mutability is expected to be implemented, which is why all methods receive `&self` and not `&mut
+/// self`.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 pub trait Store: Send + Sync {
@@ -174,9 +197,8 @@ pub trait Store: Send + Sync {
     /// import/export a responsibility of the client.
     fn identifier(&self) -> &str;
 
-    /// Returns the current timestamp tracked by the store, measured in non-leap seconds since
-    /// Unix epoch. If the store implementation is incapable of tracking time, it should return
-    /// `None`.
+    /// Returns the current timestamp tracked by the store, measured in non-leap seconds since Unix
+    /// epoch. If the store implementation is incapable of tracking time, it should return `None`.
     ///
     /// This method is used to add time metadata to notes' states. This information doesn't have a
     /// functional impact on the client's operation, it's shown to the user for informational
@@ -233,9 +255,9 @@ pub trait Store: Send + Sync {
     ) -> Result<Vec<OutputNoteRecord>, StoreError>;
 
     /// Retrieves the input note following `cursor` in the filtered set for the given consumer
-    /// account, or the first matching note when `cursor` is `None`. Optionally restricts to a
-    /// block range via `block_start` and `block_end`. Returns `None` when no matching note
-    /// follows the cursor.
+    /// account, or the first matching note when `cursor` is `None`. Optionally restricts to a block
+    /// range via `block_start` and `block_end`. Returns `None` when no matching note follows the
+    /// cursor.
     ///
     /// Build the cursor for the next call from the returned record with
     /// [`InputNoteCursor::from_record`].
@@ -243,8 +265,8 @@ pub trait Store: Send + Sync {
     /// # Ordering
     ///
     /// Notes are sorted by their per-account on-chain execution order: block number, then
-    /// per-account transaction order within the block. Notes consumed by the same transaction
-    /// are ordered deterministically and consistently across calls.
+    /// per-account transaction order within the block. Notes consumed by the same transaction are
+    /// ordered deterministically and consistently across calls.
     async fn get_input_note_after(
         &self,
         filter: NoteFilter,
@@ -321,25 +343,23 @@ pub trait Store: Send + Sync {
         filter: PartialBlockchainFilter,
     ) -> Result<BTreeMap<InOrderIndex, Word>, StoreError>;
 
-    /// Returns the chain MMR peaks at the current sync height (peaks at `forest = block_num`,
-    /// i.e. excluding `block_num` itself as a leaf).
+    /// Returns the chain MMR peaks at the current sync height (peaks at `forest = block_num`, i.e.
+    /// excluding `block_num` itself as a leaf).
     ///
-    /// The peaks' `forest().num_leaves()` equals the current sync height by construction,
-    /// so callers can derive the synced block number from the returned peaks without a
-    /// second query.
+    /// The peaks' `forest().num_leaves()` equals the current sync height by construction, so
+    /// callers can derive the synced block number from the returned peaks without a second query.
     ///
     /// Before the first sync, returns an empty [`MmrPeaks`].
     async fn get_current_blockchain_peaks(&self) -> Result<MmrPeaks, StoreError>;
 
-    /// Inserts a block header together with its MMR authentication nodes in a single
-    /// transaction, so the header and the nodes that rebuild its `PartialMmr` are committed
-    /// together.
+    /// Inserts a block header together with its MMR authentication nodes in a single transaction,
+    /// so the header and the nodes that rebuild its `PartialMmr` are committed together.
     ///
-    /// The header is inserted-if-not-exists with a one-way `has_client_notes` upgrade: on
-    /// conflict the stored `header` is preserved and the flag only moves from `false` to
-    /// `true`, never back. The MMR nodes are likewise inserted-if-not-exists: an
-    /// `InOrderIndex` already present is left untouched (auth paths of tracked blocks share
-    /// internal nodes, so re-inserting an existing index must be a no-op, not an error).
+    /// The header is inserted-if-not-exists with a one-way `has_client_notes` upgrade: on conflict
+    /// the stored `header` is preserved and the flag only moves from `false` to `true`, never back.
+    /// The MMR nodes are likewise inserted-if-not-exists: an `InOrderIndex` already present is left
+    /// untouched (auth paths of tracked blocks share internal nodes, so re-inserting an existing
+    /// index must be a no-op, not an error).
     async fn insert_block_header(
         &self,
         block_header: &BlockHeader,
@@ -363,14 +383,14 @@ pub trait Store: Send + Sync {
 
     /// Prunes historical account states for the specified account up to the given nonce.
     ///
-    /// Deletes all historical entries with `replaced_at_nonce <= up_to_nonce` from the
-    /// historical tables (headers, storage, storage map entries, and assets).
+    /// Deletes all historical entries with `replaced_at_nonce <= up_to_nonce` from the historical
+    /// tables (headers, storage, storage map entries, and assets).
     ///
-    /// Also removes orphaned `account_code` entries that are no longer referenced by any
-    /// account header.
+    /// Also removes orphaned `account_code` entries that are no longer referenced by any account
+    /// header.
     ///
-    /// Returns the total number of rows deleted, including historical entries and orphaned
-    /// account code.
+    /// Returns the total number of rows deleted, including historical entries and orphaned account
+    /// code.
     async fn prune_account_history(
         &self,
         account_id: AccountId,
@@ -410,8 +430,8 @@ pub trait Store: Send + Sync {
     async fn get_account(&self, account_id: AccountId)
     -> Result<Option<AccountRecord>, StoreError>;
 
-    /// Retrieves the [`AccountCode`] for the specified account.
-    /// Returns `None` if the account is not found.
+    /// Retrieves the [`AccountCode`] for the specified account. Returns `None` if the account is
+    /// not found.
     async fn get_account_code(
         &self,
         account_id: AccountId,
@@ -506,8 +526,8 @@ pub trait Store: Send + Sync {
     /// Returns `false` if the account is not registered, in which case nothing is written.
     /// Registering is [`Self::track_account_witness`]'s job alone.
     ///
-    /// The caller should verify the witness against `block_num`'s account root first. The read
-    /// path only checks the block number, so a bad witness stored here surfaces later as a kernel
+    /// The caller should verify the witness against `block_num`'s account root first. The read path
+    /// only checks the block number, so a bad witness stored here surfaces later as a kernel
     /// assertion during execution rather than as a chain validation error at sync time.
     async fn update_account_witness(
         &self,
@@ -519,22 +539,32 @@ pub trait Store: Send + Sync {
     // SETTINGS
     // --------------------------------------------------------------------------------------------
 
-    /// Adds a value to the `settings` table.
-    async fn set_setting(&self, key: String, value: Vec<u8>) -> Result<(), StoreError>;
+    /// Adds a value to `scope` in the `settings` table.
+    async fn set_setting(
+        &self,
+        scope: SettingScope,
+        key: String,
+        value: Vec<u8>,
+    ) -> Result<(), StoreError>;
 
-    /// Retrieves a value from the `settings` table.
-    async fn get_setting(&self, key: String) -> Result<Option<Vec<u8>>, StoreError>;
+    /// Retrieves a value from `scope` in the `settings` table.
+    async fn get_setting(
+        &self,
+        scope: SettingScope,
+        key: String,
+    ) -> Result<Option<Vec<u8>>, StoreError>;
 
-    /// Deletes a value from the `settings` table. Returns `true` if the key was present.
-    async fn remove_setting(&self, key: String) -> Result<bool, StoreError>;
+    /// Deletes a value from `scope` in the `settings` table. Returns `true` if the key was present.
+    async fn remove_setting(&self, scope: SettingScope, key: String) -> Result<bool, StoreError>;
 
-    /// Returns all the keys from the `settings` table.
-    async fn list_setting_keys(&self) -> Result<Vec<String>, StoreError>;
+    /// Returns the keys held by `scope` in the `settings` table.
+    async fn list_setting_keys(&self, scope: SettingScope) -> Result<Vec<String>, StoreError>;
 
-    /// Applies a batch of [`SettingMutation`]s. Use this when several `settings` entries must stay
-    /// mutually consistent (e.g. a record and its secondary index).
+    /// Applies a batch of [`SettingMutation`]s against `scope`. Use this when several `settings`
+    /// entries must stay mutually consistent (e.g. a record and its secondary index).
     async fn apply_settings_mutations(
         &self,
+        scope: SettingScope,
         mutations: Vec<SettingMutation>,
     ) -> Result<(), StoreError>;
 
@@ -584,18 +614,23 @@ pub trait Store: Send + Sync {
 
     /// Gets the note transport cursor.
     ///
-    /// This is used to reduce the number of fetched notes from the note transport network.
-    /// If no cursor exists, initializes it to 0.
+    /// This is used to reduce the number of fetched notes from the note transport network. If no
+    /// cursor exists, initializes it to 0.
     async fn get_note_transport_cursor(&self) -> Result<NoteTransportCursor, StoreError> {
-        let cursor_bytes = if let Some(bytes) =
-            self.get_setting(NOTE_TRANSPORT_CURSOR_STORE_SETTING.into()).await?
+        let cursor_bytes = if let Some(bytes) = self
+            .get_setting(SettingScope::Client, NOTE_TRANSPORT_CURSOR_STORE_SETTING.into())
+            .await?
         {
             bytes
         } else {
             // Lazy initialization: create cursor if not present
             let initial = 0u64.to_be_bytes().to_vec();
-            self.set_setting(NOTE_TRANSPORT_CURSOR_STORE_SETTING.into(), initial.clone())
-                .await?;
+            self.set_setting(
+                SettingScope::Client,
+                NOTE_TRANSPORT_CURSOR_STORE_SETTING.into(),
+                initial.clone(),
+            )
+            .await?;
             initial
         };
         let array: [u8; 8] = cursor_bytes
@@ -615,8 +650,12 @@ pub trait Store: Send + Sync {
         cursor: NoteTransportCursor,
     ) -> Result<(), StoreError> {
         let cursor_bytes = cursor.value().to_be_bytes().to_vec();
-        self.set_setting(NOTE_TRANSPORT_CURSOR_STORE_SETTING.into(), cursor_bytes)
-            .await?;
+        self.set_setting(
+            SettingScope::Client,
+            NOTE_TRANSPORT_CURSOR_STORE_SETTING.into(),
+            cursor_bytes,
+        )
+        .await?;
         Ok(())
     }
 
@@ -625,7 +664,9 @@ pub trait Store: Send + Sync {
 
     /// Gets persisted RPC limits. Returns `None` if not stored.
     async fn get_rpc_limits(&self) -> Result<Option<RpcLimits>, StoreError> {
-        let Some(bytes) = self.get_setting(RPC_LIMITS_STORE_SETTING.into()).await? else {
+        let Some(bytes) =
+            self.get_setting(SettingScope::Client, RPC_LIMITS_STORE_SETTING.into()).await?
+        else {
             return Ok(None);
         };
         let limits = RpcLimits::read_from_bytes(&bytes)?;
@@ -634,7 +675,8 @@ pub trait Store: Send + Sync {
 
     /// Persists RPC limits to the store.
     async fn set_rpc_limits(&self, limits: RpcLimits) -> Result<(), StoreError> {
-        self.set_setting(RPC_LIMITS_STORE_SETTING.into(), limits.to_bytes()).await
+        self.set_setting(SettingScope::Client, RPC_LIMITS_STORE_SETTING.into(), limits.to_bytes())
+            .await
     }
 
     // TRANSACTION ENCRYPTION KEY
@@ -647,7 +689,9 @@ pub trait Store: Send + Sync {
     async fn get_transaction_encryption_key(
         &self,
     ) -> Result<Option<TransactionEncryptionKey>, StoreError> {
-        let Some(bytes) = self.get_setting(TRANSACTION_ENCRYPTION_KEY_STORE_SETTING.into()).await?
+        let Some(bytes) = self
+            .get_setting(SettingScope::Client, TRANSACTION_ENCRYPTION_KEY_STORE_SETTING.into())
+            .await?
         else {
             return Ok(None);
         };
@@ -660,14 +704,19 @@ pub trait Store: Send + Sync {
         &self,
         key: &TransactionEncryptionKey,
     ) -> Result<(), StoreError> {
-        self.set_setting(TRANSACTION_ENCRYPTION_KEY_STORE_SETTING.into(), key.to_bytes())
-            .await
+        self.set_setting(
+            SettingScope::Client,
+            TRANSACTION_ENCRYPTION_KEY_STORE_SETTING.into(),
+            key.to_bytes(),
+        )
+        .await
     }
 
-    /// Removes the cached transaction encryption key, so the next submission fetches and verifies
-    /// a fresh one. Used when the node rejects a submission sealed against a retired key.
+    /// Removes the cached transaction encryption key, so the next submission fetches and verifies a
+    /// fresh one. Used when the node rejects a submission sealed against a retired key.
     async fn remove_transaction_encryption_key(&self) -> Result<(), StoreError> {
-        self.remove_setting(TRANSACTION_ENCRYPTION_KEY_STORE_SETTING.into()).await?;
+        self.remove_setting(SettingScope::Client, TRANSACTION_ENCRYPTION_KEY_STORE_SETTING.into())
+            .await?;
         Ok(())
     }
 
@@ -737,13 +786,12 @@ pub trait Store: Send + Sync {
     }
 
     /// Returns vault asset witnesses for `asset_ids` against the account's vault with root
-    /// `vault_root`. An asset absent from the vault yields an emptiness proof rather than an
-    /// error, which the executor needs when an asset is being added to the vault.
+    /// `vault_root`. An asset absent from the vault yields an emptiness proof rather than an error,
+    /// which the executor needs when an asset is being added to the vault.
     ///
-    /// The default implementation reconstructs the vault via [`Store::get_account_vault`] and
-    /// opens each witness from it; backends that keep an in-memory Merkle forest (e.g.
-    /// `SqliteStore`) override it to open the witnesses directly, without materializing the
-    /// vault.
+    /// The default implementation reconstructs the vault via [`Store::get_account_vault`] and opens
+    /// each witness from it; backends that keep an in-memory Merkle forest (e.g. `SqliteStore`)
+    /// override it to open the witnesses directly, without materializing the vault.
     async fn get_vault_asset_witnesses(
         &self,
         account_id: AccountId,
@@ -781,9 +829,9 @@ pub trait Store: Send + Sync {
 
     /// Retrieves the storage for a specific account.
     ///
-    /// Can take an optional map root to retrieve only part of the storage,
-    /// If it does, it will either return an account storage with a single
-    /// slot (the one requested), or an error if not found.
+    /// Can take an optional map root to retrieve only part of the storage, If it does, it will
+    /// either return an account storage with a single slot (the one requested), or an error if not
+    /// found.
     async fn get_account_storage(
         &self,
         account_id: AccountId,
@@ -792,8 +840,7 @@ pub trait Store: Send + Sync {
 
     /// Retrieves a storage slot value by name.
     ///
-    /// For `Value` slots, returns the stored word.
-    /// For `Map` slots, returns the map root.
+    /// For `Value` slots, returns the stored word. For `Map` slots, returns the map root.
     ///
     /// The default implementation of this method uses [`Store::get_account_storage`].
     async fn get_account_storage_item(
@@ -842,8 +889,8 @@ pub trait Store: Send + Sync {
     // PARTIAL ACCOUNTS
     // --------------------------------------------------------------------------------------------
 
-    /// Retrieves an [`AccountRecord`] object, this contains the account's latest partial
-    /// state along with its status. Returns `None` if the partial account is not found.
+    /// Retrieves an [`AccountRecord`] object, this contains the account's latest partial state
+    /// along with its status. Returns `None` if the partial account is not found.
     async fn get_minimal_partial_account(
         &self,
         account_id: AccountId,
@@ -879,28 +926,6 @@ pub enum TransactionFilter {
     Ids(Vec<TransactionId>),
 }
 
-// TRANSACTIONS FILTER HELPERS
-// ================================================================================================
-
-impl TransactionFilter {
-    /// Returns a [String] containing the query for this Filter.
-    pub fn to_query(&self) -> String {
-        const QUERY: &str = "SELECT tx.id, script.script, tx.details, tx.status \
-            FROM transactions AS tx LEFT JOIN transaction_scripts AS script ON tx.script_root = script.script_root";
-        match self {
-            TransactionFilter::All => QUERY.to_string(),
-            TransactionFilter::Uncommitted => format!(
-                "{QUERY} WHERE tx.status_variant = {}",
-                TransactionStatusVariant::Pending as u8,
-            ),
-            TransactionFilter::Ids(_) => {
-                // Use SQLite's array parameter binding
-                format!("{QUERY} WHERE tx.id IN rarray(?)")
-            },
-        }
-    }
-}
-
 // NOTE FILTER
 // ================================================================================================
 
@@ -912,8 +937,8 @@ pub enum NoteFilter {
     /// Return a list of committed notes ([`InputNoteRecord`] or [`OutputNoteRecord`]). These
     /// represent notes that the blockchain has included in a block.
     Committed,
-    /// Filter by consumed notes ([`InputNoteRecord`] or [`OutputNoteRecord`]). notes that have
-    /// been used as inputs in transactions.
+    /// Filter by consumed notes ([`InputNoteRecord`] or [`OutputNoteRecord`]). notes that have been
+    /// used as inputs in transactions.
     Consumed,
     /// Return a list of expected notes ([`InputNoteRecord`] or [`OutputNoteRecord`]). These
     /// represent notes for which the store doesn't have anchor data.
@@ -922,8 +947,8 @@ pub enum NoteFilter {
     List(Vec<NoteId>),
     /// Return a list containing any notes whose details commitment matches one of the provided
     /// [`NoteDetailsCommitment`] vector. Unlike [`NoteFilter::List`], this matches the
-    /// metadata-independent details commitment, so it also resolves metadata-less notes (which
-    /// have a NULL `note_id`).
+    /// metadata-independent details commitment, so it also resolves metadata-less notes (which have
+    /// a NULL `note_id`).
     DetailsCommitments(Vec<NoteDetailsCommitment>),
     /// Return a list containing any notes that match the provided [`Nullifier`] vector.
     Nullifiers(Vec<Nullifier>),
@@ -931,7 +956,7 @@ pub enum NoteFilter {
     /// output notes.
     Processing,
     /// Return a list containing any notes whose script root matches one of the provided
-    /// [`NoteScriptRoot`]s. This filter doesn't apply to output notes.
+    /// [`NoteScriptRoot`]s. Notes whose script isn't known (e.g. partial output notes) never match.
     ScriptRoots(Vec<NoteScriptRoot>),
     /// Return a list containing the note that matches with the provided [`NoteId`]. The query will
     /// return an error if the note isn't found.
@@ -987,8 +1012,8 @@ pub enum AccountStorageFilter {
     Root(Word),
     /// Return an [`AccountStorage`] with a single slot that matches the provided slot name.
     SlotName(StorageSlotName),
-    /// Return an [`AccountStorage`] containing only the slots whose names are in the provided
-    /// list. Useful to avoid loading the full storage when only a known subset of slots is needed
-    /// (e.g. when applying a delta to a large account).
+    /// Return an [`AccountStorage`] containing only the slots whose names are in the provided list.
+    /// Useful to avoid loading the full storage when only a known subset of slots is needed (e.g.
+    /// when applying a delta to a large account).
     SlotNames(Vec<StorageSlotName>),
 }

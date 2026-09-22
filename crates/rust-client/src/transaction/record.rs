@@ -42,8 +42,8 @@ impl TransactionRecord {
         TransactionRecord { id, details, script, status }
     }
 
-    /// Updates (if necessary) the transaction status to signify that the transaction was
-    /// committed. Will return true if the record was modified, false otherwise.
+    /// Updates (if necessary) the transaction status to signify that the transaction was committed.
+    /// Will return true if the record was modified, false otherwise.
     pub fn commit_transaction(
         &mut self,
         commit_height: BlockNumber,
@@ -57,15 +57,15 @@ impl TransactionRecord {
                 };
                 true
             },
-            // TODO: We need a better strategy here. If a transaction was discarded within this
-            // same chain of updates, it would be better to pass the state to committed and then
-            // remove the account invalid states and make them valid again
+            // TODO: We need a better strategy here. If a transaction was discarded within this same
+            // chain of updates, it would be better to pass the state to committed and then remove
+            // the account invalid states and make them valid again
             TransactionStatus::Discarded(_) | TransactionStatus::Committed { .. } => false,
         }
     }
 
-    /// Updates (if necessary) the transaction status to signify that the transaction was
-    /// discarded. Will return true if the record was modified, false otherwise.
+    /// Updates (if necessary) the transaction status to signify that the transaction was discarded.
+    /// Will return true if the record was modified, false otherwise.
     pub fn discard_transaction(&mut self, cause: DiscardCause) -> bool {
         match self.status {
             TransactionStatus::Pending => {

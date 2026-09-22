@@ -28,7 +28,13 @@ use miden_protocol::note::{
     NoteTag,
     PartialNote,
 };
-use miden_protocol::transaction::{InputNote, InputNotes, TransactionArgs, TransactionScript};
+use miden_protocol::transaction::{
+    InputNote,
+    InputNotes,
+    TransactionArgs,
+    TransactionId,
+    TransactionScript,
+};
 use miden_protocol::vm::AdviceMap;
 use miden_protocol::{MastForestScriptError, Word};
 use miden_standards::account::auth::{FeeConversionInfo, commit_fee_conversion_info};
@@ -597,6 +603,14 @@ pub enum TransactionRequestError {
     InputNoteNotAuthenticated(NoteId),
     #[error("note with details commitment {} has already been consumed", .0.to_hex())]
     InputNoteAlreadyConsumed(NoteDetailsCommitment),
+    #[error(
+        "note with details commitment {} is being consumed by pending transaction {transaction_id}",
+        note.to_hex()
+    )]
+    InputNoteBeingProcessed {
+        note: NoteDetailsCommitment,
+        transaction_id: TransactionId,
+    },
     #[error(
         "output note declares sender {actual} but the transaction is executed by account {expected}"
     )]

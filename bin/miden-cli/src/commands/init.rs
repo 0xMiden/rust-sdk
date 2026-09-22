@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::Parser;
+use miden_client::address::NetworkId;
 use tracing::info;
 
 use crate::CLIENT_CONFIG_FILE_NAME;
@@ -102,10 +103,16 @@ pub struct InitCmd {
     #[clap(long)]
     local: bool,
 
-    /// Network configuration to use. Options are `devnet`, `testnet`, `localhost` or a custom RPC
-    /// endpoint. By default, the command uses the Testnet network.
+    /// Network configuration to use. Options are `mainnet`, `testnet`, `devnet`, `localhost` or a
+    /// custom RPC endpoint. By default, the command uses the Testnet network.
     #[clap(long, short)]
     network: Option<Network>,
+
+    /// Bech32 human-readable part of the network, such as `mm`. Set it when `--network` is a custom
+    /// RPC endpoint of a known network, so addresses use that network's prefix instead of the
+    /// generic `mcst`.
+    #[arg(long, value_name = "HRP")]
+    network_id: Option<NetworkId>,
 
     /// Path to the store file.
     #[arg(long)]
@@ -189,6 +196,8 @@ impl InitCmd {
             cli_config.rpc.endpoint = CliEndpoint::try_from(network.clone())?;
         }
 
+        cli_config.rpc.network_id = self.network_id.as_ref().map(ToString::to_string);
+
         if let Some(path) = &self.store_path {
             cli_config.store_filepath = PathBuf::from(path);
         }
@@ -213,6 +222,7 @@ impl InitCmd {
             // Auto-configure note transport for known networks
             match &self.network {
                 None | Some(Network::Testnet) => Some(NoteTransportConfig::default()),
+                Some(Network::Mainnet) => Some(NoteTransportConfig::mainnet()),
                 Some(Network::Devnet) => Some(NoteTransportConfig::devnet()),
                 Some(Network::Localhost | Network::Custom(_)) => None,
             }

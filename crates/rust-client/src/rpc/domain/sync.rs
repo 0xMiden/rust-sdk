@@ -1,7 +1,12 @@
-use miden_protocol::block::{BlockHeader, BlockNumber};
+use alloc::string::ToString;
+use alloc::vec::Vec;
+
+use miden_objects::DecodeMessageExt;
+use miden_protocol::block::{BlockHeader, BlockNumber, BlockSignatures};
 use miden_protocol::crypto::merkle::mmr::MmrDelta;
 
 use crate::rpc::domain::MissingFieldHelper;
+use crate::rpc::errors::RpcConversionError;
 use crate::rpc::{RpcError, generated as proto};
 
 // SYNC TARGET
@@ -38,6 +43,8 @@ pub struct ChainMmrInfo {
     pub mmr_delta: MmrDelta,
     /// The block header at `block_to`.
     pub block_header: BlockHeader,
+    /// The validator signatures over `block_header`.
+    pub block_signatures: BlockSignatures,
 }
 
 impl TryFrom<proto::rpc::SyncChainMmrResponse> for ChainMmrInfo {
@@ -48,21 +55,30 @@ impl TryFrom<proto::rpc::SyncChainMmrResponse> for ChainMmrInfo {
             .block_range
             .ok_or(proto::rpc::SyncChainMmrResponse::missing_field(stringify!(block_range)))?;
 
-        let mmr_delta = value
+        let mmr_delta: MmrDelta = value
             .mmr_delta
             .ok_or(proto::rpc::SyncChainMmrResponse::missing_field(stringify!(mmr_delta)))?
-            .try_into()?;
+            .decode_and_verify()?;
 
-        let block_header = value
+        let block_header: BlockHeader = value
             .block_header
             .ok_or(proto::rpc::SyncChainMmrResponse::missing_field(stringify!(block_header)))?
-            .try_into()?;
+            .decode_and_build_unchecked()?;
+
+        let signatures = value
+            .block_signatures
+            .into_iter()
+            .map(DecodeMessageExt::decode_and_verify)
+            .collect::<Result<Vec<_>, _>>()?;
+        let block_signatures = BlockSignatures::new(signatures)
+            .map_err(|err| RpcConversionError::InvalidField(err.to_string()))?;
 
         Ok(Self {
             block_from: block_range.block_from.into(),
             block_to: block_range.block_to.into(),
             mmr_delta,
             block_header,
+            block_signatures,
         })
     }
 }

@@ -19,6 +19,7 @@ use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrPeaks, PartialMmr};
 use miden_protocol::note::{NoteScript, NoteScriptRoot};
+use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::transaction::{AccountInputs, PartialBlockchain};
 use miden_protocol::vm::FutureMaybeSend;
 use miden_protocol::{Word, ZERO};
@@ -318,7 +319,8 @@ impl DataStore for ClientDataStore {
         &self,
         account_id: AccountId,
         mut block_refs: BTreeSet<BlockNumber>,
-    ) -> Result<(PartialAccount, BlockHeader, PartialBlockchain), DataStoreError> {
+    ) -> Result<(PartialAccount, BlockHeader, ProtocolConfig, PartialBlockchain), DataStoreError>
+    {
         // Last block is used as reference (it does not need to be authenticated manually)
         let ref_block = *block_refs.last().ok_or(DataStoreError::other("block set is empty"))?;
 
@@ -427,7 +429,12 @@ impl DataStore for ClientDataStore {
             (block_header, partial_blockchain)
         };
 
-        Ok((partial_account, block_header, partial_blockchain))
+        let protocol_config = crate::protocol_config::load_protocol_config(
+            self.store.as_ref(),
+            block_header.protocol_config_commitment(),
+        )
+        .await?;
+        Ok((partial_account, block_header, protocol_config, partial_blockchain))
     }
 
     /// Retrieves witnesses for the requested assets from the local store, falling back to a single

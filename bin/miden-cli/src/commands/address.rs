@@ -4,7 +4,7 @@ use miden_client::account::AccountId;
 use miden_client::address::{Address, AddressId, AddressInterface, NetworkId, RoutingParameters};
 
 use crate::errors::CliError;
-use crate::utils::parse_account_id;
+use crate::utils::{configured_network_id, parse_account_id, validate_network_eq};
 use crate::{Parser, Subcommand, create_dynamic_table};
 
 /// Mirrors [`AddressInterface`], enabling parsing for CLI commands.
@@ -67,7 +67,7 @@ pub struct AddressCmd {
 
 impl AddressCmd {
     pub async fn execute<AUTH>(&self, client: Client<AUTH>) -> Result<(), CliError> {
-        let network_id = client.network_id().await?;
+        let network_id = configured_network_id()?;
         match &self.command {
             Some(AddressSubCommand::List { account_id: Some(account_id) }) => {
                 list_account_addresses(client, account_id, network_id).await?;
@@ -187,7 +187,7 @@ async fn encode_address<AUTH>(
     let routing_params = match tag_len {
         Some(tag_len) => RoutingParameters::new(interface)
             .with_note_tag_len(tag_len)
-            .map_err(|e| CliError::Address(e, String::new()))?,
+            .map_err(|e| CliError::Address(e, format!("invalid tag_len {tag_len}")))?,
         None => RoutingParameters::new(interface),
     };
     let address = Address::new(account_id).with_routing_parameters(routing_params);
@@ -218,11 +218,7 @@ fn decode_account_address(
         )));
     }
 
-    if &decoded_network_id != expected_network_id {
-        return Err(CliError::Input(format!(
-            "Address network `{decoded_network_id}` does not match configured network `{expected_network_id}`",
-        )));
-    }
+    validate_network_eq(&decoded_network_id, expected_network_id)?;
 
     Ok(address)
 }

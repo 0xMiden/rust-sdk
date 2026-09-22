@@ -1,10 +1,11 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use miden_client::Client;
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;
+use miden_client::protocol_config::ProtocolConfig;
 use miden_client::rpc::{Endpoint, GrpcClient, VerifyingRpcClient};
+use miden_client::{Client, Deserializable};
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
 
 /// Default store directory name, created in the current working directory.
@@ -52,5 +53,15 @@ pub async fn create_client(
         .build()
         .await?;
 
+    let protocol_config_path =
+        std::env::var_os("MIDEN_PROTOCOL_CONFIG").map(PathBuf::from).or_else(|| {
+            let path = PathBuf::from("data/protocol-config.bin");
+            path.exists().then_some(path)
+        });
+    if let Some(protocol_config_path) = protocol_config_path {
+        let bytes = std::fs::read(&protocol_config_path)?;
+        let config = ProtocolConfig::read_from_bytes(&bytes)?;
+        client.add_protocol_config(config).await?;
+    }
     Ok(client)
 }

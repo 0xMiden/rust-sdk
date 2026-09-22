@@ -152,7 +152,7 @@ impl CallCmd {
         }
 
         // The output stack only holds MIN_STACK_DEPTH felts.
-        if let Some(n) = call_code.result_felts
+        if let Some(n) = call_code.typed.as_ref().and_then(TypedProcInfo::output_felt_count)
             && n > MIN_STACK_DEPTH
         {
             return Err(CliError::InvalidArgument(format!(
@@ -196,11 +196,11 @@ impl CallCmd {
             _ => None,
         };
 
-        let (args, result_felts) = if let Some(typed) = &typed {
+        let args = if let Some(typed) = &typed {
             println!("Signature: {typed}\n");
             // Checks the argument count as well, and names the procedure and both counts when it is
             // wrong, so there is nothing to check here first.
-            (typed.encode_args(&self.args)?, typed.output_felt_count())
+            typed.encode_args(&self.args)?
         } else {
             println!("Signature: {name}(...) [no type info]\n");
             println!(
@@ -208,7 +208,7 @@ impl CallCmd {
                  argument is passed as one field element, the argument count is not checked, and \
                  the result is printed as a stack dump."
             );
-            (encode_raw_args(&self.args)?, None)
+            encode_raw_args(&self.args)?
         };
 
         // The account's code is loaded from the client's store at VM runtime, so the library
@@ -216,13 +216,7 @@ impl CallCmd {
         // to resolve `call.<digest>` to a known procedure — otherwise it emits a "phantom target"
         // warning. Dynamic linking provides that resolution without embedding the library bytes.
         let builder = client.code_builder().with_dynamically_linked_package(&package)?;
-        Ok(CallCode {
-            builder,
-            digest,
-            args,
-            typed,
-            result_felts,
-        })
+        Ok(CallCode { builder, digest, args, typed })
     }
 
     /// Resolves the call from a hex digest. Nothing describes the procedure, so each argument is
@@ -249,7 +243,6 @@ impl CallCmd {
             digest,
             args: encode_raw_args(&self.args)?,
             typed: None,
-            result_felts: None,
         })
     }
 }
@@ -257,36 +250,33 @@ impl CallCmd {
 // HELPERS
 // ================================================================================================
 
-/// Resolved call code: the linked builder, the procedure digest, the encoded arguments, the type
-/// information used to render the result when the package describes it, and the stack width of the
-/// results when known.
+/// Resolved call code: the linked builder, the procedure digest, the encoded arguments, and the
+/// type information the arguments were encoded against, which the result is rendered with as well.
 struct CallCode {
     builder: CodeBuilder,
     digest: Word,
     args: Vec<Felt>,
     typed: Option<TypedProcInfo>,
-    result_felts: Option<usize>,
 }
 
 /// Prints the values the procedure returned, rendered as their declared types when the package
 /// describes them and as raw stack felts otherwise.
-fn print_call_result(
-    output_stack: &[Felt; MIN_STACK_DEPTH],
-    typed: Option<&TypedProcInfo>,
-) -> Result<(), CliError> {
-    match typed {
-        // A procedure that returns nothing has no result to show; anything else that cannot be
-        // rendered is an error, since a raw stack dump would hide that the result is not a valid
-        // value of its type.
-        Some(typed) => {
-            if let Some(rendered) = typed.decode_result(output_stack.as_slice())? {
-                println!("Result: {rendered}");
-            }
-        },
+fn print_call_result(output_stack: &[Felt; MIN_STACK_DEPTH], typed: Option<&TypedProcInfo>) {
+    let Some(typed) = typed else {
         // Nothing says where the results end, so the dump runs to the last non-zero value.
-        None => print_executed_program_stack(output_stack, None),
+        print_executed_program_stack(output_stack, None);
+        return;
+    };
+
+    match typed.decode_result(output_stack.as_slice()) {
+        // A procedure that returns nothing has no result to show.
+        Ok(None) => {},
+        Ok(Some(rendered)) => println!("Result: {rendered}"),
+        Err(err) => {
+            println!("The result is not a valid value of the procedure's return type: {err}");
+            print_executed_program_stack(output_stack, typed.output_felt_count());
+        },
     }
-    Ok(())
 }
 
 /// Runs a remote call via FPI. FPI cannot mutate the foreign account, so there is no state delta to
@@ -299,7 +289,7 @@ async fn run_remote_call<AUTH: Keystore + Sync + 'static>(
     call_code: CallCode,
     advice_entries: Vec<(Word, Vec<Felt>)>,
 ) -> Result<(), CliError> {
-    let CallCode { builder, digest, args, typed, .. } = call_code;
+    let CallCode { builder, digest, args, typed } = call_code;
     let tx_script =
         build_fpi_script(builder, target_id, digest, &args).map_err(|err| match err {
             TransactionRequestError::ForeignProcedureInputsTooLong { max, actual } => {
@@ -322,7 +312,7 @@ async fn run_remote_call<AUTH: Keystore + Sync + 'static>(
         )
         .await?;
 
-    print_call_result(&output_stack, typed.as_ref())?;
+    print_call_result(&output_stack, typed.as_ref());
 
     println!("\nA call on an account read from the network can only read it; no state delta.");
     Ok(())
@@ -336,7 +326,7 @@ async fn run_local_call<AUTH: Keystore + Sync + 'static>(
     call_code: CallCode,
     advice_entries: Vec<(Word, Vec<Felt>)>,
 ) -> Result<(), CliError> {
-    let CallCode { builder, digest, args, typed, .. } = call_code;
+    let CallCode { builder, digest, args, typed } = call_code;
     let tx_script = generate_tx_script(builder, &digest, &args)?;
 
     // 1) Read-only execution to get return values.
@@ -348,7 +338,7 @@ async fn run_local_call<AUTH: Keystore + Sync + 'static>(
             BTreeMap::new(),
         )
         .await?;
-    print_call_result(&output_stack, typed.as_ref())?;
+    print_call_result(&output_stack, typed.as_ref());
 
     // 2) Transaction execution to get the state delta.
     let tx_request = TransactionRequestBuilder::new()
@@ -491,9 +481,11 @@ fn resolve_procedure_export<'a>(
         if proc.signature.as_ref().is_some_and(|sig| sig.abi.is_wasm_canonical_abi()) {
             return Ok(proc);
         }
-        // Hand-written MASM carries no signature the caller can encode against, but it is still
-        // callable with raw field elements. Keep it and go on looking: the manifest is free to
-        // write the Component Model export after this one, and that one is worth more.
+        // Any other match is the fallback: an export carrying no signature at all (hand-written
+        // MASM), or one that describes a lowering rather than the values the caller passes (`Fast`,
+        // `C`). Each of those is still callable with raw field elements. Keep the first one and go
+        // on looking: the manifest is free to write the Component Model export after it, and that
+        // one is worth more.
         untyped.get_or_insert(proc);
     }
 
@@ -654,12 +646,8 @@ mod tests {
         // name. Were it found, its `i32` return would be printed as a value.
         let manifest = manifest_with_exports(&[lowered_form()]);
 
-        let err = resolve_procedure_export(&manifest, "increment-by").unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            "invalid argument: Procedure 'increment-by' not found. Available:\n  \
-             ::\"miden:counter/counter@0.1.0\"::cc::\"miden:counter/counter@0.1.0#increment-by\""
-        );
+        // The message itself is pinned by `an_unknown_procedure_lists_the_whole_export_surface`.
+        assert!(resolve_procedure_export(&manifest, "increment-by").is_err());
     }
 
     #[test]
@@ -668,20 +656,6 @@ mod tests {
 
         let export = resolve_procedure_export(&manifest, "increment_by").unwrap();
         assert_eq!(export.signature, interface_form().1);
-    }
-
-    #[test]
-    fn a_hand_written_masm_export_does_not_shadow_the_component_model_one() {
-        // A MASM `increment_by` matches the query by name, but `call` needs the Component Model
-        // signature: only that one describes the values the user passes and reads.
-        let masm =
-            || ("::mix::increment_by", Some(FunctionType::new(CallConv::Fast, [], [Type::U32])));
-        for exports in [[interface_form(), masm()], [masm(), interface_form()]] {
-            let manifest = manifest_with_exports(&exports);
-
-            let export = resolve_procedure_export(&manifest, "increment_by").unwrap();
-            assert_eq!(export.signature, interface_form().1);
-        }
     }
 
     #[test]
@@ -698,13 +672,29 @@ mod tests {
     }
 
     #[test]
-    fn an_export_without_a_signature_is_still_resolved() {
-        // MASM written by hand: the export has the name we ask for, but no type info. It is still
-        // callable with raw field elements, so it has to resolve rather than be rejected.
-        let manifest = manifest_with_exports(&[("::mix::\"increment-by\"", None)]);
+    fn an_untyped_export_is_resolved_but_never_shadows_the_component_model_one() {
+        // Every export that is not the Component Model one takes the fallback path, whether it
+        // carries no signature at all (hand-written MASM) or one describing a lowering. Each is
+        // still callable with raw field elements, so it resolves on its own, and each must lose to
+        // the Component Model export in whichever order the manifest writes the two.
+        let untyped_forms = [
+            ("::mix::\"increment-by\"", None),
+            ("::mix::increment_by", Some(FunctionType::new(CallConv::Fast, [], [Type::U32]))),
+        ];
 
-        let export = resolve_procedure_export(&manifest, "increment-by").unwrap();
-        assert_eq!(export.signature, None);
+        for untyped in untyped_forms {
+            let manifest = manifest_with_exports(slice::from_ref(&untyped));
+            let export = resolve_procedure_export(&manifest, "increment-by").unwrap();
+            assert_eq!(export.signature, untyped.1, "{} did not resolve alone", untyped.0);
+
+            for exports in
+                [[untyped.clone(), interface_form()], [interface_form(), untyped.clone()]]
+            {
+                let manifest = manifest_with_exports(&exports);
+                let export = resolve_procedure_export(&manifest, "increment-by").unwrap();
+                assert_eq!(export.signature, interface_form().1, "{} won", untyped.0);
+            }
+        }
     }
 
     /// The Goldilocks field modulus, `2^64 - 2^32 + 1`. The first value with no felt of its own.
@@ -721,34 +711,26 @@ mod tests {
     }
 
     #[test]
-    fn a_raw_argument_at_the_field_modulus_is_rejected() {
-        // The modulus is what an unchecked `u64` argument would silently wrap around to.
-        let err = encode_raw_args(&[FIELD_MODULUS.to_string()]).unwrap_err();
+    fn a_raw_argument_that_is_not_a_decimal_felt_is_rejected() {
+        let cases = [
+            // What an unchecked `u64` argument would silently wrap around to.
+            (
+                FIELD_MODULUS.to_string(),
+                format!("invalid argument: Argument '{FIELD_MODULUS}' is too large for a felt."),
+            ),
+            // The typed path writes a `felt` in decimal and reserves `0x` for wider values, so the
+            // untyped path cannot take hex either: it would work only until the procedure is given
+            // a signature.
+            (
+                "0xff".to_string(),
+                "invalid argument: Invalid argument '0xff'. Expected a felt.".to_string(),
+            ),
+        ];
 
-        assert_eq!(
-            err.to_string(),
-            format!("invalid argument: Argument '{FIELD_MODULUS}' is too large for a felt.")
-        );
-    }
+        for (arg, expected) in cases {
+            let err = encode_raw_args(slice::from_ref(&arg)).unwrap_err();
 
-    #[test]
-    fn a_raw_hex_argument_is_rejected() {
-        // The typed path writes a `felt` in decimal and reserves `0x` for wider values, so the
-        // untyped path cannot take hex either: it would work only until the procedure is given a
-        // signature.
-        let err = encode_raw_args(&["0xff".to_string()]).unwrap_err();
-
-        assert_eq!(err.to_string(), "invalid argument: Invalid argument '0xff'. Expected a felt.");
-    }
-
-    #[test]
-    fn the_component_model_export_wins_over_an_untyped_one_written_before_it() {
-        // The untyped export is seen first, but it is only the fallback: resolution has to go on
-        // and take the Component Model one.
-        let manifest =
-            manifest_with_exports(&[("::mix::\"increment-by\"", None), interface_form()]);
-
-        let export = resolve_procedure_export(&manifest, "increment-by").unwrap();
-        assert_eq!(export.signature, interface_form().1);
+            assert_eq!(err.to_string(), expected, "argument '{arg}'");
+        }
     }
 }

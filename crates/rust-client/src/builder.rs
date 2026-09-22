@@ -5,6 +5,7 @@ use alloc::vec::Vec;
 
 use miden_protocol::assembly::{DefaultSourceManager, SourceManagerSync};
 use miden_protocol::block::BlockNumber;
+use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::{MAX_TX_EXECUTION_CYCLES, MIN_TX_EXECUTION_CYCLES};
 use miden_tx::auth::TransactionAuthenticator;
 use miden_tx::{ExecutionOptions, LocalTransactionProver};
@@ -65,13 +66,14 @@ pub trait StoreFactory {
 /// ## Network-Aware Constructors
 ///
 /// Use one of the network-specific constructors to get sensible defaults for a specific network:
+/// - [`for_mainnet()`](Self::for_mainnet) - Pre-configured for Miden mainnet
 /// - [`for_testnet()`](Self::for_testnet) - Pre-configured for Miden testnet
 /// - [`for_devnet()`](Self::for_devnet) - Pre-configured for Miden devnet
 /// - [`for_localhost()`](Self::for_localhost) - Pre-configured for local development
 ///
 /// The builder provides defaults for:
 /// - **RPC endpoint**: Automatically configured based on the network
-/// - **Transaction prover**: Remote for testnet/devnet, local for localhost
+/// - **Transaction prover**: Remote for mainnet/testnet/devnet, local for localhost
 /// - **RNG**: Random seed-based prover randomness
 ///
 /// ## Components
@@ -84,6 +86,8 @@ pub trait StoreFactory {
 ///
 /// - **Store** ([`Store`]): Provides persistence for accounts, notes, and transaction history.
 ///   Configure via [`store()`](Self::store).
+///
+/// - **Protocol configuration** ([`ProtocolConfig`]): Defines the protocol parameters for transaction execution and note screening. Register it with [`protocol_config()`](Self::protocol_config), or use a store that already contains it.
 ///
 /// - **RNG** ([`ClientCryptoRng`](crate::ClientCryptoRng)): Provides randomness for generating
 ///   keys, serial numbers, and other cryptographic operations. It is always created from a random
@@ -111,6 +115,8 @@ pub trait StoreFactory {
 ///   transactions and account proofs to be considered valid. Configure via
 ///   [`max_block_number_delta()`](Self::max_block_number_delta).
 pub struct ClientBuilder<AUTH> {
+    /// An optional protocol configuration, registered in the store when the client is built.
+    protocol_config: Option<ProtocolConfig>,
     /// An optional custom RPC client. If provided, this takes precedence over `rpc_endpoint`.
     rpc_api: Option<Arc<dyn NodeRpcClient>>,
     /// An optional store provided by the user.
@@ -146,6 +152,7 @@ pub struct ClientBuilder<AUTH> {
 impl<AUTH> Default for ClientBuilder<AUTH> {
     fn default() -> Self {
         Self {
+            protocol_config: None,
             rpc_api: None,
             store: None,
             rng: None,
@@ -172,6 +179,50 @@ impl<AUTH> ClientBuilder<AUTH>
 where
     AUTH: BuilderAuthenticator,
 {
+    /// Creates a `ClientBuilder` pre-configured for Miden mainnet.
+    ///
+    /// This automatically configures:
+    /// - **RPC**: [`Endpoint::mainnet()`]
+    /// - **Prover**: Remote prover at [`MAINNET_PROVER_ENDPOINT`]
+    /// - **Note transport**:
+    ///   [`NOTE_TRANSPORT_MAINNET_ENDPOINT`](crate::note_transport::NOTE_TRANSPORT_MAINNET_ENDPOINT)
+    ///
+    /// You still need to provide:
+    /// - A store (via `.store()`)
+    /// - An authenticator (via `.authenticator()`)
+    ///
+    /// All defaults can be overridden by calling the corresponding builder methods after
+    /// `for_mainnet()`.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let client = ClientBuilder::for_mainnet()
+    ///     .store(store)
+    ///     .authenticator(Arc::new(keystore))
+    ///     .build()
+    ///     .await?;
+    /// ```
+    #[must_use]
+    pub fn for_mainnet() -> Self {
+        let endpoint = Endpoint::mainnet();
+        Self {
+            rpc_api: Some(Arc::new(VerifyingRpcClient::new(GrpcClient::new(
+                &endpoint,
+                DEFAULT_GRPC_TIMEOUT_MS,
+            )))),
+            tx_prover: Some(Arc::new(RemoteTransactionProver::new(
+                MAINNET_PROVER_ENDPOINT.to_string(),
+            ))),
+            note_transport_config: Some(NoteTransportConfig {
+                endpoint: crate::note_transport::NOTE_TRANSPORT_MAINNET_ENDPOINT.to_string(),
+                timeout_ms: DEFAULT_GRPC_TIMEOUT_MS,
+            }),
+            endpoint: Some(endpoint),
+            ..Self::default()
+        }
+    }
+
     /// Creates a `ClientBuilder` pre-configured for Miden testnet.
     ///
     /// This automatically configures:
@@ -337,6 +388,13 @@ where
         self
     }
 
+    /// Registers a protocol configuration for execution and note screening.
+    #[must_use]
+    pub fn protocol_config(mut self, config: ProtocolConfig) -> Self {
+        self.protocol_config = Some(config);
+        self
+    }
+
     /// Optionally provide a custom RNG.
     ///
     /// Restricted to the `testing` feature: the client's RNG generates secret keys and seals
@@ -439,8 +497,8 @@ where
     /// Returns the endpoint configured for this builder, if any.
     ///
     /// This is set automatically when using network-specific constructors like
-    /// [`for_testnet()`](Self::for_testnet), [`for_devnet()`](Self::for_devnet), or
-    /// [`for_localhost()`](Self::for_localhost).
+    /// [`for_mainnet()`](Self::for_mainnet), [`for_testnet()`](Self::for_testnet),
+    /// [`for_devnet()`](Self::for_devnet), or [`for_localhost()`](Self::for_localhost).
     #[must_use]
     pub fn endpoint(&self) -> Option<&Endpoint> {
         self.endpoint.as_ref()
@@ -518,7 +576,7 @@ where
             vec![Arc::new(PswapTransactionObserver::new(store.clone()))];
 
         // Construct and return the Client
-        Ok(Client {
+        let client = Client {
             store,
             rng: ClientRng::new(rng),
             rpc_api,
@@ -539,7 +597,11 @@ where
             cache_partial_mmr_in_memory: self.cache_partial_mmr_in_memory,
             partial_mmr: None,
             transaction_observers,
-        })
+        };
+        if let Some(config) = self.protocol_config {
+            client.add_protocol_config(config).await?;
+        }
+        Ok(client)
     }
 }
 

@@ -56,6 +56,7 @@ std = [
   "dep:tokio",
   "miden-agglayer/std",
   "miden-assembly-syntax/std",
+  "miden-objects/std",
   "miden-processor/std",
   "miden-protocol/std",
   "miden-tx/std",
@@ -78,6 +79,7 @@ tonic = []
 miden-agglayer        = { workspace = true }
 miden-assembly-syntax = { workspace = true }
 miden-debug           = { optional = true, workspace = true }
+miden-objects         = { workspace = true }
 miden-processor       = { workspace = true }
 miden-protocol        = { workspace = true }
 miden-standards       = { workspace = true }
@@ -90,7 +92,6 @@ anyhow       = { workspace = true }
 async-trait  = { workspace = true }
 chrono       = { workspace = true }
 futures      = { version = "0.3" }
-hex          = { workspace = true }
 prost        = { features = ["derive"], workspace = true }
 prost-types  = { version = "0.14" }
 rand         = { workspace = true }
@@ -115,6 +116,7 @@ tonic-web-wasm-client = { default-features = false, version = "0.9" }
 [build-dependencies]
 miden-node-proto-build           = { workspace = true }
 miden-note-transport-proto-build = { workspace = true }
+miden-objects                    = { workspace = true }
 miden-protocol                   = { workspace = true }
 miden-standards                  = { workspace = true }
 miette                           = { workspace = true }

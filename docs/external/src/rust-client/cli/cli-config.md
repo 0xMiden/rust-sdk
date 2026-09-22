@@ -87,8 +87,11 @@ miden-client clear-config --global
 An `rpc` section is used to configure the connection to the Miden node. It contains the following fields:
 
 - `endpoint`: The Miden node endpoint as a URL, such as `"https://rpc.devnet.miden.io"`.
+- `network_id` (optional): The bech32 human-readable part (HRP) of the network the node serves, such as `"mm"`. The CLI uses it to encode and validate addresses. When it is not set, the network ID is derived from `endpoint`: the built-in `mainnet`, `testnet`, `devnet` and `localhost` endpoints map to `mm`, `mtst`, `mdev` and `mlcl`, and any other endpoint maps to `mcst`. Set it when `endpoint` points at your own node of a known network.
 
-This field can be set with the `--network` flag when running the `miden-client init` command. For example, to set the testnet endpoint, you can run: `miden-client init --network testnet`.
+The `endpoint` field can be set with the `--network` flag when running the `miden-client init` command. The flag accepts `mainnet`, `testnet`, `devnet`, `localhost` or a custom endpoint URL. For example, to set the testnet endpoint, you can run: `miden-client init --network testnet`.
+
+The `network_id` field can be set with the `--network-id` flag. For example, to use your own mainnet node: `miden-client init --network https://my-node.example.com --network-id mm`.
 
 :::note
 
@@ -171,7 +174,23 @@ If not set, the default behavior is to ignore the block difference between the c
 miden-client init --block-delta 256
 ```
 
+### Protocol configuration
+
+Transaction execution and note screening require a protocol configuration. Obtain a serialized configuration from the network operator and set `MIDEN_PROTOCOL_CONFIG` to its path:
+
+```sh
+export MIDEN_PROTOCOL_CONFIG=/path/to/protocol-config.bin
+```
+
+The CLI stores the configuration in the client database. It remains available after you unset the variable. The CLI reports an error if the specified file cannot be read or decoded. Relative paths are resolved from the current working directory.
+
+For a network that uses the current protocol defaults, you can instead set `fee_faucet_id = "0x..."` at the top level of `miden-client.toml`. Replace `0x...` with the full native fee faucet account ID. This constructs the current protocol configuration for that fee asset. The resulting commitment must match the reference block. Use the serialized file for networks with custom protocol parameters.
+
+For a local testing node, `make start-node-background` writes `data/protocol-config.bin`. The integration test Make targets pass this file to the CLI and benchmarks.
+
 ### Environment variables
+
+- `MIDEN_PROTOCOL_CONFIG`: Path to a serialized protocol configuration. The CLI and benchmarks register this configuration in their stores. Integration tests also accept this variable and otherwise use `data/protocol-config.bin` when it exists.
 
 - `MIDEN_CLIENT_HOME`: Overrides the default global `.miden` directory (`~/.miden`). When set, all commands that reference the global directory will use the specified path instead. This is useful for keeping separate environments or storing the client data in a non-default location. For example:
 

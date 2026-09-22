@@ -96,24 +96,6 @@ impl fmt::Debug for SqliteForestBackend<'_, '_> {
     }
 }
 
-/// Read-only view over the same transaction.
-///
-/// A separate type because the [`Backend::Reader`] contract requires a view that implements
-/// [`BackendReader`] but not [`Backend`]; every method delegates to the wrapped backend. The view
-/// observes the transaction's current (uncommitted) state, intentionally, so that later forest
-/// queries within a store operation see earlier writes of the same transaction. This deviates from
-/// the upstream contract's point-in-time snapshot wording (like the no-IO wording on
-/// `entry_count`); both deviations are safe for this crate-private backend, whose forests live only
-/// inside a single store operation, and are raised in the upstream API discussion.
-#[derive(Clone, Copy)]
-pub(crate) struct SqliteForestBackendReader<'a, 'conn>(SqliteForestBackend<'a, 'conn>);
-
-impl fmt::Debug for SqliteForestBackendReader<'_, '_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SqliteForestBackendReader").finish_non_exhaustive()
-    }
-}
-
 /// Backend-prepared data for two-phase mutations: one forward SMT mutation set per touched lineage.
 pub(crate) struct SqlitePreparedMutations {
     entries: Vec<PreparedLineage>,
@@ -150,9 +132,9 @@ fn tree_meta(conn: &Connection, lineage: LineageId) -> Result<Option<(VersionId,
         params![lineage.as_bytes().as_slice()],
         |row| {
             Ok((
-                column_value_as_u64(row, 0)?,
-                row.get::<_, Vec<u8>>(1)?,
-                column_value_as_u64(row, 2)?,
+                column_value_as_u64(row, "version")?,
+                row.get::<_, Vec<u8>>("root")?,
+                column_value_as_u64(row, "entry_count")?,
             ))
         },
     )
@@ -184,7 +166,7 @@ fn load_entries(conn: &Connection, lineage: LineageId) -> Result<Vec<(Word, Word
         .map_err(internal)?;
     let rows = stmt
         .query_map(params![lineage.as_bytes().as_slice()], |row| {
-            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+            Ok((row.get::<_, Vec<u8>>("key")?, row.get::<_, Vec<u8>>("value")?))
         })
         .map_err(internal)?;
 
@@ -236,7 +218,7 @@ fn load_leaf_entries(
         .map_err(internal)?;
     let rows = stmt
         .query_map(params![lineage.as_bytes().as_slice(), u64_to_value(position)], |row| {
-            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+            Ok((row.get::<_, Vec<u8>>("key")?, row.get::<_, Vec<u8>>("value")?))
         })
         .map_err(internal)?;
 
@@ -398,9 +380,9 @@ fn compute_update_mutations(
         let rows = stmt
             .query_map(params![lineage.as_bytes().as_slice()], |row| {
                 Ok((
-                    row.get::<_, Vec<u8>>(0)?,
-                    row.get::<_, Vec<u8>>(1)?,
-                    column_value_as_u64(row, 2)?,
+                    row.get::<_, Vec<u8>>("key")?,
+                    row.get::<_, Vec<u8>>("value")?,
+                    column_value_as_u64(row, "leaf_position")?,
                 ))
             })
             .map_err(internal)?;
@@ -446,15 +428,17 @@ fn compute_update_mutations(
         let leaf_index = LeafIndex::<SMT_DEPTH>::from(key);
         let position = leaf_index.position();
 
-        if let Entry::Vacant(entry) = leaves.entry(position) {
-            let entries = if bulk_loaded {
-                Vec::new()
-            } else {
-                load_leaf_entries(conn, lineage, position)?
-            };
-            entry.insert(entries);
-        }
-        let entries = leaves.get_mut(&position).expect("leaf loaded above");
+        let entries = match leaves.entry(position) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => {
+                let stored = if bulk_loaded {
+                    Vec::new()
+                } else {
+                    load_leaf_entries(conn, lineage, position)?
+                };
+                entry.insert(stored)
+            },
+        };
 
         let old_value = entries.iter().find(|(k, _)| *k == key).map_or(EMPTY_WORD, |(_, v)| *v);
         if value == old_value {
@@ -700,6 +684,9 @@ fn upsert_tree_meta(
 // BACKEND READER
 // ================================================================================================
 
+/// Every method reads through the borrowed transaction, so the values reflect the transaction's
+/// current, uncommitted state. `entry_count` reads the tree metadata row, so it does disk I/O; the
+/// upstream contract asks for a cached value that does no I/O.
 impl BackendReader for SqliteForestBackend<'_, '_> {
     fn open(&self, lineage: LineageId, key: Word) -> Result<SmtProof> {
         let (_version, stored_root, _count) = require_tree_meta(self.tx, lineage)?;
@@ -765,9 +752,9 @@ impl BackendReader for SqliteForestBackend<'_, '_> {
         let rows = stmt
             .query_map([], |row| {
                 Ok((
-                    row.get::<_, Vec<u8>>(0)?,
-                    column_value_as_u64(row, 1)?,
-                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, Vec<u8>>("lineage")?,
+                    column_value_as_u64(row, "version")?,
+                    row.get::<_, Vec<u8>>("root")?,
                 ))
             })
             .map_err(internal)?;
@@ -798,49 +785,22 @@ impl BackendReader for SqliteForestBackend<'_, '_> {
     }
 }
 
-impl BackendReader for SqliteForestBackendReader<'_, '_> {
-    fn open(&self, lineage: LineageId, key: Word) -> Result<SmtProof> {
-        self.0.open(lineage, key)
-    }
-
-    fn get_leaf(&self, lineage: LineageId, leaf_index: LeafIndex<SMT_DEPTH>) -> Result<SmtLeaf> {
-        self.0.get_leaf(lineage, leaf_index)
-    }
-
-    fn get(&self, lineage: LineageId, key: Word) -> Result<Option<Word>> {
-        self.0.get(lineage, key)
-    }
-
-    fn version(&self, lineage: LineageId) -> Result<VersionId> {
-        self.0.version(lineage)
-    }
-
-    fn lineages(&self) -> Result<impl Iterator<Item = LineageId>> {
-        self.0.lineages()
-    }
-
-    fn trees(&self) -> Result<impl Iterator<Item = TreeWithRoot>> {
-        self.0.trees()
-    }
-
-    fn entry_count(&self, lineage: LineageId) -> Result<usize> {
-        self.0.entry_count(lineage)
-    }
-
-    fn entries(&self, lineage: LineageId) -> Result<impl Iterator<Item = Result<TreeEntry>>> {
-        self.0.entries(lineage)
-    }
-}
-
 // BACKEND
 // ================================================================================================
 
-impl<'a, 'conn> Backend for SqliteForestBackend<'a, 'conn> {
-    type Reader = SqliteForestBackendReader<'a, 'conn>;
+impl Backend for SqliteForestBackend<'_, '_> {
+    /// The backend is its own reader. [`Backend::Reader`] is bound only by [`BackendReader`], so a
+    /// separate read-only type is not required. The upstream contract asks for a type that is not a
+    /// [`Backend`]. This crate accepts the deviation because the backend is crate-private and a
+    /// forest built on it lives only inside one store operation.
+    type Reader = Self;
     type PreparedMutations = SqlitePreparedMutations;
 
+    /// The reader observes the transaction's current, uncommitted state, so a later forest query in
+    /// the same store operation sees the earlier writes of that transaction. The upstream contract
+    /// describes a point-in-time snapshot instead.
     fn reader(&self) -> Result<Self::Reader> {
-        Ok(SqliteForestBackendReader(*self))
+        Ok(*self)
     }
 
     fn compute_mutations(

@@ -38,7 +38,9 @@ async fn {TEST_FUNCTION_NAME}() -> Result<()> {{
     let client_config = ClientConfig::default()
         .with_note_transport_endpoint(None)
         .with_funders(fee_funding::funders_path_from_env().as_deref())?;
-    {ORIGINAL_FUNCTION_NAME}(client_config).await
+    let result = {ORIGINAL_FUNCTION_NAME}(client_config.clone()).await;
+    let flushed = client_config.flush_funder().await;
+    result.and(flushed)
 }}"#;
 
 const TEST_REGISTRY_HEADER: &str = r#"// Auto-generated test cases module
@@ -299,9 +301,9 @@ fn parse_test_function_name(line: &str) -> Option<String> {
     let tokens: Vec<&str> = s.split_whitespace().collect();
     // Look for public function patterns
     let fn_pos = if tokens[0] == "pub" && tokens[1] == "async" && tokens[2] == "fn" {
-        2 // pub async fn 
+        2 // pub async fn
     } else if tokens[0] == "pub" && tokens[1] == "fn" {
-        1 // pub fn 
+        1 // pub fn
     } else {
         return None;
     };

@@ -3,7 +3,7 @@
 #![allow(clippy::items_after_statements)]
 
 mod accounts;
-pub(crate) mod helpers;
+pub(crate) mod rows;
 mod storage;
 mod vault;
 

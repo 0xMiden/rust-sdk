@@ -6,9 +6,8 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::num::NonZeroU16;
 
-use miden_protocol::Word;
 use miden_protocol::account::{AccountCodeInterface, AccountId};
-use miden_protocol::asset::{Asset, NonFungibleAsset};
+use miden_protocol::asset::Asset;
 use miden_protocol::crypto::merkle::MerkleError;
 use miden_protocol::crypto::merkle::store::MerkleStore;
 use miden_protocol::errors::{
@@ -18,7 +17,6 @@ use miden_protocol::errors::{
     NoteError,
     StorageMapError,
     TransactionInputError,
-    TransactionScriptError,
 };
 use miden_protocol::note::{
     Note,
@@ -32,9 +30,14 @@ use miden_protocol::note::{
 };
 use miden_protocol::transaction::{InputNote, InputNotes, TransactionArgs, TransactionScript};
 use miden_protocol::vm::AdviceMap;
+use miden_protocol::{MastForestScriptError, Word};
 use miden_standards::account::auth::{FeeConversionInfo, commit_fee_conversion_info};
 use miden_standards::errors::CodeBuilderError;
-use miden_standards::tx_script::{SendNotesTransactionScript, SendNotesTransactionScriptError};
+use miden_standards::tx_script::{
+    ExpirationTransactionScript,
+    SendNotesTransactionScript,
+    SendNotesTransactionScriptError,
+};
 use miden_tx::utils::serde::{
     ByteReader,
     ByteWriter,
@@ -150,7 +153,7 @@ impl TransactionRequest {
     }
 
     /// Returns the assets held by the transaction's input notes.
-    pub fn incoming_assets(&self) -> (BTreeMap<AccountId, u64>, Vec<NonFungibleAsset>) {
+    pub fn incoming_assets(&self) -> (BTreeMap<AccountId, u64>, Vec<Asset>) {
         collect_assets(self.input_notes.iter().flat_map(|note| note.assets().iter()))
     }
 
@@ -387,6 +390,10 @@ impl TransactionRequest {
     /// no such constraint and yields `None`, so the request's own
     /// [`TransactionRequestBuilder::script_arg`] applies to it.
     ///
+    /// A request without a script template normally runs without a transaction script. When such a
+    /// request sets an expiration delta, the standard [`ExpirationTransactionScript`] is used so
+    /// that the delta is enforced; the script reads the delta from its own `TX_SCRIPT_ARGS`.
+    ///
     /// Scripts supplied by the caller via [`TransactionScriptTemplate::CustomScript`] are expected
     /// to have already been compiled against the client's source manager (e.g. via
     /// [`Client::code_builder`](crate::Client::code_builder)).
@@ -409,7 +416,13 @@ impl TransactionRequest {
                 };
                 Ok(Some((script.tx_script().clone(), Some(script.tx_script_args()))))
             },
-            None => Ok(None),
+            None => match self.expiration_delta.and_then(NonZeroU16::new) {
+                Some(delta) => {
+                    let script = ExpirationTransactionScript::new(delta);
+                    Ok(Some((script.into(), Some(script.tx_script_args()))))
+                },
+                None => Ok(None),
+            },
         }
     }
 }
@@ -524,26 +537,26 @@ impl Deserializable for TransactionRequest {
 // ================================================================================================
 
 /// Accumulates fungible totals and collectable non-fungible assets from an iterator of assets.
+///
+/// An asset that is neither fungible nor non-fungible is left out of both buckets, since neither
+/// balance arithmetic applies to it. Execution judges such an asset instead.
 pub(crate) fn collect_assets<'a>(
     assets: impl Iterator<Item = &'a Asset>,
-) -> (BTreeMap<AccountId, u64>, Vec<NonFungibleAsset>) {
+) -> (BTreeMap<AccountId, u64>, Vec<Asset>) {
     let mut fungible_balance_map = BTreeMap::new();
     let mut non_fungible_set = Vec::new();
 
-    assets.for_each(|asset| match asset {
-        Asset::Fungible(fungible) => {
+    for asset in assets {
+        if let Some(fungible) = asset.as_fungible() {
             let amount = fungible.amount().as_u64();
             fungible_balance_map
                 .entry(fungible.faucet_id())
                 .and_modify(|balance| *balance += amount)
                 .or_insert(amount);
-        },
-        Asset::NonFungible(non_fungible) => {
-            if !non_fungible_set.contains(non_fungible) {
-                non_fungible_set.push(*non_fungible);
-            }
-        },
-    });
+        } else if asset.is_non_fungible() && !non_fungible_set.contains(asset) {
+            non_fungible_set.push(*asset);
+        }
+    }
 
     (fungible_balance_map, non_fungible_set)
 }
@@ -599,7 +612,7 @@ pub enum TransactionRequestError {
     )]
     FeeConversionInfoRequired(String),
     #[error("invalid transaction script")]
-    InvalidTransactionScript(#[from] TransactionScriptError),
+    InvalidTransactionScript(#[from] MastForestScriptError),
     #[error("merkle proof error")]
     MerkleError(#[from] MerkleError),
     #[error("empty transaction: the request has no input notes and no account state changes")]
@@ -676,7 +689,13 @@ mod tests {
     use rand::SeedableRng;
     use rand_chacha::ChaCha20Rng;
 
-    use super::{TransactionRequest, TransactionRequestBuilder};
+    use super::{
+        ExpirationTransactionScript,
+        NonZeroU16,
+        TransactionRequest,
+        TransactionRequestBuilder,
+        TransactionScript,
+    };
     use crate::rng::draw_word;
     use crate::rpc::domain::account::AccountStorageRequirements;
     use crate::transaction::ForeignAccount;
@@ -701,6 +720,34 @@ mod tests {
             ))
             .into()
         });
+    }
+
+    #[test]
+    fn expiration_delta_without_script_template_builds_expiration_script() {
+        let account = AccountBuilder::new(Default::default())
+            .with_component(MockAccountComponent::with_empty_slots())
+            .with_component(AuthSingleSig::new(Approver::new(
+                PublicKeyCommitment::from(EMPTY_WORD),
+                AuthScheme::Falcon512Poseidon2,
+            )))
+            .account_type(AccountType::Private)
+            .build_existing()
+            .unwrap();
+        let code_interface = account.code_interface();
+
+        let delta = NonZeroU16::new(9).unwrap();
+        let tx_request =
+            TransactionRequestBuilder::new().expiration_delta(delta.get()).build().unwrap();
+
+        let (script, script_args) =
+            tx_request.build_transaction_script(&code_interface).unwrap().unwrap();
+        let expected = ExpirationTransactionScript::new(delta);
+        assert_eq!(script.root(), TransactionScript::from(expected).root());
+        assert_eq!(script_args, Some(expected.tx_script_args()));
+
+        // Without a delta there is still no script to run.
+        let tx_request = TransactionRequestBuilder::new().build().unwrap();
+        assert!(tx_request.build_transaction_script(&code_interface).unwrap().is_none());
     }
 
     #[test]

@@ -83,12 +83,6 @@ pub struct NewWalletCmd {
     #[cfg_attr(feature = "testing", arg(long, default_value_t = false))]
     #[cfg_attr(not(feature = "testing"), arg(skip = false))]
     pub offline: bool,
-    /// Invitation code that registers the new account on the network allowlist.
-    ///
-    /// The code is single use and binds to this account only.
-    #[cfg_attr(feature = "testing", arg(long, value_name = "CODE", conflicts_with = "offline"))]
-    #[cfg_attr(not(feature = "testing"), arg(long, value_name = "CODE"))]
-    pub invitation_code: Option<String>,
 }
 
 impl NewWalletCmd {
@@ -109,7 +103,6 @@ impl NewWalletCmd {
             &package_paths,
             self.init_storage_data_path.clone(),
             self.offline,
-            self.invitation_code.as_deref(),
         )
         .await?;
 
@@ -183,12 +176,6 @@ pub struct NewAccountCmd {
     #[cfg_attr(feature = "testing", arg(long, default_value_t = false))]
     #[cfg_attr(not(feature = "testing"), arg(skip = false))]
     pub offline: bool,
-    /// Invitation code that registers the new account on the network allowlist.
-    ///
-    /// The code is single use and binds to this account only.
-    #[cfg_attr(feature = "testing", arg(long, value_name = "CODE", conflicts_with = "offline"))]
-    #[cfg_attr(not(feature = "testing"), arg(long, value_name = "CODE"))]
-    pub invitation_code: Option<String>,
 }
 
 impl NewAccountCmd {
@@ -204,7 +191,6 @@ impl NewAccountCmd {
             &self.packages,
             self.init_storage_data_path.clone(),
             self.offline,
-            self.invitation_code.as_deref(),
         )
         .await?;
 
@@ -440,7 +426,6 @@ async fn create_client_account<AUTH: Keystore + Sync + 'static>(
     package_paths: &[PathBuf],
     init_storage_data_path: Option<PathBuf>,
     offline: bool,
-    invitation_code: Option<&str>,
 ) -> Result<Account, CliError> {
     if package_paths.is_empty() {
         return Err(CliError::InvalidArgument(
@@ -545,11 +530,7 @@ async fn create_client_account<AUTH: Keystore + Sync + 'static>(
         println!("Offline mode enabled for local account creation.");
     }
 
-    client.add_account(&account, false, invitation_code).await?;
-
-    if invitation_code.is_some() {
-        println!("Registered account {} on the network allowlist.", account.id().to_hex());
-    }
+    client.add_account(&account, false).await?;
 
     Ok(account)
 }

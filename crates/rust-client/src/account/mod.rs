@@ -25,7 +25,7 @@
 //!     .build_with_schema_commitment()?;
 //!
 //! // Add the account to the client. The account already embeds its seed information.
-//! client.add_account(&account, false, None).await?;
+//! client.add_account(&account, false).await?;
 //! #   Ok(())
 //! # }
 //! ```
@@ -135,7 +135,7 @@ mod account_reader;
 pub use account_reader::AccountReader;
 /// Raw access to `miden-standards` account modules for items not curated by `miden-client`.
 pub use miden_standards::account as standards;
-use miden_standards::account::auth::{Approver, AuthSingleSig};
+use miden_standards::account::auth::{Approver, AuthSingleSig, NetworkAccount};
 use miden_standards::account::faucets::FungibleFaucet;
 pub use miden_standards::account::inspection::{
     AccountBuilderSchemaCommitmentExt,
@@ -284,10 +284,40 @@ impl<AUTH> Client<AUTH> {
         &mut self,
         account: &Account,
         overwrite: bool,
-        invitation_code: Option<&str>,
     ) -> Result<(), ClientError> {
-        self.add_account_inner(account, ClientAccountType::Native, overwrite, invitation_code)
-            .await
+        self.add_account_inner(account, ClientAccountType::Native, overwrite).await
+    }
+
+    // ACCOUNT REGISTRATION
+    // --------------------------------------------------------------------------------------------
+
+    /// Binds an invitation code to a tracked account on the network allowlist.
+    pub async fn register_account(
+        &self,
+        invitation_code: &str,
+        account_id: AccountId,
+    ) -> Result<(), ClientError> {
+        let (_, status) = self
+            .store
+            .get_account_header(account_id)
+            .await?
+            .ok_or(ClientError::AccountDataNotFound(account_id))?;
+        if !status.is_new() {
+            return Err(ClientError::AccountIsNotNew(account_id));
+        }
+
+        let account = self
+            .get_account(account_id)
+            .await?
+            .ok_or(ClientError::AccountDataNotFound(account_id))?;
+        // The node admits a network account without a code.
+        if NetworkAccount::new(account).is_ok() {
+            return Err(ClientError::AccountIsNetworkAccount(account_id));
+        }
+
+        self.rpc_api.register_account(invitation_code, account_id).await?;
+
+        Ok(())
     }
 
     /// Inserts `account` into the store (or overwrites it if `overwrite` is true) and registers the
@@ -300,7 +330,6 @@ impl<AUTH> Client<AUTH> {
         account: &Account,
         client_account_type: ClientAccountType,
         overwrite: bool,
-        invitation_code: Option<&str>,
     ) -> Result<(), ClientError> {
         if account.is_new() {
             if account.seed().is_none() {
@@ -313,10 +342,6 @@ impl<AUTH> Client<AUTH> {
                     "Added an existing account and still provided a seed when it is not needed. It's possible that the account's file was incorrectly generated. The seed will be ignored."
                 );
             }
-        }
-
-        if let Some(invitation_code) = invitation_code {
-            self.rpc_api.register_account(invitation_code, account.id()).await?;
         }
 
         let tracked_account = self.store.get_minimal_partial_account(account.id()).await?;
@@ -396,7 +421,7 @@ impl<AUTH> Client<AUTH> {
     /// - There was an error sending the request to the network.
     pub async fn import_account_by_id(&mut self, account_id: AccountId) -> Result<(), ClientError> {
         let account = self.fetch_public_account(account_id).await?;
-        self.add_account_inner(&account, ClientAccountType::Native, true, None).await
+        self.add_account_inner(&account, ClientAccountType::Native, true).await
     }
 
     /// Starts watching an on-chain account ([`ClientAccountType::Watched`]).
@@ -419,7 +444,7 @@ impl<AUTH> Client<AUTH> {
         account_id: AccountId,
     ) -> Result<(), ClientError> {
         let account = self.fetch_public_account(account_id).await?;
-        self.add_account_inner(&account, ClientAccountType::Watched, true, None).await
+        self.add_account_inner(&account, ClientAccountType::Watched, true).await
     }
 
     /// Fetches a public [`Account`] from the network, returning a typed error when the account

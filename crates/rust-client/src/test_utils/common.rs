@@ -355,7 +355,10 @@ impl TestClient {
             .await
             .context("failed to add the account key to the keystore")?;
 
-        self.add_account(&account, false, setup.invitation_code.as_deref()).await?;
+        self.add_account(&account, false).await?;
+        if let Some(invitation_code) = setup.invitation_code.as_deref() {
+            self.register_account(invitation_code, account.id()).await?;
+        }
 
         info!(
             account_id = %account.id(),

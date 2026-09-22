@@ -97,12 +97,12 @@ pub async fn try_add_account() {
     let (id, vault, storage, code, ..) = account.into_parts();
     let account_without_seed =
         Account::new_unchecked(id, vault.clone(), storage.clone(), code.clone(), ZERO, None);
-    assert!(client.add_account(&account_without_seed, false, None).await.is_err());
+    assert!(client.add_account(&account_without_seed, false).await.is_err());
 
     let account_with_seed =
         Account::new_unchecked(id, vault, storage, code, ZERO, Some(Word::default()));
 
-    assert!(client.add_account(&account_with_seed, false, None).await.is_ok());
+    assert!(client.add_account(&account_with_seed, false).await.is_ok());
 }
 
 #[tokio::test]
@@ -122,12 +122,12 @@ pub async fn try_add_ecdsa_account() {
     let (id, vault, storage, code, ..) = account.into_parts();
     let account_without_seed =
         Account::new_unchecked(id, vault.clone(), storage.clone(), code.clone(), ZERO, None);
-    assert!(client.add_account(&account_without_seed, false, None).await.is_err());
+    assert!(client.add_account(&account_without_seed, false).await.is_err());
 
     let account_with_seed =
         Account::new_unchecked(id, vault, storage, code, ZERO, Some(Word::default()));
 
-    assert!(client.add_account(&account_with_seed, false, None).await.is_ok());
+    assert!(client.add_account(&account_with_seed, false).await.is_ok());
 }
 
 #[tokio::test]
@@ -138,7 +138,7 @@ async fn load_accounts_test() {
     let created_accounts_data = create_initial_accounts_data();
 
     for account_data in created_accounts_data.clone() {
-        client.add_account(account_data.account(), false, None).await.unwrap();
+        client.add_account(account_data.account(), false).await.unwrap();
     }
 
     let expected_accounts: Vec<Account> = created_accounts_data
@@ -164,7 +164,7 @@ async fn load_ecdsa_accounts_test() {
 
     let created_accounts_data = create_ecdsa_initial_accounts_data();
     for account_data in created_accounts_data.clone() {
-        client.add_account(account_data.account(), false, None).await.unwrap();
+        client.add_account(account_data.account(), false).await.unwrap();
     }
 
     let expected_accounts: Vec<Account> = created_accounts_data
@@ -335,7 +335,7 @@ async fn build_three_slot_account(client: &mut crate::tests::TestClient) -> Acco
 
     let account_id = account.id();
     client.keystore().add_key(&key_pair, account_id).await.unwrap();
-    client.add_account(&account, false, None).await.unwrap();
+    client.add_account(&account, false).await.unwrap();
 
     account_id
 }

@@ -272,7 +272,7 @@ async fn fee_charging_client_with_auth(
     );
     client.ensure_genesis_in_place().await.unwrap();
     seed_mock_transaction_encryption_key(&mut client).await;
-    client.add_account(&account, false, None).await.unwrap();
+    client.add_account(&account, false).await.unwrap();
     client.sync_state().await.unwrap();
 
     (client, account)

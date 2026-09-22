@@ -33,7 +33,7 @@ pub async fn import_from_file(
         keystore.add_key(&key, account_id).await?;
     }
 
-    client.add_account(&account, false, None).await?;
+    client.add_account(&account, false).await?;
     let elapsed = t.elapsed();
 
     println!();

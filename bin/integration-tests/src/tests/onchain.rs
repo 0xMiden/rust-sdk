@@ -190,7 +190,7 @@ pub async fn test_onchain_accounts(client_config: ClientConfig) -> Result<()> {
     let faucet_account_id = faucet_account_header.id();
 
     client_2.keystore().add_key(&secret_key, faucet_account_id).await?;
-    client_2.add_account(&faucet_account_header, false, None).await?;
+    client_2.add_account(&faucet_account_header, false).await?;
 
     // First Mint necessary token
     info!(account_id = %target_account_id, faucet_id = %faucet_account_id, "First client minting note");

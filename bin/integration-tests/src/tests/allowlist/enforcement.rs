@@ -5,15 +5,13 @@
 //! in the first place is in [`super::registration`].
 
 use anyhow::{Context, Result};
+use miden_client::account::AccountType;
 use miden_client::rpc::RpcEndpoint;
+use miden_client::testing::common::AccountSetup;
+use miden_client::transaction::TransactionRequestBuilder;
 
 use super::invitations::create_invitation_code;
-use super::{
-    assert_rejected_as_unregistered,
-    deploy_request,
-    insert_undeployed_wallet,
-    is_deployed,
-};
+use super::{assert_rejected_as_unregistered, is_deployed};
 use crate::ClientConfig;
 use crate::tests::network_transaction::deploy_network_counter_contract;
 
@@ -28,15 +26,17 @@ pub async fn test_allowlist_registered_account_can_deploy(
     client.wait_for_node().await;
 
     let invitation_code = create_invitation_code().await?;
-    let account = insert_undeployed_wallet(&mut client, Some(&invitation_code))
+    let (account, _) = client
+        .insert_account(
+            AccountSetup::wallet(AccountType::Private).invitation_code(&invitation_code),
+        )
         .await
         .context("failed to register the account on the network allowlist")?;
 
-    let transaction_id = client
-        .submit_new_transaction(account.id(), deploy_request()?)
+    client
+        .deploy_account(account.id())
         .await
         .context("the node rejected the deploy of a registered account")?;
-    client.wait_for_tx(transaction_id).await?;
 
     assert!(
         is_deployed(&client, &account).await?,
@@ -56,10 +56,10 @@ pub async fn test_allowlist_unregistered_account_is_rejected(
     let mut client = client_config.into_client().await?;
     client.wait_for_node().await;
 
-    let account = insert_undeployed_wallet(&mut client, None).await?;
+    let account = client.insert_wallet(AccountType::Private).await?;
 
     let error = client
-        .submit_new_transaction(account.id(), deploy_request()?)
+        .submit_new_transaction(account.id(), TransactionRequestBuilder::new().build()?)
         .await
         .expect_err("the node should refuse to create an unregistered account");
     assert_rejected_as_unregistered(&error, RpcEndpoint::SubmitProvenTx);
@@ -106,14 +106,19 @@ pub async fn test_allowlist_is_enforced_per_batch_transaction(
     client.wait_for_node().await;
 
     let invitation_code = create_invitation_code().await?;
-    let registered = insert_undeployed_wallet(&mut client, Some(&invitation_code))
+    let (registered, _) = client
+        .insert_account(
+            AccountSetup::wallet(AccountType::Private).invitation_code(&invitation_code),
+        )
         .await
         .context("failed to register the account")?;
-    let unregistered = insert_undeployed_wallet(&mut client, None).await?;
+    let unregistered = client.insert_wallet(AccountType::Private).await?;
 
     // The funding notes are folded in before the batch borrows the client.
-    let registered_request = client.fund_request(registered.id(), deploy_request()?);
-    let unregistered_request = client.fund_request(unregistered.id(), deploy_request()?);
+    let registered_request =
+        client.fund_request(registered.id(), TransactionRequestBuilder::new().build()?);
+    let unregistered_request =
+        client.fund_request(unregistered.id(), TransactionRequestBuilder::new().build()?);
 
     let mut batch = client.new_transaction_batch();
     batch.push(registered.id(), registered_request).await?;

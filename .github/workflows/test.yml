@@ -96,13 +96,12 @@ jobs:
         run: make test-docs
 
   build-test-node:
-    name: Build test node
+    name: Restore test node cache
     runs-on: warp-ubuntu-latest-x64-2x
     needs: [changes]
     if: ${{ always() && needs.changes.outputs.test-node != 'false' }}
     outputs:
       cache-hit: ${{ steps.cache-test-node.outputs.cache-hit }}
-      node-rev: ${{ steps.node-rev.outputs.rev }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -130,16 +129,19 @@ jobs:
         run: file -E target/test-node/install/bin/miden-validator target/test-node/install/bin/miden-note-transport
 
   install-test-node:
-    name: Build test node cache miss
+    name: Build test node
     runs-on: warp-ubuntu-latest-x64-8x
     needs: [changes, build-test-node]
-    if: ${{ always() && needs.changes.outputs.test-node != 'false' && needs.build-test-node.result == 'success' && needs.build-test-node.outputs.cache-hit != 'true' }}
+    if: ${{ always() && needs.changes.outputs.test-node != 'false' && (needs.build-test-node.result != 'success' || needs.build-test-node.outputs.cache-hit != 'true') }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
       - name: Cleanup large tools for build space
         uses: ./.github/actions/cleanup-runner
+      - name: Resolve node revision
+        id: node-rev
+        run: echo "rev=$(./scripts/start-test-node.sh --print-rev)" >> "$GITHUB_OUTPUT"
       # Build dir cached per node rev, with no cross-rev fallback: cargo reuses stale build-script
       # outputs when one target dir serves the same crate versions from two git revs, which breaks
       # the compile with phantom type errors. A rev bump therefore compiles from scratch.
@@ -148,7 +150,7 @@ jobs:
         uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: target/test-node/build
-          key: ${{ runner.os }}-${{ runner.arch }}-test-node-build-${{ needs.build-test-node.outputs.node-rev }}
+          key: ${{ runner.os }}-${{ runner.arch }}-test-node-build-${{ steps.node-rev.outputs.rev }}
       - name: Install Rust
         run: rustup update --no-self-update
       - name: Build node binaries
@@ -160,12 +162,12 @@ jobs:
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: target/test-node/build
-          key: ${{ runner.os }}-${{ runner.arch }}-test-node-build-${{ needs.build-test-node.outputs.node-rev }}
+          key: ${{ runner.os }}-${{ runner.arch }}-test-node-build-${{ steps.node-rev.outputs.rev }}
       - name: Save test node binaries
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: target/test-node/install
-          key: ${{ runner.os }}-${{ runner.arch }}-test-node-with-ntl-${{ needs.build-test-node.outputs.node-rev }}
+          key: ${{ runner.os }}-${{ runner.arch }}-test-node-with-ntl-${{ steps.node-rev.outputs.rev }}
       - name: Upload test node binaries
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -179,7 +181,7 @@ jobs:
     name: miden-bench smoke tests
     runs-on: warp-ubuntu-latest-x64-8x
     needs: [changes, build-test-node, install-test-node]
-    if: ${{ always() && needs.changes.outputs.miden-bench != 'false' && needs.build-test-node.result == 'success' && (needs.install-test-node.result == 'success' || needs.install-test-node.result == 'skipped') }}
+    if: ${{ always() && needs.changes.outputs.miden-bench != 'false' && (needs.install-test-node.result == 'success' || (needs.build-test-node.result == 'success' && needs.build-test-node.outputs.cache-hit == 'true' && needs.install-test-node.result == 'skipped')) }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -222,7 +224,7 @@ jobs:
     name: AggLayer tests
     runs-on: warp-ubuntu-latest-x64-8x
     needs: [changes, build-test-node, install-test-node]
-    if: ${{ always() && needs.changes.outputs.agglayer != 'false' && needs.build-test-node.result == 'success' && (needs.install-test-node.result == 'success' || needs.install-test-node.result == 'skipped') }}
+    if: ${{ always() && needs.changes.outputs.agglayer != 'false' && (needs.install-test-node.result == 'success' || (needs.build-test-node.result == 'success' && needs.build-test-node.outputs.cache-hit == 'true' && needs.install-test-node.result == 'skipped')) }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -319,7 +321,7 @@ jobs:
     name: Integration tests
     runs-on: warp-ubuntu-latest-x64-8x
     needs: [changes, build-test-node, install-test-node]
-    if: ${{ always() && needs.changes.outputs.integration != 'false' && needs.build-test-node.result == 'success' && (needs.install-test-node.result == 'success' || needs.install-test-node.result == 'skipped') }}
+    if: ${{ always() && needs.changes.outputs.integration != 'false' && (needs.install-test-node.result == 'success' || (needs.build-test-node.result == 'success' && needs.build-test-node.outputs.cache-hit == 'true' && needs.install-test-node.result == 'skipped')) }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:

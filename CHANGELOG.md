@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+* [FIX][rust] The `InputNoteRecord` conversions into `Note`, `InputNote` and `NoteTagRecord` are now `TryFrom` impls, so `Note::try_from(record)` compiles. Existing `.try_into()` calls are unaffected ([#2618](https://github.com/0xMiden/rust-sdk/pull/2618)).
+
 ## 0.17.0-rc.2 (2026-09-23)
 
 ### Breaking Changes

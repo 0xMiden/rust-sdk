@@ -157,13 +157,13 @@ impl From<&Account> for NoteTagRecord {
     }
 }
 
-impl TryInto<NoteTagRecord> for &InputNoteRecord {
+impl TryFrom<&InputNoteRecord> for NoteTagRecord {
     type Error = NoteRecordError;
 
-    fn try_into(self) -> Result<NoteTagRecord, Self::Error> {
-        match self.metadata() {
+    fn try_from(record: &InputNoteRecord) -> Result<Self, Self::Error> {
+        match record.metadata() {
             Some(metadata) => {
-                Ok(NoteTagRecord::with_note_source(metadata.tag(), self.details_commitment()))
+                Ok(NoteTagRecord::with_note_source(metadata.tag(), record.details_commitment()))
             },
             None => Err(NoteRecordError::ConversionError(
                 "Input Note Record does not contain tag".to_string(),

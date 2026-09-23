@@ -395,12 +395,11 @@ async fn backfill_drains_across_batches() {
     );
 }
 
-/// Registering more tags than the targeted backfill cap resets the shared transport cursor.
-///
-/// The reset fetches the complete tag set from the start, as required by the node transport API. It
-/// can therefore recover a tag that the targeted backfill defers to the next sync.
+/// Test that registering more newly tracked tags than the per-sync backfill cap does not lose any
+/// tag's history: the burst is spread across syncs, backfilling at most
+/// `MAX_BACKFILL_TAGS_PER_SYNC` tags per call and picking up the remainder on the next sync.
 #[tokio::test]
-async fn tag_set_change_resets_cursor_when_backfill_exceeds_per_sync_cap() {
+async fn backfill_spreads_tags_exceeding_per_sync_cap_across_syncs() {
     const CAP: usize = MockClient::<FilesystemKeyStore>::MAX_BACKFILL_TAGS_PER_SYNC;
     const LATE_TAGS: usize = CAP + 1;
 
@@ -441,21 +440,21 @@ async fn tag_set_change_resets_cursor_when_backfill_exceeds_per_sync_cap() {
         recipient.add_note_tag(*tag).await.unwrap();
     }
 
-    // The targeted backfill covers at most CAP late tags. The required cursor reset then fetches
-    // the complete changed tag set from the start and recovers the deferred tag.
+    // Second sync: the backfill covers at most CAP late tags, so one late note stays uncovered.
+    // Total = driver note + capped backfill.
     recipient.sync_state().await.unwrap();
     assert_eq!(
         recipient.get_input_notes(NoteFilter::All).await.unwrap().len(),
-        1 + LATE_TAGS,
-        "the cursor reset must recover the tag deferred by the targeted backfill"
+        1 + CAP,
+        "one sync must backfill at most MAX_BACKFILL_TAGS_PER_SYNC tags"
     );
 
-    // A later sync does not import duplicates.
+    // Third sync: the deferred late tag is backfilled, recovering the whole history.
     recipient.sync_state().await.unwrap();
     assert_eq!(
         recipient.get_input_notes(NoteFilter::All).await.unwrap().len(),
         1 + LATE_TAGS,
-        "the later sync must not import duplicate notes"
+        "the deferred tag must be backfilled on the following sync"
     );
 }
 

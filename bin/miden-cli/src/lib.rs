@@ -31,7 +31,7 @@ use commands::sync::SyncCmd;
 use commands::tags::TagsCmd;
 use commands::transactions::TransactionCmd;
 
-use self::utils::config_file_exists;
+use self::utils::{config_file_exists, warn_on_misplaced_local_config};
 use crate::commands::address::AddressCmd;
 
 pub type CliKeyStore = FilesystemKeyStore;
@@ -413,6 +413,8 @@ impl Cli {
             },
             _ => {},
         }
+
+        warn_on_misplaced_local_config();
 
         // Initialize the client silently if it has no configuration file yet.
         if !config_file_exists()? {

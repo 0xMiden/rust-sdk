@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::ParseIntError;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use miden_client::account::component::FungibleFaucet;
 use miden_client::account::{AccountId, FaucetMetadata};
@@ -13,7 +13,7 @@ use serde::Deserialize;
 
 use super::{CLIENT_CONFIG_FILE_NAME, create_dynamic_table, get_account_with_id_prefix};
 use crate::commands::account::DEFAULT_ACCOUNT_ID_KEY;
-use crate::config::{CliConfig, get_global_miden_dir, get_local_miden_dir};
+use crate::config::{CliConfig, MIDEN_DIR, get_global_miden_dir, get_local_miden_dir};
 use crate::errors::CliError;
 
 pub(crate) const SHARED_TOKEN_DOCUMENTATION: &str = "There are two accepted formats for the asset:
@@ -128,6 +128,40 @@ pub(super) fn config_file_exists() -> Result<bool, CliError> {
     })?;
 
     Ok(global_miden_dir.join(CLIENT_CONFIG_FILE_NAME).exists())
+}
+
+/// Returns the path of a `miden-client.toml` placed directly in `dir`, when the CLI will not read
+/// it.
+///
+/// A local configuration is only loaded from `dir/.miden/`, so a file next to it is skipped and the
+/// CLI falls back to (or silently creates) the global one. `None` if `dir/.miden/` holds a config,
+/// or if `dir` is the global `.miden` directory itself, where the file is the global config.
+pub(crate) fn misplaced_local_config(dir: &Path, global_miden_dir: &Path) -> Option<PathBuf> {
+    let candidate = dir.join(CLIENT_CONFIG_FILE_NAME);
+    if !candidate.is_file() || dir.join(MIDEN_DIR).join(CLIENT_CONFIG_FILE_NAME).exists() {
+        return None;
+    }
+
+    let is_global_dir = match (dir.canonicalize(), global_miden_dir.canonicalize()) {
+        (Ok(dir), Ok(global)) => dir == global,
+        _ => dir == global_miden_dir,
+    };
+    (!is_global_dir).then_some(candidate)
+}
+
+/// Prints a warning when the current directory holds a `miden-client.toml` that the CLI ignores.
+pub(super) fn warn_on_misplaced_local_config() {
+    let (Ok(cwd), Ok(global_miden_dir)) = (std::env::current_dir(), get_global_miden_dir()) else {
+        return;
+    };
+    if let Some(path) = misplaced_local_config(&cwd, &global_miden_dir) {
+        eprintln!(
+            "Warning: ignoring {}. A local config is only read from \
+            ./{MIDEN_DIR}/{CLIENT_CONFIG_FILE_NAME}, and relative paths in it resolve against \
+            ./{MIDEN_DIR}/. Using the global config instead.",
+            path.display()
+        );
+    }
 }
 
 /// Returns the faucet metadata resolver using the config file.
@@ -614,6 +648,7 @@ fn parse_address(address_str: &str, network_id: &NetworkId) -> Result<AccountId,
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::path::PathBuf;
 
     use miden_client::account::AccountId;
     use miden_client::address::{Address, NetworkId};
@@ -621,12 +656,61 @@ mod tests {
     use miden_client::testing::account_id::ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET;
 
     use super::{
+        CLIENT_CONFIG_FILE_NAME,
         FaucetMetadataResolver,
+        MIDEN_DIR,
         RawFaucetEntry,
         TokenParseError,
         base_units_to_tokens,
+        misplaced_local_config,
         tokens_to_base_units,
     };
+
+    /// A fresh, empty directory under the system temp dir.
+    fn scratch_dir() -> PathBuf {
+        let dir = std::env::temp_dir()
+            .join(format!("miden-cli-misplaced-config-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn config_next_to_the_miden_dir_is_reported() {
+        let project = scratch_dir();
+        let global = scratch_dir();
+        std::fs::write(project.join(CLIENT_CONFIG_FILE_NAME), "").unwrap();
+
+        assert_eq!(
+            misplaced_local_config(&project, &global),
+            Some(project.join(CLIENT_CONFIG_FILE_NAME))
+        );
+    }
+
+    #[test]
+    fn config_is_not_reported_when_the_miden_dir_has_one() {
+        let project = scratch_dir();
+        let global = scratch_dir();
+        std::fs::write(project.join(CLIENT_CONFIG_FILE_NAME), "").unwrap();
+        std::fs::create_dir_all(project.join(MIDEN_DIR)).unwrap();
+        std::fs::write(project.join(MIDEN_DIR).join(CLIENT_CONFIG_FILE_NAME), "").unwrap();
+
+        assert_eq!(misplaced_local_config(&project, &global), None);
+    }
+
+    #[test]
+    fn global_config_is_not_reported_from_inside_the_global_dir() {
+        // With `MIDEN_CLIENT_HOME` pointing at the working directory, the file there is the global
+        // config and is read.
+        let global = scratch_dir();
+        std::fs::write(global.join(CLIENT_CONFIG_FILE_NAME), "").unwrap();
+
+        assert_eq!(misplaced_local_config(&global, &global), None);
+    }
+
+    #[test]
+    fn nothing_is_reported_without_a_config_file() {
+        assert_eq!(misplaced_local_config(&scratch_dir(), &scratch_dir()), None);
+    }
 
     fn amount(units: u64) -> AssetAmount {
         AssetAmount::new(units).unwrap()

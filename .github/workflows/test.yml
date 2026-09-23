@@ -25,6 +25,81 @@ env:
   RUST_CACHE_KEY: rust-cache-2026.02.18
 
 jobs:
+  changes:
+    name: Select system tests
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+    outputs:
+      agglayer: ${{ steps.filter.outputs.agglayer }}
+      integration: ${{ steps.filter.outputs.integration }}
+      miden-bench: ${{ steps.filter.outputs.miden-bench }}
+      test-node: ${{ steps.filter.outputs.test-node }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Select tests for changed files
+        id: filter
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [[ "$EVENT_NAME" != "pull_request" ]]; then
+            {
+              echo "agglayer=true"
+              echo "integration=true"
+              echo "miden-bench=true"
+              echo "test-node=true"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          agglayer=false
+          integration=false
+          miden_bench=false
+
+          while IFS= read -r path; do
+            case "$path" in
+              Cargo.toml|Cargo.lock|Makefile|rust-toolchain.toml|.cargo/*|.github/workflows/test.yml|.github/actions/cleanup-runner/*)
+                agglayer=true
+                integration=true
+                miden_bench=true
+                ;;
+            esac
+
+            case "$path" in
+              crates/*|bin/*|data/*|scripts/start-ci-service.sh|scripts/start-note-transport*.sh|scripts/stop-note-transport.sh|scripts/start-test-node.sh|scripts/stop-test-node.sh)
+                integration=true
+                ;;
+            esac
+
+            case "$path" in
+              bin/miden-bench/*|bin/integration-tests/*|crates/rust-client/*|crates/sqlite-store/*|crates/testing/test-node-genesis/*|data/*|scripts/start-test-node.sh|scripts/stop-test-node.sh|scripts/test-miden-bench-smoke.sh)
+                miden_bench=true
+                ;;
+            esac
+
+            case "$path" in
+              bin/integration-tests/Cargo.toml|bin/integration-tests/src/lib.rs|bin/integration-tests/src/tests/mod.rs|bin/integration-tests/src/tests/agglayer/*|bin/integration-tests/tests/integration.rs|crates/rust-client/*|crates/sqlite-store/*|crates/testing/test-node-genesis/*|data/*|scripts/start-test-node.sh|scripts/stop-test-node.sh)
+                agglayer=true
+                ;;
+            esac
+          done < <(git diff --name-only "$BASE_SHA...$HEAD_SHA")
+
+          {
+            echo "agglayer=$agglayer"
+            echo "integration=$integration"
+            echo "miden-bench=$miden_bench"
+            if [[ "$agglayer" == "true" || "$integration" == "true" || "$miden_bench" == "true" ]]; then
+              echo "test-node=true"
+            else
+              echo "test-node=false"
+            fi
+          } >> "$GITHUB_OUTPUT"
+
   test:
     name: Unit tests
     runs-on: warp-ubuntu-latest-x64-8x
@@ -73,6 +148,8 @@ jobs:
   build-test-node:
     name: Build test node
     runs-on: warp-ubuntu-latest-x64-8x
+    needs: [changes]
+    if: ${{ always() && needs.changes.outputs.test-node != 'false' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -132,7 +209,8 @@ jobs:
   miden-bench:
     name: miden-bench smoke tests
     runs-on: warp-ubuntu-latest-x64-8x
-    needs: [build-test-node]
+    needs: [changes, build-test-node]
+    if: ${{ always() && needs.changes.outputs.miden-bench != 'false' && needs.build-test-node.result == 'success' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -174,7 +252,8 @@ jobs:
   agglayer-tests:
     name: AggLayer tests
     runs-on: warp-ubuntu-latest-x64-8x
-    needs: [build-test-node]
+    needs: [changes, build-test-node]
+    if: ${{ always() && needs.changes.outputs.agglayer != 'false' && needs.build-test-node.result == 'success' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -270,7 +349,8 @@ jobs:
   integration-tests:
     name: Integration tests
     runs-on: warp-ubuntu-latest-x64-8x
-    needs: [build-test-node]
+    needs: [changes, build-test-node]
+    if: ${{ always() && needs.changes.outputs.integration != 'false' && needs.build-test-node.result == 'success' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:

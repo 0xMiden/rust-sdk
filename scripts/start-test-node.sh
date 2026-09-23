@@ -161,9 +161,16 @@ ENCRYPTION_KEY="9964dbb2590adeb415d3291b64a0a9991fbcac5adacb05ee17efee5296d081d7
 
 {
     # Genesis generation is separate from bootstrap: `genesis` builds the block once, then every
-    # component seeds its database from the resulting file.
+    # component seeds its database from the resulting file. The native faucet and the funding
+    # account are required inputs with their own flags; the fee and the timestamp are genesis
+    # parameters rather than accounts, so they are passed here instead of through the fixtures.
     "$BIN/miden-validator" genesis --genesis-block-directory "$DATA/genesis" \
-        --accounts-directory "$DATA/accounts" --config "$DATA/genesis-config/genesis.toml" \
+        --accounts-directory "$DATA/accounts" \
+        --accounts-config "$DATA/genesis-config/accounts.toml" \
+        --native-faucet "$DATA/genesis-config/native_faucet.mac" \
+        --funding-account "$DATA/genesis-config/funding_account.mac" \
+        --verification-base-fee "$VERIFICATION_BASE_FEE" \
+        --timestamp "$(date +%s)" \
         --validator.key "$VALIDATOR_PUBLIC_KEY"
     "$BIN/miden-validator" bootstrap --data-directory "$DATA/validator" \
         --genesis "$DATA/genesis/genesis.dat"

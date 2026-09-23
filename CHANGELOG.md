@@ -4,6 +4,7 @@
 
 ### Breaking Changes
 
+* [BREAKING][removal][cli] `exec` now requires `--package` (`-p`). Removed `--script-path` (`-s`) and in-process MASM compilation. Compile scripts with `miden build` first. DAP sessions use package debug information and reload the compiled package on restart ([#2596](https://github.com/0xMiden/rust-sdk/issues/2596)).
 * [BREAKING][type][rust] Added the `TransactionRequestError::InputNoteBeingProcessed` variant, so exhaustive matches on `TransactionRequestError` must handle it ([#2583](https://github.com/0xMiden/rust-sdk/pull/2583)).
 
 ### Fixes

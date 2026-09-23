@@ -41,34 +41,31 @@ assert_selection "selector" "$all_systems" ".github/scripts/select-system-tests.
 assert_selection "other integration code" "$integration_only" "bin/miden-cli/src/main.rs"
 assert_selection "unrelated workflow" "$no_systems" ".github/workflows/lint.yml"
 
-assert_comparison_failure() {
+assert_comparison_failure() (
   local name=$1
   local base_sha=$2
   local head_sha=$3
   local expected_error=$4
   local output_file
-  local error_file
+  local error_file=""
 
   output_file=$(mktemp)
+  trap 'rm -f "$output_file" "$error_file"' EXIT
   error_file=$(mktemp)
   if GITHUB_OUTPUT="$output_file" \
     "$ENTRYPOINT" pull_request "$base_sha" "$head_sha" 2> "$error_file"; then
     echo "$name did not fail" >&2
-    rm -f "$output_file" "$error_file"
     exit 1
   fi
   if [[ -s "$output_file" ]]; then
     echo "$name wrote selection outputs" >&2
-    rm -f "$output_file" "$error_file"
     exit 1
   fi
   if ! grep -Fq "$expected_error" "$error_file"; then
     echo "$name returned the wrong error" >&2
-    rm -f "$output_file" "$error_file"
     exit 1
   fi
-  rm -f "$output_file" "$error_file"
-}
+)
 
 assert_comparison_failure \
   "invalid revisions" \
@@ -79,4 +76,9 @@ assert_comparison_failure \
   "missing base revision" \
   "" \
   "missing-head-revision" \
+  "pull request base and head revisions are required"
+assert_comparison_failure \
+  "missing head revision" \
+  "missing-base-revision" \
+  "" \
   "pull request base and head revisions are required"

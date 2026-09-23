@@ -39,9 +39,9 @@ jobs:
       - name: Add Rust Cache
         uses: WarpBuilds/rust-cache@9d0cc3090d9c87de74ea67617b246e978735b1a1 # v2.9.1
         with:
-          shared-key: rust-release
+          shared-key: rust-release-${{ runner.arch }}
           prefix-key: ${{ env.RUST_CACHE_KEY }}
-          save-if: false
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/next' }}
       # Keep this on a released install-action commit with an explicit tool; shortcut tags can
       # trip zizmor's impostor-commit audit when they are later retagged.
       - uses: taiki-e/install-action@055f5df8c3f65ea01cd41e9dc855becd88953486 # v2.75.18
@@ -149,7 +149,7 @@ jobs:
       - name: Add Rust Cache
         uses: WarpBuilds/rust-cache@9d0cc3090d9c87de74ea67617b246e978735b1a1 # v2.9.1
         with:
-          shared-key: rust-release
+          shared-key: rust-release-${{ runner.arch }}
           prefix-key: ${{ env.RUST_CACHE_KEY }}
           save-if: false
       - name: Run miden-bench CLI tests
@@ -189,7 +189,7 @@ jobs:
       - name: Add Rust Cache
         uses: WarpBuilds/rust-cache@9d0cc3090d9c87de74ea67617b246e978735b1a1 # v2.9.1
         with:
-          shared-key: rust-release
+          shared-key: rust-release-${{ runner.arch }}
           prefix-key: ${{ env.RUST_CACHE_KEY }}
           save-if: false
       - name: Fetch test node binaries
@@ -287,7 +287,7 @@ jobs:
       - name: Add Rust Cache
         uses: WarpBuilds/rust-cache@9d0cc3090d9c87de74ea67617b246e978735b1a1 # v2.9.1
         with:
-          shared-key: rust-release
+          shared-key: rust-release-${{ runner.arch }}
           prefix-key: ${{ env.RUST_CACHE_KEY }}
           save-if: false
       - name: Fetch test node binaries

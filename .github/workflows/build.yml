@@ -85,7 +85,7 @@ jobs:
       - name: Add Rust Cache
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
-          shared-key: rust-release
+          shared-key: rust-release-${{ runner.arch }}
           prefix-key: ${{ env.RUST_CACHE_KEY }}
           save-if: false
       - name: make - ${{ matrix.target }}

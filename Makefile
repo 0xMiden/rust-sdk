@@ -27,6 +27,10 @@ MIDEN_FUNDER_ACCOUNTS_DIR?=$(CURDIR)/data/funders
 # `start-test-node.sh`. Against a deployed network, point this at the accounts deployed there.
 AGGLAYER_ACCOUNTS_DIR?=$(CURDIR)/data
 
+# Sequencer administration API, which the account allowlist tests create their invitation codes
+# through. `start-test-node.sh` binds it when it is started with `MIDEN_ACCOUNT_ALLOWLIST=1`.
+MIDEN_NODE_ADMIN_URL?=http://127.0.0.1:50100
+
 # Sizes the SQL store scaling benchmark sweeps over. Kept small enough to run on every PR, and
 # overridable for a deeper local run.
 STORE_BENCH_ARGS?=--notes 1000,10000 --accounts 100,1000 --iterations 5
@@ -133,18 +137,25 @@ start-note-transport:
 
 .PHONY: integration-test
 integration-test: ## Run integration tests
-	MIDEN_FUNDER_ACCOUNTS_DIR=$(MIDEN_FUNDER_ACCOUNTS_DIR) AGGLAYER_ACCOUNTS_DIR=$(AGGLAYER_ACCOUNTS_DIR) cargo nextest run --workspace --release --test=integration
+	MIDEN_FUNDER_ACCOUNTS_DIR=$(MIDEN_FUNDER_ACCOUNTS_DIR) AGGLAYER_ACCOUNTS_DIR=$(AGGLAYER_ACCOUNTS_DIR) cargo nextest run --workspace --release --test=integration -E 'not test(/allowlist/)'
 
 # The agglayer tests run in their own job against their own node: they spend most of their time
 # waiting on network transactions, so sharing a node with the rest only stretches everyone out.
 .PHONY: integration-test-non-agglayer
 integration-test-non-agglayer: ## Run every integration test except the agglayer ones, ignored tests included (requires note transport service)
-	TEST_MIDEN_NOTE_TRANSPORT_URL=$(TEST_MIDEN_NOTE_TRANSPORT_URL) MIDEN_FUNDER_ACCOUNTS_DIR=$(MIDEN_FUNDER_ACCOUNTS_DIR) cargo nextest run --workspace --release --test=integration -E 'not test(/agglayer/)'
+	TEST_MIDEN_NOTE_TRANSPORT_URL=$(TEST_MIDEN_NOTE_TRANSPORT_URL) MIDEN_FUNDER_ACCOUNTS_DIR=$(MIDEN_FUNDER_ACCOUNTS_DIR) cargo nextest run --workspace --release --test=integration -E 'not test(/agglayer/) and not test(/allowlist/)'
 	MIDEN_FUNDER_ACCOUNTS_DIR=$(MIDEN_FUNDER_ACCOUNTS_DIR) cargo nextest run --workspace --release --test=integration --run-ignored ignored-only -- import_genesis_accounts_can_be_used_for_transactions
 
 .PHONY: integration-test-agglayer
 integration-test-agglayer: ## Run only the agglayer integration tests
 	MIDEN_FUNDER_ACCOUNTS_DIR=$(MIDEN_FUNDER_ACCOUNTS_DIR) AGGLAYER_ACCOUNTS_DIR=$(AGGLAYER_ACCOUNTS_DIR) cargo nextest run --workspace --release --test=integration -E 'test(/agglayer/)'
+
+# The allowlist tests need a node that enforces the account allowlist, which rejects the account
+# creations every other test does. They run in their own job against their own node, started with
+# `MIDEN_ACCOUNT_ALLOWLIST=1`, and every other target above filters them out.
+.PHONY: integration-test-allowlist
+integration-test-allowlist: ## Run only the account allowlist integration tests (requires MIDEN_ACCOUNT_ALLOWLIST=1 on the node)
+	MIDEN_FUNDER_ACCOUNTS_DIR=$(MIDEN_FUNDER_ACCOUNTS_DIR) MIDEN_NODE_ADMIN_URL=$(MIDEN_NODE_ADMIN_URL) cargo nextest run --workspace --release --test=integration -E 'test(/allowlist/)'
 
 .PHONY: integration-test-miden-bench
 integration-test-miden-bench: install-bench ## Run miden-bench smoke tests
@@ -156,11 +167,11 @@ test-dev: ## Run tests with debug assertions enabled via test-dev profile
 
 .PHONY: integration-test-dev
 integration-test-dev: ## Run integration tests with debug assertions enabled via test-dev profile
-	MIDEN_FUNDER_ACCOUNTS_DIR=$(MIDEN_FUNDER_ACCOUNTS_DIR) AGGLAYER_ACCOUNTS_DIR=$(AGGLAYER_ACCOUNTS_DIR) cargo nextest run --workspace --cargo-profile test-dev --test=integration
+	MIDEN_FUNDER_ACCOUNTS_DIR=$(MIDEN_FUNDER_ACCOUNTS_DIR) AGGLAYER_ACCOUNTS_DIR=$(AGGLAYER_ACCOUNTS_DIR) cargo nextest run --workspace --cargo-profile test-dev --test=integration -E 'not test(/allowlist/)'
 
 .PHONY: integration-test-binary
 integration-test-binary: ## Run the integration tests using the standalone binary (requires note transport service)
-	TEST_MIDEN_NOTE_TRANSPORT_URL=$(TEST_MIDEN_NOTE_TRANSPORT_URL) MIDEN_FUNDER_ACCOUNTS_DIR=$(MIDEN_FUNDER_ACCOUNTS_DIR) AGGLAYER_ACCOUNTS_DIR=$(AGGLAYER_ACCOUNTS_DIR) cargo run --package miden-client-integration-tests --release --locked
+	TEST_MIDEN_NOTE_TRANSPORT_URL=$(TEST_MIDEN_NOTE_TRANSPORT_URL) MIDEN_FUNDER_ACCOUNTS_DIR=$(MIDEN_FUNDER_ACCOUNTS_DIR) AGGLAYER_ACCOUNTS_DIR=$(AGGLAYER_ACCOUNTS_DIR) cargo run --package miden-client-integration-tests --release --locked -- --exclude allowlist
 
 # --- Installing ----------------------------------------------------------------------------------
 

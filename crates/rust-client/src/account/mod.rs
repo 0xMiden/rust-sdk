@@ -135,7 +135,7 @@ mod account_reader;
 pub use account_reader::AccountReader;
 /// Raw access to `miden-standards` account modules for items not curated by `miden-client`.
 pub use miden_standards::account as standards;
-use miden_standards::account::auth::{Approver, AuthSingleSig};
+use miden_standards::account::auth::{Approver, AuthSingleSig, NetworkAccount};
 use miden_standards::account::faucets::FungibleFaucet;
 pub use miden_standards::account::inspection::{
     AccountBuilderSchemaCommitmentExt,
@@ -286,6 +286,50 @@ impl<AUTH> Client<AUTH> {
         overwrite: bool,
     ) -> Result<(), ClientError> {
         self.add_account_inner(account, ClientAccountType::Native, overwrite).await
+    }
+
+    // ACCOUNT REGISTRATION
+    // --------------------------------------------------------------------------------------------
+
+    /// Binds an invitation code to a tracked account on the network allowlist.
+    ///
+    /// The account must be tracked by the client, must not be deployed on chain yet, and must not
+    /// be a network account. The invitation code must exist on the node and must not be bound to
+    /// another account.
+    ///
+    /// # Errors
+    ///
+    /// - [`ClientError::AccountDataNotFound`] if the client does not track the account.
+    /// - [`ClientError::AccountIsNotNew`] if the account is already deployed on chain.
+    /// - [`ClientError::AccountIsNetworkAccount`] if the account is a network account.
+    /// - [`ClientError::RpcError`] if the node rejects the registration. The node rejects an
+    ///   unknown code, a code or account that is already registered, and a malformed request.
+    pub async fn register_account(
+        &self,
+        account_id: AccountId,
+        invitation_code: &str,
+    ) -> Result<(), ClientError> {
+        let (_, status) = self
+            .store
+            .get_account_header(account_id)
+            .await?
+            .ok_or(ClientError::AccountDataNotFound(account_id))?;
+        if !status.is_new() {
+            return Err(ClientError::AccountIsNotNew(account_id));
+        }
+
+        let account = self
+            .get_account(account_id)
+            .await?
+            .ok_or(ClientError::AccountDataNotFound(account_id))?;
+        // The node admits a network account without a code.
+        if NetworkAccount::new(account).is_ok() {
+            return Err(ClientError::AccountIsNetworkAccount(account_id));
+        }
+
+        self.rpc_api.register_account(invitation_code, account_id).await?;
+
+        Ok(())
     }
 
     /// Inserts `account` into the store (or overwrites it if `overwrite` is true) and registers the

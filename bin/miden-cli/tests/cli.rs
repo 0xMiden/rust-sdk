@@ -3116,3 +3116,38 @@ async fn test_load_local_priority() -> Result<()> {
 
     Ok(())
 }
+
+// ACCOUNT REGISTRATION ARGUMENT VALIDATION
+// ================================================================================================
+
+#[test]
+fn new_wallet_rejects_an_invitation_code() {
+    let mut cmd = cargo_bin_cmd!("miden-client");
+    cmd.args(["new-wallet", "--invitation-code", "CODE"]);
+    cmd.assert()
+        .failure()
+        .stderr(contains("unexpected argument '--invitation-code'"));
+}
+
+#[test]
+fn new_account_rejects_an_invitation_code() {
+    let mut cmd = cargo_bin_cmd!("miden-client");
+    cmd.args(["new-account", "-p", "basic-wallet", "--invitation-code", "CODE"]);
+    cmd.assert()
+        .failure()
+        .stderr(contains("unexpected argument '--invitation-code'"));
+}
+
+#[test]
+fn account_register_requires_an_invitation_code() {
+    let mut cmd = cargo_bin_cmd!("miden-client");
+    cmd.args(["account", "--register", "0x00"]);
+    cmd.assert().failure().stderr(contains("--invitation-code <CODE>"));
+}
+
+#[test]
+fn account_invitation_code_requires_register() {
+    let mut cmd = cargo_bin_cmd!("miden-client");
+    cmd.args(["account", "--invitation-code", "CODE"]);
+    cmd.assert().failure().stderr(contains("--register <ID>"));
+}

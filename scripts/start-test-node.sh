@@ -14,6 +14,9 @@
 #   MIDEN_VERIFICATION_BASE_FEE  genesis `verification_base_fee` (default 500; 0 disables fees)
 #   MIDEN_NUM_FUNDER_WALLETS     number of funder wallets a fee-charging genesis declares
 #   MIDEN_BATCH_BUILDER_WALLET   account that receives the batch builder's fees
+#   MIDEN_ACCOUNT_ALLOWLIST      1 enforces the account allowlist and binds the administration
+#                                API the tests create invitation codes through;
+#                                0 (default) allows unrestricted account creation
 
 set -euo pipefail
 
@@ -38,6 +41,10 @@ PID_FILE="$CACHE/pids"
 RPC="127.0.0.1:57291"   # matches the client default (`MIDEN_NODE_PORT`)
 VALIDATOR="127.0.0.1:50101"
 NTX="127.0.0.1:50301"
+# Private administration API of the sequencer, bound only when allowlist enforcement is on. It is
+# the only way to add an invitation code to the account allowlist, because no genesis option and
+# no bootstrap subcommand writes one. The allowlist tests create their codes through it.
+ADMIN="127.0.0.1:50100"
 PROVER_PORT=50051
 PROVER="127.0.0.1:$PROVER_PORT"
 # How long a single network transaction proof may take. The prover enforces it server-side and the
@@ -55,6 +62,9 @@ VERIFICATION_BASE_FEE="${MIDEN_VERIFICATION_BASE_FEE:-500}"
 # but never reads the account, so this is the same placeholder id the node repo uses for local
 # runs. No test consumes the fee notes.
 BATCH_BUILDER_WALLET="${MIDEN_BATCH_BUILDER_WALLET:-0xcc0000000000dd010000ee000000ff}"
+# Account allowlist enforcement. The node enforces it by default, which rejects every account
+# creation the integration tests do, so the default here is off and callers opt in.
+ACCOUNT_ALLOWLIST="${MIDEN_ACCOUNT_ALLOWLIST:-0}"
 
 NODE_BINS=(miden-validator miden-node miden-ntx-builder miden-remote-prover miden-note-transport)
 
@@ -219,7 +229,6 @@ start validator   "$BIN/miden-validator" start --listen "$VALIDATOR" --data-dire
     --storage-key.setup-context "$STORAGE_KEY_DIR/setup-context.wire" \
     --storage-key.public-key-set "$STORAGE_KEY_DIR/public-key-set.wire" \
     --storage-key.secret-share "$STORAGE_KEY_DIR/secret-share.wire"
-
 # The fee collector deployment and the sequencer both need the validator.
 echo "==> waiting for validator on $VALIDATOR"
 VALIDATOR_READY=""
@@ -249,11 +258,19 @@ if ! {
     exit 1
 fi
 
+# The node enforces the account allowlist unless told otherwise. Only the allowlist tests enable
+# it. The admin API is necessary only when the tests create invitation codes.
+if [ "$ACCOUNT_ALLOWLIST" = "1" ]; then
+    SEQUENCER_ALLOWLIST_ARGS=(--admin.listen "$ADMIN")
+else
+    SEQUENCER_ALLOWLIST_ARGS=(--disable-account-allowlist)
+fi
+
 start sequencer   "$BIN/miden-node" sequencer --rpc.listen "$RPC" --data-directory "$DATA/node" \
     --validator.url "http://$VALIDATOR" --ntx-builder.url "http://$NTX" \
     --rpc.network-tx-auth-header-value "$NETWORK_TX_AUTH" \
     --batch.builder.wallet-account-id "$BATCH_BUILDER_WALLET" \
-    --disable-account-allowlist \
+    "${SEQUENCER_ALLOWLIST_ARGS[@]}" \
     --block.interval 3s --batch.interval 1s
 # A network transaction's proof runs well past the prover's 60s default on a shared CI runner, and
 # the default capacity of 1 rejects the ntx-builder's retry outright, so it never converges.
@@ -268,6 +285,22 @@ start ntx-builder "$BIN/miden-ntx-builder" start --listen "$NTX" --rpc.url "http
     --tx-prover.timeout "$PROVER_TIMEOUT" \
     --max-cycles "$((1 << 18))" \
     --data-directory "$DATA/ntx-builder"
+
+# Waits for the sequencer administration API to accept connections. The allowlist tests create
+# their invitation codes through it, so `--background` must not return before it is up. The API is
+# served by its own task, which may bind slightly after the RPC does.
+wait_for_admin_api() {
+    for _ in $(seq 1 30); do
+        if (exec 3<>"/dev/tcp/${ADMIN%:*}/${ADMIN##*:}") 2>/dev/null; then
+            exec 3>&- 3<&-
+            return 0
+        fi
+        sleep 1
+    done
+
+    echo "error: admin API did not become ready on $ADMIN within 30s; see $LOG_DIR" >&2
+    return 1
+}
 
 # Returns non-zero (with a message) if any started component is no longer running.
 check_components_alive() {
@@ -296,6 +329,11 @@ if [ -z "$READY" ]; then
     exit 1
 fi
 echo "==> node is up (RPC on http://$RPC); logs in $LOG_DIR"
+
+if [ "$ACCOUNT_ALLOWLIST" = "1" ]; then
+    wait_for_admin_api
+    echo "==> account allowlist enforcement is ON (admin API on http://$ADMIN)"
+fi
 
 if [ "$MODE" = "background" ]; then
     exit 0

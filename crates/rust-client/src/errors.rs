@@ -34,7 +34,7 @@ use thiserror::Error;
 
 use crate::note::NoteScreenerError;
 use crate::note_transport::NoteTransportError;
-use crate::rpc::RpcError;
+use crate::rpc::{EndpointError, RegisterAccountError, RpcError};
 use crate::store::{NoteRecordError, StoreError};
 use crate::transaction::{
     BatchBuilderError,
@@ -95,6 +95,10 @@ pub enum ClientError {
     AccountIsPrivate(AccountId),
     #[error("account {0} is watched and cannot be used to execute transactions")]
     AccountIsWatched(AccountId),
+    #[error("account {0} is a network account and does not need an invitation code")]
+    AccountIsNetworkAccount(AccountId),
+    #[error("account {0} is already deployed and does not need an invitation code")]
+    AccountIsNotNew(AccountId),
     #[error(
         "account {0} is already tracked with a different ClientAccountType; switching between Native and Watched is not supported"
     )]
@@ -318,16 +322,11 @@ impl From<&ClientError> for Option<ErrorHint> {
                 ),
                 docs_url: Some(TROUBLESHOOTING_DOC),
             }),
-            ClientError::RpcError(RpcError::ConnectionError(_)) => Some(ErrorHint {
-                message: "Could not reach the Miden node. Check that the node endpoint in your \
-                          configuration is correct and that the node is running.".to_string(),
-                docs_url: Some(TROUBLESHOOTING_DOC),
-            }),
-            ClientError::RpcError(RpcError::AcceptHeaderError(_)) => Some(ErrorHint {
-                message: "The node rejected the request due to a version mismatch. \
-                          Ensure your client version is compatible with the node version.".to_string(),
-                docs_url: Some(TROUBLESHOOTING_DOC),
-            }),
+            ClientError::AccountIsNetworkAccount(account_id)
+            | ClientError::AccountIsNotNew(account_id) => {
+                Some(unneeded_invitation_code_hint(err, *account_id))
+            },
+            ClientError::RpcError(inner) => rpc_hint(inner),
             ClientError::AddNewAccountWithoutSeed => Some(ErrorHint {
                 message: "New accounts require a seed to derive their initial state. \
                           Use `Client::new_account()` which generates the seed automatically, \
@@ -451,6 +450,72 @@ impl From<&TransactionRequestError> for Option<ErrorHint> {
 impl TransactionRequestError {
     pub fn error_hint(&self) -> Option<ErrorHint> {
         self.into()
+    }
+}
+
+/// Returns the hint for an error the node or the transport returned.
+fn rpc_hint(err: &RpcError) -> Option<ErrorHint> {
+    match err {
+        RpcError::ConnectionError(_) => Some(ErrorHint {
+            message: "Could not reach the Miden node. Check that the node endpoint in your \
+                      configuration is correct and that the node is running."
+                .to_string(),
+            docs_url: Some(TROUBLESHOOTING_DOC),
+        }),
+        RpcError::AcceptHeaderError(_) => Some(ErrorHint {
+            message: "The node rejected the request due to a version mismatch. \
+                      Ensure your client version is compatible with the node version."
+                .to_string(),
+            docs_url: Some(TROUBLESHOOTING_DOC),
+        }),
+        RpcError::RequestError {
+            endpoint_error: Some(EndpointError::RegisterAccount(inner)),
+            ..
+        } => Some(register_account_hint(inner)),
+        _ => None,
+    }
+}
+
+/// Returns the hint for an invitation code that the client refused before it sent the code.
+fn unneeded_invitation_code_hint(err: &ClientError, account_id: AccountId) -> ErrorHint {
+    let message = if matches!(err, ClientError::AccountIsNetworkAccount(_)) {
+        format!(
+            "Account {account_id} is a network account. The node admits network accounts without \
+             an invitation code. Add the account without a code."
+        )
+    } else {
+        format!(
+            "Account {account_id} already exists on chain. Only an account that is not deployed \
+             needs an invitation code. Keep the code for a new account."
+        )
+    };
+
+    ErrorHint {
+        message,
+        docs_url: Some(TROUBLESHOOTING_DOC),
+    }
+}
+
+/// Returns the hint for a registration that the node rejected.
+fn register_account_hint(err: &RegisterAccountError) -> ErrorHint {
+    let message = match err {
+        RegisterAccountError::InvitationNotFound => {
+            "The node does not know this invitation code. A code is case-sensitive. Send it \
+             exactly as you received it, and do not add or remove characters."
+        },
+        RegisterAccountError::AlreadyRegistered => {
+            "This invitation code is registered to a different account, or this account is \
+             already registered. A code binds to one account only."
+        },
+        RegisterAccountError::InvalidRequest(_) => {
+            "The node rejected the registration request. Check that the invitation code is not \
+             empty and that the account ID is correct."
+        },
+    };
+
+    ErrorHint {
+        message: message.to_string(),
+        docs_url: Some(TROUBLESHOOTING_DOC),
     }
 }
 

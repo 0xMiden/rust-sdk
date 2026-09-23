@@ -63,6 +63,14 @@ pub struct AccountCmd {
     /// it will remove the default account else it will set the default account to the provided ID.
     #[arg(short, long, group = "action", value_name = "ID")]
     default: Option<Option<String>>,
+    /// Registers the account with the specified ID (or hex prefix) on the network allowlist.
+    ///
+    /// Only an account that this client tracks can be registered.
+    #[arg(long, group = "action", value_name = "ID", requires = "invitation_code")]
+    register: Option<String>,
+    /// Invitation code that registers the account named by --register.
+    #[arg(long, value_name = "CODE", requires = "register")]
+    invitation_code: Option<String>,
 }
 
 impl AccountCmd {
@@ -103,6 +111,19 @@ impl AccountCmd {
                     self.verbose,
                 )
                 .await?;
+            },
+            AccountCmd {
+                list: false,
+                show: None,
+                default: None,
+                register: Some(id),
+                invitation_code: Some(invitation_code),
+                ..
+            } => {
+                let account_id = parse_account_id(&client, id).await?;
+                client.register_account(account_id, invitation_code).await?;
+
+                println!("Registered account {} on the network allowlist.", account_id.to_hex());
             },
             AccountCmd {
                 list: false,

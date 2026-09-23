@@ -128,9 +128,8 @@ impl AccountCmd {
 
                 println!("Registered account {} on the network allowlist.", account_id.to_hex());
                 println!(
-                    "If the network funds registered accounts, the funding note can take a few \
-                     blocks to commit. Run `{bin} sync` until the note arrives, then `{bin} consume-notes --account {id}` to create the account \
-                     on chain with it.",
+                    "To use the funding note, if the network sends one, run `{bin} sync` and then \
+                     `{bin} consume-notes --account {id}`.",
                     bin = client_binary_name().display(),
                     id = account_id.to_hex()
                 );

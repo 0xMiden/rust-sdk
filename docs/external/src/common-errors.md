@@ -35,3 +35,11 @@ This guide helps you troubleshoot common issues and understand the end-to-end li
 #### `ClientError::NoteNotFoundOnChain(Note ID)`/`RpcError::NoteNotFound(Note ID)`
 - Cause: The note has not been found on chain, or the input ID is incorrect.
 - Fix: Verify the note ID, ensure it has been committed, and run sync the client before retrying.
+
+#### `ClientError::AccountNotAllowlisted(AccountId)`
+- Cause: The network enforces an account allowlist, and the submitted transaction or batch would create an account that is not registered on it. Only account creation is gated; network accounts are exempt.
+- Fix: Register the account with `Client::register_account` and the invitation code from the network operator before its first transaction. `Client::is_account_allowed` answers whether the network accepts the account.
+
+#### `RpcError::RequestError` with `EndpointError::RegisterAccount(...)`
+- Cause: The node rejected the registration: `InvitationNotFound` for an unknown code, `AlreadyRegistered` when the code is bound to a different account or the account is already registered, and `InvalidRequest` for an empty code or an unreadable account ID.
+- Fix: Send the code exactly as received. An account that is already registered needs no action. Sync to receive the funding note the network may have paid it.

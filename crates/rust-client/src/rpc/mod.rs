@@ -438,6 +438,27 @@ pub trait NodeRpcClient: Send + Sync {
 
     /// Binds an invitation code to an account on the network, using the `/RegisterAccount`
     /// endpoint.
+    ///
+    /// A network that enforces an account allowlist creates an account on chain only when the
+    /// account is registered. Registration does not create the account. The first transaction of
+    /// the account does that, and the node rejects it when the account is not registered.
+    ///
+    /// When the network operator runs a funding service, the node pays the registered account a
+    /// public P2ID note with the native asset, and answers only once that note is committed. The
+    /// note is not part of the response. The caller must sync to receive it. A network that does
+    /// not enforce the allowlist ignores the code, but still registers and funds the account.
+    ///
+    /// A retry with the same code and account succeeds without changes, and does not request
+    /// funding again.
+    ///
+    /// # Errors
+    ///
+    /// The node rejects the registration with a [`RegisterAccountError`] when the code is unknown,
+    /// when the code or the account is already registered, or when the request is malformed. A
+    /// funding failure comes back as an `Unavailable` status. The account stays registered in that
+    /// case, and a retry does not fund it.
+    ///
+    /// [`RegisterAccountError`]: crate::rpc::RegisterAccountError
     async fn register_account(
         &self,
         invitation_code: &str,
@@ -445,6 +466,10 @@ pub trait NodeRpcClient: Send + Sync {
     ) -> Result<(), RpcError>;
 
     /// Returns whether the account may be created on chain, using the `/IsAccountAllowed` endpoint.
+    ///
+    /// The node answers `true` when it does not enforce an account allowlist, or when the account
+    /// is registered. The allowlist gates account creation only, so an account that already exists
+    /// on chain is not checked.
     async fn is_account_allowed(&self, account_id: AccountId) -> Result<bool, RpcError>;
 
     /// Fills in the asset list when the vault came back flagged `too_many_assets`, by querying

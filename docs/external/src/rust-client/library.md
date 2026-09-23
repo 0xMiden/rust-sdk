@@ -154,6 +154,46 @@ let tx_id = client.submit_new_transaction(network_account.id(), deploy).await?;
 
 After deployment the account is a network account, so the node rejects user-submitted transactions against it; all further state changes happen through network transactions.
 
+## Account registration on an allowlisted network
+
+A network can restrict which accounts get created on chain. An account is created on chain by its first transaction, and a node that enforces an account allowlist rejects that transaction unless the account was registered with an invitation code. Only account creation is gated: an account that already exists on chain is never checked, and network accounts are exempt because the node creates them itself. The network operator hands out the invitation codes. A code binds to one account and cannot be reused for another.
+
+Register the account after adding it to the client and before its first transaction:
+
+```rust
+client.add_account(&new_account, false).await?;
+client.register_account(invitation_code, new_account.id()).await?;
+```
+
+`Client::register_account` requires the account to be tracked by the client, not yet created on chain, and not a network account. The node rejects an unknown code, a code that is bound to a different account, and an account that is already registered, each with its own `RegisterAccountError` variant. A retry with the same code and the same account succeeds without changes.
+
+### Funding of registered accounts
+
+A new account on a fee-charging network cannot pay the fee of its first transaction out of an empty vault. A network operator can run a funding service for this. When one is configured, the node pays every registered account a public P2ID note with the native asset, and `register_account` returns once that note is committed on chain, so the call can take a few blocks.
+
+The note is not part of the response. The client tracks the note tag of every account it owns, so the next `sync_state` imports the note. Consuming it is what creates the account on chain, and the fee of that transaction is paid out of the funds the note carries:
+
+```rust
+client.sync_state().await?;
+
+let mut notes = Vec::new();
+for (record, _) in client.get_consumable_notes(Some(new_account.id())).await? {
+    let note: InputNote = record.try_into()?;
+    notes.push(note.into_note());
+}
+
+let deploy = TransactionRequestBuilder::new().build_consume_notes(notes)?;
+client.submit_new_transaction(new_account.id(), deploy).await?;
+```
+
+If the funding fails on the node side, `register_account` returns an `Unavailable` RPC error. The account stays registered, and a retry does not request funding again, so the account has to be funded another way, for example through a faucet.
+
+A network that does not enforce the allowlist ignores the invitation code, but still registers the account and funds it when a funding service is configured. The same call therefore gives a new account its initial funds on such a network. Any code is accepted there, an empty one included.
+
+### Checking before submitting
+
+`Client::submit_new_transaction` and `BatchBuilder::submit` ask the node whether the network accepts the creation of an account before they submit a transaction that creates one, and fail with `ClientError::AccountNotAllowlisted` when it does not. The check runs after the transaction is executed and proven, so it does not save that work. Register the account first. `Client::is_account_allowed` asks the node the same question directly, and answers `true` on a network that does not enforce an allowlist.
+
 ## Execute transaction
 
 In order to execute a transaction, you first need to define which type of transaction is to be executed. This may be done with the `TransactionRequest` which represents a general definition of a transaction. Some standardized constructors are available for common transaction types.

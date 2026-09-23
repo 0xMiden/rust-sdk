@@ -1717,6 +1717,10 @@ fn init_cli() -> (PathBuf, PathBuf, Endpoint) {
 /// Initializes a CLI with the given network and store path and returns the temp directory where the
 /// CLI is running.
 fn init_cli_with_store_path(store_path: &Path, endpoint: &Endpoint) -> PathBuf {
+    init_cli_with_args(store_path, endpoint, &[])
+}
+
+fn init_cli_with_args(store_path: &Path, endpoint: &Endpoint, extra_args: &[&str]) -> PathBuf {
     let temp_dir = temp_dir().join(format!("cli-test-{}", rand::rng().random::<u64>()));
     std::fs::create_dir_all(&temp_dir).unwrap();
 
@@ -1730,6 +1734,7 @@ fn init_cli_with_store_path(store_path: &Path, endpoint: &Endpoint) -> PathBuf {
         "--store-path",
         store_path.to_str().unwrap(),
     ]);
+    init_cmd.args(extra_args);
     init_cmd.current_dir(&temp_dir).assert().success();
 
     temp_dir
@@ -3083,8 +3088,11 @@ fn create_account_with_ecdsa_auth() {
 #[tokio::test]
 #[serial_test::file_serial]
 async fn test_new_with_local_config() -> Result<()> {
-    // Initialize a local CLI configuration
-    let (store_path, temp_dir, _endpoint) = init_cli();
+    // Initialize a local CLI configuration. The client is built in this process, so the keystore
+    // stays in plaintext to avoid a password prompt.
+    let store_path = create_test_store_path();
+    let temp_dir =
+        init_cli_with_args(&store_path, &Endpoint::localhost(), &["--plaintext-keystore"]);
 
     // Use isolated global miden directory to ensure no global config interferes
     let _miden_home = set_isolated_miden_home();
@@ -3136,8 +3144,20 @@ async fn test_new_silent_init() -> Result<()> {
     let original_dir = env::current_dir().unwrap();
     env::set_current_dir(&temp_dir)?;
 
+    // Silent initialization creates an encrypted keystore, and this process has no terminal to
+    // prompt on, so the password comes from the environment.
+    // SAFETY: this test is serialized via #[serial_test::file_serial].
+    unsafe {
+        env::set_var(KEYSTORE_PASSWORD_ENV, TEST_KEYSTORE_PASSWORD);
+    }
+
     // Create a client - should succeed via silent initialization
     let client_result = miden_client_cli::CliClient::new().await;
+
+    // SAFETY: see above.
+    unsafe {
+        env::remove_var(KEYSTORE_PASSWORD_ENV);
+    }
 
     // Restore original directory
     env::set_current_dir(original_dir)?;
@@ -3186,7 +3206,9 @@ async fn test_load_local_priority() -> Result<()> {
     // Create a local config with localhost endpoint
     let local_store_path = create_test_store_path();
     let local_endpoint = Endpoint::localhost();
-    let local_temp_dir = init_cli_with_store_path(&local_store_path, &local_endpoint);
+    // The client is built in this process, so the local keystore stays in plaintext.
+    let local_temp_dir =
+        init_cli_with_args(&local_store_path, &local_endpoint, &["--plaintext-keystore"]);
 
     // Load config from the specific local directory (no need to change working directory!)
     let local_miden_dir = local_temp_dir.join(MIDEN_DIR);

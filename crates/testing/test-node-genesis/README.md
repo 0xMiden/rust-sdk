@@ -20,7 +20,7 @@ Writes, into `OUTPUT_DIR`:
 - `faucet_operator.mac`: the wallet owning the native faucet, written **with** its secret key. It
   is what `miden-faucet init --import` takes to run a faucet dispensing the native asset.
 - `funding_account.mac`: the public funding account `miden-validator genesis` requires, written
-  **with** its secret key. The testing node runs no funding service, so nothing pays out of it.
+  **with** its secret key. The node's funding service pays registered accounts out of it.
 - `tst_faucet.mac`: the TST genesis faucet, written **with** its secret key so tests can mint.
 - `test_account_NNNN.mac`: the test faucets and the `too_many_assets` account (read-only
   fixtures, no secret keys).
@@ -48,8 +48,8 @@ are built, or their vaults could not reference it. `MIDEN_VERIFICATION_BASE_FEE`
 fee (`0` gives a fee-free chain) and `MIDEN_NUM_FUNDER_WALLETS` how many funders are declared.
 
 Seeded with the native asset: the `[[wallet]]` funders, which the node writes as
-`wallet_<index>.mac` and `start-test-node.sh` copies to `./data/funders/`, and every genesis account
-that transacts, which nothing can top up afterwards.
+`wallet_<index>.mac` and `start-test-node.sh` copies to `./data/funders/`, the funding account,
+and every genesis account that transacts, which nothing can top up afterwards.
 
 ## AggLayer genesis
 
@@ -73,5 +73,3 @@ consumes, so this crate stays decoupled from the node's internal crates.
 ## License
 
 This project is [MIT licensed](../../../LICENSE).
-
-The generator writes `protocol-config.bin` with the configuration for the native fee faucet. The node startup script copies it to `data/protocol-config.bin`. Set `MIDEN_PROTOCOL_CONFIG` to this file when using the CLI or network benchmarks. Integration tests use `data/protocol-config.bin` by default. The client checks the configuration against the reference block commitment before execution.

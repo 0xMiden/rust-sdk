@@ -2153,7 +2153,13 @@ mod tests {
             .unwrap()
             .to_commitment();
         let local_header: AccountHeader = local_account.into();
-        let state_sync = StateSync::new(Arc::new(rpc_api.clone()), Arc::new(MockScreener), None);
+        let validator_config = genesis_validator_config(rpc_api);
+        let state_sync = StateSync::new(
+            Arc::new(rpc_api.clone()),
+            Arc::new(MockScreener),
+            None,
+            validator_config,
+        );
 
         let mut account_updates = AccountUpdates::default();
         state_sync

@@ -8,7 +8,7 @@ use miden_client::account::AccountId;
 use miden_client::note::{BlockNumber, NoteTag};
 use miden_client::protocol_config::protocol_config_setting_key;
 use miden_client::store::{SettingScope, StoreError};
-use miden_client::sync::{NoteTagRecord, NoteTagSource, PublicAccountUpdate, StateSyncUpdate};
+use miden_client::sync::{NoteTagRecord, NoteTagSource, StateSyncUpdate};
 use miden_client::utils::{Deserializable, Serializable};
 use rusqlite::{Connection, Transaction, params};
 

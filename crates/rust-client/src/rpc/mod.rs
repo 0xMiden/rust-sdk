@@ -436,6 +436,42 @@ pub trait NodeRpcClient: Send + Sync {
         request: GetAccountRequest,
     ) -> Result<(BlockNumber, AccountProof), RpcError>;
 
+    /// Binds an invitation code to an account on the network, using the `/RegisterAccount`
+    /// endpoint.
+    ///
+    /// A network that enforces an account allowlist creates an account on chain only when the
+    /// account is registered. Registration does not create the account. The first transaction of
+    /// the account does that, and the node rejects it when the account is not registered.
+    ///
+    /// When the network operator runs a funding service, the node pays the registered account a
+    /// public P2ID note with the native asset, and answers only once that note is committed. The
+    /// note is not part of the response. The caller must sync to receive it. A network that does
+    /// not enforce the allowlist ignores the code, but still registers and funds the account.
+    ///
+    /// A retry with the same code and account succeeds without changes, and does not request
+    /// funding again.
+    ///
+    /// # Errors
+    ///
+    /// The node rejects the registration with a [`RegisterAccountError`] when the code is unknown,
+    /// when the code or the account is already registered, or when the request is malformed. A
+    /// funding failure comes back as an `Unavailable` status. The account stays registered in that
+    /// case, and a retry does not fund it.
+    ///
+    /// [`RegisterAccountError`]: crate::rpc::RegisterAccountError
+    async fn register_account(
+        &self,
+        invitation_code: &str,
+        account_id: AccountId,
+    ) -> Result<(), RpcError>;
+
+    /// Returns whether the account may be created on chain, using the `/IsAccountAllowed` endpoint.
+    ///
+    /// The node answers `true` when it does not enforce an account allowlist, or when the account
+    /// is registered. The allowlist gates account creation only, so an account that already exists
+    /// on chain is not checked.
+    async fn is_account_allowed(&self, account_id: AccountId) -> Result<bool, RpcError>;
+
     /// Fills in the asset list when the vault came back flagged `too_many_assets`, by querying
     /// [`NodeRpcClient::sync_account_vault`] over `[GENESIS, block_to]`. No-op when the flag isn't
     /// set.
@@ -694,6 +730,8 @@ pub enum RpcEndpoint {
     Status,
     SyncNullifiers,
     GetAccount,
+    RegisterAccount,
+    IsAccountAllowed,
     GetBlockByNumber,
     GetBlockHeaderByNumber,
     GetNotesById,
@@ -717,6 +755,8 @@ impl RpcEndpoint {
             RpcEndpoint::Status => "Status",
             RpcEndpoint::SyncNullifiers => "SyncNullifiers",
             RpcEndpoint::GetAccount => "GetAccount",
+            RpcEndpoint::RegisterAccount => "RegisterAccount",
+            RpcEndpoint::IsAccountAllowed => "IsAccountAllowed",
             RpcEndpoint::GetBlockByNumber => "GetBlockByNumber",
             RpcEndpoint::GetBlockHeaderByNumber => "GetBlockHeaderByNumber",
             RpcEndpoint::GetNotesById => "GetNotesById",
@@ -737,19 +777,22 @@ impl RpcEndpoint {
     /// Returns whether repeating the call is safe when the outcome of the previous attempt is
     /// unknown.
     ///
-    /// Submissions are not: the node may have accepted the transaction before the response was
-    /// lost, so a repeat hits already-consumed state and comes back as a conflict that cannot be
-    /// told apart from a genuine double spend.
+    /// Calls that change state on the node are not: the node may have applied the change before the
+    /// response was lost, so a repeat can come back as a conflict that cannot be told apart from a
+    /// genuine one.
     ///
     /// The match is exhaustive on purpose, so a new endpoint has to be classified before it
     /// compiles.
     #[cfg(feature = "tonic")]
     pub(crate) fn is_idempotent(self) -> bool {
         match self {
-            RpcEndpoint::SubmitProvenTx | RpcEndpoint::SubmitProvenBatch => false,
+            RpcEndpoint::SubmitProvenTx
+            | RpcEndpoint::SubmitProvenBatch
+            | RpcEndpoint::RegisterAccount => false,
             RpcEndpoint::Status
             | RpcEndpoint::SyncNullifiers
             | RpcEndpoint::GetAccount
+            | RpcEndpoint::IsAccountAllowed
             | RpcEndpoint::GetBlockByNumber
             | RpcEndpoint::GetBlockHeaderByNumber
             | RpcEndpoint::GetNotesById
@@ -774,6 +817,8 @@ impl fmt::Display for RpcEndpoint {
                 write!(f, "sync_nullifiers")
             },
             RpcEndpoint::GetAccount => write!(f, "get_account"),
+            RpcEndpoint::RegisterAccount => write!(f, "register_account"),
+            RpcEndpoint::IsAccountAllowed => write!(f, "is_account_allowed"),
             RpcEndpoint::GetBlockByNumber => write!(f, "get_block_by_number"),
             RpcEndpoint::GetBlockHeaderByNumber => {
                 write!(f, "get_block_header_by_number")

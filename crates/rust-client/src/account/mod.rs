@@ -135,7 +135,7 @@ mod account_reader;
 pub use account_reader::AccountReader;
 /// Raw access to `miden-standards` account modules for items not curated by `miden-client`.
 pub use miden_standards::account as standards;
-use miden_standards::account::auth::{Approver, AuthSingleSig};
+use miden_standards::account::auth::{Approver, AuthSingleSig, NetworkAccount};
 use miden_standards::account::faucets::FungibleFaucet;
 pub use miden_standards::account::inspection::{
     AccountBuilderSchemaCommitmentExt,
@@ -261,6 +261,11 @@ pub mod component {
 ///   their state (including nonce, balance, and metadata) is updated upon every synchronization
 ///   with the network.
 ///
+/// - **Account registration:** On a network that enforces an account allowlist,
+///   [`Client::register_account`] binds an invitation code to a new account before its first
+///   transaction creates it on chain, and [`Client::is_account_allowed`] asks whether the network
+///   accepts the creation of an account.
+///
 /// - **Data retrieval:** The module also provides methods to fetch account-related data.
 impl<AUTH> Client<AUTH> {
     // ACCOUNT CREATION
@@ -286,6 +291,111 @@ impl<AUTH> Client<AUTH> {
         overwrite: bool,
     ) -> Result<(), ClientError> {
         self.add_account_inner(account, ClientAccountType::Native, overwrite).await
+    }
+
+    // ACCOUNT REGISTRATION
+    // --------------------------------------------------------------------------------------------
+
+    /// Binds an invitation code to a tracked account on the network allowlist.
+    ///
+    /// A network that enforces an account allowlist creates an account on chain only when the
+    /// account is registered. The first transaction of an account is what creates it, so the
+    /// account must be registered before that transaction is submitted.
+    /// [`Client::submit_new_transaction`] and [`BatchBuilder::submit`] ask the node first, and fail
+    /// with [`ClientError::AccountNotAllowlisted`] for an account the network does not accept. Only
+    /// account creation is gated: an account that already exists on chain is never checked, and
+    /// network accounts are exempt.
+    ///
+    /// The account must be tracked by the client, must not be deployed on chain yet, and must not
+    /// be a network account. The invitation code must exist on the node and must not be bound to
+    /// another account. A registration consumes the code, so the client asks the node first and
+    /// does not send the code for an account the node already allows.
+    ///
+    /// When the network operator runs a funding service, the node pays the registered account a
+    /// public P2ID note with the native asset. The node answers once that note is committed, so
+    /// this call can take a few blocks. The note is not part of the response, and the client does
+    /// not see it until [`Client::sync_state`] runs. The client tracks the note tag of every
+    /// account it owns, so the sync imports the note and [`Client::get_consumable_notes`] lists it.
+    /// The account then consumes the note in its first transaction. That transaction creates the
+    /// account on chain and pays its fee out of the received funds.
+    ///
+    /// # Errors
+    ///
+    /// - [`ClientError::AccountDataNotFound`] if the client does not track the account.
+    /// - [`ClientError::AccountIsNotNew`] if the account already exists on chain.
+    /// - [`ClientError::AccountIsNetworkAccount`] if the account is a network account. The node
+    ///   admits network accounts without a code.
+    /// - [`ClientError::AccountAlreadyAllowed`] if the node already allows the account, because it
+    ///   is registered or because the network does not enforce an allowlist. The code is not sent.
+    /// - [`ClientError::RpcError`] carrying a [`RegisterAccountError`] if the node rejects the
+    ///   code or the account, or an `Unavailable` status if the funding failed. In the second
+    ///   case the account stays registered, so a retry fails with
+    ///   [`ClientError::AccountAlreadyAllowed`] and the account has to be funded another way.
+    ///
+    /// [`BatchBuilder::submit`]: crate::transaction::BatchBuilder::submit
+    /// [`RegisterAccountError`]: crate::rpc::RegisterAccountError
+    pub async fn register_account(
+        &self,
+        account_id: AccountId,
+        invitation_code: &str,
+    ) -> Result<(), ClientError> {
+        let (_, status) = self
+            .store
+            .get_account_header(account_id)
+            .await?
+            .ok_or(ClientError::AccountDataNotFound(account_id))?;
+        if !status.is_new() {
+            return Err(ClientError::AccountIsNotNew(account_id));
+        }
+
+        let account = self
+            .get_account(account_id)
+            .await?
+            .ok_or(ClientError::AccountDataNotFound(account_id))?;
+        // The node admits a network account without a code.
+        if NetworkAccount::new(account).is_ok() {
+            return Err(ClientError::AccountIsNetworkAccount(account_id));
+        }
+        // A registration consumes the code, so do not send it when the node already allows the
+        // account.
+        if self.is_account_allowed(account_id).await? {
+            return Err(ClientError::AccountAlreadyAllowed(account_id));
+        }
+
+        self.rpc_api.register_account(invitation_code, account_id).await?;
+
+        Ok(())
+    }
+
+    /// Returns whether the network lets `account_id` be created on chain.
+    ///
+    /// The node answers `true` when it does not enforce an account allowlist, or when the account
+    /// is registered. See [`Client::register_account`] for how an account gets registered.
+    pub async fn is_account_allowed(&self, account_id: AccountId) -> Result<bool, ClientError> {
+        Ok(self.rpc_api.is_account_allowed(account_id).await?)
+    }
+
+    /// Returns whether a transaction against `account_id` creates an account that the network
+    /// allowlist gates.
+    ///
+    /// Only a new account is gated, and a network account is exempt. The answer is `false` for an
+    /// account that the client does not track.
+    pub(crate) async fn is_allowlist_gated(
+        &self,
+        account_id: AccountId,
+    ) -> Result<bool, ClientError> {
+        let Some((_, status)) = self.store.get_account_header(account_id).await? else {
+            return Ok(false);
+        };
+        if !status.is_new() {
+            return Ok(false);
+        }
+
+        let Some(account) = self.get_account(account_id).await? else {
+            return Ok(false);
+        };
+
+        Ok(NetworkAccount::new(account).is_err())
     }
 
     /// Inserts `account` into the store (or overwrites it if `overwrite` is true) and registers the

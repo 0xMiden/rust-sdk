@@ -86,3 +86,41 @@ assert_comparison_failure \
   "missing-base-revision" \
   "" \
   "pull request base and head revisions are required"
+
+assert_fixture_move_selects_systems() (
+  local test_repo
+  local output_file
+  local base_sha
+  local head_sha
+
+  test_repo=$(mktemp -d)
+  trap 'rm -rf "$test_repo"' EXIT
+  git -C "$test_repo" init -q
+  git -C "$test_repo" config user.email "ci@example.com"
+  git -C "$test_repo" config user.name "CI"
+  mkdir -p "$test_repo/scripts/testdata/insecure-golden-storage-key"
+  echo "fixture" > "$test_repo/scripts/testdata/insecure-golden-storage-key/secret-share.wire"
+  git -C "$test_repo" add scripts/testdata/insecure-golden-storage-key/secret-share.wire
+  git -C "$test_repo" commit -qm "Add fixture"
+  base_sha=$(git -C "$test_repo" rev-parse HEAD)
+
+  mkdir -p "$test_repo/moved"
+  git -C "$test_repo" mv \
+    scripts/testdata/insecure-golden-storage-key/secret-share.wire \
+    moved/secret-share.wire
+  git -C "$test_repo" commit -qm "Move fixture"
+  head_sha=$(git -C "$test_repo" rev-parse HEAD)
+
+  output_file=$(mktemp)
+  trap 'rm -rf "$test_repo"; rm -f "$output_file"' EXIT
+  (
+    cd "$test_repo"
+    GITHUB_OUTPUT="$output_file" "$ENTRYPOINT" pull_request "$base_sha" "$head_sha"
+  )
+  if ! diff -u <(printf '%s\n' "$all_systems") "$output_file"; then
+    echo "moving a validator fixture did not select all systems" >&2
+    exit 1
+  fi
+)
+
+assert_fixture_move_selects_systems

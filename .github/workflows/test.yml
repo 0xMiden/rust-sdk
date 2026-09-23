@@ -99,7 +99,7 @@ jobs:
     name: Restore test node cache
     runs-on: warp-ubuntu-latest-x64-2x
     needs: [changes]
-    if: ${{ always() && needs.changes.outputs.test-node != 'false' }}
+    if: ${{ !cancelled() && needs.changes.outputs.test-node != 'false' }}
     outputs:
       cache-hit: ${{ steps.cache-test-node.outputs.cache-hit }}
     steps:
@@ -134,7 +134,7 @@ jobs:
     name: Build test node
     runs-on: warp-ubuntu-latest-x64-8x
     needs: [changes, build-test-node]
-    if: ${{ always() && needs.changes.outputs.test-node != 'false' && (needs.build-test-node.result != 'success' || needs.build-test-node.outputs.cache-hit != 'true') }}
+    if: ${{ !cancelled() && needs.changes.outputs.test-node != 'false' && (needs.build-test-node.result != 'success' || needs.build-test-node.outputs.cache-hit != 'true') }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -186,7 +186,7 @@ jobs:
     name: miden-bench smoke tests
     runs-on: warp-ubuntu-latest-x64-8x
     needs: [changes, build-test-node, install-test-node]
-    if: ${{ always() && needs.changes.outputs.miden-bench != 'false' && (needs.install-test-node.result == 'success' || (needs.build-test-node.result == 'success' && needs.build-test-node.outputs.cache-hit == 'true' && needs.install-test-node.result == 'skipped')) }}
+    if: ${{ !cancelled() && needs.changes.outputs.miden-bench != 'false' && (needs.install-test-node.result == 'success' || (needs.build-test-node.result == 'success' && needs.build-test-node.outputs.cache-hit == 'true' && needs.install-test-node.result == 'skipped')) }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -229,7 +229,7 @@ jobs:
     name: AggLayer tests
     runs-on: warp-ubuntu-latest-x64-8x
     needs: [changes, build-test-node, install-test-node]
-    if: ${{ always() && needs.changes.outputs.agglayer != 'false' && (needs.install-test-node.result == 'success' || (needs.build-test-node.result == 'success' && needs.build-test-node.outputs.cache-hit == 'true' && needs.install-test-node.result == 'skipped')) }}
+    if: ${{ !cancelled() && needs.changes.outputs.agglayer != 'false' && (needs.install-test-node.result == 'success' || (needs.build-test-node.result == 'success' && needs.build-test-node.outputs.cache-hit == 'true' && needs.install-test-node.result == 'skipped')) }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -326,7 +326,7 @@ jobs:
     name: Integration tests
     runs-on: warp-ubuntu-latest-x64-8x
     needs: [changes, build-test-node, install-test-node]
-    if: ${{ always() && needs.changes.outputs.integration != 'false' && (needs.install-test-node.result == 'success' || (needs.build-test-node.result == 'success' && needs.build-test-node.outputs.cache-hit == 'true' && needs.install-test-node.result == 'skipped')) }}
+    if: ${{ !cancelled() && needs.changes.outputs.integration != 'false' && (needs.install-test-node.result == 'success' || (needs.build-test-node.result == 'success' && needs.build-test-node.outputs.cache-hit == 'true' && needs.install-test-node.result == 'skipped')) }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:

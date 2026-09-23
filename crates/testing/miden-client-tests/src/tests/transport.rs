@@ -11,6 +11,7 @@ use miden_client::note::{
     NoteDetails,
     NoteExecutionHint,
     NoteFile,
+    NoteInclusionProof,
     NoteSyncHint,
     NoteTag,
     NoteType,
@@ -36,6 +37,7 @@ use miden_protocol::account::{
 };
 use miden_protocol::asset::{Asset, FungibleAsset};
 use miden_protocol::block::BlockNumber;
+use miden_protocol::crypto::merkle::SparseMerklePath;
 use miden_protocol::crypto::rand::RandomCoin;
 use miden_protocol::note::{NoteAttachment, NoteAttachmentScheme, NoteType as ProtocolNoteType};
 use miden_protocol::testing::account_id::{ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET, ACCOUNT_ID_SENDER};
@@ -1318,6 +1320,81 @@ async fn transport_fetch_failure_leaves_cursor_for_retry() {
 
     let summary = recipient.sync_state().await.unwrap();
     assert_eq!(summary.new_private_notes.len(), 1, "note seeded during the outage must arrive");
+}
+
+/// A note relayed with its inclusion proof goes through the transport's with-proof path, and the
+/// recipient receives the proof's block as the commitment block.
+#[tokio::test]
+async fn transport_send_with_proof() {
+    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
+    let (mut sender, sender_account) = create_test_user_transport(mock_node.clone()).await;
+    let (mut recipient, recipient_account) = create_test_user_transport(mock_node.clone()).await;
+    let recipient_address = Address::new(recipient_account.id())
+        .with_routing_parameters(RoutingParameters::new(AddressInterface::BasicWallet));
+
+    let note: Note = P2idNote::builder()
+        .sender(sender_account.id())
+        .target(recipient_account.id())
+        .asset(dummy_asset())
+        .note_type(NoteType::Private)
+        .generate_serial_number(sender.rng())
+        .build()
+        .unwrap()
+        .into();
+    let inclusion_proof =
+        NoteInclusionProof::new(BlockNumber::GENESIS, 0, SparseMerklePath::default()).unwrap();
+
+    sender
+        .send_private_note_with_proof(note.clone(), &recipient_address, inclusion_proof)
+        .await
+        .unwrap();
+
+    assert_eq!(mock_node.read().proven_block(&note.id()), Some(BlockNumber::GENESIS));
+    let (delivered, _) = mock_node
+        .read()
+        .get_notes(&[note.metadata().tag()], NoteTransportCursor::init());
+    assert_eq!(delivered.len(), 1);
+    assert_eq!(delivered[0].block_hint, Some(BlockNumber::GENESIS));
+
+    recipient.sync_state().await.unwrap();
+    let notes = recipient.get_input_notes(NoteFilter::All).await.unwrap();
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0].details_commitment(), note.details_commitment());
+}
+
+/// A relay with a proof that fails stays in the outbox with its proof, and the flush re-sends it
+/// through the with-proof path.
+#[tokio::test]
+async fn flush_relay_outbox_resends_with_proof() {
+    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
+    let faulty = Arc::new(FaultyNoteTransportApi::new(mock_node.clone(), 1));
+    let (mut sender, sender_account) =
+        create_test_user_with_transport(faulty.clone() as Arc<dyn NoteTransportClient>).await;
+    let (_recipient, recipient_account) = create_test_user_transport(mock_node.clone()).await;
+    let recipient_address = Address::new(recipient_account.id())
+        .with_routing_parameters(RoutingParameters::new(AddressInterface::BasicWallet));
+
+    let note: Note = P2idNote::builder()
+        .sender(sender_account.id())
+        .target(recipient_account.id())
+        .asset(dummy_asset())
+        .note_type(NoteType::Private)
+        .generate_serial_number(sender.rng())
+        .build()
+        .unwrap()
+        .into();
+    let inclusion_proof =
+        NoteInclusionProof::new(BlockNumber::GENESIS, 0, SparseMerklePath::default()).unwrap();
+
+    let first_attempt = sender
+        .send_private_note_with_proof(note.clone(), &recipient_address, inclusion_proof)
+        .await;
+    assert!(first_attempt.is_err(), "expected NTL failure on first attempt");
+    assert_eq!(mock_node.read().proven_block(&note.id()), None);
+
+    sender.flush_relay_outbox().await.expect("flush should re-send the queued note");
+    assert_eq!(faulty.send_attempts(), 2, "flush must re-attempt the relay once");
+    assert_eq!(mock_node.read().proven_block(&note.id()), Some(BlockNumber::GENESIS));
 }
 
 /// A delivery whose details don't match the header's commitment is dropped.

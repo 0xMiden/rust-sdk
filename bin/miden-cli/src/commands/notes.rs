@@ -3,7 +3,6 @@ use comfy_table::{Attribute, Cell, ContentArrangement, Table, presets};
 use miden_client::address::Address;
 use miden_client::keystore::Keystore;
 use miden_client::note::{
-    Note,
     NoteConsumability,
     NoteConsumptionStatus,
     NoteMetadata,
@@ -345,21 +344,35 @@ async fn send<AUTH: Keystore + Sync>(
     note_id: &str,
     address: &str,
 ) -> Result<(), CliError> {
-    let note_record = get_input_note_with_id_prefix(client, note_id)
-        .await
-        .map_err(|e| CliError::Input(format!("note not found: {e}")))?;
-
-    let block_hint = note_record.inclusion_proof().map(|proof| proof.location().block_num());
-    let note: Note = note_record
-        .try_into()
-        .map_err(|e| CliError::from(ClientError::NoteRecordConversionError(e)))?;
+    let (note, inclusion_proof) = match get_output_note_with_id_prefix(client, note_id).await {
+        Ok(record) => {
+            let proof = record.inclusion_proof().cloned();
+            let note = record
+                .try_into()
+                .map_err(|e| CliError::from(ClientError::NoteRecordConversionError(e)))?;
+            (note, proof)
+        },
+        Err(IdPrefixFetchError::NoMatch(_)) => {
+            let record = get_input_note_with_id_prefix(client, note_id)
+                .await
+                .map_err(|e| CliError::Input(format!("note not found: {e}")))?;
+            let proof = record.inclusion_proof().cloned();
+            let note = record
+                .try_into()
+                .map_err(|e| CliError::from(ClientError::NoteRecordConversionError(e)))?;
+            (note, proof)
+        },
+        Err(err) => return Err(CliError::Input(format!("note not found: {err}"))),
+    };
     let (address_network_id, address) =
         Address::decode(address).map_err(|e| CliError::Input(e.to_string()))?;
     validate_network_eq(&address_network_id, &configured_network_id()?)?;
 
-    match block_hint {
-        Some(block_hint) => {
-            client.send_private_note_with_block_hint(note, &address, block_hint).await?;
+    match inclusion_proof {
+        // A committed note travels with its proof, so the transport verifies it and the recipient
+        // learns the exact commitment block.
+        Some(inclusion_proof) => {
+            client.send_private_note_with_proof(note, &address, inclusion_proof).await?;
         },
         None => {
             #[allow(deprecated)]

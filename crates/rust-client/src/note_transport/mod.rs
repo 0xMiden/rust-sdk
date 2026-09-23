@@ -11,7 +11,15 @@ use alloc::vec::Vec;
 
 use miden_protocol::address::Address;
 use miden_protocol::block::BlockNumber;
-use miden_protocol::note::{Note, NoteDetails, NoteDetailsCommitment, NoteHeader, NoteId, NoteTag};
+use miden_protocol::note::{
+    Note,
+    NoteDetails,
+    NoteDetailsCommitment,
+    NoteHeader,
+    NoteId,
+    NoteInclusionProof,
+    NoteTag,
+};
 use miden_protocol::utils::serde::Serializable;
 use miden_tx::auth::TransactionAuthenticator;
 use miden_tx::utils::serde::{
@@ -40,11 +48,11 @@ pub const NOTE_TRANSPORT_CURSOR_STORE_SETTING: &str = "note_transport_cursor";
 /// avoids a Store-trait schema change while surviving process restarts.
 pub const NOTE_TRANSPORT_COVERED_TAGS_KEY: &str = "note_transport_covered_tags";
 
-/// Settings key for the durable relay outbox: a serialized `Vec<NoteInfo>` of private notes whose
-/// transport delivery has not yet succeeded. `send_private_note` appends (replacing any entry with
-/// the same note id) before relaying; [`Client::flush_relay_outbox`] drains entries that re-send
-/// successfully. Reusing the settings k/v avoids a Store-trait schema change while surviving
-/// process restarts.
+/// Settings key for the durable relay outbox: a serialized `Vec<RelayOutboxEntry>` of private notes
+/// whose transport delivery has not yet succeeded. `send_private_note` appends (replacing any entry
+/// with the same note id) before relaying; [`Client::flush_relay_outbox`] drains entries that
+/// re-send successfully. Reusing the settings k/v avoids a Store-trait schema change while
+/// surviving process restarts.
 pub const NOTE_TRANSPORT_OUTBOX_KEY: &str = "note_transport_outbox";
 
 /// Client note transport methods.
@@ -86,7 +94,7 @@ impl<AUTH> Client<AUTH> {
         note: Note,
         address: &Address,
     ) -> Result<(), ClientError> {
-        self.relay_private_note(note, address, None).await
+        self.relay_private_note(note, address, RelayMetadata::None).await
     }
 
     /// Send a note through the note transport network, relaying a block hint to the recipient.
@@ -104,56 +112,63 @@ impl<AUTH> Client<AUTH> {
         address: &Address,
         block_hint: BlockNumber,
     ) -> Result<(), ClientError> {
-        self.relay_private_note(note, address, Some(block_hint)).await
+        self.relay_private_note(note, address, RelayMetadata::BlockHint(block_hint))
+            .await
     }
 
-    /// Shared relay path for [`Client::send_private_note`] and
-    /// [`Client::send_private_note_with_block_hint`]. `block_hint` is the optional block from which
-    /// the recipient should start scanning for the note's commitment.
+    /// Send a note through the note transport network together with its inclusion proof.
+    ///
+    /// A proof-aware transport verifies `inclusion_proof` against its node before it stores the
+    /// note. It relays the exact commitment block to the recipient. The default implementation of
+    /// [`NoteTransportClient::send_note_with_proof`] sends the proof's block as an unverified hint
+    /// for compatibility with custom transports. The proof exists once the transaction that created
+    /// the note is committed and the sender has synced past it; see
+    /// [`OutputNoteRecord::inclusion_proof`](crate::store::OutputNoteRecord::inclusion_proof).
+    ///
+    /// The same durability guarantees as [`Client::send_private_note`] apply: the proof is
+    /// persisted with the relay payload, so a retried send relays it again.
+    pub async fn send_private_note_with_proof(
+        &mut self,
+        note: Note,
+        address: &Address,
+        inclusion_proof: NoteInclusionProof,
+    ) -> Result<(), ClientError> {
+        self.relay_private_note(note, address, RelayMetadata::InclusionProof(inclusion_proof))
+            .await
+    }
+
+    /// Shared relay path for [`Client::send_private_note`],
+    /// [`Client::send_private_note_with_block_hint`] and [`Client::send_private_note_with_proof`].
+    /// `relay_metadata` selects the transport method and carries the block information it relays.
     async fn relay_private_note(
         &self,
         note: Note,
         _address: &Address,
-        block_hint: Option<BlockNumber>,
+        relay_metadata: RelayMetadata,
     ) -> Result<(), ClientError> {
         let api = self.get_note_transport_api()?;
 
-        let header = *note.header();
-        let note_id = header.id();
-        let details = NoteDetails::from(note);
-        let details_bytes = details.to_bytes();
-        // e2ee impl hint: address.key().encrypt(details_bytes)
+        let note = TransportNote::from(note);
+        let note_id = note.header().id();
+        // e2ee impl hint: address.key().encrypt(note.details().to_bytes())
 
         // Persist the payload before the network call so a failed or interrupted `send_note` leaves
-        // a recoverable record rather than losing the only copy with the call frame. The hint
-        // travels with the entry so a retried send relays the same value.
-        let entry = NoteInfo {
-            header,
-            details_bytes: details_bytes.clone(),
-            block_hint,
-        };
+        // a recoverable record rather than losing the only copy with the call frame. The delivery
+        // information travels with the entry so a retried send relays the same value.
+        let entry = RelayOutboxEntry { note, relay_metadata };
         let mut outbox = self.load_relay_outbox().await?;
         // Replace any existing entry for this note id so the latest payload wins when a
         // still-pending note is re-sent.
-        outbox.retain(|e| e.header.id() != note_id);
-        outbox.push(entry);
+        outbox.retain(|e| e.note.header().id() != note_id);
+        outbox.push(entry.clone());
         self.save_relay_outbox(outbox).await?;
 
-        // Dispatch to the hint-carrying API only when a hint is present, otherwise use the plain
-        // `send_note`. The transport exposes a separate method per scenario.
-        match block_hint {
-            Some(block_hint) => {
-                api.send_note_with_block_hint(header, details_bytes, block_hint).await?;
-            },
-            None => {
-                api.send_note(header, details_bytes).await?;
-            },
-        }
+        entry.relay(api.as_ref()).await?;
 
         // Relay succeeded — drop the entry. A failed store write here is tolerable: the next flush
         // re-sends and the receiver dedupes by note id, so a stale entry never causes loss.
         let mut outbox = self.load_relay_outbox().await?;
-        outbox.retain(|e| e.header.id() != note_id);
+        outbox.retain(|e| e.note.header().id() != note_id);
         self.save_relay_outbox(outbox).await?;
 
         Ok(())
@@ -182,18 +197,7 @@ impl<AUTH> Client<AUTH> {
         let mut last_err: Option<NoteTransportError> = None;
 
         for entry in entries {
-            let relayed = match entry.block_hint {
-                Some(block_hint) => {
-                    api.send_note_with_block_hint(
-                        entry.header,
-                        entry.details_bytes.clone(),
-                        block_hint,
-                    )
-                    .await
-                },
-                None => api.send_note(entry.header, entry.details_bytes.clone()).await,
-            };
-            match relayed {
+            match entry.relay(api.as_ref()).await {
                 Ok(()) => {},
                 Err(err) => {
                     tracing::warn!(?err, "relay-outbox entry retry failed; will retry next sync");
@@ -217,7 +221,7 @@ impl<AUTH> Client<AUTH> {
     /// mismatch or storage corruption) the entry is dropped and an empty `Vec` is returned —
     /// leaving unreadable bytes in place would block every subsequent relay because each sync would
     /// re-read them.
-    async fn load_relay_outbox(&self) -> Result<Vec<NoteInfo>, ClientError> {
+    async fn load_relay_outbox(&self) -> Result<Vec<RelayOutboxEntry>, ClientError> {
         let bytes = self
             .store
             .get_setting(SettingScope::Client, String::from(NOTE_TRANSPORT_OUTBOX_KEY))
@@ -226,7 +230,7 @@ impl<AUTH> Client<AUTH> {
         let Some(bytes) = bytes else {
             return Ok(Vec::new());
         };
-        match Vec::<NoteInfo>::read_from_bytes(&bytes) {
+        match Vec::<RelayOutboxEntry>::read_from_bytes(&bytes) {
             Ok(entries) => Ok(entries),
             Err(err) => {
                 tracing::warn!(?err, "dropping unreadable relay outbox; resetting to empty");
@@ -241,7 +245,7 @@ impl<AUTH> Client<AUTH> {
 
     /// Persist the relay outbox, removing the key entirely when empty so the settings table doesn't
     /// accumulate empty-vec blobs.
-    async fn save_relay_outbox(&self, entries: Vec<NoteInfo>) -> Result<(), ClientError> {
+    async fn save_relay_outbox(&self, entries: Vec<RelayOutboxEntry>) -> Result<(), ClientError> {
         let key = String::from(NOTE_TRANSPORT_OUTBOX_KEY);
         if entries.is_empty() {
             self.store
@@ -496,10 +500,10 @@ where
         id_by_commitment: &mut BTreeMap<NoteDetailsCommitment, NoteId>,
     ) -> Result<(Vec<NoteFile>, NoteTransportCursor), ClientError> {
         // Fallback lookback window, in blocks, used only for notes the transport delivered without
-        // a sender-provided block hint. Scanning back from sync height handles the race where a
-        // note is committed on-chain just before the NTL delivers its data. Without it,
+        // block information. Scanning back from sync height handles the race where a note is
+        // committed on-chain just before the NTL delivers its data. Without it,
         // check_expected_notes would scan from sync_height forward and miss the already-committed
-        // note. A sender-provided hint is deterministic and always preferred.
+        // note. A transport-provided block is deterministic and always preferred.
         const NOTE_LOOKBACK_BLOCKS: u32 = 20;
 
         let mut notes = Vec::new();
@@ -549,7 +553,7 @@ where
         let mut note_files = Vec::with_capacity(notes.len());
         for (note, block_hint) in notes {
             let tag = note.metadata().tag();
-            // Prefer the sender-provided hint, falling back to the lookback window when absent.
+            // Prefer the transport-provided block, falling back to the lookback window when absent.
             let after_block_num = block_hint.unwrap_or(fallback_after_block_num);
             note_files.push(NoteFile::ExpectedNote {
                 details: note.into(),
@@ -728,30 +732,82 @@ impl NoteTransportCursor {
     }
 }
 
+/// The part of a note that the note transport network sends to a recipient.
+///
+/// The transport sends the original header and details. It does not send note attachments. The
+/// constructor verifies that the header commits to the details.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TransportNote {
+    header: NoteHeader,
+    details: NoteDetails,
+}
+
+impl TransportNote {
+    /// Creates a transport note from matching note parts.
+    pub fn new(header: NoteHeader, details: NoteDetails) -> Result<Self, NoteTransportError> {
+        validate_note_parts(&header, &details)?;
+        Ok(Self { header, details })
+    }
+
+    /// Returns the note header.
+    pub fn header(&self) -> &NoteHeader {
+        &self.header
+    }
+
+    /// Returns the note details.
+    pub fn details(&self) -> &NoteDetails {
+        &self.details
+    }
+
+    /// Returns the note header and details.
+    pub fn into_parts(self) -> (NoteHeader, NoteDetails) {
+        (self.header, self.details)
+    }
+}
+
+impl From<Note> for TransportNote {
+    fn from(note: Note) -> Self {
+        let header = *note.header();
+        let details = NoteDetails::from(note);
+        Self { header, details }
+    }
+}
+
 /// The main transport client trait for sending and receiving private notes.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 pub trait NoteTransportClient: Send + Sync {
-    /// Sends a note with serialized details.
-    async fn send_note(
-        &self,
-        header: NoteHeader,
-        details: Vec<u8>,
-    ) -> Result<(), NoteTransportError>;
+    /// Sends a note.
+    async fn send_note(&self, note: TransportNote) -> Result<(), NoteTransportError>;
 
     /// Send a note, relaying a block hint for the recipient's commitment scan.
     ///
     /// `block_hint` is the block from which the recipient should start scanning for the note's
     /// commitment. The default implementation ignores it and delegates to
-    /// [`NoteTransportClient::send_note`], so existing implementors keep compiling. Transports that
-    /// can carry the hint (e.g. the gRPC client) override this.
+    /// [`NoteTransportClient::send_note`]. Transports that can carry the hint, such as the gRPC
+    /// client, override this method.
     async fn send_note_with_block_hint(
         &self,
-        header: NoteHeader,
-        details: Vec<u8>,
+        note: TransportNote,
         _block_hint: BlockNumber,
     ) -> Result<(), NoteTransportError> {
-        self.send_note(header, details).await
+        self.send_note(note).await
+    }
+
+    /// Sends a note together with its inclusion proof.
+    ///
+    /// A proof-aware transport verifies `inclusion_proof` before it stores the note. It relays the
+    /// exact commitment block to the recipient. The default implementation cannot carry or verify
+    /// the proof. It relays the proof's block number as an unverified hint through
+    /// [`NoteTransportClient::send_note_with_block_hint`]. Transports that can carry the proof,
+    /// such as the gRPC client, override this method.
+    async fn send_note_with_proof(
+        &self,
+        note: TransportNote,
+        inclusion_proof: NoteInclusionProof,
+    ) -> Result<(), NoteTransportError> {
+        self.send_note_with_block_hint(note, inclusion_proof.location().block_num())
+            .await
     }
 
     /// Fetches notes for the given tags.
@@ -772,9 +828,9 @@ pub struct NoteInfo {
     pub header: NoteHeader,
     /// Serialized note details.
     pub details_bytes: Vec<u8>,
-    /// Sender-provided block hint: the block from which the recipient should start scanning for the
-    /// note's on-chain commitment, instead of applying its default lookback window. `None` when the
-    /// sender did not provide a hint.
+    /// Block from which the recipient starts scanning for the note's on-chain commitment. This is
+    /// either an unverified sender hint or the exact block verified by a proof-aware transport.
+    /// `None` applies the recipient's default lookback window.
     pub block_hint: Option<BlockNumber>,
 }
 
@@ -787,8 +843,109 @@ impl NoteInfo {
     }
 }
 
+// RELAY OUTBOX
+// ================================================================================================
+
+/// How a relayed note tells the recipient where to look for its on-chain commitment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RelayMetadata {
+    /// No block information. The recipient falls back to its lookback window.
+    None,
+    /// An unverified lower bound for the commitment block.
+    BlockHint(BlockNumber),
+    /// The note's inclusion proof. A proof-aware transport verifies it and relays the exact block.
+    InclusionProof(NoteInclusionProof),
+}
+
+/// A private note whose transport delivery has not yet succeeded.
+#[derive(Debug, Clone)]
+struct RelayOutboxEntry {
+    note: TransportNote,
+    relay_metadata: RelayMetadata,
+}
+
+impl RelayOutboxEntry {
+    /// Sends the note through the transport method that matches its delivery information.
+    async fn relay(&self, api: &dyn NoteTransportClient) -> Result<(), NoteTransportError> {
+        let note = self.note.clone();
+        match &self.relay_metadata {
+            RelayMetadata::None => api.send_note(note).await,
+            RelayMetadata::BlockHint(block_hint) => {
+                api.send_note_with_block_hint(note, *block_hint).await
+            },
+            RelayMetadata::InclusionProof(inclusion_proof) => {
+                api.send_note_with_proof(note, inclusion_proof.clone()).await
+            },
+        }
+    }
+}
+
 // SERIALIZATION
 // ================================================================================================
+
+// The first two `RelayMetadata` tags match the encoding of the `Option<BlockNumber>` that outbox
+// entries carried before the proof variant existed, so entries written by earlier versions still
+// load.
+impl Serializable for RelayMetadata {
+    fn write_into<W: ByteWriter>(&self, target: &mut W) {
+        match self {
+            RelayMetadata::None => target.write_u8(0),
+            RelayMetadata::BlockHint(block_hint) => {
+                target.write_u8(1);
+                block_hint.write_into(target);
+            },
+            RelayMetadata::InclusionProof(inclusion_proof) => {
+                target.write_u8(2);
+                inclusion_proof.write_into(target);
+            },
+        }
+    }
+}
+
+impl Deserializable for RelayMetadata {
+    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
+        match source.read_u8()? {
+            0 => Ok(Self::None),
+            1 => Ok(Self::BlockHint(BlockNumber::read_from(source)?)),
+            2 => Ok(Self::InclusionProof(NoteInclusionProof::read_from(source)?)),
+            tag => {
+                Err(DeserializationError::InvalidValue(format!("unknown relay delivery tag {tag}")))
+            },
+        }
+    }
+}
+
+impl Serializable for TransportNote {
+    fn write_into<W: ByteWriter>(&self, target: &mut W) {
+        self.header.write_into(target);
+        self.details.to_bytes().write_into(target);
+    }
+}
+
+impl Deserializable for TransportNote {
+    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
+        let header = NoteHeader::read_from(source)?;
+        let details_bytes = Vec::<u8>::read_from(source)?;
+        let details = NoteDetails::read_from_bytes(&details_bytes)?;
+        Self::new(header, details)
+            .map_err(|error| DeserializationError::InvalidValue(format!("{error}")))
+    }
+}
+
+impl Serializable for RelayOutboxEntry {
+    fn write_into<W: ByteWriter>(&self, target: &mut W) {
+        self.note.write_into(target);
+        self.relay_metadata.write_into(target);
+    }
+}
+
+impl Deserializable for RelayOutboxEntry {
+    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
+        let note = TransportNote::read_from(source)?;
+        let relay_metadata = RelayMetadata::read_from(source)?;
+        Ok(Self { note, relay_metadata })
+    }
+}
 
 impl Serializable for NoteInfo {
     fn write_into<W: ByteWriter>(&self, target: &mut W) {
@@ -839,4 +996,40 @@ fn rejoin_note(header: &NoteHeader, details_bytes: &[u8]) -> Result<Note, Deseri
         partial_metadata,
         details.recipient().clone(),
     ))
+}
+
+/// Checks that the note header commits to the supplied details.
+pub(crate) fn validate_note_parts(
+    header: &NoteHeader,
+    details: &NoteDetails,
+) -> Result<(), NoteTransportError> {
+    let header_commitment = header.details_commitment();
+    let details_commitment = details.commitment();
+    if header_commitment != details_commitment {
+        return Err(NoteTransportError::NoteDetailsMismatch {
+            header: header_commitment,
+            details: details_commitment,
+        });
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relay_metadata_preserves_the_legacy_block_hint_encoding() {
+        let legacy_plain = Option::<BlockNumber>::None.to_bytes();
+        let legacy_hint = Some(BlockNumber::from(42)).to_bytes();
+
+        assert_eq!(RelayMetadata::None.to_bytes(), legacy_plain);
+        assert_eq!(RelayMetadata::BlockHint(BlockNumber::from(42)).to_bytes(), legacy_hint);
+        assert_eq!(RelayMetadata::read_from_bytes(&legacy_plain).unwrap(), RelayMetadata::None);
+        assert_eq!(
+            RelayMetadata::read_from_bytes(&legacy_hint).unwrap(),
+            RelayMetadata::BlockHint(BlockNumber::from(42))
+        );
+    }
 }

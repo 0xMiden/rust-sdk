@@ -9,7 +9,9 @@ use miden_client::utils::{ByteReader, Deserializable, hex_to_bytes};
 use miden_client::{SliceReader, Word};
 
 use crate::codecs::parse_account_id_token;
+use crate::config::{CLIENT_CONFIG_FILE_NAME, CliConfig};
 use crate::errors::CliError;
+use crate::utils::read_keystore_password;
 use crate::{Parser, create_dynamic_table};
 
 /// Length of a serialized ECDSA public key. It matches the compressed SEC1 form that
@@ -72,6 +74,7 @@ impl TryFrom<AuthSchemeId> for KeyScheme {
         "commitment",
         "associate",
         "disassociate",
+        "encrypt",
     ])),
     group(ArgGroup::new("association_action").args(["associate", "disassociate"])),
 )]
@@ -103,9 +106,59 @@ pub struct KeysCmd {
     /// Account ID for an association operation, as a hexadecimal ID or a bech32 address.
     #[arg(long, value_name = "ACCOUNT_ID", requires = "association_action")]
     account_id: Option<String>,
+
+    /// Encrypt the plaintext keystore with a password and mark it as encrypted in the configuration
+    /// file.
+    #[arg(long)]
+    encrypt: bool,
 }
 
 impl KeysCmd {
+    /// Returns `true` if the command encrypts the keystore. This action runs before the keystore is
+    /// opened, so it is dispatched separately from [`KeysCmd::execute`].
+    pub fn encrypts_keystore(&self) -> bool {
+        self.encrypt
+    }
+
+    /// Encrypts the plaintext keystore of `config` and sets `keystore_encrypted` in its file.
+    ///
+    /// The state of the keys directory decides whether there is something to encrypt, not the
+    /// configuration field. A configuration without the field is read as encrypted while its
+    /// directory can still hold plaintext keys.
+    pub fn encrypt_keystore(config: &CliConfig) -> Result<(), CliError> {
+        if FilesystemKeyStore::is_encrypted_directory(&config.secret_keys_directory) {
+            return Err(CliError::Input("the keystore is already encrypted".to_string()));
+        }
+        let config_path = config
+            .config_dir
+            .as_ref()
+            .map(|dir| dir.path.join(CLIENT_CONFIG_FILE_NAME))
+            .ok_or_else(|| {
+                CliError::Input("the configuration file location is unknown".to_string())
+            })?;
+
+        let password = read_keystore_password(true)?;
+        let keystore = FilesystemKeyStore::encrypt_plaintext_keystore(
+            config.secret_keys_directory.clone(),
+            password.as_bytes(),
+        )
+        .map_err(CliError::KeyStore)?;
+
+        let mut config_table: toml::Table =
+            fs::read_to_string(&config_path)?.parse().map_err(|err: toml::de::Error| {
+                CliError::Config(Box::new(err), "failed to parse config file".to_string())
+            })?;
+        config_table.insert("keystore_encrypted".to_string(), toml::Value::Boolean(true));
+        fs::write(&config_path, config_table.to_string())?;
+
+        println!(
+            "Encrypted {} keys in {}.",
+            keystore.list_keys().map_err(CliError::KeyStore)?.len(),
+            config.secret_keys_directory.display()
+        );
+        Ok(())
+    }
+
     pub fn execute(&self, keystore: &FilesystemKeyStore) -> Result<(), CliError> {
         match self {
             Self { generate: Some(scheme), .. } => generate_key(keystore, *scheme),

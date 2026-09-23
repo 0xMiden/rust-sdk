@@ -43,6 +43,7 @@ miden-client-sqlite-store      = { default-features = false, path = "crates/sqli
 
 # Miden protocol dependencies
 miden-agglayer  = { default-features = false, version = "0.17.0-rc.5" }
+miden-crypto    = { default-features = false, version = "0.33" }
 miden-objects   = { default-features = false, version = "0.17.0-rc.5" }
 miden-protocol  = { default-features = false, version = "0.17.0-rc.5" }
 miden-standards = { default-features = false, version = "0.17.0-rc.5" }
@@ -62,6 +63,7 @@ miden-processor       = { default-features = false, version = "0.33" }
 
 # External dependencies
 anyhow             = { default-features = false, version = "1.0" }
+argon2             = { default-features = false, features = ["alloc"], version = "0.6" }
 assert_cmd         = { version = "2.0" }
 async-trait        = { version = "0.1" }
 chrono             = { version = "0.4" }

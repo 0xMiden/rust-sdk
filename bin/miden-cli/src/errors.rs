@@ -100,6 +100,17 @@ pub enum CliError {
     #[error("keystore error")]
     #[diagnostic(code(cli::keystore_error))]
     KeyStore(#[source] KeyStoreError),
+    #[error(
+        "the keystore at {0} holds plaintext keys, but the configuration marks it as encrypted"
+    )]
+    #[diagnostic(
+        code(cli::plaintext_keystore),
+        help(
+            "Run `{} keys --encrypt` to encrypt the keys, or set `keystore_encrypted = false` in the configuration file to keep them in plaintext.",
+            client_binary_name().display()
+        )
+    )]
+    PlaintextKeystore(String),
     #[error("missing flag: {0}")]
     #[diagnostic(code(cli::config_error), help("Check the configuration file format."))]
     MissingFlag(String),

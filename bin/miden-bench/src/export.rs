@@ -38,7 +38,7 @@ pub async fn export_account(
         .ok_or_else(|| anyhow::anyhow!("Account {account_id} not found in store"))?;
 
     let keystore_path = store_path.join("keystore");
-    let keystore = FilesystemKeyStore::new(keystore_path)
+    let keystore = FilesystemKeyStore::new_plaintext(keystore_path)
         .map_err(|e| anyhow::anyhow!("Failed to create keystore: {e}"))?;
     let key_pairs = keystore.get_keys_for_account(&account_id).await?;
 

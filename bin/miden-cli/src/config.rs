@@ -80,6 +80,10 @@ pub struct CliConfig {
     pub store_filepath: PathBuf,
     /// Path to the directory that contains the secret key files.
     pub secret_keys_directory: PathBuf,
+    /// Whether the secret key files are encrypted with a password. A configuration file without
+    /// this field is read as encrypted.
+    #[serde(default = "default_keystore_encrypted")]
+    pub keystore_encrypted: bool,
     /// Path to the file containing the token symbol map.
     pub token_symbol_map_filepath: PathBuf,
     /// RPC endpoint for the remote prover. If this isn't present, a local prover will be used.
@@ -93,6 +97,11 @@ pub struct CliConfig {
     pub note_transport: Option<NoteTransportConfig>,
     /// Timeout for the remote prover requests.
     pub remote_prover_timeout: Duration,
+}
+
+/// Default of the `keystore_encrypted` field. Plaintext keys are an explicit opt-out.
+fn default_keystore_encrypted() -> bool {
+    true
 }
 
 // Make `ClientConfig` a provider itself for composability.
@@ -127,6 +136,7 @@ impl Default for CliConfig {
             rpc: RpcConfig::default(),
             store_filepath: PathBuf::from(STORE_FILENAME),
             secret_keys_directory: PathBuf::from(KEYSTORE_DIRECTORY),
+            keystore_encrypted: true,
             token_symbol_map_filepath: PathBuf::from(TOKEN_SYMBOL_MAP_FILENAME),
             remote_prover_endpoint: None,
             package_directory: PathBuf::from(DEFAULT_PACKAGES_DIR),

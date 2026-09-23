@@ -604,15 +604,21 @@ impl<T> BuilderAuthenticator for T where T: TransactionAuthenticator + 'static {
 /// Convenience method for [`ClientBuilder`] when using [`FilesystemKeyStore`] as the authenticator.
 #[cfg(feature = "std")]
 impl ClientBuilder<FilesystemKeyStore> {
-    /// Creates a [`FilesystemKeyStore`] from the given path and sets it as the authenticator.
+    /// Creates an encrypted [`FilesystemKeyStore`] on the given path and sets it as the
+    /// authenticator.
     ///
     /// This is a convenience method that creates the keystore and configures it as the
-    /// authenticator in a single call. The keystore provides transaction signing capabilities using
-    /// keys stored on the filesystem.
+    /// authenticator in a single call. The key files are encrypted with a key derived from
+    /// `password`, see [`FilesystemKeyStore::new`].
+    ///
+    /// A plaintext keystore has no builder shortcut. It is only recommended for development: create
+    /// it with [`FilesystemKeyStore::new_plaintext`] and pass it to
+    /// [`ClientBuilder::authenticator`].
     ///
     /// # Errors
     ///
-    /// Returns an error if the keystore cannot be created from the given path.
+    /// Returns an error if the keystore cannot be created from the given path, or if the password
+    /// does not match an existing keystore on that path.
     ///
     /// # Example
     ///
@@ -620,15 +626,16 @@ impl ClientBuilder<FilesystemKeyStore> {
     /// let client = ClientBuilder::new()
     ///     .rpc(rpc_client)
     ///     .store(store)
-    ///     .filesystem_keystore("path/to/keys")?
+    ///     .filesystem_keystore("path/to/keys", password.as_bytes())?
     ///     .build()
     ///     .await?;
     /// ```
     pub fn filesystem_keystore(
         self,
         keystore_path: impl Into<std::path::PathBuf>,
+        password: &[u8],
     ) -> Result<Self, ClientError> {
-        let keystore = FilesystemKeyStore::new(keystore_path.into())
+        let keystore = FilesystemKeyStore::new(keystore_path.into(), password)
             .map_err(|e| ClientError::ClientInitializationError(e.to_string()))?;
         Ok(self.authenticator(Arc::new(keystore)))
     }

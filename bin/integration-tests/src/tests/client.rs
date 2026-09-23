@@ -67,7 +67,7 @@ pub async fn test_client_builder_initializes_client_with_endpoint(
 ) -> Result<()> {
     let mut client = ClientBuilder::<FilesystemKeyStore>::new()
         .grpc_client(&client_config.rpc_endpoint, Some(10_000))
-        .filesystem_keystore(create_test_auth_path())?
+        .filesystem_keystore(create_test_auth_path(), b"test-password")?
         .sqlite_store(create_test_store_path())
         .build()
         .await?;

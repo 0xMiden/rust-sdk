@@ -14,6 +14,10 @@ pub enum KeyStoreError {
     StorageError(String),
     #[error("decoding error: {0}")]
     DecodingError(String),
+    #[error("encryption error: {0}")]
+    EncryptionError(String),
+    #[error("invalid keystore password")]
+    InvalidPassword,
 }
 
 /// A trait for managing cryptographic keys and their association with accounts.

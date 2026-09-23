@@ -56,6 +56,10 @@ miden-client init --remote-prover-endpoint <PROVER_URL>
 
 # To enable the transport layer, specify the endpoint
 miden-client init --note-transport-endpoint <MIDEN_NOTE_TRANSPORT_URL>
+
+# The keystore is encrypted with a password by default. Store the keys in plaintext instead, which is
+# only recommended for development
+miden-client init --plaintext-keystore
 ```
 
 More information on the configuration file can be found in the [configuration section](cli-config.md).
@@ -396,6 +400,8 @@ Manage authentication keys in the configured filesystem keystore.
 
 Supported authentication schemes are `falcon512-poseidon2` and `ecdsa-k256-keccak`.
 
+The keystore is encrypted with a password unless the configuration sets `keystore_encrypted = false`. The password is read from `MIDEN_KEYSTORE_PASSWORD`, or prompted on the terminal when the variable is not set. See [Store and keystore](./cli-config.md#store-and-keystore).
+
 #### `keys --list`
 
 List each stored key's public key commitment, authentication scheme, and associated account IDs:
@@ -445,6 +451,16 @@ miden-client keys --disassociate <COMMITMENT> --account-id <ACCOUNT_ID>
 An association is client bookkeeping. It selects the keys that an account export includes. It does not change the authentication component of the account, and it does not give the key the right to authorize a transaction for that account.
 
 `--associate` fails if the keystore holds no key for the commitment. `--disassociate` accepts a commitment that is not associated with the account and reports that nothing changed, so it can be used to clear an association whose key file is gone.
+
+#### `keys --encrypt`
+
+Encrypt a plaintext keystore and set `keystore_encrypted = true` in the configuration file:
+
+```sh
+miden-client keys --encrypt
+```
+
+The command asks for a new password, or reads it from `MIDEN_KEYSTORE_PASSWORD`. Every key file is rewritten encrypted and the account associations are kept. The command fails if the keystore directory is already encrypted. Keep a copy of the keystore directory until the command succeeds, because the keys are unreadable if it stops before it completes.
 
 #### `keys --commitment`
 

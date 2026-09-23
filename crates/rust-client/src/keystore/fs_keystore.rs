@@ -7,6 +7,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use miden_crypto::aead::xchacha::{EncryptedData, SecretKey as EncryptionKey};
+use miden_crypto::utils::zeroize::Zeroizing;
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::account::auth::{
@@ -18,7 +20,13 @@ use miden_protocol::account::auth::{
 };
 use miden_tx::AuthenticationError;
 use miden_tx::auth::{SigningInputs, TransactionAuthenticator};
-use miden_tx::utils::serde::{Deserializable, Serializable};
+use miden_tx::utils::serde::{
+    ByteReader,
+    ByteWriter,
+    Deserializable,
+    DeserializationError,
+    Serializable,
+};
 use miden_tx::utils::sync::RwLock;
 use serde::{Deserialize, Serialize};
 
@@ -107,30 +115,11 @@ impl KeyIndex {
 
     /// Saves the index to disk atomically (write to temp file, then rename).
     fn write_to_file(&self, keys_directory: &Path) -> Result<(), KeyStoreError> {
-        let index_path = keys_directory.join(INDEX_FILE_NAME);
-
         let contents = serde_json::to_string_pretty(self).map_err(|err| {
             KeyStoreError::StorageError(format!("error serializing index: {err:?}"))
         })?;
 
-        // Create the temp file in the same directory as the index so the subsequent atomic rename
-        // stays on the same filesystem.
-        let mut temp_file = tempfile::NamedTempFile::new_in(keys_directory)
-            .map_err(keystore_error("error creating temp index file"))?;
-        temp_file
-            .write_all(contents.as_bytes())
-            .map_err(keystore_error("error writing temp index file"))?;
-        temp_file
-            .as_file()
-            .sync_all()
-            .map_err(keystore_error("error syncing temp index file"))?;
-
-        // Atomically replace the index file.
-        temp_file
-            .persist(&index_path)
-            .map_err(|err| keystore_error("error renaming index file")(err.error))?;
-
-        Ok(())
+        write_file_atomically(keys_directory, INDEX_FILE_NAME, contents.as_bytes())
     }
 
     /// Returns the account ID associated with a given public key commitment hex.
@@ -193,6 +182,126 @@ impl KeyIndex {
     }
 }
 
+// ENCRYPTION METADATA FILE
+// ================================================================================================
+
+/// Name of the file that marks an encrypted keystore and holds its key derivation parameters.
+const ENCRYPTION_FILE_NAME: &str = "encryption.bin";
+const ENCRYPTION_VERSION: u32 = 1;
+const SALT_SIZE_BYTES: usize = 16;
+const ENCRYPTION_KEY_SIZE_BYTES: usize = 32;
+/// Plaintext of the check value. A key that decrypts it to this value is the correct key.
+const CHECK_VALUE: &[u8] = b"miden-client keystore";
+
+/// Parameters that derive the encryption key of an encrypted keystore from its password.
+///
+/// The key derivation function is Argon2id and the cipher is XChaCha20-Poly1305. The parameters are
+/// stored with the salt so that a keystore stays readable when the defaults change.
+struct EncryptionMetadata {
+    m_cost: u32,
+    t_cost: u32,
+    p_cost: u32,
+    salt: [u8; SALT_SIZE_BYTES],
+    /// [`CHECK_VALUE`] encrypted with the derived key. Decrypting it verifies the password.
+    check: EncryptedData,
+}
+
+impl EncryptionMetadata {
+    /// Creates metadata with a random salt and derives the key for `password`.
+    fn new(password: &[u8]) -> Result<(Self, EncryptionKey), KeyStoreError> {
+        let salt: [u8; SALT_SIZE_BYTES] = rand::random();
+        let key = derive_key(
+            password,
+            &salt,
+            argon2::Params::DEFAULT_M_COST,
+            argon2::Params::DEFAULT_T_COST,
+            argon2::Params::DEFAULT_P_COST,
+        )?;
+        let check = key.encrypt_bytes(CHECK_VALUE).map_err(encryption_error)?;
+
+        let metadata = Self {
+            m_cost: argon2::Params::DEFAULT_M_COST,
+            t_cost: argon2::Params::DEFAULT_T_COST,
+            p_cost: argon2::Params::DEFAULT_P_COST,
+            salt,
+            check,
+        };
+        Ok((metadata, key))
+    }
+
+    /// Derives the key for `password` and verifies it against the check value.
+    fn unlock(&self, password: &[u8]) -> Result<EncryptionKey, KeyStoreError> {
+        let key = derive_key(password, &self.salt, self.m_cost, self.t_cost, self.p_cost)?;
+        let decrypted =
+            key.decrypt_bytes(&self.check).map_err(|_| KeyStoreError::InvalidPassword)?;
+        if decrypted != CHECK_VALUE {
+            return Err(KeyStoreError::InvalidPassword);
+        }
+        Ok(key)
+    }
+
+    fn read_from_file(keys_directory: &Path) -> Result<Self, KeyStoreError> {
+        let bytes = fs::read(keys_directory.join(ENCRYPTION_FILE_NAME))
+            .map_err(keystore_error("error reading encryption metadata file"))?;
+        Self::read_from_bytes(&bytes).map_err(|err| {
+            KeyStoreError::DecodingError(format!("error parsing encryption metadata file: {err}"))
+        })
+    }
+
+    fn write_to_file(&self, keys_directory: &Path) -> Result<(), KeyStoreError> {
+        write_file_atomically(keys_directory, ENCRYPTION_FILE_NAME, &self.to_bytes())
+    }
+}
+
+impl Serializable for EncryptionMetadata {
+    fn write_into<W: ByteWriter>(&self, target: &mut W) {
+        target.write_u32(ENCRYPTION_VERSION);
+        target.write_u32(self.m_cost);
+        target.write_u32(self.t_cost);
+        target.write_u32(self.p_cost);
+        target.write_bytes(&self.salt);
+        self.check.write_into(target);
+    }
+}
+
+impl Deserializable for EncryptionMetadata {
+    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
+        let version = source.read_u32()?;
+        if version != ENCRYPTION_VERSION {
+            return Err(DeserializationError::InvalidValue(format!(
+                "unsupported keystore encryption version {version}"
+            )));
+        }
+        Ok(Self {
+            m_cost: source.read_u32()?,
+            t_cost: source.read_u32()?,
+            p_cost: source.read_u32()?,
+            salt: source.read_array()?,
+            check: EncryptedData::read_from(source)?,
+        })
+    }
+}
+
+/// Derives the encryption key from `password` with Argon2id.
+fn derive_key(
+    password: &[u8],
+    salt: &[u8; SALT_SIZE_BYTES],
+    m_cost: u32,
+    t_cost: u32,
+    p_cost: u32,
+) -> Result<EncryptionKey, KeyStoreError> {
+    let params = argon2::Params::new(m_cost, t_cost, p_cost, Some(ENCRYPTION_KEY_SIZE_BYTES))
+        .map_err(encryption_error)?;
+    let argon2 = argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
+
+    let mut key_bytes = Zeroizing::new([0u8; ENCRYPTION_KEY_SIZE_BYTES]);
+    argon2
+        .hash_password_into(password, salt, key_bytes.as_mut())
+        .map_err(encryption_error)?;
+
+    EncryptionKey::read_from_bytes(key_bytes.as_ref()).map_err(encryption_error)
+}
+
 // FILESYSTEM KEYSTORE
 // ================================================================================================
 
@@ -201,12 +310,19 @@ impl KeyIndex {
 /// and the contents of the file are the serialized public and secret key.
 ///
 /// Account-to-key mappings are stored in a separate JSON index file.
+///
+/// A keystore created with [`FilesystemKeyStore::new`] encrypts each key file with a key derived
+/// from a password, and holds that key in memory while it is open. A keystore created with
+/// [`FilesystemKeyStore::new_plaintext`] writes the secret keys in plaintext. Use it only for
+/// development.
 #[derive(Debug)]
 pub struct FilesystemKeyStore {
     /// The directory where the keys are stored and read from.
     pub keys_directory: PathBuf,
     /// The in-memory index of account-to-key mappings.
     index: RwLock<KeyIndex>,
+    /// The key that encrypts the key files. `None` for a plaintext keystore.
+    encryption_key: Option<Arc<EncryptionKey>>,
 }
 
 /// Information about a secret key in a [`FilesystemKeyStore`].
@@ -223,23 +339,131 @@ impl Clone for FilesystemKeyStore {
         Self {
             keys_directory: self.keys_directory.clone(),
             index: RwLock::new(index),
+            encryption_key: self.encryption_key.clone(),
         }
     }
 }
 
 impl FilesystemKeyStore {
+    /// Creates a [`FilesystemKeyStore`] on a specific directory that encrypts the key files with a
+    /// key derived from `password`.
+    ///
+    /// A directory without a keystore gets a new random salt. The password of an existing encrypted
+    /// keystore is verified before the keystore opens. The derived key stays in memory while the
+    /// keystore is alive.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KeyStoreError::InvalidPassword`] if the password does not match the existing
+    /// keystore, and an error if the directory holds plaintext keys. Plaintext keys are encrypted
+    /// with [`FilesystemKeyStore::encrypt_plaintext_keystore`].
+    pub fn new(keys_directory: PathBuf, password: &[u8]) -> Result<Self, KeyStoreError> {
+        Self::create_keys_directory(&keys_directory)?;
+
+        let key = if Self::is_encrypted_directory(&keys_directory) {
+            EncryptionMetadata::read_from_file(&keys_directory)?.unlock(password)?
+        } else {
+            if !key_file_commitments(&keys_directory)?.is_empty() {
+                return Err(KeyStoreError::StorageError(format!(
+                    "keystore at {} holds plaintext keys; encrypt them before opening it with a \
+                     password",
+                    keys_directory.display()
+                )));
+            }
+            let (metadata, key) = EncryptionMetadata::new(password)?;
+            metadata.write_to_file(&keys_directory)?;
+            key
+        };
+
+        Self::open(keys_directory, Some(Arc::new(key)))
+    }
+
     /// Creates a [`FilesystemKeyStore`] on a specific directory.
-    pub fn new(keys_directory: PathBuf) -> Result<Self, KeyStoreError> {
-        if !keys_directory.exists() {
-            fs::create_dir_all(&keys_directory)
-                .map_err(keystore_error("error creating keys directory"))?;
+    ///
+    /// # Security
+    ///
+    /// The secret keys are written to disk in plaintext. Anyone who can read the directory can
+    /// spend from the accounts that these keys control. This keystore is only recommended for
+    /// development. Use [`FilesystemKeyStore::new`] for keys that control real funds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the directory holds an encrypted keystore.
+    pub fn new_plaintext(keys_directory: PathBuf) -> Result<Self, KeyStoreError> {
+        Self::create_keys_directory(&keys_directory)?;
+
+        if Self::is_encrypted_directory(&keys_directory) {
+            return Err(KeyStoreError::StorageError(format!(
+                "keystore at {} is encrypted and requires a password",
+                keys_directory.display()
+            )));
         }
 
+        Self::open(keys_directory, None)
+    }
+
+    /// Encrypts every key file of a plaintext keystore with a key derived from `password` and
+    /// returns the encrypted keystore.
+    ///
+    /// The account associations are kept. A file that does not hold a readable key is left as it
+    /// is. The keystore is unreadable if this operation stops before it completes, so the caller
+    /// should keep a copy of the directory until it succeeds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the directory already holds an encrypted keystore.
+    pub fn encrypt_plaintext_keystore(
+        keys_directory: PathBuf,
+        password: &[u8],
+    ) -> Result<Self, KeyStoreError> {
+        let plaintext = Self::new_plaintext(keys_directory.clone())?;
+
+        let mut keys = Vec::new();
+        for commitment in key_file_commitments(&keys_directory)? {
+            if let Ok(Some(key)) = plaintext.get_key_sync(commitment) {
+                keys.push(key);
+            }
+        }
+
+        let (metadata, key) = EncryptionMetadata::new(password)?;
+        metadata.write_to_file(&keys_directory)?;
+        let encrypted = Self::open(keys_directory, Some(Arc::new(key)))?;
+
+        for key in &keys {
+            encrypted.store_key(key)?;
+        }
+
+        Ok(encrypted)
+    }
+
+    /// Returns `true` if the key files are encrypted.
+    pub fn is_encrypted(&self) -> bool {
+        self.encryption_key.is_some()
+    }
+
+    /// Returns `true` if `keys_directory` holds an encrypted keystore.
+    pub fn is_encrypted_directory(keys_directory: &Path) -> bool {
+        keys_directory.join(ENCRYPTION_FILE_NAME).exists()
+    }
+
+    fn create_keys_directory(keys_directory: &Path) -> Result<(), KeyStoreError> {
+        if !keys_directory.exists() {
+            fs::create_dir_all(keys_directory)
+                .map_err(keystore_error("error creating keys directory"))?;
+        }
+        Ok(())
+    }
+
+    fn open(
+        keys_directory: PathBuf,
+        encryption_key: Option<Arc<EncryptionKey>>,
+    ) -> Result<Self, KeyStoreError> {
         let index = KeyIndex::read_from_file(&keys_directory)?;
 
         Ok(FilesystemKeyStore {
             keys_directory,
             index: RwLock::new(index),
+            encryption_key,
         })
     }
 
@@ -247,7 +471,8 @@ impl FilesystemKeyStore {
     pub fn store_key(&self, key: &AuthSecretKey) -> Result<(), KeyStoreError> {
         let pub_key_commitment = key.public_key().to_commitment();
         let file_path = key_file_path(&self.keys_directory, pub_key_commitment);
-        write_secret_key_file(&file_path, key)
+        let contents = self.encode_key(key, pub_key_commitment)?;
+        write_secret_key_file(&file_path, &contents)
     }
 
     /// Returns information about all secret keys in the keystore.
@@ -255,28 +480,7 @@ impl FilesystemKeyStore {
         let index = self.index.read().clone();
         let mut keys = Vec::new();
 
-        for entry in fs::read_dir(&self.keys_directory)
-            .map_err(keystore_error("error reading keys directory"))?
-        {
-            let entry = entry.map_err(keystore_error("error reading keys directory entry"))?;
-            if !entry
-                .file_type()
-                .map_err(keystore_error("error reading key file type"))?
-                .is_file()
-            {
-                continue;
-            }
-
-            let file_name = entry.file_name();
-            if file_name == INDEX_FILE_NAME {
-                continue;
-            }
-            let Some(file_name) = file_name.to_str() else {
-                continue;
-            };
-            let Ok(commitment) = Word::try_from(file_name).map(PublicKeyCommitment::from) else {
-                continue;
-            };
+        for commitment in key_file_commitments(&self.keys_directory)? {
             // A file that does not hold a readable key must not hide the keys that are readable. An
             // interrupted write leaves such a file behind, so `list_keys` skips it and reports the
             // keys it can read.
@@ -353,17 +557,60 @@ impl FilesystemKeyStore {
     ) -> Result<Option<AuthSecretKey>, KeyStoreError> {
         let file_path = key_file_path(&self.keys_directory, pub_key);
         match fs::read(&file_path) {
-            Ok(bytes) => {
-                let key = AuthSecretKey::read_from_bytes(&bytes).map_err(|err| {
-                    KeyStoreError::DecodingError(format!(
-                        "error reading secret key from file: {err:?}"
-                    ))
-                })?;
-                Ok(Some(key))
-            },
+            Ok(bytes) => Ok(Some(self.decode_key(&bytes, pub_key)?)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(keystore_error("error reading secret key file")(e)),
         }
+    }
+
+    /// Returns the contents of the key file for `key`.
+    ///
+    /// An encrypted keystore binds the ciphertext to the commitment, so a key file that is renamed
+    /// to another commitment does not decrypt.
+    fn encode_key(
+        &self,
+        key: &AuthSecretKey,
+        pub_key_commitment: PublicKeyCommitment,
+    ) -> Result<Vec<u8>, KeyStoreError> {
+        let Some(encryption_key) = &self.encryption_key else {
+            return Ok(key.to_bytes());
+        };
+
+        let plaintext = Zeroizing::new(key.to_bytes());
+        let encrypted = encryption_key
+            .encrypt_bytes_with_associated_data(
+                &plaintext,
+                &Word::from(pub_key_commitment).to_bytes(),
+            )
+            .map_err(encryption_error)?;
+        Ok(encrypted.to_bytes())
+    }
+
+    /// Reads a key from the contents of its key file.
+    fn decode_key(
+        &self,
+        bytes: &[u8],
+        pub_key_commitment: PublicKeyCommitment,
+    ) -> Result<AuthSecretKey, KeyStoreError> {
+        let decoding_error = |err: DeserializationError| {
+            KeyStoreError::DecodingError(format!("error reading secret key from file: {err:?}"))
+        };
+
+        let Some(encryption_key) = &self.encryption_key else {
+            return AuthSecretKey::read_from_bytes(bytes).map_err(decoding_error);
+        };
+
+        let encrypted = EncryptedData::read_from_bytes(bytes).map_err(decoding_error)?;
+        let plaintext = encryption_key
+            .decrypt_bytes_with_associated_data(
+                &encrypted,
+                &Word::from(pub_key_commitment).to_bytes(),
+            )
+            .map(Zeroizing::new)
+            .map_err(|err| {
+                KeyStoreError::DecodingError(format!("error decrypting secret key file: {err}"))
+            })?;
+        AuthSecretKey::read_from_bytes(&plaintext).map_err(decoding_error)
     }
 
     /// Saves the index to disk.
@@ -490,9 +737,68 @@ fn key_file_path(keys_directory: &Path, pub_key_commitment: PublicKeyCommitment)
     keys_directory.join(filename)
 }
 
-/// Writes an [`AuthSecretKey`] into a file with restrictive permissions (0600 on Unix).
+/// Returns the commitments of the files in the keys directory that are named after a commitment.
+///
+/// The index and encryption metadata files are not included. A file in the list does not have to
+/// hold a readable key.
+fn key_file_commitments(keys_directory: &Path) -> Result<Vec<PublicKeyCommitment>, KeyStoreError> {
+    let mut commitments = Vec::new();
+
+    for entry in
+        fs::read_dir(keys_directory).map_err(keystore_error("error reading keys directory"))?
+    {
+        let entry = entry.map_err(keystore_error("error reading keys directory entry"))?;
+        if !entry
+            .file_type()
+            .map_err(keystore_error("error reading key file type"))?
+            .is_file()
+        {
+            continue;
+        }
+
+        let file_name = entry.file_name();
+        let Some(file_name) = file_name.to_str() else {
+            continue;
+        };
+        if let Ok(commitment) = Word::try_from(file_name).map(PublicKeyCommitment::from) {
+            commitments.push(commitment);
+        }
+    }
+
+    Ok(commitments)
+}
+
+/// Writes `contents` to `file_name` in `directory` atomically (write to temp file, then rename).
+fn write_file_atomically(
+    directory: &Path,
+    file_name: &str,
+    contents: &[u8],
+) -> Result<(), KeyStoreError> {
+    let file_path = directory.join(file_name);
+
+    // Create the temp file in the same directory as the target so the subsequent atomic rename
+    // stays on the same filesystem.
+    let mut temp_file = tempfile::NamedTempFile::new_in(directory)
+        .map_err(keystore_error("error creating temp file"))?;
+    temp_file
+        .write_all(contents)
+        .map_err(keystore_error("error writing temp file"))?;
+    temp_file
+        .as_file()
+        .sync_all()
+        .map_err(keystore_error("error syncing temp file"))?;
+
+    // Atomically replace the target file.
+    temp_file.persist(&file_path).map_err(|err| {
+        keystore_error(&format!("error renaming temp file to {file_name}"))(err.error)
+    })?;
+
+    Ok(())
+}
+
+/// Writes the contents of a key file with restrictive permissions (0600 on Unix).
 #[cfg(unix)]
-fn write_secret_key_file(file_path: &Path, key: &AuthSecretKey) -> Result<(), KeyStoreError> {
+fn write_secret_key_file(file_path: &Path, contents: &[u8]) -> Result<(), KeyStoreError> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     let mut file = fs::OpenOptions::new()
@@ -502,19 +808,24 @@ fn write_secret_key_file(file_path: &Path, key: &AuthSecretKey) -> Result<(), Ke
         .mode(0o600)
         .open(file_path)
         .map_err(keystore_error("error writing secret key file"))?;
-    file.write_all(&key.to_bytes())
+    file.write_all(contents)
         .map_err(keystore_error("error writing secret key file"))
 }
 
-/// Writes an [`AuthSecretKey`] into a file.
+/// Writes the contents of a key file.
 // TODO: on Windows, set restrictive ACLs to limit access to the current user.
 #[cfg(not(unix))]
-fn write_secret_key_file(file_path: &Path, key: &AuthSecretKey) -> Result<(), KeyStoreError> {
-    fs::write(file_path, key.to_bytes()).map_err(keystore_error("error writing secret key file"))
+fn write_secret_key_file(file_path: &Path, contents: &[u8]) -> Result<(), KeyStoreError> {
+    fs::write(file_path, contents).map_err(keystore_error("error writing secret key file"))
 }
 
 fn keystore_error(context: &str) -> impl FnOnce(std::io::Error) -> KeyStoreError {
+    let context = String::from(context);
     move |err| KeyStoreError::StorageError(format!("{context}: {err:?}"))
+}
+
+fn encryption_error(err: impl core::fmt::Display) -> KeyStoreError {
+    KeyStoreError::EncryptionError(format!("{err}"))
 }
 
 // TESTS
@@ -530,11 +841,13 @@ mod tests {
 
     use super::*;
 
+    const PASSWORD: &[u8] = b"correct horse battery staple";
+
     /// Creates a keystore on a temporary directory. The directory is removed when the returned
     /// guard is dropped, so the guard must stay alive for the whole test.
     fn test_keystore() -> (FilesystemKeyStore, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("should create a temporary directory");
-        let keystore = FilesystemKeyStore::new(dir.path().to_path_buf())
+        let keystore = FilesystemKeyStore::new_plaintext(dir.path().to_path_buf())
             .expect("should create a keystore on an existing directory");
 
         (keystore, dir)
@@ -681,5 +994,104 @@ mod tests {
         let listed = keystore.list_keys().unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].commitment, commitment);
+    }
+
+    // ENCRYPTION
+    // --------------------------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn encrypted_keystore_reopens_with_the_same_password_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = AuthSecretKey::new_falcon512_poseidon2();
+        let commitment = key.public_key().to_commitment();
+
+        let keystore = FilesystemKeyStore::new(dir.path().to_path_buf(), PASSWORD).unwrap();
+        assert!(keystore.is_encrypted());
+        keystore.add_key(&key, test_account_id()).await.unwrap();
+
+        let file = fs::read(key_file_path(dir.path(), commitment)).unwrap();
+        assert_ne!(file, key.to_bytes(), "the key file must not hold the plaintext key");
+        assert_eq!(keystore.get_key_sync(commitment).unwrap().unwrap().to_bytes(), key.to_bytes());
+        assert_eq!(keystore.list_keys().unwrap().len(), 1);
+
+        let reopened = FilesystemKeyStore::new(dir.path().to_path_buf(), PASSWORD).unwrap();
+        assert_eq!(reopened.get_key_sync(commitment).unwrap().unwrap().to_bytes(), key.to_bytes());
+        assert_eq!(
+            reopened.account_ids_for_key(commitment).unwrap(),
+            BTreeSet::from([test_account_id()])
+        );
+
+        let wrong_password = FilesystemKeyStore::new(dir.path().to_path_buf(), b"wrong");
+        assert!(matches!(wrong_password, Err(KeyStoreError::InvalidPassword)));
+
+        let plaintext = FilesystemKeyStore::new_plaintext(dir.path().to_path_buf());
+        assert!(matches!(plaintext, Err(KeyStoreError::StorageError(_))));
+    }
+
+    /// The ciphertext is bound to the commitment in the file name, so a key file that is copied
+    /// under another commitment does not decrypt.
+    #[test]
+    fn encrypted_key_file_does_not_decrypt_under_another_commitment() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = AuthSecretKey::new_ecdsa_k256_keccak();
+        let commitment = key.public_key().to_commitment();
+
+        let keystore = FilesystemKeyStore::new(dir.path().to_path_buf(), PASSWORD).unwrap();
+        keystore.store_key(&key).unwrap();
+        fs::copy(
+            key_file_path(dir.path(), commitment),
+            dir.path().join(unused_commitment().to_hex()),
+        )
+        .unwrap();
+
+        let renamed = keystore.get_key_sync(unused_commitment().into());
+        assert!(matches!(renamed, Err(KeyStoreError::DecodingError(_))));
+        assert_eq!(keystore.list_keys().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn plaintext_keystore_is_encrypted_in_place() {
+        let (plaintext, dir) = test_keystore();
+        let associated_key = AuthSecretKey::new_falcon512_poseidon2();
+        let associated_commitment = associated_key.public_key().to_commitment();
+        let standalone_key = AuthSecretKey::new_ecdsa_k256_keccak();
+        let standalone_commitment = standalone_key.public_key().to_commitment();
+
+        plaintext.add_key(&associated_key, test_account_id()).await.unwrap();
+        plaintext.store_key(&standalone_key).unwrap();
+        fs::write(dir.path().join(unused_commitment().to_hex()), [1, 2, 3]).unwrap();
+        drop(plaintext);
+
+        let opened_with_password = FilesystemKeyStore::new(dir.path().to_path_buf(), PASSWORD);
+        assert!(
+            matches!(opened_with_password, Err(KeyStoreError::StorageError(_))),
+            "plaintext keys must not be silently mixed with encrypted keys"
+        );
+
+        let encrypted =
+            FilesystemKeyStore::encrypt_plaintext_keystore(dir.path().to_path_buf(), PASSWORD)
+                .unwrap();
+        assert!(encrypted.is_encrypted());
+        assert_ne!(
+            fs::read(key_file_path(dir.path(), associated_commitment)).unwrap(),
+            associated_key.to_bytes()
+        );
+        assert_eq!(
+            encrypted.get_key_sync(associated_commitment).unwrap().unwrap().to_bytes(),
+            associated_key.to_bytes()
+        );
+        assert_eq!(
+            encrypted.get_key_sync(standalone_commitment).unwrap().unwrap().to_bytes(),
+            standalone_key.to_bytes()
+        );
+        assert_eq!(
+            encrypted.account_ids_for_key(associated_commitment).unwrap(),
+            BTreeSet::from([test_account_id()])
+        );
+        assert_eq!(encrypted.list_keys().unwrap().len(), 2);
+
+        let again =
+            FilesystemKeyStore::encrypt_plaintext_keystore(dir.path().to_path_buf(), PASSWORD);
+        assert!(matches!(again, Err(KeyStoreError::StorageError(_))));
     }
 }

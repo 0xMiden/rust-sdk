@@ -71,7 +71,11 @@ Below are representative errors you may encounter, their likely causes, and sugg
 
 #### `RpcError.GrpcError: Unavailable` after `account --register`
 - Cause: The node registered the account, but the funding service that pays registered accounts failed.
-- Fix: The account stays registered, and a retry does not fund it again. Fund the account another way, for example through a faucet, then create it on chain by consuming a note.
+- Fix: The account stays registered, so a retry fails with `AccountAlreadyAllowed`. Fund the account another way, for example through a faucet, then create it on chain by consuming a note.
+
+#### `ClientError.AccountAlreadyAllowed(<account_id>)`
+- Cause: The node already allows the account, because it is registered or because the network does not enforce an allowlist. The invitation code was not sent.
+- Fix: No registration is needed. Keep the code for a different account, and run `miden-client sync` to receive the funding note the network may have paid a registered account.
 
 #### `ClientError.StoreError(AccountCommitmentAlreadyExists(...))`
 - Cause: Trying to apply a transaction whose final account commitment is already present locally.

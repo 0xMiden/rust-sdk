@@ -23,7 +23,7 @@
 //! register, the network account included, through the node's funding service. An unregistered
 //! wallet needs the funds to pay the fee of the execution that comes before the allowlist check.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use assert_matches::assert_matches;
 use miden_client::account::{Account, AccountType};
 use miden_client::note::Note;
@@ -37,12 +37,6 @@ pub mod funding;
 pub mod invitations;
 pub mod registration;
 
-// CONSTANTS
-// ================================================================================================
-
-/// How many blocks a test waits for the funding service to commit a funding note.
-const FUNDING_NOTE_MAX_BLOCKS: u32 = 20;
-
 // HELPERS
 // ================================================================================================
 
@@ -50,32 +44,31 @@ const FUNDING_NOTE_MAX_BLOCKS: u32 = 20;
 ///
 /// This is the submission the allowlist gates. The transaction consumes the notes paid to the
 /// account, either at registration or through [`funding::request_funds`], so it pays its own fee
-/// out of those funds.
+/// out of those funds. Fails when the client has no such note.
 async fn funded_deploy_request(
     client: &mut TestClient,
     account: &Account,
 ) -> Result<TransactionRequest> {
     let notes = funding_notes(client, account).await?;
+    ensure!(!notes.is_empty(), "no funding note reached account {}", account.id());
 
     TransactionRequestBuilder::new()
         .build_consume_notes(notes)
         .context("failed to build the deploy transaction request")
 }
 
-/// Syncs the client until `account` has a committed note it can consume, and returns those notes.
-///
-/// The funding service answers before the note commits, so the sync repeats until the note is on
-/// chain. Panics when no note arrives within [`FUNDING_NOTE_MAX_BLOCKS`] blocks.
+/// Syncs the client and returns the committed notes that `account` can consume.
 ///
 /// [`Client::add_account`] tracks the note tag of the account, so the sync imports the public notes
 /// paid to the account.
 ///
 /// [`Client::add_account`]: miden_client::Client::add_account
 async fn funding_notes(client: &mut TestClient, account: &Account) -> Result<Vec<Note>> {
+    client.sync_state().await.context("failed to sync the client")?;
+
     client
-        .wait_for_consumable_notes(account.id(), FUNDING_NOTE_MAX_BLOCKS)
-        .await
-        .with_context(|| format!("failed to wait for a funding note for account {}", account.id()))?
+        .get_consumable_notes(Some(account.id()))
+        .await?
         .into_iter()
         .map(|(record, _)| {
             let note: InputNote =

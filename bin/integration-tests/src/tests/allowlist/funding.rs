@@ -24,7 +24,7 @@ pub const FUNDING_SERVICE_ENV: &str = "MIDEN_FUNDING_SERVICE_URL";
 
 /// Asks the funding service to pay [`FUNDING_AMOUNT`] of the native asset to `account`.
 ///
-/// The service answers before the note is committed, so a caller syncs until the note arrives.
+/// The service answers only once the note is committed, so a sync after this call finds the note.
 /// Fails when [`FUNDING_SERVICE_ENV`] is unset or the service refuses the request.
 pub async fn request_funds(account: &Account) -> Result<()> {
     let service_url = std::env::var(FUNDING_SERVICE_ENV).with_context(|| {

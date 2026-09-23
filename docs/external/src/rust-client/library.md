@@ -162,10 +162,10 @@ Register the account after adding it to the client and before its first transact
 
 ```rust
 client.add_account(&new_account, false).await?;
-client.register_account(invitation_code, new_account.id()).await?;
+client.register_account(new_account.id(), invitation_code).await?;
 ```
 
-`Client::register_account` requires the account to be tracked by the client, not yet created on chain, and not a network account. The node rejects an unknown code, a code that is bound to a different account, and an account that is already registered, each with its own `RegisterAccountError` variant. A retry with the same code and the same account succeeds without changes.
+`Client::register_account` requires the account to be tracked by the client, not yet created on chain, and not a network account. A registration consumes the code, so the client first asks the node whether it already allows the account, and fails with `ClientError::AccountAlreadyAllowed` without sending the code when it does. The node rejects an unknown code, a code that is bound to a different account, and an account that is already registered, each with its own `RegisterAccountError` variant.
 
 ### Funding of registered accounts
 
@@ -186,9 +186,9 @@ let deploy = TransactionRequestBuilder::new().build_consume_notes(notes)?;
 client.submit_new_transaction(new_account.id(), deploy).await?;
 ```
 
-If the funding fails on the node side, `register_account` returns an `Unavailable` RPC error. The account stays registered, and a retry does not request funding again, so the account has to be funded another way, for example through a faucet.
+If the funding fails on the node side, `register_account` returns an `Unavailable` RPC error. The account stays registered, so a retry fails with `ClientError::AccountAlreadyAllowed`, and the account has to be funded another way, for example through a faucet.
 
-A network that does not enforce the allowlist ignores the invitation code, but still registers the account and funds it when a funding service is configured. The same call therefore gives a new account its initial funds on such a network. Any code is accepted there, an empty one included.
+On a network that does not enforce the allowlist the node already allows every account, so `register_account` fails with `ClientError::AccountAlreadyAllowed` and no registration is needed.
 
 ### Checking before submitting
 

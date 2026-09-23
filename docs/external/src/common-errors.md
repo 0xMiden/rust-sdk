@@ -43,3 +43,7 @@ This guide helps you troubleshoot common issues and understand the end-to-end li
 #### `RpcError::RequestError` with `EndpointError::RegisterAccount(...)`
 - Cause: The node rejected the registration: `InvitationNotFound` for an unknown code, `AlreadyRegistered` when the code is bound to a different account or the account is already registered, and `InvalidRequest` for an empty code or an unreadable account ID.
 - Fix: Send the code exactly as received. An account that is already registered needs no action. Sync to receive the funding note the network may have paid it.
+
+#### `ClientError::AccountAlreadyAllowed(AccountId)`
+- Cause: `Client::register_account` found that the node already allows the account, because it is registered or because the network does not enforce an allowlist, and did not send the invitation code.
+- Fix: No registration is needed. Keep the code for a different account.

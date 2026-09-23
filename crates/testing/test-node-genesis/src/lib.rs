@@ -68,13 +68,12 @@ pub const NATIVE_FAUCET_FILE: &str = "native_faucet.mac";
 pub const FAUCET_OPERATOR_FILE: &str = "faucet_operator.mac";
 
 /// File name of the public funding account, written with its secret key. `miden-validator genesis`
-/// requires one: it is the account the node's funding service pays out of. `start-test-node.sh`
-/// starts the service with this file when it enforces the account allowlist. Otherwise the account
-/// only has to exist and be deployed.
+/// requires one. It is the account the node's funding service pays out of, and `start-test-node.sh`
+/// starts the service with this file.
 pub const FUNDING_ACCOUNT_FILE: &str = "funding_account.mac";
 
 /// Balance, in base units of the native fee asset, the funding account holds at genesis. The
-/// funding service pays out of this one account for every account registered during a run.
+/// service pays out of this one account for every account registered during a run.
 const FUNDING_ACCOUNT_BALANCE: u64 = 100_000_000_000;
 
 /// Token symbol, decimals and max supply of the native fee faucet, matching what the node would
@@ -105,9 +104,6 @@ const GENESIS_ACCOUNT_FEE_BALANCE: u64 = 1_000_000_000;
 /// `num_funder_wallets` declares that many `[[wallet]]` entries holding [`FUNDER_WALLET_BALANCE`].
 /// The node writes each to its accounts directory as `wallet_<index>.mac`, secret key included.
 ///
-/// The funding account holds [`FUNDING_ACCOUNT_BALANCE`], so the node's funding service can pay the
-/// accounts that register on the allowlist out of it.
-///
 /// The fee parameters and the genesis timestamp are not fixtures: `miden-validator genesis` takes
 /// them on the command line.
 ///
@@ -129,10 +125,9 @@ pub fn write_genesis_config(output_dir: &Path, num_funder_wallets: u32) -> Resul
         generate_wallet().context("failed to create the native faucet operator")?;
     let native_faucet =
         generate_native_faucet(operator.id()).context("failed to create the native fee faucet")?;
+    let native_faucet_id = native_faucet.id();
     let fee_balance: Asset =
-        FungibleAsset::new(native_faucet.id(), GENESIS_ACCOUNT_FEE_BALANCE)?.into();
-    let funding_balance: Asset =
-        FungibleAsset::new(native_faucet.id(), FUNDING_ACCOUNT_BALANCE)?.into();
+        FungibleAsset::new(native_faucet_id, GENESIS_ACCOUNT_FEE_BALANCE)?.into();
     AccountFile::new(into_genesis_account(native_faucet, fee_balance)?, vec![])
         .write(output_dir.join(NATIVE_FAUCET_FILE))
         .with_context(|| format!("failed to write {NATIVE_FAUCET_FILE}"))?;
@@ -144,6 +139,8 @@ pub fn write_genesis_config(output_dir: &Path, num_funder_wallets: u32) -> Resul
     // Genesis loads the funding account from its own flag, so it is not listed in `accounts.toml`.
     let (funding_account, funding_secret) =
         generate_wallet().context("failed to create the funding account")?;
+    let funding_balance: Asset =
+        FungibleAsset::new(native_faucet_id, FUNDING_ACCOUNT_BALANCE)?.into();
     AccountFile::new(into_genesis_account(funding_account, funding_balance)?, vec![funding_secret])
         .write(output_dir.join(FUNDING_ACCOUNT_FILE))
         .with_context(|| format!("failed to write {FUNDING_ACCOUNT_FILE}"))?;
@@ -193,7 +190,14 @@ pub fn write_genesis_config(output_dir: &Path, num_funder_wallets: u32) -> Resul
             })
             .collect(),
         wallets: (0..num_funder_wallets)
-            .map(|index| WalletEntry::native(format!("wallet_{index}"), FUNDER_WALLET_BALANCE))
+            .map(|index| WalletEntry {
+                name: format!("wallet_{index}"),
+                account_type: "public".to_string(),
+                assets: vec![AssetEntry {
+                    amount: FUNDER_WALLET_BALANCE,
+                    symbol: NATIVE_FAUCET_SYMBOL.to_string(),
+                }],
+            })
             .collect(),
     };
 
@@ -234,20 +238,6 @@ struct WalletEntry {
     name: String,
     account_type: String,
     assets: Vec<AssetEntry>,
-}
-
-impl WalletEntry {
-    /// Returns a public wallet that holds `amount` base units of the native fee asset.
-    fn native(name: String, amount: u64) -> Self {
-        Self {
-            name,
-            account_type: "public".to_string(),
-            assets: vec![AssetEntry {
-                amount,
-                symbol: NATIVE_FAUCET_SYMBOL.to_string(),
-            }],
-        }
-    }
 }
 
 /// A balance the node gives a generated wallet, naming the faucet by token symbol.

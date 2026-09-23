@@ -103,7 +103,7 @@ Register the account after creating it and before its first transaction:
 miden-client account --register <ACCOUNT_ID> --invitation-code <CODE>
 ```
 
-The account must be tracked by this client, must not exist on chain yet, and must not be a network account. Like `--show`, `--register` accepts a partial ID.
+The account must be tracked by this client, must not exist on chain yet, and must not be a network account. A registration consumes the code, so the command first asks the node whether it already allows the account and fails without sending the code when it does. Like `--show`, `--register` accepts a partial ID.
 
 When the network operator runs a funding service, the node pays the registered account a public note with the native asset, and the command returns once that note is committed on chain, so it can take a few blocks. The client tracks the note tag of every account it owns, so the note arrives with the next sync. Consuming it creates the account on chain, and the fee of that transaction is paid out of the received funds:
 
@@ -112,9 +112,9 @@ miden-client sync
 miden-client consume-notes --account <ACCOUNT_ID>
 ```
 
-A transaction that would create an unregistered account fails with `AccountNotAllowlisted` before it reaches the node. If the node registered the account but the funding failed, the command fails with an `Unavailable` RPC error. The account stays registered, and a retry does not fund it, so it has to be funded another way, for example through a faucet.
+A transaction that would create an unregistered account fails with `AccountNotAllowlisted` before it reaches the node. If the node registered the account but the funding failed, the command fails with an `Unavailable` RPC error. The account stays registered, so a retry fails with `AccountAlreadyAllowed`, and the account has to be funded another way, for example through a faucet.
 
-A network that does not enforce the allowlist ignores the invitation code, but still registers the account and funds it when a funding service is configured, so the same command gives a new account its initial funds there.
+On a network that does not enforce the allowlist the node already allows every account, so the command fails with `AccountAlreadyAllowed` and no registration is needed.
 
 ### `new-wallet`
 

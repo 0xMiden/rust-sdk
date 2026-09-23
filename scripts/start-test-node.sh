@@ -288,11 +288,14 @@ fi
 # registers, and answers the registration only once that note is committed. The service starts
 # after the sequencer, because it reads its account from the RPC. That order is safe, because the
 # sequencer calls the service only when an account registers.
+# A registration waits for the funding note to commit, which takes longer than the 10s default
+# request timeout of the RPC server.
 SEQUENCER_ALLOWLIST_ARGS=()
 if [ "$ACCOUNT_ALLOWLIST" = "1" ]; then
     SEQUENCER_ALLOWLIST_ARGS+=(--admin.listen "$ADMIN")
     SEQUENCER_ALLOWLIST_ARGS+=(--funding-service.url "http://$FUNDING")
     SEQUENCER_ALLOWLIST_ARGS+=(--funding-service.amount "$FUNDING_AMOUNT")
+    SEQUENCER_ALLOWLIST_ARGS+=(--rpc.grpc.timeout 60s)
 else
     SEQUENCER_ALLOWLIST_ARGS=(--disable-account-allowlist)
 fi

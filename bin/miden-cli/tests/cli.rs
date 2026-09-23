@@ -299,6 +299,27 @@ fn silent_initialization_uses_default_values() {
 }
 
 #[test]
+#[serial_test::file_serial]
+fn config_outside_the_miden_dir_is_reported_as_ignored() {
+    let miden_home = set_isolated_miden_home();
+
+    let temp_dir = temp_dir().join(format!("cli-test-{}", rand::rng().random::<u64>()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    std::fs::write(temp_dir.join("miden-client.toml"), "").unwrap();
+
+    let mut account_cmd = cargo_bin_cmd!("miden-client");
+    account_cmd.args(["account"]);
+    account_cmd
+        .current_dir(&temp_dir)
+        .assert()
+        .success()
+        .stderr(contains("Warning: ignoring"));
+
+    // The command still runs, against a newly created global config.
+    assert!(miden_home.join("miden-client.toml").exists());
+}
+
+#[test]
 fn miden_directory_structure_creation() {
     let temp_dir = temp_dir().join(format!("cli-test-{}", rand::rng().random::<u64>()));
     std::fs::create_dir_all(&temp_dir).unwrap();

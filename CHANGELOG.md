@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+* [FIX][cli] The CLI now warns when the working directory holds a `miden-client.toml` outside `.miden/`, which it does not read, instead of silently falling back to the global config ([#2617](https://github.com/0xMiden/rust-sdk/pull/2617)).
+
 ## 0.17.0-rc.2 (2026-09-23)
 
 ### Breaking Changes

@@ -256,7 +256,7 @@ async fn fee_charging_client_with_auth(
     builder.add_account(account.clone()).unwrap();
     let chain = builder.build().unwrap();
 
-    let keystore = FilesystemKeyStore::new(temp_dir()).unwrap();
+    let keystore = FilesystemKeyStore::new_plaintext(temp_dir()).unwrap();
     keystore.add_key(&key, account.id()).await.unwrap();
 
     let mut client = TestClient::from(

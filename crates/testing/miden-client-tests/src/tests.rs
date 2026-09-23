@@ -1499,7 +1499,7 @@ async fn input_note_reader_finds_externally_consumed_notes() {
     let rng =
         RandomCoin::new(rand::random::<[u64; 4]>().map(|v| Felt::new_unchecked(v >> 1)).into());
     let keystore_path = std::env::temp_dir();
-    let keystore = FilesystemKeyStore::new(keystore_path).unwrap();
+    let keystore = FilesystemKeyStore::new_plaintext(keystore_path).unwrap();
     let mock_rpc = MockRpcApi::new(chain);
 
     let mut client = ClientBuilder::new()
@@ -1605,7 +1605,7 @@ async fn import_by_id_already_consumed_note_is_findable_by_id() {
     // Build a client backed by this chain. This client never saw the note before.
     let rng =
         RandomCoin::new(rand::random::<[u64; 4]>().map(|v| Felt::new_unchecked(v >> 1)).into());
-    let keystore = FilesystemKeyStore::new(std::env::temp_dir()).unwrap();
+    let keystore = FilesystemKeyStore::new_plaintext(std::env::temp_dir()).unwrap();
     let mock_rpc = MockRpcApi::new(chain);
 
     let mut client = ClientBuilder::new()
@@ -1706,7 +1706,7 @@ async fn setup_prunable_block_scenario(
 
     let rng =
         RandomCoin::new(rand::random::<[u64; 4]>().map(|v| Felt::new_unchecked(v >> 1)).into());
-    let keystore = FilesystemKeyStore::new(std::env::temp_dir()).unwrap();
+    let keystore = FilesystemKeyStore::new_plaintext(std::env::temp_dir()).unwrap();
     let mock_rpc = MockRpcApi::new(chain);
 
     let mut client = ClientBuilder::new()
@@ -3323,7 +3323,7 @@ async fn create_pswap_test_client(mock_rpc_api: &MockRpcApi) -> TestClient {
     let coin_seed: [u64; 4] = seed_rng.random();
     let rng = RandomCoin::new(coin_seed.map(|v| Felt::new_unchecked(v >> 1)).into());
 
-    let keystore = FilesystemKeyStore::new(temp_dir()).unwrap();
+    let keystore = FilesystemKeyStore::new_plaintext(temp_dir()).unwrap();
 
     let mut client = ClientBuilder::new()
         .rpc(Arc::new(mock_rpc_api.clone()))
@@ -4231,7 +4231,7 @@ async fn import_watched_account_by_id_rejects_already_tracked_native_account() {
     let mut rng = rand::rng();
     let coin_seed: [u64; 4] = rng.random();
     let rng = RandomCoin::new(coin_seed.map(|v| Felt::new_unchecked(v >> 1)).into());
-    let keystore = FilesystemKeyStore::new(temp_dir()).unwrap();
+    let keystore = FilesystemKeyStore::new_plaintext(temp_dir()).unwrap();
     let mut client = ClientBuilder::new()
         .rpc(arc_rpc_api)
         .rng(Box::new(rng))
@@ -4534,7 +4534,7 @@ async fn sync_committed_private_note_with_attachments(
 
     let rng =
         RandomCoin::new(rand::random::<[u64; 4]>().map(|v| Felt::new_unchecked(v >> 1)).into());
-    let keystore = FilesystemKeyStore::new(std::env::temp_dir()).unwrap();
+    let keystore = FilesystemKeyStore::new_plaintext(std::env::temp_dir()).unwrap();
     let mut client = ClientBuilder::new()
         .rpc(rpc_api.clone())
         .rng(Box::new(rng))
@@ -4736,7 +4736,7 @@ async fn sync_large_public_account() {
     let rng = RandomCoin::new(coin_seed.map(|v| Felt::new_unchecked(v >> 1)).into());
 
     let keystore_path = temp_dir();
-    let keystore = FilesystemKeyStore::new(keystore_path).unwrap();
+    let keystore = FilesystemKeyStore::new_plaintext(keystore_path).unwrap();
 
     let mut client = ClientBuilder::new()
         .rpc(arc_rpc_api)
@@ -4806,7 +4806,7 @@ async fn prepare_offline_bootstrap_inserts_mock_chain_genesis() {
         .unwrap();
 
     let keystore_path = temp_dir();
-    let keystore = FilesystemKeyStore::new(keystore_path).unwrap();
+    let keystore = FilesystemKeyStore::new_plaintext(keystore_path).unwrap();
 
     let mut client = ClientBuilder::new()
         .rpc(Arc::new(MockRpcApi::default()))
@@ -4881,7 +4881,7 @@ pub async fn create_test_client_builder() -> (ClientBuilder<FilesystemKeyStore>,
     let rng = RandomCoin::new(coin_seed.map(|v| Felt::new_unchecked(v >> 1)).into());
 
     let keystore_path = temp_dir();
-    let keystore = FilesystemKeyStore::new(keystore_path).unwrap();
+    let keystore = FilesystemKeyStore::new_plaintext(keystore_path).unwrap();
 
     let rpc_api = MockRpcApi::new(Box::pin(create_prebuilt_mock_chain()).await);
     let arc_rpc_api = Arc::new(rpc_api.clone());

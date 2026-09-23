@@ -27,7 +27,7 @@ pub async fn import_from_file(
     let AccountFile { account, auth_secret_keys } = account_file;
 
     let keystore_path = store_path.join("keystore");
-    let keystore = FilesystemKeyStore::new(keystore_path)
+    let keystore = FilesystemKeyStore::new_plaintext(keystore_path)
         .map_err(|e| anyhow::anyhow!("Failed to create keystore: {e}"))?;
     for key in auth_secret_keys {
         keystore.add_key(&key, account_id).await?;

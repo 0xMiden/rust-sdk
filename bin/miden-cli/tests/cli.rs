@@ -1120,7 +1120,7 @@ async fn cli_export_import_account() -> Result<()> {
 
     // Ensure the account was imported
     let (client_2, _) = create_rust_client_with_store_path(&store_path_2, endpoint_2).await?;
-    let cli_keystore = FilesystemKeyStore::new_encrypted(
+    let cli_keystore = FilesystemKeyStore::new(
         temp_dir_2.clone().join(MIDEN_DIR).join("keystore"),
         TEST_KEYSTORE_PASSWORD.as_bytes(),
     )?;
@@ -2003,7 +2003,7 @@ async fn create_rust_client(
 
     let rng = Box::new(RandomCoin::new(coin_seed.map(Felt::new_unchecked).into()));
 
-    let keystore = FilesystemKeyStore::new(keystore_path.to_path_buf())?;
+    let keystore = FilesystemKeyStore::new_plaintext(keystore_path.to_path_buf())?;
 
     let client = ClientBuilder::new()
         .grpc_client(&endpoint, Some(10_000))

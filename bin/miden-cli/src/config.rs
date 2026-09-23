@@ -9,7 +9,8 @@ use figment::value::{Dict, Map};
 use figment::{Figment, Metadata, Profile, Provider};
 use miden_client::address::NetworkId;
 use miden_client::note_transport::{
-    NOTE_TRANSPORT_DEVNET_ENDPOINT, NOTE_TRANSPORT_MAINNET_ENDPOINT,
+    NOTE_TRANSPORT_DEVNET_ENDPOINT,
+    NOTE_TRANSPORT_MAINNET_ENDPOINT,
     NOTE_TRANSPORT_TESTNET_ENDPOINT,
 };
 use miden_client::rpc::Endpoint;

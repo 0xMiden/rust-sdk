@@ -69,10 +69,10 @@
 //! let store = Arc::new(sqlite_store);
 //!
 //! // Create the keystore for transaction signing. The key files are encrypted with a key derived
-//! // from the password. `FilesystemKeyStore::new` stores the keys in plaintext and is only
+//! // from the password. `FilesystemKeyStore::new_plaintext` stores the keys in plaintext and is only
 //! // recommended for development.
 //! let keystore =
-//!     FilesystemKeyStore::new_encrypted("path/to/keys/directory".try_into()?, b"password")?;
+//!     FilesystemKeyStore::new("path/to/keys/directory".try_into()?, b"password")?;
 //!
 //! // Create the RPC client.
 //! let endpoint = Endpoint::new("https".into(), "localhost".into(), Some(57291));

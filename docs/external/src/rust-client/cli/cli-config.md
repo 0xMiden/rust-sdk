@@ -106,7 +106,7 @@ The `store_filepath` field is used to configure the path to the SQLite database 
 
 The store filepath can be set when running the `miden-client init` command with the `--store-path` flag.
 
-The `keystore_encrypted` field selects whether the key files are encrypted with a password. It defaults to `true`, and `miden-client init` writes it. Set it to `false` for plaintext keys, which is only recommended for development. Pass `--plaintext-keystore` to `miden-client init` to create such a keystore. A plaintext keystore created before this field existed is read as encrypted and refuses to open. The error names the two ways out: run `miden-client keys --encrypt` to encrypt the keys, or set `keystore_encrypted = false` to keep them in plaintext.
+The `keystore_encrypted` field selects whether the key files are encrypted with a password. It defaults to `true`, and `miden-client init` writes it. Set it to `false` for plaintext keys, which is only recommended for development. Pass `--plaintext-keystore` to `miden-client init` to create such a keystore.
 
 The password of an encrypted keystore is read from the `MIDEN_KEYSTORE_PASSWORD` environment variable. When the variable is not set, the CLI prompts for the password on the terminal. A command that runs without a terminal and without the variable fails. The first time a keystore is opened, the prompted password must be typed twice.
 

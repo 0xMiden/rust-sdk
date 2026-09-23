@@ -311,9 +311,10 @@ fn derive_key(
 ///
 /// Account-to-key mappings are stored in a separate JSON index file.
 ///
-/// A keystore created with [`FilesystemKeyStore::new`] writes the secret keys in plaintext. Use it
-/// only for development. A keystore created with [`FilesystemKeyStore::new_encrypted`] encrypts
-/// each key file with a key derived from a password, and holds that key in memory while it is open.
+/// A keystore created with [`FilesystemKeyStore::new`] encrypts each key file with a key derived
+/// from a password, and holds that key in memory while it is open. A keystore created with
+/// [`FilesystemKeyStore::new_plaintext`] writes the secret keys in plaintext. Use it only for
+/// development.
 #[derive(Debug)]
 pub struct FilesystemKeyStore {
     /// The directory where the keys are stored and read from.
@@ -344,30 +345,6 @@ impl Clone for FilesystemKeyStore {
 }
 
 impl FilesystemKeyStore {
-    /// Creates a [`FilesystemKeyStore`] on a specific directory.
-    ///
-    /// # Security
-    ///
-    /// The secret keys are written to disk in plaintext. Anyone who can read the directory can
-    /// spend from the accounts that these keys control. This keystore is only recommended for
-    /// development. Use [`FilesystemKeyStore::new_encrypted`] for keys that control real funds.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the directory holds an encrypted keystore.
-    pub fn new(keys_directory: PathBuf) -> Result<Self, KeyStoreError> {
-        Self::create_keys_directory(&keys_directory)?;
-
-        if Self::is_encrypted_directory(&keys_directory) {
-            return Err(KeyStoreError::StorageError(format!(
-                "keystore at {} is encrypted and requires a password",
-                keys_directory.display()
-            )));
-        }
-
-        Self::open(keys_directory, None)
-    }
-
     /// Creates a [`FilesystemKeyStore`] on a specific directory that encrypts the key files with a
     /// key derived from `password`.
     ///
@@ -380,7 +357,7 @@ impl FilesystemKeyStore {
     /// Returns [`KeyStoreError::InvalidPassword`] if the password does not match the existing
     /// keystore, and an error if the directory holds plaintext keys. Plaintext keys are encrypted
     /// with [`FilesystemKeyStore::encrypt_plaintext_keystore`].
-    pub fn new_encrypted(keys_directory: PathBuf, password: &[u8]) -> Result<Self, KeyStoreError> {
+    pub fn new(keys_directory: PathBuf, password: &[u8]) -> Result<Self, KeyStoreError> {
         Self::create_keys_directory(&keys_directory)?;
 
         let key = if Self::is_encrypted_directory(&keys_directory) {
@@ -401,6 +378,30 @@ impl FilesystemKeyStore {
         Self::open(keys_directory, Some(Arc::new(key)))
     }
 
+    /// Creates a [`FilesystemKeyStore`] on a specific directory.
+    ///
+    /// # Security
+    ///
+    /// The secret keys are written to disk in plaintext. Anyone who can read the directory can
+    /// spend from the accounts that these keys control. This keystore is only recommended for
+    /// development. Use [`FilesystemKeyStore::new`] for keys that control real funds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the directory holds an encrypted keystore.
+    pub fn new_plaintext(keys_directory: PathBuf) -> Result<Self, KeyStoreError> {
+        Self::create_keys_directory(&keys_directory)?;
+
+        if Self::is_encrypted_directory(&keys_directory) {
+            return Err(KeyStoreError::StorageError(format!(
+                "keystore at {} is encrypted and requires a password",
+                keys_directory.display()
+            )));
+        }
+
+        Self::open(keys_directory, None)
+    }
+
     /// Encrypts every key file of a plaintext keystore with a key derived from `password` and
     /// returns the encrypted keystore.
     ///
@@ -415,7 +416,7 @@ impl FilesystemKeyStore {
         keys_directory: PathBuf,
         password: &[u8],
     ) -> Result<Self, KeyStoreError> {
-        let plaintext = Self::new(keys_directory.clone())?;
+        let plaintext = Self::new_plaintext(keys_directory.clone())?;
 
         let mut keys = Vec::new();
         for commitment in key_file_commitments(&keys_directory)? {
@@ -846,7 +847,7 @@ mod tests {
     /// guard is dropped, so the guard must stay alive for the whole test.
     fn test_keystore() -> (FilesystemKeyStore, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("should create a temporary directory");
-        let keystore = FilesystemKeyStore::new(dir.path().to_path_buf())
+        let keystore = FilesystemKeyStore::new_plaintext(dir.path().to_path_buf())
             .expect("should create a keystore on an existing directory");
 
         (keystore, dir)
@@ -1004,8 +1005,7 @@ mod tests {
         let key = AuthSecretKey::new_falcon512_poseidon2();
         let commitment = key.public_key().to_commitment();
 
-        let keystore =
-            FilesystemKeyStore::new_encrypted(dir.path().to_path_buf(), PASSWORD).unwrap();
+        let keystore = FilesystemKeyStore::new(dir.path().to_path_buf(), PASSWORD).unwrap();
         assert!(keystore.is_encrypted());
         keystore.add_key(&key, test_account_id()).await.unwrap();
 
@@ -1014,18 +1014,17 @@ mod tests {
         assert_eq!(keystore.get_key_sync(commitment).unwrap().unwrap().to_bytes(), key.to_bytes());
         assert_eq!(keystore.list_keys().unwrap().len(), 1);
 
-        let reopened =
-            FilesystemKeyStore::new_encrypted(dir.path().to_path_buf(), PASSWORD).unwrap();
+        let reopened = FilesystemKeyStore::new(dir.path().to_path_buf(), PASSWORD).unwrap();
         assert_eq!(reopened.get_key_sync(commitment).unwrap().unwrap().to_bytes(), key.to_bytes());
         assert_eq!(
             reopened.account_ids_for_key(commitment).unwrap(),
             BTreeSet::from([test_account_id()])
         );
 
-        let wrong_password = FilesystemKeyStore::new_encrypted(dir.path().to_path_buf(), b"wrong");
+        let wrong_password = FilesystemKeyStore::new(dir.path().to_path_buf(), b"wrong");
         assert!(matches!(wrong_password, Err(KeyStoreError::InvalidPassword)));
 
-        let plaintext = FilesystemKeyStore::new(dir.path().to_path_buf());
+        let plaintext = FilesystemKeyStore::new_plaintext(dir.path().to_path_buf());
         assert!(matches!(plaintext, Err(KeyStoreError::StorageError(_))));
     }
 
@@ -1037,8 +1036,7 @@ mod tests {
         let key = AuthSecretKey::new_ecdsa_k256_keccak();
         let commitment = key.public_key().to_commitment();
 
-        let keystore =
-            FilesystemKeyStore::new_encrypted(dir.path().to_path_buf(), PASSWORD).unwrap();
+        let keystore = FilesystemKeyStore::new(dir.path().to_path_buf(), PASSWORD).unwrap();
         keystore.store_key(&key).unwrap();
         fs::copy(
             key_file_path(dir.path(), commitment),
@@ -1064,8 +1062,7 @@ mod tests {
         fs::write(dir.path().join(unused_commitment().to_hex()), [1, 2, 3]).unwrap();
         drop(plaintext);
 
-        let opened_with_password =
-            FilesystemKeyStore::new_encrypted(dir.path().to_path_buf(), PASSWORD);
+        let opened_with_password = FilesystemKeyStore::new(dir.path().to_path_buf(), PASSWORD);
         assert!(
             matches!(opened_with_password, Err(KeyStoreError::StorageError(_))),
             "plaintext keys must not be silently mixed with encrypted keys"

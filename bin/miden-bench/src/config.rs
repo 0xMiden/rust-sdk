@@ -50,11 +50,14 @@ pub async fn create_client(
     let coin_seed: [u64; 4] = rng.random();
     let rng_coin = RandomCoin::new(coin_seed.map(Felt::new_unchecked).into());
 
+    // The benchmark keys control no real funds, so they are stored in plaintext.
+    let keystore = FilesystemKeyStore::new_plaintext(keystore_path)?;
+
     let builder = ClientBuilder::new()
         .rpc(Arc::new(VerifyingRpcClient::new(GrpcClient::new(endpoint, RPC_TIMEOUT_MS))))
         .rng(Box::new(rng_coin))
         .sqlite_store(sqlite_path)
-        .filesystem_keystore(keystore_path.to_str().expect("keystore path should be valid UTF-8"))?
+        .authenticator(Arc::new(keystore))
         .tx_discard_delta(None);
 
     Ok(builder.build().await?)

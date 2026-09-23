@@ -146,7 +146,7 @@ pub async fn deploy_account(
     // Add key to the filesystem keystore and account to the client
     let keystore_path = store_path.join("keystore");
     let keystore =
-        FilesystemKeyStore::new(keystore_path).expect("Failed to create keystore handle");
+        FilesystemKeyStore::new_plaintext(keystore_path).expect("Failed to create keystore handle");
     keystore.add_key(&secret_key, account_id).await?;
     client.add_account(&account, false).await?;
 

@@ -7,7 +7,12 @@ use miden_client::account::{AccountId, AddressError};
 use miden_client::keystore::KeyStoreError;
 use miden_client::vm::typed::TypedError;
 use miden_client::{
-    AccountError, AccountIdError, AssetError, ClientError, CodeBuilderError, ErrorHint,
+    AccountError,
+    AccountIdError,
+    AssetError,
+    ClientError,
+    CodeBuilderError,
+    ErrorHint,
     NetworkIdError,
 };
 use miette::Diagnostic;
@@ -101,7 +106,7 @@ pub enum CliError {
     #[diagnostic(
         code(cli::plaintext_keystore),
         help(
-            "Run `{} keys --encrypt` to encrypt the keys",
+            "Run `{} keys --encrypt` to encrypt the keys, or set `keystore_encrypted = false` in the configuration file to keep them in plaintext.",
             client_binary_name().display()
         )
     )]

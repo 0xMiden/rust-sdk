@@ -30,7 +30,7 @@ use crate::errors::CliError;
 pub(crate) fn open_keystore(config: &CliConfig) -> Result<CliKeyStore, CliError> {
     let keys_directory = config.secret_keys_directory.clone();
     if !config.keystore_encrypted {
-        return CliKeyStore::new(keys_directory).map_err(CliError::KeyStore);
+        return CliKeyStore::new_plaintext(keys_directory).map_err(CliError::KeyStore);
     }
 
     // A new keystore has no password yet, so a typed password is confirmed before it is used.
@@ -39,7 +39,7 @@ pub(crate) fn open_keystore(config: &CliConfig) -> Result<CliKeyStore, CliError>
         return Err(CliError::PlaintextKeystore(keys_directory.display().to_string()));
     }
     let password = read_keystore_password(is_new)?;
-    CliKeyStore::new_encrypted(keys_directory, password.as_bytes()).map_err(CliError::KeyStore)
+    CliKeyStore::new(keys_directory, password.as_bytes()).map_err(CliError::KeyStore)
 }
 
 /// Reads the keystore password from [`KEYSTORE_PASSWORD_ENV`], or prompts for it when the variable

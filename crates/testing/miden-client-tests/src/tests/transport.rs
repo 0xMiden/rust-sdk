@@ -139,7 +139,7 @@ async fn transport_recovers_attachments() {
     let rpc_api = Arc::new(MockRpcApi::new(mock_chain));
 
     let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
-    let keystore = FilesystemKeyStore::new(temp_dir()).unwrap();
+    let keystore = FilesystemKeyStore::new_plaintext(temp_dir()).unwrap();
     let rng =
         RandomCoin::new(rand::random::<[u64; 4]>().map(|v| Felt::new_unchecked(v >> 1)).into());
     let mut client = ClientBuilder::new()
@@ -551,7 +551,7 @@ async fn fetch_private_notes_finds_note_committed_at_sync_height() {
     let rng = RandomCoin::new(coin_seed.map(|v| Felt::new_unchecked(v >> 1)).into());
 
     let keystore_path = temp_dir();
-    let keystore = FilesystemKeyStore::new(keystore_path.clone()).unwrap();
+    let keystore = FilesystemKeyStore::new_plaintext(keystore_path.clone()).unwrap();
 
     let builder: ClientBuilder<FilesystemKeyStore> = ClientBuilder::new()
         .rpc(arc_rpc_api)
@@ -659,7 +659,7 @@ async fn ntl_note_committed_within_the_sync_window_is_committed_by_that_sync() {
     let coin_seed: [u64; 4] = rng.random();
     let rng = RandomCoin::new(coin_seed.map(|v| Felt::new_unchecked(v >> 1)).into());
 
-    let keystore = FilesystemKeyStore::new(temp_dir()).unwrap();
+    let keystore = FilesystemKeyStore::new_plaintext(temp_dir()).unwrap();
 
     let builder: ClientBuilder<FilesystemKeyStore> = ClientBuilder::new()
         .rpc(rpc_api)
@@ -747,7 +747,7 @@ async fn ntl_note_already_spent_below_the_checkpoint_is_not_left_committed() {
     let mut rng = rand::rng();
     let coin_seed: [u64; 4] = rng.random();
     let rng = RandomCoin::new(coin_seed.map(|v| Felt::new_unchecked(v >> 1)).into());
-    let keystore = FilesystemKeyStore::new(temp_dir()).unwrap();
+    let keystore = FilesystemKeyStore::new_plaintext(temp_dir()).unwrap();
 
     let builder: ClientBuilder<FilesystemKeyStore> = ClientBuilder::new()
         .rpc(rpc_api)
@@ -822,7 +822,7 @@ async fn ntl_refresh_of_expected_note_detects_consumption_in_same_sync() {
     let transport_client = MockNoteTransportApi::new(mock_transport_node.clone());
 
     let rng = RandomCoin::new([1, 2, 3, 4].map(Felt::new_unchecked).into());
-    let keystore = FilesystemKeyStore::new(temp_dir()).unwrap();
+    let keystore = FilesystemKeyStore::new_plaintext(temp_dir()).unwrap();
 
     let builder: ClientBuilder<FilesystemKeyStore> = ClientBuilder::new()
         .rpc(rpc_api.clone())
@@ -1538,7 +1538,7 @@ async fn committed_private_note_recipient(
     let rng = RandomCoin::new(coin_seed.map(|v| Felt::new_unchecked(v >> 1)).into());
 
     let keystore_path = temp_dir();
-    let keystore = FilesystemKeyStore::new(keystore_path.clone()).unwrap();
+    let keystore = FilesystemKeyStore::new_plaintext(keystore_path.clone()).unwrap();
 
     let builder: ClientBuilder<FilesystemKeyStore> = ClientBuilder::new()
         .rpc(arc_rpc_api)

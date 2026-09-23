@@ -49,7 +49,7 @@ let client = ClientBuilder::for_testnet()
     .await?;
 ```
 
-The encrypted keystore derives its key from the password with Argon2id and encrypts each key file with XChaCha20-Poly1305. The derived key stays in memory while the keystore is open. An existing plaintext keystore is encrypted in place with `FilesystemKeyStore::encrypt_plaintext_keystore`.
+The encrypted keystore derives its key from the password with Argon2id and encrypts each key file with XChaCha20-Poly1305. The derived key stays in memory while the wkeystore is open. An existing plaintext keystore is encrypted in place with `FilesystemKeyStore::encrypt_plaintext_keystore`.
 
 Other network constructors are available:
 - `ClientBuilder::for_mainnet()` - Pre-configured for Miden mainnet

@@ -36,10 +36,6 @@ MIDEN_NODE_ADMIN_URL?=http://127.0.0.1:50100
 # `MIDEN_ACCOUNT_ALLOWLIST=1`.
 MIDEN_FUNDING_SERVICE_URL?=http://127.0.0.1:50401
 
-# RPC timeout in milliseconds for the account allowlist tests. The node replies to a registration
-# only after the funding note of the account is committed, requiring a longer timeout.
-ALLOWLIST_RPC_TIMEOUT_MS?=60000
-
 # Sizes the SQL store scaling benchmark sweeps over. Kept small enough to run on every PR, and
 # overridable for a deeper local run.
 STORE_BENCH_ARGS?=--notes 1000,10000 --accounts 100,1000 --iterations 5
@@ -166,7 +162,7 @@ integration-test-agglayer: ## Run only the agglayer integration tests
 # they create through the same service. They use no funder wallets.
 .PHONY: integration-test-allowlist
 integration-test-allowlist: ## Run only the account allowlist integration tests (requires MIDEN_ACCOUNT_ALLOWLIST=1 on the node)
-	MIDEN_TEST_TIMEOUT=$(ALLOWLIST_RPC_TIMEOUT_MS) MIDEN_NODE_ADMIN_URL=$(MIDEN_NODE_ADMIN_URL) MIDEN_FUNDING_SERVICE_URL=$(MIDEN_FUNDING_SERVICE_URL) cargo nextest run --workspace --release --test=integration -E 'test(/allowlist/)'
+	MIDEN_NODE_ADMIN_URL=$(MIDEN_NODE_ADMIN_URL) MIDEN_FUNDING_SERVICE_URL=$(MIDEN_FUNDING_SERVICE_URL) cargo nextest run --workspace --release --test=integration -E 'test(/allowlist/)'
 
 .PHONY: integration-test-miden-bench
 integration-test-miden-bench: install-bench ## Run miden-bench smoke tests

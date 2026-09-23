@@ -169,7 +169,7 @@ client.register_account(new_account.id(), invitation_code).await?;
 
 ### Funding of registered accounts
 
-A new account on a fee-charging network cannot pay the fee of its first transaction out of an empty vault. A network operator can run a funding service for this. When one is configured, the node pays every registered account a public P2ID note with the native asset, and `register_account` returns as soon as the node submits the transaction that creates that note. The note is not committed on chain yet at that point, so it can take a few blocks to arrive.
+A new account on a fee-charging network cannot pay the fee of its first transaction out of an empty vault. A network operator can run a funding service for this. When one is configured, the node pays every registered account a public P2ID note with the native asset, and `register_account` returns as soon as the funding service queues that note. The note is not committed on chain yet at that point, so it can take a few blocks to arrive.
 
 The note is not part of the response. The client tracks the note tag of every account it owns, so a `sync_state` that runs after the note is committed imports it. Sync until the note arrives. Consuming it is what creates the account on chain, and the fee of that transaction is paid out of the funds the note carries:
 

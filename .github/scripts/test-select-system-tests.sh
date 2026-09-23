@@ -3,6 +3,7 @@
 set -euo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+ENTRYPOINT="$SCRIPT_DIR/select-system-tests-from-git.sh"
 SELECTOR="$SCRIPT_DIR/select-system-tests.sh"
 
 assert_selection() {
@@ -39,3 +40,21 @@ assert_selection "validator fixture" "$all_systems" \
 assert_selection "selector" "$all_systems" ".github/scripts/select-system-tests.sh"
 assert_selection "other integration code" "$integration_only" "bin/miden-cli/src/main.rs"
 assert_selection "unrelated workflow" "$no_systems" ".github/workflows/lint.yml"
+
+output_file=$(mktemp)
+error_file=$(mktemp)
+trap 'rm -f "$output_file" "$error_file"' EXIT
+if GITHUB_OUTPUT="$output_file" \
+  "$ENTRYPOINT" pull_request missing-base-revision missing-head-revision 2> "$error_file"; then
+  echo "invalid revisions did not fail" >&2
+  exit 1
+fi
+if [[ -s "$output_file" ]]; then
+  echo "invalid revisions wrote selection outputs" >&2
+  exit 1
+fi
+if ! grep -Fq \
+  "failed to compare missing-base-revision with missing-head-revision" "$error_file"; then
+  echo "invalid revision error did not identify both revisions" >&2
+  exit 1
+fi

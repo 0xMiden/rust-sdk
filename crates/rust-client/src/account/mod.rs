@@ -35,6 +35,7 @@
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
+pub use miden_objects::account_file::{AccountFile, AccountFileError};
 use miden_protocol::Felt;
 use miden_protocol::account::auth::PublicKey;
 pub use miden_protocol::account::{
@@ -44,7 +45,6 @@ pub use miden_protocol::account::{
     AccountComponent,
     AccountComponentCode,
     AccountDelta,
-    AccountFile,
     AccountHeader,
     AccountId,
     AccountIdPrefix,

@@ -33,9 +33,7 @@ use super::note_record::NoteRecordError;
 #[derive(Debug, Error)]
 #[allow(clippy::large_enum_variant)]
 pub enum StoreError {
-    #[error(
-        "protocol configuration {0} is not stored; register it with Client::add_protocol_config"
-    )]
+    #[error("protocol configuration {0} is not stored; sync the client to get it from the node")]
     ProtocolConfigNotFound(Word),
     #[error("stored protocol configuration does not match commitment {0}")]
     ProtocolConfigCommitmentMismatch(Word),

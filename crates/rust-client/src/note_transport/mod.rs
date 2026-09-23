@@ -9,7 +9,6 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use futures::Stream;
 use miden_protocol::address::Address;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{Note, NoteDetails, NoteDetailsCommitment, NoteHeader, NoteId, NoteTag};
@@ -700,10 +699,9 @@ pub(crate) struct NoteTransportLayerUpdate {
 
 /// Note transport cursor
 ///
-/// Pagination integer used to reduce the number of fetched notes from the note transport network,
-/// avoiding duplicate downloads.
+/// Identifies a position in the note transport service's stored-note sequence.
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Eq, Ord)]
-pub struct NoteTransportCursor(u64);
+pub struct NoteTransportCursor(Option<(u64, u64)>);
 
 /// Note Transport update
 pub struct NoteTransportUpdate {
@@ -714,30 +712,27 @@ pub struct NoteTransportUpdate {
 }
 
 impl NoteTransportCursor {
-    pub fn new(value: u64) -> Self {
-        Self(value)
-    }
-
+    /// Returns the cursor that starts from the first retained note.
     pub fn init() -> Self {
-        Self::new(0)
+        Self(None)
     }
 
-    pub fn value(&self) -> u64 {
+    /// Builds a cursor from the nonce and sequence returned by the transport service.
+    pub fn from_parts(nonce: u64, sequence: u64) -> Self {
+        Self(Some((nonce, sequence)))
+    }
+
+    /// Returns the nonce and sequence, or `None` for the initial cursor.
+    pub fn parts(&self) -> Option<(u64, u64)> {
         self.0
     }
 }
 
-impl From<u64> for NoteTransportCursor {
-    fn from(value: u64) -> Self {
-        Self::new(value)
-    }
-}
-
-/// The main transport client trait for sending and receiving encrypted notes
+/// The main transport client trait for sending and receiving private notes.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 pub trait NoteTransportClient: Send + Sync {
-    /// Send a note with optionally encrypted details
+    /// Sends a note with serialized details.
     async fn send_note(
         &self,
         header: NoteHeader,
@@ -759,36 +754,23 @@ pub trait NoteTransportClient: Send + Sync {
         self.send_note(header, details).await
     }
 
-    /// Fetch notes for given tags
+    /// Fetches notes for the given tags.
     ///
-    /// Downloads notes for given tags. Returns notes labelled after the provided cursor
-    /// (pagination), and an updated cursor.
+    /// Downloads notes for the given tags. Returns notes after the provided cursor (pagination),
+    /// and an updated cursor.
     async fn fetch_notes(
         &self,
         tag: &[NoteTag],
         cursor: NoteTransportCursor,
     ) -> Result<(Vec<NoteInfo>, NoteTransportCursor), NoteTransportError>;
-
-    /// Stream notes for a given tag
-    async fn stream_notes(
-        &self,
-        tag: NoteTag,
-        cursor: NoteTransportCursor,
-    ) -> Result<Box<dyn NoteStream>, NoteTransportError>;
-}
-
-/// Stream trait for note streaming
-pub trait NoteStream:
-    Stream<Item = Result<Vec<NoteInfo>, NoteTransportError>> + Send + Unpin
-{
 }
 
 /// Information about a note fetched from the note transport network
 #[derive(Debug, Clone)]
 pub struct NoteInfo {
-    /// Note header
+    /// Note header.
     pub header: NoteHeader,
-    /// Note details, can be encrypted
+    /// Serialized note details.
     pub details_bytes: Vec<u8>,
     /// Sender-provided block hint: the block from which the recipient should start scanning for the
     /// note's on-chain commitment, instead of applying its default lookback window. `None` when the
@@ -797,7 +779,7 @@ pub struct NoteInfo {
 }
 
 impl NoteInfo {
-    /// Build a [`NoteInfo`] without a block hint (`block_hint` is `None`).
+    /// Builds a [`NoteInfo`] without a block hint (`block_hint` is `None`).
     ///
     /// Use the [`NoteInfo::block_hint`] field directly to attach a hint.
     pub fn new(header: NoteHeader, details_bytes: Vec<u8>) -> Self {
@@ -833,8 +815,7 @@ impl Serializable for NoteTransportCursor {
 
 impl Deserializable for NoteTransportCursor {
     fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
-        let value = u64::read_from(source)?;
-        Ok(Self::new(value))
+        Ok(Self(Option::<(u64, u64)>::read_from(source)?))
     }
 }
 

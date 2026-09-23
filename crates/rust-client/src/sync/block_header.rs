@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use miden_protocol::block::{BlockHeader, BlockNumber};
+use miden_protocol::block::{BlockHeader, BlockNumber, ValidatorConfig};
 use miden_protocol::crypto::hash::rpo::Rpo256;
 use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::crypto::merkle::mmr::{Forest, InOrderIndex, PartialMmr};
@@ -36,6 +36,12 @@ impl<AUTH> Client<AUTH> {
             )));
         };
         Ok(block_header)
+    }
+
+    /// Retrieves the validator configuration committed by the block header at the current sync
+    /// height.
+    pub async fn get_validator_config(&self) -> Result<ValidatorConfig, ClientError> {
+        Ok(self.get_latest_block_header().await?.validator_config().clone())
     }
 
     /// Ensures that the genesis block is available. If the genesis commitment is already cached in
@@ -76,7 +82,7 @@ impl<AUTH> Client<AUTH> {
         }
 
         let rpc = MockRpcApi::default();
-        self.add_protocol_config(rpc.protocol_config()).await?;
+        self.seed_protocol_config(rpc.protocol_config()).await?;
         *self.test_rpc_api() = Arc::new(rpc);
         self.ensure_genesis_in_place().await?;
         Ok(())

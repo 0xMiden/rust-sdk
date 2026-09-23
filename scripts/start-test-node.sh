@@ -13,6 +13,7 @@
 # Env vars:
 #   MIDEN_VERIFICATION_BASE_FEE  genesis `verification_base_fee` (default 500; 0 disables fees)
 #   MIDEN_NUM_FUNDER_WALLETS     number of funder wallets a fee-charging genesis declares
+#   MIDEN_BATCH_BUILDER_WALLET   account that receives the batch builder's fees
 
 set -euo pipefail
 
@@ -50,8 +51,12 @@ NETWORK_TX_AUTH="${MIDEN_NETWORK_TX_AUTH:-miden-client-testing-ntx-secret}"
 # Genesis `verification_base_fee`. Every transaction pays out of its own account's vault, as on a
 # real chain. At 0 fees are never charged.
 VERIFICATION_BASE_FEE="${MIDEN_VERIFICATION_BASE_FEE:-500}"
+# Account that receives the batch builder's fees in a P2ID note. The sequencer requires the value
+# but never reads the account, so this is the same placeholder id the node repo uses for local
+# runs. No test consumes the fee notes.
+BATCH_BUILDER_WALLET="${MIDEN_BATCH_BUILDER_WALLET:-0xcc0000000000dd010000ee000000ff}"
 
-NODE_BINS=(miden-validator miden-node miden-ntx-builder miden-remote-prover)
+NODE_BINS=(miden-validator miden-node miden-ntx-builder miden-remote-prover miden-note-transport)
 
 # Resolve the pinned node source from Cargo.lock: a git pin takes precedence, otherwise use the
 # crates.io version locked for `miden-node-proto-build`.
@@ -136,7 +141,6 @@ MIDEN_VERIFICATION_BASE_FEE="$VERIFICATION_BASE_FEE" "$GEN_GENESIS" "$DATA/genes
 # below once `miden-validator genesis` has generated them.
 rm -rf "$ROOT/data/funders"
 mkdir -p "$ROOT/data"
-cp "$DATA/genesis-config/protocol-config.bin" "$ROOT/data/protocol-config.bin"
 cp "$DATA/genesis-config/tst_faucet.mac" "$ROOT/data/account.mac"
 # Expose the agglayer accounts under ./data, where the tests read them via AGGLAYER_ACCOUNTS_DIR.
 for mac in bridge_admin.mac ger_manager.mac bridge.mac agglayer_faucet.mac \
@@ -157,9 +161,16 @@ ENCRYPTION_KEY="9964dbb2590adeb415d3291b64a0a9991fbcac5adacb05ee17efee5296d081d7
 
 {
     # Genesis generation is separate from bootstrap: `genesis` builds the block once, then every
-    # component seeds its database from the resulting file.
+    # component seeds its database from the resulting file. The native faucet and the funding
+    # account are required inputs with their own flags; the fee and the timestamp are genesis
+    # parameters rather than accounts, so they are passed here instead of through the fixtures.
     "$BIN/miden-validator" genesis --genesis-block-directory "$DATA/genesis" \
-        --accounts-directory "$DATA/accounts" --config "$DATA/genesis-config/genesis.toml" \
+        --accounts-directory "$DATA/accounts" \
+        --accounts-config "$DATA/genesis-config/accounts.toml" \
+        --native-faucet "$DATA/genesis-config/native_faucet.mac" \
+        --funding-account "$DATA/genesis-config/funding_account.mac" \
+        --verification-base-fee "$VERIFICATION_BASE_FEE" \
+        --timestamp "$(date +%s)" \
         --validator.key "$VALIDATOR_PUBLIC_KEY"
     "$BIN/miden-validator" bootstrap --data-directory "$DATA/validator" \
         --genesis "$DATA/genesis/genesis.dat"
@@ -208,11 +219,40 @@ start validator   "$BIN/miden-validator" start --listen "$VALIDATOR" --data-dire
     --storage-key.setup-context "$STORAGE_KEY_DIR/setup-context.wire" \
     --storage-key.public-key-set "$STORAGE_KEY_DIR/public-key-set.wire" \
     --storage-key.secret-share "$STORAGE_KEY_DIR/secret-share.wire"
-# Let the validator bind before the sequencer starts producing blocks against it.
-sleep 2
+
+# The fee collector deployment and the sequencer both need the validator.
+echo "==> waiting for validator on $VALIDATOR"
+VALIDATOR_READY=""
+for _ in $(seq 1 30); do
+    if (exec 3<>"/dev/tcp/${VALIDATOR%:*}/${VALIDATOR##*:}") 2>/dev/null; then
+        exec 3>&- 3<&-
+        VALIDATOR_READY=1
+        break
+    fi
+    sleep 1
+done
+if [ -z "$VALIDATOR_READY" ]; then
+    echo "error: validator did not become ready within 30s; see $LOG_DIR" >&2
+    exit 1
+fi
+
+# The sequencer does not start until the batch builder's fee collector account exists in its data
+# directory and is deployed on chain. The deployment proves one block locally and pays no fee.
+echo "==> creating and deploying the fee collector account"
+if ! {
+    "$BIN/miden-node" fee-collector create --data-directory "$DATA/node" &&
+    "$BIN/miden-node" fee-collector deploy --data-directory "$DATA/node" \
+        --validator.url "http://$VALIDATOR"
+} >"$LOG_DIR/fee-collector.log" 2>&1; then
+    echo "error: fee collector deployment failed; see $LOG_DIR/fee-collector.log" >&2
+    tail -n 20 "$LOG_DIR/fee-collector.log" >&2
+    exit 1
+fi
+
 start sequencer   "$BIN/miden-node" sequencer --rpc.listen "$RPC" --data-directory "$DATA/node" \
     --validator.url "http://$VALIDATOR" --ntx-builder.url "http://$NTX" \
     --rpc.network-tx-auth-header-value "$NETWORK_TX_AUTH" \
+    --batch.builder.wallet-account-id "$BATCH_BUILDER_WALLET" \
     --disable-account-allowlist \
     --block.interval 3s --batch.interval 1s
 # A network transaction's proof runs well past the prover's 60s default on a shared CI runner, and

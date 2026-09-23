@@ -5,25 +5,22 @@
 pub mod agglayer;
 
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use ::rand::{RngExt, random};
 use anyhow::{Context, Result};
+use miden_objects::account_file::AccountFile;
 use miden_protocol::account::auth::{AuthScheme, AuthSecretKey};
 use miden_protocol::account::{
     Account,
     AccountBuilder,
     AccountComponent,
     AccountComponentMetadata,
-    AccountFile,
     AccountId,
     AccountType,
     StorageMap,
     StorageMapKey,
 };
-use miden_protocol::asset::{Asset, AssetAmount, AssetId, FungibleAsset, TokenSymbol};
-use miden_protocol::protocol_config::ProtocolConfig;
-use miden_protocol::utils::serde::Serializable;
+use miden_protocol::asset::{Asset, AssetAmount, FungibleAsset, TokenSymbol};
 use miden_protocol::{ONE, Word};
 use miden_standards::account::access::AccessControl;
 use miden_standards::account::auth::{Approver, AuthSingleSig};
@@ -70,6 +67,11 @@ pub const NATIVE_FAUCET_FILE: &str = "native_faucet.mac";
 /// account `miden-faucet init --import` takes to dispense the native asset on this chain.
 pub const FAUCET_OPERATOR_FILE: &str = "faucet_operator.mac";
 
+/// File name of the public funding account, written with its secret key. `miden-validator genesis`
+/// requires one: it is the account the node's funding service pays out of. The testing node runs no
+/// funding service, so the wallet only has to exist and be deployed.
+pub const FUNDING_ACCOUNT_FILE: &str = "funding_account.mac";
+
 /// Token symbol, decimals and max supply of the native fee faucet, matching what the node would
 /// generate for it if genesis left it unset.
 const NATIVE_FAUCET_SYMBOL: &str = "MIDEN";
@@ -83,29 +85,29 @@ const TST_FAUCET_MAX_SUPPLY: u64 = 1_000_000_000_000;
 /// Balance, in base units of the native fee asset, held by every genesis account that transacts.
 const GENESIS_ACCOUNT_FEE_BALANCE: u64 = 1_000_000_000;
 
-/// Writes the genesis fixtures into `output_dir` so the node can be bootstrapped with
-/// `miden-validator bootstrap --genesis-config-file <output_dir>/genesis.toml`.
+/// Writes the genesis fixtures into `output_dir` for `miden-validator genesis`, which takes the
+/// native faucet and the funding account through `--native-faucet` and `--funding-account`, and the
+/// remaining accounts through `--accounts-config <output_dir>/accounts.toml`.
 ///
 /// This emits the TST genesis faucet (written with its secret key), the test faucets, and the
-/// `too_many_assets` account as `.mac` files referenced by `[[account]]` entries in `genesis.toml`,
-/// which the node loads verbatim.
+/// `too_many_assets` account as `.mac` files referenced by `[[account]]` entries in
+/// `accounts.toml`, which the node loads verbatim.
 ///
-/// The native fee faucet is generated here and pointed at by `native_faucet` rather than left to
-/// the node, so its ID is known before the remaining accounts are serialized. A vault entry can
-/// only reference a faucet whose ID already exists, which is what lets those accounts be seeded.
+/// The native fee faucet is generated here so its ID is known before the remaining accounts are
+/// serialized. A vault entry can only reference a faucet whose ID already exists, which is what
+/// lets those accounts be seeded.
 ///
 /// `num_funder_wallets` declares that many `[[wallet]]` entries holding [`FUNDER_WALLET_BALANCE`].
 /// The node writes each to its accounts directory as `wallet_<index>.mac`, secret key included.
+///
+/// The fee parameters and the genesis timestamp are not fixtures: `miden-validator genesis` takes
+/// them on the command line.
 ///
 /// The agglayer genesis accounts (bridge admin, GER manager, bridge, and faucet) are emitted too,
 /// and integration tests load their `.mac` files via the `AGGLAYER_ACCOUNTS_DIR` env var. They are
 /// always present because the bridge and faucet are network accounts, which no client transaction
 /// can deploy, so a test cannot create them at runtime.
-pub fn write_genesis_config(
-    output_dir: &Path,
-    verification_base_fee: u32,
-    num_funder_wallets: u32,
-) -> Result<()> {
+pub fn write_genesis_config(output_dir: &Path, num_funder_wallets: u32) -> Result<()> {
     std::fs::create_dir_all(output_dir).with_context(|| {
         format!("failed to create genesis output directory {}", output_dir.display())
     })?;
@@ -116,11 +118,9 @@ pub fn write_genesis_config(
     // commits to its operator's ID, so the operator is built first, and both get their balance only
     // once the faucet's ID exists.
     let (operator, operator_secret) =
-        generate_faucet_operator().context("failed to create the native faucet operator")?;
+        generate_wallet().context("failed to create the native faucet operator")?;
     let native_faucet =
         generate_native_faucet(operator.id()).context("failed to create the native fee faucet")?;
-    let protocol_config = ProtocolConfig::current(AssetId::new_fungible(native_faucet.id()))?;
-    std::fs::write(output_dir.join("protocol-config.bin"), protocol_config.to_bytes())?;
     let fee_balance: Asset =
         FungibleAsset::new(native_faucet.id(), GENESIS_ACCOUNT_FEE_BALANCE)?.into();
     AccountFile::new(into_genesis_account(native_faucet, fee_balance)?, vec![])
@@ -130,6 +130,13 @@ pub fn write_genesis_config(
         .write(output_dir.join(FAUCET_OPERATOR_FILE))
         .with_context(|| format!("failed to write {FAUCET_OPERATOR_FILE}"))?;
     account_files.push(FAUCET_OPERATOR_FILE.to_string());
+
+    // Genesis loads the funding account from its own flag, so it is not listed in `accounts.toml`.
+    let (funding_account, funding_secret) =
+        generate_wallet().context("failed to create the funding account")?;
+    AccountFile::new(into_genesis_account(funding_account, fee_balance)?, vec![funding_secret])
+        .write(output_dir.join(FUNDING_ACCOUNT_FILE))
+        .with_context(|| format!("failed to write {FUNDING_ACCOUNT_FILE}"))?;
 
     // Genesis faucet (TST), with its secret key so it can sign minting transactions and the fee
     // balance those settle from.
@@ -164,21 +171,17 @@ pub fn write_genesis_config(
         account_files.push(file_name.to_string());
     }
 
-    let timestamp: u32 = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("current timestamp should be greater than unix epoch")
-        .as_secs()
-        .try_into()
-        .expect("timestamp should fit into u32");
-
     // The validator set is not part of this config: `miden-validator genesis` takes the set's
     // public keys on the command line, and `start-test-node.sh` generates the key-pair it passes
     // there alongside the matching signing key.
-    let config = GenesisConfig {
-        timestamp,
-        native_faucet: NATIVE_FAUCET_FILE.to_string(),
-        fee_parameters: FeeParametersEntry { verification_base_fee },
-        accounts: account_files.into_iter().map(|path| AccountEntry { path }).collect(),
+    let config = AccountsConfig {
+        accounts: account_files
+            .into_iter()
+            .map(|path| AccountEntry {
+                name: path.trim_end_matches(".mac").to_string(),
+                path,
+            })
+            .collect(),
         wallets: (0..num_funder_wallets)
             .map(|index| WalletEntry {
                 name: format!("wallet_{index}"),
@@ -191,26 +194,23 @@ pub fn write_genesis_config(
             .collect(),
     };
 
-    let toml = toml::to_string(&config).context("failed to serialize genesis.toml")?;
-    std::fs::write(output_dir.join("genesis.toml"), toml)
-        .with_context(|| "failed to write genesis.toml")?;
+    let toml = toml::to_string(&config).context("failed to serialize accounts.toml")?;
+    std::fs::write(output_dir.join(ACCOUNTS_CONFIG_FILE), toml)
+        .with_context(|| format!("failed to write {ACCOUNTS_CONFIG_FILE}"))?;
 
     Ok(())
 }
 
-// GENESIS CONFIG
+// ACCOUNTS CONFIG
 // ================================================================================================
 
-/// The `genesis.toml` the node bootstraps from.
-///
-/// Field order is the serialized order, and TOML requires a table's own values before any nested
-/// table, so the scalars have to stay above `fee_parameters` and the two arrays of tables.
+/// File name of the additional accounts config `miden-validator genesis` loads through
+/// `--accounts-config`.
+pub const ACCOUNTS_CONFIG_FILE: &str = "accounts.toml";
+
+/// The `accounts.toml` that `miden-validator genesis` loads through `--accounts-config`.
 #[derive(Serialize)]
-struct GenesisConfig {
-    timestamp: u32,
-    /// File name of the faucet whose asset the chain charges fees in.
-    native_faucet: String,
-    fee_parameters: FeeParametersEntry,
+struct AccountsConfig {
     /// Rendered as `[[account]]` entries, each naming a `.mac` file the node loads verbatim.
     #[serde(rename = "account")]
     accounts: Vec<AccountEntry>,
@@ -220,12 +220,9 @@ struct GenesisConfig {
 }
 
 #[derive(Serialize)]
-struct FeeParametersEntry {
-    verification_base_fee: u32,
-}
-
-#[derive(Serialize)]
 struct AccountEntry {
+    /// Label the node prints next to the account's ID once genesis is built.
+    name: String,
     path: String,
 }
 
@@ -277,15 +274,15 @@ fn generate_faucet(
     Ok((account, secret))
 }
 
-/// Builds the public wallet owning the native fee faucet, with the key that signs for it.
-fn generate_faucet_operator() -> anyhow::Result<(Account, AuthSecretKey)> {
+/// Builds a public basic wallet, with the key that signs for it.
+fn generate_wallet() -> anyhow::Result<(Account, AuthSecretKey)> {
     let mut rng = ChaCha20Rng::from_seed(random());
     let secret = AuthSecretKey::new_falcon512_poseidon2_with_rng(&mut rng);
     let approver =
         Approver::new(secret.public_key().to_commitment(), AuthScheme::Falcon512Poseidon2);
-    let operator = create_basic_wallet(rng.random(), approver, AccountType::Public)?;
+    let wallet = create_basic_wallet(rng.random(), approver, AccountType::Public)?;
 
-    Ok((operator, secret))
+    Ok((wallet, secret))
 }
 
 /// Builds the native fee faucet as a network account owned by `operator_id`, mirroring the faucet

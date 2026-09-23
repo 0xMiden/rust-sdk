@@ -124,7 +124,7 @@ pub use batch::{BatchBuilder, BatchBuilderError, ProvenBatchSubmission};
 mod chain_anchor;
 pub use chain_anchor::{ChainAnchor, ChainAnchorError};
 
-#[cfg(any())]
+#[cfg(feature = "dap")]
 mod dap_executor;
 mod prover;
 pub use prover::TransactionProver;
@@ -494,7 +494,7 @@ where
     ///
     /// This applies the same request preparation and output-recipient validation as
     /// [`Self::execute_transaction`], and returns the corresponding [`ClientError`] on failure.
-    #[cfg(any())]
+    #[cfg(feature = "dap")]
     pub async fn execute_transaction_with_dap(
         &self,
         account_id: AccountId,
@@ -557,7 +557,7 @@ where
                     .execute_transaction(account_id, prep.block_num, notes, prep.tx_args)
                     .await?
             },
-            #[cfg(any())]
+            #[cfg(feature = "dap")]
             TransactionExecutionMode::Dap => {
                 self.build_dap_executor(&data_store)?
                     .execute_transaction(account_id, prep.block_num, notes, prep.tx_args)
@@ -626,11 +626,24 @@ where
             .get_input_notes(NoteFilter::List(transaction_request.input_note_ids().collect()))
             .await?;
 
-        // Verify that none of the stored input notes are already consumed.
+        // Verify that none of the stored input notes are already consumed or held by a pending
+        // local transaction. A processing note is rejected here, before anything is executed or
+        // submitted: the store could not record a second consumer, so a transaction spending it
+        // would reach the node without a local record of it.
         for note in &stored_note_records {
             if note.is_consumed() {
                 return Err(ClientError::TransactionRequestError(
                     TransactionRequestError::InputNoteAlreadyConsumed(note.details_commitment()),
+                ));
+            }
+            if let Some(transaction_id) = note.consumer_transaction_id()
+                && note.is_processing()
+            {
+                return Err(ClientError::TransactionRequestError(
+                    TransactionRequestError::InputNoteBeingProcessed {
+                        note: note.details_commitment(),
+                        transaction_id: *transaction_id,
+                    },
                 ));
             }
         }
@@ -814,8 +827,7 @@ where
         // response cannot supply its own trust anchor.
         let genesis_commitment =
             self.trusted_block_header(BlockNumber::GENESIS).await?.commitment();
-        let chain_tip = self.store.get_sync_height().await?;
-        let validator_keys = self.trusted_block_header(chain_tip).await?.validator_config().clone();
+        let validator_keys = self.get_validator_config().await?;
 
         let key = attested.verify(genesis_commitment, &validator_keys)?;
         self.store.set_transaction_encryption_key(&key).await?;
@@ -967,7 +979,7 @@ where
 
     /// Executes the provided transaction script with a DAP debug adapter listening for connections,
     /// allowing interactive debugging via any DAP-compatible client.
-    #[cfg(any())]
+    #[cfg(feature = "dap")]
     pub async fn execute_program_with_dap(
         &self,
         account_id: AccountId,
@@ -1275,7 +1287,7 @@ where
     }
 
     /// Creates a transaction executor configured for DAP (Debug Adapter Protocol) debugging.
-    #[cfg(any())]
+    #[cfg(feature = "dap")]
     pub(crate) fn build_dap_executor<'store, 'auth, STORE: DataStore + Sync>(
         &'auth self,
         data_store: &'store STORE,
@@ -1440,7 +1452,7 @@ pub enum TransactionStoreUpdateError {
 #[derive(Clone, Copy, Debug)]
 enum TransactionExecutionMode {
     Standard,
-    #[cfg(any())]
+    #[cfg(feature = "dap")]
     Dap,
 }
 

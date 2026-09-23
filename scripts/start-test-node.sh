@@ -229,7 +229,6 @@ start validator   "$BIN/miden-validator" start --listen "$VALIDATOR" --data-dire
     --storage-key.setup-context "$STORAGE_KEY_DIR/setup-context.wire" \
     --storage-key.public-key-set "$STORAGE_KEY_DIR/public-key-set.wire" \
     --storage-key.secret-share "$STORAGE_KEY_DIR/secret-share.wire"
-
 # The fee collector deployment and the sequencer both need the validator.
 echo "==> waiting for validator on $VALIDATOR"
 VALIDATOR_READY=""
@@ -259,21 +258,19 @@ if ! {
     exit 1
 fi
 
-# The node enforces the account allowlist unless told otherwise, and enforcement rejects every
-# account-creating submission from an unregistered account. Only the allowlist tests want that.
-# The admin API is bound only alongside enforcement, because seeding the invitation codes is the
-# one thing it is needed for, and binding it otherwise would only add a port that can clash.
-SEQUENCER_ALLOWLIST_ARGS=()
+# The node enforces the account allowlist unless told otherwise. Only the allowlist tests enable
+# it. The admin API is necessary only when the tests create invitation codes.
 if [ "$ACCOUNT_ALLOWLIST" = "1" ]; then
-    SEQUENCER_ALLOWLIST_ARGS+=(--admin.listen "$ADMIN")
+    SEQUENCER_ALLOWLIST_ARGS=(--admin.listen "$ADMIN")
 else
-    SEQUENCER_ALLOWLIST_ARGS+=(--disable-account-allowlist)
+    SEQUENCER_ALLOWLIST_ARGS=(--disable-account-allowlist)
 fi
+
 start sequencer   "$BIN/miden-node" sequencer --rpc.listen "$RPC" --data-directory "$DATA/node" \
     --validator.url "http://$VALIDATOR" --ntx-builder.url "http://$NTX" \
     --rpc.network-tx-auth-header-value "$NETWORK_TX_AUTH" \
     --batch.builder.wallet-account-id "$BATCH_BUILDER_WALLET" \
-    ${SEQUENCER_ALLOWLIST_ARGS[@]+"${SEQUENCER_ALLOWLIST_ARGS[@]}"} \
+    "${SEQUENCER_ALLOWLIST_ARGS[@]}" \
     --block.interval 3s --batch.interval 1s
 # A network transaction's proof runs well past the prover's 60s default on a shared CI runner, and
 # the default capacity of 1 rejects the ntx-builder's retry outright, so it never converges.

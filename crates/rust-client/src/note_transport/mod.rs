@@ -712,34 +712,19 @@ pub struct NoteTransportUpdate {
 }
 
 impl NoteTransportCursor {
-    /// Creates a cursor with a sequence value and a zero nonce.
-    ///
-    /// This constructor supports custom transport implementations. The node transport assigns a
-    /// nonce when it returns the first page.
-    pub fn new(value: u64) -> Self {
-        Self(Some((0, value)))
-    }
-
+    /// Returns the cursor that starts from the first retained note.
     pub fn init() -> Self {
         Self(None)
     }
 
+    /// Builds a cursor from the nonce and sequence returned by the transport service.
     pub fn from_parts(nonce: u64, sequence: u64) -> Self {
         Self(Some((nonce, sequence)))
     }
 
+    /// Returns the nonce and sequence, or `None` for the initial cursor.
     pub fn parts(&self) -> Option<(u64, u64)> {
         self.0
-    }
-
-    pub fn value(&self) -> u64 {
-        self.0.map_or(0, |(_, sequence)| sequence)
-    }
-}
-
-impl From<u64> for NoteTransportCursor {
-    fn from(value: u64) -> Self {
-        Self::new(value)
     }
 }
 

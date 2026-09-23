@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 #
 # Starts the note transport service in the foreground from the node binaries installed by
-# start-test-node.sh. Ctrl+C stops it. Every start begins from an empty database, like the node
-# components.
+# start-test-node.sh. Every start begins from an empty database, like the node components.
 
 set -euo pipefail
 

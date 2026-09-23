@@ -97,6 +97,8 @@ pub enum ClientError {
     AccountIsWatched(AccountId),
     #[error("account {0} is a network account and does not need an invitation code")]
     AccountIsNetworkAccount(AccountId),
+    #[error("account {0} is already allowed on the network and does not need an invitation code")]
+    AccountAlreadyAllowed(AccountId),
     #[error("account {0} is already deployed and does not need an invitation code")]
     AccountIsNotNew(AccountId),
     #[error(
@@ -334,6 +336,7 @@ impl From<&ClientError> for Option<ErrorHint> {
                 docs_url: Some(TROUBLESHOOTING_DOC),
             }),
             ClientError::AccountIsNetworkAccount(account_id)
+            | ClientError::AccountAlreadyAllowed(account_id)
             | ClientError::AccountIsNotNew(account_id) => {
                 Some(unneeded_invitation_code_hint(err, *account_id))
             },
@@ -489,16 +492,20 @@ fn rpc_hint(err: &RpcError) -> Option<ErrorHint> {
 
 /// Returns the hint for an invitation code that the client refused before it sent the code.
 fn unneeded_invitation_code_hint(err: &ClientError, account_id: AccountId) -> ErrorHint {
-    let message = if matches!(err, ClientError::AccountIsNetworkAccount(_)) {
-        format!(
+    let message = match err {
+        ClientError::AccountIsNetworkAccount(_) => format!(
             "Account {account_id} is a network account. The node admits network accounts without \
              an invitation code. Add the account without a code."
-        )
-    } else {
-        format!(
+        ),
+        ClientError::AccountAlreadyAllowed(_) => format!(
+            "Account {account_id} is already registered, or the node does not enforce an \
+             allowlist. The client did not send the invitation code. Keep the code for a \
+             different account."
+        ),
+        _ => format!(
             "Account {account_id} already exists on chain. Only an account that is not deployed \
              needs an invitation code. Keep the code for a new account."
-        )
+        ),
     };
 
     ErrorHint {

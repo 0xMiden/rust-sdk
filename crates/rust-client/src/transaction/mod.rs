@@ -68,14 +68,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use miden_protocol::account::{
-    Account,
-    AccountCode,
-    AccountCodeInterface,
-    AccountId,
-    AccountUpdateDetails,
-    PartialAccount,
-};
+use miden_protocol::account::{AccountCode, AccountCodeInterface, AccountId, PartialAccount};
 use miden_protocol::asset::Asset;
 use miden_protocol::block::{BlockHeader, BlockNumber, FeeParameters};
 use miden_protocol::errors::AssetError;
@@ -92,7 +85,7 @@ use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::transaction::{AccountInputs, PartialBlockchain};
 use miden_protocol::vm::MIN_STACK_DEPTH;
 use miden_protocol::{Felt, Word};
-use miden_standards::account::auth::{FeeConversionInfo, NetworkAccount};
+use miden_standards::account::auth::FeeConversionInfo;
 use miden_standards::account::faucets::FungibleFaucet;
 use miden_standards::account::interface::AccountComponentInterfaceExt;
 use miden_standards::note::TxFeeNote;
@@ -324,25 +317,6 @@ where
         }
 
         Ok(tx_id)
-    }
-
-    /// Returns [`ClientError::AccountNotAllowlisted`] if the network refuses to create
-    /// `account_id`.
-    pub(crate) async fn check_account_id_allowed(
-        &self,
-        account_id: AccountId,
-    ) -> Result<(), ClientError> {
-        match self.rpc_api.is_account_allowed(account_id).await {
-            Ok(true) => Ok(()),
-            Ok(false) => Err(ClientError::AccountNotAllowlisted(account_id)),
-            Err(err) => {
-                info!(
-                    "could not check whether account {account_id} is on the network allowlist, \
-                     submitting anyway and letting the node decide: {err}"
-                );
-                Ok(())
-            },
-        }
     }
 
     /// Creates and executes a transaction specified by the request against the specified account,
@@ -824,8 +798,9 @@ where
         transaction_inputs: impl Into<TransactionInputs>,
     ) -> Result<BlockNumber, ClientError> {
         // A transaction that creates an account is gated by the network allowlist.
-        if creates_allowlist_checked_account(&proven_transaction) {
-            self.check_account_id_allowed(proven_transaction.account_id()).await?;
+        let account_id = proven_transaction.account_id();
+        if self.is_allowlist_gated(account_id).await? {
+            ensure_account_allowed(account_id, self.is_account_allowed(account_id).await)?;
         }
 
         info!("Submitting transaction to the network...");
@@ -1907,22 +1882,25 @@ pub(crate) fn validate_executed_transaction(
     Ok(())
 }
 
-/// Returns whether `proven_transaction` creates an account that the network allowlist gates.
+/// Turns the answer of [`Client::is_account_allowed`] for `account_id` into a submission check.
 ///
-/// An account that already exists on chain is not gated, and neither is a network account.
-fn creates_allowlist_checked_account(proven_transaction: &ProvenTransaction) -> bool {
-    let account_update = proven_transaction.account_update();
-    if !account_update.initial_state_commitment().is_empty() {
-        return false;
+/// Returns [`ClientError::AccountNotAllowlisted`] if the network refuses to create the account. If
+/// the check itself fails, the submission continues and the node decides.
+fn ensure_account_allowed(
+    account_id: AccountId,
+    is_allowed: Result<bool, ClientError>,
+) -> Result<(), ClientError> {
+    match is_allowed {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(ClientError::AccountNotAllowlisted(account_id)),
+        Err(err) => {
+            info!(
+                "could not check whether account {account_id} is on the network allowlist, \
+                 submitting anyway and letting the node decide: {err}"
+            );
+            Ok(())
+        },
     }
-
-    // A new account is only exempt when it is a valid network account. The full account is only
-    // carried in the update of a public account.
-    let AccountUpdateDetails::Public(patch) = account_update.details() else {
-        return true;
-    };
-
-    !Account::try_from(patch).is_ok_and(|account| NetworkAccount::new(account).is_ok())
 }
 
 // TESTS

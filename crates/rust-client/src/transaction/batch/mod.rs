@@ -87,7 +87,7 @@ use crate::transaction::{
     TransactionRequest,
     TransactionResult,
     TransactionStoreUpdate,
-    creates_allowlist_checked_account,
+    ensure_account_allowed,
     validate_executed_transaction,
 };
 use crate::{Client, ClientError};
@@ -281,14 +281,15 @@ where
 
         // Accounts that the batch creates are gated by the network allowlist. Ask before the batch
         // is proven.
-        let gated_accounts: BTreeSet<AccountId> = self
-            .pushed_txs
-            .iter()
-            .filter(|p| creates_allowlist_checked_account(&p.proven_tx))
-            .map(|p| p.proven_tx.account_id())
-            .collect();
-        for account_id in gated_accounts {
-            self.client.check_account_id_allowed(account_id).await?;
+        let account_ids: BTreeSet<AccountId> =
+            self.pushed_txs.iter().map(|p| p.proven_tx.account_id()).collect();
+        for account_id in account_ids {
+            if self.client.is_allowlist_gated(account_id).await? {
+                ensure_account_allowed(
+                    account_id,
+                    self.client.is_account_allowed(account_id).await,
+                )?;
+            }
         }
 
         let store = self.client.store.clone();

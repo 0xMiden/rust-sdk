@@ -34,8 +34,11 @@ pub(crate) fn open_keystore(config: &CliConfig) -> Result<CliKeyStore, CliError>
     }
 
     // A new keystore has no password yet, so a typed password is confirmed before it is used.
-    let confirm = !keys_directory.exists() || std::fs::read_dir(&keys_directory)?.next().is_none();
-    let password = read_keystore_password(confirm)?;
+    let is_new = !keys_directory.exists() || std::fs::read_dir(&keys_directory)?.next().is_none();
+    if !is_new && !CliKeyStore::is_encrypted_directory(&keys_directory) {
+        return Err(CliError::PlaintextKeystore(keys_directory.display().to_string()));
+    }
+    let password = read_keystore_password(is_new)?;
     CliKeyStore::new_encrypted(keys_directory, password.as_bytes()).map_err(CliError::KeyStore)
 }
 

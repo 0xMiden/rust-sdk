@@ -9,8 +9,7 @@ use figment::value::{Dict, Map};
 use figment::{Figment, Metadata, Profile, Provider};
 use miden_client::address::NetworkId;
 use miden_client::note_transport::{
-    NOTE_TRANSPORT_DEVNET_ENDPOINT,
-    NOTE_TRANSPORT_MAINNET_ENDPOINT,
+    NOTE_TRANSPORT_DEVNET_ENDPOINT, NOTE_TRANSPORT_MAINNET_ENDPOINT,
     NOTE_TRANSPORT_TESTNET_ENDPOINT,
 };
 use miden_client::rpc::Endpoint;
@@ -80,7 +79,9 @@ pub struct CliConfig {
     pub store_filepath: PathBuf,
     /// Path to the directory that contains the secret key files.
     pub secret_keys_directory: PathBuf,
-    /// Whether the secret key files are encrypted with a password.
+    /// Whether the secret key files are encrypted with a password. A configuration file without
+    /// this field is read as encrypted.
+    #[serde(default = "default_keystore_encrypted")]
     pub keystore_encrypted: bool,
     /// Path to the file containing the token symbol map.
     pub token_symbol_map_filepath: PathBuf,
@@ -95,6 +96,11 @@ pub struct CliConfig {
     pub note_transport: Option<NoteTransportConfig>,
     /// Timeout for the remote prover requests.
     pub remote_prover_timeout: Duration,
+}
+
+/// Default of the `keystore_encrypted` field. Plaintext keys are an explicit opt-out.
+fn default_keystore_encrypted() -> bool {
+    true
 }
 
 // Make `ClientConfig` a provider itself for composability.

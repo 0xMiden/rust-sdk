@@ -216,9 +216,11 @@ fn cli_encrypts_a_plaintext_keystore() {
     let plaintext_key = fs::read(keystore_dir.join(&commitment)).unwrap();
     assert!(AuthSecretKey::read_from_bytes(&plaintext_key).is_ok());
 
-    // The field is required, so a configuration written before it existed does not load.
-    let config_with_field = fs::read_to_string(&config_path).unwrap();
-    let config_without_field = config_with_field.replace("keystore_encrypted = false\n", "");
+    // A configuration written before the field existed is read as encrypted. Its plaintext keys
+    // must not open silently, and the error must point at the two ways out.
+    let config_without_field = fs::read_to_string(&config_path)
+        .unwrap()
+        .replace("keystore_encrypted = false\n", "");
     assert!(!config_without_field.contains("keystore_encrypted"));
     fs::write(&config_path, config_without_field).unwrap();
     let mut legacy_list_cmd = miden_cmd();
@@ -227,8 +229,7 @@ fn cli_encrypts_a_plaintext_keystore() {
         .current_dir(&temp_dir)
         .assert()
         .failure()
-        .stderr(contains("keystore_encrypted"));
-    fs::write(&config_path, config_with_field).unwrap();
+        .stderr(contains("keys --encrypt").and(contains("keystore_encrypted = false")));
 
     let mut encrypt_cmd = miden_cmd();
     encrypt_cmd.args(["keys", "--encrypt"]);

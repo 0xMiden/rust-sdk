@@ -14,6 +14,10 @@
 
 ### Breaking Changes
 
+* [BREAKING][arch][rust] Updated protocol dependencies to `0.17.0-rc.6` ([#2594](https://github.com/0xMiden/rust-sdk/pull/2594)).
+* [BREAKING][arch][rust] `AccountFile` and `NoteFile` moved from `miden-protocol` and `miden-standards` to `miden-objects`. Both are re-exported from `miden_client::account` and `miden_client::note` as before ([#2594](https://github.com/0xMiden/rust-sdk/pull/2594)).
+* [BREAKING][type][rust] `AccountFile` and `NoteFile` are encoded as Protobuf, so files written by earlier versions no longer decode. `Deserializable::read_from_bytes` is replaced by `try_from_bytes`, which reports the new `AccountFileError` and `NoteFileError` ([#2594](https://github.com/0xMiden/rust-sdk/pull/2594)).
+* [BREAKING][type][rust] The `AccountFile` fields `account` and `auth_secret_keys` are private. Use `account()`, `auth_secret_keys()` or `into_parts()`. `NoteSyncHint` likewise exposes `after_block_num()` and `tag()`
 * [BREAKING][behavior][rust,cli] The client now gets its protocol configuration from the node during `Client::sync_state` instead of being given one. `SyncChainMmr` carries the configuration when the client syncs from genesis or when the configuration commitment changed over the synced range, and the client verifies it against the block header before storing it ([#2591](https://github.com/0xMiden/rust-sdk/pull/2591)).
 * [BREAKING][removal][rust] Removed `ClientBuilder::protocol_config` and `Client::add_protocol_config`. A client gets its configurations by syncing, so there is no longer a way to supply one ([#2591](https://github.com/0xMiden/rust-sdk/pull/2591)).
 * [BREAKING][behavior][rust] State sync now authenticates the chain tip by verifying the block signatures against the validator configuration ([#2553](https://github.com/0xMiden/rust-sdk/pull/2553)).

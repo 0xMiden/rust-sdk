@@ -26,14 +26,14 @@ pub async fn test_allowlist_unknown_code_is_rejected(client_config: ClientConfig
     let account = client.insert_wallet(AccountType::Private).await?;
 
     let error = client
-        .register_account(UNKNOWN_INVITATION_CODE, account.id())
+        .register_account(account.id(), UNKNOWN_INVITATION_CODE)
         .await
         .expect_err("the node should not know this invitation code");
     assert_registration_rejected(&error, &RegisterAccountError::InvitationNotFound);
 
     let invitation_code = create_invitation_code().await?;
     client
-        .register_account(&invitation_code, account.id())
+        .register_account(account.id(), &invitation_code)
         .await
         .context("a rejected registration should leave the account registerable")?;
 
@@ -57,7 +57,7 @@ pub async fn test_allowlist_code_is_single_use(client_config: ClientConfig) -> R
 
     let second = client.insert_wallet(AccountType::Private).await?;
     let error = client
-        .register_account(&invitation_code, second.id())
+        .register_account(second.id(), &invitation_code)
         .await
         .expect_err("a code already bound to an account should not register another");
     assert_registration_rejected(&error, &RegisterAccountError::AlreadyRegistered);

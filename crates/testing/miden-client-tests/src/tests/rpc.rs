@@ -106,7 +106,7 @@ async fn client_register_account_forwards_the_invitation_code() {
     let (mut client, rpc_api) = Box::pin(create_test_client()).await;
     client.add_account(&new_account(), false).await.unwrap();
 
-    client.register_account(INVITATION_CODE, account_id()).await.unwrap();
+    client.register_account(account_id(), INVITATION_CODE).await.unwrap();
 
     assert_eq!(
         rpc_api.registered_invitation_code(account_id()).as_deref(),
@@ -125,8 +125,8 @@ async fn client_register_account_can_be_retried_after_a_rejection() {
         rejection(GrpcError::NotFound, RegisterAccountError::InvitationNotFound),
     );
 
-    client.register_account("wrong-code", account_id()).await.unwrap_err();
-    client.register_account(INVITATION_CODE, account_id()).await.unwrap();
+    client.register_account(account_id(), "wrong-code").await.unwrap_err();
+    client.register_account(account_id(), INVITATION_CODE).await.unwrap();
 
     assert_eq!(
         rpc_api.registered_invitation_code(account_id()).as_deref(),

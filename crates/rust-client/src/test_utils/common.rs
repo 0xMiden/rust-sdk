@@ -357,7 +357,7 @@ impl TestClient {
 
         self.add_account(&account, false).await?;
         if let Some(invitation_code) = setup.invitation_code.as_deref() {
-            self.register_account(invitation_code, account.id()).await?;
+            self.register_account(account.id(), invitation_code).await?;
         }
 
         info!(

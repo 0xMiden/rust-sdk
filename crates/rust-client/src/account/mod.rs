@@ -292,10 +292,22 @@ impl<AUTH> Client<AUTH> {
     // --------------------------------------------------------------------------------------------
 
     /// Binds an invitation code to a tracked account on the network allowlist.
+    ///
+    /// The account must be tracked by the client, must not be deployed on chain yet, and must not
+    /// be a network account. The invitation code must exist on the node and must not be bound to
+    /// another account.
+    ///
+    /// # Errors
+    ///
+    /// - [`ClientError::AccountDataNotFound`] if the client does not track the account.
+    /// - [`ClientError::AccountIsNotNew`] if the account is already deployed on chain.
+    /// - [`ClientError::AccountIsNetworkAccount`] if the account is a network account.
+    /// - [`ClientError::RpcError`] if the node rejects the registration. The node rejects an
+    ///   unknown code, a code or account that is already registered, and a malformed request.
     pub async fn register_account(
         &self,
-        invitation_code: &str,
         account_id: AccountId,
+        invitation_code: &str,
     ) -> Result<(), ClientError> {
         let (_, status) = self
             .store

@@ -121,7 +121,7 @@ impl AccountCmd {
                 ..
             } => {
                 let account_id = parse_account_id(&client, id).await?;
-                client.register_account(invitation_code, account_id).await?;
+                client.register_account(account_id, invitation_code).await?;
 
                 println!("Registered account {} on the network allowlist.", account_id.to_hex());
             },

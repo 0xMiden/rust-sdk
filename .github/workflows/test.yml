@@ -97,15 +97,16 @@ jobs:
 
   build-test-node:
     name: Build test node
-    runs-on: warp-ubuntu-latest-x64-8x
+    runs-on: warp-ubuntu-latest-x64-2x
     needs: [changes]
     if: ${{ always() && needs.changes.outputs.test-node != 'false' }}
+    outputs:
+      cache-hit: ${{ steps.cache-test-node.outputs.cache-hit }}
+      node-rev: ${{ steps.node-rev.outputs.rev }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
-      - name: Cleanup large tools for build space
-        uses: ./.github/actions/cleanup-runner
       - name: Resolve node revision
         id: node-rev
         run: echo "rev=$(./scripts/start-test-node.sh --print-rev)" >> "$GITHUB_OUTPUT"
@@ -114,38 +115,9 @@ jobs:
         uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: target/test-node/install
-          key: ${{ runner.os }}-test-node-with-ntl-${{ steps.node-rev.outputs.rev }}
-      # Build dir cached per node rev, with no cross-rev fallback: cargo reuses stale build-script
-      # outputs when one target dir serves the same crate versions from two git revs, which breaks
-      # the compile with phantom type errors. A rev bump therefore compiles from scratch.
-      - name: Restore test node build cache
-        if: steps.cache-test-node.outputs.cache-hit != 'true'
-        id: cache-test-node-build
-        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
-        with:
-          path: target/test-node/build
-          key: ${{ runner.os }}-test-node-build-${{ steps.node-rev.outputs.rev }}
-      - name: Install Rust
-        if: steps.cache-test-node.outputs.cache-hit != 'true'
-        run: rustup update --no-self-update
-      - name: Build node binaries
-        if: steps.cache-test-node.outputs.cache-hit != 'true'
-        run: ./scripts/start-test-node.sh --install-only
-      # Saved on every branch (not just `next`) so a PR's later pushes reuse its first build instead
-      # of recompiling the node from scratch each push. Keyed on the node rev.
-      - name: Save test node build cache
-        if: steps.cache-test-node.outputs.cache-hit != 'true' && steps.cache-test-node-build.outputs.cache-hit != 'true'
-        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
-        with:
-          path: target/test-node/build
-          key: ${{ runner.os }}-test-node-build-${{ steps.node-rev.outputs.rev }}
-      - name: Save test node binaries
-        if: steps.cache-test-node.outputs.cache-hit != 'true'
-        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
-        with:
-          path: target/test-node/install
-          key: ${{ runner.os }}-test-node-with-ntl-${{ steps.node-rev.outputs.rev }}
+          key: ${{ runner.os }}-${{ runner.arch }}-test-node-with-ntl-${{ steps.node-rev.outputs.rev }}
       - name: Upload test node binaries
+        if: steps.cache-test-node.outputs.cache-hit == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: test-node-artifact
@@ -154,13 +126,60 @@ jobs:
           include-hidden-files: true
           path: target/test-node/install
       - name: Check binary existence
+        if: steps.cache-test-node.outputs.cache-hit == 'true'
+        run: file -E target/test-node/install/bin/miden-validator target/test-node/install/bin/miden-note-transport
+
+  install-test-node:
+    name: Build test node cache miss
+    runs-on: warp-ubuntu-latest-x64-8x
+    needs: [changes, build-test-node]
+    if: ${{ always() && needs.changes.outputs.test-node != 'false' && needs.build-test-node.result == 'success' && needs.build-test-node.outputs.cache-hit != 'true' }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Cleanup large tools for build space
+        uses: ./.github/actions/cleanup-runner
+      # Build dir cached per node rev, with no cross-rev fallback: cargo reuses stale build-script
+      # outputs when one target dir serves the same crate versions from two git revs, which breaks
+      # the compile with phantom type errors. A rev bump therefore compiles from scratch.
+      - name: Restore test node build cache
+        id: cache-test-node-build
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: target/test-node/build
+          key: ${{ runner.os }}-${{ runner.arch }}-test-node-build-${{ needs.build-test-node.outputs.node-rev }}
+      - name: Install Rust
+        run: rustup update --no-self-update
+      - name: Build node binaries
+        run: ./scripts/start-test-node.sh --install-only
+      # Saved on every branch (not just `next`) so a PR's later pushes reuse its first build instead
+      # of recompiling the node from scratch each push. Keyed on the node rev.
+      - name: Save test node build cache
+        if: steps.cache-test-node-build.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: target/test-node/build
+          key: ${{ runner.os }}-${{ runner.arch }}-test-node-build-${{ needs.build-test-node.outputs.node-rev }}
+      - name: Save test node binaries
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: target/test-node/install
+          key: ${{ runner.os }}-${{ runner.arch }}-test-node-with-ntl-${{ needs.build-test-node.outputs.node-rev }}
+      - name: Upload test node binaries
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-node-artifact
+          include-hidden-files: true
+          path: target/test-node/install
+      - name: Check binary existence
         run: file -E target/test-node/install/bin/miden-validator target/test-node/install/bin/miden-note-transport
 
   miden-bench:
     name: miden-bench smoke tests
     runs-on: warp-ubuntu-latest-x64-8x
-    needs: [changes, build-test-node]
-    if: ${{ always() && needs.changes.outputs.miden-bench != 'false' && needs.build-test-node.result == 'success' }}
+    needs: [changes, build-test-node, install-test-node]
+    if: ${{ always() && needs.changes.outputs.miden-bench != 'false' && needs.build-test-node.result == 'success' && (needs.install-test-node.result == 'success' || needs.install-test-node.result == 'skipped') }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -202,8 +221,8 @@ jobs:
   agglayer-tests:
     name: AggLayer tests
     runs-on: warp-ubuntu-latest-x64-8x
-    needs: [changes, build-test-node]
-    if: ${{ always() && needs.changes.outputs.agglayer != 'false' && needs.build-test-node.result == 'success' }}
+    needs: [changes, build-test-node, install-test-node]
+    if: ${{ always() && needs.changes.outputs.agglayer != 'false' && needs.build-test-node.result == 'success' && (needs.install-test-node.result == 'success' || needs.install-test-node.result == 'skipped') }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -299,8 +318,8 @@ jobs:
   integration-tests:
     name: Integration tests
     runs-on: warp-ubuntu-latest-x64-8x
-    needs: [changes, build-test-node]
-    if: ${{ always() && needs.changes.outputs.integration != 'false' && needs.build-test-node.result == 'success' }}
+    needs: [changes, build-test-node, install-test-node]
+    if: ${{ always() && needs.changes.outputs.integration != 'false' && needs.build-test-node.result == 'success' && (needs.install-test-node.result == 'success' || needs.install-test-node.result == 'skipped') }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:

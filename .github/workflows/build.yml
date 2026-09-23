@@ -27,7 +27,7 @@ env:
 jobs:
   build:
     name: Build Client and CLI
-    runs-on: warp-ubuntu-latest-arm64-2x
+    runs-on: warp-ubuntu-latest-arm64-4x
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:

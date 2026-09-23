@@ -326,10 +326,43 @@ impl<AUTH> Client<AUTH> {
         if NetworkAccount::new(account).is_ok() {
             return Err(ClientError::AccountIsNetworkAccount(account_id));
         }
+        // A registration consumes the code, so do not send it when the node already allows the
+        // account.
+        if self.is_account_allowed(account_id).await? {
+            return Err(ClientError::AccountAlreadyAllowed(account_id));
+        }
 
         self.rpc_api.register_account(invitation_code, account_id).await?;
 
         Ok(())
+    }
+
+    /// Returns whether the network lets `account_id` be created on chain.
+    pub async fn is_account_allowed(&self, account_id: AccountId) -> Result<bool, ClientError> {
+        Ok(self.rpc_api.is_account_allowed(account_id).await?)
+    }
+
+    /// Returns whether a transaction against `account_id` creates an account that the network
+    /// allowlist gates.
+    ///
+    /// Only a new account is gated, and a network account is exempt. The answer is `false` for an
+    /// account that the client does not track.
+    pub(crate) async fn is_allowlist_gated(
+        &self,
+        account_id: AccountId,
+    ) -> Result<bool, ClientError> {
+        let Some((_, status)) = self.store.get_account_header(account_id).await? else {
+            return Ok(false);
+        };
+        if !status.is_new() {
+            return Ok(false);
+        }
+
+        let Some(account) = self.get_account(account_id).await? else {
+            return Ok(false);
+        };
+
+        Ok(NetworkAccount::new(account).is_err())
     }
 
     /// Inserts `account` into the store (or overwrites it if `overwrite` is true) and registers the

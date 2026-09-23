@@ -4,14 +4,13 @@
 //! the account is registered or is a network account, and refused otherwise. Registering an account
 //! in the first place is in [`super::registration`].
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use miden_client::account::AccountType;
-use miden_client::rpc::RpcEndpoint;
 use miden_client::testing::common::AccountSetup;
 use miden_client::transaction::TransactionRequestBuilder;
 
 use super::invitations::create_invitation_code;
-use super::{assert_rejected_as_unregistered, is_deployed};
+use super::{assert_rejected_before_submission, is_deployed};
 use crate::ClientConfig;
 use crate::tests::network_transaction::deploy_network_counter_contract;
 
@@ -61,8 +60,8 @@ pub async fn test_allowlist_unregistered_account_is_rejected(
     let error = client
         .submit_new_transaction(account.id(), TransactionRequestBuilder::new().build()?)
         .await
-        .expect_err("the node should refuse to create an unregistered account");
-    assert_rejected_as_unregistered(&error, RpcEndpoint::SubmitProvenTx);
+        .expect_err("an unregistered account should not be created");
+    assert_rejected_before_submission(&error, &account);
 
     assert!(
         !is_deployed(&client, &account).await?,
@@ -94,14 +93,12 @@ pub async fn test_allowlist_network_account_needs_no_registration(
     Ok(())
 }
 
-/// Every transaction in a batch is checked, not only the first.
+/// Every account a batch creates is checked, not only the first.
 ///
-/// The node checks each transaction of a submitted batch separately, so a batch that pairs a
-/// registered account with an unregistered one is rejected as a whole. Without this the batch
-/// endpoint could stop enforcing and only the single-transaction tests would notice.
-pub async fn test_allowlist_is_enforced_per_batch_transaction(
-    client_config: ClientConfig,
-) -> Result<()> {
+/// A batch that pairs a registered account with an unregistered one is refused at submission. The
+/// registered account is pushed first, so the test fails if the check only ever looks at the
+/// opening transaction of a batch.
+pub async fn test_allowlist_is_enforced_per_batch(client_config: ClientConfig) -> Result<()> {
     let mut client = client_config.into_client().await?;
     client.wait_for_node().await;
 
@@ -124,11 +121,10 @@ pub async fn test_allowlist_is_enforced_per_batch_transaction(
     batch.push(registered.id(), registered_request).await?;
     batch.push(unregistered.id(), unregistered_request).await?;
 
-    let error = batch
-        .submit()
-        .await
-        .expect_err("a batch creating an unregistered account should be rejected");
-    assert_rejected_as_unregistered(&error, RpcEndpoint::SubmitProvenBatch);
+    let Err(error) = batch.submit().await else {
+        bail!("a batch creating an unregistered account should be refused")
+    };
+    assert_rejected_before_submission(&error, &unregistered);
 
     assert!(
         !is_deployed(&client, &unregistered).await?,

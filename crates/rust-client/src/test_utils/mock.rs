@@ -3,7 +3,7 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use miden_protocol::Word;
 use miden_protocol::account::{
@@ -89,6 +89,13 @@ pub struct MockRpcApi {
     next_call_failures: Arc<RwLock<BTreeMap<&'static str, RpcError>>>,
     /// Invitation code each account was registered with, recorded by `register_account`.
     registered_accounts: Arc<RwLock<BTreeMap<AccountId, String>>>,
+    /// Whether `is_account_allowed` consults `registered_accounts`. A node that does not enforce
+    /// the allowlist answers `true` for every account, which is the default here so that tests
+    /// which deploy accounts need no registration.
+    allowlist_enforced: Arc<AtomicBool>,
+    /// Number of `is_account_allowed` requests served, so a test can assert that a flow avoided the
+    /// round trip.
+    is_account_allowed_calls: Arc<AtomicUsize>,
     /// Sealed inputs handed to `submit_proven_batch`, one entry per call and recorded before any
     /// staged failure is served, so a test can assert that a resubmission sealed again instead of
     /// reusing a cached ciphertext.
@@ -118,8 +125,16 @@ impl MockRpcApi {
             get_notes_by_id_calls: Arc::new(AtomicUsize::new(0)),
             next_call_failures: Arc::new(RwLock::new(BTreeMap::new())),
             registered_accounts: Arc::new(RwLock::new(BTreeMap::new())),
+            allowlist_enforced: Arc::new(AtomicBool::new(false)),
+            is_account_allowed_calls: Arc::new(AtomicUsize::new(0)),
             submitted_batch_sealed_inputs: Arc::new(RwLock::new(Vec::new())),
         }
+    }
+
+    /// Makes `is_account_allowed` answer from the recorded registrations, modelling a node that
+    /// enforces the account allowlist. Without this the mock answers `true` for every account.
+    pub fn enforce_account_allowlist(&self) {
+        self.allowlist_enforced.store(true, Ordering::SeqCst);
     }
 
     /// Id of the first account updated in the mock chain's proven blocks, in block then
@@ -173,6 +188,11 @@ impl MockRpcApi {
     /// Returns how many `get_notes_by_id` requests this API has served.
     pub fn get_notes_by_id_call_count(&self) -> usize {
         self.get_notes_by_id_calls.load(Ordering::Relaxed)
+    }
+
+    /// Returns how many `is_account_allowed` requests this API has served.
+    pub fn is_account_allowed_call_count(&self) -> usize {
+        self.is_account_allowed_calls.load(Ordering::Relaxed)
     }
 
     /// Overrides the MMR path returned by `sync_notes` for the specified block.
@@ -785,6 +805,22 @@ impl NodeRpcClient for MockRpcApi {
             .insert(account_id, String::from(invitation_code));
 
         Ok(())
+    }
+
+    async fn is_account_allowed(&self, account_id: AccountId) -> Result<bool, RpcError> {
+        self.is_account_allowed_calls.fetch_add(1, Ordering::Relaxed);
+
+        if let Some(error) = self.take_failure(RpcEndpoint::IsAccountAllowed) {
+            return Err(error);
+        }
+
+        // A node that does not enforce the allowlist allows every account. Call
+        // `enforce_account_allowlist` to answer from the recorded registrations instead.
+        if !self.allowlist_enforced.load(Ordering::SeqCst) {
+            return Ok(true);
+        }
+
+        Ok(self.registered_accounts.read().contains_key(&account_id))
     }
 
     /// Returns the nullifiers created after the specified block number that match the provided

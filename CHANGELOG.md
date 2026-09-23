@@ -31,6 +31,7 @@
 * [BREAKING][behavior][rust] Notes fetched from the Note Transport Layer are screened when their tag matches a tracked account's tag, discarding the ones no tracked account can consume ([#2474](https://github.com/0xMiden/rust-sdk/pull/2474)).
 * [BREAKING][behavior][rust] A Note Transport Layer failure no longer fails `Client::sync_state`. The error is logged and the chain sync still applies; the transport cursor is left where it was, so the next sync requests the same page again ([#2453](https://github.com/0xMiden/rust-sdk/pull/2453)).
 * [BREAKING][type][rust] `NodeRpcClient` gained a `register_account` method, which binds an invitation code to an account ID through the node's `RegisterAccount` endpoint ([#2532](https://github.com/0xMiden/rust-sdk/pull/2532)).
+* [BREAKING][type][rust] Added `NodeRpcClient::is_account_allowed` and the `ClientError::AccountNotAllowlisted` and `ClientError::AccountAlreadyAllowed` variants ([#2550](https://github.com/0xMiden/rust-sdk/pull/2550)).
 * [BREAKING][type][rust] Added the `TransactionRequestError::SwapNoteWithZeroAsset` variant, so exhaustive matches on `TransactionRequestError` must handle it ([#2459](https://github.com/0xMiden/rust-sdk/pull/2459)).
 * [BREAKING][removal][rust] Removed `TransactionFilter::to_query`. The method emitted `SQLite` text from the storage-agnostic `Store` module, so the query now lives in `miden-client-sqlite-store` next to the `NoteFilter` queries.
 * [BREAKING][removal][test] Loose helper functions in `miden_client::testing::common` are now methods on `TestClient`. `TestClient::keystore()` exposes the client's keystore, so `ClientConfig::into_client` and `into_unsynced_client` return just the `TestClient` instead of a client/keystore pair ([#2481](https://github.com/0xMiden/rust-sdk/pull/2481)).
@@ -66,6 +67,7 @@
 * [FEATURE][rust] `Client::retry_proven_batch` resends a batch whose outcome was never confirmed, sealing the transaction inputs again on every attempt so nothing is executed or proven twice. It takes the `ProvenBatchSubmission` from `BatchBuilderError::BatchSubmissionOutcomeUnknown`, which has no public constructor, so that error is the only way to obtain one ([#2508](https://github.com/0xMiden/rust-sdk/pull/2508)).
 * [FEATURE][cli] Added `account --register <ID> --invitation-code <CODE>`, which registers a tracked account on the network allowlist ([#2545](https://github.com/0xMiden/rust-sdk/pull/2545)).
 * [FEATURE][rust] Added `Client::register_account`, which binds an invitation code to a tracked new account that is not a network account ([#2545](https://github.com/0xMiden/rust-sdk/pull/2545)).
+* [FEATURE][rust] Added `Client::is_account_allowed`. Submitting a transaction or batch that creates an account the network allowlist does not accept now fails with `ClientError::AccountNotAllowlisted` ([#2550](https://github.com/0xMiden/rust-sdk/pull/2550)).
 
 ### Enhancements
 

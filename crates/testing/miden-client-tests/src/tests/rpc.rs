@@ -1,5 +1,6 @@
-use miden_client::account::AccountId;
+use miden_client::account::{AccountId, AccountType};
 use miden_client::auth::{AuthSchemeId, AuthSingleSig, PublicKeyCommitment};
+use miden_client::block::BlockNumber;
 use miden_client::rpc::{
     EndpointError,
     GrpcError,
@@ -8,7 +9,14 @@ use miden_client::rpc::{
     RpcEndpoint,
     RpcError,
 };
+use miden_client::testing::common::{AccountSetup, TestClient};
 use miden_client::testing::mock::MockRpcApi;
+use miden_client::transaction::{
+    LocalTransactionProver,
+    TransactionRequest,
+    TransactionRequestBuilder,
+    TransactionResult,
+};
 use miden_client::{ClientError, ErrorHint, Word};
 use miden_protocol::account::Account;
 use miden_protocol::{EMPTY_WORD, ZERO};
@@ -19,6 +27,11 @@ use miden_testing::MockChain;
 use super::{ACCOUNT_ID_REGULAR, create_test_client};
 
 const INVITATION_CODE: &str = "Mi-DEN-1234";
+
+/// Builds the request for an account's first transaction, which creates it on chain.
+fn deploy_request() -> TransactionRequest {
+    TransactionRequestBuilder::new().build().unwrap()
+}
 
 fn account_id() -> AccountId {
     AccountId::try_from(ACCOUNT_ID_REGULAR).unwrap()
@@ -104,6 +117,7 @@ async fn register_account_reports_a_consumed_code() {
 #[tokio::test]
 async fn client_register_account_forwards_the_invitation_code() {
     let (mut client, rpc_api) = Box::pin(create_test_client()).await;
+    rpc_api.enforce_account_allowlist();
     client.add_account(&new_account(), false).await.unwrap();
 
     client.register_account(account_id(), INVITATION_CODE).await.unwrap();
@@ -119,6 +133,7 @@ async fn client_register_account_forwards_the_invitation_code() {
 #[tokio::test]
 async fn client_register_account_can_be_retried_after_a_rejection() {
     let (mut client, rpc_api) = Box::pin(create_test_client()).await;
+    rpc_api.enforce_account_allowlist();
     client.add_account(&new_account(), false).await.unwrap();
     rpc_api.fail_next_call(
         RpcEndpoint::RegisterAccount,
@@ -247,4 +262,158 @@ fn register_account_hints_are_distinct_and_link_the_docs() {
     assert_ne!(hints[0], hints[1]);
     assert_ne!(hints[1], hints[2]);
     assert_ne!(hints[0], hints[2]);
+}
+
+// ALLOWLIST INSPECTION
+// ================================================================================================
+
+/// The mock answers from the registrations it recorded, so the two endpoints agree with each other.
+#[tokio::test]
+async fn is_account_allowed_follows_the_registrations() {
+    let rpc_api = MockRpcApi::new(MockChain::new());
+    rpc_api.enforce_account_allowlist();
+
+    assert!(!rpc_api.is_account_allowed(account_id()).await.unwrap());
+
+    rpc_api.register_account(INVITATION_CODE, account_id()).await.unwrap();
+
+    assert!(rpc_api.is_account_allowed(account_id()).await.unwrap());
+}
+
+/// A node that does not enforce the allowlist answers `true` for an account it has never seen.
+#[tokio::test]
+async fn is_account_allowed_is_true_when_the_node_does_not_enforce() {
+    let rpc_api = MockRpcApi::new(MockChain::new());
+
+    assert!(rpc_api.is_account_allowed(account_id()).await.unwrap());
+}
+
+// ALLOWLIST CHECK BEFORE SUBMISSION
+// ================================================================================================
+
+/// Executes the first transaction of `account_id` and submits it with a dummy proof. The submission
+/// path does not verify proofs, and a real proof is the expensive part.
+async fn submit_deploy(
+    client: &mut TestClient,
+    account_id: AccountId,
+) -> Result<(TransactionResult, BlockNumber), ClientError> {
+    let tx_result = Box::pin(client.execute_transaction(account_id, deploy_request())).await?;
+    let proven = LocalTransactionProver::default()
+        .prove_dummy(tx_result.executed_transaction().clone())
+        .unwrap();
+    let submission_height = Box::pin(client.submit_proven_transaction(proven, &tx_result)).await?;
+
+    Ok((tx_result, submission_height))
+}
+
+/// An unregistered account is refused before the transaction is submitted.
+#[tokio::test]
+async fn creating_an_unregistered_account_is_refused_before_submission() {
+    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
+    rpc_api.enforce_account_allowlist();
+
+    for account_type in [AccountType::Private, AccountType::Public] {
+        let account = client.insert_wallet(account_type).await.unwrap();
+
+        let error = submit_deploy(&mut client, account.id()).await.unwrap_err();
+
+        let ClientError::AccountNotAllowlisted(refused) = &error else {
+            panic!("expected the {account_type:?} account creation to be refused, got: {error}");
+        };
+        assert_eq!(*refused, account.id());
+    }
+}
+
+/// The allowlist is only checked at submission, so a transaction for an unregistered account can
+/// still be executed to inspect its effects.
+#[tokio::test]
+async fn executing_a_transaction_does_not_check_the_allowlist() {
+    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
+    rpc_api.enforce_account_allowlist();
+
+    let account = client.insert_wallet(AccountType::Private).await.unwrap();
+
+    Box::pin(client.execute_transaction(account.id(), deploy_request()))
+        .await
+        .unwrap();
+
+    assert_eq!(rpc_api.is_account_allowed_call_count(), 0);
+}
+
+/// A registered account is created as usual.
+#[tokio::test]
+async fn creating_a_registered_account_is_allowed() {
+    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
+    rpc_api.enforce_account_allowlist();
+
+    let (account, _) = client
+        .insert_account(AccountSetup::wallet(AccountType::Private).invitation_code(INVITATION_CODE))
+        .await
+        .unwrap();
+
+    submit_deploy(&mut client, account.id()).await.unwrap();
+
+    assert_eq!(rpc_api.is_account_allowed_call_count(), 2);
+}
+
+/// The allowlist only gates account creation, so an account that already exists is never asked
+/// about. Enforcement is on and the account is not registered, yet its second transaction goes
+/// through.
+#[tokio::test]
+async fn an_existing_account_is_not_checked() {
+    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
+
+    let account = client.insert_wallet(AccountType::Private).await.unwrap();
+    let (tx_result, submission_height) = submit_deploy(&mut client, account.id()).await.unwrap();
+    client.apply_transaction(&tx_result, submission_height).await.unwrap();
+    rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+
+    rpc_api.enforce_account_allowlist();
+    let calls_before = rpc_api.is_account_allowed_call_count();
+
+    submit_deploy(&mut client, account.id()).await.unwrap();
+
+    assert_eq!(rpc_api.is_account_allowed_call_count(), calls_before);
+}
+
+/// A node that cannot answer is not an answer about the account, so the transaction is left alone
+/// and the node decides at submission. This is what keeps the client working against a node that
+/// does not serve the endpoint.
+#[tokio::test]
+async fn a_failed_check_does_not_block_the_transaction() {
+    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
+    rpc_api.enforce_account_allowlist();
+    rpc_api.fail_next_call(
+        RpcEndpoint::IsAccountAllowed,
+        RpcError::RequestError {
+            endpoint: RpcEndpoint::IsAccountAllowed,
+            error_kind: GrpcError::Unimplemented,
+            endpoint_error: None,
+            source: None,
+        },
+    );
+
+    let account = client.insert_wallet(AccountType::Private).await.unwrap();
+
+    submit_deploy(&mut client, account.id()).await.unwrap();
+}
+
+/// A refusal is not remembered. Each attempt asks the node again, so an account that is registered
+/// after a refusal can be created.
+#[tokio::test]
+async fn a_refusal_is_not_remembered() {
+    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
+    rpc_api.enforce_account_allowlist();
+
+    let account = client.insert_wallet(AccountType::Private).await.unwrap();
+
+    let error = submit_deploy(&mut client, account.id()).await.unwrap_err();
+    assert!(matches!(error, ClientError::AccountNotAllowlisted(_)), "got: {error}");
+
+    client.register_account(account.id(), INVITATION_CODE).await.unwrap();
+
+    submit_deploy(&mut client, account.id()).await.unwrap();
+
+    assert_eq!(rpc_api.is_account_allowed_call_count(), 3);
 }

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Enhancements
+
+* [test] CI uses smaller runners for short jobs and cancels superseded pull request runs. Pull requests skip the miden-bench and AggLayer jobs when unrelated files change, while pushes to `main` and `next` still run every test ([#2610](https://github.com/0xMiden/rust-sdk/pull/2610)).
+
 ## 0.17.0-rc.2 (2026-09-23)
 
 ### Breaking Changes

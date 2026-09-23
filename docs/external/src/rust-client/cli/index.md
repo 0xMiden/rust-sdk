@@ -105,10 +105,11 @@ miden-client account --register <ACCOUNT_ID> --invitation-code <CODE>
 
 The account must be tracked by this client, must not exist on chain yet, and must not be a network account. A registration consumes the code, so the command first asks the node whether it already allows the account and fails without sending the code when it does. Like `--show`, `--register` accepts a partial ID.
 
-When the network operator runs a funding service, the node pays the registered account a public note with the native asset, and the command returns once that note is committed on chain, so it can take a few blocks. The client tracks the note tag of every account it owns, so the note arrives with the next sync. Consuming it creates the account on chain, and the fee of that transaction is paid out of the received funds:
+When the network operator runs a funding service, the node pays the registered account a public note with the native asset, and the command returns as soon as the funding service queues that note. The note is not committed on chain yet at that point, so it can take a few blocks to arrive. The client tracks the note tag of every account it owns, so a sync that runs after the note is committed imports it. Sync until the note is listed as consumable. Consuming it creates the account on chain, and the fee of that transaction is paid out of the received funds:
 
 ```sh
 miden-client sync
+miden-client notes --list consumable --account-id <ACCOUNT_ID>
 miden-client consume-notes --account <ACCOUNT_ID>
 ```
 

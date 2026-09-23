@@ -312,12 +312,13 @@ impl<AUTH> Client<AUTH> {
     /// does not send the code for an account the node already allows.
     ///
     /// When the network operator runs a funding service, the node pays the registered account a
-    /// public P2ID note with the native asset. The node answers once that note is committed, so
-    /// this call can take a few blocks. The note is not part of the response, and the client does
-    /// not see it until [`Client::sync_state`] runs. The client tracks the note tag of every
-    /// account it owns, so the sync imports the note and [`Client::get_consumable_notes`] lists it.
-    /// The account then consumes the note in its first transaction. That transaction creates the
-    /// account on chain and pays its fee out of the received funds.
+    /// public P2ID note with the native asset. The node answers once the funding service queues the
+    /// note, before the note is committed. The note is not part of the response, and the client
+    /// does not see it until a [`Client::sync_state`] runs after the note is committed. The client
+    /// tracks the note tag of every account it owns, so that sync imports the note and
+    /// [`Client::get_consumable_notes`] lists it. Sync again until the note arrives. The account
+    /// then consumes the note in its first transaction. That transaction creates the account on
+    /// chain and pays its fee out of the received funds.
     ///
     /// # Errors
     ///

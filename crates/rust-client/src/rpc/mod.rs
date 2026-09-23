@@ -444,9 +444,10 @@ pub trait NodeRpcClient: Send + Sync {
     /// the account does that, and the node rejects it when the account is not registered.
     ///
     /// When the network operator runs a funding service, the node pays the registered account a
-    /// public P2ID note with the native asset, and answers only once that note is committed. The
-    /// note is not part of the response. The caller must sync to receive it. A network that does
-    /// not enforce the allowlist ignores the code, but still registers and funds the account.
+    /// public P2ID note with the native asset. The node answers before that note is committed. The
+    /// note is not part of the response. The caller must sync until the note arrives. A network
+    /// that does not enforce the allowlist ignores the code, but still registers and funds the
+    /// account.
     ///
     /// A retry with the same code and account succeeds without changes, and does not request
     /// funding again.

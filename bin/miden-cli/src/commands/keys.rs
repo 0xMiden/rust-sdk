@@ -122,13 +122,11 @@ impl KeysCmd {
 
     /// Encrypts the plaintext keystore of `config` and sets `keystore_encrypted` in its file.
     ///
-    /// The state of the keys directory decides whether there is something to encrypt, not the
-    /// configuration field. A configuration without the field is read as encrypted while its
-    /// directory can still hold plaintext keys.
+    /// The field is set only after all key files are encrypted. An encrypted keys directory with a
+    /// file that does not set the field to `true` is thus an interrupted encryption, and this
+    /// command continues it with the password of the keystore. A configuration without the field is
+    /// read as encrypted, so the parsed configuration cannot tell these cases apart.
     pub fn encrypt_keystore(config: &CliConfig) -> Result<(), CliError> {
-        if FilesystemKeyStore::is_encrypted_directory(&config.secret_keys_directory) {
-            return Err(CliError::Input("the keystore is already encrypted".to_string()));
-        }
         let config_path = config
             .config_dir
             .as_ref()
@@ -136,18 +134,29 @@ impl KeysCmd {
             .ok_or_else(|| {
                 CliError::Input("the configuration file location is unknown".to_string())
             })?;
+        let mut config_table: toml::Table =
+            fs::read_to_string(&config_path)?.parse().map_err(|err: toml::de::Error| {
+                CliError::Config(Box::new(err), "failed to parse config file".to_string())
+            })?;
 
-        let password = read_keystore_password(true)?;
+        let is_encrypted_directory =
+            FilesystemKeyStore::is_encrypted_directory(&config.secret_keys_directory);
+        let file_marks_encrypted = config_table
+            .get("keystore_encrypted")
+            .is_some_and(|value| value.as_bool() == Some(true));
+        if is_encrypted_directory && file_marks_encrypted {
+            return Err(CliError::Input("the keystore is already encrypted".to_string()));
+        }
+
+        // An interrupted encryption already has a password, so a prompted password is not
+        // confirmed. The keystore verifies it instead.
+        let password = read_keystore_password(!is_encrypted_directory)?;
         let keystore = FilesystemKeyStore::encrypt_plaintext_keystore(
             config.secret_keys_directory.clone(),
             password.as_bytes(),
         )
         .map_err(CliError::KeyStore)?;
 
-        let mut config_table: toml::Table =
-            fs::read_to_string(&config_path)?.parse().map_err(|err: toml::de::Error| {
-                CliError::Config(Box::new(err), "failed to parse config file".to_string())
-            })?;
         config_table.insert("keystore_encrypted".to_string(), toml::Value::Boolean(true));
         fs::write(&config_path, config_table.to_string())?;
 

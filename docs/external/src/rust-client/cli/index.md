@@ -460,7 +460,7 @@ Encrypt a plaintext keystore and set `keystore_encrypted = true` in the configur
 miden-client keys --encrypt
 ```
 
-The command asks for a new password, or reads it from `MIDEN_KEYSTORE_PASSWORD`. Every key file is rewritten encrypted and the account associations are kept. The command fails if the keystore directory is already encrypted. Keep a copy of the keystore directory until the command succeeds, because the keys are unreadable if it stops before it completes.
+The command asks for a new password, or reads it from `MIDEN_KEYSTORE_PASSWORD`. Every key file is rewritten encrypted and the account associations are kept. The command fails if the keystore is already encrypted. If the command stops before it completes, run it again with the same password to encrypt the remaining keys.
 
 #### `keys --commitment`
 

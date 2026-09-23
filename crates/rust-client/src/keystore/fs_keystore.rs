@@ -406,31 +406,43 @@ impl FilesystemKeyStore {
     /// returns the encrypted keystore.
     ///
     /// The account associations are kept. A file that does not hold a readable key is left as it
-    /// is. The keystore is unreadable if this operation stops before it completes, so the caller
-    /// should keep a copy of the directory until it succeeds.
+    /// is. Each key file is replaced atomically, so a key file is never partially written.
+    ///
+    /// If this operation stops before it completes, the directory holds both encrypted and
+    /// plaintext key files. Call this function again with the same password to encrypt the
+    /// remaining plaintext key files. A call on a keystore that is fully encrypted changes nothing.
     ///
     /// # Errors
     ///
-    /// Returns an error if the directory already holds an encrypted keystore.
+    /// Returns [`KeyStoreError::InvalidPassword`] if the directory already holds an encrypted
+    /// keystore with a different password.
     pub fn encrypt_plaintext_keystore(
         keys_directory: PathBuf,
         password: &[u8],
     ) -> Result<Self, KeyStoreError> {
-        let plaintext = Self::new_plaintext(keys_directory.clone())?;
+        Self::create_keys_directory(&keys_directory)?;
 
-        let mut keys = Vec::new();
-        for commitment in key_file_commitments(&keys_directory)? {
-            if let Ok(Some(key)) = plaintext.get_key_sync(commitment) {
-                keys.push(key);
-            }
-        }
-
-        let (metadata, key) = EncryptionMetadata::new(password)?;
-        metadata.write_to_file(&keys_directory)?;
+        // The metadata file is written before the key files are encrypted. An interrupted operation
+        // thus leaves the metadata file that a new call needs to continue.
+        let key = if Self::is_encrypted_directory(&keys_directory) {
+            EncryptionMetadata::read_from_file(&keys_directory)?.unlock(password)?
+        } else {
+            let (metadata, key) = EncryptionMetadata::new(password)?;
+            metadata.write_to_file(&keys_directory)?;
+            key
+        };
         let encrypted = Self::open(keys_directory, Some(Arc::new(key)))?;
 
-        for key in &keys {
-            encrypted.store_key(key)?;
+        for commitment in key_file_commitments(&encrypted.keys_directory)? {
+            let Ok(bytes) = fs::read(key_file_path(&encrypted.keys_directory, commitment)) else {
+                continue;
+            };
+            if encrypted.decode_key(&bytes, commitment).is_ok() {
+                continue;
+            }
+            if let Ok(key) = AuthSecretKey::read_from_bytes(&bytes) {
+                encrypted.store_key(&key)?;
+            }
         }
 
         Ok(encrypted)
@@ -470,9 +482,8 @@ impl FilesystemKeyStore {
     /// Stores a secret key without associating it with an account.
     pub fn store_key(&self, key: &AuthSecretKey) -> Result<(), KeyStoreError> {
         let pub_key_commitment = key.public_key().to_commitment();
-        let file_path = key_file_path(&self.keys_directory, pub_key_commitment);
         let contents = self.encode_key(key, pub_key_commitment)?;
-        write_secret_key_file(&file_path, &contents)
+        write_secret_key_file(&self.keys_directory, pub_key_commitment, &contents)
     }
 
     /// Returns information about all secret keys in the keystore.
@@ -796,27 +807,18 @@ fn write_file_atomically(
     Ok(())
 }
 
-/// Writes the contents of a key file with restrictive permissions (0600 on Unix).
-#[cfg(unix)]
-fn write_secret_key_file(file_path: &Path, contents: &[u8]) -> Result<(), KeyStoreError> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(file_path)
-        .map_err(keystore_error("error writing secret key file"))?;
-    file.write_all(contents)
-        .map_err(keystore_error("error writing secret key file"))
-}
-
-/// Writes the contents of a key file.
+/// Writes the contents of a key file atomically (write to temp file, then rename).
+///
+/// On Unix, the temp file is created with restrictive permissions (0600), and the key file keeps
+/// them after the rename.
 // TODO: on Windows, set restrictive ACLs to limit access to the current user.
-#[cfg(not(unix))]
-fn write_secret_key_file(file_path: &Path, contents: &[u8]) -> Result<(), KeyStoreError> {
-    fs::write(file_path, contents).map_err(keystore_error("error writing secret key file"))
+fn write_secret_key_file(
+    keys_directory: &Path,
+    pub_key_commitment: PublicKeyCommitment,
+    contents: &[u8],
+) -> Result<(), KeyStoreError> {
+    let file_name = Word::from(pub_key_commitment).to_hex();
+    write_file_atomically(keys_directory, &file_name, contents)
 }
 
 fn keystore_error(context: &str) -> impl FnOnce(std::io::Error) -> KeyStoreError {
@@ -1091,7 +1093,46 @@ mod tests {
         assert_eq!(encrypted.list_keys().unwrap().len(), 2);
 
         let again =
-            FilesystemKeyStore::encrypt_plaintext_keystore(dir.path().to_path_buf(), PASSWORD);
-        assert!(matches!(again, Err(KeyStoreError::StorageError(_))));
+            FilesystemKeyStore::encrypt_plaintext_keystore(dir.path().to_path_buf(), PASSWORD)
+                .unwrap();
+        assert_eq!(again.list_keys().unwrap().len(), 2);
+
+        let wrong_password =
+            FilesystemKeyStore::encrypt_plaintext_keystore(dir.path().to_path_buf(), b"wrong");
+        assert!(matches!(wrong_password, Err(KeyStoreError::InvalidPassword)));
+    }
+
+    /// An interrupted encryption leaves plaintext key files next to encrypted ones. A new call with
+    /// the same password encrypts the remaining plaintext key files.
+    #[test]
+    fn interrupted_encryption_completes_on_a_new_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let encrypted_key = AuthSecretKey::new_falcon512_poseidon2();
+        let encrypted_commitment = encrypted_key.public_key().to_commitment();
+        let plaintext_key = AuthSecretKey::new_ecdsa_k256_keccak();
+        let plaintext_commitment = plaintext_key.public_key().to_commitment();
+
+        let keystore = FilesystemKeyStore::new(dir.path().to_path_buf(), PASSWORD).unwrap();
+        keystore.store_key(&encrypted_key).unwrap();
+        fs::write(key_file_path(dir.path(), plaintext_commitment), plaintext_key.to_bytes())
+            .unwrap();
+        drop(keystore);
+
+        let encrypted =
+            FilesystemKeyStore::encrypt_plaintext_keystore(dir.path().to_path_buf(), PASSWORD)
+                .unwrap();
+        assert_ne!(
+            fs::read(key_file_path(dir.path(), plaintext_commitment)).unwrap(),
+            plaintext_key.to_bytes()
+        );
+        assert_eq!(
+            encrypted.get_key_sync(plaintext_commitment).unwrap().unwrap().to_bytes(),
+            plaintext_key.to_bytes()
+        );
+        assert_eq!(
+            encrypted.get_key_sync(encrypted_commitment).unwrap().unwrap().to_bytes(),
+            encrypted_key.to_bytes()
+        );
+        assert_eq!(encrypted.list_keys().unwrap().len(), 2);
     }
 }

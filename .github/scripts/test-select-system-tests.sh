@@ -11,7 +11,7 @@ assert_selection() {
   local expected=$2
   shift 2
 
-  if ! diff -u <(printf '%s\n' "$expected") <(printf '%s\n' "$@" | "$SELECTOR"); then
+  if ! diff -u <(printf '%s\n' "$expected") <(printf '%s\0' "$@" | "$SELECTOR"); then
     echo "selection failed for $name" >&2
     exit 1
   fi
@@ -147,3 +147,41 @@ assert_fixture_move_selects_systems() (
 )
 
 assert_fixture_move_selects_systems
+
+assert_quoted_filename_selects_systems() (
+  local test_repo
+  local output_file
+  local base_sha
+  local head_sha
+  local quoted_path
+
+  test_repo=$(mktemp -d)
+  trap 'rm -rf "$test_repo"' EXIT
+  git -C "$test_repo" init -q
+  git -C "$test_repo" config user.email "ci@example.com"
+  git -C "$test_repo" config user.name "CI"
+  echo "base" > "$test_repo/README.md"
+  git -C "$test_repo" add README.md
+  git -C "$test_repo" commit -qm "Add base"
+  base_sha=$(git -C "$test_repo" rev-parse HEAD)
+
+  quoted_path=$'crates/rust-client/src/quoted\tname.rs'
+  mkdir -p "$test_repo/crates/rust-client/src"
+  echo "changed" > "$test_repo/$quoted_path"
+  git -C "$test_repo" add -- "$quoted_path"
+  git -C "$test_repo" commit -qm "Add quoted filename"
+  head_sha=$(git -C "$test_repo" rev-parse HEAD)
+
+  output_file=$(mktemp)
+  trap 'rm -rf "$test_repo"; rm -f "$output_file"' EXIT
+  (
+    cd "$test_repo"
+    GITHUB_OUTPUT="$output_file" "$ENTRYPOINT" pull_request "$base_sha" "$head_sha"
+  )
+  if ! diff -u <(printf '%s\n' "$all_systems") "$output_file"; then
+    echo "a quoted filename under shared client code did not select all systems" >&2
+    exit 1
+  fi
+)
+
+assert_quoted_filename_selects_systems

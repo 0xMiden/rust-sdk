@@ -6,7 +6,7 @@ agglayer=false
 integration=false
 miden_bench=false
 
-while IFS= read -r path; do
+while IFS= read -r -d '' path; do
   case "$path" in
     Cargo.toml|Cargo.lock|Makefile|rust-toolchain.toml|.cargo/*|.config/nextest.toml|.github/workflows/test.yml|.github/actions/cleanup-runner/*|.github/scripts/select-system-tests*.sh|scripts/testdata/insecure-golden-storage-key/*)
       agglayer=true

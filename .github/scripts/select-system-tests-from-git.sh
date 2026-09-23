@@ -25,7 +25,7 @@ fi
 
 changed_files=$(mktemp)
 trap 'rm -f "$changed_files"' EXIT
-if ! git diff --no-renames --name-only "$BASE_SHA...$HEAD_SHA" > "$changed_files"; then
+if ! git diff --no-renames --name-only -z "$BASE_SHA...$HEAD_SHA" > "$changed_files"; then
   echo "failed to compare $BASE_SHA with $HEAD_SHA" >&2
   exit 1
 fi

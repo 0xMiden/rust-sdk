@@ -3,8 +3,8 @@
 set -euo pipefail
 
 EVENT_NAME=${1:?event name is required}
-BASE_SHA=${2:-}
-HEAD_SHA=${3:-}
+BASE_SHA=${2-}
+HEAD_SHA=${3-}
 GITHUB_OUTPUT=${GITHUB_OUTPUT:?GITHUB_OUTPUT is required}
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
@@ -16,6 +16,11 @@ if [[ "$EVENT_NAME" != "pull_request" ]]; then
     echo "test-node=true"
   } >> "$GITHUB_OUTPUT"
   exit 0
+fi
+
+if [[ -z "$BASE_SHA" || -z "$HEAD_SHA" ]]; then
+  echo "pull request base and head revisions are required" >&2
+  exit 1
 fi
 
 changed_files=$(mktemp)

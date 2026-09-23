@@ -2698,7 +2698,6 @@ dependencies = [
  "miden-assembly-syntax",
  "miden-debug",
  "miden-node-proto-build",
- "miden-note-transport-proto-build",
  "miden-objects",
  "miden-processor",
  "miden-protocol",
@@ -3150,24 +3149,13 @@ dependencies = [
 [[package]]
 name = "miden-node-proto-build"
 version = "0.17.0-rc.2"
-source = "git+https://github.com/0xMiden/node?rev=e55c065d79d476633e932ec610742628965fb158#e55c065d79d476633e932ec610742628965fb158"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "faccdf0eb561a149dace1215ee3a18017ce555e60bbcf29f2f627c0f45286a8d"
 dependencies = [
  "build-rs",
  "codegen",
  "fs-err",
  "miden-objects",
- "miette",
- "protox",
- "tonic-prost-build",
-]
-
-[[package]]
-name = "miden-note-transport-proto-build"
-version = "0.5.0-rc.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a9d736051a42941788c6534caf8cf779b388c0ae72c9d5f0d729d2a9872d833"
-dependencies = [
- "fs-err",
  "miette",
  "protox",
  "tonic-prost-build",

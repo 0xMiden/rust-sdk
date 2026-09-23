@@ -19,17 +19,26 @@ Writes, into `OUTPUT_DIR`:
   secret key of its own).
 - `faucet_operator.mac`: the wallet owning the native faucet, written **with** its secret key. It
   is what `miden-faucet init --import` takes to run a faucet dispensing the native asset.
+- `funding_account.mac`: the public funding account `miden-validator genesis` requires, written
+  **with** its secret key. The testing node runs no funding service, so nothing pays out of it.
 - `tst_faucet.mac`: the TST genesis faucet, written **with** its secret key so tests can mint.
 - `test_account_NNNN.mac`: the test faucets and the `too_many_assets` account (read-only
   fixtures, no secret keys).
-- `genesis.toml`: points at the native faucet via `native_faucet`, references the rest via
-  `[[account]]` entries, and declares the `verification_base_fee` and the funder wallets.
+- `accounts.toml`: references the accounts above (except the native faucet and the funding
+  account) via named `[[account]]` entries and declares the funder wallets.
 
-The node is then bootstrapped with:
+The genesis block is then built with:
 
 ```bash
-miden-validator bootstrap --genesis-config-file OUTPUT_DIR/genesis.toml ...
+miden-validator genesis \
+  --native-faucet OUTPUT_DIR/native_faucet.mac \
+  --funding-account OUTPUT_DIR/funding_account.mac \
+  --accounts-config OUTPUT_DIR/accounts.toml \
+  --verification-base-fee <FEE> --timestamp <UNIX_SECONDS> ...
 ```
+
+The fee and the timestamp are genesis parameters, not fixtures, so `start-test-node.sh` passes
+them on the command line.
 
 ## Fees and funding
 
@@ -58,7 +67,7 @@ accounts, which no client transaction can deploy.
 ## Why a TOML manifest
 
 The accounts are built in Rust (depending only on `miden-protocol` / `miden-standards`) and emitted
-as `.mac` files. `genesis.toml` is a thin manifest the node's own `miden-validator bootstrap`
+as `.mac` files. `accounts.toml` is a thin manifest the node's own `miden-validator genesis`
 consumes, so this crate stays decoupled from the node's internal crates.
 
 ## License

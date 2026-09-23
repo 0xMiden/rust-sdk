@@ -56,7 +56,7 @@ VERIFICATION_BASE_FEE="${MIDEN_VERIFICATION_BASE_FEE:-500}"
 # runs. No test consumes the fee notes.
 BATCH_BUILDER_WALLET="${MIDEN_BATCH_BUILDER_WALLET:-0xcc0000000000dd010000ee000000ff}"
 
-NODE_BINS=(miden-validator miden-node miden-ntx-builder miden-remote-prover)
+NODE_BINS=(miden-validator miden-node miden-ntx-builder miden-remote-prover miden-note-transport)
 
 # Resolve the pinned node source from Cargo.lock: a git pin takes precedence, otherwise use the
 # crates.io version locked for `miden-node-proto-build`.
@@ -161,9 +161,16 @@ ENCRYPTION_KEY="9964dbb2590adeb415d3291b64a0a9991fbcac5adacb05ee17efee5296d081d7
 
 {
     # Genesis generation is separate from bootstrap: `genesis` builds the block once, then every
-    # component seeds its database from the resulting file.
+    # component seeds its database from the resulting file. The native faucet and the funding
+    # account are required inputs with their own flags; the fee and the timestamp are genesis
+    # parameters rather than accounts, so they are passed here instead of through the fixtures.
     "$BIN/miden-validator" genesis --genesis-block-directory "$DATA/genesis" \
-        --accounts-directory "$DATA/accounts" --config "$DATA/genesis-config/genesis.toml" \
+        --accounts-directory "$DATA/accounts" \
+        --accounts-config "$DATA/genesis-config/accounts.toml" \
+        --native-faucet "$DATA/genesis-config/native_faucet.mac" \
+        --funding-account "$DATA/genesis-config/funding_account.mac" \
+        --verification-base-fee "$VERIFICATION_BASE_FEE" \
+        --timestamp "$(date +%s)" \
         --validator.key "$VALIDATOR_PUBLIC_KEY"
     "$BIN/miden-validator" bootstrap --data-directory "$DATA/validator" \
         --genesis "$DATA/genesis/genesis.dat"

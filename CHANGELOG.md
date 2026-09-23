@@ -14,6 +14,7 @@
 
 ### Breaking Changes
 
+* [BREAKING][removal][rust] The note transport gRPC client now uses the service and message definitions from the node repository, through `miden-node-proto-build` `0.17.0-rc.2` from crates.io. Fetched notes are decoded one by one: a note that fails to decode, or whose details do not match the commitment in its header, is dropped with a warning instead of failing the fetch. `NoteTransportCursor` now stores the node's nonce and sequence, and the unsupported `NoteTransportClient::stream_notes` API and `NoteStream` trait were removed ([#2594](https://github.com/0xMiden/rust-sdk/pull/2594)).
 * [BREAKING][arch][rust] Updated protocol dependencies to `0.17.0-rc.6` ([#2594](https://github.com/0xMiden/rust-sdk/pull/2594)).
 * [BREAKING][arch][rust] `AccountFile` and `NoteFile` moved from `miden-protocol` and `miden-standards` to `miden-objects`. Both are re-exported from `miden_client::account` and `miden_client::note` as before ([#2594](https://github.com/0xMiden/rust-sdk/pull/2594)).
 * [BREAKING][type][rust] `AccountFile` and `NoteFile` are encoded as Protobuf, so files written by earlier versions no longer decode. `Deserializable::read_from_bytes` is replaced by `try_from_bytes`, which reports the new `AccountFileError` and `NoteFileError` ([#2594](https://github.com/0xMiden/rust-sdk/pull/2594)).
@@ -88,6 +89,7 @@
 
 ### Enhancements
 
+* [test] The testing node is installed from the `0.17.0-rc.2` node crates on crates.io instead of a git revision. Its genesis is built with that release's `miden-validator genesis` flags: the native faucet, a new funding account, the fee and the timestamp are passed on the command line and the remaining accounts through `--accounts-config` ([#2594](https://github.com/0xMiden/rust-sdk/pull/2594)).
 * [rust] `Client::sync_state` fetches a Note Transport Layer page and the node's chain update concurrently, instead of running a full note transport sync before the chain sync. The transport notes are imported first and their records join the chain sync's note updates, so a note delivered and committed within the same sync is reported by that sync ([#2453](https://github.com/0xMiden/rust-sdk/pull/2453)).
 * [FEATURE][cli] `call` now takes an `account-id` argument as a bech32 address as well as a hex id, matching the spellings the rest of the CLI accepts for an account. This applies to the `account-id` type itself and to the faucet half of an `asset` token ([#2179](https://github.com/0xMiden/rust-sdk/pull/2179)).
 

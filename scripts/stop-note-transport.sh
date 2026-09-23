@@ -1,19 +1,19 @@
-#!/bin/bash
+#!/usr/bin/env bash
+#
+# Stops the note transport service started by start-note-transport-bg.sh.
 
 set -euo pipefail
 
-PID_FILE=.note-transport.pid
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PID_FILE="$ROOT/target/test-node/note-transport.pid"
 
 if [ -f "$PID_FILE" ]; then
-  PID=$(cat "$PID_FILE")
-  if ps -p "$PID" > /dev/null 2>&1; then
-    kill "$PID" || true
-  fi
-  rm -f "$PID_FILE"
+    kill "$(cat "$PID_FILE")" 2>/dev/null || true
+    rm -f "$PID_FILE"
 fi
 
-# Fallback kill by process name
-pkill -f "miden-note-transport" || true
-sleep 1
-echo "Note transport service stopped"
+# Fallback in case the pid file is stale.
+pkill -f "$ROOT/target/test-node/install/bin/miden-note-transport" 2>/dev/null || true
 
+sleep 1
+echo "Stopped note transport."

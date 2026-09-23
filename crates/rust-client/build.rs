@@ -1,8 +1,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use miden_node_proto_build::{remote_prover_api_descriptor, rpc_api_descriptor};
-use miden_note_transport_proto_build::mnt_api_descriptor;
+use miden_node_proto_build::{
+    note_transport_api_descriptor,
+    remote_prover_api_descriptor,
+    rpc_api_descriptor,
+};
 use miette::IntoDiagnostic;
 
 const RPC_STD_DIR: &str = "rpc/std";
@@ -96,16 +99,16 @@ fn compile_tonic_remote_prover_proto(out_dir: &Path) -> miette::Result<()> {
 
 /// Generates the Rust protobuf bindings for the Note Transport client.
 fn compile_tonic_note_transport_proto(out_dir: &Path) -> miette::Result<()> {
-    let file_descriptors = mnt_api_descriptor();
+    let file_descriptors = note_transport_api_descriptor();
 
     let std_out = out_dir.join(NOTE_TRANSPORT_STD_DIR);
     let nostd_out = out_dir.join(NOTE_TRANSPORT_NOSTD_DIR);
     fs::create_dir_all(&std_out).into_diagnostic()?;
     fs::create_dir_all(&nostd_out).into_diagnostic()?;
 
-    let prost_config = tonic_prost_build::Config::new();
+    let prost_config = canonical_object_config();
 
-    let mut web_tonic_prost_config = tonic_prost_build::Config::new();
+    let mut web_tonic_prost_config = canonical_object_config();
     // Use BTreeMap so the no_std bindings don't depend on std::collections::HashMap.
     web_tonic_prost_config.btree_map(["."]);
 

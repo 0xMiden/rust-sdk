@@ -69,6 +69,10 @@
 * [FEATURE][rust] Added `Client::register_account`, which binds an invitation code to a tracked new account that is not a network account ([#2545](https://github.com/0xMiden/rust-sdk/pull/2545)).
 * [FEATURE][rust] Added `Client::is_account_allowed`. Submitting a transaction or batch that creates an account the network allowlist does not accept now fails with `ClientError::AccountNotAllowlisted` ([#2550](https://github.com/0xMiden/rust-sdk/pull/2550)).
 
+### Enhancements
+
+* [FEATURE][cli] Added a `--package` option to `exec` so a compiled transaction script package (`.masp`) can be run instead of MASM source. A path without an extension is resolved in the package directory, as with `call --package` ([#2470](https://github.com/0xMiden/rust-sdk/issues/2470)).
+
 ### Fixes
 
 * [FIX][cli] `new-account` and `new-wallet` now reject a package that exports procedures without an `@account_procedure` or `@auth_script` attribute. They also reject packages whose target kind is not `account-component` and packages without an account component metadata section ([#2542](https://github.com/0xMiden/rust-sdk/pull/2542)).

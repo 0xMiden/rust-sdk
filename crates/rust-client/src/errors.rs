@@ -39,6 +39,7 @@ use crate::store::{NoteRecordError, StoreError};
 use crate::transaction::{
     BatchBuilderError,
     ChainAnchorError,
+    ProvenBatchSubmission,
     TransactionRequestError,
     TransactionStoreUpdateError,
 };
@@ -312,15 +313,9 @@ impl From<&ClientError> for Option<ErrorHint> {
                 ),
                 docs_url: Some(TROUBLESHOOTING_DOC),
             }),
-            ClientError::AccountNotAllowlisted(account_id) => Some(ErrorHint {
-                message: format!(
-                    "The network only creates accounts that are on its allowlist, and account \
-                     {account_id} is not on it. Register it with an invitation code through \
-                     `account --register {account_id} --invitation-code <CODE>`, or create the \
-                     account with `new-wallet --invitation-code <CODE>` from the start."
-                ),
-                docs_url: Some(TROUBLESHOOTING_DOC),
-            }),
+            ClientError::AccountNotAllowlisted(account_id) => {
+                Some(account_not_allowlisted_hint(*account_id))
+            },
             ClientError::AccountNonceTooLow => Some(ErrorHint {
                 message: "The account you are trying to import has an older nonce than the version \
                           already tracked locally. Run `sync` to ensure your local state is current, \
@@ -380,20 +375,7 @@ impl From<&ClientError> for Option<ErrorHint> {
             ClientError::BatchBuilder(BatchBuilderError::BatchSubmissionOutcomeUnknown {
                 submission,
                 ..
-            }) => Some(ErrorHint {
-                message: format!(
-                    "Do not rebuild the batch: re-executing produces new transaction ids over \
-                     the same notes, so if the original did land you would be left with ids that \
-                     can never commit. Neither option can apply the batch twice, since both \
-                     consume the same nullifiers. Either retry with the `submission` attached to \
-                     this error, which carries the proven batch and each transaction's inputs and \
-                     records the batch if the node accepts it, or sync and see whether the \
-                     accounts moved: until a retry is accepted the {} ids in \
-                     `submission.transaction_ids()` have no record to look up.",
-                    submission.transaction_count()
-                ),
-                docs_url: Some(TROUBLESHOOTING_DOC),
-            }),
+            }) => Some(batch_submission_outcome_unknown_hint(submission)),
             _ => None,
         }
     }
@@ -464,6 +446,35 @@ impl From<&TransactionRequestError> for Option<ErrorHint> {
 impl TransactionRequestError {
     pub fn error_hint(&self) -> Option<ErrorHint> {
         self.into()
+    }
+}
+
+/// Returns the hint for an account the network allowlist does not accept.
+fn account_not_allowlisted_hint(account_id: AccountId) -> ErrorHint {
+    ErrorHint {
+        message: format!(
+            "The network only creates accounts that are on its allowlist, and account \
+             {account_id} is not on it. Register it with \
+             `account --register {account_id} --invitation-code <CODE>` before you create it."
+        ),
+        docs_url: Some(TROUBLESHOOTING_DOC),
+    }
+}
+
+/// Hint for a batch submission that came back without a definite outcome.
+fn batch_submission_outcome_unknown_hint(submission: &ProvenBatchSubmission) -> ErrorHint {
+    ErrorHint {
+        message: format!(
+            "Do not rebuild the batch: re-executing produces new transaction ids over the same \
+             notes, so if the original did land you would be left with ids that can never \
+             commit. Neither option can apply the batch twice, since both consume the same \
+             nullifiers. Either retry with the `submission` attached to this error, which \
+             carries the proven batch and each transaction's inputs and records the batch if the \
+             node accepts it, or sync and see whether the accounts moved: until a retry is \
+             accepted the {} ids in `submission.transaction_ids()` have no record to look up.",
+            submission.transaction_count()
+        ),
+        docs_url: Some(TROUBLESHOOTING_DOC),
     }
 }
 

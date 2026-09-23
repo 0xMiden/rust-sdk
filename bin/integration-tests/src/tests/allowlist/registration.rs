@@ -5,15 +5,13 @@
 //! [`super::enforcement`].
 
 use anyhow::{Context, Result};
+use miden_client::account::AccountType;
 use miden_client::rpc::RegisterAccountError;
+use miden_client::testing::common::AccountSetup;
+use miden_client::transaction::TransactionRequestBuilder;
 
-use super::invitations::InvitationPool;
-use super::{
-    assert_registration_rejected,
-    assert_rejected_before_submission,
-    deploy_request,
-    insert_undeployed_wallet,
-};
+use super::invitations::create_invitation_code;
+use super::{assert_registration_rejected, assert_rejected_before_submission};
 use crate::ClientConfig;
 
 /// A code the node was never given. Long enough that it cannot collide with a created code.

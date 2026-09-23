@@ -221,23 +221,6 @@ where
         self.store.get_transactions(filter).await.map_err(Into::into)
     }
 
-    // TRANSACTION BATCH
-    // --------------------------------------------------------------------------------------------
-
-    /// Open a new [`BatchBuilder`] for accumulating transactions across one or more local accounts.
-    ///
-    /// See [`crate::transaction::batch`] for usage and constraints.
-    pub fn new_transaction_batch(&mut self) -> BatchBuilder<'_, AUTH> {
-        let inner_data_store = ClientDataStore::new(self.store.clone(), self.rpc_api.clone());
-        BatchBuilder {
-            client: self,
-            data_store: InMemoryBatchDataStore::new(inner_data_store),
-            pushed_txs: Vec::new(),
-            consumed_input_notes: BTreeSet::new(),
-            checked_accounts: BTreeSet::new(),
-        }
-    }
-
     // TRANSACTION
     // --------------------------------------------------------------------------------------------
 

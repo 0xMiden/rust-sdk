@@ -18,7 +18,7 @@
 
 use anyhow::{Context, Result};
 use assert_matches::assert_matches;
-use miden_client::account::{Account, AccountType};
+use miden_client::account::Account;
 use miden_client::rpc::{EndpointError, RegisterAccountError, RpcEndpoint, RpcError};
 use miden_client::testing::common::*;
 use miden_client::{ClientError, Felt};
@@ -29,26 +29,6 @@ pub mod registration;
 
 // HELPERS
 // ================================================================================================
-
-/// Builds the request for an account's first transaction, which creates it on chain.
-///
-/// This is the submission the allowlist gates. `TestClient::submit_new_transaction` folds in the
-/// account's funding note, so the transaction pays its own fee out of the funds it consumes.
-fn deploy_request() -> Result<TransactionRequest> {
-    TransactionRequestBuilder::new()
-        .build()
-        .context("failed to build the deploy transaction request")
-}
-
-/// Inserts a funded wallet that has not been created on chain yet.
-async fn insert_undeployed_wallet(client: &mut TestClient) -> Result<Account> {
-    let (account, _) = client
-        .insert_account(AccountSetup::wallet(AccountType::Private))
-        .await
-        .context("failed to insert the wallet account")?;
-
-    Ok(account)
-}
 
 /// Asserts that `error` is the client refusing to create an unregistered account.
 ///

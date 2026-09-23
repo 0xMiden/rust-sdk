@@ -5,14 +5,12 @@
 //! in the first place is in [`super::registration`].
 
 use anyhow::{Context, Result, bail};
+use miden_client::account::AccountType;
+use miden_client::testing::common::AccountSetup;
+use miden_client::transaction::TransactionRequestBuilder;
 
-use super::invitations::InvitationPool;
-use super::{
-    assert_rejected_before_submission,
-    deploy_request,
-    insert_undeployed_wallet,
-    is_deployed,
-};
+use super::invitations::create_invitation_code;
+use super::{assert_rejected_before_submission, is_deployed};
 use crate::ClientConfig;
 use crate::tests::network_transaction::deploy_network_counter_contract;
 

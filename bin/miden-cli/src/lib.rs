@@ -17,6 +17,7 @@ mod commands;
 use commands::account::AccountCmd;
 use commands::call::CallCmd;
 use commands::clear_config::ClearConfigCmd;
+use commands::completions::CompletionsCmd;
 use commands::exec::ExecCmd;
 use commands::export::ExportCmd;
 use commands::import::ImportCmd;
@@ -377,6 +378,8 @@ pub enum Command {
     Keys(KeysCmd),
     Init(InitCmd),
     ClearConfig(ClearConfigCmd),
+    /// Generate a completion script for the client.
+    Completions(CompletionsCmd),
     Notes(NotesCmd),
     Sync(SyncCmd),
     /// View a summary of the current client state.
@@ -406,6 +409,10 @@ impl Cli {
             },
             Command::ClearConfig(clear_config_cmd) => {
                 clear_config_cmd.execute()?;
+                return Ok(());
+            },
+            Command::Completions(completions_cmd) => {
+                completions_cmd.execute()?;
                 return Ok(());
             },
             Command::NetworkNoteStatus(cmd) => {
@@ -442,6 +449,7 @@ impl Cli {
             Command::Import(import) => import.execute(client, keystore).await,
             Command::Init(_)
             | Command::ClearConfig(_)
+            | Command::Completions(_)
             | Command::NetworkNoteStatus(_)
             | Command::Keys(_) => Ok(()), /* Already handled earlier */
             Command::Info(info_cmd) => info::print_client_info(&client, info_cmd.rpc_status).await,

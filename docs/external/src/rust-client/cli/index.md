@@ -678,3 +678,20 @@ The account state read this way comes from the transaction's reference block, wh
 ### `note-transport`
 
 Send and fetch private notes using the transport layer.
+
+### `completions`
+
+Generate a shell completion script for the client. The command prints the script on stdout. Source the script in your shell configuration to enable completions for the commands and flags of `miden-client`.
+
+```sh
+# Bash
+miden-client completions bash > ~/.local/share/bash-completion/completions/miden-client
+
+# Zsh
+miden-client completions zsh > "${fpath[1]}/_miden-client"
+
+# Fish
+miden-client completions fish > ~/.config/fish/completions/miden-client.fish
+```
+
+The command supports `bash`, `elvish`, `fish`, `powershell`, and `zsh`.

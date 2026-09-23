@@ -185,3 +185,23 @@ assert_quoted_filename_selects_systems() (
 )
 
 assert_quoted_filename_selects_systems
+
+assert_push_selects_all_systems() (
+  local test_dir
+  local output_file
+
+  test_dir=$(mktemp -d)
+  trap 'rm -rf "$test_dir"' EXIT
+  output_file=$(mktemp)
+  trap 'rm -rf "$test_dir"; rm -f "$output_file"' EXIT
+  (
+    cd "$test_dir"
+    GITHUB_OUTPUT="$output_file" "$ENTRYPOINT" push
+  )
+  if ! diff -u <(printf '%s\n' "$all_systems") "$output_file"; then
+    echo "push did not select all systems" >&2
+    exit 1
+  fi
+)
+
+assert_push_selects_all_systems

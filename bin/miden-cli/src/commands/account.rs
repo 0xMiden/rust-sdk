@@ -66,8 +66,9 @@ pub struct AccountCmd {
     /// Registers the account with the specified ID (or hex prefix) on the network allowlist.
     ///
     /// Only an account that this client tracks can be registered. When the network funds registered
-    /// accounts, the node pays the account a public note with the native asset. Run `sync` to
-    /// receive it, then `consume-notes` to create the account on chain with it.
+    /// accounts, the node pays the account a public note with the native asset. The note can take a
+    /// few blocks to commit. Run `sync` until the note arrives, then `consume-notes` to create the
+    /// account on chain with it.
     #[arg(long, group = "action", value_name = "ID", requires = "invitation_code")]
     register: Option<String>,
     /// Invitation code that registers the account named by --register.
@@ -127,8 +128,8 @@ impl AccountCmd {
 
                 println!("Registered account {} on the network allowlist.", account_id.to_hex());
                 println!(
-                    "If the network funds registered accounts, run `{bin} sync` to receive the \
-                     funding note, then `{bin} consume-notes --account {id}` to create the account \
+                    "If the network funds registered accounts, the funding note can take a few \
+                     blocks to commit. Run `{bin} sync` until the note arrives, then `{bin} consume-notes --account {id}` to create the account \
                      on chain with it.",
                     bin = client_binary_name().display(),
                     id = account_id.to_hex()

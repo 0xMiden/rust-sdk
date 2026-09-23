@@ -169,15 +169,22 @@ client.register_account(new_account.id(), invitation_code).await?;
 
 ### Funding of registered accounts
 
-A new account on a fee-charging network cannot pay the fee of its first transaction out of an empty vault. A network operator can run a funding service for this. When one is configured, the node pays every registered account a public P2ID note with the native asset, and `register_account` returns once that note is committed on chain, so the call can take a few blocks.
+A new account on a fee-charging network cannot pay the fee of its first transaction out of an empty vault. A network operator can run a funding service for this. When one is configured, the node pays every registered account a public P2ID note with the native asset, and `register_account` returns as soon as the node submits the transaction that creates that note. The note is not committed on chain yet at that point, so it can take a few blocks to arrive.
 
-The note is not part of the response. The client tracks the note tag of every account it owns, so the next `sync_state` imports the note. Consuming it is what creates the account on chain, and the fee of that transaction is paid out of the funds the note carries:
+The note is not part of the response. The client tracks the note tag of every account it owns, so a `sync_state` that runs after the note is committed imports it. Sync until the note arrives. Consuming it is what creates the account on chain, and the fee of that transaction is paid out of the funds the note carries:
 
 ```rust
-client.sync_state().await?;
+let records = loop {
+    client.sync_state().await?;
+    let records = client.get_consumable_notes(Some(new_account.id())).await?;
+    if !records.is_empty() {
+        break records;
+    }
+    tokio::time::sleep(Duration::from_secs(3)).await;
+};
 
 let mut notes = Vec::new();
-for (record, _) in client.get_consumable_notes(Some(new_account.id())).await? {
+for (record, _) in records {
     let note: InputNote = record.try_into()?;
     notes.push(note.into_note());
 }

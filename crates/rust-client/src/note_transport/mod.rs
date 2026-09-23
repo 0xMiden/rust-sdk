@@ -31,7 +31,7 @@ use crate::{Client, ClientError};
 pub const NOTE_TRANSPORT_MAINNET_ENDPOINT: &str = "https://transport.mainnet.miden.io";
 pub const NOTE_TRANSPORT_TESTNET_ENDPOINT: &str = "https://transport.miden.io";
 pub const NOTE_TRANSPORT_DEVNET_ENDPOINT: &str = "https://transport.devnet.miden.io";
-pub const NOTE_TRANSPORT_CURSOR_STORE_SETTING: &str = "note_transport_cursor_v2";
+pub const NOTE_TRANSPORT_CURSOR_STORE_SETTING: &str = "note_transport_cursor";
 
 /// Settings key for the note-transport backfill bookkeeping: a serialized `Vec<NoteTag>` of the
 /// `User`- and `Account`-source tags whose full history has already been fetched up to the global

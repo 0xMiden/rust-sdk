@@ -82,7 +82,7 @@ jobs:
 
   clippy:
     name: Clippy
-    runs-on: warp-ubuntu-latest-x64-8x
+    runs-on: warp-ubuntu-latest-arm64-2x
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -92,7 +92,7 @@ jobs:
       - name: Add Rust Cache
         uses: WarpBuilds/rust-cache@9d0cc3090d9c87de74ea67617b246e978735b1a1 # v2.9.1
         with:
-          shared-key: rust-release
+          shared-key: rust-release-${{ runner.arch }}
           prefix-key: ${{ env.RUST_CACHE_KEY }}
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/next' }}
       - name: Install Rust with clippy
@@ -104,7 +104,7 @@ jobs:
 
   format:
     name: Format check
-    runs-on: warp-ubuntu-latest-x64-8x
+    runs-on: warp-ubuntu-latest-arm64-2x
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -114,7 +114,7 @@ jobs:
       - name: Add Rust Cache
         uses: WarpBuilds/rust-cache@9d0cc3090d9c87de74ea67617b246e978735b1a1 # v2.9.1
         with:
-          shared-key: rust-format
+          shared-key: rust-format-${{ runner.arch }}
           prefix-key: ${{ env.RUST_CACHE_KEY }}
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/next' }}
       - name: Install Rust with rustfmt
@@ -127,7 +127,7 @@ jobs:
 
   rustdocs:
     name: Build rust documentation
-    runs-on: warp-ubuntu-latest-x64-8x
+    runs-on: warp-ubuntu-latest-arm64-2x
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -137,7 +137,7 @@ jobs:
       - name: Add Rust Cache
         uses: WarpBuilds/rust-cache@9d0cc3090d9c87de74ea67617b246e978735b1a1 # v2.9.1
         with:
-          shared-key: rust-docs
+          shared-key: rust-docs-${{ runner.arch }}
           prefix-key: ${{ env.RUST_CACHE_KEY }}
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/next' }}
       - name: Install Rust

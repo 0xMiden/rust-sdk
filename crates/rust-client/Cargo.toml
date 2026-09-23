@@ -23,7 +23,7 @@ ignored = ["getrandom", "prost-types", "tonic-prost"]
 [package.metadata.cargo-shear]
 # getrandom is used through rand's wasm backend selection. The other entries are used by
 # generated proto bindings and std-only keystore code that shear does not fully resolve.
-ignored = ["getrandom", "prost-types", "serde", "serde_json", "tempfile", "tonic-prost"]
+ignored = ["argon2", "getrandom", "miden-crypto", "prost-types", "serde", "serde_json", "tempfile", "tonic-prost"]
 
 [lib]
 crate-type = ["lib"]

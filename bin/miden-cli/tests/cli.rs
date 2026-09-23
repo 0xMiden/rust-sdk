@@ -650,8 +650,8 @@ async fn tx_show_and_list_filters() -> Result<()> {
 
     sync_cli(&temp_dir);
 
-    let output_note_id = mint_cli(&temp_dir, &wallet_account_id, &fungible_faucet_account_id);
-    let transaction_id = latest_transaction_id_cli(&temp_dir);
+    let (transaction_id, output_note_id) =
+        mint_cli(&temp_dir, &wallet_account_id, &fungible_faucet_account_id);
 
     // A prefix of the ID has to resolve to the same transaction.
     let mut show_cmd = cargo_bin_cmd!("miden-client");
@@ -1005,7 +1005,7 @@ async fn cli_export_import_note() -> Result<()> {
     sync_cli(&temp_dir_1);
 
     // Let's try and mint
-    let note_to_export_id =
+    let (_, note_to_export_id) =
         mint_cli(&temp_dir_1, &first_basic_account_id, &fungible_faucet_account_id);
 
     // Export without type fails
@@ -1127,7 +1127,7 @@ async fn cli_export_import_account() -> Result<()> {
     assert!(client_2.get_account(AccountId::from_hex(&wallet_id)?).await.is_ok());
     sync_cli(&temp_dir_2);
 
-    let note_id = mint_cli(&temp_dir_2, &wallet_id, &faucet_id);
+    let (_, note_id) = mint_cli(&temp_dir_2, &wallet_id, &faucet_id);
 
     // Wait until the note is committed on the node
     sync_until_committed_note(&temp_dir_2);
@@ -1361,7 +1361,7 @@ async fn consume_unauthenticated_note() -> Result<()> {
     sync_cli(&temp_dir);
 
     // Mint
-    let note_id = mint_cli(&temp_dir, &wallet_account_id, &fungible_faucet_account_id);
+    let (_, note_id) = mint_cli(&temp_dir, &wallet_account_id, &fungible_faucet_account_id);
 
     // Wait for the mint transaction to be committed on the node
     sync_until_committed_transaction(&temp_dir);
@@ -1947,7 +1947,11 @@ fn sync_cli(cli_path: &Path) -> SyncResult {
 
 /// Mints 100 units of the corresponding faucet using the cli and checks that the command runs
 /// successfully given account using the CLI given by `cli_path`.
-fn mint_cli(cli_path: &Path, target_account_id: &str, faucet_id: &str) -> String {
+///
+/// Returns the ID of the transaction and the ID of the note that the mint created, as the command
+/// reports them. Both come from the command itself, so they do not depend on what else the store
+/// holds.
+fn mint_cli(cli_path: &Path, target_account_id: &str, faucet_id: &str) -> (String, String) {
     let mut mint_cmd = cargo_bin_cmd!("miden-client");
     mint_cmd.args([
         "mint",
@@ -1968,35 +1972,17 @@ fn mint_cli(cli_path: &Path, target_account_id: &str, faucet_id: &str) -> String
         String::from_utf8_lossy(&output.stderr)
     );
 
-    String::from_utf8(output.stdout)
-        .unwrap()
-        .split_whitespace()
-        .skip_while(|&word| word != "Output")
-        .find(|word| word.starts_with("0x"))
-        .unwrap()
-        .to_string()
-}
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let id_after = |keyword: &str| {
+        stdout
+            .split_whitespace()
+            .skip_while(|&word| word != keyword)
+            .find(|word| word.starts_with("0x"))
+            .unwrap_or_else(|| panic!("the mint should report an ID after {keyword}:\n{stdout}"))
+            .to_string()
+    };
 
-/// Returns the ID of the most recently created transaction, read off the first column of `tx --list
-/// --limit 1`.
-fn latest_transaction_id_cli(cli_path: &Path) -> String {
-    let mut list_cmd = cargo_bin_cmd!("miden-client");
-    list_cmd.args(["tx", "--list", "--limit", "1"]);
-
-    let output = list_cmd.current_dir(cli_path).output().unwrap();
-    assert!(
-        output.status.success(),
-        "latest_transaction_id_cli failed.\nstdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    String::from_utf8(output.stdout)
-        .unwrap()
-        .split_whitespace()
-        .find(|word| word.starts_with("0x"))
-        .expect("the listing should hold a transaction")
-        .to_string()
+    (id_after("Transaction"), id_after("Output"))
 }
 
 /// Shows note details using the cli and checks that the command runs successfully given account

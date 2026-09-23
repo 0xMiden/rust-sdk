@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use miden_protocol::block::BlockNumber;
-use miden_protocol::note::{NoteHeader, NoteTag};
+use miden_protocol::note::{NoteHeader, NoteId, NoteInclusionProof, NoteTag};
 use miden_tx::utils::serde::{
     ByteReader,
     ByteWriter,
@@ -21,6 +21,7 @@ use crate::note_transport::{
     NoteTransportClient,
     NoteTransportCursor,
     NoteTransportError,
+    TransportNote,
 };
 
 /// Mock Note Transport Node
@@ -35,6 +36,8 @@ pub struct MockNoteTransportNode {
     /// (total, across all tags) in one call. Used to exercise client-side pagination drain loops.
     /// `None` = unbounded (legacy behavior).
     max_batch: Option<usize>,
+    /// Notes stored through the with-proof path, with the block their proof named.
+    proven_notes: BTreeMap<NoteId, BlockNumber>,
 }
 
 impl MockNoteTransportNode {
@@ -44,6 +47,7 @@ impl MockNoteTransportNode {
             nonce: 1,
             next_sequence: 1,
             max_batch: None,
+            proven_notes: BTreeMap::default(),
         }
     }
 
@@ -54,7 +58,27 @@ impl MockNoteTransportNode {
             nonce: 1,
             next_sequence: 1,
             max_batch: Some(max_batch),
+            proven_notes: BTreeMap::default(),
         }
+    }
+
+    /// Seed a note relayed with its inclusion proof. The real service verifies the proof against
+    /// its node; the mock only records the proof's block and serves it as the commitment block.
+    pub fn add_note_with_proof(
+        &mut self,
+        header: NoteHeader,
+        details_bytes: Vec<u8>,
+        inclusion_proof: &NoteInclusionProof,
+    ) {
+        let block_num = inclusion_proof.location().block_num();
+        self.proven_notes.insert(header.id(), block_num);
+        self.add_note_after(header, details_bytes, Some(block_num));
+    }
+
+    /// Returns the block named by the proof a note was stored with, or `None` when the note was not
+    /// stored through the with-proof path.
+    pub fn proven_block(&self, note_id: &NoteId) -> Option<BlockNumber> {
+        self.proven_notes.get(note_id).copied()
     }
 
     pub fn add_note(&mut self, header: NoteHeader, details_bytes: Vec<u8>) {
@@ -156,17 +180,24 @@ impl MockNoteTransportApi {
 }
 
 impl MockNoteTransportApi {
-    pub fn send_note(&self, header: NoteHeader, details_bytes: Vec<u8>) {
+    pub fn send_note(&self, note: TransportNote) {
+        let (header, details) = note.into_parts();
+        let details_bytes = details.to_bytes();
         self.mock_node.write().add_note(header, details_bytes);
     }
 
-    pub fn send_note_with_block_hint(
-        &self,
-        header: NoteHeader,
-        details_bytes: Vec<u8>,
-        block_hint: BlockNumber,
-    ) {
+    pub fn send_note_with_block_hint(&self, note: TransportNote, block_hint: BlockNumber) {
+        let (header, details) = note.into_parts();
+        let details_bytes = details.to_bytes();
         self.mock_node.write().add_note_after(header, details_bytes, Some(block_hint));
+    }
+
+    pub fn send_note_with_proof(&self, note: TransportNote, inclusion_proof: &NoteInclusionProof) {
+        let (header, details) = note.into_parts();
+        let details_bytes = details.to_bytes();
+        self.mock_node
+            .write()
+            .add_note_with_proof(header, details_bytes, inclusion_proof);
     }
 
     pub fn fetch_notes(
@@ -181,22 +212,26 @@ impl MockNoteTransportApi {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl NoteTransportClient for MockNoteTransportApi {
-    async fn send_note(
-        &self,
-        header: NoteHeader,
-        details: Vec<u8>,
-    ) -> Result<(), NoteTransportError> {
-        self.send_note(header, details);
+    async fn send_note(&self, note: TransportNote) -> Result<(), NoteTransportError> {
+        self.send_note(note);
         Ok(())
     }
 
     async fn send_note_with_block_hint(
         &self,
-        header: NoteHeader,
-        details: Vec<u8>,
+        note: TransportNote,
         block_hint: BlockNumber,
     ) -> Result<(), NoteTransportError> {
-        self.send_note_with_block_hint(header, details, block_hint);
+        self.send_note_with_block_hint(note, block_hint);
+        Ok(())
+    }
+
+    async fn send_note_with_proof(
+        &self,
+        note: TransportNote,
+        inclusion_proof: NoteInclusionProof,
+    ) -> Result<(), NoteTransportError> {
+        self.send_note_with_proof(note, &inclusion_proof);
         Ok(())
     }
 
@@ -265,47 +300,53 @@ impl FaultyNoteTransportApi {
     pub fn fetch_attempts(&self) -> usize {
         self.fetch_attempts.load(Ordering::SeqCst)
     }
+
+    /// Records a send attempt and returns whether it must fail.
+    fn take_send_failure(&self) -> Option<NoteTransportError> {
+        self.send_attempts.fetch_add(1, Ordering::SeqCst);
+        self.fail_next
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok()
+            .then(|| {
+                NoteTransportError::Network(
+                    "FaultyNoteTransportApi: simulated send_note failure".to_string(),
+                )
+            })
+    }
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl NoteTransportClient for FaultyNoteTransportApi {
-    async fn send_note(
-        &self,
-        header: NoteHeader,
-        details: Vec<u8>,
-    ) -> Result<(), NoteTransportError> {
-        self.send_attempts.fetch_add(1, Ordering::SeqCst);
-        let should_fail = self
-            .fail_next
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
-            .is_ok();
-        if should_fail {
-            return Err(NoteTransportError::Network(
-                "FaultyNoteTransportApi: simulated send_note failure".to_string(),
-            ));
+    async fn send_note(&self, note: TransportNote) -> Result<(), NoteTransportError> {
+        if let Some(error) = self.take_send_failure() {
+            return Err(error);
         }
-        self.inner.send_note(header, details);
+        self.inner.send_note(note);
         Ok(())
     }
 
     async fn send_note_with_block_hint(
         &self,
-        header: NoteHeader,
-        details: Vec<u8>,
+        note: TransportNote,
         block_hint: BlockNumber,
     ) -> Result<(), NoteTransportError> {
-        self.send_attempts.fetch_add(1, Ordering::SeqCst);
-        let should_fail = self
-            .fail_next
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
-            .is_ok();
-        if should_fail {
-            return Err(NoteTransportError::Network(
-                "FaultyNoteTransportApi: simulated send_note failure".to_string(),
-            ));
+        if let Some(error) = self.take_send_failure() {
+            return Err(error);
         }
-        self.inner.send_note_with_block_hint(header, details, block_hint);
+        self.inner.send_note_with_block_hint(note, block_hint);
+        Ok(())
+    }
+
+    async fn send_note_with_proof(
+        &self,
+        note: TransportNote,
+        inclusion_proof: NoteInclusionProof,
+    ) -> Result<(), NoteTransportError> {
+        if let Some(error) = self.take_send_failure() {
+            return Err(error);
+        }
+        self.inner.send_note_with_proof(note, &inclusion_proof);
         Ok(())
     }
 
@@ -350,6 +391,7 @@ impl Deserializable for MockNoteTransportNode {
             nonce,
             next_sequence,
             max_batch: None,
+            proven_notes: BTreeMap::default(),
         })
     }
 }

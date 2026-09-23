@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Features
+
+* [FEATURE][rust,cli] Added `Client::send_private_note_with_proof` and `NoteTransportClient::send_note_with_proof`, which relay a private note together with its inclusion proof through the node's `SendNoteWithProof` endpoint. The gRPC service verifies the proof before it stores the note, and recipients receive the exact commitment block instead of a hint. Note transport send methods now accept a validated `TransportNote` instead of separate headers and serialized details. The proof method defaults to relaying the proof's block as an unverified hint. `miden-client notes --send` uses the proof when the stored note has one ([#2611](https://github.com/0xMiden/rust-sdk/pull/2611)).
+
 ### Enhancements
 
 * [test] CI uses smaller runners for short jobs and cancels superseded pull request runs. Pull requests skip specialty system tests when unrelated files change, while pushes to `main` and `next` still run every test ([#2610](https://github.com/0xMiden/rust-sdk/pull/2610)).

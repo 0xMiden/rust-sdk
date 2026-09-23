@@ -15,8 +15,14 @@ use miden_objects::{
     Verify,
 };
 use miden_protocol::block::BlockNumber;
-use miden_protocol::note::{NoteDetails, NoteDetailsCommitment, NoteHeader, NoteTag};
-use miden_protocol::utils::serde::{Deserializable, Serializable};
+use miden_protocol::note::{
+    NoteDetails,
+    NoteDetailsCommitment,
+    NoteHeader,
+    NoteInclusionProof,
+    NoteTag,
+};
+use miden_protocol::utils::serde::Serializable;
 use miden_tx::utils::sync::RwLock;
 use thiserror::Error;
 use tonic::{Code, Request};
@@ -36,9 +42,10 @@ use super::generated::note_transport::{
     FetchNotesRequest,
     FetchedNote,
     SendNoteRequest,
-    TransportNote,
+    SendNoteWithProofRequest,
+    TransportNote as ProtoTransportNote,
 };
-use super::{NoteInfo, NoteTransportCursor, NoteTransportError};
+use super::{NoteInfo, NoteTransportCursor, NoteTransportError, TransportNote};
 
 // FETCHED NOTE DECODING
 // ================================================================================================
@@ -107,6 +114,15 @@ impl Verify for DecodedFetchedNote {
             details_bytes: self.details.to_bytes(),
             block_hint: self.block_hint,
         })
+    }
+}
+
+/// Builds the wire representation of a transport note.
+fn proto_transport_note(note: TransportNote) -> ProtoTransportNote {
+    let (header, details) = note.into_parts();
+    ProtoTransportNote {
+        header: Some(header.into()),
+        details: Some(details.into()),
     }
 }
 
@@ -207,12 +223,8 @@ impl GrpcNoteTransportClient {
     /// Pushes a note to the note transport network.
     ///
     /// The note header and details use the node's typed Protobuf messages.
-    pub async fn send_note(
-        &self,
-        header: NoteHeader,
-        details: Vec<u8>,
-    ) -> Result<(), NoteTransportError> {
-        self.send_note_inner(header, details, None).await
+    pub async fn send_note(&self, note: TransportNote) -> Result<(), NoteTransportError> {
+        self.send_note_inner(note, None).await
     }
 
     /// Pushes a note to the note transport network, relaying a block hint for the recipient.
@@ -221,26 +233,46 @@ impl GrpcNoteTransportClient {
     /// which the recipient should start scanning for the note's commitment.
     pub async fn send_note_with_block_hint(
         &self,
-        header: NoteHeader,
-        details: Vec<u8>,
+        note: TransportNote,
         block_hint: BlockNumber,
     ) -> Result<(), NoteTransportError> {
-        self.send_note_inner(header, details, Some(block_hint.as_u32())).await
+        self.send_note_inner(note, Some(block_hint.as_u32())).await
+    }
+
+    /// Pushes a note to the note transport network together with its inclusion proof.
+    ///
+    /// The service verifies the proof against its node before it stores the note. It relays the
+    /// commitment block to recipients as the exact inclusion block.
+    pub async fn send_note_with_proof(
+        &self,
+        note: TransportNote,
+        inclusion_proof: NoteInclusionProof,
+    ) -> Result<(), NoteTransportError> {
+        let note_id = note.header().id();
+        let request = SendNoteWithProofRequest {
+            inclusion_proof: Some((&note_id, &inclusion_proof).into()),
+            note: Some(proto_transport_note(note)),
+        };
+
+        self.api()
+            .await?
+            .send_note_with_proof(Request::new(request))
+            .await
+            .map_err(|e| {
+                NoteTransportError::Network(format!("Send note with proof failed: {e:?}"))
+            })?;
+
+        Ok(())
     }
 
     /// Sends a note with an optional block hint.
     async fn send_note_inner(
         &self,
-        header: NoteHeader,
-        details: Vec<u8>,
+        note: TransportNote,
         after_block_num: Option<u32>,
     ) -> Result<(), NoteTransportError> {
-        let details = NoteDetails::read_from_bytes(&details)?;
         let request = SendNoteRequest {
-            note: Some(TransportNote {
-                header: Some(header.into()),
-                details: Some(details.into()),
-            }),
+            note: Some(proto_transport_note(note)),
             after_block_num: after_block_num.map(BlockNumber::from).map(Into::into),
         };
 
@@ -334,21 +366,24 @@ impl GrpcNoteTransportClient {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl super::NoteTransportClient for GrpcNoteTransportClient {
-    async fn send_note(
-        &self,
-        header: NoteHeader,
-        details: Vec<u8>,
-    ) -> Result<(), NoteTransportError> {
-        self.send_note(header, details).await
+    async fn send_note(&self, note: TransportNote) -> Result<(), NoteTransportError> {
+        self.send_note(note).await
     }
 
     async fn send_note_with_block_hint(
         &self,
-        header: NoteHeader,
-        details: Vec<u8>,
+        note: TransportNote,
         block_hint: BlockNumber,
     ) -> Result<(), NoteTransportError> {
-        self.send_note_with_block_hint(header, details, block_hint).await
+        self.send_note_with_block_hint(note, block_hint).await
+    }
+
+    async fn send_note_with_proof(
+        &self,
+        note: TransportNote,
+        inclusion_proof: NoteInclusionProof,
+    ) -> Result<(), NoteTransportError> {
+        self.send_note_with_proof(note, inclusion_proof).await
     }
 
     async fn fetch_notes(
@@ -377,6 +412,7 @@ mod tests {
         ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE,
         ACCOUNT_ID_SENDER,
     };
+    use miden_protocol::utils::serde::Deserializable;
     use miden_standards::note::P2idNote;
 
     use super::*;
@@ -451,8 +487,34 @@ mod tests {
     }
 
     #[test]
+    fn mismatched_transport_note_is_rejected() {
+        let note_a = private_note(5);
+        let note_b = private_note(6);
+
+        let error =
+            TransportNote::new(*note_b.header(), NoteDetails::from(note_a.clone())).unwrap_err();
+
+        assert!(matches!(error, NoteTransportError::NoteDetailsMismatch { .. }));
+    }
+
+    #[test]
+    fn transport_note_preserves_the_legacy_outbox_encoding() {
+        let note = private_note(7);
+        let header = *note.header();
+        let details = NoteDetails::from(note.clone());
+        let mut legacy = Vec::new();
+        header.write_into(&mut legacy);
+        details.to_bytes().write_into(&mut legacy);
+
+        let transport_note = TransportNote::from(note);
+
+        assert_eq!(transport_note.to_bytes(), legacy);
+        assert_eq!(TransportNote::read_from_bytes(&legacy).unwrap(), transport_note);
+    }
+
+    #[test]
     fn missing_header_or_details_are_rejected() {
-        let note = private_note(5);
+        let note = private_note(8);
 
         let mut without_header = fetched_note(note.header(), NoteDetails::from(note.clone()));
         without_header.header = None;

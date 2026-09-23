@@ -9,9 +9,9 @@ SELECTOR="$SCRIPT_DIR/select-system-tests.sh"
 assert_selection() {
   local name=$1
   local expected=$2
-  local path=$3
+  shift 2
 
-  if ! diff -u <(printf '%s\n' "$expected") <(printf '%s\n' "$path" | "$SELECTOR"); then
+  if ! diff -u <(printf '%s\n' "$expected") <(printf '%s\n' "$@" | "$SELECTOR"); then
     echo "selection failed for $name" >&2
     exit 1
   fi
@@ -26,6 +26,16 @@ integration_only=$(printf '%s\n' \
   "agglayer=false" \
   "integration=true" \
   "miden-bench=false" \
+  "test-node=true")
+benchmark_only=$(printf '%s\n' \
+  "agglayer=false" \
+  "integration=false" \
+  "miden-bench=true" \
+  "test-node=true")
+benchmark_and_integration=$(printf '%s\n' \
+  "agglayer=false" \
+  "integration=true" \
+  "miden-bench=true" \
   "test-node=true")
 no_systems=$(printf '%s\n' \
   "agglayer=false" \
@@ -43,6 +53,19 @@ assert_selection "validator fixture" "$all_systems" \
   "scripts/testdata/insecure-golden-storage-key/secret-share.wire"
 assert_selection "selector" "$all_systems" ".github/scripts/select-system-tests.sh"
 assert_selection "other integration code" "$integration_only" "bin/miden-cli/src/main.rs"
+assert_selection "benchmark script" "$benchmark_only" "scripts/test-miden-bench-smoke.sh"
+assert_selection \
+  "benchmark then integration" \
+  "$benchmark_and_integration" \
+  "scripts/test-miden-bench-smoke.sh" \
+  "bin/miden-cli/src/main.rs" \
+  ".github/workflows/lint.yml"
+assert_selection \
+  "integration then benchmark" \
+  "$benchmark_and_integration" \
+  "bin/miden-cli/src/main.rs" \
+  "scripts/test-miden-bench-smoke.sh" \
+  ".github/workflows/lint.yml"
 assert_selection "unrelated workflow" "$no_systems" ".github/workflows/lint.yml"
 
 assert_comparison_failure() (

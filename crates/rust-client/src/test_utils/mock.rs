@@ -87,12 +87,12 @@ pub struct MockRpcApi {
     /// [`MockRpcApi::fail_next_call`]. An entry is removed when served, so the call after it
     /// answers normally and a test can exercise a retry.
     next_call_failures: Arc<RwLock<BTreeMap<&'static str, RpcError>>>,
+    /// Invitation code each account was registered with, recorded by `register_account`.
+    registered_accounts: Arc<RwLock<BTreeMap<AccountId, String>>>,
     /// Sealed inputs handed to `submit_proven_batch`, one entry per call and recorded before any
     /// staged failure is served, so a test can assert that a resubmission sealed again instead of
     /// reusing a cached ciphertext.
     submitted_batch_sealed_inputs: Arc<RwLock<Vec<Vec<SealedTransactionInputs>>>>,
-    /// Invitation code each account was registered with, recorded by `register_account`.
-    registered_accounts: Arc<RwLock<BTreeMap<AccountId, String>>>,
 }
 
 impl Default for MockRpcApi {
@@ -117,8 +117,8 @@ impl MockRpcApi {
             sync_notes_mmr_path_overrides: Arc::new(RwLock::new(BTreeMap::new())),
             get_notes_by_id_calls: Arc::new(AtomicUsize::new(0)),
             next_call_failures: Arc::new(RwLock::new(BTreeMap::new())),
-            submitted_batch_sealed_inputs: Arc::new(RwLock::new(Vec::new())),
             registered_accounts: Arc::new(RwLock::new(BTreeMap::new())),
+            submitted_batch_sealed_inputs: Arc::new(RwLock::new(Vec::new())),
         }
     }
 

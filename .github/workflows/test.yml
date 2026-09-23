@@ -40,6 +40,8 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Test system-test selector
+        run: .github/scripts/test-select-system-tests.sh
       - name: Select tests for changed files
         id: filter
         env:
@@ -47,6 +49,8 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          set -euo pipefail
+
           if [[ "$EVENT_NAME" != "pull_request" ]]; then
             {
               echo "agglayer=true"
@@ -57,48 +61,14 @@ jobs:
             exit 0
           fi
 
-          agglayer=false
-          integration=false
-          miden_bench=false
+          changed_files=$(mktemp)
+          trap 'rm -f "$changed_files"' EXIT
+          if ! git diff --name-only "$BASE_SHA...$HEAD_SHA" > "$changed_files"; then
+            echo "failed to compare $BASE_SHA with $HEAD_SHA" >&2
+            exit 1
+          fi
 
-          while IFS= read -r path; do
-            case "$path" in
-              Cargo.toml|Cargo.lock|Makefile|rust-toolchain.toml|.cargo/*|.github/workflows/test.yml|.github/actions/cleanup-runner/*)
-                agglayer=true
-                integration=true
-                miden_bench=true
-                ;;
-            esac
-
-            case "$path" in
-              crates/*|bin/*|data/*|scripts/start-ci-service.sh|scripts/start-note-transport*.sh|scripts/stop-note-transport.sh|scripts/start-test-node.sh|scripts/stop-test-node.sh)
-                integration=true
-                ;;
-            esac
-
-            case "$path" in
-              bin/miden-bench/*|bin/integration-tests/*|crates/rust-client/*|crates/sqlite-store/*|crates/testing/test-node-genesis/*|data/*|scripts/start-test-node.sh|scripts/stop-test-node.sh|scripts/test-miden-bench-smoke.sh)
-                miden_bench=true
-                ;;
-            esac
-
-            case "$path" in
-              bin/integration-tests/Cargo.toml|bin/integration-tests/src/lib.rs|bin/integration-tests/src/tests/mod.rs|bin/integration-tests/src/tests/agglayer/*|bin/integration-tests/tests/integration.rs|crates/rust-client/*|crates/sqlite-store/*|crates/testing/test-node-genesis/*|data/*|scripts/start-test-node.sh|scripts/stop-test-node.sh)
-                agglayer=true
-                ;;
-            esac
-          done < <(git diff --name-only "$BASE_SHA...$HEAD_SHA")
-
-          {
-            echo "agglayer=$agglayer"
-            echo "integration=$integration"
-            echo "miden-bench=$miden_bench"
-            if [[ "$agglayer" == "true" || "$integration" == "true" || "$miden_bench" == "true" ]]; then
-              echo "test-node=true"
-            else
-              echo "test-node=false"
-            fi
-          } >> "$GITHUB_OUTPUT"
+          .github/scripts/select-system-tests.sh < "$changed_files" >> "$GITHUB_OUTPUT"
 
   test:
     name: Unit tests

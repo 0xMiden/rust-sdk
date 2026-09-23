@@ -436,6 +436,14 @@ pub trait NodeRpcClient: Send + Sync {
         request: GetAccountRequest,
     ) -> Result<(BlockNumber, AccountProof), RpcError>;
 
+    /// Binds an invitation code to an account on the network, using the `/RegisterAccount`
+    /// endpoint.
+    async fn register_account(
+        &self,
+        invitation_code: &str,
+        account_id: AccountId,
+    ) -> Result<(), RpcError>;
+
     /// Fills in the asset list when the vault came back flagged `too_many_assets`, by querying
     /// [`NodeRpcClient::sync_account_vault`] over `[GENESIS, block_to]`. No-op when the flag isn't
     /// set.
@@ -694,6 +702,7 @@ pub enum RpcEndpoint {
     Status,
     SyncNullifiers,
     GetAccount,
+    RegisterAccount,
     GetBlockByNumber,
     GetBlockHeaderByNumber,
     GetNotesById,
@@ -717,6 +726,7 @@ impl RpcEndpoint {
             RpcEndpoint::Status => "Status",
             RpcEndpoint::SyncNullifiers => "SyncNullifiers",
             RpcEndpoint::GetAccount => "GetAccount",
+            RpcEndpoint::RegisterAccount => "RegisterAccount",
             RpcEndpoint::GetBlockByNumber => "GetBlockByNumber",
             RpcEndpoint::GetBlockHeaderByNumber => "GetBlockHeaderByNumber",
             RpcEndpoint::GetNotesById => "GetNotesById",
@@ -737,16 +747,18 @@ impl RpcEndpoint {
     /// Returns whether repeating the call is safe when the outcome of the previous attempt is
     /// unknown.
     ///
-    /// Submissions are not: the node may have accepted the transaction before the response was
-    /// lost, so a repeat hits already-consumed state and comes back as a conflict that cannot be
-    /// told apart from a genuine double spend.
+    /// Calls that change state on the node are not: the node may have applied the change before the
+    /// response was lost, so a repeat can come back as a conflict that cannot be told apart from a
+    /// genuine one.
     ///
     /// The match is exhaustive on purpose, so a new endpoint has to be classified before it
     /// compiles.
     #[cfg(feature = "tonic")]
     pub(crate) fn is_idempotent(self) -> bool {
         match self {
-            RpcEndpoint::SubmitProvenTx | RpcEndpoint::SubmitProvenBatch => false,
+            RpcEndpoint::SubmitProvenTx
+            | RpcEndpoint::SubmitProvenBatch
+            | RpcEndpoint::RegisterAccount => false,
             RpcEndpoint::Status
             | RpcEndpoint::SyncNullifiers
             | RpcEndpoint::GetAccount
@@ -774,6 +786,7 @@ impl fmt::Display for RpcEndpoint {
                 write!(f, "sync_nullifiers")
             },
             RpcEndpoint::GetAccount => write!(f, "get_account"),
+            RpcEndpoint::RegisterAccount => write!(f, "register_account"),
             RpcEndpoint::GetBlockByNumber => write!(f, "get_block_by_number"),
             RpcEndpoint::GetBlockHeaderByNumber => {
                 write!(f, "get_block_header_by_number")

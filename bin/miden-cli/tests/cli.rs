@@ -188,6 +188,50 @@ fn cli_manages_keys() {
     }
 }
 
+/// An interrupted `keys --encrypt` leaves an encrypted keystore with a plaintext key file and a
+/// configuration that still marks the keystore as plaintext. A new `keys --encrypt` finishes it.
+#[test]
+fn cli_finishes_an_interrupted_keystore_encryption() {
+    let temp_dir = temp_dir().join(format!("cli-test-{}", rand::rng().random::<u64>()));
+    fs::create_dir_all(&temp_dir).unwrap();
+    let config_path = temp_dir.join(MIDEN_DIR).join("miden-client.toml");
+    let keystore_dir = temp_dir.join(MIDEN_DIR).join(KEYSTORE_DIRECTORY);
+
+    let mut init_cmd = cargo_bin_cmd!("miden-client");
+    init_cmd.args(["init", "--local", "--network", "localhost", "--plaintext-keystore"]);
+    init_cmd.current_dir(&temp_dir).assert().success();
+
+    // Simulate the interruption: the keystore is encrypted, one key file is still in plaintext, and
+    // the configuration was not updated.
+    let key = AuthSecretKey::new_ecdsa_k256_keccak();
+    let commitment = Word::from(key.public_key().to_commitment()).to_hex();
+    FilesystemKeyStore::encrypt_plaintext_keystore(
+        keystore_dir.clone(),
+        TEST_KEYSTORE_PASSWORD.as_bytes(),
+    )
+    .unwrap();
+    fs::write(keystore_dir.join(&commitment), key.to_bytes()).unwrap();
+    assert!(fs::read_to_string(&config_path).unwrap().contains("keystore_encrypted = false"));
+
+    let mut list_cmd = miden_cmd();
+    list_cmd.args(["keys", "--list"]);
+    list_cmd
+        .current_dir(&temp_dir)
+        .assert()
+        .failure()
+        .stderr(contains("cli::encrypted_keystore"));
+
+    let mut encrypt_cmd = miden_cmd();
+    encrypt_cmd.args(["keys", "--encrypt"]);
+    encrypt_cmd.current_dir(&temp_dir).assert().success();
+    assert!(fs::read_to_string(&config_path).unwrap().contains("keystore_encrypted = true"));
+    assert_ne!(fs::read(keystore_dir.join(&commitment)).unwrap(), key.to_bytes());
+
+    let mut list_cmd = miden_cmd();
+    list_cmd.args(["keys", "--list"]);
+    list_cmd.current_dir(&temp_dir).assert().success().stdout(contains(&commitment));
+}
+
 /// A keystore initialized with `--plaintext-keystore` holds plaintext keys until `keys --encrypt`
 /// encrypts it. After that, every command needs the password.
 #[test]

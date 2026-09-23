@@ -151,7 +151,7 @@ impl KeysCmd {
         // An interrupted encryption already has a password, so a prompted password is not
         // confirmed. The keystore verifies it instead.
         let password = read_keystore_password(!is_encrypted_directory)?;
-        let keystore = FilesystemKeyStore::encrypt_plaintext_keystore(
+        let (keystore, unreadable) = FilesystemKeyStore::encrypt_plaintext_keystore(
             config.secret_keys_directory.clone(),
             password.as_bytes(),
         )
@@ -165,6 +165,14 @@ impl KeysCmd {
             keystore.list_keys().map_err(CliError::KeyStore)?.len(),
             config.secret_keys_directory.display()
         );
+        // These files can hold plaintext secret key bytes, so the user must decide what to do with
+        // them.
+        for commitment in unreadable {
+            eprintln!(
+                "Warning: the key file {} does not hold a readable key and is not encrypted.",
+                config.secret_keys_directory.join(Word::from(commitment).to_hex()).display()
+            );
+        }
         Ok(())
     }
 

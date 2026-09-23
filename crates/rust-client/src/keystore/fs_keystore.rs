@@ -363,7 +363,7 @@ impl FilesystemKeyStore {
         let key = if Self::is_encrypted_directory(&keys_directory) {
             EncryptionMetadata::read_from_file(&keys_directory)?.unlock(password)?
         } else {
-            if !key_file_commitments(&keys_directory)?.is_empty() {
+            if Self::holds_plaintext_keys(&keys_directory)? {
                 return Err(KeyStoreError::StorageError(format!(
                     "keystore at {} holds plaintext keys; encrypt them before opening it with a \
                      password",
@@ -402,11 +402,12 @@ impl FilesystemKeyStore {
         Self::open(keys_directory, None)
     }
 
-    /// Encrypts every key file of a plaintext keystore with a key derived from `password` and
-    /// returns the encrypted keystore.
+    /// Encrypts every key file of a plaintext keystore with a key derived from `password`.
     ///
-    /// The account associations are kept. A file that does not hold a readable key is left as it
-    /// is. Each key file is replaced atomically, so a key file is never partially written.
+    /// Returns the encrypted keystore and the commitments of the key files that do not hold a
+    /// readable key. These files are left as they are, so the caller must report them. The account
+    /// associations are kept. Each key file is replaced atomically, so a key file is never
+    /// partially written.
     ///
     /// If this operation stops before it completes, the directory holds both encrypted and
     /// plaintext key files. Call this function again with the same password to encrypt the
@@ -415,11 +416,11 @@ impl FilesystemKeyStore {
     /// # Errors
     ///
     /// Returns [`KeyStoreError::InvalidPassword`] if the directory already holds an encrypted
-    /// keystore with a different password.
+    /// keystore with a different password, and an error if a key file cannot be read.
     pub fn encrypt_plaintext_keystore(
         keys_directory: PathBuf,
         password: &[u8],
-    ) -> Result<Self, KeyStoreError> {
+    ) -> Result<(Self, Vec<PublicKeyCommitment>), KeyStoreError> {
         Self::create_keys_directory(&keys_directory)?;
 
         // The metadata file is written before the key files are encrypted. An interrupted operation
@@ -433,19 +434,20 @@ impl FilesystemKeyStore {
         };
         let encrypted = Self::open(keys_directory, Some(Arc::new(key)))?;
 
+        let mut unreadable = Vec::new();
         for commitment in key_file_commitments(&encrypted.keys_directory)? {
-            let Ok(bytes) = fs::read(key_file_path(&encrypted.keys_directory, commitment)) else {
-                continue;
-            };
+            let bytes = fs::read(key_file_path(&encrypted.keys_directory, commitment))
+                .map_err(keystore_error("error reading secret key file"))?;
             if encrypted.decode_key(&bytes, commitment).is_ok() {
                 continue;
             }
-            if let Ok(key) = AuthSecretKey::read_from_bytes(&bytes) {
-                encrypted.store_key(&key)?;
+            match AuthSecretKey::read_from_bytes(&bytes) {
+                Ok(key) => encrypted.store_key(&key)?,
+                Err(_) => unreadable.push(commitment),
             }
         }
 
-        Ok(encrypted)
+        Ok((encrypted, unreadable))
     }
 
     /// Returns `true` if the key files are encrypted.
@@ -456,6 +458,21 @@ impl FilesystemKeyStore {
     /// Returns `true` if `keys_directory` holds an encrypted keystore.
     pub fn is_encrypted_directory(keys_directory: &Path) -> bool {
         keys_directory.join(ENCRYPTION_FILE_NAME).exists()
+    }
+
+    /// Returns `true` if `keys_directory` is not an encrypted keystore and holds key files.
+    ///
+    /// [`FilesystemKeyStore::new`] refuses such a directory. A directory that is missing or holds
+    /// no key files becomes a new encrypted keystore.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the directory cannot be read.
+    pub fn holds_plaintext_keys(keys_directory: &Path) -> Result<bool, KeyStoreError> {
+        if !keys_directory.exists() || Self::is_encrypted_directory(keys_directory) {
+            return Ok(false);
+        }
+        Ok(!key_file_commitments(keys_directory)?.is_empty())
     }
 
     fn create_keys_directory(keys_directory: &Path) -> Result<(), KeyStoreError> {
@@ -1070,10 +1087,11 @@ mod tests {
             "plaintext keys must not be silently mixed with encrypted keys"
         );
 
-        let encrypted =
+        let (encrypted, unreadable) =
             FilesystemKeyStore::encrypt_plaintext_keystore(dir.path().to_path_buf(), PASSWORD)
                 .unwrap();
         assert!(encrypted.is_encrypted());
+        assert_eq!(unreadable, vec![PublicKeyCommitment::from(unused_commitment())]);
         assert_ne!(
             fs::read(key_file_path(dir.path(), associated_commitment)).unwrap(),
             associated_key.to_bytes()
@@ -1092,7 +1110,7 @@ mod tests {
         );
         assert_eq!(encrypted.list_keys().unwrap().len(), 2);
 
-        let again =
+        let (again, _) =
             FilesystemKeyStore::encrypt_plaintext_keystore(dir.path().to_path_buf(), PASSWORD)
                 .unwrap();
         assert_eq!(again.list_keys().unwrap().len(), 2);
@@ -1100,6 +1118,22 @@ mod tests {
         let wrong_password =
             FilesystemKeyStore::encrypt_plaintext_keystore(dir.path().to_path_buf(), b"wrong");
         assert!(matches!(wrong_password, Err(KeyStoreError::InvalidPassword)));
+    }
+
+    /// A directory with files that are not key files is a new keystore, not a plaintext keystore.
+    #[test]
+    fn directory_without_key_files_opens_as_new_encrypted_keystore() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join(".DS_Store"), [1, 2, 3]).unwrap();
+        assert!(!FilesystemKeyStore::holds_plaintext_keys(dir.path()).unwrap());
+
+        let keystore = FilesystemKeyStore::new(dir.path().to_path_buf(), PASSWORD).unwrap();
+        assert!(keystore.is_encrypted());
+        assert!(!FilesystemKeyStore::holds_plaintext_keys(dir.path()).unwrap());
+
+        let (plaintext, plaintext_dir) = test_keystore();
+        plaintext.store_key(&AuthSecretKey::new_falcon512_poseidon2()).unwrap();
+        assert!(FilesystemKeyStore::holds_plaintext_keys(plaintext_dir.path()).unwrap());
     }
 
     /// An interrupted encryption leaves plaintext key files next to encrypted ones. A new call with
@@ -1118,9 +1152,10 @@ mod tests {
             .unwrap();
         drop(keystore);
 
-        let encrypted =
+        let (encrypted, unreadable) =
             FilesystemKeyStore::encrypt_plaintext_keystore(dir.path().to_path_buf(), PASSWORD)
                 .unwrap();
+        assert!(unreadable.is_empty());
         assert_ne!(
             fs::read(key_file_path(dir.path(), plaintext_commitment)).unwrap(),
             plaintext_key.to_bytes()

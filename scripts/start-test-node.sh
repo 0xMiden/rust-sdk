@@ -74,7 +74,8 @@ BATCH_BUILDER_WALLET="${MIDEN_BATCH_BUILDER_WALLET:-0xcc0000000000dd010000ee0000
 # creation the integration tests do, so the default here is off and callers opt in.
 ACCOUNT_ALLOWLIST="${MIDEN_ACCOUNT_ALLOWLIST:-0}"
 
-NODE_BINS=(miden-validator miden-node miden-ntx-builder miden-remote-prover miden-funding-service)
+NODE_BINS=(miden-validator miden-node miden-ntx-builder miden-remote-prover miden-funding-service
+    miden-note-transport)
 
 # Resolve the pinned node source from Cargo.lock: a git pin takes precedence, otherwise use the
 # crates.io version locked for `miden-node-proto-build`.
@@ -250,7 +251,6 @@ start validator   "$BIN/miden-validator" start --listen "$VALIDATOR" --data-dire
     --storage-key.setup-context "$STORAGE_KEY_DIR/setup-context.wire" \
     --storage-key.public-key-set "$STORAGE_KEY_DIR/public-key-set.wire" \
     --storage-key.secret-share "$STORAGE_KEY_DIR/secret-share.wire"
-
 # The fee collector deployment and the sequencer both need the validator.
 echo "==> waiting for validator on $VALIDATOR"
 VALIDATOR_READY=""
@@ -279,23 +279,21 @@ if ! {
     tail -n 20 "$LOG_DIR/fee-collector.log" >&2
     exit 1
 fi
-# The node enforces the account allowlist unless told otherwise, and enforcement rejects every
-# account-creating submission from an unregistered account. Only the allowlist tests want that.
-# The admin API is bound only alongside enforcement, because seeding the invitation codes is the
-# one thing it is needed for, and binding it otherwise would only add a port that can clash.
+
+# The node enforces the account allowlist unless told otherwise. Only the allowlist tests enable
+# it. The admin API is necessary only when the tests create invitation codes.
 #
-# With enforcement on, the sequencer also asks the funding service to pay every account that
-# registers, and answers the registration only once that note is committed. The service starts
-# after the sequencer, because it reads its account from the RPC. That order is safe, because the
-# sequencer calls the service only when an account registers.
-# A registration waits for the funding note to commit, which takes longer than the 10s default
-# request timeout of the RPC server.
-SEQUENCER_ALLOWLIST_ARGS=()
+# With enforcement on, the sequencer asks the funding service to pay every account that registers,
+# and answers the registration only once that note is committed. That takes longer than the 10s
+# default request timeout of the RPC server. The service starts after the sequencer, because it
+# reads its account from the RPC. The sequencer calls the service only when an account registers.
 if [ "$ACCOUNT_ALLOWLIST" = "1" ]; then
-    SEQUENCER_ALLOWLIST_ARGS+=(--admin.listen "$ADMIN")
-    SEQUENCER_ALLOWLIST_ARGS+=(--funding-service.url "http://$FUNDING")
-    SEQUENCER_ALLOWLIST_ARGS+=(--funding-service.amount "$FUNDING_AMOUNT")
-    SEQUENCER_ALLOWLIST_ARGS+=(--rpc.grpc.timeout 60s)
+    SEQUENCER_ALLOWLIST_ARGS=(
+        --admin.listen "$ADMIN"
+        --funding-service.url "http://$FUNDING"
+        --funding-service.amount "$FUNDING_AMOUNT"
+        --rpc.grpc.timeout 60s
+    )
 else
     SEQUENCER_ALLOWLIST_ARGS=(--disable-account-allowlist)
 fi
@@ -304,7 +302,7 @@ start sequencer   "$BIN/miden-node" sequencer --rpc.listen "$RPC" --data-directo
     --validator.url "http://$VALIDATOR" --ntx-builder.url "http://$NTX" \
     --rpc.network-tx-auth-header-value "$NETWORK_TX_AUTH" \
     --batch.builder.wallet-account-id "$BATCH_BUILDER_WALLET" \
-    ${SEQUENCER_ALLOWLIST_ARGS[@]+"${SEQUENCER_ALLOWLIST_ARGS[@]}"} \
+    "${SEQUENCER_ALLOWLIST_ARGS[@]}" \
     --block.interval 3s --batch.interval 1s
 # A network transaction's proof runs well past the prover's 60s default on a shared CI runner, and
 # the default capacity of 1 rejects the ntx-builder's retry outright, so it never converges.
@@ -319,7 +317,7 @@ start ntx-builder "$BIN/miden-ntx-builder" start --listen "$NTX" --rpc.url "http
     --tx-prover.timeout "$PROVER_TIMEOUT" \
     --max-cycles "$((1 << 18))" \
     --data-directory "$DATA/ntx-builder"
-# The funding service pays out of the `funding_service` wallet that `miden-validator genesis` wrote,
+# The funding service pays out of the funding account that genesis was built with,
 # and trusts the validator key the validator was started with. A request blocks until the note is
 # committed, so its HTTP timeout covers a proof plus the expiration window.
 if [ "$ACCOUNT_ALLOWLIST" = "1" ]; then
@@ -327,7 +325,7 @@ if [ "$ACCOUNT_ALLOWLIST" = "1" ]; then
         --rpc.url "http://$RPC" \
         --tx-prover.url "http://$PROVER" \
         --tx-prover.timeout "$PROVER_TIMEOUT" \
-        --account-file "$DATA/accounts/funding_service.mac" \
+        --account-file "$DATA/genesis-config/funding_account.mac" \
         --validator-signing-public-key "$VALIDATOR_PUBLIC_KEY" \
         --http.timeout "$PROVER_TIMEOUT" \
         --poll-interval 250ms

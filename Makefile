@@ -40,8 +40,6 @@ MIDEN_FUNDING_SERVICE_URL?=http://127.0.0.1:50401
 # only after the funding note of the account is committed, requiring a longer timeout.
 ALLOWLIST_RPC_TIMEOUT_MS?=60000
 
-integration-test integration-test-non-agglayer integration-test-agglayer integration-test-allowlist integration-test-miden-bench integration-test-dev integration-test-binary: export MIDEN_PROTOCOL_CONFIG := $(MIDEN_PROTOCOL_CONFIG)
-
 # Sizes the SQL store scaling benchmark sweeps over. Kept small enough to run on every PR, and
 # overridable for a deeper local run.
 STORE_BENCH_ARGS?=--notes 1000,10000 --accounts 100,1000 --iterations 5

@@ -1974,7 +1974,8 @@ async fn create_rust_client_with_store_path(
     store_path: &Path,
     endpoint: Endpoint,
 ) -> Result<(TestClient, FilesystemKeyStore)> {
-    create_rust_client(store_path, &temp_dir(), endpoint).await
+    let keystore = FilesystemKeyStore::new_plaintext(temp_dir())?;
+    create_rust_client(store_path, keystore, endpoint).await
 }
 
 /// Creates a new [`Client`] over both the store and the keystore of the CLI running in `cli_path`,
@@ -1984,13 +1985,16 @@ async fn create_rust_client_with_cli_keystore(
     cli_path: &Path,
     endpoint: Endpoint,
 ) -> Result<(TestClient, FilesystemKeyStore)> {
-    let keystore_dir = cli_path.join(MIDEN_DIR).join(KEYSTORE_DIRECTORY);
-    create_rust_client(store_path, &keystore_dir, endpoint).await
+    let keystore = FilesystemKeyStore::new(
+        cli_path.join(MIDEN_DIR).join(KEYSTORE_DIRECTORY),
+        TEST_KEYSTORE_PASSWORD.as_bytes(),
+    )?;
+    create_rust_client(store_path, keystore, endpoint).await
 }
 
 async fn create_rust_client(
     store_path: &Path,
-    keystore_path: &Path,
+    keystore: FilesystemKeyStore,
     endpoint: Endpoint,
 ) -> Result<(TestClient, FilesystemKeyStore)> {
     let store = {
@@ -2002,8 +2006,6 @@ async fn create_rust_client(
     let coin_seed: [u64; 4] = rng.random();
 
     let rng = Box::new(RandomCoin::new(coin_seed.map(Felt::new_unchecked).into()));
-
-    let keystore = FilesystemKeyStore::new_plaintext(keystore_path.to_path_buf())?;
 
     let client = ClientBuilder::new()
         .grpc_client(&endpoint, Some(10_000))

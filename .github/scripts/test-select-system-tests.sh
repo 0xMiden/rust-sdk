@@ -34,6 +34,10 @@ no_systems=$(printf '%s\n' \
   "test-node=false")
 
 assert_selection "AggLayer build script" "$all_systems" "bin/integration-tests/build.rs"
+assert_selection "AggLayer Foundry source" "$all_systems" \
+  "bin/integration-tests/foundry-vectors/src/DepositContractTestHelpers.sol"
+assert_selection "AggLayer Foundry configuration" "$all_systems" \
+  "bin/integration-tests/foundry-vectors/foundry.toml"
 assert_selection "Nextest configuration" "$all_systems" ".config/nextest.toml"
 assert_selection "validator fixture" "$all_systems" \
   "scripts/testdata/insecure-golden-storage-key/secret-share.wire"

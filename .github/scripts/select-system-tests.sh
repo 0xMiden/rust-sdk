@@ -28,7 +28,7 @@ while IFS= read -r path; do
   esac
 
   case "$path" in
-    bin/integration-tests/Cargo.toml|bin/integration-tests/build.rs|bin/integration-tests/src/config.rs|bin/integration-tests/src/fee_funding.rs|bin/integration-tests/src/lib.rs|bin/integration-tests/src/tests/mod.rs|bin/integration-tests/src/tests/agglayer/*|bin/integration-tests/tests/integration.rs|crates/rust-client/*|crates/sqlite-store/*|crates/testing/test-node-genesis/*|data/*|scripts/start-test-node.sh|scripts/stop-test-node.sh)
+    bin/integration-tests/Cargo.toml|bin/integration-tests/build.rs|bin/integration-tests/foundry-vectors/*|bin/integration-tests/src/config.rs|bin/integration-tests/src/fee_funding.rs|bin/integration-tests/src/lib.rs|bin/integration-tests/src/tests/mod.rs|bin/integration-tests/src/tests/agglayer/*|bin/integration-tests/tests/integration.rs|crates/rust-client/*|crates/sqlite-store/*|crates/testing/test-node-genesis/*|data/*|scripts/start-test-node.sh|scripts/stop-test-node.sh)
       agglayer=true
       ;;
   esac

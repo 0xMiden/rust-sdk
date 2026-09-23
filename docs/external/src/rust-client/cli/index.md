@@ -308,7 +308,7 @@ View transactions.
 | `--list`      | List tracked transactions                | `-l`    |
 | `--show <ID>` | Show the details of a single transaction | `-s`    |
 
-The `--list` flag accepts filters that narrow the listing, which is ordered by creation time:
+The `--list` flag accepts filters that narrow the listing, which is ordered by creation time, newest first:
 
 | Flag                | Description                                            | Aliases |
 | ------------------- | ------------------------------------------------------ | ------- |

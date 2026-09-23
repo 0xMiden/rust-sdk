@@ -7,7 +7,7 @@ use miden_client::Client;
 use miden_client::block::BlockNumber;
 use miden_client::keystore::Keystore;
 use miden_client::note::{NoteAssets, Nullifier, StandardNote};
-use miden_client::store::{InputNoteRecord, NoteFilter, TransactionFilter};
+use miden_client::store::{InputNoteRecord, NoteFilter, TransactionFilter, TransactionFilterQuery};
 use miden_client::transaction::{
     ExpirationTransactionScript,
     SendNotesTransactionScript,
@@ -15,6 +15,7 @@ use miden_client::transaction::{
     TransactionScript,
     TransactionScriptRoot,
     TransactionStatus,
+    TransactionStatusVariant,
 };
 
 use crate::commands::notes::note_record_type;
@@ -35,14 +36,13 @@ pub enum TransactionStatusFilter {
     Discarded,
 }
 
-impl TransactionStatusFilter {
-    fn matches(&self, status: &TransactionStatus) -> bool {
-        matches!(
-            (self, status),
-            (TransactionStatusFilter::Pending, TransactionStatus::Pending)
-                | (TransactionStatusFilter::Committed, TransactionStatus::Committed { .. })
-                | (TransactionStatusFilter::Discarded, TransactionStatus::Discarded(_))
-        )
+impl From<&TransactionStatusFilter> for TransactionStatusVariant {
+    fn from(status: &TransactionStatusFilter) -> Self {
+        match status {
+            TransactionStatusFilter::Pending => TransactionStatusVariant::Pending,
+            TransactionStatusFilter::Committed => TransactionStatusVariant::Committed,
+            TransactionStatusFilter::Discarded => TransactionStatusVariant::Discarded,
+        }
     }
 }
 
@@ -55,17 +55,15 @@ pub struct TransactionCmd {
     /// Show details of the transaction with the specified ID or hex prefix.
     #[arg(short, long, group = "action", value_name = "ID")]
     show: Option<String>,
-    /// (only has effect on `--list`) Only list transactions executed by this account ID (or hex
-    /// prefix).
+    /// Only list transactions executed by this account ID (or hex prefix).
     #[arg(short, long, value_name = "ID", conflicts_with = "show")]
     account_id: Option<String>,
-    /// (only has effect on `--list`) Only list transactions in this status.
+    /// Only list transactions in this status.
     #[arg(long, value_name = "status", conflicts_with = "show")]
     status: Option<TransactionStatusFilter>,
-    /// (only has effect on `--list`) Only list the most recently created transactions, at most this
-    /// many.
+    /// Only list the most recently created transactions, at most this many.
     #[arg(long, value_name = "count", conflicts_with = "show")]
-    limit: Option<usize>,
+    limit: Option<u32>,
 }
 
 impl TransactionCmd {
@@ -94,36 +92,20 @@ async fn list_transactions<AUTH: Keystore + Sync + 'static>(
     client: &Client<AUTH>,
     account_id: Option<&str>,
     status: Option<&TransactionStatusFilter>,
-    limit: Option<usize>,
+    limit: Option<u32>,
 ) -> Result<(), CliError> {
     let account_id = match account_id {
         Some(account_id) => Some(parse_account_id(client, account_id).await?),
         None => None,
     };
 
-    let mut transactions = client.get_transactions(TransactionFilter::All).await?;
-    transactions.retain(|transaction| {
-        account_id.is_none_or(|account_id| transaction.details.account_id == account_id)
-            && status.is_none_or(|status| status.matches(&transaction.status))
-    });
-
-    // The store returns transactions in an unspecified order, so sort them to make the listing
-    // chronological and give `--limit` a well-defined tail to keep. The creation timestamp has a
-    // resolution of one second, so the submission height and the ID break a tie between
-    // transactions created in the same second and keep the order stable.
-    transactions.sort_by(|left, right| {
-        let key = |transaction: &TransactionRecord| {
-            (
-                transaction.details.creation_timestamp,
-                transaction.details.submission_height,
-                transaction.id.to_hex(),
-            )
-        };
-        key(left).cmp(&key(right))
-    });
-    if let Some(limit) = limit {
-        transactions.drain(..transactions.len().saturating_sub(limit));
-    }
+    let transactions = client
+        .get_transactions(TransactionFilter::Query(TransactionFilterQuery {
+            account_id,
+            status: status.map(TransactionStatusVariant::from),
+            limit,
+        }))
+        .await?;
 
     print_transactions_summary(&transactions);
     Ok(())
@@ -383,6 +365,7 @@ mod tests {
         SendNotesTransactionScript,
         TransactionScriptRoot,
         TransactionStatus,
+        TransactionStatusVariant,
     };
 
     use super::{
@@ -394,25 +377,24 @@ mod tests {
     };
 
     #[test]
-    fn transaction_status_filter_matches_only_its_own_status() {
-        let statuses = [
-            TransactionStatus::Pending,
-            TransactionStatus::Committed {
-                block_number: BlockNumber::from(7u32),
-                commit_timestamp: 0,
-            },
-            TransactionStatus::Discarded(DiscardCause::Expired),
-        ];
-        let filters = [
-            TransactionStatusFilter::Pending,
-            TransactionStatusFilter::Committed,
-            TransactionStatusFilter::Discarded,
+    fn transaction_status_filter_selects_the_variant_of_its_status() {
+        let cases = [
+            (TransactionStatusFilter::Pending, TransactionStatus::Pending),
+            (
+                TransactionStatusFilter::Committed,
+                TransactionStatus::Committed {
+                    block_number: BlockNumber::from(7u32),
+                    commit_timestamp: 0,
+                },
+            ),
+            (
+                TransactionStatusFilter::Discarded,
+                TransactionStatus::Discarded(DiscardCause::Expired),
+            ),
         ];
 
-        for (filter_index, filter) in filters.iter().enumerate() {
-            for (status_index, status) in statuses.iter().enumerate() {
-                assert_eq!(filter.matches(status), filter_index == status_index);
-            }
+        for (filter, status) in cases {
+            assert_eq!(TransactionStatusVariant::from(&filter), status.variant());
         }
     }
 

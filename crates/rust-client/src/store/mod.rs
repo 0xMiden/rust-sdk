@@ -60,7 +60,7 @@ use crate::note_transport::{NOTE_TRANSPORT_CURSOR_STORE_SETTING, NoteTransportCu
 use crate::rpc::encryption::{TRANSACTION_ENCRYPTION_KEY_STORE_SETTING, TransactionEncryptionKey};
 use crate::rpc::{RPC_LIMITS_STORE_SETTING, RpcLimits};
 use crate::sync::{NoteTagRecord, StateSyncUpdate};
-use crate::transaction::{TransactionRecord, TransactionStoreUpdate};
+use crate::transaction::{TransactionRecord, TransactionStatusVariant, TransactionStoreUpdate};
 
 /// Contains [`ClientDataStore`] to automatically implement [`DataStore`] for anything that
 /// implements [`Store`]. This isn't public because it's an implementation detail to instantiate the
@@ -865,6 +865,23 @@ pub enum TransactionFilter {
     Uncommitted,
     /// Return a list of the transaction that matches the provided [`TransactionId`]s.
     Ids(Vec<TransactionId>),
+    /// Return the transactions that match every criterion of the query, newest first.
+    Query(TransactionFilterQuery),
+}
+
+/// The criteria of [`TransactionFilter::Query`]. A criterion that is `None` matches every
+/// transaction.
+///
+/// Transactions are ordered by creation time, newest first. Transactions with the same creation
+/// time are ordered by descending ID.
+#[derive(Debug, Clone, Default)]
+pub struct TransactionFilterQuery {
+    /// Keep only the transactions executed by this account.
+    pub account_id: Option<AccountId>,
+    /// Keep only the transactions in this status.
+    pub status: Option<TransactionStatusVariant>,
+    /// Keep only the newest transactions, at most this many.
+    pub limit: Option<u32>,
 }
 
 // NOTE FILTER

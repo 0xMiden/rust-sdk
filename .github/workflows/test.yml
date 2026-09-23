@@ -275,7 +275,8 @@ jobs:
   allowlist-tests:
     name: Account allowlist tests
     runs-on: warp-ubuntu-latest-x64-8x
-    needs: [build-test-node]
+    needs: [changes, build-test-node, install-test-node]
+    if: ${{ !cancelled() && needs.changes.outputs.integration != 'false' && (needs.install-test-node.result == 'success' || (needs.build-test-node.result == 'success' && needs.build-test-node.outputs.cache-hit == 'true' && needs.install-test-node.result == 'skipped')) }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -290,7 +291,7 @@ jobs:
       - name: Add Rust Cache
         uses: WarpBuilds/rust-cache@9d0cc3090d9c87de74ea67617b246e978735b1a1 # v2.9.1
         with:
-          shared-key: rust-release
+          shared-key: rust-release-${{ runner.arch }}
           prefix-key: ${{ env.RUST_CACHE_KEY }}
           save-if: false
       - name: Fetch test node binaries

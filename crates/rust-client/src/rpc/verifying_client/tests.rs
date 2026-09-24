@@ -681,6 +681,44 @@ async fn sync_transactions_accepts_empty_response() {
     assert!(records.is_empty());
 }
 
+// BLOCK WINDOW RANGE
+// ================================================================================================
+
+#[tokio::test]
+async fn sync_nullifiers_verifies_block_range() {
+    let from = BlockNumber::from(10u32);
+    let to = BlockNumber::from(20u32);
+
+    let client = VerifyingRpcClient::new(CannedTransport {
+        nullifiers: Some(vec![nullifier_update(0xabcd, 15)]),
+        ..Default::default()
+    });
+    client
+        .sync_nullifiers(&[0xabcd], from, to)
+        .await
+        .expect("an update inside the window must be accepted");
+
+    let client = VerifyingRpcClient::new(CannedTransport {
+        nullifiers: Some(vec![nullifier_update(0xabcd, 25)]),
+        ..Default::default()
+    });
+    let err = client
+        .sync_nullifiers(&[0xabcd], from, to)
+        .await
+        .expect_err("an update after the window must be rejected");
+    assert!(matches!(err, RpcError::InvalidResponse(_)));
+
+    let client = VerifyingRpcClient::new(CannedTransport {
+        nullifiers: Some(vec![nullifier_update(0xabcd, 5)]),
+        ..Default::default()
+    });
+    let err = client
+        .sync_nullifiers(&[0xabcd], from, to)
+        .await
+        .expect_err("an update before the window must be rejected");
+    assert!(matches!(err, RpcError::InvalidResponse(_)));
+}
+
 #[tokio::test]
 async fn transport_errors_pass_through_unchanged() {
     let client = VerifyingRpcClient::new(CannedTransport {

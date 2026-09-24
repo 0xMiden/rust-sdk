@@ -1603,7 +1603,7 @@ async fn list_addresses_remove() -> Result<()> {
     Ok(())
 }
 
-// EXTERNAL ECDSA KEY TESTS
+// AUTHENTICATION SCHEME TESTS
 // ================================================================================================
 
 /// The secp256k1 point 6·G in both SEC1 encodings, as an external signer would export it.
@@ -1680,24 +1680,50 @@ fn cli_generates_ecdsa_key_when_no_public_key_is_given() {
 }
 
 #[test]
-fn cli_rejects_external_ecdsa_key_alongside_auth_package() {
+fn cli_generates_falcon_key_when_no_public_key_is_given() {
     let temp_dir = init_cli().1;
 
     let mut create_cmd = cargo_bin_cmd!("miden-client");
-    create_cmd.args([
-        "new-account",
-        "-p",
-        "auth/no-auth",
-        "-p",
-        "basic-wallet",
-        "--ecdsa-k256-keccak",
-        EXTERNAL_ECDSA_KEY_COMPRESSED,
-    ]);
+    create_cmd.args(["new-wallet", "--falcon"]);
     create_cmd
         .current_dir(&temp_dir)
         .assert()
-        .failure()
-        .stderr(contains("auth component").and(contains("--ecdsa-k256-keccak")));
+        .success()
+        .stdout(contains("Generated and stored falcon512-poseidon2 authentication key"));
+
+    let keystore_dir = temp_dir.join(MIDEN_DIR).join(KEYSTORE_DIRECTORY);
+    let keystore_entries = fs::read_dir(&keystore_dir).unwrap().count();
+    assert_ne!(keystore_entries, 0, "the generated Falcon key should land in the keystore");
+}
+
+#[test]
+fn cli_rejects_auth_scheme_flag_alongside_auth_package() {
+    let temp_dir = init_cli().1;
+
+    let auth_args = [
+        vec!["--ecdsa".to_string()],
+        vec!["--falcon".to_string()],
+        vec!["--ecdsa".to_string(), EXTERNAL_ECDSA_KEY_COMPRESSED.to_string()],
+    ];
+
+    for auth_args in auth_args {
+        let mut args = vec![
+            "new-account".to_string(),
+            "-p".to_string(),
+            "auth/no-auth".to_string(),
+            "-p".to_string(),
+            "basic-wallet".to_string(),
+        ];
+        args.extend(auth_args);
+
+        let mut create_cmd = cargo_bin_cmd!("miden-client");
+        create_cmd
+            .args(args)
+            .current_dir(&temp_dir)
+            .assert()
+            .failure()
+            .stderr(contains("auth component").and(contains("--ecdsa-k256-keccak")));
+    }
 }
 
 #[test]

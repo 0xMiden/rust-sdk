@@ -21,6 +21,7 @@ use crate::{Parser, create_dynamic_table};
 /// reads.
 const FALCON_PUBLIC_KEY_BYTES: usize = 897;
 
+// Command modules share these names. Keep them internal to the CLI crate.
 /// Name of the Falcon scheme in the command line and in the command output.
 pub(crate) const FALCON_SCHEME_NAME: &str = "falcon512-poseidon2";
 /// Name of the ECDSA scheme in the command line and in the command output.

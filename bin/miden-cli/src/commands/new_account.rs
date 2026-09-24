@@ -3,7 +3,7 @@ use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
-use clap::{Parser, ValueEnum};
+use clap::{Args, Parser, ValueEnum};
 use miden_client::Client;
 use miden_client::account::component::{
     AccountComponent,
@@ -33,7 +33,7 @@ use serde::Deserialize;
 use tracing::debug;
 
 use crate::commands::account::set_default_account_if_unset;
-use crate::commands::keys::scheme_name;
+use crate::commands::keys::{ECDSA_SCHEME_NAME, FALCON_SCHEME_NAME, scheme_name};
 use crate::config::CliConfig;
 use crate::errors::CliError;
 use crate::utils::parse_ecdsa_public_key;
@@ -54,6 +54,48 @@ impl From<CliAccountType> for AccountType {
         match cli_account_type {
             CliAccountType::Private => AccountType::Private,
             CliAccountType::Public => AccountType::Public,
+        }
+    }
+}
+
+/// Selects an authentication scheme and an optional external ECDSA public key.
+#[derive(Args, Clone, Debug)]
+struct AuthArgs {
+    /// Use the ECDSA k256/Keccak authentication scheme.
+    ///
+    /// With a `PUBLIC_KEY`, the account uses the external key and stores no secret key. The key
+    /// must use a `0x`-prefixed, compressed or uncompressed SEC1 encoding. Without a value, the
+    /// command generates an ECDSA secret key and stores it in the keystore.
+    #[allow(clippy::option_option)]
+    #[arg(
+        long = ECDSA_SCHEME_NAME,
+        visible_alias = "ecdsa",
+        value_name = "PUBLIC_KEY",
+        num_args = 0..=1,
+        conflicts_with = "falcon512_poseidon2"
+    )]
+    ecdsa_k256_keccak: Option<Option<String>>,
+
+    /// Generate and store a Falcon512/Poseidon2 authentication key.
+    #[arg(
+        long = FALCON_SCHEME_NAME,
+        visible_alias = "falcon",
+        default_value_t = false,
+        conflicts_with = "ecdsa_k256_keccak"
+    )]
+    falcon512_poseidon2: bool,
+}
+
+impl AuthArgs {
+    fn choice(&self) -> Result<AuthChoice, CliError> {
+        match (&self.ecdsa_k256_keccak, self.falcon512_poseidon2) {
+            (Some(Some(key)), false) => parse_ecdsa_public_key(key).map(AuthChoice::ExternalEcdsa),
+            (Some(None), false) => Ok(AuthChoice::Generate(AuthSchemeId::EcdsaK256Keccak)),
+            (None, true) => Ok(AuthChoice::Generate(AuthSchemeId::Falcon512Poseidon2)),
+            (None, false) => Ok(AuthChoice::Default),
+            (Some(_), true) => Err(CliError::InvalidArgument(format!(
+                "--{ECDSA_SCHEME_NAME} and --{FALCON_SCHEME_NAME} cannot be used together"
+            ))),
         }
     }
 }
@@ -86,32 +128,8 @@ pub struct NewWalletCmd {
     #[cfg_attr(feature = "testing", arg(long, default_value_t = false))]
     #[cfg_attr(not(feature = "testing"), arg(skip = false))]
     pub offline: bool,
-    /// Use the ECDSA k256/Keccak authentication scheme, optionally committing to an externally-held
-    /// public key.
-    ///
-    /// With a `PUBLIC_KEY` (SEC1 compressed 33-byte or uncompressed 65-byte hex, `0x`-prefixed —
-    /// the form external signers such as a Ledger device export), the account commits to that key
-    /// and no secret key is generated or stored, so transactions must be signed by the external key
-    /// holder. Without a value, a new ECDSA secret key is generated and stored in the keystore.
-    /// Cannot be combined with a package that contributes an auth component.
-    // The nested option is clap's idiom for a flag with an optional value: the outer level says
-    // whether the flag is present, the inner one whether a value was given.
-    #[allow(clippy::option_option)]
-    #[arg(
-        long = "ecdsa-k256-keccak",
-        visible_alias = "ecdsa",
-        value_name = "PUBLIC_KEY",
-        num_args = 0..=1,
-        conflicts_with = "falcon512_poseidon2"
-    )]
-    pub ecdsa_k256_keccak: Option<Option<String>>,
-    /// Use the Falcon512/Poseidon2 authentication scheme: generate a new secret key and store it in
-    /// the keystore.
-    ///
-    /// This is the default when no scheme flag and no auth component package is given. Cannot be
-    /// combined with a package that contributes an auth component.
-    #[arg(long = "falcon512-poseidon2", visible_alias = "falcon", default_value_t = false)]
-    pub falcon512_poseidon2: bool,
+    #[command(flatten)]
+    auth: AuthArgs,
 }
 
 impl NewWalletCmd {
@@ -132,7 +150,7 @@ impl NewWalletCmd {
             &package_paths,
             self.init_storage_data_path.clone(),
             self.offline,
-            AuthChoice::from_flags(self.falcon512_poseidon2, self.ecdsa_k256_keccak.as_ref())?,
+            self.auth.choice()?,
         )
         .await?;
 
@@ -165,7 +183,7 @@ impl NewWalletCmd {
 ///
 /// An authentication scheme can also be selected explicitly with `--ecdsa-k256-keccak [PUBLIC_KEY]`
 /// or `--falcon512-poseidon2` (aliases: `--ecdsa`, `--falcon`). These flags are mutually exclusive
-/// with each other and with auth component packages. When a public key is given, the account
+/// with each other and with auth component packages. When an ECDSA public key is given, the account
 /// commits to that externally-held key and no secret key is stored; otherwise a key of the selected
 /// scheme is generated and stored in the keystore.
 ///
@@ -212,32 +230,8 @@ pub struct NewAccountCmd {
     #[cfg_attr(feature = "testing", arg(long, default_value_t = false))]
     #[cfg_attr(not(feature = "testing"), arg(skip = false))]
     pub offline: bool,
-    /// Use the ECDSA k256/Keccak authentication scheme, optionally committing to an externally-held
-    /// public key.
-    ///
-    /// With a `PUBLIC_KEY` (SEC1 compressed 33-byte or uncompressed 65-byte hex, `0x`-prefixed —
-    /// the form external signers such as a Ledger device export), the account commits to that key
-    /// and no secret key is generated or stored, so transactions must be signed by the external key
-    /// holder. Without a value, a new ECDSA secret key is generated and stored in the keystore.
-    /// Cannot be combined with a package that contributes an auth component.
-    // The nested option is clap's idiom for a flag with an optional value: the outer level says
-    // whether the flag is present, the inner one whether a value was given.
-    #[allow(clippy::option_option)]
-    #[arg(
-        long = "ecdsa-k256-keccak",
-        visible_alias = "ecdsa",
-        value_name = "PUBLIC_KEY",
-        num_args = 0..=1,
-        conflicts_with = "falcon512_poseidon2"
-    )]
-    pub ecdsa_k256_keccak: Option<Option<String>>,
-    /// Use the Falcon512/Poseidon2 authentication scheme: generate a new secret key and store it in
-    /// the keystore.
-    ///
-    /// This is the default when no scheme flag and no auth component package is given. Cannot be
-    /// combined with a package that contributes an auth component.
-    #[arg(long = "falcon512-poseidon2", visible_alias = "falcon", default_value_t = false)]
-    pub falcon512_poseidon2: bool,
+    #[command(flatten)]
+    auth: AuthArgs,
 }
 
 impl NewAccountCmd {
@@ -253,7 +247,7 @@ impl NewAccountCmd {
             &self.packages,
             self.init_storage_data_path.clone(),
             self.offline,
-            AuthChoice::from_flags(self.falcon512_poseidon2, self.ecdsa_k256_keccak.as_ref())?,
+            self.auth.choice()?,
         )
         .await?;
 
@@ -462,65 +456,54 @@ enum AuthChoice {
     ExternalEcdsa(ecdsa_k256_keccak::PublicKey),
 }
 
-impl AuthChoice {
-    /// Builds the selection from the command line flags. Clap enforces that at most one scheme flag
-    /// is present.
-    fn from_flags(falcon: bool, ecdsa: Option<&Option<String>>) -> Result<Self, CliError> {
-        match (falcon, ecdsa) {
-            (true, _) => Ok(Self::Generate(AuthSchemeId::Falcon512Poseidon2)),
-            (false, Some(Some(key))) => Ok(Self::ExternalEcdsa(parse_ecdsa_public_key(key)?)),
-            (false, Some(None)) => Ok(Self::Generate(AuthSchemeId::EcdsaK256Keccak)),
-            (false, None) => Ok(Self::Default),
-        }
-    }
+/// Describes how the account authentication component was created.
+enum AuthOutcome {
+    Generated(AuthSecretKey),
+    External,
+    Package,
 }
 
-/// Adds the authentication component selected by `auth_choice`: one committing to the external
-/// ECDSA key, one with a freshly generated key of the selected scheme, or the one contributed by
-/// the packages. Without an explicit selection, packages win and Falcon is the generated fallback.
-/// An explicit selection combined with a package auth component is rejected.
+/// Adds the authentication component selected by `auth_choice`.
 ///
-/// Returns the updated builder and the generated secret key, when one was created.
+/// The component uses an external public key, a generated key, or package data. A package takes
+/// precedence when the user does not select a scheme. The function generates a Falcon key when no
+/// package supplies authentication data. An explicit selection conflicts with package
+/// authentication data.
+///
+/// Returns the updated builder and the authentication outcome.
 fn add_auth_component<R: Rng + CryptoRng>(
-    mut builder: AccountBuilder,
+    builder: AccountBuilder,
     auth_choice: AuthChoice,
     auth_components: Vec<AccountComponent>,
     rng: &mut R,
-) -> Result<(AccountBuilder, Option<AuthSecretKey>), CliError> {
-    if !matches!(auth_choice, AuthChoice::Default) && !auth_components.is_empty() {
-        return Err(CliError::InvalidArgument(
-            "the given packages contribute an auth component, which cannot be combined with \
-            --ecdsa-k256-keccak or --falcon512-poseidon2"
-                .to_string(),
-        ));
-    }
-
-    let scheme_to_generate = match &auth_choice {
-        AuthChoice::Generate(scheme) => Some(*scheme),
-        AuthChoice::Default if auth_components.is_empty() => Some(AuthSchemeId::Falcon512Poseidon2),
-        AuthChoice::Default | AuthChoice::ExternalEcdsa(_) => None,
+) -> Result<(AccountBuilder, AuthOutcome), CliError> {
+    let scheme = match (auth_choice, auth_components.is_empty()) {
+        (AuthChoice::Default, false) => {
+            debug!("Adding auth component from package");
+            let builder = auth_components.into_iter().fold(builder, AccountBuilder::with_component);
+            return Ok((builder, AuthOutcome::Package));
+        },
+        (_, false) => {
+            return Err(CliError::InvalidArgument(format!(
+                "the given packages contribute an auth component, which cannot be combined \
+                    with --{ECDSA_SCHEME_NAME} or --{FALCON_SCHEME_NAME}"
+            )));
+        },
+        (AuthChoice::ExternalEcdsa(public_key), true) => {
+            debug!("Adding ECDSA auth component for the external public key");
+            let builder = builder.with_component(AuthSingleSig::ecdsa_k256_keccak(public_key));
+            return Ok((builder, AuthOutcome::External));
+        },
+        (AuthChoice::Generate(scheme), true) => scheme,
+        (AuthChoice::Default, true) => AuthSchemeId::Falcon512Poseidon2,
     };
 
-    let key_pair = if let AuthChoice::ExternalEcdsa(public_key) = auth_choice {
-        debug!("Adding ECDSA auth component for the external public key");
-        builder = builder.with_component(AuthSingleSig::ecdsa_k256_keccak(public_key));
-        None
-    } else if let Some(scheme) = scheme_to_generate {
-        debug!("Adding auth component with a generated {scheme} key");
-        let kp = AuthSecretKey::with_scheme_and_rng(scheme, rng).map_err(|err| {
-            CliError::InvalidArgument(format!("failed to generate a {scheme} key: {err}"))
-        })?;
-        builder = builder.with_component(AuthSingleSig::from_public_key(kp.public_key()));
-        Some(kp)
-    } else {
-        debug!("Adding auth component from package");
-        for component in auth_components {
-            builder = builder.with_component(component);
-        }
-        None
-    };
-
-    Ok((builder, key_pair))
+    debug!("Adding auth component with a generated {scheme} key");
+    let key = AuthSecretKey::with_scheme_and_rng(scheme, rng).map_err(|err| {
+        CliError::InvalidArgument(format!("failed to generate a {scheme} key: {err}"))
+    })?;
+    let builder = builder.with_component(AuthSingleSig::from_public_key(key.public_key()));
+    Ok((builder, AuthOutcome::Generated(key)))
 }
 
 /// Returns `true` when the CLI should inject a default `TokenPolicyManager` for a fungible faucet
@@ -627,8 +610,7 @@ async fn create_client_account<AUTH: Keystore + Sync + 'static>(
             .build();
         regular_components.extend(policy_manager);
     }
-    let uses_external_key = matches!(auth_choice, AuthChoice::ExternalEcdsa(_));
-    let (mut builder, key_pair) =
+    let (mut builder, auth_outcome) =
         add_auth_component(builder, auth_choice, auth_components, client.rng())?;
 
     // Add all regular (non-auth) components
@@ -640,21 +622,23 @@ async fn create_client_account<AUTH: Keystore + Sync + 'static>(
         .build_with_schema_commitment()
         .map_err(|err| CliError::Account(err, "failed to build account".into()))?;
 
-    // Only add the key to the keystore if we generated it ourselves
-    if let Some(key_pair) = key_pair {
-        // Use the Keystore trait method which handles both key storage and account association
-        keystore.add_key(&key_pair, account.id()).await.map_err(CliError::KeyStore)?;
-        println!(
-            "Generated and stored {} authentication key in keystore.",
-            scheme_name(key_pair.auth_scheme())
-        );
-    } else if uses_external_key {
-        println!(
-            "Using external ECDSA public key for authentication (no key was generated or \
-            stored; transactions must be signed by the external key holder)."
-        );
-    } else {
-        println!("Using custom authentication component from package (no key generated).");
+    match auth_outcome {
+        AuthOutcome::Generated(key) => {
+            keystore.add_key(&key, account.id()).await.map_err(CliError::KeyStore)?;
+            println!(
+                "Generated and stored {} authentication key in keystore.",
+                scheme_name(key.auth_scheme())
+            );
+        },
+        AuthOutcome::External => {
+            println!(
+                "Using external ECDSA public key for authentication (no key was generated or \
+                stored; transactions must be signed by the external key holder)."
+            );
+        },
+        AuthOutcome::Package => {
+            println!("Using custom authentication component from package (no key generated).");
+        },
     }
 
     let _ = offline;

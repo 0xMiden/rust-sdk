@@ -25,6 +25,31 @@ env:
   RUST_CACHE_KEY: rust-cache-2026.02.18
 
 jobs:
+  changes:
+    name: Select system tests
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+    outputs:
+      agglayer: ${{ steps.filter.outputs.agglayer }}
+      integration: ${{ steps.filter.outputs.integration }}
+      miden-bench: ${{ steps.filter.outputs.miden-bench }}
+      test-node: ${{ steps.filter.outputs.test-node }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Test system-test selector
+        run: .github/scripts/test-select-system-tests.sh
+      - name: Select tests for changed files
+        id: filter
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: .github/scripts/select-system-tests-from-git.sh "$EVENT_NAME" "$BASE_SHA" "$HEAD_SHA"
+
   test:
     name: Unit tests
     runs-on: warp-ubuntu-latest-x64-8x
@@ -39,9 +64,9 @@ jobs:
       - name: Add Rust Cache
         uses: WarpBuilds/rust-cache@9d0cc3090d9c87de74ea67617b246e978735b1a1 # v2.9.1
         with:
-          shared-key: rust-release
+          shared-key: rust-release-${{ runner.arch }}
           prefix-key: ${{ env.RUST_CACHE_KEY }}
-          save-if: false
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/next' }}
       # Keep this on a released install-action commit with an explicit tool; shortcut tags can
       # trip zizmor's impostor-commit audit when they are later retagged.
       - uses: taiki-e/install-action@055f5df8c3f65ea01cd41e9dc855becd88953486 # v2.75.18
@@ -52,7 +77,7 @@ jobs:
 
   doc-tests:
     name: Documentation tests
-    runs-on: warp-ubuntu-latest-x64-8x
+    runs-on: warp-ubuntu-latest-arm64-2x
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -64,15 +89,52 @@ jobs:
       - name: Add Rust Cache
         uses: WarpBuilds/rust-cache@9d0cc3090d9c87de74ea67617b246e978735b1a1 # v2.9.1
         with:
-          shared-key: rust-release
+          shared-key: rust-release-${{ runner.arch }}
           prefix-key: ${{ env.RUST_CACHE_KEY }}
           save-if: false
       - name: Run doc-tests
         run: make test-docs
 
   build-test-node:
+    name: Restore test node cache
+    runs-on: warp-ubuntu-latest-x64-2x
+    needs: [changes]
+    if: ${{ !cancelled() && needs.changes.outputs.test-node != 'false' }}
+    outputs:
+      cache-hit: ${{ steps.cache-test-node.outputs.cache-hit }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Resolve node revision
+        id: node-rev
+        run: |
+          rev=$(./scripts/start-test-node.sh --print-rev)
+          echo "rev=$rev" >> "$GITHUB_OUTPUT"
+      - name: Restore test node binaries
+        id: cache-test-node
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: target/test-node/install
+          key: ${{ runner.os }}-${{ runner.arch }}-test-node-with-ntl-${{ steps.node-rev.outputs.rev }}
+      - name: Check binary existence
+        if: steps.cache-test-node.outputs.cache-hit == 'true'
+        run: file -E target/test-node/install/bin/miden-validator target/test-node/install/bin/miden-note-transport
+      - name: Upload test node binaries
+        if: steps.cache-test-node.outputs.cache-hit == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-node-artifact
+          # `.crates.toml` is hidden and records the installed rev; the consumer jobs read it to
+          # confirm the cached binaries match the pinned rev, so it must be uploaded.
+          include-hidden-files: true
+          path: target/test-node/install
+
+  install-test-node:
     name: Build test node
     runs-on: warp-ubuntu-latest-x64-8x
+    needs: [changes, build-test-node]
+    if: ${{ !cancelled() && needs.changes.outputs.test-node != 'false' && (needs.build-test-node.result != 'success' || needs.build-test-node.outputs.cache-hit != 'true') }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -81,58 +143,50 @@ jobs:
         uses: ./.github/actions/cleanup-runner
       - name: Resolve node revision
         id: node-rev
-        run: echo "rev=$(./scripts/start-test-node.sh --print-rev)" >> "$GITHUB_OUTPUT"
-      - name: Restore test node binaries
-        id: cache-test-node
-        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
-        with:
-          path: target/test-node/install
-          key: ${{ runner.os }}-test-node-with-ntl-${{ steps.node-rev.outputs.rev }}
+        run: |
+          rev=$(./scripts/start-test-node.sh --print-rev)
+          echo "rev=$rev" >> "$GITHUB_OUTPUT"
       # Build dir cached per node rev, with no cross-rev fallback: cargo reuses stale build-script
       # outputs when one target dir serves the same crate versions from two git revs, which breaks
       # the compile with phantom type errors. A rev bump therefore compiles from scratch.
       - name: Restore test node build cache
-        if: steps.cache-test-node.outputs.cache-hit != 'true'
         id: cache-test-node-build
         uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: target/test-node/build
-          key: ${{ runner.os }}-test-node-build-${{ steps.node-rev.outputs.rev }}
+          key: ${{ runner.os }}-${{ runner.arch }}-test-node-build-${{ steps.node-rev.outputs.rev }}
       - name: Install Rust
-        if: steps.cache-test-node.outputs.cache-hit != 'true'
         run: rustup update --no-self-update
       - name: Build node binaries
-        if: steps.cache-test-node.outputs.cache-hit != 'true'
         run: ./scripts/start-test-node.sh --install-only
+      - name: Check binary existence
+        run: file -E target/test-node/install/bin/miden-validator target/test-node/install/bin/miden-note-transport
       # Saved on every branch (not just `next`) so a PR's later pushes reuse its first build instead
       # of recompiling the node from scratch each push. Keyed on the node rev.
       - name: Save test node build cache
-        if: steps.cache-test-node.outputs.cache-hit != 'true' && steps.cache-test-node-build.outputs.cache-hit != 'true'
+        if: steps.cache-test-node-build.outputs.cache-hit != 'true'
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: target/test-node/build
-          key: ${{ runner.os }}-test-node-build-${{ steps.node-rev.outputs.rev }}
+          key: ${{ runner.os }}-${{ runner.arch }}-test-node-build-${{ steps.node-rev.outputs.rev }}
       - name: Save test node binaries
-        if: steps.cache-test-node.outputs.cache-hit != 'true'
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: target/test-node/install
-          key: ${{ runner.os }}-test-node-with-ntl-${{ steps.node-rev.outputs.rev }}
+          key: ${{ runner.os }}-${{ runner.arch }}-test-node-with-ntl-${{ steps.node-rev.outputs.rev }}
       - name: Upload test node binaries
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: test-node-artifact
-          # `.crates.toml` is hidden and records the installed rev; the consumer jobs read it to
-          # confirm the cached binaries match the pinned rev, so it must be uploaded.
           include-hidden-files: true
+          overwrite: true
           path: target/test-node/install
-      - name: Check binary existence
-        run: file -E target/test-node/install/bin/miden-validator target/test-node/install/bin/miden-note-transport
 
   miden-bench:
     name: miden-bench smoke tests
     runs-on: warp-ubuntu-latest-x64-8x
-    needs: [build-test-node]
+    needs: [changes, build-test-node, install-test-node]
+    if: ${{ !cancelled() && needs.changes.outputs.miden-bench != 'false' && (needs.install-test-node.result == 'success' || (needs.build-test-node.result == 'success' && needs.build-test-node.outputs.cache-hit == 'true' && needs.install-test-node.result == 'skipped')) }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -149,7 +203,7 @@ jobs:
       - name: Add Rust Cache
         uses: WarpBuilds/rust-cache@9d0cc3090d9c87de74ea67617b246e978735b1a1 # v2.9.1
         with:
-          shared-key: rust-release
+          shared-key: rust-release-${{ runner.arch }}
           prefix-key: ${{ env.RUST_CACHE_KEY }}
           save-if: false
       - name: Run miden-bench CLI tests
@@ -174,7 +228,8 @@ jobs:
   agglayer-tests:
     name: AggLayer tests
     runs-on: warp-ubuntu-latest-x64-8x
-    needs: [build-test-node]
+    needs: [changes, build-test-node, install-test-node]
+    if: ${{ !cancelled() && needs.changes.outputs.agglayer != 'false' && (needs.install-test-node.result == 'success' || (needs.build-test-node.result == 'success' && needs.build-test-node.outputs.cache-hit == 'true' && needs.install-test-node.result == 'skipped')) }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -189,7 +244,7 @@ jobs:
       - name: Add Rust Cache
         uses: WarpBuilds/rust-cache@9d0cc3090d9c87de74ea67617b246e978735b1a1 # v2.9.1
         with:
-          shared-key: rust-release
+          shared-key: rust-release-${{ runner.arch }}
           prefix-key: ${{ env.RUST_CACHE_KEY }}
           save-if: false
       - name: Fetch test node binaries
@@ -220,7 +275,8 @@ jobs:
   allowlist-tests:
     name: Account allowlist tests
     runs-on: warp-ubuntu-latest-x64-8x
-    needs: [build-test-node]
+    needs: [changes, build-test-node, install-test-node]
+    if: ${{ !cancelled() && needs.changes.outputs.integration != 'false' && (needs.install-test-node.result == 'success' || (needs.build-test-node.result == 'success' && needs.build-test-node.outputs.cache-hit == 'true' && needs.install-test-node.result == 'skipped')) }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -235,7 +291,7 @@ jobs:
       - name: Add Rust Cache
         uses: WarpBuilds/rust-cache@9d0cc3090d9c87de74ea67617b246e978735b1a1 # v2.9.1
         with:
-          shared-key: rust-release
+          shared-key: rust-release-${{ runner.arch }}
           prefix-key: ${{ env.RUST_CACHE_KEY }}
           save-if: false
       - name: Fetch test node binaries
@@ -270,7 +326,8 @@ jobs:
   integration-tests:
     name: Integration tests
     runs-on: warp-ubuntu-latest-x64-8x
-    needs: [build-test-node]
+    needs: [changes, build-test-node, install-test-node]
+    if: ${{ !cancelled() && needs.changes.outputs.integration != 'false' && (needs.install-test-node.result == 'success' || (needs.build-test-node.result == 'success' && needs.build-test-node.outputs.cache-hit == 'true' && needs.install-test-node.result == 'skipped')) }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -287,7 +344,7 @@ jobs:
       - name: Add Rust Cache
         uses: WarpBuilds/rust-cache@9d0cc3090d9c87de74ea67617b246e978735b1a1 # v2.9.1
         with:
-          shared-key: rust-release
+          shared-key: rust-release-${{ runner.arch }}
           prefix-key: ${{ env.RUST_CACHE_KEY }}
           save-if: false
       - name: Fetch test node binaries

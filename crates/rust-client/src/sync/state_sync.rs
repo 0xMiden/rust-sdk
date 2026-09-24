@@ -1277,6 +1277,18 @@ impl StateSync {
     /// replacement. An oversized part is fetched as changes over the synced range: the storage maps
     /// with `sync_storage_maps` and the vault with `sync_account_vault`. Neither endpoint is called
     /// when its part fits in the response.
+    ///
+    /// # Security
+    ///
+    /// The RPC layer range-checks only the pagination cursor of the `sync_storage_maps` and
+    /// `sync_account_vault` responses, not the block height of each individual update, so the node
+    /// can return an update stamped outside the requested window. The store closes this gap when it
+    /// applies the update: it verifies the resulting vault root and storage commitment against
+    /// `details.header`. An update that moves the account state away from that header fails the
+    /// store update instead of being persisted. The caller must authenticate `details.header`
+    /// against the chain tip and pass the block of that header as `block_to`. A caller that
+    /// consumes these incremental updates without the same header check must range-check each
+    /// update height first.
     async fn build_account_update(
         &self,
         account_id: AccountId,

@@ -11,6 +11,7 @@ pub use sync::{
     NoteSyncError,
     SyncAccountStorageMapsError,
     SyncAccountVaultError,
+    SyncChainMmrError,
     SyncNullifiersError,
     SyncTransactionsError,
 };
@@ -49,6 +50,9 @@ pub enum EndpointError {
     /// Error from the `SyncTransactions` endpoint
     #[error(transparent)]
     SyncTransactions(#[from] SyncTransactionsError),
+    /// Error from the `SyncChainMmr` endpoint
+    #[error(transparent)]
+    SyncChainMmr(#[from] SyncChainMmrError),
     /// Error from the `GetNotesById` endpoint
     #[error(transparent)]
     GetNotesById(#[from] GetNotesByIdError),
@@ -107,9 +111,11 @@ pub fn parse_node_error(
         RpcEndpoint::GetAccount => {
             Some(EndpointError::GetAccount(GetAccountError::from_code(code, message)))
         },
+        RpcEndpoint::SyncChainMmr => {
+            Some(EndpointError::SyncChainMmr(SyncChainMmrError::from_code(code, message)))
+        },
         // These endpoints don't have typed errors from the node
-        RpcEndpoint::SyncChainMmr
-        | RpcEndpoint::Status
+        RpcEndpoint::Status
         | RpcEndpoint::GetLimits
         | RpcEndpoint::GetNetworkNoteStatus
         | RpcEndpoint::GetTransactionEncryptionKey
@@ -195,6 +201,36 @@ mod tests {
                 "node is down"
             )
             .is_none()
+        );
+    }
+
+    /// A request for a block after the chain tip must parse as `FutureBlock`, and a range that is
+    /// invalid for another reason must stay `InvalidBlockRange`.
+    #[test]
+    fn a_block_after_the_chain_tip_parses_as_future_block() {
+        assert_eq!(
+            parse_node_error(
+                &RpcEndpoint::SyncNotes,
+                &[2],
+                "block_to (5) is greater than chain tip (4)"
+            ),
+            Some(EndpointError::NoteSync(NoteSyncError::FutureBlock))
+        );
+        assert_eq!(
+            parse_node_error(&RpcEndpoint::SyncChainMmr, &[2], "start block is not known"),
+            Some(EndpointError::SyncChainMmr(SyncChainMmrError::FutureBlock))
+        );
+        assert_eq!(
+            parse_node_error(
+                &RpcEndpoint::SyncNullifiers,
+                &[1],
+                "block_to (5) is greater than chain tip (4)"
+            ),
+            Some(EndpointError::SyncNullifiers(SyncNullifiersError::FutureBlock))
+        );
+        assert_eq!(
+            parse_node_error(&RpcEndpoint::SyncNullifiers, &[1], "invalid block range"),
+            Some(EndpointError::SyncNullifiers(SyncNullifiersError::InvalidBlockRange))
         );
     }
 }

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Breaking Changes
+
+* [BREAKING][type][rust] Sync endpoint errors now have a `FutureBlock` variant for requests past the node's chain tip, and `EndpointError` has a `SyncChainMmr` variant. `NoteSyncError` codes now match the node, so a deserialization failure no longer parses as `Unknown` ([#2383](https://github.com/0xMiden/rust-sdk/issues/2383)).
+
 ### Enhancements
 
 * [test] CI uses smaller runners for short jobs and cancels superseded pull request runs. Pull requests skip specialty system tests when unrelated files change, while pushes to `main` and `next` still run every test ([#2610](https://github.com/0xMiden/rust-sdk/pull/2610)).

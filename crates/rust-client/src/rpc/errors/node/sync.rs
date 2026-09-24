@@ -2,6 +2,15 @@ use alloc::string::String;
 
 use thiserror::Error;
 
+/// Returns whether the message is the node message for a block range that ends after the chain tip.
+///
+/// The node sends the same error code for this case and for an invalid block range on these
+/// endpoints. Only the message identifies this case.
+// TODO: Use a dedicated error code when the node sends one for these endpoints.
+fn is_range_beyond_tip(message: &str) -> bool {
+    message.contains("greater than chain tip")
+}
+
 // NOTE SYNC ERROR
 // ================================================================================================
 
@@ -14,6 +23,10 @@ pub enum NoteSyncError {
     /// Invalid block range specified
     #[error("invalid block range")]
     InvalidBlockRange,
+    /// Requested block is ahead of the node's chain tip. This can happen when the node is behind
+    /// the network, so a retry can succeed.
+    #[error("requested block is ahead of the node's chain tip")]
+    FutureBlock,
     /// Failed to deserialize data
     #[error("deserialization failed")]
     DeserializationFailed,
@@ -28,7 +41,8 @@ impl NoteSyncError {
         match code {
             0 => Self::Internal,
             1 => Self::InvalidBlockRange,
-            2 => Self::DeserializationFailed,
+            2 => Self::FutureBlock,
+            3 => Self::DeserializationFailed,
             _ => Self::Unknown { code, message: String::from(message) },
         }
     }
@@ -46,6 +60,10 @@ pub enum SyncNullifiersError {
     /// Invalid block range specified
     #[error("invalid block range")]
     InvalidBlockRange,
+    /// Requested block is ahead of the node's chain tip. This can happen when the node is behind
+    /// the network, so a retry can succeed.
+    #[error("requested block is ahead of the node's chain tip")]
+    FutureBlock,
     /// Invalid prefix length
     #[error("invalid prefix length")]
     InvalidPrefixLength,
@@ -62,6 +80,7 @@ impl SyncNullifiersError {
     pub fn from_code(code: u8, message: &str) -> Self {
         match code {
             0 => Self::Internal,
+            1 if is_range_beyond_tip(message) => Self::FutureBlock,
             1 => Self::InvalidBlockRange,
             2 => Self::InvalidPrefixLength,
             3 => Self::DeserializationFailed,
@@ -82,6 +101,10 @@ pub enum SyncAccountVaultError {
     /// Invalid block range specified
     #[error("invalid block range")]
     InvalidBlockRange,
+    /// Requested block is ahead of the node's chain tip. This can happen when the node is behind
+    /// the network, so a retry can succeed.
+    #[error("requested block is ahead of the node's chain tip")]
+    FutureBlock,
     /// Failed to deserialize data
     #[error("deserialization failed")]
     DeserializationFailed,
@@ -98,6 +121,7 @@ impl SyncAccountVaultError {
     pub fn from_code(code: u8, message: &str) -> Self {
         match code {
             0 => Self::Internal,
+            1 if is_range_beyond_tip(message) => Self::FutureBlock,
             1 => Self::InvalidBlockRange,
             2 => Self::DeserializationFailed,
             3 => Self::AccountNotPublic,
@@ -118,6 +142,10 @@ pub enum SyncAccountStorageMapsError {
     /// Invalid block range specified
     #[error("invalid block range")]
     InvalidBlockRange,
+    /// Requested block is ahead of the node's chain tip. This can happen when the node is behind
+    /// the network, so a retry can succeed.
+    #[error("requested block is ahead of the node's chain tip")]
+    FutureBlock,
     /// Failed to deserialize data
     #[error("deserialization failed")]
     DeserializationFailed,
@@ -137,6 +165,7 @@ impl SyncAccountStorageMapsError {
     pub fn from_code(code: u8, message: &str) -> Self {
         match code {
             0 => Self::Internal,
+            1 if is_range_beyond_tip(message) => Self::FutureBlock,
             1 => Self::InvalidBlockRange,
             2 => Self::DeserializationFailed,
             3 => Self::AccountNotFound,
@@ -158,6 +187,10 @@ pub enum SyncTransactionsError {
     /// Invalid block range specified
     #[error("invalid block range")]
     InvalidBlockRange,
+    /// Requested block is ahead of the node's chain tip. This can happen when the node is behind
+    /// the network, so a retry can succeed.
+    #[error("requested block is ahead of the node's chain tip")]
+    FutureBlock,
     /// Failed to deserialize data
     #[error("deserialization failed")]
     DeserializationFailed,
@@ -177,10 +210,40 @@ impl SyncTransactionsError {
     pub fn from_code(code: u8, message: &str) -> Self {
         match code {
             0 => Self::Internal,
+            1 if is_range_beyond_tip(message) => Self::FutureBlock,
             1 => Self::InvalidBlockRange,
             2 => Self::DeserializationFailed,
             3 => Self::AccountNotFound,
             4 => Self::WitnessError,
+            _ => Self::Unknown { code, message: String::from(message) },
+        }
+    }
+}
+
+// SYNC CHAIN MMR ERROR
+// ================================================================================================
+
+// Error codes match `miden-node/crates/rpc/src/server/api/error_codes.rs::SyncChainMmrErrorCode`.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum SyncChainMmrError {
+    /// Internal server error (code 0)
+    #[error("internal server error")]
+    Internal,
+    /// Requested block is ahead of the node's chain tip. This can happen when the node is behind
+    /// the network, so a retry can succeed.
+    #[error("requested block is ahead of the node's chain tip")]
+    FutureBlock,
+    /// Error code not recognized by this client version. This can happen if the node is newer than
+    /// the client and has added new error variants.
+    #[error("unknown error code {code}: {message}")]
+    Unknown { code: u8, message: String },
+}
+
+impl SyncChainMmrError {
+    pub fn from_code(code: u8, message: &str) -> Self {
+        match code {
+            0 => Self::Internal,
+            2 => Self::FutureBlock,
             _ => Self::Unknown { code, message: String::from(message) },
         }
     }

@@ -24,11 +24,6 @@ pub trait FeeFunder: Send + Sync + fmt::Debug {
     /// Taken together so one transaction can pay them all; returned rather than consumed so each
     /// account's own next transaction spends its note.
     async fn fund(&self, account_ids: &[AccountId]) -> Result<Vec<(AccountId, Note)>>;
-
-    /// Waits until a block carries every payment this funder has submitted.
-    async fn flush(&self) -> Result<()> {
-        Ok(())
-    }
 }
 
 impl TestClient {
@@ -47,20 +42,13 @@ impl TestClient {
         Ok(())
     }
 
-    /// Waits until a block carries every payment this client's funder has submitted.
-    pub async fn flush_funder(&self) -> Result<()> {
-        match self.fee_funder() {
-            Some(funder) => funder.flush().await,
-            None => Ok(()),
-        }
-    }
-
     /// Returns the funder, or an error naming what to supply when the chain needs one.
     fn funder(&self) -> Result<Arc<dyn FeeFunder>> {
         self.fee_funder().cloned().context(
             "this chain charges a transaction fee, so every account a test creates has to be \
-             funded before it can transact, but this client has no fee funder. Supply the funder \
-             wallets to draw from (see the integration tests' `--funders` argument)",
+             funded before it can transact, but this client has no fee funder. Supply the \
+             funding service to draw from (see the integration tests' `--funding-service` \
+             argument)",
         )
     }
 
@@ -134,9 +122,9 @@ impl TestClient {
         for (account_id, note) in funded {
             let (account_id, note_id) = (*account_id, note.id());
 
-            // Consumed as an unauthenticated input, so the funder's transaction only has to have
-            // reached the mempool. This doubles as the deploy, paying its fee out of the note it
-            // just consumed.
+            // Consumed as an unauthenticated input, so the funder's transaction does not have to be
+            // committed. It has to reach the node before this one does, or the node rejects this
+            // one. This doubles as the deploy, paying its fee out of the note it just consumed.
             let request = TransactionRequestBuilder::new()
                 .build_consume_notes(vec![note.clone()])
                 .context("failed to build the funding note consumption request")?;

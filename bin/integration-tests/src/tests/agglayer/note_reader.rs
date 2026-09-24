@@ -21,7 +21,6 @@ pub async fn test_agglayer_note_reader_reads_consumed_notes(
     client_config: ClientConfig,
 ) -> Result<()> {
     let agglayer_config = AgglayerConfig::from_env()?;
-    let _agglayer_accounts = agglayer_config.claim()?;
     let (mut bridge_admin, mut ger_manager, mut user) =
         create_agglayer_clients(&client_config).await?;
     let (_bridge_admin_id, ger_manager_id, bridge_id) =

@@ -91,7 +91,7 @@ miden-tx-batch        = { workspace = true }
 anyhow       = { workspace = true }
 async-trait  = { workspace = true }
 chrono       = { workspace = true }
-futures      = { version = "0.3" }
+futures      = { workspace = true }
 prost        = { features = ["derive"], workspace = true }
 prost-types  = { version = "0.14" }
 rand         = { workspace = true }

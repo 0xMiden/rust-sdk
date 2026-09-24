@@ -716,6 +716,21 @@ impl TestClient {
         Ok(tx_id)
     }
 
+    /// Consumes `input_notes` with `account_id` and waits for the transaction to commit.
+    ///
+    /// Nearly every caller of [`Self::consume_notes`] needs the consumption to have landed before
+    /// it asserts anything, so this pairs the two.
+    pub async fn consume_notes_and_wait(
+        &mut self,
+        account_id: AccountId,
+        input_notes: &[Note],
+    ) -> Result<TransactionId> {
+        let tx_id = self.consume_notes(account_id, input_notes).await?;
+        self.wait_for_tx(tx_id).await?;
+
+        Ok(tx_id)
+    }
+
     /// Executes a transaction and consumes the resulting unauthenticated notes immediately without
     /// waiting for the first transaction to be committed.
     pub async fn execute_tx_and_consume_output_notes(

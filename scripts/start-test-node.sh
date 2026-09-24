@@ -12,12 +12,20 @@
 #
 # Env vars:
 #   MIDEN_VERIFICATION_BASE_FEE  genesis `verification_base_fee` (default 500; 0 disables fees)
-#   MIDEN_NUM_FUNDER_WALLETS     number of funder wallets a fee-charging genesis declares
 #   MIDEN_BATCH_BUILDER_WALLET   account that receives the batch builder's fees
-#   MIDEN_ACCOUNT_ALLOWLIST      1 enforces the account allowlist, binds the administration
-#                                API the tests create invitation codes through, and starts the
-#                                funding service that pays each account which registers.
-#                                0 (default) allows unrestricted account creation
+#   MIDEN_NODE_GIT_REV           install the node binaries from this git rev instead of the source
+#                                pinned in Cargo.lock. Give the full commit hash: `cargo install`
+#                                records that hash, and this script compares it to decide whether
+#                                the cached binaries are current.
+#   MIDEN_NODE_GIT_URL           repository MIDEN_NODE_GIT_REV names
+#                                (default https://github.com/0xMiden/miden-node)
+#   MIDEN_ACCOUNT_ALLOWLIST      1 enforces the account allowlist and binds the administration
+#                                API the tests create invitation codes through. The sequencer
+#                                then asks the funding service to pay each account which
+#                                registers. 0 (default) allows unrestricted account creation
+#
+# A fee-charging chain also starts the funding service, which is where the tests draw the native
+# asset from. They reach it at MIDEN_FUNDING_SERVICE_URL=http://127.0.0.1:50401.
 
 set -euo pipefail
 
@@ -48,12 +56,13 @@ NTX="127.0.0.1:50301"
 ADMIN="127.0.0.1:50100"
 PROVER_PORT=50051
 PROVER="127.0.0.1:$PROVER_PORT"
-# HTTP API of the funding service, started only when allowlist enforcement is on. The sequencer
-# calls it for every account that registers. Matches the port of the node's own compose file.
+# HTTP API of the funding service, started on a fee-charging chain. The tests reach it through
+# MIDEN_FUNDING_SERVICE_URL, and with allowlist enforcement on the sequencer calls it for every
+# account that registers. Matches the port of the node's own compose file.
 FUNDING="127.0.0.1:50401"
 # Native asset base units the sequencer asks the funding service to pay each registered account.
-# Matches `FUNDING_AMOUNT` in `bin/integration-tests/src/fee_funding.rs`, which covers the fees of
-# every transaction a test runs against the account.
+# Matches `FUNDING_AMOUNT` in `bin/integration-tests/src/funding.rs`, which covers the fees of every
+# transaction a test runs against the account.
 FUNDING_AMOUNT=10000000
 # How long a single network transaction proof may take. The prover enforces it server-side and the
 # ntx-builder waits that long for the response. Shared so the two cannot drift apart: if the
@@ -77,10 +86,21 @@ ACCOUNT_ALLOWLIST="${MIDEN_ACCOUNT_ALLOWLIST:-0}"
 NODE_BINS=(miden-validator miden-node miden-ntx-builder miden-remote-prover miden-funding-service
     miden-note-transport)
 
-# Resolve the pinned node source from Cargo.lock: a git pin takes precedence, otherwise use the
+# Resolve the node source. MIDEN_NODE_GIT_REV wins, so a node that is not released yet can be
+# tested without a git pin in Cargo.lock, which would drag the whole lockfile with it. Otherwise
+# read Cargo.lock: a git pin takes precedence there too, and a lockfile without one gives the
 # crates.io version locked for `miden-node-proto-build`.
-SRC_LINE="$(grep -m1 'source = "git+https://github.com/0xMiden/node' "$ROOT/Cargo.lock" || true)"
-if [ -n "$SRC_LINE" ]; then
+#
+# Cargo.lock records the URL as it is written in Cargo.toml. Both `0xMiden/node` and
+# `0xMiden/miden-node` reach the repository, so both spellings are matched. A pattern which matches
+# only one of them reports no git pin and silently installs the crates.io node instead.
+SRC_LINE="$(grep -m1 -E 'source = "git\+https://github\.com/0xMiden/(miden-)?node[?#"]' "$ROOT/Cargo.lock" || true)"
+if [ -n "${MIDEN_NODE_GIT_REV:-}" ]; then
+    NODE_SOURCE="git"
+    NODE_REV="$MIDEN_NODE_GIT_REV"
+    NODE_URL="${MIDEN_NODE_GIT_URL:-https://github.com/0xMiden/miden-node}"
+    NODE_DESC="$NODE_URL @ $NODE_REV (MIDEN_NODE_GIT_REV)"
+elif [ -n "$SRC_LINE" ]; then
     NODE_SOURCE="git"
     SRC="${SRC_LINE#*\"git+}"; SRC="${SRC%\"}"
     NODE_REV="${SRC##*#}"
@@ -90,7 +110,7 @@ else
     NODE_SOURCE="registry"
     NODE_VERSION="$(awk -F'"' '/^name = "miden-node-proto-build"$/ { getline; print $2; exit }' "$ROOT/Cargo.lock")"
     [ -n "$NODE_VERSION" ] || {
-        echo "error: no 0xMiden/node git source and no miden-node-proto-build version in Cargo.lock" >&2
+        echo "error: no 0xMiden node git source and no miden-node-proto-build version in Cargo.lock" >&2
         exit 1
     }
     NODE_REV="v$NODE_VERSION"
@@ -168,10 +188,7 @@ echo "==> generating genesis + bootstrapping (verification_base_fee = $VERIFICAT
 rm -rf "$DATA"
 # Each component opens its SQLite DB directly under its data dir and does not create it.
 mkdir -p "$LOG_DIR" "$DATA/validator" "$DATA/node" "$DATA/ntx-builder"
-MIDEN_VERIFICATION_BASE_FEE="$VERIFICATION_BASE_FEE" "$GEN_GENESIS" "$DATA/genesis-config"
-# Cleared up front so a fee-free run cannot leave a previous run's funders behind, and re-exposed
-# below once `miden-validator genesis` has generated them.
-rm -rf "$ROOT/data/funders"
+"$GEN_GENESIS" "$DATA/genesis-config"
 mkdir -p "$ROOT/data"
 cp "$DATA/genesis-config/tst_faucet.mac" "$ROOT/data/account.mac"
 # Expose the agglayer accounts under ./data, where the tests read them via AGGLAYER_ACCOUNTS_DIR.
@@ -212,14 +229,6 @@ ENCRYPTION_KEY="9964dbb2590adeb415d3291b64a0a9991fbcac5adacb05ee17efee5296d081d7
 } >"$LOG_DIR/bootstrap.log" 2>&1
 NATIVE_FAUCET_ID="$(sed -n 's/^Native faucet account id: //p' "$LOG_DIR/bootstrap.log")"
 echo "==> native faucet $NATIVE_FAUCET_ID, operator wallet in $ROOT/data/faucet_operator.mac"
-
-# Expose the wallets the node generated from the genesis `[[wallet]]` entries under ./data/funders,
-# where the tests read them via MIDEN_FUNDER_ACCOUNTS_DIR. A fee-free genesis declares none.
-if compgen -G "$DATA/accounts/wallet_*.mac" >/dev/null; then
-    mkdir -p "$ROOT/data/funders"
-    cp "$DATA"/accounts/wallet_*.mac "$ROOT/data/funders/"
-    echo "==> exposed $(ls "$ROOT/data/funders" | wc -l | tr -d ' ') funder wallets in $ROOT/data/funders"
-fi
 
 echo "==> starting components"
 : > "$PID_FILE"
@@ -304,9 +313,10 @@ start sequencer   "$BIN/miden-node" sequencer --rpc.listen "$RPC" --data-directo
     "${SEQUENCER_ALLOWLIST_ARGS[@]}" \
     --block.interval 3s --batch.interval 1s
 # A network transaction's proof runs well past the prover's 60s default on a shared CI runner, and
-# the default capacity of 1 rejects the ntx-builder's retry outright, so it never converges.
+# the default capacity of 1 rejects the ntx-builder's retry outright, so it never converges. The
+# funding service proves against this prover too, so the capacity covers both callers.
 start prover      "$BIN/miden-remote-prover" --kind=transaction --port="$PROVER_PORT" \
-    --timeout "$PROVER_TIMEOUT" --capacity 8
+    --timeout "$PROVER_TIMEOUT" --capacity 16
 # Let the sequencer bind its RPC before the ntx-builder dials it.
 sleep 2
 # The ntx-builder's own default of 10s is shorter than the heaviest proofs take on CI, so it is
@@ -316,18 +326,6 @@ start ntx-builder "$BIN/miden-ntx-builder" start --listen "$NTX" --rpc.url "http
     --tx-prover.timeout "$PROVER_TIMEOUT" \
     --max-cycles "$((1 << 18))" \
     --data-directory "$DATA/ntx-builder"
-# The funding service pays out of the funding account that genesis was built with,
-# and trusts the validator key the validator was started with.
-if [ "$ACCOUNT_ALLOWLIST" = "1" ]; then
-    start funding-service "$BIN/miden-funding-service" start --listen "$FUNDING" \
-        --rpc.url "http://$RPC" \
-        --tx-prover.url "http://$PROVER" \
-        --tx-prover.timeout "$PROVER_TIMEOUT" \
-        --account-file "$DATA/genesis-config/funding_account.mac" \
-        --validator-signing-public-key "$VALIDATOR_PUBLIC_KEY" \
-        --poll-interval 250ms
-fi
-
 # Waits for the sequencer administration API to accept connections. The allowlist tests create
 # their invitation codes through it, so `--background` must not return before it is up. The API is
 # served by its own task, which may bind slightly after the RPC does.
@@ -344,22 +342,25 @@ wait_for_admin_api() {
     return 1
 }
 
-# Waits for the funding service to serve HTTP. A registration fails when the service is not up, so
-# `--background` must not return before it is. `GET /status` answers while the service still
-# synchronizes. Asking for the route rather than the socket also catches a process that bound the
-# port but cannot serve.
-wait_for_funding_service() {
-    for _ in $(seq 1 60); do
-        if curl -sfo /dev/null "http://$FUNDING/status"; then
-            return 0
-        fi
-        check_components_alive || return 1
-        sleep 1
-    done
-
-    echo "error: funding service did not become ready on $FUNDING within 60s; see $LOG_DIR" >&2
-    return 1
-}
+# The funding service hands the native asset to the accounts the tests create, and to every account
+# that registers when allowlist enforcement is on. It runs only on a fee-charging chain, since a
+# fee-free one hands out nothing.
+#
+# It pays out of the funding account `gen-genesis` wrote and genesis loaded through
+# `--funding-account`, signing with the key in that file, and trusts the same validator signing key
+# the validator itself was started with. It answers a request with the note before it builds the
+# transaction which creates the note.
+FUNDING_ENABLED=""
+if [ "$VERIFICATION_BASE_FEE" != "0" ]; then
+    FUNDING_ENABLED=1
+    start funding-service "$BIN/miden-funding-service" start --listen "$FUNDING" \
+        --rpc.url "http://$RPC" \
+        --tx-prover.url "http://$PROVER" \
+        --tx-prover.timeout "$PROVER_TIMEOUT" \
+        --account-file "$DATA/genesis-config/funding_account.mac" \
+        --validator-signing-public-key "$VALIDATOR_PUBLIC_KEY" \
+        --poll-interval 250ms
+fi
 
 # Returns non-zero (with a message) if any started component is no longer running.
 check_components_alive() {
@@ -372,26 +373,37 @@ check_components_alive() {
     done < "$PID_FILE"
 }
 
-echo "==> waiting for RPC on $RPC"
-READY=""
-for _ in $(seq 1 60); do
-    if (exec 3<>"/dev/tcp/${RPC%:*}/${RPC##*:}") 2>/dev/null; then
-        exec 3>&- 3<&-
-        READY=1
-        break
-    fi
-    check_components_alive || exit 1
-    sleep 1
-done
-if [ -z "$READY" ]; then
-    echo "error: RPC did not become ready within 60s; see $LOG_DIR" >&2
+# Runs `probe` once a second until it succeeds, failing the run if it never does or if a component
+# dies while waiting.
+wait_for() {
+    local what="$1" probe="$2"
+    echo "==> waiting for $what"
+    for _ in $(seq 1 60); do
+        "$probe" && return 0
+        check_components_alive || exit 1
+        sleep 1
+    done
+    echo "error: $what did not become ready within 60s; see $LOG_DIR" >&2
     exit 1
+}
+
+rpc_ready() { (exec 3<>"/dev/tcp/${RPC%:*}/${RPC##*:}") 2>/dev/null && exec 3>&- 3<&-; }
+# `GET /status` answers while the service still synchronizes, so this only confirms it is serving.
+# Asking for the route rather than the socket catches a process that bound the port but cannot
+# serve, which is what a funding account the node does not agree with looks like.
+funding_ready() { curl -sfo /dev/null "http://$FUNDING/status"; }
+
+wait_for "RPC on $RPC" rpc_ready
+
+if [ -n "$FUNDING_ENABLED" ]; then
+    wait_for "the funding service on $FUNDING" funding_ready
+    echo "==> funding service is up (MIDEN_FUNDING_SERVICE_URL=http://$FUNDING)"
 fi
+
 echo "==> node is up (RPC on http://$RPC); logs in $LOG_DIR"
 
 if [ "$ACCOUNT_ALLOWLIST" = "1" ]; then
     wait_for_admin_api
-    wait_for_funding_service
     echo "==> account allowlist enforcement is ON (admin API on http://$ADMIN," \
         "registrations funded by http://$FUNDING)"
 fi

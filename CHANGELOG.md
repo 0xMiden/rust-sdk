@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Breaking Changes
+
+* [BREAKING][test] The integration tests now pay fees through the node's funding service (`MIDEN_FUNDING_SERVICE_URL`) instead of a pool of pre-funded wallets, and the standalone integration test binary is removed ([#2573](https://github.com/0xMiden/rust-sdk/issues/2573)).
+
 ### Enhancements
 
 * [test] CI uses smaller runners for short jobs and cancels superseded pull request runs. Pull requests skip specialty system tests when unrelated files change, while pushes to `main` and `next` still run every test ([#2610](https://github.com/0xMiden/rust-sdk/pull/2610)).

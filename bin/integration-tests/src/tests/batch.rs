@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use miden_client::Felt;
-use miden_client::account::AccountType;
+use miden_client::account::{AccountId, AccountType};
 use miden_client::asset::{Asset, AssetAmount, FungibleAsset};
 use miden_client::note::NoteType;
 use miden_client::store::TransactionFilter;
@@ -13,6 +13,41 @@ use miden_client::transaction::{
 use tracing::info;
 
 use crate::ClientConfig;
+
+/// Polls until every account has at least the given number of committed transactions, returning the
+/// counts reached.
+///
+/// A batch commits when the node packs it into a block, so the counts are read again after each
+/// block rather than once. Returns the last counts seen when the window runs out, which lets the
+/// caller assert on them and report what was actually reached.
+async fn poll_committed_counts<const N: usize>(
+    client: &mut TestClient,
+    expected: [(AccountId, usize); N],
+    what: &str,
+) -> Result<[usize; N]> {
+    let mut counts = [0usize; N];
+
+    for attempt in 0..30 {
+        client.wait_for_blocks(1).await?;
+        client.sync_state().await?;
+        let transactions = client.get_transactions(TransactionFilter::All).await?;
+
+        for (index, (account_id, _)) in expected.iter().enumerate() {
+            counts[index] = transactions
+                .iter()
+                .filter(|tx| tx.details.account_id == *account_id)
+                .filter(|tx| matches!(tx.status, TransactionStatus::Committed { .. }))
+                .count();
+        }
+
+        info!(attempt, ?counts, what, "polling for batch txs to commit");
+        if counts.iter().zip(expected.iter()).all(|(got, (_, want))| got >= want) {
+            break;
+        }
+    }
+
+    Ok(counts)
+}
 
 /// Real-node integration test for the `BatchBuilder` end-to-end path.
 ///
@@ -87,21 +122,8 @@ pub async fn test_batch_builder_submits_two_p2id_on_one_account(
 
     // Poll until at least 3 sender-account transactions are committed (1 from mint-and-consume + 2
     // from the batch). Give the node a reasonable window to finalize the batch's block.
-    let mut committed_count = 0;
-    for attempt in 0..30 {
-        client.wait_for_blocks(1).await?;
-        client.sync_state().await.unwrap();
-        let all_transactions = client.get_transactions(TransactionFilter::All).await.unwrap();
-        committed_count = all_transactions
-            .iter()
-            .filter(|tx| tx.details.account_id == from_account_id)
-            .filter(|tx| matches!(tx.status, TransactionStatus::Committed { .. }))
-            .count();
-        info!(attempt, committed_count, "polling for batch txs to commit");
-        if committed_count >= 3 {
-            break;
-        }
-    }
+    let [committed_count] =
+        poll_committed_counts(&mut client, [(from_account_id, 3)], "single account").await?;
     assert!(
         committed_count >= 3,
         "expected at least 3 committed transactions from the sender account \
@@ -209,30 +231,11 @@ pub async fn test_batch_builder_multiple_accounts(client_config: ClientConfig) -
     info!(block_num = block_num.as_u32(), "Cross-account batch submitted");
     assert!(block_num.as_u32() > 0, "expected a positive block number");
 
-    // Poll until both txs are committed.
-    let mut a_committed = 0;
-    let mut b_committed = 0;
-    for attempt in 0..30 {
-        client.wait_for_blocks(1).await?;
-        client.sync_state().await.unwrap();
-        let all_transactions = client.get_transactions(TransactionFilter::All).await.unwrap();
-        a_committed = all_transactions
-            .iter()
-            .filter(|tx| tx.details.account_id == account_id_a)
-            .filter(|tx| matches!(tx.status, TransactionStatus::Committed { .. }))
-            .count();
-        b_committed = all_transactions
-            .iter()
-            .filter(|tx| tx.details.account_id == account_id_b)
-            .filter(|tx| matches!(tx.status, TransactionStatus::Committed { .. }))
-            .count();
-        info!(attempt, a_committed, b_committed, "polling for cross-account batch txs");
-        // A needs ≥ 2 commits (mint-and-consume + batch send); B needs ≥ 2 (mint-and-consume +
-        // batch consume).
-        if a_committed >= 2 && b_committed >= 2 {
-            break;
-        }
-    }
+    // Poll until both txs are committed. A needs >= 2 commits (mint-and-consume + batch send), B
+    // likewise (mint-and-consume + batch consume).
+    let [a_committed, b_committed] =
+        poll_committed_counts(&mut client, [(account_id_a, 2), (account_id_b, 2)], "cross-account")
+            .await?;
     assert!(a_committed >= 2, "expected ≥ 2 committed txs for A, got {a_committed}");
     assert!(b_committed >= 2, "expected ≥ 2 committed txs for B, got {b_committed}");
 
@@ -349,27 +352,9 @@ pub async fn test_batch_builder_interleaved_pushes(client_config: ClientConfig) 
 
     // Poll until both accounts have their batch txs committed (A: mint+consume + 2 batch = 3, B:
     // mint+consume + 1 batch = 2).
-    let mut a_committed = 0;
-    let mut b_committed = 0;
-    for attempt in 0..30 {
-        client.wait_for_blocks(1).await?;
-        client.sync_state().await.unwrap();
-        let all_transactions = client.get_transactions(TransactionFilter::All).await.unwrap();
-        a_committed = all_transactions
-            .iter()
-            .filter(|tx| tx.details.account_id == account_id_a)
-            .filter(|tx| matches!(tx.status, TransactionStatus::Committed { .. }))
-            .count();
-        b_committed = all_transactions
-            .iter()
-            .filter(|tx| tx.details.account_id == account_id_b)
-            .filter(|tx| matches!(tx.status, TransactionStatus::Committed { .. }))
-            .count();
-        info!(attempt, a_committed, b_committed, "polling for interleaved batch txs");
-        if a_committed >= 3 && b_committed >= 2 {
-            break;
-        }
-    }
+    let [a_committed, b_committed] =
+        poll_committed_counts(&mut client, [(account_id_a, 3), (account_id_b, 2)], "interleaved")
+            .await?;
     assert!(a_committed >= 3, "expected ≥ 3 committed txs for A, got {a_committed}");
     assert!(b_committed >= 2, "expected ≥ 2 committed txs for B, got {b_committed}");
 

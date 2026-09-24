@@ -398,16 +398,6 @@ impl MockRpcApi {
             .collect()
     }
 
-    pub fn get_private_available_notes(&self) -> Vec<MockChainNote> {
-        self.mock_chain
-            .read()
-            .committed_notes()
-            .values()
-            .filter(|n| matches!(n, MockChainNote::Private(_, _, _, _)))
-            .cloned()
-            .collect()
-    }
-
     pub fn advance_blocks(&self, num_blocks: u32) {
         let mut mock_chain = self.mock_chain.write();
         let block_num = mock_chain.latest_block_header().block_num();

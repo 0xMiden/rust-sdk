@@ -614,8 +614,7 @@ async fn setup_fpi_vault_asset_read(
         .mint_note(foreign_account_id, faucet_account.id(), NoteType::Private)
         .await?;
     client.wait_for_tx(tx_id).await?;
-    let tx_id = client.consume_notes(foreign_account_id, &[note]).await?;
-    client.wait_for_tx(tx_id).await?;
+    client.consume_notes_and_wait(foreign_account_id, &[note]).await?;
 
     let fungible_asset = FungibleAsset::new(faucet_account.id(), MINT_AMOUNT)
         .context("failed to build the expected fungible asset")?;

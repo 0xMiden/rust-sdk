@@ -284,15 +284,14 @@ fi
 # it. The admin API is necessary only when the tests create invitation codes.
 #
 # With enforcement on, the sequencer asks the funding service to pay every account that registers,
-# and answers the registration only once that note is committed. That takes longer than the 10s
-# default request timeout of the RPC server. The service starts after the sequencer, because it
-# reads its account from the RPC. The sequencer calls the service only when an account registers.
+# and answers the registration once the service queues that note, before the note is committed.
+# The service starts after the sequencer, because it reads its account from the RPC. The sequencer
+# calls the service only when an account registers.
 if [ "$ACCOUNT_ALLOWLIST" = "1" ]; then
     SEQUENCER_ALLOWLIST_ARGS=(
         --admin.listen "$ADMIN"
         --funding-service.url "http://$FUNDING"
         --funding-service.amount "$FUNDING_AMOUNT"
-        --rpc.grpc.timeout 60s
     )
 else
     SEQUENCER_ALLOWLIST_ARGS=(--disable-account-allowlist)
@@ -318,8 +317,7 @@ start ntx-builder "$BIN/miden-ntx-builder" start --listen "$NTX" --rpc.url "http
     --max-cycles "$((1 << 18))" \
     --data-directory "$DATA/ntx-builder"
 # The funding service pays out of the funding account that genesis was built with,
-# and trusts the validator key the validator was started with. A request blocks until the note is
-# committed, so its HTTP timeout covers a proof plus the expiration window.
+# and trusts the validator key the validator was started with.
 if [ "$ACCOUNT_ALLOWLIST" = "1" ]; then
     start funding-service "$BIN/miden-funding-service" start --listen "$FUNDING" \
         --rpc.url "http://$RPC" \
@@ -327,7 +325,6 @@ if [ "$ACCOUNT_ALLOWLIST" = "1" ]; then
         --tx-prover.timeout "$PROVER_TIMEOUT" \
         --account-file "$DATA/genesis-config/funding_account.mac" \
         --validator-signing-public-key "$VALIDATOR_PUBLIC_KEY" \
-        --http.timeout "$PROVER_TIMEOUT" \
         --poll-interval 250ms
 fi
 

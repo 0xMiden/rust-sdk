@@ -2,15 +2,6 @@ use alloc::string::String;
 
 use thiserror::Error;
 
-/// Returns whether the message is the node message for a block range that ends after the chain tip.
-///
-/// The node sends the same error code for this case and for an invalid block range on these
-/// endpoints. Only the message identifies this case.
-// TODO: Use a dedicated error code when the node sends one for these endpoints.
-fn is_range_beyond_tip(message: &str) -> bool {
-    message.contains("greater than chain tip")
-}
-
 // NOTE SYNC ERROR
 // ================================================================================================
 
@@ -80,10 +71,10 @@ impl SyncNullifiersError {
     pub fn from_code(code: u8, message: &str) -> Self {
         match code {
             0 => Self::Internal,
-            1 if is_range_beyond_tip(message) => Self::FutureBlock,
             1 => Self::InvalidBlockRange,
             2 => Self::InvalidPrefixLength,
             3 => Self::DeserializationFailed,
+            4 => Self::FutureBlock,
             _ => Self::Unknown { code, message: String::from(message) },
         }
     }
@@ -121,10 +112,10 @@ impl SyncAccountVaultError {
     pub fn from_code(code: u8, message: &str) -> Self {
         match code {
             0 => Self::Internal,
-            1 if is_range_beyond_tip(message) => Self::FutureBlock,
             1 => Self::InvalidBlockRange,
             2 => Self::DeserializationFailed,
             3 => Self::AccountNotPublic,
+            4 => Self::FutureBlock,
             _ => Self::Unknown { code, message: String::from(message) },
         }
     }
@@ -165,11 +156,11 @@ impl SyncAccountStorageMapsError {
     pub fn from_code(code: u8, message: &str) -> Self {
         match code {
             0 => Self::Internal,
-            1 if is_range_beyond_tip(message) => Self::FutureBlock,
             1 => Self::InvalidBlockRange,
             2 => Self::DeserializationFailed,
             3 => Self::AccountNotFound,
             4 => Self::AccountNotPublic,
+            5 => Self::FutureBlock,
             _ => Self::Unknown { code, message: String::from(message) },
         }
     }
@@ -210,11 +201,11 @@ impl SyncTransactionsError {
     pub fn from_code(code: u8, message: &str) -> Self {
         match code {
             0 => Self::Internal,
-            1 if is_range_beyond_tip(message) => Self::FutureBlock,
             1 => Self::InvalidBlockRange,
             2 => Self::DeserializationFailed,
             3 => Self::AccountNotFound,
             4 => Self::WitnessError,
+            5 => Self::FutureBlock,
             _ => Self::Unknown { code, message: String::from(message) },
         }
     }

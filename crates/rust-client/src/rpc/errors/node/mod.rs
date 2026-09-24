@@ -204,33 +204,34 @@ mod tests {
         );
     }
 
-    /// A request for a block after the chain tip must parse as `FutureBlock`, and a range that is
-    /// invalid for another reason must stay `InvalidBlockRange`.
+    /// A request for a block after the chain tip must parse as `FutureBlock` on every sync
+    /// endpoint.
     #[test]
     fn a_block_after_the_chain_tip_parses_as_future_block() {
+        let message = "block_to (5) is greater than chain tip (4)";
         assert_eq!(
-            parse_node_error(
-                &RpcEndpoint::SyncNotes,
-                &[2],
-                "block_to (5) is greater than chain tip (4)"
-            ),
+            parse_node_error(&RpcEndpoint::SyncNotes, &[2], message),
             Some(EndpointError::NoteSync(NoteSyncError::FutureBlock))
         );
         assert_eq!(
-            parse_node_error(&RpcEndpoint::SyncChainMmr, &[2], "start block is not known"),
+            parse_node_error(&RpcEndpoint::SyncChainMmr, &[2], message),
             Some(EndpointError::SyncChainMmr(SyncChainMmrError::FutureBlock))
         );
         assert_eq!(
-            parse_node_error(
-                &RpcEndpoint::SyncNullifiers,
-                &[1],
-                "block_to (5) is greater than chain tip (4)"
-            ),
+            parse_node_error(&RpcEndpoint::SyncNullifiers, &[4], message),
             Some(EndpointError::SyncNullifiers(SyncNullifiersError::FutureBlock))
         );
         assert_eq!(
-            parse_node_error(&RpcEndpoint::SyncNullifiers, &[1], "invalid block range"),
-            Some(EndpointError::SyncNullifiers(SyncNullifiersError::InvalidBlockRange))
+            parse_node_error(&RpcEndpoint::SyncAccountVault, &[4], message),
+            Some(EndpointError::SyncAccountVault(SyncAccountVaultError::FutureBlock))
+        );
+        assert_eq!(
+            parse_node_error(&RpcEndpoint::SyncStorageMaps, &[5], message),
+            Some(EndpointError::SyncStorageMaps(SyncAccountStorageMapsError::FutureBlock))
+        );
+        assert_eq!(
+            parse_node_error(&RpcEndpoint::SyncTransactions, &[5], message),
+            Some(EndpointError::SyncTransactions(SyncTransactionsError::FutureBlock))
         );
     }
 }

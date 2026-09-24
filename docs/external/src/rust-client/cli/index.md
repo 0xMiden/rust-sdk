@@ -121,13 +121,17 @@ On a network that does not enforce the allowlist the node already allows every a
 
 Creates a new wallet account.
 
-A basic wallet is comprised of a basic authentication component (for RPO Falcon signature verification), alongside a basic wallet component (for sending and receiving assets).
+A basic wallet contains an authentication component and a basic wallet component for sending and receiving assets. The CLI generates and stores a Falcon512/Poseidon2 authentication key by default.
 
-This command has three optional flags:
+The command accepts these options:
 
 - `-t, --account-type <ACCOUNT_TYPE>`: Used to select the account visibility (private if not specified). It may receive "private" or "public". This is the only thing the protocol's `AccountType` encodes.
 - `--extra-packages <PACKAGES>`: Specifies a list of file paths for packages holding account components to include in the account. If the packages contain placeholders, the CLI will prompt the user to enter the required data for instantiating storage appropriately.
 - `--init-storage-data-path <INIT_STORAGE_DATA_PATH>`: Specifies an optional file path to a TOML file containing key/value pairs used for initializing storage. Each key should map to a placeholder within the packages' component metadata. The CLI will prompt for any keys that are not present in the file.
+- `--ecdsa-k256-keccak [PUBLIC_KEY]`, alias `--ecdsa`: Selects ECDSA k256/Keccak authentication. Without a public key, the CLI generates and stores a new key. With a `0x`-prefixed compressed or uncompressed SEC1 public key, the account uses the external key and stores no secret key.
+- `--falcon512-poseidon2`, alias `--falcon`: Generates and stores a Falcon512/Poseidon2 authentication key. This is also the default when no scheme flag or authentication component package is given.
+
+The authentication scheme flags are mutually exclusive. They also cannot be combined with an extra package that contributes an authentication component. An account that uses an external public key requires an external signer to authorize transactions.
 
 After creating an account with the `new-wallet` command, it is automatically stored and tracked by the client. This means the client can execute transactions that modify the state of accounts and track related changes by synchronizing with the Miden network.
 
@@ -139,13 +143,17 @@ Creates a new account and saves it locally.
 
 An account may be composed of one or more components, each with its own storage and distinct functionality. This command lets you build a custom account by selecting an account type and optionally adding extra component packages.
 
-This command has four flags:
+The command accepts these options:
 
 - `-t, --account-type <ACCOUNT_TYPE>`: Specifies the account visibility. It accepts either "private" or "public", with "private" as the default. This is the only thing the protocol's `AccountType` encodes.
 
 There is no `--faucet` flag: faucet-vs-regular is derived from the packages. If any package contributes the `FungibleFaucet` component, the resulting account is treated as a fungible faucet and an implicit `TokenPolicyManager` is installed when one is not already provided. `--account-type` only selects visibility.
 - `--packages <PACKAGES>`: Specifies a list of file paths for packages holding account components to include in the account. If the packages contain placeholders, the CLI will prompt the user to enter the required data for instantiating storage appropriately.
 - `--init-storage-data-path <INIT_STORAGE_DATA_PATH>`: Specifies an optional file path to a TOML file containing key/value pairs used for initializing storage. Each key should map to a placeholder within the packages' component metadata. The CLI will prompt for any keys that are not present in the file.
+- `--ecdsa-k256-keccak [PUBLIC_KEY]`, alias `--ecdsa`: Selects ECDSA k256/Keccak authentication. Without a public key, the CLI generates and stores a new key. With a `0x`-prefixed compressed or uncompressed SEC1 public key, the account uses the external key and stores no secret key.
+- `--falcon512-poseidon2`, alias `--falcon`: Generates and stores a Falcon512/Poseidon2 authentication key. This is also the default when no scheme flag or authentication component package is given.
+
+The authentication scheme flags are mutually exclusive. They also cannot be combined with a package that contributes an authentication component. Without a scheme flag, a package authentication component takes precedence. If no package supplies one, the CLI generates and stores a Falcon key. An account that uses an external public key requires an external signer to authorize transactions.
 
 After creating an account with the `new-account` command, the account is stored locally and tracked by the client, enabling it to execute transactions and synchronize state changes with the Miden network.
 
@@ -162,6 +170,12 @@ miden-client new-wallet -t public
 
 # Create a new wallet that includes custom packages
 miden-client new-wallet --extra-packages packages/custom-package.masp
+
+# Create a wallet and generate an ECDSA authentication key
+miden-client new-wallet --ecdsa
+
+# Create a wallet that commits to an external ECDSA public key
+miden-client new-wallet --ecdsa 0x02...
 
 # Create a fungible faucet with interactive input
 # (the resulting account is a faucet because basic-fungible-faucet.masp contributes the
@@ -483,7 +497,7 @@ Calculate a public key commitment without storing the public key:
 miden-client keys --commitment <PUBLIC_KEY>
 ```
 
-`PUBLIC_KEY` must be a `0x`-prefixed hexadecimal serialization of the key. The CLI identifies the scheme from the key length. For ECDSA, provide the 33-byte compressed SEC1 public key. For Falcon, provide the 897-byte serialized Falcon public key.
+`PUBLIC_KEY` must be a `0x`-prefixed hexadecimal serialization of the key. The CLI identifies the scheme from the key length. For ECDSA, provide a 33-byte compressed or 65-byte uncompressed SEC1 public key. For Falcon, provide the 897-byte serialized Falcon public key.
 
 ### Importing and exporting
 

@@ -20,11 +20,11 @@ use miden_client::note::{
 use miden_client::store::{
     InputNoteCursor,
     InputNoteRecord,
-    InputNoteState,
     NoteFilter,
     OutputNoteRecord,
     OutputNoteState,
     StoreError,
+    proto,
 };
 use miden_client::utils::{Deserializable, DeserializationError, Serializable};
 use miden_client::{SliceReader, Word};
@@ -286,7 +286,7 @@ fn parse_input_note(row: &rusqlite::Row<'_>) -> Result<InputNoteRecord, StoreErr
 
     let details = NoteDetails::new(assets, recipient);
     let attachments = NoteAttachments::read_from_bytes(&attachments)?;
-    let state = InputNoteState::read_from_bytes(&state)?;
+    let state = proto::decode(&state)?;
 
     Ok(InputNoteRecord::new(details, attachments, Some(created_at), state))
 }
@@ -313,7 +313,7 @@ fn serialize_input_note(note: &InputNoteRecord) -> SerializedInputNoteData {
     let script_root = recipient.script().root().to_bytes();
 
     let state_discriminant = note.state().discriminant();
-    let state = note.state().to_bytes();
+    let state = proto::encode(note.state());
 
     let consumed_block_height = note.state().consumed_block_height().map(|h| h.as_u32());
     let consumed_tx_order = note.state().consumed_tx_order();
@@ -374,7 +374,7 @@ fn serialize_input_note_state(note: &InputNoteRecord) -> SerializedInputNoteStat
     SerializedInputNoteStateUpdate {
         details_commitment: note.details_commitment().to_bytes(),
         state_discriminant: note.state().discriminant(),
-        state: note.state().to_bytes(),
+        state: proto::encode(note.state()),
         attachments: note.attachments().to_bytes(),
         consumed_block_height,
         consumed_tx_order,

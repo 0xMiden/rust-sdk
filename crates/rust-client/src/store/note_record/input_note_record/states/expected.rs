@@ -1,9 +1,17 @@
 use alloc::string::ToString;
 
+use miden_objects::DecodeMessageExt;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::note::{NoteId, NoteInclusionProof, NoteMetadata, NoteTag};
 use miden_protocol::transaction::TransactionId;
+use miden_tx::utils::serde::{
+    ByteReader,
+    ByteWriter,
+    Deserializable,
+    DeserializationError,
+    Serializable,
+};
 
 use super::{
     ConsumedExternalNoteState,
@@ -14,6 +22,7 @@ use super::{
     UnverifiedNoteState,
 };
 use crate::store::NoteRecordError;
+use crate::store::proto::{self, ProtoDecodeError};
 
 /// Information related to notes in the [`InputNoteState::Expected`] state.
 #[derive(Clone, Debug, PartialEq)]
@@ -116,22 +125,47 @@ impl NoteStateHandler for ExpectedNoteState {
     }
 }
 
-impl miden_tx::utils::serde::Serializable for ExpectedNoteState {
-    fn write_into<W: miden_tx::utils::serde::ByteWriter>(&self, target: &mut W) {
+impl Serializable for ExpectedNoteState {
+    fn write_into<W: ByteWriter>(&self, target: &mut W) {
         self.metadata.write_into(target);
         self.after_block_num.write_into(target);
         self.tag.write_into(target);
     }
 }
 
-impl miden_tx::utils::serde::Deserializable for ExpectedNoteState {
-    fn read_from<R: miden_tx::utils::serde::ByteReader>(
-        source: &mut R,
-    ) -> Result<Self, miden_tx::utils::serde::DeserializationError> {
+impl Deserializable for ExpectedNoteState {
+    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
         let metadata = Option::<NoteMetadata>::read_from(source)?;
         let after_block_num = BlockNumber::read_from(source)?;
         let tag = Option::<NoteTag>::read_from(source)?;
         Ok(ExpectedNoteState { metadata, after_block_num, tag })
+    }
+}
+
+impl From<&ExpectedNoteState> for proto::input_note_state::Expected {
+    fn from(state: &ExpectedNoteState) -> Self {
+        Self {
+            metadata: state.metadata.map(Into::into),
+            after_block_num: Some(state.after_block_num.into()),
+            tag: state.tag.map(Into::into),
+        }
+    }
+}
+
+impl TryFrom<proto::input_note_state::Expected> for ExpectedNoteState {
+    type Error = ProtoDecodeError;
+
+    fn try_from(state: proto::input_note_state::Expected) -> Result<Self, Self::Error> {
+        Ok(ExpectedNoteState {
+            metadata: state.metadata.map(DecodeMessageExt::decode_and_verify).transpose()?,
+            after_block_num: proto::required(
+                state.after_block_num,
+                "expected note state",
+                "after block number",
+            )?
+            .decode_and_verify()?,
+            tag: state.tag.map(NoteTag::from),
+        })
     }
 }
 

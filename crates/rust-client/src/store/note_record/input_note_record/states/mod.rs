@@ -2,6 +2,7 @@ use alloc::string::ToString;
 use core::fmt::{self, Display};
 
 use chrono::{Local, TimeZone};
+use miden_objects::DecodeMessageExt;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::note::{NoteId, NoteInclusionProof, NoteMetadata};
@@ -13,6 +14,8 @@ pub use miden_tx::utils::serde::{
     DeserializationError,
     Serializable,
 };
+
+use crate::store::proto::{self, ProtoDecodeError, ProtobufValue};
 
 mod committed;
 mod consumed_authenticated_local;
@@ -270,6 +273,62 @@ impl Deserializable for InputNoteState {
     }
 }
 
+impl ProtobufValue for InputNoteState {
+    type Message = proto::InputNoteState;
+
+    fn to_proto(&self) -> Self::Message {
+        use proto::input_note_state::State;
+
+        let state = match self {
+            InputNoteState::Expected(inner) => State::Expected(inner.into()),
+            InputNoteState::Unverified(inner) => State::Unverified(inner.into()),
+            InputNoteState::Committed(inner) => State::Committed(inner.into()),
+            InputNoteState::Invalid(inner) => State::Invalid(inner.into()),
+            InputNoteState::ProcessingAuthenticated(inner) => {
+                State::ProcessingAuthenticated(inner.into())
+            },
+            InputNoteState::ProcessingUnauthenticated(inner) => {
+                State::ProcessingUnauthenticated(inner.into())
+            },
+            InputNoteState::ConsumedAuthenticatedLocal(inner) => {
+                State::ConsumedAuthenticatedLocal(inner.into())
+            },
+            InputNoteState::ConsumedUnauthenticatedLocal(inner) => {
+                State::ConsumedUnauthenticatedLocal(inner.into())
+            },
+            InputNoteState::ConsumedExternal(inner) => State::ConsumedExternal(inner.into()),
+        };
+
+        Self::Message { state: Some(state) }
+    }
+
+    fn from_proto(state: Self::Message) -> Result<Self, ProtoDecodeError> {
+        use proto::input_note_state::State;
+
+        let state = proto::required(state.state, "input note state", "variant")?;
+
+        Ok(match state {
+            State::Expected(inner) => ExpectedNoteState::try_from(inner)?.into(),
+            State::Unverified(inner) => UnverifiedNoteState::try_from(inner)?.into(),
+            State::Committed(inner) => CommittedNoteState::try_from(inner)?.into(),
+            State::Invalid(inner) => InvalidNoteState::try_from(inner)?.into(),
+            State::ProcessingAuthenticated(inner) => {
+                ProcessingAuthenticatedNoteState::try_from(inner)?.into()
+            },
+            State::ProcessingUnauthenticated(inner) => {
+                ProcessingUnauthenticatedNoteState::try_from(inner)?.into()
+            },
+            State::ConsumedAuthenticatedLocal(inner) => {
+                ConsumedAuthenticatedLocalNoteState::try_from(inner)?.into()
+            },
+            State::ConsumedUnauthenticatedLocal(inner) => {
+                ConsumedUnauthenticatedLocalNoteState::try_from(inner)?.into()
+            },
+            State::ConsumedExternal(inner) => ConsumedExternalNoteState::try_from(inner)?.into(),
+        })
+    }
+}
+
 impl Display for InputNoteState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -422,6 +481,36 @@ impl Deserializable for NoteSubmissionData {
             submitted_at,
             consumer_account,
             consumer_transaction,
+        })
+    }
+}
+
+impl From<&NoteSubmissionData> for proto::NoteSubmissionData {
+    fn from(data: &NoteSubmissionData) -> Self {
+        Self {
+            submitted_at: data.submitted_at,
+            consumer_account: Some(data.consumer_account.into()),
+            consumer_transaction: Some(data.consumer_transaction.into()),
+        }
+    }
+}
+
+impl TryFrom<proto::NoteSubmissionData> for NoteSubmissionData {
+    type Error = ProtoDecodeError;
+
+    fn try_from(data: proto::NoteSubmissionData) -> Result<Self, Self::Error> {
+        const MESSAGE: &str = "note submission data";
+
+        Ok(NoteSubmissionData {
+            submitted_at: data.submitted_at,
+            consumer_account: proto::required(data.consumer_account, MESSAGE, "consumer account")?
+                .decode_and_verify()?,
+            consumer_transaction: proto::required(
+                data.consumer_transaction,
+                MESSAGE,
+                "consumer transaction",
+            )?
+            .decode_and_verify()?,
         })
     }
 }

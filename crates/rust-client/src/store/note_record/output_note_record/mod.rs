@@ -1,6 +1,7 @@
 use alloc::string::ToString;
 use core::fmt::{self, Display};
 
+use miden_objects::DecodeMessageExt;
 use miden_objects::note_file::{NoteFile, NoteSyncHint};
 use miden_protocol::Word;
 use miden_protocol::block::BlockNumber;
@@ -28,6 +29,7 @@ use miden_tx::utils::serde::{
 };
 
 use super::NoteRecordError;
+use crate::store::proto::{self, ProtoDecodeError, ProtobufValue};
 
 // OUTPUT NOTE RECORD
 // ================================================================================================
@@ -518,6 +520,75 @@ impl Deserializable for OutputNoteState {
             },
             _ => Err(DeserializationError::InvalidValue("OutputNoteState".to_string())),
         }
+    }
+}
+
+impl ProtobufValue for OutputNoteState {
+    type Message = proto::OutputNoteState;
+
+    fn to_proto(&self) -> Self::Message {
+        use proto::output_note_state::{
+            CommittedFull,
+            CommittedPartial,
+            Consumed,
+            ExpectedFull,
+            ExpectedPartial,
+            State,
+        };
+
+        let state = match self {
+            OutputNoteState::ExpectedPartial => State::ExpectedPartial(ExpectedPartial {}),
+            OutputNoteState::ExpectedFull { recipient } => State::ExpectedFull(ExpectedFull {
+                recipient: Some(recipient.clone().into()),
+            }),
+            OutputNoteState::CommittedPartial { inclusion_proof } => {
+                State::CommittedPartial(CommittedPartial {
+                    inclusion_proof: inclusion_proof.to_bytes(),
+                })
+            },
+            OutputNoteState::CommittedFull { recipient, inclusion_proof } => {
+                State::CommittedFull(CommittedFull {
+                    recipient: Some(recipient.clone().into()),
+                    inclusion_proof: inclusion_proof.to_bytes(),
+                })
+            },
+            OutputNoteState::Consumed { block_height, recipient } => State::Consumed(Consumed {
+                block_height: Some((*block_height).into()),
+                recipient: Some(recipient.clone().into()),
+            }),
+        };
+
+        Self::Message { state: Some(state) }
+    }
+
+    fn from_proto(state: Self::Message) -> Result<Self, ProtoDecodeError> {
+        use proto::output_note_state::State;
+
+        const MESSAGE: &str = "output note state";
+
+        let state = proto::required(state.state, MESSAGE, "variant")?;
+
+        Ok(match state {
+            State::ExpectedPartial(_) => OutputNoteState::ExpectedPartial,
+            State::ExpectedFull(inner) => OutputNoteState::ExpectedFull {
+                recipient: proto::required(inner.recipient, MESSAGE, "recipient")?
+                    .decode_and_verify()?,
+            },
+            State::CommittedPartial(inner) => OutputNoteState::CommittedPartial {
+                inclusion_proof: NoteInclusionProof::read_from_bytes(&inner.inclusion_proof)?,
+            },
+            State::CommittedFull(inner) => OutputNoteState::CommittedFull {
+                recipient: proto::required(inner.recipient, MESSAGE, "recipient")?
+                    .decode_and_verify()?,
+                inclusion_proof: NoteInclusionProof::read_from_bytes(&inner.inclusion_proof)?,
+            },
+            State::Consumed(inner) => OutputNoteState::Consumed {
+                block_height: proto::required(inner.block_height, MESSAGE, "block height")?
+                    .decode_and_verify()?,
+                recipient: proto::required(inner.recipient, MESSAGE, "recipient")?
+                    .decode_and_verify()?,
+            },
+        })
     }
 }
 

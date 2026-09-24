@@ -69,6 +69,7 @@ comfy-table        = { version = "7.1" }
 miette             = { features = ["fancy"], version = "7.6" }
 predicates         = { version = "3.0" }
 prost              = { default-features = false, version = "0.14" }
+protox             = { version = "=0.9.1" }
 rand               = { version = "0.10" }
 rand_chacha        = { version = "0.10" }
 regex              = { version = "1.0" }

@@ -5,7 +5,7 @@ use std::vec::Vec;
 
 use miden_client::Word;
 use miden_client::note::ToInputNoteCommitments;
-use miden_client::store::{StoreError, TransactionFilter};
+use miden_client::store::{StoreError, TransactionFilter, proto};
 use miden_client::transaction::{
     TransactionDetails,
     TransactionId,
@@ -95,11 +95,11 @@ impl SqliteStore {
                 let (id, script, details, status) = result.into_store_error()?;
                 Ok(TransactionRecord {
                     id: TransactionId::read_from_bytes(&id)?,
-                    details: TransactionDetails::read_from_bytes(&details)?,
+                    details: proto::decode(&details)?,
                     script: script
                         .map(|script| TransactionScript::read_from_bytes(&script))
                         .transpose()?,
-                    status: TransactionStatus::read_from_bytes(&status)?,
+                    status: proto::decode(&status)?,
                 })
             })
             .collect::<Result<Vec<TransactionRecord>, _>>()
@@ -215,10 +215,10 @@ pub(crate) fn upsert_transaction_record(
         UPSERT_TRANSACTION_QUERY,
         params![
             transaction.id.to_bytes(),
-            transaction.details.to_bytes(),
+            proto::encode(&transaction.details),
             script_root,
             transaction.status.variant() as u8,
-            transaction.status.to_bytes(),
+            proto::encode(&transaction.status),
         ],
     )
     .into_store_error()?;

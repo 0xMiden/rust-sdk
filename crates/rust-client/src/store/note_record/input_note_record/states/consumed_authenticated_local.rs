@@ -1,13 +1,22 @@
 use alloc::string::ToString;
 
+use miden_objects::DecodeMessageExt;
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::note::{NoteId, NoteInclusionProof, NoteMetadata};
 use miden_protocol::transaction::TransactionId;
+use miden_tx::utils::serde::{
+    ByteReader,
+    ByteWriter,
+    Deserializable,
+    DeserializationError,
+    Serializable,
+};
 
 use super::{InputNoteState, NoteStateHandler, NoteSubmissionData};
 use crate::store::NoteRecordError;
+use crate::store::proto::{self, ProtoDecodeError};
 
 /// Information related to notes in the [`InputNoteState::ConsumedAuthenticatedLocal`] state.
 #[derive(Clone, Debug, PartialEq)]
@@ -85,8 +94,8 @@ impl NoteStateHandler for ConsumedAuthenticatedLocalNoteState {
     }
 }
 
-impl miden_tx::utils::serde::Serializable for ConsumedAuthenticatedLocalNoteState {
-    fn write_into<W: miden_tx::utils::serde::ByteWriter>(&self, target: &mut W) {
+impl Serializable for ConsumedAuthenticatedLocalNoteState {
+    fn write_into<W: ByteWriter>(&self, target: &mut W) {
         self.metadata.write_into(target);
         self.inclusion_proof.write_into(target);
         self.block_note_root.write_into(target);
@@ -96,10 +105,8 @@ impl miden_tx::utils::serde::Serializable for ConsumedAuthenticatedLocalNoteStat
     }
 }
 
-impl miden_tx::utils::serde::Deserializable for ConsumedAuthenticatedLocalNoteState {
-    fn read_from<R: miden_tx::utils::serde::ByteReader>(
-        source: &mut R,
-    ) -> Result<Self, miden_tx::utils::serde::DeserializationError> {
+impl Deserializable for ConsumedAuthenticatedLocalNoteState {
+    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
         let metadata = NoteMetadata::read_from(source)?;
         let inclusion_proof = NoteInclusionProof::read_from(source)?;
         let block_note_root = Word::read_from(source)?;
@@ -113,6 +120,49 @@ impl miden_tx::utils::serde::Deserializable for ConsumedAuthenticatedLocalNoteSt
             nullifier_block_height,
             submission_data,
             consumed_tx_order,
+        })
+    }
+}
+
+impl From<&ConsumedAuthenticatedLocalNoteState>
+    for proto::input_note_state::ConsumedAuthenticatedLocal
+{
+    fn from(state: &ConsumedAuthenticatedLocalNoteState) -> Self {
+        Self {
+            metadata: Some(state.metadata.into()),
+            inclusion_proof: state.inclusion_proof.to_bytes(),
+            block_note_root: Some(state.block_note_root.into()),
+            nullifier_block_height: Some(state.nullifier_block_height.into()),
+            submission_data: Some((&state.submission_data).into()),
+            consumed_tx_order: state.consumed_tx_order,
+        }
+    }
+}
+
+impl TryFrom<proto::input_note_state::ConsumedAuthenticatedLocal>
+    for ConsumedAuthenticatedLocalNoteState
+{
+    type Error = ProtoDecodeError;
+
+    fn try_from(
+        state: proto::input_note_state::ConsumedAuthenticatedLocal,
+    ) -> Result<Self, Self::Error> {
+        const MESSAGE: &str = "consumed authenticated local note state";
+
+        Ok(ConsumedAuthenticatedLocalNoteState {
+            metadata: proto::required(state.metadata, MESSAGE, "metadata")?.decode_and_verify()?,
+            inclusion_proof: NoteInclusionProof::read_from_bytes(&state.inclusion_proof)?,
+            block_note_root: proto::required(state.block_note_root, MESSAGE, "block note root")?
+                .try_into()?,
+            nullifier_block_height: proto::required(
+                state.nullifier_block_height,
+                MESSAGE,
+                "nullifier block height",
+            )?
+            .decode_and_verify()?,
+            submission_data: proto::required(state.submission_data, MESSAGE, "submission data")?
+                .try_into()?,
+            consumed_tx_order: state.consumed_tx_order,
         })
     }
 }

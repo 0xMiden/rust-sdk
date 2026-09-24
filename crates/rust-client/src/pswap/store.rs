@@ -27,7 +27,15 @@ use super::lineage::{
     PswapLineageState,
 };
 use crate::store::input_note_states::{CommittedNoteState, UnverifiedNoteState};
-use crate::store::{InputNoteRecord, NoteFilter, SettingMutation, SettingScope, Store, StoreError};
+use crate::store::{
+    InputNoteRecord,
+    NoteFilter,
+    SettingMutation,
+    SettingScope,
+    Store,
+    StoreError,
+    proto,
+};
 use crate::sync::{NoteTagRecord, NoteTagSource};
 use crate::utils::{Deserializable, Serializable, bytes_to_hex_string};
 
@@ -67,7 +75,7 @@ pub(crate) async fn put_lineage(
             vec![
                 SettingMutation::Set {
                     key: order_key(record.order_id()),
-                    value: record.to_bytes(),
+                    value: proto::encode(record),
                 },
                 SettingMutation::Set {
                     key: tip_key(record.current_tip_note_id),
@@ -86,8 +94,7 @@ pub(crate) async fn get_lineage(
     let Some(bytes) = store.get_setting(SettingScope::Client, order_key(order_id)).await? else {
         return Ok(None);
     };
-    let record = PswapLineageRecord::read_from_bytes(&bytes)
-        .map_err(StoreError::DataDeserializationError)?;
+    let record = proto::decode(&bytes)?;
     Ok(Some(record))
 }
 
@@ -146,8 +153,7 @@ pub(crate) async fn list_lineages(
         let Some(bytes) = store.get_setting(SettingScope::Client, key).await? else {
             continue;
         };
-        let record = PswapLineageRecord::read_from_bytes(&bytes)
-            .map_err(StoreError::DataDeserializationError)?;
+        let record: PswapLineageRecord = proto::decode(&bytes)?;
         let keep = match &filter {
             PswapLineageFilter::All => true,
             PswapLineageFilter::Active => record.state == PswapLineageState::Active,
@@ -213,7 +219,7 @@ pub(crate) async fn apply_round(
     let mut mutations = vec![
         SettingMutation::Set {
             key: order_key(update.order_id),
-            value: new_record.to_bytes(),
+            value: proto::encode(&new_record),
         },
         SettingMutation::Remove { key: tip_key(old_tip) },
     ];

@@ -1,10 +1,18 @@
 use alloc::string::ToString;
 
+use miden_objects::DecodeMessageExt;
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::note::{NoteId, NoteInclusionProof, NoteMetadata};
 use miden_protocol::transaction::TransactionId;
+use miden_tx::utils::serde::{
+    ByteReader,
+    ByteWriter,
+    Deserializable,
+    DeserializationError,
+    Serializable,
+};
 
 use super::{
     CommittedNoteState,
@@ -14,6 +22,7 @@ use super::{
     UnverifiedNoteState,
 };
 use crate::store::NoteRecordError;
+use crate::store::proto::{self, ProtoDecodeError};
 
 /// Information related to notes in the [`InputNoteState::Invalid`] state.
 #[derive(Clone, Debug, PartialEq)]
@@ -112,18 +121,16 @@ impl NoteStateHandler for InvalidNoteState {
     }
 }
 
-impl miden_tx::utils::serde::Serializable for InvalidNoteState {
-    fn write_into<W: miden_tx::utils::serde::ByteWriter>(&self, target: &mut W) {
+impl Serializable for InvalidNoteState {
+    fn write_into<W: ByteWriter>(&self, target: &mut W) {
         self.metadata.write_into(target);
         self.invalid_inclusion_proof.write_into(target);
         self.block_note_root.write_into(target);
     }
 }
 
-impl miden_tx::utils::serde::Deserializable for InvalidNoteState {
-    fn read_from<R: miden_tx::utils::serde::ByteReader>(
-        source: &mut R,
-    ) -> Result<Self, miden_tx::utils::serde::DeserializationError> {
+impl Deserializable for InvalidNoteState {
+    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
         let metadata = NoteMetadata::read_from(source)?;
         let invalid_inclusion_proof = NoteInclusionProof::read_from(source)?;
         let block_note_root = Word::read_from(source)?;
@@ -131,6 +138,33 @@ impl miden_tx::utils::serde::Deserializable for InvalidNoteState {
             metadata,
             invalid_inclusion_proof,
             block_note_root,
+        })
+    }
+}
+
+impl From<&InvalidNoteState> for proto::input_note_state::Invalid {
+    fn from(state: &InvalidNoteState) -> Self {
+        Self {
+            metadata: Some(state.metadata.into()),
+            invalid_inclusion_proof: state.invalid_inclusion_proof.to_bytes(),
+            block_note_root: Some(state.block_note_root.into()),
+        }
+    }
+}
+
+impl TryFrom<proto::input_note_state::Invalid> for InvalidNoteState {
+    type Error = ProtoDecodeError;
+
+    fn try_from(state: proto::input_note_state::Invalid) -> Result<Self, Self::Error> {
+        const MESSAGE: &str = "invalid note state";
+
+        Ok(InvalidNoteState {
+            metadata: proto::required(state.metadata, MESSAGE, "metadata")?.decode_and_verify()?,
+            invalid_inclusion_proof: NoteInclusionProof::read_from_bytes(
+                &state.invalid_inclusion_proof,
+            )?,
+            block_note_root: proto::required(state.block_note_root, MESSAGE, "block note root")?
+                .try_into()?,
         })
     }
 }

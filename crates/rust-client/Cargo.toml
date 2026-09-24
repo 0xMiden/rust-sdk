@@ -119,6 +119,7 @@ miden-protocol         = { workspace = true }
 miden-standards        = { workspace = true }
 miette                 = { workspace = true }
 prost                  = { features = ["derive"], workspace = true }
+protox                 = { workspace = true }
 tonic-prost-build      = { version = "0.14" }
 
 [dev-dependencies]

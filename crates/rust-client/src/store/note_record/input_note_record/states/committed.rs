@@ -1,10 +1,18 @@
 use alloc::string::ToString;
 
+use miden_objects::DecodeMessageExt;
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::note::{NoteId, NoteInclusionProof, NoteMetadata};
 use miden_protocol::transaction::TransactionId;
+use miden_tx::utils::serde::{
+    ByteReader,
+    ByteWriter,
+    Deserializable,
+    DeserializationError,
+    Serializable,
+};
 
 use super::{
     ConsumedExternalNoteState,
@@ -14,6 +22,7 @@ use super::{
     ProcessingAuthenticatedNoteState,
 };
 use crate::store::NoteRecordError;
+use crate::store::proto::{self, ProtoDecodeError};
 
 /// Information related to notes in the [`InputNoteState::Committed`] state.
 #[derive(Clone, Debug, PartialEq)]
@@ -116,18 +125,16 @@ impl NoteStateHandler for CommittedNoteState {
     }
 }
 
-impl miden_tx::utils::serde::Serializable for CommittedNoteState {
-    fn write_into<W: miden_tx::utils::serde::ByteWriter>(&self, target: &mut W) {
+impl Serializable for CommittedNoteState {
+    fn write_into<W: ByteWriter>(&self, target: &mut W) {
         self.metadata.write_into(target);
         self.inclusion_proof.write_into(target);
         self.block_note_root.write_into(target);
     }
 }
 
-impl miden_tx::utils::serde::Deserializable for CommittedNoteState {
-    fn read_from<R: miden_tx::utils::serde::ByteReader>(
-        source: &mut R,
-    ) -> Result<Self, miden_tx::utils::serde::DeserializationError> {
+impl Deserializable for CommittedNoteState {
+    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
         let metadata = NoteMetadata::read_from(source)?;
         let inclusion_proof = NoteInclusionProof::read_from(source)?;
         let block_note_root = Word::read_from(source)?;
@@ -135,6 +142,31 @@ impl miden_tx::utils::serde::Deserializable for CommittedNoteState {
             metadata,
             inclusion_proof,
             block_note_root,
+        })
+    }
+}
+
+impl From<&CommittedNoteState> for proto::input_note_state::Committed {
+    fn from(state: &CommittedNoteState) -> Self {
+        Self {
+            metadata: Some(state.metadata.into()),
+            inclusion_proof: state.inclusion_proof.to_bytes(),
+            block_note_root: Some(state.block_note_root.into()),
+        }
+    }
+}
+
+impl TryFrom<proto::input_note_state::Committed> for CommittedNoteState {
+    type Error = ProtoDecodeError;
+
+    fn try_from(state: proto::input_note_state::Committed) -> Result<Self, Self::Error> {
+        const MESSAGE: &str = "committed note state";
+
+        Ok(CommittedNoteState {
+            metadata: proto::required(state.metadata, MESSAGE, "metadata")?.decode_and_verify()?,
+            inclusion_proof: NoteInclusionProof::read_from_bytes(&state.inclusion_proof)?,
+            block_note_root: proto::required(state.block_note_root, MESSAGE, "block note root")?
+                .try_into()?,
         })
     }
 }

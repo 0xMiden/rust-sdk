@@ -1,10 +1,18 @@
 use alloc::string::ToString;
 
+use miden_objects::DecodeMessageExt;
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::note::{NoteId, NoteInclusionProof, NoteMetadata};
 use miden_protocol::transaction::TransactionId;
+use miden_tx::utils::serde::{
+    ByteReader,
+    ByteWriter,
+    Deserializable,
+    DeserializationError,
+    Serializable,
+};
 
 use super::{
     ConsumedAuthenticatedLocalNoteState,
@@ -14,6 +22,7 @@ use super::{
     NoteSubmissionData,
 };
 use crate::store::NoteRecordError;
+use crate::store::proto::{self, ProtoDecodeError};
 
 /// Information related to notes in the [`InputNoteState::ProcessingAuthenticated`] state.
 #[derive(Clone, Debug, PartialEq)]
@@ -113,8 +122,8 @@ impl NoteStateHandler for ProcessingAuthenticatedNoteState {
     }
 }
 
-impl miden_tx::utils::serde::Serializable for ProcessingAuthenticatedNoteState {
-    fn write_into<W: miden_tx::utils::serde::ByteWriter>(&self, target: &mut W) {
+impl Serializable for ProcessingAuthenticatedNoteState {
+    fn write_into<W: ByteWriter>(&self, target: &mut W) {
         self.metadata.write_into(target);
         self.inclusion_proof.write_into(target);
         self.block_note_root.write_into(target);
@@ -122,10 +131,8 @@ impl miden_tx::utils::serde::Serializable for ProcessingAuthenticatedNoteState {
     }
 }
 
-impl miden_tx::utils::serde::Deserializable for ProcessingAuthenticatedNoteState {
-    fn read_from<R: miden_tx::utils::serde::ByteReader>(
-        source: &mut R,
-    ) -> Result<Self, miden_tx::utils::serde::DeserializationError> {
+impl Deserializable for ProcessingAuthenticatedNoteState {
+    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
         let metadata = NoteMetadata::read_from(source)?;
         let inclusion_proof = NoteInclusionProof::read_from(source)?;
         let block_note_root = Word::read_from(source)?;
@@ -135,6 +142,38 @@ impl miden_tx::utils::serde::Deserializable for ProcessingAuthenticatedNoteState
             inclusion_proof,
             block_note_root,
             submission_data,
+        })
+    }
+}
+
+impl From<&ProcessingAuthenticatedNoteState> for proto::input_note_state::ProcessingAuthenticated {
+    fn from(state: &ProcessingAuthenticatedNoteState) -> Self {
+        Self {
+            metadata: Some(state.metadata.into()),
+            inclusion_proof: state.inclusion_proof.to_bytes(),
+            block_note_root: Some(state.block_note_root.into()),
+            submission_data: Some((&state.submission_data).into()),
+        }
+    }
+}
+
+impl TryFrom<proto::input_note_state::ProcessingAuthenticated>
+    for ProcessingAuthenticatedNoteState
+{
+    type Error = ProtoDecodeError;
+
+    fn try_from(
+        state: proto::input_note_state::ProcessingAuthenticated,
+    ) -> Result<Self, Self::Error> {
+        const MESSAGE: &str = "processing authenticated note state";
+
+        Ok(ProcessingAuthenticatedNoteState {
+            metadata: proto::required(state.metadata, MESSAGE, "metadata")?.decode_and_verify()?,
+            inclusion_proof: NoteInclusionProof::read_from_bytes(&state.inclusion_proof)?,
+            block_note_root: proto::required(state.block_note_root, MESSAGE, "block note root")?
+                .try_into()?,
+            submission_data: proto::required(state.submission_data, MESSAGE, "submission data")?
+                .try_into()?,
         })
     }
 }

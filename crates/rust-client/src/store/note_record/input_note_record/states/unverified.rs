@@ -1,9 +1,17 @@
 use alloc::string::ToString;
 
+use miden_objects::DecodeMessageExt;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::note::{NoteId, NoteInclusionProof, NoteMetadata};
 use miden_protocol::transaction::TransactionId;
+use miden_tx::utils::serde::{
+    ByteReader,
+    ByteWriter,
+    Deserializable,
+    DeserializationError,
+    Serializable,
+};
 
 use super::{
     CommittedNoteState,
@@ -15,6 +23,7 @@ use super::{
     ProcessingUnauthenticatedNoteState,
 };
 use crate::store::NoteRecordError;
+use crate::store::proto::{self, ProtoDecodeError};
 
 /// Information related to notes in the [`InputNoteState::Unverified`] state.
 #[derive(Clone, Debug, PartialEq)]
@@ -139,20 +148,39 @@ impl NoteStateHandler for UnverifiedNoteState {
     }
 }
 
-impl miden_tx::utils::serde::Serializable for UnverifiedNoteState {
-    fn write_into<W: miden_tx::utils::serde::ByteWriter>(&self, target: &mut W) {
+impl Serializable for UnverifiedNoteState {
+    fn write_into<W: ByteWriter>(&self, target: &mut W) {
         self.metadata.write_into(target);
         self.inclusion_proof.write_into(target);
     }
 }
 
-impl miden_tx::utils::serde::Deserializable for UnverifiedNoteState {
-    fn read_from<R: miden_tx::utils::serde::ByteReader>(
-        source: &mut R,
-    ) -> Result<Self, miden_tx::utils::serde::DeserializationError> {
+impl Deserializable for UnverifiedNoteState {
+    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
         let metadata = NoteMetadata::read_from(source)?;
         let inclusion_proof = NoteInclusionProof::read_from(source)?;
         Ok(UnverifiedNoteState { metadata, inclusion_proof })
+    }
+}
+
+impl From<&UnverifiedNoteState> for proto::input_note_state::Unverified {
+    fn from(state: &UnverifiedNoteState) -> Self {
+        Self {
+            metadata: Some(state.metadata.into()),
+            inclusion_proof: state.inclusion_proof.to_bytes(),
+        }
+    }
+}
+
+impl TryFrom<proto::input_note_state::Unverified> for UnverifiedNoteState {
+    type Error = ProtoDecodeError;
+
+    fn try_from(state: proto::input_note_state::Unverified) -> Result<Self, Self::Error> {
+        Ok(UnverifiedNoteState {
+            metadata: proto::required(state.metadata, "unverified note state", "metadata")?
+                .decode_and_verify()?,
+            inclusion_proof: NoteInclusionProof::read_from_bytes(&state.inclusion_proof)?,
+        })
     }
 }
 

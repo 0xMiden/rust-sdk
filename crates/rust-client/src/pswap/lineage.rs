@@ -3,8 +3,10 @@
 //! See module-level docs on [`crate::pswap`].
 
 use alloc::collections::BTreeMap;
+use alloc::format;
 use alloc::string::ToString;
 
+use miden_objects::DecodeMessageExt;
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::AssetAmount;
 use miden_protocol::block::{BlockHeader, BlockNumber};
@@ -13,7 +15,7 @@ use miden_protocol::{Felt, Word};
 use miden_standards::note::{PswapNote, PswapNoteAttachment};
 
 use super::errors::PswapLineageError;
-use crate::utils::{ByteReader, ByteWriter, Deserializable, DeserializationError, Serializable};
+use crate::store::proto::{self, ProtoDecodeError, ProtobufValue};
 
 // PSWAP LINEAGE STATE
 // ================================================================================================
@@ -404,44 +406,85 @@ pub(crate) fn build_record_from_fields(
 // VALUE CODEC
 // ================================================================================================
 
-/// Encodes the record's fields in declaration order: the `original_note_id` fetch handle, the
-/// mirrored order id and creator, then the mutable tip state. Only the remaining *amounts* are
-/// written — the faucets and full note live on the depth-0 note, recovered via `original_note_id`
-/// when needed.
-impl Serializable for PswapLineageRecord {
-    fn write_into<W: ByteWriter>(&self, target: &mut W) {
-        self.original_note_id.write_into(target);
-        self.order_id.write_into(target);
-        self.creator_account_id.write_into(target);
-        self.current_tip_note_id.write_into(target);
-        self.current_depth.write_into(target);
-        self.remaining_offered.write_into(target);
-        self.remaining_requested.write_into(target);
-        self.state.as_u8().write_into(target);
-    }
-}
+/// Only the remaining *amounts* are stored. The faucets and the full note live on the depth-0 note,
+/// which is recovered through `original_note_id` when needed.
+impl ProtobufValue for PswapLineageRecord {
+    type Message = proto::PswapLineageRecord;
 
-impl Deserializable for PswapLineageRecord {
-    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
-        let original_note_id = NoteId::read_from(source)?;
-        let order_id = Felt::read_from(source)?;
-        let creator_account_id = AccountId::read_from(source)?;
-        let current_tip_note_id = NoteId::read_from(source)?;
-        let current_depth = u32::read_from(source)?;
-        let remaining_offered = AssetAmount::read_from(source)?;
-        let remaining_requested = AssetAmount::read_from(source)?;
-        let state_byte = u8::read_from(source)?;
+    fn to_proto(&self) -> Self::Message {
+        Self::Message {
+            original_note_id: Some((&self.original_note_id).into()),
+            order_id: Some(self.order_id.into()),
+            creator_account_id: Some(self.creator_account_id.into()),
+            current_tip_note_id: Some((&self.current_tip_note_id).into()),
+            current_depth: self.current_depth,
+            remaining_offered: self.remaining_offered.into(),
+            remaining_requested: self.remaining_requested.into(),
+            state: proto::PswapLineageState::from(self.state).into(),
+        }
+    }
+
+    fn from_proto(record: Self::Message) -> Result<Self, ProtoDecodeError> {
+        const MESSAGE: &str = "pswap lineage record";
+
+        let original_note_id = proto::required(record.original_note_id, MESSAGE, "original note")?
+            .decode_and_verify()?;
+        let order_id = proto::required(record.order_id, MESSAGE, "order id")?.try_into()?;
+        let creator_account_id =
+            proto::required(record.creator_account_id, MESSAGE, "creator account")?
+                .decode_and_verify()?;
+        let current_tip_note_id =
+            proto::required(record.current_tip_note_id, MESSAGE, "current tip note")?
+                .decode_and_verify()?;
+        let remaining_offered = AssetAmount::new(record.remaining_offered)
+            .map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))?;
+        let remaining_requested = AssetAmount::new(record.remaining_requested)
+            .map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))?;
+        let state = PswapLineageState::try_from(record.state)?;
+
         build_record_from_fields(
             original_note_id,
             order_id,
             creator_account_id,
             current_tip_note_id,
-            current_depth,
+            record.current_depth,
             remaining_offered,
             remaining_requested,
-            state_byte,
+            state.as_u8(),
         )
-        .map_err(|err| DeserializationError::InvalidValue(err.to_string()))
+        .map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))
+    }
+}
+
+impl From<PswapLineageState> for proto::PswapLineageState {
+    fn from(state: PswapLineageState) -> Self {
+        match state {
+            PswapLineageState::Active => proto::PswapLineageState::Active,
+            PswapLineageState::FullyFilled => proto::PswapLineageState::FullyFilled,
+            PswapLineageState::Reclaimed => proto::PswapLineageState::Reclaimed,
+        }
+    }
+}
+
+impl TryFrom<i32> for PswapLineageState {
+    type Error = ProtoDecodeError;
+
+    /// Reads the stage from the enum value that the store keeps. An unknown value and the
+    /// unspecified value are both rejected, because the stage decides whether the order can still
+    /// be filled.
+    fn try_from(state: i32) -> Result<Self, Self::Error> {
+        let state = proto::PswapLineageState::try_from(state).map_err(|_| {
+            ProtoDecodeError::InvalidValue(format!("unknown pswap lineage state {state}"))
+        })?;
+
+        match state {
+            proto::PswapLineageState::Active => Ok(PswapLineageState::Active),
+            proto::PswapLineageState::FullyFilled => Ok(PswapLineageState::FullyFilled),
+            proto::PswapLineageState::Reclaimed => Ok(PswapLineageState::Reclaimed),
+            proto::PswapLineageState::Unspecified => Err(ProtoDecodeError::InvalidValue(
+                "pswap lineage state is unspecified".to_string(),
+            )),
+        }
     }
 }
 
@@ -645,8 +688,8 @@ mod tests {
         assert_eq!(record.creator_account_id(), creator);
     }
 
-    /// `Serializable`/`Deserializable` round-trip preserves every field. Exercised at an advanced
-    /// depth with reduced amounts to catch an offered/requested mix-up.
+    /// The protobuf round-trip preserves every field. Exercised at an advanced depth with reduced
+    /// amounts to catch an offered/requested mix-up.
     #[test]
     fn value_codec_round_trips() {
         let (sender, creator, offered_faucet, requested_faucet) = fixed_account_ids();
@@ -656,8 +699,8 @@ mod tests {
             record_from_test_pswap(&pswap, note.id(), 3, 70, 35, PswapLineageState::Active.as_u8())
                 .unwrap();
 
-        let bytes = record.to_bytes();
-        let decoded = PswapLineageRecord::read_from_bytes(&bytes).unwrap();
+        let bytes = proto::encode(&record);
+        let decoded: PswapLineageRecord = proto::decode(&bytes).unwrap();
 
         assert_eq!(decoded.original_note_id, record.original_note_id);
         assert_eq!(decoded.creator_account_id(), record.creator_account_id());

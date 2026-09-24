@@ -4,7 +4,7 @@
 
 ### Breaking Changes
 
-* [BREAKING][arch][rust] Updated protocol dependencies to `0.17.0-rc.7` and `miden-node-proto-build` to node `0.17.0-rc.3` ([#XXXX](https://github.com/0xMiden/rust-sdk/pull/XXXX)).
+* [BREAKING][rust] Updated protocol dependencies to `0.17.0-rc.7` and `miden-node-proto-build` to node `0.17.0-rc.3` ([#2621](https://github.com/0xMiden/rust-sdk/pull/2621)).
 
 ### Enhancements
 

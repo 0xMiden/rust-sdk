@@ -1009,11 +1009,11 @@ async fn cli_export_import_account() -> Result<()> {
     export_cmd.current_dir(&temp_dir_1).assert().success();
 
     let keyless_file = AccountFile::read(temp_dir_1.join(KEYLESS_WALLET_FILENAME))?;
-    assert!(keyless_file.auth_secret_keys.is_empty());
-    assert_eq!(keyless_file.account.id(), AccountId::from_hex(&wallet_id)?);
+    assert!(keyless_file.auth_secret_keys().is_empty());
+    assert_eq!(keyless_file.account().id(), AccountId::from_hex(&wallet_id)?);
 
     let with_keys_file = AccountFile::read(temp_dir_1.join(WALLET_FILENAME))?;
-    assert!(!with_keys_file.auth_secret_keys.is_empty());
+    assert!(!with_keys_file.auth_secret_keys().is_empty());
 
     // Copy the account files
     for filename in &[FAUCET_FILENAME, WALLET_FILENAME] {
@@ -2961,8 +2961,8 @@ fn create_and_export_account_with_multisig_auth() {
         .stdout(contains("without secret keys"));
 
     let account_file = AccountFile::read(temp_dir.join(ACCOUNT_FILENAME)).unwrap();
-    assert_eq!(account_file.account.id().to_hex(), account_id);
-    assert!(account_file.auth_secret_keys.is_empty());
+    assert_eq!(account_file.account().id().to_hex(), account_id);
+    assert!(account_file.auth_secret_keys().is_empty());
 }
 
 /// Tests creating an account with the ecdsa-auth component.
@@ -3131,4 +3131,39 @@ async fn test_load_local_priority() -> Result<()> {
     );
 
     Ok(())
+}
+
+// ACCOUNT REGISTRATION ARGUMENT VALIDATION
+// ================================================================================================
+
+#[test]
+fn new_wallet_rejects_an_invitation_code() {
+    let mut cmd = cargo_bin_cmd!("miden-client");
+    cmd.args(["new-wallet", "--invitation-code", "CODE"]);
+    cmd.assert()
+        .failure()
+        .stderr(contains("unexpected argument '--invitation-code'"));
+}
+
+#[test]
+fn new_account_rejects_an_invitation_code() {
+    let mut cmd = cargo_bin_cmd!("miden-client");
+    cmd.args(["new-account", "-p", "basic-wallet", "--invitation-code", "CODE"]);
+    cmd.assert()
+        .failure()
+        .stderr(contains("unexpected argument '--invitation-code'"));
+}
+
+#[test]
+fn account_register_requires_an_invitation_code() {
+    let mut cmd = cargo_bin_cmd!("miden-client");
+    cmd.args(["account", "--register", "0x00"]);
+    cmd.assert().failure().stderr(contains("--invitation-code <CODE>"));
+}
+
+#[test]
+fn account_invitation_code_requires_register() {
+    let mut cmd = cargo_bin_cmd!("miden-client");
+    cmd.args(["account", "--invitation-code", "CODE"]);
+    cmd.assert().failure().stderr(contains("--register <ID>"));
 }

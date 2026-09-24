@@ -3,6 +3,7 @@ use alloc::vec::Vec;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use miden_client::account::AccountFile;
 use miden_client::assembly::{CodeBuilder, SourceManagerSync};
 use miden_client::auth::{AuthSchemeId, AuthSecretKey, AuthSingleSig, PublicKeyCommitment};
 use miden_client::keystore::Keystore;
@@ -13,7 +14,6 @@ use miden_protocol::account::{
     AccountBuilder,
     AccountComponent,
     AccountComponentMetadata,
-    AccountFile,
     AccountId,
     AccountType,
     StorageSlot,
@@ -138,12 +138,12 @@ async fn load_accounts_test() {
     let created_accounts_data = create_initial_accounts_data();
 
     for account_data in created_accounts_data.clone() {
-        client.add_account(&account_data.account, false).await.unwrap();
+        client.add_account(account_data.account(), false).await.unwrap();
     }
 
     let expected_accounts: Vec<Account> = created_accounts_data
         .into_iter()
-        .map(|account_data| account_data.account)
+        .map(|account_data| account_data.into_parts().0)
         .collect();
     let accounts = client.get_account_headers().await.unwrap();
 
@@ -164,12 +164,12 @@ async fn load_ecdsa_accounts_test() {
 
     let created_accounts_data = create_ecdsa_initial_accounts_data();
     for account_data in created_accounts_data.clone() {
-        client.add_account(&account_data.account, false).await.unwrap();
+        client.add_account(account_data.account(), false).await.unwrap();
     }
 
     let expected_accounts: Vec<Account> = created_accounts_data
         .into_iter()
-        .map(|account_data| account_data.account)
+        .map(|account_data| account_data.into_parts().0)
         .collect();
     let accounts = client.get_account_headers().await.unwrap();
 

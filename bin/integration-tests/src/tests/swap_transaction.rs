@@ -1,8 +1,7 @@
 use anyhow::{Context, Result};
 use miden_client::account::AccountType;
 use miden_client::asset::{Asset, AssetAmount, FungibleAsset};
-use miden_client::note::standards::NoteSyncHint;
-use miden_client::note::{Note, NoteDetails, NoteFile, NoteType, SwapNote};
+use miden_client::note::{Note, NoteDetails, NoteFile, NoteSyncHint, NoteType, SwapNote};
 use miden_client::store::NoteFilter;
 use miden_client::transaction::{SwapTransactionData, TransactionRequestBuilder};
 use tracing::info;

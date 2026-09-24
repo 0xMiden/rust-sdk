@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+#### Enhancements
+
+* [type][rust] Added `AccountStateUpdate` that carries the new account header, a `StorageUpdate` and a `VaultUpdate`, to yield the update for a synced public account. Storage and vault updates can be `Full` or `Patch`. Sync fetches storage maps only when a storage map is oversized and the vault only when the vault is ([#2548](https://github.com/0xMiden/rust-sdk/pull/2548)).
+
 ## 0.17.0-rc.2 (2026-09-23)
 
 ### Breaking Changes
@@ -58,7 +64,6 @@
 * [BREAKING][type][rust] Added the `TransactionRequestError::SwapNoteWithZeroAsset` variant, so exhaustive matches on `TransactionRequestError` must handle it ([#2459](https://github.com/0xMiden/rust-sdk/pull/2459)).
 * [BREAKING][removal][rust] Removed `TransactionFilter::to_query`. The method emitted `SQLite` text from the storage-agnostic `Store` module, so the query now lives in `miden-client-sqlite-store` next to the `NoteFilter` queries.
 * [BREAKING][removal][test] Loose helper functions in `miden_client::testing::common` are now methods on `TestClient`. `TestClient::keystore()` exposes the client's keystore, so `ClientConfig::into_client` and `into_unsynced_client` return just the `TestClient` instead of a client/keystore pair ([#2481](https://github.com/0xMiden/rust-sdk/pull/2481)).
-* [BREAKING][type][rust] Added `AccountStateUpdate` that carries the new account header, a `StorageUpdate` and a `VaultUpdate`, to yield the update for a synced public account. Storage and vault updates can be `Full` or `Patch`. Sync fetches storage maps only when a storage map is oversized and the vault only when the vault is ([#2548](https://github.com/0xMiden/rust-sdk/pull/2548)).
 * [BREAKING][removal][rust] `tokens_to_base_units`, `base_units_to_tokens` and `TokenParseError` are removed from `miden_client::utils`. They format and parse fungible amounts for display against a faucet's decimals, which only the CLI needs, so they now live in the CLI crate ([#2515](https://github.com/0xMiden/rust-sdk/pull/2515)).
 * [BREAKING][arch][rust,store] Updated protocol dependencies to `0.17.0-rc.3`, VM dependencies to `0.32`, and `miden-debug` to `0.15`. Updated node protobuf bindings to [#2570](https://github.com/0xMiden/node/pull/2570). Requires a compatible node and a new client database ([#2530](https://github.com/0xMiden/rust-sdk/pull/2530)).
 * [BREAKING][arch][rust] Updated protocol dependencies to `0.17.0-rc.4`. The RPC domain conversions now decode a message and then build or verify it, following the `miden-objects` split ([#2549](https://github.com/0xMiden/rust-sdk/pull/2549)).

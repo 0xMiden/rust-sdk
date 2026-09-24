@@ -4,10 +4,15 @@
 //! the row was written by a version that did not set it. [`required`] turns that into an error at
 //! the point of use, and names the field it was reading.
 
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-use miden_objects::ConversionError;
+use miden_objects::{ConversionError, DecodeMessageExt, proto as objects};
+use miden_protocol::Word;
+use miden_protocol::account::AccountCode;
+use miden_protocol::block::BlockHeader;
+use miden_protocol::note::{NoteAttachments, NoteMetadata, NoteScript, NoteStorage};
+use miden_protocol::transaction::TransactionScript;
 use miden_tx::utils::serde::DeserializationError;
 
 #[rustfmt::skip]
@@ -79,4 +84,130 @@ pub(crate) fn required<T>(
     name: &'static str,
 ) -> Result<T, ProtoDecodeError> {
     field.ok_or(ProtoDecodeError::MissingField { message, field: name })
+}
+
+// PROTOCOL VALUES
+// ================================================================================================
+
+// The store keeps these protocol values in their own columns, as the messages that `miden-objects`
+// defines.
+
+impl ProtobufValue for AccountCode {
+    type Message = objects::account::AccountCode;
+
+    fn to_proto(&self) -> Self::Message {
+        self.into()
+    }
+
+    fn from_proto(message: Self::Message) -> Result<Self, ProtoDecodeError> {
+        Ok(message.decode_and_verify()?)
+    }
+}
+
+impl ProtobufValue for TransactionScript {
+    type Message = objects::transaction::TransactionScript;
+
+    fn to_proto(&self) -> Self::Message {
+        self.into()
+    }
+
+    fn from_proto(message: Self::Message) -> Result<Self, ProtoDecodeError> {
+        Ok(message.decode_and_verify()?)
+    }
+}
+
+impl ProtobufValue for NoteScript {
+    type Message = objects::note::NoteScript;
+
+    fn to_proto(&self) -> Self::Message {
+        self.into()
+    }
+
+    fn from_proto(message: Self::Message) -> Result<Self, ProtoDecodeError> {
+        Ok(message.decode_and_verify()?)
+    }
+}
+
+impl ProtobufValue for NoteAttachments {
+    type Message = objects::note::NoteAttachments;
+
+    fn to_proto(&self) -> Self::Message {
+        self.into()
+    }
+
+    fn from_proto(message: Self::Message) -> Result<Self, ProtoDecodeError> {
+        Ok(message.decode_and_verify()?)
+    }
+}
+
+impl ProtobufValue for NoteStorage {
+    type Message = objects::note::NoteStorage;
+
+    fn to_proto(&self) -> Self::Message {
+        self.into()
+    }
+
+    fn from_proto(message: Self::Message) -> Result<Self, ProtoDecodeError> {
+        Ok(message.decode_and_verify()?)
+    }
+}
+
+impl ProtobufValue for NoteMetadata {
+    type Message = objects::note::NoteMetadata;
+
+    fn to_proto(&self) -> Self::Message {
+        (*self).into()
+    }
+
+    fn from_proto(message: Self::Message) -> Result<Self, ProtoDecodeError> {
+        Ok(message.decode_and_verify()?)
+    }
+}
+
+/// The store only keeps headers that it received from the node or built from them, so a stored
+/// header is not verified again when it is read.
+impl ProtobufValue for BlockHeader {
+    type Message = objects::blockchain::BlockHeader;
+
+    fn to_proto(&self) -> Self::Message {
+        self.into()
+    }
+
+    fn from_proto(message: Self::Message) -> Result<Self, ProtoDecodeError> {
+        Ok(message.decode_and_build_unchecked()?)
+    }
+}
+
+impl ProtobufValue for miden_protocol::note::NoteAssets {
+    type Message = NoteAssets;
+
+    fn to_proto(&self) -> Self::Message {
+        NoteAssets {
+            assets: self.iter().map(Into::into).collect(),
+        }
+    }
+
+    fn from_proto(message: Self::Message) -> Result<Self, ProtoDecodeError> {
+        let assets = message
+            .assets
+            .into_iter()
+            .map(DecodeMessageExt::decode_and_verify)
+            .collect::<Result<Vec<_>, _>>()?;
+        Self::new(assets).map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))
+    }
+}
+
+/// The peaks of the partial blockchain MMR, without their forest.
+impl ProtobufValue for Vec<Word> {
+    type Message = MmrPeaks;
+
+    fn to_proto(&self) -> Self::Message {
+        MmrPeaks {
+            peaks: self.iter().map(Into::into).collect(),
+        }
+    }
+
+    fn from_proto(message: Self::Message) -> Result<Self, ProtoDecodeError> {
+        Ok(message.peaks.into_iter().map(Word::try_from).collect::<Result<_, _>>()?)
+    }
 }

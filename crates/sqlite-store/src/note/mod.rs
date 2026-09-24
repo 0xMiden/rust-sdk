@@ -6,11 +6,8 @@ use std::vec::Vec;
 use miden_client::account::AccountId;
 use miden_client::note::{
     BlockNumber,
-    NoteAssets,
-    NoteAttachments,
     NoteDetails,
     NoteInclusionProof,
-    NoteMetadata,
     NoteRecipient,
     NoteScript,
     NoteUpdateTracker,
@@ -259,7 +256,7 @@ impl SqliteStore {
             .into_store_error()?;
 
         match script_bytes {
-            Some(bytes) => Ok(NoteScript::from_bytes(&bytes)?),
+            Some(bytes) => Ok(proto::decode(&bytes)?),
             None => Err(StoreError::NoteScriptNotFound(script_root.to_hex())),
         }
     }
@@ -278,14 +275,14 @@ fn parse_input_note(row: &rusqlite::Row<'_>) -> Result<InputNoteRecord, StoreErr
     let created_at = column_value_as_u64(row, "created_at").into_store_error()?;
     let attachments: Vec<u8> = row.get("attachments").into_store_error()?;
 
-    let assets = NoteAssets::read_from_bytes(&assets)?;
+    let assets = proto::decode(&assets)?;
     let serial_number = Word::read_from_bytes(&serial_number)?;
-    let script = NoteScript::read_from_bytes(&script)?;
-    let inputs = NoteStorage::read_from_bytes(&inputs)?;
+    let script = proto::decode(&script)?;
+    let inputs = proto::decode(&inputs)?;
     let recipient = NoteRecipient::new(serial_number, script, inputs);
 
     let details = NoteDetails::new(assets, recipient);
-    let attachments = NoteAttachments::read_from_bytes(&attachments)?;
+    let attachments = proto::decode(&attachments)?;
     let state = proto::decode(&state)?;
 
     Ok(InputNoteRecord::new(details, attachments, Some(created_at), state))
@@ -302,13 +299,13 @@ fn serialize_input_note(note: &InputNoteRecord) -> SerializedInputNoteData {
     let created_at = note.created_at().unwrap_or(0);
 
     let details = note.details();
-    let assets = details.assets().to_bytes();
-    let attachments = note.attachments().to_bytes();
+    let assets = proto::encode(details.assets());
+    let attachments = proto::encode(note.attachments());
     let recipient = details.recipient();
 
     let serial_number = recipient.serial_num().to_bytes();
-    let script = recipient.script().to_bytes();
-    let inputs = recipient.storage().to_bytes();
+    let script = proto::encode(recipient.script());
+    let inputs = proto::encode(recipient.storage());
 
     let script_root = recipient.script().root().to_bytes();
 
@@ -349,11 +346,11 @@ fn parse_output_note(row: &rusqlite::Row<'_>) -> Result<OutputNoteRecord, StoreE
     let script: Option<Vec<u8>> = row.get("serialized_note_script").into_store_error()?;
 
     let recipient_digest = Word::read_from_bytes(&recipient_digest)?;
-    let assets = NoteAssets::read_from_bytes(&assets)?;
-    let metadata = NoteMetadata::read_from_bytes(&metadata)?;
-    let script = script.map(|script| NoteScript::read_from_bytes(&script)).transpose()?;
+    let assets = proto::decode(&assets)?;
+    let metadata = proto::decode(&metadata)?;
+    let script = script.map(|script| proto::decode(&script)).transpose()?;
     let state = decode_output_note_state(&state, script)?;
-    let attachments = NoteAttachments::read_from_bytes(&attachments)?;
+    let attachments = proto::decode(&attachments)?;
 
     Ok(OutputNoteRecord::new(
         recipient_digest,
@@ -375,7 +372,7 @@ fn serialize_input_note_state(note: &InputNoteRecord) -> SerializedInputNoteStat
         details_commitment: note.details_commitment().to_bytes(),
         state_discriminant: note.state().discriminant(),
         state: proto::encode(note.state()),
-        attachments: note.attachments().to_bytes(),
+        attachments: proto::encode(note.attachments()),
         consumed_block_height,
         consumed_tx_order,
         consumer_account_id,
@@ -395,21 +392,21 @@ fn serialize_output_note_state(note: &OutputNoteRecord) -> SerializedOutputNoteS
 fn serialize_output_note(note: &OutputNoteRecord) -> SerializedOutputNoteData {
     let details_commitment = note.details_commitment().to_bytes();
     let id = note.id().as_word().to_bytes();
-    let assets = note.assets().to_bytes();
+    let assets = proto::encode(note.assets());
     let recipient_digest = note.recipient_digest().to_bytes();
-    let metadata = note.metadata().to_bytes();
+    let metadata = proto::encode(note.metadata());
 
     let nullifier = note.nullifier().map(|nullifier| nullifier.to_bytes());
 
     // The script is only known when the note's full details (recipient) are known. It is stored in
     // the shared `notes_scripts` table, with the note row referencing it by root.
     let script_root = note.script_root().map(|root| root.to_bytes());
-    let script = note.recipient().map(|recipient| recipient.script().to_bytes());
+    let script = note.recipient().map(|recipient| proto::encode(recipient.script()));
 
     let state_discriminant = note.state().discriminant();
     let state = encode_output_note_state(note.state());
 
-    let attachments = note.attachments().to_bytes();
+    let attachments = proto::encode(note.attachments());
 
     SerializedOutputNoteData {
         details_commitment,
@@ -745,7 +742,7 @@ pub(super) fn upsert_note_script_tx(
 ) -> Result<(), StoreError> {
     tx.prepare_cached(UPSERT_NOTE_SCRIPT_QUERY)
         .into_store_error()?
-        .execute(params![note_script.root().to_bytes(), note_script.to_bytes()])
+        .execute(params![note_script.root().to_bytes(), proto::encode(note_script)])
         .into_store_error()?;
 
     Ok(())

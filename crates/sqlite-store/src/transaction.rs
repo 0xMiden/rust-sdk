@@ -10,7 +10,6 @@ use miden_client::transaction::{
     TransactionDetails,
     TransactionId,
     TransactionRecord,
-    TransactionScript,
     TransactionStatus,
     TransactionStatusVariant,
     TransactionStoreUpdate,
@@ -96,9 +95,7 @@ impl SqliteStore {
                 Ok(TransactionRecord {
                     id: TransactionId::read_from_bytes(&id)?,
                     details: proto::decode(&details)?,
-                    script: script
-                        .map(|script| TransactionScript::read_from_bytes(&script))
-                        .transpose()?,
+                    script: script.map(|script| proto::decode(&script)).transpose()?,
                     status: proto::decode(&status)?,
                 })
             })
@@ -207,7 +204,7 @@ pub(crate) fn upsert_transaction_record(
     let script_root = transaction.script.as_ref().map(|script| script.root().to_bytes());
 
     if let Some(script) = &transaction.script {
-        tx.execute(INSERT_TRANSACTION_SCRIPT_QUERY, params![script_root, script.to_bytes()])
+        tx.execute(INSERT_TRANSACTION_SCRIPT_QUERY, params![script_root, proto::encode(script)])
             .into_store_error()?;
     }
 

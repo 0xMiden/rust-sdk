@@ -10,6 +10,7 @@ syntax = "proto3";
 package miden.client.store;
 
 import "account.proto";
+import "asset.proto";
 import "block_number.proto";
 import "note.proto";
 import "primitives.proto";
@@ -237,4 +238,18 @@ enum PswapLineageState {
   PSWAP_LINEAGE_STATE_ACTIVE = 1;
   PSWAP_LINEAGE_STATE_FULLY_FILLED = 2;
   PSWAP_LINEAGE_STATE_RECLAIMED = 3;
+}
+
+// PROTOCOL COLLECTIONS
+// ================================================================================================
+
+// The assets of a note. The protocol schema has a message for one asset but not for the list.
+message NoteAssets {
+  repeated asset.Asset assets = 1;
+}
+
+// The peaks of the partial blockchain MMR at the sync height. The forest comes from the block
+// number of the same row.
+message MmrPeaks {
+  repeated primitives.Word peaks = 1;
 }

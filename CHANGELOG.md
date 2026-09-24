@@ -6,6 +6,10 @@
 
 * [BREAKING][arch][rust] Updated protocol dependencies to `0.17.0-rc.7` and `miden-node-proto-build` to node `0.17.0-rc.3` ([#XXXX](https://github.com/0xMiden/rust-sdk/pull/XXXX)).
 
+### Enhancements
+
+* [test] CI uses smaller runners for short jobs and cancels superseded pull request runs. Pull requests skip specialty system tests when unrelated files change, while pushes to `main` and `next` still run every test ([#2610](https://github.com/0xMiden/rust-sdk/pull/2610)).
+
 ## 0.17.0-rc.2 (2026-09-23)
 
 ### Breaking Changes
@@ -105,6 +109,7 @@
 * [FIX][cli] `miden-client import` now rejects invocations without a file path instead of silently succeeding ([#2450](https://github.com/0xMiden/rust-sdk/pull/2450)).
 * [FIX][rust] `TransactionRequestBuilder::build_swap` and `build_pswap_create` now reject a zero-amount asset on either side of the exchange. A zero requested asset produced a payback P2ID note carrying nothing, and a zero offered asset produced a note whose consumer pays and receives nothing ([#2459](https://github.com/0xMiden/rust-sdk/pull/2459)).
 * [FIX][test] The integration tests run again on a chain that charges no fee. A `--funders` path (`MIDEN_FUNDER_ACCOUNTS_DIR`) that is unset, empty, missing, or holds no `.mac` file now leaves the run without funders instead of failing, which is all a fee-free genesis needs, since it declares no wallets for the path to hold. A `.mac` file that is present but unusable stays a hard error ([#2481](https://github.com/0xMiden/rust-sdk/pull/2481)).
+* [FIX][rust] `VerifyingRpcClient::sync_nullifiers` now rejects an update stamped outside the requested `block_from`/`block_to` window with `RpcError::InvalidResponse`, in the same pass that checks the nullifier prefixes. `GrpcClient` rejects a page whose cursor ends past the requested `block_to` with `RpcError::PaginationError`, which covers every block-paginated method. Note blocks and transaction records were already range-checked by the sync ([#2503](https://github.com/0xMiden/rust-sdk/pull/2503)).
 * [FIX][store] `set_setting` and `remove_setting` return an error when the number of affected rows does not match the expected count ([#2537](https://github.com/0xMiden/rust-sdk/pull/2537)).
 
 ## 0.16.0 (2026-09-07)

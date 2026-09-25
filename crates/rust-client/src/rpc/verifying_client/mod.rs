@@ -78,9 +78,11 @@ fn verify_note_tags(
 }
 
 /// Returns [`RpcError::InvalidResponse`] if any update carries a nullifier whose prefix was not in
-/// `requested_prefixes`.
-fn verify_nullifier_prefixes(
+/// `requested_prefixes`, or a block number outside the inclusive `[block_from, block_to]` window.
+fn verify_nullifier_updates(
     requested_prefixes: &BTreeSet<u16>,
+    block_from: BlockNumber,
+    block_to: BlockNumber,
     batch: &[NullifierUpdate],
 ) -> Result<(), RpcError> {
     for update in batch {
@@ -93,6 +95,14 @@ fn verify_nullifier_prefixes(
                 .join(", ");
             return Err(RpcError::InvalidResponse(format!(
                 "node returned nullifier with prefix {prefix} but [{requested}] were requested"
+            )));
+        }
+        if update.block_num < block_from || update.block_num > block_to {
+            return Err(RpcError::InvalidResponse(format!(
+                "node returned nullifier {} at block {} but blocks {block_from} to {block_to} were \
+                 requested",
+                update.nullifier.to_hex(),
+                update.block_num
             )));
         }
     }
@@ -141,7 +151,7 @@ fn verify_note_script_root(requested: Word, script: &NoteScript) -> Result<(), R
 ///   requested.
 /// - [`sync_notes`](NodeRpcClient::sync_notes): every returned note's tag must have been requested.
 /// - [`sync_nullifiers`](NodeRpcClient::sync_nullifiers): every returned nullifier's prefix must
-///   have been requested.
+///   have been requested, and its block number must fall in the requested window.
 /// - [`get_account`](NodeRpcClient::get_account): when the state at a specific block was requested,
 ///   the response must be for that block.
 /// - [`get_note_script_by_root`](NodeRpcClient::get_note_script_by_root): a returned script's root
@@ -258,7 +268,7 @@ impl<T: NodeRpcClient> NodeRpcClient for VerifyingRpcClient<T> {
     ) -> Result<Vec<NullifierUpdate>, RpcError> {
         let nullifiers = self.0.sync_nullifiers(prefix, block_from, block_to).await?;
         let requested: BTreeSet<u16> = prefix.iter().copied().collect();
-        verify_nullifier_prefixes(&requested, &nullifiers)?;
+        verify_nullifier_updates(&requested, block_from, block_to, &nullifiers)?;
         Ok(nullifiers)
     }
 
@@ -281,6 +291,20 @@ impl<T: NodeRpcClient> NodeRpcClient for VerifyingRpcClient<T> {
             )));
         }
         Ok((block_num, proof))
+    }
+
+    async fn register_account(
+        &self,
+        invitation_code: &str,
+        account_id: AccountId,
+    ) -> Result<(), RpcError> {
+        // Nothing to verify here: a successful response carries no payload to check the request
+        // against.
+        self.0.register_account(invitation_code, account_id).await
+    }
+
+    async fn is_account_allowed(&self, account_id: AccountId) -> Result<bool, RpcError> {
+        self.0.is_account_allowed(account_id).await
     }
 
     async fn get_note_script_by_root(&self, root: Word) -> Result<Option<NoteScript>, RpcError> {

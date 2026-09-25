@@ -780,6 +780,12 @@ where
         proven_transaction: ProvenTransaction,
         transaction_inputs: impl Into<TransactionInputs>,
     ) -> Result<BlockNumber, ClientError> {
+        // A transaction that creates an account is gated by the network allowlist.
+        let account_id = proven_transaction.account_id();
+        if self.is_allowlist_gated(account_id).await? {
+            ensure_account_allowed(account_id, self.is_account_allowed(account_id).await)?;
+        }
+
         info!("Submitting transaction to the network...");
         let tx_id = proven_transaction.id();
         let key = self.transaction_encryption_key().await?;
@@ -1857,6 +1863,27 @@ pub(crate) fn validate_executed_transaction(
     }
 
     Ok(())
+}
+
+/// Turns the answer of [`Client::is_account_allowed`] for `account_id` into a submission check.
+///
+/// Returns [`ClientError::AccountNotAllowlisted`] if the network refuses to create the account. If
+/// the check itself fails, the submission continues and the node decides.
+fn ensure_account_allowed(
+    account_id: AccountId,
+    is_allowed: Result<bool, ClientError>,
+) -> Result<(), ClientError> {
+    match is_allowed {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(ClientError::AccountNotAllowlisted(account_id)),
+        Err(err) => {
+            info!(
+                "could not check whether account {account_id} is on the network allowlist, \
+                 submitting anyway and letting the node decide: {err}"
+            );
+            Ok(())
+        },
+    }
 }
 
 // TESTS

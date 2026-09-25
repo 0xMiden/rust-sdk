@@ -16,6 +16,7 @@ use miden_standards::note::{PswapNote, PswapNoteAttachment};
 
 use super::errors::PswapLineageError;
 use crate::store::proto::{self, ProtoDecodeError, ProtobufValue};
+use crate::utils::{ByteReader, ByteWriter, Deserializable, DeserializationError, Serializable};
 
 // PSWAP LINEAGE STATE
 // ================================================================================================
@@ -406,6 +407,47 @@ pub(crate) fn build_record_from_fields(
 // VALUE CODEC
 // ================================================================================================
 
+/// Encodes the record's fields in declaration order: the `original_note_id` fetch handle, the
+/// mirrored order id and creator, then the mutable tip state. Only the remaining *amounts* are
+/// written — the faucets and full note live on the depth-0 note, recovered via `original_note_id`
+/// when needed.
+impl Serializable for PswapLineageRecord {
+    fn write_into<W: ByteWriter>(&self, target: &mut W) {
+        self.original_note_id.write_into(target);
+        self.order_id.write_into(target);
+        self.creator_account_id.write_into(target);
+        self.current_tip_note_id.write_into(target);
+        self.current_depth.write_into(target);
+        self.remaining_offered.write_into(target);
+        self.remaining_requested.write_into(target);
+        self.state.as_u8().write_into(target);
+    }
+}
+
+impl Deserializable for PswapLineageRecord {
+    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
+        let original_note_id = NoteId::read_from(source)?;
+        let order_id = Felt::read_from(source)?;
+        let creator_account_id = AccountId::read_from(source)?;
+        let current_tip_note_id = NoteId::read_from(source)?;
+        let current_depth = u32::read_from(source)?;
+        let remaining_offered = AssetAmount::read_from(source)?;
+        let remaining_requested = AssetAmount::read_from(source)?;
+        let state_byte = u8::read_from(source)?;
+        build_record_from_fields(
+            original_note_id,
+            order_id,
+            creator_account_id,
+            current_tip_note_id,
+            current_depth,
+            remaining_offered,
+            remaining_requested,
+            state_byte,
+        )
+        .map_err(|err| DeserializationError::InvalidValue(err.to_string()))
+    }
+}
+
 /// Only the remaining *amounts* are stored. The faucets and the full note live on the depth-0 note,
 /// which is recovered through `original_note_id` when needed.
 impl ProtobufValue for PswapLineageRecord {
@@ -688,8 +730,8 @@ mod tests {
         assert_eq!(record.creator_account_id(), creator);
     }
 
-    /// The protobuf round-trip preserves every field. Exercised at an advanced depth with reduced
-    /// amounts to catch an offered/requested mix-up.
+    /// `Serializable`/`Deserializable` round-trip preserves every field. Exercised at an advanced
+    /// depth with reduced amounts to catch an offered/requested mix-up.
     #[test]
     fn value_codec_round_trips() {
         let (sender, creator, offered_faucet, requested_faucet) = fixed_account_ids();
@@ -699,8 +741,8 @@ mod tests {
             record_from_test_pswap(&pswap, note.id(), 3, 70, 35, PswapLineageState::Active.as_u8())
                 .unwrap();
 
-        let bytes = proto::encode(&record);
-        let decoded: PswapLineageRecord = proto::decode(&bytes).unwrap();
+        let bytes = record.to_bytes();
+        let decoded = PswapLineageRecord::read_from_bytes(&bytes).unwrap();
 
         assert_eq!(decoded.original_note_id, record.original_note_id);
         assert_eq!(decoded.creator_account_id(), record.creator_account_id());

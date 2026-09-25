@@ -1,8 +1,8 @@
 //! Protobuf bindings for the values the store keeps, generated from `proto/store.proto`.
 //!
 //! A message field is optional in protobuf, so a value the store requires arrives as `None` when
-//! the row was written by a version that did not set it. [`required`] turns that into an error at
-//! the point of use, and names the field it was reading.
+//! the row was written by a version that did not set it. `required` turns that into an error at the
+//! point of use, and names the field it was reading.
 
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;

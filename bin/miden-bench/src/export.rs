@@ -5,9 +5,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use miden_client::Client;
 use miden_client::account::{AccountFile, AccountId};
 use miden_client::keystore::{FilesystemKeyStore, Keystore};
-use miden_client::{Client, Serializable};
 
 use crate::report::format_size;
 

@@ -675,6 +675,27 @@ async fn show_untracked_public_account() -> Result<()> {
     Ok(())
 }
 
+// NOTE SHOW TESTS
+// ================================================================================================
+
+/// `notes --show` with an ID prefix that matches no note reports an input error. It used to be
+/// reported as an import error with a hint to check the file name.
+#[test]
+fn show_note_with_unknown_id_reports_an_input_error() {
+    let temp_dir = init_cli().1;
+
+    let mut show_cmd = cargo_bin_cmd!("miden-client");
+    show_cmd.args(["notes", "--show", "0x1234"]);
+    show_cmd
+        .current_dir(&temp_dir)
+        .assert()
+        .failure()
+        .stderr(contains("input error"))
+        .stderr(contains("did not match any note"))
+        .stderr(contains("import error").not())
+        .stderr(contains("Check the file name").not());
+}
+
 // INSPECT TESTS
 // ================================================================================================
 

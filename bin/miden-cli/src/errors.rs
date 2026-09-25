@@ -3,12 +3,11 @@
 
 use std::error::Error;
 
-use miden_client::account::{AccountId, AddressError};
+use miden_client::account::AddressError;
 use miden_client::keystore::KeyStoreError;
 use miden_client::vm::typed::TypedError;
 use miden_client::{
     AccountError,
-    AccountIdError,
     AssetError,
     ClientError,
     CodeBuilderError,
@@ -29,9 +28,6 @@ pub enum CliError {
     #[error("account component error: {1}")]
     #[diagnostic(code(cli::account_error))]
     AccountComponentError(#[source] SourceError, String),
-    #[error("account id error: {1}")]
-    #[diagnostic(code(cli::accountid_error), help("Check the account ID format."))]
-    AccountId(#[source] AccountIdError, String),
     #[error("address error: {1}")]
     #[diagnostic(code(cli::address_error), help("Check the address format."))]
     Address(#[source] AddressError, String),
@@ -100,9 +96,6 @@ pub enum CliError {
     #[error("keystore error")]
     #[diagnostic(code(cli::keystore_error))]
     KeyStore(#[source] KeyStoreError),
-    #[error("missing flag: {0}")]
-    #[diagnostic(code(cli::config_error), help("Check the configuration file format."))]
-    MissingFlag(String),
     #[error("network id error")]
     NetworkIdError(#[from] NetworkIdError),
     #[error("client has not been synced yet")]
@@ -131,8 +124,6 @@ pub enum CliError {
     #[error("transaction error: {1}")]
     #[diagnostic(code(cli::transaction_error))]
     Transaction(#[source] SourceError, String),
-    #[error("expected full account, but got partial account: {0}")]
-    InvalidAccount(AccountId),
 }
 
 impl From<ClientError> for CliError {

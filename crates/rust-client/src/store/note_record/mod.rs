@@ -19,7 +19,6 @@
 
 use alloc::string::{String, ToString};
 
-use miden_protocol::errors::NoteError;
 use thiserror::Error;
 
 mod input_note_record;
@@ -54,9 +53,6 @@ pub enum NoteRecordError {
     /// Error generated during conversion of note record.
     #[error("note record conversion error: {0}")]
     ConversionError(String),
-    /// Invalid underlying note object.
-    #[error("note error")]
-    NoteError(#[from] NoteError),
     /// Note record isn't consumable.
     #[error("note not consumable: {0}")]
     NoteNotConsumable(String),

@@ -16,9 +16,6 @@ pub use tx_prover::RemoteTransactionProver;
 /// Errors that can occur when communicating with a remote prover.
 #[derive(Debug, Error)]
 pub enum RemoteProverClientError {
-    /// Indicates that the provided gRPC server endpoint is invalid.
-    #[error("invalid uri {0}")]
-    InvalidEndpoint(String),
     /// Indicates that the connection to the server failed.
     #[error("failed to connect to prover {0}")]
     ConnectionFailed(#[source] Box<dyn CoreError + Send + Sync + 'static>),

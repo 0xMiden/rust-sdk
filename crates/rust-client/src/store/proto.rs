@@ -356,3 +356,49 @@ impl ProtobufValue for Vec<Word> {
         Ok(message.peaks.into_iter().map(Word::try_from).collect::<Result<_, _>>()?)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
+
+    use miden_protocol::block::BlockNumber;
+    use miden_protocol::crypto::merkle::SparseMerklePath;
+    use miden_standards::note::StandardNote;
+
+    use super::*;
+    use crate::transaction::TransactionStatus;
+
+    /// A later client version can add fields to a stored message. A row that carries a field the
+    /// reader does not know must still decode to the same value.
+    #[test]
+    fn decoding_skips_unknown_fields() {
+        let status = TransactionStatus::Committed {
+            block_number: BlockNumber::from(7u32),
+            commit_timestamp: 42,
+        };
+        let mut bytes = encode(&status);
+        // Field 15 as a varint with value 1: the tag byte is (15 << 3) | 0.
+        bytes.extend_from_slice(&[15 << 3, 1]);
+
+        assert_eq!(decode::<TransactionStatus>(&bytes).unwrap(), status);
+    }
+
+    /// The store keeps an output note state without the recipient's script and reads it back with
+    /// the script from `notes_scripts`.
+    #[test]
+    fn output_note_state_round_trips_without_its_script() {
+        let script = StandardNote::P2ID.script();
+        let recipient =
+            NoteRecipient::new(Word::empty(), script.clone(), NoteStorage::new(vec![]).unwrap());
+        let path = SparseMerklePath::from_parts(0, Vec::new()).unwrap();
+        let inclusion_proof =
+            miden_protocol::note::NoteInclusionProof::new(BlockNumber::from(3u32), 1, path)
+                .unwrap();
+        let state = OutputNoteState::CommittedFull { recipient, inclusion_proof };
+
+        let bytes = encode_output_note_state(&state);
+
+        assert_eq!(decode_output_note_state(&bytes, Some(script)).unwrap(), state);
+        assert!(decode_output_note_state(&bytes, None).is_err());
+    }
+}

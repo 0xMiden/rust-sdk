@@ -514,3 +514,99 @@ impl TryFrom<proto::NoteSubmissionData> for NoteSubmissionData {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec::Vec;
+
+    use miden_protocol::Word;
+    use miden_protocol::crypto::merkle::SparseMerklePath;
+    use miden_protocol::note::{NoteAttachments, NoteType, PartialNoteMetadata};
+    use miden_protocol::testing::account_id::ACCOUNT_ID_SENDER;
+
+    use super::*;
+
+    /// The conversions to and from protobuf are written field by field, so a round trip through
+    /// every variant catches a field that is dropped or read into the wrong place.
+    #[test]
+    fn every_input_note_state_round_trips_through_protobuf() {
+        let account = AccountId::try_from(ACCOUNT_ID_SENDER).unwrap();
+        let metadata = NoteMetadata::new(
+            PartialNoteMetadata::new(account, NoteType::Public),
+            &NoteAttachments::empty(),
+        );
+        let path = SparseMerklePath::from_parts(0, Vec::new()).unwrap();
+        let proof = NoteInclusionProof::new(BlockNumber::from(3u32), 1, path).unwrap();
+        let root = Word::empty();
+        let submission = NoteSubmissionData {
+            submitted_at: Some(10),
+            consumer_account: account,
+            consumer_transaction: TransactionId::from_raw(Word::empty()),
+        };
+        // Distinct block numbers, so a swap between two of them fails the comparison.
+        let after = BlockNumber::from(2u32);
+        let nullified = BlockNumber::from(4u32);
+
+        let states: [InputNoteState; 9] = [
+            ExpectedNoteState {
+                metadata: Some(metadata),
+                after_block_num: after,
+                tag: Some(metadata.tag()),
+            }
+            .into(),
+            UnverifiedNoteState { metadata, inclusion_proof: proof.clone() }.into(),
+            CommittedNoteState {
+                metadata,
+                inclusion_proof: proof.clone(),
+                block_note_root: root,
+            }
+            .into(),
+            InvalidNoteState {
+                metadata,
+                invalid_inclusion_proof: proof.clone(),
+                block_note_root: root,
+            }
+            .into(),
+            ProcessingAuthenticatedNoteState {
+                metadata,
+                inclusion_proof: proof.clone(),
+                block_note_root: root,
+                submission_data: submission,
+            }
+            .into(),
+            ProcessingUnauthenticatedNoteState {
+                metadata,
+                after_block_num: after,
+                submission_data: submission,
+            }
+            .into(),
+            ConsumedAuthenticatedLocalNoteState {
+                metadata,
+                inclusion_proof: proof,
+                block_note_root: root,
+                nullifier_block_height: nullified,
+                submission_data: submission,
+                consumed_tx_order: Some(1),
+            }
+            .into(),
+            ConsumedUnauthenticatedLocalNoteState {
+                metadata,
+                nullifier_block_height: nullified,
+                submission_data: submission,
+                consumed_tx_order: Some(1),
+            }
+            .into(),
+            ConsumedExternalNoteState {
+                nullifier_block_height: nullified,
+                consumer_account: Some(account),
+                consumed_tx_order: Some(1),
+                metadata: Some(metadata),
+            }
+            .into(),
+        ];
+
+        for state in states {
+            assert_eq!(proto::decode::<InputNoteState>(&proto::encode(&state)).unwrap(), state);
+        }
+    }
+}

@@ -714,6 +714,7 @@ mod tests {
     use miden_tx::utils::serde::{Deserializable, Serializable};
 
     use super::{
+        BlockNumber,
         ExpirationTransactionScript,
         NonZeroU16,
         TransactionRequest,
@@ -837,7 +838,11 @@ mod tests {
 
         // This transaction request wouldn't be valid in a real scenario, it's intended for testing
         let tx_request = TransactionRequestBuilder::new()
-            .block_numbers(&[1u32.into(), 3u32.into(), 1u32.into()])
+            .block_numbers([
+                BlockNumber::from(1u32),
+                BlockNumber::from(3u32),
+                BlockNumber::from(1u32),
+            ])
             .input_notes(vec![(notes.pop().unwrap(), None)])
             .explicit_input_notes(vec![(
                 InputNote::unauthenticated(notes.pop().unwrap()),

@@ -16,13 +16,8 @@ use miden_client::ONE;
 use miden_client::account::{Account, AccountId, Address};
 use miden_client::block::BlockNumber;
 use miden_client::note::{InputNoteReader, NoteUpdateTracker};
-use miden_client::store::{ClientAccountType, InputNoteCursor, NoteFilter, Store};
-use miden_client::sync::{
-    AccountUpdates,
-    PartialBlockchainUpdates,
-    StateSyncUpdate,
-    TransactionUpdateTracker,
-};
+use miden_client::store::{AccountUpdates, ClientAccountType, InputNoteCursor, NoteFilter, Store};
+use miden_client::sync::{PartialBlockchainUpdates, StateSyncUpdate, TransactionUpdateTracker};
 use miden_client_sqlite_store::SqliteStore;
 
 use crate::generators::store_data;

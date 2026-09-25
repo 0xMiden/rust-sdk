@@ -19,6 +19,7 @@ use miden_client::store::input_note_states::{
     NoteSubmissionData,
 };
 use miden_client::store::{
+    AccountUpdates,
     InputNoteCursor,
     InputNoteRecord,
     InputNoteState,
@@ -28,12 +29,7 @@ use miden_client::store::{
     Store,
     StoreError,
 };
-use miden_client::sync::{
-    AccountUpdates,
-    PartialBlockchainUpdates,
-    StateSyncUpdate,
-    TransactionUpdateTracker,
-};
+use miden_client::sync::{PartialBlockchainUpdates, StateSyncUpdate, TransactionUpdateTracker};
 use miden_client::utils::{Deserializable, DeserializationError, Serializable};
 use miden_client::{Felt, ZERO};
 use miden_protocol::Word;

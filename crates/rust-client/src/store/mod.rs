@@ -80,12 +80,13 @@ mod account;
 pub use account::{
     AccountRecord,
     AccountRecordData,
+    AccountStateUpdate,
     AccountStatus,
     AccountUpdates,
     ClientAccountType,
+    StorageUpdate,
+    VaultUpdate,
 };
-
-pub use crate::sync::PublicAccountUpdate;
 mod note_record;
 pub use note_record::{
     InputNoteRecord,

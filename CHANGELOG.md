@@ -12,6 +12,7 @@
 
 ### Enhancements
 
+* [type][rust] Added `AccountStateUpdate` that carries the new account header, a `StorageUpdate` and a `VaultUpdate`, to yield the update for a synced public account. Storage and vault updates can be `Full` or `Patch`. Sync fetches storage maps only when a storage map is oversized and the vault only when the vault is ([#2548](https://github.com/0xMiden/rust-sdk/pull/2548)).
 * [test] CI uses smaller runners for short jobs and cancels superseded pull request runs. Pull requests skip specialty system tests when unrelated files change, while pushes to `main` and `next` still run every test ([#2610](https://github.com/0xMiden/rust-sdk/pull/2610)).
 
 ## 0.17.0-rc.2 (2026-09-23)

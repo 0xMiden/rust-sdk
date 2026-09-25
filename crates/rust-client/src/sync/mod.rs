@@ -87,13 +87,7 @@ pub(crate) use state_sync::block_num_from_forest;
 pub use state_sync::{ChainSyncData, NoteUpdateAction, OnNoteReceived, StateSync, StateSyncInput};
 
 mod state_sync_update;
-pub use state_sync_update::{
-    AccountUpdates,
-    PartialBlockchainUpdates,
-    PublicAccountUpdate,
-    StateSyncUpdate,
-    TransactionUpdateTracker,
-};
+pub use state_sync_update::{PartialBlockchainUpdates, StateSyncUpdate, TransactionUpdateTracker};
 
 /// Untracks the given block leaves from `partial_mmr`, returning the authentication-node indices
 /// that are no longer needed by any remaining tracked leaf.

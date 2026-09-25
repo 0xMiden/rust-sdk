@@ -8,7 +8,7 @@ use miden_client::account::AccountId;
 use miden_client::note::{BlockNumber, NoteTag};
 use miden_client::protocol_config::protocol_config_setting_key;
 use miden_client::store::{SettingScope, StoreError};
-use miden_client::sync::{NoteTagRecord, NoteTagSource, PublicAccountUpdate, StateSyncUpdate};
+use miden_client::sync::{NoteTagRecord, NoteTagSource, StateSyncUpdate};
 use miden_client::utils::{Deserializable, Serializable};
 use rusqlite::{Connection, Transaction, params};
 
@@ -152,14 +152,7 @@ impl SqliteStore {
 
             // Update public accounts on the db that have been updated onchain
             for update in account_updates.updated_public_accounts() {
-                match update {
-                    PublicAccountUpdate::Full(account) => {
-                        Self::update_account_state(db_tx, &mut smt_forest, account)?;
-                    },
-                    PublicAccountUpdate::Patch { new_header, patch } => {
-                        Self::apply_sync_account_patch(db_tx, &mut smt_forest, new_header, patch)?;
-                    },
-                }
+                Self::apply_sync_account_update(db_tx, &mut smt_forest, update)?;
             }
 
             for (account_id, digest) in account_updates.mismatched_private_accounts() {

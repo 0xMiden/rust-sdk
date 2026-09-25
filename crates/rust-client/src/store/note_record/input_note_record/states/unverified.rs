@@ -167,7 +167,7 @@ impl From<&UnverifiedNoteState> for proto::input_note_state::Unverified {
     fn from(state: &UnverifiedNoteState) -> Self {
         Self {
             metadata: Some(state.metadata.into()),
-            inclusion_proof: state.inclusion_proof.to_bytes(),
+            inclusion_proof: Some((&state.inclusion_proof).into()),
         }
     }
 }
@@ -179,7 +179,12 @@ impl TryFrom<proto::input_note_state::Unverified> for UnverifiedNoteState {
         Ok(UnverifiedNoteState {
             metadata: proto::required(state.metadata, "unverified note state", "metadata")?
                 .decode_and_verify()?,
-            inclusion_proof: NoteInclusionProof::read_from_bytes(&state.inclusion_proof)?,
+            inclusion_proof: proto::required(
+                state.inclusion_proof,
+                "unverified note state",
+                "inclusion proof",
+            )?
+            .try_into()?,
         })
     }
 }

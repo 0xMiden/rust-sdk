@@ -150,7 +150,7 @@ impl From<&ProcessingAuthenticatedNoteState> for proto::input_note_state::Proces
     fn from(state: &ProcessingAuthenticatedNoteState) -> Self {
         Self {
             metadata: Some(state.metadata.into()),
-            inclusion_proof: state.inclusion_proof.to_bytes(),
+            inclusion_proof: Some((&state.inclusion_proof).into()),
             block_note_root: Some(state.block_note_root.into()),
             submission_data: Some((&state.submission_data).into()),
         }
@@ -169,7 +169,8 @@ impl TryFrom<proto::input_note_state::ProcessingAuthenticated>
 
         Ok(ProcessingAuthenticatedNoteState {
             metadata: proto::required(state.metadata, MESSAGE, "metadata")?.decode_and_verify()?,
-            inclusion_proof: NoteInclusionProof::read_from_bytes(&state.inclusion_proof)?,
+            inclusion_proof: proto::required(state.inclusion_proof, MESSAGE, "inclusion proof")?
+                .try_into()?,
             block_note_root: proto::required(state.block_note_root, MESSAGE, "block note root")?
                 .try_into()?,
             submission_data: proto::required(state.submission_data, MESSAGE, "submission data")?

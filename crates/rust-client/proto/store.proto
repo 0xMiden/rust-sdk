@@ -4,9 +4,9 @@ syntax = "proto3";
 // columns. Field numbers are part of the on-disk format, so a released number must keep its
 // meaning. Add fields, do not renumber or reuse them.
 //
-// A value of the protocol is carried by its canonical message where one exists. Where none exists,
-// or where the message needs data this schema does not hold, the value is a `bytes` field that
-// holds the canonical encoding of the type named in the comment.
+// A value of the protocol is carried by its `miden-objects` message. Where that message needs data
+// this schema does not hold, a `Stored` message keeps only the parts the store has. Messages named
+// `Stored` describe what the store writes, not the whole domain type.
 package miden.client.store;
 
 import "account.proto";
@@ -73,9 +73,6 @@ message TransactionDetails {
 // ================================================================================================
 
 // A note the client consumes or expects to consume.
-//
-// `inclusion_proof` is a `bytes` field because the canonical message of a note inclusion proof also
-// carries the note id, which a state does not hold.
 message InputNoteState {
   // The note is expected to arrive. Its metadata is known only if the client created the note or
   // fetched it from the node.
@@ -88,31 +85,27 @@ message InputNoteState {
   // The note has an inclusion proof that is not verified against a block header yet.
   message Unverified {
     note.NoteMetadata metadata = 1;
-    // miden_protocol::note::NoteInclusionProof, canonical encoding.
-    bytes inclusion_proof = 2;
+    NoteInclusionProof inclusion_proof = 2;
   }
 
   // The inclusion proof is verified against the block header.
   message Committed {
     note.NoteMetadata metadata = 1;
-    // miden_protocol::note::NoteInclusionProof, canonical encoding.
-    bytes inclusion_proof = 2;
+    NoteInclusionProof inclusion_proof = 2;
     primitives.Word block_note_root = 3;
   }
 
   // The inclusion proof does not match the block header.
   message Invalid {
     note.NoteMetadata metadata = 1;
-    // miden_protocol::note::NoteInclusionProof, canonical encoding.
-    bytes invalid_inclusion_proof = 2;
+    NoteInclusionProof invalid_inclusion_proof = 2;
     primitives.Word block_note_root = 3;
   }
 
   // A transaction that consumes the authenticated note is submitted.
   message ProcessingAuthenticated {
     note.NoteMetadata metadata = 1;
-    // miden_protocol::note::NoteInclusionProof, canonical encoding.
-    bytes inclusion_proof = 2;
+    NoteInclusionProof inclusion_proof = 2;
     primitives.Word block_note_root = 3;
     NoteSubmissionData submission_data = 4;
   }
@@ -127,8 +120,7 @@ message InputNoteState {
   // The client consumed the authenticated note.
   message ConsumedAuthenticatedLocal {
     note.NoteMetadata metadata = 1;
-    // miden_protocol::note::NoteInclusionProof, canonical encoding.
-    bytes inclusion_proof = 2;
+    NoteInclusionProof inclusion_proof = 2;
     primitives.Word block_note_root = 3;
     blockchain.BlockNumber nullifier_block_height = 4;
     NoteSubmissionData submission_data = 5;
@@ -164,6 +156,14 @@ message InputNoteState {
   }
 }
 
+// A note inclusion proof. Unlike the `miden-objects` message, it has no note id: a state belongs to
+// a note record, which already holds the id.
+message NoteInclusionProof {
+  blockchain.BlockNumber block_num = 1;
+  uint32 note_index_in_block = 2;
+  primitives.SparseMerklePath inclusion_path = 3;
+}
+
 // Facts about a note the client submitted for consumption.
 message NoteSubmissionData {
   // Time at which the note was submitted, in seconds since the Unix epoch.
@@ -175,8 +175,7 @@ message NoteSubmissionData {
 // A note the client produces, as the store keeps it.
 //
 // A recipient has no script: the store keeps the script in `notes_scripts` and joins it back on
-// read. A partial state holds no recipient, so the note details are not known. `inclusion_proof` is
-// a `bytes` field for the same reason as in InputNoteState.
+// read. A partial state holds no recipient, so the note details are not known.
 message StoredOutputNoteState {
   // The note is expected and its details are not known.
   message ExpectedPartial {}
@@ -188,15 +187,13 @@ message StoredOutputNoteState {
 
   // The note is in the chain and its details are not known.
   message CommittedPartial {
-    // miden_protocol::note::NoteInclusionProof, canonical encoding.
-    bytes inclusion_proof = 1;
+    NoteInclusionProof inclusion_proof = 1;
   }
 
   // The note is in the chain and its details are known.
   message CommittedFull {
     StoredNoteRecipient recipient = 1;
-    // miden_protocol::note::NoteInclusionProof, canonical encoding.
-    bytes inclusion_proof = 2;
+    NoteInclusionProof inclusion_proof = 2;
   }
 
   // The note is consumed.

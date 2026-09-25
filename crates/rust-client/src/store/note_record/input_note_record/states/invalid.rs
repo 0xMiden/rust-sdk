@@ -146,7 +146,7 @@ impl From<&InvalidNoteState> for proto::input_note_state::Invalid {
     fn from(state: &InvalidNoteState) -> Self {
         Self {
             metadata: Some(state.metadata.into()),
-            invalid_inclusion_proof: state.invalid_inclusion_proof.to_bytes(),
+            invalid_inclusion_proof: Some((&state.invalid_inclusion_proof).into()),
             block_note_root: Some(state.block_note_root.into()),
         }
     }
@@ -160,9 +160,12 @@ impl TryFrom<proto::input_note_state::Invalid> for InvalidNoteState {
 
         Ok(InvalidNoteState {
             metadata: proto::required(state.metadata, MESSAGE, "metadata")?.decode_and_verify()?,
-            invalid_inclusion_proof: NoteInclusionProof::read_from_bytes(
-                &state.invalid_inclusion_proof,
-            )?,
+            invalid_inclusion_proof: proto::required(
+                state.invalid_inclusion_proof,
+                MESSAGE,
+                "invalid inclusion proof",
+            )?
+            .try_into()?,
             block_note_root: proto::required(state.block_note_root, MESSAGE, "block note root")?
                 .try_into()?,
         })

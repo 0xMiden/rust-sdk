@@ -11,16 +11,8 @@ use miden_objects::{ConversionError, DecodeMessageExt, proto as objects};
 use miden_protocol::Word;
 use miden_protocol::account::AccountCode;
 use miden_protocol::block::BlockHeader;
-use miden_protocol::note::{
-    NoteAttachments,
-    NoteInclusionProof,
-    NoteMetadata,
-    NoteRecipient,
-    NoteScript,
-    NoteStorage,
-};
+use miden_protocol::note::{NoteAttachments, NoteMetadata, NoteRecipient, NoteScript, NoteStorage};
 use miden_protocol::transaction::TransactionScript;
-use miden_tx::utils::serde::{Deserializable, DeserializationError, Serializable};
 
 use crate::store::OutputNoteState;
 
@@ -75,9 +67,6 @@ pub enum ProtoDecodeError {
     /// A protocol message does not describe a valid protocol value.
     #[error("invalid protocol value")]
     Conversion(#[from] ConversionError),
-    /// A `bytes` field does not hold a valid `Serializable` encoding.
-    #[error("invalid serialized value")]
-    Serialized(#[from] DeserializationError),
     /// The message is well formed, but its content breaks a rule of the value.
     #[error("invalid value: {0}")]
     InvalidValue(String),
@@ -93,6 +82,40 @@ pub(crate) fn required<T>(
     name: &'static str,
 ) -> Result<T, ProtoDecodeError> {
     field.ok_or(ProtoDecodeError::MissingField { message, field: name })
+}
+
+// NOTE INCLUSION PROOF
+// ================================================================================================
+
+impl From<&miden_protocol::note::NoteInclusionProof> for NoteInclusionProof {
+    fn from(proof: &miden_protocol::note::NoteInclusionProof) -> Self {
+        Self {
+            block_num: Some(proof.location().block_num().into()),
+            note_index_in_block: proof.location().block_note_tree_index().into(),
+            inclusion_path: Some(proof.note_path().clone().into()),
+        }
+    }
+}
+
+impl TryFrom<NoteInclusionProof> for miden_protocol::note::NoteInclusionProof {
+    type Error = ProtoDecodeError;
+
+    fn try_from(proof: NoteInclusionProof) -> Result<Self, Self::Error> {
+        const MESSAGE: &str = "note inclusion proof";
+
+        let block_num = required(proof.block_num, MESSAGE, "block number")?.decode_and_verify()?;
+        let index = u16::try_from(proof.note_index_in_block).map_err(|_| {
+            ProtoDecodeError::InvalidValue(format!(
+                "note index {} is out of range",
+                proof.note_index_in_block
+            ))
+        })?;
+        let path =
+            required(proof.inclusion_path, MESSAGE, "inclusion path")?.decode_and_verify()?;
+
+        Self::new(block_num, index, path)
+            .map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))
+    }
 }
 
 // OUTPUT NOTE STATE
@@ -119,13 +142,13 @@ pub fn encode_output_note_state(state: &OutputNoteState) -> Vec<u8> {
         }),
         OutputNoteState::CommittedPartial { inclusion_proof } => {
             State::CommittedPartial(CommittedPartial {
-                inclusion_proof: inclusion_proof.to_bytes(),
+                inclusion_proof: Some(inclusion_proof.into()),
             })
         },
         OutputNoteState::CommittedFull { recipient, inclusion_proof } => {
             State::CommittedFull(CommittedFull {
                 recipient: Some(stored_recipient(recipient)),
-                inclusion_proof: inclusion_proof.to_bytes(),
+                inclusion_proof: Some(inclusion_proof.into()),
             })
         },
         OutputNoteState::Consumed { block_height, recipient } => State::Consumed(Consumed {
@@ -155,11 +178,13 @@ pub fn decode_output_note_state(
             recipient: full_recipient(required(inner.recipient, MESSAGE, "recipient")?, script)?,
         },
         State::CommittedPartial(inner) => OutputNoteState::CommittedPartial {
-            inclusion_proof: NoteInclusionProof::read_from_bytes(&inner.inclusion_proof)?,
+            inclusion_proof: required(inner.inclusion_proof, MESSAGE, "inclusion proof")?
+                .try_into()?,
         },
         State::CommittedFull(inner) => OutputNoteState::CommittedFull {
             recipient: full_recipient(required(inner.recipient, MESSAGE, "recipient")?, script)?,
-            inclusion_proof: NoteInclusionProof::read_from_bytes(&inner.inclusion_proof)?,
+            inclusion_proof: required(inner.inclusion_proof, MESSAGE, "inclusion proof")?
+                .try_into()?,
         },
         State::Consumed(inner) => OutputNoteState::Consumed {
             block_height: required(inner.block_height, MESSAGE, "block height")?

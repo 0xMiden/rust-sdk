@@ -2145,13 +2145,29 @@ fn assert_command_fails_but_does_not_panic(command: &mut Command) {
 
 #[test]
 fn exec_parse() {
-    let failure_script =
-        fs::canonicalize("tests/files/test_cli_advice_inputs_expect_failure.masm").unwrap();
-    let success_script =
-        fs::canonicalize("tests/files/test_cli_advice_inputs_expect_success.masm").unwrap();
     let toml_path = fs::canonicalize("tests/files/test_cli_advice_inputs_input.toml").unwrap();
 
     let temp_dir = init_cli().1;
+    let compile_fixture = |name: &str| {
+        use miden_client::assembly::{Assembler, DefaultSourceManager, Module, ModuleKind};
+        let source_manager = Arc::new(DefaultSourceManager::default());
+        let source = fs::read_to_string(format!("tests/files/{name}.masm")).unwrap();
+        let module = Module::parser(Some(ModuleKind::Library))
+            .parse_str(
+                Some(miden_client::assembly::Path::new("exec::test")),
+                source,
+                source_manager.clone(),
+            )
+            .unwrap();
+        let package = Assembler::new(source_manager)
+            .assemble_library(name, module, None::<&str>)
+            .unwrap();
+        let path = temp_dir.join(format!("{name}.masp"));
+        fs::write(&path, package.to_bytes()).unwrap();
+        path
+    };
+    let success_script = compile_fixture("test_cli_advice_inputs_expect_success");
+    let failure_script = compile_fixture("test_cli_advice_inputs_expect_failure");
 
     // Create wallet account
     let basic_account_id = new_wallet_cli(&temp_dir, AccountType::Private);
@@ -2160,7 +2176,7 @@ fn exec_parse() {
     let mut success_cmd = cargo_bin_cmd!("miden-client");
     success_cmd.args([
         "exec",
-        "-s",
+        "--package",
         success_script.to_str().unwrap(),
         "-a",
         &basic_account_id,
@@ -2173,7 +2189,7 @@ fn exec_parse() {
     let mut failure_cmd = cargo_bin_cmd!("miden-client");
     failure_cmd.args([
         "exec",
-        "-s",
+        "--package",
         failure_script.to_str().unwrap(),
         "-a",
         &basic_account_id,

@@ -11,9 +11,18 @@ use miden_objects::{ConversionError, DecodeMessageExt, proto as objects};
 use miden_protocol::Word;
 use miden_protocol::account::AccountCode;
 use miden_protocol::block::BlockHeader;
-use miden_protocol::note::{NoteAttachments, NoteMetadata, NoteScript, NoteStorage};
+use miden_protocol::note::{
+    NoteAttachments,
+    NoteInclusionProof,
+    NoteMetadata,
+    NoteRecipient,
+    NoteScript,
+    NoteStorage,
+};
 use miden_protocol::transaction::TransactionScript;
-use miden_tx::utils::serde::DeserializationError;
+use miden_tx::utils::serde::{Deserializable, DeserializationError, Serializable};
+
+use crate::store::OutputNoteState;
 
 #[rustfmt::skip]
 #[allow(clippy::doc_markdown, clippy::large_enum_variant, missing_docs)]
@@ -84,6 +93,104 @@ pub(crate) fn required<T>(
     name: &'static str,
 ) -> Result<T, ProtoDecodeError> {
     field.ok_or(ProtoDecodeError::MissingField { message, field: name })
+}
+
+// OUTPUT NOTE STATE
+// ================================================================================================
+
+// The store keeps an output note state without the recipient's script, which lives in
+// `notes_scripts`. Reading it back needs that script, so this type does not fit `ProtobufValue`.
+
+/// Encodes an output note state as the message that the store keeps, without the script.
+pub fn encode_output_note_state(state: &OutputNoteState) -> Vec<u8> {
+    use stored_output_note_state::{
+        CommittedFull,
+        CommittedPartial,
+        Consumed,
+        ExpectedFull,
+        ExpectedPartial,
+        State,
+    };
+
+    let state = match state {
+        OutputNoteState::ExpectedPartial => State::ExpectedPartial(ExpectedPartial {}),
+        OutputNoteState::ExpectedFull { recipient } => State::ExpectedFull(ExpectedFull {
+            recipient: Some(stored_recipient(recipient)),
+        }),
+        OutputNoteState::CommittedPartial { inclusion_proof } => {
+            State::CommittedPartial(CommittedPartial {
+                inclusion_proof: inclusion_proof.to_bytes(),
+            })
+        },
+        OutputNoteState::CommittedFull { recipient, inclusion_proof } => {
+            State::CommittedFull(CommittedFull {
+                recipient: Some(stored_recipient(recipient)),
+                inclusion_proof: inclusion_proof.to_bytes(),
+            })
+        },
+        OutputNoteState::Consumed { block_height, recipient } => State::Consumed(Consumed {
+            block_height: Some((*block_height).into()),
+            recipient: Some(stored_recipient(recipient)),
+        }),
+    };
+
+    prost::Message::encode_to_vec(&StoredOutputNoteState { state: Some(state) })
+}
+
+/// Decodes a stored output note state and completes its recipient with `script`, which the store
+/// reads from `notes_scripts`.
+pub fn decode_output_note_state(
+    bytes: &[u8],
+    script: Option<NoteScript>,
+) -> Result<OutputNoteState, ProtoDecodeError> {
+    use stored_output_note_state::State;
+
+    const MESSAGE: &str = "stored output note state";
+
+    let message = <StoredOutputNoteState as prost::Message>::decode(bytes)?;
+
+    Ok(match required(message.state, MESSAGE, "variant")? {
+        State::ExpectedPartial(_) => OutputNoteState::ExpectedPartial,
+        State::ExpectedFull(inner) => OutputNoteState::ExpectedFull {
+            recipient: full_recipient(required(inner.recipient, MESSAGE, "recipient")?, script)?,
+        },
+        State::CommittedPartial(inner) => OutputNoteState::CommittedPartial {
+            inclusion_proof: NoteInclusionProof::read_from_bytes(&inner.inclusion_proof)?,
+        },
+        State::CommittedFull(inner) => OutputNoteState::CommittedFull {
+            recipient: full_recipient(required(inner.recipient, MESSAGE, "recipient")?, script)?,
+            inclusion_proof: NoteInclusionProof::read_from_bytes(&inner.inclusion_proof)?,
+        },
+        State::Consumed(inner) => OutputNoteState::Consumed {
+            block_height: required(inner.block_height, MESSAGE, "block height")?
+                .decode_and_verify()?,
+            recipient: full_recipient(required(inner.recipient, MESSAGE, "recipient")?, script)?,
+        },
+    })
+}
+
+fn stored_recipient(recipient: &NoteRecipient) -> StoredNoteRecipient {
+    StoredNoteRecipient {
+        serial_num: Some(recipient.serial_num().into()),
+        storage: Some(recipient.storage().into()),
+    }
+}
+
+fn full_recipient(
+    stored: StoredNoteRecipient,
+    script: Option<NoteScript>,
+) -> Result<NoteRecipient, ProtoDecodeError> {
+    const MESSAGE: &str = "stored note recipient";
+
+    let serial_num = required(stored.serial_num, MESSAGE, "serial number")?.try_into()?;
+    let storage = required(stored.storage, MESSAGE, "storage")?.decode_and_verify()?;
+    let script = script.ok_or_else(|| {
+        ProtoDecodeError::InvalidValue(
+            "output note state has a recipient but no script row".to_string(),
+        )
+    })?;
+
+    Ok(NoteRecipient::new(serial_num, script, storage))
 }
 
 // PROTOCOL VALUES

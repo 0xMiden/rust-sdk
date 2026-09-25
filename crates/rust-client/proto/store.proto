@@ -172,17 +172,18 @@ message NoteSubmissionData {
   transaction.TransactionId consumer_transaction = 3;
 }
 
-// A note the client produces.
+// A note the client produces, as the store keeps it.
 //
-// A partial state holds no recipient, so the note details are not known. `inclusion_proof` is a
-// `bytes` field for the same reason as in InputNoteState.
-message OutputNoteState {
+// A recipient has no script: the store keeps the script in `notes_scripts` and joins it back on
+// read. A partial state holds no recipient, so the note details are not known. `inclusion_proof` is
+// a `bytes` field for the same reason as in InputNoteState.
+message StoredOutputNoteState {
   // The note is expected and its details are not known.
   message ExpectedPartial {}
 
   // The note is expected and its details are known.
   message ExpectedFull {
-    note.NoteRecipient recipient = 1;
+    StoredNoteRecipient recipient = 1;
   }
 
   // The note is in the chain and its details are not known.
@@ -193,7 +194,7 @@ message OutputNoteState {
 
   // The note is in the chain and its details are known.
   message CommittedFull {
-    note.NoteRecipient recipient = 1;
+    StoredNoteRecipient recipient = 1;
     // miden_protocol::note::NoteInclusionProof, canonical encoding.
     bytes inclusion_proof = 2;
   }
@@ -201,7 +202,7 @@ message OutputNoteState {
   // The note is consumed.
   message Consumed {
     blockchain.BlockNumber block_height = 1;
-    note.NoteRecipient recipient = 2;
+    StoredNoteRecipient recipient = 2;
   }
 
   oneof state {
@@ -211,6 +212,12 @@ message OutputNoteState {
     CommittedFull committed_full = 4;
     Consumed consumed = 5;
   }
+}
+
+// The recipient of an output note without its script.
+message StoredNoteRecipient {
+  primitives.Word serial_num = 1;
+  note.NoteStorage storage = 2;
 }
 
 // PSWAP

@@ -1,6 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.17.0-rc.3 (2026-09-24)
+
+### Breaking Changes
+
+* [BREAKING][rust] Updated protocol dependencies to `0.17.0-rc.7` and `miden-node-proto-build` to node `0.17.0-rc.3` ([#2621](https://github.com/0xMiden/rust-sdk/pull/2621)).
+
+### Features
+
+* [FEATURE][cli] Added the mutually exclusive authentication scheme flags `--ecdsa-k256-keccak [PUBLIC_KEY]` and `--falcon512-poseidon2` (aliases `--ecdsa`, `--falcon`) to `new-wallet` and `new-account`. With an ECDSA public key, the account commits to the external key and stores no secret key. ECDSA accepts a `0x`-prefixed compressed or uncompressed SEC1 key. Without a public key, the CLI generates and stores a key of the selected scheme. `keys --commitment` now also accepts the 65-byte uncompressed SEC1 encoding ([#2590](https://github.com/0xMiden/rust-sdk/pull/2590)).
 
 ### Breaking Changes
 

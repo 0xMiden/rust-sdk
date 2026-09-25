@@ -10,6 +10,10 @@
 
 * [FEATURE][cli] Added the mutually exclusive authentication scheme flags `--ecdsa-k256-keccak [PUBLIC_KEY]` and `--falcon512-poseidon2` (aliases `--ecdsa`, `--falcon`) to `new-wallet` and `new-account`. With an ECDSA public key, the account commits to the external key and stores no secret key. ECDSA accepts a `0x`-prefixed compressed or uncompressed SEC1 key. Without a public key, the CLI generates and stores a key of the selected scheme. `keys --commitment` now also accepts the 65-byte uncompressed SEC1 encoding ([#2590](https://github.com/0xMiden/rust-sdk/pull/2590)).
 
+### Breaking Changes
+
+* [BREAKING][behavior][rust] `Client::add_account` and `Client::add_address` return the new `ClientError::AccountTagLimitExceeded` when the client already tracks `Client::MAX_ACCOUNT_TAGS` (128) account tags, the most the note transport accepts in one request ([#2627](https://github.com/0xMiden/rust-sdk/pull/2627)).
+
 ### Features
 
 * [FEATURE][rust,cli] Added `Client::send_private_note_with_proof` and `NoteTransportClient::send_note_with_proof`, which relay a private note together with its inclusion proof through the node's `SendNoteWithProof` endpoint. The gRPC service verifies the proof before it stores the note, and recipients receive the exact commitment block instead of a hint. Note transport send methods now accept a validated `TransportNote` instead of separate headers and serialized details. The proof method defaults to relaying the proof's block as an unverified hint. `miden-client notes --send` uses the proof when the stored note has one ([#2611](https://github.com/0xMiden/rust-sdk/pull/2611)).

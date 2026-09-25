@@ -32,6 +32,7 @@
 //!
 //! For more details on accounts, refer to the [Account] documentation.
 
+use alloc::collections::BTreeSet;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
@@ -157,7 +158,7 @@ use crate::errors::ClientError;
 use crate::rpc::domain::account::GetAccountRequest;
 use crate::rpc::node::{EndpointError, GetAccountError};
 use crate::store::{AccountStatus, AccountStorageFilter, ClientAccountType};
-use crate::sync::NoteTagRecord;
+use crate::sync::{NoteTagRecord, NoteTagSource};
 
 pub mod component {
     pub const MIDEN_PACKAGE_EXTENSION: &str = "masp";
@@ -268,6 +269,9 @@ pub mod component {
 ///
 /// - **Data retrieval:** The module also provides methods to fetch account-related data.
 impl<AUTH> Client<AUTH> {
+    // Mirror of node MAX_TAGS_PER_FETCH_REQUEST. NTL allows up to 128 tags per request.
+    pub const MAX_ACCOUNT_TAGS: usize = 128;
+
     // ACCOUNT CREATION
     // --------------------------------------------------------------------------------------------
 
@@ -376,6 +380,24 @@ impl<AUTH> Client<AUTH> {
         Ok(self.rpc_api.is_account_allowed(account_id).await?)
     }
 
+    /// Returns an error if `tag` is a new account tag and the client already tracks
+    /// [`Self::MAX_ACCOUNT_TAGS`] account tags.
+    async fn validate_can_track_more_account_tags(&self, tag: NoteTag) -> Result<(), ClientError> {
+        let tracked_tags: BTreeSet<NoteTag> = self
+            .store
+            .get_note_tags()
+            .await?
+            .into_iter()
+            .filter(|record| matches!(record.source, NoteTagSource::Account(_)))
+            .map(|record| record.tag)
+            .collect();
+        if !tracked_tags.contains(&tag) && tracked_tags.len() >= Self::MAX_ACCOUNT_TAGS {
+            return Err(ClientError::AccountTagLimitExceeded(tracked_tags.len()));
+        }
+
+        Ok(())
+    }
+
     /// Returns whether a transaction against `account_id` creates an account that the network
     /// allowlist gates.
     ///
@@ -428,6 +450,10 @@ impl<AUTH> Client<AUTH> {
         match tracked_account {
             None => {
                 let default_address = Address::new(account.id());
+                if matches!(client_account_type, ClientAccountType::Native) {
+                    self.validate_can_track_more_account_tags(default_address.to_note_tag())
+                        .await?;
+                }
 
                 self.store
                     .insert_account(account, default_address.clone(), client_account_type)
@@ -601,6 +627,9 @@ impl<AUTH> Client<AUTH> {
         match tracked_account {
             None => Err(ClientError::AccountDataNotFound(account_id)),
             Some(tracked_account) => {
+                if !tracked_account.is_watched() {
+                    self.validate_can_track_more_account_tags(address.to_note_tag()).await?;
+                }
                 self.store.insert_address(address.clone(), account_id).await?;
                 // Watched accounts intentionally have no derived note tag registered to avoid sync
                 // state pulling notes for them.

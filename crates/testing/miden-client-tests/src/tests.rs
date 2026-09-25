@@ -4224,6 +4224,78 @@ async fn account_add_address_after_creation() {
     assert!(note_tags.contains(&note_tag_record));
 }
 
+async fn insert_random_account(client: &mut TestClient) -> Result<AccountId, ClientError> {
+    let mut init_seed = [0u8; 32];
+
+    loop {
+        client.rng().fill_bytes(&mut init_seed);
+
+        let account = AccountBuilder::new(init_seed)
+            .account_type(AccountType::Private)
+            .with_component(AuthSingleSig::new(Approver::new(
+                PublicKeyCommitment::from(EMPTY_WORD),
+                AuthSchemeId::Falcon512Poseidon2,
+            )))
+            .with_component(BasicWallet)
+            .build()
+            .unwrap();
+
+        let tag = Address::new(account.id()).to_note_tag();
+        if client.get_note_tags().await?.iter().any(|record| record.tag == tag) {
+            continue;
+        }
+
+        match client.add_account(&account, false).await {
+            Err(ClientError::AccountAlreadyTracked(_)) => {},
+            result => return result.map(|()| account.id()),
+        }
+    }
+}
+
+async fn fill_account_tags(client: &mut TestClient) -> AccountId {
+    let mut account_id = None;
+    for _ in 0..MockClient::<()>::MAX_ACCOUNT_TAGS {
+        account_id = Some(insert_random_account(client).await.unwrap());
+    }
+    account_id.unwrap()
+}
+
+#[tokio::test]
+async fn account_add_fails_if_tag_limit_exceeded() {
+    let (mut client, _rpc_api) = Box::pin(create_test_client()).await;
+
+    client.add_note_tag(NoteTag::new(u32::MAX)).await.unwrap();
+    let account_id = fill_account_tags(&mut client).await;
+
+    let err = insert_random_account(&mut client).await.unwrap_err();
+    assert!(matches!(err, ClientError::AccountTagLimitExceeded(_)));
+
+    let routing_params = RoutingParameters::new(AddressInterface::BasicWallet)
+        .with_note_tag_len(NoteTag::MAX_ACCOUNT_TARGET_TAG_LENGTH)
+        .unwrap();
+    let address = Address::new(account_id).with_routing_parameters(routing_params);
+    for _ in 0..2 {
+        let err = client.add_address(address.clone(), account_id).await.unwrap_err();
+        assert!(matches!(err, ClientError::AccountTagLimitExceeded(_)));
+    }
+}
+
+#[tokio::test]
+async fn import_watched_account_by_id_ignores_tag_limit() {
+    let mut mock_chain_builder = MockChainBuilder::new();
+    let account = mock_chain_builder
+        .add_existing_mock_account(miden_testing::Auth::IncrNonce)
+        .unwrap();
+    let rpc_api = MockRpcApi::new(mock_chain_builder.build().unwrap());
+    let (builder, _rpc_api) = Box::pin(create_test_client_builder()).await;
+    let mut client = TestClient::from(builder.rpc(Arc::new(rpc_api)).build().await.unwrap());
+    client.ensure_genesis_in_place().await.unwrap();
+
+    fill_account_tags(&mut client).await;
+
+    client.import_watched_account_by_id(account.id()).await.unwrap();
+}
+
 #[tokio::test]
 async fn import_watched_account_by_id_rejects_already_tracked_native_account() {
     let mut mock_chain_builder = MockChainBuilder::new();

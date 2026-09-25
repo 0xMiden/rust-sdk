@@ -452,6 +452,8 @@ pub enum PublicAccountUpdate {
     /// The account is oversized in some dimension. The new state is described by the absolute
     /// patch, which advances the local state to `new_header`.
     Patch {
+        /// The account header the patch was derived from.
+        previous_header: AccountHeader,
         /// The new account header after applying the patch.
         new_header: AccountHeader,
         /// The absolute patch to apply.

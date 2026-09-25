@@ -63,6 +63,9 @@
 
 ### Breaking Changes
 
+* [BREAKING][behavior][store] Store writes now verify the state they were derived from inside the write transaction, so a stale account, note, or block update fails instead of overwriting newer state ([#2538](https://github.com/0xMiden/rust-sdk/pull/2538)).
+* [BREAKING][type][rust] `PublicAccountUpdate::Patch` carries a new `previous_header` field holding the account header the patch was derived from ([#2538](https://github.com/0xMiden/rust-sdk/pull/2538)).
+* [BREAKING][type][rust] Added the `StoreError::StaleUpdate` variant and the `StaleUpdate` enum, so exhaustive matches on `StoreError` must handle it  ([#2538](https://github.com/0xMiden/rust-sdk/pull/2538)).
 * [BREAKING][arch][rust] Updated `miden-node-proto-build` to `0.17.0-rc.1`, protocol dependencies to `0.17.0-rc.5` and VM dependencies to `0.33` ([#2562](https://github.com/0xMiden/rust-sdk/pull/2562)).
 * [BREAKING][behavior][rust] `Keystore::get_account_key_commitments` returns an empty set for an account the keystore holds no key for, instead of an error. An account can use keys that are held elsewhere, so this is a valid state. Code that read the error as "this account is unknown" must check for an empty set instead. `export --account` now exports such an account instead of failing with "No keys found for account" ([#2556](https://github.com/0xMiden/rust-sdk/pull/2556)).
 * [BREAKING][type][rust] Added the `StoreError::DatabaseTransientError` and `StoreError::DatabasePermanentError` variants, so exhaustive matches on `StoreError` must handle them. The SQLite store returns the first for a busy or locked database and the second for a constraint violation or a corrupt database file, which it previously reported as `StoreError::DatabaseError` ([#2537](https://github.com/0xMiden/rust-sdk/pull/2537)).

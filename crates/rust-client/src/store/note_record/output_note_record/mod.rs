@@ -437,6 +437,15 @@ impl OutputNoteState {
             },
         }
     }
+
+    /// Returns whether the state transition from `old_discriminant` to `new_discriminant` is valid.
+    ///
+    /// This is intended to be used to check a note's state transition against the stored state,
+    /// before persisting the new state
+    pub fn is_valid_transition(old_discriminant: u8, new_discriminant: u8) -> bool {
+        // The discriminants are ordered along the note lifecycle, which only moves forward.
+        new_discriminant >= old_discriminant
+    }
 }
 
 impl Serializable for OutputNoteRecord {

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+* [FIX][rust] A pending transaction whose ID changed on inclusion is now matched by the account ID and both its initial and final account states, so another transaction from the same initial state no longer marks it as committed ([#2600](https://github.com/0xMiden/rust-sdk/pull/2600)).
+
 ## 0.17.0-rc.3 (2026-09-24)
 
 ### Breaking Changes

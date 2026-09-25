@@ -1,24 +1,26 @@
-//! Generates the genesis fixtures (`.mac` account files + `genesis.toml`) used to bootstrap a
-//! testing node from the standalone node executables.
+//! Generates the genesis fixtures (`.mac` account files + `accounts.toml`) that `miden-validator
+//! genesis` builds a testing node's genesis block from.
 //!
 //! Usage: `gen-genesis [OUTPUT_DIR]` (defaults to `./genesis`).
 //!
 //! The chain charges fees by default: every transaction pays out of its own account vault,
 //! denominated in the `MIDEN` native faucet's asset, and genesis declares the funder wallets the
-//! integration tests draw that asset from. `MIDEN_VERIFICATION_BASE_FEE` overrides the base fee
-//! (`0` gives a fee-free chain, which declares no funder wallets) and `MIDEN_NUM_FUNDER_WALLETS`
-//! overrides how many funders are declared.
+//! integration tests draw that asset from. `MIDEN_VERIFICATION_BASE_FEE` is the base fee
+//! `start-test-node.sh` passes to `miden-validator genesis`; `0` gives a fee-free chain, which
+//! declares no funder wallets here. `MIDEN_NUM_FUNDER_WALLETS` overrides how many funders are
+//! declared.
 
 use std::path::PathBuf;
 
 use anyhow::Context;
 use test_node_genesis::DEFAULT_NUM_FUNDER_WALLETS;
 
-/// Env var overriding the genesis `verification_base_fee`.
+/// Env var carrying the genesis `verification_base_fee`. The value itself goes to `miden-validator
+/// genesis`; it is read here only to decide whether funder wallets are needed.
 const VERIFICATION_BASE_FEE_ENV: &str = "MIDEN_VERIFICATION_BASE_FEE";
 
-/// Genesis `verification_base_fee` when the env var is unset. Matches the base fee the protocol's
-/// own fee tests use, and is large enough that the computed fee is never zero.
+/// Genesis `verification_base_fee` when the env var is unset. Matches the default in
+/// `start-test-node.sh`.
 const DEFAULT_VERIFICATION_BASE_FEE: u32 = 500;
 
 /// Env var overriding the number of funder wallets emitted by a fee-charging genesis.
@@ -43,12 +45,8 @@ fn main() -> anyhow::Result<()> {
         "verification_base_fee = {verification_base_fee}, funder wallets = {num_funder_wallets}"
     );
 
-    test_node_genesis::write_genesis_config(
-        &output_dir,
-        verification_base_fee,
-        num_funder_wallets,
-    )?;
-    println!("Wrote genesis config to {}", output_dir.display());
+    test_node_genesis::write_genesis_config(&output_dir, num_funder_wallets)?;
+    println!("Wrote genesis fixtures to {}", output_dir.display());
 
     Ok(())
 }

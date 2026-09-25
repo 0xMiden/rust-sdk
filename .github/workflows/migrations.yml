@@ -18,7 +18,7 @@ concurrency:
 jobs:
   migrations:
     name: Migrations are append-only
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     timeout-minutes: 5
     steps:
       - name: Checkout code

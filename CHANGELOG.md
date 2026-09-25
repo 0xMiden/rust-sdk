@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+* [FIX][rust] Discarding a local transaction during sync now releases the input notes it was consuming: authenticated notes go back to `Committed` and unauthenticated ones to `Expected`, so they are listed as consumable again and can be spent by a new transaction. Notes consumed on chain in the meantime stay consumed. Previously such notes stayed in a processing state indefinitely ([#2585](https://github.com/0xMiden/rust-sdk/pull/2585)).
+
 ## 0.17.0-rc.3 (2026-09-24)
 
 ### Breaking Changes

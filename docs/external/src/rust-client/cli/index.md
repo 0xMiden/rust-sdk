@@ -303,9 +303,35 @@ View transactions.
 
 #### Action Flags
 
-| Command  | Description               | Aliases |
-| -------- | ------------------------- | ------- |
-| `--list` | List tracked transactions | -l      |
+| Command       | Description                              | Aliases |
+| ------------- | ---------------------------------------- | ------- |
+| `--list`      | List tracked transactions                | `-l`    |
+| `--show <ID>` | Show the details of a single transaction | `-s`    |
+
+The `--list` flag accepts filters that narrow the listing, which is ordered by creation time, newest first:
+
+| Flag                | Description                                            | Aliases |
+| ------------------- | ------------------------------------------------------ | ------- |
+| `--account-id <ID>` | Only list transactions executed by this account        | `-a`    |
+| `--status <status>` | Only list `pending`, `committed` or `discarded` ones    |         |
+| `--limit <count>`   | Only list at most this many of the newest transactions  |         |
+
+The `--show` flag prints the transaction's metadata — its status (with the expiration block while
+it's still pending), account ID, script root, reference block, submission height, creation time,
+and the account state commitment before and after — followed by a table per side of the notes it
+consumed and created, with each note's ID, standard name, type and assets. The reference block is
+the block the transaction executed against, which is not the block it was included in.
+
+Like `notes --show`, it also accepts a partial ID instead of the full one:
+
+```sh
+miden-client tx --show 0x0c97ec
+```
+
+A consumed note is only recorded by its nullifier, and a note ID can't be derived from a nullifier,
+so the ID is recovered by looking the nullifier up among the notes the client tracks. A private note
+that isn't the client's own can't be resolved that way, so it's marked as `<private>` and identified
+only by its nullifier.
 
 After a transaction gets executed, two entities start being tracked:
 

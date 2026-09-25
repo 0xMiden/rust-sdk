@@ -10,7 +10,8 @@ use miden_client::builder::ClientBuilder;
 use miden_client::keystore::{FilesystemKeyStore, Keystore};
 use miden_client::note_transport::grpc::GrpcNoteTransportClient;
 use miden_client::rpc::{GrpcClient, VerifyingRpcClient};
-use miden_client::store::{NoteFilter as ClientNoteFilter, OutputNoteRecord};
+use miden_client::store::{NoteFilter as ClientNoteFilter, OutputNoteRecord, TransactionFilter};
+use miden_client::transaction::TransactionRecord;
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
 
 mod commands;
@@ -528,6 +529,51 @@ pub(crate) async fn get_output_note_with_id_prefix<AUTH: Keystore + Sync>(
     Ok(output_note_records
         .pop()
         .expect("input_note_records should always have one element"))
+}
+
+/// Returns the client transaction whose ID starts with `transaction_id_prefix`.
+///
+/// # Errors
+///
+/// - Returns [`IdPrefixFetchError::NoMatch`](miden_client::IdPrefixFetchError::NoMatch) if no
+///   transaction ID starts with `transaction_id_prefix`.
+/// - Returns [`IdPrefixFetchError::MultipleMatches`](miden_client::IdPrefixFetchError::MultipleMatches)
+///   if more than one transaction ID starts with `transaction_id_prefix`.
+pub(crate) async fn get_transaction_with_id_prefix<AUTH: Keystore + Sync + 'static>(
+    client: &miden_client::Client<AUTH>,
+    transaction_id_prefix: &str,
+) -> Result<TransactionRecord, miden_client::IdPrefixFetchError> {
+    let mut transactions = client
+        .get_transactions(TransactionFilter::All)
+        .await
+        .map_err(|err| {
+            tracing::error!("Error when fetching all transactions from the store: {err}");
+            miden_client::IdPrefixFetchError::NoMatch(format!(
+                "transaction ID prefix {transaction_id_prefix}"
+            ))
+        })?
+        .into_iter()
+        .filter(|transaction| transaction.id.to_hex().starts_with(transaction_id_prefix))
+        .collect::<Vec<_>>();
+
+    match transactions.len() {
+        0 => Err(miden_client::IdPrefixFetchError::NoMatch(format!(
+            "transaction ID prefix {transaction_id_prefix}"
+        ))),
+        1 => Ok(transactions.pop().expect("transactions has exactly one element")),
+        _ => {
+            let transaction_ids =
+                transactions.iter().map(|transaction| transaction.id).collect::<Vec<_>>();
+            tracing::error!(
+                "Multiple transactions found for the prefix {}: {:?}",
+                transaction_id_prefix,
+                transaction_ids
+            );
+            Err(miden_client::IdPrefixFetchError::MultipleMatches(format!(
+                "transaction ID prefix {transaction_id_prefix}"
+            )))
+        },
+    }
 }
 
 /// Returns the client account whose ID starts with `account_id_prefix`.

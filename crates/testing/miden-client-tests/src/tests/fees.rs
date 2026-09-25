@@ -25,8 +25,10 @@ use miden_client::transaction::{
 };
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
 use miden_protocol::account::{AccountBuilder, AccountComponent, AccountType};
+use miden_protocol::crypto::SequentialCommit;
 use miden_protocol::crypto::rand::RandomCoin;
 use miden_protocol::testing::account_id::ACCOUNT_ID_FEE_FAUCET;
+use miden_protocol::transaction::TransactionSummary;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::AccountBuilderSchemaCommitmentExt;
 use miden_standards::account::auth::{
@@ -35,6 +37,7 @@ use miden_standards::account::auth::{
     AuthMultisig,
     AuthMultisigConfig,
     AuthSingleSig,
+    MultisigAuthArgs,
 };
 use miden_standards::account::wallets::BasicWallet;
 use miden_standards::testing::note::NoteBuilder;
@@ -219,7 +222,7 @@ async fn fee_charging_client() -> (TestClient, Account) {
 
 /// Builds a fee-charging chain and a client whose account authenticates through `AuthMultisig`,
 /// which reads the auth args as conversion info but will not accept a salt it did not choose.
-async fn fee_charging_multisig_client() -> (TestClient, Account) {
+async fn fee_charging_multisig_client() -> (TestClient, Arc<MockRpcApi>, Account) {
     let key = AuthSecretKey::new_falcon512_poseidon2();
     let approvers = ApproverSet::new(
         vec![Approver::new(
@@ -231,13 +234,21 @@ async fn fee_charging_multisig_client() -> (TestClient, Account) {
     .unwrap();
     let auth = AuthMultisig::new(AuthMultisigConfig::new(approvers)).unwrap();
 
-    Box::pin(fee_charging_client_with_auth(auth, key)).await
+    Box::pin(fee_charging_client_with_auth_and_rpc(auth, key)).await
 }
 
 async fn fee_charging_client_with_auth(
     auth: impl Into<AccountComponent>,
     key: AuthSecretKey,
 ) -> (TestClient, Account) {
+    let (client, _, account) = fee_charging_client_with_auth_and_rpc(auth, key).await;
+    (client, account)
+}
+
+async fn fee_charging_client_with_auth_and_rpc(
+    auth: impl Into<AccountComponent>,
+    key: AuthSecretKey,
+) -> (TestClient, Arc<MockRpcApi>, Account) {
     let fee_faucet_id: AccountId = ACCOUNT_ID_FEE_FAUCET.try_into().unwrap();
     let fee_asset: Asset = FungibleAsset::new(fee_faucet_id, FEE_ASSET_BALANCE).unwrap().into();
 
@@ -259,9 +270,10 @@ async fn fee_charging_client_with_auth(
     let keystore = FilesystemKeyStore::new(temp_dir()).unwrap();
     keystore.add_key(&key, account.id()).await.unwrap();
 
+    let rpc_api = Arc::new(MockRpcApi::new(chain));
     let mut client = TestClient::from(
         ClientBuilder::new()
-            .rpc(Arc::new(MockRpcApi::new(chain)))
+            .rpc(rpc_api.clone())
             .rng(Box::new(RandomCoin::new(Word::from([0xfeeu32, 1, 2, 3]))))
             .sqlite_store(create_test_store_path())
             .authenticator(Arc::new(keystore))
@@ -275,7 +287,7 @@ async fn fee_charging_client_with_auth(
     client.add_account(&account, false).await.unwrap();
     client.sync_state().await.unwrap();
 
-    (client, account)
+    (client, rpc_api, account)
 }
 
 /// The kernel's fee note must NOT be tracked as one of the user's own output notes.
@@ -402,7 +414,7 @@ async fn checking_note_consumability_pays_the_fee_on_a_fee_charging_chain() {
 /// caller of `execute_transaction` intact.
 #[tokio::test]
 async fn a_multisig_account_is_told_to_declare_its_own_conversion_info() {
-    let (mut client, account) = Box::pin(fee_charging_multisig_client()).await;
+    let (mut client, _, account) = Box::pin(fee_charging_multisig_client()).await;
 
     let err = Box::pin(
         client.execute_transaction(account.id(), TransactionRequestBuilder::new().build().unwrap()),
@@ -419,5 +431,56 @@ async fn a_multisig_account_is_told_to_declare_its_own_conversion_info() {
             TransactionRequestError::FeeConversionInfoRequired(auth_component),
         ) => assert_eq!(auth_component, AccountComponentInterface::AuthMultisig.name()),
         other => panic!("expected FeeConversionInfoRequired(Multisig), got {other:?}"),
+    }
+}
+
+/// A multisig proposal can bind its summary to an old block and execute against the current chain
+/// tip. The node does not need to retain account state for the bound block.
+#[tokio::test]
+async fn multisig_proposal_reexecutes_after_bound_account_state_is_pruned() {
+    let (mut client, rpc_api, account) = Box::pin(fee_charging_multisig_client()).await;
+    let bound_block_num = client.get_sync_height().await.unwrap();
+    let fee_faucet_id: AccountId = ACCOUNT_ID_FEE_FAUCET.try_into().unwrap();
+    let auth_args = MultisigAuthArgs::new(bound_block_num, Word::from([21u32, 22, 23, 24]))
+        .with_conversion_info(FeeConversionInfo::one_to_one(fee_faucet_id));
+    let auth_arg = auth_args.to_commitment();
+    let request = TransactionRequestBuilder::new()
+        .block_numbers([bound_block_num])
+        .auth_arg(auth_arg)
+        .extend_advice_map([(auth_arg, auth_args.to_elements())])
+        .build()
+        .unwrap();
+
+    let original_summary = unauthorized_summary(
+        Box::pin(client.execute_transaction(account.id(), request.clone()))
+            .await
+            .expect_err("the unsigned multisig proposal should return its summary"),
+    );
+    assert_eq!(original_summary.block_number(), bound_block_num);
+
+    rpc_api.prove_block();
+    rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+    assert!(client.get_sync_height().await.unwrap() > bound_block_num);
+
+    // Keep the old block header, but remove its account state. The selected block must only bind
+    // the summary. Foreign account inputs, including the fee faucet, must use the current tip.
+    rpc_api.prune_account_state_at(bound_block_num);
+
+    let later_summary = unauthorized_summary(
+        Box::pin(client.execute_transaction(account.id(), request))
+            .await
+            .expect_err("the proposal should still reach multisig authorization at the new tip"),
+    );
+
+    assert_eq!(later_summary, original_summary);
+}
+
+fn unauthorized_summary(error: ClientError) -> Box<TransactionSummary> {
+    match error {
+        ClientError::TransactionExecutorError(TransactionExecutorError::Unauthorized(summary)) => {
+            summary
+        },
+        other => panic!("expected an unauthorized multisig summary, got {other:?}"),
     }
 }

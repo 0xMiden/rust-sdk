@@ -37,6 +37,7 @@ use miden_protocol::account::{
 };
 use miden_protocol::assembly::diagnostics::miette::GraphicalReportHandler;
 use miden_protocol::asset::{Asset, FungibleAsset};
+use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::note::{NoteRecipient, NoteStorage, NoteType};
 use miden_protocol::testing::account_id::{
@@ -618,6 +619,50 @@ async fn chain_anchor_pins_execution_to_an_older_reference_block() {
         tip,
         "default execution must reference the sync height"
     );
+}
+
+#[tokio::test]
+async fn transaction_request_includes_selected_blocks() {
+    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
+    let (wallet, faucet) = client.setup_wallet_and_faucet(AccountType::Private).await.unwrap();
+    client.sync_state().await.unwrap();
+
+    for _ in 0..2 {
+        rpc_api.prove_block();
+    }
+    client.sync_state().await.unwrap();
+
+    let tip = client.get_sync_height().await.unwrap();
+    let selected_block = BlockNumber::from(tip.as_u32() - 1);
+    let transaction_request = TransactionRequestBuilder::new()
+        .block_numbers([selected_block])
+        .build_mint_fungible_asset(
+            FungibleAsset::new(faucet.id(), 5u64).unwrap(),
+            wallet.id(),
+            NoteType::Private,
+            client.rng(),
+        )
+        .unwrap();
+
+    assert!(transaction_request.block_numbers().contains(&selected_block));
+
+    let result = Box::pin(client.execute_transaction(faucet.id(), transaction_request.clone()))
+        .await
+        .unwrap();
+    assert!(
+        result
+            .executed_transaction()
+            .tx_inputs()
+            .blockchain()
+            .contains_block(selected_block)
+    );
+
+    let anchor = client.chain_anchor_for_request(&transaction_request).await.unwrap();
+    assert!(anchor.partial_blockchain().contains_block(selected_block));
+
+    Box::pin(client.execute_transaction_at(faucet.id(), transaction_request, anchor))
+        .await
+        .unwrap();
 }
 
 #[tokio::test]

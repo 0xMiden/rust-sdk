@@ -52,11 +52,25 @@ use miden_protocol::note::{
     NoteTag,
     Nullifier,
 };
+use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::transaction::TransactionId;
 use miden_protocol::{Felt, Word};
 use miden_tx::utils::serde::{Deserializable, Serializable};
 
-use crate::note_transport::{NOTE_TRANSPORT_CURSOR_STORE_SETTING, NoteTransportCursor};
+use crate::note_transport::{
+    NOTE_TRANSPORT_COVERED_TAGS_KEY,
+    NOTE_TRANSPORT_CURSOR_STORE_SETTING,
+    NOTE_TRANSPORT_OUTBOX_KEY,
+    NoteInfo,
+    NoteTransportCursor,
+};
+use crate::protocol_config::protocol_config_setting_key;
+use crate::pswap::{
+    PSWAP_ORDER_SETTING_PREFIX,
+    PswapLineageRecord,
+    pswap_order_setting_key,
+    pswap_tip_setting_key,
+};
 use crate::rpc::encryption::{TRANSACTION_ENCRYPTION_KEY_STORE_SETTING, TransactionEncryptionKey};
 use crate::rpc::{RPC_LIMITS_STORE_SETTING, RpcLimits};
 use crate::sync::{NoteTagRecord, StateSyncUpdate};
@@ -612,18 +626,14 @@ pub trait Store: Send + Sync {
         else {
             return Ok(None);
         };
-        let limits = proto::decode(&bytes)?;
+        let limits = RpcLimits::read_from_bytes(&bytes)?;
         Ok(Some(limits))
     }
 
     /// Persists RPC limits to the store.
     async fn set_rpc_limits(&self, limits: RpcLimits) -> Result<(), StoreError> {
-        self.set_setting(
-            SettingScope::Client,
-            RPC_LIMITS_STORE_SETTING.into(),
-            proto::encode(&limits),
-        )
-        .await
+        self.set_setting(SettingScope::Client, RPC_LIMITS_STORE_SETTING.into(), limits.to_bytes())
+            .await
     }
 
     // TRANSACTION ENCRYPTION KEY
@@ -665,6 +675,170 @@ pub trait Store: Send + Sync {
         self.remove_setting(SettingScope::Client, TRANSACTION_ENCRYPTION_KEY_STORE_SETTING.into())
             .await?;
         Ok(())
+    }
+
+    // PROTOCOL CONFIGURATIONS
+    // --------------------------------------------------------------------------------------------
+
+    /// Gets the protocol configuration stored for `commitment`. Returns `None` if not stored.
+    async fn get_protocol_config(
+        &self,
+        commitment: Word,
+    ) -> Result<Option<ProtocolConfig>, StoreError> {
+        let Some(bytes) = self
+            .get_setting(SettingScope::Client, protocol_config_setting_key(commitment))
+            .await?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(ProtocolConfig::read_from_bytes(&bytes)?))
+    }
+
+    /// Stores a protocol configuration under its own commitment.
+    async fn insert_protocol_config(&self, config: &ProtocolConfig) -> Result<(), StoreError> {
+        self.set_setting(
+            SettingScope::Client,
+            protocol_config_setting_key(config.to_commitment()),
+            config.to_bytes(),
+        )
+        .await
+    }
+
+    // NOTE TRANSPORT RELAY
+    // --------------------------------------------------------------------------------------------
+
+    /// Gets the notes that wait to be relayed to the note transport network.
+    async fn get_note_transport_outbox(&self) -> Result<Vec<NoteInfo>, StoreError> {
+        let Some(bytes) =
+            self.get_setting(SettingScope::Client, NOTE_TRANSPORT_OUTBOX_KEY.into()).await?
+        else {
+            return Ok(Vec::new());
+        };
+        Ok(Vec::<NoteInfo>::read_from_bytes(&bytes)?)
+    }
+
+    /// Replaces the notes that wait to be relayed. An empty list removes the entry.
+    async fn set_note_transport_outbox(&self, notes: Vec<NoteInfo>) -> Result<(), StoreError> {
+        if notes.is_empty() {
+            self.remove_setting(SettingScope::Client, NOTE_TRANSPORT_OUTBOX_KEY.into())
+                .await?;
+            return Ok(());
+        }
+        self.set_setting(SettingScope::Client, NOTE_TRANSPORT_OUTBOX_KEY.into(), notes.to_bytes())
+            .await
+    }
+
+    /// Gets the note tags whose history the client already fetched from the note transport network.
+    async fn get_note_transport_covered_tags(&self) -> Result<BTreeSet<NoteTag>, StoreError> {
+        let Some(bytes) = self
+            .get_setting(SettingScope::Client, NOTE_TRANSPORT_COVERED_TAGS_KEY.into())
+            .await?
+        else {
+            return Ok(BTreeSet::new());
+        };
+        Ok(BTreeSet::<NoteTag>::read_from_bytes(&bytes)?)
+    }
+
+    /// Replaces the covered note tags. An empty set removes the entry.
+    async fn set_note_transport_covered_tags(
+        &self,
+        tags: &BTreeSet<NoteTag>,
+    ) -> Result<(), StoreError> {
+        if tags.is_empty() {
+            self.remove_setting(SettingScope::Client, NOTE_TRANSPORT_COVERED_TAGS_KEY.into())
+                .await?;
+            return Ok(());
+        }
+        self.set_setting(
+            SettingScope::Client,
+            NOTE_TRANSPORT_COVERED_TAGS_KEY.into(),
+            tags.to_bytes(),
+        )
+        .await
+    }
+
+    // PSWAP LINEAGES
+    // --------------------------------------------------------------------------------------------
+
+    /// Stores a PSWAP lineage record and the index from its current tip to its order id. Both
+    /// writes are applied together.
+    async fn insert_pswap_lineage(&self, record: &PswapLineageRecord) -> Result<(), StoreError> {
+        self.apply_settings_mutations(
+            SettingScope::Client,
+            vec![
+                SettingMutation::Set {
+                    key: pswap_order_setting_key(record.order_id()),
+                    value: record.to_bytes(),
+                },
+                SettingMutation::Set {
+                    key: pswap_tip_setting_key(record.current_tip_note_id),
+                    value: record.order_id().to_bytes(),
+                },
+            ],
+        )
+        .await
+    }
+
+    /// Replaces a PSWAP lineage record after a round, and moves its tip index from `old_tip` to
+    /// `new_tip`. A round that ends the order has no `new_tip`. All writes are applied together.
+    async fn update_pswap_lineage(
+        &self,
+        record: &PswapLineageRecord,
+        old_tip: NoteId,
+        new_tip: Option<NoteId>,
+    ) -> Result<(), StoreError> {
+        let mut mutations = vec![
+            SettingMutation::Set {
+                key: pswap_order_setting_key(record.order_id()),
+                value: record.to_bytes(),
+            },
+            SettingMutation::Remove { key: pswap_tip_setting_key(old_tip) },
+        ];
+        if let Some(new_tip) = new_tip {
+            mutations.push(SettingMutation::Set {
+                key: pswap_tip_setting_key(new_tip),
+                value: record.order_id().to_bytes(),
+            });
+        }
+        self.apply_settings_mutations(SettingScope::Client, mutations).await
+    }
+
+    /// Gets the PSWAP lineage record of `order_id`. Returns `None` if not stored.
+    async fn get_pswap_lineage(
+        &self,
+        order_id: Felt,
+    ) -> Result<Option<PswapLineageRecord>, StoreError> {
+        let Some(bytes) = self
+            .get_setting(SettingScope::Client, pswap_order_setting_key(order_id))
+            .await?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(PswapLineageRecord::read_from_bytes(&bytes)?))
+    }
+
+    /// Gets the order id whose current tip is `tip`. Returns `None` if `tip` is not a tracked tip.
+    async fn get_pswap_order_id_by_tip(&self, tip: NoteId) -> Result<Option<Felt>, StoreError> {
+        let Some(bytes) =
+            self.get_setting(SettingScope::Client, pswap_tip_setting_key(tip)).await?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(Felt::read_from_bytes(&bytes)?))
+    }
+
+    /// Gets every PSWAP lineage record the store holds.
+    async fn get_pswap_lineages(&self) -> Result<Vec<PswapLineageRecord>, StoreError> {
+        let mut records = Vec::new();
+        for key in self.list_setting_keys(SettingScope::Client).await? {
+            if !key.starts_with(PSWAP_ORDER_SETTING_PREFIX) {
+                continue;
+            }
+            if let Some(bytes) = self.get_setting(SettingScope::Client, key).await? {
+                records.push(PswapLineageRecord::read_from_bytes(&bytes)?);
+            }
+        }
+        Ok(records)
     }
 
     // PARTIAL MMR

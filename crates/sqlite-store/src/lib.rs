@@ -29,7 +29,15 @@ use miden_client::account::{
 use miden_client::asset::{Asset, AssetVault, AssetWitness};
 use miden_client::block::BlockHeader;
 use miden_client::crypto::{InOrderIndex, MmrPeaks};
-use miden_client::note::{BlockNumber, NoteScript, NoteTag, Nullifier};
+use miden_client::note::{BlockNumber, NoteId, NoteScript, NoteTag, Nullifier};
+use miden_client::note_transport::{
+    NOTE_TRANSPORT_COVERED_TAGS_KEY,
+    NOTE_TRANSPORT_OUTBOX_KEY,
+    NoteInfo,
+};
+use miden_client::protocol_config::{ProtocolConfig, protocol_config_setting_key};
+use miden_client::pswap::{PswapLineageRecord, pswap_order_setting_key};
+use miden_client::rpc::{RPC_LIMITS_STORE_SETTING, RpcLimits};
 use miden_client::store::{
     AccountRecord,
     AccountStatus,
@@ -497,6 +505,81 @@ impl Store for SqliteStore {
             })
         })
         .await
+    }
+
+    async fn get_rpc_limits(&self) -> Result<Option<RpcLimits>, StoreError> {
+        self.get_proto_setting(RPC_LIMITS_STORE_SETTING.into()).await
+    }
+
+    async fn set_rpc_limits(&self, limits: RpcLimits) -> Result<(), StoreError> {
+        self.set_proto_setting(RPC_LIMITS_STORE_SETTING.into(), &limits).await
+    }
+
+    async fn get_protocol_config(
+        &self,
+        commitment: Word,
+    ) -> Result<Option<ProtocolConfig>, StoreError> {
+        self.get_proto_setting(protocol_config_setting_key(commitment)).await
+    }
+
+    async fn insert_protocol_config(&self, config: &ProtocolConfig) -> Result<(), StoreError> {
+        self.set_proto_setting(protocol_config_setting_key(config.to_commitment()), config)
+            .await
+    }
+
+    async fn get_note_transport_outbox(&self) -> Result<Vec<NoteInfo>, StoreError> {
+        Ok(self
+            .get_proto_setting(NOTE_TRANSPORT_OUTBOX_KEY.into())
+            .await?
+            .unwrap_or_default())
+    }
+
+    async fn set_note_transport_outbox(&self, notes: Vec<NoteInfo>) -> Result<(), StoreError> {
+        self.set_proto_setting_or_remove(NOTE_TRANSPORT_OUTBOX_KEY.into(), &notes, notes.is_empty())
+            .await
+    }
+
+    async fn get_note_transport_covered_tags(&self) -> Result<BTreeSet<NoteTag>, StoreError> {
+        Ok(self
+            .get_proto_setting(NOTE_TRANSPORT_COVERED_TAGS_KEY.into())
+            .await?
+            .unwrap_or_default())
+    }
+
+    async fn set_note_transport_covered_tags(
+        &self,
+        tags: &BTreeSet<NoteTag>,
+    ) -> Result<(), StoreError> {
+        self.set_proto_setting_or_remove(
+            NOTE_TRANSPORT_COVERED_TAGS_KEY.into(),
+            tags,
+            tags.is_empty(),
+        )
+        .await
+    }
+
+    async fn insert_pswap_lineage(&self, record: &PswapLineageRecord) -> Result<(), StoreError> {
+        self.put_pswap_lineage(record, None, Some(record.current_tip_note_id)).await
+    }
+
+    async fn update_pswap_lineage(
+        &self,
+        record: &PswapLineageRecord,
+        old_tip: NoteId,
+        new_tip: Option<NoteId>,
+    ) -> Result<(), StoreError> {
+        self.put_pswap_lineage(record, Some(old_tip), new_tip).await
+    }
+
+    async fn get_pswap_lineage(
+        &self,
+        order_id: Felt,
+    ) -> Result<Option<PswapLineageRecord>, StoreError> {
+        self.get_proto_setting(pswap_order_setting_key(order_id)).await
+    }
+
+    async fn get_pswap_lineages(&self) -> Result<Vec<PswapLineageRecord>, StoreError> {
+        self.list_pswap_lineages().await
     }
 
     async fn get_unspent_input_note_nullifiers(&self) -> Result<Vec<Nullifier>, StoreError> {

@@ -46,6 +46,11 @@ use miden_protocol::note::Note;
 use miden_standards::note::PswapNote;
 use miden_tx::auth::TransactionAuthenticator;
 pub use observer::PswapChainObserver;
+pub use store::{
+    ORDER_PREFIX as PSWAP_ORDER_SETTING_PREFIX,
+    order_key as pswap_order_setting_key,
+    tip_key as pswap_tip_setting_key,
+};
 
 use crate::store::{NoteFilter, Store};
 use crate::sync::{NoteTagRecord, NoteTagSource};
@@ -97,7 +102,7 @@ impl TransactionObserver for PswapTransactionObserver {
             // immutable order facts (see `PswapLineageRecord`).
             let record = PswapLineageRecord::new_depth_zero(note.id(), &pswap);
 
-            store::put_lineage(&self.store, &record).await?;
+            self.store.insert_pswap_lineage(&record).await?;
             self.store
                 .add_note_tag(NoteTagRecord {
                     // The asset-pair tag is derived straight from the note we just parsed; the
@@ -151,7 +156,7 @@ impl<AUTH: TransactionAuthenticator + Sync + 'static> Client<AUTH> {
         &self,
         order_id: Felt,
     ) -> Result<Option<PswapLineageRecord>, ClientError> {
-        store::get_lineage(&self.store, order_id).await.map_err(Into::into)
+        self.store.get_pswap_lineage(order_id).await.map_err(Into::into)
     }
 
     /// Builds a tx reclaiming the unfilled offered asset on the current tip of an Active lineage.
@@ -160,7 +165,9 @@ impl<AUTH: TransactionAuthenticator + Sync + 'static> Client<AUTH> {
         &self,
         order_id: Felt,
     ) -> Result<TransactionRequest, ClientError> {
-        let lineage = store::get_lineage(&self.store, order_id)
+        let lineage = self
+            .store
+            .get_pswap_lineage(order_id)
             .await?
             .ok_or(PswapLineageError::NotFound(order_id))?;
 

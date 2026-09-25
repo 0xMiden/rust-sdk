@@ -1,11 +1,5 @@
 # Changelog
 
-## Unreleased
-
-### Fixes
-
-* [FIX][cli] `notes --show` with an ID prefix that matches no note, or more than one, now reports an input error instead of an import error with a file name hint ([#2602](https://github.com/0xMiden/rust-sdk/pull/2602)).
-
 ## 0.17.0-rc.3 (2026-09-24)
 
 ### Breaking Changes

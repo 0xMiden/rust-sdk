@@ -4,7 +4,6 @@ use core::error::Error;
 use core::fmt;
 
 pub use miden_objects::ConversionError;
-use miden_protocol::account::AccountId;
 use miden_protocol::errors::NoteError;
 use miden_protocol::note::NoteId;
 use miden_protocol::utils::serde::DeserializationError;
@@ -22,10 +21,6 @@ pub use node::{AddTransactionError, EndpointError, RegisterAccountError};
 pub enum RpcError {
     #[error("accept header validation failed")]
     AcceptHeaderError(#[from] AcceptHeaderError),
-    #[error(
-        "unexpected update received for private account {0}; private account state should not be sent by the node"
-    )]
-    AccountUpdateForPrivateAccountReceived(AccountId),
     #[error("failed to connect to the Miden node")]
     ConnectionError(#[source] Box<dyn Error + Send + Sync + 'static>),
     #[error("failed to deserialize response from the Miden node: {0}")]
@@ -239,15 +234,6 @@ pub enum AcceptHeaderError {
 pub struct AcceptHeaderContext {
     pub client_version: String,
     pub genesis_commitment: String,
-}
-
-impl AcceptHeaderContext {
-    pub fn unknown() -> Self {
-        Self {
-            client_version: "unknown".to_string(),
-            genesis_commitment: "unknown".to_string(),
-        }
-    }
 }
 
 impl fmt::Display for AcceptHeaderContext {

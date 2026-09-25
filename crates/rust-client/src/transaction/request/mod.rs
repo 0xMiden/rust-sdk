@@ -6,6 +6,7 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::num::NonZeroU16;
 
+use miden_protocol::Word;
 use miden_protocol::account::{AccountCodeInterface, AccountId};
 use miden_protocol::asset::Asset;
 use miden_protocol::crypto::merkle::MerkleError;
@@ -13,7 +14,6 @@ use miden_protocol::crypto::merkle::store::MerkleStore;
 use miden_protocol::errors::{
     AccountError,
     AssetError,
-    AssetVaultError,
     NoteError,
     StorageMapError,
     TransactionInputError,
@@ -36,7 +36,6 @@ use miden_protocol::transaction::{
     TransactionScript,
 };
 use miden_protocol::vm::AdviceMap;
-use miden_protocol::{MastForestScriptError, Word};
 use miden_standards::account::auth::{FeeConversionInfo, commit_fee_conversion_info};
 use miden_standards::errors::CodeBuilderError;
 use miden_standards::tx_script::{
@@ -625,14 +624,10 @@ pub enum TransactionRequestError {
          caller must declare a fresh one with `TransactionRequestBuilder::fee_conversion_salt`"
     )]
     FeeConversionInfoRequired(String),
-    #[error("invalid transaction script")]
-    InvalidTransactionScript(#[from] MastForestScriptError),
     #[error("merkle proof error")]
     MerkleError(#[from] MerkleError),
     #[error("empty transaction: the request has no input notes and no account state changes")]
     NoInputNotesNorAccountChange,
-    #[error("note not found: {0}")]
-    NoteNotFound(String),
     #[error("failed to create note")]
     NoteCreationError(#[from] NoteError),
     #[error("note failed validation")]
@@ -663,12 +658,6 @@ pub enum TransactionRequestError {
     TransactionInputError(#[from] TransactionInputError),
     #[error("account storage map error")]
     StorageMapError(#[from] StorageMapError),
-    #[error("asset vault error")]
-    AssetVaultError(#[from] AssetVaultError),
-    #[error(
-        "unsupported authentication scheme ID {0}; supported schemes are: RpoFalcon512 (0) and EcdsaK256Keccak (1)"
-    )]
-    UnsupportedAuthSchemeId(u8),
 }
 
 // TESTS

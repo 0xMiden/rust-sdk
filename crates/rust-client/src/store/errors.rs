@@ -1,30 +1,23 @@
 use alloc::string::String;
-use core::num::TryFromIntError;
 
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::AssetId;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::merkle::MerkleError;
 use miden_protocol::crypto::merkle::mmr::MmrError;
-use miden_protocol::crypto::merkle::smt::SmtProofError;
 use miden_protocol::errors::{
-    AccountDeltaError,
     AccountError,
     AccountIdError,
     AccountPatchError,
-    AddressError,
     AssetError,
     AssetVaultError,
     NoteError,
     StorageMapError,
 };
-use miden_protocol::utils::HexParseError;
 use miden_protocol::utils::serde::DeserializationError;
-use miden_protocol::{MastForestScriptError, Word, WordError};
+use miden_protocol::{Word, WordError};
 use miden_tx::DataStoreError;
 use thiserror::Error;
-
-use super::note_record::NoteRecordError;
 
 // STORE ERROR
 // ================================================================================================
@@ -41,26 +34,18 @@ pub enum StoreError {
     AssetError(#[from] AssetError),
     #[error("asset vault error")]
     AssetVaultError(#[from] AssetVaultError),
-    #[error("account code data with root {0} not found")]
-    AccountCodeDataNotFound(Word),
     #[error("account data wasn't found for account id {0}")]
     AccountDataNotFound(AccountId),
-    #[error("account delta error")]
-    AccountDeltaError(#[from] AccountDeltaError),
     #[error("account patch error")]
     AccountPatchError(#[from] AccountPatchError),
     #[error("account error")]
     AccountError(#[from] AccountError),
-    #[error("address error")]
-    AddressError(#[from] AddressError),
     #[error("invalid account ID")]
     AccountIdError(#[from] AccountIdError),
     #[error("stored account commitment does not match the expected commitment for account {0}")]
     AccountCommitmentMismatch(AccountId),
     #[error("account storage data with root {0} not found")]
     AccountStorageRootNotFound(Word),
-    #[error("account storage data with index {0} not found")]
-    AccountStorageIndexNotFound(usize),
     #[error("block header for block {0} not found")]
     BlockHeaderNotFound(BlockNumber),
     #[error("partial blockchain node at index {0} not found")]
@@ -73,34 +58,20 @@ pub enum StoreError {
     DatabaseTransientError(String),
     #[error("permanent database error: {0}")]
     DatabasePermanentError(String),
-    #[error("failed to parse hex value")]
-    HexParseError(#[from] HexParseError),
-    #[error("integer conversion failed")]
-    InvalidInt(#[from] TryFromIntError),
-    #[error("note record error")]
-    NoteRecordError(#[from] NoteRecordError),
     #[error("merkle store error")]
     MerkleStoreError(#[from] MerkleError),
     #[error("failed to construct Merkle Mountain Range (MMR)")]
     MmrError(#[from] MmrError),
     #[error("failed to create note inclusion proof")]
     NoteInclusionProofError(#[from] NoteError),
-    #[error("note tag {0} is already being tracked")]
-    NoteTagAlreadyTracked(u64),
     #[error("note script with root {0} not found")]
     NoteScriptNotFound(String),
     #[error("failed to parse data retrieved from the database: {0}")]
     ParsingError(String),
     #[error("failed to retrieve data from the database: {0}")]
     QueryError(String),
-    #[error("sparse merkle tree proof error")]
-    SmtProofError(#[from] SmtProofError),
     #[error("account storage map error")]
     StorageMapError(#[from] StorageMapError),
-    #[error("failed to instantiate a script from its mast forest")]
-    MastForestScriptError(#[from] MastForestScriptError),
-    #[error("account vault data for root {0} not found")]
-    VaultDataNotFound(Word),
     #[error("vault key {0:?} (hashed to {1}) is not tracked in the vault")]
     VaultKeyNotTracked(AssetId, Word),
     #[error("failed to parse word")]

@@ -29,7 +29,6 @@ use crate::transaction::{
     InputNote,
     NATIVE_FEE_CONVERSION_SALT,
     TransactionArgs,
-    TransactionRequestError,
     native_fee_conversion_info,
 };
 
@@ -369,6 +368,4 @@ pub enum NoteScreenerError {
     StoreError(#[from] StoreError),
     #[error("note consumption check failed")]
     NoteCheckerError(#[from] NoteCheckerError),
-    #[error("failed to build transaction request")]
-    TransactionRequestError(#[from] TransactionRequestError),
 }

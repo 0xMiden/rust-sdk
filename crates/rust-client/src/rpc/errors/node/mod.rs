@@ -11,6 +11,7 @@ pub use sync::{
     NoteSyncError,
     SyncAccountStorageMapsError,
     SyncAccountVaultError,
+    SyncChainMmrError,
     SyncNullifiersError,
     SyncTransactionsError,
 };
@@ -25,7 +26,7 @@ use crate::rpc::errors::GrpcError;
 /// Each variant wraps a typed error parsed from the error code in the node's gRPC response.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum EndpointError {
-    /// Error from the `SubmitProvenTransaction` endpoint
+    /// Error from the `SubmitProvenTransaction` or `SubmitProvenBatch` endpoint
     #[error(transparent)]
     AddTransaction(#[from] AddTransactionError),
     /// Error from the `GetBlockHeaderByNumber` endpoint
@@ -49,6 +50,9 @@ pub enum EndpointError {
     /// Error from the `SyncTransactions` endpoint
     #[error(transparent)]
     SyncTransactions(#[from] SyncTransactionsError),
+    /// Error from the `SyncChainMmr` endpoint
+    #[error(transparent)]
+    SyncChainMmr(#[from] SyncChainMmrError),
     /// Error from the `GetNotesById` endpoint
     #[error(transparent)]
     GetNotesById(#[from] GetNotesByIdError),
@@ -74,7 +78,7 @@ pub fn parse_node_error(
     let code = *details.first()?;
 
     match endpoint {
-        RpcEndpoint::SubmitProvenTx => {
+        RpcEndpoint::SubmitProvenTx | RpcEndpoint::SubmitProvenBatch => {
             Some(EndpointError::AddTransaction(AddTransactionError::from_code(code, message)))
         },
         RpcEndpoint::GetBlockHeaderByNumber => {
@@ -107,15 +111,16 @@ pub fn parse_node_error(
         RpcEndpoint::GetAccount => {
             Some(EndpointError::GetAccount(GetAccountError::from_code(code, message)))
         },
+        RpcEndpoint::SyncChainMmr => {
+            Some(EndpointError::SyncChainMmr(SyncChainMmrError::from_code(code, message)))
+        },
         // These endpoints don't have typed errors from the node
-        RpcEndpoint::SyncChainMmr
-        | RpcEndpoint::Status
+        RpcEndpoint::Status
         | RpcEndpoint::GetLimits
         | RpcEndpoint::GetNetworkNoteStatus
         | RpcEndpoint::GetTransactionEncryptionKey
         | RpcEndpoint::RegisterAccount
-        | RpcEndpoint::IsAccountAllowed
-        | RpcEndpoint::SubmitProvenBatch => None,
+        | RpcEndpoint::IsAccountAllowed => None,
     }
 }
 
@@ -195,6 +200,37 @@ mod tests {
                 "node is down"
             )
             .is_none()
+        );
+    }
+
+    /// A request for a block after the chain tip must parse as `FutureBlock` on every sync
+    /// endpoint.
+    #[test]
+    fn a_block_after_the_chain_tip_parses_as_future_block() {
+        let message = "block_to (5) is greater than chain tip (4)";
+        assert_eq!(
+            parse_node_error(&RpcEndpoint::SyncNotes, &[2], message),
+            Some(EndpointError::NoteSync(NoteSyncError::FutureBlock))
+        );
+        assert_eq!(
+            parse_node_error(&RpcEndpoint::SyncChainMmr, &[2], message),
+            Some(EndpointError::SyncChainMmr(SyncChainMmrError::FutureBlock))
+        );
+        assert_eq!(
+            parse_node_error(&RpcEndpoint::SyncNullifiers, &[4], message),
+            Some(EndpointError::SyncNullifiers(SyncNullifiersError::FutureBlock))
+        );
+        assert_eq!(
+            parse_node_error(&RpcEndpoint::SyncAccountVault, &[4], message),
+            Some(EndpointError::SyncAccountVault(SyncAccountVaultError::FutureBlock))
+        );
+        assert_eq!(
+            parse_node_error(&RpcEndpoint::SyncStorageMaps, &[5], message),
+            Some(EndpointError::SyncStorageMaps(SyncAccountStorageMapsError::FutureBlock))
+        );
+        assert_eq!(
+            parse_node_error(&RpcEndpoint::SyncTransactions, &[5], message),
+            Some(EndpointError::SyncTransactions(SyncTransactionsError::FutureBlock))
         );
     }
 }

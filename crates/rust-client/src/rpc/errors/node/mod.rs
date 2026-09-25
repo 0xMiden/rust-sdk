@@ -26,7 +26,7 @@ use crate::rpc::errors::GrpcError;
 /// Each variant wraps a typed error parsed from the error code in the node's gRPC response.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum EndpointError {
-    /// Error from the `SubmitProvenTransaction` endpoint
+    /// Error from the `SubmitProvenTransaction` or `SubmitProvenBatch` endpoint
     #[error(transparent)]
     AddTransaction(#[from] AddTransactionError),
     /// Error from the `GetBlockHeaderByNumber` endpoint
@@ -78,7 +78,7 @@ pub fn parse_node_error(
     let code = *details.first()?;
 
     match endpoint {
-        RpcEndpoint::SubmitProvenTx => {
+        RpcEndpoint::SubmitProvenTx | RpcEndpoint::SubmitProvenBatch => {
             Some(EndpointError::AddTransaction(AddTransactionError::from_code(code, message)))
         },
         RpcEndpoint::GetBlockHeaderByNumber => {
@@ -120,8 +120,7 @@ pub fn parse_node_error(
         | RpcEndpoint::GetNetworkNoteStatus
         | RpcEndpoint::GetTransactionEncryptionKey
         | RpcEndpoint::RegisterAccount
-        | RpcEndpoint::IsAccountAllowed
-        | RpcEndpoint::SubmitProvenBatch => None,
+        | RpcEndpoint::IsAccountAllowed => None,
     }
 }
 

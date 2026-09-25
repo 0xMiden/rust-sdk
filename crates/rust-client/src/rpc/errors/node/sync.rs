@@ -5,7 +5,8 @@ use thiserror::Error;
 // NOTE SYNC ERROR
 // ================================================================================================
 
-// Error codes match `miden-node/crates/store/src/errors.rs::NoteSyncError`.
+// Error codes match `SyncErrorCode` and `SyncNotesErrorCode` in
+// `miden-node/crates/rpc/src/server/api/error_codes.rs`.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum NoteSyncError {
     /// Internal server error (code 0)
@@ -42,7 +43,8 @@ impl NoteSyncError {
 // SYNC NULLIFIERS ERROR
 // ================================================================================================
 
-// Error codes match `miden-node/crates/store/src/errors.rs::SyncNullifiersError`.
+// Error codes match `SyncErrorCode` and `SyncNullifiersErrorCode` in
+// `miden-node/crates/rpc/src/server/api/error_codes.rs`.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum SyncNullifiersError {
     /// Internal server error (code 0)
@@ -83,7 +85,8 @@ impl SyncNullifiersError {
 // SYNC ACCOUNT VAULT ERROR
 // ================================================================================================
 
-// Error codes match `miden-node/crates/store/src/errors.rs::SyncAccountVaultError`.
+// Error codes match `SyncErrorCode` and `SyncAccountVaultErrorCode` in
+// `miden-node/crates/rpc/src/server/api/error_codes.rs`.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum SyncAccountVaultError {
     /// Internal server error (code 0)
@@ -124,7 +127,8 @@ impl SyncAccountVaultError {
 // SYNC ACCOUNT STORAGE MAPS ERROR
 // ================================================================================================
 
-// Error codes match `miden-node/crates/store/src/errors.rs::SyncAccountStorageMapsError`.
+// Error codes match `SyncErrorCode` and `SyncAccountStorageMapsErrorCode` in
+// `miden-node/crates/rpc/src/server/api/error_codes.rs`.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum SyncAccountStorageMapsError {
     /// Internal server error (code 0)
@@ -140,9 +144,6 @@ pub enum SyncAccountStorageMapsError {
     /// Failed to deserialize data
     #[error("deserialization failed")]
     DeserializationFailed,
-    /// Account was not found
-    #[error("account not found")]
-    AccountNotFound,
     /// Account is not public
     #[error("account is not public")]
     AccountNotPublic,
@@ -158,7 +159,6 @@ impl SyncAccountStorageMapsError {
             0 => Self::Internal,
             1 => Self::InvalidBlockRange,
             2 => Self::DeserializationFailed,
-            3 => Self::AccountNotFound,
             4 => Self::AccountNotPublic,
             5 => Self::FutureBlock,
             _ => Self::Unknown { code, message: String::from(message) },
@@ -169,7 +169,8 @@ impl SyncAccountStorageMapsError {
 // SYNC TRANSACTIONS ERROR
 // ================================================================================================
 
-// Error codes match `miden-node/crates/store/src/errors.rs::SyncTransactionsError`.
+// Error codes match `SyncErrorCode` and `SyncTransactionsErrorCode` in
+// `miden-node/crates/rpc/src/server/api/error_codes.rs`.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum SyncTransactionsError {
     /// Internal server error (code 0)
@@ -185,12 +186,6 @@ pub enum SyncTransactionsError {
     /// Failed to deserialize data
     #[error("deserialization failed")]
     DeserializationFailed,
-    /// Account was not found
-    #[error("account not found")]
-    AccountNotFound,
-    /// Witness error
-    #[error("witness error")]
-    WitnessError,
     /// Error code not recognized by this client version. This can happen if the node is newer than
     /// the client and has added new error variants.
     #[error("unknown error code {code}: {message}")]
@@ -203,8 +198,6 @@ impl SyncTransactionsError {
             0 => Self::Internal,
             1 => Self::InvalidBlockRange,
             2 => Self::DeserializationFailed,
-            3 => Self::AccountNotFound,
-            4 => Self::WitnessError,
             5 => Self::FutureBlock,
             _ => Self::Unknown { code, message: String::from(message) },
         }

@@ -4,7 +4,7 @@
 
 ### Breaking Changes
 
-* [BREAKING][type][rust] Sync endpoint errors now have a `FutureBlock` variant for requests past the node's chain tip, and `EndpointError` has a `SyncChainMmr` variant. `NoteSyncError` codes now match the node, so a deserialization failure no longer parses as `Unknown` ([#2383](https://github.com/0xMiden/rust-sdk/issues/2383)).
+* [BREAKING][type][rust] Sync endpoint errors now have a `FutureBlock` variant for requests past the node's chain tip, and `EndpointError` has a `SyncChainMmr` variant. `NoteSyncError` codes now match the node, so a deserialization failure no longer parses as `Unknown`. `SyncAccountStorageMapsError::AccountNotFound`, `SyncTransactionsError::AccountNotFound` and `SyncTransactionsError::WitnessError`, `GetNotesByIdError::NoteNotFound`, `GetNotesByIdError::NoteNotPublic`, `GetNoteScriptByRootError::ScriptNotFound` and `GetBlockByNumberError::DeserializationFailed` were removed because the node does not send them. `AddTransactionError` now has `MissingFee`, `ConsumesInflightFeeNotes`, `InvalidFeeAsset`, `BatchIdMismatch` and `AuthenticationFailed` variants for node rejections that previously parsed as `Unknown`, and `SubmitProvenBatch` rejections now parse as `AddTransactionError`. `RpcError::AccountUpdateForPrivateAccountReceived` and `AcceptHeaderContext::unknown` were removed because nothing used them ([#2383](https://github.com/0xMiden/rust-sdk/issues/2383)).
 
 ### Enhancements
 

@@ -23,8 +23,8 @@ pub async fn import_from_file(
 
     let t = Instant::now();
     let account_file = AccountFile::read(filename)?;
-    let account_id = account_file.account.id();
-    let AccountFile { account, auth_secret_keys } = account_file;
+    let (account, auth_secret_keys) = account_file.into_parts();
+    let account_id = account.id();
 
     let keystore_path = store_path.join("keystore");
     let keystore = FilesystemKeyStore::new(keystore_path)

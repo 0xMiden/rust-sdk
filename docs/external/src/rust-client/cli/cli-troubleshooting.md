@@ -15,6 +15,7 @@ This guide helps you troubleshoot common issues and understand the end-to-end li
 - If you need a clean local state, delete the SQLite store file referenced by `store_filepath` (default: `.miden/store.sqlite3`). It will be recreated automatically on the next command.
 - Verify your node RPC endpoint is reachable and correct in your configuration file (local `.miden/miden-client.toml` or global `~/.miden/miden-client.toml`).
 - Run `miden-client sync` to refresh local state after errors involving missing data or outdated heights.
+- On a network that enforces an account allowlist, register a new account with `miden-client account --register <ID> --invitation-code <CODE>` before its first transaction, then `sync` to receive the funding note the network pays it.
 
 ### Typical CLI outputs
 
@@ -59,6 +60,22 @@ Below are representative errors you may encounter, their likely causes, and sugg
 #### `ClientError.AccountLocked(<account_id>)`
 - Cause: Attempting to modify a locked account.
 - Fix: Unlock or use another account as appropriate.
+
+#### `ClientError.AccountNotAllowlisted(<account_id>)`
+- Cause: The network enforces an account allowlist, and the transaction would create an account that is not registered on it. Only the first transaction of an account is affected. Network accounts are exempt.
+- Fix: Register the account with `miden-client account --register <ID> --invitation-code <CODE>`, using the invitation code the network operator gave you, then run `miden-client sync` and submit the transaction again. See [Registering an account on the network allowlist](index.md#registering-an-account-on-the-network-allowlist).
+
+#### `invitation code does not exist` / `the invitation code or the account is already registered`
+- Cause: The node does not know the invitation code, the code is bound to a different account, or the account is already registered. Codes are case-sensitive and bind to one account only.
+- Fix: Send the code exactly as you received it. If the account is already registered, no action is needed. Run `miden-client sync` to receive the funding note the network may have paid it.
+
+#### `RpcError.GrpcError: Unavailable` after `account --register`
+- Cause: The node registered the account, but the funding service that pays registered accounts failed.
+- Fix: The account stays registered, so a retry fails with `AccountAlreadyAllowed`. Fund the account another way, for example through a faucet, then create it on chain by consuming a note.
+
+#### `ClientError.AccountAlreadyAllowed(<account_id>)`
+- Cause: The node already allows the account, because it is registered or because the network does not enforce an allowlist. The invitation code was not sent.
+- Fix: No registration is needed. Keep the code for a different account, and run `miden-client sync` to receive the funding note the network may have paid a registered account.
 
 #### `ClientError.StoreError(AccountCommitmentAlreadyExists(...))`
 - Cause: Trying to apply a transaction whose final account commitment is already present locally.

@@ -21,7 +21,7 @@ use miden_client::note::{Note, NoteType, P2idNote};
 use miden_client::testing::common::TestClient;
 use miden_client::testing::fee::FeeFunder;
 use miden_client::transaction::{TransactionId, TransactionRequest, TransactionRequestBuilder};
-use miden_client::{Client, ClientError, Deserializable};
+use miden_client::{Client, ClientError};
 use rand::RngExt;
 use rustix::fs::{FlockOperation, flock};
 use rustix::io::Errno;
@@ -38,7 +38,7 @@ pub const FUNDER_ACCOUNTS_ENV: &str = "MIDEN_FUNDER_ACCOUNTS_DIR";
 
 /// Amount of the native fee asset, in base units, each funded account receives. A fee runs a few
 /// tens of thousands of base units, so this covers far more than any one test spends.
-const FUNDING_AMOUNT: u64 = 10_000_000;
+pub const FUNDING_AMOUNT: u64 = 10_000_000;
 
 /// How long to wait before a rejected payment is submitted again.
 const STALE_WALLET_RETRY_DELAY: Duration = Duration::from_secs(5);
@@ -122,15 +122,14 @@ fn load_funders(path: Option<&Path>) -> Result<Vec<AccountFile>> {
         .map(|path| {
             let bytes = std::fs::read(path)
                 .with_context(|| format!("failed to read funder {}", path.display()))?;
-            let funder = AccountFile::read_from_bytes(&bytes).map_err(|err| {
-                anyhow::anyhow!("failed to deserialize {}: {err}", path.display())
-            })?;
+            let funder = AccountFile::try_from_bytes(&bytes)
+                .with_context(|| format!("failed to deserialize {}", path.display()))?;
 
-            let id = funder.account.id();
+            let id = funder.account().id();
             if !id.is_public() {
                 bail!("funder {id} in {} must be public to be shared", path.display());
             }
-            if funder.auth_secret_keys.is_empty() {
+            if funder.auth_secret_keys().is_empty() {
                 bail!("funder {id} in {} carries no secret key to sign with", path.display());
             }
 
@@ -190,7 +189,7 @@ impl Funder {
     fn claim(&self) -> Result<AccountLock> {
         for offset in 0..self.wallets.len() {
             let wallet = &self.wallets[(self.scan_from + offset) % self.wallets.len()];
-            if let Some(lock) = AccountLock::try_acquire(wallet.account.id())? {
+            if let Some(lock) = AccountLock::try_acquire(wallet.account().id())? {
                 return Ok(lock);
             }
         }
@@ -201,11 +200,11 @@ impl Funder {
         let wallet = &self.wallets[self.scan_from % self.wallets.len()];
         warn!(
             wallets = self.wallets.len(),
-            funder_id = %wallet.account.id(),
+            funder_id = %wallet.account().id(),
             "Every funder wallet is claimed, waiting for one to be released",
         );
 
-        AccountLock::acquire(wallet.account.id())
+        AccountLock::acquire(wallet.account().id())
     }
 
     async fn build_client(&self) -> Result<TestClient> {
@@ -221,8 +220,8 @@ impl Funder {
         client.sync_state().await.context("failed to sync the funder client")?;
 
         for wallet in &self.wallets {
-            let id = wallet.account.id();
-            for key in &wallet.auth_secret_keys {
+            let id = wallet.account().id();
+            for key in wallet.auth_secret_keys() {
                 client.keystore().add_key(key, id).await.context("failed to add a funder key")?;
             }
         }
@@ -378,7 +377,7 @@ impl fmt::Debug for Funder {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Funder")
             .field("rpc_endpoint", &self.client_config.rpc_endpoint)
-            .field("wallets", &self.wallets.iter().map(|w| w.account.id()).collect::<Vec<_>>())
+            .field("wallets", &self.wallets.iter().map(|w| w.account().id()).collect::<Vec<_>>())
             .finish_non_exhaustive()
     }
 }

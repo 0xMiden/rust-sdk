@@ -34,6 +34,12 @@
 //! - A failed [`push`](BatchBuilder::push) leaves the batch exactly as it was, so the caller may
 //!   retry with a different request or submit the transactions accumulated so far.
 //!
+//! ## Account allowlist
+//!
+//! [`BatchBuilder::submit`] asks the network allowlist about each account that the batch creates
+//! before the batch is proven. It fails with [`crate::ClientError::AccountNotAllowlisted`] if the
+//! network does not accept one of them. [`Client::retry_proven_batch`] does not ask again.
+//!
 //! ## Error semantics around submission
 //!
 //! A submission that comes back without a definite outcome raises
@@ -81,6 +87,7 @@ use crate::transaction::{
     TransactionRequest,
     TransactionResult,
     TransactionStoreUpdate,
+    ensure_account_allowed,
     validate_executed_transaction,
 };
 use crate::{Client, ClientError};
@@ -272,6 +279,19 @@ where
             .filter(|&r| r < ref_block_num)
             .collect();
 
+        // Accounts that the batch creates are gated by the network allowlist. Ask before the batch
+        // is proven.
+        let account_ids: BTreeSet<AccountId> =
+            self.pushed_txs.iter().map(|p| p.proven_tx.account_id()).collect();
+        for account_id in account_ids {
+            if self.client.is_allowlist_gated(account_id).await? {
+                ensure_account_allowed(
+                    account_id,
+                    self.client.is_account_allowed(account_id).await,
+                )?;
+            }
+        }
+
         let store = self.client.store.clone();
 
         // 2. Fetch the reference block header (from the store).
@@ -369,6 +389,7 @@ where
         let tx_result =
             Box::pin(execute_transaction_for_batch(self.client, &self.data_store, account_id, req))
                 .await?;
+
         let proven_tx = self.client.prove_transaction(&tx_result).await?;
 
         // 3. The transaction is final: fold it into the in-batch account state, record its consumed

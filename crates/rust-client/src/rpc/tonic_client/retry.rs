@@ -134,18 +134,26 @@ mod tests {
         Status::with_metadata(Code::ResourceExhausted, "Too Many Requests! Wait for 0s", metadata)
     }
 
-    /// A submission whose response was lost may already have been accepted, so repeating it would
-    /// surface the resulting conflict instead of the original success.
+    /// A call that changes state and whose response was lost may already have been applied, so
+    /// repeating it would surface the resulting conflict instead of the original success.
     #[test]
-    fn submissions_do_not_retry_unavailable() {
-        for endpoint in [RpcEndpoint::SubmitProvenTx, RpcEndpoint::SubmitProvenBatch] {
+    fn state_changing_calls_do_not_retry_unavailable() {
+        for endpoint in [
+            RpcEndpoint::SubmitProvenTx,
+            RpcEndpoint::SubmitProvenBatch,
+            RpcEndpoint::RegisterAccount,
+        ] {
             assert!(!is_retryable(endpoint, &Status::new(Code::Unavailable, "transport error")));
         }
     }
 
     #[test]
-    fn submissions_retry_resource_exhausted() {
-        for endpoint in [RpcEndpoint::SubmitProvenTx, RpcEndpoint::SubmitProvenBatch] {
+    fn state_changing_calls_retry_resource_exhausted() {
+        for endpoint in [
+            RpcEndpoint::SubmitProvenTx,
+            RpcEndpoint::SubmitProvenBatch,
+            RpcEndpoint::RegisterAccount,
+        ] {
             assert!(is_retryable(endpoint, &Status::new(Code::ResourceExhausted, "rate limited")));
         }
     }

@@ -48,6 +48,16 @@ Check the [Miden client documentation](https://docs.miden.xyz/builder/tools/clie
 
 Save the account ID for a future step.
 
+:::tip Networks with an account allowlist
+Some networks only create accounts that were registered with an invitation code. If the network you use is one of them, register the account before you continue, using the code the network operator gave you:
+
+```sh
+miden-client account --register <ACCOUNT_ID> --invitation-code <CODE>
+```
+
+Such a network usually also funds the registered account with a public note, so after [syncing](#sync-the-client) you may already have a note to consume without requesting tokens from the faucet. See [Registering an account on the network allowlist](../cli/index.md#registering-an-account-on-the-network-allowlist).
+:::
+
 ## Request tokens from the public faucet
 
 1. To request funds from the faucet navigate to the following website: [Miden faucet website](https://faucet.testnet.miden.io/).

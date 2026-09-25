@@ -1,6 +1,7 @@
 use alloc::string::ToString;
 use core::fmt::{self, Display};
 
+use miden_objects::note_file::{NoteFile, NoteSyncHint};
 use miden_protocol::Word;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{
@@ -18,7 +19,6 @@ use miden_protocol::note::{
     PartialNote,
 };
 use miden_protocol::transaction::RawOutputNote;
-use miden_standards::note::{NoteFile, NoteSyncHint};
 use miden_tx::utils::serde::{
     ByteReader,
     ByteWriter,

@@ -1,4 +1,5 @@
 pub mod agglayer;
+pub mod allowlist;
 pub mod batch;
 pub mod client;
 pub mod custom_transaction;

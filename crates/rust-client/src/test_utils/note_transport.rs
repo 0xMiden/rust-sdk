@@ -3,12 +3,8 @@ use alloc::collections::BTreeMap;
 use alloc::string::ToString;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::pin::Pin;
 use core::sync::atomic::{AtomicUsize, Ordering};
-use core::task::{Context, Poll};
 
-use chrono::Utc;
-use futures::Stream;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{NoteHeader, NoteTag};
 use miden_tx::utils::serde::{
@@ -22,7 +18,6 @@ use miden_tx::utils::sync::RwLock;
 
 use crate::note_transport::{
     NoteInfo,
-    NoteStream,
     NoteTransportClient,
     NoteTransportCursor,
     NoteTransportError,
@@ -34,6 +29,8 @@ use crate::note_transport::{
 #[derive(Clone)]
 pub struct MockNoteTransportNode {
     notes: BTreeMap<NoteTag, Vec<(NoteInfo, NoteTransportCursor)>>,
+    nonce: u64,
+    next_sequence: u64,
     /// Optional per-response batch cap; if `Some(n)`, `get_notes` returns at most `n` entries
     /// (total, across all tags) in one call. Used to exercise client-side pagination drain loops.
     /// `None` = unbounded (legacy behavior).
@@ -44,6 +41,8 @@ impl MockNoteTransportNode {
     pub fn new() -> Self {
         Self {
             notes: BTreeMap::default(),
+            nonce: 1,
+            next_sequence: 1,
             max_batch: None,
         }
     }
@@ -52,6 +51,8 @@ impl MockNoteTransportNode {
     pub fn with_max_batch(max_batch: usize) -> Self {
         Self {
             notes: BTreeMap::default(),
+            nonce: 1,
+            next_sequence: 1,
             max_batch: Some(max_batch),
         }
     }
@@ -70,8 +71,9 @@ impl MockNoteTransportNode {
     ) {
         let tag = header.metadata().tag();
         let info = NoteInfo { header, details_bytes, block_hint };
-        let cursor = u64::try_from(Utc::now().timestamp_micros()).unwrap();
-        self.notes.entry(tag).or_default().push((info, cursor.into()));
+        let cursor = NoteTransportCursor::from_parts(self.nonce, self.next_sequence);
+        self.next_sequence += 1;
+        self.notes.entry(tag).or_default().push((info, cursor));
     }
 
     /// Seed a note under an arbitrary transport tag key, regardless of the note's own tag.
@@ -82,8 +84,9 @@ impl MockNoteTransportNode {
         details_bytes: Vec<u8>,
     ) {
         let info = NoteInfo { header, details_bytes, block_hint: None };
-        let cursor = u64::try_from(Utc::now().timestamp_micros()).unwrap();
-        self.notes.entry(tag).or_default().push((info, cursor.into()));
+        let cursor = NoteTransportCursor::from_parts(self.nonce, self.next_sequence);
+        self.next_sequence += 1;
+        self.notes.entry(tag).or_default().push((info, cursor));
     }
 
     pub fn get_notes(
@@ -123,7 +126,10 @@ impl MockNoteTransportNode {
             collected.truncate(max);
         }
 
-        let rcursor = collected.iter().map(|(_, c)| *c).max().unwrap_or(cursor);
+        let initial_cursor = cursor
+            .parts()
+            .map_or(NoteTransportCursor::from_parts(self.nonce, 0), |_| cursor);
+        let rcursor = collected.iter().map(|(_, c)| *c).max().unwrap_or(initial_cursor);
         let notes = collected.into_iter().map(|(n, _)| n).collect();
         (notes, rcursor)
     }
@@ -172,16 +178,6 @@ impl MockNoteTransportApi {
     }
 }
 
-pub struct DummyNoteStream {}
-impl Stream for DummyNoteStream {
-    type Item = Result<Vec<NoteInfo>, NoteTransportError>;
-
-    fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        Poll::Ready(None)
-    }
-}
-impl NoteStream for DummyNoteStream {}
-
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl NoteTransportClient for MockNoteTransportApi {
@@ -211,14 +207,6 @@ impl NoteTransportClient for MockNoteTransportApi {
     ) -> Result<(Vec<NoteInfo>, NoteTransportCursor), NoteTransportError> {
         Ok(self.fetch_notes(tags, cursor))
     }
-
-    async fn stream_notes(
-        &self,
-        _tag: NoteTag,
-        _cursor: NoteTransportCursor,
-    ) -> Result<Box<dyn NoteStream>, NoteTransportError> {
-        Ok(Box::new(DummyNoteStream {}))
-    }
 }
 
 // FAULTY NOTE TRANSPORT API
@@ -235,8 +223,7 @@ impl NoteTransportClient for MockNoteTransportApi {
 /// The decorator counts attempts (`send_attempts`) and lets a test specify how many of the next
 /// `send_note` calls should fail (`fail_next`); successful calls delegate to an inner
 /// [`MockNoteTransportApi`]. `fetch_notes` failures can be injected separately via
-/// [`FaultyNoteTransportApi::fail_next_n_fetches`]; `stream_notes` always delegates to the inner
-/// mock.
+/// [`FaultyNoteTransportApi::fail_next_n_fetches`].
 pub struct FaultyNoteTransportApi {
     inner: MockNoteTransportApi,
     fail_next: AtomicUsize,
@@ -339,14 +326,6 @@ impl NoteTransportClient for FaultyNoteTransportApi {
         }
         Ok(self.inner.fetch_notes(tags, cursor))
     }
-
-    async fn stream_notes(
-        &self,
-        _tag: NoteTag,
-        _cursor: NoteTransportCursor,
-    ) -> Result<Box<dyn NoteStream>, NoteTransportError> {
-        Ok(Box::new(DummyNoteStream {}))
-    }
 }
 
 // SERIALIZATION
@@ -355,13 +334,22 @@ impl NoteTransportClient for FaultyNoteTransportApi {
 impl Serializable for MockNoteTransportNode {
     fn write_into<W: ByteWriter>(&self, target: &mut W) {
         self.notes.write_into(target);
+        self.nonce.write_into(target);
+        self.next_sequence.write_into(target);
     }
 }
 
 impl Deserializable for MockNoteTransportNode {
     fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
         let notes = BTreeMap::<NoteTag, Vec<(NoteInfo, NoteTransportCursor)>>::read_from(source)?;
+        let nonce = u64::read_from(source)?;
+        let next_sequence = u64::read_from(source)?;
 
-        Ok(Self { notes, max_batch: None })
+        Ok(Self {
+            notes,
+            nonce,
+            next_sequence,
+            max_batch: None,
+        })
     }
 }

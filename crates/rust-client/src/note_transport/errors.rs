@@ -2,7 +2,8 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use core::error::Error;
 
-use miden_protocol::note::NoteDetailsCommitment;
+use miden_objects::ConversionError;
+use miden_protocol::note::{NoteDetailsCommitment, NoteTag};
 use miden_protocol::utils::serde::DeserializationError;
 use thiserror::Error;
 
@@ -25,6 +26,10 @@ pub enum NoteTransportError {
         header: NoteDetailsCommitment,
         details: NoteDetailsCommitment,
     },
+    #[error("note transport returned an invalid note: {0}")]
+    InvalidFetchedNote(#[source] ConversionError),
+    #[error("note transport returned a note with tag {0}, which the client did not request")]
+    UnrequestedTag(NoteTag),
     #[error("note transport network error: {0}")]
     Network(String),
     #[error(

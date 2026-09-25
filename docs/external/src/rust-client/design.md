@@ -88,4 +88,5 @@ The system is also prepared for end-to-end encryption (to be implemented).
 gRPC methods include:
 
 - `SendNote`: Sends a note to the note transport network. The recipient address is employed to encrypt the outgoing note (to be implemented).
+- `SendNoteWithProof`: Sends a note together with its inclusion proof. The network verifies the proof before it stores the note and relays the commitment block to the recipient.
 - `FetchNotes`: Fetch notes from the network by note tag. A pagination mechanism using a monotonic-increasing cursor is also employed. The cursor is created by the network and used by the client to reduce the number of fetched notes (to avoid downloading already fetched notes).

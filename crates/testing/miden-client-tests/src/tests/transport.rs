@@ -1,6 +1,7 @@
 use std::env::temp_dir;
 use std::sync::Arc;
 
+use miden_client::ClientError;
 use miden_client::account::{Account, AccountType};
 use miden_client::address::{Address, AddressInterface, RoutingParameters};
 use miden_client::builder::ClientBuilder;
@@ -17,7 +18,7 @@ use miden_client::note::{
     NoteType,
     PartialNoteMetadata,
 };
-use miden_client::note_transport::{NoteTransportClient, NoteTransportCursor};
+use miden_client::note_transport::{NoteTransportClient, NoteTransportCursor, NoteTransportError};
 use miden_client::store::NoteFilter;
 use miden_client::testing::common::{TestClient, create_test_store_path};
 use miden_client::testing::mock::{MockClient, MockRpcApi};
@@ -1397,9 +1398,10 @@ async fn flush_relay_outbox_resends_with_proof() {
     assert_eq!(mock_node.read().proven_block(&note.id()), Some(BlockNumber::GENESIS));
 }
 
-/// A delivery whose details don't match the header's commitment is dropped.
+/// A delivery whose details don't match the header's commitment fails the transport sync. The
+/// cursor stays on the page and the chain sync continues.
 #[tokio::test]
-async fn transport_delivery_with_mismatched_details_is_dropped() {
+async fn transport_delivery_with_mismatched_details_errors() {
     let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
     let (mut sender, sender_account) = create_test_user_transport(mock_node.clone()).await;
     let (mut recipient, recipient_account) = create_test_user_transport(mock_node.clone()).await;
@@ -1423,31 +1425,56 @@ async fn transport_delivery_with_mismatched_details_is_dropped() {
         .unwrap()
         .into();
 
-    let cursor_before = recipient.test_store().get_note_transport_cursor().await.unwrap();
     // Note B's header paired with note A's details.
     mock_node
         .write()
         .add_note(*note_b.header(), NoteDetails::from(note_a.clone()).to_bytes());
 
-    let summary = recipient.sync_state().await.unwrap();
-    assert!(summary.new_private_notes.is_empty(), "forged delivery must not import");
-    assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 0);
-    let cursor_after = recipient.test_store().get_note_transport_cursor().await.unwrap();
-    assert!(cursor_after > cursor_before, "cursor must advance past the forged delivery");
+    let error = recipient.sync_note_transport().await.unwrap_err();
+    match error {
+        ClientError::NoteTransportError(NoteTransportError::NoteDetailsMismatch {
+            header,
+            details,
+        }) => {
+            assert_eq!(header, note_b.details_commitment());
+            assert_eq!(details, note_a.details_commitment());
+        },
+        other => panic!("expected a details mismatch, got {other:?}"),
+    }
 
-    mock_node
-        .write()
-        .add_note(*note_b.header(), NoteDetails::from(note_b.clone()).to_bytes());
-    let summary = recipient.sync_state().await.unwrap();
-    assert_eq!(summary.new_private_notes.len(), 1);
-    let notes = recipient.get_input_notes(NoteFilter::All).await.unwrap();
-    assert_eq!(notes.len(), 1);
-    assert_eq!(notes[0].details_commitment(), note_b.details_commitment());
+    assert_invalid_delivery_is_not_imported(&mut recipient).await;
 }
 
-/// A delivery for a tag that wasn't requested is dropped.
+/// A delivery whose details do not decode fails the transport sync.
 #[tokio::test]
-async fn transport_delivery_for_unrequested_tag_is_dropped() {
+async fn transport_delivery_with_undecodable_details_errors() {
+    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
+    let (mut sender, sender_account) = create_test_user_transport(mock_node.clone()).await;
+    let (mut recipient, recipient_account) = create_test_user_transport(mock_node.clone()).await;
+
+    let note: Note = P2idNote::builder()
+        .sender(sender_account.id())
+        .target(recipient_account.id())
+        .asset(dummy_asset())
+        .note_type(NoteType::Private)
+        .generate_serial_number(sender.rng())
+        .build()
+        .unwrap()
+        .into();
+    mock_node.write().add_note(*note.header(), vec![0xff; 4]);
+
+    let error = recipient.sync_note_transport().await.unwrap_err();
+    assert!(
+        matches!(error, ClientError::NoteTransportError(NoteTransportError::Deserialization(_))),
+        "expected a deserialization error, got {error:?}"
+    );
+
+    assert_invalid_delivery_is_not_imported(&mut recipient).await;
+}
+
+/// A delivery for a tag that was not requested fails the transport sync.
+#[tokio::test]
+async fn transport_delivery_for_unrequested_tag_errors() {
     let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
     let (mut sender, sender_account) = create_test_user_transport(mock_node.clone()).await;
     let (mut recipient, _recipient_account) = create_test_user_transport(mock_node.clone()).await;
@@ -1463,6 +1490,7 @@ async fn transport_delivery_for_unrequested_tag_is_dropped() {
         .build()
         .unwrap()
         .into();
+    let foreign_tag = foreign_note.metadata().tag();
     // A note tagged for the sender, served under the recipient's tracked tag.
     mock_node.write().add_note_with_tag_key(
         tracked_tag,
@@ -1470,9 +1498,17 @@ async fn transport_delivery_for_unrequested_tag_is_dropped() {
         NoteDetails::from(foreign_note).to_bytes(),
     );
 
-    let summary = recipient.sync_state().await.unwrap();
-    assert!(summary.new_private_notes.is_empty(), "foreign-tag delivery must not import");
-    assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 0);
+    let error = recipient.sync_note_transport().await.unwrap_err();
+    assert!(
+        matches!(
+            error,
+            ClientError::NoteTransportError(NoteTransportError::UnrequestedTag(tag))
+                if tag == foreign_tag
+        ),
+        "expected an unrequested tag error, got {error:?}"
+    );
+
+    assert_invalid_delivery_is_not_imported(&mut recipient).await;
 }
 
 // HELPERS
@@ -1488,6 +1524,27 @@ fn dummy_asset() -> Asset {
         AssetCallbackFlag::Disabled,
     );
     FungibleAsset::new(faucet_id, 100).unwrap().into()
+}
+
+/// Asserts that an invalid delivery on the transport is not imported, that it keeps the stored
+/// cursor on its page, and that it does not stop the chain sync.
+async fn assert_invalid_delivery_is_not_imported(client: &mut TestClient) {
+    let cursor_before = client.test_store().get_note_transport_cursor().await.unwrap();
+
+    assert!(
+        client.sync_note_transport().await.is_err(),
+        "the invalid delivery must fail again"
+    );
+    assert!(
+        client.fetch_private_notes().await.is_err(),
+        "the invalid delivery must fail again"
+    );
+    let summary = client.sync_state().await.expect("the chain sync must continue");
+
+    assert!(summary.new_private_notes.is_empty(), "invalid delivery must not import");
+    assert_eq!(client.get_input_notes(NoteFilter::All).await.unwrap().len(), 0);
+    let cursor_after = client.test_store().get_note_transport_cursor().await.unwrap();
+    assert_eq!(cursor_after, cursor_before, "cursor must not advance past the invalid delivery");
 }
 
 pub async fn create_test_client_transport(

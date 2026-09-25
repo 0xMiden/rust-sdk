@@ -317,18 +317,14 @@ impl GrpcNoteTransportClient {
 
         let response = response.into_inner();
 
-        // Decode each note on its own. A note that does not decode, or whose details do not match
-        // its header, is dropped: failing the fetch would keep the cursor on this page and stall
-        // the sync on a single bad delivery.
-        let mut notes = Vec::with_capacity(response.notes.len());
-        for note in response.notes {
-            match note.decode_and_verify() {
-                Ok(note) => notes.push(note),
-                Err(error) => {
-                    tracing::warn!(?error, "dropping a transport note that does not decode");
-                },
-            }
-        }
+        // The service rejects notes that do not decode or whose details do not match their header.
+        // A fetched note that fails these checks shows that the service misbehaves, so the fetch
+        // fails.
+        let notes = response
+            .notes
+            .into_iter()
+            .map(|note| note.decode_and_verify().map_err(NoteTransportError::InvalidFetchedNote))
+            .collect::<Result<Vec<_>, _>>()?;
 
         let cursor = response
             .cursor

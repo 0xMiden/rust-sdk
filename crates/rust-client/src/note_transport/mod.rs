@@ -516,20 +516,11 @@ where
             // e2ee impl hint: for key in self.store.decryption_keys() try
             // key.decrypt(details_bytes_encrypted)
             //
-            // Drop invalid entries so the cursor can advance past them.
-            let note = match rejoin_note(&note_info.header, &note_info.details_bytes) {
-                Ok(note) => note,
-                Err(err) => {
-                    tracing::warn!(?err, "dropping malformed transport delivery");
-                    continue;
-                },
-            };
-            if !tags.contains(&note.metadata().tag()) {
-                tracing::warn!(
-                    tag = ?note.metadata().tag(),
-                    "dropping transport delivery for a tag that was not requested"
-                );
-                continue;
+            // An invalid delivery fails the fetch and the cursor stays on this page.
+            let note = rejoin_note(&note_info.header, &note_info.details_bytes)?;
+            let tag = note.metadata().tag();
+            if !tags.contains(&tag) {
+                return Err(NoteTransportError::UnrequestedTag(tag).into());
             }
 
             // The header carries the attachment-aware (on-chain) note id; the rejoined note has
@@ -976,17 +967,10 @@ impl Deserializable for NoteTransportCursor {
     }
 }
 
-fn rejoin_note(header: &NoteHeader, details_bytes: &[u8]) -> Result<Note, DeserializationError> {
+fn rejoin_note(header: &NoteHeader, details_bytes: &[u8]) -> Result<Note, NoteTransportError> {
     let mut reader = SliceReader::new(details_bytes);
     let details = NoteDetails::read_from(&mut reader)?;
-    // The header must commit to the delivered details.
-    if details.commitment() != header.details_commitment() {
-        return Err(DeserializationError::InvalidValue(format!(
-            "delivered note details (commitment {}) do not match the header's details commitment {}",
-            details.commitment().to_hex(),
-            header.details_commitment().to_hex(),
-        )));
-    }
+    validate_note_parts(header, &details)?;
     // The transport wire format only carries `NoteHeader` + serialized `NoteDetails`, not the
     // attachments collection. We rejoin with empty attachments; this matches the original note only
     // when it had no attachments in the first place.

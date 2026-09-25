@@ -13,6 +13,8 @@
 ### Breaking Changes
 
 * [BREAKING][behavior][rust] `Client::add_account` and `Client::add_address` return the new `ClientError::AccountTagLimitExceeded` when the client already tracks `Client::MAX_ACCOUNT_TAGS` (128) account tags, the most the note transport accepts in one request ([#2627](https://github.com/0xMiden/rust-sdk/pull/2627)).
+* [BREAKING][behavior][rust] `Client::sync_note_transport` and `Client::fetch_private_notes` return an error when the note transport returns a note that does not decode, whose details do not match its header, or whose tag was not requested. `Client::sync_state` logs the error and continues the chain sync ([#2628](https://github.com/0xMiden/rust-sdk/pull/2628)).
+* [BREAKING][type][rust] Added the `NoteTransportError::InvalidFetchedNote` and `NoteTransportError::UnrequestedTag` variants ([#2628](https://github.com/0xMiden/rust-sdk/pull/2628)).
 
 ### Features
 

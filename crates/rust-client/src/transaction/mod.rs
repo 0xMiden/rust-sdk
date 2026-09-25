@@ -453,6 +453,18 @@ where
         &self,
         transaction_request: &TransactionRequest,
     ) -> Result<ChainAnchor, ClientError> {
+        let tracked_blocks = self.tracked_blocks_for_request(transaction_request).await?;
+        self.chain_anchor_at_tip(tracked_blocks).await
+    }
+
+    /// Collects the creation blocks of a request's authenticated input notes, which a
+    /// [`ChainAnchor`] must track so those notes can be consumed against it. This covers notes the
+    /// store holds as authenticated and notes pinned as authenticated through
+    /// [`TransactionRequestBuilder::explicit_input_notes`].
+    async fn tracked_blocks_for_request(
+        &self,
+        transaction_request: &TransactionRequest,
+    ) -> Result<BTreeSet<BlockNumber>, ClientError> {
         let inferred_input_note_ids: Vec<NoteId> = transaction_request
             .input_note_ids()
             .filter(|note_id| !transaction_request.explicit_input_notes.contains_key(note_id))
@@ -478,7 +490,98 @@ where
                 .map(|proof| proof.location().block_num()),
         );
 
+        Ok(tracked_blocks)
+    }
+
+    /// Captures a [`ChainAnchor`] at the client's current sync height (the chain tip) that
+    /// additionally tracks `bound_block`, so a multisig proposal whose summary binds `bound_block`
+    /// can be re-derived, verified, and executed against the tip rather than against the proposer's
+    /// original (and by now possibly pruned) anchor.
+    ///
+    /// # Why the tip
+    ///
+    /// A multisig auth procedure lets the approvers commit to a caller-chosen block through
+    /// [`MultisigAuthArgs`](miden_standards::account::auth::MultisigAuthArgs): the transaction
+    /// summary binds `bound_block`'s commitment (read from the transaction's partial blockchain),
+    /// not the execution reference block, so the summary commitment the approvers signed reproduces
+    /// at any reference block at or after `bound_block` — as long as `bound_block` stays tracked by
+    /// the partial blockchain. This is what makes it safe to move execution to the tip.
+    ///
+    /// Executing against the tip matters because the reference block also fixes the block at which
+    /// foreign account state is fetched (see [`Self::execute_transaction_at`]). Every fee-paying
+    /// transaction FPI-loads the chain fee faucet through the kernel's asset callback, and nodes
+    /// prune historical account state after a small window. Re-deriving an aged proposal against its
+    /// original anchor therefore fails once the anchor block is pruned, whereas fetching the fee
+    /// faucet at the tip always succeeds.
+    ///
+    /// Pass the resulting anchor to [`Self::execute_transaction_at`]. The bound block is taken from
+    /// the shared summary via [`TransactionSummary::block_number`], or from the
+    /// `MultisigAuthArgs::bound_block_num` the proposer chose.
+    ///
+    /// # Caveats
+    ///
+    /// The auth args commit fee conversion info naming the reference block's fee faucet. If the
+    /// chain's fee parameters change between `bound_block` and the tip, the committed conversion
+    /// info no longer matches and the fee payment aborts; in that (rare) case the proposal must be
+    /// re-collected. `bound_block` must be at or before the tip, which always holds for an aged
+    /// proposal.
+    ///
+    /// The bound block's header and MMR authentication path are fetched from the node if the client
+    /// does not already track them (a bound block with no client activity is not tracked by a
+    /// routine sync). Only block-header data is fetched here, which the node serves even for blocks
+    /// whose account state it has pruned — that is the whole reason the summary can still be
+    /// reproduced after the account state at the bound block is gone.
+    ///
+    /// # Errors
+    ///
+    /// - Returns [`ClientError::StoreError`] if a header for the sync height or a tracked block is
+    ///   not present in the store.
+    /// - Returns [`ClientError::RpcError`] if the node cannot serve the bound block's header and MMR
+    ///   proof.
+    /// - Returns [`ChainAnchorError::TooManyTrackedBlocks`] if the tracked blocks (the bound block
+    ///   plus the request's authenticated input notes' creation blocks) exceed what a transaction
+    ///   can reference.
+    pub async fn chain_anchor_for_multisig_summary(
+        &self,
+        transaction_request: &TransactionRequest,
+        bound_block: BlockNumber,
+    ) -> Result<ChainAnchor, ClientError> {
+        // The tip anchor must carry the bound block's commitment so the kernel can read it. A bound
+        // block with no client activity is not tracked by a routine sync, so fetch and persist its
+        // header and MMR path (a no-op when already tracked). This is a block-header fetch only, so
+        // it succeeds even when the node has pruned the account state at that block.
+        let mut partial_mmr = self.get_current_partial_mmr().await?;
+        self.get_and_store_authenticated_block(bound_block, &mut partial_mmr).await?;
+
+        let mut tracked_blocks = self.tracked_blocks_for_request(transaction_request).await?;
+        tracked_blocks.insert(bound_block);
         self.chain_anchor_at_tip(tracked_blocks).await
+    }
+
+    /// Re-derives and executes a multisig proposal at the current chain tip while its transaction
+    /// summary stays bound to `bound_block`.
+    ///
+    /// This is the convenience entry point over [`Self::chain_anchor_for_multisig_summary`] followed
+    /// by [`Self::execute_transaction_at`]: it captures a tip anchor tracking `bound_block` and
+    /// executes the request against it, so the fee faucet (and any other foreign account) is fetched
+    /// at the tip — a block the node still serves — while the summary commitment the approvers
+    /// signed is reproduced unchanged. See [`Self::chain_anchor_for_multisig_summary`] for the full
+    /// rationale and caveats.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`Self::chain_anchor_for_multisig_summary`] and
+    /// [`Self::execute_transaction_at`].
+    pub async fn execute_multisig_summary_at_tip(
+        &mut self,
+        account_id: AccountId,
+        transaction_request: TransactionRequest,
+        bound_block: BlockNumber,
+    ) -> Result<TransactionResult, ClientError> {
+        let anchor = self
+            .chain_anchor_for_multisig_summary(&transaction_request, bound_block)
+            .await?;
+        Box::pin(self.execute_transaction_at(account_id, transaction_request, anchor)).await
     }
 
     /// Executes `transaction_request` (e.g. consuming a note) through the DAP program executor, so

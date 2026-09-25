@@ -612,14 +612,18 @@ pub trait Store: Send + Sync {
         else {
             return Ok(None);
         };
-        let limits = RpcLimits::read_from_bytes(&bytes)?;
+        let limits = proto::decode(&bytes)?;
         Ok(Some(limits))
     }
 
     /// Persists RPC limits to the store.
     async fn set_rpc_limits(&self, limits: RpcLimits) -> Result<(), StoreError> {
-        self.set_setting(SettingScope::Client, RPC_LIMITS_STORE_SETTING.into(), limits.to_bytes())
-            .await
+        self.set_setting(
+            SettingScope::Client,
+            RPC_LIMITS_STORE_SETTING.into(),
+            proto::encode(&limits),
+        )
+        .await
     }
 
     // TRANSACTION ENCRYPTION KEY

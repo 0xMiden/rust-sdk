@@ -4,17 +4,10 @@
 use alloc::format;
 use core::convert::TryFrom;
 
-use miden_tx::utils::serde::{
-    ByteReader,
-    ByteWriter,
-    Deserializable,
-    DeserializationError,
-    Serializable,
-};
-
 use crate::rpc::RpcEndpoint;
 use crate::rpc::errors::RpcConversionError;
 use crate::rpc::generated::rpc as proto;
+use crate::store::proto::{self as store_proto, ProtoDecodeError, ProtobufValue};
 
 /// Key used to store RPC limits in the settings table.
 pub(crate) const RPC_LIMITS_STORE_SETTING: &str = "rpc_limits";
@@ -51,22 +44,24 @@ impl Default for RpcLimits {
     }
 }
 
-impl Serializable for RpcLimits {
-    fn write_into<W: ByteWriter>(&self, target: &mut W) {
-        self.note_ids_limit.write_into(target);
-        self.nullifiers_limit.write_into(target);
-        self.account_ids_limit.write_into(target);
-        self.note_tags_limit.write_into(target);
-    }
-}
+impl ProtobufValue for RpcLimits {
+    type Message = store_proto::RpcLimits;
 
-impl Deserializable for RpcLimits {
-    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
+    fn to_proto(&self) -> Self::Message {
+        Self::Message {
+            note_ids_limit: self.note_ids_limit,
+            nullifiers_limit: self.nullifiers_limit,
+            account_ids_limit: self.account_ids_limit,
+            note_tags_limit: self.note_tags_limit,
+        }
+    }
+
+    fn from_proto(limits: Self::Message) -> Result<Self, ProtoDecodeError> {
         Ok(Self {
-            note_ids_limit: u32::read_from(source)?,
-            nullifiers_limit: u32::read_from(source)?,
-            account_ids_limit: u32::read_from(source)?,
-            note_tags_limit: u32::read_from(source)?,
+            note_ids_limit: limits.note_ids_limit,
+            nullifiers_limit: limits.nullifiers_limit,
+            account_ids_limit: limits.account_ids_limit,
+            note_tags_limit: limits.note_tags_limit,
         })
     }
 }
@@ -128,8 +123,8 @@ mod tests {
             note_tags_limit: 1000,
         };
 
-        let bytes = original.to_bytes();
-        let deserialized = RpcLimits::read_from_bytes(&bytes).expect("deserialization failed");
+        let bytes = store_proto::encode(&original);
+        let deserialized: RpcLimits = store_proto::decode(&bytes).expect("deserialization failed");
 
         assert_eq!(original, deserialized);
     }

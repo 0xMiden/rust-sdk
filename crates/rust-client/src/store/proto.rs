@@ -12,6 +12,7 @@ use miden_protocol::Word;
 use miden_protocol::account::AccountCode;
 use miden_protocol::block::BlockHeader;
 use miden_protocol::note::{NoteAttachments, NoteMetadata, NoteRecipient, NoteScript, NoteStorage};
+use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::transaction::TransactionScript;
 
 use crate::store::OutputNoteState;
@@ -274,6 +275,18 @@ impl ProtobufValue for NoteAttachments {
 
 impl ProtobufValue for NoteStorage {
     type Message = objects::note::NoteStorage;
+
+    fn to_proto(&self) -> Self::Message {
+        self.into()
+    }
+
+    fn from_proto(message: Self::Message) -> Result<Self, ProtoDecodeError> {
+        Ok(message.decode_and_verify()?)
+    }
+}
+
+impl ProtobufValue for ProtocolConfig {
+    type Message = objects::protocol_config::ProtocolConfig;
 
     fn to_proto(&self) -> Self::Message {
         self.into()

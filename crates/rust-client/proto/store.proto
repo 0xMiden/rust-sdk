@@ -244,6 +244,36 @@ enum PswapLineageState {
   PSWAP_LINEAGE_STATE_RECLAIMED = 3;
 }
 
+// SETTINGS
+// ================================================================================================
+
+// The limits the node reported for its RPC endpoints.
+message RpcLimits {
+  uint32 note_ids_limit = 1;
+  uint32 nullifiers_limit = 2;
+  uint32 account_ids_limit = 3;
+  uint32 note_tags_limit = 4;
+}
+
+// A note fetched from or sent to the note transport network.
+message NoteInfo {
+  note.NoteHeader header = 1;
+  // The note details, which can be encrypted.
+  bytes details = 2;
+  // The block from which the recipient scans for the note. Absent when the sender gave no hint.
+  blockchain.BlockNumber block_hint = 3;
+}
+
+// The notes that wait to be relayed to the note transport network.
+message RelayOutbox {
+  repeated NoteInfo notes = 1;
+}
+
+// The note tags whose history the client already fetched from the note transport network.
+message NoteTags {
+  repeated fixed32 tags = 1;
+}
+
 // PROTOCOL COLLECTIONS
 // ================================================================================================
 

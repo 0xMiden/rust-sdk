@@ -82,10 +82,9 @@ pub async fn test_output_notes_do_not_register_tags(client_config: ClientConfig)
     // an inclusion proof, so committedness must be asserted explicitly.
     assert!(received_record.is_committed(), "received note should be committed");
     let received_note: InputNote = received_record.try_into()?;
-    let tx_id = client_2
-        .consume_notes(basic_wallet.id(), &[received_note.note().clone()])
+    client_2
+        .consume_notes_and_wait(basic_wallet.id(), &[received_note.note().clone()])
         .await?;
-    client_2.wait_for_tx(tx_id).await?;
     client_2
         .assert_account_has_single_asset(basic_wallet.id(), faucet_account.id(), MINT_AMOUNT)
         .await;
@@ -159,8 +158,9 @@ pub async fn test_input_note_tag_lifecycle(client_config: ClientConfig) -> Resul
         .context("self-directed note should be tracked as an input note")?;
     assert!(received_record.is_committed(), "self-directed input note should be committed");
     let received_note: InputNote = received_record.try_into()?;
-    let tx_id = client_1.consume_notes(wallet_b.id(), &[received_note.note().clone()]).await?;
-    client_1.wait_for_tx(tx_id).await?;
+    client_1
+        .consume_notes_and_wait(wallet_b.id(), &[received_note.note().clone()])
+        .await?;
 
     // Importing an expected note by details (before it is committed on chain) registers a tag and
     // cleans it up once the note commits.
@@ -206,8 +206,9 @@ pub async fn test_input_note_tag_lifecycle(client_config: ClientConfig) -> Resul
         .context("imported note should be committed for the recipient")?;
     assert!(received_record.is_committed(), "imported note should be committed");
     let received_note: InputNote = received_record.try_into()?;
-    let tx_id = client_2.consume_notes(wallet_c.id(), &[received_note.note().clone()]).await?;
-    client_2.wait_for_tx(tx_id).await?;
+    client_2
+        .consume_notes_and_wait(wallet_c.id(), &[received_note.note().clone()])
+        .await?;
 
     Ok(())
 }

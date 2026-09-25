@@ -10,6 +10,10 @@
 
 * [FEATURE][cli] Added the mutually exclusive authentication scheme flags `--ecdsa-k256-keccak [PUBLIC_KEY]` and `--falcon512-poseidon2` (aliases `--ecdsa`, `--falcon`) to `new-wallet` and `new-account`. With an ECDSA public key, the account commits to the external key and stores no secret key. ECDSA accepts a `0x`-prefixed compressed or uncompressed SEC1 key. Without a public key, the CLI generates and stores a key of the selected scheme. `keys --commitment` now also accepts the 65-byte uncompressed SEC1 encoding ([#2590](https://github.com/0xMiden/rust-sdk/pull/2590)).
 
+### Breaking Changes
+
+* [BREAKING][test] The integration tests now pay fees through the node's funding service (`MIDEN_FUNDING_SERVICE_URL`) instead of a pool of pre-funded wallets, and the standalone integration test binary is removed ([#2573](https://github.com/0xMiden/rust-sdk/issues/2573)).
+
 ### Enhancements
 
 * [test] CI uses smaller runners for short jobs and cancels superseded pull request runs. Pull requests skip specialty system tests when unrelated files change, while pushes to `main` and `next` still run every test ([#2610](https://github.com/0xMiden/rust-sdk/pull/2610)).

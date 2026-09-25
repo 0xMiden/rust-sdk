@@ -63,7 +63,7 @@ use miden_client::{Felt, Word, ZERO};
 use rand::{Rng, RngExt};
 
 use crate::ClientConfig;
-use crate::fee_funding::fee_faucet_id;
+use crate::funding::fee_faucet_id;
 
 // HELPERS
 // ================================================================================================
@@ -858,8 +858,7 @@ pub async fn test_ntx_mint_produces_public_note_with_non_standard_script(
         .pop()
         .context("expected the committed public note to be present on Bob's client")?
         .try_into()?;
-    let consume_tx_id = client_2.consume_notes(bob.id(), &[note]).await?;
-    client_2.wait_for_tx(consume_tx_id).await?;
+    client_2.consume_notes_and_wait(bob.id(), &[note]).await?;
 
     client_2
         .assert_account_has_single_asset(bob.id(), faucet.id(), amount.as_canonical_u64())

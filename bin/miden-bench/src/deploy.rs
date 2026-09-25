@@ -153,7 +153,7 @@ pub async fn deploy_account(
     // Deploy the account
     let deploy_t = Instant::now();
     if client.chain_charges_fees().await? {
-        println!("Deploying account to network, funded from a funder wallet...");
+        println!("Deploying account to network, funded from the funding service...");
         client.deploy_account(account_id).await?;
         println!("  Total: {:.2?}", deploy_t.elapsed());
     } else {

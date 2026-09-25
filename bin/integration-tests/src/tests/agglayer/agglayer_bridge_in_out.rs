@@ -61,7 +61,6 @@ const TEST_L1_DESTINATION: &str = "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd";
 /// never claimed before.
 pub async fn test_agglayer_bridge_in_out(client_config: ClientConfig) -> Result<()> {
     let agglayer_config = AgglayerConfig::from_env()?;
-    let _agglayer_accounts = agglayer_config.claim()?;
     let (mut bridge_admin, mut ger_manager, mut user) =
         create_agglayer_clients(&client_config).await?;
     let (bridge_admin_id, ger_manager_id, bridge_id) =

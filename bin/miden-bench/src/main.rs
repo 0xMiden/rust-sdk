@@ -17,8 +17,8 @@ mod masm;
 mod metrics;
 mod report;
 
-use config::{BenchConfig, DEFAULT_STORE_DIR, RPC_TIMEOUT_MS};
-use miden_client_integration_tests::{ClientConfig, fee_funding};
+use config::{BenchConfig, DEFAULT_STORE_DIR};
+use miden_client_integration_tests::funding;
 
 const DEFAULT_ITERATION_COUNT: usize = 5;
 
@@ -41,11 +41,11 @@ struct CliArgs {
     #[arg(long, global = true, default_value = DEFAULT_STORE_DIR)]
     store: String,
 
-    /// Path to pre-funded basic wallets to draw transaction fees from: either one `.mac` account
-    /// file or a directory of them. Defaults to `MIDEN_FUNDER_ACCOUNTS_DIR`. A path naming no such
-    /// file leaves the run without funders, which is all a fee-free chain needs.
+    /// Base URL of the node's funding service, which hands out the native fee asset over HTTP.
+    /// Defaults to `MIDEN_FUNDING_SERVICE_URL`. Leaving it unset leaves the run without a funder,
+    /// which is all a fee-free chain needs.
     #[arg(long, global = true)]
-    funders: Option<PathBuf>,
+    funding_service: Option<String>,
 }
 
 #[derive(Subcommand, Clone)]
@@ -259,10 +259,9 @@ async fn main() {
         .await
         .expect("Failed to create client");
 
-    let funders = args.funders.or_else(fee_funding::funders_path_from_env);
+    let funding_service = args.funding_service.or_else(funding::funding_service_from_env);
     let fee_funder =
-        fee_funding::load(&ClientConfig::new(endpoint.clone(), RPC_TIMEOUT_MS), funders.as_deref())
-            .expect("Failed to load the funder wallets");
+        funding::load(funding_service.as_deref()).expect("Failed to load the fee funder");
     let mut client = TestClient::from(client).with_fee_funder(fee_funder);
 
     match args.command.startup_mode() {
@@ -276,8 +275,6 @@ async fn main() {
     }
 
     dispatch_command(args.command, &mut client, store_path, endpoint, &store_flag).await;
-
-    client.flush_funder().await.expect("Failed to flush the fee funder");
 }
 
 async fn dispatch_command(

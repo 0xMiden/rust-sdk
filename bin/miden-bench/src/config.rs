@@ -6,6 +6,7 @@ use miden_client::crypto::RandomCoin;
 use miden_client::keystore::FilesystemKeyStore;
 use miden_client::rpc::{Endpoint, GrpcClient, VerifyingRpcClient};
 use miden_client::{Client, Felt};
+use miden_client_integration_tests::submit_retry::UnknownNoteRetryRpcClient;
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
 use rand::RngExt;
 
@@ -51,7 +52,12 @@ pub async fn create_client(
     let rng_coin = RandomCoin::new(coin_seed.map(Felt::new_unchecked).into());
 
     let builder = ClientBuilder::new()
-        .rpc(Arc::new(VerifyingRpcClient::new(GrpcClient::new(endpoint, RPC_TIMEOUT_MS))))
+        // Deploys consume funding notes the node may not know yet, so rejected submissions are
+        // retried.
+        .rpc(Arc::new(UnknownNoteRetryRpcClient::new(VerifyingRpcClient::new(GrpcClient::new(
+            endpoint,
+            RPC_TIMEOUT_MS,
+        )))))
         .rng(Box::new(rng_coin))
         .sqlite_store(sqlite_path)
         .filesystem_keystore(keystore_path.to_str().expect("keystore path should be valid UTF-8"))?

@@ -571,30 +571,15 @@ pub trait Store: Send + Sync {
     /// Gets the note transport cursor.
     ///
     /// This is used to reduce the number of fetched notes from the note transport network. If no
-    /// cursor exists, initializes it to 0.
+    /// cursor exists, this returns an initial cursor.
     async fn get_note_transport_cursor(&self) -> Result<NoteTransportCursor, StoreError> {
-        let cursor_bytes = if let Some(bytes) = self
+        let Some(cursor_bytes) = self
             .get_setting(SettingScope::Client, NOTE_TRANSPORT_CURSOR_STORE_SETTING.into())
             .await?
-        {
-            bytes
-        } else {
-            // Lazy initialization: create cursor if not present
-            let initial = 0u64.to_be_bytes().to_vec();
-            self.set_setting(
-                SettingScope::Client,
-                NOTE_TRANSPORT_CURSOR_STORE_SETTING.into(),
-                initial.clone(),
-            )
-            .await?;
-            initial
+        else {
+            return Ok(NoteTransportCursor::init());
         };
-        let array: [u8; 8] = cursor_bytes
-            .as_slice()
-            .try_into()
-            .map_err(|e: core::array::TryFromSliceError| StoreError::ParsingError(e.to_string()))?;
-        let cursor = u64::from_be_bytes(array);
-        Ok(cursor.into())
+        NoteTransportCursor::read_from_bytes(&cursor_bytes).map_err(Into::into)
     }
 
     /// Updates the note transport cursor.
@@ -605,7 +590,7 @@ pub trait Store: Send + Sync {
         &self,
         cursor: NoteTransportCursor,
     ) -> Result<(), StoreError> {
-        let cursor_bytes = cursor.value().to_be_bytes().to_vec();
+        let cursor_bytes = cursor.to_bytes();
         self.set_setting(
             SettingScope::Client,
             NOTE_TRANSPORT_CURSOR_STORE_SETTING.into(),

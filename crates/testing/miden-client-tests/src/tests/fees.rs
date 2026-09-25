@@ -440,6 +440,11 @@ async fn a_multisig_account_is_told_to_declare_its_own_conversion_info() {
 async fn multisig_proposal_reexecutes_after_bound_account_state_is_pruned() {
     let (mut client, rpc_api, account) = Box::pin(fee_charging_multisig_client()).await;
     let bound_block_num = client.get_sync_height().await.unwrap();
+
+    rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+    assert!(client.get_sync_height().await.unwrap() > bound_block_num);
+
     let fee_faucet_id: AccountId = ACCOUNT_ID_FEE_FAUCET.try_into().unwrap();
     let auth_args = MultisigAuthArgs::new(bound_block_num, Word::from([21u32, 22, 23, 24]))
         .with_conversion_info(FeeConversionInfo::one_to_one(fee_faucet_id));
@@ -451,6 +456,9 @@ async fn multisig_proposal_reexecutes_after_bound_account_state_is_pruned() {
         .build()
         .unwrap();
 
+    let anchor = client.chain_anchor_for_request(&request).await.unwrap();
+    assert!(anchor.partial_blockchain().contains_block(bound_block_num));
+
     let original_summary = unauthorized_summary(
         Box::pin(client.execute_transaction(account.id(), request.clone()))
             .await
@@ -458,7 +466,6 @@ async fn multisig_proposal_reexecutes_after_bound_account_state_is_pruned() {
     );
     assert_eq!(original_summary.block_number(), bound_block_num);
 
-    rpc_api.prove_block();
     rpc_api.prove_block();
     client.sync_state().await.unwrap();
     assert!(client.get_sync_height().await.unwrap() > bound_block_num);

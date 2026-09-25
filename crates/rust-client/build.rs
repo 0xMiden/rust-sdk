@@ -7,6 +7,13 @@ use miden_node_proto_build::{
     rpc_api_descriptor,
 };
 use miette::IntoDiagnostic;
+use protox::Compiler;
+use protox::file::{
+    ChainFileResolver,
+    DescriptorSetFileResolver,
+    GoogleFileResolver,
+    IncludeFileResolver,
+};
 
 const RPC_STD_DIR: &str = "rpc/std";
 const RPC_NOSTD_DIR: &str = "rpc/nostd";
@@ -14,6 +21,10 @@ const NOTE_TRANSPORT_STD_DIR: &str = "note_transport/std";
 const NOTE_TRANSPORT_NOSTD_DIR: &str = "note_transport/nostd";
 const REMOTE_PROVER_STD_DIR: &str = "remote_prover/std";
 const REMOTE_PROVER_NOSTD_DIR: &str = "remote_prover/nostd";
+const STORE_DIR: &str = "store";
+
+const STORE_PROTO_INCLUDE_DIR: &str = "proto";
+const STORE_PROTO_FILE: &str = "proto/store.proto";
 
 const RPC_STD_WRAPPER: &str = "rpc_std.rs";
 const RPC_NOSTD_WRAPPER: &str = "rpc_nostd.rs";
@@ -34,6 +45,7 @@ fn main() -> miette::Result<()> {
     compile_tonic_client_proto(&out_dir)?;
     compile_tonic_note_transport_proto(&out_dir)?;
     compile_tonic_remote_prover_proto(&out_dir)?;
+    compile_store_proto(&out_dir)?;
 
     replace_no_std_types_in_dir(&out_dir.join(RPC_NOSTD_DIR))?;
     replace_no_std_types_in_dir(&out_dir.join(NOTE_TRANSPORT_NOSTD_DIR))?;
@@ -62,6 +74,51 @@ fn canonical_object_config() -> tonic_prost_build::Config {
         config.extern_path(*proto_path, *rust_path);
     }
     config
+}
+
+// STORE PROTO CODEGEN
+// ===============================================================================================
+
+/// Generates the Rust protobuf bindings for the values the store keeps.
+///
+/// The schema lives in this crate, so it must be compiled here. `protox` compiles it in pure Rust
+/// and produces the same file descriptors that the other generators receive from their build
+/// dependencies. This keeps `protoc` out of the build requirements.
+///
+/// The resolver chain decides where an `import` in the schema is read from. The store schema
+/// resolves against its own directory, the canonical object schemas that `miden-objects` embeds,
+/// and the well-known Google types, in that order.
+fn compile_store_proto(out_dir: &Path) -> miette::Result<()> {
+    println!("cargo::rerun-if-changed={STORE_PROTO_INCLUDE_DIR}");
+
+    let mut resolver = ChainFileResolver::new();
+    resolver.add(IncludeFileResolver::new(PathBuf::from(STORE_PROTO_INCLUDE_DIR)));
+    resolver.add(
+        DescriptorSetFileResolver::decode(miden_objects::FILE_DESCRIPTOR_SET).into_diagnostic()?,
+    );
+    resolver.add(GoogleFileResolver::new());
+
+    let mut compiler = Compiler::with_file_resolver(resolver);
+    compiler.include_imports(true);
+    compiler.open_file(STORE_PROTO_FILE)?;
+    let file_descriptors = compiler.file_descriptor_set();
+
+    let store_out = out_dir.join(STORE_DIR);
+    fs::create_dir_all(&store_out).into_diagnostic()?;
+
+    // The schema has no services, and BTreeMap keeps a future map field usable without std, so one
+    // set of bindings serves both the std and the no_std builds.
+    let mut config = canonical_object_config();
+    config.btree_map(["."]);
+
+    tonic_prost_build::configure()
+        .build_transport(false)
+        .build_server(false)
+        .out_dir(&store_out)
+        .compile_fds_with_config(file_descriptors, config)
+        .into_diagnostic()?;
+
+    Ok(())
 }
 
 // REMOTE PROVER CLIENT PROTO CODEGEN

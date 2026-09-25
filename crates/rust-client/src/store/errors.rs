@@ -25,6 +25,7 @@ use miden_tx::DataStoreError;
 use thiserror::Error;
 
 use super::note_record::NoteRecordError;
+use super::proto::ProtoDecodeError;
 
 // STORE ERROR
 // ================================================================================================
@@ -67,6 +68,8 @@ pub enum StoreError {
     PartialBlockchainNodeNotFound(u64),
     #[error("failed to deserialize data from the store")]
     DataDeserializationError(#[from] DeserializationError),
+    #[error("failed to decode a protobuf value from the store")]
+    ProtoDecodeError(#[from] ProtoDecodeError),
     #[error("database-related non-query error: {0}")]
     DatabaseError(String),
     #[error("transient database error, the operation can be retried: {0}")]

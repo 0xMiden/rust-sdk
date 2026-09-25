@@ -5,11 +5,8 @@ use alloc::format;
 use miden_protocol::Word;
 pub use miden_protocol::errors::ProtocolConfigError;
 pub use miden_protocol::protocol_config::{NextProtocolConfig, ProtocolConfig};
-use miden_protocol::utils::serde::Deserializable;
-#[cfg(feature = "testing")]
-use miden_protocol::utils::serde::Serializable;
 
-use crate::store::{SettingScope, Store, StoreError};
+use crate::store::{SettingScope, Store, StoreError, proto};
 use crate::{Client, ClientError};
 
 impl<AUTH> Client<AUTH> {
@@ -24,7 +21,7 @@ impl<AUTH> Client<AUTH> {
             .set_setting(
                 SettingScope::Client,
                 protocol_config_setting_key(config.to_commitment()),
-                config.to_bytes(),
+                proto::encode(&config),
             )
             .await?;
         Ok(())
@@ -54,7 +51,7 @@ pub(crate) async fn load_protocol_config(
         .get_setting(SettingScope::Client, protocol_config_setting_key(commitment))
         .await?
         .ok_or(StoreError::ProtocolConfigNotFound(commitment))?;
-    let config = ProtocolConfig::read_from_bytes(&bytes)?;
+    let config: ProtocolConfig = proto::decode(&bytes)?;
     if config.to_commitment() != commitment {
         return Err(StoreError::ProtocolConfigCommitmentMismatch(commitment));
     }

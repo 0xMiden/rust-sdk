@@ -1,12 +1,21 @@
 use alloc::string::ToString;
 
+use miden_objects::DecodeMessageExt;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::note::{NoteId, NoteInclusionProof, NoteMetadata};
 use miden_protocol::transaction::TransactionId;
+use miden_tx::utils::serde::{
+    ByteReader,
+    ByteWriter,
+    Deserializable,
+    DeserializationError,
+    Serializable,
+};
 
 use super::{InputNoteState, NoteStateHandler};
 use crate::store::NoteRecordError;
+use crate::store::proto::{self, ProtoDecodeError};
 
 /// Information related to notes in the [`InputNoteState::ConsumedExternal`] state.
 ///
@@ -84,8 +93,8 @@ impl NoteStateHandler for ConsumedExternalNoteState {
     }
 }
 
-impl miden_tx::utils::serde::Serializable for ConsumedExternalNoteState {
-    fn write_into<W: miden_tx::utils::serde::ByteWriter>(&self, target: &mut W) {
+impl Serializable for ConsumedExternalNoteState {
+    fn write_into<W: ByteWriter>(&self, target: &mut W) {
         self.nullifier_block_height.write_into(target);
         self.consumer_account.write_into(target);
         self.consumed_tx_order.write_into(target);
@@ -93,10 +102,8 @@ impl miden_tx::utils::serde::Serializable for ConsumedExternalNoteState {
     }
 }
 
-impl miden_tx::utils::serde::Deserializable for ConsumedExternalNoteState {
-    fn read_from<R: miden_tx::utils::serde::ByteReader>(
-        source: &mut R,
-    ) -> Result<Self, miden_tx::utils::serde::DeserializationError> {
+impl Deserializable for ConsumedExternalNoteState {
+    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
         let nullifier_block_height = BlockNumber::read_from(source)?;
         let consumer_account = Option::<AccountId>::read_from(source)?;
         let consumed_tx_order = Option::<u32>::read_from(source)?;
@@ -106,6 +113,40 @@ impl miden_tx::utils::serde::Deserializable for ConsumedExternalNoteState {
             consumer_account,
             consumed_tx_order,
             metadata,
+        })
+    }
+}
+
+impl From<&ConsumedExternalNoteState> for proto::input_note_state::ConsumedExternal {
+    fn from(state: &ConsumedExternalNoteState) -> Self {
+        Self {
+            nullifier_block_height: Some(state.nullifier_block_height.into()),
+            consumer_account: state.consumer_account.map(Into::into),
+            consumed_tx_order: state.consumed_tx_order,
+            metadata: state.metadata.map(Into::into),
+        }
+    }
+}
+
+impl TryFrom<proto::input_note_state::ConsumedExternal> for ConsumedExternalNoteState {
+    type Error = ProtoDecodeError;
+
+    fn try_from(state: proto::input_note_state::ConsumedExternal) -> Result<Self, Self::Error> {
+        const MESSAGE: &str = "consumed external note state";
+
+        Ok(ConsumedExternalNoteState {
+            nullifier_block_height: proto::required(
+                state.nullifier_block_height,
+                MESSAGE,
+                "nullifier block height",
+            )?
+            .decode_and_verify()?,
+            consumer_account: state
+                .consumer_account
+                .map(DecodeMessageExt::decode_and_verify)
+                .transpose()?,
+            consumed_tx_order: state.consumed_tx_order,
+            metadata: state.metadata.map(DecodeMessageExt::decode_and_verify).transpose()?,
         })
     }
 }

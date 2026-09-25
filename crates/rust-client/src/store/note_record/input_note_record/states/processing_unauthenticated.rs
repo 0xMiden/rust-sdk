@@ -1,9 +1,17 @@
 use alloc::string::ToString;
 
+use miden_objects::DecodeMessageExt;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::note::{NoteId, NoteInclusionProof, NoteMetadata};
 use miden_protocol::transaction::TransactionId;
+use miden_tx::utils::serde::{
+    ByteReader,
+    ByteWriter,
+    Deserializable,
+    DeserializationError,
+    Serializable,
+};
 
 use super::{
     ConsumedExternalNoteState,
@@ -13,6 +21,7 @@ use super::{
     NoteSubmissionData,
 };
 use crate::store::NoteRecordError;
+use crate::store::proto::{self, ProtoDecodeError};
 
 /// Information related to notes in the [`InputNoteState::ProcessingUnauthenticated`] state.
 #[derive(Clone, Debug, PartialEq)]
@@ -103,18 +112,16 @@ impl NoteStateHandler for ProcessingUnauthenticatedNoteState {
     }
 }
 
-impl miden_tx::utils::serde::Serializable for ProcessingUnauthenticatedNoteState {
-    fn write_into<W: miden_tx::utils::serde::ByteWriter>(&self, target: &mut W) {
+impl Serializable for ProcessingUnauthenticatedNoteState {
+    fn write_into<W: ByteWriter>(&self, target: &mut W) {
         self.metadata.write_into(target);
         self.after_block_num.write_into(target);
         self.submission_data.write_into(target);
     }
 }
 
-impl miden_tx::utils::serde::Deserializable for ProcessingUnauthenticatedNoteState {
-    fn read_from<R: miden_tx::utils::serde::ByteReader>(
-        source: &mut R,
-    ) -> Result<Self, miden_tx::utils::serde::DeserializationError> {
+impl Deserializable for ProcessingUnauthenticatedNoteState {
+    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
         let metadata = NoteMetadata::read_from(source)?;
         let after_block_num = BlockNumber::read_from(source)?;
         let submission_data = NoteSubmissionData::read_from(source)?;
@@ -122,6 +129,38 @@ impl miden_tx::utils::serde::Deserializable for ProcessingUnauthenticatedNoteSta
             metadata,
             after_block_num,
             submission_data,
+        })
+    }
+}
+
+impl From<&ProcessingUnauthenticatedNoteState>
+    for proto::input_note_state::ProcessingUnauthenticated
+{
+    fn from(state: &ProcessingUnauthenticatedNoteState) -> Self {
+        Self {
+            metadata: Some(state.metadata.into()),
+            after_block_num: Some(state.after_block_num.into()),
+            submission_data: Some((&state.submission_data).into()),
+        }
+    }
+}
+
+impl TryFrom<proto::input_note_state::ProcessingUnauthenticated>
+    for ProcessingUnauthenticatedNoteState
+{
+    type Error = ProtoDecodeError;
+
+    fn try_from(
+        state: proto::input_note_state::ProcessingUnauthenticated,
+    ) -> Result<Self, Self::Error> {
+        const MESSAGE: &str = "processing unauthenticated note state";
+
+        Ok(ProcessingUnauthenticatedNoteState {
+            metadata: proto::required(state.metadata, MESSAGE, "metadata")?.decode_and_verify()?,
+            after_block_num: proto::required(state.after_block_num, MESSAGE, "after block number")?
+                .decode_and_verify()?,
+            submission_data: proto::required(state.submission_data, MESSAGE, "submission data")?
+                .try_into()?,
         })
     }
 }

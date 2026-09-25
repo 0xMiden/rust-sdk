@@ -14,7 +14,13 @@ use miden_client::account::{
     StorageSlotType,
 };
 use miden_client::asset::{Asset, AssetId};
-use miden_client::store::{AccountStatus, AccountStorageFilter, ClientAccountType, StoreError};
+use miden_client::store::{
+    AccountStatus,
+    AccountStorageFilter,
+    ClientAccountType,
+    StoreError,
+    proto,
+};
 use miden_client::{Deserializable, Serializable, Word};
 use rusqlite::types::{ToSqlOutput, Value};
 use rusqlite::{Connection, OptionalExtension, Params, params, params_from_iter};
@@ -141,7 +147,7 @@ pub(super) fn query_account_code(
         .query_row(params![commitment.to_bytes()], |row| row.get::<_, Vec<u8>>(0))
         .optional()
         .into_store_error()?
-        .map(|bytes| Ok(AccountCode::read_from_bytes(&bytes)?))
+        .map(|bytes| Ok(proto::decode::<AccountCode>(&bytes)?))
         .transpose()
 }
 

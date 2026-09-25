@@ -1,0 +1,289 @@
+syntax = "proto3";
+
+// Schema of the values the client keeps in its store. The store writes these messages into blob
+// columns. Field numbers are part of the on-disk format, so a released number must keep its
+// meaning. Add fields, do not renumber or reuse them.
+//
+// A value of the protocol is carried by its `miden-objects` message. Where that message needs data
+// this schema does not hold, a `Stored` message keeps only the parts the store has. Messages named
+// `Stored` describe what the store writes, not the whole domain type.
+package miden.client.store;
+
+import "account.proto";
+import "asset.proto";
+import "block_number.proto";
+import "note.proto";
+import "primitives.proto";
+import "transaction.proto";
+
+// TRANSACTIONS
+// ================================================================================================
+
+// Status of a transaction the client tracks.
+message TransactionStatus {
+  // The transaction is submitted and is not committed yet.
+  message Pending {}
+
+  // The transaction is in the chain.
+  message Committed {
+    // Number of the block that contains the transaction.
+    blockchain.BlockNumber block_number = 1;
+    // Time at which the block was committed, in seconds since the Unix epoch.
+    uint64 commit_timestamp = 2;
+  }
+
+  // The transaction can never commit.
+  message Discarded {
+    DiscardCause cause = 1;
+  }
+
+  oneof status {
+    Pending pending = 1;
+    Committed committed = 2;
+    Discarded discarded = 3;
+  }
+}
+
+// Reason for which a transaction was discarded.
+enum DiscardCause {
+  // The reason is absent. The store rejects a value with this cause.
+  DISCARD_CAUSE_UNSPECIFIED = 0;
+  DISCARD_CAUSE_EXPIRED = 1;
+  DISCARD_CAUSE_INPUT_CONSUMED = 2;
+  DISCARD_CAUSE_DISCARDED_INITIAL_STATE = 3;
+  DISCARD_CAUSE_STALE = 4;
+  DISCARD_CAUSE_SUPERSEDED = 5;
+}
+
+// Facts about a transaction the client executed.
+message TransactionDetails {
+  account.AccountId account_id = 1;
+  primitives.Word init_account_state = 2;
+  primitives.Word final_account_state = 3;
+  repeated primitives.Word input_note_nullifiers = 4;
+  transaction.RawOutputNotes output_notes = 5;
+  blockchain.BlockNumber block_num = 6;
+  blockchain.BlockNumber submission_height = 7;
+  blockchain.BlockNumber expiration_block_num = 8;
+  // Time at which the client created the transaction, in seconds since the Unix epoch.
+  uint64 creation_timestamp = 9;
+}
+
+// NOTES
+// ================================================================================================
+
+// A note the client consumes or expects to consume.
+message InputNoteState {
+  // The note is expected to arrive. Its metadata is known only if the client created the note or
+  // fetched it from the node.
+  message Expected {
+    note.NoteMetadata metadata = 1;
+    blockchain.BlockNumber after_block_num = 2;
+    optional fixed32 tag = 3;
+  }
+
+  // The note has an inclusion proof that is not verified against a block header yet.
+  message Unverified {
+    note.NoteMetadata metadata = 1;
+    NoteInclusionProof inclusion_proof = 2;
+  }
+
+  // The inclusion proof is verified against the block header.
+  message Committed {
+    note.NoteMetadata metadata = 1;
+    NoteInclusionProof inclusion_proof = 2;
+    primitives.Word block_note_root = 3;
+  }
+
+  // The inclusion proof does not match the block header.
+  message Invalid {
+    note.NoteMetadata metadata = 1;
+    NoteInclusionProof invalid_inclusion_proof = 2;
+    primitives.Word block_note_root = 3;
+  }
+
+  // A transaction that consumes the authenticated note is submitted.
+  message ProcessingAuthenticated {
+    note.NoteMetadata metadata = 1;
+    NoteInclusionProof inclusion_proof = 2;
+    primitives.Word block_note_root = 3;
+    NoteSubmissionData submission_data = 4;
+  }
+
+  // A transaction that consumes the note is submitted before the note is authenticated.
+  message ProcessingUnauthenticated {
+    note.NoteMetadata metadata = 1;
+    blockchain.BlockNumber after_block_num = 2;
+    NoteSubmissionData submission_data = 3;
+  }
+
+  // The client consumed the authenticated note.
+  message ConsumedAuthenticatedLocal {
+    note.NoteMetadata metadata = 1;
+    NoteInclusionProof inclusion_proof = 2;
+    primitives.Word block_note_root = 3;
+    blockchain.BlockNumber nullifier_block_height = 4;
+    NoteSubmissionData submission_data = 5;
+    optional uint32 consumed_tx_order = 6;
+  }
+
+  // The client consumed the note before it was authenticated.
+  message ConsumedUnauthenticatedLocal {
+    note.NoteMetadata metadata = 1;
+    blockchain.BlockNumber nullifier_block_height = 2;
+    NoteSubmissionData submission_data = 3;
+    optional uint32 consumed_tx_order = 4;
+  }
+
+  // Another client consumed the note.
+  message ConsumedExternal {
+    blockchain.BlockNumber nullifier_block_height = 1;
+    account.AccountId consumer_account = 2;
+    optional uint32 consumed_tx_order = 3;
+    note.NoteMetadata metadata = 4;
+  }
+
+  oneof state {
+    Expected expected = 1;
+    Unverified unverified = 2;
+    Committed committed = 3;
+    Invalid invalid = 4;
+    ProcessingAuthenticated processing_authenticated = 5;
+    ProcessingUnauthenticated processing_unauthenticated = 6;
+    ConsumedAuthenticatedLocal consumed_authenticated_local = 7;
+    ConsumedUnauthenticatedLocal consumed_unauthenticated_local = 8;
+    ConsumedExternal consumed_external = 9;
+  }
+}
+
+// A note inclusion proof. Unlike the `miden-objects` message, it has no note id: a state belongs to
+// a note record, which already holds the id.
+message NoteInclusionProof {
+  blockchain.BlockNumber block_num = 1;
+  uint32 note_index_in_block = 2;
+  primitives.SparseMerklePath inclusion_path = 3;
+}
+
+// Facts about a note the client submitted for consumption.
+message NoteSubmissionData {
+  // Time at which the note was submitted, in seconds since the Unix epoch.
+  optional uint64 submitted_at = 1;
+  account.AccountId consumer_account = 2;
+  transaction.TransactionId consumer_transaction = 3;
+}
+
+// A note the client produces, as the store keeps it.
+//
+// A recipient has no script: the store keeps the script in `notes_scripts` and joins it back on
+// read. A partial state holds no recipient, so the note details are not known.
+message StoredOutputNoteState {
+  // The note is expected and its details are not known.
+  message ExpectedPartial {}
+
+  // The note is expected and its details are known.
+  message ExpectedFull {
+    StoredNoteRecipient recipient = 1;
+  }
+
+  // The note is in the chain and its details are not known.
+  message CommittedPartial {
+    NoteInclusionProof inclusion_proof = 1;
+  }
+
+  // The note is in the chain and its details are known.
+  message CommittedFull {
+    StoredNoteRecipient recipient = 1;
+    NoteInclusionProof inclusion_proof = 2;
+  }
+
+  // The note is consumed.
+  message Consumed {
+    blockchain.BlockNumber block_height = 1;
+    StoredNoteRecipient recipient = 2;
+  }
+
+  oneof state {
+    ExpectedPartial expected_partial = 1;
+    ExpectedFull expected_full = 2;
+    CommittedPartial committed_partial = 3;
+    CommittedFull committed_full = 4;
+    Consumed consumed = 5;
+  }
+}
+
+// The recipient of an output note without its script.
+message StoredNoteRecipient {
+  primitives.Word serial_num = 1;
+  note.NoteStorage storage = 2;
+}
+
+// PSWAP
+// ================================================================================================
+
+// State of one PSWAP order across the chain of notes that fill it.
+message PswapLineageRecord {
+  // Handle of the depth-0 note. Stable for the lifetime of the order.
+  note.NoteId original_note_id = 1;
+  primitives.Felt order_id = 2;
+  account.AccountId creator_account_id = 3;
+  // Handle of the current tip. Equal to original_note_id at depth 0.
+  note.NoteId current_tip_note_id = 4;
+  uint32 current_depth = 5;
+  uint64 remaining_offered = 6;
+  uint64 remaining_requested = 7;
+  PswapLineageState state = 8;
+}
+
+// Stage an order is at.
+enum PswapLineageState {
+  // The stage is absent. The store rejects a value with this state.
+  PSWAP_LINEAGE_STATE_UNSPECIFIED = 0;
+  // The order can still be filled or reclaimed.
+  PSWAP_LINEAGE_STATE_ACTIVE = 1;
+  PSWAP_LINEAGE_STATE_FULLY_FILLED = 2;
+  PSWAP_LINEAGE_STATE_RECLAIMED = 3;
+}
+
+// SETTINGS
+// ================================================================================================
+
+// The limits the node reported for its RPC endpoints.
+message RpcLimits {
+  uint32 note_ids_limit = 1;
+  uint32 nullifiers_limit = 2;
+  uint32 account_ids_limit = 3;
+  uint32 note_tags_limit = 4;
+}
+
+// A note fetched from or sent to the note transport network.
+message NoteInfo {
+  note.NoteHeader header = 1;
+  // The note details, which can be encrypted.
+  bytes details = 2;
+  // The block from which the recipient scans for the note. Absent when the sender gave no hint.
+  blockchain.BlockNumber block_hint = 3;
+}
+
+// The notes that wait to be relayed to the note transport network.
+message RelayOutbox {
+  repeated NoteInfo notes = 1;
+}
+
+// The note tags whose history the client already fetched from the note transport network.
+message NoteTags {
+  repeated fixed32 tags = 1;
+}
+
+// PROTOCOL COLLECTIONS
+// ================================================================================================
+
+// The assets of a note. The protocol schema has a message for one asset but not for the list.
+message NoteAssets {
+  repeated asset.Asset assets = 1;
+}
+
+// The peaks of the partial blockchain MMR at the sync height. The forest comes from the block
+// number of the same row.
+message MmrPeaks {
+  repeated primitives.Word peaks = 1;
+}

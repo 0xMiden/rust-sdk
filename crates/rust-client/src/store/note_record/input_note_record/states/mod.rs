@@ -2,6 +2,7 @@ use alloc::string::ToString;
 use core::fmt::{self, Display};
 
 use chrono::{Local, TimeZone};
+use miden_objects::DecodeMessageExt;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::note::{NoteId, NoteInclusionProof, NoteMetadata};
@@ -13,6 +14,8 @@ pub use miden_tx::utils::serde::{
     DeserializationError,
     Serializable,
 };
+
+use crate::store::proto::{self, ProtoDecodeError, ProtobufValue};
 
 mod committed;
 mod consumed_authenticated_local;
@@ -270,6 +273,62 @@ impl Deserializable for InputNoteState {
     }
 }
 
+impl ProtobufValue for InputNoteState {
+    type Message = proto::InputNoteState;
+
+    fn to_proto(&self) -> Self::Message {
+        use proto::input_note_state::State;
+
+        let state = match self {
+            InputNoteState::Expected(inner) => State::Expected(inner.into()),
+            InputNoteState::Unverified(inner) => State::Unverified(inner.into()),
+            InputNoteState::Committed(inner) => State::Committed(inner.into()),
+            InputNoteState::Invalid(inner) => State::Invalid(inner.into()),
+            InputNoteState::ProcessingAuthenticated(inner) => {
+                State::ProcessingAuthenticated(inner.into())
+            },
+            InputNoteState::ProcessingUnauthenticated(inner) => {
+                State::ProcessingUnauthenticated(inner.into())
+            },
+            InputNoteState::ConsumedAuthenticatedLocal(inner) => {
+                State::ConsumedAuthenticatedLocal(inner.into())
+            },
+            InputNoteState::ConsumedUnauthenticatedLocal(inner) => {
+                State::ConsumedUnauthenticatedLocal(inner.into())
+            },
+            InputNoteState::ConsumedExternal(inner) => State::ConsumedExternal(inner.into()),
+        };
+
+        Self::Message { state: Some(state) }
+    }
+
+    fn from_proto(state: Self::Message) -> Result<Self, ProtoDecodeError> {
+        use proto::input_note_state::State;
+
+        let state = proto::required(state.state, "input note state", "variant")?;
+
+        Ok(match state {
+            State::Expected(inner) => ExpectedNoteState::try_from(inner)?.into(),
+            State::Unverified(inner) => UnverifiedNoteState::try_from(inner)?.into(),
+            State::Committed(inner) => CommittedNoteState::try_from(inner)?.into(),
+            State::Invalid(inner) => InvalidNoteState::try_from(inner)?.into(),
+            State::ProcessingAuthenticated(inner) => {
+                ProcessingAuthenticatedNoteState::try_from(inner)?.into()
+            },
+            State::ProcessingUnauthenticated(inner) => {
+                ProcessingUnauthenticatedNoteState::try_from(inner)?.into()
+            },
+            State::ConsumedAuthenticatedLocal(inner) => {
+                ConsumedAuthenticatedLocalNoteState::try_from(inner)?.into()
+            },
+            State::ConsumedUnauthenticatedLocal(inner) => {
+                ConsumedUnauthenticatedLocalNoteState::try_from(inner)?.into()
+            },
+            State::ConsumedExternal(inner) => ConsumedExternalNoteState::try_from(inner)?.into(),
+        })
+    }
+}
+
 impl Display for InputNoteState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -423,5 +482,131 @@ impl Deserializable for NoteSubmissionData {
             consumer_account,
             consumer_transaction,
         })
+    }
+}
+
+impl From<&NoteSubmissionData> for proto::NoteSubmissionData {
+    fn from(data: &NoteSubmissionData) -> Self {
+        Self {
+            submitted_at: data.submitted_at,
+            consumer_account: Some(data.consumer_account.into()),
+            consumer_transaction: Some(data.consumer_transaction.into()),
+        }
+    }
+}
+
+impl TryFrom<proto::NoteSubmissionData> for NoteSubmissionData {
+    type Error = ProtoDecodeError;
+
+    fn try_from(data: proto::NoteSubmissionData) -> Result<Self, Self::Error> {
+        const MESSAGE: &str = "note submission data";
+
+        Ok(NoteSubmissionData {
+            submitted_at: data.submitted_at,
+            consumer_account: proto::required(data.consumer_account, MESSAGE, "consumer account")?
+                .decode_and_verify()?,
+            consumer_transaction: proto::required(
+                data.consumer_transaction,
+                MESSAGE,
+                "consumer transaction",
+            )?
+            .decode_and_verify()?,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec::Vec;
+
+    use miden_protocol::Word;
+    use miden_protocol::crypto::merkle::SparseMerklePath;
+    use miden_protocol::note::{NoteAttachments, NoteType, PartialNoteMetadata};
+    use miden_protocol::testing::account_id::ACCOUNT_ID_SENDER;
+
+    use super::*;
+
+    /// The conversions to and from protobuf are written field by field, so a round trip through
+    /// every variant catches a field that is dropped or read into the wrong place.
+    #[test]
+    fn every_input_note_state_round_trips_through_protobuf() {
+        let account = AccountId::try_from(ACCOUNT_ID_SENDER).unwrap();
+        let metadata = NoteMetadata::new(
+            PartialNoteMetadata::new(account, NoteType::Public),
+            &NoteAttachments::empty(),
+        );
+        let path = SparseMerklePath::from_parts(0, Vec::new()).unwrap();
+        let proof = NoteInclusionProof::new(BlockNumber::from(3u32), 1, path).unwrap();
+        let root = Word::empty();
+        let submission = NoteSubmissionData {
+            submitted_at: Some(10),
+            consumer_account: account,
+            consumer_transaction: TransactionId::from_raw(Word::empty()),
+        };
+        // Distinct block numbers, so a swap between two of them fails the comparison.
+        let after = BlockNumber::from(2u32);
+        let nullified = BlockNumber::from(4u32);
+
+        let states: [InputNoteState; 9] = [
+            ExpectedNoteState {
+                metadata: Some(metadata),
+                after_block_num: after,
+                tag: Some(metadata.tag()),
+            }
+            .into(),
+            UnverifiedNoteState { metadata, inclusion_proof: proof.clone() }.into(),
+            CommittedNoteState {
+                metadata,
+                inclusion_proof: proof.clone(),
+                block_note_root: root,
+            }
+            .into(),
+            InvalidNoteState {
+                metadata,
+                invalid_inclusion_proof: proof.clone(),
+                block_note_root: root,
+            }
+            .into(),
+            ProcessingAuthenticatedNoteState {
+                metadata,
+                inclusion_proof: proof.clone(),
+                block_note_root: root,
+                submission_data: submission,
+            }
+            .into(),
+            ProcessingUnauthenticatedNoteState {
+                metadata,
+                after_block_num: after,
+                submission_data: submission,
+            }
+            .into(),
+            ConsumedAuthenticatedLocalNoteState {
+                metadata,
+                inclusion_proof: proof,
+                block_note_root: root,
+                nullifier_block_height: nullified,
+                submission_data: submission,
+                consumed_tx_order: Some(1),
+            }
+            .into(),
+            ConsumedUnauthenticatedLocalNoteState {
+                metadata,
+                nullifier_block_height: nullified,
+                submission_data: submission,
+                consumed_tx_order: Some(1),
+            }
+            .into(),
+            ConsumedExternalNoteState {
+                nullifier_block_height: nullified,
+                consumer_account: Some(account),
+                consumed_tx_order: Some(1),
+                metadata: Some(metadata),
+            }
+            .into(),
+        ];
+
+        for state in states {
+            assert_eq!(proto::decode::<InputNoteState>(&proto::encode(&state)).unwrap(), state);
+        }
     }
 }

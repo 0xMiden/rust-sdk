@@ -9,6 +9,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
+use miden_objects::DecodeMessageExt;
 use miden_protocol::address::Address;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{Note, NoteDetails, NoteDetailsCommitment, NoteHeader, NoteId, NoteTag};
@@ -24,6 +25,7 @@ use miden_tx::utils::serde::{
 
 pub use self::errors::NoteTransportError;
 use crate::note::{NoteFile, NoteSyncHint};
+use crate::store::proto::{self, ProtoDecodeError, ProtobufValue};
 use crate::store::{InputNoteRecord, NoteFilter, SettingScope};
 use crate::sync::NoteTagSource;
 use crate::{Client, ClientError};
@@ -226,7 +228,7 @@ impl<AUTH> Client<AUTH> {
         let Some(bytes) = bytes else {
             return Ok(Vec::new());
         };
-        match Vec::<NoteInfo>::read_from_bytes(&bytes) {
+        match proto::decode::<Vec<NoteInfo>>(&bytes) {
             Ok(entries) => Ok(entries),
             Err(err) => {
                 tracing::warn!(?err, "dropping unreadable relay outbox; resetting to empty");
@@ -250,7 +252,7 @@ impl<AUTH> Client<AUTH> {
                 .map_err(ClientError::StoreError)?;
             return Ok(());
         }
-        let bytes = entries.to_bytes();
+        let bytes = proto::encode(&entries);
         self.store
             .set_setting(SettingScope::Client, key, bytes)
             .await
@@ -293,7 +295,7 @@ impl<AUTH> Client<AUTH> {
         let Some(bytes) = bytes else {
             return Ok(BTreeSet::new());
         };
-        match BTreeSet::<NoteTag>::read_from_bytes(&bytes) {
+        match proto::decode::<BTreeSet<NoteTag>>(&bytes) {
             Ok(tags) => Ok(tags),
             Err(err) => {
                 tracing::warn!(?err, "dropping unreadable covered-tags set; resetting to empty");
@@ -321,7 +323,7 @@ impl<AUTH> Client<AUTH> {
             return Ok(());
         }
         self.store
-            .set_setting(SettingScope::Client, key, tags.to_bytes())
+            .set_setting(SettingScope::Client, key, proto::encode(tags))
             .await
             .map_err(ClientError::StoreError)
     }
@@ -804,6 +806,58 @@ impl Deserializable for NoteInfo {
         let details_bytes = Vec::<u8>::read_from(source)?;
         let block_hint = Option::<BlockNumber>::read_from(source)?;
         Ok(NoteInfo { header, details_bytes, block_hint })
+    }
+}
+
+impl From<&NoteInfo> for proto::NoteInfo {
+    fn from(info: &NoteInfo) -> Self {
+        Self {
+            header: Some(info.header.into()),
+            details: info.details_bytes.clone(),
+            block_hint: info.block_hint.map(Into::into),
+        }
+    }
+}
+
+impl TryFrom<proto::NoteInfo> for NoteInfo {
+    type Error = ProtoDecodeError;
+
+    fn try_from(info: proto::NoteInfo) -> Result<Self, Self::Error> {
+        Ok(NoteInfo {
+            header: proto::required(info.header, "note info", "header")?.decode_and_verify()?,
+            details_bytes: info.details,
+            block_hint: info.block_hint.map(DecodeMessageExt::decode_and_verify).transpose()?,
+        })
+    }
+}
+
+/// The notes that wait to be relayed to the note transport network.
+impl ProtobufValue for Vec<NoteInfo> {
+    type Message = proto::RelayOutbox;
+
+    fn to_proto(&self) -> Self::Message {
+        Self::Message {
+            notes: self.iter().map(Into::into).collect(),
+        }
+    }
+
+    fn from_proto(outbox: Self::Message) -> Result<Self, ProtoDecodeError> {
+        outbox.notes.into_iter().map(NoteInfo::try_from).collect()
+    }
+}
+
+/// The note tags whose history the client already fetched from the note transport network.
+impl ProtobufValue for BTreeSet<NoteTag> {
+    type Message = proto::NoteTags;
+
+    fn to_proto(&self) -> Self::Message {
+        Self::Message {
+            tags: self.iter().copied().map(u32::from).collect(),
+        }
+    }
+
+    fn from_proto(tags: Self::Message) -> Result<Self, ProtoDecodeError> {
+        Ok(tags.tags.into_iter().map(NoteTag::from).collect())
     }
 }
 

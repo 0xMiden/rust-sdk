@@ -7,7 +7,7 @@ use miden_client::Word;
 use miden_client::account::AccountId;
 use miden_client::note::{BlockNumber, NoteTag};
 use miden_client::protocol_config::protocol_config_setting_key;
-use miden_client::store::{SettingScope, StoreError};
+use miden_client::store::{SettingScope, StoreError, proto};
 use miden_client::sync::{NoteTagRecord, NoteTagSource, PublicAccountUpdate, StateSyncUpdate};
 use miden_client::utils::{Deserializable, Serializable};
 use rusqlite::{Connection, Transaction, params};
@@ -89,7 +89,8 @@ impl SqliteStore {
         with_write_tx(conn, |db_tx| {
             let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(db_tx))?;
             // Update blockchain checkpoint (block number and peaks) only if moving forward.
-            let new_peaks_bytes = partial_blockchain_updates.new_peaks.peaks().to_vec().to_bytes();
+            let new_peaks_bytes =
+                proto::encode(&partial_blockchain_updates.new_peaks.peaks().to_vec());
             const BLOCKCHAIN_CHECKPOINT_QUERY: &str = "\
                 UPDATE blockchain_checkpoint \
                 SET block_num = ?1, partial_blockchain_peaks = ?2 \
@@ -171,7 +172,7 @@ impl SqliteStore {
                     db_tx,
                     SettingScope::Client,
                     &protocol_config_setting_key(config.to_commitment()),
-                    &config.to_bytes(),
+                    &proto::encode(config),
                 )?;
             }
 

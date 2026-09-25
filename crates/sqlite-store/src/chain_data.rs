@@ -8,7 +8,7 @@ use miden_client::Word;
 use miden_client::block::BlockHeader;
 use miden_client::crypto::{Forest, InOrderIndex, MmrPeaks};
 use miden_client::note::BlockNumber;
-use miden_client::store::{BlockRelevance, PartialBlockchainFilter, StoreError};
+use miden_client::store::{BlockRelevance, PartialBlockchainFilter, StoreError, proto};
 use miden_client::utils::{Deserializable, Serializable};
 use rusqlite::{Connection, Transaction, params, params_from_iter};
 
@@ -161,7 +161,7 @@ impl SqliteStore {
         const QUERY: &str =
             insert_sql!(block_headers { block_num, header, has_client_notes } | IGNORE);
         let block_num = block_header.block_num().as_u32();
-        tx.execute(QUERY, params![block_num, block_header.to_bytes(), has_client_notes])
+        tx.execute(QUERY, params![block_num, proto::encode(block_header), has_client_notes])
             .into_store_error()?;
 
         set_block_header_has_client_notes(tx, u64::from(block_num), has_client_notes)?;
@@ -249,7 +249,7 @@ fn query_partial_blockchain_nodes<P: rusqlite::Params>(
 }
 
 fn parse_partial_blockchain_peaks(forest: u32, peaks_nodes: &[u8]) -> Result<MmrPeaks, StoreError> {
-    let mmr_peaks_nodes = Vec::<Word>::read_from_bytes(peaks_nodes)?;
+    let mmr_peaks_nodes: Vec<Word> = proto::decode(peaks_nodes)?;
 
     let forest_size = usize::try_from(forest).expect("u64 should fit in usize");
     let forest = Forest::new(forest_size).map_err(|err| {
@@ -271,7 +271,7 @@ fn parse_block_headers_columns(
 fn parse_block_header(
     (header, has_client_notes): (Vec<u8>, bool),
 ) -> Result<(BlockHeader, BlockRelevance), StoreError> {
-    Ok((BlockHeader::read_from_bytes(&header)?, has_client_notes.into()))
+    Ok((proto::decode(&header)?, has_client_notes.into()))
 }
 
 pub(crate) fn set_block_header_has_client_notes(
@@ -297,8 +297,7 @@ mod test {
     use miden_client::block::BlockHeader;
     use miden_client::crypto::{Forest, InOrderIndex, MmrPeaks};
     use miden_client::note::BlockNumber;
-    use miden_client::store::{PartialBlockchainFilter, Store};
-    use miden_client::utils::Serializable;
+    use miden_client::store::{PartialBlockchainFilter, Store, proto};
     use miden_protocol::crypto::merkle::mmr::Mmr;
     use rusqlite::params;
 
@@ -497,7 +496,7 @@ mod test {
         let mut previous_remaining: Option<i64> = None;
         for height in prune_heights {
             let height_i64 = i64::try_from(height).expect("fits in i64");
-            let peaks_bytes = peaks_by_block[height].peaks().to_vec().to_bytes();
+            let peaks_bytes = proto::encode(&peaks_by_block[height].peaks().to_vec());
 
             // Update sync height (and the matching MMR peaks) to simulate having synced further
             store
@@ -587,12 +586,12 @@ mod test {
         // Track blocks 3 and 10; we will untrack 3 later.
         let tracked: BTreeSet<usize> = [3, 10].into();
         let auth_nodes = collect_auth_nodes(&mmr, &headers, &tracked);
-        let tip_peaks_bytes = mmr
-            .peaks_at(Forest::new(TOTAL_BLOCKS - 1).expect("valid forest"))
-            .unwrap()
-            .peaks()
-            .to_vec()
-            .to_bytes();
+        let tip_peaks_bytes = proto::encode(
+            &mmr.peaks_at(Forest::new(TOTAL_BLOCKS - 1).expect("valid forest"))
+                .unwrap()
+                .peaks()
+                .to_vec(),
+        );
 
         // Persist everything.
         let headers_clone = headers.clone();

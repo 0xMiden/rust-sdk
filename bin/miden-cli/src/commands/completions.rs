@@ -47,12 +47,30 @@ impl CompletionsCmd {
 mod tests {
     use super::*;
 
+    /// A binary name different from the default `miden-client`, so the tests verify that the script
+    /// follows the name it is generated with instead of a hard-coded name.
+    const RENAMED_BINARY_NAME: &str = "miden-client-renamed";
+
+    #[test]
+    fn completion_script_is_named_after_the_provided_binary_name() {
+        let cmd = CompletionsCmd { shell: Shell::Bash };
+
+        let mut buffer = Vec::new();
+        cmd.write_completions(RENAMED_BINARY_NAME, &mut buffer);
+
+        let script = String::from_utf8(buffer).expect("completion script should be valid UTF-8");
+        assert!(
+            script.contains(RENAMED_BINARY_NAME),
+            "script should be named after the provided binary name"
+        );
+    }
+
     #[test]
     fn completion_script_lists_subcommands() {
         let cmd = CompletionsCmd { shell: Shell::Bash };
 
         let mut buffer = Vec::new();
-        cmd.write_completions("miden-client", &mut buffer);
+        cmd.write_completions(RENAMED_BINARY_NAME, &mut buffer);
 
         let script = String::from_utf8(buffer).expect("completion script should be valid UTF-8");
         assert!(script.contains("account"), "script should list the account command");

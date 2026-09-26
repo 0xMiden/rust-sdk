@@ -1,7 +1,8 @@
 //! Contains structures and functions related to transaction creation.
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::ToString;
 use alloc::vec::Vec;
+use core::borrow::Borrow;
 
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::{Asset, AssetAmount, FungibleAsset};
@@ -48,6 +49,8 @@ use crate::ClientRng;
 /// scripts, and setting other transaction parameters.
 #[derive(Clone, Debug)]
 pub struct TransactionRequestBuilder {
+    /// Blocks that the transaction must be able to authenticate against its reference block.
+    block_numbers: BTreeSet<BlockNumber>,
     /// Notes to be consumed by the transaction, in consumption order.
     ///
     /// A note with an entry in `explicit_input_notes` is consumed in the mode that entry pins. The
@@ -108,6 +111,7 @@ impl TransactionRequestBuilder {
     /// Creates a new, empty [`TransactionRequestBuilder`].
     pub fn new() -> Self {
         Self {
+            block_numbers: BTreeSet::new(),
             input_notes: vec![],
             input_notes_args: vec![],
             explicit_input_notes: BTreeMap::new(),
@@ -125,6 +129,22 @@ impl TransactionRequestBuilder {
             fee_conversion_salt: None,
             expected_ntx_scripts: vec![],
         }
+    }
+
+    /// Adds blocks that the transaction must be able to authenticate against its reference block.
+    ///
+    /// The client adds each block header and its authentication path to the transaction's partial
+    /// blockchain. The client fetches a header from the node when it is not in the local store.
+    /// Each block must be at or before the transaction's reference block.
+    #[must_use]
+    pub fn block_numbers<I, B>(mut self, block_numbers: I) -> Self
+    where
+        I: IntoIterator<Item = B>,
+        B: Borrow<BlockNumber>,
+    {
+        self.block_numbers
+            .extend(block_numbers.into_iter().map(|block_num| *block_num.borrow()));
+        self
     }
 
     /// Adds the specified notes as input notes to the transaction request.
@@ -679,6 +699,7 @@ impl TransactionRequestBuilder {
         };
 
         let request = TransactionRequest {
+            block_numbers: self.block_numbers,
             input_notes: self.input_notes,
             input_notes_args: self.input_notes_args,
             explicit_input_notes: self.explicit_input_notes,

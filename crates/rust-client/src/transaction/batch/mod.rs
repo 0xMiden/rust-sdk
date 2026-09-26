@@ -322,8 +322,13 @@ where
         //    the MMR convention used by `ClientDataStore::get_transaction_inputs`.
         let current_peaks =
             store.get_current_blockchain_peaks().await.map_err(ClientError::StoreError)?;
-        let partial_mmr =
-            build_partial_mmr_with_paths(&store, current_peaks, &authenticated_blocks).await?;
+        let partial_mmr = build_partial_mmr_with_paths(
+            &store,
+            &self.client.rpc_api,
+            current_peaks,
+            &authenticated_blocks,
+        )
+        .await?;
         let partial_blockchain = PartialBlockchain::new(partial_mmr, authenticated_blocks)?;
 
         // 5. Split pushed_txs into the two views required by the remaining steps and build the
@@ -432,6 +437,7 @@ where
     let prep = client.prepare_transaction_for_batch(&account, transaction_request).await?;
 
     data_store.register_note_scripts(prep.output_note_scripts());
+    data_store.register_block_numbers(prep.block_numbers.iter().copied());
     for fpi_account in &prep.foreign_account_inputs {
         data_store.mast_store().load_account_code(fpi_account.code());
     }

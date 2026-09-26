@@ -36,9 +36,9 @@ use thiserror::Error;
 /// signed data, and replay the transaction with [`crate::Client::execute_transaction_at`] so the
 /// summary — and with it the signature advice keys — reproduces exactly.
 ///
-/// When the transaction consumes authenticated notes, the anchor's [`PartialBlockchain`] must track
-/// each note's creation block; [`crate::Client::chain_anchor_for_request`] captures an anchor
-/// tracking the blocks of a request's authenticated input notes.
+/// The anchor's [`PartialBlockchain`] must track each block that the transaction authenticates.
+/// [`crate::Client::chain_anchor_for_request`] captures the blocks declared by the request and the
+/// creation blocks of its authenticated input notes.
 ///
 /// [`TransactionSummary`]: miden_protocol::transaction::TransactionSummary
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,8 +69,7 @@ impl ChainAnchor {
             });
         }
 
-        // A transaction references at most one creation block per input note, so a chain tracking
-        // more blocks than that is not an anchor any honest peer would produce.
+        // Bound the work required to validate an anchor received from an untrusted source.
         if chain.num_tracked_blocks() > MAX_INPUT_NOTES_PER_TX {
             return Err(ChainAnchorError::TooManyTrackedBlocks {
                 count: chain.num_tracked_blocks(),

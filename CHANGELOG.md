@@ -1,10 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.17.0-rc.4 (2026-09-26)
 
-### Fixes
+### Breaking Changes
 
-* [FIX][rust] A pending transaction whose ID changed on inclusion is now matched by the account ID and both its initial and final account states, so another transaction from the same initial state no longer marks it as committed ([#2600](https://github.com/0xMiden/rust-sdk/pull/2600)).
+* [BREAKING][behavior][rust] Added `TransactionRequestBuilder::block_numbers` so callers can include selected blocks in a transaction's partial blockchain and in anchors captured with `Client::chain_anchor_for_request`. `TransactionRequest` now always serializes the block numbers, so request bytes written by rc.3 do not deserialize ([#2629](https://github.com/0xMiden/rust-sdk/pull/2629), [#2625](https://github.com/0xMiden/rust-sdk/issues/2625)).
+* [BREAKING][removal][cli] `exec` now requires `--package` (`-p`). Removed `--script-path` (`-s`) and in-process MASM compilation. Compile scripts with `miden build` first. DAP sessions use package debug information and reload the compiled package on restart ([#2596](https://github.com/0xMiden/rust-sdk/issues/2596)).
 
 ## 0.17.0-rc.3 (2026-09-24)
 

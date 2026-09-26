@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+* [FIX][rust] Calling `TransactionRequestBuilder::own_output_notes` before `expected_output_recipients` no longer drops the own notes' recipients, which made `execute_transaction` panic. `TransactionRequest::validate` now also rejects a `SendNotes` note whose recipient is missing ([#2603](https://github.com/0xMiden/rust-sdk/pull/2603)).
+
 ## 0.17.0-rc.4 (2026-09-26)
 
 ### Breaking Changes

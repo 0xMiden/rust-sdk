@@ -416,7 +416,7 @@ impl PswapCmd {
         match &self.action {
             PswapAction::Create(cmd) => Box::pin(cmd.execute(client)).await,
             PswapAction::Consume(cmd) => Box::pin(cmd.execute(client)).await,
-            PswapAction::Cancel(cmd) => cmd.execute(client).await,
+            PswapAction::Cancel(cmd) => Box::pin(cmd.execute(client)).await,
         }
     }
 }

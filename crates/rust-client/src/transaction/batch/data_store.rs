@@ -275,6 +275,14 @@ impl InMemoryBatchDataStore {
         self.inner.register_foreign_account_inputs(foreign_accounts);
     }
 
+    /// Registers blocks that the current transaction must be able to authenticate.
+    pub(crate) fn register_block_numbers(
+        &self,
+        block_numbers: impl IntoIterator<Item = BlockNumber>,
+    ) {
+        self.inner.register_block_numbers(block_numbers);
+    }
+
     /// Registers note scripts on the inner [`ClientDataStore`] so the executor can resolve the
     /// request's output note scripts during transaction execution.
     pub(crate) fn register_note_scripts(&self, note_scripts: impl IntoIterator<Item = NoteScript>) {

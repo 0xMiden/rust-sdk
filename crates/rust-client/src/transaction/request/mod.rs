@@ -303,11 +303,24 @@ impl TransactionRequest {
     ///
     /// # Errors
     /// - If a note appears more than once among the input notes.
+    /// - If an own output note's recipient is not among the expected output recipients.
     fn validate(&self) -> Result<(), TransactionRequestError> {
         let mut seen_input_notes = BTreeSet::new();
         for (note_id, _) in &self.input_notes_args {
             if !seen_input_notes.insert(note_id) {
                 return Err(TransactionRequestError::DuplicateInputNote(*note_id));
+            }
+        }
+
+        if let Some(TransactionScriptTemplate::SendNotes(notes)) = &self.script_template {
+            for note in notes {
+                if !self.expected_output_recipients.contains_key(&note.recipient_digest()) {
+                    return Err(TransactionRequestError::ScriptTemplateError(format!(
+                        "the recipient of own output note {} is not among the expected output \
+                         recipients",
+                        note.id()
+                    )));
+                }
             }
         }
 
@@ -700,7 +713,7 @@ mod tests {
     };
     use miden_protocol::asset::FungibleAsset;
     use miden_protocol::crypto::rand::{FeltRng, RandomCoin};
-    use miden_protocol::note::{NoteTag, NoteType};
+    use miden_protocol::note::{Note, NoteRecipient, NoteTag, NoteType};
     use miden_protocol::testing::account_id::{
         ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET,
         ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE,
@@ -799,6 +812,61 @@ mod tests {
         tx_request.input_notes_args.push((note_id, None));
 
         assert!(TransactionRequest::read_from_bytes(&tx_request.to_bytes()).is_err());
+    }
+
+    fn p2id_note(amount: u64, rng: &mut RandomCoin) -> Note {
+        let sender_id = AccountId::try_from(ACCOUNT_ID_SENDER).unwrap();
+        let target_id =
+            AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE).unwrap();
+        let faucet_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
+
+        P2idNote::builder()
+            .sender(sender_id)
+            .target(target_id)
+            .assets(vec![FungibleAsset::new(faucet_id, amount).unwrap()])
+            .note_type(NoteType::Private)
+            .generate_serial_number(rng)
+            .build()
+            .unwrap()
+            .into()
+    }
+
+    #[test]
+    fn own_output_notes_survive_later_expected_output_recipients() {
+        let mut rng = RandomCoin::new(Word::default());
+        let own_note = p2id_note(100, &mut rng);
+        let other_note = p2id_note(200, &mut rng);
+
+        let tx_request = TransactionRequestBuilder::new()
+            .own_output_notes(vec![own_note.clone()])
+            .expected_output_recipients(vec![other_note.recipient().clone()])
+            .build()
+            .unwrap();
+
+        assert_eq!(tx_request.expected_output_own_notes(), vec![own_note.clone()]);
+        let recipients: Vec<_> =
+            tx_request.expected_output_recipients().map(NoteRecipient::digest).collect();
+        assert!(recipients.contains(&own_note.recipient().digest()));
+        assert!(recipients.contains(&other_note.recipient().digest()));
+    }
+
+    #[test]
+    fn deserialization_rejects_own_output_note_without_recipient() {
+        let mut rng = RandomCoin::new(Word::default());
+        let own_note = p2id_note(100, &mut rng);
+
+        // The builder always records the recipient, so the built request is corrupted by hand.
+        let mut tx_request = TransactionRequestBuilder::new()
+            .own_output_notes(vec![own_note])
+            .build()
+            .unwrap();
+        tx_request.expected_output_recipients.clear();
+
+        let err = TransactionRequest::read_from_bytes(&tx_request.to_bytes()).unwrap_err();
+        assert!(
+            format!("{err}").contains("expected output recipients"),
+            "unexpected error: {err}"
+        );
     }
 
     fn assert_transaction_request_serialization_with<F>(auth_component: F)

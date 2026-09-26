@@ -8,6 +8,7 @@ use miden_protocol::transaction::TransactionId;
 use super::{
     ConsumedExternalNoteState,
     ConsumedUnauthenticatedLocalNoteState,
+    ExpectedNoteState,
     InputNoteState,
     NoteStateHandler,
     NoteSubmissionData,
@@ -85,6 +86,24 @@ impl NoteStateHandler for ProcessingUnauthenticatedNoteState {
                 nullifier_block_height: block_height,
                 submission_data: self.submission_data,
                 consumed_tx_order: None,
+            }
+            .into(),
+        ))
+    }
+
+    fn transaction_discarded(
+        &self,
+        transaction_id: TransactionId,
+    ) -> Result<Option<InputNoteState>, NoteRecordError> {
+        if transaction_id != self.submission_data.consumer_transaction {
+            return Ok(None);
+        }
+
+        Ok(Some(
+            ExpectedNoteState {
+                metadata: Some(self.metadata),
+                after_block_num: self.after_block_num,
+                tag: Some(self.metadata.tag()),
             }
             .into(),
         ))

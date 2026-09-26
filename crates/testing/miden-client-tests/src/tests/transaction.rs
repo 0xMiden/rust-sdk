@@ -13,6 +13,7 @@ use miden_client::store::{NoteFilter, TransactionFilter};
 use miden_client::transaction::{
     ChainAnchor,
     ChainAnchorError,
+    DiscardCause,
     InputNote,
     LocalTransactionProver,
     ProvenTransaction,
@@ -22,6 +23,7 @@ use miden_client::transaction::{
     TransactionProverError,
     TransactionRequestBuilder,
     TransactionRequestError,
+    TransactionStatus,
 };
 use miden_client::{ClientError, Deserializable, Serializable, async_trait};
 use miden_debug::{DapClient, DapConfig, DapStopReason};
@@ -50,7 +52,13 @@ use miden_standards::account::auth::Approver;
 use miden_standards::account::wallets::BasicWallet;
 
 use super::PaymentNoteDescription;
-use crate::tests::create_test_client;
+use crate::tests::{
+    TX_DISCARD_DELTA,
+    TestClient,
+    create_test_client,
+    create_test_client_builder,
+    seed_mock_transaction_encryption_key,
+};
 
 #[tokio::test]
 async fn dap_transaction_execution_records_replay_data() {
@@ -1037,4 +1045,70 @@ async fn consuming_a_processing_note_is_rejected_before_submission() {
         .pop()
         .unwrap();
     assert_eq!(record.consumer_transaction_id(), Some(&first_tx_id));
+}
+
+/// When a local transaction is discarded, the notes it was consuming go back to their previous
+/// state so they can be consumed again. Otherwise they stay processing under a transaction that
+/// will never be committed, and the funds they hold are lost to this client.
+#[tokio::test]
+async fn discarded_transaction_releases_its_input_notes() {
+    let (builder, rpc_api) = Box::pin(create_test_client_builder()).await;
+    let mut client =
+        TestClient::from(builder.tx_discard_delta(Some(TX_DISCARD_DELTA)).build().await.unwrap());
+    client.ensure_genesis_in_place().await.unwrap();
+    seed_mock_transaction_encryption_key(&mut client).await;
+    let (wallet, faucet) = client.setup_wallet_and_faucet(AccountType::Private).await.unwrap();
+
+    let note = client.mint_note(wallet.id(), faucet.id(), NoteType::Private).await.unwrap().1;
+    rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+
+    // Consume the note with a transaction that is applied locally but never reaches the node, so it
+    // goes stale once the chain moves past the discard delta.
+    let request = TransactionRequestBuilder::new()
+        .build_consume_notes(vec![note.clone()])
+        .unwrap();
+    let tx_result = Box::pin(client.execute_transaction(wallet.id(), request)).await.unwrap();
+    let tx_id = tx_result.id();
+    let submission_height = client.get_sync_height().await.unwrap();
+    Box::pin(client.apply_transaction(&tx_result, submission_height)).await.unwrap();
+
+    let record = client.get_input_note(note.id()).await.unwrap().unwrap();
+    assert!(record.is_processing());
+    assert_eq!(record.consumer_transaction_id(), Some(&tx_id));
+
+    // Move past the discard delta: the sync discards the transaction.
+    rpc_api.advance_blocks(TX_DISCARD_DELTA + 1);
+    client.sync_state().await.unwrap();
+    let tx_record = client
+        .get_transactions(TransactionFilter::Ids(vec![tx_id]))
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert!(
+        matches!(tx_record.status, TransactionStatus::Discarded(DiscardCause::Stale)),
+        "the transaction should have been discarded, got: {:?}",
+        tx_record.status
+    );
+
+    // The note is back to committed and is listed as consumable again.
+    let record = client.get_input_note(note.id()).await.unwrap().unwrap();
+    assert!(
+        record.is_committed(),
+        "the note should be released by the discarded transaction, got: {}",
+        record.state()
+    );
+    let consumable = client.get_consumable_notes(Some(wallet.id())).await.unwrap();
+    assert!(consumable.iter().any(|(record, _)| record.id() == Some(note.id())));
+
+    // Consuming it again works and is confirmed by the network.
+    let second_tx_id =
+        client.consume_notes(wallet.id(), std::slice::from_ref(&note)).await.unwrap();
+    rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+
+    let record = client.get_input_note(note.id()).await.unwrap().unwrap();
+    assert!(record.is_consumed(), "the note should be consumed, got: {}", record.state());
+    assert_eq!(record.consumer_transaction_id(), Some(&second_tx_id));
 }

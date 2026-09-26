@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.17.0-rc.4 (2026-09-26)
+
+### Breaking Changes
+
+* [BREAKING][removal][cli] `exec` now requires `--package` (`-p`). Removed `--script-path` (`-s`) and in-process MASM compilation. Compile scripts with `miden build` first. DAP sessions use package debug information and reload the compiled package on restart ([#2596](https://github.com/0xMiden/rust-sdk/issues/2596)).
+
 ## 0.17.0-rc.3 (2026-09-24)
 
 ### Breaking Changes
@@ -19,7 +25,6 @@
 
 ### Breaking Changes
 
-* [BREAKING][removal][cli] `exec` now requires `--package` (`-p`). Removed `--script-path` (`-s`) and in-process MASM compilation. Compile scripts with `miden build` first. DAP sessions use package debug information and reload the compiled package on restart ([#2596](https://github.com/0xMiden/rust-sdk/issues/2596)).
 * [BREAKING][removal][rust] The note transport gRPC client now uses the service and message definitions from the node repository, through `miden-node-proto-build` `0.17.0-rc.2` from crates.io. Fetched notes are decoded one by one: a note that fails to decode, or whose details do not match the commitment in its header, is dropped with a warning instead of failing the fetch. `NoteTransportCursor` now stores the node's nonce and sequence, and the unsupported `NoteTransportClient::stream_notes` API and `NoteStream` trait were removed ([#2594](https://github.com/0xMiden/rust-sdk/pull/2594)).
 * [BREAKING][arch][rust] Updated protocol dependencies to `0.17.0-rc.6` ([#2594](https://github.com/0xMiden/rust-sdk/pull/2594)).
 * [BREAKING][arch][rust] `AccountFile` and `NoteFile` moved from `miden-protocol` and `miden-standards` to `miden-objects`. Both are re-exported from `miden_client::account` and `miden_client::note` as before ([#2594](https://github.com/0xMiden/rust-sdk/pull/2594)).

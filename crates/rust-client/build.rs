@@ -64,6 +64,11 @@ fn canonical_object_config() -> tonic_prost_build::Config {
     config
 }
 
+/// Whether transport-capable client bindings are requested.
+fn tonic_client_codegen_enabled() -> bool {
+    std::env::var_os("CARGO_FEATURE_TONIC").is_some()
+}
+
 // REMOTE PROVER CLIENT PROTO CODEGEN
 // ===============================================================================================
 
@@ -79,6 +84,7 @@ fn compile_tonic_remote_prover_proto(out_dir: &Path) -> miette::Result<()> {
     // The `nostd` bindings target `wasm32`, where the transport is provided by
     // `tonic-web-wasm-client`, so tonic's own transport codegen must be disabled.
     tonic_prost_build::configure()
+        .build_client(tonic_client_codegen_enabled())
         .build_transport(false)
         .build_server(false)
         .out_dir(&nostd_out)
@@ -114,6 +120,7 @@ fn compile_tonic_note_transport_proto(out_dir: &Path) -> miette::Result<()> {
 
     // Generate the header of the user facing server from its proto file
     tonic_prost_build::configure()
+        .build_client(tonic_client_codegen_enabled())
         .build_transport(false)
         .build_server(false)
         .out_dir(&nostd_out)
@@ -152,6 +159,7 @@ fn compile_tonic_client_proto(out_dir: &Path) -> miette::Result<()> {
 
     // Generate the header of the user facing server from its proto file
     tonic_prost_build::configure()
+        .build_client(tonic_client_codegen_enabled())
         .build_transport(false)
         .build_server(false)
         .out_dir(&nostd_out)

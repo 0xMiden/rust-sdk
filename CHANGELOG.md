@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Breaking Changes
+
+* [BREAKING][type][rust] Added the `AccountProofError::InconsistentStorageCommitment` variant, so exhaustive matches on `AccountProofError` must handle it ([#2601](https://github.com/0xMiden/rust-sdk/pull/2601)).
+
+### Fixes
+
+* [FIX][rust] `GetAccount` responses are now checked against the authenticated account header: the account rebuilt from the returned details must match the header's commitment, and the storage header must match its storage commitment ([#2601](https://github.com/0xMiden/rust-sdk/pull/2601)).
+
 ## 0.17.0-rc.4 (2026-09-26)
 
 ### Breaking Changes

@@ -577,12 +577,13 @@ Execute the specified program against the specified account.
 | Flag                          | Description                                  | Aliases |
 | ----------------------------- | -------------------------------------------- | ------- |
 | `--account <ACCOUNT_ID>`      | Account ID to use for the program execution. | `-a`    |
-| `--script-path <SCRIPT_PATH>` | Path to script's source code to be executed. | `-s`    |
-| `--package <PACKAGE>`         | Compiled transaction script package (`.masp`) to execute instead of the source, as a path or a name resolved in the packages directory. | `-p`    |
+| `--package <PACKAGE>`         | Required compiled transaction script package (`.masp`), as a path or a name resolved in the packages directory. | `-p`    |
 | `--inputs-path <INPUTS_PATH>` | Path to the inputs file.                     | `-i`    |
 | `--hex-words`                 | Print the output stack grouped into words.   |         |
 
-Exactly one of `--script-path` and `--package` must be given. `--package` accepts what `cargo miden build` produces for a `#[tx_script]`, i.e. a library with a single `@transaction_script` procedure. It cannot be combined with `--start-debug-adapter`, since the debug session recompiles the script from source when it restarts.
+`--package` is required. It accepts a library package with exactly one transaction script export, such as a Rust `#[tx_script]` built with `miden build`. Executable packages and MASM source files are not accepted. Replace `--script-path script.masm` with `--package script.masp` after compiling the script.
+
+With the `dap` feature, add `--start-debug-adapter <ADDR>` to debug the package. Compile with debug information for source stepping. A restart reloads the package without compiling sources; rebuild it first to apply source changes. See the [debugging guide](../debugging.md).
 
 The file referenced by `--inputs-path` should contain a TOML array of inline tables, where each table has two fields: - `key`: a 256-bit hexadecimal string representing a word to be used as a key for the input entry. The hexadecimal value must be prefixed with 0x. - `values`: an array of 64-bit unsigned integers representing field elements to be used as values for the input entry. Each integer must be written as a separate string, within double quotes.
 

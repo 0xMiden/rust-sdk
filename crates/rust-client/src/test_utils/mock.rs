@@ -254,6 +254,13 @@ impl MockRpcApi {
         }
     }
 
+    /// Removes the account-state snapshot for the specified block.
+    ///
+    /// Tests use this method to model a node that pruned historical account state.
+    pub fn prune_account_state_at(&self, block_num: BlockNumber) {
+        self.historical_chains.write().remove(&block_num);
+    }
+
     /// Retrieves a block by its block number.
     fn get_block_by_num(&self, block_num: BlockNumber) -> BlockHeader {
         self.mock_chain.read().block_header(block_num.as_usize())

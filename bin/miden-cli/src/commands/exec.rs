@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::slice;
 
-use clap::{ArgGroup, Parser};
+use clap::Parser;
 use miden_client::account::AccountId;
 use miden_client::keystore::Keystore;
 use miden_client::transaction::{ForeignAccount, TransactionScript};
@@ -26,27 +26,16 @@ use crate::utils::{
 
 #[derive(Debug, Clone, Parser)]
 #[command(about = "Execute the specified program against the specified account")]
-#[command(group(ArgGroup::new("script").required(true).args(["script_path", "package"])))]
 pub struct ExecCmd {
     /// Account ID to use for the program execution
     #[arg(short = 'a', long = "account")]
     account_id: Option<String>,
 
-    /// Path to script's source code to be executed. Either this or `--package` must be given.
-    #[arg(long, short)]
-    script_path: Option<String>,
-
-    /// Path to a compiled transaction script package (`.masp`), such as the one `cargo miden build`
-    /// produces for a `#[tx_script]`. Either this or `--script-path` must be given.
+    /// Compiled transaction script package (.masp), given as a path or a package name.
     ///
-    /// A path without an extension is resolved to `<path>.masp` in the configured package
-    /// directory, as `call --package` does.
-    // DAP is compiled out on this branch (`#[cfg(any())]` on `start_debug_adapter` above), so
-    // `conflicts_with` would name an argument clap never sees. This mirrors that idiom, and the
-    // conflict comes back on its own when the debug adapter is re-enabled.
-    #[cfg_attr(any(), arg(long, short, conflicts_with = "start_debug_adapter"))]
-    #[cfg_attr(not(any()), arg(long, short))]
-    package: Option<PathBuf>,
+    /// A bare name resolves in the configured package directory.
+    #[arg(long, short)]
+    package: PathBuf,
 
     /// Path to a TOML file with advice map entries used as inputs to the VM's advice map.
     #[arg(long, short, long_help = crate::advice_inputs::INPUTS_PATH_LONG_HELP)]
@@ -78,7 +67,8 @@ impl ExecCmd {
         &self,
         client: Client<AUTH>,
     ) -> Result<(), CliError> {
-        let script_source = self.script_source()?;
+        let cli_config = CliConfig::load()?;
+        let tx_script = load_tx_script_package(&cli_config, &self.package)?;
 
         let account_id =
             get_input_acc_id_by_prefix_or_default(&client, self.account_id.clone()).await?;
@@ -90,17 +80,9 @@ impl ExecCmd {
 
         let advice_inputs = AdviceInputs::default().with_map(inputs);
 
-        let tx_script = match &script_source {
-            // Pass the path rather than the source string so the assembler's source manager records
-            // the real filesystem URI in every `AssemblyOp`'s location. Without this, DAP clients
-            // (VS Code, Zed) get `Source { path: None }` in stack traces and can't highlight the
-            // current line or open the file.
-            ScriptSource::Masm(path) => client.code_builder().compile_tx_script(path.as_path())?,
-            ScriptSource::Package(path) => load_tx_script_package(&CliConfig::load()?, path)?,
-        };
-
-        let output_stack =
-            self.execute_program(&client, account_id, tx_script, advice_inputs).await?;
+        let output_stack = self
+            .execute_program(&client, &cli_config, account_id, tx_script, advice_inputs)
+            .await?;
 
         println!("Program executed successfully");
         if self.hex_words {
@@ -114,11 +96,14 @@ impl ExecCmd {
     async fn execute_program<AUTH: Keystore + Sync + 'static>(
         &self,
         client: &Client<AUTH>,
+        cli_config: &CliConfig,
         account_id: AccountId,
         tx_script: TransactionScript,
         advice_inputs: AdviceInputs,
     ) -> Result<[Felt; MIN_STACK_DEPTH], CliError> {
         let foreign_accounts = BTreeMap::<AccountId, ForeignAccount>::new();
+        #[cfg(not(feature = "dap"))]
+        let _ = cli_config;
 
         #[cfg(feature = "dap")]
         if let Some(addr) = self.start_debug_adapter.as_ref() {
@@ -137,22 +122,8 @@ impl ExecCmd {
             let config_handle = config.clone();
             miden_debug::DapConfig::set_global(config);
 
-            // `--package` conflicts with `--start-debug-adapter`, so the source path is present
-            // here. A compiled package could not be recompiled when the debug session restarts.
-            let script_path = self.script_path.as_deref().map(PathBuf::from).ok_or_else(|| {
-                CliError::Input(
-                    "the debug adapter needs --script-path, a compiled package cannot be \
-                     recompiled on restart"
-                        .to_string(),
-                )
-            })?;
+            let mut tx_script = tx_script;
             loop {
-                // DAP restart can happen after the user edits the script. Refresh the cached source
-                // before compiling again so execution uses the current file contents.
-                reload_source_file(&client.source_manager(), script_path.as_path())?;
-
-                let tx_script = client.code_builder().compile_tx_script(script_path.as_path())?;
-
                 let result = client
                     .execute_program_with_dap(
                         account_id,
@@ -164,7 +135,8 @@ impl ExecCmd {
 
                 if config_handle.restart_requested() {
                     config_handle.reset_restart();
-                    println!("Recompiling from source and restarting debug session...");
+                    tx_script = load_tx_script_package(cli_config, &self.package)?;
+                    println!("Reloading package and restarting debug session...");
                     continue;
                 }
 
@@ -199,34 +171,6 @@ impl ExecCmd {
             .await
             .map_err(|err| CliError::Exec(err.into(), "error executing the program".to_string()))
     }
-
-    /// Returns where the transaction script comes from, checking that a source path exists.
-    fn script_source(&self) -> Result<ScriptSource, CliError> {
-        match (&self.script_path, &self.package) {
-            (Some(script_path), None) => {
-                let path = PathBuf::from(script_path);
-                if !path.exists() {
-                    return Err(CliError::Exec(
-                        "error with the program file".to_string().into(),
-                        format!("the program file at path {script_path} does not exist"),
-                    ));
-                }
-                Ok(ScriptSource::Masm(path))
-            },
-            (None, Some(package)) => Ok(ScriptSource::Package(package.clone())),
-            _ => Err(CliError::Input(
-                "exactly one of --script-path or --package must be given".to_string(),
-            )),
-        }
-    }
-}
-
-/// Where the transaction script passed to `exec` comes from.
-enum ScriptSource {
-    /// MASM source, compiled before execution.
-    Masm(PathBuf),
-    /// A compiled transaction script package (`.masp`).
-    Package(PathBuf),
 }
 
 /// Loads a compiled transaction script from a package file.
@@ -250,56 +194,6 @@ fn load_tx_script_package(
     })
 }
 
-// SOURCE FILE RELOADING
-// ================================================================================================
-
-#[cfg(feature = "dap")]
-use source_reload::reload_source_file;
-
-#[cfg(feature = "dap")]
-mod source_reload {
-    use std::path::Path;
-    use std::sync::Arc;
-
-    use miden_client::assembly::{SourceManagerExt, SourceManagerSync, Uri};
-
-    use crate::errors::CliError;
-
-    /// Reloads a source file from disk into the given source manager.
-    ///
-    /// Source managers cache files by URI, so compiling a path that has already been loaded may
-    /// reuse the cached `SourceFile`. This updates an existing entry for `path` in-place, or loads
-    /// it if the source manager has not seen it yet.
-    pub(super) fn reload_source_file(
-        source_manager: &Arc<dyn SourceManagerSync>,
-        path: &Path,
-    ) -> Result<(), CliError> {
-        let reload_err = |source: Box<dyn std::error::Error + Send + Sync>| {
-            CliError::Exec(source, "error reloading the program source file".to_string())
-        };
-
-        let uri = Uri::from(path);
-
-        let Some(source_id) = source_manager.find(&uri) else {
-            source_manager.load_file(path).map_err(|source| reload_err(Box::new(source)))?;
-            return Ok(());
-        };
-
-        let source =
-            std::fs::read_to_string(path).map_err(|source| reload_err(Box::new(source)))?;
-        let version = source_manager
-            .get(source_id)
-            .map_err(|source| reload_err(Box::new(source)))?
-            .content()
-            .version()
-            .saturating_add(1);
-
-        source_manager
-            .update(source_id, source, None, version)
-            .map_err(|source| reload_err(Box::new(source)))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::env::temp_dir;
@@ -314,34 +208,17 @@ mod tests {
     use super::{CliConfig, ExecCmd, load_tx_script_package};
 
     #[test]
-    fn accepts_either_script_path_or_package() {
-        assert!(ExecCmd::try_parse_from(["exec", "--script-path", "script.masm"]).is_ok());
-        assert!(ExecCmd::try_parse_from(["exec", "--package", "script.masp"]).is_ok());
-    }
-
-    #[test]
-    fn rejects_both_script_path_and_package() {
-        assert!(
-            ExecCmd::try_parse_from([
-                "exec",
-                "--script-path",
-                "script.masm",
-                "--package",
-                "script.masp"
-            ])
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn requires_script_path_or_package() {
+    fn requires_a_package_and_rejects_source_arguments() {
         assert!(ExecCmd::try_parse_from(["exec"]).is_err());
+        assert!(ExecCmd::try_parse_from(["exec", "--script-path", "script.masm"]).is_err());
+        assert!(ExecCmd::try_parse_from(["exec", "-s", "script.masm"]).is_err());
+        assert!(ExecCmd::try_parse_from(["exec", "--package", "script.masp"]).is_ok());
+        assert!(ExecCmd::try_parse_from(["exec", "-p", "script"]).is_ok());
     }
 
-    // Disabled with the rest of the DAP surface on this branch (see `#[cfg(any())]` above).
-    #[cfg(any())]
+    #[cfg(feature = "dap")]
     #[test]
-    fn package_conflicts_with_debug_adapter() {
+    fn accepts_a_package_with_debug_adapter_and_recording() {
         assert!(
             ExecCmd::try_parse_from([
                 "exec",
@@ -349,6 +226,18 @@ mod tests {
                 "script.masp",
                 "--start-debug-adapter",
                 "127.0.0.1:4711",
+                "--record",
+                "session.mdsnap",
+            ])
+            .is_ok()
+        );
+        assert!(
+            ExecCmd::try_parse_from([
+                "exec",
+                "--package",
+                "script.masp",
+                "--record",
+                "session.mdsnap",
             ])
             .is_err()
         );
@@ -378,7 +267,37 @@ mod tests {
         let result = load_tx_script_package(&CliConfig::default(), &path);
         fs::remove_file(&path).unwrap();
 
-        result.unwrap();
+        let script = result.unwrap();
+        assert!(script.loaded_mast_forest().package_debug_info().unwrap().is_some());
+    }
+
+    #[test]
+    fn loads_packages_by_name_and_reloads_changed_artifacts() {
+        let path = write_library_package(
+            "reload",
+            "@transaction_script\npub proc main\n    push.1 drop\nend\n",
+        );
+        let config = CliConfig {
+            package_directory: path.parent().unwrap().to_path_buf(),
+            ..CliConfig::default()
+        };
+        let name = PathBuf::from(path.file_stem().unwrap());
+        let first = load_tx_script_package(&config, &name).unwrap();
+        write_library_package(
+            "reload",
+            "@transaction_script\npub proc main\n    push.2 drop\nend\n",
+        );
+        let second = load_tx_script_package(&config, &name).unwrap();
+        assert_ne!(first.root(), second.root());
+        fs::remove_file(&path).unwrap();
+        assert!(load_tx_script_package(&config, &name).is_err());
+    }
+
+    #[test]
+    fn rejects_source_files_as_packages() {
+        assert!(
+            load_tx_script_package(&CliConfig::default(), &PathBuf::from("script.masm"),).is_err()
+        );
     }
 
     #[test]

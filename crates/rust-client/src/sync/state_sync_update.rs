@@ -330,10 +330,12 @@ impl TransactionUpdateTracker {
 
         // Fallback for transactions with unauthenticated input notes: the node authenticates these
         // notes during processing, which changes the transaction ID. Match by account ID and
-        // pre-transaction state instead.
+        // initial and final account states instead. The final state is needed too: another
+        // transaction from the same initial state must not commit this one.
         if let Some(transaction) = self.transactions.values_mut().find(|tx| {
             tx.details.account_id == account_id
                 && tx.details.init_account_state == header.initial_state_commitment()
+                && tx.details.final_account_state == header.final_state_commitment()
         }) {
             transaction.commit_transaction(record.block_num, timestamp);
             return;
@@ -579,8 +581,15 @@ mod tests {
 
     use miden_protocol::account::{AccountCode, StorageMapKey, StorageMapPatchEntries};
     use miden_protocol::testing::account_id::ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE;
+    use miden_protocol::transaction::{
+        InputNoteCommitment,
+        InputNotes,
+        RawOutputNotes,
+        TransactionHeader,
+    };
 
     use super::*;
+    use crate::transaction::TransactionDetails;
 
     fn account_id() -> AccountId {
         ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE.try_into().unwrap()
@@ -700,5 +709,85 @@ mod tests {
         let patch = build_patch(2, vec![], map_entries).unwrap();
 
         assert!(patch.storage().updated_map(&map_slot).is_some());
+    }
+
+    // TRANSACTION INCLUSION TESTS
+    // --------------------------------------------------------------------------------------------
+
+    fn rpc_transaction(init_state: u64, final_state: u64, nullifier: u64) -> RpcTransactionRecord {
+        let input_notes = InputNotes::new_unchecked(vec![InputNoteCommitment::from(
+            Nullifier::from_raw(word(nullifier)),
+        )]);
+
+        RpcTransactionRecord {
+            block_num: BlockNumber::from(5u32),
+            transaction_header: TransactionHeader::new(
+                account_id(),
+                word(init_state),
+                word(final_state),
+                input_notes,
+                vec![],
+            )
+            .unwrap(),
+            output_notes: vec![],
+            erased_output_notes: vec![],
+            consumed_note_refs: vec![],
+        }
+    }
+
+    fn pending_transaction(init_state: u64, final_state: u64, nullifier: u64) -> TransactionRecord {
+        let id = rpc_transaction(init_state, final_state, nullifier).transaction_header.id();
+        let details = TransactionDetails {
+            account_id: account_id(),
+            init_account_state: word(init_state),
+            final_account_state: word(final_state),
+            input_note_nullifiers: vec![word(nullifier)],
+            output_notes: RawOutputNotes::new(vec![]).unwrap(),
+            block_num: BlockNumber::from(1u32),
+            submission_height: BlockNumber::from(1u32),
+            expiration_block_num: BlockNumber::from(100u32),
+            creation_timestamp: 0,
+        };
+
+        TransactionRecord::new(id, details, None, TransactionStatus::Pending)
+    }
+
+    /// A transaction included under a different ID is matched to the local one when it starts and
+    /// ends at the same account states, as happens when the node authenticates unauthenticated
+    /// input notes.
+    #[test]
+    fn inclusion_with_changed_id_commits_matching_local_transaction() {
+        let local = pending_transaction(10, 11, 1);
+        let local_id = local.id;
+        let mut tracker = TransactionUpdateTracker::new(vec![local]);
+
+        let included = rpc_transaction(10, 11, 2);
+        assert_ne!(included.transaction_header.id(), local_id);
+        tracker.apply_transaction_inclusion(&included, 0);
+
+        assert!(tracker.committed_transactions().any(|tx| tx.id == local_id));
+    }
+
+    /// A different transaction from the same initial account state (for example, a previously
+    /// discarded one that the network included after all) must not commit an unrelated local
+    /// transaction.
+    #[test]
+    fn inclusion_from_same_initial_state_does_not_commit_unrelated_local_transaction() {
+        let local = pending_transaction(10, 11, 1);
+        let local_id = local.id;
+        let mut tracker = TransactionUpdateTracker::new(vec![local]);
+
+        let included = rpc_transaction(10, 12, 2);
+        tracker.apply_transaction_inclusion(&included, 0);
+
+        assert!(
+            tracker.committed_transactions().next().is_none(),
+            "local transaction {local_id} (10 -> 11) was committed by an inclusion of 10 -> 12",
+        );
+        assert_eq!(
+            tracker.external_nullifier_account(&Nullifier::from_raw(word(2))),
+            Some(account_id()),
+            "the included transaction should be treated as external",
+        );
     }
 }

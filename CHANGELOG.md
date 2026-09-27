@@ -8,7 +8,7 @@
 
 ### Features
 
-* [FEATURE][cli] Added `tx --show <ID>` to print a single transaction: its ID, status (with the expiration block while it's pending), account ID, script root, reference block, submission height, creation time, and the account state commitment before and after, followed by a table per side of its notes with each note's ID, standard name, type and assets. A consumed note is only recorded by its nullifier, so its ID is recovered from the client's tracked notes; a private note that isn't the client's own can't be resolved and is marked as private. A transaction script matching a Miden standard is named alongside its root, and a note script matching one is named in the note tables. `tx --list` also gained `--account-id`, `--status` and `--limit` filters, and now lists transactions ordered by creation time ([#2589](https://github.com/0xMiden/rust-sdk/pull/2589)).
+* [FEATURE][cli] Added `tx --show <ID>`, which prints the transaction record and its input and output notes with their standard note name, store state and decoded P2ID, P2IDE, SWAP or PSWAP storage. Added `--account-id`, `--status` and `--limit` filters to `tx --list`, which now orders transactions by creation time ([#2589](https://github.com/0xMiden/rust-sdk/pull/2589)).
 * [FEATURE][rust] Added the `SendNotesTransactionScript` re-export to `miden_client::transaction` ([#2589](https://github.com/0xMiden/rust-sdk/pull/2589)).
 
 ### Fixes

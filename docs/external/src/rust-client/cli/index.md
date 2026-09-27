@@ -316,22 +316,17 @@ The `--list` flag accepts filters that narrow the listing, which is ordered by c
 | `--status <status>` | Only list `pending`, `committed` or `discarded` ones    |         |
 | `--limit <count>`   | Only list at most this many of the newest transactions  |         |
 
-The `--show` flag prints the transaction's metadata — its status (with the expiration block while
-it's still pending), account ID, script root, reference block, submission height, creation time,
-and the account state commitment before and after — followed by a table per side of the notes it
-consumed and created, with each note's ID, standard name, type and assets. The reference block is
-the block the transaction executed against, which is not the block it was included in.
-
-Like `notes --show`, it also accepts a partial ID instead of the full one:
+The `--show` flag prints the transaction record, a table of its input notes and a table of its
+output notes. Each note row has the standard note name, the store state and the decoded storage of a P2ID, P2IDE,
+SWAP or PSWAP note. The reference block is the block the transaction executed against, not the
+block that included it. It accepts a partial ID:
 
 ```sh
 miden-client tx --show 0x0c97ec
 ```
 
-A consumed note is only recorded by its nullifier, and a note ID can't be derived from a nullifier,
-so the ID is recovered by looking the nullifier up among the notes the client tracks. A private note
-that isn't the client's own can't be resolved that way, so it's marked as `<private>` and identified
-only by its nullifier.
+The transaction records an input note only by its nullifier. The note ID comes from the tracked
+notes with that nullifier. An untracked private note shows as `<private>`.
 
 After a transaction gets executed, two entities start being tracked:
 

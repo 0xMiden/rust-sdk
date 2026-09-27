@@ -29,7 +29,7 @@ use miden_client::auth::{
 use miden_client::builder::ClientBuilder;
 use miden_client::crypto::RandomCoin;
 use miden_client::keystore::Keystore;
-use miden_client::note::NoteId;
+use miden_client::note::{NoteId, NoteTag};
 use miden_client::note_transport::{
     NOTE_TRANSPORT_MAINNET_ENDPOINT,
     NOTE_TRANSPORT_TESTNET_ENDPOINT,
@@ -663,7 +663,10 @@ async fn tx_show_and_list_filters() -> Result<()> {
         .stdout(contains(transaction_id.as_str()))
         .stdout(contains(fungible_faucet_account_id.as_str()))
         .stdout(contains(output_note_id.as_str()))
-        .stdout(contains("Account State Before"));
+        .stdout(contains("Account State Before"))
+        // The minted note is a P2ID note, so its decoded storage names the wallet.
+        .stdout(contains(format!("target: {wallet_account_id}")))
+        .stdout(contains("Expected Full"));
 
     // The faucet executed the mint, and with no sync in between it is still pending.
     let filters_keeping_the_transaction: [&[&str]; 2] = [
@@ -716,6 +719,97 @@ fn tx_list_filters_conflict_with_show() {
             "the argument '--show <ID>' cannot be used with '{rejected_flag}'"
         )));
     }
+}
+
+/// Sends a P2IDE note and checks that `tx --show` prints the note's row with its decoded storage.
+#[tokio::test]
+async fn tx_show_decodes_p2ide_note_storage() -> Result<()> {
+    const RECLAIM_HEIGHT: &str = "100000";
+    const TIMELOCK_HEIGHT: &str = "50000";
+
+    let (store_path, temp_dir, endpoint) = init_cli();
+
+    let sender_account_id = new_wallet_cli(&temp_dir, AccountType::Private);
+    let target_account_id = new_wallet_cli(&temp_dir, AccountType::Private);
+    // The faucet is public, so `tx --show` can fetch its token metadata from the node.
+    let fungible_faucet_account_id = new_faucet_cli(&temp_dir, AccountType::Public);
+    fund_cli_account(&temp_dir, &store_path, &endpoint, &fungible_faucet_account_id).await?;
+    fund_cli_account(&temp_dir, &store_path, &endpoint, &sender_account_id).await?;
+
+    sync_cli(&temp_dir);
+    let (_, minted_note_id) = mint_cli(&temp_dir, &sender_account_id, &fungible_faucet_account_id);
+    sync_until_committed_note(&temp_dir);
+    consume_note_cli(&temp_dir, &sender_account_id, &[&minted_note_id]);
+
+    let mut transfer_cmd = cargo_bin_cmd!("miden-client");
+    transfer_cmd.args([
+        "transfer",
+        "--sender",
+        &sender_account_id,
+        "--target",
+        &target_account_id,
+        "--asset",
+        &format!("25::{fungible_faucet_account_id}"),
+        "-n",
+        "private",
+        "--recall-height",
+        RECLAIM_HEIGHT,
+        "--timelock-height",
+        TIMELOCK_HEIGHT,
+        "--force",
+    ]);
+    let output = transfer_cmd.current_dir(&temp_dir).output()?;
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8(output.stdout)?;
+    let id_after = |keyword: &str| {
+        stdout
+            .split_whitespace()
+            .skip_while(|&word| word != keyword)
+            .find(|word| word.starts_with("0x"))
+            .unwrap_or_else(|| {
+                panic!("the transfer should report an ID after {keyword}:\n{stdout}")
+            })
+            .to_string()
+    };
+    let (transaction_id, note_id) = (id_after("Transaction"), id_after("Output"));
+
+    // The store is the ground truth for the note's expected height.
+    let (client, _) = create_rust_client_with_store_path(&store_path, endpoint).await?;
+    let record = client
+        .get_output_note(NoteId::try_from_hex(&note_id)?)
+        .await?
+        .expect("the transfer should store its output note");
+
+    let mut show_cmd = cargo_bin_cmd!("miden-client");
+    show_cmd.args(["tx", "--show", &transaction_id]);
+    let output = show_cmd.current_dir(&temp_dir).output()?;
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8(output.stdout)?;
+
+    let target_tag = NoteTag::with_account_target(AccountId::from_hex(&target_account_id)?);
+    // The faucet that `new_faucet_cli` creates uses the BTC symbol with 10 decimals.
+    let expected_row = vec![
+        note_id.clone(),
+        "P2IDE".to_string(),
+        "Private".to_string(),
+        target_tag.to_string(),
+        "Expected Full".to_string(),
+        record.expected_height().to_string(),
+        format!(
+            "target: {target_account_id}\nreclaim height: {RECLAIM_HEIGHT}\n\
+             timelock height: {TIMELOCK_HEIGHT}"
+        ),
+        "0.0000000025 BTC".to_string(),
+    ];
+    // On a chain that charges fees, the transaction also creates a TX_FEE note.
+    let rows = table_rows(&stdout, "Output Notes:");
+    let p2ide_row = rows
+        .iter()
+        .find(|row| row[0] == note_id)
+        .unwrap_or_else(|| panic!("the output notes should include {note_id}:\n{stdout}"));
+    assert_eq!(p2ide_row, &expected_row);
+
+    Ok(())
 }
 
 // ACCOUNT SHOW TESTS
@@ -2059,6 +2153,48 @@ fn consume_note_cli(cli_path: &Path, account_id: &str, note_ids: &[&str]) {
     cli_args.extend_from_slice(note_ids);
     consume_note_cmd.args(&cli_args);
     consume_note_cmd.current_dir(cli_path).assert().success();
+}
+
+/// Returns the body rows of the table that directly follows the `title` line in `stdout`.
+///
+/// A cell that spans more than one line is returned with its lines joined by newlines.
+fn table_rows(stdout: &str, title: &str) -> Vec<Vec<String>> {
+    let mut lines = stdout.lines().skip_while(|line| line.trim() != title).skip(1).peekable();
+    // A section without rows prints a message instead of a table.
+    if !lines.peek().is_some_and(|line| line.starts_with('┌')) {
+        return Vec::new();
+    }
+    let body = lines
+        .skip_while(|line| !line.starts_with('╞'))
+        .skip(1)
+        .take_while(|line| !line.starts_with('└'));
+
+    let join_cells = |row: Vec<Vec<&str>>| -> Vec<String> {
+        row.into_iter()
+            .map(|lines| {
+                lines.into_iter().filter(|line| !line.is_empty()).collect::<Vec<_>>().join("\n")
+            })
+            .collect()
+    };
+
+    let mut rows = Vec::new();
+    let mut row: Vec<Vec<&str>> = Vec::new();
+    for line in body {
+        if line.starts_with('├') {
+            rows.push(join_cells(std::mem::take(&mut row)));
+            continue;
+        }
+        let cells = line.trim().trim_matches('│').split('┆').map(str::trim);
+        if row.is_empty() {
+            row = cells.map(|cell| vec![cell]).collect();
+        } else {
+            row.iter_mut().zip(cells).for_each(|(lines, cell)| lines.push(cell));
+        }
+    }
+    if !row.is_empty() {
+        rows.push(join_cells(row));
+    }
+    rows
 }
 
 /// Creates a new faucet account using the CLI given by `cli_path`.

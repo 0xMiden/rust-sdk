@@ -3,13 +3,28 @@ use std::collections::BTreeMap;
 use chrono::{Local, TimeZone};
 use clap::ValueEnum;
 use comfy_table::{Cell, ContentArrangement, presets};
-use miden_client::Client;
+use miden_client::asset::{Asset, AssetAmount, FungibleAsset};
 use miden_client::block::BlockNumber;
 use miden_client::keystore::Keystore;
-use miden_client::note::{NoteAssets, Nullifier, StandardNote};
-use miden_client::store::{InputNoteRecord, NoteFilter, TransactionFilter, TransactionFilterQuery};
+use miden_client::note::standards::{PswapNoteStorage, SwapNoteStorage};
+use miden_client::note::{
+    NoteAssets,
+    NoteId,
+    Nullifier,
+    P2idNoteStorage,
+    P2ideNoteStorage,
+    StandardNote,
+};
+use miden_client::store::{
+    InputNoteRecord,
+    NoteFilter,
+    OutputNoteRecord,
+    TransactionFilter,
+    TransactionFilterQuery,
+};
 use miden_client::transaction::{
     ExpirationTransactionScript,
+    RawOutputNote,
     SendNotesTransactionScript,
     TransactionRecord,
     TransactionScript,
@@ -17,6 +32,7 @@ use miden_client::transaction::{
     TransactionStatus,
     TransactionStatusVariant,
 };
+use miden_client::{Client, Felt};
 
 use crate::commands::notes::note_record_type;
 use crate::errors::CliError;
@@ -210,22 +226,46 @@ async fn print_input_notes<AUTH: Keystore + Sync>(
         .filter_map(|record| record.nullifier().map(|nullifier| (nullifier, record)))
         .collect();
 
-    let mut table = create_dynamic_table(&["ID", "Nullifier", "Standard Note", "Type", "Assets"]);
+    let mut table = create_dynamic_table(&[
+        "ID",
+        "Nullifier",
+        "Standard Note",
+        "Type",
+        "State",
+        "Storage",
+        "Assets",
+    ]);
     for nullifier in &nullifiers {
         let Some(record) = records.get(nullifier) else {
-            table.add_row(vec![PRIVATE_NOTE, &nullifier.to_hex(), NO_VALUE, NO_VALUE, NO_VALUE]);
+            table.add_row(vec![
+                PRIVATE_NOTE,
+                &nullifier.to_hex(),
+                NO_VALUE,
+                NO_VALUE,
+                NO_VALUE,
+                NO_VALUE,
+                NO_VALUE,
+            ]);
             continue;
         };
 
         let id = record.id().map_or_else(|| NO_VALUE.to_string(), |id| id.to_hex());
-        let standard_note = StandardNote::from_script_root(record.details().script().root())
-            .map_or(NO_VALUE, |standard_note| standard_note.name());
+        let standard_note = StandardNote::from_script_root(record.details().script().root());
+        let storage = format_standard_note_storage(
+            client,
+            resolver,
+            standard_note,
+            record.details().storage().items(),
+        )
+        .await?;
 
         table.add_row(vec![
             id,
             nullifier.to_hex(),
-            standard_note.to_string(),
+            standard_note.map_or(NO_VALUE, |standard_note| standard_note.name()).to_string(),
             note_record_type(record.metadata()),
+            record.state().to_string(),
+            storage,
             format_assets(client, resolver, record.assets()).await?,
         ]);
     }
@@ -248,19 +288,55 @@ async fn print_output_notes<AUTH: Keystore + Sync>(
         return Ok(());
     }
 
-    let mut table = create_dynamic_table(&["ID", "Standard Note", "Type", "Tag", "Assets"]);
+    // The transaction keeps the notes as it created them. The store keeps their current state.
+    let note_ids = output_notes.iter().map(RawOutputNote::id).collect::<Vec<_>>();
+    let records: BTreeMap<NoteId, OutputNoteRecord> = client
+        .get_output_notes(NoteFilter::List(note_ids))
+        .await?
+        .into_iter()
+        .map(|record| (record.id(), record))
+        .collect();
+
+    let mut table = create_dynamic_table(&[
+        "ID",
+        "Standard Note",
+        "Type",
+        "Tag",
+        "State",
+        "Expected Height",
+        "Storage",
+        "Assets",
+    ]);
     for note in output_notes.iter() {
-        // A partial output note carries no recipient, so its script root isn't known.
-        let standard_note = note
-            .recipient()
-            .and_then(|recipient| StandardNote::from_script_root(recipient.script().root()))
-            .map_or(NO_VALUE, |standard_note| standard_note.name());
+        // A partial output note carries no recipient, so its script and storage aren't known.
+        let recipient = note.recipient();
+        let standard_note = recipient
+            .and_then(|recipient| StandardNote::from_script_root(recipient.script().root()));
+        let storage = match recipient {
+            Some(recipient) => {
+                format_standard_note_storage(
+                    client,
+                    resolver,
+                    standard_note,
+                    recipient.storage().items(),
+                )
+                .await?
+            },
+            None => NO_VALUE.to_string(),
+        };
+        let record = records.get(&note.id());
 
         table.add_row(vec![
             note.id().to_hex(),
-            standard_note.to_string(),
+            standard_note.map_or(NO_VALUE, |standard_note| standard_note.name()).to_string(),
             note_record_type(Some(note.metadata())),
             note.metadata().tag().to_string(),
+            record.map_or_else(|| NO_VALUE.to_string(), |record| record.state().to_string()),
+            record.map_or_else(
+                || NO_VALUE.to_string(),
+                |record| record.expected_height().to_string(),
+            ),
+            storage,
             format_assets(client, resolver, note.assets()).await?,
         ]);
     }
@@ -328,6 +404,71 @@ fn format_timestamp(timestamp: u64) -> String {
         .map_or_else(|| timestamp.to_string(), |datetime| datetime.to_string())
 }
 
+/// Renders the decoded storage of a P2ID, P2IDE, SWAP or PSWAP note one field per line.
+///
+/// Other notes, and storage that doesn't decode, are shown as the empty-value placeholder.
+async fn format_standard_note_storage<AUTH: Keystore + Sync>(
+    client: &Client<AUTH>,
+    resolver: &FaucetMetadataResolver,
+    standard_note: Option<StandardNote>,
+    items: &[Felt],
+) -> Result<String, CliError> {
+    let fields = match standard_note {
+        Some(StandardNote::P2ID) => P2idNoteStorage::try_from(items)
+            .map(|storage| vec![format!("target: {}", storage.target())])
+            .ok(),
+        Some(StandardNote::P2IDE) => P2ideNoteStorage::try_from(items)
+            .map(|storage| {
+                let mut fields = vec![format!("target: {}", storage.target())];
+                if let Some(height) = storage.reclaim_height() {
+                    fields.push(format!("reclaim height: {height}"));
+                }
+                if let Some(height) = storage.timelock_height() {
+                    fields.push(format!("timelock height: {height}"));
+                }
+                fields
+            })
+            .ok(),
+        Some(StandardNote::SWAP) => match SwapNoteStorage::try_from(items) {
+            Ok(storage) => Some(vec![
+                format!(
+                    "requested: {}",
+                    format_asset(client, resolver, &storage.requested_asset()).await?
+                ),
+                format!("payback note: {}", storage.payback_note_type()),
+            ]),
+            Err(_) => None,
+        },
+        Some(StandardNote::PSWAP) => match PswapNoteStorage::try_from(items) {
+            Ok(storage) => {
+                let requested = Asset::from(*storage.min_requested_asset());
+                let mut fields = vec![
+                    format!("creator: {}", storage.creator_account_id()),
+                    format!("requested: {}", format_asset(client, resolver, &requested).await?),
+                ];
+                // A zero fill step means that the note accepts fills of any size.
+                if storage.min_fill_step() != AssetAmount::ZERO
+                    && let Ok(fill_step) = FungibleAsset::new(
+                        storage.requested_faucet_id(),
+                        storage.min_fill_step().as_u64(),
+                    )
+                {
+                    fields.push(format!(
+                        "min fill step: {}",
+                        format_asset(client, resolver, &Asset::from(fill_step)).await?
+                    ));
+                }
+                fields.push(format!("payback note: {}", storage.payback_note_type()));
+                Some(fields)
+            },
+            Err(_) => None,
+        },
+        _ => None,
+    };
+
+    Ok(fields.map_or_else(|| NO_VALUE.to_string(), |fields| fields.join("\n")))
+}
+
 /// Renders a note's assets one per line, so they fit a single table cell.
 async fn format_assets<AUTH: Keystore + Sync>(
     client: &Client<AUTH>,
@@ -336,16 +477,7 @@ async fn format_assets<AUTH: Keystore + Sync>(
 ) -> Result<String, CliError> {
     let mut formatted = Vec::with_capacity(assets.num_assets());
     for asset in assets.iter() {
-        formatted.push(match asset.as_fungible() {
-            Some(fungible_asset) => {
-                let (faucet, amount) =
-                    resolver.format_fungible_asset(client, &fungible_asset).await?;
-                format!("{amount} {faucet}")
-            },
-            None => {
-                format!("1 {} (non-fungible)", asset.faucet_id().prefix().to_hex())
-            },
-        });
+        formatted.push(format_asset(client, resolver, asset).await?);
     }
 
     if formatted.is_empty() {
@@ -353,6 +485,21 @@ async fn format_assets<AUTH: Keystore + Sync>(
     }
 
     Ok(formatted.join("\n"))
+}
+
+/// Renders an asset as its amount and faucet.
+async fn format_asset<AUTH: Keystore + Sync>(
+    client: &Client<AUTH>,
+    resolver: &FaucetMetadataResolver,
+    asset: &Asset,
+) -> Result<String, CliError> {
+    Ok(match asset.as_fungible() {
+        Some(fungible_asset) => {
+            let (faucet, amount) = resolver.format_fungible_asset(client, &fungible_asset).await?;
+            format!("{amount} {faucet}")
+        },
+        None => format!("1 {} (non-fungible)", asset.faucet_id().prefix().to_hex()),
+    })
 }
 
 #[cfg(test)]

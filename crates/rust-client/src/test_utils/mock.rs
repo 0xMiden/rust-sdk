@@ -51,7 +51,7 @@ use crate::rpc::domain::storage_map::StorageMapInfo;
 use crate::rpc::domain::sync::{ChainMmrInfo, SyncTarget};
 use crate::rpc::domain::transaction::TransactionRecord;
 use crate::rpc::encryption::{AttestedTransactionEncryptionKey, SealedTransactionInputs};
-use crate::rpc::{AccountStateAt, NodeRpcClient, RpcEndpoint, RpcError, RpcStatusInfo};
+use crate::rpc::{AccountStateAt, Endpoint, NodeRpcClient, RpcEndpoint, RpcError, RpcStatusInfo};
 
 pub type MockClient<AUTH> = Client<AUTH>;
 
@@ -960,8 +960,10 @@ impl NodeRpcClient for MockRpcApi {
         Ok(self.get_sync_transactions_request(block_from, block_to, &account_ids))
     }
 
+    /// Returns the network ID of a local node. A public network ID makes the client download the
+    /// genesis block of that network instead of requesting it from the mock.
     async fn get_network_id(&self) -> Result<NetworkId, RpcError> {
-        Ok(NetworkId::Testnet)
+        Ok(Endpoint::localhost().to_network_id())
     }
 
     async fn get_rpc_limits(&self) -> Result<crate::rpc::RpcLimits, RpcError> {

@@ -8,14 +8,14 @@ use miden_client::Word;
 use miden_client::block::BlockHeader;
 use miden_client::crypto::{Forest, InOrderIndex, MmrPeaks};
 use miden_client::note::BlockNumber;
-use miden_client::store::{BlockRelevance, PartialBlockchainFilter, StoreError, proto};
+use miden_client::store::{BlockRelevance, PartialBlockchainFilter, StoreError};
 use miden_client::utils::{Deserializable, Serializable};
 use rusqlite::{Connection, Transaction, params, params_from_iter};
 
 use super::SqliteStore;
 use crate::sql_error::SqlResultExt;
 use crate::sync::query_sync_height;
-use crate::{insert_sql, int_array, subst, with_write_tx};
+use crate::{insert_sql, int_array, proto, subst, with_write_tx};
 
 impl SqliteStore {
     pub(crate) fn get_block_headers(
@@ -297,12 +297,12 @@ mod test {
     use miden_client::block::BlockHeader;
     use miden_client::crypto::{Forest, InOrderIndex, MmrPeaks};
     use miden_client::note::BlockNumber;
-    use miden_client::store::{PartialBlockchainFilter, Store, proto};
+    use miden_client::store::{PartialBlockchainFilter, Store};
     use miden_protocol::crypto::merkle::mmr::Mmr;
     use rusqlite::params;
 
-    use crate::SqliteStore;
     use crate::tests::create_test_store;
+    use crate::{SqliteStore, proto};
 
     async fn insert_dummy_block_headers(store: &mut SqliteStore) -> Vec<BlockHeader> {
         let block_headers: Vec<BlockHeader> =

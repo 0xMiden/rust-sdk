@@ -5,7 +5,7 @@ use std::vec::Vec;
 
 use miden_client::Word;
 use miden_client::note::ToInputNoteCommitments;
-use miden_client::store::{StoreError, TransactionFilter, proto};
+use miden_client::store::{StoreError, TransactionFilter};
 use miden_client::transaction::{
     TransactionDetails,
     TransactionId,
@@ -23,7 +23,7 @@ use super::note::apply_note_updates_tx;
 use super::sync::add_note_tag_tx;
 use crate::forest::{ScopedAccountForest, SqliteForestBackend};
 use crate::sql_error::SqlResultExt;
-use crate::{blob_array, insert_sql, subst, with_write_tx};
+use crate::{blob_array, insert_sql, proto, subst, with_write_tx};
 
 pub(crate) const UPSERT_TRANSACTION_QUERY: &str = insert_sql!(
     transactions {

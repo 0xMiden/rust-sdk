@@ -10,13 +10,13 @@ use miden_client::pswap::{
     pswap_order_setting_key,
     pswap_tip_setting_key,
 };
-use miden_client::store::proto::{self, ProtobufValue};
 use miden_client::store::{SettingMutation, SettingScope, Store, StoreError};
 use miden_client::utils::Serializable;
 use rusqlite::types::FromSql;
 use rusqlite::{Connection, OptionalExtension, ToSql, params};
 
 use super::SqliteStore;
+use crate::proto::{self, ProtobufValue};
 use crate::sql_error::SqlResultExt;
 use crate::{insert_sql, subst};
 

@@ -1,9 +1,10 @@
 use miden_client::account::AccountType;
 use miden_client::asset::AssetId;
 use miden_client::protocol_config::{ProtocolConfig, protocol_config_setting_key};
-use miden_client::store::{SettingScope, StoreError, proto};
+use miden_client::store::{SettingScope, StoreError};
 use miden_client::transaction::TransactionRequestBuilder;
 use miden_client::{ClientError, Word};
+use miden_client_sqlite_store::proto;
 use miden_protocol::testing::account_id::ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2;
 
 use super::{TestClient, create_test_client, create_test_client_builder};

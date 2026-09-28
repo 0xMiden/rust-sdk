@@ -1,6 +1,5 @@
 use alloc::string::ToString;
 
-use miden_objects::DecodeMessageExt;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::note::{NoteId, NoteInclusionProof, NoteMetadata, NoteTag};
@@ -22,7 +21,6 @@ use super::{
     UnverifiedNoteState,
 };
 use crate::store::NoteRecordError;
-use crate::store::proto::{self, ProtoDecodeError};
 
 /// Information related to notes in the [`InputNoteState::Expected`] state.
 #[derive(Clone, Debug, PartialEq)]
@@ -139,33 +137,6 @@ impl Deserializable for ExpectedNoteState {
         let after_block_num = BlockNumber::read_from(source)?;
         let tag = Option::<NoteTag>::read_from(source)?;
         Ok(ExpectedNoteState { metadata, after_block_num, tag })
-    }
-}
-
-impl From<&ExpectedNoteState> for proto::input_note_state::Expected {
-    fn from(state: &ExpectedNoteState) -> Self {
-        Self {
-            metadata: state.metadata.map(Into::into),
-            after_block_num: Some(state.after_block_num.into()),
-            tag: state.tag.map(Into::into),
-        }
-    }
-}
-
-impl TryFrom<proto::input_note_state::Expected> for ExpectedNoteState {
-    type Error = ProtoDecodeError;
-
-    fn try_from(state: proto::input_note_state::Expected) -> Result<Self, Self::Error> {
-        Ok(ExpectedNoteState {
-            metadata: state.metadata.map(DecodeMessageExt::decode_and_verify).transpose()?,
-            after_block_num: proto::required(
-                state.after_block_num,
-                "expected note state",
-                "after block number",
-            )?
-            .decode_and_verify()?,
-            tag: state.tag.map(NoteTag::from),
-        })
     }
 }
 

@@ -1,6 +1,5 @@
 use alloc::string::ToString;
 
-use miden_objects::DecodeMessageExt;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::note::{NoteId, NoteInclusionProof, NoteMetadata};
@@ -23,7 +22,6 @@ use super::{
     ProcessingUnauthenticatedNoteState,
 };
 use crate::store::NoteRecordError;
-use crate::store::proto::{self, ProtoDecodeError};
 
 /// Information related to notes in the [`InputNoteState::Unverified`] state.
 #[derive(Clone, Debug, PartialEq)]
@@ -160,32 +158,6 @@ impl Deserializable for UnverifiedNoteState {
         let metadata = NoteMetadata::read_from(source)?;
         let inclusion_proof = NoteInclusionProof::read_from(source)?;
         Ok(UnverifiedNoteState { metadata, inclusion_proof })
-    }
-}
-
-impl From<&UnverifiedNoteState> for proto::input_note_state::Unverified {
-    fn from(state: &UnverifiedNoteState) -> Self {
-        Self {
-            metadata: Some(state.metadata.into()),
-            inclusion_proof: Some((&state.inclusion_proof).into()),
-        }
-    }
-}
-
-impl TryFrom<proto::input_note_state::Unverified> for UnverifiedNoteState {
-    type Error = ProtoDecodeError;
-
-    fn try_from(state: proto::input_note_state::Unverified) -> Result<Self, Self::Error> {
-        Ok(UnverifiedNoteState {
-            metadata: proto::required(state.metadata, "unverified note state", "metadata")?
-                .decode_and_verify()?,
-            inclusion_proof: proto::required(
-                state.inclusion_proof,
-                "unverified note state",
-                "inclusion proof",
-            )?
-            .try_into()?,
-        })
     }
 }
 

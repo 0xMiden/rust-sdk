@@ -28,7 +28,6 @@ use miden_client::store::{
     AccountUpdate,
     ClientAccountType,
     StoreError,
-    proto,
 };
 use miden_client::utils::{Deserializable, Serializable};
 use miden_client::{AccountError, Felt, Word};
@@ -54,6 +53,7 @@ use crate::{
     column_value_as_u64,
     insert_sql,
     int_array,
+    proto,
     subst,
     u64_to_value,
     with_write_tx,

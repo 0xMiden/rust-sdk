@@ -1,9 +1,7 @@
-use alloc::format;
 use alloc::string::ToString;
 use alloc::vec::Vec;
 use core::fmt;
 
-use miden_objects::DecodeMessageExt;
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
@@ -15,8 +13,6 @@ use miden_tx::utils::serde::{
     DeserializationError,
     Serializable,
 };
-
-use crate::store::proto::{self, ProtoDecodeError, ProtobufValue};
 
 // TRANSACTION RECORD
 // ================================================================================================
@@ -144,73 +140,6 @@ impl Deserializable for TransactionDetails {
     }
 }
 
-impl ProtobufValue for TransactionDetails {
-    type Message = proto::TransactionDetails;
-
-    fn to_proto(&self) -> Self::Message {
-        Self::Message {
-            account_id: Some(self.account_id.into()),
-            init_account_state: Some(self.init_account_state.into()),
-            final_account_state: Some(self.final_account_state.into()),
-            input_note_nullifiers: self
-                .input_note_nullifiers
-                .iter()
-                .map(|nullifier| (*nullifier).into())
-                .collect(),
-            output_notes: Some((&self.output_notes).into()),
-            block_num: Some(self.block_num.into()),
-            submission_height: Some(self.submission_height.into()),
-            expiration_block_num: Some(self.expiration_block_num.into()),
-            creation_timestamp: self.creation_timestamp,
-        }
-    }
-
-    fn from_proto(details: Self::Message) -> Result<Self, ProtoDecodeError> {
-        const MESSAGE: &str = "transaction details";
-
-        let input_note_nullifiers = details
-            .input_note_nullifiers
-            .into_iter()
-            .map(Word::try_from)
-            .collect::<Result<Vec<Word>, _>>()?;
-
-        Ok(Self {
-            account_id: proto::required(details.account_id, MESSAGE, "account id")?
-                .decode_and_verify()?,
-            init_account_state: proto::required(
-                details.init_account_state,
-                MESSAGE,
-                "initial account state",
-            )?
-            .try_into()?,
-            final_account_state: proto::required(
-                details.final_account_state,
-                MESSAGE,
-                "final account state",
-            )?
-            .try_into()?,
-            input_note_nullifiers,
-            output_notes: proto::required(details.output_notes, MESSAGE, "output notes")?
-                .decode_and_verify()?,
-            block_num: proto::required(details.block_num, MESSAGE, "block number")?
-                .decode_and_verify()?,
-            submission_height: proto::required(
-                details.submission_height,
-                MESSAGE,
-                "submission height",
-            )?
-            .decode_and_verify()?,
-            expiration_block_num: proto::required(
-                details.expiration_block_num,
-                MESSAGE,
-                "expiration block number",
-            )?
-            .decode_and_verify()?,
-            creation_timestamp: details.creation_timestamp,
-        })
-    }
-}
-
 /// Represents the cause of the discarded transaction.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DiscardCause {
@@ -268,42 +197,6 @@ impl Deserializable for DiscardCause {
             3 => Ok(DiscardCause::Stale),
             4 => Ok(DiscardCause::Superseded),
             _ => Err(DeserializationError::InvalidValue("Invalid discard cause".to_string())),
-        }
-    }
-}
-
-impl From<DiscardCause> for proto::DiscardCause {
-    fn from(cause: DiscardCause) -> Self {
-        match cause {
-            DiscardCause::Expired => proto::DiscardCause::Expired,
-            DiscardCause::InputConsumed => proto::DiscardCause::InputConsumed,
-            DiscardCause::DiscardedInitialState => proto::DiscardCause::DiscardedInitialState,
-            DiscardCause::Stale => proto::DiscardCause::Stale,
-            DiscardCause::Superseded => proto::DiscardCause::Superseded,
-        }
-    }
-}
-
-impl TryFrom<i32> for DiscardCause {
-    type Error = ProtoDecodeError;
-
-    /// Reads the cause from the enum value that the store keeps. An unknown value and the
-    /// unspecified value are both rejected, because the cause decides how the client reports a
-    /// transaction that can never commit.
-    fn try_from(cause: i32) -> Result<Self, Self::Error> {
-        let cause = proto::DiscardCause::try_from(cause).map_err(|_| {
-            ProtoDecodeError::InvalidValue(format!("unknown discard cause {cause}"))
-        })?;
-
-        match cause {
-            proto::DiscardCause::Expired => Ok(DiscardCause::Expired),
-            proto::DiscardCause::InputConsumed => Ok(DiscardCause::InputConsumed),
-            proto::DiscardCause::DiscardedInitialState => Ok(DiscardCause::DiscardedInitialState),
-            proto::DiscardCause::Stale => Ok(DiscardCause::Stale),
-            proto::DiscardCause::Superseded => Ok(DiscardCause::Superseded),
-            proto::DiscardCause::Unspecified => {
-                Err(ProtoDecodeError::InvalidValue("discard cause is unspecified".to_string()))
-            },
         }
     }
 }
@@ -385,47 +278,6 @@ impl Deserializable for TransactionStatus {
                 Ok(TransactionStatus::Discarded(cause))
             },
             _ => Err(DeserializationError::InvalidValue("Invalid transaction status".to_string())),
-        }
-    }
-}
-
-impl ProtobufValue for TransactionStatus {
-    type Message = proto::TransactionStatus;
-
-    fn to_proto(&self) -> Self::Message {
-        use proto::transaction_status::{Committed, Discarded, Pending, Status};
-
-        let status = match self {
-            TransactionStatus::Pending => Status::Pending(Pending {}),
-            TransactionStatus::Committed { block_number, commit_timestamp } => {
-                Status::Committed(Committed {
-                    block_number: Some((*block_number).into()),
-                    commit_timestamp: *commit_timestamp,
-                })
-            },
-            TransactionStatus::Discarded(cause) => Status::Discarded(Discarded {
-                cause: proto::DiscardCause::from(*cause).into(),
-            }),
-        };
-
-        Self::Message { status: Some(status) }
-    }
-
-    fn from_proto(status: Self::Message) -> Result<Self, ProtoDecodeError> {
-        use proto::transaction_status::Status;
-
-        const MESSAGE: &str = "transaction status";
-
-        match proto::required(status.status, MESSAGE, "variant")? {
-            Status::Pending(_) => Ok(TransactionStatus::Pending),
-            Status::Committed(committed) => Ok(TransactionStatus::Committed {
-                block_number: proto::required(committed.block_number, MESSAGE, "block number")?
-                    .decode_and_verify()?,
-                commit_timestamp: committed.commit_timestamp,
-            }),
-            Status::Discarded(discarded) => {
-                Ok(TransactionStatus::Discarded(discarded.cause.try_into()?))
-            },
         }
     }
 }

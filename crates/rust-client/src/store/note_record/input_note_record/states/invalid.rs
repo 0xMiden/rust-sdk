@@ -1,6 +1,5 @@
 use alloc::string::ToString;
 
-use miden_objects::DecodeMessageExt;
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber};
@@ -22,7 +21,6 @@ use super::{
     UnverifiedNoteState,
 };
 use crate::store::NoteRecordError;
-use crate::store::proto::{self, ProtoDecodeError};
 
 /// Information related to notes in the [`InputNoteState::Invalid`] state.
 #[derive(Clone, Debug, PartialEq)]
@@ -138,36 +136,6 @@ impl Deserializable for InvalidNoteState {
             metadata,
             invalid_inclusion_proof,
             block_note_root,
-        })
-    }
-}
-
-impl From<&InvalidNoteState> for proto::input_note_state::Invalid {
-    fn from(state: &InvalidNoteState) -> Self {
-        Self {
-            metadata: Some(state.metadata.into()),
-            invalid_inclusion_proof: Some((&state.invalid_inclusion_proof).into()),
-            block_note_root: Some(state.block_note_root.into()),
-        }
-    }
-}
-
-impl TryFrom<proto::input_note_state::Invalid> for InvalidNoteState {
-    type Error = ProtoDecodeError;
-
-    fn try_from(state: proto::input_note_state::Invalid) -> Result<Self, Self::Error> {
-        const MESSAGE: &str = "invalid note state";
-
-        Ok(InvalidNoteState {
-            metadata: proto::required(state.metadata, MESSAGE, "metadata")?.decode_and_verify()?,
-            invalid_inclusion_proof: proto::required(
-                state.invalid_inclusion_proof,
-                MESSAGE,
-                "invalid inclusion proof",
-            )?
-            .try_into()?,
-            block_note_root: proto::required(state.block_note_root, MESSAGE, "block note root")?
-                .try_into()?,
         })
     }
 }

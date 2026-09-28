@@ -20,7 +20,6 @@ use miden_client::store::{
     NoteFilter,
     OutputNoteRecord,
     StoreError,
-    proto,
 };
 use miden_client::utils::{Deserializable, Serializable};
 use rusqlite::types::Value;
@@ -34,7 +33,7 @@ use crate::note::filters::{
     note_filter_to_query_output_notes,
 };
 use crate::sql_error::SqlResultExt;
-use crate::{column_value_as_u64, u64_to_value, with_write_tx};
+use crate::{column_value_as_u64, proto, u64_to_value, with_write_tx};
 
 mod filters;
 

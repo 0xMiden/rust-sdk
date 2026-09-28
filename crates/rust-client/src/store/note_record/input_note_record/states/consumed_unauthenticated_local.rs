@@ -1,6 +1,5 @@
 use alloc::string::ToString;
 
-use miden_objects::DecodeMessageExt;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::note::{NoteId, NoteInclusionProof, NoteMetadata};
@@ -15,7 +14,6 @@ use miden_tx::utils::serde::{
 
 use super::{InputNoteState, NoteStateHandler, NoteSubmissionData};
 use crate::store::NoteRecordError;
-use crate::store::proto::{self, ProtoDecodeError};
 
 /// Information related to notes in the [`InputNoteState::ConsumedUnauthenticatedLocal`] state.
 #[derive(Clone, Debug, PartialEq)]
@@ -109,44 +107,6 @@ impl Deserializable for ConsumedUnauthenticatedLocalNoteState {
             nullifier_block_height,
             submission_data,
             consumed_tx_order,
-        })
-    }
-}
-
-impl From<&ConsumedUnauthenticatedLocalNoteState>
-    for proto::input_note_state::ConsumedUnauthenticatedLocal
-{
-    fn from(state: &ConsumedUnauthenticatedLocalNoteState) -> Self {
-        Self {
-            metadata: Some(state.metadata.into()),
-            nullifier_block_height: Some(state.nullifier_block_height.into()),
-            submission_data: Some((&state.submission_data).into()),
-            consumed_tx_order: state.consumed_tx_order,
-        }
-    }
-}
-
-impl TryFrom<proto::input_note_state::ConsumedUnauthenticatedLocal>
-    for ConsumedUnauthenticatedLocalNoteState
-{
-    type Error = ProtoDecodeError;
-
-    fn try_from(
-        state: proto::input_note_state::ConsumedUnauthenticatedLocal,
-    ) -> Result<Self, Self::Error> {
-        const MESSAGE: &str = "consumed unauthenticated local note state";
-
-        Ok(ConsumedUnauthenticatedLocalNoteState {
-            metadata: proto::required(state.metadata, MESSAGE, "metadata")?.decode_and_verify()?,
-            nullifier_block_height: proto::required(
-                state.nullifier_block_height,
-                MESSAGE,
-                "nullifier block height",
-            )?
-            .decode_and_verify()?,
-            submission_data: proto::required(state.submission_data, MESSAGE, "submission data")?
-                .try_into()?,
-            consumed_tx_order: state.consumed_tx_order,
         })
     }
 }

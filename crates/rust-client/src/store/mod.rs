@@ -87,8 +87,6 @@ pub(crate) mod data_store;
 mod errors;
 pub use errors::*;
 
-pub mod proto;
-
 mod smt_forest;
 pub use smt_forest::{AccountSmtForest, AccountUpdate};
 

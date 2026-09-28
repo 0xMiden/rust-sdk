@@ -14,19 +14,13 @@ use miden_client::account::{
     StorageSlotType,
 };
 use miden_client::asset::{Asset, AssetId};
-use miden_client::store::{
-    AccountStatus,
-    AccountStorageFilter,
-    ClientAccountType,
-    StoreError,
-    proto,
-};
+use miden_client::store::{AccountStatus, AccountStorageFilter, ClientAccountType, StoreError};
 use miden_client::{Deserializable, Serializable, Word};
 use rusqlite::types::{ToSqlOutput, Value};
 use rusqlite::{Connection, OptionalExtension, Params, params, params_from_iter};
 
 use crate::sql_error::SqlResultExt;
-use crate::{column_value_as_u64, text_array};
+use crate::{column_value_as_u64, proto, text_array};
 
 pub(crate) struct SerializedHeaderData {
     pub id: Vec<u8>,

@@ -73,6 +73,7 @@ mod chain_data;
 mod db_management;
 mod forest;
 mod note;
+pub mod proto;
 mod settings;
 mod sql_error;
 mod sync;

@@ -39,7 +39,7 @@ use alloc::vec::Vec;
 use async_trait::async_trait;
 pub use errors::PswapLineageError;
 use lineage::PswapLineageFilter;
-pub use lineage::{PswapLineageRecord, PswapLineageState};
+pub use lineage::{PswapLineageRecord, PswapLineageState, build_record_from_fields};
 use miden_protocol::Felt;
 use miden_protocol::account::AccountId;
 use miden_protocol::note::Note;

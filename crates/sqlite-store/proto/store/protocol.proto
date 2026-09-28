@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+// Protocol values that more than one table keeps, where the `miden-objects` schema has no message
+// that fits. Field numbers are part of the on-disk format, so a released number must keep its
+// meaning. Add fields, do not renumber or reuse them.
+package miden.client.store;
+
+import "asset.proto";
+import "block_number.proto";
+import "primitives.proto";
+
+// A note inclusion proof. Unlike the `miden-objects` message, it has no note id: a state belongs to
+// a note record, which already holds the id.
+message NoteInclusionProof {
+  blockchain.BlockNumber block_num = 1;
+  uint32 note_index_in_block = 2;
+  primitives.SparseMerklePath inclusion_path = 3;
+}
+
+// The assets of a note. The protocol schema has a message for one asset but not for the list.
+message NoteAssets {
+  repeated asset.Asset assets = 1;
+}
+
+// The peaks of the partial blockchain MMR at the sync height. The forest comes from the block
+// number of the same row.
+message MmrPeaks {
+  repeated primitives.Word peaks = 1;
+}

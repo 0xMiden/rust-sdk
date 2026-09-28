@@ -1,6 +1,5 @@
 use alloc::string::ToString;
 
-use miden_objects::DecodeMessageExt;
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber};
@@ -22,7 +21,6 @@ use super::{
     ProcessingAuthenticatedNoteState,
 };
 use crate::store::NoteRecordError;
-use crate::store::proto::{self, ProtoDecodeError};
 
 /// Information related to notes in the [`InputNoteState::Committed`] state.
 #[derive(Clone, Debug, PartialEq)]
@@ -142,32 +140,6 @@ impl Deserializable for CommittedNoteState {
             metadata,
             inclusion_proof,
             block_note_root,
-        })
-    }
-}
-
-impl From<&CommittedNoteState> for proto::input_note_state::Committed {
-    fn from(state: &CommittedNoteState) -> Self {
-        Self {
-            metadata: Some(state.metadata.into()),
-            inclusion_proof: Some((&state.inclusion_proof).into()),
-            block_note_root: Some(state.block_note_root.into()),
-        }
-    }
-}
-
-impl TryFrom<proto::input_note_state::Committed> for CommittedNoteState {
-    type Error = ProtoDecodeError;
-
-    fn try_from(state: proto::input_note_state::Committed) -> Result<Self, Self::Error> {
-        const MESSAGE: &str = "committed note state";
-
-        Ok(CommittedNoteState {
-            metadata: proto::required(state.metadata, MESSAGE, "metadata")?.decode_and_verify()?,
-            inclusion_proof: proto::required(state.inclusion_proof, MESSAGE, "inclusion proof")?
-                .try_into()?,
-            block_note_root: proto::required(state.block_note_root, MESSAGE, "block note root")?
-                .try_into()?,
         })
     }
 }

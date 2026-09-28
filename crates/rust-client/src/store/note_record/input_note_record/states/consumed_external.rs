@@ -1,6 +1,5 @@
 use alloc::string::ToString;
 
-use miden_objects::DecodeMessageExt;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::note::{NoteId, NoteInclusionProof, NoteMetadata};
@@ -15,7 +14,6 @@ use miden_tx::utils::serde::{
 
 use super::{InputNoteState, NoteStateHandler};
 use crate::store::NoteRecordError;
-use crate::store::proto::{self, ProtoDecodeError};
 
 /// Information related to notes in the [`InputNoteState::ConsumedExternal`] state.
 ///
@@ -113,40 +111,6 @@ impl Deserializable for ConsumedExternalNoteState {
             consumer_account,
             consumed_tx_order,
             metadata,
-        })
-    }
-}
-
-impl From<&ConsumedExternalNoteState> for proto::input_note_state::ConsumedExternal {
-    fn from(state: &ConsumedExternalNoteState) -> Self {
-        Self {
-            nullifier_block_height: Some(state.nullifier_block_height.into()),
-            consumer_account: state.consumer_account.map(Into::into),
-            consumed_tx_order: state.consumed_tx_order,
-            metadata: state.metadata.map(Into::into),
-        }
-    }
-}
-
-impl TryFrom<proto::input_note_state::ConsumedExternal> for ConsumedExternalNoteState {
-    type Error = ProtoDecodeError;
-
-    fn try_from(state: proto::input_note_state::ConsumedExternal) -> Result<Self, Self::Error> {
-        const MESSAGE: &str = "consumed external note state";
-
-        Ok(ConsumedExternalNoteState {
-            nullifier_block_height: proto::required(
-                state.nullifier_block_height,
-                MESSAGE,
-                "nullifier block height",
-            )?
-            .decode_and_verify()?,
-            consumer_account: state
-                .consumer_account
-                .map(DecodeMessageExt::decode_and_verify)
-                .transpose()?,
-            consumed_tx_order: state.consumed_tx_order,
-            metadata: state.metadata.map(DecodeMessageExt::decode_and_verify).transpose()?,
         })
     }
 }

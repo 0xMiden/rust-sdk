@@ -5,7 +5,9 @@ use alloc::{boxed::Box, format, string::ToString};
 
 #[cfg(feature = "std")]
 use miden_protocol::address::NetworkId;
-use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock, ValidatorConfig};
+#[cfg(feature = "std")]
+use miden_protocol::block::SignedBlock;
+use miden_protocol::block::{BlockHeader, BlockNumber, ValidatorConfig};
 use miden_protocol::crypto::hash::rpo::Rpo256;
 use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::crypto::merkle::mmr::{Forest, InOrderIndex, PartialMmr};
@@ -48,12 +50,13 @@ impl<AUTH> Client<AUTH> {
         Ok(block_header)
     }
 
-    /// Fetches the genesis block of the network the client is connected to.
+    /// Fetches the genesis block header of the network the client is connected to.
     ///
-    /// For mainnet, testnet and devnet, the block is downloaded from
+    /// For mainnet, testnet and devnet, the genesis block is downloaded from
     /// `https://genesis.<network>.miden.io` and validated. For other networks, and in builds
-    /// without the `std` feature, the block is requested from the node.
-    async fn fetch_genesis_block(&self) -> Result<SignedBlock, ClientError> {
+    /// without the `std` feature, the header is requested from the node. The node is not asked for
+    /// the full block because the genesis block body can exceed the gRPC message size limit.
+    async fn fetch_genesis_block_header(&self) -> Result<BlockHeader, ClientError> {
         #[cfg(feature = "std")]
         {
             let network = match self.network_id().await? {
@@ -71,12 +74,15 @@ impl<AUTH> Client<AUTH> {
                     .bytes()
                     .await
                     .map_err(|err| RpcError::ConnectionError(Box::new(err)))?;
-                return Ok(deserialize_genesis_block(&bytes)?);
+                return Ok(deserialize_genesis_block(&bytes)?.header().clone());
             }
         }
 
-        let (block, _) = self.rpc_api.get_block_by_number(BlockNumber::GENESIS, false).await?;
-        Ok(block)
+        let (header, _) = self
+            .rpc_api
+            .get_block_header_by_number(Some(BlockNumber::GENESIS), false)
+            .await?;
+        Ok(header)
     }
 
     /// Retrieves the validator configuration committed by the block header at the current sync
@@ -93,7 +99,7 @@ impl<AUTH> Client<AUTH> {
             return Ok(());
         }
 
-        let genesis = self.fetch_genesis_block().await?.header().clone();
+        let genesis = self.fetch_genesis_block_header().await?;
 
         // Genesis is untracked since there are no client notes associated with it, so we fetch no
         // MMR proof and pass no nodes.

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Enhancements
+
+* [rust] On official networks, the genesis block is now fetched from the official `genesis` service (`https://genesis.<network>.miden.io`) instead of the node ([#2639](https://github.com/0xMiden/rust-sdk/pull/2639)).
+
 ## 0.17.0-rc.4 (2026-09-26)
 
 ### Breaking Changes

@@ -112,9 +112,26 @@ impl TestClient {
     ) -> Result<TransactionId, ClientError> {
         self.sync_state().await?;
 
+        if !transaction_request.expected_ntx_scripts().is_empty() {
+            let prover = self.client.prover();
+            Box::pin(self.client.ensure_ntx_scripts_registered(
+                account_id,
+                transaction_request.expected_ntx_scripts(),
+                prover,
+            ))
+            .await?;
+        }
+
         let transaction_request = self.fund_request(account_id, transaction_request);
 
-        Box::pin(self.client.submit_new_transaction(account_id, transaction_request)).await
+        let tx_result =
+            Box::pin(self.client.execute_transaction(account_id, transaction_request)).await?;
+        let proven_transaction = self.client.prove_transaction(&tx_result).await?;
+        let submission_height =
+            self.submit_proven_transaction_retrying(proven_transaction, &tx_result).await?;
+        self.client.apply_transaction(&tx_result, submission_height).await?;
+
+        Ok(tx_result.id())
     }
 
     /// Executes a transaction for `account_id`, folding in its funding note when it has one.

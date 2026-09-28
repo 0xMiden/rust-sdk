@@ -1,19 +1,29 @@
 //! Funding support for running the test helpers against a fee-charging chain.
 
 use alloc::boxed::Box;
+use alloc::string::ToString;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
+use core::error::Error;
 use core::fmt;
+use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use miden_protocol::Felt;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
+use miden_protocol::transaction::ProvenTransaction;
 
 use super::common::TestClient;
+use crate::ClientError;
 use crate::note::Note;
-use crate::transaction::{TransactionId, TransactionRequestBuilder};
+use crate::transaction::{
+    TransactionId,
+    TransactionRequest,
+    TransactionRequestBuilder,
+    TransactionResult,
+};
 
 /// Makes accounts able to pay their own transaction fees.
 #[async_trait::async_trait(?Send)]
@@ -164,4 +174,74 @@ impl TestClient {
 
         Ok(genesis.fee_parameters().verification_base_fee() != 0)
     }
+
+    /// Submits a proven transaction. Resubmits it if the node rejects it assuming it consumes an
+    /// unauthenticated note that the node does not know yet.
+    pub async fn submit_proven_transaction_retrying(
+        &mut self,
+        proven_transaction: ProvenTransaction,
+        tx_result: &TransactionResult,
+    ) -> Result<BlockNumber, ClientError> {
+        let deadline = Instant::now() + UNKNOWN_NOTE_RETRY_DEADLINE;
+        loop {
+            match self.submit_proven_transaction(proven_transaction.clone(), tx_result).await {
+                Err(err) if is_unknown_unauthenticated_note(&err) && Instant::now() < deadline => {
+                    tokio::time::sleep(UNKNOWN_NOTE_RETRY_INTERVAL).await;
+                },
+                result => return result,
+            }
+        }
+    }
+
+    /// Returns `transaction_request` with `account_id`'s funding note folded in, after the node
+    /// committed that note.
+    pub async fn fund_request_after_commit(
+        &mut self,
+        account_id: AccountId,
+        mut transaction_request: TransactionRequest,
+    ) -> Result<TransactionRequest> {
+        let Some(note) = self.take_funding(account_id) else {
+            return Ok(transaction_request);
+        };
+
+        let note_id = note.id();
+        let deadline = Instant::now() + UNKNOWN_NOTE_RETRY_DEADLINE;
+        while self.test_rpc_api().get_notes_by_id(&[note_id]).await?.is_empty() {
+            if Instant::now() >= deadline {
+                bail!("funding note {note_id} of account {account_id} did not commit in time");
+            }
+            tokio::time::sleep(UNKNOWN_NOTE_RETRY_INTERVAL).await;
+        }
+
+        transaction_request.add_unauthenticated_input_note(note);
+        Ok(transaction_request)
+    }
+}
+
+// UNKNOWN FUNDING NOTES
+// ================================================================================================
+
+/// The message with which the node rejects a submission that consumes an unknown unauthenticated
+/// note.
+const UNKNOWN_UNAUTHENTICATED_NOTES: &str = "unauthenticated input notes are unknown";
+
+/// How long to wait for the node to know a funding note.
+///
+/// It covers a funder which still proves the funding transaction.
+const UNKNOWN_NOTE_RETRY_DEADLINE: Duration = Duration::from_secs(120);
+
+/// How long to wait between two checks for a funding note.
+const UNKNOWN_NOTE_RETRY_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Returns whether the node rejected a submission because it consumes an unauthenticated note that
+/// the node does not know.
+fn is_unknown_unauthenticated_note(err: &ClientError) -> bool {
+    let mut source: Option<&(dyn Error + 'static)> = Some(err);
+    while let Some(err) = source {
+        if err.to_string().contains(UNKNOWN_UNAUTHENTICATED_NOTES) {
+            return true;
+        }
+        source = err.source();
+    }
+    false
 }

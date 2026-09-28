@@ -8,8 +8,8 @@
 //! The service answers with the note before it builds the transaction which creates the note. Every
 //! funding note is consumed as an unauthenticated input, so no test waits for the funding
 //! transaction to commit. A test can submit its own transaction before the funding transaction
-//! reaches the node. The test client's RPC layer resubmits such a rejected transaction (see
-//! [`crate::submit_retry`]).
+//! reaches the node. `TestClient::submit_new_transaction` resubmits such a rejected transaction,
+//! and `TestClient::fund_request_after_commit` waits for the note before a batch uses it.
 
 use std::sync::Arc;
 use std::time::Duration;

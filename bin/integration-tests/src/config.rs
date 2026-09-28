@@ -22,7 +22,6 @@ use rand::RngExt;
 use uuid::Uuid;
 
 use crate::funding;
-use crate::submit_retry::UnknownNoteRetryRpcClient;
 
 const NETWORK_DEVNET: &str = "devnet";
 const NETWORK_TESTNET: &str = "testnet";
@@ -146,11 +145,9 @@ impl ClientConfig {
             format!("failed to create keystore at path: {}", auth_path.to_string_lossy())
         })?;
 
-        // The funding service answers before its funding transaction reaches the node, so a test
-        // can submit a transaction which consumes a funding note the node does not know yet. Such a
-        // rejected submission is retried.
-        let rpc_client = Arc::new(UnknownNoteRetryRpcClient::new(VerifyingRpcClient::new(
-            GrpcClient::new(&self.rpc_endpoint, self.rpc_timeout_ms),
+        let rpc_client = Arc::new(VerifyingRpcClient::new(GrpcClient::new(
+            &self.rpc_endpoint,
+            self.rpc_timeout_ms,
         )));
 
         let mut builder = ClientBuilder::new()

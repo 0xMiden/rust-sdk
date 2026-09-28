@@ -571,15 +571,13 @@ pub async fn test_consumed_note_ordering(client_config: ClientConfig) -> Result<
 
     // Requests are built before the batch borrows the client, so a funding note can still be folded
     // in.
-    let requests: Vec<_> = minted_notes
-        .iter()
-        .map(|note| {
-            let tx_request = TransactionRequestBuilder::new()
-                .build_consume_notes(vec![note.clone()])
-                .unwrap();
-            client.fund_request(wallet_account.id(), tx_request)
-        })
-        .collect();
+    let mut requests = Vec::with_capacity(minted_notes.len());
+    for note in &minted_notes {
+        let tx_request = TransactionRequestBuilder::new()
+            .build_consume_notes(vec![note.clone()])
+            .unwrap();
+        requests.push(client.fund_request_after_commit(wallet_account.id(), tx_request).await?);
+    }
 
     let mut batch = client.new_transaction_batch();
     for (i, tx_request) in requests.into_iter().enumerate() {

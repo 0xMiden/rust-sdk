@@ -148,9 +148,11 @@ rather than calling the funding `insert_new_*` helpers in a row.
 
 Funding costs no transaction of its own. Each account's note is held until the account's next
 transaction and folded into it, so that one transaction deploys the account, funds it and does the
-test's work. `TestClient::submit_new_transaction` does the folding. A request going somewhere else
-needs `TestClient::fund_request` first, notably a batch, which borrows the client for as long as it
-lives. A test that needs the funding to land in a particular transaction, one asserting on what a
+test's work. `TestClient::submit_new_transaction` does the folding. The funding service answers
+before its funding transaction reaches the node, so `TestClient::submit_new_transaction` resubmits
+a transaction the node rejects for an unknown funding note. A request going somewhere else needs
+`TestClient::fund_request_after_commit` first, notably a batch, which borrows the client for as long
+as it lives and cannot be resubmitted. That call waits until the node committed the funding note. A test that needs the funding to land in a particular transaction, one asserting on what a
 sync reports for instance, should call `TestClient::take_funding` and consume the note itself.
 
 ### Environment variables

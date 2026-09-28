@@ -7,7 +7,6 @@
 
 pub mod config;
 pub mod funding;
-pub mod submit_retry;
 pub mod tests;
 
 pub use config::{ClientConfig, NoteTransportEndpoint, create_test_auth_path};

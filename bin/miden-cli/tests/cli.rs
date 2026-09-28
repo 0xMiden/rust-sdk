@@ -34,7 +34,7 @@ use miden_client::note_transport::{
     NOTE_TRANSPORT_MAINNET_ENDPOINT,
     NOTE_TRANSPORT_TESTNET_ENDPOINT,
 };
-use miden_client::rpc::{Endpoint, GrpcClient, VerifyingRpcClient};
+use miden_client::rpc::Endpoint;
 use miden_client::testing::account_id::{
     ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET,
     ACCOUNT_ID_PRIVATE_SENDER,
@@ -59,7 +59,6 @@ use miden_client::{self, Deserializable, Felt, Word};
 use miden_client_cli::MIDEN_DIR;
 use miden_client_cli::config::{KEYSTORE_DIRECTORY, Network};
 use miden_client_integration_tests::funding;
-use miden_client_integration_tests::submit_retry::UnknownNoteRetryRpcClient;
 use miden_client_sqlite_store::SqliteStore;
 use midenc_hir_type::{CallConv, FunctionType, StructRef, StructType, Type};
 use predicates::prelude::PredicateBooleanExt;
@@ -2097,11 +2096,8 @@ async fn create_rust_client(
 
     let keystore = FilesystemKeyStore::new(keystore_path.to_path_buf())?;
 
-    // Deploys consume funding notes the node may not know yet, so rejected submissions are retried.
     let client = ClientBuilder::new()
-        .rpc(Arc::new(UnknownNoteRetryRpcClient::new(VerifyingRpcClient::new(
-            GrpcClient::new(&endpoint, 10_000),
-        ))))
+        .grpc_client(&endpoint, Some(10_000))
         .rng(rng)
         .store(store)
         .authenticator(Arc::new(keystore.clone()))

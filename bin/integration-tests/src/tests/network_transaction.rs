@@ -553,9 +553,10 @@ pub async fn test_recall_note_before_ntx_consumes_it(client_config: ClientConfig
     let bump_proven = client.prove_transaction(&bump_result).await?;
     let consume_proven = client.prove_transaction(&consume_result).await?;
 
-    // Submit both transactions
+    // Submit both transactions. The bump is the first transaction of the wallet, so it can consume
+    // a funding note the node does not know yet.
     let _bump_submission_height =
-        client.submit_proven_transaction(bump_proven, &bump_result).await?;
+        client.submit_proven_transaction_retrying(bump_proven, &bump_result).await?;
 
     let consume_submission_height =
         client.submit_proven_transaction(consume_proven, &consume_result).await?;

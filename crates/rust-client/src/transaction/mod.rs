@@ -103,7 +103,11 @@ use crate::rpc::domain::account::{
 };
 use crate::rpc::encryption::{TransactionEncryptionKey, seal_transaction_inputs};
 use crate::rpc::{AccountStateAt, NodeRpcClient, RpcError};
-use crate::store::data_store::{ClientDataStore, build_partial_mmr_with_paths};
+use crate::store::data_store::{
+    ClientDataStore,
+    build_partial_mmr_with_paths,
+    get_block_headers_with_fallback,
+};
 use crate::store::input_note_states::ExpectedNoteState;
 use crate::store::{
     AccountRecord,
@@ -406,35 +410,28 @@ where
         let mut tracked_blocks = tracked_blocks;
         // The kernel extends the MMR with the reference block itself, so it needs no path.
         tracked_blocks.remove(&sync_height);
-
-        let block_headers: Vec<BlockHeader> = self
-            .store
-            .get_block_headers(&tracked_blocks)
-            .await?
-            .into_iter()
-            .map(|(header, _has_notes)| header)
-            .collect();
-
-        // `Store::get_block_headers` may silently omit missing headers, so verify each requested
-        // block is present rather than comparing lengths.
-        let fetched_nums: BTreeSet<BlockNumber> =
-            block_headers.iter().map(BlockHeader::block_num).collect();
-        if let Some(&missing) = tracked_blocks.difference(&fetched_nums).next() {
-            return Err(StoreError::BlockHeaderNotFound(missing).into());
+        if let Some(&future_block) =
+            tracked_blocks.iter().find(|&&block_num| block_num > sync_height)
+        {
+            return Err(StoreError::BlockHeaderNotFound(future_block).into());
         }
 
+        let block_headers =
+            get_block_headers_with_fallback(&self.store, &self.rpc_api, &tracked_blocks).await?;
+
         let peaks = self.store.get_current_blockchain_peaks().await?;
-        let partial_mmr = build_partial_mmr_with_paths(&self.store, peaks, &block_headers).await?;
+        let partial_mmr =
+            build_partial_mmr_with_paths(&self.store, &self.rpc_api, peaks, &block_headers).await?;
 
         let chain = PartialBlockchain::new(partial_mmr, block_headers)?;
 
         Ok(ChainAnchor::new(header, chain)?)
     }
 
-    /// Captures a [`ChainAnchor`] at the client's current sync height, tracking the creation blocks
-    /// of the request's authenticated input notes so that the request can later execute against the
-    /// anchor. This covers notes the store holds as authenticated and notes pinned as authenticated
-    /// through [`TransactionRequestBuilder::explicit_input_notes`].
+    /// Captures a [`ChainAnchor`] at the client's current sync height. The anchor tracks the blocks
+    /// declared through [`TransactionRequestBuilder::block_numbers`] and the creation blocks of the
+    /// request's authenticated input notes. This covers notes the store holds as authenticated and
+    /// notes pinned as authenticated through [`TransactionRequestBuilder::explicit_input_notes`].
     ///
     /// This is the capture entry point for flows that never see a successful execution result at
     /// capture time — e.g. multisig proposal flows, where execution intentionally fails with
@@ -447,8 +444,8 @@ where
     ///
     /// - Returns [`ClientError::StoreError`] if a header for the sync height or a tracked block is
     ///   not present in the store.
-    /// - Returns [`ChainAnchorError::TooManyTrackedBlocks`] if the request's authenticated input
-    ///   notes were created across more blocks than a transaction can reference.
+    /// - Returns [`ChainAnchorError::TooManyTrackedBlocks`] if the request needs more tracked blocks
+    ///   than an anchor permits.
     pub async fn chain_anchor_for_request(
         &self,
         transaction_request: &TransactionRequest,
@@ -477,6 +474,7 @@ where
                 .filter_map(InputNote::proof)
                 .map(|proof| proof.location().block_num()),
         );
+        tracked_blocks.extend(transaction_request.block_numbers().iter().copied());
 
         self.chain_anchor_at_tip(tracked_blocks).await
     }
@@ -531,6 +529,7 @@ where
             data_store = data_store.with_chain_anchor(*anchor);
         }
         data_store.register_note_scripts(prep.output_note_scripts());
+        data_store.register_block_numbers(prep.block_numbers.iter().copied());
         for fpi_account in &prep.foreign_account_inputs {
             data_store.mast_store().load_account_code(fpi_account.code());
         }
@@ -690,6 +689,7 @@ where
             self.retrieve_foreign_account_inputs(foreign_accounts, block_num).await?;
 
         let ignore_invalid_notes = transaction_request.ignore_invalid_input_notes();
+        let block_numbers = transaction_request.block_numbers().clone();
 
         let reference_header = match anchor {
             Some(anchor) => anchor.header().clone(),
@@ -716,6 +716,7 @@ where
             future_notes,
             tx_args,
             foreign_account_inputs,
+            block_numbers,
             block_num,
             ignore_invalid_notes,
         })
@@ -1469,6 +1470,7 @@ pub(crate) struct PreparedTransaction {
     pub(crate) future_notes: Vec<(NoteDetails, NoteTag)>,
     pub(crate) tx_args: TransactionArgs,
     pub(crate) foreign_account_inputs: Vec<AccountInputs>,
+    pub(crate) block_numbers: BTreeSet<BlockNumber>,
     pub(crate) block_num: BlockNumber,
     pub(crate) ignore_invalid_notes: bool,
 }

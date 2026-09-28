@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.17.0-rc.4 (TBD)
+
+### Breaking Changes
+
+* [BREAKING][arch][store] The SQLite store writes its structured values as protobuf messages instead of the `Serializable` encoding: transaction details and status, input and output note states, account code, note and transaction scripts, note assets, attachments, storage and metadata, and block headers. Requires a new client database ([#2624](https://github.com/0xMiden/rust-sdk/pull/2624)).
+
 ## 0.17.0-rc.3 (2026-09-24)
 
 ### Breaking Changes

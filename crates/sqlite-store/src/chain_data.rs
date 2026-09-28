@@ -249,7 +249,7 @@ fn query_partial_blockchain_nodes<P: rusqlite::Params>(
 }
 
 fn parse_partial_blockchain_peaks(forest: u32, peaks_nodes: &[u8]) -> Result<MmrPeaks, StoreError> {
-    let mmr_peaks_nodes: Vec<Word> = proto::decode(peaks_nodes)?;
+    let mmr_peaks_nodes = Vec::<Word>::read_from_bytes(peaks_nodes)?;
 
     let forest_size = usize::try_from(forest).expect("u64 should fit in usize");
     let forest = Forest::new(forest_size).map_err(|err| {
@@ -298,11 +298,12 @@ mod test {
     use miden_client::crypto::{Forest, InOrderIndex, MmrPeaks};
     use miden_client::note::BlockNumber;
     use miden_client::store::{PartialBlockchainFilter, Store};
+    use miden_client::utils::Serializable;
     use miden_protocol::crypto::merkle::mmr::Mmr;
     use rusqlite::params;
 
+    use crate::SqliteStore;
     use crate::tests::create_test_store;
-    use crate::{SqliteStore, proto};
 
     async fn insert_dummy_block_headers(store: &mut SqliteStore) -> Vec<BlockHeader> {
         let block_headers: Vec<BlockHeader> =
@@ -496,7 +497,7 @@ mod test {
         let mut previous_remaining: Option<i64> = None;
         for height in prune_heights {
             let height_i64 = i64::try_from(height).expect("fits in i64");
-            let peaks_bytes = proto::encode(&peaks_by_block[height].peaks().to_vec());
+            let peaks_bytes = peaks_by_block[height].peaks().to_vec().to_bytes();
 
             // Update sync height (and the matching MMR peaks) to simulate having synced further
             store
@@ -586,12 +587,12 @@ mod test {
         // Track blocks 3 and 10; we will untrack 3 later.
         let tracked: BTreeSet<usize> = [3, 10].into();
         let auth_nodes = collect_auth_nodes(&mmr, &headers, &tracked);
-        let tip_peaks_bytes = proto::encode(
-            &mmr.peaks_at(Forest::new(TOTAL_BLOCKS - 1).expect("valid forest"))
-                .unwrap()
-                .peaks()
-                .to_vec(),
-        );
+        let tip_peaks_bytes = mmr
+            .peaks_at(Forest::new(TOTAL_BLOCKS - 1).expect("valid forest"))
+            .unwrap()
+            .peaks()
+            .to_vec()
+            .to_bytes();
 
         // Persist everything.
         let headers_clone = headers.clone();

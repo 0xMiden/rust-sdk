@@ -21,9 +21,3 @@ message NoteInclusionProof {
 message NoteAssets {
   repeated asset.Asset assets = 1;
 }
-
-// The peaks of the partial blockchain MMR at the sync height. The forest comes from the block
-// number of the same row.
-message MmrPeaks {
-  repeated primitives.Word peaks = 1;
-}

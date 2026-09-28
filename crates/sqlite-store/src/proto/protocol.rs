@@ -5,7 +5,6 @@ use std::string::ToString;
 use std::vec::Vec;
 
 use miden_objects::{DecodeMessageExt, proto as objects};
-use miden_protocol::Word;
 use miden_protocol::account::AccountCode;
 use miden_protocol::block::BlockHeader;
 use miden_protocol::note::{
@@ -122,21 +121,6 @@ impl ProtobufValue for NoteAssets {
             .map(DecodeMessageExt::decode_and_verify)
             .collect::<Result<Vec<_>, _>>()?;
         Self::new(assets).map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))
-    }
-}
-
-/// The peaks of the partial blockchain MMR, without their forest.
-impl ProtobufValue for Vec<Word> {
-    type Message = proto::MmrPeaks;
-
-    fn to_proto(&self) -> Self::Message {
-        proto::MmrPeaks {
-            peaks: self.iter().map(Into::into).collect(),
-        }
-    }
-
-    fn from_proto(message: Self::Message) -> Result<Self, ProtoDecodeError> {
-        Ok(message.peaks.into_iter().map(Word::try_from).collect::<Result<_, _>>()?)
     }
 }
 

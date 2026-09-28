@@ -2,8 +2,6 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 #[cfg(feature = "std")]
 use alloc::{boxed::Box, format, string::ToString};
-#[cfg(feature = "std")]
-use std::println;
 
 #[cfg(feature = "std")]
 use miden_protocol::address::NetworkId;
@@ -325,9 +323,6 @@ pub(crate) async fn fetch_block_header(
 }
 
 /// Deserializes a genesis file into its block and validates it.
-///
-/// The file format is the one of `GenesisBlock` in `miden-node/crates/utils/src/genesis.rs`: a
-/// [`SignedBlock`] followed by a [`ProtocolConfig`].
 #[cfg(feature = "std")]
 fn deserialize_genesis_block(bytes: &[u8]) -> Result<SignedBlock, RpcError> {
     let mut reader = SliceReader::new(bytes);
@@ -362,7 +357,6 @@ fn deserialize_genesis_block(bytes: &[u8]) -> Result<SignedBlock, RpcError> {
             "genesis protocol configuration commitment mismatch: expected {expected}, got {actual}"
         )));
     }
-    println!("OK");
     Ok(block)
 }
 

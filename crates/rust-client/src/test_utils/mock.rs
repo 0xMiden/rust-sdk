@@ -960,8 +960,6 @@ impl NodeRpcClient for MockRpcApi {
         Ok(self.get_sync_transactions_request(block_from, block_to, &account_ids))
     }
 
-    /// Returns the network ID of a local node. A public network ID makes the client download the
-    /// genesis block of that network instead of requesting it from the mock.
     async fn get_network_id(&self) -> Result<NetworkId, RpcError> {
         Ok(Endpoint::localhost().to_network_id())
     }

@@ -4,13 +4,6 @@ use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::note::{NoteId, NoteInclusionProof, NoteMetadata};
 use miden_protocol::transaction::TransactionId;
-use miden_tx::utils::serde::{
-    ByteReader,
-    ByteWriter,
-    Deserializable,
-    DeserializationError,
-    Serializable,
-};
 
 use super::{
     ConsumedExternalNoteState,
@@ -110,16 +103,18 @@ impl NoteStateHandler for ProcessingUnauthenticatedNoteState {
     }
 }
 
-impl Serializable for ProcessingUnauthenticatedNoteState {
-    fn write_into<W: ByteWriter>(&self, target: &mut W) {
+impl miden_tx::utils::serde::Serializable for ProcessingUnauthenticatedNoteState {
+    fn write_into<W: miden_tx::utils::serde::ByteWriter>(&self, target: &mut W) {
         self.metadata.write_into(target);
         self.after_block_num.write_into(target);
         self.submission_data.write_into(target);
     }
 }
 
-impl Deserializable for ProcessingUnauthenticatedNoteState {
-    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
+impl miden_tx::utils::serde::Deserializable for ProcessingUnauthenticatedNoteState {
+    fn read_from<R: miden_tx::utils::serde::ByteReader>(
+        source: &mut R,
+    ) -> Result<Self, miden_tx::utils::serde::DeserializationError> {
         let metadata = NoteMetadata::read_from(source)?;
         let after_block_num = BlockNumber::read_from(source)?;
         let submission_data = NoteSubmissionData::read_from(source)?;

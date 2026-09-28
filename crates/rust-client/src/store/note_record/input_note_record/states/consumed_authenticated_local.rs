@@ -5,13 +5,6 @@ use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::note::{NoteId, NoteInclusionProof, NoteMetadata};
 use miden_protocol::transaction::TransactionId;
-use miden_tx::utils::serde::{
-    ByteReader,
-    ByteWriter,
-    Deserializable,
-    DeserializationError,
-    Serializable,
-};
 
 use super::{InputNoteState, NoteStateHandler, NoteSubmissionData};
 use crate::store::NoteRecordError;
@@ -92,8 +85,8 @@ impl NoteStateHandler for ConsumedAuthenticatedLocalNoteState {
     }
 }
 
-impl Serializable for ConsumedAuthenticatedLocalNoteState {
-    fn write_into<W: ByteWriter>(&self, target: &mut W) {
+impl miden_tx::utils::serde::Serializable for ConsumedAuthenticatedLocalNoteState {
+    fn write_into<W: miden_tx::utils::serde::ByteWriter>(&self, target: &mut W) {
         self.metadata.write_into(target);
         self.inclusion_proof.write_into(target);
         self.block_note_root.write_into(target);
@@ -103,8 +96,10 @@ impl Serializable for ConsumedAuthenticatedLocalNoteState {
     }
 }
 
-impl Deserializable for ConsumedAuthenticatedLocalNoteState {
-    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
+impl miden_tx::utils::serde::Deserializable for ConsumedAuthenticatedLocalNoteState {
+    fn read_from<R: miden_tx::utils::serde::ByteReader>(
+        source: &mut R,
+    ) -> Result<Self, miden_tx::utils::serde::DeserializationError> {
         let metadata = NoteMetadata::read_from(source)?;
         let inclusion_proof = NoteInclusionProof::read_from(source)?;
         let block_note_root = Word::read_from(source)?;

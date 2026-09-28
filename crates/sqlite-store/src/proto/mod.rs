@@ -3,6 +3,9 @@
 //! A message field is optional in protobuf, so a value the store requires arrives as `None` when
 //! the row was written by a version that did not set it. `required` turns that into an error at the
 //! point of use, and names the field it was reading.
+//!
+//! A scalar field without `optional` has no presence, so an absent value reads as zero. Declare a
+//! new scalar field as `optional` when the reader must detect that it is absent.
 
 use std::string::{String, ToString};
 use std::vec::Vec;
@@ -64,7 +67,7 @@ pub fn decode<T: ProtobufValue>(bytes: &[u8]) -> Result<T, ProtoDecodeError> {
 #[derive(Debug, thiserror::Error)]
 pub enum ProtoDecodeError {
     /// The bytes are not a valid protobuf message.
-    #[error("invalid protobuf message")]
+    #[error("invalid protobuf message: {0}")]
     Wire(#[from] prost::DecodeError),
     /// An enum field holds a value that the schema does not define.
     #[error(transparent)]
@@ -76,15 +79,13 @@ pub enum ProtoDecodeError {
         field: &'static str,
     },
     /// A protocol message does not describe a valid protocol value.
-    #[error("invalid protocol value")]
+    #[error("invalid protocol value: {0}")]
     Conversion(#[from] ConversionError),
     /// The message is well formed, but its content breaks a rule of the value.
     #[error("invalid value: {0}")]
     InvalidValue(String),
 }
 
-/// The client reports a value that cannot be read back as a deserialization error, whatever the
-/// store's format.
 impl From<ProtoDecodeError> for StoreError {
     fn from(err: ProtoDecodeError) -> Self {
         StoreError::DataDeserializationError(DeserializationError::InvalidValue(err.to_string()))

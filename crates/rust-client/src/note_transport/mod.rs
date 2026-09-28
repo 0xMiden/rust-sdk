@@ -5,6 +5,7 @@ pub mod grpc;
 
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
@@ -23,7 +24,7 @@ use miden_tx::utils::serde::{
 
 pub use self::errors::NoteTransportError;
 use crate::note::{NoteFile, NoteSyncHint};
-use crate::store::{InputNoteRecord, NoteFilter, StoreError};
+use crate::store::{InputNoteRecord, NoteFilter, SettingScope};
 use crate::sync::NoteTagSource;
 use crate::{Client, ClientError};
 
@@ -217,22 +218,41 @@ impl<AUTH> Client<AUTH> {
     /// leaving unreadable bytes in place would block every subsequent relay because each sync would
     /// re-read them.
     async fn load_relay_outbox(&self) -> Result<Vec<NoteInfo>, ClientError> {
-        match self.store.get_note_transport_outbox().await {
+        let bytes = self
+            .store
+            .get_setting(SettingScope::Client, String::from(NOTE_TRANSPORT_OUTBOX_KEY))
+            .await
+            .map_err(ClientError::StoreError)?;
+        let Some(bytes) = bytes else {
+            return Ok(Vec::new());
+        };
+        match Vec::<NoteInfo>::read_from_bytes(&bytes) {
             Ok(entries) => Ok(entries),
-            Err(err) if is_decode_error(&err) => {
+            Err(err) => {
                 tracing::warn!(?err, "dropping unreadable relay outbox; resetting to empty");
-                self.store.set_note_transport_outbox(Vec::new()).await?;
+                self.store
+                    .remove_setting(SettingScope::Client, String::from(NOTE_TRANSPORT_OUTBOX_KEY))
+                    .await
+                    .map_err(ClientError::StoreError)?;
                 Ok(Vec::new())
             },
-            Err(err) => Err(err.into()),
         }
     }
 
-    /// Persist the relay outbox. An empty outbox removes the entry, so the store doesn't accumulate
-    /// empty-vec blobs.
+    /// Persist the relay outbox, removing the key entirely when empty so the settings table doesn't
+    /// accumulate empty-vec blobs.
     async fn save_relay_outbox(&self, entries: Vec<NoteInfo>) -> Result<(), ClientError> {
+        let key = String::from(NOTE_TRANSPORT_OUTBOX_KEY);
+        if entries.is_empty() {
+            self.store
+                .remove_setting(SettingScope::Client, key)
+                .await
+                .map_err(ClientError::StoreError)?;
+            return Ok(());
+        }
+        let bytes = entries.to_bytes();
         self.store
-            .set_note_transport_outbox(entries)
+            .set_setting(SettingScope::Client, key, bytes)
             .await
             .map_err(ClientError::StoreError)
     }
@@ -265,30 +285,46 @@ impl<AUTH> Client<AUTH> {
     /// tracked tag as new only triggers a one-off backfill, which dedupes, whereas leaving
     /// unreadable bytes in place would fail every subsequent sync.
     async fn load_covered_tags(&self) -> Result<BTreeSet<NoteTag>, ClientError> {
-        match self.store.get_note_transport_covered_tags().await {
+        let bytes = self
+            .store
+            .get_setting(SettingScope::Client, String::from(NOTE_TRANSPORT_COVERED_TAGS_KEY))
+            .await
+            .map_err(ClientError::StoreError)?;
+        let Some(bytes) = bytes else {
+            return Ok(BTreeSet::new());
+        };
+        match BTreeSet::<NoteTag>::read_from_bytes(&bytes) {
             Ok(tags) => Ok(tags),
-            Err(err) if is_decode_error(&err) => {
+            Err(err) => {
                 tracing::warn!(?err, "dropping unreadable covered-tags set; resetting to empty");
-                self.store.set_note_transport_covered_tags(&BTreeSet::new()).await?;
+                self.store
+                    .remove_setting(
+                        SettingScope::Client,
+                        String::from(NOTE_TRANSPORT_COVERED_TAGS_KEY),
+                    )
+                    .await
+                    .map_err(ClientError::StoreError)?;
                 Ok(BTreeSet::new())
             },
-            Err(err) => Err(err.into()),
         }
     }
 
-    /// Persist the covered-tags set. An empty set removes the entry, so the store doesn't
-    /// accumulate empty-vec blobs.
+    /// Persist the covered-tags set, removing the key entirely when empty so the settings table
+    /// doesn't accumulate empty-vec blobs.
     async fn save_covered_tags(&self, tags: &BTreeSet<NoteTag>) -> Result<(), ClientError> {
+        let key = String::from(NOTE_TRANSPORT_COVERED_TAGS_KEY);
+        if tags.is_empty() {
+            self.store
+                .remove_setting(SettingScope::Client, key)
+                .await
+                .map_err(ClientError::StoreError)?;
+            return Ok(());
+        }
         self.store
-            .set_note_transport_covered_tags(tags)
+            .set_setting(SettingScope::Client, key, tags.to_bytes())
             .await
             .map_err(ClientError::StoreError)
     }
-}
-
-/// Returns whether a store error means that the stored bytes could not be read back.
-fn is_decode_error(err: &StoreError) -> bool {
-    matches!(err, StoreError::DataDeserializationError(_))
 }
 
 impl<AUTH> Client<AUTH>

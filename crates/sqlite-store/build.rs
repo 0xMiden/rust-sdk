@@ -11,7 +11,6 @@ const STORE_PROTO_FILES: &[&str] = &[
     "proto/store/input_note.proto",
     "proto/store/output_note.proto",
     "proto/store/protocol.proto",
-    "proto/store/settings.proto",
     "proto/store/transaction.proto",
 ];
 

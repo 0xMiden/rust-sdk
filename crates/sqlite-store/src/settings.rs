@@ -3,20 +3,11 @@
 use std::string::String;
 use std::vec::Vec;
 
-use miden_client::note::NoteId;
-use miden_client::pswap::{
-    PSWAP_ORDER_SETTING_PREFIX,
-    PswapLineageRecord,
-    pswap_order_setting_key,
-    pswap_tip_setting_key,
-};
-use miden_client::store::{SettingMutation, SettingScope, Store, StoreError};
-use miden_client::utils::Serializable;
+use miden_client::store::{SettingScope, StoreError};
 use rusqlite::types::FromSql;
 use rusqlite::{Connection, OptionalExtension, ToSql, params};
 
 use super::SqliteStore;
-use crate::proto::{self, ProtobufValue};
 use crate::sql_error::SqlResultExt;
 use crate::{insert_sql, subst};
 
@@ -91,80 +82,6 @@ impl SqliteStore {
             .into_store_error()?
             .collect::<Result<Vec<String>, _>>()
             .into_store_error()
-    }
-}
-
-// CLIENT VALUES
-// ================================================================================================
-
-// The client values in `settings` keep the client's keys, and this store writes them as protobuf
-// messages.
-impl SqliteStore {
-    pub(crate) async fn get_proto_setting<T: ProtobufValue>(
-        &self,
-        key: String,
-    ) -> Result<Option<T>, StoreError> {
-        let Some(bytes) = Store::get_setting(self, SettingScope::Client, key).await? else {
-            return Ok(None);
-        };
-        Ok(Some(proto::decode(&bytes)?))
-    }
-
-    pub(crate) async fn set_proto_setting<T: ProtobufValue>(
-        &self,
-        key: String,
-        value: &T,
-    ) -> Result<(), StoreError> {
-        Store::set_setting(self, SettingScope::Client, key, proto::encode(value)).await
-    }
-
-    /// Writes `value`, or removes the entry when `is_empty` holds, so empty collections leave no
-    /// row behind.
-    pub(crate) async fn set_proto_setting_or_remove<T: ProtobufValue>(
-        &self,
-        key: String,
-        value: &T,
-        is_empty: bool,
-    ) -> Result<(), StoreError> {
-        if is_empty {
-            Store::remove_setting(self, SettingScope::Client, key).await?;
-            return Ok(());
-        }
-        self.set_proto_setting(key, value).await
-    }
-
-    pub(crate) async fn put_pswap_lineage(
-        &self,
-        record: &PswapLineageRecord,
-        old_tip: Option<NoteId>,
-        new_tip: Option<NoteId>,
-    ) -> Result<(), StoreError> {
-        let mut mutations = vec![SettingMutation::Set {
-            key: pswap_order_setting_key(record.order_id()),
-            value: proto::encode(record),
-        }];
-        if let Some(old_tip) = old_tip {
-            mutations.push(SettingMutation::Remove { key: pswap_tip_setting_key(old_tip) });
-        }
-        if let Some(new_tip) = new_tip {
-            mutations.push(SettingMutation::Set {
-                key: pswap_tip_setting_key(new_tip),
-                value: record.order_id().to_bytes(),
-            });
-        }
-        Store::apply_settings_mutations(self, SettingScope::Client, mutations).await
-    }
-
-    pub(crate) async fn list_pswap_lineages(&self) -> Result<Vec<PswapLineageRecord>, StoreError> {
-        let mut records = Vec::new();
-        for key in Store::list_setting_keys(self, SettingScope::Client).await? {
-            if key.starts_with(PSWAP_ORDER_SETTING_PREFIX)
-                && let Some(record) = self.get_proto_setting(key).await?
-            {
-                records.push(record);
-            }
-        }
-        Ok(records)
     }
 }
 

@@ -17,9 +17,7 @@ use crate::rpc::errors::RpcConversionError;
 use crate::rpc::generated::rpc as proto;
 
 /// Key used to store RPC limits in the settings table.
-///
-/// A [`Store`](crate::store::Store) implementation needs this key to keep the limits in `settings`.
-pub const RPC_LIMITS_STORE_SETTING: &str = "rpc_limits";
+pub(crate) const RPC_LIMITS_STORE_SETTING: &str = "rpc_limits";
 
 const DEFAULT_NOTE_IDS_LIMIT: u32 = 100;
 const DEFAULT_NULLIFIERS_LIMIT: u32 = 1000;

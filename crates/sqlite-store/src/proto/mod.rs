@@ -14,13 +14,18 @@ use miden_objects::ConversionError;
 mod input_note;
 mod output_note;
 mod protocol;
-mod settings;
 mod transaction;
 
 pub use output_note::{decode_output_note_state, encode_output_note_state};
 
 #[rustfmt::skip]
-#[allow(clippy::doc_markdown, clippy::large_enum_variant, missing_docs)]
+#[allow(
+    clippy::doc_markdown,
+    clippy::large_enum_variant,
+    clippy::struct_field_names,
+    clippy::trivially_copy_pass_by_ref,
+    missing_docs
+)]
 mod generated {
     include!(concat!(env!("OUT_DIR"), "/miden.client.store.rs"));
 }

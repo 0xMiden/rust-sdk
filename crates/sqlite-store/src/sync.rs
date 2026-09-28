@@ -172,7 +172,7 @@ impl SqliteStore {
                     db_tx,
                     SettingScope::Client,
                     &protocol_config_setting_key(config.to_commitment()),
-                    &proto::encode(config),
+                    &config.to_bytes(),
                 )?;
             }
 

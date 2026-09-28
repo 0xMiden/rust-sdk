@@ -89,7 +89,7 @@ async fn collect_candidate_orders(
 ) -> Result<BTreeSet<Felt>, PswapLineageError> {
     let mut candidate_orders: BTreeSet<Felt> = BTreeSet::new();
     for note_id in consumed_note_ids {
-        if let Some(order_id) = store.get_pswap_order_id_by_tip(*note_id).await? {
+        if let Some(order_id) = store::resolve_order_by_tip(store, *note_id).await? {
             candidate_orders.insert(order_id);
         }
     }
@@ -107,7 +107,7 @@ async fn load_active_lineages(
 ) -> Result<Vec<PswapLineageRecord>, PswapLineageError> {
     let mut active_lineages = Vec::new();
     for order_id in candidate_orders {
-        if let Some(record) = store.get_pswap_lineage(order_id).await?
+        if let Some(record) = store::get_lineage(store, order_id).await?
             && record.state == PswapLineageState::Active
         {
             active_lineages.push(record);

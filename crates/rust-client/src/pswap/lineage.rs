@@ -379,7 +379,7 @@ pub(crate) enum PswapLineageFilter {
 /// alternative backends can reuse it. The only validation is decoding the `state_byte` into a known
 /// [`PswapLineageState`].
 #[allow(clippy::too_many_arguments)]
-pub fn build_record_from_fields(
+pub(crate) fn build_record_from_fields(
     original_note_id: NoteId,
     order_id: Felt,
     creator_account_id: AccountId,

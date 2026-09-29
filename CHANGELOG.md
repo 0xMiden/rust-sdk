@@ -10,6 +10,8 @@
 
 * [FEATURE][rust] Added `AccountComponentCode`, `AccountComponentNameError`, `ComponentMetadataError`, and `RoleSymbolError` to `miden_client::account::component`, and `AuthSchemeError` to `miden_client::auth` ([#2678](https://github.com/0xMiden/rust-sdk/pull/2678)).
 * [FEATURE][cli] Added the repeatable `--init-slot <slot::name>=<value>` flag to `new-wallet` and `new-account`. Each use sets one init storage value and overrides the matching entry of the `--init-storage-data-path` file ([#2641](https://github.com/0xMiden/rust-sdk/pull/2641)).
+* [FEATURE][cli] Added `send`, which calls a procedure, then proves the transaction and submits it.
+* [FEATURE][cli] Added `--note-script` to `call` and `send`. It takes a note script `.masp` package for a note the procedure creates, so the client can build the full output note from the script root the procedure emits.
 
 ### Breaking Changes
 

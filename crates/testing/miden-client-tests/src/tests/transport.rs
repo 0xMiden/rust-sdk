@@ -79,7 +79,7 @@ async fn transport_basic() {
 
     // Send note
     sender
-        .send_private_note_with_block_hint(note, &recipient_address, BlockNumber::from(0))
+        .send_private_note_with_proof(note, &recipient_address, genesis_inclusion_proof())
         .await
         .unwrap();
 
@@ -236,7 +236,7 @@ async fn transport_cursor_pagination() {
 
     // Send note A, sync → recipient receives 1 note
     sender
-        .send_private_note_with_block_hint(note_a.clone(), &recipient_address, BlockNumber::from(0))
+        .send_private_note_with_proof(note_a.clone(), &recipient_address, genesis_inclusion_proof())
         .await
         .unwrap();
     recipient.sync_state().await.unwrap();
@@ -248,7 +248,7 @@ async fn transport_cursor_pagination() {
 
     // Send note B, sync → recipient receives note B (cursor advanced past A)
     sender
-        .send_private_note_with_block_hint(note_b.clone(), &recipient_address, BlockNumber::from(0))
+        .send_private_note_with_proof(note_b.clone(), &recipient_address, genesis_inclusion_proof())
         .await
         .unwrap();
     recipient.sync_state().await.unwrap();
@@ -481,7 +481,7 @@ async fn transport_fetch_no_matching_tags() {
         .into();
 
     sender
-        .send_private_note_with_block_hint(note, &recipient_address, BlockNumber::from(0))
+        .send_private_note_with_proof(note, &recipient_address, genesis_inclusion_proof())
         .await
         .unwrap();
 
@@ -886,8 +886,9 @@ async fn ntl_refresh_of_expected_note_detects_consumption_in_same_sync() {
 /// A private note must reach the recipient even when the sender's first relay attempt fails,
 /// provided the transport later recovers.
 ///
-/// `send_private_note` persists the payload in a durable outbox, so a relay that fails is retried
-/// instead of dropped. Without persistence the recipient would never learn about the note.
+/// `send_private_note_with_proof` persists the payload in a durable outbox, so a relay that fails
+/// is retried instead of dropped. Without persistence the recipient would never learn about the
+/// note.
 ///
 /// The test does not constrain where the retry happens (inline, on `sync_state`, or through an
 /// explicit `flush_relay_outbox`): it polls by alternating sender and recipient `sync_state` calls
@@ -896,7 +897,7 @@ async fn ntl_refresh_of_expected_note_detects_consumption_in_same_sync() {
 async fn private_note_relay_recovers_after_transient_ntl_failure() {
     let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
 
-    // Fail the next send_note attempt, then recover — a single transient transport failure.
+    // Fail the next relay attempt, then recover — a single transient transport failure.
     let faulty = Arc::new(FaultyNoteTransportApi::new(mock_node.clone(), 1));
     let (mut sender, sender_account) =
         create_test_user_with_transport(faulty.clone() as Arc<dyn NoteTransportClient>).await;
@@ -919,7 +920,7 @@ async fn private_note_relay_recovers_after_transient_ntl_failure() {
     // First relay attempt — the faulty NTL rejects it. We don't assert on the return value: the
     // relay may fail here and be retried later.
     let _ = sender
-        .send_private_note_with_block_hint(note, &recipient_address, BlockNumber::from(0))
+        .send_private_note_with_proof(note, &recipient_address, genesis_inclusion_proof())
         .await;
 
     // Drive both clients forward; the retry must deliver the note within a few rounds.
@@ -945,13 +946,14 @@ async fn private_note_relay_recovers_after_transient_ntl_failure() {
     // durability.
     assert!(
         faulty.send_attempts() >= 2,
-        "the relay must be retried; observed only {} send_note attempt(s)",
+        "the relay must be retried; observed only {} relay attempt(s)",
         faulty.send_attempts()
     );
 }
 
-/// The durable outbox entry survives a failed `send_private_note` and is re-sent by an explicit
-/// `flush_relay_outbox`, without a full sync. A second flush is a no-op once the entry has drained.
+/// The durable outbox entry survives a failed `send_private_note_with_proof` and is re-sent by an
+/// explicit `flush_relay_outbox`, without a full sync. A second flush is a no-op once the entry has
+/// drained.
 #[tokio::test]
 async fn flush_relay_outbox_retries_failed_relay_without_full_sync() {
     let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
@@ -977,7 +979,7 @@ async fn flush_relay_outbox_retries_failed_relay_without_full_sync() {
 
     // First relay fails; the payload must survive in the outbox.
     let first_attempt = sender
-        .send_private_note_with_block_hint(note, &recipient_address, BlockNumber::from(0))
+        .send_private_note_with_proof(note, &recipient_address, genesis_inclusion_proof())
         .await;
     assert!(
         first_attempt.is_err(),
@@ -1051,7 +1053,7 @@ async fn note_delivered_by_tag_match_is_only_kept_when_a_tracked_account_can_con
     let address = Address::new(account.id())
         .with_routing_parameters(RoutingParameters::new(AddressInterface::BasicWallet));
     sender
-        .send_private_note_with_block_hint(note.clone(), &address, BlockNumber::from(0))
+        .send_private_note_with_proof(note.clone(), &address, genesis_inclusion_proof())
         .await
         .unwrap();
 
@@ -1080,7 +1082,7 @@ async fn note_delivered_by_tag_match_is_only_kept_when_a_tracked_account_can_con
     let recipient_address = Address::new(account.id())
         .with_routing_parameters(RoutingParameters::new(AddressInterface::BasicWallet));
     sender
-        .send_private_note_with_block_hint(note, &recipient_address, BlockNumber::from(0))
+        .send_private_note_with_proof(note, &recipient_address, genesis_inclusion_proof())
         .await
         .unwrap();
 
@@ -1119,7 +1121,7 @@ async fn persistent_relay_failure_does_not_block_sync_state() {
 
     // The relay fails and the payload is persisted to the outbox.
     let _ = sender
-        .send_private_note_with_block_hint(note, &recipient_address, BlockNumber::from(0))
+        .send_private_note_with_proof(note, &recipient_address, genesis_inclusion_proof())
         .await;
 
     // sync_state flushes the outbox (which fails) but must still complete: the relay failure is
@@ -1135,36 +1137,6 @@ async fn persistent_relay_failure_does_not_block_sync_state() {
         direct.is_err(),
         "directly flushing an undeliverable entry should surface the error"
     );
-}
-
-/// `send_private_note_with_block_hint` delivers a note end-to-end like `send_private_note`,
-/// exercising the floor-carrying relay path.
-#[tokio::test]
-async fn send_private_note_with_block_hint_delivers_note() {
-    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
-    let (mut sender, sender_account) = create_test_user_transport(mock_node.clone()).await;
-    let (mut recipient, recipient_account) = create_test_user_transport(mock_node.clone()).await;
-    let recipient_address = Address::new(recipient_account.id())
-        .with_routing_parameters(RoutingParameters::new(AddressInterface::BasicWallet));
-
-    let note: Note = P2idNote::builder()
-        .sender(sender_account.id())
-        .target(recipient_account.id())
-        .asset(dummy_asset())
-        .note_type(NoteType::Private)
-        .generate_serial_number(sender.rng())
-        .build()
-        .unwrap()
-        .into();
-
-    sender
-        .send_private_note_with_block_hint(note, &recipient_address, BlockNumber::from(0))
-        .await
-        .unwrap();
-
-    recipient.sync_state().await.unwrap();
-    let notes = recipient.get_input_notes(NoteFilter::All).await.unwrap();
-    assert_eq!(notes.len(), 1, "recipient should receive the note relayed with a block floor");
 }
 
 /// A private note committed more than the fallback lookback window before the recipient's sync
@@ -1183,8 +1155,8 @@ async fn fetch_private_notes_uses_sender_provided_after_block_num() {
         "sync height must be beyond the fallback lookback window for this test to be meaningful"
     );
 
-    // Deliver the note WITH a floor pointing at genesis, mirroring
-    // `send_private_note_with_block_hint`.
+    // Deliver the note WITH a floor pointing at genesis, as the transport does for a note it stored
+    // with a verified proof.
     let details_bytes = NoteDetails::from(private_note.clone()).to_bytes();
     mock_transport_node.write().add_note_after(
         *private_note.header(),
@@ -1341,11 +1313,8 @@ async fn transport_send_with_proof() {
         .build()
         .unwrap()
         .into();
-    let inclusion_proof =
-        NoteInclusionProof::new(BlockNumber::GENESIS, 0, SparseMerklePath::default()).unwrap();
-
     sender
-        .send_private_note_with_proof(note.clone(), &recipient_address, inclusion_proof)
+        .send_private_note_with_proof(note.clone(), &recipient_address, genesis_inclusion_proof())
         .await
         .unwrap();
 
@@ -1383,11 +1352,8 @@ async fn flush_relay_outbox_resends_with_proof() {
         .build()
         .unwrap()
         .into();
-    let inclusion_proof =
-        NoteInclusionProof::new(BlockNumber::GENESIS, 0, SparseMerklePath::default()).unwrap();
-
     let first_attempt = sender
-        .send_private_note_with_proof(note.clone(), &recipient_address, inclusion_proof)
+        .send_private_note_with_proof(note.clone(), &recipient_address, genesis_inclusion_proof())
         .await;
     assert!(first_attempt.is_err(), "expected NTL failure on first attempt");
     assert_eq!(mock_node.read().proven_block(&note.id()), None);
@@ -1479,7 +1445,13 @@ async fn transport_delivery_for_unrequested_tag_is_dropped() {
 // ================================================================================================
 
 /// A dummy fungible asset for transport-layer notes. P2ID notes require at least one asset, and
-/// these notes are never consumed on-chain, so the issuing faucet only needs to be a valid ID.
+/// these notes are never consumed on-chain, so the issuing faucet only needs to be a valid ID. An
+/// inclusion proof that names the genesis block. The mock transport does not verify proofs, so the
+/// path is empty; the recipient scans for the commitment from genesis.
+fn genesis_inclusion_proof() -> NoteInclusionProof {
+    NoteInclusionProof::new(BlockNumber::GENESIS, 0, SparseMerklePath::default()).unwrap()
+}
+
 fn dummy_asset() -> Asset {
     let faucet_id = AccountId::dummy(
         [7u8; 15],

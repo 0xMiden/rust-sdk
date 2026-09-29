@@ -41,7 +41,6 @@ use super::generated::note_transport::{
     FetchNotesCursor,
     FetchNotesRequest,
     FetchedNote,
-    SendNoteRequest,
     SendNoteWithProofRequest,
     TransportNote as ProtoTransportNote,
 };
@@ -220,25 +219,6 @@ impl GrpcNoteTransportClient {
         Ok(self.ensure_connected().await?.health_client)
     }
 
-    /// Pushes a note to the note transport network.
-    ///
-    /// The note header and details use the node's typed Protobuf messages.
-    pub async fn send_note(&self, note: TransportNote) -> Result<(), NoteTransportError> {
-        self.send_note_inner(note, None).await
-    }
-
-    /// Pushes a note to the note transport network, relaying a block hint for the recipient.
-    ///
-    /// `block_hint` is forwarded as the request's `after_block_num`. It identifies the block from
-    /// which the recipient should start scanning for the note's commitment.
-    pub async fn send_note_with_block_hint(
-        &self,
-        note: TransportNote,
-        block_hint: BlockNumber,
-    ) -> Result<(), NoteTransportError> {
-        self.send_note_inner(note, Some(block_hint.as_u32())).await
-    }
-
     /// Pushes a note to the note transport network together with its inclusion proof.
     ///
     /// The service verifies the proof against its node before it stores the note. It relays the
@@ -261,26 +241,6 @@ impl GrpcNoteTransportClient {
             .map_err(|e| {
                 NoteTransportError::Network(format!("Send note with proof failed: {e:?}"))
             })?;
-
-        Ok(())
-    }
-
-    /// Sends a note with an optional block hint.
-    async fn send_note_inner(
-        &self,
-        note: TransportNote,
-        after_block_num: Option<u32>,
-    ) -> Result<(), NoteTransportError> {
-        let request = SendNoteRequest {
-            note: Some(proto_transport_note(note)),
-            after_block_num: after_block_num.map(BlockNumber::from).map(Into::into),
-        };
-
-        self.api()
-            .await?
-            .send_note(Request::new(request))
-            .await
-            .map_err(|e| NoteTransportError::Network(format!("Send note failed: {e:?}")))?;
 
         Ok(())
     }
@@ -366,18 +326,6 @@ impl GrpcNoteTransportClient {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl super::NoteTransportClient for GrpcNoteTransportClient {
-    async fn send_note(&self, note: TransportNote) -> Result<(), NoteTransportError> {
-        self.send_note(note).await
-    }
-
-    async fn send_note_with_block_hint(
-        &self,
-        note: TransportNote,
-        block_hint: BlockNumber,
-    ) -> Result<(), NoteTransportError> {
-        self.send_note_with_block_hint(note, block_hint).await
-    }
-
     async fn send_note_with_proof(
         &self,
         note: TransportNote,
@@ -498,18 +446,13 @@ mod tests {
     }
 
     #[test]
-    fn transport_note_preserves_the_legacy_outbox_encoding() {
-        let note = private_note(7);
-        let header = *note.header();
-        let details = NoteDetails::from(note.clone());
-        let mut legacy = Vec::new();
-        header.write_into(&mut legacy);
-        details.to_bytes().write_into(&mut legacy);
+    fn transport_note_round_trips() {
+        let transport_note = TransportNote::from(private_note(7));
 
-        let transport_note = TransportNote::from(note);
-
-        assert_eq!(transport_note.to_bytes(), legacy);
-        assert_eq!(TransportNote::read_from_bytes(&legacy).unwrap(), transport_note);
+        assert_eq!(
+            TransportNote::read_from_bytes(&transport_note.to_bytes()).unwrap(),
+            transport_note
+        );
     }
 
     #[test]

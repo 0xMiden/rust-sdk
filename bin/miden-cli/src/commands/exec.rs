@@ -12,9 +12,9 @@ use miden_client::vm::{AdviceInputs, MIN_STACK_DEPTH};
 use miden_client::{Client, Felt};
 
 use crate::advice_inputs::load_advice_map_from_file;
-use crate::commands::new_account::load_packages;
 use crate::config::CliConfig;
 use crate::errors::CliError;
+use crate::packages::load_packages;
 use crate::utils::{
     get_input_acc_id_by_prefix_or_default,
     print_executed_program_stack,

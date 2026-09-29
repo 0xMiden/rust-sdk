@@ -10,6 +10,10 @@
 
 * [FEATURE][rust] Added `Client::track_account_witness`, `Client::untrack_account_witness` and `Client::tracked_account_witnesses` to register accounts whose account witness the sync keeps fresh in the store (new `account_witnesses` table). A transaction using a registered account as a foreign account builds its inputs from the store instead of issuing a `GetAccount` request, moving the cost from once per transaction to once per sync ([#2476](https://github.com/0xMiden/rust-sdk/pull/2476)).
 
+### Fixes
+
+* [FIX][rust] Calling `TransactionRequestBuilder::own_output_notes` before `expected_output_recipients` no longer drops the own notes' recipients, which made `execute_transaction` panic. `TransactionRequest::validate` now also rejects a `SendNotes` note whose recipient is missing ([#2603](https://github.com/0xMiden/rust-sdk/pull/2603)).
+
 ## 0.17.0-rc.4 (2026-09-26)
 
 ### Breaking Changes

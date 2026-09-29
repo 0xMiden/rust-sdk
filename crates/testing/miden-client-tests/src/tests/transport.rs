@@ -1444,14 +1444,14 @@ async fn transport_delivery_for_unrequested_tag_is_dropped() {
 // HELPERS
 // ================================================================================================
 
-/// A dummy fungible asset for transport-layer notes. P2ID notes require at least one asset, and
-/// these notes are never consumed on-chain, so the issuing faucet only needs to be a valid ID. An
-/// inclusion proof that names the genesis block. The mock transport does not verify proofs, so the
-/// path is empty; the recipient scans for the commitment from genesis.
+/// An inclusion proof that names the genesis block. The mock transport does not verify proofs, so
+/// the path is empty; the recipient scans for the commitment from genesis.
 fn genesis_inclusion_proof() -> NoteInclusionProof {
     NoteInclusionProof::new(BlockNumber::GENESIS, 0, SparseMerklePath::default()).unwrap()
 }
 
+/// A dummy fungible asset for transport-layer notes. P2ID notes require at least one asset, and
+/// these notes are never consumed on-chain, so the issuing faucet only needs to be a valid ID.
 fn dummy_asset() -> Asset {
     let faucet_id = AccountId::dummy(
         [7u8; 15],

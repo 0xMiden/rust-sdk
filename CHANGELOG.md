@@ -2,9 +2,13 @@
 
 ## Unreleased
 
-### Fixes
+### Breaking Changes
 
-* [FIX][rust] Discarding a local transaction during sync now releases the input notes it was consuming: authenticated notes go back to `Committed` and unauthenticated ones to `Expected`, so they are listed as consumable again and can be spent by a new transaction. Notes consumed on chain in the meantime stay consumed. Previously such notes stayed in a processing state indefinitely ([#2585](https://github.com/0xMiden/rust-sdk/pull/2585)).
+* [BREAKING][param][rust] The `Store` trait requires five account-witness registry methods: `track_account_witness`, `untrack_account_witness`, `tracked_account_witnesses`, `get_account_witness` and `update_account_witness`. They have no default bodies, so every out-of-tree implementation must provide them ([#2476](https://github.com/0xMiden/rust-sdk/pull/2476)).
+
+### Enhancements
+
+* [FEATURE][rust] Added `Client::track_account_witness`, `Client::untrack_account_witness` and `Client::tracked_account_witnesses` to register accounts whose account witness the sync keeps fresh in the store (new `account_witnesses` table). A transaction using a registered account as a foreign account builds its inputs from the store instead of issuing a `GetAccount` request, moving the cost from once per transaction to once per sync ([#2476](https://github.com/0xMiden/rust-sdk/pull/2476)).
 
 ## 0.17.0-rc.4 (2026-09-26)
 

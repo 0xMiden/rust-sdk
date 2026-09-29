@@ -49,7 +49,7 @@ crate-type = ["lib"]
 # each consumer can pick the smallest feature set they need.
 concurrent = ["miden-tx/concurrent"]
 dap = ["dep:miden-debug", "std"]
-default = ["std", "tonic"]
+default = ["std"]
 std = [
   "concurrent",
   "dep:tempfile",
@@ -60,9 +60,9 @@ std = [
   "miden-processor/std",
   "miden-protocol/std",
   "miden-tx/std",
-  "tonic/tls-native-roots",
-  "tonic/tls-ring",
-  "tonic/transport",
+  "tonic?/tls-native-roots",
+  "tonic?/tls-ring",
+  "tonic?/transport",
 ]
 testing = [
   "dep:miden-testing",

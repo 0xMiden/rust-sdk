@@ -92,6 +92,7 @@ fn compile_tonic_remote_prover_proto(out_dir: &Path) -> miette::Result<()> {
         .into_diagnostic()?;
 
     tonic_prost_build::configure()
+        .build_client(tonic_client_codegen_enabled())
         .build_server(false)
         .out_dir(&std_out)
         .compile_fds_with_config(file_descriptors, canonical_object_config())
@@ -128,6 +129,7 @@ fn compile_tonic_note_transport_proto(out_dir: &Path) -> miette::Result<()> {
         .into_diagnostic()?;
 
     tonic_prost_build::configure()
+        .build_client(tonic_client_codegen_enabled())
         .build_server(false)
         .out_dir(&std_out)
         .compile_fds_with_config(file_descriptors, prost_config)
@@ -167,6 +169,7 @@ fn compile_tonic_client_proto(out_dir: &Path) -> miette::Result<()> {
         .into_diagnostic()?;
 
     tonic_prost_build::configure()
+        .build_client(tonic_client_codegen_enabled())
         .build_server(false)
         .out_dir(&std_out)
         .compile_fds_with_config(file_descriptors, prost_config)

@@ -539,8 +539,14 @@ impl<AUTH> Client<AUTH> {
     /// tracked by this client, so that its code, storage and vault come from the store as well;
     /// registering an untracked public account costs a request per sync and saves none.
     ///
-    /// The account is not validated against the network here. Registering an already registered
-    /// account is a no-op and keeps any cached witness.
+    /// The witness is fetched by the next sync, not by this call. Transactions assume that a sync
+    /// ran after the account was registered.
+    ///
+    /// The account is not validated against the network here. The sync fails while a registered
+    /// account has no witness that the node can return, so an account that is not in the account
+    /// tree blocks the sync until it is unregistered.
+    ///
+    /// Registering an already registered account is a no-op and keeps any cached witness.
     ///
     /// Returns `true` if the account was not registered before this call.
     pub async fn track_account_witness(&self, account_id: AccountId) -> Result<bool, ClientError> {

@@ -4,7 +4,7 @@ use std::string::ToString;
 use std::vec::Vec;
 
 use miden_client::account::AccountId;
-use miden_client::block::{AccountWitness, BlockNumber};
+use miden_client::block::AccountWitness;
 use miden_client::store::StoreError;
 use miden_client::utils::{Deserializable, Serializable};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -64,33 +64,32 @@ impl SqliteStore {
     pub(crate) fn get_account_witness(
         conn: &mut Connection,
         account_id: AccountId,
-    ) -> Result<Option<(AccountWitness, BlockNumber)>, StoreError> {
-        const QUERY: &str = "SELECT witness, block_num FROM account_witnesses \
+    ) -> Result<Option<AccountWitness>, StoreError> {
+        const QUERY: &str = "SELECT witness FROM account_witnesses \
                              WHERE account_id = ? AND witness IS NOT NULL";
 
-        let row: Option<(Vec<u8>, u32)> = conn
+        let witness: Option<Vec<u8>> = conn
             .prepare_cached(QUERY)
             .into_store_error()?
-            .query_row(params![account_id.to_bytes()], |row| Ok((row.get(0)?, row.get(1)?)))
+            .query_row(params![account_id.to_bytes()], |row| row.get(0))
             .optional()
             .into_store_error()?;
 
-        row.map(|(witness, block_num)| {
-            let witness = AccountWitness::read_from_bytes(&witness)
-                .map_err(StoreError::DataDeserializationError)?;
-            Ok((witness, BlockNumber::from(block_num)))
-        })
-        .transpose()
+        witness
+            .map(|witness| {
+                AccountWitness::read_from_bytes(&witness)
+                    .map_err(StoreError::DataDeserializationError)
+            })
+            .transpose()
     }
 
     pub(crate) fn update_account_witness(
         conn: &mut Connection,
         account_id: AccountId,
         witness: &AccountWitness,
-        block_num: BlockNumber,
     ) -> Result<bool, StoreError> {
         let tx = conn.transaction().into_store_error()?;
-        let updated = Self::update_account_witness_tx(&tx, account_id, witness, block_num)?;
+        let updated = Self::update_account_witness_tx(&tx, account_id, witness)?;
         tx.commit().into_store_error()?;
 
         Ok(updated)
@@ -102,17 +101,15 @@ impl SqliteStore {
         tx: &Transaction<'_>,
         account_id: AccountId,
         witness: &AccountWitness,
-        block_num: BlockNumber,
     ) -> Result<bool, StoreError> {
         // UPDATE rather than an upsert: the row must already exist, since only
         // `track_account_witness` registers an account.
-        const QUERY: &str =
-            "UPDATE account_witnesses SET witness = ?, block_num = ? WHERE account_id = ?";
+        const QUERY: &str = "UPDATE account_witnesses SET witness = ? WHERE account_id = ?";
 
         let updated = tx
             .prepare_cached(QUERY)
             .into_store_error()?
-            .execute(params![witness.to_bytes(), block_num.as_u32(), account_id.to_bytes()])
+            .execute(params![witness.to_bytes(), account_id.to_bytes()])
             .into_store_error()?;
 
         Ok(updated > 0)

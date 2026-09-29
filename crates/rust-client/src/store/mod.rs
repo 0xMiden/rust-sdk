@@ -513,29 +513,27 @@ pub trait Store: Send + Sync {
     /// it yet.
     async fn tracked_account_witnesses(&self) -> Result<Vec<AccountId>, StoreError>;
 
-    /// Retrieves the cached [`AccountWitness`] along with the block it was fetched at.
-    ///
-    /// Callers must reject a witness whose block is not the one they execute against.
+    /// Retrieves the cached [`AccountWitness`]. The witness opens under the account root of the
+    /// block at the sync height.
     ///
     /// Returns `None` when the account is not registered or has not been refreshed yet.
     async fn get_account_witness(
         &self,
         account_id: AccountId,
-    ) -> Result<Option<(AccountWitness, BlockNumber)>, StoreError>;
+    ) -> Result<Option<AccountWitness>, StoreError>;
 
     /// Caches an [`AccountWitness`] for a registered account, replacing any previous one.
     ///
     /// Returns `false` if the account is not registered, in which case nothing is written.
     /// Registering is [`Self::track_account_witness`]'s job alone.
     ///
-    /// The caller should verify the witness against `block_num`'s account root first. The read path
-    /// only checks the block number, so a bad witness stored here surfaces later as a kernel
-    /// assertion during execution rather than as a chain validation error at sync time.
+    /// The caller must verify the witness against the account root of the block at the sync height
+    /// first. The read path does not check the witness, so a bad witness stored here surfaces later
+    /// as a kernel assertion during execution rather than as a chain validation error at sync time.
     async fn update_account_witness(
         &self,
         account_id: AccountId,
         witness: &AccountWitness,
-        block_num: BlockNumber,
     ) -> Result<bool, StoreError>;
 
     // SETTINGS

@@ -683,6 +683,10 @@ impl NodeRpcClient for MockRpcApi {
     ) -> Result<(BlockNumber, AccountProof), RpcError> {
         self.get_account_calls.fetch_add(1, Ordering::Relaxed);
 
+        if let Some(error) = self.take_failure(RpcEndpoint::GetAccount) {
+            return Err(error);
+        }
+
         let current_chain = self.mock_chain.read();
         let current_block_number = current_chain.latest_block_header().block_num();
         let block_number = match request.at {

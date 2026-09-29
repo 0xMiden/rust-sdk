@@ -62,7 +62,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::cmp::max;
 
-use futures::StreamExt;
+use futures::{StreamExt, TryStreamExt};
 use miden_protocol::account::AccountId;
 use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::block::{BlockHeader, BlockNumber};
@@ -170,7 +170,7 @@ where
         let block_from = block_num_from_forest(&self.get_current_partial_mmr().await?)?;
 
         let mut chain_sync_data = state_sync.fetch_state(block_from, input).await?;
-        self.collect_account_witnesses(&mut chain_sync_data).await;
+        self.collect_account_witnesses(&mut chain_sync_data).await?;
 
         Ok(chain_sync_data)
     }
@@ -456,30 +456,24 @@ where
     /// Every account needs a witness at the new chain tip, whether or not its own state changed,
     /// since a witness breaks when any other account in the tree moves.
     ///
-    /// A failed fetch is logged and skipped rather than failing the sync. A witness is only a
-    /// cache: the transaction path falls back to the node when it finds none for its reference
-    /// block, so a miss costs one request later.
-    async fn collect_account_witnesses(&self, chain_sync_data: &mut ChainSyncData) {
-        let account_ids = match self.store.tracked_account_witnesses().await {
-            Ok(account_ids) if account_ids.is_empty() => return,
-            Ok(account_ids) => account_ids,
-            Err(err) => {
-                warn!(%err, "failed to read the tracked account witness registry");
-                return;
-            },
-        };
+    /// # Errors
+    ///
+    /// Fails if any witness cannot be fetched or validated. A successful sync therefore leaves a
+    /// witness at the sync height for every registered account.
+    async fn collect_account_witnesses(
+        &self,
+        chain_sync_data: &mut ChainSyncData,
+    ) -> Result<(), ClientError> {
+        let account_ids = self.store.tracked_account_witnesses().await?;
+        if account_ids.is_empty() {
+            return Ok(());
+        }
 
         // The header of the block the witnesses must open under. The sync only carries it when it
         // advanced; otherwise the client is already at that block and the store holds its header.
         let chain_tip_header = match chain_sync_data.chain_tip_header() {
             Some(header) => header.clone(),
-            None => match self.get_latest_block_header().await {
-                Ok(header) => header,
-                Err(err) => {
-                    warn!(%err, "failed to read the synced block header; skipping witness fetch");
-                    return;
-                },
-            },
+            None => self.get_latest_block_header().await?,
         };
 
         let already_fetched: BTreeSet<AccountId> = chain_sync_data
@@ -488,52 +482,47 @@ where
             .iter()
             .map(|(account_id, _)| *account_id)
             .collect();
-        let to_fetch: Vec<AccountId> = account_ids
-            .into_iter()
-            .filter(|account_id| !already_fetched.contains(account_id))
-            .collect();
+
+        let mut to_fetch = Vec::new();
+        for account_id in account_ids {
+            if already_fetched.contains(&account_id) {
+                continue;
+            }
+            // The chain did not advance, so the client is already synced to the chain tip. A stored
+            // witness is therefore already the witness for this block.
+            if chain_sync_data.chain_tip_header().is_none()
+                && self.store.get_account_witness(account_id).await?.is_some()
+            {
+                continue;
+            }
+            to_fetch.push(account_id);
+        }
 
         // Bounded fan-out, under the same limit the sync uses for its own `get_account` requests.
-        // Each future resolves to a `Result` so that one failure does not cancel the others.
         let header = &chain_tip_header;
         let witnesses: Vec<(AccountId, AccountWitness)> = futures::stream::iter(to_fetch)
             .map(|account_id| async move {
-                (account_id, self.fetch_account_witness(account_id, header).await)
+                let witness = self.fetch_account_witness(account_id, header).await?;
+                Ok::<_, ClientError>((account_id, witness))
             })
             .buffered(MAX_CONCURRENT_ACCOUNT_FETCHES)
-            .filter_map(|(account_id, result)| async move {
-                match result {
-                    Ok(witness) => witness.map(|witness| (account_id, witness)),
-                    Err(err) => {
-                        warn!(%account_id, %err, "failed to fetch the account witness to cache");
-                        None
-                    },
-                }
-            })
-            .collect()
-            .await;
+            .try_collect()
+            .await?;
 
         chain_sync_data
             .account_updates
             .extend(AccountUpdates::default().with_account_witnesses(witnesses));
+
+        Ok(())
     }
 
     /// Fetches a single account's witness at `chain_tip_header`'s block.
-    ///
-    /// Returns `None` without a request when the store already holds a witness at that block, which
-    /// is the case when the client syncs again and the chain has not advanced.
     async fn fetch_account_witness(
         &self,
         account_id: AccountId,
         chain_tip_header: &BlockHeader,
-    ) -> Result<Option<AccountWitness>, ClientError> {
+    ) -> Result<AccountWitness, ClientError> {
         let chain_tip = chain_tip_header.block_num();
-
-        if let Some((_, cached_at)) = self.store.get_account_witness(account_id).await?
-            && cached_at == chain_tip
-        {
-            return Ok(None);
-        }
 
         // The minimal request: no vault, no storage map entries, only the witness is wanted.
         let (proof_block_num, proof) = self
@@ -550,7 +539,7 @@ where
         let (witness, _) = proof.into_parts();
         validate_account_witness(&witness, account_id, chain_tip_header)?;
 
-        Ok(Some(witness))
+        Ok(witness)
     }
 }
 

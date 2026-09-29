@@ -169,7 +169,7 @@ impl SqliteStore {
             // Writes only land for accounts registered for witness prefetching; the rest are
             // no-ops, so the sync does not have to know which ones those are.
             for (account_id, witness) in account_updates.account_witnesses() {
-                Self::update_account_witness_tx(db_tx, *account_id, witness, block_num)?;
+                Self::update_account_witness_tx(db_tx, *account_id, witness)?;
             }
 
             if let Some(config) = &protocol_config {

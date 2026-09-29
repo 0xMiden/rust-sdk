@@ -734,18 +734,19 @@ async fn tracked_account_witness_is_served_from_the_store() {
     client.track_account_witness(foreign_account_id).await.unwrap();
     assert_eq!(client.tracked_account_witnesses().await.unwrap(), vec![foreign_account_id]);
 
-    // Precondition: the refresh runs as part of the sync, so a witness must land at the new sync
-    // height. Without this the assertion below would pass for the wrong reason.
+    // Precondition: the refresh runs as part of the sync, so a witness must land in the store.
+    // Without this the assertion below would pass for the wrong reason.
     client.sync_state().await.unwrap();
 
-    let sync_height = client.get_sync_height().await.unwrap();
-    let (_, cached_at) = client
-        .test_store()
-        .get_account_witness(foreign_account_id)
-        .await
-        .unwrap()
-        .expect("the sync should have cached a witness for the registered account");
-    assert_eq!(cached_at, sync_height, "the witness must be cached at the synced block");
+    assert!(
+        client
+            .test_store()
+            .get_account_witness(foreign_account_id)
+            .await
+            .unwrap()
+            .is_some(),
+        "the sync should have cached a witness for the registered account"
+    );
 
     // The actual subject: a transaction at that same height issues no request for the witness.
     // Counted from after the sync so the refresh's own request is not attributed to it.
@@ -758,6 +759,49 @@ async fn tracked_account_witness_is_served_from_the_store() {
         rpc_api.get_account_call_count(),
         calls_before,
         "a cached witness at the reference block must not reach the node"
+    );
+}
+
+/// A sync that cannot fetch the witness of a registered account fails and stores nothing. The next
+/// sync fetches the witness again.
+#[tokio::test]
+async fn sync_fails_when_a_tracked_account_witness_cannot_be_fetched() {
+    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
+    let setup = Box::pin(deploy_fpi_account(&mut client, &rpc_api, AccountType::Private)).await;
+    let foreign_account_id = setup.foreign_account.id();
+
+    client.track_account_witness(foreign_account_id).await.unwrap();
+
+    rpc_api.fail_next_call(
+        RpcEndpoint::GetAccount,
+        RpcError::RequestError {
+            endpoint: RpcEndpoint::GetAccount,
+            error_kind: GrpcError::Unavailable,
+            endpoint_error: None,
+            source: None,
+        },
+    );
+
+    client.sync_state().await.unwrap_err();
+    assert!(
+        client
+            .test_store()
+            .get_account_witness(foreign_account_id)
+            .await
+            .unwrap()
+            .is_none(),
+        "a failed sync must not cache a witness"
+    );
+
+    client.sync_state().await.unwrap();
+    assert!(
+        client
+            .test_store()
+            .get_account_witness(foreign_account_id)
+            .await
+            .unwrap()
+            .is_some(),
+        "the next sync must cache the witness"
     );
 }
 
@@ -791,48 +835,6 @@ async fn untracked_account_witness_is_fetched_from_the_node() {
         rpc_api.get_account_call_count(),
         calls_before + 1,
         "without a cached witness the transaction must ask the node for the witness, once"
-    );
-}
-
-/// A witness cached at a block other than the transaction's reference block is not used.
-#[tokio::test]
-async fn stale_account_witness_falls_back_to_the_node() {
-    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
-    let setup = Box::pin(deploy_fpi_account(&mut client, &rpc_api, AccountType::Private)).await;
-    let foreign_account_id = setup.foreign_account.id();
-
-    // Registered and cached at the current sync height.
-    client.track_account_witness(foreign_account_id).await.unwrap();
-    client.sync_state().await.unwrap();
-
-    let sync_height = client.get_sync_height().await.unwrap();
-    let (witness, cached_at) = client
-        .test_store()
-        .get_account_witness(foreign_account_id)
-        .await
-        .unwrap()
-        .expect("the sync should have cached a witness");
-    assert_eq!(cached_at, sync_height);
-
-    // Re-stamp the same witness at an earlier block. Only the block number differs from the passing
-    // case, which isolates it as the thing the read path checks.
-    let stale_block = sync_height.checked_sub(1).expect("the chain is past genesis by now");
-    client
-        .test_store()
-        .update_account_witness(foreign_account_id, &witness, stale_block)
-        .await
-        .unwrap();
-
-    // The transaction still executes against `sync_height`, so the entry cannot serve it.
-    let calls_before = rpc_api.get_account_call_count();
-    Box::pin(client.execute_transaction(setup.local_wallet_id, fpi_request(&setup)))
-        .await
-        .unwrap();
-
-    assert_eq!(
-        rpc_api.get_account_call_count(),
-        calls_before + 1,
-        "a witness from another block must be ignored and refetched"
     );
 }
 

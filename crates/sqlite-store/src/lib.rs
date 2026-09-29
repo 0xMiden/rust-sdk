@@ -466,7 +466,7 @@ impl Store for SqliteStore {
     async fn get_account_witness(
         &self,
         account_id: AccountId,
-    ) -> Result<Option<(AccountWitness, BlockNumber)>, StoreError> {
+    ) -> Result<Option<AccountWitness>, StoreError> {
         self.interact_with_connection(move |conn| {
             SqliteStore::get_account_witness(conn, account_id)
         })
@@ -477,11 +477,10 @@ impl Store for SqliteStore {
         &self,
         account_id: AccountId,
         witness: &AccountWitness,
-        block_num: BlockNumber,
     ) -> Result<bool, StoreError> {
         let witness = witness.clone();
         self.interact_with_connection(move |conn| {
-            SqliteStore::update_account_witness(conn, account_id, &witness, block_num)
+            SqliteStore::update_account_witness(conn, account_id, &witness)
         })
         .await
     }

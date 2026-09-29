@@ -1222,17 +1222,21 @@ where
         Ok(return_foreign_account_inputs)
     }
 
-    /// Returns the account's witness at `block_num`, from the store when a witness cached for that
-    /// block is available and from the node otherwise.
+    /// Returns the account's witness at `block_num`, from the store when `block_num` is the sync
+    /// height and the account is registered, and from the node otherwise.
     ///
-    /// A cached witness only serves the block it was fetched at, since that is the account root it
-    /// opens under. See [`Client::track_account_witness`] for how one gets cached.
+    /// The sync keeps a witness at the sync height for every registered account, so the node serves
+    /// only unregistered accounts and reference blocks other than the sync height. See
+    /// [`Client::track_account_witness`] for how one gets cached.
     async fn get_account_witness_at(
         &self,
         account_id: AccountId,
         block_num: BlockNumber,
     ) -> Result<AccountWitness, ClientError> {
-        if let Some(witness) = cached_witness_at(&self.store, account_id, block_num).await? {
+        // The store only holds witnesses at the sync height.
+        if block_num == self.store.get_sync_height().await?
+            && let Some(witness) = self.store.get_account_witness(account_id).await?
+        {
             return Ok(witness);
         }
 
@@ -1787,8 +1791,10 @@ async fn local_account_inputs(
     account_id: AccountId,
     account_state_at: AccountStateAt,
 ) -> Result<Option<AccountInputs>, ClientError> {
+    // The store only holds witnesses at the sync height.
     if let AccountStateAt::Block(block_num) = account_state_at
-        && let Some(witness) = cached_witness_at(store, account_id, block_num).await?
+        && block_num == store.get_sync_height().await?
+        && let Some(witness) = store.get_account_witness(account_id).await?
         && let Some(record) = store.get_minimal_partial_account(account_id).await?
     {
         // Derived from the same read that gets handed to the kernel, so what is checked and what is
@@ -1800,21 +1806,6 @@ async fn local_account_inputs(
     }
 
     Ok(None)
-}
-
-/// Returns the witness cached for `account_id`, if there is one and it was fetched at `block_num`.
-///
-/// A witness opens under one block's account root, so one cached at any other block cannot serve a
-/// transaction executing against `block_num`.
-async fn cached_witness_at(
-    store: &Arc<dyn Store>,
-    account_id: AccountId,
-    block_num: BlockNumber,
-) -> Result<Option<AccountWitness>, ClientError> {
-    Ok(store
-        .get_account_witness(account_id)
-        .await?
-        .and_then(|(witness, cached_at)| (cached_at == block_num).then_some(witness)))
 }
 
 /// Builds a foreign account's [`AccountInputs`], from the store when [`local_account_inputs`] can

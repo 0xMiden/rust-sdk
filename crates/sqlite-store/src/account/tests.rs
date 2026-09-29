@@ -24,7 +24,7 @@ use miden_client::account::{
 use miden_client::assembly::CodeBuilder;
 use miden_client::asset::{Asset, FungibleAsset, NonFungibleAsset, NonFungibleAssetDetails};
 use miden_client::auth::{AuthSchemeId, AuthSingleSig, PublicKeyCommitment};
-use miden_client::block::{AccountWitness, BlockNumber};
+use miden_client::block::AccountWitness;
 use miden_client::store::{AccountUpdate, ClientAccountType, Store, StoreError};
 use miden_client::testing::common::{ACCOUNT_ID_REGULAR, create_test_store_path};
 use miden_client::{EMPTY_WORD, Felt, ONE, Serializable, Word, ZERO};
@@ -2763,14 +2763,12 @@ fn mock_account_witness(account_id: AccountId, state_commitment: Word) -> Accoun
         .expect("the path depth matches the account tree depth")
 }
 
-/// A registered account has no witness until one is cached, and the cached witness round-trips
-/// along with the block it was fetched at.
+/// A registered account has no witness until one is cached, and the cached witness round-trips.
 #[tokio::test]
 async fn account_witness_registry_round_trip() -> anyhow::Result<()> {
     let store = create_test_store().await;
     let account_id = AccountId::try_from(ACCOUNT_ID_REGULAR)?;
     let witness = mock_account_witness(account_id, Word::from([1u32; 4]));
-    let cached_block = BlockNumber::from(7);
 
     // Not registered yet.
     assert!(
@@ -2790,16 +2788,15 @@ async fn account_witness_registry_round_trip() -> anyhow::Result<()> {
         "registering an account does not cache a witness on its own"
     );
 
-    store.update_account_witness(account_id, &witness, cached_block).await?;
+    store.update_account_witness(account_id, &witness).await?;
 
     // Registered and cached, as it stands after a sync.
-    let (cached, cached_at) = store
+    let cached = store
         .get_account_witness(account_id)
         .await?
         .context("the cached witness should be readable")?;
     assert_eq!(cached.id(), witness.id());
     assert_eq!(cached.state_commitment(), witness.state_commitment());
-    assert_eq!(cached_at, cached_block);
 
     // Unregistered again: the row and its witness are gone.
     assert!(store.untrack_account_witness(account_id).await?);
@@ -2818,10 +2815,9 @@ async fn tracking_an_already_tracked_account_keeps_its_witness() -> anyhow::Resu
     let store = create_test_store().await;
     let account_id = AccountId::try_from(ACCOUNT_ID_REGULAR)?;
     let witness = mock_account_witness(account_id, Word::from([2u32; 4]));
-    let cached_block = BlockNumber::from(3);
 
     store.track_account_witness(account_id).await?;
-    store.update_account_witness(account_id, &witness, cached_block).await?;
+    store.update_account_witness(account_id, &witness).await?;
 
     // Registering the same account a second time.
     assert!(
@@ -2829,11 +2825,11 @@ async fn tracking_an_already_tracked_account_keeps_its_witness() -> anyhow::Resu
         "re-registering reports no new registration"
     );
 
-    let (_, cached_at) = store
+    let cached = store
         .get_account_witness(account_id)
         .await?
         .context("the witness cached before re-registering should survive")?;
-    assert_eq!(cached_at, cached_block);
+    assert_eq!(cached.state_commitment(), witness.state_commitment());
 
     Ok(())
 }
@@ -2846,7 +2842,7 @@ async fn update_does_not_create_a_registration() -> anyhow::Result<()> {
     let account_id = AccountId::try_from(ACCOUNT_ID_REGULAR)?;
     let witness = mock_account_witness(account_id, Word::from([3u32; 4]));
 
-    let updated = store.update_account_witness(account_id, &witness, BlockNumber::from(5)).await?;
+    let updated = store.update_account_witness(account_id, &witness).await?;
 
     assert!(!updated, "an unregistered account reports no update");
     assert!(store.tracked_account_witnesses().await?.is_empty());
@@ -2855,38 +2851,31 @@ async fn update_does_not_create_a_registration() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// A refresh replaces the previous entry rather than accumulating one per block.
+/// A refresh replaces the previous entry rather than accumulating one per sync.
 #[tokio::test]
 async fn updating_a_witness_replaces_the_previous_one() -> anyhow::Result<()> {
     let store = create_test_store().await;
     let account_id = AccountId::try_from(ACCOUNT_ID_REGULAR)?;
     let latest_commitment = Word::from([5u32; 4]);
-    let latest_block = BlockNumber::from(11);
 
     store.track_account_witness(account_id).await?;
 
-    // Two syncs, one block apart.
+    // Two syncs.
     store
         .update_account_witness(
             account_id,
             &mock_account_witness(account_id, Word::from([4u32; 4])),
-            BlockNumber::from(10),
         )
         .await?;
     store
-        .update_account_witness(
-            account_id,
-            &mock_account_witness(account_id, latest_commitment),
-            latest_block,
-        )
+        .update_account_witness(account_id, &mock_account_witness(account_id, latest_commitment))
         .await?;
 
-    let (cached, cached_at) = store
+    let cached = store
         .get_account_witness(account_id)
         .await?
         .context("the latest witness should be readable")?;
     assert_eq!(cached.state_commitment(), latest_commitment);
-    assert_eq!(cached_at, latest_block);
     assert_eq!(store.tracked_account_witnesses().await?, vec![account_id]);
 
     Ok(())

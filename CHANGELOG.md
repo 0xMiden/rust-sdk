@@ -4,7 +4,7 @@
 
 ### Breaking Changes
 
-* [BREAKING][type][rust] Sync endpoints now report a `FutureBlock` error when the requested block is ahead of the node's chain tip. Endpoint errors now match the node's error codes, including new transaction submission errors, and unused error variants were removed ([#2383](https://github.com/0xMiden/rust-sdk/issues/2383)).
+* [BREAKING][type][rust] Sync endpoints now report a `FutureBlock` error when the requested block is ahead of the node's chain tip. Endpoint errors now match the node's error codes, including new transaction submission errors, and unused error variants were removed ([#2383](https://github.com/0xMiden/rust-sdk/pull/2623)).
 
 ### Enhancements
 

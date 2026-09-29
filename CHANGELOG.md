@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Breaking Changes
+
+* [BREAKING][param][rust] The `Store` trait requires five account-witness registry methods: `track_account_witness`, `untrack_account_witness`, `tracked_account_witnesses`, `get_account_witness` and `update_account_witness`. They have no default bodies, so every out-of-tree implementation must provide them ([#2476](https://github.com/0xMiden/rust-sdk/pull/2476)).
+
+### Enhancements
+
+* [FEATURE][rust] Added `Client::track_account_witness`, `Client::untrack_account_witness` and `Client::tracked_account_witnesses` to register accounts whose account witness the sync keeps fresh in the store (new `account_witnesses` table). A transaction using a registered account as a foreign account builds its inputs from the store instead of issuing a `GetAccount` request, moving the cost from once per transaction to once per sync ([#2476](https://github.com/0xMiden/rust-sdk/pull/2476)).
+
+## 0.17.0-rc.4 (2026-09-26)
+
+### Breaking Changes
+
+* [BREAKING][behavior][rust] Added `TransactionRequestBuilder::block_numbers` so callers can include selected blocks in a transaction's partial blockchain and in anchors captured with `Client::chain_anchor_for_request`. `TransactionRequest` now always serializes the block numbers, so request bytes written by rc.3 do not deserialize ([#2629](https://github.com/0xMiden/rust-sdk/pull/2629), [#2625](https://github.com/0xMiden/rust-sdk/issues/2625)).
+* [BREAKING][removal][cli] `exec` now requires `--package` (`-p`). Removed `--script-path` (`-s`) and in-process MASM compilation. Compile scripts with `miden build` first. DAP sessions use package debug information and reload the compiled package on restart ([#2596](https://github.com/0xMiden/rust-sdk/issues/2596)).
+
 ## 0.17.0-rc.3 (2026-09-24)
 
 ### Breaking Changes
@@ -18,7 +35,6 @@
 
 ### Breaking Changes
 
-* [BREAKING][removal][cli] `exec` now requires `--package` (`-p`). Removed `--script-path` (`-s`) and in-process MASM compilation. Compile scripts with `miden build` first. DAP sessions use package debug information and reload the compiled package on restart ([#2596](https://github.com/0xMiden/rust-sdk/issues/2596)).
 * [BREAKING][removal][rust] The note transport gRPC client now uses the service and message definitions from the node repository, through `miden-node-proto-build` `0.17.0-rc.2` from crates.io. Fetched notes are decoded one by one: a note that fails to decode, or whose details do not match the commitment in its header, is dropped with a warning instead of failing the fetch. `NoteTransportCursor` now stores the node's nonce and sequence, and the unsupported `NoteTransportClient::stream_notes` API and `NoteStream` trait were removed ([#2594](https://github.com/0xMiden/rust-sdk/pull/2594)).
 * [BREAKING][arch][rust] Updated protocol dependencies to `0.17.0-rc.6` ([#2594](https://github.com/0xMiden/rust-sdk/pull/2594)).
 * [BREAKING][arch][rust] `AccountFile` and `NoteFile` moved from `miden-protocol` and `miden-standards` to `miden-objects`. Both are re-exported from `miden_client::account` and `miden_client::note` as before ([#2594](https://github.com/0xMiden/rust-sdk/pull/2594)).

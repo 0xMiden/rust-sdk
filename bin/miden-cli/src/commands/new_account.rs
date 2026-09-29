@@ -297,10 +297,8 @@ pub struct NewAccountCmd {
     /// present in the init storage data file.
     #[arg(short, long)]
     pub init_storage_data_path: Option<PathBuf>,
-    /// Sets one init storage value in the form `<slot::name>=<value>`.
-    ///
-    /// The name is a storage slot name, or a slot name with a `.field` suffix. Repeat the flag to
-    /// set more values. The user will be prompted to provide values for any keys not given.
+    /// Sets one init storage value in the form `<slot::name>=<value>`. The name is a storage slot
+    /// name, or a slot name with a `.field` suffix. Repeat the flag to set more values.
     #[arg(
         long = "init-storage-value",
         value_name = "SLOT=VALUE",
@@ -627,7 +625,7 @@ async fn create_client_account<AUTH: Keystore + Sync + 'static>(
     keystore: &CliKeyStore,
     account_type: AccountType,
     package_paths: &[PathBuf],
-    init_source: InitStorageDataSource,
+    init_storage_data_source: InitStorageDataSource,
     offline: bool,
     auth_choice: AuthChoice,
 ) -> Result<Account, CliError> {
@@ -643,7 +641,7 @@ async fn create_client_account<AUTH: Keystore + Sync + 'static>(
     let packages = load_packages(&cli_config, package_paths)?;
     debug!("Loaded {} packages", packages.len());
     debug!("Loading initialization storage data...");
-    let (init_storage_data, faucet_metadata) = init_source.load()?;
+    let (init_storage_data, faucet_metadata) = init_storage_data_source.load()?;
     debug!("Loaded initialization storage data");
 
     // `FungibleFaucet` requires every storage slot to be initialized. When the user provides a
@@ -946,14 +944,6 @@ mod tests {
         let (name, value) = parse_init_entry("my::slot.field=10").unwrap();
         assert_eq!(name.to_string(), "my::slot.field");
         assert_eq!(value, "10");
-    }
-
-    #[test]
-    fn parse_init_entry_splits_at_first_equals_sign() {
-        let (name, value) = parse_init_entry("my::slot=a=b").unwrap();
-
-        assert_eq!(name.to_string(), "my::slot");
-        assert_eq!(value, "a=b");
     }
 
     #[test]

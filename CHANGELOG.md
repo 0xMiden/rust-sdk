@@ -10,6 +10,11 @@
 
 * [FEATURE][rust] Added `Client::track_account_witness`, `Client::untrack_account_witness` and `Client::tracked_account_witnesses` to register accounts whose account witness the sync keeps fresh in the store (new `account_witnesses` table). A transaction using a registered account as a foreign account builds its inputs from the store instead of issuing a `GetAccount` request, moving the cost from once per transaction to once per sync ([#2476](https://github.com/0xMiden/rust-sdk/pull/2476)).
 
+### Features
+
+* [FEATURE][cli] Added the repeatable `--init-storage-value <slot::name>=<value>` flag to `new-wallet` and `new-account`. Each use sets one init storage value. The flag cannot be combined with `--init-storage-data-path`.
+
+
 ## 0.17.0-rc.4 (2026-09-26)
 
 ### Breaking Changes
@@ -1207,7 +1212,7 @@
 
 * Added ability to start the client in debug mode (#283).
 
-## 0.2.0 (2024-04-14)
+## 0.2.0 (2024-04-14) 
 
 * Added an `init` command to the CLI.
 * Added support for on-chain accounts.

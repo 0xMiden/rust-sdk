@@ -167,7 +167,7 @@ async fn show_note<AUTH: Keystore + Sync>(
     if matches!(input_note_record, Err(IdPrefixFetchError::NoMatch(_)))
         && matches!(output_note_record, Err(IdPrefixFetchError::NoMatch(_)))
     {
-        return Err(CliError::Import(
+        return Err(CliError::Input(
             "The specified note ID hex prefix did not match any note".to_string(),
         ));
     }
@@ -176,7 +176,7 @@ async fn show_note<AUTH: Keystore + Sync>(
     if matches!(input_note_record, Err(IdPrefixFetchError::MultipleMatches(_)))
         || matches!(output_note_record, Err(IdPrefixFetchError::MultipleMatches(_)))
     {
-        return Err(CliError::Import(
+        return Err(CliError::Input(
             "The specified note ID hex prefix matched with more than one note.".to_string(),
         ));
     }
@@ -189,7 +189,7 @@ async fn show_note<AUTH: Keystore + Sync>(
         (Some(input_record), Some(output_record))
             if input_record.id() != Some(output_record.id()) =>
         {
-            return Err(CliError::Import(
+            return Err(CliError::Input(
                 "The specified note ID hex prefix matched with more than one note.".to_string(),
             ));
         },

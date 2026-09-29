@@ -42,22 +42,25 @@ miden-client-integration-tests = { default-features = false, path = "bin/integra
 miden-client-sqlite-store      = { default-features = false, path = "crates/sqlite-store", version = "0.17.0-rc.4" }
 
 # Miden protocol dependencies
-miden-agglayer  = { default-features = false, version = "0.17.0-rc.7" }
-miden-objects   = { default-features = false, version = "0.17.0-rc.7" }
-miden-protocol  = { default-features = false, version = "0.17.0-rc.7" }
-miden-standards = { default-features = false, version = "0.17.0-rc.7" }
-miden-testing   = { default-features = false, version = "0.17.0-rc.7" }
-miden-tx        = { default-features = false, version = "0.17.0-rc.7" }
-miden-tx-batch  = { default-features = false, version = "0.17.0-rc.7" }
+miden-agglayer  = { branch = "pgackst-code-upgrade-chunks", default-features = false, git = "https://github.com/0xMiden/protocol.git" } # TODO: switch to crates.io release once available
+miden-objects   = { branch = "pgackst-code-upgrade-chunks", default-features = false, git = "https://github.com/0xMiden/protocol.git" } # TODO: switch to crates.io release once available
+miden-protocol  = { branch = "pgackst-code-upgrade-chunks", default-features = false, git = "https://github.com/0xMiden/protocol.git" } # TODO: switch to crates.io release once available
+miden-standards = { branch = "pgackst-code-upgrade-chunks", default-features = false, git = "https://github.com/0xMiden/protocol.git" } # TODO: switch to crates.io release once available
+miden-testing   = { branch = "pgackst-code-upgrade-chunks", default-features = false, git = "https://github.com/0xMiden/protocol.git" } # TODO: switch to crates.io release once available
+miden-tx        = { branch = "pgackst-code-upgrade-chunks", default-features = false, git = "https://github.com/0xMiden/protocol.git" } # TODO: switch to crates.io release once available
+miden-tx-batch  = { branch = "pgackst-code-upgrade-chunks", default-features = false, git = "https://github.com/0xMiden/protocol.git" } # TODO: switch to crates.io release once available
 
 # Miden node dependencies
-miden-node-proto-build = { default-features = false, version = "0.17.0-rc.3" }
+miden-node-proto-build = { default-features = false, git = "https://github.com/0xMiden/node", rev = "7012fa418cef4845a8b58b6c559a4813bd63d040" } # TODO: switch to crates.io release once available
 
 # Miden debug dependency
-miden-assembly-syntax = { default-features = false, version = "0.33" }
-miden-debug           = { default-features = false, features = ["dap", "std"], version = "0.16" }
-miden-mast-package    = { default-features = false, version = "0.33" }
-miden-processor       = { default-features = false, version = "0.33" }
+miden-assembly-syntax = { default-features = false, version = "0.34" }
+miden-debug = { default-features = false, features = [
+  "dap",
+  "std",
+], git = "https://github.com/0xMiden/miden-debug", rev = "0062c35003630ee0e7e0a8270c44df7bb1eeecf7" } # TODO: switch to crates.io release once available
+miden-mast-package = { default-features = false, version = "0.34" }
+miden-processor = { default-features = false, version = "0.34" }
 
 # External dependencies
 anyhow             = { default-features = false, version = "1.0" }

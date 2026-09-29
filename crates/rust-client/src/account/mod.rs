@@ -43,6 +43,8 @@ pub use miden_protocol::account::{
     Account,
     AccountBuilder,
     AccountCode,
+    AccountCodePatch,
+    AccountCodeUpgrade,
     AccountComponent,
     AccountComponentCode,
     AccountDelta,
@@ -243,6 +245,7 @@ pub mod component {
         TransferPolicy,
         TransferPolicyError,
     };
+    pub use miden_standards::account::upgrade::UpgradeManager;
     pub use miden_standards::account::wallets::BasicWallet;
 }
 

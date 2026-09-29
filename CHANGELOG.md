@@ -5,6 +5,28 @@
 ### Breaking Changes
 
 * [BREAKING][type][rust] Sync endpoints now report a `FutureBlock` error when the requested block is ahead of the node's chain tip. Endpoint errors now match the node's error codes, including new transaction submission errors, and unused error variants were removed ([#2383](https://github.com/0xMiden/rust-sdk/pull/2623)).
+* [BREAKING][param][rust] The `Store` trait requires five account-witness registry methods: `track_account_witness`, `untrack_account_witness`, `tracked_account_witnesses`, `get_account_witness` and `update_account_witness`. They have no default bodies, so every out-of-tree implementation must provide them ([#2476](https://github.com/0xMiden/rust-sdk/pull/2476)).
+
+### Enhancements
+
+* [FEATURE][rust] Added `Client::track_account_witness`, `Client::untrack_account_witness` and `Client::tracked_account_witnesses` to register accounts whose account witness the sync keeps fresh in the store (new `account_witnesses` table). A transaction using a registered account as a foreign account builds its inputs from the store instead of issuing a `GetAccount` request, moving the cost from once per transaction to once per sync ([#2476](https://github.com/0xMiden/rust-sdk/pull/2476)).
+
+## 0.17.0-rc.4 (2026-09-26)
+
+### Breaking Changes
+
+* [BREAKING][behavior][rust] Added `TransactionRequestBuilder::block_numbers` so callers can include selected blocks in a transaction's partial blockchain and in anchors captured with `Client::chain_anchor_for_request`. `TransactionRequest` now always serializes the block numbers, so request bytes written by rc.3 do not deserialize ([#2629](https://github.com/0xMiden/rust-sdk/pull/2629), [#2625](https://github.com/0xMiden/rust-sdk/issues/2625)).
+* [BREAKING][removal][cli] `exec` now requires `--package` (`-p`). Removed `--script-path` (`-s`) and in-process MASM compilation. Compile scripts with `miden build` first. DAP sessions use package debug information and reload the compiled package on restart ([#2596](https://github.com/0xMiden/rust-sdk/issues/2596)).
+
+## 0.17.0-rc.3 (2026-09-24)
+
+### Breaking Changes
+
+* [BREAKING][rust] Updated protocol dependencies to `0.17.0-rc.7` and `miden-node-proto-build` to node `0.17.0-rc.3` ([#2621](https://github.com/0xMiden/rust-sdk/pull/2621)).
+
+### Features
+
+* [FEATURE][cli] Added the mutually exclusive authentication scheme flags `--ecdsa-k256-keccak [PUBLIC_KEY]` and `--falcon512-poseidon2` (aliases `--ecdsa`, `--falcon`) to `new-wallet` and `new-account`. With an ECDSA public key, the account commits to the external key and stores no secret key. ECDSA accepts a `0x`-prefixed compressed or uncompressed SEC1 key. Without a public key, the CLI generates and stores a key of the selected scheme. `keys --commitment` now also accepts the 65-byte uncompressed SEC1 encoding ([#2590](https://github.com/0xMiden/rust-sdk/pull/2590)).
 
 ### Enhancements
 
@@ -109,6 +131,7 @@
 * [FIX][cli] `miden-client import` now rejects invocations without a file path instead of silently succeeding ([#2450](https://github.com/0xMiden/rust-sdk/pull/2450)).
 * [FIX][rust] `TransactionRequestBuilder::build_swap` and `build_pswap_create` now reject a zero-amount asset on either side of the exchange. A zero requested asset produced a payback P2ID note carrying nothing, and a zero offered asset produced a note whose consumer pays and receives nothing ([#2459](https://github.com/0xMiden/rust-sdk/pull/2459)).
 * [FIX][test] The integration tests run again on a chain that charges no fee. A `--funders` path (`MIDEN_FUNDER_ACCOUNTS_DIR`) that is unset, empty, missing, or holds no `.mac` file now leaves the run without funders instead of failing, which is all a fee-free genesis needs, since it declares no wallets for the path to hold. A `.mac` file that is present but unusable stays a hard error ([#2481](https://github.com/0xMiden/rust-sdk/pull/2481)).
+* [FIX][rust] `VerifyingRpcClient::sync_nullifiers` now rejects an update stamped outside the requested `block_from`/`block_to` window with `RpcError::InvalidResponse`, in the same pass that checks the nullifier prefixes. `GrpcClient` rejects a page whose cursor ends past the requested `block_to` with `RpcError::PaginationError`, which covers every block-paginated method. Note blocks and transaction records were already range-checked by the sync ([#2503](https://github.com/0xMiden/rust-sdk/pull/2503)).
 * [FIX][store] `set_setting` and `remove_setting` return an error when the number of affected rows does not match the expected count ([#2537](https://github.com/0xMiden/rust-sdk/pull/2537)).
 
 ## 0.16.0 (2026-09-07)

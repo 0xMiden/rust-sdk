@@ -6,13 +6,13 @@ use std::collections::BTreeSet;
 use ::rand::{RngExt, random};
 use anyhow::{Context, Result};
 use miden_agglayer::{AggLayerBridge, AggLayerFaucet, BridgeRoles};
+use miden_objects::account_file::AccountFile;
 use miden_protocol::account::auth::{AuthScheme, AuthSecretKey};
 use miden_protocol::account::{
     Account,
     AccountBuilder,
     AccountComponent,
     AccountComponentMetadata,
-    AccountFile,
     AccountType,
 };
 use miden_protocol::asset::{Asset, AssetAmount};

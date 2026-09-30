@@ -27,7 +27,7 @@ env:
 jobs:
   build:
     name: Build Client and CLI
-    runs-on: warp-ubuntu-latest-x64-8x
+    runs-on: warp-ubuntu-latest-arm64-4x
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -39,7 +39,7 @@ jobs:
       - name: Add Rust Cache
         uses: WarpBuilds/rust-cache@9d0cc3090d9c87de74ea67617b246e978735b1a1 # v2.9.1
         with:
-          shared-key: rust-release
+          shared-key: rust-release-${{ runner.arch }}
           prefix-key: ${{ env.RUST_CACHE_KEY }}
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/next' }}
       - name: make - build
@@ -47,7 +47,7 @@ jobs:
 
   build-wasm:
     name: Build wasm32 (no_std)
-    runs-on: warp-ubuntu-latest-x64-8x
+    runs-on: warp-ubuntu-latest-arm64-2x
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -61,7 +61,7 @@ jobs:
       - name: Add Rust Cache
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
-          shared-key: rust-release
+          shared-key: rust-release-${{ runner.arch }}
           prefix-key: ${{ env.RUST_CACHE_KEY }}
           save-if: false
       - name: make - build-wasm
@@ -85,7 +85,7 @@ jobs:
       - name: Add Rust Cache
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
-          shared-key: rust-release
+          shared-key: rust-release-${{ runner.arch }}
           prefix-key: ${{ env.RUST_CACHE_KEY }}
           save-if: false
       - name: make - ${{ matrix.target }}

@@ -68,37 +68,6 @@ let client = ClientBuilder::new()
     .await?;
 ```
 
-## Protocol configuration
-
-Transaction execution and note screening require the protocol configuration committed by the reference block. The node RPC does not provide this configuration. Obtain the serialized configuration from the network operator and register it before executing transactions:
-
-```rust
-use miden_client::Deserializable;
-use miden_client::protocol_config::ProtocolConfig;
-
-let bytes = std::fs::read("protocol-config.bin")?;
-let config = ProtocolConfig::read_from_bytes(&bytes)?;
-client.add_protocol_config(config).await?;
-```
-
-You can also register it during construction with `ClientBuilder::protocol_config(config)`. The client stores configurations by commitment and selects the one committed by the transaction reference block. Registration persists across client restarts. Register each new configuration before its protocol upgrade takes effect. A missing configuration returns `StoreError::ProtocolConfigNotFound`.
-
-A network that runs the standard protocol parameters needs only one value, the account ID of the native fee faucet, which the operator publishes together with the network endpoints:
-
-```rust
-use miden_client::account::AccountId;
-use miden_client::asset::AssetId;
-use miden_client::protocol_config::ProtocolConfig;
-
-let fee_faucet_id = AccountId::from_hex("0x...")?;
-let config = ProtocolConfig::current(AssetId::new_fungible(fee_faucet_id))?;
-client.add_protocol_config(config).await?;
-```
-
-`ProtocolConfig::current` takes the fee faucet ID and reads the kernel and proof verification parameters from the kernels linked into your binary. It describes the protocol your build implements, not the protocol the network runs. Use it when the two match. When they differ, the derived commitment does not match the one in the block header, and you need the serialized configuration from the operator.
-
-For a local testing node, `make start-node-background` writes the configuration to `data/protocol-config.bin`.
-
 ## Create local account
 
 With the Miden client, you can create and track any number of public and local accounts. For local accounts, the state is tracked locally, and the rollup only keeps commitments to the data, which in turn guarantees privacy.
@@ -153,6 +122,53 @@ let tx_id = client.submit_new_transaction(network_account.id(), deploy).await?;
 ```
 
 After deployment the account is a network account, so the node rejects user-submitted transactions against it; all further state changes happen through network transactions.
+
+## Account registration on an allowlisted network
+
+A network can restrict which accounts get created on chain. An account is created on chain by its first transaction, and a node that enforces an account allowlist rejects that transaction unless the account was registered with an invitation code. Only account creation is gated: an account that already exists on chain is never checked, and network accounts are exempt because the node creates them itself. The network operator hands out the invitation codes. A code binds to one account and cannot be reused for another.
+
+Register the account after adding it to the client and before its first transaction:
+
+```rust
+client.add_account(&new_account, false).await?;
+client.register_account(new_account.id(), invitation_code).await?;
+```
+
+`Client::register_account` requires the account to be tracked by the client, not yet created on chain, and not a network account. A registration consumes the code, so the client first asks the node whether it already allows the account, and fails with `ClientError::AccountAlreadyAllowed` without sending the code when it does. The node rejects an unknown code, a code that is bound to a different account, and an account that is already registered, each with its own `RegisterAccountError` variant.
+
+### Funding of registered accounts
+
+A new account on a fee-charging network cannot pay the fee of its first transaction out of an empty vault. A network operator can run a funding service for this. When one is configured, the node pays every registered account a public P2ID note with the native asset, and `register_account` returns as soon as the funding service queues that note. The note is not committed on chain yet at that point, so it can take a few blocks to arrive.
+
+The note is not part of the response. The client tracks the note tag of every account it owns, so a `sync_state` that runs after the note is committed imports it. Sync until the note arrives. Consuming it is what creates the account on chain, and the fee of that transaction is paid out of the funds the note carries:
+
+```rust
+let records = loop {
+    client.sync_state().await?;
+    let records = client.get_consumable_notes(Some(new_account.id())).await?;
+    if !records.is_empty() {
+        break records;
+    }
+    tokio::time::sleep(Duration::from_secs(3)).await;
+};
+
+let mut notes = Vec::new();
+for (record, _) in records {
+    let note: InputNote = record.try_into()?;
+    notes.push(note.into_note());
+}
+
+let deploy = TransactionRequestBuilder::new().build_consume_notes(notes)?;
+client.submit_new_transaction(new_account.id(), deploy).await?;
+```
+
+If the funding fails on the node side, `register_account` returns an `Unavailable` RPC error. The account stays registered, so a retry fails with `ClientError::AccountAlreadyAllowed`, and the account has to be funded another way, for example through a faucet.
+
+On a network that does not enforce the allowlist the node already allows every account, so `register_account` fails with `ClientError::AccountAlreadyAllowed` and no registration is needed.
+
+### Checking before submitting
+
+`Client::submit_new_transaction` and `BatchBuilder::submit` ask the node whether the network accepts the creation of an account before they submit a transaction that creates one, and fail with `ClientError::AccountNotAllowlisted` when it does not. The check runs after the transaction is executed and proven, so it does not save that work. Register the account first. `Client::is_account_allowed` asks the node the same question directly, and answers `true` on a network that does not enforce an allowlist.
 
 ## Execute transaction
 

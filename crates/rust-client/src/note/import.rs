@@ -12,6 +12,7 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::ToString;
 use alloc::vec::Vec;
 
+use miden_objects::note_file::NoteFile;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{
     Note,
@@ -22,7 +23,6 @@ use miden_protocol::note::{
     NoteInclusionProof,
     NoteTag,
 };
-use miden_standards::note::NoteFile;
 use miden_tx::auth::TransactionAuthenticator;
 
 use crate::rpc::domain::note::{FetchedNote, ResolvedSyncNotesBlock};

@@ -15,10 +15,12 @@ use miden_protocol::account::{
     StorageSlotPatch,
     StorageValuePatch,
 };
+use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrPeaks};
 use miden_protocol::errors::AccountPatchError;
 use miden_protocol::note::{NoteId, Nullifier};
+use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::transaction::TransactionId;
 use miden_protocol::{Felt, ONE, Word};
 
@@ -46,6 +48,9 @@ pub struct StateSyncUpdate {
     transaction_updates: TransactionUpdateTracker,
     /// Public account updates and mismatched private accounts after the sync.
     account_updates: AccountUpdates,
+    /// The protocol configuration active at `block_num`. The node sends it when the sync starts at
+    /// genesis, or when the starting block and `block_num` commit to different configurations.
+    protocol_config: Option<ProtocolConfig>,
 }
 
 impl StateSyncUpdate {
@@ -58,6 +63,7 @@ impl StateSyncUpdate {
         note_updates: NoteUpdateTracker,
         transaction_updates: TransactionUpdateTracker,
         account_updates: AccountUpdates,
+        protocol_config: Option<ProtocolConfig>,
     ) -> Self {
         Self {
             block_num,
@@ -65,6 +71,7 @@ impl StateSyncUpdate {
             note_updates,
             transaction_updates,
             account_updates,
+            protocol_config,
         }
     }
 
@@ -93,6 +100,11 @@ impl StateSyncUpdate {
         &self.account_updates
     }
 
+    /// Returns the protocol configuration the node sent with this sync, if any.
+    pub fn protocol_config(&self) -> Option<&ProtocolConfig> {
+        self.protocol_config.as_ref()
+    }
+
     /// Decomposes this update into its constituent parts.
     pub fn into_parts(
         self,
@@ -102,6 +114,7 @@ impl StateSyncUpdate {
         NoteUpdateTracker,
         TransactionUpdateTracker,
         AccountUpdates,
+        Option<ProtocolConfig>,
     ) {
         (
             self.block_num,
@@ -109,6 +122,7 @@ impl StateSyncUpdate {
             self.note_updates,
             self.transaction_updates,
             self.account_updates,
+            self.protocol_config,
         )
     }
 }
@@ -528,6 +542,9 @@ pub struct AccountUpdates {
     /// hasn't been committed). If this is not the case, the account may be locked until the state
     /// is restored manually.
     mismatched_private_accounts: Vec<(AccountId, Word)>,
+    /// Witnesses validated at the target block, for the accounts the sync queried anyway. Kept so
+    /// that the witness refresh does not request them a second time.
+    account_witnesses: Vec<(AccountId, AccountWitness)>,
 }
 
 impl AccountUpdates {
@@ -539,7 +556,18 @@ impl AccountUpdates {
         Self {
             updated_public_accounts,
             mismatched_private_accounts,
+            account_witnesses: Vec::new(),
         }
+    }
+
+    /// Attaches the account witnesses the sync validated at its target block.
+    #[must_use]
+    pub fn with_account_witnesses(
+        mut self,
+        account_witnesses: Vec<(AccountId, AccountWitness)>,
+    ) -> Self {
+        self.account_witnesses = account_witnesses;
+        self
     }
 
     /// Returns the updated public accounts.
@@ -552,9 +580,15 @@ impl AccountUpdates {
         &self.mismatched_private_accounts
     }
 
+    /// Returns the account witnesses validated at the sync's target block.
+    pub fn account_witnesses(&self) -> &[(AccountId, AccountWitness)] {
+        &self.account_witnesses
+    }
+
     pub fn extend(&mut self, other: AccountUpdates) {
         self.updated_public_accounts.extend(other.updated_public_accounts);
         self.mismatched_private_accounts.extend(other.mismatched_private_accounts);
+        self.account_witnesses.extend(other.account_witnesses);
     }
 }
 

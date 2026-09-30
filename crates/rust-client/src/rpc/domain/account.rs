@@ -1,5 +1,7 @@
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
+use core::fmt::{self, Debug, Formatter};
+
 use miden_protocol::account::{
     Account, AccountCode, AccountHeader, AccountId, AccountStorage, AccountStorageHeader,
     StorageMap, StorageMapKey, StorageSlot, StorageSlotName, StorageSlotType,
@@ -22,6 +24,18 @@ use crate::rpc::generated::rpc::account_request::account_detail_request::{
     StorageMapDetailRequest, StorageMapDetailRequests, StorageRequest,
 };
 use crate::rpc::generated::{self as proto};
+
+// REGISTER ACCOUNT REQUEST
+// ================================================================================================
+
+/// Hides the invitation code, which is a secret that must not reach logs or error messages.
+impl Debug for proto::rpc::RegisterAccountRequest {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RegisterAccountRequest")
+            .field("account_id", &self.account_id)
+            .finish_non_exhaustive()
+    }
+}
 
 // FROM PROTO ACCOUNT HEADERS
 // ================================================================================================

@@ -24,6 +24,7 @@ use miden_client::account::{
 use miden_client::assembly::CodeBuilder;
 use miden_client::asset::{Asset, FungibleAsset, NonFungibleAsset, NonFungibleAssetDetails};
 use miden_client::auth::{AuthSchemeId, AuthSingleSig, PublicKeyCommitment};
+use miden_client::block::AccountWitness;
 use miden_client::store::{AccountUpdate, ClientAccountType, StaleUpdate, Store, StoreError};
 use miden_client::testing::common::{ACCOUNT_ID_REGULAR, create_test_store_path};
 use miden_client::{EMPTY_WORD, Felt, ONE, Serializable, Word, ZERO};
@@ -34,7 +35,7 @@ use miden_protocol::account::{
     StorageSlotPatch,
     StorageValuePatch,
 };
-use miden_protocol::crypto::merkle::MerkleError;
+use miden_protocol::crypto::merkle::{MerkleError, SparseMerklePath};
 use miden_protocol::testing::account_id::{
     ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET,
     ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_WITH_CALLBACKS,
@@ -2773,6 +2774,186 @@ async fn remove_map_patch_deletes_slot() -> anyhow::Result<()> {
     Ok(())
 }
 
+// ACCOUNT WITNESS REGISTRY TESTS
+// ================================================================================================
+
+/// Builds a witness for `account_id` whose path is the one an empty tree would give.
+///
+/// The registry stores the witness as an opaque blob and never opens it, so the path's contents do
+/// not matter for these tests.
+fn mock_account_witness(account_id: AccountId, state_commitment: Word) -> AccountWitness {
+    let path = SparseMerklePath::from_parts(u64::MAX, Vec::new())
+        .expect("an all-empty path spans the full account tree depth");
+    AccountWitness::new(account_id, state_commitment, path)
+        .expect("the path depth matches the account tree depth")
+}
+
+/// A registered account has no witness until one is cached, and the cached witness round-trips.
+#[tokio::test]
+async fn account_witness_registry_round_trip() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+    let account_id = AccountId::try_from(ACCOUNT_ID_REGULAR)?;
+    let witness = mock_account_witness(account_id, Word::from([1u32; 4]));
+
+    // Not registered yet.
+    assert!(
+        store.get_account_witness(account_id).await?.is_none(),
+        "an unregistered account has no cached witness"
+    );
+
+    assert!(
+        store.track_account_witness(account_id).await?,
+        "the account was not registered yet"
+    );
+
+    // Registered, but no sync has run.
+    assert_eq!(store.tracked_account_witnesses().await?, vec![account_id]);
+    assert!(
+        store.get_account_witness(account_id).await?.is_none(),
+        "registering an account does not cache a witness on its own"
+    );
+
+    store.update_account_witness(account_id, &witness).await?;
+
+    // Registered and cached, as it stands after a sync.
+    let cached = store
+        .get_account_witness(account_id)
+        .await?
+        .context("the cached witness should be readable")?;
+    assert_eq!(cached.id(), witness.id());
+    assert_eq!(cached.state_commitment(), witness.state_commitment());
+
+    // Unregistered again: the row and its witness are gone.
+    assert!(store.untrack_account_witness(account_id).await?);
+    assert!(store.tracked_account_witnesses().await?.is_empty());
+    assert!(
+        !store.untrack_account_witness(account_id).await?,
+        "untracking an unregistered account reports no removal"
+    );
+
+    Ok(())
+}
+
+/// Re-registering must not discard a witness already cached for the account.
+#[tokio::test]
+async fn tracking_an_already_tracked_account_keeps_its_witness() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+    let account_id = AccountId::try_from(ACCOUNT_ID_REGULAR)?;
+    let witness = mock_account_witness(account_id, Word::from([2u32; 4]));
+
+    store.track_account_witness(account_id).await?;
+    store.update_account_witness(account_id, &witness).await?;
+
+    // Registering the same account a second time.
+    assert!(
+        !store.track_account_witness(account_id).await?,
+        "re-registering reports no new registration"
+    );
+
+    let cached = store
+        .get_account_witness(account_id)
+        .await?
+        .context("the witness cached before re-registering should survive")?;
+    assert_eq!(cached.state_commitment(), witness.state_commitment());
+
+    Ok(())
+}
+
+/// Caching a witness never registers the account: `track_account_witness` is the only way in, so a
+/// write for an account that is not registered is dropped rather than upserted.
+#[tokio::test]
+async fn update_does_not_create_a_registration() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+    let account_id = AccountId::try_from(ACCOUNT_ID_REGULAR)?;
+    let witness = mock_account_witness(account_id, Word::from([3u32; 4]));
+
+    let updated = store.update_account_witness(account_id, &witness).await?;
+
+    assert!(!updated, "an unregistered account reports no update");
+    assert!(store.tracked_account_witnesses().await?.is_empty());
+    assert!(store.get_account_witness(account_id).await?.is_none());
+
+    Ok(())
+}
+
+/// A refresh replaces the previous entry rather than accumulating one per sync.
+#[tokio::test]
+async fn updating_a_witness_replaces_the_previous_one() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+    let account_id = AccountId::try_from(ACCOUNT_ID_REGULAR)?;
+    let latest_commitment = Word::from([5u32; 4]);
+
+    store.track_account_witness(account_id).await?;
+
+    // Two syncs.
+    store
+        .update_account_witness(
+            account_id,
+            &mock_account_witness(account_id, Word::from([4u32; 4])),
+        )
+        .await?;
+    store
+        .update_account_witness(account_id, &mock_account_witness(account_id, latest_commitment))
+        .await?;
+
+    let cached = store
+        .get_account_witness(account_id)
+        .await?
+        .context("the latest witness should be readable")?;
+    assert_eq!(cached.state_commitment(), latest_commitment);
+    assert_eq!(store.tracked_account_witnesses().await?, vec![account_id]);
+
+    Ok(())
+}
+
+// PoC: overwriting a not-yet-deployed account with itself drops its seed
+// ================================================================================================
+
+#[tokio::test]
+async fn update_account_keeps_the_seed_of_a_new_account() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+
+    let account = AccountBuilder::new([7; 32])
+        .account_type(AccountType::Private)
+        .with_component(AuthSingleSig::new(Approver::new(
+            PublicKeyCommitment::from(EMPTY_WORD),
+            AuthSchemeId::Falcon512Poseidon2,
+        )))
+        .with_component(AccountComponent::new(
+            BasicWallet::code().as_package().clone(),
+            vec![],
+            AccountComponentMetadata::new("miden::testing::seed_kept"),
+        )?)
+        .build_with_schema_commitment()?;
+    assert!(account.is_new());
+    let seed = account.seed().expect("a new account carries its seed");
+
+    store
+        .insert_account(&account, Address::new(account.id()), ClientAccountType::Native)
+        .await?;
+
+    // Re-importing the same (still undeployed) account with `overwrite = true` goes through
+    // `update_account` with an unchanged nonce.
+    store.update_account(&account).await?;
+
+    let (_, status) = store
+        .get_account_header(account.id())
+        .await?
+        .context("account should be tracked")?;
+    assert_eq!(status.seed(), Some(&seed), "the seed must survive the overwrite");
+    let record = store.get_account(account.id()).await?.context("account should be tracked")?;
+    let stored: Account = record.try_into()?;
+    assert_eq!(stored.seed(), Some(seed));
+
+    // `PartialAccount::new` refuses a nonce-0 account without a seed, so without the seed every
+    // client operation that starts from the minimal partial account (including a second
+    // `add_account` that could repair the record) fails.
+    let partial = store.get_minimal_partial_account(account.id()).await?;
+    assert!(partial.is_some());
+
+    Ok(())
+}
+
 // STATE GUARD TESTS
 // ================================================================================================
 
@@ -2860,52 +3041,4 @@ async fn apply_sync_account_patch_to_store(
             Ok(())
         })
         .await
-}
-
-// PoC: overwriting a not-yet-deployed account with itself drops its seed
-// ================================================================================================
-
-#[tokio::test]
-async fn update_account_keeps_the_seed_of_a_new_account() -> anyhow::Result<()> {
-    let store = create_test_store().await;
-
-    let account = AccountBuilder::new([7; 32])
-        .account_type(AccountType::Private)
-        .with_component(AuthSingleSig::new(Approver::new(
-            PublicKeyCommitment::from(EMPTY_WORD),
-            AuthSchemeId::Falcon512Poseidon2,
-        )))
-        .with_component(AccountComponent::new(
-            BasicWallet::code().as_package().clone(),
-            vec![],
-            AccountComponentMetadata::new("miden::testing::seed_kept"),
-        )?)
-        .build_with_schema_commitment()?;
-    assert!(account.is_new());
-    let seed = account.seed().expect("a new account carries its seed");
-
-    store
-        .insert_account(&account, Address::new(account.id()), ClientAccountType::Native)
-        .await?;
-
-    // Re-importing the same (still undeployed) account with `overwrite = true` goes through
-    // `update_account` with an unchanged nonce.
-    store.update_account(&account).await?;
-
-    let (_, status) = store
-        .get_account_header(account.id())
-        .await?
-        .context("account should be tracked")?;
-    assert_eq!(status.seed(), Some(&seed), "the seed must survive the overwrite");
-    let record = store.get_account(account.id()).await?.context("account should be tracked")?;
-    let stored: Account = record.try_into()?;
-    assert_eq!(stored.seed(), Some(seed));
-
-    // `PartialAccount::new` refuses a nonce-0 account without a seed, so without the seed every
-    // client operation that starts from the minimal partial account (including a second
-    // `add_account` that could repair the record) fails.
-    let partial = store.get_minimal_partial_account(account.id()).await?;
-    assert!(partial.is_some());
-
-    Ok(())
 }

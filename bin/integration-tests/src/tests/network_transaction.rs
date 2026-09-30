@@ -185,12 +185,27 @@ const NON_STANDARD_CLAIM_NOTE_SCRIPT: &str = r#"
 
 /// Deploys a counter contract as a network account that allowlists `allowed_note_script_roots`.
 ///
+/// The account is built and added by [`add_network_counter_contract`], then deployed with a funding
+/// note from the client's fee funder.
+pub(crate) async fn deploy_network_counter_contract(
+    client: &mut TestClient,
+    allowed_note_script_roots: &[NoteScriptRoot],
+) -> Result<Account> {
+    let account = add_network_counter_contract(client, allowed_note_script_roots).await?;
+    client.deploy_account(account.id()).await?;
+
+    Ok(account)
+}
+
+/// Builds a counter contract as a network account that allowlists `allowed_note_script_roots`, and
+/// adds it to the client without deploying it.
+///
 /// The standardized allowlist slot (carried by [`AuthNetworkAccount`]) is what makes the node treat
 /// the account as a network account and route matching notes to it.
 ///
 /// P2ID is allowlisted on top of the caller's roots, and the account carries a wallet component, so
 /// that its deploy transaction can consume a funding note.
-pub(crate) async fn deploy_network_counter_contract(
+pub(crate) async fn add_network_counter_contract(
     client: &mut TestClient,
     allowed_note_script_roots: &[NoteScriptRoot],
 ) -> Result<Account> {
@@ -207,7 +222,6 @@ pub(crate) async fn deploy_network_counter_contract(
 
     let account = build_counter_account(client, auth, true)?;
     client.add_account(&account, false).await?;
-    client.deploy_account(account.id()).await?;
 
     Ok(account)
 }

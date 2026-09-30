@@ -2,6 +2,8 @@ use alloc::string::String;
 
 use thiserror::Error;
 
+use crate::rpc::errors::GrpcError;
+
 // GET ACCOUNT ERROR
 // ================================================================================================
 
@@ -42,6 +44,37 @@ impl GetAccountError {
             4 => Self::UnknownBlock,
             5 => Self::BlockPruned,
             _ => Self::Unknown { code, message: String::from(message) },
+        }
+    }
+}
+
+// REGISTER ACCOUNT ERROR
+// ================================================================================================
+
+/// Reason the node rejected a registration.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum RegisterAccountError {
+    #[error("invitation code does not exist")]
+    InvitationNotFound,
+    #[error("the invitation code or the account is already registered")]
+    AlreadyRegistered,
+    /// The request was malformed. The account ID was missing or unreadable, or the invitation code
+    /// was empty.
+    #[error("invalid registration request: {0}")]
+    InvalidRequest(String),
+}
+
+impl RegisterAccountError {
+    /// Returns the typed error for the status codes the node uses to reject a registration.
+    ///
+    /// Returns `None` for every other code, because those report a transport or node-side failure
+    /// rather than a decision about the registration.
+    pub fn from_grpc_error(error_kind: &GrpcError, message: &str) -> Option<Self> {
+        match error_kind {
+            GrpcError::NotFound => Some(Self::InvitationNotFound),
+            GrpcError::AlreadyExists => Some(Self::AlreadyRegistered),
+            GrpcError::InvalidArgument => Some(Self::InvalidRequest(String::from(message))),
+            _ => None,
         }
     }
 }

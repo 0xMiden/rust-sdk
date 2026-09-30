@@ -8,11 +8,12 @@ use async_trait::async_trait;
 use futures::{StreamExt, TryStreamExt};
 use miden_protocol::Word;
 use miden_protocol::account::{Account, AccountHeader, AccountId, StorageSlotType};
-use miden_protocol::block::account_tree::AccountIdKey;
-use miden_protocol::block::{BlockHeader, BlockNumber};
+use miden_protocol::block::account_tree::{AccountIdKey, AccountWitness};
+use miden_protocol::block::{BlockHeader, BlockNumber, ValidatorConfig};
 use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrDelta, PartialMmr};
 use miden_protocol::note::{NoteId, NoteTag, Nullifier};
+use miden_protocol::protocol_config::ProtocolConfig;
 use tracing::info;
 
 use super::state_sync_update::{TransactionUpdateTracker, build_account_patch};
@@ -42,7 +43,7 @@ use crate::store::{InputNoteRecord, OutputNoteRecord, StoreError};
 use crate::transaction::TransactionRecord;
 
 /// Maximum number of `get_account` requests kept in flight while syncing the state.
-const MAX_CONCURRENT_ACCOUNT_FETCHES: usize = 4;
+pub(crate) const MAX_CONCURRENT_ACCOUNT_FETCHES: usize = 4;
 
 // STATE UPDATE DATA
 // ================================================================================================
@@ -72,6 +73,9 @@ struct FetchedSyncData {
     note_blocks: Vec<ResolvedSyncNotesBlock>,
     /// Transaction records for the synced range, as returned by `sync_transactions`.
     transactions: Vec<RpcTransactionRecord>,
+    /// The protocol configuration active at the chain tip. The node sends it when the sync starts
+    /// at genesis, or when the starting block and the chain tip commit to different configurations.
+    protocol_config: Option<ProtocolConfig>,
 }
 
 /// A note a watched account consumed, carrying what recovery needs to validate and attribute it.
@@ -194,6 +198,9 @@ pub struct StateSync {
     /// If true, queries the node for consumption of tracked unspent-note nullifiers each sync and
     /// discards local transactions whose inputs were nullified.
     sync_nullifiers: bool,
+    /// The validator set and quorum that the chain tip block header must be signed by. A sync
+    /// validates every `sync_chain_mmr` response against it.
+    validator_config: ValidatorConfig,
 }
 
 impl StateSync {
@@ -207,10 +214,12 @@ impl StateSync {
     /// * `rpc_api` - The RPC client used to communicate with the node.
     /// * `note_screener` - The note screener used to check the relevance of notes.
     /// * `tx_discard_delta` - Number of blocks after which pending transactions are discarded.
+    /// * `validator_config` - The validator set and quorum the chain tip header must be signed by.
     pub fn new(
         rpc_api: Arc<dyn NodeRpcClient>,
         note_screener: Arc<dyn OnNoteReceived>,
         tx_discard_delta: Option<u32>,
+        validator_config: ValidatorConfig,
     ) -> Self {
         Self {
             rpc_api,
@@ -218,6 +227,7 @@ impl StateSync {
             note_observers: Vec::new(),
             tx_discard_delta,
             sync_nullifiers: true,
+            validator_config,
         }
     }
 
@@ -348,6 +358,7 @@ impl StateSync {
             chain_tip_header,
             note_blocks,
             transactions,
+            protocol_config,
         } = sync_data;
 
         let new_commitments = derive_account_commitments(&transactions);
@@ -369,6 +380,7 @@ impl StateSync {
                 note_blocks_awaiting_screening: note_blocks,
                 transactions,
                 relevant_note_blocks: Vec::new(),
+                protocol_config,
             }),
             superseded_states,
             note_updates,
@@ -447,6 +459,7 @@ impl StateSync {
             mmr_delta,
             note_blocks_awaiting_screening,
             relevant_note_blocks,
+            protocol_config,
             ..
         }) = advance
         else {
@@ -457,6 +470,7 @@ impl StateSync {
                 note_updates,
                 transaction_updates,
                 account_updates,
+                None,
             ));
         };
         // Check the note blocks have been screened before building the update
@@ -489,6 +503,7 @@ impl StateSync {
             note_updates,
             transaction_updates,
             account_updates,
+            protocol_config,
         ))
     }
 
@@ -612,8 +627,12 @@ impl StateSync {
             .await?;
         let chain_tip = chain_mmr_info.block_to;
 
-        // Validate the response covers the range we requested.
-        Self::validate_chain_mmr_response(&chain_mmr_info, current_block_num)?;
+        // Validate the response covers the range we requested and is signed by the validator set.
+        Self::validate_chain_mmr_response(
+            &chain_mmr_info,
+            current_block_num,
+            &self.validator_config,
+        )?;
 
         // No progress — already at the tip.
         if chain_tip == current_block_num {
@@ -655,6 +674,7 @@ impl StateSync {
             chain_tip_header: chain_mmr_info.block_header,
             note_blocks,
             transactions: transaction_records,
+            protocol_config: chain_mmr_info.protocol_config,
         }))
     }
 
@@ -701,10 +721,12 @@ impl StateSync {
             .map_err(ClientError::RpcError)
     }
 
-    /// Validates that a `sync_chain_mmr` response covers the requested range.
+    /// Validates that a `sync_chain_mmr` response covers the requested range and that the chain tip
+    /// block header carries the signatures of `validator_config`.
     fn validate_chain_mmr_response(
         chain_mmr_info: &ChainMmrInfo,
         current_block_num: BlockNumber,
+        validator_config: &ValidatorConfig,
     ) -> Result<(), ClientError> {
         if chain_mmr_info.block_header.block_num() != chain_mmr_info.block_to {
             return Err(ClientError::ChainValidationError(format!(
@@ -725,6 +747,18 @@ impl StateSync {
                 chain_mmr_info.block_to
             )));
         }
+
+        // Check that the validator set signed the chain tip block header.
+        chain_mmr_info
+            .block_signatures
+            .verify_against(chain_mmr_info.block_header.commitment(), validator_config)
+            .map_err(|err| {
+                ClientError::ChainValidationError(format!(
+                    "chain tip block header {} does not carry valid validator signatures: {err}",
+                    chain_mmr_info.block_header.block_num()
+                ))
+            })?;
+
         Ok(())
     }
 
@@ -1092,7 +1126,7 @@ impl StateSync {
 
         // Ordered fan-out: responses are folded in `commitment_updates` order regardless of
         // completion order, so the resulting updates do not depend on response timing.
-        let synced_accounts: Vec<PublicAccountSync> =
+        let synced_accounts: Vec<(AccountWitness, PublicAccountSync)> =
             futures::stream::iter(diverging_accounts.iter().map(|(id, local_header)| {
                 self.sync_public_account(*id, local_header, block_from, chain_tip_header)
             }))
@@ -1102,7 +1136,12 @@ impl StateSync {
 
         // Local states that lost a same-nonce race; their transactions must be discarded.
         let mut superseded_states = Vec::new();
-        for ((_, local_header), synced_account) in diverging_accounts.iter().zip(synced_accounts) {
+        let mut account_witnesses = Vec::with_capacity(synced_accounts.len());
+        for ((account_id, local_header), (witness, synced_account)) in
+            diverging_accounts.iter().zip(synced_accounts)
+        {
+            account_witnesses.push((*account_id, witness));
+
             match synced_account {
                 PublicAccountSync::Apply(public_update) => {
                     account_updates.extend(AccountUpdates::new(vec![*public_update], Vec::new()));
@@ -1114,14 +1153,18 @@ impl StateSync {
             }
         }
 
+        account_updates.extend(AccountUpdates::default().with_account_witnesses(account_witnesses));
+
         Ok(superseded_states)
     }
 
     // SYNC PUBLIC ACCOUNTS HELPERS
     // --------------------------------------------------------------------------------------------
 
-    /// Fetches an updated snapshot for a single public account and decides how to reconcile it
-    /// against the local state.
+    /// Fetches a single public account at the sync target, returning the witness that proves it and
+    /// how its state should be reconciled against the local one.
+    ///
+    /// The witness holds in every outcome, including the ones that leave the local state alone.
     ///
     /// Must only be called when the local commitment for the account is known to differ from the
     /// network's, so an equal nonce always means a genuine fork.
@@ -1131,7 +1174,7 @@ impl StateSync {
         local_header: &AccountHeader,
         block_from: BlockNumber,
         chain_tip_header: &BlockHeader,
-    ) -> Result<PublicAccountSync, ClientError> {
+    ) -> Result<(AccountWitness, PublicAccountSync), ClientError> {
         let target_block_num = chain_tip_header.block_num();
 
         // A single request fetches the full snapshot: every storage map's entries plus the vault,
@@ -1148,7 +1191,7 @@ impl StateSync {
             .await
             .map_err(ClientError::RpcError)?;
 
-        let details =
+        let (witness, details) =
             Self::validate_account_proof(proof, proof_block_num, account_id, chain_tip_header)?;
 
         match details
@@ -1159,9 +1202,9 @@ impl StateSync {
         {
             // Node is behind us: our own transaction was committed yet (will expire naturally
             // eventually).
-            Ordering::Less => return Ok(PublicAccountSync::Ignore),
+            Ordering::Less => return Ok((witness, PublicAccountSync::Ignore)),
             // Same height but different state: our transaction definitively lost, drop it.
-            Ordering::Equal => return Ok(PublicAccountSync::Superseded),
+            Ordering::Equal => return Ok((witness, PublicAccountSync::Superseded)),
             // Node moved past us: adopt its state, built below.
             Ordering::Greater => {},
         }
@@ -1186,12 +1229,12 @@ impl StateSync {
             PublicAccountUpdate::Full(account)
         };
 
-        Ok(PublicAccountSync::Apply(Box::new(public_update)))
+        Ok((witness, PublicAccountSync::Apply(Box::new(public_update))))
     }
 
     /// Validates that a `get_account` proof is bound to the sync target `chain_tip_header`: it must
     /// be for the requested `account_id`, at the target block, and its witness must open under the
-    /// target header's account root. Returns the account details on success.
+    /// target header's account root. Returns the witness and the account details on success.
     ///
     /// # Errors
     ///
@@ -1206,7 +1249,7 @@ impl StateSync {
         proof_block_num: BlockNumber,
         account_id: AccountId,
         chain_tip_header: &BlockHeader,
-    ) -> Result<AccountDetails, ClientError> {
+    ) -> Result<(AccountWitness, AccountDetails), ClientError> {
         let target_block_num = chain_tip_header.block_num();
 
         if proof_block_num != target_block_num {
@@ -1217,35 +1260,31 @@ impl StateSync {
 
         let (witness, details) = proof.into_parts();
 
-        // The witness is internally consistent but not yet tied to the account we requested.
-        if witness.id() != account_id {
-            return Err(ClientError::ChainValidationError(format!(
-                "get_account returned account {} but {account_id} was requested",
-                witness.id()
-            )));
-        }
+        validate_account_witness(&witness, account_id, chain_tip_header)?;
 
-        let account_key = AccountIdKey::from(account_id).as_word();
-        let state_commitment = witness.state_commitment();
-        witness
-            .into_proof()
-            .verify_presence(&account_key, &state_commitment, &chain_tip_header.account_root())
-            .map_err(|err| {
-                ClientError::ChainValidationError(format!(
-                    "get_account witness for account {account_id} does not open under block \
-                     {target_block_num} account root: {err}"
-                ))
-            })?;
-
-        details.ok_or_else(|| {
+        let details = details.ok_or_else(|| {
             ClientError::ChainValidationError(format!(
                 "get_account returned no details for public account {account_id}"
             ))
-        })
+        })?;
+
+        Ok((witness, details))
     }
 
     /// Builds a [`PublicAccountUpdate::Patch`] by fetching incremental storage map and vault
     /// updates over the synced range and assembling the absolute [`AccountPatch`] from them.
+    ///
+    /// # Security
+    ///
+    /// The RPC layer range-checks only the pagination cursor of the `sync_storage_maps` and
+    /// `sync_account_vault` responses, not the block height of each individual update, so the node
+    /// can return an update stamped outside the requested window. The store closes this gap when it
+    /// applies the patch: it verifies the resulting vault root and storage commitment against
+    /// `details.header`. An update that moves the account state away from that header fails the
+    /// store update instead of being persisted. The caller must authenticate `details.header`
+    /// against the chain tip and pass the block of that header as `block_to`. A caller that
+    /// consumes these incremental updates without the same header check must range-check each
+    /// update height first.
     async fn build_patch_update(
         &self,
         account_id: AccountId,
@@ -1444,7 +1483,17 @@ pub struct ChainSyncData {
     /// built has to track them here, or this sync's verdicts have no record to apply to.
     pub(crate) note_updates: NoteUpdateTracker,
     transaction_updates: TransactionUpdateTracker,
-    account_updates: AccountUpdates,
+    /// Account updates as the sync derived them. The client adds the witnesses of the accounts it
+    /// keeps fresh, which the sync only queries when their state changed.
+    pub(crate) account_updates: AccountUpdates,
+}
+
+impl ChainSyncData {
+    /// Returns the header of the chain tip this sync advances to, or `None` when the client was
+    /// already at the tip.
+    pub(crate) fn chain_tip_header(&self) -> Option<&BlockHeader> {
+        self.advance.as_ref().map(|advance| &advance.chain_tip_header)
+    }
 }
 
 /// The part of a [`ChainSyncData`] that only exists when the node reported progress.
@@ -1460,10 +1509,49 @@ struct ChainAdvance {
     transactions: Vec<RpcTransactionRecord>,
     /// Screened blocks holding a client-relevant note, each with its `sync_notes` MMR path.
     relevant_note_blocks: Vec<RelevantNoteBlock>,
+    /// The protocol configuration active at `chain_tip_header`, when the node sent it.
+    protocol_config: Option<ProtocolConfig>,
 }
 
 // HELPERS
 // ================================================================================================
+
+/// Checks that an [`AccountWitness`] is for `account_id` and opens under `chain_tip_header`'s
+/// account root.
+///
+/// Run before a witness fetched from the node is used or persisted.
+///
+/// # Errors
+///
+/// Returns [`ClientError::ChainValidationError`] if the witness is for a different account, or if
+/// it does not open under the header's account root.
+pub(crate) fn validate_account_witness(
+    witness: &AccountWitness,
+    account_id: AccountId,
+    chain_tip_header: &BlockHeader,
+) -> Result<(), ClientError> {
+    // The witness is internally consistent but not yet tied to the account we requested.
+    if witness.id() != account_id {
+        return Err(ClientError::ChainValidationError(format!(
+            "get_account returned account {} but {account_id} was requested",
+            witness.id()
+        )));
+    }
+
+    let account_key = AccountIdKey::from(account_id).as_word();
+    let state_commitment = witness.state_commitment();
+    witness
+        .clone()
+        .into_proof()
+        .verify_presence(&account_key, &state_commitment, &chain_tip_header.account_root())
+        .map_err(|err| {
+            ClientError::ChainValidationError(format!(
+                "get_account witness for account {account_id} does not open under block {} \
+                 account root: {err}",
+                chain_tip_header.block_num()
+            ))
+        })
+}
 
 /// Returns the block number the given partial MMR is synced to.
 pub(crate) fn block_num_from_forest(partial_mmr: &PartialMmr) -> Result<BlockNumber, ClientError> {
@@ -1591,7 +1679,7 @@ mod tests {
     use miden_protocol::account::Account;
     use miden_protocol::assembly::DefaultSourceManager;
     use miden_protocol::asset::{Asset, FungibleAsset};
-    use miden_protocol::block::BlockNumber;
+    use miden_protocol::block::{BlockNumber, BlockSignatures};
     use miden_protocol::crypto::merkle::MerklePath;
     use miden_protocol::crypto::merkle::mmr::{Forest, InOrderIndex, PartialMmr};
     use miden_protocol::note::{
@@ -1654,6 +1742,24 @@ mod tests {
         }
     }
 
+    /// The validator configuration committed by the mock chain's genesis block header.
+    fn genesis_validator_config(mock_rpc: &MockRpcApi) -> ValidatorConfig {
+        mock_rpc.mock_chain.read().block_header(0).validator_config().clone()
+    }
+
+    /// The signatures the mock chain produced for `block_num`.
+    fn block_signatures(mock_rpc: &MockRpcApi, block_num: BlockNumber) -> BlockSignatures {
+        mock_rpc
+            .mock_chain
+            .read()
+            .proven_blocks()
+            .iter()
+            .find(|block| block.header().block_num() == block_num)
+            .expect("the mock chain contains the block")
+            .signatures()
+            .clone()
+    }
+
     fn empty() -> StateSyncInput {
         StateSyncInput {
             accounts: vec![],
@@ -1697,7 +1803,9 @@ mod tests {
         let account = builder.add_existing_mock_account(miden_testing::Auth::IncrNonce).unwrap();
         let rpc_api = MockRpcApi::new(builder.build().unwrap());
         let chain_tip_header = rpc_api.mock_chain.read().latest_block_header();
-        let state_sync = StateSync::new(Arc::new(rpc_api), Arc::new(MockScreener), None);
+        let validator_config = genesis_validator_config(&rpc_api);
+        let state_sync =
+            StateSync::new(Arc::new(rpc_api), Arc::new(MockScreener), None, validator_config);
 
         // Local state is at a higher nonce than the node's snapshot (our own tx isn't committed
         // there yet), so the node snapshot must be ignored.
@@ -1734,7 +1842,9 @@ mod tests {
         let account = builder.add_existing_mock_account(miden_testing::Auth::IncrNonce).unwrap();
         let rpc_api = MockRpcApi::new(builder.build().unwrap());
         let chain_tip_header = rpc_api.mock_chain.read().latest_block_header();
-        let state_sync = StateSync::new(Arc::new(rpc_api), Arc::new(MockScreener), None);
+        let validator_config = genesis_validator_config(&rpc_api);
+        let state_sync =
+            StateSync::new(Arc::new(rpc_api), Arc::new(MockScreener), None, validator_config);
 
         // Local state is at the same nonce as the node's but with a different commitment: a fork
         // where the local transaction lost the race and must be discarded.
@@ -1808,7 +1918,9 @@ mod tests {
         let rpc_api = MockRpcApi::new(builder.build().unwrap());
         let chain_tip_header = rpc_api.mock_chain.read().latest_block_header();
         let on_chain_commitment = account.to_commitment();
-        let state_sync = StateSync::new(Arc::new(rpc_api), Arc::new(MockScreener), None);
+        let validator_config = genesis_validator_config(&rpc_api);
+        let state_sync =
+            StateSync::new(Arc::new(rpc_api), Arc::new(MockScreener), None, validator_config);
 
         let result = state_sync
             .verify_private_account_mismatch(account.id(), on_chain_commitment, &chain_tip_header)
@@ -1830,7 +1942,9 @@ mod tests {
         let rpc_api = MockRpcApi::new(builder.build().unwrap());
         let chain_tip_header = rpc_api.mock_chain.read().latest_block_header();
         let on_chain_commitment = account.to_commitment();
-        let state_sync = StateSync::new(Arc::new(rpc_api), Arc::new(MockScreener), None);
+        let validator_config = genesis_validator_config(&rpc_api);
+        let state_sync =
+            StateSync::new(Arc::new(rpc_api), Arc::new(MockScreener), None, validator_config);
         let stale_local_commitment = word(0xdead_beef);
 
         let result = state_sync
@@ -1857,7 +1971,9 @@ mod tests {
         let account = builder.add_existing_mock_account(miden_testing::Auth::IncrNonce).unwrap();
         let rpc_api = MockRpcApi::new(builder.build().unwrap());
         let real_header = rpc_api.mock_chain.read().latest_block_header();
-        let state_sync = StateSync::new(Arc::new(rpc_api), Arc::new(MockScreener), None);
+        let validator_config = genesis_validator_config(&rpc_api);
+        let state_sync =
+            StateSync::new(Arc::new(rpc_api), Arc::new(MockScreener), None, validator_config);
 
         // Same block number so the request resolves, but a tampered account root the witness cannot
         // verify against.
@@ -1921,7 +2037,9 @@ mod tests {
                 .to_commitment(),
             local_header.to_commitment()
         );
-        let state_sync = StateSync::new(Arc::new(rpc_api), Arc::new(MockScreener), None);
+        let validator_config = genesis_validator_config(&rpc_api);
+        let state_sync =
+            StateSync::new(Arc::new(rpc_api), Arc::new(MockScreener), None, validator_config);
 
         let current_public_accounts = vec![&local_header];
         let commitment_updates = vec![(account.id(), account.to_commitment())];
@@ -2300,8 +2418,12 @@ mod tests {
         let (chain, account, [note1, note2, note3]) = build_chain_with_chained_consume_txs().await;
 
         let mock_rpc = MockRpcApi::new(chain);
-        let state_sync =
-            StateSync::new(Arc::new(mock_rpc.clone()), Arc::new(CommitAllScreener), None);
+        let state_sync = StateSync::new(
+            Arc::new(mock_rpc.clone()),
+            Arc::new(CommitAllScreener),
+            None,
+            genesis_validator_config(&mock_rpc),
+        );
 
         let genesis_peaks =
             mock_rpc.get_mmr().peaks_at(Forest::new(1).expect("valid forest")).unwrap();
@@ -2359,7 +2481,12 @@ mod tests {
         mock_rpc.advance_blocks(3);
         let chain_tip_1 = mock_rpc.get_chain_tip_block_num();
 
-        let state_sync = StateSync::new(Arc::new(mock_rpc.clone()), Arc::new(MockScreener), None);
+        let state_sync = StateSync::new(
+            Arc::new(mock_rpc.clone()),
+            Arc::new(MockScreener),
+            None,
+            genesis_validator_config(&mock_rpc),
+        );
 
         // Build the initial PartialMmr from genesis (only 1 leaf).
         let genesis_peaks =
@@ -2506,9 +2633,11 @@ mod tests {
             mock_rpc.get_mmr().peaks_at(Forest::new(1).expect("valid forest")).unwrap();
         let mut partial_mmr = PartialMmr::from_peaks(genesis_peaks);
 
-        let state_sync = StateSync::new(Arc::new(mock_rpc), Arc::new(MockScreener), None)
-            .with_note_observer(Arc::new(AlwaysRelevantObserver));
+        let validator_config = genesis_validator_config(&mock_rpc);
         let mut input = empty();
+        let state_sync =
+            StateSync::new(Arc::new(mock_rpc), Arc::new(MockScreener), None, validator_config)
+                .with_note_observer(Arc::new(AlwaysRelevantObserver));
         input.note_tags = note_tags;
 
         let update = state_sync.sync_state(&mut partial_mmr, input).await.unwrap();
@@ -2560,7 +2689,12 @@ mod tests {
 
         // Test that fetch_sync_data returns note blocks with valid MMR paths that can be used to
         // track blocks in the partial MMR.
-        let state_sync = StateSync::new(Arc::new(mock_rpc.clone()), Arc::new(MockScreener), None);
+        let state_sync = StateSync::new(
+            Arc::new(mock_rpc.clone()),
+            Arc::new(MockScreener),
+            None,
+            genesis_validator_config(&mock_rpc),
+        );
 
         let genesis_peaks =
             mock_rpc.get_mmr().peaks_at(Forest::new(1).expect("valid forest")).unwrap();
@@ -2772,7 +2906,12 @@ mod tests {
         let network_header =
             AccountHeader::new(network_account_id, ZERO, EMPTY_WORD, EMPTY_WORD, EMPTY_WORD);
 
-        let state_sync = StateSync::new(Arc::new(mock_rpc.clone()), Arc::new(MockScreener), None);
+        let state_sync = StateSync::new(
+            Arc::new(mock_rpc.clone()),
+            Arc::new(MockScreener),
+            None,
+            genesis_validator_config(&mock_rpc),
+        );
 
         let genesis_peaks =
             mock_rpc.get_mmr().peaks_at(Forest::new(1).expect("valid forest")).unwrap();
@@ -2828,6 +2967,7 @@ mod tests {
         mock_rpc.advance_blocks(3);
         let chain_tip = mock_rpc.get_chain_tip_block_num();
         let current = BlockNumber::GENESIS;
+        let validator_config = genesis_validator_config(&mock_rpc);
 
         let header_of =
             |block_num: u32| mock_rpc.mock_chain.read().block_header(block_num as usize);
@@ -2837,18 +2977,18 @@ mod tests {
 
         // Sanity check: the untampered response passes validation.
         let response = chain_mmr_response().await;
-        StateSync::validate_chain_mmr_response(&response, current).unwrap();
+        StateSync::validate_chain_mmr_response(&response, current, &validator_config).unwrap();
 
         // The returned block header doesn't correspond to `block_to`.
         let mut response = chain_mmr_response().await;
         response.block_header = header_of(chain_tip.as_u32() - 1);
-        let result = StateSync::validate_chain_mmr_response(&response, current);
+        let result = StateSync::validate_chain_mmr_response(&response, current, &validator_config);
         assert!(matches!(result, Err(ClientError::ChainValidationError(_))));
 
         // `block_from` doesn't match the block the sync was requested from.
         let mut response = chain_mmr_response().await;
         response.block_from = current + 1;
-        let result = StateSync::validate_chain_mmr_response(&response, current);
+        let result = StateSync::validate_chain_mmr_response(&response, current, &validator_config);
         assert!(matches!(result, Err(ClientError::ChainValidationError(_))));
 
         // `block_to` (and its header) regress behind the client's current block.
@@ -2856,7 +2996,8 @@ mod tests {
         response.block_from = chain_tip;
         response.block_to = BlockNumber::GENESIS;
         response.block_header = header_of(0);
-        let result = StateSync::validate_chain_mmr_response(&response, chain_tip);
+        let result =
+            StateSync::validate_chain_mmr_response(&response, chain_tip, &validator_config);
         assert!(matches!(result, Err(ClientError::ChainValidationError(_))));
     }
 
@@ -2881,6 +3022,36 @@ mod tests {
         let result =
             StateSync::validate_note_blocks_range(&[genesis_note_block], current, chain_tip);
         assert!(matches!(result, Err(ClientError::ChainValidationError(_))));
+    }
+
+    /// Verifies that `validate_chain_mmr_response` authenticates the chain tip header against the
+    /// validator set, so a header served without the signatures of that set is rejected.
+    #[tokio::test]
+    async fn validate_chain_mmr_response_rejects_chain_tip_without_valid_signatures() {
+        let mock_rpc = MockRpcApi::default();
+        mock_rpc.advance_blocks(3);
+        let chain_tip = mock_rpc.get_chain_tip_block_num();
+        let current = BlockNumber::GENESIS;
+
+        let validator_config = genesis_validator_config(&mock_rpc);
+        assert!(!validator_config.is_empty(), "the mock chain must commit a validator set");
+
+        // The signatures the validator set produced for the chain tip are accepted.
+        let mut chain_mmr_info =
+            mock_rpc.sync_chain_mmr(current, SyncTarget::CommittedChainTip).await.unwrap();
+        StateSync::validate_chain_mmr_response(&chain_mmr_info, current, &validator_config)
+            .unwrap();
+
+        let parent = BlockNumber::from(chain_tip.as_u32() - 1);
+        // Override the chain_mmr_info with the signatures of a different block
+        chain_mmr_info.block_signatures = block_signatures(&mock_rpc, parent);
+        // `validate_chain_mmr_response` returns an error when the signature verification fails
+        let result =
+            StateSync::validate_chain_mmr_response(&chain_mmr_info, current, &validator_config);
+        assert!(
+            matches!(result, Err(ClientError::ChainValidationError(_))),
+            "signatures of another block must be rejected, got {result:?}"
+        );
     }
 
     /// Verifies that `advance_mmr` rejects an MMR delta whose post-apply peaks don't match the

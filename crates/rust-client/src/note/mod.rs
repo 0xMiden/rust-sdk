@@ -76,6 +76,7 @@ mod note_update_tracker;
 // RE-EXPORTS
 // ================================================================================================
 
+pub use miden_objects::note_file::{NoteFile, NoteFileError, NoteSyncHint};
 pub use miden_protocol::block::BlockNumber;
 pub use miden_protocol::errors::NoteError;
 pub use miden_protocol::note::{
@@ -115,8 +116,6 @@ pub use miden_standards::note::{
     NetworkAccountTarget,
     NoteConsumptionStatus,
     NoteExecutionHint,
-    NoteFile,
-    NoteSyncHint,
     P2idNote,
     P2idNoteStorage,
     P2ideNote,

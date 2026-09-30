@@ -3,26 +3,29 @@ use std::path::{Path, PathBuf};
 
 use clap::{ArgGroup, ValueEnum};
 use miden_client::auth::{AuthSchemeId, AuthSecretKey, PublicKeyCommitment};
-use miden_client::crypto::{ecdsa_k256_keccak, rpo_falcon512};
+use miden_client::crypto::rpo_falcon512;
 use miden_client::keystore::FilesystemKeyStore;
 use miden_client::utils::{ByteReader, Deserializable, hex_to_bytes};
 use miden_client::{SliceReader, Word};
 
 use crate::codecs::parse_account_id_token;
 use crate::errors::CliError;
+use crate::utils::{
+    ECDSA_COMPRESSED_KEY_BYTES,
+    ECDSA_UNCOMPRESSED_KEY_BYTES,
+    parse_ecdsa_public_key,
+};
 use crate::{Parser, create_dynamic_table};
 
-/// Length of a serialized ECDSA public key. It matches the compressed SEC1 form that
-/// `ecdsa_k256_keccak::PublicKey` reads.
-const ECDSA_PUBLIC_KEY_BYTES: usize = 33;
 /// Length of a serialized Falcon public key. It matches the form that `rpo_falcon512::PublicKey`
 /// reads.
 const FALCON_PUBLIC_KEY_BYTES: usize = 897;
 
+// Command modules share these names. Keep them internal to the CLI crate.
 /// Name of the Falcon scheme in the command line and in the command output.
-const FALCON_SCHEME_NAME: &str = "falcon512-poseidon2";
+pub(crate) const FALCON_SCHEME_NAME: &str = "falcon512-poseidon2";
 /// Name of the ECDSA scheme in the command line and in the command output.
-const ECDSA_SCHEME_NAME: &str = "ecdsa-k256-keccak";
+pub(crate) const ECDSA_SCHEME_NAME: &str = "ecdsa-k256-keccak";
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum KeyScheme {
@@ -230,33 +233,29 @@ fn print_commitment(public_key: &str) -> Result<(), CliError> {
     let encoded_key = public_key.strip_prefix("0x").ok_or_else(|| {
         CliError::Input("public key must use a 0x-prefixed hexadecimal encoding".to_string())
     })?;
-    let scheme = match encoded_key.len() {
-        length if length == ECDSA_PUBLIC_KEY_BYTES * 2 => KeyScheme::EcdsaK256Keccak,
-        length if length == FALCON_PUBLIC_KEY_BYTES * 2 => KeyScheme::Falcon512Poseidon2,
-        length => {
-            return Err(CliError::Input(format!(
-                "unsupported public key length: expected {} or {} hexadecimal digits, got {}",
-                ECDSA_PUBLIC_KEY_BYTES * 2,
-                FALCON_PUBLIC_KEY_BYTES * 2,
-                length
-            )));
+    let commitment = match encoded_key.len() {
+        length
+            if length == ECDSA_COMPRESSED_KEY_BYTES * 2
+                || length == ECDSA_UNCOMPRESSED_KEY_BYTES * 2 =>
+        {
+            parse_ecdsa_public_key(public_key)?.to_commitment()
         },
-    };
-
-    let commitment = match scheme {
-        KeyScheme::Falcon512Poseidon2 => {
+        length if length == FALCON_PUBLIC_KEY_BYTES * 2 => {
+            let scheme = KeyScheme::Falcon512Poseidon2;
             let bytes = hex_to_bytes::<FALCON_PUBLIC_KEY_BYTES>(public_key)
                 .map_err(|err| invalid_public_key(scheme, err))?;
             rpo_falcon512::PublicKey::read_from_bytes(&bytes)
                 .map_err(|err| invalid_public_key(scheme, err))?
                 .to_commitment()
         },
-        KeyScheme::EcdsaK256Keccak => {
-            let bytes = hex_to_bytes::<ECDSA_PUBLIC_KEY_BYTES>(public_key)
-                .map_err(|err| invalid_public_key(scheme, err))?;
-            ecdsa_k256_keccak::PublicKey::read_from_bytes(&bytes)
-                .map_err(|err| invalid_public_key(scheme, err))?
-                .to_commitment()
+        length => {
+            return Err(CliError::Input(format!(
+                "unsupported public key length: expected {}, {} or {} hexadecimal digits, got {}",
+                ECDSA_COMPRESSED_KEY_BYTES * 2,
+                ECDSA_UNCOMPRESSED_KEY_BYTES * 2,
+                FALCON_PUBLIC_KEY_BYTES * 2,
+                length
+            )));
         },
     };
 
@@ -278,6 +277,6 @@ fn parse_commitment(value: &str) -> Result<PublicKeyCommitment, CliError> {
 ///
 /// A scheme that the command cannot generate has no command line name. The upstream name is used
 /// for it, so that `--list` still reports the key.
-fn scheme_name(scheme: AuthSchemeId) -> String {
+pub(crate) fn scheme_name(scheme: AuthSchemeId) -> String {
     KeyScheme::try_from(scheme).map_or_else(|()| scheme.to_string(), |scheme| scheme.name().into())
 }

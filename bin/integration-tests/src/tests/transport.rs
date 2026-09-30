@@ -2,7 +2,6 @@ use anyhow::{Context, Result};
 use miden_client::account::AccountType;
 use miden_client::address::{Address, AddressInterface, RoutingParameters};
 use miden_client::asset::FungibleAsset;
-use miden_client::block::BlockNumber;
 use miden_client::note::NoteType;
 use miden_client::store::{InputNoteState, NoteFilter};
 use miden_client::transaction::TransactionRequestBuilder;
@@ -73,11 +72,16 @@ pub async fn test_transport_note_inclusion_proof_and_consumption(
         .await
         .context("mint tx failed")?;
 
-    // Send via transport
+    // Send via transport with the proof the sender obtained when its transaction was committed.
+    let inclusion_proof = sender
+        .get_output_note(note.id())
+        .await?
+        .and_then(|record| record.inclusion_proof().cloned())
+        .context("minted note should carry an inclusion proof after commit")?;
     sender
-        .send_private_note_with_block_hint(note.clone(), &recipient_address, BlockNumber::from(0))
+        .send_private_note_with_proof(note.clone(), &recipient_address, inclusion_proof)
         .await
-        .context("send_private_note failed")?;
+        .context("send_private_note_with_proof failed")?;
 
     // Recipient syncs (transport fetch + state sync)
     recipient.sync_state().await.context("recipient sync")?;
@@ -180,16 +184,17 @@ pub async fn test_transport_multiple_notes_different_blocks(
         minted_notes.push(note);
     }
 
-    // Send all 3 notes via transport
+    // Send all 3 notes via transport, each with its own inclusion proof.
     for note in &minted_notes {
+        let inclusion_proof = sender
+            .get_output_note(note.id())
+            .await?
+            .and_then(|record| record.inclusion_proof().cloned())
+            .context("minted note should carry an inclusion proof after commit")?;
         sender
-            .send_private_note_with_block_hint(
-                note.clone(),
-                &recipient_address,
-                BlockNumber::from(0),
-            )
+            .send_private_note_with_proof(note.clone(), &recipient_address, inclusion_proof)
             .await
-            .context("send_private_note failed")?;
+            .context("send_private_note_with_proof failed")?;
     }
 
     // Recipient syncs
@@ -251,120 +256,6 @@ pub async fn test_transport_multiple_notes_different_blocks(
     // Verify total balance (10 + 20 + 30 = 60)
     recipient
         .assert_account_has_single_asset(recipient_account.id(), faucet_account.id(), 60)
-        .await;
-
-    Ok(())
-}
-
-/// Tests that a note sent via transport before being committed on-chain starts as Expected, then
-/// transitions to Committed once the mint tx is executed and synced.
-pub async fn test_transport_note_not_yet_committed(client_config: ClientConfig) -> Result<()> {
-    if client_config.note_transport_endpoint.is_none() {
-        eprintln!(
-            "Skipping note transport test (set TEST_MIDEN_NOTE_TRANSPORT_URL or use \
-             --note-transport-url to enable)"
-        );
-        return Ok(());
-    }
-
-    let sender_config = client_config.clone();
-    let recipient_config = client_config;
-
-    let mut sender =
-        sender_config.into_unsynced_client().await.context("failed to build sender")?;
-    let mut recipient = recipient_config
-        .into_unsynced_client()
-        .await
-        .context("failed to build recipient")?;
-
-    sender.wait_for_node().await;
-
-    let faucet_account = sender
-        .insert_faucet(AccountType::Private)
-        .await
-        .context("failed to insert faucet")?;
-
-    let recipient_account = recipient
-        .insert_wallet(AccountType::Private)
-        .await
-        .context("failed to insert wallet")?;
-
-    let recipient_address = Address::new(recipient_account.id())
-        .with_routing_parameters(RoutingParameters::new(AddressInterface::BasicWallet));
-
-    // Initial sync
-    recipient.sync_state().await.context("recipient initial sync")?;
-
-    // Build mint tx and extract the note BEFORE executing
-    let fungible_asset = FungibleAsset::new(faucet_account.id(), 100).context("asset")?;
-    let tx_request = TransactionRequestBuilder::new()
-        .build_mint_fungible_asset(
-            fungible_asset,
-            recipient_account.id(),
-            NoteType::Private,
-            sender.rng(),
-        )
-        .context("build mint tx")?;
-    let note = tx_request
-        .expected_output_own_notes()
-        .last()
-        .cloned()
-        .context("expected output note missing")?;
-
-    // Send via transport BEFORE the note is committed on-chain
-    sender
-        .send_private_note_with_block_hint(note.clone(), &recipient_address, BlockNumber::from(0))
-        .await
-        .context("send_private_note failed")?;
-
-    // Recipient syncs — transport fetch finds the note, but it's not on chain yet
-    recipient.sync_state().await.context("recipient sync (pre-commit)")?;
-
-    let notes = recipient.get_input_notes(NoteFilter::All).await?;
-    let received = notes
-        .iter()
-        .find(|n| n.id() == Some(note.id()))
-        .context("note not received by recipient via transport")?;
-    assert!(
-        matches!(received.state(), InputNoteState::Expected(..)),
-        "note should be Expected (not yet on chain), got: {:?}",
-        received.state()
-    );
-    assert!(received.inclusion_proof().is_none(), "no inclusion proof before commit");
-
-    // Our note shouldn't be consumable yet (pre-commit)
-    let consumable = recipient.get_consumable_notes(Some(recipient_account.id())).await?;
-    assert!(
-        !consumable.iter().any(|(n, _)| n.id() == Some(note.id())),
-        "minted note should not be consumable before commit",
-    );
-
-    // Now execute the mint tx — note commits on chain
-    sender
-        .execute_tx_and_sync(faucet_account.id(), tx_request)
-        .await
-        .context("mint tx failed")?;
-
-    // Recipient syncs again — note tag tracking finds it on chain
-    recipient.sync_state().await.context("recipient sync (post-commit)")?;
-
-    let notes = recipient.get_input_notes(NoteFilter::All).await?;
-    let received = notes
-        .iter()
-        .find(|n| n.id() == Some(note.id()))
-        .context("note not present after post-commit sync")?;
-    assert!(
-        matches!(received.state(), InputNoteState::Committed(..)),
-        "note should now be Committed, got: {:?}",
-        received.state()
-    );
-    assert!(received.inclusion_proof().is_some(), "should have inclusion proof after commit");
-
-    // Consume the note
-    recipient.consume_notes_and_wait(recipient_account.id(), &[note]).await?;
-
-    recipient
-        .assert_account_has_single_asset(recipient_account.id(), faucet_account.id(), 100)
         .await;
 
     Ok(())

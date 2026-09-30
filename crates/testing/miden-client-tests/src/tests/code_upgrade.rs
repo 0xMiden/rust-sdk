@@ -26,9 +26,10 @@ use miden_client::assembly::CodeBuilder;
 use miden_client::asset::{Asset, FungibleAsset};
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;
-use miden_client::note::{Note, NoteType};
+use miden_client::note::{AccountCodeUpgradeAttachment, Note, NoteType};
 use miden_client::testing::common::create_test_store_path;
 use miden_client::testing::mock::{MockClient, MockRpcApi};
+use miden_client::testing::standards::account_component::MockProceduresComponent;
 use miden_client::transaction::{
     PaymentNoteDescription,
     TransactionRequest,
@@ -270,8 +271,12 @@ fn wallet_account(seed: u8) -> Account {
 }
 
 /// Returns a deployed public account that `owner` owns through `Ownable2Step`, and the code that
-/// adds [`BasicWallet`] to it. The `Authority` of the account only accepts an upgrade from `owner`.
-fn owned_upgradeable_account(owner: AccountId) -> (Account, AccountCode) {
+/// adds [`BasicWallet`] and `extra_components` to it. The `Authority` of the account only accepts
+/// an upgrade from `owner`.
+fn owned_upgradeable_account(
+    owner: AccountId,
+    extra_components: Vec<AccountComponent>,
+) -> (Account, AccountCode) {
     let components = || {
         let (mut components, _) = Auth::IncrNonce.build_components();
         components.extend(AccessControl::Ownable2Step { owner });
@@ -287,6 +292,7 @@ fn owned_upgradeable_account(owner: AccountId) -> (Account, AccountCode) {
 
     let mut upgraded_components = components();
     upgraded_components.push(BasicWallet.into());
+    upgraded_components.extend(extra_components);
     let upgraded_code = AccountCode::from_components(&upgraded_components).unwrap();
     assert_ne!(account.code().commitment(), upgraded_code.commitment());
 
@@ -581,16 +587,31 @@ async fn account_code_upgrade_without_upgrade_manager_is_rejected() {
 }
 
 /// The owner of an account sends an upgrade note to the account. The account consumes the note, and
-/// the store saves the new code.
+/// the store saves the new code. The note splits code that does not fit into one attachment into
+/// chunks.
+#[rstest]
+#[case::single_chunk(vec![], 1)]
+#[case::two_chunks(vec![MockProceduresComponent::new(150).into()], 2)]
 #[tokio::test]
-async fn upgrade_note_from_owner_upgrades_target_code() {
+async fn upgrade_note_from_owner_upgrades_target_code(
+    #[case] extra_components: Vec<AccountComponent>,
+    #[case] expected_num_chunks: usize,
+) {
     let owner = wallet_account(6);
-    let (target, upgraded_code) = owned_upgradeable_account(owner.id());
+    let (target, upgraded_code) = owned_upgradeable_account(owner.id(), extra_components);
     let rpc_api = rpc_api_with_accounts(&[&owner, &target]);
     let mut client = client_tracking(rpc_api.clone(), &target).await;
     client.add_account(&owner, false).await.unwrap();
 
     let note = send_upgrade_note(&mut client, &owner, &target, &upgraded_code).await;
+    let num_chunks = note
+        .attachments()
+        .iter()
+        .filter(|attachment| {
+            attachment.attachment_scheme() == AccountCodeUpgradeAttachment::ATTACHMENT_SCHEME
+        })
+        .count();
+    assert_eq!(num_chunks, expected_num_chunks);
 
     let request = TransactionRequestBuilder::new().build_consume_notes(vec![note]).unwrap();
     let result = Box::pin(client.execute_transaction(target.id(), request)).await.unwrap();
@@ -614,7 +635,7 @@ async fn upgrade_note_from_owner_upgrades_target_code() {
 async fn upgrade_note_from_other_sender_is_rejected() {
     let owner = wallet_account(6);
     let other_sender = wallet_account(7);
-    let (target, upgraded_code) = owned_upgradeable_account(owner.id());
+    let (target, upgraded_code) = owned_upgradeable_account(owner.id(), vec![]);
     let rpc_api = rpc_api_with_accounts(&[&other_sender, &target]);
     let mut client = client_tracking(rpc_api, &target).await;
     client.add_account(&other_sender, false).await.unwrap();

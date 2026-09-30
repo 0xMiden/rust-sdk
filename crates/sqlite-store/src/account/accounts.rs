@@ -53,6 +53,7 @@ use crate::{
     column_value_as_u64,
     insert_sql,
     int_array,
+    proto,
     subst,
     u64_to_value,
     with_write_tx,
@@ -211,7 +212,7 @@ impl SqliteStore {
             .into_store_error()?
             .map(|result| {
                 let (id, code): (Vec<u8>, Vec<u8>) = result.into_store_error()?;
-                Ok((AccountId::read_from_bytes(&id)?, AccountCode::read_from_bytes(&code)?))
+                Ok((AccountId::read_from_bytes(&id)?, proto::decode(&code)?))
             })
             .collect::<Result<BTreeMap<AccountId, AccountCode>, _>>()
     }
@@ -420,8 +421,11 @@ impl SqliteStore {
         account_code: &AccountCode,
     ) -> Result<(), StoreError> {
         const QUERY: &str = insert_sql!(account_code { commitment, code } | IGNORE);
-        tx.execute(QUERY, params![account_code.commitment().to_bytes(), account_code.to_bytes()])
-            .into_store_error()?;
+        tx.execute(
+            QUERY,
+            params![account_code.commitment().to_bytes(), proto::encode(account_code)],
+        )
+        .into_store_error()?;
         Ok(())
     }
 

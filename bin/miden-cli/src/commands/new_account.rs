@@ -6,12 +6,22 @@ use std::path::{Path, PathBuf};
 use clap::{Args, Parser, ValueEnum};
 use miden_client::Client;
 use miden_client::account::component::{
-    AccountComponent, AccountComponentMetadata, BurnPolicy, FungibleFaucet, InitStorageData,
-    InitStorageDataError, MIDEN_PACKAGE_EXTENSION, MintPolicy, StorageValueName, TokenName,
+    AccountComponent,
+    AccountComponentMetadata,
+    BurnPolicy,
+    FungibleFaucet,
+    InitStorageData,
+    InitStorageDataError,
+    MIDEN_PACKAGE_EXTENSION,
+    MintPolicy,
+    TokenName,
     TokenPolicyManager,
 };
 use miden_client::account::{
-    Account, AccountBuilder, AccountBuilderSchemaCommitmentExt, AccountType,
+    Account,
+    AccountBuilder,
+    AccountBuilderSchemaCommitmentExt,
+    AccountType,
 };
 use miden_client::asset::{AssetAmount, TokenSymbol};
 use miden_client::auth::{AuthSchemeId, AuthSecretKey, AuthSingleSig};
@@ -95,13 +105,13 @@ impl AuthArgs {
 enum InitStorageDataSource {
     /// A TOML file, given with `--init-storage-data-path`.
     Path(PathBuf),
-    /// The `<slot::name>=<value>` entries, given with `--init-storage-value`.
-    Values(Vec<(StorageValueName, String)>),
+    /// The parsed `--init-storage-value` entries. Each entry holds the data of one flag.
+    Values(Vec<InitStorageData>),
 }
 
 impl InitStorageDataSource {
     /// Creates the source from the command arguments. The TOML file takes precedence.
-    fn new(path: Option<&PathBuf>, values: &[(StorageValueName, String)]) -> Self {
+    fn new(path: Option<&PathBuf>, values: &[InitStorageData]) -> Self {
         match path {
             Some(path) => Self::Path(path.clone()),
             None => Self::Values(values.to_vec()),
@@ -118,15 +128,14 @@ impl InitStorageDataSource {
             Self::Path(path) => load_init_storage_data(&path),
             Self::Values(values) => {
                 let mut init_data = InitStorageData::default();
-                for (name, value) in values {
-                    let entry = parse_init_value(&name, &value)?;
+                for entry in values {
                     // `merge_with` overwrites value entries, so check for duplicates first.
                     if let Some(name) =
                         entry.values().keys().find(|name| init_data.value_entry(name).is_some())
                     {
                         return Err(CliError::InitDataError(
                             Box::new(InitStorageDataError::DuplicateKey(name.to_string())),
-                            format!("invalid --init-storage-value entry for `{name}`"),
+                            format!("`{name}` is set by more than one --init-storage-value entry"),
                         ));
                     }
                     init_data.merge_with(entry);
@@ -137,42 +146,29 @@ impl InitStorageDataSource {
     }
 }
 
-/// Parses an `--init-storage-value` entry in the form `<slot::name>=<value>`.
+/// Parses an `--init-storage-value` entry in the form `<slot::name>=<value>` into init storage
+/// data.
 ///
 /// The entry is split at the first `=`. Storage value names cannot contain `=`, so the value can
-/// contain it.
-fn parse_init_storage_value(entry: &str) -> Result<(StorageValueName, String), String> {
+/// contain it. The value must be a TOML value in the same form as in an init storage data file: a
+/// quoted string, a 4-element array of quoted strings, an inline table of fields, or a list of `{
+/// key, value }` map entries. Unquoted values are rejected.
+fn parse_init_storage_value(entry: &str) -> Result<InitStorageData, String> {
     let (name, value) = entry
         .split_once('=')
         .ok_or_else(|| format!("expected `<slot::name>=<value>`, got `{entry}`"))?;
-    let name = name
-        .parse::<StorageValueName>()
-        .map_err(|err| format!("invalid storage value name `{name}`: {err}"))?;
-    Ok((name, value.to_string()))
-}
-
-/// Converts the value of one `--init-storage-value` entry into init storage data.
-///
-/// A value that is a TOML string, array or inline table is used as TOML, so the entry accepts the
-/// same values as an init storage data file. Any other value, for example `0x1234` or `16`, is used
-/// as a plain string.
-fn parse_init_value(name: &StorageValueName, value: &str) -> Result<InitStorageData, CliError> {
-    // TOML reads `0x1234` and `16` as integers, but init storage values must be strings.
-    let value = match value.parse::<toml::Value>() {
-        Ok(toml::Value::String(_) | toml::Value::Array(_) | toml::Value::Table(_)) => {
-            value.to_string()
-        },
-        _ => toml::Value::String(value.to_string()).to_string(),
+    // Clap shows only the text of the error, so the text includes the cause.
+    let message = |err: &dyn std::fmt::Display| {
+        format!("invalid --init-storage-value entry for `{name}`: {err}")
     };
 
-    // Storage value names contain only ASCII letters, digits, `_`, `-`, `:` and `.`, so the name is
-    // a valid quoted TOML key.
-    InitStorageData::from_toml(&format!("\"{name}\" = {value}")).map_err(|err| {
-        CliError::InitDataError(
-            Box::new(err),
-            format!("invalid --init-storage-value entry for `{name}`"),
-        )
-    })
+    // Parse the value on its own. A single TOML value cannot add more keys to the document below.
+    // `from_toml` checks the name.
+    let value = value.parse::<toml::Value>().map_err(|err| message(&err))?;
+    let toml_str = toml::to_string(&toml::Table::from_iter([(name.to_string(), value)]))
+        .map_err(|err| message(&err))?;
+
+    InitStorageData::from_toml(&toml_str).map_err(|err| message(&err))
 }
 
 // NEW WALLET
@@ -199,8 +195,8 @@ pub struct NewWalletCmd {
     #[arg(short, long)]
     pub init_storage_data_path: Option<PathBuf>,
     /// Sets one init storage value in the form `<slot::name>=<value>`. The name is a storage slot
-    /// name, or a slot name with a `.field` suffix. The value is a plain string, or a TOML value in
-    /// the same form as in an init storage data file: a 4-element string array, an inline table of
+    /// name, or a slot name with a `.field` suffix. The value is a TOML value in the same form as
+    /// in an init storage data file: a quoted string, a 4-element string array, an inline table of
     /// fields, or a list of `{ key, value }` map entries. Repeat the flag to set more values. The
     /// user will be prompted to provide values for any keys not given.
     #[arg(
@@ -209,7 +205,7 @@ pub struct NewWalletCmd {
         value_parser = parse_init_storage_value,
         conflicts_with = "init_storage_data_path"
     )]
-    pub init_storage_values: Vec<(StorageValueName, String)>,
+    pub init_storage_values: Vec<InitStorageData>,
     /// Seed local-only state so the wallet can be created and used for execution without a node.
     /// Only available when built with the `testing` feature.
     #[cfg_attr(feature = "testing", arg(long, default_value_t = false))]
@@ -301,7 +297,7 @@ impl NewWalletCmd {
 ///
 /// Set init storage values on the command line instead of in a file:
 /// ```bash
-/// miden-client new-account -p my-component --init-storage-value my_project::my_component::slot=0x1234
+/// miden-client new-account -p my-component --init-storage-value 'my::component::slot="0x1234"'
 /// ```
 #[derive(Debug, Parser, Clone)]
 pub struct NewAccountCmd {
@@ -321,8 +317,8 @@ pub struct NewAccountCmd {
     #[arg(short, long)]
     pub init_storage_data_path: Option<PathBuf>,
     /// Sets one init storage value in the form `<slot::name>=<value>`. The name is a storage slot
-    /// name, or a slot name with a `.field` suffix. The value is a plain string, or a TOML value in
-    /// the same form as in an init storage data file: a 4-element string array, an inline table of
+    /// name, or a slot name with a `.field` suffix. The value is a TOML value in the same form as
+    /// in an init storage data file: a quoted string, a 4-element string array, an inline table of
     /// fields, or a list of `{ key, value }` map entries. Repeat the flag to set more values.
     #[arg(
         long = "init-storage-value",
@@ -330,7 +326,7 @@ pub struct NewAccountCmd {
         value_parser = parse_init_storage_value,
         conflicts_with = "init_storage_data_path"
     )]
-    pub init_storage_values: Vec<(StorageValueName, String)>,
+    pub init_storage_values: Vec<InitStorageData>,
     /// Seed local-only state so the account can be created and used for execution without a node.
     /// Only available when built with the `testing` feature.
     #[cfg_attr(feature = "testing", arg(long, default_value_t = false))]
@@ -838,8 +834,15 @@ fn process_packages(
 mod tests {
     use miden_client::account::StorageSlotName;
     use miden_client::account::component::{
-        BasicWallet, FeltSchema, SchemaType, StorageSchema, StorageSlotSchema, TokenName,
-        ValueSlotSchema, WordSchema, WordValue,
+        BasicWallet,
+        FeltSchema,
+        SchemaType,
+        StorageSchema,
+        StorageSlotSchema,
+        TokenName,
+        ValueSlotSchema,
+        WordSchema,
+        WordValue,
     };
     use miden_client::assembly::CodeBuilder;
     use miden_client::asset::{AssetAmount, TokenSymbol};
@@ -954,166 +957,84 @@ mod tests {
         NewAccountCmd::try_parse_from(args)
     }
 
-    /// Parses one `--init-storage-value` entry into init storage data.
-    fn parse_entry(entry: &str) -> Result<InitStorageData, String> {
-        let (name, value) = parse_init_storage_value(entry)?;
-        parse_init_value(&name, &value).map_err(|err| err.to_string())
-    }
-
-    /// Returns the value entry for `name` in the data parsed from `entry`.
-    fn parsed_value(entry: &str, name: &str) -> WordValue {
-        let init_data = parse_entry(entry).unwrap();
-        init_data.value_entry(&name.parse().unwrap()).unwrap().clone()
+    /// Loads the init storage data from the given `--init-storage-value` entries.
+    fn load_init_storage_values(entries: &[&str]) -> Result<InitStorageData, CliError> {
+        let args: Vec<&str> =
+            entries.iter().flat_map(|entry| ["--init-storage-value", entry]).collect();
+        let cmd = parse_new_account(&args).unwrap();
+        InitStorageDataSource::Values(cmd.init_storage_values)
+            .load()
+            .map(|(data, _)| data)
     }
 
     #[test]
-    fn parse_init_storage_value_accepts_slot_and_field_names() {
-        assert_eq!(parsed_value("my::slot=0x1", "my::slot"), WordValue::Atomic("0x1".into()));
+    fn parse_init_storage_value_accepts_toml_values() {
+        let init_data = parse_init_storage_value(r#"my::slot.field="a=b""#).unwrap();
         assert_eq!(
-            parsed_value("my::slot.field=10", "my::slot.field"),
-            WordValue::Atomic("10".into())
+            init_data.value_entry(&"my::slot.field".parse().unwrap()),
+            Some(&WordValue::Atomic("a=b".into()))
         );
-    }
 
-    #[test]
-    fn parse_init_storage_value_keeps_plain_values_as_strings() {
-        assert_eq!(parsed_value("my::slot=a=b", "my::slot"), WordValue::Atomic("a=b".into()));
-        assert_eq!(parsed_value("my::slot=true", "my::slot"), WordValue::Atomic("true".into()));
-        assert_eq!(parsed_value("my::slot=\"BTC\"", "my::slot"), WordValue::Atomic("BTC".into()));
-    }
-
-    #[test]
-    fn parse_init_storage_value_accepts_word_elements() {
-        let value = parsed_value(r#"my::slot=["1", "2", "3", "4"]"#, "my::slot");
-
-        assert_eq!(value, WordValue::Elements(["1", "2", "3", "4"].map(String::from)));
-    }
-
-    #[test]
-    fn parse_init_storage_value_accepts_inline_table_of_fields() {
-        let init_data = parse_entry(r#"my::slot={ a = "1", b = "2" }"#).unwrap();
-
-        assert_eq!(init_data.values().len(), 2);
-        assert!(init_data.value_entry(&"my::slot.a".parse().unwrap()).is_some());
-        assert!(init_data.value_entry(&"my::slot.b".parse().unwrap()).is_some());
-    }
-
-    #[test]
-    fn parse_init_storage_value_accepts_map_entries() {
-        let init_data = parse_entry(r#"my::map=[{ key = "0x01", value = "0x10" }]"#).unwrap();
-
-        let entries = init_data.map_entries(&"my::map".parse().unwrap()).unwrap();
+        let init_data = parse_init_storage_value(r#"my::slot=["1", "2", "3", "4"]"#).unwrap();
         assert_eq!(
-            entries,
-            &vec![(WordValue::Atomic("0x01".into()), WordValue::Atomic("0x10".into()))]
+            init_data.value_entry(&"my::slot".parse().unwrap()),
+            Some(&WordValue::Elements(["1", "2", "3", "4"].map(String::from)))
         );
+
+        let init_data =
+            parse_init_storage_value(r#"my::map=[{ key = "0x01", value = "0x10" }]"#).unwrap();
+        assert_eq!(init_data.map_entries(&"my::map".parse().unwrap()).unwrap().len(), 1);
     }
 
     #[test]
-    fn parse_init_storage_value_rejects_invalid_toml_structure() {
-        let err = parse_entry(r#"my::slot=["1", "2"]"#)
-            .expect_err("an array without 4 elements should be rejected");
-
-        assert!(
-            err.contains("invalid --init-storage-value entry for `my::slot`"),
-            "unexpected error: {err}"
-        );
+    fn parse_init_storage_value_rejects_invalid_entries() {
+        for entry in [
+            "my::slot",               // no `=`
+            r#"token_metadata="1""#,  // slot name with one component
+            "my::slot=0x1234",        // unquoted value
+            r#"my::slot=["1", "2"]"#, // array without 4 elements
+        ] {
+            assert!(parse_init_storage_value(entry).is_err(), "`{entry}` should be rejected");
+        }
     }
 
     #[test]
-    fn parse_init_storage_value_rejects_entry_without_equals_sign() {
+    fn init_storage_value_conflicts_with_init_storage_data_path() {
         let err =
-            parse_init_storage_value("my::slot").expect_err("an entry without `=` should fail");
-
-        assert!(err.contains("expected `<slot::name>=<value>`"), "unexpected error: {err}");
-    }
-
-    #[test]
-    fn parse_init_storage_value_rejects_invalid_slot_name() {
-        // A slot name needs at least two `::` separated components.
-        let err =
-            parse_init_storage_value("token_metadata=1").expect_err("the name should be rejected");
-
-        assert!(err.contains("invalid storage value name"), "unexpected error: {err}");
-    }
-
-    #[test]
-    fn init_flag_is_repeatable() {
-        let cmd = parse_new_account(&[
-            "--init-storage-value",
-            "my::slot.a=1",
-            "--init-storage-value",
-            "my::slot.b=2",
-        ])
-        .unwrap();
-
-        assert_eq!(cmd.init_storage_values.len(), 2);
-    }
-
-    #[test]
-    fn init_flag_conflicts_with_init_storage_data_path() {
-        let err =
-            parse_new_account(&["--init-storage-value", "my::slot=1", "-i", "init_data.toml"])
+            parse_new_account(&["--init-storage-value", r#"my::slot="1""#, "-i", "init_data.toml"])
                 .expect_err("--init-storage-value and -i should conflict");
 
         assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
     #[test]
-    fn init_storage_data_source_rejects_duplicate_names() {
-        let cmd = parse_new_account(&[
-            "--init-storage-value",
-            "my::slot=1",
-            "--init-storage-value",
-            "my::slot=2",
-        ])
-        .unwrap();
-
-        let err = InitStorageDataSource::Values(cmd.init_storage_values)
-            .load()
-            .expect_err("a duplicate name should be rejected");
-
-        assert!(
-            err.to_string().contains("invalid --init-storage-value entry"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn init_storage_data_source_appends_map_entries() {
-        let cmd = parse_new_account(&[
-            "--init-storage-value",
+    fn init_storage_data_source_appends_map_entries_and_rejects_duplicate_values() {
+        let init_data = load_init_storage_values(&[
             r#"my::map=[{ key = "0x01", value = "0x10" }]"#,
-            "--init-storage-value",
             r#"my::map=[{ key = "0x02", value = "0x20" }]"#,
         ])
         .unwrap();
-
-        let (init_data, _) = InitStorageDataSource::Values(cmd.init_storage_values).load().unwrap();
-
         assert_eq!(init_data.map_entries(&"my::map".parse().unwrap()).unwrap().len(), 2);
+
+        let err = load_init_storage_values(&[r#"my::slot="1""#, r#"my::slot="2""#])
+            .expect_err("a duplicate name should be rejected");
+        assert!(err.to_string().contains("more than one"), "unexpected error: {err}");
     }
 
     #[test]
-    fn init_entries_initialize_storage_without_prompting() {
+    fn init_storage_values_initialize_storage_without_prompting() {
         let package = test_component_package_with_schema(
             "@account_procedure pub proc marked nop end",
             composite_slot_schema(None),
         );
-        let entries = ["a=1", "b=2", "c=3", "d=4"].map(|field| format!("{TEST_SLOT}.{field}"));
-        let args: Vec<&str> = entries
-            .iter()
-            .flat_map(|entry| ["--init-storage-value", entry.as_str()])
-            .collect();
-        let cmd = parse_new_account(&args).unwrap();
+        let entries = [r#"a="1""#, r#"b="2""#, r#"c="3""#, r#"d="4""#]
+            .map(|field| format!("{TEST_SLOT}.{field}"));
+        let init_data = load_init_storage_values(&entries.each_ref().map(String::as_str)).unwrap();
 
-        let (init_data, faucet_metadata) =
-            InitStorageDataSource::Values(cmd.init_storage_values).load().unwrap();
         // Stdin is empty under the test runner. A prompt would read empty values and fail.
         let components = process_packages(vec![package], &init_data)
             .expect("the --init-storage-value values should satisfy every field of the slot");
 
-        assert!(faucet_metadata.is_none());
         assert_eq!(components[0].storage_slots()[0].value(), Word::from([1u32, 2, 3, 4]));
     }
 

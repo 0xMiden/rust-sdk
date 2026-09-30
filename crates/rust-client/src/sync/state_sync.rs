@@ -391,9 +391,8 @@ impl StateSync {
 
     /// Turns the node's raw response into note and transaction updates.
     ///
-    /// Discards the local transactions the node superseded, screens the received notes for
-    /// relevance, applies the transaction inclusions, and recovers the public notes the tracked
-    /// accounts consumed, fetching those by id.
+    /// Screens the received notes for relevance, applies transaction inclusions before terminal
+    /// discard decisions, and recovers the public notes the tracked accounts consumed.
     pub async fn derive_state_updates(
         &self,
         chain_sync_data: &mut ChainSyncData,
@@ -410,11 +409,6 @@ impl StateSync {
             return Ok(());
         };
 
-        // Discard the local transactions whose result lost a same-nonce race against the network.
-        for superseded_state in core::mem::take(superseded_states) {
-            transaction_updates.apply_superseded_account_state(superseded_state);
-        }
-
         advance.relevant_note_blocks = self
             .screen_note_blocks(
                 core::mem::take(&mut advance.note_blocks_awaiting_screening),
@@ -428,6 +422,12 @@ impl StateSync {
             note_updates,
             transaction_updates,
         )?;
+
+        // A discard is terminal. Resolve observed inclusions before discarding local transactions
+        // whose result lost a same-nonce race against the network.
+        for superseded_state in core::mem::take(superseded_states) {
+            transaction_updates.apply_superseded_account_state(superseded_state);
+        }
 
         self.recover_consumed_public_notes(note_updates, &advance.transactions).await?;
 

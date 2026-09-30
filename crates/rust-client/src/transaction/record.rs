@@ -57,9 +57,6 @@ impl TransactionRecord {
                 };
                 true
             },
-            // TODO: We need a better strategy here. If a transaction was discarded within this same
-            // chain of updates, it would be better to pass the state to committed and then remove
-            // the account invalid states and make them valid again
             TransactionStatus::Discarded(_) | TransactionStatus::Committed { .. } => false,
         }
     }

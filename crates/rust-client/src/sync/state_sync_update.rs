@@ -319,29 +319,39 @@ impl TransactionUpdateTracker {
     pub fn apply_transaction_inclusion(&mut self, record: &RpcTransactionRecord, timestamp: u64) {
         let header = &record.transaction_header;
         let account_id = header.account_id();
+        let initial_state = header.initial_state_commitment();
+        let final_state = header.final_state_commitment();
 
         if let Some(transaction) = self.transactions.get_mut(&header.id()) {
             transaction.commit_transaction(record.block_num, timestamp);
-            return;
-        }
-
-        // Fallback for transactions with unauthenticated input notes: the node authenticates these
-        // notes during processing, which changes the transaction ID. Match by account ID and
-        // pre-transaction state instead.
-        if let Some(transaction) = self.transactions.values_mut().find(|tx| {
-            tx.details.account_id == account_id
-                && tx.details.init_account_state == header.initial_state_commitment()
+        } else if let Some(transaction) = self.transactions.values_mut().find(|tx| {
+            // The node authenticates unauthenticated input notes during processing. This changes
+            // the transaction ID but does not change the account state transition.
+            matches!(tx.status, TransactionStatus::Pending)
+                && tx.details.account_id == account_id
+                && tx.details.init_account_state == initial_state
+                && tx.details.final_account_state == final_state
         }) {
             transaction.commit_transaction(record.block_num, timestamp);
-            return;
+        } else {
+            // No local transaction matched. This is an external transaction by a tracked account.
+            // Record the nullifier-to-account mappings so nullifier processing can attribute note
+            // consumption to tracked accounts.
+            for commitment in header.input_notes().iter() {
+                self.external_nullifier_accounts.insert(commitment.nullifier(), account_id);
+            }
         }
 
-        // No local transaction matched. This is an external transaction by a tracked account.
-        // Record the nullifier→account mappings so we can attribute note consumption to tracked
-        // accounts during nullifier processing.
-        for commitment in header.input_notes().iter() {
-            self.external_nullifier_accounts.insert(commitment.nullifier(), account_id);
-        }
+        // A different state transition from the same initial account state makes the local branch
+        // invalid. Discard its dependent transactions too.
+        self.discard_transaction_with_predicate(
+            |transaction| {
+                transaction.details.account_id == account_id
+                    && transaction.details.init_account_state == initial_state
+                    && transaction.details.final_account_state != final_state
+            },
+            DiscardCause::Superseded,
+        );
     }
 
     /// Applies the necessary state transitions to the [`TransactionUpdateTracker`] when a the sync
@@ -599,8 +609,10 @@ mod tests {
 
     use miden_protocol::account::{AccountCode, StorageMapKey, StorageMapPatchEntries};
     use miden_protocol::testing::account_id::ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE;
+    use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionHeader};
 
     use super::*;
+    use crate::transaction::TransactionDetails;
 
     fn account_id() -> AccountId {
         ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE.try_into().unwrap()
@@ -627,6 +639,104 @@ mod tests {
             Word::default(),
             Word::default(),
         )
+    }
+
+    fn pending_transaction(id: u64, initial_state: u64, final_state: u64) -> TransactionRecord {
+        TransactionRecord::new(
+            TransactionId::from_raw(word(id)),
+            TransactionDetails {
+                account_id: account_id(),
+                init_account_state: word(initial_state),
+                final_account_state: word(final_state),
+                input_note_nullifiers: vec![],
+                output_notes: RawOutputNotes::new(vec![]).unwrap(),
+                block_num: BlockNumber::GENESIS,
+                submission_height: BlockNumber::GENESIS,
+                expiration_block_num: BlockNumber::from(100u32),
+                creation_timestamp: 0,
+            },
+            None,
+            TransactionStatus::Pending,
+        )
+    }
+
+    fn rpc_transaction(initial_state: u64, final_state: u64) -> RpcTransactionRecord {
+        RpcTransactionRecord {
+            block_num: BlockNumber::from(10u32),
+            transaction_header: TransactionHeader::new(
+                account_id(),
+                word(initial_state),
+                word(final_state),
+                InputNotes::new_unchecked(vec![]),
+                vec![],
+            )
+            .unwrap(),
+            output_notes: vec![],
+            erased_output_notes: vec![],
+            consumed_note_refs: vec![],
+        }
+    }
+
+    #[test]
+    fn transaction_inclusion_prevents_a_later_superseded_discard() {
+        let rpc_transaction = rpc_transaction(1, 2);
+        let transaction = TransactionRecord::new(
+            rpc_transaction.transaction_header.id(),
+            pending_transaction(1, 1, 2).details,
+            None,
+            TransactionStatus::Pending,
+        );
+        let mut tracker = TransactionUpdateTracker::new(vec![transaction]);
+
+        tracker.apply_transaction_inclusion(&rpc_transaction, 20);
+        tracker.apply_superseded_account_state(word(2));
+
+        let transaction = tracker.transactions.values().next().unwrap();
+        assert!(matches!(transaction.status, TransactionStatus::Committed { .. }));
+    }
+
+    #[test]
+    fn transaction_inclusion_requires_the_same_final_state_for_id_fallback() {
+        let transaction = pending_transaction(1, 1, 2);
+        let transaction_id = transaction.id;
+        let mut tracker = TransactionUpdateTracker::new(vec![transaction]);
+
+        tracker.apply_transaction_inclusion(&rpc_transaction(1, 3), 20);
+
+        let transaction = tracker.transactions.get(&transaction_id).unwrap();
+        assert_eq!(transaction.status, TransactionStatus::Discarded(DiscardCause::Superseded));
+    }
+
+    #[test]
+    fn transaction_inclusion_falls_back_to_the_account_state_transition() {
+        let transaction = pending_transaction(1, 1, 2);
+        let transaction_id = transaction.id;
+        let mut tracker = TransactionUpdateTracker::new(vec![transaction]);
+
+        tracker.apply_transaction_inclusion(&rpc_transaction(1, 2), 20);
+
+        let transaction = tracker.transactions.get(&transaction_id).unwrap();
+        assert!(matches!(transaction.status, TransactionStatus::Committed { .. }));
+    }
+
+    #[test]
+    fn competing_account_transition_discards_the_optimistic_chain() {
+        let first = pending_transaction(1, 1, 2);
+        let first_id = first.id;
+        let second = pending_transaction(2, 2, 3);
+        let second_id = second.id;
+        let mut tracker = TransactionUpdateTracker::new(vec![first, second]);
+
+        tracker.apply_transaction_inclusion(&rpc_transaction(1, 4), 20);
+
+        assert_eq!(
+            tracker.transactions.get(&first_id).unwrap().status,
+            TransactionStatus::Discarded(DiscardCause::Superseded)
+        );
+        assert_eq!(
+            tracker.transactions.get(&second_id).unwrap().status,
+            TransactionStatus::Discarded(DiscardCause::DiscardedInitialState)
+        );
     }
 
     fn build_patch(

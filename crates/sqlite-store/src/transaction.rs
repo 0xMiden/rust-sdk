@@ -12,7 +12,6 @@ use miden_client::transaction::{
     TransactionDetails,
     TransactionId,
     TransactionRecord,
-    TransactionScript,
     TransactionStatus,
     TransactionStatusVariant,
     TransactionStoreUpdate,
@@ -25,7 +24,7 @@ use super::note::apply_note_updates_tx;
 use super::sync::add_note_tag_tx;
 use crate::forest::{ScopedAccountForest, SqliteForestBackend};
 use crate::sql_error::SqlResultExt;
-use crate::{blob_array, insert_sql, subst, with_write_tx};
+use crate::{blob_array, insert_sql, proto, subst, with_write_tx};
 
 pub(crate) const UPSERT_TRANSACTION_QUERY: &str = insert_sql!(
     transactions {
@@ -149,11 +148,9 @@ impl SqliteStore {
                 let (id, script, details, status) = result.into_store_error()?;
                 Ok(TransactionRecord {
                     id: TransactionId::read_from_bytes(&id)?,
-                    details: TransactionDetails::read_from_bytes(&details)?,
-                    script: script
-                        .map(|script| TransactionScript::read_from_bytes(&script))
-                        .transpose()?,
-                    status: TransactionStatus::read_from_bytes(&status)?,
+                    details: proto::decode(&details)?,
+                    script: script.map(|script| proto::decode(&script)).transpose()?,
+                    status: proto::decode(&status)?,
                 })
             })
             .collect::<Result<Vec<TransactionRecord>, _>>()
@@ -261,7 +258,7 @@ pub(crate) fn upsert_transaction_record(
     let script_root = transaction.script.as_ref().map(|script| script.root().to_bytes());
 
     if let Some(script) = &transaction.script {
-        tx.execute(INSERT_TRANSACTION_SCRIPT_QUERY, params![script_root, script.to_bytes()])
+        tx.execute(INSERT_TRANSACTION_SCRIPT_QUERY, params![script_root, proto::encode(script)])
             .into_store_error()?;
     }
 
@@ -269,10 +266,10 @@ pub(crate) fn upsert_transaction_record(
         UPSERT_TRANSACTION_QUERY,
         params![
             transaction.id.to_bytes(),
-            transaction.details.to_bytes(),
+            proto::encode(&transaction.details),
             script_root,
             transaction.status.variant() as u8,
-            transaction.status.to_bytes(),
+            proto::encode(&transaction.status),
         ],
     )
     .into_store_error()?;

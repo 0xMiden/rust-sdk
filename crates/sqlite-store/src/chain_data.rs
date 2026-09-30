@@ -15,7 +15,7 @@ use rusqlite::{Connection, Transaction, params, params_from_iter};
 use super::SqliteStore;
 use crate::sql_error::SqlResultExt;
 use crate::sync::query_sync_height;
-use crate::{insert_sql, int_array, subst, with_write_tx};
+use crate::{insert_sql, int_array, proto, subst, with_write_tx};
 
 impl SqliteStore {
     pub(crate) fn get_block_headers(
@@ -161,7 +161,7 @@ impl SqliteStore {
         const QUERY: &str =
             insert_sql!(block_headers { block_num, header, has_client_notes } | IGNORE);
         let block_num = block_header.block_num().as_u32();
-        tx.execute(QUERY, params![block_num, block_header.to_bytes(), has_client_notes])
+        tx.execute(QUERY, params![block_num, proto::encode(block_header), has_client_notes])
             .into_store_error()?;
 
         set_block_header_has_client_notes(tx, u64::from(block_num), has_client_notes)?;
@@ -271,7 +271,7 @@ fn parse_block_headers_columns(
 fn parse_block_header(
     (header, has_client_notes): (Vec<u8>, bool),
 ) -> Result<(BlockHeader, BlockRelevance), StoreError> {
-    Ok((BlockHeader::read_from_bytes(&header)?, has_client_notes.into()))
+    Ok((proto::decode(&header)?, has_client_notes.into()))
 }
 
 pub(crate) fn set_block_header_has_client_notes(

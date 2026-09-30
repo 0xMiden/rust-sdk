@@ -1,0 +1,104 @@
+syntax = "proto3";
+
+// Values of the `input_notes` table. Field numbers are part of the on-disk format, so a released
+// number must keep its meaning. Add fields, do not renumber or reuse them.
+package miden.client.store;
+
+import "account.proto";
+import "block_number.proto";
+import "note.proto";
+import "primitives.proto";
+import "transaction.proto";
+import "store/protocol.proto";
+
+// A note the client consumes or expects to consume.
+message InputNoteState {
+  // The note is expected to arrive. Its metadata is known only if the client created the note or
+  // fetched it from the node.
+  message Expected {
+    note.NoteMetadata metadata = 1;
+    blockchain.BlockNumber after_block_num = 2;
+    optional fixed32 tag = 3;
+  }
+
+  // The note has an inclusion proof that is not verified against a block header yet.
+  message Unverified {
+    note.NoteMetadata metadata = 1;
+    NoteInclusionProof inclusion_proof = 2;
+  }
+
+  // The inclusion proof is verified against the block header.
+  message Committed {
+    note.NoteMetadata metadata = 1;
+    NoteInclusionProof inclusion_proof = 2;
+    primitives.Word block_note_root = 3;
+  }
+
+  // The inclusion proof does not match the block header.
+  message Invalid {
+    note.NoteMetadata metadata = 1;
+    NoteInclusionProof invalid_inclusion_proof = 2;
+    primitives.Word block_note_root = 3;
+  }
+
+  // A transaction that consumes the authenticated note is submitted.
+  message ProcessingAuthenticated {
+    note.NoteMetadata metadata = 1;
+    NoteInclusionProof inclusion_proof = 2;
+    primitives.Word block_note_root = 3;
+    NoteSubmissionData submission_data = 4;
+  }
+
+  // A transaction that consumes the note is submitted before the note is authenticated.
+  message ProcessingUnauthenticated {
+    note.NoteMetadata metadata = 1;
+    blockchain.BlockNumber after_block_num = 2;
+    NoteSubmissionData submission_data = 3;
+  }
+
+  // The client consumed the authenticated note.
+  message ConsumedAuthenticatedLocal {
+    note.NoteMetadata metadata = 1;
+    NoteInclusionProof inclusion_proof = 2;
+    primitives.Word block_note_root = 3;
+    blockchain.BlockNumber nullifier_block_height = 4;
+    NoteSubmissionData submission_data = 5;
+    optional uint32 consumed_tx_order = 6;
+  }
+
+  // The client consumed the note before it was authenticated.
+  message ConsumedUnauthenticatedLocal {
+    note.NoteMetadata metadata = 1;
+    blockchain.BlockNumber nullifier_block_height = 2;
+    NoteSubmissionData submission_data = 3;
+    optional uint32 consumed_tx_order = 4;
+  }
+
+  // Another client consumed the note.
+  message ConsumedExternal {
+    blockchain.BlockNumber nullifier_block_height = 1;
+    account.AccountId consumer_account = 2;
+    optional uint32 consumed_tx_order = 3;
+    note.NoteMetadata metadata = 4;
+  }
+
+  oneof state {
+    Expected expected = 1;
+    Unverified unverified = 2;
+    Committed committed = 3;
+    Invalid invalid = 4;
+    ProcessingAuthenticated processing_authenticated = 5;
+    ProcessingUnauthenticated processing_unauthenticated = 6;
+    ConsumedAuthenticatedLocal consumed_authenticated_local = 7;
+    ConsumedUnauthenticatedLocal consumed_unauthenticated_local = 8;
+    ConsumedExternal consumed_external = 9;
+  }
+}
+
+// Facts about a note the client submitted for consumption.
+message NoteSubmissionData {
+  // Time at which the note was submitted, in seconds since the Unix epoch.
+  optional uint64 submitted_at = 1;
+  account.AccountId consumer_account = 2;
+  transaction.TransactionId consumer_transaction = 3;
+}

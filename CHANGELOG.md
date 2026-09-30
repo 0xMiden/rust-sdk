@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Features
+
+* [FEATURE][rust] Added `ClientBuilder::seed_genesis`, which stores a genesis block header and its protocol configuration when the client is built ([#2639](https://github.com/0xMiden/rust-sdk/pull/2639)).
+
 ### Enhancements
 
 * [rust] On official networks, `std` builds now fetch the genesis block from the official `genesis` service (`https://genesis.<network>.miden.io`) instead of the node. Builds without `std` still fetch it from the node ([#2639](https://github.com/0xMiden/rust-sdk/pull/2639)).

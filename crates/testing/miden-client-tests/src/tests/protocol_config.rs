@@ -1,6 +1,8 @@
 use miden_client::account::AccountType;
 use miden_client::asset::AssetId;
+use miden_client::block::BlockNumber;
 use miden_client::protocol_config::{ProtocolConfig, protocol_config_setting_key};
+use miden_client::rpc::NodeRpcClient;
 use miden_client::store::{SettingScope, StoreError};
 use miden_client::transaction::TransactionRequestBuilder;
 use miden_client::{ClientError, Serializable, Word};
@@ -28,6 +30,39 @@ async fn the_first_sync_stores_the_protocol_config() {
     client.sync_state().await.unwrap();
 
     assert_eq!(client.get_protocol_config(config.to_commitment()).await.unwrap(), config);
+}
+
+#[tokio::test]
+async fn seed_genesis_stores_the_genesis_header_and_protocol_config() {
+    let (builder, rpc) = create_test_client_builder().await;
+    let (genesis, _) =
+        rpc.get_block_header_by_number(Some(BlockNumber::GENESIS), false).await.unwrap();
+    let protocol_config = rpc.protocol_config();
+
+    let client = builder
+        .seed_genesis(genesis.clone(), protocol_config.clone())
+        .build()
+        .await
+        .unwrap();
+
+    let (stored, _) = client.get_block_header_by_num(BlockNumber::GENESIS).await.unwrap().unwrap();
+    assert_eq!(stored.commitment(), genesis.commitment());
+    let expected_protocol_config =
+        client.get_protocol_config(protocol_config.to_commitment()).await.unwrap();
+    assert_eq!(expected_protocol_config, protocol_config);
+}
+
+#[tokio::test]
+async fn seed_genesis_rejects_a_protocol_config_the_header_does_not_commit_to() {
+    let (builder, rpc) = create_test_client_builder().await;
+    let (genesis, _) =
+        rpc.get_block_header_by_number(Some(BlockNumber::GENESIS), false).await.unwrap();
+    let wrong_protocol_config = protocol_config_for(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2);
+    assert_ne!(wrong_protocol_config.to_commitment(), genesis.protocol_config_commitment());
+
+    let result = builder.seed_genesis(genesis, wrong_protocol_config).build().await;
+
+    assert!(matches!(result, Err(ClientError::ChainValidationError(_))));
 }
 
 #[tokio::test]

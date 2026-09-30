@@ -952,7 +952,6 @@ impl SqliteStore {
             }
             .into());
         }
-        // Transaction derefs to Connection, so we can pass it where Connection is expected.
         Self::apply_account_patch(tx, smt_forest, previous_header, new_header, patch)
     }
 

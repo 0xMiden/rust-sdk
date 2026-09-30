@@ -371,7 +371,7 @@ async fn local_code_upgrade_with_storage_changes() {
 )]
 #[case::new_account(InvalidUpgrade::NewAccount, "a new account cannot be upgraded")]
 #[case::second_upgrade(InvalidUpgrade::SecondUpgrade, "an account code upgrade is already pending")]
-#[case::missing_code(InvalidUpgrade::MissingCode, "does not provide the new code")]
+#[case::missing_code(InvalidUpgrade::MissingCode, "did not provide the new code")]
 #[case::mismatched_code(InvalidUpgrade::MismatchedCode, "but the advice map provides code")]
 #[tokio::test]
 async fn invalid_code_upgrade_is_rejected(

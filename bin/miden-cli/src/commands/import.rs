@@ -1,3 +1,4 @@
+use std::fmt::Write;
 use std::fs;
 use std::path::PathBuf;
 
@@ -5,7 +6,6 @@ use miden_client::Client;
 use miden_client::account::{AccountFile, AccountId};
 use miden_client::keystore::Keystore;
 use miden_client::note::NoteFile;
-use miden_client::utils::Deserializable;
 use tracing::info;
 
 use crate::commands::account::{account_code_has_basic_wallet, set_default_account_if_unset};
@@ -33,37 +33,43 @@ impl ImportCmd {
         for filename in &self.filenames {
             let contents = fs::read(filename)?;
 
-            if let Ok(note_file) = NoteFile::read_from_bytes(&contents) {
-                match client.import_notes(&[note_file]).await?.first() {
-                    Some(commitment) => println!(
-                        "Successfully imported note with details commitment {}",
-                        commitment.to_hex()
-                    ),
-                    None => println!("Note was already up to date; nothing to import."),
-                }
-            } else {
-                info!(
-                    "Attempting to import account data from {}...",
-                    fs::canonicalize(filename)?.as_path().display()
-                );
-                let Ok(account_file) = AccountFile::read_from_bytes(&contents) else {
-                    return Err(CliError::Import(format!(
-                        "failed to read `{}` as a note or as an account",
-                        filename.to_string_lossy()
-                    )));
-                };
-                let account_id =
-                    import_account(&mut client, &keystore, account_file, self.overwrite).await?;
+            let note_error = match NoteFile::try_from_bytes(&contents) {
+                Ok(note_file) => {
+                    match client.import_notes(&[note_file]).await?.first() {
+                        Some(commitment) => println!(
+                            "Successfully imported note with details commitment {}",
+                            commitment.to_hex()
+                        ),
+                        None => println!("Note was already up to date; nothing to import."),
+                    }
+                    continue;
+                },
+                Err(note_error) => note_error,
+            };
 
-                println!("Successfully imported account {account_id}");
+            info!(
+                "Attempting to import account data from {}...",
+                fs::canonicalize(filename)?.as_path().display()
+            );
+            let account_file = AccountFile::try_from_bytes(&contents).map_err(|account_error| {
+                CliError::Import(format!(
+                    "failed to read `{}`\n  as a note: {}\n  as an account: {}",
+                    filename.to_string_lossy(),
+                    error_chain(&note_error),
+                    error_chain(&account_error),
+                ))
+            })?;
+            let account_id =
+                import_account(&mut client, &keystore, account_file, self.overwrite).await?;
 
-                // Only basic wallets are eligible to become the default account; faucets and other
-                // account kinds are skipped.
-                if let Some(code) = client.get_account_code(account_id).await?
-                    && account_code_has_basic_wallet(account_id, &code)
-                {
-                    set_default_account_if_unset(&mut client, account_id).await?;
-                }
+            println!("Successfully imported account {account_id}");
+
+            // Only basic wallets are eligible to become the default account; faucets and other
+            // account kinds are skipped.
+            if let Some(code) = client.get_account_code(account_id).await?
+                && account_code_has_basic_wallet(account_id, &code)
+            {
+                set_default_account_if_unset(&mut client, account_id).await?;
             }
         }
         Ok(())
@@ -85,8 +91,8 @@ async fn import_account<AUTH>(
     account_file: AccountFile,
     overwrite: bool,
 ) -> Result<AccountId, CliError> {
-    let account_id = account_file.account.id();
-    let AccountFile { account, auth_secret_keys } = account_file;
+    let (account, auth_secret_keys) = account_file.into_parts();
+    let account_id = account.id();
 
     for key in auth_secret_keys {
         // Use the Keystore trait method which handles both key storage and account association
@@ -101,8 +107,23 @@ async fn import_account<AUTH>(
 // HELPERS
 // ================================================================================================
 
-/// Checks that all files exist, otherwise returns an error. It also ensures that all files have a
-/// specific extension.
+/// Renders an error together with the messages of its sources.
+///
+/// The file decode errors keep the cause on the error source, so the top message alone does not say
+/// why a file was rejected.
+fn error_chain(error: &dyn std::error::Error) -> String {
+    let mut message = error.to_string();
+    let mut cause = error.source();
+
+    while let Some(source) = cause {
+        write!(message, ": {source}").unwrap();
+        cause = source.source();
+    }
+
+    message
+}
+
+/// Checks that all files exist, otherwise returns an error.
 fn validate_paths(paths: &[PathBuf]) -> Result<(), CliError> {
     let invalid_path = paths.iter().find(|path| !path.exists());
 

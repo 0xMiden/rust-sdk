@@ -27,7 +27,7 @@ The Miden client supports screening notes against tracked accounts to determine 
 
 ### Account generation and tracking
 
-The Miden client provides features for generating and tracking accounts within the Miden rollup ecosystem. Users can create accounts and track their transaction status.
+The Miden client provides features for generating and tracking accounts within the Miden rollup ecosystem. Users can create accounts and track their transaction status. On a network that enforces an account allowlist, the client registers a new account with an invitation code before its first transaction, and receives the funds the network pays a registered account. See [Account registration on an allowlisted network](./library.md#account-registration-on-an-allowlisted-network).
 
 ### Crate features
 

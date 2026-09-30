@@ -26,8 +26,7 @@ use miden_client::asset::{Asset, AssetAmount, FungibleAsset};
 use miden_client::auth::{AuthSchemeId, AuthSecretKey, AuthSingleSig, ECDSA_K256_KECCAK_SCHEME_ID};
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;
-use miden_client::note::standards::NoteSyncHint;
-use miden_client::note::{BlockNumber, NoteFile, NoteTag, NoteType};
+use miden_client::note::{BlockNumber, NoteFile, NoteSyncHint, NoteTag, NoteType};
 use miden_client::rpc::domain::account::{
     AccountStorageRequirements,
     GetAccountRequest,

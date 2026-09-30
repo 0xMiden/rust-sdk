@@ -5,7 +5,7 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
-use std::string::ToString;
+use std::string::{String, ToString};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::vec::Vec;
@@ -217,6 +217,7 @@ enum AccountKind {
 pub struct AccountSetup {
     kind: AccountKind,
     funded: bool,
+    invitation_code: Option<String>,
 }
 
 impl AccountSetup {
@@ -228,6 +229,7 @@ impl AccountSetup {
                 auth_scheme: ECDSA_K256_KECCAK_SCHEME_ID,
             },
             funded: true,
+            invitation_code: None,
         }
     }
 
@@ -246,6 +248,7 @@ impl AccountSetup {
         Self {
             kind: AccountKind::Prebuilt { account: Box::new(account), key },
             funded: true,
+            invitation_code: None,
         }
     }
 
@@ -262,6 +265,13 @@ impl AccountSetup {
     #[must_use]
     pub fn unfunded(mut self) -> Self {
         self.funded = false;
+        self
+    }
+
+    /// Registers the account on the network allowlist with `invitation_code` when it is inserted.
+    #[must_use]
+    pub fn invitation_code(mut self, invitation_code: &str) -> Self {
+        self.invitation_code = Some(invitation_code.to_string());
         self
     }
 }
@@ -347,6 +357,9 @@ impl<AUTH: Keystore + Sync + 'static> TestClient<AUTH> {
             .context("failed to add the account key to the keystore")?;
 
         self.add_account(&account, false).await?;
+        if let Some(invitation_code) = setup.invitation_code.as_deref() {
+            self.register_account(account.id(), invitation_code).await?;
+        }
 
         info!(
             account_id = %account.id(),

@@ -43,6 +43,8 @@ pub(super) struct DataStoreCache {
     /// scripts): they must be resolvable while the transaction executes, but they are persisted
     /// only as part of the store update applied after the transaction succeeds.
     note_scripts: RwLock<BTreeMap<Word, NoteScript>>,
+    /// Blocks that the in-flight transaction request must be able to authenticate.
+    block_numbers: RwLock<BTreeSet<BlockNumber>>,
     /// Storage map witnesses, keyed by (`map_root`, `map_key`). Avoids redundant RPC calls when the
     /// same map entry is accessed multiple times within a transaction.
     storage_map_witnesses: RwLock<BTreeMap<(Word, StorageMapKey), StorageMapWitness>>,
@@ -72,6 +74,7 @@ impl DataStoreCache {
             mast_store: Arc::new(TransactionMastStore::new()),
             foreign_account_inputs: RwLock::new(BTreeMap::new()),
             note_scripts: RwLock::new(BTreeMap::new()),
+            block_numbers: RwLock::new(BTreeSet::new()),
             storage_map_witnesses: RwLock::new(BTreeMap::new()),
             partial_accounts: RwLock::new(BTreeMap::new()),
             blockchains: RwLock::new(BTreeMap::new()),
@@ -79,6 +82,21 @@ impl DataStoreCache {
             cache_execution_inputs: false,
             ref_block: RwLock::new(None),
         }
+    }
+
+    /// Replaces the blocks requested by the in-flight transaction.
+    pub(super) fn replace_block_numbers(
+        &self,
+        block_numbers: impl IntoIterator<Item = BlockNumber>,
+    ) {
+        let mut cache = self.block_numbers.write();
+        cache.clear();
+        cache.extend(block_numbers);
+    }
+
+    /// Returns the blocks requested by the in-flight transaction.
+    pub(super) fn block_numbers(&self) -> BTreeSet<BlockNumber> {
+        self.block_numbers.read().clone()
     }
 
     /// Enables the transaction-input and vault-asset-witness caches.

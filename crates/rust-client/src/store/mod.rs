@@ -40,6 +40,7 @@ use miden_protocol::account::{
 };
 use miden_protocol::address::Address;
 use miden_protocol::asset::{Asset, AssetId, AssetVault, AssetWitness};
+use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::merkle::MerkleError;
 use miden_protocol::crypto::merkle::mmr::{Forest, InOrderIndex, MmrPeaks, PartialMmr};
@@ -491,6 +492,50 @@ pub trait Store: Send + Sync {
     /// Tag removal is the caller's responsibility — see [`Self::remove_note_tag`].
     async fn remove_address(&self, address: Address) -> Result<bool, StoreError>;
 
+    // ACCOUNT WITNESSES
+    // --------------------------------------------------------------------------------------------
+
+    /// Registers an account whose [`AccountWitness`] should be refreshed on every sync, so that
+    /// transactions using it as a foreign account can resolve the witness locally.
+    ///
+    /// No-op if the account is already registered; a cached witness is left in place. The witness
+    /// itself is filled in by the next sync.
+    ///
+    /// Returns `true` if the account was not registered before this call.
+    async fn track_account_witness(&self, account_id: AccountId) -> Result<bool, StoreError>;
+
+    /// Stops refreshing the account's witness and drops any cached one.
+    ///
+    /// Returns `true` if the account was registered.
+    async fn untrack_account_witness(&self, account_id: AccountId) -> Result<bool, StoreError>;
+
+    /// Retrieves the ID of every registered account, whether or not a witness has been cached for
+    /// it yet.
+    async fn tracked_account_witnesses(&self) -> Result<Vec<AccountId>, StoreError>;
+
+    /// Retrieves the cached [`AccountWitness`]. The witness opens under the account root of the
+    /// block at the sync height.
+    ///
+    /// Returns `None` when the account is not registered or has not been refreshed yet.
+    async fn get_account_witness(
+        &self,
+        account_id: AccountId,
+    ) -> Result<Option<AccountWitness>, StoreError>;
+
+    /// Caches an [`AccountWitness`] for a registered account, replacing any previous one.
+    ///
+    /// Returns `false` if the account is not registered, in which case nothing is written.
+    /// Registering is [`Self::track_account_witness`]'s job alone.
+    ///
+    /// The caller must verify the witness against the account root of the block at the sync height
+    /// first. The read path does not check the witness, so a bad witness stored here surfaces later
+    /// as a kernel assertion during execution rather than as a chain validation error at sync time.
+    async fn update_account_witness(
+        &self,
+        account_id: AccountId,
+        witness: &AccountWitness,
+    ) -> Result<bool, StoreError>;
+
     // SETTINGS
     // --------------------------------------------------------------------------------------------
 
@@ -571,30 +616,15 @@ pub trait Store: Send + Sync {
     /// Gets the note transport cursor.
     ///
     /// This is used to reduce the number of fetched notes from the note transport network. If no
-    /// cursor exists, initializes it to 0.
+    /// cursor exists, this returns an initial cursor.
     async fn get_note_transport_cursor(&self) -> Result<NoteTransportCursor, StoreError> {
-        let cursor_bytes = if let Some(bytes) = self
+        let Some(cursor_bytes) = self
             .get_setting(SettingScope::Client, NOTE_TRANSPORT_CURSOR_STORE_SETTING.into())
             .await?
-        {
-            bytes
-        } else {
-            // Lazy initialization: create cursor if not present
-            let initial = 0u64.to_be_bytes().to_vec();
-            self.set_setting(
-                SettingScope::Client,
-                NOTE_TRANSPORT_CURSOR_STORE_SETTING.into(),
-                initial.clone(),
-            )
-            .await?;
-            initial
+        else {
+            return Ok(NoteTransportCursor::init());
         };
-        let array: [u8; 8] = cursor_bytes
-            .as_slice()
-            .try_into()
-            .map_err(|e: core::array::TryFromSliceError| StoreError::ParsingError(e.to_string()))?;
-        let cursor = u64::from_be_bytes(array);
-        Ok(cursor.into())
+        NoteTransportCursor::read_from_bytes(&cursor_bytes).map_err(Into::into)
     }
 
     /// Updates the note transport cursor.
@@ -605,7 +635,7 @@ pub trait Store: Send + Sync {
         &self,
         cursor: NoteTransportCursor,
     ) -> Result<(), StoreError> {
-        let cursor_bytes = cursor.value().to_be_bytes().to_vec();
+        let cursor_bytes = cursor.to_bytes();
         self.set_setting(
             SettingScope::Client,
             NOTE_TRANSPORT_CURSOR_STORE_SETTING.into(),

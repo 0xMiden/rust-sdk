@@ -13,12 +13,6 @@
 # Env vars:
 #   MIDEN_VERIFICATION_BASE_FEE  genesis `verification_base_fee` (default 500; 0 disables fees)
 #   MIDEN_BATCH_BUILDER_WALLET   account that receives the batch builder's fees
-#   MIDEN_NODE_GIT_REV           install the node binaries from this git rev instead of the source
-#                                pinned in Cargo.lock. Give the full commit hash: `cargo install`
-#                                records that hash, and this script compares it to decide whether
-#                                the cached binaries are current.
-#   MIDEN_NODE_GIT_URL           repository MIDEN_NODE_GIT_REV names
-#                                (default https://github.com/0xMiden/miden-node)
 #   MIDEN_ACCOUNT_ALLOWLIST      1 enforces the account allowlist and binds the administration
 #                                API the tests create invitation codes through. The sequencer
 #                                then asks the funding service to pay each account which
@@ -86,21 +80,15 @@ ACCOUNT_ALLOWLIST="${MIDEN_ACCOUNT_ALLOWLIST:-0}"
 NODE_BINS=(miden-validator miden-node miden-ntx-builder miden-remote-prover miden-funding-service
     miden-note-transport)
 
-# Resolve the node source. MIDEN_NODE_GIT_REV wins, so a node that is not released yet can be
-# tested without a git pin in Cargo.lock, which would drag the whole lockfile with it. Otherwise
-# read Cargo.lock: a git pin takes precedence there too, and a lockfile without one gives the
-# crates.io version locked for `miden-node-proto-build`.
+# Resolve the node source from Cargo.lock. By default, install the crates.io version that
+# Cargo.lock locks for `miden-node-proto-build`. A git pin of the node in Cargo.lock takes
+# precedence.
 #
-# Cargo.lock records the URL as it is written in Cargo.toml. Both `0xMiden/node` and
-# `0xMiden/miden-node` reach the repository, so both spellings are matched. A pattern which matches
-# only one of them reports no git pin and silently installs the crates.io node instead.
+# Cargo.lock records the URL as Cargo.toml writes it. Both `0xMiden/node` and `0xMiden/miden-node`
+# reach the repository, so the pattern matches both spellings. A pattern that misses one spelling
+# ignores a git pin with that spelling.
 SRC_LINE="$(grep -m1 -E 'source = "git\+https://github\.com/0xMiden/(miden-)?node[?#"]' "$ROOT/Cargo.lock" || true)"
-if [ -n "${MIDEN_NODE_GIT_REV:-}" ]; then
-    NODE_SOURCE="git"
-    NODE_REV="$MIDEN_NODE_GIT_REV"
-    NODE_URL="${MIDEN_NODE_GIT_URL:-https://github.com/0xMiden/miden-node}"
-    NODE_DESC="$NODE_URL @ $NODE_REV (MIDEN_NODE_GIT_REV)"
-elif [ -n "$SRC_LINE" ]; then
+if [ -n "$SRC_LINE" ]; then
     NODE_SOURCE="git"
     SRC="${SRC_LINE#*\"git+}"; SRC="${SRC%\"}"
     NODE_REV="${SRC##*#}"
@@ -350,9 +338,9 @@ wait_for_admin_api() {
 # `--funding-account`, signing with the key in that file, and trusts the same validator signing key
 # the validator itself was started with. It answers a request with the note before it builds the
 # transaction which creates the note.
-FUNDING_ENABLED=""
+MIDEN_TEST_FUNDING_ENABLED=""
 if [ "$VERIFICATION_BASE_FEE" != "0" ]; then
-    FUNDING_ENABLED=1
+    MIDEN_TEST_FUNDING_ENABLED=1
     start funding-service "$BIN/miden-funding-service" start --listen "$FUNDING" \
         --rpc.url "http://$RPC" \
         --tx-prover.url "http://$PROVER" \
@@ -395,7 +383,7 @@ funding_ready() { curl -sfo /dev/null "http://$FUNDING/status"; }
 
 wait_for "RPC on $RPC" rpc_ready
 
-if [ -n "$FUNDING_ENABLED" ]; then
+if [ -n "$MIDEN_TEST_FUNDING_ENABLED" ]; then
     wait_for "the funding service on $FUNDING" funding_ready
     echo "==> funding service is up (MIDEN_FUNDING_SERVICE_URL=http://$FUNDING)"
 fi

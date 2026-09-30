@@ -146,8 +146,9 @@ variants and then pass the whole set to `TestClient::fund_if_needed`, which asks
 once so they share one transaction. A test creating several accounts of its own should do the same
 rather than calling the funding `insert_new_*` helpers in a row.
 
-Funding costs no transaction of its own. Each account's note is held until the account's next
-transaction and folded into it, so that one transaction deploys the account, funds it and does the
+The service creates the funding notes in a transaction of its own. A test spends no extra
+transaction to receive them. Each account's note is held until the account's next transaction and
+folded into it, so that one transaction deploys the account, funds it and does the
 test's work. `TestClient::submit_new_transaction` does the folding. The funding service answers
 before its funding transaction reaches the node, so `TestClient::submit_new_transaction` resubmits
 a transaction the node rejects for an unknown funding note. A request going somewhere else needs

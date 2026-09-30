@@ -195,6 +195,10 @@ impl TestClient {
 
     /// Returns `transaction_request` with `account_id`'s funding note folded in, after the node
     /// committed that note.
+    ///
+    /// Use this for a request that cannot be resubmitted, such as a request in a batch. The node
+    /// rejects a request whose unauthenticated note it does not know yet. The client cannot see the
+    /// node's mempool, so a committed note is the first sign that the node knows it.
     pub async fn fund_request_after_commit(
         &mut self,
         account_id: AccountId,

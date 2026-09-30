@@ -34,20 +34,9 @@ pub const FUNDING_SERVICE_ENV: &str = "MIDEN_FUNDING_SERVICE_URL";
 /// tens of thousands of base units, so this covers far more than any one test spends.
 pub const FUNDING_AMOUNT: u64 = 10_000_000;
 
-/// How long one `fund` call may take, with every attempt included. The service answers as soon as
-/// it queues the note, so this bound is reached only when the service stops answering.
-///
-/// Keep this below the time after which nextest kills a test (`slow-timeout` in
-/// `.config/nextest.toml`, 360s). A killed test reports only that it timed out. A test which
-/// reaches this deadline fails with the funding error instead, which shows that the funding service
-/// stopped answering.
+/// How long one `fund` call may take, with every retry included. It is below the nextest kill time
+/// (360s), so a stuck funding service fails the test with a funding error and not a timeout.
 const FUNDING_DEADLINE: Duration = Duration::from_secs(240);
-
-/// How long one attempt may take. An attempt cannot outlive the whole `fund` call.
-///
-/// A caller that gives up is dropped from the service's next batch without an error from the
-/// service, so the account is not funded. `fund` then returns the timeout as its error.
-const REQUEST_TIMEOUT: Duration = FUNDING_DEADLINE;
 
 /// How many times one funding request is sent before the run gives up.
 ///
@@ -150,7 +139,6 @@ impl FundingServiceFunder {
     /// Builds a funder talking to the service at `base_url`.
     pub fn new(base_url: &str, amount: u64) -> Result<Self> {
         let http = reqwest::Client::builder()
-            .timeout(REQUEST_TIMEOUT)
             .build()
             .context("failed to build the funding service HTTP client")?;
 

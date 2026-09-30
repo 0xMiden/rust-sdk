@@ -1,11 +1,5 @@
 # Changelog
 
-## Unreleased
-
-### Breaking Changes
-
-* [BREAKING][test] The integration tests now pay fees through the node's funding service (`MIDEN_FUNDING_SERVICE_URL`) instead of a pool of pre-funded wallets, and the standalone integration test binary is removed ([#2593](https://github.com/0xMiden/rust-sdk/pull/2593), [#2573](https://github.com/0xMiden/rust-sdk/issues/2573)).
-
 ## 0.17.0-rc.4 (2026-09-26)
 
 ### Breaking Changes

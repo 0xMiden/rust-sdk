@@ -254,6 +254,8 @@ pub enum ClientError {
     Observer(Box<dyn core::error::Error + Send + Sync + 'static>),
     #[error("expected note blocks to be screened before state sync update is built")]
     UnscreenedNoteBlocks,
+    #[error("client already tracks maximum number of account tags possible: {0}")]
+    AccountTagLimitExceeded(usize),
 }
 
 // OBSERVER FAN-OUT

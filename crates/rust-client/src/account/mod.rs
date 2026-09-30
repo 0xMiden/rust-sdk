@@ -32,6 +32,7 @@
 //!
 //! For more details on accounts, refer to the [Account] documentation.
 
+use alloc::collections::BTreeSet;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
@@ -157,7 +158,7 @@ use crate::errors::ClientError;
 use crate::rpc::domain::account::GetAccountRequest;
 use crate::rpc::node::{EndpointError, GetAccountError};
 use crate::store::{AccountStatus, AccountStorageFilter, ClientAccountType};
-use crate::sync::NoteTagRecord;
+use crate::sync::{NoteTagRecord, NoteTagSource};
 
 pub mod component {
     pub const MIDEN_PACKAGE_EXTENSION: &str = "masp";
@@ -268,6 +269,9 @@ pub mod component {
 ///
 /// - **Data retrieval:** The module also provides methods to fetch account-related data.
 impl<AUTH> Client<AUTH> {
+    // Mirror of node MAX_TAGS_PER_FETCH_REQUEST. NTL allows up to 128 tags per request.
+    pub const MAX_ACCOUNT_TAGS: usize = 128;
+
     // ACCOUNT CREATION
     // --------------------------------------------------------------------------------------------
 
@@ -376,6 +380,24 @@ impl<AUTH> Client<AUTH> {
         Ok(self.rpc_api.is_account_allowed(account_id).await?)
     }
 
+    /// Returns an error if `tag` is a new account tag and the client already tracks
+    /// [`Self::MAX_ACCOUNT_TAGS`] account tags.
+    async fn validate_can_track_more_account_tags(&self, tag: NoteTag) -> Result<(), ClientError> {
+        let tracked_tags: BTreeSet<NoteTag> = self
+            .store
+            .get_note_tags()
+            .await?
+            .into_iter()
+            .filter(|record| matches!(record.source, NoteTagSource::Account(_)))
+            .map(|record| record.tag)
+            .collect();
+        if !tracked_tags.contains(&tag) && tracked_tags.len() >= Self::MAX_ACCOUNT_TAGS {
+            return Err(ClientError::AccountTagLimitExceeded(tracked_tags.len()));
+        }
+
+        Ok(())
+    }
+
     /// Returns whether a transaction against `account_id` creates an account that the network
     /// allowlist gates.
     ///
@@ -428,6 +450,10 @@ impl<AUTH> Client<AUTH> {
         match tracked_account {
             None => {
                 let default_address = Address::new(account.id());
+                if matches!(client_account_type, ClientAccountType::Native) {
+                    self.validate_can_track_more_account_tags(default_address.to_note_tag())
+                        .await?;
+                }
 
                 self.store
                     .insert_account(account, default_address.clone(), client_account_type)
@@ -526,6 +552,49 @@ impl<AUTH> Client<AUTH> {
         self.add_account_inner(&account, ClientAccountType::Watched, true).await
     }
 
+    // ACCOUNT WITNESS PREFETCHING
+    // --------------------------------------------------------------------------------------------
+
+    /// Registers an account whose account witness [`Client::sync_chain`] keeps up to date, so that
+    /// transactions using it as a foreign account resolve the witness locally. This trades one
+    /// request per transaction for one per sync.
+    ///
+    /// A [`ForeignAccount::Private`](crate::transaction::ForeignAccount) needs nothing else, since
+    /// the caller supplies the account data. A
+    /// [`ForeignAccount::Public`](crate::transaction::ForeignAccount) additionally has to be
+    /// tracked by this client, so that its code, storage and vault come from the store as well;
+    /// registering an untracked public account costs a request per sync and saves none.
+    ///
+    /// The witness is fetched by the next sync, not by this call. Transactions assume that a sync
+    /// ran after the account was registered.
+    ///
+    /// The account is not validated against the network here. The sync fails while a registered
+    /// account has no witness that the node can return, so an account that is not in the account
+    /// tree blocks the sync until it is unregistered.
+    ///
+    /// Registering an already registered account is a no-op and keeps any cached witness.
+    ///
+    /// Returns `true` if the account was not registered before this call.
+    pub async fn track_account_witness(&self, account_id: AccountId) -> Result<bool, ClientError> {
+        self.store.track_account_witness(account_id).await.map_err(Into::into)
+    }
+
+    /// Stops keeping the account's witness up to date and drops the cached one.
+    ///
+    /// Returns `true` if the account was registered. Transactions using it keep working, falling
+    /// back to fetching the witness from the node.
+    pub async fn untrack_account_witness(
+        &self,
+        account_id: AccountId,
+    ) -> Result<bool, ClientError> {
+        self.store.untrack_account_witness(account_id).await.map_err(Into::into)
+    }
+
+    /// Returns the IDs of every account registered via [`Client::track_account_witness`].
+    pub async fn tracked_account_witnesses(&self) -> Result<Vec<AccountId>, ClientError> {
+        self.store.tracked_account_witnesses().await.map_err(Into::into)
+    }
+
     /// Fetches a public [`Account`] from the network, returning a typed error when the account
     /// doesn't exist on chain or is private.
     async fn fetch_public_account(&self, account_id: AccountId) -> Result<Account, ClientError> {
@@ -601,6 +670,9 @@ impl<AUTH> Client<AUTH> {
         match tracked_account {
             None => Err(ClientError::AccountDataNotFound(account_id)),
             Some(tracked_account) => {
+                if !tracked_account.is_watched() {
+                    self.validate_can_track_more_account_tags(address.to_note_tag()).await?;
+                }
                 self.store.insert_address(address.clone(), account_id).await?;
                 // Watched accounts intentionally have no derived note tag registered to avoid sync
                 // state pulling notes for them.

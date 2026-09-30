@@ -91,6 +91,9 @@ pub struct MockRpcApi {
     get_notes_by_id_calls: Arc<AtomicUsize>,
     /// Block header requests, recorded with the requested block and proof flag.
     block_header_requests: Arc<RwLock<Vec<BlockHeaderRequest>>>,
+    /// Number of `get_account` requests served, so a test can assert that a flow avoided the round
+    /// trip.
+    get_account_calls: Arc<AtomicUsize>,
     /// Failures to serve instead of answering, keyed by [`RpcEndpoint::proto_name`] and set by
     /// [`MockRpcApi::fail_next_call`]. An entry is removed when served, so the call after it
     /// answers normally and a test can exercise a retry.
@@ -132,6 +135,7 @@ impl MockRpcApi {
             sync_notes_mmr_path_overrides: Arc::new(RwLock::new(BTreeMap::new())),
             get_notes_by_id_calls: Arc::new(AtomicUsize::new(0)),
             block_header_requests: Arc::new(RwLock::new(Vec::new())),
+            get_account_calls: Arc::new(AtomicUsize::new(0)),
             next_call_failures: Arc::new(RwLock::new(BTreeMap::new())),
             registered_accounts: Arc::new(RwLock::new(BTreeMap::new())),
             allowlist_enforced: Arc::new(AtomicBool::new(false)),
@@ -208,6 +212,11 @@ impl MockRpcApi {
                 (request.block_num == Some(block_num)).then_some(request.include_mmr_proof)
             })
             .collect()
+    }
+
+    /// Returns how many `get_account` requests this API has served.
+    pub fn get_account_call_count(&self) -> usize {
+        self.get_account_calls.load(Ordering::Relaxed)
     }
 
     /// Returns how many `is_account_allowed` requests this API has served.
@@ -703,6 +712,12 @@ impl NodeRpcClient for MockRpcApi {
         account_id: AccountId,
         request: GetAccountRequest,
     ) -> Result<(BlockNumber, AccountProof), RpcError> {
+        self.get_account_calls.fetch_add(1, Ordering::Relaxed);
+
+        if let Some(error) = self.take_failure(RpcEndpoint::GetAccount) {
+            return Err(error);
+        }
+
         let current_chain = self.mock_chain.read();
         let current_block_number = current_chain.latest_block_header().block_num();
         let block_number = match request.at {

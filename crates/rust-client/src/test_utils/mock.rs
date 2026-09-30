@@ -83,6 +83,10 @@ pub struct MockRpcApi {
     /// Number of `get_notes_by_id` requests served, so a test can assert that a flow avoided the
     /// round trip.
     get_notes_by_id_calls: Arc<AtomicUsize>,
+    /// Number of `sync_storage_maps` requests served.
+    sync_storage_maps_calls: Arc<AtomicUsize>,
+    /// Number of `sync_account_vault` requests served.
+    sync_account_vault_calls: Arc<AtomicUsize>,
     /// Number of `get_account` requests served, so a test can assert that a flow avoided the round
     /// trip.
     get_account_calls: Arc<AtomicUsize>,
@@ -126,6 +130,8 @@ impl MockRpcApi {
             private_note_attachments: Arc::new(RwLock::new(BTreeMap::new())),
             sync_notes_mmr_path_overrides: Arc::new(RwLock::new(BTreeMap::new())),
             get_notes_by_id_calls: Arc::new(AtomicUsize::new(0)),
+            sync_storage_maps_calls: Arc::new(AtomicUsize::new(0)),
+            sync_account_vault_calls: Arc::new(AtomicUsize::new(0)),
             get_account_calls: Arc::new(AtomicUsize::new(0)),
             next_call_failures: Arc::new(RwLock::new(BTreeMap::new())),
             registered_accounts: Arc::new(RwLock::new(BTreeMap::new())),
@@ -192,6 +198,16 @@ impl MockRpcApi {
     /// Returns how many `get_notes_by_id` requests this API has served.
     pub fn get_notes_by_id_call_count(&self) -> usize {
         self.get_notes_by_id_calls.load(Ordering::Relaxed)
+    }
+
+    /// Returns how many `sync_storage_maps` requests this API has served.
+    pub fn sync_storage_maps_call_count(&self) -> usize {
+        self.sync_storage_maps_calls.load(Ordering::Relaxed)
+    }
+
+    /// Returns how many `sync_account_vault` requests this API has served.
+    pub fn sync_account_vault_call_count(&self) -> usize {
+        self.sync_account_vault_calls.load(Ordering::Relaxed)
     }
 
     /// Returns how many `get_account` requests this API has served.
@@ -910,6 +926,8 @@ impl NodeRpcClient for MockRpcApi {
         block_to: BlockNumber,
         account_id: AccountId,
     ) -> Result<StorageMapInfo, RpcError> {
+        self.sync_storage_maps_calls.fetch_add(1, Ordering::Relaxed);
+
         let mut map_entries: BTreeMap<StorageSlotName, StorageMapPatchEntries> = BTreeMap::new();
         let mut current_block_from = block_from;
         let chain_tip = self.get_chain_tip_block_num();
@@ -944,6 +962,8 @@ impl NodeRpcClient for MockRpcApi {
         block_to: BlockNumber,
         account_id: AccountId,
     ) -> Result<AccountVaultInfo, RpcError> {
+        self.sync_account_vault_calls.fetch_add(1, Ordering::Relaxed);
+
         let mut vault_patch = AccountVaultPatch::default();
         let mut current_block_from = block_from;
         let chain_tip = self.get_chain_tip_block_num();

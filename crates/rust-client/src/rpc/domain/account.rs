@@ -130,36 +130,17 @@ pub struct AccountDetails {
     pub vault_details: AccountVaultDetails,
 }
 
-impl TryFrom<&AccountDetails> for Account {
+impl TryFrom<&AccountStorageDetails> for AccountStorage {
     type Error = RpcError;
 
-    /// Builds an [`Account`] from [`AccountDetails`].
+    /// Builds an [`AccountStorage`] from [`AccountStorageDetails`].
     ///
-    /// This conversion fails if the account details are incomplete, i.e., when the account's
-    /// storage maps or vault exceed the node's size threshold, or when only specific map keys were
-    /// requested.
-    fn try_from(details: &AccountDetails) -> Result<Self, Self::Error> {
-        if details.vault_details.too_many_assets {
-            return Err(RpcError::ExpectedDataMissing(
-                "cannot build account: vault has too many assets".into(),
-            ));
-        }
-
-        if let Some(slot_name) = details
-            .storage_details
-            .map_details
-            .iter()
-            .find(|m| m.is_limit_exceeded())
-            .map(|m| &m.slot_name)
-        {
-            return Err(RpcError::ExpectedDataMissing(format!(
-                "cannot build account: storage map slot '{slot_name}' has too many entries",
-            )));
-        }
-
+    /// This conversion fails when a map slot has no details in the response, when its entries are
+    /// not complete (oversized or requested by key), or when they do not form a valid map.
+    fn try_from(details: &AccountStorageDetails) -> Result<Self, Self::Error> {
         let mut slots: Vec<StorageSlot> = Vec::new();
 
-        for slot_header in details.storage_details.header.slots() {
+        for slot_header in details.header.slots() {
             match slot_header.slot_type() {
                 StorageSlotType::Value => {
                     slots.push(StorageSlot::with_value(
@@ -168,10 +149,8 @@ impl TryFrom<&AccountDetails> for Account {
                     ));
                 },
                 StorageSlotType::Map => {
-                    let map_details = details
-                        .storage_details
-                        .find_map_details(slot_header.name())
-                        .ok_or_else(|| {
+                    let map_details =
+                        details.find_map_details(slot_header.name()).ok_or_else(|| {
                             RpcError::ExpectedDataMissing(format!(
                                 "slot '{}' is a map but has no map_details in response",
                                 slot_header.name()
@@ -200,13 +179,44 @@ impl TryFrom<&AccountDetails> for Account {
             }
         }
 
+        AccountStorage::new(slots).map_err(|err| {
+            RpcError::InvalidResponse(format!("rpc api returned non-valid storage slots: {err}"))
+        })
+    }
+}
+
+impl TryFrom<&AccountDetails> for Account {
+    type Error = RpcError;
+
+    /// Builds an [`Account`] from [`AccountDetails`].
+    ///
+    /// This conversion fails if the account details are incomplete, i.e., when the account's
+    /// storage maps or vault exceed the node's size threshold, or when only specific map keys were
+    /// requested.
+    fn try_from(details: &AccountDetails) -> Result<Self, Self::Error> {
+        if details.vault_details.too_many_assets {
+            return Err(RpcError::ExpectedDataMissing(
+                "cannot build account: vault has too many assets".into(),
+            ));
+        }
+
+        if let Some(slot_name) = details
+            .storage_details
+            .map_details
+            .iter()
+            .find(|m| m.is_limit_exceeded())
+            .map(|m| &m.slot_name)
+        {
+            return Err(RpcError::ExpectedDataMissing(format!(
+                "cannot build account: storage map slot '{slot_name}' has too many entries",
+            )));
+        }
+
         let asset_vault = AssetVault::new(&details.vault_details.assets).map_err(|err| {
             RpcError::InvalidResponse(format!("rpc api returned non-valid assets: {err}"))
         })?;
 
-        let account_storage = AccountStorage::new(slots).map_err(|err| {
-            RpcError::InvalidResponse(format!("rpc api returned non-valid storage slots: {err}"))
-        })?;
+        let account_storage = AccountStorage::try_from(&details.storage_details)?;
 
         Account::new(
             details.header.id(),

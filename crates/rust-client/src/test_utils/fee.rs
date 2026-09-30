@@ -11,7 +11,7 @@ use miden_protocol::Felt;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
 
-use super::common::{Keystore, TestClient};
+use super::common::TestClient;
 use crate::note::Note;
 use crate::transaction::{TransactionId, TransactionRequestBuilder};
 
@@ -31,7 +31,7 @@ pub trait FeeFunder: Send + Sync + fmt::Debug {
     }
 }
 
-impl<AUTH: Keystore + Sync + 'static> TestClient<AUTH> {
+impl TestClient {
     /// Pays `account_ids` what they need to cover their own fees, if the chain charges any.
     ///
     /// Each note is held until the account's next transaction, which consumes it and is thereby

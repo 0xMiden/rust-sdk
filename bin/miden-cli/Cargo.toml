@@ -28,14 +28,12 @@ miden-client-sqlite-store = { workspace = true }
 miden-debug               = { optional = true, workspace = true }
 
 # External dependencies
-async-trait        = { workspace = true }
 clap               = { features = ["derive"], workspace = true }
 comfy-table        = { workspace = true }
 dirs               = { version = "6.0" }
 figment            = { features = ["env", "toml"], version = "0.10" }
 miette             = { workspace = true }
 rand               = { workspace = true }
-rpassword          = { version = "7.5" }
 serde              = { workspace = true }
 thiserror          = { workspace = true }
 tokio              = { workspace = true }

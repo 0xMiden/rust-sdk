@@ -4,20 +4,18 @@ use std::path::{Path, PathBuf};
 use clap::{ArgGroup, ValueEnum};
 use miden_client::auth::{AuthSchemeId, AuthSecretKey, PublicKeyCommitment};
 use miden_client::crypto::rpo_falcon512;
-use miden_client::keystore::EncryptedFilesystemKeyStore;
+use miden_client::keystore::FilesystemKeyStore;
 use miden_client::utils::{ByteReader, Deserializable, hex_to_bytes};
 use miden_client::{SliceReader, Word};
 
 use crate::codecs::parse_account_id_token;
-use crate::config::{CLIENT_CONFIG_FILE_NAME, CliConfig};
 use crate::errors::CliError;
 use crate::utils::{
     ECDSA_COMPRESSED_KEY_BYTES,
     ECDSA_UNCOMPRESSED_KEY_BYTES,
     parse_ecdsa_public_key,
-    read_keystore_password,
 };
-use crate::{CliKeyStore, Parser, create_dynamic_table};
+use crate::{Parser, create_dynamic_table};
 
 /// Length of a serialized Falcon public key. It matches the form that `rpo_falcon512::PublicKey`
 /// reads.
@@ -77,7 +75,6 @@ impl TryFrom<AuthSchemeId> for KeyScheme {
         "commitment",
         "associate",
         "disassociate",
-        "encrypt",
     ])),
     group(ArgGroup::new("association_action").args(["associate", "disassociate"])),
 )]
@@ -109,77 +106,10 @@ pub struct KeysCmd {
     /// Account ID for an association operation, as a hexadecimal ID or a bech32 address.
     #[arg(long, value_name = "ACCOUNT_ID", requires = "association_action")]
     account_id: Option<String>,
-
-    /// Encrypt the plaintext keystore with a password and mark it as encrypted in the configuration
-    /// file.
-    #[arg(long)]
-    encrypt: bool,
 }
 
 impl KeysCmd {
-    /// Returns `true` if the command encrypts the keystore. This action runs before the keystore is
-    /// opened, so it is dispatched separately from [`KeysCmd::execute`].
-    pub fn encrypts_keystore(&self) -> bool {
-        self.encrypt
-    }
-
-    /// Encrypts the plaintext keystore of `config` and sets `keystore_encrypted` in its file.
-    ///
-    /// The field is set only after all key files are encrypted. An encrypted keys directory with a
-    /// file that does not set the field to `true` is thus an interrupted encryption, and this
-    /// command continues it with the password of the keystore. A configuration without the field is
-    /// read as encrypted, so the parsed configuration cannot tell these cases apart.
-    pub fn encrypt_keystore(config: &CliConfig) -> Result<(), CliError> {
-        let config_path = config
-            .config_dir
-            .as_ref()
-            .map(|dir| dir.path.join(CLIENT_CONFIG_FILE_NAME))
-            .ok_or_else(|| {
-                CliError::Input("the configuration file location is unknown".to_string())
-            })?;
-        let mut config_table: toml::Table =
-            fs::read_to_string(&config_path)?.parse().map_err(|err: toml::de::Error| {
-                CliError::Config(Box::new(err), "failed to parse config file".to_string())
-            })?;
-
-        let is_encrypted_directory =
-            EncryptedFilesystemKeyStore::is_encrypted_directory(&config.secret_keys_directory);
-        let file_marks_encrypted = config_table
-            .get("keystore_encrypted")
-            .is_some_and(|value| value.as_bool() == Some(true));
-        if is_encrypted_directory && file_marks_encrypted {
-            return Err(CliError::Input("the keystore is already encrypted".to_string()));
-        }
-
-        // An interrupted encryption already has a password, so a prompted password is not
-        // confirmed. The keystore verifies it instead.
-        let password = read_keystore_password(!is_encrypted_directory)?;
-        let (keystore, unreadable) = EncryptedFilesystemKeyStore::encrypt_plaintext_keystore(
-            config.secret_keys_directory.clone(),
-            password.as_bytes(),
-        )
-        .map_err(CliError::KeyStore)?;
-
-        config_table.insert("keystore_encrypted".to_string(), toml::Value::Boolean(true));
-        fs::write(&config_path, config_table.to_string())?;
-
-        println!(
-            "Encrypted {} keys in {}.",
-            keystore.list_keys().map_err(CliError::KeyStore)?.len(),
-            config.secret_keys_directory.display()
-        );
-        // These files can hold plaintext secret key bytes, so the user must decide what to do with
-        // them.
-        for commitment in unreadable {
-            eprintln!(
-                "Warning: the key file {} does not hold a readable key and is not encrypted.",
-                config.secret_keys_directory.join(Word::from(commitment).to_hex()).display()
-            );
-        }
-        Ok(())
-    }
-
-    pub fn execute(&self, keystore: &CliKeyStore) -> Result<(), CliError> {
+    pub fn execute(&self, keystore: &FilesystemKeyStore) -> Result<(), CliError> {
         match self {
             Self { generate: Some(scheme), .. } => generate_key(keystore, *scheme),
             Self { import: Some(file), .. } => import_key(keystore, file),
@@ -199,7 +129,7 @@ impl KeysCmd {
     }
 }
 
-fn list_keys(keystore: &CliKeyStore) -> Result<(), CliError> {
+fn list_keys(keystore: &FilesystemKeyStore) -> Result<(), CliError> {
     let mut table = create_dynamic_table(&["Commitment", "Scheme", "Associated accounts"]);
 
     for key in keystore.list_keys().map_err(CliError::KeyStore)? {
@@ -224,7 +154,7 @@ fn list_keys(keystore: &CliKeyStore) -> Result<(), CliError> {
 }
 
 fn associate_key(
-    keystore: &CliKeyStore,
+    keystore: &FilesystemKeyStore,
     commitment: &str,
     account_id: &str,
 ) -> Result<(), CliError> {
@@ -240,7 +170,7 @@ fn associate_key(
 }
 
 fn disassociate_key(
-    keystore: &CliKeyStore,
+    keystore: &FilesystemKeyStore,
     commitment: &str,
     account_id: &str,
 ) -> Result<(), CliError> {
@@ -263,13 +193,13 @@ fn disassociate_key(
     Ok(())
 }
 
-fn generate_key(keystore: &CliKeyStore, scheme: KeyScheme) -> Result<(), CliError> {
+fn generate_key(keystore: &FilesystemKeyStore, scheme: KeyScheme) -> Result<(), CliError> {
     let key = AuthSecretKey::with_scheme(scheme.into())
         .map_err(|err| CliError::Input(format!("failed to generate key: {err}")))?;
     store_and_report_key(keystore, &key, "Generated")
 }
 
-fn import_key(keystore: &CliKeyStore, file: &Path) -> Result<(), CliError> {
+fn import_key(keystore: &FilesystemKeyStore, file: &Path) -> Result<(), CliError> {
     let bytes = fs::read(file)?;
     let mut reader = SliceReader::new(&bytes);
     let key = AuthSecretKey::read_from(&mut reader).map_err(|err| {
@@ -288,7 +218,7 @@ fn import_key(keystore: &CliKeyStore, file: &Path) -> Result<(), CliError> {
 }
 
 fn store_and_report_key(
-    keystore: &CliKeyStore,
+    keystore: &FilesystemKeyStore,
     key: &AuthSecretKey,
     action: &str,
 ) -> Result<(), CliError> {

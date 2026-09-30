@@ -137,11 +137,6 @@ pub struct InitCmd {
     /// Maximum number of blocks the client can be behind the network.
     #[clap(long)]
     block_delta: Option<u32>,
-
-    /// Store the secret keys in plaintext instead of encrypting them with a password. Only
-    /// recommended for development.
-    #[clap(long)]
-    plaintext_keystore: bool,
 }
 
 impl InitCmd {
@@ -234,7 +229,6 @@ impl InitCmd {
         };
 
         cli_config.max_block_number_delta = self.block_delta;
-        cli_config.keystore_encrypted = !self.plaintext_keystore;
 
         let config_as_toml_string = toml::to_string_pretty(&cli_config).map_err(|err| {
             CliError::Config("failed to serialize config".to_string().into(), err.to_string())

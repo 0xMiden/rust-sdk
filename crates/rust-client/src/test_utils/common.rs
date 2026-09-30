@@ -54,10 +54,9 @@ use crate::{Client, ClientError};
 /// A [`Client`] wired for the test helpers, carrying the [`FeeFunder`] the account-creating helpers
 /// pay deploys from when the chain charges transaction fees.
 ///
-/// Dereferences to the wrapped [`Client`], so it is used exactly like one. `AUTH` is the keystore
-/// the client signs with.
-pub struct TestClient<AUTH = FilesystemKeyStore> {
-    client: Client<AUTH>,
+/// Dereferences to the wrapped [`Client`], so it is used exactly like one.
+pub struct TestClient {
+    client: Client<FilesystemKeyStore>,
     fee_funder: Option<Arc<dyn FeeFunder>>,
     /// Funding notes paid to accounts that have not spent them yet.
     ///
@@ -66,9 +65,9 @@ pub struct TestClient<AUTH = FilesystemKeyStore> {
     pending_funding: BTreeMap<AccountId, Note>,
 }
 
-impl<AUTH: Keystore + Sync + 'static> TestClient<AUTH> {
+impl TestClient {
     /// Wraps `client` with no fee funder, which is all a fee-free chain needs.
-    pub fn new(client: Client<AUTH>) -> Self {
+    pub fn new(client: Client<FilesystemKeyStore>) -> Self {
         Self {
             client,
             fee_funder: None,
@@ -77,7 +76,7 @@ impl<AUTH: Keystore + Sync + 'static> TestClient<AUTH> {
     }
 
     /// Returns the keystore the client signs with, shared with it through the authenticator.
-    pub fn keystore(&self) -> &AUTH {
+    pub fn keystore(&self) -> &FilesystemKeyStore {
         self.client
             .authenticator()
             .expect("test clients are always built with a keystore authenticator")
@@ -165,21 +164,21 @@ impl<AUTH: Keystore + Sync + 'static> TestClient<AUTH> {
     }
 }
 
-impl<AUTH: Keystore + Sync + 'static> From<Client<AUTH>> for TestClient<AUTH> {
-    fn from(client: Client<AUTH>) -> Self {
+impl From<Client<FilesystemKeyStore>> for TestClient {
+    fn from(client: Client<FilesystemKeyStore>) -> Self {
         Self::new(client)
     }
 }
 
-impl<AUTH: Keystore + Sync + 'static> Deref for TestClient<AUTH> {
-    type Target = Client<AUTH>;
+impl Deref for TestClient {
+    type Target = Client<FilesystemKeyStore>;
 
     fn deref(&self) -> &Self::Target {
         &self.client
     }
 }
 
-impl<AUTH: Keystore + Sync + 'static> DerefMut for TestClient<AUTH> {
+impl DerefMut for TestClient {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.client
     }
@@ -311,7 +310,7 @@ pub fn fungible_faucet_component() -> Result<(FungibleFaucet, TokenPolicyManager
     Ok((faucet, policy_manager))
 }
 
-impl<AUTH: Keystore + Sync + 'static> TestClient<AUTH> {
+impl TestClient {
     /// Inserts the account described by `setup` into the client and adds its key to the keystore.
     /// Unless [`AccountSetup::unfunded`] was set, the account is also funded so its first
     /// transaction can pay its own fee and double as its deploy.
@@ -474,7 +473,7 @@ impl<AUTH: Keystore + Sync + 'static> TestClient<AUTH> {
 // TRANSACTION HELPERS
 // ================================================================================================
 
-impl<AUTH: Keystore + Sync + 'static> TestClient<AUTH> {
+impl TestClient {
     /// Executes a transaction and asserts that it fails with the expected error.
     pub async fn execute_failing_tx(
         &mut self,
@@ -795,7 +794,7 @@ impl<AUTH: Keystore + Sync + 'static> TestClient<AUTH> {
 // ASSERTION HELPERS
 // ================================================================================================
 
-impl<AUTH: Keystore + Sync + 'static> TestClient<AUTH> {
+impl TestClient {
     /// Asserts that the account has a single asset with the expected amount.
     pub async fn assert_account_has_single_asset(
         &self,

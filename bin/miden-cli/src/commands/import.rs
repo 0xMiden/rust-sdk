@@ -10,7 +10,7 @@ use tracing::info;
 
 use crate::commands::account::{account_code_has_basic_wallet, set_default_account_if_unset};
 use crate::errors::CliError;
-use crate::{CliKeyStore, Parser};
+use crate::{FilesystemKeyStore, Parser};
 
 #[derive(Debug, Parser, Clone)]
 #[command(about = "Import notes or accounts")]
@@ -27,7 +27,7 @@ impl ImportCmd {
     pub async fn execute<AUTH: Keystore + Sync + 'static>(
         &self,
         mut client: Client<AUTH>,
-        keystore: CliKeyStore,
+        keystore: FilesystemKeyStore,
     ) -> Result<(), CliError> {
         validate_paths(&self.filenames)?;
         for filename in &self.filenames {
@@ -87,7 +87,7 @@ impl ImportCmd {
 /// - Adding the [account][`miden_client::account::Account`] to the client
 async fn import_account<AUTH>(
     client: &mut Client<AUTH>,
-    keystore: &CliKeyStore,
+    keystore: &FilesystemKeyStore,
     account_file: AccountFile,
     overwrite: bool,
 ) -> Result<AccountId, CliError> {

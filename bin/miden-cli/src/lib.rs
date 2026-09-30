@@ -7,7 +7,7 @@ use comfy_table::{Attribute, Cell, ContentArrangement, Table, presets};
 use errors::CliError;
 use miden_client::account::AccountHeader;
 use miden_client::builder::ClientBuilder;
-use miden_client::keystore::Keystore;
+use miden_client::keystore::{FilesystemKeyStore, Keystore};
 use miden_client::note_transport::grpc::GrpcNoteTransportClient;
 use miden_client::rpc::{GrpcClient, VerifyingRpcClient};
 use miden_client::store::{NoteFilter as ClientNoteFilter, OutputNoteRecord};
@@ -31,13 +31,10 @@ use commands::sync::SyncCmd;
 use commands::tags::TagsCmd;
 use commands::transactions::TransactionCmd;
 
-pub use self::cli_keystore::CliKeyStore;
-use self::utils::{config_file_exists, open_keystore};
+use self::utils::config_file_exists;
 use crate::commands::address::AddressCmd;
 
-/// Environment variable that holds the password of an encrypted keystore. When it is not set, the
-/// CLI prompts for the password on the terminal.
-pub const KEYSTORE_PASSWORD_ENV: &str = "MIDEN_KEYSTORE_PASSWORD";
+pub type CliKeyStore = FilesystemKeyStore;
 
 /// A Client configured using the CLI's system user configuration.
 ///
@@ -132,18 +129,9 @@ impl CliClient {
     /// # }
     /// ```
     pub async fn from_config(config: CliConfig) -> Result<Self, CliError> {
-        let keystore = open_keystore(&config)?;
-        Self::from_config_and_keystore(config, keystore).await
-    }
+        let keystore =
+            CliKeyStore::new(config.secret_keys_directory.clone()).map_err(CliError::KeyStore)?;
 
-    /// Creates a new `CliClient` instance from an existing `CliConfig` and an open keystore.
-    ///
-    /// This is [`CliClient::from_config`] for a caller that already opened the keystore of the
-    /// configuration, so that the password of an encrypted keystore is requested only once.
-    pub async fn from_config_and_keystore(
-        config: CliConfig,
-        keystore: CliKeyStore,
-    ) -> Result<Self, CliError> {
         let rpc_client = Arc::new(VerifyingRpcClient::new(
             GrpcClient::new(&config.rpc.endpoint.clone().into(), config.rpc.timeout_ms)
                 .with_max_decoding_message_size(CLI_MAX_RESPONSE_SIZE_BYTES),
@@ -283,7 +271,6 @@ mod advice_inputs;
 mod codecs;
 pub mod config;
 // These modules intentionally shadow the miden_client re-exports - CLI has its own errors/utils
-mod cli_keystore;
 #[allow(hidden_glob_reexports)]
 mod errors;
 mod info;
@@ -435,19 +422,14 @@ impl Cli {
 
         let cli_config = CliConfig::load()?;
 
-        if let Command::Keys(keys) = &self.action
-            && keys.encrypts_keystore()
-        {
-            return KeysCmd::encrypt_keystore(&cli_config);
-        }
-
-        let keystore = open_keystore(&cli_config)?;
+        let keystore = CliKeyStore::new(cli_config.secret_keys_directory.clone())
+            .map_err(CliError::KeyStore)?;
 
         if let Command::Keys(keys) = &self.action {
             return keys.execute(&keystore);
         }
 
-        let cli_client = CliClient::from_config_and_keystore(cli_config, keystore.clone()).await?;
+        let cli_client = CliClient::from_config(cli_config).await?;
 
         let client = cli_client.into_inner();
 

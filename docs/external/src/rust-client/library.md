@@ -206,6 +206,31 @@ client.submit_transaction(transaction_execution_result).await?
 You can decide whether you want the note details to be public or private through the `note_type` parameter.
 You may also customize the transaction request with the other `TransactionRequestBuilder` methods. This allows you to run custom code, with custom note arguments and additional output/input notes as well.
 
+### Upgrade account code
+
+An account with the `UpgradeManager` component can replace its code. An upgrade does not change the account storage, so the new code must use the same storage layout as the current code. Otherwise, the account can become unusable.
+
+An account whose authority is `Authority::AuthControlled` upgrades itself with a local transaction:
+
+```rust
+let request = TransactionRequestBuilder::new().build_account_code_upgrade(new_code)?;
+client.submit_new_transaction(account_id, request).await?;
+```
+
+A network account cannot run this transaction, because its auth procedure rejects transaction scripts that it does not allowlist. Its owner sends it an upgrade note instead. The network account must allowlist `UpgradeNote::script_root()`, and its `Authority` must accept the sender, for example `AccessControl::Ownable2Step` with the sender as owner. The node consumes the note with a network transaction:
+
+```rust
+let request = TransactionRequestBuilder::new().build_upgrade_note(
+    owner_id,
+    network_account_id,
+    new_code,
+    client.rng(),
+)?;
+client.submit_new_transaction(owner_id, request).await?;
+```
+
+To upgrade the code and make other changes in the same transaction, write a custom script that calls `upgrade` and give the new code to the transaction with `TransactionRequestBuilder::account_code_upgrade`.
+
 ## Note screening
 
 ### When to use note screening

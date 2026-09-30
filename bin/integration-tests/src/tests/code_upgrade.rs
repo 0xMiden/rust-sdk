@@ -15,15 +15,13 @@ use miden_client::account::{
     AccountBuilder,
     AccountBuilderSchemaCommitmentExt,
     AccountCode,
-    AccountCodeUpgrade,
     AccountId,
     AccountType,
     StorageSlot,
 };
 use miden_client::assembly::CodeBuilder;
 use miden_client::auth::{Approver, AuthSingleSig, RPO_FALCON_SCHEME_ID};
-use miden_client::crypto::FeltRng;
-use miden_client::note::{Note, NoteScriptRoot, P2idNote, UpgradeNote};
+use miden_client::note::{NoteScriptRoot, P2idNote, UpgradeNote};
 use miden_client::testing::common::{AccountSetup, TestClient, auth_component};
 use miden_client::transaction::{TransactionRequest, TransactionRequestBuilder};
 use miden_client::{Felt, Word, ZERO};
@@ -78,18 +76,20 @@ fn counter_component() -> Result<AccountComponent> {
 }
 
 /// Returns a request that upgrades the code of the executing account to `code`. If
-/// `increment_counter` is set, the same transaction also increments the counter in storage.
+/// `increment_counter` is set, the same transaction also increments the counter in storage, so the
+/// request needs a custom script.
 fn upgrade_request(
     client: &TestClient,
     code: &AccountCode,
     increment_counter: bool,
 ) -> Result<TransactionRequest> {
+    if !increment_counter {
+        return TransactionRequestBuilder::new()
+            .build_account_code_upgrade(code.clone())
+            .context("failed to build the upgrade transaction request");
+    }
+
     let new_code_commitment = code.commitment();
-    let increment_call = if increment_counter {
-        "call.counter_contract::increment_count"
-    } else {
-        ""
-    };
     let tx_script = client
         .code_builder()
         .with_linked_module("external_contract::counter_contract", COUNTER_CONTRACT)?
@@ -105,14 +105,14 @@ fn upgrade_request(
                 call.account_upgrade::upgrade
                 dropw dropw
 
-                {increment_call}
+                call.counter_contract::increment_count
             end"
         ))
         .context("failed to compile the upgrade transaction script")?;
 
     TransactionRequestBuilder::new()
         .custom_script(tx_script)
-        .extend_advice_map([AccountCodeUpgrade::new(code.clone()).to_advice_map_entry()])
+        .account_code_upgrade(code.clone())
         .build()
         .context("failed to build the upgrade transaction request")
 }
@@ -181,15 +181,9 @@ pub async fn test_network_account_code_upgrade_via_upgrade_note(
         "the upgraded code must be different from the current code"
     );
 
-    let upgrade_note: Note = UpgradeNote::builder()
-        .sender(owner.id())
-        .target(network_account.id())
-        .code(upgraded_code.clone())
-        .serial_number(client.rng().draw_word())
-        .build()
-        .context("failed to build the upgrade note")?
-        .into();
-    let request = TransactionRequestBuilder::new().own_output_notes(vec![upgrade_note]).build()?;
+    let request = TransactionRequestBuilder::new()
+        .build_upgrade_note(owner.id(), network_account.id(), upgraded_code.clone(), client.rng())
+        .context("failed to build the upgrade note request")?;
     client.execute_tx_and_sync(owner.id(), request).await?;
 
     // Wait until the network transaction builder consumes the upgrade note.

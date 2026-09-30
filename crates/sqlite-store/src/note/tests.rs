@@ -29,7 +29,7 @@ use miden_client::store::{
     StoreError,
 };
 use miden_client::sync::{
-    AccountUpdates,
+    AccountUpdateTracker,
     PartialBlockchainUpdates,
     StateSyncUpdate,
     TransactionUpdateTracker,
@@ -788,7 +788,7 @@ async fn output_notes_filtered_by_script_root() {
             [swap_note.clone(), partial_note.clone()],
         ),
         TransactionUpdateTracker::default(),
-        AccountUpdates::default(),
+        AccountUpdateTracker::default(),
         None,
     );
     store.apply_state_sync(state_sync_update).await.unwrap();
@@ -842,7 +842,7 @@ async fn output_note_state_blob_does_not_embed_script() {
         PartialBlockchainUpdates::default(),
         NoteUpdateTracker::for_transaction_updates([], [], [note.clone()]),
         TransactionUpdateTracker::default(),
-        AccountUpdates::default(),
+        AccountUpdateTracker::default(),
         None,
     );
     store.apply_state_sync(state_sync_update).await.unwrap();
@@ -877,7 +877,7 @@ async fn consumed_output_note_round_trips() {
         PartialBlockchainUpdates::default(),
         NoteUpdateTracker::for_transaction_updates([], [], [note.clone()]),
         TransactionUpdateTracker::default(),
-        AccountUpdates::default(),
+        AccountUpdateTracker::default(),
         None,
     );
     store.apply_state_sync(state_sync_update).await.unwrap();
@@ -909,7 +909,7 @@ async fn state_sync_stores_scripts_of_new_input_notes() {
             PartialBlockchainUpdates::default(),
             NoteUpdateTracker::for_transaction_updates(notes.clone(), [], []),
             TransactionUpdateTracker::default(),
-            AccountUpdates::default(),
+            AccountUpdateTracker::default(),
             None,
         );
         store.apply_state_sync(state_sync_update).await.unwrap();
@@ -1044,7 +1044,7 @@ async fn input_note_state_update_persists_attachments() {
         PartialBlockchainUpdates::default(),
         NoteUpdateTracker::for_transaction_updates([], [updated], []),
         TransactionUpdateTracker::default(),
-        AccountUpdates::default(),
+        AccountUpdateTracker::default(),
         None,
     );
     store.apply_state_sync(state_sync_update).await.unwrap();

@@ -18,7 +18,7 @@ use miden_client::block::BlockNumber;
 use miden_client::note::{InputNoteReader, NoteUpdateTracker};
 use miden_client::store::{ClientAccountType, InputNoteCursor, NoteFilter, Store};
 use miden_client::sync::{
-    AccountUpdates,
+    AccountUpdateTracker,
     PartialBlockchainUpdates,
     StateSyncUpdate,
     TransactionUpdateTracker,
@@ -219,7 +219,7 @@ async fn note_write_measurements(
                     PartialBlockchainUpdates::default(),
                     NoteUpdateTracker::for_transaction_updates(notes, [], []),
                     TransactionUpdateTracker::default(),
-                    AccountUpdates::default(),
+                    AccountUpdateTracker::default(),
                     None,
                 );
                 store.apply_state_sync(update).await?;

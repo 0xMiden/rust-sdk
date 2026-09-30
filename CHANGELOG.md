@@ -13,7 +13,7 @@
 
 ### Fixes
 
-* [FIX][rust] `SyncSummary::locked_accounts` now reports only accounts that the current sync locked. It excludes stale network commitments and accounts that were already locked. The new `AccountUpdateTracker` collects account updates during sync, and `AccountUpdates` remains as a compatibility alias ([#2118](https://github.com/0xMiden/rust-sdk/issues/2118)).
+* [FIX][rust] `SyncSummary::locked_accounts` now reports only accounts that the current sync locked. It excludes stale network commitments and accounts that were already locked. The new `AccountUpdateTracker` collects account updates during sync ([#2118](https://github.com/0xMiden/rust-sdk/issues/2118)).
 * [FIX][rust] State sync now resolves observed transaction inclusions before terminal discard decisions. The transaction ID fallback verifies the complete account state transition, and a competing on-chain transition discards its dependent optimistic transaction chain.
 
 ## 0.17.0-rc.4 (2026-09-26)

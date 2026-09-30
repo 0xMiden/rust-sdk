@@ -596,9 +596,6 @@ impl AccountUpdateTracker {
     }
 }
 
-/// Compatibility name for [`AccountUpdateTracker`].
-pub type AccountUpdates = AccountUpdateTracker;
-
 // TESTS
 // ================================================================================================
 

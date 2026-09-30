@@ -97,7 +97,6 @@ pub(crate) use state_sync::{
 mod state_sync_update;
 pub use state_sync_update::{
     AccountUpdateTracker,
-    AccountUpdates,
     PartialBlockchainUpdates,
     PublicAccountUpdate,
     StateSyncUpdate,

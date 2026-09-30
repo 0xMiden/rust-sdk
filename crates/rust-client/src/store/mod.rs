@@ -80,7 +80,7 @@ pub use smt_forest::{AccountSmtForest, AccountUpdate};
 mod account;
 pub use account::{AccountRecord, AccountRecordData, AccountStatus, ClientAccountType};
 
-pub use crate::sync::{AccountUpdateTracker, AccountUpdates, PublicAccountUpdate};
+pub use crate::sync::{AccountUpdateTracker, PublicAccountUpdate};
 mod note_record;
 pub use note_record::{
     InputNoteRecord,

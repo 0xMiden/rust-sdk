@@ -10,7 +10,7 @@ use miden_client::utils::{Deserializable, Serializable};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use crate::sql_error::SqlResultExt;
-use crate::{SqliteStore, insert_sql, subst};
+use crate::{SqliteStore, insert_sql, proto, subst};
 
 impl SqliteStore {
     pub(crate) fn track_account_witness(
@@ -75,12 +75,7 @@ impl SqliteStore {
             .optional()
             .into_store_error()?;
 
-        witness
-            .map(|witness| {
-                AccountWitness::read_from_bytes(&witness)
-                    .map_err(StoreError::DataDeserializationError)
-            })
-            .transpose()
+        Ok(witness.map(|witness| proto::decode(&witness)).transpose()?)
     }
 
     pub(crate) fn update_account_witness(
@@ -109,7 +104,7 @@ impl SqliteStore {
         let updated = tx
             .prepare_cached(QUERY)
             .into_store_error()?
-            .execute(params![witness.to_bytes(), account_id.to_bytes()])
+            .execute(params![proto::encode(witness), account_id.to_bytes()])
             .into_store_error()?;
 
         Ok(updated > 0)

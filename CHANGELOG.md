@@ -1,15 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+* [FIX][rust] Missing block headers are fetched together with their MMR proof, avoiding a second node request for the same block while building transaction inputs or a chain anchor ([#2634](https://github.com/0xMiden/rust-sdk/issues/2634)).
+
 ## 0.17.0-rc.4 (2026-09-26)
 
 ### Breaking Changes
 
 * [BREAKING][behavior][rust] Added `TransactionRequestBuilder::block_numbers` so callers can include selected blocks in a transaction's partial blockchain and in anchors captured with `Client::chain_anchor_for_request`. `TransactionRequest` now always serializes the block numbers, so request bytes written by rc.3 do not deserialize ([#2629](https://github.com/0xMiden/rust-sdk/pull/2629), [#2625](https://github.com/0xMiden/rust-sdk/issues/2625)).
 * [BREAKING][removal][cli] `exec` now requires `--package` (`-p`). Removed `--script-path` (`-s`) and in-process MASM compilation. Compile scripts with `miden build` first. DAP sessions use package debug information and reload the compiled package on restart ([#2596](https://github.com/0xMiden/rust-sdk/issues/2596)).
-
-### Fixes
-
-* [FIX][rust] Missing block headers are fetched together with their MMR proof, avoiding a second node request for the same block while building transaction inputs or a chain anchor ([#2634](https://github.com/0xMiden/rust-sdk/issues/2634)).
 
 ## 0.17.0-rc.3 (2026-09-24)
 

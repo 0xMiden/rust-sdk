@@ -4,7 +4,7 @@
 
 ### Enhancements
 
-* [rust] On official networks, the genesis block is now fetched from the official `genesis` service (`https://genesis.<network>.miden.io`) instead of the node ([#2639](https://github.com/0xMiden/rust-sdk/pull/2639)).
+* [rust] On official networks, `std` builds now fetch the genesis block from the official `genesis` service (`https://genesis.<network>.miden.io`) instead of the node. Builds without `std` still fetch it from the node ([#2639](https://github.com/0xMiden/rust-sdk/pull/2639)).
 
 ### Breaking Changes
 

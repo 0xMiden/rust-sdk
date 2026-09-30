@@ -5,6 +5,8 @@ use miden_protocol::block::{BlockHeader, BlockNumber, ValidatorConfig};
 use miden_protocol::crypto::hash::rpo::Rpo256;
 use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::crypto::merkle::mmr::{Forest, InOrderIndex, PartialMmr};
+use miden_protocol::protocol_config::ProtocolConfig;
+use miden_protocol::utils::serde::Serializable;
 use miden_protocol::{Felt, Word};
 use tracing::warn;
 #[cfg(feature = "std")]
@@ -13,13 +15,13 @@ use {
     alloc::{boxed::Box, format, string::ToString},
     miden_protocol::address::NetworkId,
     miden_protocol::block::SignedBlock,
-    miden_protocol::protocol_config::ProtocolConfig,
     miden_protocol::utils::serde::{ByteReader, Deserializable, SliceReader},
 };
 
+use crate::protocol_config::protocol_config_setting_key;
 use crate::rpc::NodeRpcClient;
 use crate::rpc::domain::note::ResolvedSyncNotesBlock;
-use crate::store::{BlockRelevance, StoreError};
+use crate::store::{BlockRelevance, SettingScope, StoreError};
 #[cfg(feature = "testing")]
 use crate::test_utils::mock::MockRpcApi;
 use crate::{CachedPartialMmr, Client, ClientError};
@@ -47,13 +49,17 @@ impl<AUTH> Client<AUTH> {
         Ok(block_header)
     }
 
-    /// Fetches the genesis block header of the network the client is connected to.
+    /// Fetches the genesis block header of the network the client is connected to, and the genesis
+    /// protocol configuration when it is available.
     ///
-    /// For mainnet, testnet and devnet, the genesis block is downloaded from
-    /// `https://genesis.<network>.miden.io` and validated. For other networks, and in builds
-    /// without the `std` feature, the header is requested from the node. The node is not asked for
-    /// the full block because the genesis block body can exceed the gRPC message size limit.
-    async fn fetch_genesis_block_header(&self) -> Result<BlockHeader, ClientError> {
+    /// For mainnet, testnet and devnet, the genesis block and its protocol configuration are
+    /// downloaded from `https://genesis.<network>.miden.io` and validated. For other networks, and
+    /// in builds without the `std` feature, the header is requested from the node and no protocol
+    /// configuration is returned. The node is not asked for the full block because the genesis
+    /// block body can exceed the gRPC message size limit.
+    async fn fetch_genesis_block_header(
+        &self,
+    ) -> Result<(BlockHeader, Option<ProtocolConfig>), ClientError> {
         #[cfg(feature = "std")]
         {
             let network = match self.network_id().await? {
@@ -71,7 +77,8 @@ impl<AUTH> Client<AUTH> {
                     .bytes()
                     .await
                     .map_err(|err| RpcError::ConnectionError(Box::new(err)))?;
-                return Ok(deserialize_genesis_block(&bytes)?.header().clone());
+                let (block, protocol_config) = deserialize_genesis_block(&bytes)?;
+                return Ok((block.header().clone(), Some(protocol_config)));
             }
         }
 
@@ -79,7 +86,7 @@ impl<AUTH> Client<AUTH> {
             .rpc_api
             .get_block_header_by_number(Some(BlockNumber::GENESIS), false)
             .await?;
-        Ok(header)
+        Ok((header, None))
     }
 
     /// Retrieves the validator configuration committed by the block header at the current sync
@@ -96,11 +103,21 @@ impl<AUTH> Client<AUTH> {
             return Ok(());
         }
 
-        let genesis = self.fetch_genesis_block_header().await?;
+        let (genesis, protocol_config) = self.fetch_genesis_block_header().await?;
 
         // Genesis is untracked since there are no client notes associated with it, so we fetch no
         // MMR proof and pass no nodes.
         self.store.insert_block_header(&genesis, &[], false).await?;
+        // Without a protocol configuration here, the first sync from genesis stores it.
+        if let Some(protocol_config) = protocol_config {
+            self.store
+                .set_setting(
+                    SettingScope::Client,
+                    protocol_config_setting_key(protocol_config.to_commitment()),
+                    protocol_config.to_bytes(),
+                )
+                .await?;
+        }
         self.rpc_api.set_genesis_commitment(genesis.commitment()).await?;
         Ok(())
     }
@@ -325,9 +342,9 @@ pub(crate) async fn fetch_block_header(
     Ok((block_header, path_nodes))
 }
 
-/// Deserializes a genesis file into its block and validates it.
+/// Deserializes a genesis file into its block and protocol configuration, and validates them.
 #[cfg(feature = "std")]
-fn deserialize_genesis_block(bytes: &[u8]) -> Result<SignedBlock, RpcError> {
+fn deserialize_genesis_block(bytes: &[u8]) -> Result<(SignedBlock, ProtocolConfig), RpcError> {
     let mut reader = SliceReader::new(bytes);
     let block = SignedBlock::read_from(&mut reader)
         .map_err(|err| RpcError::DeserializationError(err.to_string()))?;
@@ -360,7 +377,7 @@ fn deserialize_genesis_block(bytes: &[u8]) -> Result<SignedBlock, RpcError> {
             "genesis protocol configuration commitment mismatch: expected {expected}, got {actual}"
         )));
     }
-    Ok(block)
+    Ok((block, protocol_config))
 }
 
 #[cfg(test)]

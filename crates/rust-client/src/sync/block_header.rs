@@ -1,26 +1,23 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-#[cfg(feature = "std")]
-use alloc::{boxed::Box, format, string::ToString};
 
-#[cfg(feature = "std")]
-use miden_protocol::address::NetworkId;
-#[cfg(feature = "std")]
-use miden_protocol::block::SignedBlock;
 use miden_protocol::block::{BlockHeader, BlockNumber, ValidatorConfig};
 use miden_protocol::crypto::hash::rpo::Rpo256;
 use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::crypto::merkle::mmr::{Forest, InOrderIndex, PartialMmr};
-#[cfg(feature = "std")]
-use miden_protocol::protocol_config::ProtocolConfig;
-#[cfg(feature = "std")]
-use miden_protocol::utils::serde::{ByteReader, Deserializable, SliceReader};
 use miden_protocol::{Felt, Word};
 use tracing::warn;
+#[cfg(feature = "std")]
+use {
+    crate::rpc::RpcError,
+    alloc::{boxed::Box, format, string::ToString},
+    miden_protocol::address::NetworkId,
+    miden_protocol::block::SignedBlock,
+    miden_protocol::protocol_config::ProtocolConfig,
+    miden_protocol::utils::serde::{ByteReader, Deserializable, SliceReader},
+};
 
 use crate::rpc::NodeRpcClient;
-#[cfg(feature = "std")]
-use crate::rpc::RpcError;
 use crate::rpc::domain::note::ResolvedSyncNotesBlock;
 use crate::store::{BlockRelevance, StoreError};
 #[cfg(feature = "testing")]

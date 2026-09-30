@@ -1,11 +1,12 @@
-//! The store keeps these protocol values in their own columns, as the messages that `miden-objects`
-//! defines.
+//! The store keeps these protocol values in their own columns. Most of them use the messages that
+//! `miden-objects` defines.
 
 use std::string::ToString;
+use std::sync::Arc;
 use std::vec::Vec;
 
 use miden_objects::{DecodeMessageExt, proto as objects};
-use miden_protocol::account::AccountCode;
+use miden_protocol::account::{AccountCode, AccountProcedureRoot};
 use miden_protocol::block::BlockHeader;
 use miden_protocol::note::{
     NoteAssets,
@@ -16,43 +17,87 @@ use miden_protocol::note::{
     NoteStorage,
 };
 use miden_protocol::transaction::TransactionScript;
+use miden_protocol::utils::serde::{Deserializable, Serializable};
+use miden_protocol::{MastForest, MastNodeId, Word};
 
 use crate::proto::{self, ProtoDecodeError, ProtobufValue, required};
 
 impl ProtobufValue for AccountCode {
-    type Message = objects::account::AccountCode;
+    type Message = proto::AccountCode;
 
     fn to_proto(&self) -> Self::Message {
-        self.into()
+        proto::AccountCode {
+            mast: Some(self.mast().as_ref().into()),
+            procedure_roots: self.procedure_roots().map(Into::into).collect(),
+        }
     }
 
     fn from_proto(message: Self::Message) -> Result<Self, ProtoDecodeError> {
-        Ok(message.decode_and_verify()?)
+        let mast = trusted_mast(message.mast, "account code")?;
+        let procedures = message
+            .procedure_roots
+            .into_iter()
+            .map(|root| Word::try_from(root).map(AccountProcedureRoot::from_raw))
+            .collect::<Result<Vec<_>, _>>()?;
+        Self::from_parts(mast, procedures)
+            .map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))
     }
 }
 
 impl ProtobufValue for TransactionScript {
-    type Message = objects::transaction::TransactionScript;
+    type Message = proto::TransactionScript;
 
     fn to_proto(&self) -> Self::Message {
-        self.into()
+        proto::TransactionScript {
+            mast: Some(self.mast().as_ref().into()),
+            entrypoint: self.entrypoint().into(),
+        }
     }
 
     fn from_proto(message: Self::Message) -> Result<Self, ProtoDecodeError> {
-        Ok(message.decode_and_verify()?)
+        let mast = trusted_mast(message.mast, "transaction script")?;
+        let entrypoint = MastNodeId::from_u32_safe(message.entrypoint, &mast)
+            .map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))?;
+        Self::from_parts(mast, entrypoint)
+            .map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))
     }
 }
 
 impl ProtobufValue for NoteScript {
-    type Message = objects::note::NoteScript;
+    type Message = proto::NoteScript;
 
     fn to_proto(&self) -> Self::Message {
-        self.into()
+        proto::NoteScript {
+            mast: Some(self.mast().as_ref().into()),
+            entrypoint: self.entrypoint().into(),
+        }
     }
 
     fn from_proto(message: Self::Message) -> Result<Self, ProtoDecodeError> {
-        Ok(message.decode_and_verify()?)
+        let mast = trusted_mast(message.mast, "note script")?;
+        let entrypoint = MastNodeId::from_u32_safe(message.entrypoint, &mast)
+            .map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))?;
+        Self::from_parts(mast, entrypoint)
+            .map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))
     }
+}
+
+impl From<&MastForest> for proto::MastForest {
+    fn from(mast: &MastForest) -> Self {
+        Self { encoded: mast.to_bytes() }
+    }
+}
+
+/// Reads a MAST forest without a check of its node hashes. The store only keeps forests that the
+/// client verified or assembled before it wrote them.
+fn trusted_mast(
+    mast: Option<proto::MastForest>,
+    message: &'static str,
+) -> Result<Arc<MastForest>, ProtoDecodeError> {
+    let mast = required(mast, message, "mast")?;
+    MastForest::read_from_bytes(&mast.encoded)
+        .map(Arc::new)
+        .map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))
 }
 
 impl ProtobufValue for NoteAttachments {
@@ -155,5 +200,24 @@ impl TryFrom<proto::NoteInclusionProof> for NoteInclusionProof {
 
         Self::new(block_num, index, path)
             .map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::proto::{decode, encode};
+
+    #[test]
+    fn mast_values_round_trip() {
+        let code = AccountCode::mock();
+        assert_eq!(decode::<AccountCode>(&encode(&code)).unwrap(), code);
+
+        let note_script = NoteScript::mock();
+        assert_eq!(decode::<NoteScript>(&encode(&note_script)).unwrap(), note_script);
+
+        let tx_script =
+            TransactionScript::from_parts(note_script.mast(), note_script.entrypoint()).unwrap();
+        assert_eq!(decode::<TransactionScript>(&encode(&tx_script)).unwrap(), tx_script);
     }
 }

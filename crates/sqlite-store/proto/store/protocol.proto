@@ -1,8 +1,8 @@
 syntax = "proto3";
 
-// Protocol values that more than one table keeps, where the `miden-objects` schema has no message
-// that fits. Field numbers are part of the on-disk format, so a released number must keep its
-// meaning. Add fields, do not renumber or reuse them.
+// Protocol values where the `miden-objects` schema has no message that fits the store. Field numbers
+// are part of the on-disk format, so a released number must keep its meaning. Add fields, do not
+// renumber or reuse them.
 package miden.client.store;
 
 import "asset.proto";
@@ -20,4 +20,25 @@ message NoteInclusionProof {
 // The assets of a note. The protocol schema has a message for one asset but not for the list.
 message NoteAssets {
   repeated asset.Asset assets = 1;
+}
+
+// A MAST forest in the Miden binary format with its node hashes. The store reads the forest without
+// a new hash check, so the hashes must be present. The `miden-objects` message can omit them.
+message MastForest {
+  bytes encoded = 1;
+}
+
+message AccountCode {
+  MastForest mast = 1;
+  repeated primitives.Word procedure_roots = 2;
+}
+
+message NoteScript {
+  MastForest mast = 1;
+  uint32 entrypoint = 2;
+}
+
+message TransactionScript {
+  MastForest mast = 1;
+  uint32 entrypoint = 2;
 }

@@ -27,6 +27,14 @@
 
 * [FEATURE][cli] Added the mutually exclusive authentication scheme flags `--ecdsa-k256-keccak [PUBLIC_KEY]` and `--falcon512-poseidon2` (aliases `--ecdsa`, `--falcon`) to `new-wallet` and `new-account`. With an ECDSA public key, the account commits to the external key and stores no secret key. ECDSA accepts a `0x`-prefixed compressed or uncompressed SEC1 key. Without a public key, the CLI generates and stores a key of the selected scheme. `keys --commitment` now also accepts the 65-byte uncompressed SEC1 encoding ([#2590](https://github.com/0xMiden/rust-sdk/pull/2590)).
 
+### Breaking Changes
+
+* [BREAKING][removal][rust,cli] Removed `Client::send_private_note`, `Client::send_private_note_with_block_hint`, `NoteTransportClient::send_note` and `NoteTransportClient::send_note_with_block_hint`, which used the note transport network's `SendNote` endpoint. Use `Client::send_private_note_with_proof` and `NoteTransportClient::send_note_with_proof` instead; a private note can only be relayed once its transaction is committed and the sender has synced past it. `send_note_with_proof` takes a validated `TransportNote` and is the only send method custom transports implement. `miden-client notes --send` errors when the stored note has no inclusion proof yet. Pending relay-outbox entries recorded by earlier versions carry no proof and are dropped on load ([#2611](https://github.com/0xMiden/rust-sdk/pull/2611)).
+
+### Features
+
+* [FEATURE][rust,cli] Added `Client::send_private_note_with_proof` and `NoteTransportClient::send_note_with_proof`, which relay a private note together with its inclusion proof through the note transport network's `SendNoteWithProof` endpoint. The gRPC service verifies the proof before it stores the note, and recipients receive the exact commitment block instead of a hint. `miden-client notes --send` relays the stored note's proof ([#2611](https://github.com/0xMiden/rust-sdk/pull/2611)).
+
 ### Enhancements
 
 * [test] CI uses smaller runners for short jobs and cancels superseded pull request runs. Pull requests skip specialty system tests when unrelated files change, while pushes to `main` and `next` still run every test ([#2610](https://github.com/0xMiden/rust-sdk/pull/2610)).

@@ -22,7 +22,7 @@ use miden_client::assembly::CodeBuilder;
 use miden_client::auth::{AuthSecretKey, PublicKey, TransactionAuthenticator};
 use miden_client::builder::ClientBuilder;
 use miden_client::crypto::RandomCoin;
-use miden_client::keystore::Keystore;
+use miden_client::keystore::{EncryptedFilesystemKeyStore, Keystore};
 use miden_client::note::NoteId;
 use miden_client::note_transport::{
     NOTE_TRANSPORT_MAINNET_ENDPOINT,
@@ -205,7 +205,7 @@ fn cli_finishes_an_interrupted_keystore_encryption() {
     // the configuration was not updated.
     let key = AuthSecretKey::new_ecdsa_k256_keccak();
     let commitment = Word::from(key.public_key().to_commitment()).to_hex();
-    FilesystemKeyStore::encrypt_plaintext_keystore(
+    EncryptedFilesystemKeyStore::encrypt_plaintext_keystore(
         keystore_dir.clone(),
         TEST_KEYSTORE_PASSWORD.as_bytes(),
     )
@@ -1164,7 +1164,7 @@ async fn cli_export_import_account() -> Result<()> {
 
     // Ensure the account was imported
     let (client_2, _) = create_rust_client_with_store_path(&store_path_2, endpoint_2).await?;
-    let cli_keystore = FilesystemKeyStore::new(
+    let cli_keystore = EncryptedFilesystemKeyStore::new(
         temp_dir_2.clone().join(MIDEN_DIR).join("keystore"),
         TEST_KEYSTORE_PASSWORD.as_bytes(),
     )?;
@@ -2018,7 +2018,7 @@ async fn create_rust_client_with_store_path(
     store_path: &Path,
     endpoint: Endpoint,
 ) -> Result<(TestClient, FilesystemKeyStore)> {
-    let keystore = FilesystemKeyStore::new_plaintext(temp_dir())?;
+    let keystore = FilesystemKeyStore::new(temp_dir())?;
     create_rust_client(store_path, keystore, endpoint).await
 }
 
@@ -2028,19 +2028,19 @@ async fn create_rust_client_with_cli_keystore(
     store_path: &Path,
     cli_path: &Path,
     endpoint: Endpoint,
-) -> Result<(TestClient, FilesystemKeyStore)> {
-    let keystore = FilesystemKeyStore::new(
+) -> Result<(TestClient<EncryptedFilesystemKeyStore>, EncryptedFilesystemKeyStore)> {
+    let keystore = EncryptedFilesystemKeyStore::new(
         cli_path.join(MIDEN_DIR).join(KEYSTORE_DIRECTORY),
         TEST_KEYSTORE_PASSWORD.as_bytes(),
     )?;
     create_rust_client(store_path, keystore, endpoint).await
 }
 
-async fn create_rust_client(
+async fn create_rust_client<AUTH: Keystore + Clone + Sync + 'static>(
     store_path: &Path,
-    keystore: FilesystemKeyStore,
+    keystore: AUTH,
     endpoint: Endpoint,
-) -> Result<(TestClient, FilesystemKeyStore)> {
+) -> Result<(TestClient<AUTH>, AUTH)> {
     let store = {
         let sqlite_store = SqliteStore::new(PathBuf::from(store_path)).await?;
         std::sync::Arc::new(sqlite_store)
@@ -2094,7 +2094,7 @@ async fn cli_funding_client(
     cli_path: &Path,
     store_path: &Path,
     endpoint: &Endpoint,
-) -> Result<TestClient> {
+) -> Result<TestClient<EncryptedFilesystemKeyStore>> {
     let fee_funder = fee_funding::load(
         &ClientConfig::new(endpoint.clone(), 10_000),
         fee_funding::funders_path_from_env().as_deref(),

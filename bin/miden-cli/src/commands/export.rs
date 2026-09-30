@@ -11,7 +11,7 @@ use tracing::info;
 
 use crate::errors::CliError;
 use crate::utils::parse_account_id;
-use crate::{FilesystemKeyStore, Parser, get_output_note_with_id_prefix};
+use crate::{CliKeyStore, Parser, get_output_note_with_id_prefix};
 
 #[derive(Debug, Parser, Clone)]
 #[command(about = "Export client output notes, or account data")]
@@ -68,7 +68,7 @@ impl ExportCmd {
     pub async fn execute<AUTH: Keystore + Sync>(
         &self,
         mut client: Client<AUTH>,
-        keystore: FilesystemKeyStore,
+        keystore: CliKeyStore,
     ) -> Result<(), CliError> {
         if self.account {
             export_account(
@@ -104,7 +104,7 @@ impl ExportCmd {
 /// undeployed, and the seed is needed to deploy the account.
 async fn export_account<AUTH>(
     client: &Client<AUTH>,
-    keystore: &FilesystemKeyStore,
+    keystore: &CliKeyStore,
     account_id: &str,
     filename: Option<PathBuf>,
     no_keys: bool,

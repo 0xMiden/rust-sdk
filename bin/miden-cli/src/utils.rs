@@ -7,6 +7,7 @@ use miden_client::account::component::FungibleFaucet;
 use miden_client::account::{AccountId, FaucetMetadata};
 use miden_client::address::{Address, AddressId, NetworkId};
 use miden_client::asset::{AssetAmount, FungibleAsset};
+use miden_client::keystore::{EncryptedFilesystemKeyStore, FilesystemKeyStore};
 use miden_client::transaction::{ExecutedTransaction, InputNote};
 use miden_client::vm::MIN_STACK_DEPTH;
 use miden_client::{AssetError, Client, Felt, WORD_SIZE, Word};
@@ -30,19 +31,25 @@ use crate::errors::CliError;
 pub(crate) fn open_keystore(config: &CliConfig) -> Result<CliKeyStore, CliError> {
     let keys_directory = config.secret_keys_directory.clone();
     if !config.keystore_encrypted {
-        if CliKeyStore::is_encrypted_directory(&keys_directory) {
+        if EncryptedFilesystemKeyStore::is_encrypted_directory(&keys_directory) {
             return Err(CliError::EncryptedKeystore(keys_directory.display().to_string()));
         }
-        return CliKeyStore::new_plaintext(keys_directory).map_err(CliError::KeyStore);
+        return FilesystemKeyStore::new(keys_directory)
+            .map(CliKeyStore::Plaintext)
+            .map_err(CliError::KeyStore);
     }
 
-    if CliKeyStore::holds_plaintext_keys(&keys_directory).map_err(CliError::KeyStore)? {
+    if EncryptedFilesystemKeyStore::holds_plaintext_keys(&keys_directory)
+        .map_err(CliError::KeyStore)?
+    {
         return Err(CliError::PlaintextKeystore(keys_directory.display().to_string()));
     }
     // A new keystore has no password yet, so a typed password is confirmed before it is used.
-    let is_new = !CliKeyStore::is_encrypted_directory(&keys_directory);
+    let is_new = !EncryptedFilesystemKeyStore::is_encrypted_directory(&keys_directory);
     let password = read_keystore_password(is_new)?;
-    CliKeyStore::new(keys_directory, password.as_bytes()).map_err(CliError::KeyStore)
+    EncryptedFilesystemKeyStore::new(keys_directory, password.as_bytes())
+        .map(CliKeyStore::Encrypted)
+        .map_err(CliError::KeyStore)
 }
 
 /// Reads the keystore password from [`KEYSTORE_PASSWORD_ENV`], or prompts for it when the variable

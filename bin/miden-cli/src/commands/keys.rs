@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use clap::{ArgGroup, ValueEnum};
 use miden_client::auth::{AuthSchemeId, AuthSecretKey, PublicKeyCommitment};
 use miden_client::crypto::{ecdsa_k256_keccak, rpo_falcon512};
-use miden_client::keystore::FilesystemKeyStore;
+use miden_client::keystore::EncryptedFilesystemKeyStore;
 use miden_client::utils::{ByteReader, Deserializable, hex_to_bytes};
 use miden_client::{SliceReader, Word};
 
@@ -12,7 +12,7 @@ use crate::codecs::parse_account_id_token;
 use crate::config::{CLIENT_CONFIG_FILE_NAME, CliConfig};
 use crate::errors::CliError;
 use crate::utils::read_keystore_password;
-use crate::{Parser, create_dynamic_table};
+use crate::{CliKeyStore, Parser, create_dynamic_table};
 
 /// Length of a serialized ECDSA public key. It matches the compressed SEC1 form that
 /// `ecdsa_k256_keccak::PublicKey` reads.
@@ -140,7 +140,7 @@ impl KeysCmd {
             })?;
 
         let is_encrypted_directory =
-            FilesystemKeyStore::is_encrypted_directory(&config.secret_keys_directory);
+            EncryptedFilesystemKeyStore::is_encrypted_directory(&config.secret_keys_directory);
         let file_marks_encrypted = config_table
             .get("keystore_encrypted")
             .is_some_and(|value| value.as_bool() == Some(true));
@@ -151,7 +151,7 @@ impl KeysCmd {
         // An interrupted encryption already has a password, so a prompted password is not
         // confirmed. The keystore verifies it instead.
         let password = read_keystore_password(!is_encrypted_directory)?;
-        let (keystore, unreadable) = FilesystemKeyStore::encrypt_plaintext_keystore(
+        let (keystore, unreadable) = EncryptedFilesystemKeyStore::encrypt_plaintext_keystore(
             config.secret_keys_directory.clone(),
             password.as_bytes(),
         )
@@ -176,7 +176,7 @@ impl KeysCmd {
         Ok(())
     }
 
-    pub fn execute(&self, keystore: &FilesystemKeyStore) -> Result<(), CliError> {
+    pub fn execute(&self, keystore: &CliKeyStore) -> Result<(), CliError> {
         match self {
             Self { generate: Some(scheme), .. } => generate_key(keystore, *scheme),
             Self { import: Some(file), .. } => import_key(keystore, file),
@@ -196,7 +196,7 @@ impl KeysCmd {
     }
 }
 
-fn list_keys(keystore: &FilesystemKeyStore) -> Result<(), CliError> {
+fn list_keys(keystore: &CliKeyStore) -> Result<(), CliError> {
     let mut table = create_dynamic_table(&["Commitment", "Scheme", "Associated accounts"]);
 
     for key in keystore.list_keys().map_err(CliError::KeyStore)? {
@@ -221,7 +221,7 @@ fn list_keys(keystore: &FilesystemKeyStore) -> Result<(), CliError> {
 }
 
 fn associate_key(
-    keystore: &FilesystemKeyStore,
+    keystore: &CliKeyStore,
     commitment: &str,
     account_id: &str,
 ) -> Result<(), CliError> {
@@ -237,7 +237,7 @@ fn associate_key(
 }
 
 fn disassociate_key(
-    keystore: &FilesystemKeyStore,
+    keystore: &CliKeyStore,
     commitment: &str,
     account_id: &str,
 ) -> Result<(), CliError> {
@@ -260,13 +260,13 @@ fn disassociate_key(
     Ok(())
 }
 
-fn generate_key(keystore: &FilesystemKeyStore, scheme: KeyScheme) -> Result<(), CliError> {
+fn generate_key(keystore: &CliKeyStore, scheme: KeyScheme) -> Result<(), CliError> {
     let key = AuthSecretKey::with_scheme(scheme.into())
         .map_err(|err| CliError::Input(format!("failed to generate key: {err}")))?;
     store_and_report_key(keystore, &key, "Generated")
 }
 
-fn import_key(keystore: &FilesystemKeyStore, file: &Path) -> Result<(), CliError> {
+fn import_key(keystore: &CliKeyStore, file: &Path) -> Result<(), CliError> {
     let bytes = fs::read(file)?;
     let mut reader = SliceReader::new(&bytes);
     let key = AuthSecretKey::read_from(&mut reader).map_err(|err| {
@@ -285,7 +285,7 @@ fn import_key(keystore: &FilesystemKeyStore, file: &Path) -> Result<(), CliError
 }
 
 fn store_and_report_key(
-    keystore: &FilesystemKeyStore,
+    keystore: &CliKeyStore,
     key: &AuthSecretKey,
     action: &str,
 ) -> Result<(), CliError> {

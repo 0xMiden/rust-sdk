@@ -7,7 +7,7 @@ use comfy_table::{Attribute, Cell, ContentArrangement, Table, presets};
 use errors::CliError;
 use miden_client::account::AccountHeader;
 use miden_client::builder::ClientBuilder;
-use miden_client::keystore::{FilesystemKeyStore, Keystore};
+use miden_client::keystore::Keystore;
 use miden_client::note_transport::grpc::GrpcNoteTransportClient;
 use miden_client::rpc::{GrpcClient, VerifyingRpcClient};
 use miden_client::store::{NoteFilter as ClientNoteFilter, OutputNoteRecord};
@@ -31,10 +31,9 @@ use commands::sync::SyncCmd;
 use commands::tags::TagsCmd;
 use commands::transactions::TransactionCmd;
 
+pub use self::cli_keystore::CliKeyStore;
 use self::utils::{config_file_exists, open_keystore};
 use crate::commands::address::AddressCmd;
-
-pub type CliKeyStore = FilesystemKeyStore;
 
 /// Environment variable that holds the password of an encrypted keystore. When it is not set, the
 /// CLI prompts for the password on the terminal.
@@ -284,6 +283,7 @@ mod advice_inputs;
 mod codecs;
 pub mod config;
 // These modules intentionally shadow the miden_client re-exports - CLI has its own errors/utils
+mod cli_keystore;
 #[allow(hidden_glob_reexports)]
 mod errors;
 mod info;

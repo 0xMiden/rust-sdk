@@ -37,6 +37,7 @@ env/
 # Ignore files that spawn using `miden-client init`
 miden-client.toml
 keystore/
+!crates/rust-client/src/keystore/
 .miden/packages/
 
 # Ignore files that spawn using `cargo run`

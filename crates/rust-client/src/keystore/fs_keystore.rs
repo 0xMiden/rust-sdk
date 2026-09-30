@@ -22,7 +22,7 @@ use miden_tx::utils::serde::{Deserializable, Serializable};
 use miden_tx::utils::sync::RwLock;
 use serde::{Deserialize, Serialize};
 
-use super::{KeyStoreError, Keystore};
+use super::{EncryptedFilesystemKeyStore, KeyStoreError, Keystore};
 
 // INDEX FILE
 // ================================================================================================
@@ -32,14 +32,14 @@ const INDEX_VERSION: u32 = 1;
 
 /// The structure of the key index file that maps account IDs to public key commitments.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-struct KeyIndex {
+pub(super) struct KeyIndex {
     version: u32,
     /// Maps account ID (hex) to a set of public key commitment (hex).
     mappings: BTreeMap<String, BTreeSet<String>>,
 }
 
 impl KeyIndex {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             version: INDEX_VERSION,
             mappings: BTreeMap::new(),
@@ -47,7 +47,11 @@ impl KeyIndex {
     }
 
     /// Adds a mapping from account ID to public key commitment.
-    fn add_mapping(&mut self, account_id: &AccountId, pub_key_commitment: PublicKeyCommitment) {
+    pub(super) fn add_mapping(
+        &mut self,
+        account_id: &AccountId,
+        pub_key_commitment: PublicKeyCommitment,
+    ) {
         let account_id_hex = account_id.to_hex();
         let pub_key_hex = Word::from(pub_key_commitment).to_hex();
 
@@ -58,7 +62,7 @@ impl KeyIndex {
     ///
     /// Returns `true` if the mapping was present. An account entry that keeps no commitment is
     /// removed.
-    fn remove_mapping(
+    pub(super) fn remove_mapping(
         &mut self,
         account_id: &AccountId,
         pub_key_commitment: PublicKeyCommitment,
@@ -79,7 +83,7 @@ impl KeyIndex {
     }
 
     /// Removes all mappings for a given public key commitment.
-    fn remove_all_mappings_for_key(&mut self, pub_key_commitment: PublicKeyCommitment) {
+    pub(super) fn remove_all_mappings_for_key(&mut self, pub_key_commitment: PublicKeyCommitment) {
         let pub_key_hex = Word::from(pub_key_commitment).to_hex();
 
         // Remove the key from all account mappings
@@ -90,7 +94,7 @@ impl KeyIndex {
     }
 
     /// Loads the index from disk, or creates a new one if it doesn't exist.
-    fn read_from_file(keys_directory: &Path) -> Result<Self, KeyStoreError> {
+    pub(super) fn read_from_file(keys_directory: &Path) -> Result<Self, KeyStoreError> {
         let index_path = keys_directory.join(INDEX_FILE_NAME);
 
         if !index_path.exists() {
@@ -106,31 +110,12 @@ impl KeyIndex {
     }
 
     /// Saves the index to disk atomically (write to temp file, then rename).
-    fn write_to_file(&self, keys_directory: &Path) -> Result<(), KeyStoreError> {
-        let index_path = keys_directory.join(INDEX_FILE_NAME);
-
+    pub(super) fn write_to_file(&self, keys_directory: &Path) -> Result<(), KeyStoreError> {
         let contents = serde_json::to_string_pretty(self).map_err(|err| {
             KeyStoreError::StorageError(format!("error serializing index: {err:?}"))
         })?;
 
-        // Create the temp file in the same directory as the index so the subsequent atomic rename
-        // stays on the same filesystem.
-        let mut temp_file = tempfile::NamedTempFile::new_in(keys_directory)
-            .map_err(keystore_error("error creating temp index file"))?;
-        temp_file
-            .write_all(contents.as_bytes())
-            .map_err(keystore_error("error writing temp index file"))?;
-        temp_file
-            .as_file()
-            .sync_all()
-            .map_err(keystore_error("error syncing temp index file"))?;
-
-        // Atomically replace the index file.
-        temp_file
-            .persist(&index_path)
-            .map_err(|err| keystore_error("error renaming index file")(err.error))?;
-
-        Ok(())
+        write_file_atomically(keys_directory, INDEX_FILE_NAME, contents.as_bytes())
     }
 
     /// Returns the account ID associated with a given public key commitment hex.
@@ -140,7 +125,10 @@ impl KeyIndex {
     ///
     /// A key can be associated with more than one account. This method returns only the first
     /// account in iteration order. Use [`KeyIndex::get_account_ids`] to get every account.
-    fn get_account_id(&self, pub_key_commitment: PublicKeyCommitment) -> Option<AccountId> {
+    pub(super) fn get_account_id(
+        &self,
+        pub_key_commitment: PublicKeyCommitment,
+    ) -> Option<AccountId> {
         let pub_key_hex = Word::from(pub_key_commitment).to_hex();
 
         for (account_id_hex, commitments) in &self.mappings {
@@ -153,7 +141,7 @@ impl KeyIndex {
     }
 
     /// Returns all account IDs associated with a public key commitment.
-    fn get_account_ids(
+    pub(super) fn get_account_ids(
         &self,
         pub_key_commitment: PublicKeyCommitment,
     ) -> Result<BTreeSet<AccountId>, KeyStoreError> {
@@ -176,7 +164,7 @@ impl KeyIndex {
     ///
     /// Returns an empty set if the index holds no mapping for the account. An account can hold keys
     /// that this keystore does not have, so an absent mapping is a valid state.
-    fn get_commitments(&self, account_id: &AccountId) -> BTreeSet<PublicKeyCommitment> {
+    pub(super) fn get_commitments(&self, account_id: &AccountId) -> BTreeSet<PublicKeyCommitment> {
         let account_id_hex = account_id.to_hex();
 
         self.mappings
@@ -201,6 +189,12 @@ impl KeyIndex {
 /// and the contents of the file are the serialized public and secret key.
 ///
 /// Account-to-key mappings are stored in a separate JSON index file.
+///
+/// # Security
+///
+/// The secret keys are written to disk in plaintext. Anyone who can read the directory can spend
+/// from the accounts that these keys control. Use [`EncryptedFilesystemKeyStore`] for keys that
+/// control real funds.
 #[derive(Debug)]
 pub struct FilesystemKeyStore {
     /// The directory where the keys are stored and read from.
@@ -209,7 +203,7 @@ pub struct FilesystemKeyStore {
     index: RwLock<KeyIndex>,
 }
 
-/// Information about a secret key in a [`FilesystemKeyStore`].
+/// Information about a secret key in a keystore.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StoredKeyInfo {
     pub commitment: PublicKeyCommitment,
@@ -229,10 +223,18 @@ impl Clone for FilesystemKeyStore {
 
 impl FilesystemKeyStore {
     /// Creates a [`FilesystemKeyStore`] on a specific directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the directory holds an [`EncryptedFilesystemKeyStore`].
     pub fn new(keys_directory: PathBuf) -> Result<Self, KeyStoreError> {
-        if !keys_directory.exists() {
-            fs::create_dir_all(&keys_directory)
-                .map_err(keystore_error("error creating keys directory"))?;
+        create_keys_directory(&keys_directory)?;
+
+        if EncryptedFilesystemKeyStore::is_encrypted_directory(&keys_directory) {
+            return Err(KeyStoreError::StorageError(format!(
+                "keystore at {} is encrypted and requires a password",
+                keys_directory.display()
+            )));
         }
 
         let index = KeyIndex::read_from_file(&keys_directory)?;
@@ -246,8 +248,7 @@ impl FilesystemKeyStore {
     /// Stores a secret key without associating it with an account.
     pub fn store_key(&self, key: &AuthSecretKey) -> Result<(), KeyStoreError> {
         let pub_key_commitment = key.public_key().to_commitment();
-        let file_path = key_file_path(&self.keys_directory, pub_key_commitment);
-        write_secret_key_file(&file_path, key)
+        write_secret_key_file(&self.keys_directory, pub_key_commitment, &key.to_bytes())
     }
 
     /// Returns information about all secret keys in the keystore.
@@ -255,28 +256,7 @@ impl FilesystemKeyStore {
         let index = self.index.read().clone();
         let mut keys = Vec::new();
 
-        for entry in fs::read_dir(&self.keys_directory)
-            .map_err(keystore_error("error reading keys directory"))?
-        {
-            let entry = entry.map_err(keystore_error("error reading keys directory entry"))?;
-            if !entry
-                .file_type()
-                .map_err(keystore_error("error reading key file type"))?
-                .is_file()
-            {
-                continue;
-            }
-
-            let file_name = entry.file_name();
-            if file_name == INDEX_FILE_NAME {
-                continue;
-            }
-            let Some(file_name) = file_name.to_str() else {
-                continue;
-            };
-            let Ok(commitment) = Word::try_from(file_name).map(PublicKeyCommitment::from) else {
-                continue;
-            };
+        for commitment in key_file_commitments(&self.keys_directory)? {
             // A file that does not hold a readable key must not hide the keys that are readable. An
             // interrupted write leaves such a file behind, so `list_keys` skips it and reports the
             // keys it can read.
@@ -485,35 +465,100 @@ impl Keystore for FilesystemKeyStore {
 // ================================================================================================
 
 /// Returns the file path that belongs to the public key commitment
-fn key_file_path(keys_directory: &Path, pub_key_commitment: PublicKeyCommitment) -> PathBuf {
+pub(super) fn key_file_path(
+    keys_directory: &Path,
+    pub_key_commitment: PublicKeyCommitment,
+) -> PathBuf {
     let filename = Word::from(pub_key_commitment).to_hex();
     keys_directory.join(filename)
 }
 
-/// Writes an [`AuthSecretKey`] into a file with restrictive permissions (0600 on Unix).
-#[cfg(unix)]
-fn write_secret_key_file(file_path: &Path, key: &AuthSecretKey) -> Result<(), KeyStoreError> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(file_path)
-        .map_err(keystore_error("error writing secret key file"))?;
-    file.write_all(&key.to_bytes())
-        .map_err(keystore_error("error writing secret key file"))
+/// Returns the commitments of the files in the keys directory that are named after a commitment.
+///
+/// The index and encryption metadata files are not included. A file in the list does not have to
+/// hold a readable key.
+pub(super) fn key_file_commitments(
+    keys_directory: &Path,
+) -> Result<Vec<PublicKeyCommitment>, KeyStoreError> {
+    let mut commitments = Vec::new();
+
+    for entry in
+        fs::read_dir(keys_directory).map_err(keystore_error("error reading keys directory"))?
+    {
+        let entry = entry.map_err(keystore_error("error reading keys directory entry"))?;
+        if !entry
+            .file_type()
+            .map_err(keystore_error("error reading key file type"))?
+            .is_file()
+        {
+            continue;
+        }
+
+        let file_name = entry.file_name();
+        let Some(file_name) = file_name.to_str() else {
+            continue;
+        };
+        if let Ok(commitment) = Word::try_from(file_name).map(PublicKeyCommitment::from) {
+            commitments.push(commitment);
+        }
+    }
+
+    Ok(commitments)
 }
 
-/// Writes an [`AuthSecretKey`] into a file.
+/// Writes `contents` to `file_name` in `directory` atomically (write to temp file, then rename).
+pub(super) fn write_file_atomically(
+    directory: &Path,
+    file_name: &str,
+    contents: &[u8],
+) -> Result<(), KeyStoreError> {
+    let file_path = directory.join(file_name);
+
+    // Create the temp file in the same directory as the target so the subsequent atomic rename
+    // stays on the same filesystem.
+    let mut temp_file = tempfile::NamedTempFile::new_in(directory)
+        .map_err(keystore_error("error creating temp file"))?;
+    temp_file
+        .write_all(contents)
+        .map_err(keystore_error("error writing temp file"))?;
+    temp_file
+        .as_file()
+        .sync_all()
+        .map_err(keystore_error("error syncing temp file"))?;
+
+    // Atomically replace the target file.
+    temp_file.persist(&file_path).map_err(|err| {
+        keystore_error(&format!("error renaming temp file to {file_name}"))(err.error)
+    })?;
+
+    Ok(())
+}
+
+/// Writes the contents of a key file atomically (write to temp file, then rename).
+///
+/// On Unix, the temp file is created with restrictive permissions (0600), and the key file keeps
+/// them after the rename.
 // TODO: on Windows, set restrictive ACLs to limit access to the current user.
-#[cfg(not(unix))]
-fn write_secret_key_file(file_path: &Path, key: &AuthSecretKey) -> Result<(), KeyStoreError> {
-    fs::write(file_path, key.to_bytes()).map_err(keystore_error("error writing secret key file"))
+pub(super) fn write_secret_key_file(
+    keys_directory: &Path,
+    pub_key_commitment: PublicKeyCommitment,
+    contents: &[u8],
+) -> Result<(), KeyStoreError> {
+    let file_name = Word::from(pub_key_commitment).to_hex();
+    write_file_atomically(keys_directory, &file_name, contents)
 }
 
-fn keystore_error(context: &str) -> impl FnOnce(std::io::Error) -> KeyStoreError {
+/// Creates the keys directory if it does not exist.
+pub(super) fn create_keys_directory(keys_directory: &Path) -> Result<(), KeyStoreError> {
+    if !keys_directory.exists() {
+        fs::create_dir_all(keys_directory)
+            .map_err(keystore_error("error creating keys directory"))?;
+    }
+    Ok(())
+}
+
+pub(super) fn keystore_error(context: &str) -> impl FnOnce(std::io::Error) -> KeyStoreError {
+    let context = String::from(context);
     move |err| KeyStoreError::StorageError(format!("{context}: {err:?}"))
 }
 

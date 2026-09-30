@@ -14,6 +14,10 @@ pub enum KeyStoreError {
     StorageError(String),
     #[error("decoding error: {0}")]
     DecodingError(String),
+    #[error("encryption error: {0}")]
+    EncryptionError(String),
+    #[error("invalid keystore password")]
+    InvalidPassword,
 }
 
 /// A trait for managing cryptographic keys and their association with accounts.
@@ -85,6 +89,10 @@ pub trait Keystore: TransactionAuthenticator {
 }
 
 #[cfg(feature = "std")]
+mod encrypted_fs_keystore;
+#[cfg(feature = "std")]
 mod fs_keystore;
+#[cfg(feature = "std")]
+pub use encrypted_fs_keystore::EncryptedFilesystemKeyStore;
 #[cfg(feature = "std")]
 pub use fs_keystore::{FilesystemKeyStore, StoredKeyInfo};

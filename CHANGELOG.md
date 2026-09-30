@@ -4,7 +4,7 @@
 
 ### Breaking Changes
 
-* [BREAKING][arch][store] The SQLite store writes its structured values as protobuf messages instead of the `Serializable` encoding: transaction details and status, input and output note states, account code, note and transaction scripts, note assets, attachments, storage and metadata, and block headers. Requires a new client database ([#2624](https://github.com/0xMiden/rust-sdk/pull/2624)).
+* [BREAKING][arch][store] The SQLite store writes its structured values as protobuf messages instead of the `Serializable` encoding: transaction details and status, input and output note states, account code, note and transaction scripts, note assets, attachments, storage and metadata, block headers, and account witnesses. Requires a new client database ([#2624](https://github.com/0xMiden/rust-sdk/pull/2624)).
 * [BREAKING][param][rust] The `Store` trait requires five account-witness registry methods: `track_account_witness`, `untrack_account_witness`, `tracked_account_witnesses`, `get_account_witness` and `update_account_witness`. They have no default bodies, so every out-of-tree implementation must provide them ([#2476](https://github.com/0xMiden/rust-sdk/pull/2476)).
 
 ### Enhancements

@@ -8,6 +8,7 @@ use std::vec::Vec;
 use miden_objects::{DecodeMessageExt, proto as objects};
 use miden_protocol::account::{AccountCode, AccountProcedureRoot};
 use miden_protocol::block::BlockHeader;
+use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::note::{
     NoteAssets,
     NoteAttachments,
@@ -129,6 +130,18 @@ impl ProtobufValue for NoteMetadata {
 
     fn to_proto(&self) -> Self::Message {
         (*self).into()
+    }
+
+    fn from_proto(message: Self::Message) -> Result<Self, ProtoDecodeError> {
+        Ok(message.decode_and_verify()?)
+    }
+}
+
+impl ProtobufValue for AccountWitness {
+    type Message = objects::account::AccountWitness;
+
+    fn to_proto(&self) -> Self::Message {
+        self.into()
     }
 
     fn from_proto(message: Self::Message) -> Result<Self, ProtoDecodeError> {

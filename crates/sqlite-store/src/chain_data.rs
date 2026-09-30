@@ -191,7 +191,7 @@ impl SqliteStore {
                     .iter()
                     .find(|block| blocks_with_unspent_notes.contains(&block.as_u32()))
                 {
-                    return Err(StaleUpdate::Block(*block).into());
+                    return Err(StaleUpdate::BlockWithUnspentNote(*block).into());
                 }
             }
 
@@ -687,7 +687,7 @@ mod test {
             .untrack_and_prune_irrelevant_blocks(&[BlockNumber::from(NOTE_BLOCK)], &[])
             .await;
         assert!(
-            matches!(&result, Err(StoreError::StaleUpdate(StaleUpdate::Block(_)))),
+            matches!(&result, Err(StoreError::StaleUpdate(StaleUpdate::BlockWithUnspentNote(_)))),
             "expected a stale update conflict, got {result:?}"
         );
 

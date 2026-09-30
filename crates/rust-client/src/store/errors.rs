@@ -68,7 +68,7 @@ pub enum StaleUpdate {
         new_discriminant: u8,
     },
     #[error("block {0} still holds an unspent note")]
-    Block(BlockNumber),
+    BlockWithUnspentNote(BlockNumber),
 }
 
 // STORE ERROR

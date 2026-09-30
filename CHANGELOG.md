@@ -11,6 +11,10 @@
 
 * [FEATURE][rust] Added `Client::track_account_witness`, `Client::untrack_account_witness` and `Client::tracked_account_witnesses` to register accounts whose account witness the sync keeps fresh in the store (new `account_witnesses` table). A transaction using a registered account as a foreign account builds its inputs from the store instead of issuing a `GetAccount` request, moving the cost from once per transaction to once per sync ([#2476](https://github.com/0xMiden/rust-sdk/pull/2476)).
 
+### Fixes
+
+* [FIX][rust] `SyncSummary::locked_accounts` now reports only accounts that the current sync locked. It excludes stale network commitments and accounts that were already locked. The new `AccountUpdateTracker` collects account updates during sync, and `AccountUpdates` remains as a compatibility alias ([#2118](https://github.com/0xMiden/rust-sdk/issues/2118)).
+
 ## 0.17.0-rc.4 (2026-09-26)
 
 ### Breaking Changes

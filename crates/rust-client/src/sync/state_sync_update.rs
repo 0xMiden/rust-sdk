@@ -47,7 +47,7 @@ pub struct StateSyncUpdate {
     /// Committed and discarded transactions after the sync.
     transaction_updates: TransactionUpdateTracker,
     /// Public account updates and mismatched private accounts after the sync.
-    account_updates: AccountUpdates,
+    account_updates: AccountUpdateTracker,
     /// The protocol configuration active at `block_num`. The node sends it when the sync starts at
     /// genesis, or when the starting block and `block_num` commit to different configurations.
     protocol_config: Option<ProtocolConfig>,
@@ -62,7 +62,7 @@ impl StateSyncUpdate {
         partial_blockchain_updates: PartialBlockchainUpdates,
         note_updates: NoteUpdateTracker,
         transaction_updates: TransactionUpdateTracker,
-        account_updates: AccountUpdates,
+        account_updates: AccountUpdateTracker,
         protocol_config: Option<ProtocolConfig>,
     ) -> Self {
         Self {
@@ -96,7 +96,7 @@ impl StateSyncUpdate {
     }
 
     /// Returns the account updates.
-    pub fn account_updates(&self) -> &AccountUpdates {
+    pub fn account_updates(&self) -> &AccountUpdateTracker {
         &self.account_updates
     }
 
@@ -113,7 +113,7 @@ impl StateSyncUpdate {
         PartialBlockchainUpdates,
         NoteUpdateTracker,
         TransactionUpdateTracker,
-        AccountUpdates,
+        AccountUpdateTracker,
         Option<ProtocolConfig>,
     ) {
         (
@@ -186,12 +186,8 @@ impl From<&StateSyncUpdate> for SyncSummary {
                 .iter()
                 .map(PublicAccountUpdate::id)
                 .collect(),
-            value
-                .account_updates
-                .mismatched_private_accounts()
-                .iter()
-                .map(|(id, _)| *id)
-                .collect(),
+            // The client fills this after the store applies the lock candidates.
+            Vec::new(),
             value.transaction_updates.committed_transactions().map(|t| t.id).collect(),
         )
     }
@@ -524,13 +520,13 @@ pub(crate) fn build_account_patch(
     AccountPatch::new(new_header.id(), storage, vault_patch, code, Some(new_header.nonce()))
 }
 
-// ACCOUNT UPDATES
+// ACCOUNT UPDATE TRACKER
 // ================================================================================================
 
-/// Contains account changes to apply to the store after a sync request.
+/// Collects account changes to apply after a sync request.
 #[derive(Debug, Clone, Default)]
 #[allow(clippy::struct_field_names)]
-pub struct AccountUpdates {
+pub struct AccountUpdateTracker {
     /// Updated public accounts, either as full state replacements or incremental patches.
     updated_public_accounts: Vec<PublicAccountUpdate>,
     /// Account commitments received from the network that don't match the currently locally-tracked
@@ -545,8 +541,8 @@ pub struct AccountUpdates {
     account_witnesses: Vec<(AccountId, AccountWitness)>,
 }
 
-impl AccountUpdates {
-    /// Creates a new instance of `AccountUpdates`.
+impl AccountUpdateTracker {
+    /// Creates a new account update tracker.
     pub fn new(
         updated_public_accounts: Vec<PublicAccountUpdate>,
         mismatched_private_accounts: Vec<(AccountId, Word)>,
@@ -583,12 +579,15 @@ impl AccountUpdates {
         &self.account_witnesses
     }
 
-    pub fn extend(&mut self, other: AccountUpdates) {
+    pub fn extend(&mut self, other: AccountUpdateTracker) {
         self.updated_public_accounts.extend(other.updated_public_accounts);
         self.mismatched_private_accounts.extend(other.mismatched_private_accounts);
         self.account_witnesses.extend(other.account_witnesses);
     }
 }
+
+/// Compatibility name for [`AccountUpdateTracker`].
+pub type AccountUpdates = AccountUpdateTracker;
 
 // TESTS
 // ================================================================================================

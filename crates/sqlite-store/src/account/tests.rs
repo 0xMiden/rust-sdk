@@ -1437,6 +1437,36 @@ async fn lock_account_affects_latest_and_historical() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Verifies that a stale network commitment does not lock an account.
+#[tokio::test]
+async fn lock_account_ignores_a_historical_commitment() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+    let map_slot_name = StorageSlotName::new("test::lock::stale").expect("valid slot name");
+    let mut account = setup_account_with_map(&store, 3, &map_slot_name).await?;
+    let account_id = account.id();
+    let historical_commitment = account.to_commitment();
+
+    apply_single_entry_update(&store, &mut account, &map_slot_name, 2).await?;
+
+    store
+        .interact_with_connection(move |conn| {
+            let tx = conn.transaction().into_store_error()?;
+            SqliteStore::lock_account_on_unexpected_commitment(
+                &tx,
+                &account_id,
+                &historical_commitment,
+            )?;
+            tx.commit().into_store_error()?;
+            Ok(())
+        })
+        .await?;
+
+    let (_, status) = store.get_account_header(account_id).await?.expect("account should exist");
+    assert!(!status.is_locked());
+
+    Ok(())
+}
+
 /// Verifies that undoing a patch after `update_account_state` does not resurrect entries that were
 /// removed by the update. This exercises the archival logic in `update_account_state`.
 ///

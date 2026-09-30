@@ -5,6 +5,7 @@ members = [
   "bin/integration-tests",
   "bin/miden-bench",
   "bin/miden-cli",
+  "crates/proto",
   "crates/rust-client",
   "crates/sqlite-store",
   "crates/testing/miden-client-tests",
@@ -39,6 +40,7 @@ opt-level = 1
 # Workspace crates
 miden-client                   = { default-features = false, path = "crates/rust-client", version = "0.17.0-rc.5" }
 miden-client-integration-tests = { default-features = false, path = "bin/integration-tests", version = "0.17.0-rc.5" }
+miden-client-proto             = { default-features = false, path = "crates/proto", version = "0.17.0-rc.5" }
 miden-client-sqlite-store      = { default-features = false, path = "crates/sqlite-store", version = "0.17.0-rc.5" }
 
 # Miden protocol dependencies

@@ -1,0 +1,55 @@
+syntax = "proto3";
+
+// Output note values. Field numbers are part of the encoded format, so a released number must keep
+// its meaning. Add fields, do not renumber or reuse them.
+package client.output_note;
+
+import "block_number.proto";
+import "note.proto";
+import "primitives.proto";
+import "client/protocol.proto";
+
+// The state of a note the client produces, without the script of its recipient.
+//
+// The reader supplies the script when it decodes the state. A partial state holds no recipient, so
+// the note details are not known.
+message OutputNoteStateWithoutScript {
+  // The note is expected and its details are not known.
+  message ExpectedPartial {}
+
+  // The note is expected and its details are known.
+  message ExpectedFull {
+    NoteRecipientWithoutScript recipient = 1;
+  }
+
+  // The note is in the chain and its details are not known.
+  message CommittedPartial {
+    protocol.NoteInclusionProof inclusion_proof =1;
+  }
+
+  // The note is in the chain and its details are known.
+  message CommittedFull {
+    NoteRecipientWithoutScript recipient = 1;
+    protocol.NoteInclusionProof inclusion_proof =2;
+  }
+
+  // The note is consumed.
+  message Consumed {
+    blockchain.BlockNumber block_height = 1;
+    NoteRecipientWithoutScript recipient = 2;
+  }
+
+  oneof state {
+    ExpectedPartial expected_partial = 1;
+    ExpectedFull expected_full = 2;
+    CommittedPartial committed_partial = 3;
+    CommittedFull committed_full = 4;
+    Consumed consumed = 5;
+  }
+}
+
+// The recipient of an output note without its script.
+message NoteRecipientWithoutScript {
+  primitives.Word serial_num = 1;
+  note.NoteStorage storage = 2;
+}

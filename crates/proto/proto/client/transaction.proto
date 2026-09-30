@@ -1,8 +1,8 @@
 syntax = "proto3";
 
-// Values of the `transactions` table. Field numbers are part of the on-disk format, so a released
-// number must keep its meaning. Add fields, do not renumber or reuse them.
-package miden.client.store;
+// Transaction values. Field numbers are part of the encoded format, so a released number must keep
+// its meaning. Add fields, do not renumber or reuse them.
+package client.transaction;
 
 import "account.proto";
 import "block_number.proto";
@@ -36,7 +36,7 @@ message TransactionStatus {
 
 // Reason for which a transaction was discarded.
 enum DiscardCause {
-  // The reason is absent. The store rejects a value with this cause.
+  // The reason is absent. Decoding rejects a value with this cause.
   DISCARD_CAUSE_UNSPECIFIED = 0;
   DISCARD_CAUSE_EXPIRED = 1;
   DISCARD_CAUSE_INPUT_CONSUMED = 2;
@@ -51,7 +51,7 @@ message TransactionDetails {
   primitives.Word init_account_state = 2;
   primitives.Word final_account_state = 3;
   repeated primitives.Word input_note_nullifiers = 4;
-  transaction.RawOutputNotes output_notes = 5;
+  .transaction.RawOutputNotes output_notes = 5;
   blockchain.BlockNumber block_num = 6;
   blockchain.BlockNumber submission_height = 7;
   blockchain.BlockNumber expiration_block_num = 8;

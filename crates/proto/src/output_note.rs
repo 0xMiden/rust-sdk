@@ -1,5 +1,5 @@
-//! The store keeps an output note state without the recipient's script, which lives in
-//! `notes_scripts`. Reading it back needs that script, so this type does not fit `ProtobufValue`.
+//! An output note state is encoded without the recipient's script. Decoding needs that script, so
+//! this type does not fit `ProtobufValue`.
 
 use std::string::ToString;
 use std::vec::Vec;
@@ -8,11 +8,12 @@ use miden_client::store::OutputNoteState;
 use miden_objects::DecodeMessageExt;
 use miden_protocol::note::{NoteRecipient, NoteScript};
 
-use crate::proto::{self, ProtoDecodeError, required};
+use crate as proto;
+use crate::{ProtoDecodeError, required};
 
-/// Encodes an output note state as the message that the store keeps, without the script.
-pub fn encode_output_note_state(state: &OutputNoteState) -> Vec<u8> {
-    use proto::stored_output_note_state::{
+/// Encodes an output note state without the script of its recipient.
+pub fn encode_output_note_state_without_script(state: &OutputNoteState) -> Vec<u8> {
+    use proto::output_note_state_without_script::{
         CommittedFull,
         CommittedPartial,
         Consumed,
@@ -24,7 +25,7 @@ pub fn encode_output_note_state(state: &OutputNoteState) -> Vec<u8> {
     let state = match state {
         OutputNoteState::ExpectedPartial => State::ExpectedPartial(ExpectedPartial {}),
         OutputNoteState::ExpectedFull { recipient } => State::ExpectedFull(ExpectedFull {
-            recipient: Some(stored_recipient(recipient)),
+            recipient: Some(recipient_without_script(recipient)),
         }),
         OutputNoteState::CommittedPartial { inclusion_proof } => {
             State::CommittedPartial(CommittedPartial {
@@ -33,30 +34,30 @@ pub fn encode_output_note_state(state: &OutputNoteState) -> Vec<u8> {
         },
         OutputNoteState::CommittedFull { recipient, inclusion_proof } => {
             State::CommittedFull(CommittedFull {
-                recipient: Some(stored_recipient(recipient)),
+                recipient: Some(recipient_without_script(recipient)),
                 inclusion_proof: Some(inclusion_proof.into()),
             })
         },
         OutputNoteState::Consumed { block_height, recipient } => State::Consumed(Consumed {
             block_height: Some((*block_height).into()),
-            recipient: Some(stored_recipient(recipient)),
+            recipient: Some(recipient_without_script(recipient)),
         }),
     };
 
-    prost::Message::encode_to_vec(&proto::StoredOutputNoteState { state: Some(state) })
+    prost::Message::encode_to_vec(&proto::OutputNoteStateWithoutScript { state: Some(state) })
 }
 
-/// Decodes a stored output note state and completes its recipient with `script`, which the store
-/// reads from `notes_scripts`.
-pub fn decode_output_note_state(
+/// Decodes an output note state that was encoded without its script, and completes its recipient
+/// with `script`.
+pub fn decode_output_note_state_without_script(
     bytes: &[u8],
     script: Option<NoteScript>,
 ) -> Result<OutputNoteState, ProtoDecodeError> {
-    use proto::stored_output_note_state::State;
+    use proto::output_note_state_without_script::State;
 
-    const MESSAGE: &str = "stored output note state";
+    const MESSAGE: &str = "output note state without script";
 
-    let message = <proto::StoredOutputNoteState as prost::Message>::decode(bytes)?;
+    let message = <proto::OutputNoteStateWithoutScript as prost::Message>::decode(bytes)?;
 
     Ok(match required(message.state, MESSAGE, "variant")? {
         State::ExpectedPartial(_) => OutputNoteState::ExpectedPartial,
@@ -80,24 +81,24 @@ pub fn decode_output_note_state(
     })
 }
 
-fn stored_recipient(recipient: &NoteRecipient) -> proto::StoredNoteRecipient {
-    proto::StoredNoteRecipient {
+fn recipient_without_script(recipient: &NoteRecipient) -> proto::NoteRecipientWithoutScript {
+    proto::NoteRecipientWithoutScript {
         serial_num: Some(recipient.serial_num().into()),
         storage: Some(recipient.storage().into()),
     }
 }
 
 fn full_recipient(
-    stored: proto::StoredNoteRecipient,
+    recipient: proto::NoteRecipientWithoutScript,
     script: Option<NoteScript>,
 ) -> Result<NoteRecipient, ProtoDecodeError> {
-    const MESSAGE: &str = "stored note recipient";
+    const MESSAGE: &str = "note recipient without script";
 
-    let serial_num = required(stored.serial_num, MESSAGE, "serial number")?.try_into()?;
-    let storage = required(stored.storage, MESSAGE, "storage")?.decode_and_verify()?;
+    let serial_num = required(recipient.serial_num, MESSAGE, "serial number")?.try_into()?;
+    let storage = required(recipient.storage, MESSAGE, "storage")?.decode_and_verify()?;
     let script = script.ok_or_else(|| {
         ProtoDecodeError::InvalidValue(
-            "output note state has a recipient but no script row".to_string(),
+            "output note state has a recipient but no script".to_string(),
         )
     })?;
 
@@ -116,8 +117,8 @@ mod tests {
 
     use super::*;
 
-    /// The store keeps an output note state without the recipient's script and reads it back with
-    /// the script from `notes_scripts`.
+    /// An output note state is encoded without the recipient's script and decodes back with the
+    /// script that the reader supplies.
     #[test]
     fn output_note_state_round_trips_without_its_script() {
         let script = StandardNote::P2ID.script();
@@ -127,9 +128,9 @@ mod tests {
         let inclusion_proof = NoteInclusionProof::new(BlockNumber::from(3u32), 1, path).unwrap();
         let state = OutputNoteState::CommittedFull { recipient, inclusion_proof };
 
-        let bytes = encode_output_note_state(&state);
+        let bytes = encode_output_note_state_without_script(&state);
 
-        assert_eq!(decode_output_note_state(&bytes, Some(script)).unwrap(), state);
-        assert!(decode_output_note_state(&bytes, None).is_err());
+        assert_eq!(decode_output_note_state_without_script(&bytes, Some(script)).unwrap(), state);
+        assert!(decode_output_note_state_without_script(&bytes, None).is_err());
     }
 }

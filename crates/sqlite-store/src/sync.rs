@@ -157,10 +157,23 @@ impl SqliteStore {
                         Self::update_account_state(db_tx, &mut smt_forest, account)?;
                     },
                     PublicAccountUpdate::Patch { previous_header, new_header, patch } => {
+                        // The client derives the patch from the local state at the start of the
+                        // sync. If `undo_account_state` discarded that state, the stored commitment
+                        // no longer matches `previous_header`, and the patch is rejected. For this
+                        // case, use the header that the undo restored as the initial state.
+                        let account_id = previous_header.id();
+                        let previous_header = if discarded_states
+                            .contains(&(account_id, previous_header.to_commitment()))
+                        {
+                            Self::require_latest_account_header(db_tx, account_id)?
+                        } else {
+                            previous_header.clone()
+                        };
+
                         Self::apply_sync_account_patch(
                             db_tx,
                             &mut smt_forest,
-                            previous_header,
+                            &previous_header,
                             new_header,
                             patch,
                         )?;

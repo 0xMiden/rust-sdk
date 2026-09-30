@@ -24,9 +24,25 @@ use miden_client::account::{
 use miden_client::assembly::CodeBuilder;
 use miden_client::asset::{Asset, FungibleAsset, NonFungibleAsset, NonFungibleAssetDetails};
 use miden_client::auth::{AuthSchemeId, AuthSingleSig, PublicKeyCommitment};
-use miden_client::block::AccountWitness;
+use miden_client::block::{AccountWitness, BlockNumber};
+use miden_client::note::NoteUpdateTracker;
 use miden_client::store::{AccountUpdate, ClientAccountType, StaleUpdate, Store, StoreError};
+use miden_client::sync::{
+    AccountUpdates,
+    PartialBlockchainUpdates,
+    PublicAccountUpdate,
+    StateSyncUpdate,
+    TransactionUpdateTracker,
+};
 use miden_client::testing::common::{ACCOUNT_ID_REGULAR, create_test_store_path};
+use miden_client::transaction::{
+    DiscardCause,
+    RawOutputNotes,
+    TransactionDetails,
+    TransactionId,
+    TransactionRecord,
+    TransactionStatus,
+};
 use miden_client::{EMPTY_WORD, Felt, ONE, Serializable, Word, ZERO};
 use miden_protocol::account::{
     AccountComponentMetadata,
@@ -3014,6 +3030,69 @@ async fn apply_sync_account_patch_rejects_stale_patches() -> anyhow::Result<()> 
         .try_into()?;
     assert_eq!(persisted, stored_account);
     assert_eq!(get_storage_metrics(&store).await, metrics_before);
+
+    Ok(())
+}
+
+/// A sync can discard a local transaction and patch the same account. The client derives the patch
+/// from the discarded state, so the store must apply it to the state that the undo restores.
+#[tokio::test]
+async fn apply_state_sync_patches_account_with_discarded_state() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+    let map_slot_name = StorageSlotName::new("test::discarded_sync::map").expect("valid slot name");
+
+    // Store an account with nonce 1
+    let committed_account = setup_account_with_map(&store, 3, &map_slot_name).await?;
+    let mut local_account = committed_account.clone();
+    // Move the account nonce to 2 locally
+    apply_single_entry_update(&store, &mut local_account, &map_slot_name, 2).await?;
+
+    // The discarded transaction that moved the account nonce from 1 to 2
+    let discarded_transaction = TransactionRecord::new(
+        TransactionId::from_raw(Word::default()),
+        TransactionDetails {
+            account_id: local_account.id(),
+            init_account_state: committed_account.to_commitment(),
+            final_account_state: local_account.to_commitment(),
+            input_note_nullifiers: vec![],
+            output_notes: RawOutputNotes::new(vec![])?,
+            block_num: BlockNumber::from(0u32),
+            submission_height: BlockNumber::from(0u32),
+            expiration_block_num: BlockNumber::from(1u32),
+            creation_timestamp: 0,
+        },
+        None,
+        TransactionStatus::Discarded(DiscardCause::Expired),
+    );
+
+    // The network moves the committed state to nonce 3.
+    let network_account = advanced_account(&committed_account, &map_slot_name, 3, 3000)?;
+    let patch = single_entry_patch(&committed_account, &map_slot_name, 3, 3000)?;
+    let account_update = PublicAccountUpdate::Patch {
+        previous_header: (&local_account).into(),
+        new_header: (&network_account).into(),
+        patch,
+    };
+
+    // Create a state sync update including the discarded transaction
+    let state_sync_update = StateSyncUpdate::from_parts(
+        BlockNumber::from(0u32),
+        PartialBlockchainUpdates::default(),
+        NoteUpdateTracker::default(),
+        TransactionUpdateTracker::new(vec![discarded_transaction]),
+        AccountUpdates::new(vec![account_update], Vec::new()),
+        None,
+    );
+    // Apply the state sync update
+    store.apply_state_sync(state_sync_update).await?;
+
+    // Check the
+    let persisted: Account = store
+        .get_account(network_account.id())
+        .await?
+        .context("account should exist after the sync")?
+        .try_into()?;
+    assert_eq!(persisted, network_account);
 
     Ok(())
 }

@@ -568,7 +568,7 @@ impl SqliteStore {
 
     /// Returns the stored latest header of an account, or [`StoreError::AccountDataNotFound`] if
     /// the store does not track it.
-    fn require_latest_account_header(
+    pub(crate) fn require_latest_account_header(
         tx: &Transaction<'_>,
         account_id: AccountId,
     ) -> Result<AccountHeader, StoreError> {

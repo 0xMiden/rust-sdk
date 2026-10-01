@@ -224,7 +224,15 @@ impl ProtobufValue for TransactionRequest {
             .collect::<Result<Vec<NoteRecipient>, _>>()?;
         let (custom_script, own_output_notes) =
             decode_script_template(request.script_template, &expected_output_recipients)?;
-        let expected_future_notes = decode_expected_future_notes(request.expected_future_notes)?;
+        let expected_future_notes = request
+            .expected_future_notes
+            .into_iter()
+            .map(|note| {
+                let details = required(note.details, "expected future note", "details")?
+                    .decode_and_verify()?;
+                Ok((details, NoteTag::from(note.tag)))
+            })
+            .collect::<Result<Vec<(NoteDetails, NoteTag)>, ProtoDecodeError>>()?;
         let advice_map: AdviceMap =
             required(request.advice_map, MESSAGE, "advice map")?.decode_and_verify()?;
         let merkle_store: MerkleStore =
@@ -402,20 +410,6 @@ fn decode_script_template(
             Ok((None, notes))
         },
     }
-}
-
-/// Decodes the notes that later transactions are expected to create, with their tags.
-fn decode_expected_future_notes(
-    notes: Vec<proto::ExpectedFutureNote>,
-) -> Result<Vec<(NoteDetails, NoteTag)>, ProtoDecodeError> {
-    notes
-        .into_iter()
-        .map(|note| {
-            let details =
-                required(note.details, "expected future note", "details")?.decode_and_verify()?;
-            Ok((details, NoteTag::from(note.tag)))
-        })
-        .collect()
 }
 
 /// Builds an own output note from its partial note and the recipient that the partial note commits

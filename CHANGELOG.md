@@ -166,6 +166,17 @@
 * [FIX][rust] `VerifyingRpcClient::sync_nullifiers` now rejects an update stamped outside the requested `block_from`/`block_to` window with `RpcError::InvalidResponse`, in the same pass that checks the nullifier prefixes. `GrpcClient` rejects a page whose cursor ends past the requested `block_to` with `RpcError::PaginationError`, which covers every block-paginated method. Note blocks and transaction records were already range-checked by the sync ([#2503](https://github.com/0xMiden/rust-sdk/pull/2503)).
 * [FIX][store] `set_setting` and `remove_setting` return an error when the number of affected rows does not match the expected count ([#2537](https://github.com/0xMiden/rust-sdk/pull/2537)).
 
+## 0.16.1 (2026-09-10)
+
+### Changes
+
+* [FEATURE][rust] New `miden-web3signer-authenticator` crate provides `Web3SignerAuthenticator`, which allows a Miden client to sign transactions with `EcdsaK256Keccak` keys held in a Web3Signer instance ([#2501](https://github.com/0xMiden/rust-sdk/pull/2501)).
+* Updated workspace version to 0.16.1 ([#2526](https://github.com/0xMiden/rust-sdk/pull/2526)).
+
+### Fixes
+
+* [FIX][rust] `ForeignAccount` gained the `Prefetched(AccountInputs)` variant: a request can carry a foreign account's state and inclusion witness, and nothing is fetched for that account at execution time. `Client::get_foreign_account_inputs` is now public and fetches inputs for a set of declarations at a given block. Together they let a transaction pinned to an older block execute after the node stopped serving account state there. Exhaustive matches on `ForeignAccount` must handle the new variant. Requests without prefetched accounts keep their serialized format ([#2524](https://github.com/0xMiden/rust-sdk/issues/2524)).
+
 ## 0.16.0 (2026-09-07)
 
 ### Breaking Changes

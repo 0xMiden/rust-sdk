@@ -120,30 +120,43 @@ impl InitStorageDataSource {
 
     /// Loads the init storage data and the optional fungible faucet metadata.
     ///
-    /// Only a TOML file can supply fungible faucet metadata. Map entries for the same slot from
-    /// different `--init-storage-value` flags are appended. A value name that more than one flag
-    /// sets is an error.
+    /// Only a TOML file can supply fungible faucet metadata.
     fn load(self) -> Result<(InitStorageData, Option<FungibleFaucetMetadata>), CliError> {
         match self {
             Self::Path(path) => load_init_storage_data(&path),
             Self::Values(values) => {
-                let mut init_data = InitStorageData::default();
-                for entry in values {
-                    // `merge_with` overwrites value entries, so check for duplicates first.
-                    if let Some(name) =
-                        entry.values().keys().find(|name| init_data.value_entry(name).is_some())
-                    {
-                        return Err(CliError::InitDataError(
-                            Box::new(InitStorageDataError::DuplicateKey(name.to_string())),
-                            format!("`{name}` is set by more than one --init-storage-value entry"),
-                        ));
-                    }
-                    init_data.merge_with(entry);
-                }
+                let init_data = merge_init_storage_values(&values).map_err(|err| {
+                    CliError::InitDataError(
+                        Box::new(err),
+                        "conflicting --init-storage-value entries".to_string(),
+                    )
+                })?;
                 Ok((init_data, None))
             },
         }
     }
+}
+
+/// Merges the init storage data of several `--init-storage-value` entries into one.
+fn merge_init_storage_values(
+    values: &[InitStorageData],
+) -> Result<InitStorageData, InitStorageDataError> {
+    let mut init_data = InitStorageData::default();
+
+    values
+        .iter()
+        .flat_map(InitStorageData::values)
+        .try_for_each(|(name, value)| init_data.insert_value(name.clone(), value.clone()))?;
+
+    values
+        .iter()
+        .flat_map(InitStorageData::maps)
+        .flat_map(|(slot_name, entries)| entries.iter().map(move |entry| (slot_name, entry)))
+        .try_for_each(|(slot_name, (key, value))| {
+            init_data.insert_map_entry(slot_name.clone(), key.clone(), value.clone())
+        })?;
+
+    Ok(init_data)
 }
 
 /// Parses an `--init-storage-value` entry in the form `<slot::name>=<value>` into init storage
@@ -989,7 +1002,7 @@ mod tests {
     }
 
     #[test]
-    fn init_storage_data_source_appends_map_entries_and_rejects_duplicate_values() {
+    fn init_storage_data_source_appends_map_entries_and_rejects_conflicts() {
         let init_data = load_init_storage_values(&[
             r#"my::map=[{ key = "0x01", value = "0x10" }]"#,
             r#"my::map=[{ key = "0x02", value = "0x20" }]"#,
@@ -997,9 +1010,19 @@ mod tests {
         .unwrap();
         assert_eq!(init_data.map_entries(&"my::map".parse().unwrap()).unwrap().len(), 2);
 
-        let err = load_init_storage_values(&[r#"my::slot="1""#, r#"my::slot="2""#])
-            .expect_err("a duplicate name should be rejected");
-        assert!(err.to_string().contains("more than one"), "unexpected error: {err}");
+        for entries in [
+            // The same value name twice.
+            [r#"my::slot="1""#, r#"my::slot="2""#],
+            // The same map key twice.
+            [
+                r#"my::map=[{ key = "0x01", value = "0x10" }]"#,
+                r#"my::map=[{ key = "0x01", value = "0x20" }]"#,
+            ],
+            // A value and map entries for the same slot.
+            [r#"my::map="1""#, r#"my::map=[{ key = "0x01", value = "0x10" }]"#],
+        ] {
+            assert!(load_init_storage_values(&entries).is_err(), "{entries:?} should be rejected");
+        }
     }
 
     #[test]

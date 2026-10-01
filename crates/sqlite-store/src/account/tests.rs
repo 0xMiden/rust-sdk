@@ -854,7 +854,7 @@ async fn account_note_tags_come_from_native_account_addresses() -> anyhow::Resul
     assert_eq!(store.get_account_note_tags().await?.len(), expected.len());
 
     // The store does not keep the account note tags.
-    assert!(store.get_stored_note_tags().await?.is_empty());
+    assert!(store.get_note_tags().await?.is_empty());
     assert_eq!(
         store.get_unique_note_tags().await?,
         expected.iter().map(|(tag, _)| *tag).collect::<BTreeSet<_>>()
@@ -926,7 +926,7 @@ async fn unique_note_tags_merge_stored_and_account_tags() -> anyhow::Result<()> 
     };
     assert!(store.add_note_tag(subscription_record).await?);
 
-    let stored = store.get_stored_note_tags().await?;
+    let stored = store.get_note_tags().await?;
     assert_eq!(stored.len(), 2);
     assert!(stored.contains(&user_record));
     assert!(stored.contains(&subscription_record));
@@ -965,7 +965,7 @@ async fn add_note_tag_rejects_account_source() -> anyhow::Result<()> {
         .unwrap_err();
     assert!(matches!(err, StoreError::AccountNoteTagNotStorable(id) if id == untracked_id));
 
-    assert!(store.get_stored_note_tags().await?.is_empty());
+    assert!(store.get_note_tags().await?.is_empty());
     assert_eq!(account_note_tag_set(&store).await?, BTreeSet::from([(account_tag, account_id)]));
 
     Ok(())

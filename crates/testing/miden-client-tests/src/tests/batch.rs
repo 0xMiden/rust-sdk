@@ -302,7 +302,7 @@ async fn apply_transaction_rejects_account_note_tag() {
             .to_commitment(),
         commitment_before,
     );
-    assert!(store.get_stored_note_tags().await.unwrap().is_empty());
+    assert!(store.get_note_tags().await.unwrap().is_empty());
     assert_eq!(
         store.get_account_note_tags().await.unwrap(),
         vec![NoteTagRecord::with_account_source(account_tag, account_id)],

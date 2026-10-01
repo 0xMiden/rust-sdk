@@ -579,23 +579,44 @@ pub trait Store: Send + Sync {
     // --------------------------------------------------------------------------------------------
 
     /// Returns the stored note tag records that the client is interested in.
-    async fn get_stored_note_tags(&self) -> Result<Vec<NoteTagRecord>, StoreError>;
+    ///
+    /// The result does not contain the records of [`Self::get_account_note_tags`].
+    async fn get_note_tags(&self) -> Result<Vec<NoteTagRecord>, StoreError>;
 
     /// Returns the note tag records of the tracked native accounts.
     ///
-    /// The store does not keep these records. It derives them from the addresses of the native
-    /// accounts, with [`Address::to_note_tag`]. Each record has a
+    /// The store does not keep these records. This method derives them from the addresses of the
+    /// native accounts, with [`Address::to_note_tag`]. Each record has a
     /// [`NoteTagSource::Account`](crate::sync::NoteTagSource::Account) source. Two addresses of one
     /// account with the same tag give one record. Watched accounts give no records.
-    async fn get_account_note_tags(&self) -> Result<Vec<NoteTagRecord>, StoreError>;
+    async fn get_account_note_tags(&self) -> Result<Vec<NoteTagRecord>, StoreError> {
+        let mut tags = BTreeSet::new();
+        for account_id in self.get_account_ids().await? {
+            let is_native = self
+                .get_minimal_partial_account(account_id)
+                .await?
+                .is_some_and(|record| !record.is_watched());
+            if !is_native {
+                continue;
+            }
+            for address in self.get_addresses_by_account_id(account_id).await? {
+                tags.insert((address.to_note_tag(), account_id));
+            }
+        }
+
+        Ok(tags
+            .into_iter()
+            .map(|(tag, account_id)| NoteTagRecord::with_account_source(tag, account_id))
+            .collect())
+    }
 
     /// Returns the unique note tags (without source) that the client is interested in.
     ///
-    /// The result contains the tags of [`Self::get_stored_note_tags`] and of
+    /// The result contains the tags of [`Self::get_note_tags`] and of
     /// [`Self::get_account_note_tags`].
     async fn get_unique_note_tags(&self) -> Result<BTreeSet<NoteTag>, StoreError> {
         let mut tags: BTreeSet<NoteTag> =
-            self.get_stored_note_tags().await?.into_iter().map(|r| r.tag).collect();
+            self.get_note_tags().await?.into_iter().map(|r| r.tag).collect();
         tags.extend(self.get_account_note_tags().await?.into_iter().map(|r| r.tag));
         Ok(tags)
     }

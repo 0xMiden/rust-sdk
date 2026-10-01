@@ -31,7 +31,7 @@ impl<AUTH> Client<AUTH> {
     /// the client and don't need to be added here. That is, notes for managed accounts will be
     /// retrieved automatically by the client when syncing.
     pub async fn get_note_tags(&self) -> Result<Vec<NoteTagRecord>, ClientError> {
-        let mut tags = self.store.get_stored_note_tags().await?;
+        let mut tags = self.store.get_note_tags().await?;
         tags.extend(self.store.get_account_note_tags().await?);
         Ok(tags)
     }

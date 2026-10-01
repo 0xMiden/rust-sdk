@@ -221,7 +221,7 @@ impl<AUTH> Client<AUTH> {
     async fn backfill_candidate_tags(&self) -> Result<BTreeSet<NoteTag>, ClientError> {
         let mut tags: BTreeSet<NoteTag> = self
             .store
-            .get_stored_note_tags()
+            .get_note_tags()
             .await?
             .into_iter()
             .filter(|record| matches!(record.source, NoteTagSource::User))

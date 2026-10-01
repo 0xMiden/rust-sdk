@@ -81,6 +81,8 @@ message TransactionRequest {
   primitives.Word auth_arg = 14;
   primitives.Word fee_conversion_salt = 15;
   repeated note.NoteScript expected_ntx_scripts = 16;
+  // New code of the executing account.
+  account.AccountCodeUpgrade account_code_upgrade = 17;
 }
 
 // Arguments of one input note.

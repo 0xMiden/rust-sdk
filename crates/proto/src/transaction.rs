@@ -16,7 +16,7 @@ use miden_client::transaction::{
     TransactionStatus,
 };
 use miden_objects::DecodeMessageExt;
-use miden_protocol::account::{StorageMapKey, StorageSlotName};
+use miden_protocol::account::{AccountCodeUpgrade, StorageMapKey, StorageSlotName};
 use miden_protocol::crypto::merkle::store::MerkleStore;
 use miden_protocol::note::{Note, NoteDetails, NoteId, NoteRecipient, NoteTag, PartialNote};
 use miden_protocol::transaction::{InputNote, TransactionScript};
@@ -197,6 +197,7 @@ impl ProtobufValue for TransactionRequest {
             auth_arg: self.auth_arg().map(Into::into),
             fee_conversion_salt: self.fee_conversion_salt().map(Into::into),
             expected_ntx_scripts: self.expected_ntx_scripts().iter().map(Into::into).collect(),
+            account_code_upgrade: self.account_code_upgrade().map(Into::into),
         }
     }
 
@@ -257,6 +258,10 @@ impl ProtobufValue for TransactionRequest {
             .into_iter()
             .map(DecodeMessageExt::decode_and_verify)
             .collect::<Result<Vec<_>, _>>()?;
+        let account_code_upgrade: Option<AccountCodeUpgrade> = request
+            .account_code_upgrade
+            .map(DecodeMessageExt::decode_and_verify)
+            .transpose()?;
 
         // BUILDING
         // ----------------------------------------------------------------------------------------
@@ -286,6 +291,7 @@ impl ProtobufValue for TransactionRequest {
         builder = builder
             .expected_output_recipients(expected_output_recipients)
             .expected_future_notes(expected_future_notes)
+            .extend_advice_map(advice_map)
             .extend_merkle_store(merkle_store.inner_nodes())
             .foreign_accounts(foreign_accounts)
             .expected_ntx_scripts(expected_ntx_scripts);
@@ -304,11 +310,11 @@ impl ProtobufValue for TransactionRequest {
         if let Some(salt) = fee_conversion_salt {
             builder = builder.fee_conversion_salt(salt);
         }
+        if let Some(account_code_upgrade) = account_code_upgrade {
+            builder = builder.account_code_upgrade(account_code_upgrade.into_code());
+        }
 
-        let mut request =
-            builder.build().map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))?;
-        *request.advice_map_mut() = advice_map;
-        Ok(request)
+        builder.build().map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))
     }
 }
 
@@ -554,6 +560,7 @@ mod tests {
     use miden_protocol::account::auth::{AuthScheme, PublicKeyCommitment};
     use miden_protocol::account::{
         AccountBuilder,
+        AccountCode,
         AccountId,
         AccountType,
         StorageMapKey,
@@ -632,6 +639,7 @@ mod tests {
             .script_arg(rng.draw_word())
             .auth_arg(rng.draw_word())
             .expected_ntx_scripts(vec![notes.pop().unwrap().recipient().script().clone()])
+            .account_code_upgrade(AccountCode::mock())
             .build()
             .unwrap();
 

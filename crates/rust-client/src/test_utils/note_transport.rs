@@ -254,12 +254,6 @@ impl FaultyNoteTransportApi {
         }
     }
 
-    /// Reset the fail-counter to `n`; subsequent `send_note_with_proof` calls fail until the
-    /// counter reaches zero.
-    pub fn fail_next_n(&self, n: usize) {
-        self.fail_next.store(n, Ordering::SeqCst);
-    }
-
     /// Total `send_note_with_proof` calls observed (success + failure).
     pub fn send_attempts(&self) -> usize {
         self.send_attempts.load(Ordering::SeqCst)

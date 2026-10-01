@@ -981,7 +981,6 @@ impl FromStr for Network {
 
 impl Network {
     /// Converts the Network variant to its corresponding RPC endpoint string
-    #[allow(dead_code)]
     pub fn to_rpc_endpoint(&self) -> String {
         match self {
             Network::Custom(custom) => custom.clone(),

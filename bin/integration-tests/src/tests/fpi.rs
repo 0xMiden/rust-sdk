@@ -555,11 +555,16 @@ async fn standard_fpi(
     client2.wait_for_blocks_no_sync(2).await?;
 
     // Second client should be able to submit a transaction Without being synced to latest state.
-    // `TestClient::submit_new_transaction` syncs first, so this folds in the funding note and then
-    // calls the wrapped client directly. The wrapped client does not repeat a rejected submission,
-    // so the funding note must be committed first.
-    let tx_request = client2.fund_request_after_commit(native_account.id(), tx_request).await?;
-    let _ = (*client2).submit_new_transaction(native_account.id(), tx_request).await?;
+    // `TestClient::submit_new_transaction` and `TestClient::execute_transaction` sync first, so
+    // this executes with the wrapped client. The node can reject the transaction until it knows the
+    // funding note, so the submission repeats until the node accepts it.
+    let tx_request = client2.fund_request(native_account.id(), tx_request);
+    let tx_result = (*client2).execute_transaction(native_account.id(), tx_request).await?;
+    let proven_transaction = client2.prove_transaction(&tx_result).await?;
+    let submission_height = client2
+        .submit_proven_transaction_retrying(proven_transaction, &tx_result)
+        .await?;
+    client2.apply_transaction(&tx_result, submission_height).await?;
 
     // After the transaction the foreign account should be cached (for public accounts only)
     if account_type == AccountType::Public {

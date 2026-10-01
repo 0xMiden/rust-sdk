@@ -152,9 +152,11 @@ folded into it, so that one transaction deploys the account, funds it and does t
 test's work. `TestClient::submit_new_transaction` does the folding. The funding service answers
 before its funding transaction reaches the node, so `TestClient::submit_new_transaction` resubmits
 a transaction the node rejects for an unknown funding note. A request going somewhere else needs
-`TestClient::fund_request_after_commit` first, notably a batch, which borrows the client for as long
-as it lives and cannot be resubmitted. That call waits until the node committed the funding note. A test that needs the funding to land in a particular transaction, one asserting on what a
-sync reports for instance, should call `TestClient::take_funding` and consume the note itself.
+`TestClient::fund_request` first and `TestClient::submit_proven_transaction_retrying` to submit it.
+A rejected batch cannot be resubmitted, so an account spends its funding note in an earlier
+transaction before it joins a batch. A test that needs the funding to land in a particular
+transaction, one asserting on what a sync reports for instance, should call
+`TestClient::take_funding` and consume the note itself.
 
 ### Environment variables
 

@@ -153,8 +153,10 @@ impl TestClient {
 
     /// Returns `transaction_request` with `account_id`'s funding note folded in.
     ///
-    /// Only needed for requests not going through [`Self::submit_new_transaction`] — notably a
-    /// batch, which borrows the client, so the note must be taken before the batch is created.
+    /// Only needed for requests not going through [`Self::submit_new_transaction`]. The node can
+    /// reject such a request until it knows the funding note, so submit it with
+    /// [`Self::submit_proven_transaction_retrying`]. Do not use it for a batch. A rejected batch
+    /// cannot be resubmitted.
     #[must_use]
     pub fn fund_request(
         &mut self,

@@ -30,7 +30,15 @@ fn round_trip(status: &TransactionStatus) -> Result<TransactionStatus, ProtoDeco
 }
 ```
 
-An output note state is encoded without the script of its recipient, so a store can keep each script once. The reader passes the script back when it decodes the state:
+An output note state includes the script of its recipient and uses the standard functions:
+
+```rust
+let bytes = encode(note.state());
+let state = decode::<OutputNoteState>(&bytes)?;
+```
+
+A store can omit the script from the state when it keeps each script separately. The reader passes
+the script back when it decodes the state:
 
 ```rust
 let bytes = encode_output_note_state_without_script(note.state());

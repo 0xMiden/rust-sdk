@@ -9,17 +9,15 @@ import "note.proto";
 import "primitives.proto";
 import "client/protocol.proto";
 
-// The state of a note the client produces, without the script of its recipient.
-//
-// The reader supplies the script when it decodes the state. A partial state holds no recipient, so
-// the note details are not known.
-message OutputNoteStateWithoutScript {
+// The state of a note the client produces. A partial state holds no recipient, so the note details
+// are not known.
+message OutputNoteState {
   // The note is expected and its details are not known.
   message ExpectedPartial {}
 
   // The note is expected and its details are known.
   message ExpectedFull {
-    NoteRecipientWithoutScript recipient = 1;
+    OutputNoteRecipient recipient = 1;
   }
 
   // The note is in the chain and its details are not known.
@@ -29,14 +27,14 @@ message OutputNoteStateWithoutScript {
 
   // The note is in the chain and its details are known.
   message CommittedFull {
-    NoteRecipientWithoutScript recipient = 1;
+    OutputNoteRecipient recipient = 1;
     protocol.NoteInclusionProof inclusion_proof = 2;
   }
 
   // The note is consumed.
   message Consumed {
     blockchain.BlockNumber block_height = 1;
-    NoteRecipientWithoutScript recipient = 2;
+    OutputNoteRecipient recipient = 2;
   }
 
   oneof state {
@@ -48,8 +46,9 @@ message OutputNoteStateWithoutScript {
   }
 }
 
-// The recipient of an output note without its script.
-message NoteRecipientWithoutScript {
+// The recipient of an output note. A store can omit the script when it keeps scripts separately.
+message OutputNoteRecipient {
   primitives.Word serial_num = 1;
   note.NoteStorage storage = 2;
+  protocol.NoteScript script = 3;
 }

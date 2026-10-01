@@ -221,6 +221,28 @@ impl InputNoteState {
     ) -> Result<Option<InputNoteState>, NoteRecordError> {
         self.inner().transaction_committed(transaction_id, block_height)
     }
+
+    /// Returns whether the transition from `old_discriminant` to `new_discriminant` is valid.
+    ///
+    /// This is intended to be used to check a note's state transition against the stored state,
+    /// before persisting the new state.
+    pub fn is_valid_transition(old_discriminant: u8, new_discriminant: u8) -> bool {
+        // An invalid note can receive a new inclusion proof, be verified against a later block
+        // header, or be nullified by the network. The first two cases move to a lower discriminant,
+        // so the comparison below does not cover them.
+        if old_discriminant == Self::STATE_INVALID {
+            return matches!(
+                new_discriminant,
+                Self::STATE_UNVERIFIED
+                    | Self::STATE_COMMITTED
+                    | Self::STATE_INVALID
+                    | Self::STATE_CONSUMED_EXTERNAL
+            );
+        }
+
+        // Every other discriminant is ordered along the note lifecycle, which only moves forward.
+        new_discriminant >= old_discriminant
+    }
 }
 
 impl Serializable for InputNoteState {

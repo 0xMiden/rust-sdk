@@ -1291,7 +1291,7 @@ impl StateSync {
     async fn build_patch_update(
         &self,
         account_id: AccountId,
-        local_header: &AccountHeader,
+        previous_header: &AccountHeader,
         details: &AccountDetails,
         block_from: BlockNumber,
         block_to: BlockNumber,
@@ -1323,11 +1323,12 @@ impl StateSync {
             map_info.map_entries,
             vault_info.vault_patch,
             details.code.clone(),
-            local_header.code_commitment(),
+            previous_header.code_commitment(),
         )
         .map_err(StoreError::AccountPatchError)?;
 
         Ok(PublicAccountUpdate::Patch {
+            previous_header: previous_header.clone(),
             new_header: details.header.clone(),
             patch,
         })

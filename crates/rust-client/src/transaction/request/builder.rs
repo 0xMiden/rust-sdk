@@ -29,14 +29,7 @@ use miden_protocol::note::{
 use miden_protocol::transaction::{InputNote, TransactionScript};
 use miden_protocol::vm::AdviceMap;
 use miden_protocol::{Felt, Word};
-use miden_standards::note::{
-    P2idNote,
-    P2ideNote,
-    PswapNote,
-    PswapNoteStorage,
-    SwapNote,
-    UpgradeNote,
-};
+use miden_standards::note::{P2idNote, P2ideNote, PswapNote, PswapNoteStorage, SwapNote};
 
 use super::code_upgrade::account_code_upgrade_script;
 use super::{
@@ -379,6 +372,11 @@ impl TransactionRequestBuilder {
 
     /// Gives `code` to the transaction as the new code of the executing account.
     ///
+    /// The built request adds the serialized code to the transaction advice map. The account
+    /// upgrade procedure reads the code after a transaction script initializes an upgrade with the
+    /// matching code commitment. This method does not initialize the upgrade or change the
+    /// transaction script.
+    ///
     /// Use [`Self::build_account_code_upgrade`] when the transaction only upgrades the code.
     #[must_use]
     pub fn account_code_upgrade(mut self, code: AccountCode) -> Self {
@@ -691,8 +689,8 @@ impl TransactionRequestBuilder {
     /// An upgrade does not change the account storage. The new code must use the same storage
     /// layout as the current code, otherwise the account can become unusable.
     ///
-    /// A network account rejects the script of this request. To upgrade a network account, send it
-    /// an UPGRADE note with [`Self::build_upgrade_note`].
+    /// To upgrade a network account, build an [`UpgradeNote`](crate::note::UpgradeNote) and add it
+    /// with [`Self::own_output_notes`].
     ///
     /// The request uses a custom script and gives it the new code commitment as the script
     /// argument. This function replaces a previously set custom script and script argument.
@@ -710,40 +708,6 @@ impl TransactionRequestBuilder {
             .script_arg(new_code_commitment)
             .account_code_upgrade(code)
             .build()
-    }
-
-    /// Consumes the builder and returns a [`TransactionRequest`] for a transaction that sends an
-    /// UPGRADE note. This request must be executed against the sender account.
-    ///
-    /// - `sender_account_id` is the account that executes the transaction. The authority of the
-    ///   target account must accept this account, for example as the owner in
-    ///   [`AccessControl::Ownable2Step`](crate::account::component::AccessControl::Ownable2Step).
-    /// - `target_account_id` is the public account that consumes the note and upgrades its code.
-    /// - `code` is the new code of the target account. The note carries the code in its
-    ///   attachments.
-    /// - `rng` is the random number generator used to generate the serial number for the created
-    ///   note.
-    ///
-    /// This function cannot be used with a previously set custom script.
-    ///
-    /// # Errors
-    /// - If the target account is not public.
-    /// - If `code` does not fit into the note attachments.
-    pub fn build_upgrade_note(
-        self,
-        sender_account_id: AccountId,
-        target_account_id: AccountId,
-        code: AccountCode,
-        rng: &mut ClientRng,
-    ) -> Result<TransactionRequest, TransactionRequestError> {
-        let upgrade_note = UpgradeNote::builder()
-            .sender(sender_account_id)
-            .target(target_account_id)
-            .code(code)
-            .generate_serial_number(rng)
-            .build()?;
-
-        self.own_output_notes(vec![upgrade_note.into()]).build()
     }
 
     // FINALIZE BUILDER

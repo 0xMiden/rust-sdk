@@ -26,7 +26,7 @@ edition      = "2024"
 license      = "MIT"
 repository   = "https://github.com/0xMiden/rust-sdk"
 rust-version = "1.98.1"
-version      = "0.17.0-rc.4"
+version      = "0.17.0-rc.5"
 
 [profile.dev]
 codegen-units = 16
@@ -37,30 +37,27 @@ opt-level = 1
 
 [workspace.dependencies]
 # Workspace crates
-miden-client                   = { default-features = false, path = "crates/rust-client", version = "0.17.0-rc.4" }
-miden-client-integration-tests = { default-features = false, path = "bin/integration-tests", version = "0.17.0-rc.4" }
-miden-client-sqlite-store      = { default-features = false, path = "crates/sqlite-store", version = "0.17.0-rc.4" }
+miden-client                   = { default-features = false, path = "crates/rust-client", version = "0.17.0-rc.5" }
+miden-client-integration-tests = { default-features = false, path = "bin/integration-tests", version = "0.17.0-rc.5" }
+miden-client-sqlite-store      = { default-features = false, path = "crates/sqlite-store", version = "0.17.0-rc.5" }
 
 # Miden protocol dependencies
-miden-agglayer  = { default-features = false, version = "=0.17.0-rc.8" }
-miden-objects   = { default-features = false, version = "=0.17.0-rc.8" }
-miden-protocol  = { default-features = false, version = "=0.17.0-rc.8" }
-miden-standards = { default-features = false, version = "=0.17.0-rc.8" }
-miden-testing   = { default-features = false, version = "=0.17.0-rc.8" }
-miden-tx        = { default-features = false, version = "=0.17.0-rc.8" }
-miden-tx-batch  = { default-features = false, version = "=0.17.0-rc.8" }
+miden-agglayer  = { default-features = false, version = "=0.17.0-rc.9" }
+miden-objects   = { default-features = false, version = "=0.17.0-rc.9" }
+miden-protocol  = { default-features = false, version = "=0.17.0-rc.9" }
+miden-standards = { default-features = false, version = "=0.17.0-rc.9" }
+miden-testing   = { default-features = false, version = "=0.17.0-rc.9" }
+miden-tx        = { default-features = false, version = "=0.17.0-rc.9" }
+miden-tx-batch  = { default-features = false, version = "=0.17.0-rc.9" }
 
 # Miden node dependencies
-miden-node-proto-build = { default-features = false, git = "https://github.com/0xMiden/node", rev = "7012fa418cef4845a8b58b6c559a4813bd63d040" } # TODO: switch to crates.io release once available
+miden-node-proto-build = { default-features = false, version = "0.17.0-rc.4" }
 
-# Miden debug dependency
-miden-assembly-syntax = { default-features = false, version = "0.34" }
-miden-debug = { default-features = false, features = [
-  "dap",
-  "std",
-], git = "https://github.com/0xMiden/miden-debug", rev = "0062c35003630ee0e7e0a8270c44df7bb1eeecf7" } # TODO: switch to crates.io release once available
-miden-mast-package = { default-features = false, version = "0.34" }
-miden-processor = { default-features = false, version = "0.34" }
+# Miden VM dependencies
+miden-assembly-syntax = { default-features = false, version = "0.35" }
+miden-debug           = { default-features = false, features = ["dap", "std"], version = "0.18.0" }
+miden-mast-package    = { default-features = false, version = "0.35" }
+miden-processor       = { default-features = false, version = "0.35" }
 
 # External dependencies
 anyhow             = { default-features = false, version = "1.0" }
@@ -90,12 +87,6 @@ tonic              = { default-features = false, version = "0.14" }
 tracing            = { version = "0.1" }
 tracing-subscriber = { default-features = false, version = "0.3" }
 uuid               = { version = "1.10" }
-
-# `miden-node-proto-build` takes `miden-objects` from a protocol git branch that no longer exists.
-# This patch replaces it with the crates.io release that the workspace uses.
-# TODO: remove the patch once the node revision uses the crates.io release.
-[patch."https://github.com/0xMiden/protocol.git"]
-miden-objects = { version = "=0.17.0-rc.8" }
 
 # Lints are set to warn for development, which are promoted to errors in CI.
 [workspace.lints.clippy]

@@ -26,7 +26,7 @@ use miden_client::assembly::CodeBuilder;
 use miden_client::asset::{Asset, FungibleAsset};
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;
-use miden_client::note::{AccountCodeUpgradeAttachment, Note, NoteType};
+use miden_client::note::{AccountCodeUpgradeAttachment, Note, NoteType, UpgradeNote};
 use miden_client::testing::common::create_test_store_path;
 use miden_client::testing::mock::{MockClient, MockRpcApi};
 use miden_client::testing::standards::account_component::MockProceduresComponent;
@@ -338,8 +338,16 @@ async fn send_upgrade_note(
     target: &Account,
     code: &AccountCode,
 ) -> Note {
+    let upgrade_note = UpgradeNote::builder()
+        .sender(sender.id())
+        .target(target.id())
+        .code(code.clone())
+        .generate_serial_number(client.rng())
+        .build()
+        .unwrap();
     let request = TransactionRequestBuilder::new()
-        .build_upgrade_note(sender.id(), target.id(), code.clone(), client.rng())
+        .own_output_notes([upgrade_note.into()])
+        .build()
         .unwrap();
     let [note]: [Note; 1] = request.expected_output_own_notes().try_into().unwrap();
 

@@ -217,15 +217,18 @@ let request = TransactionRequestBuilder::new().build_account_code_upgrade(new_co
 client.submit_new_transaction(account_id, request).await?;
 ```
 
-A network account cannot run this transaction, because its auth procedure rejects transaction scripts that it does not allowlist. Its owner sends it an upgrade note instead. The network account must allowlist `UpgradeNote::script_root()`, and its `Authority` must accept the sender, for example `AccessControl::Ownable2Step` with the sender as owner. The node consumes the note with a network transaction:
+A network account gets its code upgraded through an upgrade note that its owner sends to it. The network account must allowlist `UpgradeNote::script_root()`, and its `Authority` must accept the sender, for example `AccessControl::Ownable2Step` with the sender as owner. The node consumes the note with a network transaction:
 
 ```rust
-let request = TransactionRequestBuilder::new().build_upgrade_note(
-    owner_id,
-    network_account_id,
-    new_code,
-    client.rng(),
-)?;
+let upgrade_note = UpgradeNote::builder()
+    .sender(owner_id)
+    .target(network_account_id)
+    .code(new_code)
+    .generate_serial_number(client.rng())
+    .build()?;
+let request = TransactionRequestBuilder::new()
+    .own_output_notes([upgrade_note.into()])
+    .build()?;
 client.submit_new_transaction(owner_id, request).await?;
 ```
 

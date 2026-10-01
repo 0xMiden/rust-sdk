@@ -183,8 +183,16 @@ async fn network_account_code_upgrade_via_upgrade_note(
         "the upgraded code must be different from the current code"
     );
 
+    let upgrade_note = UpgradeNote::builder()
+        .sender(owner.id())
+        .target(network_account.id())
+        .code(upgraded_code.clone())
+        .generate_serial_number(client.rng())
+        .build()
+        .context("failed to build the upgrade note")?;
     let request = TransactionRequestBuilder::new()
-        .build_upgrade_note(owner.id(), network_account.id(), upgraded_code.clone(), client.rng())
+        .own_output_notes([upgrade_note.into()])
+        .build()
         .context("failed to build the upgrade note request")?;
     let notes = request.expected_output_own_notes();
     let [note] = notes.as_slice() else {

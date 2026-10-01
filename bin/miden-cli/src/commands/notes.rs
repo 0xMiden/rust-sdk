@@ -272,15 +272,8 @@ async fn show_note<AUTH: Keystore + Sync>(
     let assets = assets.iter();
 
     for asset in assets {
-        let (asset_type, faucet, amount) = match asset.as_fungible() {
-            Some(fungible_asset) => {
-                let (faucet, amount) =
-                    resolver.format_fungible_asset(client, &fungible_asset).await?;
-                ("Fungible Asset", faucet, amount)
-            },
-            None => ("Non Fungible Asset", asset.faucet_id().prefix().to_hex(), 1.0.to_string()),
-        };
-        table.add_row(vec![asset_type, &faucet, &amount.clone()]);
+        let formatted = resolver.format_asset(client, asset).await?;
+        table.add_row(vec![formatted.type_label(), &formatted.faucet, &formatted.amount]);
     }
     println!("{table}");
 

@@ -5,7 +5,6 @@ use std::string::{String, ToString};
 use std::vec::Vec;
 
 use miden_client::Word;
-use miden_client::account::AccountId;
 use miden_client::note::ToInputNoteCommitments;
 use miden_client::store::{StoreError, TransactionFilter, TransactionFilterQuery};
 use miden_client::transaction::{
@@ -52,8 +51,10 @@ const TRANSACTIONS_BASE_QUERY: &str = "SELECT \
 ///
 /// The ids of [`TransactionFilter::Ids`] are bound as one `rarray(?)` value, so the SQL text stays
 /// constant for any number of ids.
-fn transaction_filter_to_query(filter: &TransactionFilter) -> (String, Vec<Box<dyn ToSql>>) {
-    match filter {
+fn transaction_filter_to_query(
+    filter: &TransactionFilter,
+) -> Result<(String, Vec<Box<dyn ToSql>>), StoreError> {
+    let query = match filter {
         TransactionFilter::All => (TRANSACTIONS_BASE_QUERY.to_string(), vec![]),
         TransactionFilter::Uncommitted => (
             format!(
@@ -64,62 +65,35 @@ fn transaction_filter_to_query(filter: &TransactionFilter) -> (String, Vec<Box<d
         ),
         TransactionFilter::Ids(ids) => (
             format!("{TRANSACTIONS_BASE_QUERY} WHERE tx.id IN rarray(?)"),
-            vec![Box::new(blob_array(ids))],
+            vec![Box::new(blob_array(ids)) as Box<dyn ToSql>],
         ),
         TransactionFilter::Query(query) => transaction_query_to_sql(query),
-    }
+        // `TransactionFilter` is `#[non_exhaustive]`, so a new variant must not compile silently
+        // into this store without an SQL mapping.
+        _ => {
+            return Err(StoreError::QueryError(
+                "unsupported transaction filter variant".to_string(),
+            ));
+        },
+    };
+    Ok(query)
 }
 
 /// Returns the query for a [`TransactionFilterQuery`], and the values it binds.
 ///
-/// The account ID and the creation time are read from fixed positions of the serialized details, so
-/// the query does not decode the rows it skips.
+/// The status is the only part of the query that maps to a table column. The account ID and the
+/// creation time are fields of the proto-encoded details blob, so [`SqliteStore::get_transactions`]
+/// filters by account, orders by creation time, and applies the limit in Rust after it decodes each
+/// row.
 fn transaction_query_to_sql(query: &TransactionFilterQuery) -> (String, Vec<Box<dyn ToSql>>) {
-    let mut conditions = Vec::new();
-    let mut params: Vec<Box<dyn ToSql>> = Vec::new();
-
-    if let Some(account_id) = query.account_id {
-        // The account ID is the first field of the serialized details and has a fixed length.
-        conditions.push(format!("substr(tx.details, 1, {}) = ?", AccountId::SERIALIZED_SIZE));
-        params.push(Box::new(account_id.to_bytes()));
-    }
     // The status is written into the SQL text and not bound, so that a filter on pending
     // transactions can use the partial index on them.
-    if let Some(status) = query.status {
-        conditions.push(format!("tx.status_variant = {}", status as u8));
-    }
-
-    let where_clause = if conditions.is_empty() {
-        String::new()
-    } else {
-        format!(" WHERE {}", conditions.join(" AND "))
-    };
-    let limit_clause = match query.limit {
-        Some(limit) => {
-            params.push(Box::new(limit));
-            " LIMIT ?"
-        },
-        None => "",
+    let where_clause = match query.status {
+        Some(status) => format!(" WHERE tx.status_variant = {}", status as u8),
+        None => String::new(),
     };
 
-    let sql = format!(
-        "{TRANSACTIONS_BASE_QUERY}{where_clause} ORDER BY {}, tx.id DESC{limit_clause}",
-        creation_timestamp_order_sql()
-    );
-
-    (sql, params)
-}
-
-/// Returns the `ORDER BY` terms that sort transactions from the newest to the oldest.
-///
-/// The creation timestamp is a little-endian `u64` at the end of the serialized details. One term
-/// per byte compares the bytes from the most significant to the least significant one, which is the
-/// order of the numbers they encode.
-fn creation_timestamp_order_sql() -> String {
-    (1..=size_of::<u64>())
-        .map(|byte| format!("substr(tx.details, -{byte}, 1) DESC"))
-        .collect::<Vec<_>>()
-        .join(", ")
+    (format!("{TRANSACTIONS_BASE_QUERY}{where_clause}"), Vec::new())
 }
 
 // TRANSACTIONS
@@ -131,9 +105,10 @@ impl SqliteStore {
         conn: &mut Connection,
         filter: &TransactionFilter,
     ) -> Result<Vec<TransactionRecord>, StoreError> {
-        let (query, params) = transaction_filter_to_query(filter);
+        let (query, params) = transaction_filter_to_query(filter)?;
 
-        conn.prepare(&query)
+        let mut records = conn
+            .prepare(&query)
             .into_store_error()?
             .query_map(rusqlite::params_from_iter(params), |row| {
                 Ok((
@@ -153,7 +128,28 @@ impl SqliteStore {
                     status: proto::decode(&status)?,
                 })
             })
-            .collect::<Result<Vec<TransactionRecord>, _>>()
+            .collect::<Result<Vec<TransactionRecord>, StoreError>>()?;
+
+        // The account ID, the creation time, and the limit are not table columns, so they are
+        // applied after each row is decoded. Only the query filter uses them.
+        if let TransactionFilter::Query(query) = filter {
+            if let Some(account_id) = query.account_id {
+                records.retain(|record| record.details.account_id == account_id);
+            }
+            // Order the transactions from the newest to the oldest. The transaction ID breaks a tie
+            // between equal creation times, so the order is stable.
+            records.sort_by(|a, b| {
+                b.details
+                    .creation_timestamp
+                    .cmp(&a.details.creation_timestamp)
+                    .then_with(|| b.id.to_bytes().cmp(&a.id.to_bytes()))
+            });
+            if let Some(limit) = query.limit {
+                records.truncate(limit as usize);
+            }
+        }
+
+        Ok(records)
     }
 
     /// Inserts a transaction and updates the current state based on the `tx_result` changes.
@@ -394,7 +390,7 @@ mod tests {
     fn uncommitted_is_served_by_the_pending_transactions_index() {
         let conn = create_test_connection(&[]);
 
-        let (query, _) = transaction_filter_to_query(&TransactionFilter::Uncommitted);
+        let (query, _) = transaction_filter_to_query(&TransactionFilter::Uncommitted).unwrap();
         let plan = query_plan(&conn, &query).join("\n");
 
         // Every entry of the partial index is a pending transaction, so the search never touches a

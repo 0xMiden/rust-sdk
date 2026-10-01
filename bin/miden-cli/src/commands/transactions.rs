@@ -42,8 +42,10 @@ use crate::{Parser, create_dynamic_table, get_transaction_with_id_prefix};
 /// Placeholder shown for a field that the client can't fill in for the transaction at hand.
 const NO_VALUE: &str = "-";
 
-/// Placeholder shown instead of the ID of a consumed note the client can't resolve.
-const PRIVATE_NOTE: &str = "<private>";
+/// Placeholder shown instead of the ID of a consumed note the client does not track. A consumed
+/// note is recorded only by its nullifier. If the client does not track the note, its ID cannot be
+/// recovered from the nullifier.
+const UNTRACKED_NOTE: &str = "<untracked>";
 
 #[derive(Clone, Debug, ValueEnum)]
 pub enum TransactionStatusFilter {
@@ -238,7 +240,7 @@ async fn print_input_notes<AUTH: Keystore + Sync>(
     for nullifier in &nullifiers {
         let Some(record) = records.get(nullifier) else {
             table.add_row(vec![
-                PRIVATE_NOTE,
+                UNTRACKED_NOTE,
                 &nullifier.to_hex(),
                 NO_VALUE,
                 NO_VALUE,
@@ -493,12 +495,11 @@ async fn format_asset<AUTH: Keystore + Sync>(
     resolver: &FaucetMetadataResolver,
     asset: &Asset,
 ) -> Result<String, CliError> {
-    Ok(match asset.as_fungible() {
-        Some(fungible_asset) => {
-            let (faucet, amount) = resolver.format_fungible_asset(client, &fungible_asset).await?;
-            format!("{amount} {faucet}")
-        },
-        None => format!("1 {} (non-fungible)", asset.faucet_id().prefix().to_hex()),
+    let formatted = resolver.format_asset(client, asset).await?;
+    Ok(if formatted.is_fungible {
+        format!("{} {}", formatted.amount, formatted.faucet)
+    } else {
+        format!("{} {} (non-fungible)", formatted.amount, formatted.faucet)
     })
 }
 

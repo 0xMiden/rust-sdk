@@ -1,11 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::ParseIntError;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use miden_client::account::component::FungibleFaucet;
 use miden_client::account::{AccountId, FaucetMetadata};
 use miden_client::address::{Address, AddressId, NetworkId};
-use miden_client::asset::{AssetAmount, FungibleAsset};
+use miden_client::asset::{Asset, AssetAmount, FungibleAsset};
 use miden_client::crypto::ecdsa_k256_keccak;
 use miden_client::transaction::{ExecutedTransaction, InputNote};
 use miden_client::utils::{Deserializable, hex_to_bytes};
@@ -215,20 +216,8 @@ pub async fn print_executed_transaction<AUTH>(
         let mut table = create_dynamic_table(&["Asset Type", "Faucet ID", "New Amount"]);
 
         for asset in patch.vault().updated_assets() {
-            match asset.as_fungible() {
-                Some(fungible) => {
-                    let (faucet_fmt, amount_fmt) =
-                        resolver.format_fungible_asset(client, &fungible).await?;
-                    table.add_row(vec!["Fungible Asset", &faucet_fmt, &amount_fmt]);
-                },
-                None => {
-                    table.add_row(vec![
-                        "Non Fungible Asset",
-                        &asset.faucet_id().prefix().to_hex(),
-                        "1",
-                    ]);
-                },
-            }
+            let formatted = resolver.format_asset(client, &asset).await?;
+            table.add_row(vec![formatted.type_label(), &formatted.faucet, &formatted.amount]);
         }
 
         for asset_id in patch.vault().removed_asset_ids() {
@@ -415,6 +404,32 @@ struct FaucetTomlEntry {
 #[derive(Debug)]
 pub struct FaucetMetadataResolver {
     toml: BTreeMap<String, FaucetTomlEntry>,
+    /// Holds the outcome of every faucet lookup for the lifetime of the resolver. It caches misses
+    /// as well as hits, so several assets from the same untracked faucet cause at most one RPC
+    /// fetch.
+    cache: Mutex<BTreeMap<AccountId, Option<FaucetMetadata>>>,
+}
+
+/// An asset formatted for display in a CLI table.
+pub struct FormattedAsset {
+    /// True for a fungible asset. False for a non-fungible asset.
+    pub is_fungible: bool,
+    /// The token symbol when it is known. Otherwise, the faucet address for a fungible asset or the
+    /// faucet prefix for a non-fungible asset.
+    pub faucet: String,
+    /// The token amount for a fungible asset, or "1" for a non-fungible asset.
+    pub amount: String,
+}
+
+impl FormattedAsset {
+    /// Returns the asset type label used in table cells.
+    pub fn type_label(&self) -> &'static str {
+        if self.is_fungible {
+            "Fungible Asset"
+        } else {
+            "Non Fungible Asset"
+        }
+    }
 }
 
 impl FaucetMetadataResolver {
@@ -467,7 +482,10 @@ impl FaucetMetadataResolver {
             parsed.insert(symbol, FaucetTomlEntry { account_id, decimals: entry.decimals });
         }
 
-        Ok(Self { toml: parsed })
+        Ok(Self {
+            toml: parsed,
+            cache: Mutex::new(BTreeMap::new()),
+        })
     }
 
     /// Looks up `(symbol, decimals)` for a faucet using only local sources: the TOML map and the
@@ -493,28 +511,73 @@ impl FaucetMetadataResolver {
         client: &Client<AUTH>,
         faucet_id: AccountId,
     ) -> Result<Option<FaucetMetadata>, CliError> {
+        // 0) in-memory cache. It also holds misses, so an untracked faucet is fetched at most once.
+        // The lock is scoped so the guard drops before the `await` below.
+        {
+            let cache = self.cache.lock().expect("faucet metadata cache mutex is poisoned");
+            if let Some(cached) = cache.get(&faucet_id) {
+                return Ok(cached.clone());
+            }
+        }
+
+        // A transient RPC error is not cached. A later lookup can then retry instead of reading a
+        // cached miss.
+        let resolved = match self.resolve_uncached(client, faucet_id).await {
+            Ok(resolved) => resolved,
+            Err(err) => {
+                tracing::warn!("failed to fetch faucet metadata for {}: {err}", faucet_id.to_hex());
+                return Ok(None);
+            },
+        };
+
+        self.cache
+            .lock()
+            .expect("faucet metadata cache mutex is poisoned")
+            .insert(faucet_id, resolved.clone());
+        Ok(resolved)
+    }
+
+    /// Runs the full lookup without consulting the in-memory cache: TOML → settings store → RPC
+    /// fetch. On RPC success, the result is persisted to the settings store. A failed RPC fetch
+    /// returns an error, so the caller does not cache it as a miss.
+    async fn resolve_uncached<AUTH>(
+        &self,
+        client: &Client<AUTH>,
+        faucet_id: AccountId,
+    ) -> Result<Option<FaucetMetadata>, CliError> {
         // 1) & 2) local sources (TOML + settings store)
         if let Some(meta) = self.resolve_local(client, faucet_id).await? {
             return Ok(Some(meta));
         }
         // 3) RPC fetch
         let setting_key = faucet_metadata_setting_key(faucet_id);
-        match client.fetch_remote_token_metadata(faucet_id).await {
-            Ok(Some(meta)) => {
-                if let Err(err) = client.set_setting(setting_key, meta.clone()).await {
-                    tracing::warn!(
-                        "failed to persist faucet metadata for {}: {err}",
-                        faucet_id.to_hex(),
-                    );
-                }
-                Ok(Some(meta))
-            },
-            Ok(None) => Ok(None),
-            Err(err) => {
-                tracing::warn!("failed to fetch faucet metadata for {}: {err}", faucet_id.to_hex());
-                Ok(None)
-            },
+        let Some(meta) = client.fetch_remote_token_metadata(faucet_id).await? else {
+            return Ok(None);
+        };
+        if let Err(err) = client.set_setting(setting_key, meta.clone()).await {
+            tracing::warn!("failed to persist faucet metadata for {}: {err}", faucet_id.to_hex());
         }
+        Ok(Some(meta))
+    }
+
+    /// Formats an asset for display. A fungible asset is resolved through [`Self::resolve`]. A
+    /// non-fungible asset shows its faucet prefix and an amount of one.
+    pub async fn format_asset<AUTH>(
+        &self,
+        client: &Client<AUTH>,
+        asset: &Asset,
+    ) -> Result<FormattedAsset, CliError> {
+        Ok(match asset.as_fungible() {
+            Some(fungible) => {
+                let (faucet, amount) = self.format_fungible_asset(client, &fungible).await?;
+                FormattedAsset { is_fungible: true, faucet, amount }
+            },
+            None => FormattedAsset {
+                is_fungible: false,
+                faucet: asset.faucet_id().prefix().to_hex(),
+                amount: "1".to_string(),
+            },
+        })
     }
 
     /// Formats a fungible asset using [`Self::resolve`]. On miss, returns `(<bech32 faucet

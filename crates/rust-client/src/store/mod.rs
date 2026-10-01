@@ -902,6 +902,7 @@ pub enum PartialBlockchainFilter {
 
 /// Filters for narrowing the set of transactions returned by the client's store.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum TransactionFilter {
     /// Return all transactions.
     All,

@@ -157,18 +157,16 @@ fn parse_init_storage_value(entry: &str) -> Result<InitStorageData, String> {
     let (name, value) = entry
         .split_once('=')
         .ok_or_else(|| format!("expected `<slot::name>=<value>`, got `{entry}`"))?;
-    // Clap shows only the text of the error, so the text includes the cause.
-    let message = |err: &dyn std::fmt::Display| {
+    let error_message = |err: &dyn std::fmt::Display| {
         format!("invalid --init-storage-value entry for `{name}`: {err}")
     };
 
-    // Parse the value on its own. A single TOML value cannot add more keys to the document below.
-    // `from_toml` checks the name.
-    let value = value.parse::<toml::Value>().map_err(|err| message(&err))?;
+    // Parse the value as TOML
+    let value = value.parse::<toml::Value>().map_err(|err| error_message(&err))?;
     let toml_str = toml::to_string(&toml::Table::from_iter([(name.to_string(), value)]))
-        .map_err(|err| message(&err))?;
+        .map_err(|err| error_message(&err))?;
 
-    InitStorageData::from_toml(&toml_str).map_err(|err| message(&err))
+    InitStorageData::from_toml(&toml_str).map_err(|err| error_message(&err))
 }
 
 // NEW WALLET
@@ -195,10 +193,9 @@ pub struct NewWalletCmd {
     #[arg(short, long)]
     pub init_storage_data_path: Option<PathBuf>,
     /// Sets one init storage value in the form `<slot::name>=<value>`. The name is a storage slot
-    /// name, or a slot name with a `.field` suffix. The value is a TOML value in the same form as
-    /// in an init storage data file: a quoted string, a 4-element string array, an inline table of
-    /// fields, or a list of `{ key, value }` map entries. Repeat the flag to set more values. The
-    /// user will be prompted to provide values for any keys not given.
+    /// name, or a slot name with a `.field` suffix. The value must be a quoted string, a 4-element
+    /// string array, an inline table of fields, or a list of `{ key, value }` map entries. Repeat
+    /// the flag to set more values.
     #[arg(
         long = "init-storage-value",
         value_name = "SLOT=VALUE",
@@ -317,9 +314,9 @@ pub struct NewAccountCmd {
     #[arg(short, long)]
     pub init_storage_data_path: Option<PathBuf>,
     /// Sets one init storage value in the form `<slot::name>=<value>`. The name is a storage slot
-    /// name, or a slot name with a `.field` suffix. The value is a TOML value in the same form as
-    /// in an init storage data file: a quoted string, a 4-element string array, an inline table of
-    /// fields, or a list of `{ key, value }` map entries. Repeat the flag to set more values.
+    /// name, or a slot name with a `.field` suffix. The value must be a quoted string, a 4-element
+    /// string array, an inline table of fields, or a list of `{ key, value }` map entries. Repeat
+    /// the flag to set more values.
     #[arg(
         long = "init-storage-value",
         value_name = "SLOT=VALUE",
@@ -951,28 +948,12 @@ mod tests {
         );
     }
 
-    /// Parses `new-account` arguments with one package and the given extra arguments.
-    fn parse_new_account(extra_args: &[&str]) -> Result<NewAccountCmd, clap::Error> {
-        let args = ["new-account", "-p", "basic-wallet"].iter().chain(extra_args);
-        NewAccountCmd::try_parse_from(args)
-    }
-
-    /// Loads the init storage data from the given `--init-storage-value` entries.
-    fn load_init_storage_values(entries: &[&str]) -> Result<InitStorageData, CliError> {
-        let args: Vec<&str> =
-            entries.iter().flat_map(|entry| ["--init-storage-value", entry]).collect();
-        let cmd = parse_new_account(&args).unwrap();
-        InitStorageDataSource::Values(cmd.init_storage_values)
-            .load()
-            .map(|(data, _)| data)
-    }
-
     #[test]
     fn parse_init_storage_value_accepts_toml_values() {
-        let init_data = parse_init_storage_value(r#"my::slot.field="a=b""#).unwrap();
+        let init_data = parse_init_storage_value(r#"my::slot.field="0x1234""#).unwrap();
         assert_eq!(
             init_data.value_entry(&"my::slot.field".parse().unwrap()),
-            Some(&WordValue::Atomic("a=b".into()))
+            Some(&WordValue::Atomic("0x1234".into()))
         );
 
         let init_data = parse_init_storage_value(r#"my::slot=["1", "2", "3", "4"]"#).unwrap();
@@ -1036,6 +1017,22 @@ mod tests {
             .expect("the --init-storage-value values should satisfy every field of the slot");
 
         assert_eq!(components[0].storage_slots()[0].value(), Word::from([1u32, 2, 3, 4]));
+    }
+
+    /// Parses `new-account` arguments with one package and the given extra arguments.
+    fn parse_new_account(extra_args: &[&str]) -> Result<NewAccountCmd, clap::Error> {
+        let args = ["new-account", "-p", "basic-wallet"].iter().chain(extra_args);
+        NewAccountCmd::try_parse_from(args)
+    }
+
+    /// Loads the init storage data from the given `--init-storage-value` entries.
+    fn load_init_storage_values(entries: &[&str]) -> Result<InitStorageData, CliError> {
+        let args: Vec<&str> =
+            entries.iter().flat_map(|entry| ["--init-storage-value", entry]).collect();
+        let cmd = parse_new_account(&args).unwrap();
+        InitStorageDataSource::Values(cmd.init_storage_values)
+            .load()
+            .map(|(data, _)| data)
     }
 
     fn test_fungible_faucet_component() -> AccountComponent {

@@ -12,8 +12,7 @@
 
 ### Features
 
-* [FEATURE][cli] Added the repeatable `--init-storage-value <slot::name>=<value>` flag to `new-wallet` and `new-account`. Each use sets one init storage value. The flag cannot be combined with `--init-storage-data-path`.
-
+* [FEATURE][cli] Added the repeatable `--init-storage-value <slot::name>=<value>` flag to `new-wallet` and `new-account`. Each use sets one init storage value. The flag cannot be combined with `--init-storage-data-path` ([#2641](https://github.com/0xMiden/rust-sdk/pull/2641).
 
 ## 0.17.0-rc.4 (2026-09-26)
 
@@ -1212,7 +1211,7 @@
 
 * Added ability to start the client in debug mode (#283).
 
-## 0.2.0 (2024-04-14) 
+## 0.2.0 (2024-04-14)
 
 * Added an `init` command to the CLI.
 * Added support for on-chain accounts.

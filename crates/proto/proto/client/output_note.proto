@@ -24,13 +24,13 @@ message OutputNoteStateWithoutScript {
 
   // The note is in the chain and its details are not known.
   message CommittedPartial {
-    protocol.NoteInclusionProof inclusion_proof =1;
+    protocol.NoteInclusionProof inclusion_proof = 1;
   }
 
   // The note is in the chain and its details are known.
   message CommittedFull {
     NoteRecipientWithoutScript recipient = 1;
-    protocol.NoteInclusionProof inclusion_proof =2;
+    protocol.NoteInclusionProof inclusion_proof = 2;
   }
 
   // The note is consumed.

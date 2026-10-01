@@ -1,18 +1,32 @@
 # Changelog
 
-## Unreleased
+## 0.17.0-rc.5 (2026-10-01)
 
 ### Breaking Changes
 
+* [BREAKING][type][rust] Sync endpoints now report a `FutureBlock` error when the requested block is ahead of the node's chain tip. Endpoint errors now match the node's error codes, including new transaction submission errors, and unused error variants were removed ([#2383](https://github.com/0xMiden/rust-sdk/pull/2623)).
+* [BREAKING][arch][store] The SQLite store writes its structured values as protobuf messages instead of the `Serializable` encoding: transaction details and status, input and output note states, account code, note and transaction scripts, note assets, attachments, storage and metadata, block headers, partial blockchain peaks, and account witnesses. Requires a new client database ([#2624](https://github.com/0xMiden/rust-sdk/pull/2624), [#2647](https://github.com/0xMiden/rust-sdk/pull/2647)).
 * [BREAKING][param][rust] The `Store` trait requires five account-witness registry methods: `track_account_witness`, `untrack_account_witness`, `tracked_account_witnesses`, `get_account_witness` and `update_account_witness`. They have no default bodies, so every out-of-tree implementation must provide them ([#2476](https://github.com/0xMiden/rust-sdk/pull/2476)).
+* [BREAKING][arch][rust] Updated protocol dependencies to the `0.17.0-rc.9` pre-release and pinned them to that exact version (`=0.17.0-rc.9`), Miden VM to `0.35`, `miden-debug` to `0.18.0` and `miden-node-proto-build` to `0.17.0-rc.4` ([#2651](https://github.com/0xMiden/rust-sdk/pull/2651)).
+* [BREAKING][api][rust,cli] Updated the node, remote prover and note transport clients to the v1 gRPC APIs from node `0.17.0-rc.4`. Replaced `Client::send_private_note` and `Client::send_private_note_with_block_hint` with `Client::send_private_note_with_proof`. Note transport submissions now require a `NoteInclusionProof` for a committed note ([#2651](https://github.com/0xMiden/rust-sdk/pull/2651)).
+* [BREAKING][type][rust] `AccountPatch` and `AccountDelta` carry their code as an `AccountCodePatch`. Code in a patch no longer means that the account is new, because a code upgrade also carries code. `AccountPatch::is_full_state` and `Account::try_from(&AccountPatch)` are removed. Use `AccountPatch::try_to_new_account` to build a new account from a creation patch ([#2642](https://github.com/0xMiden/rust-sdk/pull/2642)).
+* [BREAKING][behavior][store] Account code, note scripts and transaction scripts use the hashless MAST serialization of protocol `0.17.0-rc.9`. A store that an earlier version created cannot read them and must be recreated ([#2642](https://github.com/0xMiden/rust-sdk/pull/2642)).
+* [BREAKING][behavior][rust] `TransactionRequest` serializes the new code of an account code upgrade after its other fields, so request bytes that an earlier version wrote do not deserialize ([#2645](https://github.com/0xMiden/rust-sdk/pull/2645)).
+
+### Features
+
+* [FEATURE][rust] Added support for account code upgrades. The store saves the new code when a local transaction or a synced public account update changes the code of an account, also when a large public account syncs through incremental patches. The store rejects a patch whose code does not match the new code commitment. Re-exported `AccountCodePatch`, `AccountCodeUpgrade`, `UpgradeNote`, `AccountCodeUpgradeAttachment`, `AccountCodeUpgradeAttachmentError` and `UpgradeManager` ([#2642](https://github.com/0xMiden/rust-sdk/pull/2642)).
+* [FEATURE][rust] Added `MockRpcApi::add_pending_executed_transaction`, which commits an executed transaction on the mock chain with a dummy proof ([#2642](https://github.com/0xMiden/rust-sdk/pull/2642)).
+* [FEATURE][rust] Added `TransactionRequestBuilder` helpers for account code upgrades. `account_code_upgrade` gives the new code to a transaction whose custom script upgrades the executing account. `build_account_code_upgrade` builds a request that upgrades the code of an account with `UpgradeManager` and `Authority::AuthControlled`. `TransactionRequest::account_code_upgrade` returns the new code of a request ([#2645](https://github.com/0xMiden/rust-sdk/pull/2645)).
 
 ### Enhancements
 
+* [FEATURE][cli] The CLI logs the `.miden` directory it loaded the configuration from, and whether it is the local or the global one, at debug level. Run a command with `RUST_LOG=debug` to see it ([#2648](https://github.com/0xMiden/rust-sdk/pull/2648)).
 * [FEATURE][rust] Added `Client::track_account_witness`, `Client::untrack_account_witness` and `Client::tracked_account_witnesses` to register accounts whose account witness the sync keeps fresh in the store (new `account_witnesses` table). A transaction using a registered account as a foreign account builds its inputs from the store instead of issuing a `GetAccount` request, moving the cost from once per transaction to once per sync ([#2476](https://github.com/0xMiden/rust-sdk/pull/2476)).
 
 ### Fixes
 
-* [FIX][rust] A pending transaction whose ID changed on inclusion is now matched by the account ID and both its initial and final account states, so another transaction from the same initial state no longer marks it as committed ([#2600](https://github.com/0xMiden/rust-sdk/pull/2600)).
+* [FIX][rust] Missing block headers are fetched together with their MMR proof, avoiding a second node request for the same block while building transaction inputs or a chain anchor ([#2634](https://github.com/0xMiden/rust-sdk/issues/2634)).
 
 ## 0.17.0-rc.4 (2026-09-26)
 
@@ -30,6 +44,20 @@
 ### Features
 
 * [FEATURE][cli] Added the mutually exclusive authentication scheme flags `--ecdsa-k256-keccak [PUBLIC_KEY]` and `--falcon512-poseidon2` (aliases `--ecdsa`, `--falcon`) to `new-wallet` and `new-account`. With an ECDSA public key, the account commits to the external key and stores no secret key. ECDSA accepts a `0x`-prefixed compressed or uncompressed SEC1 key. Without a public key, the CLI generates and stores a key of the selected scheme. `keys --commitment` now also accepts the 65-byte uncompressed SEC1 encoding ([#2590](https://github.com/0xMiden/rust-sdk/pull/2590)).
+
+### Breaking Changes
+
+* [BREAKING][removal][rust,cli] Removed `Client::send_private_note`, `Client::send_private_note_with_block_hint`, `NoteTransportClient::send_note` and `NoteTransportClient::send_note_with_block_hint`, which used the note transport network's `SendNote` endpoint. Use `Client::send_private_note_with_proof` and `NoteTransportClient::send_note_with_proof` instead; a private note can only be relayed once its transaction is committed and the sender has synced past it. `send_note_with_proof` takes a validated `TransportNote` and is the only send method custom transports implement. `miden-client notes --send` errors when the stored note has no inclusion proof yet. Pending relay-outbox entries recorded by earlier versions carry no proof and are dropped on load ([#2611](https://github.com/0xMiden/rust-sdk/pull/2611)).
+
+### Breaking Changes
+
+* [BREAKING][behavior][rust] `Client::add_account` and `Client::add_address` return the new `ClientError::AccountTagLimitExceeded` when the client already tracks `Client::MAX_ACCOUNT_TAGS` (128) account tags, the most the note transport accepts in one request ([#2627](https://github.com/0xMiden/rust-sdk/pull/2627)).
+* [BREAKING][behavior][rust] `Client::sync_note_transport` and `Client::fetch_private_notes` return an error when the note transport returns a note that does not decode, whose details do not match its header, or whose tag was not requested. `Client::sync_state` logs the error and continues the chain sync ([#2630](https://github.com/0xMiden/rust-sdk/pull/2630)).
+* [BREAKING][type][rust] Added the `NoteTransportError::InvalidFetchedNote` and `NoteTransportError::UnrequestedTag` variants ([#2630](https://github.com/0xMiden/rust-sdk/pull/2630)).
+
+### Features
+
+* [FEATURE][rust,cli] Added `Client::send_private_note_with_proof` and `NoteTransportClient::send_note_with_proof`, which relay a private note together with its inclusion proof through the note transport network's `SendNoteWithProof` endpoint. The gRPC service verifies the proof before it stores the note, and recipients receive the exact commitment block instead of a hint. `miden-client notes --send` relays the stored note's proof ([#2611](https://github.com/0xMiden/rust-sdk/pull/2611)).
 
 ### Enhancements
 

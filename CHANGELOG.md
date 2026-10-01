@@ -21,6 +21,7 @@
 
 ### Features
 
+* [FEATURE][rust] Added protobuf serialization for `TransactionRequest`. Added the `TransactionRequest::input_notes_args`, `TransactionRequest::explicit_input_notes` and `TransactionRequest::expiration_delta` getters ([#2654](https://github.com/0xMiden/rust-sdk/pull/2654)).
 * [FEATURE][rust] Added support for account code upgrades. The store saves the new code when a local transaction or a synced public account update changes the code of an account, also when a large public account syncs through incremental patches. The store rejects a patch whose code does not match the new code commitment. Re-exported `AccountCodePatch`, `AccountCodeUpgrade`, `UpgradeNote`, `AccountCodeUpgradeAttachment`, `AccountCodeUpgradeAttachmentError` and `UpgradeManager` ([#2642](https://github.com/0xMiden/rust-sdk/pull/2642)).
 * [FEATURE][rust] Added `MockRpcApi::add_pending_executed_transaction`, which commits an executed transaction on the mock chain with a dummy proof ([#2642](https://github.com/0xMiden/rust-sdk/pull/2642)).
 * [FEATURE][rust] Added `TransactionRequestBuilder` helpers for account code upgrades. `account_code_upgrade` gives the new code to a transaction whose custom script upgrades the executing account. `build_account_code_upgrade` builds a request that upgrades the code of an account with `UpgradeManager` and `Authority::AuthControlled`. `TransactionRequest::account_code_upgrade` returns the new code of a request ([#2645](https://github.com/0xMiden/rust-sdk/pull/2645)).

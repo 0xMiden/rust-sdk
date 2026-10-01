@@ -300,8 +300,8 @@ async fn mint_custom_note(
     target_account_id: AccountId,
 ) -> Result<Note> {
     // Prepare transaction
-    let mut random_coin = ChaCha20Rng::seed_from_u64(0);
-    let note = create_custom_note(client, faucet_account_id, target_account_id, &mut random_coin)?;
+    let mut rng = ChaCha20Rng::seed_from_u64(0);
+    let note = create_custom_note(client, faucet_account_id, target_account_id, &mut rng)?;
 
     let transaction_request =
         TransactionRequestBuilder::new().own_output_notes(vec![note.clone()]).build()?;

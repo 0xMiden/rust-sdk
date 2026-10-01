@@ -4,6 +4,7 @@ description            = "Protobuf serialization of miden-client types"
 edition.workspace      = true
 license.workspace      = true
 name                   = "miden-client-proto"
+publish                = true
 repository.workspace   = true
 rust-version.workspace = true
 version.workspace      = true

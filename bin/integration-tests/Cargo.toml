@@ -2,6 +2,7 @@
 authors.workspace      = true
 description            = "Integration Tests for the miden client library"
 edition.workspace      = true
+exclude                = ["foundry-vectors/**"]
 license.workspace      = true
 name                   = "miden-client-integration-tests"
 publish                = true

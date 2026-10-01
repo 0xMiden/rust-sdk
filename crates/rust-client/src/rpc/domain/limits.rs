@@ -73,7 +73,7 @@ impl Deserializable for RpcLimits {
 
 /// Extracts a parameter limit from the proto response for a given endpoint and parameter name.
 fn get_param(
-    proto: &proto::RpcLimits,
+    proto: &proto::GetLimitsResponse,
     endpoint: RpcEndpoint,
     param: &'static str,
 ) -> Result<u32, RpcConversionError> {
@@ -100,10 +100,10 @@ fn get_param(
     Ok(*limit)
 }
 
-impl TryFrom<proto::RpcLimits> for RpcLimits {
+impl TryFrom<proto::GetLimitsResponse> for RpcLimits {
     type Error = RpcConversionError;
 
-    fn try_from(proto: proto::RpcLimits) -> Result<Self, Self::Error> {
+    fn try_from(proto: proto::GetLimitsResponse) -> Result<Self, Self::Error> {
         Ok(Self {
             note_ids_limit: get_param(&proto, RpcEndpoint::GetNotesById, "note_id")?,
             nullifiers_limit: get_param(&proto, RpcEndpoint::SyncNullifiers, "nullifier_prefix")?,
@@ -136,7 +136,7 @@ mod tests {
 
     #[test]
     fn rejects_zero_limits_from_rpc_response() {
-        let mut proto = proto::RpcLimits::default();
+        let mut proto = proto::GetLimitsResponse::default();
 
         proto.endpoints.insert(
             RpcEndpoint::GetNotesById.proto_name().into(),

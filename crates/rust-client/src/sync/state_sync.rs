@@ -1221,7 +1221,7 @@ impl StateSync {
         // `sync_storage_maps` and `sync_account_vault`, even if not needed.
         let public_update = if vault_oversized || any_map_oversized {
             // Some part of the account is oversized — use incremental endpoints.
-            self.build_patch_update(account_id, &details, block_from, proof_block_num)
+            self.build_patch_update(account_id, local_header, &details, block_from, proof_block_num)
                 .await?
         } else {
             // The single response carries the full vault and every map's entries.
@@ -1274,6 +1274,9 @@ impl StateSync {
     /// Builds a [`PublicAccountUpdate::Patch`] by fetching incremental storage map and vault
     /// updates over the synced range and assembling the absolute [`AccountPatch`] from them.
     ///
+    /// `local_header` is the state of the account in the store. If the on-chain code commitment is
+    /// different, the account upgraded its code and the patch carries the new code.
+    ///
     /// # Security
     ///
     /// The RPC layer range-checks only the pagination cursor of the `sync_storage_maps` and
@@ -1288,6 +1291,7 @@ impl StateSync {
     async fn build_patch_update(
         &self,
         account_id: AccountId,
+        local_header: &AccountHeader,
         details: &AccountDetails,
         block_from: BlockNumber,
         block_to: BlockNumber,
@@ -1319,6 +1323,7 @@ impl StateSync {
             map_info.map_entries,
             vault_info.vault_patch,
             details.code.clone(),
+            local_header.code_commitment(),
         )
         .map_err(StoreError::AccountPatchError)?;
 

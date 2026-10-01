@@ -602,7 +602,12 @@ pub trait Store: Send + Sync {
     /// - Storing new MMR authentication nodes.
     /// - Updating the tracked public accounts.
     /// - Storing the protocol configuration the update carries, before the sync height advances.
-    async fn apply_state_sync(&self, state_sync_update: StateSyncUpdate) -> Result<(), StoreError>;
+    ///
+    /// Returns the private accounts that the update locked.
+    async fn apply_state_sync(
+        &self,
+        state_sync_update: StateSyncUpdate,
+    ) -> Result<Vec<AccountId>, StoreError>;
 
     // TRANSPORT
     // --------------------------------------------------------------------------------------------

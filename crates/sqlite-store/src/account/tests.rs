@@ -24,8 +24,15 @@ use miden_client::account::{
 use miden_client::assembly::CodeBuilder;
 use miden_client::asset::{Asset, FungibleAsset, NonFungibleAsset, NonFungibleAssetDetails};
 use miden_client::auth::{AuthSchemeId, AuthSingleSig, PublicKeyCommitment};
-use miden_client::block::AccountWitness;
+use miden_client::block::{AccountWitness, BlockNumber};
+use miden_client::note::NoteUpdateTracker;
 use miden_client::store::{AccountUpdate, ClientAccountType, Store, StoreError};
+use miden_client::sync::{
+    AccountUpdateTracker,
+    PartialBlockchainUpdates,
+    StateSyncUpdate,
+    TransactionUpdateTracker,
+};
 use miden_client::testing::common::{ACCOUNT_ID_REGULAR, create_test_store_path};
 use miden_client::{EMPTY_WORD, Felt, ONE, Serializable, Word, ZERO};
 use miden_protocol::account::{
@@ -1342,6 +1349,22 @@ async fn undo_account_state_deletes_account_entirely() -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn lock_account_on_commitment(
+    store: &SqliteStore,
+    account_id: AccountId,
+    commitment: Word,
+) -> Result<bool, StoreError> {
+    store
+        .interact_with_connection(move |conn| {
+            let tx = conn.transaction().into_store_error()?;
+            let locked =
+                SqliteStore::lock_account_on_unexpected_commitment(&tx, &account_id, &commitment)?;
+            tx.commit().into_store_error()?;
+            Ok(locked)
+        })
+        .await
+}
+
 /// Verifies that `lock_account_on_unexpected_commitment` sets `locked = true` in both the latest
 /// and historical tables so that the lock survives undo/rebuild.
 #[tokio::test]
@@ -1399,14 +1422,7 @@ async fn lock_account_affects_latest_and_historical() -> anyhow::Result<()> {
     // Lock the account with a fake mismatched digest (not matching any historical commitment)
     let fake_digest =
         [Felt::from(999u32), Felt::from(888u32), Felt::from(777u32), Felt::from(666u32)].into();
-    store
-        .interact_with_connection(move |conn| {
-            let tx = conn.transaction().into_store_error()?;
-            SqliteStore::lock_account_on_unexpected_commitment(&tx, &account_id, &fake_digest)?;
-            tx.commit().into_store_error()?;
-            Ok(())
-        })
-        .await?;
+    assert!(lock_account_on_commitment(&store, account_id, fake_digest).await?);
 
     // Latest should be locked
     let (_header, status) = store
@@ -1434,6 +1450,8 @@ async fn lock_account_affects_latest_and_historical() -> anyhow::Result<()> {
     assert_eq!(historical_locked.len(), 1, "Should have 1 historical entry (old nonce-1 state)");
     assert!(historical_locked[0], "Historical nonce-1 should be locked");
 
+    assert!(!lock_account_on_commitment(&store, account_id, fake_digest).await?);
+
     Ok(())
 }
 
@@ -1447,22 +1465,37 @@ async fn lock_account_ignores_a_historical_commitment() -> anyhow::Result<()> {
     let historical_commitment = account.to_commitment();
 
     apply_single_entry_update(&store, &mut account, &map_slot_name, 2).await?;
+    let current_commitment = account.to_commitment();
 
-    store
-        .interact_with_connection(move |conn| {
-            let tx = conn.transaction().into_store_error()?;
-            SqliteStore::lock_account_on_unexpected_commitment(
-                &tx,
-                &account_id,
-                &historical_commitment,
-            )?;
-            tx.commit().into_store_error()?;
-            Ok(())
-        })
-        .await?;
+    assert!(!lock_account_on_commitment(&store, account_id, current_commitment).await?);
+    assert!(!lock_account_on_commitment(&store, account_id, historical_commitment).await?);
 
     let (_, status) = store.get_account_header(account_id).await?.expect("account should exist");
     assert!(!status.is_locked());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn state_sync_returns_newly_locked_accounts() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+    let map_slot_name = StorageSlotName::new("test::lock::outcome").expect("valid slot name");
+    let account = setup_account_with_map(&store, 3, &map_slot_name).await?;
+    let account_id = account.id();
+    let unexpected_commitment =
+        [Felt::from(999u32), Felt::from(888u32), Felt::from(777u32), Felt::from(666u32)].into();
+    let update = StateSyncUpdate::from_parts(
+        BlockNumber::GENESIS,
+        PartialBlockchainUpdates::default(),
+        NoteUpdateTracker::default(),
+        TransactionUpdateTracker::default(),
+        AccountUpdateTracker::new(vec![], vec![(account_id, unexpected_commitment)]),
+        None,
+    );
+
+    let result = store.apply_state_sync(update).await?;
+
+    assert_eq!(result, vec![account_id]);
 
     Ok(())
 }

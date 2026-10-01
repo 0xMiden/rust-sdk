@@ -34,7 +34,7 @@ use miden_client::{AccountError, Felt, Word};
 use miden_protocol::account::{AccountStorageHeader, StorageMapWitness, StorageSlotHeader};
 use miden_protocol::asset::{AssetId, PartialVault};
 use miden_protocol::crypto::merkle::MerkleError;
-use rusqlite::{Connection, OptionalExtension, Transaction, named_params, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use crate::account::rows::{
     query_account_addresses,
@@ -961,32 +961,51 @@ impl SqliteStore {
         Self::apply_account_patch(tx, smt_forest, &init_header, new_header, patch)
     }
 
-    /// Locks the account if the mismatched digest doesn't belong to a previous account state (stale
-    /// data).
+    /// Locks the account if the digest is not a current or historical account commitment.
+    ///
+    /// Returns whether this call locked the account.
     pub(crate) fn lock_account_on_unexpected_commitment(
         tx: &Transaction<'_>,
         account_id: &AccountId,
         mismatched_digest: &Word,
-    ) -> Result<(), StoreError> {
-        // Mismatched digests may be due to stale network data. If the mismatched digest is tracked
-        // in the db and corresponds to the mismatched account, it means we got a past update and
-        // shouldn't lock the account.
-        const LOCK_CONDITION: &str = "WHERE id = :account_id AND NOT EXISTS (SELECT 1 FROM historical_account_headers WHERE id = :account_id AND account_commitment = :digest)";
-        let account_id_bytes = account_id.to_bytes();
-        let digest_bytes = mismatched_digest.to_bytes();
-        let params = named_params! {
-            ":account_id": account_id_bytes,
-            ":digest": digest_bytes
+    ) -> Result<bool, StoreError> {
+        let Some((latest_header, status, _)) =
+            query_latest_account_headers(tx, "id = ?", params![account_id.to_bytes()])?.pop()
+        else {
+            return Err(StoreError::AccountDataNotFound(*account_id));
         };
 
-        let query = format!("UPDATE latest_account_headers SET locked = true {LOCK_CONDITION}");
-        tx.execute(&query, params).into_store_error()?;
+        if status.is_locked() || latest_header.to_commitment() == *mismatched_digest {
+            return Ok(false);
+        }
+
+        let account_id_bytes = account_id.to_bytes();
+        let digest_bytes = mismatched_digest.to_bytes();
+        let is_historical: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM historical_account_headers WHERE id = ?1 AND account_commitment = ?2)",
+                params![&account_id_bytes, &digest_bytes],
+                |row| row.get(0),
+            )
+            .into_store_error()?;
+        if is_historical {
+            return Ok(false);
+        }
+
+        tx.execute(
+            "UPDATE latest_account_headers SET locked = true WHERE id = ?",
+            params![&account_id_bytes],
+        )
+        .into_store_error()?;
 
         // Also lock historical rows so that undo_account_state preserves the lock.
-        let query = format!("UPDATE historical_account_headers SET locked = true {LOCK_CONDITION}");
-        tx.execute(&query, params).into_store_error()?;
+        tx.execute(
+            "UPDATE historical_account_headers SET locked = true WHERE id = ?",
+            params![&account_id_bytes],
+        )
+        .into_store_error()?;
 
-        Ok(())
+        Ok(true)
     }
 
     // HELPERS

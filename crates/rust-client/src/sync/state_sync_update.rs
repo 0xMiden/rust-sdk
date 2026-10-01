@@ -19,9 +19,9 @@ use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrPeaks};
 use miden_protocol::errors::AccountPatchError;
-use miden_protocol::note::{NoteId, Nullifier};
+use miden_protocol::note::{NoteHeader, NoteId, Nullifier};
 use miden_protocol::protocol_config::ProtocolConfig;
-use miden_protocol::transaction::TransactionId;
+use miden_protocol::transaction::{RawOutputNote, TransactionHeader, TransactionId};
 use miden_protocol::{Felt, ONE, Word};
 
 use super::SyncSummary;
@@ -186,7 +186,7 @@ impl From<&StateSyncUpdate> for SyncSummary {
                 .iter()
                 .map(PublicAccountUpdate::id)
                 .collect(),
-            // The client fills this after the store applies the lock candidates.
+            // The client fills this from the outcomes returned by the store.
             Vec::new(),
             value.transaction_updates.committed_transactions().map(|t| t.id).collect(),
         )
@@ -321,17 +321,15 @@ impl TransactionUpdateTracker {
         let account_id = header.account_id();
         let initial_state = header.initial_state_commitment();
         let final_state = header.final_state_commitment();
+        let fallback_transaction_id = self.unique_fallback_transaction_id(header);
 
         if let Some(transaction) = self.transactions.get_mut(&header.id()) {
             transaction.commit_transaction(record.block_num, timestamp);
-        } else if let Some(transaction) = self.transactions.values_mut().find(|tx| {
-            // The node authenticates unauthenticated input notes during processing. This changes
-            // the transaction ID but does not change the account state transition.
-            matches!(tx.status, TransactionStatus::Pending)
-                && tx.details.account_id == account_id
-                && tx.details.init_account_state == initial_state
-                && tx.details.final_account_state == final_state
-        }) {
+        } else if let Some(transaction_id) = fallback_transaction_id {
+            let transaction = self
+                .transactions
+                .get_mut(&transaction_id)
+                .expect("the fallback transaction ID came from the transaction map");
             transaction.commit_transaction(record.block_num, timestamp);
         } else {
             // No local transaction matched. This is an external transaction by a tracked account.
@@ -352,6 +350,32 @@ impl TransactionUpdateTracker {
             },
             DiscardCause::Superseded,
         );
+    }
+
+    /// Returns a fallback match only when the transaction header identifies one local transaction.
+    fn unique_fallback_transaction_id(&self, header: &TransactionHeader) -> Option<TransactionId> {
+        let mut matching_ids = self.transactions.iter().filter_map(|(transaction_id, tx)| {
+            // The node authenticates unauthenticated input notes during processing. This changes
+            // the transaction ID but does not change the input nullifiers or output note IDs.
+            (matches!(tx.status, TransactionStatus::Pending)
+                && tx.details.account_id == header.account_id()
+                && tx.details.init_account_state == header.initial_state_commitment()
+                && tx.details.final_account_state == header.final_state_commitment()
+                && tx.details.input_note_nullifiers.iter().copied().eq(header
+                    .input_notes()
+                    .iter()
+                    .map(|commitment| commitment.nullifier().as_word()))
+                && tx
+                    .details
+                    .output_notes
+                    .iter()
+                    .map(RawOutputNote::id)
+                    .eq(header.output_notes().iter().map(NoteHeader::id)))
+            .then_some(*transaction_id)
+        });
+
+        let first = matching_ids.next()?;
+        matching_ids.next().is_none().then_some(first)
     }
 
     /// Applies the necessary state transitions to the [`TransactionUpdateTracker`] when a the sync
@@ -606,7 +630,12 @@ mod tests {
 
     use miden_protocol::account::{AccountCode, StorageMapKey, StorageMapPatchEntries};
     use miden_protocol::testing::account_id::ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE;
-    use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionHeader};
+    use miden_protocol::transaction::{
+        InputNoteCommitment,
+        InputNotes,
+        RawOutputNotes,
+        TransactionHeader,
+    };
 
     use super::*;
     use crate::transaction::TransactionDetails;
@@ -639,13 +668,22 @@ mod tests {
     }
 
     fn pending_transaction(id: u64, initial_state: u64, final_state: u64) -> TransactionRecord {
+        pending_transaction_with_inputs(id, initial_state, final_state, &[])
+    }
+
+    fn pending_transaction_with_inputs(
+        id: u64,
+        initial_state: u64,
+        final_state: u64,
+        input_nullifiers: &[u64],
+    ) -> TransactionRecord {
         TransactionRecord::new(
             TransactionId::from_raw(word(id)),
             TransactionDetails {
                 account_id: account_id(),
                 init_account_state: word(initial_state),
                 final_account_state: word(final_state),
-                input_note_nullifiers: vec![],
+                input_note_nullifiers: input_nullifiers.iter().map(|value| word(*value)).collect(),
                 output_notes: RawOutputNotes::new(vec![]).unwrap(),
                 block_num: BlockNumber::GENESIS,
                 submission_height: BlockNumber::GENESIS,
@@ -658,13 +696,26 @@ mod tests {
     }
 
     fn rpc_transaction(initial_state: u64, final_state: u64) -> RpcTransactionRecord {
+        rpc_transaction_with_inputs(initial_state, final_state, &[])
+    }
+
+    fn rpc_transaction_with_inputs(
+        initial_state: u64,
+        final_state: u64,
+        input_nullifiers: &[u64],
+    ) -> RpcTransactionRecord {
         RpcTransactionRecord {
             block_num: BlockNumber::from(10u32),
             transaction_header: TransactionHeader::new(
                 account_id(),
                 word(initial_state),
                 word(final_state),
-                InputNotes::new_unchecked(vec![]),
+                InputNotes::new_unchecked(
+                    input_nullifiers
+                        .iter()
+                        .map(|value| InputNoteCommitment::from(Nullifier::from_raw(word(*value))))
+                        .collect(),
+                ),
                 vec![],
             )
             .unwrap(),
@@ -714,6 +765,31 @@ mod tests {
 
         let transaction = tracker.transactions.get(&transaction_id).unwrap();
         assert!(matches!(transaction.status, TransactionStatus::Committed { .. }));
+    }
+
+    #[test]
+    fn transaction_inclusion_fallback_requires_unique_note_identity() {
+        let first = pending_transaction_with_inputs(1, 1, 2, &[10]);
+        let first_id = first.id;
+        let second = pending_transaction_with_inputs(2, 1, 2, &[20]);
+        let second_id = second.id;
+        let third = pending_transaction_with_inputs(3, 1, 2, &[20]);
+        let third_id = third.id;
+        let mut tracker = TransactionUpdateTracker::new(vec![first, second, third]);
+
+        tracker.apply_transaction_inclusion(&rpc_transaction_with_inputs(1, 2, &[10]), 20);
+
+        assert!(matches!(
+            tracker.transactions.get(&first_id).unwrap().status,
+            TransactionStatus::Committed { .. }
+        ));
+        tracker.apply_transaction_inclusion(&rpc_transaction_with_inputs(1, 2, &[20]), 20);
+
+        assert_eq!(
+            tracker.transactions.get(&second_id).unwrap().status,
+            TransactionStatus::Pending
+        );
+        assert_eq!(tracker.transactions.get(&third_id).unwrap().status, TransactionStatus::Pending);
     }
 
     #[test]

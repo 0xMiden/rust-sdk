@@ -189,7 +189,10 @@ impl Store for SqliteStore {
         self.interact_with_connection(SqliteStore::get_sync_height).await
     }
 
-    async fn apply_state_sync(&self, state_sync_update: StateSyncUpdate) -> Result<(), StoreError> {
+    async fn apply_state_sync(
+        &self,
+        state_sync_update: StateSyncUpdate,
+    ) -> Result<Vec<AccountId>, StoreError> {
         self.interact_with_connection(move |conn| {
             SqliteStore::apply_state_sync(conn, state_sync_update)
         })

@@ -218,14 +218,6 @@ where
 
         let state_sync_update = StateSync::build_update(chain_sync_data, &mut partial_mmr)?;
 
-        let lock_candidates: BTreeSet<AccountId> = state_sync_update
-            .account_updates()
-            .mismatched_private_accounts()
-            .iter()
-            .map(|(account_id, _)| *account_id)
-            .collect();
-        let locked_before = self.locked_accounts_among(&lock_candidates).await?;
-
         let mut sync_summary: SyncSummary = (&state_sync_update).into();
 
         // Post-sync observer hooks; run before persisting. Per-observer errors are logged, not
@@ -235,13 +227,11 @@ where
         info!("Applying changes to the store.");
 
         // Apply received and computed updates to the store
-        self.store
+        sync_summary.locked_accounts = self
+            .store
             .apply_state_sync(state_sync_update)
             .await
             .map_err(ClientError::StoreError)?;
-
-        let locked_after = self.locked_accounts_among(&lock_candidates).await?;
-        sync_summary.locked_accounts = locked_after.difference(&locked_before).copied().collect();
         debug!(sync_summary = ?sync_summary, "Sync summary computed");
 
         // Cache MMR so pruning can reuse in-memory MMR.
@@ -250,21 +240,6 @@ where
         self.maybe_untrack_and_prune_irrelevant_blocks().await?;
 
         Ok(sync_summary)
-    }
-
-    /// Returns the candidates that are currently locked.
-    async fn locked_accounts_among(
-        &self,
-        candidates: &BTreeSet<AccountId>,
-    ) -> Result<BTreeSet<AccountId>, ClientError> {
-        let mut locked = BTreeSet::new();
-        for account_id in candidates {
-            let account = self.store.get_account_header(*account_id).await?;
-            if account.is_some_and(|(_, status)| status.is_locked()) {
-                locked.insert(*account_id);
-            }
-        }
-        Ok(locked)
     }
 
     /// Fetches private notes from the Note Transport Layer for the tracked note tags.

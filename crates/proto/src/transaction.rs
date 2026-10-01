@@ -247,12 +247,6 @@ impl ProtobufValue for TransactionRequest {
         let script_arg = request.script_arg.map(Word::try_from).transpose()?;
         let auth_arg = request.auth_arg.map(Word::try_from).transpose()?;
         let fee_conversion_salt = request.fee_conversion_salt.map(Word::try_from).transpose()?;
-        // The builder keeps only one of the two values, because each one replaces the other.
-        if auth_arg.is_some() && fee_conversion_salt.is_some() {
-            return Err(ProtoDecodeError::InvalidValue(
-                "a request cannot have both an auth argument and a fee conversion salt".to_string(),
-            ));
-        }
         let expected_ntx_scripts = request
             .expected_ntx_scripts
             .into_iter()

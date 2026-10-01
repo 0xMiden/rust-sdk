@@ -376,8 +376,8 @@ impl CliConfig {
     /// ```
     pub fn load() -> Result<Self, CliError> {
         // Try local first
-        match Self::from_local_dir() {
-            Ok(config) => Ok(config),
+        let config = match Self::from_local_dir() {
+            Ok(config) => config,
             // Only fall back to global if the local config file was not found (not for parse errors
             // or other issues)
             Err(CliError::ConfigNotFound(_)) => {
@@ -387,11 +387,17 @@ impl CliConfig {
                         "Neither local nor global config file exists".to_string(),
                     ),
                     other => other,
-                })
+                })?
             },
             // For other errors (like parse errors), propagate them immediately
-            Err(e) => Err(e),
+            Err(e) => return Err(e),
+        };
+
+        if let Some(config_dir) = &config.config_dir {
+            tracing::debug!("Loaded configuration from {config_dir}");
         }
+
+        Ok(config)
     }
 
     /// Loads the client configuration from a TOML file.

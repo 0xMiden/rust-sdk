@@ -37,7 +37,7 @@ Below are representative errors you may encounter, their likely causes, and sugg
 - Cause: Node is down, unreachable, or behind a load balancer that blocked the request.
 - Fix: Check `rpc.endpoint` in your configuration file (local `.miden/miden-client.toml` or global `~/.miden/miden-client.toml`), verify the node is running/accessible, and retry.
 
-#### `RpcError.InvalidArgument` / `ExpectedDataMissing` / `InvalidResponse`
+#### `RpcError.GrpcError: InvalidArgument` / `RpcError.ExpectedDataMissing` / `RpcError.InvalidResponse`
 - Cause: Malformed request parameters or unexpected server response.
 - Fix: Re-check command flags/inputs. If using partial IDs, ensure they map to a single entity. Update to the latest client if the server API has changed.
 
@@ -77,15 +77,11 @@ Below are representative errors you may encounter, their likely causes, and sugg
 - Cause: The node already allows the account, because it is registered or because the network does not enforce an allowlist. The invitation code was not sent.
 - Fix: No registration is needed. Keep the code for a different account, and run `miden-client sync` to receive the funding note the network may have paid a registered account.
 
-#### `ClientError.StoreError(AccountCommitmentAlreadyExists(...))`
-- Cause: Trying to apply a transaction whose final account commitment is already present locally.
-- Fix: Ensure you are not re-applying the same transaction. Sync and check transaction status.
-
 #### `ClientError.NoteNotFoundOnChain(<note_id>)` / `RpcError.NoteNotFound(<note_id>)`
 - Cause: The note has not been published/committed yet or the ID is incorrect.
 - Fix: Verify the note ID. If it should exist, run `miden-client sync` and retry.
 
-#### `ClientError.TransactionInputError` / `TransactionScriptError`
+#### `ClientError.TransactionRequestError(TransactionInputError)` / `ClientError.TransactionExecutorError`
 - Cause: Invalid transaction inputs, script logic errors, or failing constraints.
 - Fix: Validate input notes, foreign accounts, and script assumptions.
 

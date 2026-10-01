@@ -228,7 +228,7 @@ impl InMemoryBatchDataStore {
             account_id,
         )?;
 
-        let code = patch.code().unwrap_or_else(|| state.account.code()).clone();
+        let code = patch.code().as_code().unwrap_or_else(|| state.account.code()).clone();
         ensure_matches(
             "code commitment",
             code.commitment(),

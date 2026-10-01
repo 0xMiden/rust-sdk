@@ -25,7 +25,7 @@ use miden_protocol::crypto::merkle::mmr::{Forest, Mmr, MmrProof};
 use miden_protocol::crypto::merkle::smt::PartialSmt;
 use miden_protocol::note::{NoteAttachments, NoteHeader, NoteId, NoteScript, NoteTag};
 use miden_protocol::protocol_config::ProtocolConfig;
-use miden_protocol::transaction::{OutputNote, ProvenTransaction};
+use miden_protocol::transaction::{ExecutedTransaction, OutputNote, ProvenTransaction};
 use miden_protocol::vm::ExecutionProof;
 use miden_testing::{MockChain, MockChainNote};
 use miden_tx::utils::sync::RwLock;
@@ -55,6 +55,12 @@ use crate::rpc::{AccountStateAt, NodeRpcClient, RpcEndpoint, RpcError, RpcStatus
 
 pub type MockClient<AUTH> = Client<AUTH>;
 
+#[derive(Clone, Copy)]
+struct BlockHeaderRequest {
+    block_num: Option<BlockNumber>,
+    include_mmr_proof: bool,
+}
+
 /// Mock RPC API
 ///
 /// This struct implements the RPC API used by the client to communicate with the node. It simulates
@@ -83,6 +89,8 @@ pub struct MockRpcApi {
     /// Number of `get_notes_by_id` requests served, so a test can assert that a flow avoided the
     /// round trip.
     get_notes_by_id_calls: Arc<AtomicUsize>,
+    /// Block header requests, recorded with the requested block and proof flag.
+    block_header_requests: Arc<RwLock<Vec<BlockHeaderRequest>>>,
     /// Number of `get_account` requests served, so a test can assert that a flow avoided the round
     /// trip.
     get_account_calls: Arc<AtomicUsize>,
@@ -126,6 +134,7 @@ impl MockRpcApi {
             private_note_attachments: Arc::new(RwLock::new(BTreeMap::new())),
             sync_notes_mmr_path_overrides: Arc::new(RwLock::new(BTreeMap::new())),
             get_notes_by_id_calls: Arc::new(AtomicUsize::new(0)),
+            block_header_requests: Arc::new(RwLock::new(Vec::new())),
             get_account_calls: Arc::new(AtomicUsize::new(0)),
             next_call_failures: Arc::new(RwLock::new(BTreeMap::new())),
             registered_accounts: Arc::new(RwLock::new(BTreeMap::new())),
@@ -194,6 +203,17 @@ impl MockRpcApi {
         self.get_notes_by_id_calls.load(Ordering::Relaxed)
     }
 
+    /// Returns the proof flags of requests for `block_num`.
+    pub fn block_header_requests(&self, block_num: BlockNumber) -> Vec<bool> {
+        self.block_header_requests
+            .read()
+            .iter()
+            .filter_map(|request| {
+                (request.block_num == Some(block_num)).then_some(request.include_mmr_proof)
+            })
+            .collect()
+    }
+
     /// Returns how many `get_account` requests this API has served.
     pub fn get_account_call_count(&self) -> usize {
         self.get_account_calls.load(Ordering::Relaxed)
@@ -236,6 +256,17 @@ impl MockRpcApi {
     /// Returns the chain tip block number.
     pub fn get_chain_tip_block_num(&self) -> BlockNumber {
         self.mock_chain.read().latest_block_header().block_num()
+    }
+
+    /// Adds an executed transaction to the pending transactions of the mock chain with a dummy
+    /// proof. The next [`Self::prove_block`] call commits it.
+    ///
+    /// Tests use this method to put a transaction on chain without the cost of a real proof.
+    pub fn add_pending_executed_transaction(&self, executed_transaction: &ExecutedTransaction) {
+        self.mock_chain
+            .write()
+            .add_pending_executed_transaction(executed_transaction)
+            .expect("mock chain should accept the executed transaction");
     }
 
     /// Advances the mock chain by proving the next block, committing all pending objects to the
@@ -558,6 +589,10 @@ impl NodeRpcClient for MockRpcApi {
         block_num: Option<BlockNumber>,
         include_mmr_proof: bool,
     ) -> Result<(BlockHeader, Option<MmrProof>), RpcError> {
+        self.block_header_requests
+            .write()
+            .push(BlockHeaderRequest { block_num, include_mmr_proof });
+
         let block = if let Some(block_num) = block_num {
             self.mock_chain.read().block_header(block_num.as_usize())
         } else {

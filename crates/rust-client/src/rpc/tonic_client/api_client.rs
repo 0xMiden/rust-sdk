@@ -22,7 +22,7 @@ pub(crate) mod api_client_wrapper {
 
     use super::{MetadataInterceptor, accept_header_interceptor};
     use crate::rpc::RpcError;
-    use crate::rpc::generated::rpc::api_client::ApiClient as ProtoClient;
+    use crate::rpc::generated::rpc::node_service_client::NodeServiceClient as ProtoClient;
 
     pub type WasmClient = tonic_web_wasm_client::Client;
     pub type InnerClient = ProtoClient<InterceptedService<WasmClient, MetadataInterceptor>>;
@@ -118,7 +118,7 @@ pub(crate) mod api_client_wrapper {
 
     use super::{MetadataInterceptor, accept_header_interceptor};
     use crate::rpc::RpcError;
-    use crate::rpc::generated::rpc::api_client::ApiClient as ProtoClient;
+    use crate::rpc::generated::rpc::node_service_client::NodeServiceClient as ProtoClient;
 
     pub type InnerClient = ProtoClient<InterceptedService<Channel, MetadataInterceptor>>;
     #[derive(Clone)]

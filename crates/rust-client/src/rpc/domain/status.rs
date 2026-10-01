@@ -108,10 +108,10 @@ impl TryFrom<proto::rpc::GetNetworkNoteStatusResponse> for NetworkNoteStatusInfo
     }
 }
 
-impl TryFrom<proto::rpc::RpcStatus> for RpcStatusInfo {
+impl TryFrom<proto::rpc::StatusResponse> for RpcStatusInfo {
     type Error = RpcError;
 
-    fn try_from(value: proto::rpc::RpcStatus) -> Result<Self, Self::Error> {
+    fn try_from(value: proto::rpc::StatusResponse) -> Result<Self, Self::Error> {
         let genesis_commitment = value.genesis_commitment.map(TryInto::try_into).transpose()?;
         Ok(Self {
             version: value.version,

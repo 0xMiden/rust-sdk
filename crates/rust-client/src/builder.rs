@@ -86,8 +86,6 @@ pub trait StoreFactory {
 /// - **Store** ([`Store`]): Provides persistence for accounts, notes, and transaction history.
 ///   Configure via [`store()`](Self::store).
 ///
-/// - **Protocol configuration** ([`ProtocolConfig`]): Defines the protocol parameters for transaction execution and note screening. Register it with [`protocol_config()`](Self::protocol_config), or use a store that already contains it.
-///
 /// - **RNG** ([`ClientCryptoRng`](crate::ClientCryptoRng)): Provides randomness for generating
 ///   keys, serial numbers, and other cryptographic operations. It is always created from a random
 ///   seed, so that a caller cannot make the keys it generates predictable. Under the `testing`

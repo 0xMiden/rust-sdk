@@ -7,4 +7,4 @@ mod inner {
     #[cfg(not(feature = "std"))]
     include!(concat!(env!("OUT_DIR"), "/remote_prover_nostd.rs"));
 }
-pub use inner::remote_prover::*;
+pub use inner::miden::remote_prover::v1::*;

@@ -131,6 +131,7 @@ use rand::{Rng, RngExt, SeedableRng};
 use rstest::rstest;
 
 mod batch;
+mod code_upgrade;
 mod fees;
 mod rpc;
 pub mod store;

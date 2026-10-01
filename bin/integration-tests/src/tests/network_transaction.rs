@@ -72,7 +72,7 @@ pub(crate) static COUNTER_SLOT_NAME: LazyLock<StorageSlotName> = LazyLock::new(|
     StorageSlotName::new("miden::testing::counter_contract::counter").expect("slot name is valid")
 });
 
-const COUNTER_CONTRACT: &str = r#"
+pub(crate) const COUNTER_CONTRACT: &str = r#"
         use miden::protocol::active_account
         use miden::protocol::native_account
         use miden::core::word
@@ -230,7 +230,7 @@ pub(crate) async fn add_network_counter_contract(
 ///
 /// `fee_faucet_id` must be the faucet the chain charges fees in, as named by the genesis header's
 /// fee parameters.
-fn zero_fee_policy_manager(
+pub(crate) fn zero_fee_policy_manager(
     fee_faucet_id: AccountId,
     allowed_note_script_roots: impl IntoIterator<Item = NoteScriptRoot>,
 ) -> FeePolicyManager {

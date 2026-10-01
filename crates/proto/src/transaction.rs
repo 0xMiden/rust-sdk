@@ -540,3 +540,150 @@ impl TryFrom<proto::AccountStorageRequirements> for AccountStorageRequirements {
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::vec;
+    use std::vec::Vec;
+
+    use miden_client::transaction::{
+        ForeignAccount,
+        TransactionRequest,
+        TransactionRequestBuilder,
+    };
+    use miden_protocol::account::auth::{AuthScheme, PublicKeyCommitment};
+    use miden_protocol::account::{
+        AccountBuilder,
+        AccountId,
+        AccountType,
+        StorageMapKey,
+        StorageSlotName,
+    };
+    use miden_protocol::asset::FungibleAsset;
+    use miden_protocol::block::BlockNumber;
+    use miden_protocol::crypto::merkle::MerkleTree;
+    use miden_protocol::crypto::rand::{FeltRng, RandomCoin};
+    use miden_protocol::note::{Note, NoteScript, NoteTag, NoteType};
+    use miden_protocol::testing::account_id::{
+        ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET,
+        ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE,
+        ACCOUNT_ID_SENDER,
+    };
+    use miden_protocol::transaction::{InputNote, TransactionScript};
+    use miden_protocol::{EMPTY_WORD, Felt, Word};
+    use miden_standards::account::auth::{Approver, AuthSingleSig};
+    use miden_standards::note::P2idNote;
+    use miden_standards::testing::account_component::MockAccountComponent;
+
+    use super::AccountStorageRequirements;
+    use crate::{decode, encode};
+
+    /// A request with a send notes template. Plain and explicit input notes are mixed, so the
+    /// decoder must keep their order.
+    #[test]
+    fn transaction_request_with_send_notes_round_trips() {
+        let sender_id = AccountId::try_from(ACCOUNT_ID_SENDER).unwrap();
+        let target_id =
+            AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE).unwrap();
+        let mut rng = RandomCoin::new(Word::default());
+        let mut notes = notes(8, &mut rng);
+
+        let private_account = AccountBuilder::new(Default::default())
+            .with_component(MockAccountComponent::with_empty_slots())
+            .with_component(AuthSingleSig::new(Approver::new(
+                PublicKeyCommitment::from(EMPTY_WORD),
+                AuthScheme::Falcon512Poseidon2,
+            )))
+            .account_type(AccountType::Private)
+            .build_existing()
+            .unwrap();
+        let merkle_tree =
+            MerkleTree::new([rng.draw_word(), rng.draw_word(), rng.draw_word(), rng.draw_word()])
+                .unwrap();
+
+        let request = TransactionRequestBuilder::new()
+            .block_numbers([BlockNumber::from(1u32), BlockNumber::from(3u32)])
+            .input_notes([(notes.pop().unwrap(), None)])
+            .explicit_input_notes([(
+                InputNote::unauthenticated(notes.pop().unwrap()),
+                Some(rng.draw_word()),
+            )])
+            .input_notes([(notes.pop().unwrap(), Some(rng.draw_word()))])
+            .expected_output_recipients([notes.pop().unwrap().recipient().clone()])
+            .expected_future_notes(vec![(
+                notes.pop().unwrap().into(),
+                NoteTag::with_account_target(sender_id),
+            )])
+            .extend_advice_map([(rng.draw_word(), vec![Felt::from(1u32), Felt::from(2u32)])])
+            .extend_merkle_store(merkle_tree.inner_nodes())
+            .foreign_accounts([
+                ForeignAccount::public(
+                    target_id,
+                    AccountStorageRequirements::new([(
+                        StorageSlotName::new("demo::storage_slot").unwrap(),
+                        &[StorageMapKey::new(Word::default())],
+                    )]),
+                )
+                .unwrap(),
+                ForeignAccount::private(&private_account).unwrap(),
+            ])
+            .own_output_notes([notes.pop().unwrap(), notes.pop().unwrap()])
+            .expiration_delta(10)
+            .script_arg(rng.draw_word())
+            .auth_arg(rng.draw_word())
+            .expected_ntx_scripts(vec![notes.pop().unwrap().recipient().script().clone()])
+            .build()
+            .unwrap();
+
+        assert_eq!(decode::<TransactionRequest>(&encode(&request)).unwrap(), request);
+    }
+
+    /// A request with a custom script and the fields that a send notes request cannot have.
+    #[test]
+    fn transaction_request_with_custom_script_round_trips() {
+        let mut rng = RandomCoin::new(Word::default());
+        let note_script = NoteScript::mock();
+        let script =
+            TransactionScript::from_parts(note_script.mast(), note_script.entrypoint()).unwrap();
+
+        let request = TransactionRequestBuilder::new()
+            .input_notes(notes(2, &mut rng).into_iter().map(|note| (note, None)))
+            .custom_script(script)
+            .ignore_invalid_input_notes()
+            .fee_conversion_salt(rng.draw_word())
+            .build()
+            .unwrap();
+
+        assert_eq!(decode::<TransactionRequest>(&encode(&request)).unwrap(), request);
+    }
+
+    /// A request without a script template and without optional values.
+    #[test]
+    fn empty_transaction_request_round_trips() {
+        let request = TransactionRequestBuilder::new().build().unwrap();
+
+        assert_eq!(decode::<TransactionRequest>(&encode(&request)).unwrap(), request);
+    }
+
+    /// Returns `count` P2ID notes with different serial numbers and amounts.
+    fn notes(count: u64, rng: &mut RandomCoin) -> Vec<Note> {
+        let sender_id = AccountId::try_from(ACCOUNT_ID_SENDER).unwrap();
+        let target_id =
+            AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE).unwrap();
+        let faucet_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
+
+        (0..count)
+            .map(|i| {
+                P2idNote::builder()
+                    .sender(sender_id)
+                    .target(target_id)
+                    .assets(vec![FungibleAsset::new(faucet_id, 100 + i).unwrap()])
+                    .note_type(NoteType::Private)
+                    .generate_serial_number(rng)
+                    .build()
+                    .unwrap()
+                    .into()
+            })
+            .collect()
+    }
+}

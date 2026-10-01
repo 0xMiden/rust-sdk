@@ -4,6 +4,7 @@ use std::env::temp_dir;
 
 use miden_client::ClientError;
 use miden_client::account::component::{
+    AccessControl,
     AccountComponentMetadata,
     Authority,
     BasicWallet,
@@ -15,6 +16,7 @@ use miden_client::account::{
     AccountCode,
     AccountCodeUpgrade,
     AccountComponent,
+    AccountId,
     AccountType,
     StorageMapKey,
     StorageSlot,
@@ -24,13 +26,15 @@ use miden_client::assembly::CodeBuilder;
 use miden_client::asset::{Asset, FungibleAsset};
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;
-use miden_client::note::NoteType;
+use miden_client::note::{AccountCodeUpgradeAttachment, Note, NoteType};
 use miden_client::testing::common::create_test_store_path;
 use miden_client::testing::mock::{MockClient, MockRpcApi};
+use miden_client::testing::standards::account_component::MockProceduresComponent;
 use miden_client::transaction::{
     PaymentNoteDescription,
     TransactionRequest,
     TransactionRequestBuilder,
+    TransactionScript,
 };
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
 use miden_protocol::crypto::rand::RandomCoin;
@@ -149,8 +153,15 @@ fn upgradeable_account_builder() -> AccountBuilder {
 
 /// Returns a mock RPC API over a chain that contains `account`.
 fn rpc_api_with(account: &Account) -> MockRpcApi {
+    rpc_api_with_accounts(&[account])
+}
+
+/// Returns a mock RPC API over a chain that contains `accounts`.
+fn rpc_api_with_accounts(accounts: &[&Account]) -> MockRpcApi {
     let mut builder = MockChainBuilder::new();
-    builder.add_account(account.clone()).unwrap();
+    for account in accounts {
+        builder.add_account((*account).clone()).unwrap();
+    }
     MockRpcApi::new(builder.build().unwrap())
 }
 
@@ -173,16 +184,14 @@ async fn client_tracking(rpc_api: MockRpcApi, account: &Account) -> MockClient<F
     client
 }
 
-/// Returns a request whose script initializes each upgrade in `upgrades`, given as the new code
-/// commitment and the storage upgrade commitment. If `bump_state` is set, the script then also
-/// changes the storage of the account. `advice_entry` is the advice map entry that gives the new
-/// code to the transaction, if any.
-fn upgrade_request(
+/// Returns a script that initializes each upgrade in `upgrades`, given as the new code commitment
+/// and the storage upgrade commitment. If `bump_state` is set, the script then also changes the
+/// storage of the account.
+fn upgrade_script(
     client: &MockClient<FilesystemKeyStore>,
     upgrades: &[(Word, Word)],
     bump_state: bool,
-    advice_entry: Option<(Word, Vec<Felt>)>,
-) -> TransactionRequest {
+) -> TransactionScript {
     let upgrade_calls = upgrades
         .iter()
         .map(|(new_code_commitment, storage_upgrade_commitment)| {
@@ -197,7 +206,7 @@ fn upgrade_request(
         .join("\n");
     let bump_call = if bump_state { "call.upgrade_state::bump" } else { "" };
 
-    let tx_script = client
+    client
         .code_builder()
         .with_linked_module(STATE_MODULE, state_component_code())
         .unwrap()
@@ -211,28 +220,83 @@ fn upgrade_request(
                 {bump_call}
             end"
         ))
-        .unwrap();
+        .unwrap()
+}
 
+/// Returns a request with the script of [`upgrade_script`]. `advice_entry` is the advice map entry
+/// that gives the new code to the transaction, if any.
+fn upgrade_request(
+    client: &MockClient<FilesystemKeyStore>,
+    upgrades: &[(Word, Word)],
+    bump_state: bool,
+    advice_entry: Option<(Word, Vec<Felt>)>,
+) -> TransactionRequest {
     TransactionRequestBuilder::new()
-        .custom_script(tx_script)
+        .custom_script(upgrade_script(client, upgrades, bump_state))
         .extend_advice_map(advice_entry)
         .build()
         .unwrap()
 }
 
-/// Returns a request that upgrades the account code to `code` and gives the code to the
-/// transaction. If `bump_state` is set, the transaction also changes the storage of the account.
+/// Returns a request that upgrades the account code to `code`. If `bump_state` is set, the
+/// transaction also changes the storage of the account, so the request needs a custom script.
 fn valid_upgrade_request(
     client: &MockClient<FilesystemKeyStore>,
     code: &AccountCode,
     bump_state: bool,
 ) -> TransactionRequest {
-    upgrade_request(
-        client,
-        &[(code.commitment(), Word::empty())],
-        bump_state,
-        Some(AccountCodeUpgrade::new(code.clone()).to_advice_map_entry()),
-    )
+    if !bump_state {
+        return TransactionRequestBuilder::new()
+            .build_account_code_upgrade(code.clone())
+            .unwrap();
+    }
+
+    TransactionRequestBuilder::new()
+        .custom_script(upgrade_script(client, &[(code.commitment(), Word::empty())], true))
+        .account_code_upgrade(code.clone())
+        .build()
+        .unwrap()
+}
+
+/// Returns a deployed public account with a basic wallet. The auth component does not need
+/// signatures.
+fn wallet_account(seed: u8) -> Account {
+    let (mut components, _) = Auth::IncrNonce.build_components();
+    components.push(BasicWallet.into());
+    AccountBuilder::new([seed; 32])
+        .account_type(AccountType::Public)
+        .with_components(components)
+        .build_existing()
+        .unwrap()
+}
+
+/// Returns a deployed public account that `owner` owns through `Ownable2Step`, and the code that
+/// adds [`BasicWallet`] and `extra_components` to it. The `Authority` of the account only accepts
+/// an upgrade from `owner`.
+fn owned_upgradeable_account(
+    owner: AccountId,
+    extra_components: Vec<AccountComponent>,
+) -> (Account, AccountCode) {
+    let components = || {
+        let (mut components, _) = Auth::IncrNonce.build_components();
+        components.extend(AccessControl::Ownable2Step { owner });
+        components.push(UpgradeManager.into());
+        components
+    };
+
+    let account = AccountBuilder::new([5; 32])
+        .account_type(AccountType::Public)
+        .with_components(components())
+        .build_existing()
+        .unwrap();
+
+    let mut upgraded_components = components();
+    upgraded_components.push(BasicWallet.into());
+    upgraded_components.extend(extra_components);
+    let upgraded_code = AccountCode::from_components(&upgraded_components).unwrap();
+    assert_ne!(account.code().commitment(), upgraded_code.commitment());
+
+    (account, upgraded_code)
 }
 
 /// Returns the message of `error` and of all of its sources.
@@ -264,6 +328,32 @@ fn send_request(
             client.rng(),
         )
         .unwrap()
+}
+
+/// Executes a transaction in which `sender` sends an upgrade note that upgrades the code of
+/// `target` to `code`, and returns the note.
+async fn send_upgrade_note(
+    client: &mut MockClient<FilesystemKeyStore>,
+    sender: &Account,
+    target: &Account,
+    code: &AccountCode,
+) -> Note {
+    let request = TransactionRequestBuilder::new()
+        .build_upgrade_note(sender.id(), target.id(), code.clone(), client.rng())
+        .unwrap();
+    let [note]: [Note; 1] = request.expected_output_own_notes().try_into().unwrap();
+
+    let result = Box::pin(client.execute_transaction(sender.id(), request)).await.unwrap();
+    assert!(
+        result
+            .executed_transaction()
+            .output_notes()
+            .iter()
+            .any(|output| output.id() == note.id()),
+        "the transaction should create the upgrade note"
+    );
+
+    note
 }
 
 async fn stored_account(client: &mut MockClient<FilesystemKeyStore>, account: &Account) -> Account {
@@ -469,4 +559,100 @@ async fn synced_code_upgrade_stores_new_code(
     let stored = stored_account(&mut observer, &account).await;
     assert_eq!(stored, expected);
     assert_eq!(stored.code(), &upgraded_code);
+}
+
+/// The standard upgrade request calls the `upgrade` procedure of `UpgradeManager`. An account
+/// without this component cannot execute the request, and the stored account does not change.
+#[tokio::test]
+async fn account_code_upgrade_without_upgrade_manager_is_rejected() {
+    let account = wallet_account(8);
+    let (_, other_code) = upgradeable_account();
+    let rpc_api = rpc_api_with(&account);
+    let mut client = client_tracking(rpc_api, &account).await;
+
+    let request = TransactionRequestBuilder::new().build_account_code_upgrade(other_code).unwrap();
+    let error = Box::pin(client.execute_transaction(account.id(), request)).await.unwrap_err();
+    assert!(
+        matches!(error, ClientError::TransactionExecutorError(_)),
+        "unexpected error: {error:?}"
+    );
+    let expected_error = format!(
+        "account procedure with procedure root {} is not in the account procedure index map",
+        UpgradeManager::upgrade_root()
+    );
+    let messages = error_chain(&error);
+    assert!(messages.contains(&expected_error), "unexpected error: {messages}");
+
+    assert_eq!(stored_account(&mut client, &account).await, account);
+}
+
+/// The owner of an account sends an upgrade note to the account. The account consumes the note, and
+/// the store saves the new code. The note splits code that does not fit into one attachment into
+/// chunks.
+#[rstest]
+#[case::single_chunk(vec![], 1)]
+#[case::two_chunks(vec![MockProceduresComponent::new(150).into()], 2)]
+#[tokio::test]
+async fn upgrade_note_from_owner_upgrades_target_code(
+    #[case] extra_components: Vec<AccountComponent>,
+    #[case] expected_num_chunks: usize,
+) {
+    let owner = wallet_account(6);
+    let (target, upgraded_code) = owned_upgradeable_account(owner.id(), extra_components);
+    let rpc_api = rpc_api_with_accounts(&[&owner, &target]);
+    let mut client = client_tracking(rpc_api.clone(), &target).await;
+    client.add_account(&owner, false).await.unwrap();
+
+    let note = send_upgrade_note(&mut client, &owner, &target, &upgraded_code).await;
+    let num_chunks = note
+        .attachments()
+        .iter()
+        .filter(|attachment| {
+            attachment.attachment_scheme() == AccountCodeUpgradeAttachment::ATTACHMENT_SCHEME
+        })
+        .count();
+    assert_eq!(num_chunks, expected_num_chunks);
+
+    let request = TransactionRequestBuilder::new().build_consume_notes(vec![note]).unwrap();
+    let result = Box::pin(client.execute_transaction(target.id(), request)).await.unwrap();
+    let executed_tx = result.executed_transaction();
+    assert_eq!(executed_tx.final_account().code_commitment(), upgraded_code.commitment());
+    assert_eq!(executed_tx.account_patch().code().as_code(), Some(&upgraded_code));
+
+    client
+        .apply_transaction(&result, rpc_api.get_chain_tip_block_num())
+        .await
+        .unwrap();
+
+    let stored = stored_account(&mut client, &target).await;
+    assert_eq!(stored.code(), &upgraded_code);
+    assert_eq!(stored.to_commitment(), executed_tx.final_account().to_commitment());
+}
+
+/// An upgrade note from an account that is not the owner fails when the target consumes it, and the
+/// stored account does not change.
+#[tokio::test]
+async fn upgrade_note_from_other_sender_is_rejected() {
+    let owner = wallet_account(6);
+    let other_sender = wallet_account(7);
+    let (target, upgraded_code) = owned_upgradeable_account(owner.id(), vec![]);
+    let rpc_api = rpc_api_with_accounts(&[&other_sender, &target]);
+    let mut client = client_tracking(rpc_api, &target).await;
+    client.add_account(&other_sender, false).await.unwrap();
+
+    let note = send_upgrade_note(&mut client, &other_sender, &target, &upgraded_code).await;
+
+    let request = TransactionRequestBuilder::new().build_consume_notes(vec![note]).unwrap();
+    let error = Box::pin(client.execute_transaction(target.id(), request)).await.unwrap_err();
+    assert!(
+        matches!(error, ClientError::TransactionExecutorError(_)),
+        "unexpected error: {error:?}"
+    );
+    let messages = error_chain(&error);
+    assert!(
+        messages.contains("note sender is not the owner"),
+        "unexpected error: {messages}"
+    );
+
+    assert_eq!(stored_account(&mut client, &target).await, target);
 }

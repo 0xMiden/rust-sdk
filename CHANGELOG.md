@@ -10,11 +10,13 @@
 * [BREAKING][arch][rust] Updated protocol dependencies to the `0.17.0-rc.8` pre-release and pinned them to that exact version (`=0.17.0-rc.8`), Miden VM to `0.34` and `miden-node-proto-build` to the node revision of [node#2707](https://github.com/0xMiden/node/pull/2707). `miden-debug` is pinned to a git revision that supports VM `0.34` ([#2642](https://github.com/0xMiden/rust-sdk/pull/2642)).
 * [BREAKING][type][rust] `AccountPatch` and `AccountDelta` carry their code as an `AccountCodePatch`. Code in a patch no longer means that the account is new, because a code upgrade also carries code. `AccountPatch::is_full_state` and `Account::try_from(&AccountPatch)` are removed. Use `AccountPatch::try_to_new_account` to build a new account from a creation patch ([#2642](https://github.com/0xMiden/rust-sdk/pull/2642)).
 * [BREAKING][behavior][store] Account code, note scripts and transaction scripts use the hashless MAST serialization of protocol `0.17.0-rc.8`. A store that an earlier version created cannot read them and must be recreated ([#2642](https://github.com/0xMiden/rust-sdk/pull/2642)).
+* [BREAKING][behavior][rust] `TransactionRequest` serializes the new code of an account code upgrade after its other fields, so request bytes that an earlier version wrote do not deserialize ([#2645](https://github.com/0xMiden/rust-sdk/pull/2645)).
 
 ### Features
 
 * [FEATURE][rust] Added support for account code upgrades. The store saves the new code when a local transaction or a synced public account update changes the code of an account, also when a large public account syncs through incremental patches. The store rejects a patch whose code does not match the new code commitment. Re-exported `AccountCodePatch`, `AccountCodeUpgrade`, `UpgradeNote`, `AccountCodeUpgradeAttachment`, `AccountCodeUpgradeAttachmentError` and `UpgradeManager` ([#2642](https://github.com/0xMiden/rust-sdk/pull/2642)).
 * [FEATURE][rust] Added `MockRpcApi::add_pending_executed_transaction`, which commits an executed transaction on the mock chain with a dummy proof ([#2642](https://github.com/0xMiden/rust-sdk/pull/2642)).
+* [FEATURE][rust] Added `TransactionRequestBuilder` helpers for account code upgrades. `account_code_upgrade` gives the new code to a transaction whose custom script upgrades the executing account. `build_account_code_upgrade` builds a request that upgrades the code of an account with `UpgradeManager` and `Authority::AuthControlled`. `build_upgrade_note` builds a request that sends an `UpgradeNote` to a public account, for example a network account that its owner upgrades. `TransactionRequest::account_code_upgrade` returns the new code of a request ([#2645](https://github.com/0xMiden/rust-sdk/pull/2645)).
 
 ### Enhancements
 

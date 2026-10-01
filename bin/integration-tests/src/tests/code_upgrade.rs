@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use anyhow::{Context, Result, anyhow, ensure};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use miden_client::account::component::{
     AccessControl,
     AccountComponent,
@@ -15,16 +15,15 @@ use miden_client::account::{
     AccountBuilder,
     AccountBuilderSchemaCommitmentExt,
     AccountCode,
-    AccountCodeUpgrade,
     AccountId,
     AccountType,
     StorageSlot,
 };
 use miden_client::assembly::CodeBuilder;
 use miden_client::auth::{Approver, AuthSingleSig, RPO_FALCON_SCHEME_ID};
-use miden_client::crypto::FeltRng;
-use miden_client::note::{Note, NoteScriptRoot, P2idNote, UpgradeNote};
+use miden_client::note::{AccountCodeUpgradeAttachment, NoteScriptRoot, P2idNote, UpgradeNote};
 use miden_client::testing::common::{AccountSetup, TestClient, auth_component};
+use miden_client::testing::standards::account_component::MockProceduresComponent;
 use miden_client::transaction::{TransactionRequest, TransactionRequestBuilder};
 use miden_client::{Felt, Word, ZERO};
 use rand::Rng;
@@ -78,18 +77,20 @@ fn counter_component() -> Result<AccountComponent> {
 }
 
 /// Returns a request that upgrades the code of the executing account to `code`. If
-/// `increment_counter` is set, the same transaction also increments the counter in storage.
+/// `increment_counter` is set, the same transaction also increments the counter in storage, so the
+/// request needs a custom script.
 fn upgrade_request(
     client: &TestClient,
     code: &AccountCode,
     increment_counter: bool,
 ) -> Result<TransactionRequest> {
+    if !increment_counter {
+        return TransactionRequestBuilder::new()
+            .build_account_code_upgrade(code.clone())
+            .context("failed to build the upgrade transaction request");
+    }
+
     let new_code_commitment = code.commitment();
-    let increment_call = if increment_counter {
-        "call.counter_contract::increment_count"
-    } else {
-        ""
-    };
     let tx_script = client
         .code_builder()
         .with_linked_module("external_contract::counter_contract", COUNTER_CONTRACT)?
@@ -105,14 +106,14 @@ fn upgrade_request(
                 call.account_upgrade::upgrade
                 dropw dropw
 
-                {increment_call}
+                call.counter_contract::increment_count
             end"
         ))
         .context("failed to compile the upgrade transaction script")?;
 
     TransactionRequestBuilder::new()
         .custom_script(tx_script)
-        .extend_advice_map([AccountCodeUpgrade::new(code.clone()).to_advice_map_entry()])
+        .account_code_upgrade(code.clone())
         .build()
         .context("failed to build the upgrade transaction request")
 }
@@ -151,13 +152,14 @@ async fn upgradeable_network_components(
         .collect())
 }
 
-// TESTS
-// ================================================================================================
-
-/// The owner of a network account sends an upgrade note to it. The network transaction builder
-/// consumes the note and upgrades the code. The client syncs the account and stores the new code.
-pub async fn test_network_account_code_upgrade_via_upgrade_note(
+/// Deploys a network account that a new wallet owns. The owner sends an upgrade note whose new code
+/// adds `extra_components`. The note must carry the code in `expected_num_chunks` attachments. The
+/// network transaction builder consumes the note and upgrades the code. The client syncs the
+/// account and stores the new code.
+async fn network_account_code_upgrade_via_upgrade_note(
     client_config: ClientConfig,
+    extra_components: Vec<AccountComponent>,
+    expected_num_chunks: usize,
 ) -> Result<()> {
     let mut client = client_config.into_client().await?;
     client.sync_state().await?;
@@ -175,21 +177,30 @@ pub async fn test_network_account_code_upgrade_via_upgrade_note(
     client.add_account(&network_account, false).await?;
     client.deploy_account(network_account.id()).await?;
 
-    let upgraded_code = upgraded_code(components)?;
+    let upgraded_code = upgraded_code(components.into_iter().chain(extra_components).collect())?;
     ensure!(
         upgraded_code.commitment() != network_account.code().commitment(),
         "the upgraded code must be different from the current code"
     );
 
-    let upgrade_note: Note = UpgradeNote::builder()
-        .sender(owner.id())
-        .target(network_account.id())
-        .code(upgraded_code.clone())
-        .serial_number(client.rng().draw_word())
-        .build()
-        .context("failed to build the upgrade note")?
-        .into();
-    let request = TransactionRequestBuilder::new().own_output_notes(vec![upgrade_note]).build()?;
+    let request = TransactionRequestBuilder::new()
+        .build_upgrade_note(owner.id(), network_account.id(), upgraded_code.clone(), client.rng())
+        .context("failed to build the upgrade note request")?;
+    let notes = request.expected_output_own_notes();
+    let [note] = notes.as_slice() else {
+        bail!("the request should create exactly one upgrade note");
+    };
+    let num_chunks = note
+        .attachments()
+        .iter()
+        .filter(|attachment| {
+            attachment.attachment_scheme() == AccountCodeUpgradeAttachment::ATTACHMENT_SCHEME
+        })
+        .count();
+    ensure!(
+        num_chunks == expected_num_chunks,
+        "the upgrade note should carry the code in {expected_num_chunks} attachments, not {num_chunks}"
+    );
     client.execute_tx_and_sync(owner.id(), request).await?;
 
     // Wait until the network transaction builder consumes the upgrade note.
@@ -218,6 +229,31 @@ pub async fn test_network_account_code_upgrade_via_upgrade_note(
     assert_eq!(stored.to_commitment(), node_account.to_commitment());
 
     Ok(())
+}
+
+// TESTS
+// ================================================================================================
+
+/// The owner of a network account sends an upgrade note to it. The network transaction builder
+/// consumes the note and upgrades the code. The client syncs the account and stores the new code.
+pub async fn test_network_account_code_upgrade_via_upgrade_note(
+    client_config: ClientConfig,
+) -> Result<()> {
+    network_account_code_upgrade_via_upgrade_note(client_config, vec![], 1).await
+}
+
+/// The owner of a network account sends an upgrade note with new code that does not fit into one
+/// note attachment. The note carries the code in two attachments. The network transaction builder
+/// consumes the note and upgrades the code. The client syncs the account and stores the new code.
+pub async fn test_network_account_code_upgrade_via_two_chunk_upgrade_note(
+    client_config: ClientConfig,
+) -> Result<()> {
+    network_account_code_upgrade_via_upgrade_note(
+        client_config,
+        vec![MockProceduresComponent::new(150).into()],
+        2,
+    )
+    .await
 }
 
 /// A public account upgrades its code, and then upgrades back to the original code and increments a

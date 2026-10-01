@@ -6,8 +6,10 @@ package client.transaction;
 
 import "account.proto";
 import "block_number.proto";
+import "note.proto";
 import "primitives.proto";
 import "transaction.proto";
+import "transaction_inputs.proto";
 
 // Status of a transaction the client tracks.
 message TransactionStatus {
@@ -57,4 +59,77 @@ message TransactionDetails {
   blockchain.BlockNumber expiration_block_num = 8;
   // Time at which the client created the transaction, in seconds since the Unix epoch.
   uint64 creation_timestamp = 9;
+}
+
+// A transaction that an account can execute.
+message TransactionRequest {
+  repeated blockchain.BlockNumber block_numbers = 1;
+  repeated note.Note input_notes = 2;
+  repeated NoteArgsEntry input_notes_args = 3;
+  repeated .transaction.InputNote explicit_input_notes = 4;
+  TransactionScriptTemplate script_template = 5;
+  repeated note.NoteRecipient expected_output_recipients = 6;
+  repeated ExpectedFutureNote expected_future_notes = 7;
+  primitives.AdviceMap advice_map = 8;
+  primitives.MerkleStore merkle_store = 9;
+  repeated ForeignAccount foreign_accounts = 10;
+  optional uint32 expiration_delta = 11;
+  bool ignore_invalid_input_notes = 12;
+  // Word that the transaction script receives on the operand stack.
+  primitives.Word script_arg = 13;
+  // Word that the authentication procedure receives on the operand stack.
+  primitives.Word auth_arg = 14;
+  primitives.Word fee_conversion_salt = 15;
+  repeated note.NoteScript expected_ntx_scripts = 16;
+}
+
+// Arguments of one input note.
+message NoteArgsEntry {
+  note.NoteId note_id = 1;
+  // An absent value means that the note has no arguments.
+  primitives.Word note_args = 2;
+}
+
+// Template from which the client builds the transaction script.
+message TransactionScriptTemplate {
+  // Notes that the transaction script must create.
+  message SendNotes {
+    repeated note.PartialNote notes = 1;
+  }
+
+  oneof template {
+    // The exact transaction script to execute.
+    .transaction.TransactionScript custom_script = 1;
+    SendNotes send_notes = 2;
+  }
+}
+
+// A note that a later transaction is expected to create.
+message ExpectedFutureNote {
+  note.NoteDetails details = 1;
+  fixed32 tag = 2;
+}
+
+// An account that is not the executing account and that the transaction reads.
+message ForeignAccount {
+  message Public {
+    account.AccountId account_id = 1;
+    AccountStorageRequirements storage_requirements = 2;
+  }
+
+  oneof account {
+    Public public = 1;
+    account.PartialAccount private = 2;
+  }
+}
+
+// Storage map entries that the client gets for a public foreign account.
+message AccountStorageRequirements {
+  // Map keys of one storage slot. An empty key list means all entries of the slot.
+  message SlotKeys {
+    string slot_name = 1;
+    repeated primitives.Word keys = 2;
+  }
+
+  repeated SlotKeys slots = 1;
 }

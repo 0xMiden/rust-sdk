@@ -456,6 +456,34 @@ impl SqliteStore {
             .into());
         }
 
+        // The header refers to the account code by its commitment, so a code upgrade must store the
+        // new code before the header.
+        match patch.code().as_code() {
+            Some(code) => {
+                if code.commitment() != final_account_state.code_commitment() {
+                    return Err(StoreError::DatabaseError(format!(
+                        "apply_account_patch: patch code commitment {} for account {} does not \
+                         match the final code commitment {}",
+                        code.commitment(),
+                        account_id,
+                        final_account_state.code_commitment(),
+                    )));
+                }
+                Self::insert_account_code(tx, code)?;
+            },
+            None => {
+                if init_account_state.code_commitment() != final_account_state.code_commitment() {
+                    return Err(StoreError::DatabaseError(format!(
+                        "apply_account_patch: patch for account {} changes the code commitment \
+                         from {} to {} but does not contain the new code",
+                        account_id,
+                        init_account_state.code_commitment(),
+                        final_account_state.code_commitment(),
+                    )));
+                }
+            },
+        }
+
         // Archive old header and insert the new one
         Self::replace_account_header(tx, final_account_state, init_account_state, None)?;
 
@@ -926,6 +954,10 @@ impl SqliteStore {
             params![&nonce_val, &account_id_bytes],
         )
         .into_store_error()?;
+
+        // The new state can have upgraded code. The header refers to the code by its commitment, so
+        // store the code before the header.
+        Self::insert_account_code(tx, new_account_state.code())?;
 
         // Archive the old header to historical and write the new one to latest. A state that is
         // still undeployed keeps its seed

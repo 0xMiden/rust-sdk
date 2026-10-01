@@ -17,7 +17,7 @@ use crate::forest::{ScopedAccountForest, SqliteForestBackend};
 use crate::note::apply_note_updates_tx;
 use crate::sql_error::SqlResultExt;
 use crate::transaction::upsert_transaction_record;
-use crate::{insert_sql, subst, with_write_tx};
+use crate::{insert_sql, proto, subst, with_write_tx};
 
 impl SqliteStore {
     pub(crate) fn get_note_tags(conn: &mut Connection) -> Result<Vec<NoteTagRecord>, StoreError> {
@@ -89,7 +89,7 @@ impl SqliteStore {
         with_write_tx(conn, |db_tx| {
             let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(db_tx))?;
             // Update blockchain checkpoint (block number and peaks) only if moving forward.
-            let new_peaks_bytes = partial_blockchain_updates.new_peaks.peaks().to_vec().to_bytes();
+            let new_peaks_bytes = proto::encode_mmr_peaks(&partial_blockchain_updates.new_peaks);
             const BLOCKCHAIN_CHECKPOINT_QUERY: &str = "\
                 UPDATE blockchain_checkpoint \
                 SET block_num = ?1, partial_blockchain_peaks = ?2 \

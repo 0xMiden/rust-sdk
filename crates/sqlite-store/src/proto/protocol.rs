@@ -9,6 +9,7 @@ use miden_objects::{DecodeMessageExt, proto as objects};
 use miden_protocol::account::{AccountCode, AccountProcedureRoot};
 use miden_protocol::block::BlockHeader;
 use miden_protocol::block::account_tree::AccountWitness;
+use miden_protocol::crypto::merkle::mmr::{Forest, MmrPeaks};
 use miden_protocol::note::{
     NoteAssets,
     NoteAttachments,
@@ -180,6 +181,23 @@ impl ProtobufValue for NoteAssets {
             .collect::<Result<Vec<_>, _>>()?;
         Self::new(assets).map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))
     }
+}
+
+// MMR PEAKS
+// ================================================================================================
+
+/// Encodes the peaks of the partial blockchain MMR without the forest.
+pub fn encode_mmr_peaks(peaks: &MmrPeaks) -> Vec<u8> {
+    prost::Message::encode_to_vec(&proto::MmrPeaks {
+        peaks: peaks.peaks().iter().map(Into::into).collect(),
+    })
+}
+
+/// Decodes the peaks of the partial blockchain MMR. The forest comes from the checkpoint row.
+pub fn decode_mmr_peaks(forest: Forest, bytes: &[u8]) -> Result<MmrPeaks, ProtoDecodeError> {
+    let message = <proto::MmrPeaks as prost::Message>::decode(bytes)?;
+    let peaks = message.peaks.into_iter().map(Word::try_from).collect::<Result<Vec<_>, _>>()?;
+    MmrPeaks::new(forest, peaks).map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))
 }
 
 // NOTE INCLUSION PROOF

@@ -1,15 +1,27 @@
 # Changelog
 
-## Unreleased
+## 0.17.0-rc.5 (2026-10-01)
 
 ### Breaking Changes
 
 * [BREAKING][type][rust] Sync endpoints now report a `FutureBlock` error when the requested block is ahead of the node's chain tip. Endpoint errors now match the node's error codes, including new transaction submission errors, and unused error variants were removed ([#2383](https://github.com/0xMiden/rust-sdk/pull/2623)).
-* [BREAKING][arch][store] The SQLite store writes its structured values as protobuf messages instead of the `Serializable` encoding: transaction details and status, input and output note states, account code, note and transaction scripts, note assets, attachments, storage and metadata, block headers, and account witnesses. Requires a new client database ([#2624](https://github.com/0xMiden/rust-sdk/pull/2624)).
+* [BREAKING][arch][store] The SQLite store writes its structured values as protobuf messages instead of the `Serializable` encoding: transaction details and status, input and output note states, account code, note and transaction scripts, note assets, attachments, storage and metadata, block headers, partial blockchain peaks, and account witnesses. Requires a new client database ([#2624](https://github.com/0xMiden/rust-sdk/pull/2624), [#2647](https://github.com/0xMiden/rust-sdk/pull/2647)).
 * [BREAKING][param][rust] The `Store` trait requires five account-witness registry methods: `track_account_witness`, `untrack_account_witness`, `tracked_account_witnesses`, `get_account_witness` and `update_account_witness`. They have no default bodies, so every out-of-tree implementation must provide them ([#2476](https://github.com/0xMiden/rust-sdk/pull/2476)).
+* [BREAKING][arch][rust] Updated protocol dependencies to the `0.17.0-rc.9` pre-release and pinned them to that exact version (`=0.17.0-rc.9`), Miden VM to `0.35`, `miden-debug` to `0.18.0` and `miden-node-proto-build` to `0.17.0-rc.4` ([#2651](https://github.com/0xMiden/rust-sdk/pull/2651)).
+* [BREAKING][api][rust,cli] Updated the node, remote prover and note transport clients to the v1 gRPC APIs from node `0.17.0-rc.4`. Replaced `Client::send_private_note` and `Client::send_private_note_with_block_hint` with `Client::send_private_note_with_proof`. Note transport submissions now require a `NoteInclusionProof` for a committed note ([#2651](https://github.com/0xMiden/rust-sdk/pull/2651)).
+* [BREAKING][type][rust] `AccountPatch` and `AccountDelta` carry their code as an `AccountCodePatch`. Code in a patch no longer means that the account is new, because a code upgrade also carries code. `AccountPatch::is_full_state` and `Account::try_from(&AccountPatch)` are removed. Use `AccountPatch::try_to_new_account` to build a new account from a creation patch ([#2642](https://github.com/0xMiden/rust-sdk/pull/2642)).
+* [BREAKING][behavior][store] Account code, note scripts and transaction scripts use the hashless MAST serialization of protocol `0.17.0-rc.9`. A store that an earlier version created cannot read them and must be recreated ([#2642](https://github.com/0xMiden/rust-sdk/pull/2642)).
+* [BREAKING][behavior][rust] `TransactionRequest` serializes the new code of an account code upgrade after its other fields, so request bytes that an earlier version wrote do not deserialize ([#2645](https://github.com/0xMiden/rust-sdk/pull/2645)).
+
+### Features
+
+* [FEATURE][rust] Added support for account code upgrades. The store saves the new code when a local transaction or a synced public account update changes the code of an account, also when a large public account syncs through incremental patches. The store rejects a patch whose code does not match the new code commitment. Re-exported `AccountCodePatch`, `AccountCodeUpgrade`, `UpgradeNote`, `AccountCodeUpgradeAttachment`, `AccountCodeUpgradeAttachmentError` and `UpgradeManager` ([#2642](https://github.com/0xMiden/rust-sdk/pull/2642)).
+* [FEATURE][rust] Added `MockRpcApi::add_pending_executed_transaction`, which commits an executed transaction on the mock chain with a dummy proof ([#2642](https://github.com/0xMiden/rust-sdk/pull/2642)).
+* [FEATURE][rust] Added `TransactionRequestBuilder` helpers for account code upgrades. `account_code_upgrade` gives the new code to a transaction whose custom script upgrades the executing account. `build_account_code_upgrade` builds a request that upgrades the code of an account with `UpgradeManager` and `Authority::AuthControlled`. `TransactionRequest::account_code_upgrade` returns the new code of a request ([#2645](https://github.com/0xMiden/rust-sdk/pull/2645)).
 
 ### Enhancements
 
+* [FEATURE][cli] The CLI logs the `.miden` directory it loaded the configuration from, and whether it is the local or the global one, at debug level. Run a command with `RUST_LOG=debug` to see it ([#2648](https://github.com/0xMiden/rust-sdk/pull/2648)).
 * [FEATURE][rust] Added `Client::track_account_witness`, `Client::untrack_account_witness` and `Client::tracked_account_witnesses` to register accounts whose account witness the sync keeps fresh in the store (new `account_witnesses` table). A transaction using a registered account as a foreign account builds its inputs from the store instead of issuing a `GetAccount` request, moving the cost from once per transaction to once per sync ([#2476](https://github.com/0xMiden/rust-sdk/pull/2476)).
 
 ### Fixes

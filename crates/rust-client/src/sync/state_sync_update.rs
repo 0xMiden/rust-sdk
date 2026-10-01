@@ -4,6 +4,7 @@ use alloc::vec::Vec;
 use miden_protocol::account::{
     Account,
     AccountCode,
+    AccountCodePatch,
     AccountHeader,
     AccountId,
     AccountPatch,
@@ -488,21 +489,23 @@ impl PublicAccountUpdate {
 /// map entry, and vault asset, so the patch is assembled directly from them with no need to load
 /// the prior account state.
 ///
-/// An update of an existing account (final nonce > 1) yields a partial-state patch with no code. A
-/// newly created account (final nonce 1) cannot be represented as a partial-state patch, so the
-/// patch becomes a full-state patch carrying `code` (already validated against the on-chain code
-/// commitment by the caller).
+/// A newly created account (final nonce 1) gets a creation patch: every storage slot is a `Create`
+/// operation and the patch carries `code`. An update of an existing account (final nonce > 1) gets
+/// `Update` operations. It carries `code` only if the code commitment differs from
+/// `local_code_commitment`, which means that the account upgraded its code. The caller must
+/// validate `code` against the on-chain code commitment.
 pub(crate) fn build_account_patch(
     new_header: &AccountHeader,
     value_slot_updates: Vec<(StorageSlotName, Word)>,
     map_entries: BTreeMap<StorageSlotName, StorageMapPatchEntries>,
     vault_patch: AccountVaultPatch,
     code: AccountCode,
+    local_code_commitment: Word,
 ) -> Result<AccountPatch, AccountPatchError> {
-    let is_full_state = new_header.nonce() == ONE;
+    let is_new_account = new_header.nonce() == ONE;
 
     let value_entries = value_slot_updates.into_iter().map(|(slot_name, new_value)| {
-        let value_patch = if is_full_state {
+        let value_patch = if is_new_account {
             StorageValuePatch::Create { value: new_value }
         } else {
             StorageValuePatch::Update { value: new_value }
@@ -511,7 +514,7 @@ pub(crate) fn build_account_patch(
     });
 
     let map_entries = map_entries.into_iter().map(|(slot_name, entries)| {
-        let map_patch = if is_full_state {
+        let map_patch = if is_new_account {
             StorageMapPatch::Create { entries }
         } else {
             StorageMapPatch::Update { entries }
@@ -521,7 +524,8 @@ pub(crate) fn build_account_patch(
 
     let storage = AccountStoragePatch::from_entries(value_entries.chain(map_entries))?;
 
-    let code = is_full_state.then_some(code);
+    let carries_code = is_new_account || code.commitment() != local_code_commitment;
+    let code = AccountCodePatch::new(carries_code.then_some(code));
 
     AccountPatch::new(new_header.id(), storage, vault_patch, code, Some(new_header.nonce()))
 }
@@ -643,6 +647,7 @@ mod tests {
             map_entries,
             AccountVaultPatch::default(),
             AccountCode::mock(),
+            AccountCode::mock().commitment(),
         )
     }
 
@@ -653,7 +658,7 @@ mod tests {
         assert_eq!(patch.final_nonce(), Some(Felt::new_unchecked(4)));
         assert!(patch.storage().is_empty());
         assert!(patch.vault().is_empty());
-        assert!(!patch.is_full_state());
+        assert!(patch.code().is_empty());
     }
 
     #[test]
@@ -687,14 +692,47 @@ mod tests {
     }
 
     /// A newly created account (final nonce 1) observed via the oversized sync path yields a
-    /// full-state patch carrying the supplied code, rather than failing to build.
+    /// creation patch carrying the supplied code, rather than failing to build.
     #[test]
-    fn build_patch_for_new_account_is_full_state() {
+    fn build_patch_for_new_account_carries_code() {
         let value_slot = slot_name("miden::test::value");
         let patch = build_patch(1, vec![(value_slot, word(1))], BTreeMap::new()).unwrap();
 
-        assert!(patch.is_full_state());
+        assert_eq!(patch.code().as_code(), Some(&AccountCode::mock()));
         assert_eq!(patch.final_nonce(), Some(ONE));
+        assert!(patch.try_to_new_account().is_ok());
+    }
+
+    /// An existing account whose on-chain code commitment differs from the local one upgraded its
+    /// code. The patch carries the new code and keeps `Update` operations for storage.
+    #[test]
+    fn build_patch_for_code_upgrade_carries_new_code() {
+        let value_slot = slot_name("miden::test::value");
+        let local_code_commitment = word(7);
+        assert_ne!(local_code_commitment, AccountCode::mock().commitment());
+
+        let patch = build_account_patch(
+            &header_with_nonce(3),
+            vec![(value_slot.clone(), word(3))],
+            BTreeMap::new(),
+            AccountVaultPatch::default(),
+            AccountCode::mock(),
+            local_code_commitment,
+        )
+        .unwrap();
+
+        assert_eq!(patch.code().as_code(), Some(&AccountCode::mock()));
+        assert_eq!(patch.storage().updated_value(&value_slot), Some(word(3)));
+        assert!(patch.try_to_new_account().is_err());
+    }
+
+    /// An existing account whose code commitment did not change gets a patch without code.
+    #[test]
+    fn build_patch_without_code_change_omits_code() {
+        let value_slot = slot_name("miden::test::value");
+        let patch = build_patch(3, vec![(value_slot, word(3))], BTreeMap::new()).unwrap();
+
+        assert!(patch.code().is_empty());
     }
 
     /// A newly created account (final nonce 1, full-state) emits each map slot as a `Create`, which

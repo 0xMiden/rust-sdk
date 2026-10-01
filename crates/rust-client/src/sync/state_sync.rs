@@ -1274,6 +1274,9 @@ impl StateSync {
     /// Builds a [`PublicAccountUpdate::Patch`] by fetching incremental storage map and vault
     /// updates over the synced range and assembling the absolute [`AccountPatch`] from them.
     ///
+    /// `local_header` is the state of the account in the store. If the on-chain code commitment is
+    /// different, the account upgraded its code and the patch carries the new code.
+    ///
     /// # Security
     ///
     /// The RPC layer range-checks only the pagination cursor of the `sync_storage_maps` and
@@ -1320,6 +1323,7 @@ impl StateSync {
             map_info.map_entries,
             vault_info.vault_patch,
             details.code.clone(),
+            previous_header.code_commitment(),
         )
         .map_err(StoreError::AccountPatchError)?;
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+* [FEATURE][cli] Added the repeatable `--init-storage-value <slot::name>=<value>` flag to `new-wallet` and `new-account`. Each use sets one init storage value. The flag cannot be combined with `--init-storage-data-path` ([#2641](https://github.com/0xMiden/rust-sdk/pull/2641)).
+
 ## 0.17.0-rc.5 (2026-10-01)
 
 ### Breaking Changes
@@ -23,10 +29,6 @@
 
 * [FEATURE][cli] The CLI logs the `.miden` directory it loaded the configuration from, and whether it is the local or the global one, at debug level. Run a command with `RUST_LOG=debug` to see it ([#2648](https://github.com/0xMiden/rust-sdk/pull/2648)).
 * [FEATURE][rust] Added `Client::track_account_witness`, `Client::untrack_account_witness` and `Client::tracked_account_witnesses` to register accounts whose account witness the sync keeps fresh in the store (new `account_witnesses` table). A transaction using a registered account as a foreign account builds its inputs from the store instead of issuing a `GetAccount` request, moving the cost from once per transaction to once per sync ([#2476](https://github.com/0xMiden/rust-sdk/pull/2476)).
-
-### Features
-
-* [FEATURE][cli] Added the repeatable `--init-storage-value <slot::name>=<value>` flag to `new-wallet` and `new-account`. Each use sets one init storage value. The flag cannot be combined with `--init-storage-data-path` ([#2641](https://github.com/0xMiden/rust-sdk/pull/2641).
 
 ### Fixes
 

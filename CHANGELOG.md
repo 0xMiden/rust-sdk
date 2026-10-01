@@ -4,12 +4,8 @@
 
 ### Breaking Changes
 
-* [BREAKING][removal][rust,cli] Removed unused items: the deprecated `ClientBuilder::tx_graceful_blocks` alias (use `tx_discard_delta`), the `NoteTransportUpdate` struct, the `AccountProofs` type alias, the `CliError::Internal` variant, and the test helpers `FaultyNoteTransportApi::fail_next_n` and `MockRpcApi::get_private_available_notes`.
-
-### Fixes
-
-* [FIX][rust] State sync matches an included transaction to a local pending transaction by its ID only. An included transaction with an unknown ID from the same account and initial state no longer marks the local transaction as committed and is handled as an external transaction.
-
+* [BREAKING][removal][rust,cli] Removed unused items: the deprecated `ClientBuilder::tx_graceful_blocks` alias (use `tx_discard_delta`), the `NoteTransportUpdate` struct, the `AccountProofs` type alias, the `CliError::Internal` variant ([#2661](https://github.com/0xMiden/rust-sdk/pull/2661))..
+* 
 ## 0.17.0-rc.5 (2026-10-01)
 
 ### Breaking Changes

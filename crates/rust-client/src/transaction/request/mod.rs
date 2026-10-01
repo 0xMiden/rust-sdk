@@ -6,7 +6,8 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::num::NonZeroU16;
 
-use miden_protocol::account::{AccountCodeInterface, AccountId};
+use miden_protocol::Word;
+use miden_protocol::account::{AccountCodeInterface, AccountCodeUpgrade, AccountId};
 use miden_protocol::asset::Asset;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::merkle::MerkleError;
@@ -14,7 +15,6 @@ use miden_protocol::crypto::merkle::store::MerkleStore;
 use miden_protocol::errors::{
     AccountError,
     AssetError,
-    AssetVaultError,
     NoteError,
     StorageMapError,
     TransactionInputError,
@@ -37,7 +37,6 @@ use miden_protocol::transaction::{
     TransactionScript,
 };
 use miden_protocol::vm::AdviceMap;
-use miden_protocol::{MastForestScriptError, Word};
 use miden_standards::account::auth::{FeeConversionInfo, commit_fee_conversion_info};
 use miden_standards::errors::CodeBuilderError;
 use miden_standards::tx_script::{
@@ -55,6 +54,7 @@ use miden_tx::utils::serde::{
 use thiserror::Error;
 
 mod builder;
+mod code_upgrade;
 pub use builder::{
     PaymentNoteDescription,
     PswapTransactionData,
@@ -145,6 +145,9 @@ pub struct TransactionRequest {
     ///
     /// See [`TransactionRequestBuilder::expected_ntx_scripts`] for details.
     expected_ntx_scripts: Vec<NoteScript>,
+    /// New code of the executing account, set through
+    /// [`TransactionRequestBuilder::account_code_upgrade`].
+    account_code_upgrade: Option<AccountCodeUpgrade>,
 }
 
 impl TransactionRequest {
@@ -273,6 +276,11 @@ impl TransactionRequest {
         &self.expected_ntx_scripts
     }
 
+    /// Returns the new code that the transaction gives to the executing account, if any.
+    pub fn account_code_upgrade(&self) -> Option<&AccountCodeUpgrade> {
+        self.account_code_upgrade.as_ref()
+    }
+
     // STATE MUTATORS
     // --------------------------------------------------------------------------------------------
 
@@ -370,6 +378,7 @@ impl TransactionRequest {
             expected_output_recipients,
             advice_map,
             merkle_store,
+            account_code_upgrade,
             ..
         } = self;
 
@@ -385,6 +394,10 @@ impl TransactionRequest {
 
         if let Some(auth_argument) = self.auth_arg {
             tx_args = tx_args.with_auth_args(auth_argument);
+        }
+
+        if let Some(account_code_upgrade) = account_code_upgrade {
+            tx_args = tx_args.with_account_code_upgrade(account_code_upgrade);
         }
 
         tx_args
@@ -473,6 +486,7 @@ impl Serializable for TransactionRequest {
         self.auth_arg.write_into(target);
         self.fee_conversion_salt.write_into(target);
         self.expected_ntx_scripts.write_into(target);
+        self.account_code_upgrade.write_into(target);
     }
 }
 
@@ -523,6 +537,7 @@ impl Deserializable for TransactionRequest {
         let auth_arg = Option::<Word>::read_from(source)?;
         let fee_conversion_salt = Option::<Word>::read_from(source)?;
         let expected_ntx_scripts = Vec::<NoteScript>::read_from(source)?;
+        let account_code_upgrade = Option::<AccountCodeUpgrade>::read_from(source)?;
 
         let request = TransactionRequest {
             block_numbers,
@@ -541,6 +556,7 @@ impl Deserializable for TransactionRequest {
             auth_arg,
             fee_conversion_salt,
             expected_ntx_scripts,
+            account_code_upgrade,
         };
         request
             .validate()
@@ -636,14 +652,10 @@ pub enum TransactionRequestError {
          caller must declare a fresh one with `TransactionRequestBuilder::fee_conversion_salt`"
     )]
     FeeConversionInfoRequired(String),
-    #[error("invalid transaction script")]
-    InvalidTransactionScript(#[from] MastForestScriptError),
     #[error("merkle proof error")]
     MerkleError(#[from] MerkleError),
     #[error("empty transaction: the request has no input notes and no account state changes")]
     NoInputNotesNorAccountChange,
-    #[error("note not found: {0}")]
-    NoteNotFound(String),
     #[error("failed to create note")]
     NoteCreationError(#[from] NoteError),
     #[error("note failed validation")]
@@ -674,12 +686,6 @@ pub enum TransactionRequestError {
     TransactionInputError(#[from] TransactionInputError),
     #[error("account storage map error")]
     StorageMapError(#[from] StorageMapError),
-    #[error("asset vault error")]
-    AssetVaultError(#[from] AssetVaultError),
-    #[error(
-        "unsupported authentication scheme ID {0}; supported schemes are: RpoFalcon512 (0) and EcdsaK256Keccak (1)"
-    )]
-    UnsupportedAuthSchemeId(u8),
 }
 
 // TESTS

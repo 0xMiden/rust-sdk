@@ -2206,7 +2206,7 @@ mod tests {
         // An honest proof with one extra asset slipped into the vault. The header and the witness
         // are untouched, so every check on the proof itself still passes.
         let (proof_block_num, proof) = get_account_proof(&rpc_api, account.id()).await;
-        let mut details = StateSync::validate_account_proof(
+        let (_, mut details) = StateSync::validate_account_proof(
             proof,
             proof_block_num,
             account.id(),

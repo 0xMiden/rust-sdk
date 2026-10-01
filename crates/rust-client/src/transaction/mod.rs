@@ -104,11 +104,7 @@ use crate::rpc::domain::account::{
 };
 use crate::rpc::encryption::{TransactionEncryptionKey, seal_transaction_inputs};
 use crate::rpc::{AccountStateAt, NodeRpcClient, RpcError};
-use crate::store::data_store::{
-    ClientDataStore,
-    build_partial_mmr_with_paths,
-    get_block_headers_with_fallback,
-};
+use crate::store::data_store::{ClientDataStore, build_partial_mmr_and_headers_with_fallback};
 use crate::store::input_note_states::ExpectedNoteState;
 use crate::store::{
     AccountRecord,
@@ -418,12 +414,14 @@ where
             return Err(StoreError::BlockHeaderNotFound(future_block).into());
         }
 
-        let block_headers =
-            get_block_headers_with_fallback(&self.store, &self.rpc_api, &tracked_blocks).await?;
-
         let peaks = self.store.get_current_blockchain_peaks().await?;
-        let partial_mmr =
-            build_partial_mmr_with_paths(&self.store, &self.rpc_api, peaks, &block_headers).await?;
+        let (partial_mmr, block_headers) = build_partial_mmr_and_headers_with_fallback(
+            &self.store,
+            &self.rpc_api,
+            peaks,
+            &tracked_blocks,
+        )
+        .await?;
 
         let chain = PartialBlockchain::new(partial_mmr, block_headers)?;
 

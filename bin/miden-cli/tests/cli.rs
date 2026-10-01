@@ -305,6 +305,37 @@ fn silent_initialization_uses_default_values() {
 }
 
 #[test]
+#[serial_test::file_serial]
+fn loaded_config_directory_is_logged_at_debug_level() {
+    let miden_home = set_isolated_miden_home();
+
+    let temp_dir = temp_dir().join(format!("cli-test-{}", rand::rng().random::<u64>()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    // Without a local config, the global one is loaded.
+    let mut account_cmd = cargo_bin_cmd!("miden-client");
+    account_cmd.args(["account"]).env("RUST_LOG", "debug");
+    account_cmd
+        .current_dir(&temp_dir)
+        .assert()
+        .success()
+        .stdout(contains(format!("Loaded configuration from {} (Global)", miden_home.display())));
+
+    // With a local config, that one is loaded instead.
+    let mut init_cmd = cargo_bin_cmd!("miden-client");
+    init_cmd.args(["init", "--local", "--network", "localhost"]);
+    init_cmd.current_dir(&temp_dir).assert().success();
+
+    let mut account_cmd = cargo_bin_cmd!("miden-client");
+    account_cmd.args(["account"]).env("RUST_LOG", "debug");
+    // The local directory is derived from the current directory, which the OS may canonicalize.
+    account_cmd.current_dir(&temp_dir).assert().success().stdout(contains(format!(
+        "Loaded configuration from {} (Local)",
+        temp_dir.canonicalize().unwrap().join(MIDEN_DIR).display()
+    )));
+}
+
+#[test]
 fn miden_directory_structure_creation() {
     let temp_dir = temp_dir().join(format!("cli-test-{}", rand::rng().random::<u64>()));
     std::fs::create_dir_all(&temp_dir).unwrap();

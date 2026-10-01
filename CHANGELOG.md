@@ -6,6 +6,7 @@
 
 * [BREAKING][type][rust] Added `TransactionFilter::Query`, which takes a `TransactionFilterQuery` to select transactions by account and status, newest first, up to a limit. `TransactionFilter` is now `#[non_exhaustive]` ([#2589](https://github.com/0xMiden/rust-sdk/pull/2589)).
 * [FEATURE][rust] Added `Client::track_account_witness`, `Client::untrack_account_witness` and `Client::tracked_account_witnesses` to register accounts whose account witness the sync keeps fresh in the store (new `account_witnesses` table). A transaction using a registered account as a foreign account builds its inputs from the store instead of issuing a `GetAccount` request, moving the cost from once per transaction to once per sync ([#2476](https://github.com/0xMiden/rust-sdk/pull/2476)).
+* [BREAKING][type][rust] Sync endpoints now report a `FutureBlock` error when the requested block is ahead of the node's chain tip. Endpoint errors now match the node's error codes, including new transaction submission errors, and unused error variants were removed ([#2383](https://github.com/0xMiden/rust-sdk/pull/2623)).
 * [BREAKING][arch][store] The SQLite store writes its structured values as protobuf messages instead of the `Serializable` encoding: transaction details and status, input and output note states, account code, note and transaction scripts, note assets, attachments, storage and metadata, block headers, and account witnesses. Requires a new client database ([#2624](https://github.com/0xMiden/rust-sdk/pull/2624)).
 * [BREAKING][param][rust] The `Store` trait requires five account-witness registry methods: `track_account_witness`, `untrack_account_witness`, `tracked_account_witnesses`, `get_account_witness` and `update_account_witness`. They have no default bodies, so every out-of-tree implementation must provide them ([#2476](https://github.com/0xMiden/rust-sdk/pull/2476)).
 
@@ -14,11 +15,12 @@
 * [FEATURE][cli] Added `tx --show <ID>`, which prints the transaction record and its input and output notes with their standard note name, store state and decoded P2ID, P2IDE, SWAP or PSWAP storage. Added `--account-id`, `--status` and `--limit` filters to `tx --list`, which now orders transactions by creation time ([#2589](https://github.com/0xMiden/rust-sdk/pull/2589)).
 * [FEATURE][rust] Added the `SendNotesTransactionScript` re-export to `miden_client::transaction` ([#2589](https://github.com/0xMiden/rust-sdk/pull/2589)).
 * [FEATURE][cli] The CLI caches faucet metadata lookups for the lifetime of a command, so several assets from the same faucet cause at most one metadata RPC fetch. The cache also holds misses ([#2589](https://github.com/0xMiden/rust-sdk/pull/2589)).
+* [FEATURE][cli] The CLI logs the `.miden` directory it loaded the configuration from, and whether it is the local or the global one, at debug level. Run a command with `RUST_LOG=debug` to see it ([#2648](https://github.com/0xMiden/rust-sdk/pull/2648)).
 
 ### Fixes
 
 * [FIX][rust] `IdPrefixFetchError::NoMatch` names the kind of entry that was looked up, instead of always saying "notes" ([#2589](https://github.com/0xMiden/rust-sdk/pull/2589)).
-* [BREAKING][param][rust] The `Store` trait requires five account-witness registry methods: `track_account_witness`, `untrack_account_witness`, `tracked_account_witnesses`, `get_account_witness` and `update_account_witness`. They have no default bodies, so every out-of-tree implementation must provide them ([#2476](https://github.com/0xMiden/rust-sdk/pull/2476)).
+* [FIX][rust] Missing block headers are fetched together with their MMR proof, avoiding a second node request for the same block while building transaction inputs or a chain anchor ([#2634](https://github.com/0xMiden/rust-sdk/issues/2634)).
 
 ## 0.17.0-rc.4 (2026-09-26)
 

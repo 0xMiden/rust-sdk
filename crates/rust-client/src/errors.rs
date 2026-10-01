@@ -3,8 +3,8 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::fmt;
 
+use miden_protocol::Word;
 use miden_protocol::account::AccountId;
-use miden_protocol::crypto::merkle::MerkleError;
 pub use miden_protocol::errors::{
     AccountError,
     AccountIdError,
@@ -17,16 +17,12 @@ use miden_protocol::errors::{
     PartialBlockchainError,
     ProposedBatchError,
     ProvenBatchError,
-    TransactionInputError,
 };
 use miden_protocol::note::NoteId;
 use miden_protocol::transaction::{ProvenTransaction, TransactionId, TransactionInputs};
-use miden_protocol::{MastForestScriptError, Word};
 // RE-EXPORTS
 // ================================================================================================
 pub use miden_standards::errors::CodeBuilderError;
-use miden_standards::tx_script::SendNotesTransactionScriptError;
-use miden_tx::utils::HexParseError;
 use miden_tx::utils::serde::DeserializationError;
 pub use miden_tx::{AuthenticationError, NoteCheckerError, TransactionExecutorError};
 use miden_tx::{DataStoreError, TransactionProverError};
@@ -84,8 +80,6 @@ pub enum ClientError {
     AccountAlreadyTracked(AccountId),
     #[error("account error")]
     AccountError(#[from] AccountError),
-    #[error("account patch error")]
-    AccountPatchError(#[from] AccountPatchError),
     #[error("account {0} is locked because the local state may be out of date with the network")]
     AccountLocked(AccountId),
     #[error(
@@ -142,8 +136,6 @@ pub enum ClientError {
     MissingNoteConsumptionPosition(Word),
     #[error("note with id {0} not found on chain")]
     NoteNotFoundOnChain(NoteId),
-    #[error("failed to parse hex string")]
-    HexParseError(#[from] HexParseError),
     #[error(
         "the chain Merkle Mountain Range (MMR) forest value exceeds the supported range (must fit in a u32)"
     )]
@@ -154,8 +146,6 @@ pub enum ClientError {
         "cannot track a new account without its seed; the seed is required to validate the account ID's correctness"
     )]
     AddNewAccountWithoutSeed,
-    #[error("merkle proof error")]
-    MerkleError(#[from] MerkleError),
     #[error(
         "transaction output mismatch: expected output notes with recipient digests {0:?} were not produced by the transaction"
     )]
@@ -177,10 +167,6 @@ pub enum ClientError {
     #[error("RPC error")]
     RpcError(#[from] RpcError),
     #[error(
-        "no transaction encryption key is available; the validator set's key must be cached in the store before transaction inputs can be sealed for submission"
-    )]
-    MissingTransactionEncryptionKey,
-    #[error(
         "transaction failed a recency check: {0} — the reference block may be too old; try syncing and resubmitting"
     )]
     RecencyConditionError(&'static str),
@@ -190,8 +176,6 @@ pub enum ClientError {
     StoreError(#[from] StoreError),
     #[error("transaction execution failed")]
     TransactionExecutorError(#[from] TransactionExecutorError),
-    #[error("invalid transaction input")]
-    TransactionInputError(#[source] TransactionInputError),
     #[error("transaction proving failed")]
     TransactionProvingError(#[from] TransactionProverError),
     #[error("prover returned a proof of transaction {returned}, but {requested} was requested")]
@@ -201,10 +185,6 @@ pub enum ClientError {
     },
     #[error("invalid transaction request")]
     TransactionRequestError(#[from] TransactionRequestError),
-    #[error("failed to build the send-notes transaction script")]
-    SendNotesTransactionScriptError(#[from] SendNotesTransactionScriptError),
-    #[error("mast forest script error")]
-    MastForestScriptError(#[source] MastForestScriptError),
     #[error("client initialization error: {0}")]
     ClientInitializationError(String),
     #[error("expected full account data for account {0}, but only partial data is available")]

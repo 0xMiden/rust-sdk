@@ -274,8 +274,6 @@ impl ProtobufValue for TransactionRequest {
         // call to keep the order of the request.
         for input_note in input_notes {
             builder = match input_note {
-                // If the note is in the `explicit_input_notes` map, use the `explicit_input_note`
-                // setter
                 DecodedInputNote::Explicit(input_note, note_args) => {
                     builder.explicit_input_notes([(input_note, note_args)])
                 },
@@ -470,8 +468,6 @@ impl From<&ForeignAccount> for proto::ForeignAccount {
     }
 }
 
-/// The account is built with [`ForeignAccount::public`] or [`ForeignAccount::private`], so a public
-/// account in the private variant is rejected, and the reverse.
 impl TryFrom<proto::ForeignAccount> for ForeignAccount {
     type Error = ProtoDecodeError;
 

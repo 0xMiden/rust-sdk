@@ -1,0 +1,60 @@
+syntax = "proto3";
+
+// Values of the `transactions` table. Field numbers are part of the on-disk format, so a released
+// number must keep its meaning. Add fields, do not renumber or reuse them.
+package miden.client.store;
+
+import "account.proto";
+import "block_number.proto";
+import "primitives.proto";
+import "transaction.proto";
+
+// Status of a transaction the client tracks.
+message TransactionStatus {
+  // The transaction is submitted and is not committed yet.
+  message Pending {}
+
+  // The transaction is in the chain.
+  message Committed {
+    // Number of the block that contains the transaction.
+    blockchain.BlockNumber block_number = 1;
+    // Time at which the block was committed, in seconds since the Unix epoch.
+    uint64 commit_timestamp = 2;
+  }
+
+  // The transaction can never commit.
+  message Discarded {
+    DiscardCause cause = 1;
+  }
+
+  oneof status {
+    Pending pending = 1;
+    Committed committed = 2;
+    Discarded discarded = 3;
+  }
+}
+
+// Reason for which a transaction was discarded.
+enum DiscardCause {
+  // The reason is absent. The store rejects a value with this cause.
+  DISCARD_CAUSE_UNSPECIFIED = 0;
+  DISCARD_CAUSE_EXPIRED = 1;
+  DISCARD_CAUSE_INPUT_CONSUMED = 2;
+  DISCARD_CAUSE_DISCARDED_INITIAL_STATE = 3;
+  DISCARD_CAUSE_STALE = 4;
+  DISCARD_CAUSE_SUPERSEDED = 5;
+}
+
+// Facts about a transaction the client executed.
+message TransactionDetails {
+  account.AccountId account_id = 1;
+  primitives.Word init_account_state = 2;
+  primitives.Word final_account_state = 3;
+  repeated primitives.Word input_note_nullifiers = 4;
+  transaction.RawOutputNotes output_notes = 5;
+  blockchain.BlockNumber block_num = 6;
+  blockchain.BlockNumber submission_height = 7;
+  blockchain.BlockNumber expiration_block_num = 8;
+  // Time at which the client created the transaction, in seconds since the Unix epoch.
+  uint64 creation_timestamp = 9;
+}

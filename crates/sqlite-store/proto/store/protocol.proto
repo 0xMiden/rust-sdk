@@ -22,6 +22,12 @@ message NoteAssets {
   repeated asset.Asset assets = 1;
 }
 
+// The peaks of the partial blockchain MMR. The message has no forest: the checkpoint row keeps it
+// as the block number.
+message MmrPeaks {
+  repeated primitives.Word peaks = 1;
+}
+
 // A MAST forest in the Miden binary format with its node hashes. The store reads the forest without
 // a new hash check, so the hashes must be present. The `miden-objects` message can omit them.
 message MastForest {

@@ -25,7 +25,7 @@ use miden_protocol::crypto::merkle::mmr::{Forest, Mmr, MmrProof};
 use miden_protocol::crypto::merkle::smt::PartialSmt;
 use miden_protocol::note::{NoteAttachments, NoteHeader, NoteId, NoteScript, NoteTag};
 use miden_protocol::protocol_config::ProtocolConfig;
-use miden_protocol::transaction::{OutputNote, ProvenTransaction};
+use miden_protocol::transaction::{ExecutedTransaction, OutputNote, ProvenTransaction};
 use miden_protocol::vm::ExecutionProof;
 use miden_testing::{MockChain, MockChainNote};
 use miden_tx::utils::sync::RwLock;
@@ -256,6 +256,17 @@ impl MockRpcApi {
     /// Returns the chain tip block number.
     pub fn get_chain_tip_block_num(&self) -> BlockNumber {
         self.mock_chain.read().latest_block_header().block_num()
+    }
+
+    /// Adds an executed transaction to the pending transactions of the mock chain with a dummy
+    /// proof. The next [`Self::prove_block`] call commits it.
+    ///
+    /// Tests use this method to put a transaction on chain without the cost of a real proof.
+    pub fn add_pending_executed_transaction(&self, executed_transaction: &ExecutedTransaction) {
+        self.mock_chain
+            .write()
+            .add_pending_executed_transaction(executed_transaction)
+            .expect("mock chain should accept the executed transaction");
     }
 
     /// Advances the mock chain by proving the next block, committing all pending objects to the

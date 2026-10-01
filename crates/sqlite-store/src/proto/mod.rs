@@ -20,6 +20,7 @@ mod protocol;
 mod transaction;
 
 pub use output_note::{decode_output_note_state, encode_output_note_state};
+pub use protocol::{decode_mmr_peaks, encode_mmr_peaks};
 
 #[rustfmt::skip]
 #[allow(

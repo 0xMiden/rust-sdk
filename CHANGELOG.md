@@ -4,11 +4,8 @@
 
 ### Breaking Changes
 
-* [BREAKING][param][rust] The `Store` trait requires `get_account_note_tags`, which derives the note tags of the native accounts from their addresses. The store no longer keeps account note tags. `Store::get_stored_note_tags` returns only the stored tags, and `Store::get_unique_note_tags` returns both sets. `Client::get_note_tags` still returns both sets ([#2644](https://github.com/0xMiden/rust-sdk/issues/2644)).
-* [BREAKING][rename][rust] `Store::get_note_tags` → `Store::get_stored_note_tags` ([#2644](https://github.com/0xMiden/rust-sdk/issues/2644)).
-* [BREAKING][behavior][rust,store] `Store::add_note_tag` and `Store::apply_transaction` return the new `StoreError::AccountNoteTagNotStorable` for a tag record with a `NoteTagSource::Account` source ([#2644](https://github.com/0xMiden/rust-sdk/issues/2644)).
-* [BREAKING][behavior][store] The SQLite store no longer keeps account note tags. A migration removes the stored ones ([#2644](https://github.com/0xMiden/rust-sdk/issues/2644)).
-* [BREAKING][param][rust] `Client::remove_address` no longer takes an `AccountId`. The address identifies its account ([#2644](https://github.com/0xMiden/rust-sdk/issues/2644)).
+* [BREAKING][param][rust,store] Account note tags are derived from the addresses of native accounts instead of being stored. The `Store` trait requires `get_account_note_tags`. `get_note_tags` is renamed to `get_stored_note_tags`, and `get_unique_note_tags` returns both sets. `add_note_tag` and `apply_transaction` reject account-source tags with the new `StoreError::AccountNoteTagNotStorable`. A SQLite migration removes the stored account tags ([#2653](https://github.com/0xMiden/rust-sdk/pull/2653)).
+* [BREAKING][param][rust] `Client::remove_address` no longer takes an `AccountId` ([#2653](https://github.com/0xMiden/rust-sdk/pull/2653)).
 
 ## 0.17.0-rc.5 (2026-10-01)
 

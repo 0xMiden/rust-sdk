@@ -219,16 +219,15 @@ impl<AUTH> Client<AUTH> {
     /// are created by transport delivery and note import, so backfilling them would re-fetch tags
     /// the fetch path itself just registered; `Subscription` tags are excluded for the same reason.
     async fn backfill_candidate_tags(&self) -> Result<BTreeSet<NoteTag>, ClientError> {
-        let tags = self
+        let mut tags: BTreeSet<NoteTag> = self
             .store
-            .get_note_tags()
+            .get_stored_note_tags()
             .await?
             .into_iter()
-            .filter(|record| {
-                matches!(record.source, NoteTagSource::User | NoteTagSource::Account(_))
-            })
+            .filter(|record| matches!(record.source, NoteTagSource::User))
             .map(|record| record.tag)
             .collect();
+        tags.extend(self.store.get_account_note_tags().await?.into_iter().map(|record| record.tag));
         Ok(tags)
     }
 
@@ -416,14 +415,13 @@ where
         Ok(())
     }
 
-    /// Returns the tracked tags that were registered for an account, i.e. derived from its ID.
+    /// Returns the tags of the addresses of the tracked native accounts.
     async fn tracked_account_tags(&self) -> Result<BTreeSet<NoteTag>, ClientError> {
         let tags = self
             .store
-            .get_note_tags()
+            .get_account_note_tags()
             .await?
             .into_iter()
-            .filter(|record| matches!(record.source, NoteTagSource::Account(_)))
             .map(|record| record.tag)
             .collect();
         Ok(tags)

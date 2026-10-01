@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::vec::Vec;
 
 use miden_client::Word;
-use miden_client::account::AccountId;
+use miden_client::account::{AccountId, Address};
 use miden_client::note::{BlockNumber, NoteTag};
 use miden_client::protocol_config::protocol_config_setting_key;
 use miden_client::store::{SettingScope, StoreError};
@@ -20,7 +20,9 @@ use crate::transaction::upsert_transaction_record;
 use crate::{insert_sql, proto, subst, with_write_tx};
 
 impl SqliteStore {
-    pub(crate) fn get_note_tags(conn: &mut Connection) -> Result<Vec<NoteTagRecord>, StoreError> {
+    pub(crate) fn get_stored_note_tags(
+        conn: &mut Connection,
+    ) -> Result<Vec<NoteTagRecord>, StoreError> {
         const QUERY: &str = "SELECT tag, source FROM tags";
 
         conn.prepare_cached(QUERY)
@@ -39,12 +41,19 @@ impl SqliteStore {
             .collect::<Result<Vec<NoteTagRecord>, _>>()
     }
 
+    pub(crate) fn get_account_note_tags(
+        conn: &mut Connection,
+    ) -> Result<Vec<NoteTagRecord>, StoreError> {
+        query_account_note_tags(conn)
+    }
+
     pub(crate) fn get_unique_note_tags(
         conn: &mut Connection,
     ) -> Result<BTreeSet<NoteTag>, StoreError> {
         const QUERY: &str = "SELECT DISTINCT tag FROM tags";
 
-        conn.prepare_cached(QUERY)
+        let mut tags = conn
+            .prepare_cached(QUERY)
             .into_store_error()?
             .query_map([], |row| row.get(0))
             .expect("no binding parameters used in query")
@@ -52,7 +61,10 @@ impl SqliteStore {
                 let tag: Vec<u8> = result.into_store_error()?;
                 NoteTag::read_from_bytes(&tag).map_err(StoreError::DataDeserializationError)
             })
-            .collect::<Result<BTreeSet<NoteTag>, _>>()
+            .collect::<Result<BTreeSet<NoteTag>, _>>()?;
+        tags.extend(query_account_note_tags(conn)?.into_iter().map(|record| record.tag));
+
+        Ok(tags)
     }
 
     pub(super) fn add_note_tag(
@@ -188,10 +200,18 @@ impl SqliteStore {
 
 /// Inserts the tag record, relying on the `(tag, source)` primary key for idempotency across
 /// concurrent connections. Returns whether a new row was inserted.
+///
+/// Returns [`StoreError::AccountNoteTagNotStorable`] for a record with an account source. The store
+/// derives these records from the addresses of the native accounts. No operation removes a stored
+/// copy, so the client would track its tag forever.
 pub(super) fn add_note_tag_tx(
     tx: &Transaction<'_>,
     tag: &NoteTagRecord,
 ) -> Result<bool, StoreError> {
+    if let NoteTagSource::Account(account_id) = tag.source {
+        return Err(StoreError::AccountNoteTagNotStorable(account_id));
+    }
+
     const QUERY: &str = insert_sql!(tags { tag, source } | IGNORE);
     let inserted = tx
         .execute(QUERY, params![tag.tag.to_bytes(), tag.source.to_bytes()])
@@ -210,6 +230,34 @@ pub(super) fn remove_note_tag_tx(
         .into_store_error()?;
 
     Ok(removed_tags)
+}
+
+/// Returns the tag records of the addresses of the native accounts.
+fn query_account_note_tags(conn: &Connection) -> Result<Vec<NoteTagRecord>, StoreError> {
+    const QUERY: &str = "SELECT addresses.account_id, addresses.address \
+        FROM addresses \
+        JOIN latest_account_headers ON latest_account_headers.id = addresses.account_id \
+        WHERE latest_account_headers.watched = FALSE";
+
+    let tags = conn
+        .prepare_cached(QUERY)
+        .into_store_error()?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .expect("no binding parameters used in query")
+        .map(|result| {
+            let (account_id, address): (Vec<u8>, Vec<u8>) = result.into_store_error()?;
+            let account_id = AccountId::read_from_bytes(&account_id)?;
+            let address = Address::read_from_bytes(&address)?;
+            Ok((address.to_note_tag(), account_id))
+        })
+        .collect::<Result<BTreeSet<(NoteTag, AccountId)>, StoreError>>()?;
+
+    // The `addresses` table does not keep the tag, so this function computes it from each address.
+    // Two addresses of one account with the same tag give one record.
+    Ok(tags
+        .into_iter()
+        .map(|(tag, account_id)| NoteTagRecord::with_account_source(tag, account_id))
+        .collect())
 }
 
 /// Reads the sync height from the `blockchain_checkpoint` row.

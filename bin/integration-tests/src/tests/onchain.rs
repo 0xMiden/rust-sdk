@@ -446,7 +446,7 @@ pub async fn test_import_watched_account_by_id(client_config: ClientConfig) -> R
         .context("watched account should be tracked in client_2's store")?;
     assert!(watched_record.is_watched(), "watched account must be marked as watched");
 
-    let tags = client_2.test_store().get_note_tags().await?;
+    let tags = client_2.get_note_tags().await?;
     assert!(
         !tags
             .iter()
@@ -501,7 +501,7 @@ pub async fn test_import_watched_account_by_id(client_config: ClientConfig) -> R
         .await?
         .context("account should still be tracked after re-import")?;
     assert!(record.is_watched(), "account must remain watched");
-    let tags = client_2.test_store().get_note_tags().await?;
+    let tags = client_2.get_note_tags().await?;
     assert!(
         !tags
             .iter()

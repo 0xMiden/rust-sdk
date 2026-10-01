@@ -167,8 +167,12 @@ impl Store for SqliteStore {
         Some(current_timestamp_u64())
     }
 
-    async fn get_note_tags(&self) -> Result<Vec<NoteTagRecord>, StoreError> {
-        self.interact_with_connection(SqliteStore::get_note_tags).await
+    async fn get_stored_note_tags(&self) -> Result<Vec<NoteTagRecord>, StoreError> {
+        self.interact_with_connection(SqliteStore::get_stored_note_tags).await
+    }
+
+    async fn get_account_note_tags(&self) -> Result<Vec<NoteTagRecord>, StoreError> {
+        self.interact_with_connection(SqliteStore::get_account_note_tags).await
     }
 
     async fn get_unique_note_tags(&self) -> Result<BTreeSet<NoteTag>, StoreError> {

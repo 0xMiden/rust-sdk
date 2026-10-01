@@ -6,7 +6,8 @@ use std::vec::Vec;
 use miden_client::Word;
 use miden_client::account::AccountId;
 use miden_client::note::{BlockNumber, NoteTag};
-use miden_client::store::StoreError;
+use miden_client::protocol_config::protocol_config_setting_key;
+use miden_client::store::{SettingScope, StoreError};
 use miden_client::sync::{NoteTagRecord, NoteTagSource, PublicAccountUpdate, StateSyncUpdate};
 use miden_client::utils::{Deserializable, Serializable};
 use rusqlite::{Connection, Transaction, params};
@@ -16,7 +17,7 @@ use crate::forest::{ScopedAccountForest, SqliteForestBackend};
 use crate::note::apply_note_updates_tx;
 use crate::sql_error::SqlResultExt;
 use crate::transaction::upsert_transaction_record;
-use crate::{insert_sql, subst, with_write_tx};
+use crate::{insert_sql, proto, subst, with_write_tx};
 
 impl SqliteStore {
     pub(crate) fn get_note_tags(conn: &mut Connection) -> Result<Vec<NoteTagRecord>, StoreError> {
@@ -82,12 +83,13 @@ impl SqliteStore {
             note_updates,
             transaction_updates,
             account_updates,
+            protocol_config,
         ) = state_sync_update.into_parts();
 
         with_write_tx(conn, |db_tx| {
             let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(db_tx))?;
             // Update blockchain checkpoint (block number and peaks) only if moving forward.
-            let new_peaks_bytes = partial_blockchain_updates.new_peaks.peaks().to_vec().to_bytes();
+            let new_peaks_bytes = proto::encode_mmr_peaks(&partial_blockchain_updates.new_peaks);
             const BLOCKCHAIN_CHECKPOINT_QUERY: &str = "\
                 UPDATE blockchain_checkpoint \
                 SET block_num = ?1, partial_blockchain_peaks = ?2 \
@@ -162,6 +164,21 @@ impl SqliteStore {
 
             for (account_id, digest) in account_updates.mismatched_private_accounts() {
                 Self::lock_account_on_unexpected_commitment(db_tx, account_id, digest)?;
+            }
+
+            // Writes only land for accounts registered for witness prefetching; the rest are
+            // no-ops, so the sync does not have to know which ones those are.
+            for (account_id, witness) in account_updates.account_witnesses() {
+                Self::update_account_witness_tx(db_tx, *account_id, witness)?;
+            }
+
+            if let Some(config) = &protocol_config {
+                Self::set_setting(
+                    db_tx,
+                    SettingScope::Client,
+                    &protocol_config_setting_key(config.to_commitment()),
+                    &config.to_bytes(),
+                )?;
             }
 
             Ok(())

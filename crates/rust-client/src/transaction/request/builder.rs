@@ -1,9 +1,10 @@
 //! Contains structures and functions related to transaction creation.
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::ToString;
 use alloc::vec::Vec;
+use core::borrow::Borrow;
 
-use miden_protocol::account::AccountId;
+use miden_protocol::account::{AccountCode, AccountCodeUpgrade, AccountId};
 use miden_protocol::asset::{Asset, AssetAmount, FungibleAsset};
 use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::merkle::InnerNodeInfo;
@@ -30,6 +31,7 @@ use miden_protocol::vm::AdviceMap;
 use miden_protocol::{Felt, Word};
 use miden_standards::note::{P2idNote, P2ideNote, PswapNote, PswapNoteStorage, SwapNote};
 
+use super::code_upgrade::account_code_upgrade_script;
 use super::{
     ForeignAccount,
     NoteArgs,
@@ -48,6 +50,8 @@ use crate::ClientRng;
 /// scripts, and setting other transaction parameters.
 #[derive(Clone, Debug)]
 pub struct TransactionRequestBuilder {
+    /// Blocks that the transaction must be able to authenticate against its reference block.
+    block_numbers: BTreeSet<BlockNumber>,
     /// Notes to be consumed by the transaction, in consumption order.
     ///
     /// A note with an entry in `explicit_input_notes` is consumed in the mode that entry pins. The
@@ -99,6 +103,10 @@ pub struct TransactionRequestBuilder {
     ///
     /// See [`TransactionRequestBuilder::expected_ntx_scripts`] for details.
     expected_ntx_scripts: Vec<NoteScript>,
+    /// New code of the executing account.
+    ///
+    /// See [`TransactionRequestBuilder::account_code_upgrade`] for details.
+    account_code_upgrade: Option<AccountCodeUpgrade>,
 }
 
 impl TransactionRequestBuilder {
@@ -108,6 +116,7 @@ impl TransactionRequestBuilder {
     /// Creates a new, empty [`TransactionRequestBuilder`].
     pub fn new() -> Self {
         Self {
+            block_numbers: BTreeSet::new(),
             input_notes: vec![],
             input_notes_args: vec![],
             explicit_input_notes: BTreeMap::new(),
@@ -124,7 +133,24 @@ impl TransactionRequestBuilder {
             auth_arg: None,
             fee_conversion_salt: None,
             expected_ntx_scripts: vec![],
+            account_code_upgrade: None,
         }
+    }
+
+    /// Adds blocks that the transaction must be able to authenticate against its reference block.
+    ///
+    /// The client adds each block header and its authentication path to the transaction's partial
+    /// blockchain. The client fetches a header from the node when it is not in the local store.
+    /// Each block must be at or before the transaction's reference block.
+    #[must_use]
+    pub fn block_numbers<I, B>(mut self, block_numbers: I) -> Self
+    where
+        I: IntoIterator<Item = B>,
+        B: Borrow<BlockNumber>,
+    {
+        self.block_numbers
+            .extend(block_numbers.into_iter().map(|block_num| *block_num.borrow()));
+        self
     }
 
     /// Adds the specified notes as input notes to the transaction request.
@@ -209,6 +235,13 @@ impl TransactionRequestBuilder {
     /// - **Private accounts**: the node retrieves a proof of the account's existence and injects
     ///   that as advice inputs. Private accounts must always be declared here with their
     ///   [`PartialAccount`](miden_protocol::account::PartialAccount) state.
+    /// - **Prefetched accounts**: the caller supplies the state and inclusion witness as
+    ///   [`ForeignAccount::Prefetched`] and nothing is fetched for them. The witness must open
+    ///   against the transaction's reference block.
+    ///   [`Client::get_foreign_account_inputs`](crate::Client::get_foreign_account_inputs) fetches
+    ///   inputs for a given block.
+    ///
+    /// Declaring an account ID more than once keeps the last declaration.
     #[must_use]
     pub fn foreign_accounts(
         mut self,
@@ -341,6 +374,20 @@ impl TransactionRequestBuilder {
     #[must_use]
     pub fn expected_ntx_scripts(mut self, scripts: Vec<NoteScript>) -> Self {
         self.expected_ntx_scripts = scripts;
+        self
+    }
+
+    /// Gives `code` to the transaction as the new code of the executing account.
+    ///
+    /// The built request adds the serialized code to the transaction advice map. The account
+    /// upgrade procedure reads the code after a transaction script initializes an upgrade with the
+    /// matching code commitment. This method does not initialize the upgrade or change the
+    /// transaction script.
+    ///
+    /// Use [`Self::build_account_code_upgrade`] when the transaction only upgrades the code.
+    #[must_use]
+    pub fn account_code_upgrade(mut self, code: AccountCode) -> Self {
+        self.account_code_upgrade = Some(AccountCodeUpgrade::new(code));
         self
     }
 
@@ -638,6 +685,38 @@ impl TransactionRequestBuilder {
         self.input_notes(vec![(pswap_note, None)]).build()
     }
 
+    /// Consumes the builder and returns a [`TransactionRequest`] for a transaction that upgrades
+    /// the code of the executing account to `code`. This request must be executed against an
+    /// account with the [`UpgradeManager`](crate::account::component::UpgradeManager) component and
+    /// the [`Authority::AuthControlled`](crate::account::component::Authority::AuthControlled)
+    /// authority.
+    ///
+    /// - `code` is the new code of the account.
+    ///
+    /// An upgrade does not change the account storage. The new code must use the same storage
+    /// layout as the current code, otherwise the account can become unusable.
+    ///
+    /// To upgrade a network account, build an [`UpgradeNote`](crate::note::UpgradeNote) and add it
+    /// with [`Self::own_output_notes`].
+    ///
+    /// The request uses a custom script and gives it the new code commitment as the script
+    /// argument. This function replaces a previously set custom script and script argument.
+    ///
+    /// # Errors
+    /// - If own output notes are set.
+    /// - If an expiration delta is set.
+    pub fn build_account_code_upgrade(
+        self,
+        code: AccountCode,
+    ) -> Result<TransactionRequest, TransactionRequestError> {
+        let new_code_commitment = code.commitment();
+
+        self.custom_script(account_code_upgrade_script())
+            .script_arg(new_code_commitment)
+            .account_code_upgrade(code)
+            .build()
+    }
+
     // FINALIZE BUILDER
     // --------------------------------------------------------------------------------------------
 
@@ -677,6 +756,7 @@ impl TransactionRequestBuilder {
         };
 
         let request = TransactionRequest {
+            block_numbers: self.block_numbers,
             input_notes: self.input_notes,
             input_notes_args: self.input_notes_args,
             explicit_input_notes: self.explicit_input_notes,
@@ -692,6 +772,7 @@ impl TransactionRequestBuilder {
             auth_arg: self.auth_arg,
             fee_conversion_salt: self.fee_conversion_salt,
             expected_ntx_scripts: self.expected_ntx_scripts,
+            account_code_upgrade: self.account_code_upgrade,
         };
         request.validate()?;
 

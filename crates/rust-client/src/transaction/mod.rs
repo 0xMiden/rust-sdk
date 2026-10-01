@@ -70,6 +70,7 @@ use alloc::vec::Vec;
 
 use miden_protocol::account::{AccountCode, AccountCodeInterface, AccountId, PartialAccount};
 use miden_protocol::asset::Asset;
+use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::block::{BlockHeader, BlockNumber, FeeParameters};
 use miden_protocol::errors::AssetError;
 use miden_protocol::note::{
@@ -82,7 +83,7 @@ use miden_protocol::note::{
     NoteTag,
 };
 use miden_protocol::protocol_config::ProtocolConfig;
-use miden_protocol::transaction::{AccountInputs, PartialBlockchain};
+use miden_protocol::transaction::PartialBlockchain;
 use miden_protocol::vm::MIN_STACK_DEPTH;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::auth::FeeConversionInfo;
@@ -103,7 +104,7 @@ use crate::rpc::domain::account::{
 };
 use crate::rpc::encryption::{TransactionEncryptionKey, seal_transaction_inputs};
 use crate::rpc::{AccountStateAt, NodeRpcClient, RpcError};
-use crate::store::data_store::{ClientDataStore, build_partial_mmr_with_paths};
+use crate::store::data_store::{ClientDataStore, build_partial_mmr_and_headers_with_fallback};
 use crate::store::input_note_states::ExpectedNoteState;
 use crate::store::{
     AccountRecord,
@@ -162,6 +163,7 @@ mod result;
 // RE-EXPORTS
 // ================================================================================================
 pub use miden_protocol::transaction::{
+    AccountInputs,
     ExecutedTransaction,
     InputNote,
     InputNotes,
@@ -345,8 +347,9 @@ where
     /// [`ChainAnchor::block_commitment`] against an independently trusted value (e.g. the block
     /// commitment bound into the signed transaction summary).
     ///
-    /// Foreign account proofs are fetched at the anchor's block, so requests with foreign accounts
-    /// additionally require the node to serve account state at that block.
+    /// Foreign accounts are fetched at the anchor's block unless declared as
+    /// [`ForeignAccount::Prefetched`], so a node that no longer serves account state at that block
+    /// only affects accounts that are not prefetched.
     ///
     /// # Errors
     ///
@@ -406,35 +409,30 @@ where
         let mut tracked_blocks = tracked_blocks;
         // The kernel extends the MMR with the reference block itself, so it needs no path.
         tracked_blocks.remove(&sync_height);
-
-        let block_headers: Vec<BlockHeader> = self
-            .store
-            .get_block_headers(&tracked_blocks)
-            .await?
-            .into_iter()
-            .map(|(header, _has_notes)| header)
-            .collect();
-
-        // `Store::get_block_headers` may silently omit missing headers, so verify each requested
-        // block is present rather than comparing lengths.
-        let fetched_nums: BTreeSet<BlockNumber> =
-            block_headers.iter().map(BlockHeader::block_num).collect();
-        if let Some(&missing) = tracked_blocks.difference(&fetched_nums).next() {
-            return Err(StoreError::BlockHeaderNotFound(missing).into());
+        if let Some(&future_block) =
+            tracked_blocks.iter().find(|&&block_num| block_num > sync_height)
+        {
+            return Err(StoreError::BlockHeaderNotFound(future_block).into());
         }
 
         let peaks = self.store.get_current_blockchain_peaks().await?;
-        let partial_mmr = build_partial_mmr_with_paths(&self.store, peaks, &block_headers).await?;
+        let (partial_mmr, block_headers) = build_partial_mmr_and_headers_with_fallback(
+            &self.store,
+            &self.rpc_api,
+            peaks,
+            &tracked_blocks,
+        )
+        .await?;
 
         let chain = PartialBlockchain::new(partial_mmr, block_headers)?;
 
         Ok(ChainAnchor::new(header, chain)?)
     }
 
-    /// Captures a [`ChainAnchor`] at the client's current sync height, tracking the creation blocks
-    /// of the request's authenticated input notes so that the request can later execute against the
-    /// anchor. This covers notes the store holds as authenticated and notes pinned as authenticated
-    /// through [`TransactionRequestBuilder::explicit_input_notes`].
+    /// Captures a [`ChainAnchor`] at the client's current sync height. The anchor tracks the blocks
+    /// declared through [`TransactionRequestBuilder::block_numbers`] and the creation blocks of the
+    /// request's authenticated input notes. This covers notes the store holds as authenticated and
+    /// notes pinned as authenticated through [`TransactionRequestBuilder::explicit_input_notes`].
     ///
     /// This is the capture entry point for flows that never see a successful execution result at
     /// capture time — e.g. multisig proposal flows, where execution intentionally fails with
@@ -447,8 +445,8 @@ where
     ///
     /// - Returns [`ClientError::StoreError`] if a header for the sync height or a tracked block is
     ///   not present in the store.
-    /// - Returns [`ChainAnchorError::TooManyTrackedBlocks`] if the request's authenticated input
-    ///   notes were created across more blocks than a transaction can reference.
+    /// - Returns [`ChainAnchorError::TooManyTrackedBlocks`] if the request needs more tracked blocks
+    ///   than an anchor permits.
     pub async fn chain_anchor_for_request(
         &self,
         transaction_request: &TransactionRequest,
@@ -477,6 +475,7 @@ where
                 .filter_map(InputNote::proof)
                 .map(|proof| proof.location().block_num()),
         );
+        tracked_blocks.extend(transaction_request.block_numbers().iter().copied());
 
         self.chain_anchor_at_tip(tracked_blocks).await
     }
@@ -531,6 +530,7 @@ where
             data_store = data_store.with_chain_anchor(*anchor);
         }
         data_store.register_note_scripts(prep.output_note_scripts());
+        data_store.register_block_numbers(prep.block_numbers.iter().copied());
         for fpi_account in &prep.foreign_account_inputs {
             data_store.mast_store().load_account_code(fpi_account.code());
         }
@@ -626,11 +626,24 @@ where
             .get_input_notes(NoteFilter::List(transaction_request.input_note_ids().collect()))
             .await?;
 
-        // Verify that none of the stored input notes are already consumed.
+        // Verify that none of the stored input notes are already consumed or held by a pending
+        // local transaction. A processing note is rejected here, before anything is executed or
+        // submitted: the store could not record a second consumer, so a transaction spending it
+        // would reach the node without a local record of it.
         for note in &stored_note_records {
             if note.is_consumed() {
                 return Err(ClientError::TransactionRequestError(
                     TransactionRequestError::InputNoteAlreadyConsumed(note.details_commitment()),
+                ));
+            }
+            if let Some(transaction_id) = note.consumer_transaction_id()
+                && note.is_processing()
+            {
+                return Err(ClientError::TransactionRequestError(
+                    TransactionRequestError::InputNoteBeingProcessed {
+                        note: note.details_commitment(),
+                        transaction_id: *transaction_id,
+                    },
                 ));
             }
         }
@@ -673,10 +686,12 @@ where
             None => self.store.get_sync_height().await?,
         };
 
-        let foreign_account_inputs =
-            self.retrieve_foreign_account_inputs(foreign_accounts, block_num).await?;
+        let foreign_account_inputs = self
+            .get_foreign_account_inputs(foreign_accounts.into_values(), block_num)
+            .await?;
 
         let ignore_invalid_notes = transaction_request.ignore_invalid_input_notes();
+        let block_numbers = transaction_request.block_numbers().clone();
 
         let reference_header = match anchor {
             Some(anchor) => anchor.header().clone(),
@@ -688,6 +703,19 @@ where
                     .0
             },
         };
+
+        // A witness opens against the account tree of exactly one block. Rejecting a mismatch here
+        // names the account and the block; inside the executor it would only be a kernel failure.
+        for inputs in &foreign_account_inputs {
+            if inputs.compute_account_root().ok() != Some(reference_header.account_root()) {
+                return Err(TransactionRequestError::ForeignAccountNotAtReferenceBlock {
+                    account_id: inputs.id(),
+                    block_num,
+                }
+                .into());
+            }
+        }
+
         attach_native_fee_conversion_info(
             &mut transaction_request,
             &account_code_interface,
@@ -703,6 +731,7 @@ where
             future_notes,
             tx_args,
             foreign_account_inputs,
+            block_numbers,
             block_num,
             ignore_invalid_notes,
         })
@@ -767,6 +796,12 @@ where
         proven_transaction: ProvenTransaction,
         transaction_inputs: impl Into<TransactionInputs>,
     ) -> Result<BlockNumber, ClientError> {
+        // A transaction that creates an account is gated by the network allowlist.
+        let account_id = proven_transaction.account_id();
+        if self.is_allowlist_gated(account_id).await? {
+            ensure_account_allowed(account_id, self.is_account_allowed(account_id).await)?;
+        }
+
         info!("Submitting transaction to the network...");
         let tx_id = proven_transaction.id();
         let key = self.transaction_encryption_key().await?;
@@ -1162,19 +1197,29 @@ where
     ///
     /// For any [`ForeignAccount::Public`] in `foreign_accounts`, these pieces of data are retrieved
     /// from the network. For any [`ForeignAccount::Private`] account, inner data is used and only a
-    /// proof of the account's existence on the network is fetched.
-    async fn retrieve_foreign_account_inputs(
+    /// proof of the account's existence on the network is fetched. A [`ForeignAccount::Prefetched`]
+    /// account is returned as is.
+    ///
+    /// Each witness opens against the account tree of `block_num`, so the results are valid only
+    /// for a transaction whose reference block is exactly `block_num`. Declared as
+    /// [`ForeignAccount::Prefetched`], they are served from the request instead of being fetched.
+    /// Under [`Self::execute_transaction_at`] the reference block is the anchor's block; otherwise
+    /// it is the sync height at execution time, so do not sync between fetching and executing. Only
+    /// the given accounts are fetched; this method does not discover the accounts a transaction
+    /// loads, such as faucets whose asset callbacks it triggers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if account data cannot be fetched or converted to transaction inputs.
+    pub async fn get_foreign_account_inputs(
         &self,
-        foreign_accounts: BTreeMap<AccountId, ForeignAccount>,
+        foreign_accounts: impl IntoIterator<Item = ForeignAccount>,
         block_num: BlockNumber,
     ) -> Result<Vec<AccountInputs>, ClientError> {
-        if foreign_accounts.is_empty() {
-            return Ok(Vec::new());
-        }
+        let foreign_accounts = foreign_accounts.into_iter();
+        let mut return_foreign_account_inputs = Vec::with_capacity(foreign_accounts.size_hint().0);
 
-        let mut return_foreign_account_inputs = Vec::with_capacity(foreign_accounts.len());
-
-        for foreign_account in foreign_accounts.into_values() {
+        for foreign_account in foreign_accounts {
             let foreign_account_inputs = match foreign_account {
                 ForeignAccount::Public(account_id, storage_requirements) => {
                     fetch_public_account_inputs(
@@ -1187,23 +1232,46 @@ where
                     .await?
                 },
                 ForeignAccount::Private(partial_account) => {
-                    let account_id = partial_account.id();
-                    let (_, account_proof) = self
-                        .rpc_api
-                        .get_account(
-                            account_id,
-                            GetAccountRequest::new().at(AccountStateAt::Block(block_num)),
-                        )
-                        .await?;
-                    let (witness, _) = account_proof.into_parts();
+                    // The caller already supplied the account data, so the witness is all that is
+                    // missing.
+                    let witness =
+                        self.get_account_witness_at(partial_account.id(), block_num).await?;
+
                     AccountInputs::new(partial_account, witness)
                 },
+                ForeignAccount::Prefetched(inputs) => inputs,
             };
 
             return_foreign_account_inputs.push(foreign_account_inputs);
         }
 
         Ok(return_foreign_account_inputs)
+    }
+
+    /// Returns the account's witness at `block_num`, from the store when `block_num` is the sync
+    /// height and the account is registered, and from the node otherwise.
+    ///
+    /// The sync keeps a witness at the sync height for every registered account, so the node serves
+    /// only unregistered accounts and reference blocks other than the sync height. See
+    /// [`Client::track_account_witness`] for how one gets cached.
+    async fn get_account_witness_at(
+        &self,
+        account_id: AccountId,
+        block_num: BlockNumber,
+    ) -> Result<AccountWitness, ClientError> {
+        // The store only holds witnesses at the sync height.
+        if block_num == self.store.get_sync_height().await?
+            && let Some(witness) = self.store.get_account_witness(account_id).await?
+        {
+            return Ok(witness);
+        }
+
+        let (_, account_proof) = self
+            .rpc_api
+            .get_account(account_id, GetAccountRequest::new().at(AccountStateAt::Block(block_num)))
+            .await?;
+
+        Ok(account_proof.into_parts().0)
     }
 
     /// Prepares the data store and block reference for program execution.
@@ -1216,8 +1284,9 @@ where
     ) -> Result<(ClientDataStore, BlockNumber), ClientError> {
         let block_ref = self.get_sync_height().await?;
 
-        let foreign_account_inputs =
-            self.retrieve_foreign_account_inputs(foreign_accounts, block_ref).await?;
+        let foreign_account_inputs = self
+            .get_foreign_account_inputs(foreign_accounts.into_values(), block_ref)
+            .await?;
 
         let account_code = self
             .store
@@ -1450,6 +1519,7 @@ pub(crate) struct PreparedTransaction {
     pub(crate) future_notes: Vec<(NoteDetails, NoteTag)>,
     pub(crate) tx_args: TransactionArgs,
     pub(crate) foreign_account_inputs: Vec<AccountInputs>,
+    pub(crate) block_numbers: BTreeSet<BlockNumber>,
     pub(crate) block_num: BlockNumber,
     pub(crate) ignore_invalid_notes: bool,
 }
@@ -1735,15 +1805,47 @@ fn validate_basic_account_request(
     Ok(())
 }
 
-/// Fetches a foreign account's proof and details from the network, converts them into
-/// [`AccountInputs`], and caches the returned code in the store for future requests.
+/// Builds a foreign account's [`AccountInputs`] entirely from the store, or returns `None` when it
+/// cannot.
+///
+/// Storage maps and vault assets are carried root-only, and resolve against the store during
+/// execution. A caller's [`AccountStorageRequirements`] therefore become per-key lookups against
+/// the store rather than one prefetched batch.
+///
+/// Requires the local header to hash to the commitment the witness proves. Otherwise the local
+/// state is not the one the chain committed at that block, and the kernel would reject it.
+async fn local_account_inputs(
+    store: &Arc<dyn Store>,
+    account_id: AccountId,
+    account_state_at: AccountStateAt,
+) -> Result<Option<AccountInputs>, ClientError> {
+    // The store only holds witnesses at the sync height.
+    if let AccountStateAt::Block(block_num) = account_state_at
+        && block_num == store.get_sync_height().await?
+        && let Some(witness) = store.get_account_witness(account_id).await?
+        && let Some(record) = store.get_minimal_partial_account(account_id).await?
+    {
+        // Derived from the same read that gets handed to the kernel, so what is checked and what is
+        // used cannot drift apart.
+        let account: PartialAccount = record.try_into()?;
+        if account.to_commitment() == witness.state_commitment() {
+            return Ok(Some(AccountInputs::new(account, witness)));
+        }
+    }
+
+    Ok(None)
+}
+
+/// Builds a foreign account's [`AccountInputs`], from the store when [`local_account_inputs`] can
+/// serve them and from the network otherwise, caching the returned code in the store for future
+/// requests.
 ///
 /// Storage maps the node caps as oversized (returned truncated) are carried root-only in the
 /// inputs; reads from them resolve lazily as per-key witnesses during execution.
 ///
 /// # Errors
-/// Fails if the account is private: the RPC does not return account details for them, causing
-/// [`TransactionRequestError::ForeignAccountDataMissing`].
+/// Fails if the account is private and has to be fetched: the RPC does not return account details
+/// for them, causing [`TransactionRequestError::ForeignAccountDataMissing`].
 pub(crate) async fn fetch_public_account_inputs(
     store: &Arc<dyn Store>,
     rpc_api: &Arc<dyn NodeRpcClient>,
@@ -1751,6 +1853,10 @@ pub(crate) async fn fetch_public_account_inputs(
     storage_requirements: AccountStorageRequirements,
     account_state_at: AccountStateAt,
 ) -> Result<AccountInputs, ClientError> {
+    if let Some(inputs) = local_account_inputs(store, account_id, account_state_at).await? {
+        return Ok(inputs);
+    }
+
     let known_code: Option<AccountCode> =
         store.get_foreign_account_code(vec![account_id]).await?.into_values().next();
 
@@ -1844,6 +1950,27 @@ pub(crate) fn validate_executed_transaction(
     }
 
     Ok(())
+}
+
+/// Turns the answer of [`Client::is_account_allowed`] for `account_id` into a submission check.
+///
+/// Returns [`ClientError::AccountNotAllowlisted`] if the network refuses to create the account. If
+/// the check itself fails, the submission continues and the node decides.
+fn ensure_account_allowed(
+    account_id: AccountId,
+    is_allowed: Result<bool, ClientError>,
+) -> Result<(), ClientError> {
+    match is_allowed {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(ClientError::AccountNotAllowlisted(account_id)),
+        Err(err) => {
+            info!(
+                "could not check whether account {account_id} is on the network allowlist, \
+                 submitting anyway and letting the node decide: {err}"
+            );
+            Ok(())
+        },
+    }
 }
 
 // TESTS

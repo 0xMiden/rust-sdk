@@ -310,6 +310,18 @@ impl NodeRpcClient for CannedTransport {
         self.canned(self.account.as_ref(), "test must set a canned get_account response")
     }
 
+    async fn register_account(
+        &self,
+        _invitation_code: &str,
+        _account_id: AccountId,
+    ) -> Result<(), RpcError> {
+        unimplemented!("not used in these tests")
+    }
+
+    async fn is_account_allowed(&self, _account_id: AccountId) -> Result<bool, RpcError> {
+        unimplemented!("not used in these tests")
+    }
+
     async fn get_note_script_by_root(&self, _root: Word) -> Result<Option<NoteScript>, RpcError> {
         if let Some(err) = self.failure() {
             return Err(err);
@@ -667,6 +679,44 @@ async fn sync_transactions_accepts_empty_response() {
         .await
         .expect("an empty response must be accepted");
     assert!(records.is_empty());
+}
+
+// BLOCK WINDOW RANGE
+// ================================================================================================
+
+#[tokio::test]
+async fn sync_nullifiers_verifies_block_range() {
+    let from = BlockNumber::from(10u32);
+    let to = BlockNumber::from(20u32);
+
+    let client = VerifyingRpcClient::new(CannedTransport {
+        nullifiers: Some(vec![nullifier_update(0xabcd, 15)]),
+        ..Default::default()
+    });
+    client
+        .sync_nullifiers(&[0xabcd], from, to)
+        .await
+        .expect("an update inside the window must be accepted");
+
+    let client = VerifyingRpcClient::new(CannedTransport {
+        nullifiers: Some(vec![nullifier_update(0xabcd, 25)]),
+        ..Default::default()
+    });
+    let err = client
+        .sync_nullifiers(&[0xabcd], from, to)
+        .await
+        .expect_err("an update after the window must be rejected");
+    assert!(matches!(err, RpcError::InvalidResponse(_)));
+
+    let client = VerifyingRpcClient::new(CannedTransport {
+        nullifiers: Some(vec![nullifier_update(0xabcd, 5)]),
+        ..Default::default()
+    });
+    let err = client
+        .sync_nullifiers(&[0xabcd], from, to)
+        .await
+        .expect_err("an update before the window must be rejected");
+    assert!(matches!(err, RpcError::InvalidResponse(_)));
 }
 
 #[tokio::test]

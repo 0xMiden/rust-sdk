@@ -789,6 +789,7 @@ async fn output_notes_filtered_by_script_root() {
         ),
         TransactionUpdateTracker::default(),
         AccountUpdates::default(),
+        None,
     );
     store.apply_state_sync(state_sync_update).await.unwrap();
 
@@ -842,6 +843,7 @@ async fn output_note_state_blob_does_not_embed_script() {
         NoteUpdateTracker::for_transaction_updates([], [], [note.clone()]),
         TransactionUpdateTracker::default(),
         AccountUpdates::default(),
+        None,
     );
     store.apply_state_sync(state_sync_update).await.unwrap();
 
@@ -850,8 +852,9 @@ async fn output_note_state_blob_does_not_embed_script() {
     let notes = store.get_output_notes(NoteFilter::All).await.unwrap();
     assert_eq!(notes, vec![note]);
 
-    // The stored state blob carries the recipient without its script.
-    let script_bytes = StandardNote::SWAP.script().to_bytes();
+    // The stored state blob carries the recipient without its script. The MAST forest bytes are in
+    // every encoding of the script, so the search finds an embedded script in any format.
+    let script_bytes = StandardNote::SWAP.script().mast().to_bytes();
     let state_blob = store
         .interact_with_connection(|conn| {
             conn.query_row("SELECT state FROM output_notes", [], |row| row.get::<_, Vec<u8>>(0))
@@ -875,6 +878,7 @@ async fn consumed_output_note_round_trips() {
         NoteUpdateTracker::for_transaction_updates([], [], [note.clone()]),
         TransactionUpdateTracker::default(),
         AccountUpdates::default(),
+        None,
     );
     store.apply_state_sync(state_sync_update).await.unwrap();
 
@@ -906,6 +910,7 @@ async fn state_sync_stores_scripts_of_new_input_notes() {
             NoteUpdateTracker::for_transaction_updates(notes.clone(), [], []),
             TransactionUpdateTracker::default(),
             AccountUpdates::default(),
+            None,
         );
         store.apply_state_sync(state_sync_update).await.unwrap();
 
@@ -1040,6 +1045,7 @@ async fn input_note_state_update_persists_attachments() {
         NoteUpdateTracker::for_transaction_updates([], [updated], []),
         TransactionUpdateTracker::default(),
         AccountUpdates::default(),
+        None,
     );
     store.apply_state_sync(state_sync_update).await.unwrap();
 

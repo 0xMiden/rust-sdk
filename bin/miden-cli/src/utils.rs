@@ -6,7 +6,9 @@ use miden_client::account::component::FungibleFaucet;
 use miden_client::account::{AccountId, FaucetMetadata};
 use miden_client::address::{Address, AddressId, NetworkId};
 use miden_client::asset::{AssetAmount, FungibleAsset};
+use miden_client::crypto::ecdsa_k256_keccak;
 use miden_client::transaction::{ExecutedTransaction, InputNote};
+use miden_client::utils::{Deserializable, hex_to_bytes};
 use miden_client::vm::MIN_STACK_DEPTH;
 use miden_client::{AssetError, Client, Felt, WORD_SIZE, Word};
 use serde::Deserialize;
@@ -611,6 +613,74 @@ fn parse_address(address_str: &str, network_id: &NetworkId) -> Result<AccountId,
     Err(format!("address `{address_str}` does not encode an account ID"))
 }
 
+// ECDSA PUBLIC KEY PARSING
+// ================================================================================================
+
+/// Byte length of a SEC1-compressed secp256k1 public key (parity prefix plus x coordinate).
+pub(crate) const ECDSA_COMPRESSED_KEY_BYTES: usize = 33;
+/// Byte length of a SEC1-uncompressed secp256k1 public key (`0x04` prefix plus both coordinates).
+pub(crate) const ECDSA_UNCOMPRESSED_KEY_BYTES: usize = 65;
+
+/// SPKI (RFC 5280) ASN.1 DER header declaring an uncompressed secp256k1 EC public key. The 65-byte
+/// SEC1 point follows these bytes directly. Layout:
+///
+/// ```text
+/// 30 56           SEQUENCE (86 bytes)
+///   30 10         SEQUENCE, AlgorithmIdentifier (16 bytes)
+///     06 07 2a 86 48 ce 3d 02 01   OID 1.2.840.10045.2.1 (ecPublicKey)
+///     06 05 2b 81 04 00 0a         OID 1.3.132.0.10 (secp256k1)
+///   03 42 00      BIT STRING (66 bytes, no unused bits): the SEC1 point
+/// ```
+const SECP256K1_SPKI_HEADER: [u8; 23] = [
+    0x30, 0x56, 0x30, 0x10, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x05, 0x2b,
+    0x81, 0x04, 0x00, 0x0a, 0x03, 0x42, 0x00,
+];
+
+fn invalid_ecdsa_key(err: impl core::fmt::Display) -> CliError {
+    CliError::InvalidArgument(format!("invalid ECDSA public key: {err}"))
+}
+
+/// Parses a hex-encoded secp256k1 public key in SEC1 format.
+///
+/// Accepts the 33-byte compressed and the 65-byte uncompressed encoding (the form Ledger and other
+/// Ethereum-style signers export), both with a mandatory `0x` prefix. The point is fully validated:
+/// an uncompressed key whose coordinates do not lie on the curve is rejected.
+pub(crate) fn parse_ecdsa_public_key(
+    encoded: &str,
+) -> Result<ecdsa_k256_keccak::PublicKey, CliError> {
+    let hex_digits = encoded.strip_prefix("0x").ok_or_else(|| {
+        CliError::InvalidArgument(
+            "ECDSA public key must use a 0x-prefixed hexadecimal encoding".to_string(),
+        )
+    })?;
+
+    match hex_digits.len() {
+        len if len == ECDSA_COMPRESSED_KEY_BYTES * 2 => {
+            let bytes =
+                hex_to_bytes::<ECDSA_COMPRESSED_KEY_BYTES>(encoded).map_err(invalid_ecdsa_key)?;
+            ecdsa_k256_keccak::PublicKey::read_from_bytes(&bytes).map_err(invalid_ecdsa_key)
+        },
+        len if len == ECDSA_UNCOMPRESSED_KEY_BYTES * 2 => {
+            let bytes =
+                hex_to_bytes::<ECDSA_UNCOMPRESSED_KEY_BYTES>(encoded).map_err(invalid_ecdsa_key)?;
+            // Wrapping the point in an SPKI document lets the DER constructor validate both
+            // coordinates against the curve equation. Compressing the point locally instead would
+            // drop the y coordinate and silently accept a corrupted key whose y parity happens to
+            // match.
+            let mut der = Vec::with_capacity(SECP256K1_SPKI_HEADER.len() + bytes.len());
+            der.extend_from_slice(&SECP256K1_SPKI_HEADER);
+            der.extend_from_slice(&bytes);
+            ecdsa_k256_keccak::PublicKey::from_der(&der).map_err(invalid_ecdsa_key)
+        },
+        len => Err(CliError::InvalidArgument(format!(
+            "unsupported ECDSA public key length: expected {} (compressed) or {} (uncompressed) \
+            hexadecimal digits after the 0x prefix, got {len}",
+            ECDSA_COMPRESSED_KEY_BYTES * 2,
+            ECDSA_UNCOMPRESSED_KEY_BYTES * 2,
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -619,12 +689,15 @@ mod tests {
     use miden_client::address::{Address, NetworkId};
     use miden_client::asset::AssetAmount;
     use miden_client::testing::account_id::ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET;
+    use miden_client::utils::Serializable;
 
     use super::{
         FaucetMetadataResolver,
         RawFaucetEntry,
         TokenParseError,
         base_units_to_tokens,
+        hex_to_bytes,
+        parse_ecdsa_public_key,
         tokens_to_base_units,
     };
 
@@ -706,5 +779,82 @@ mod tests {
         );
 
         assert!(result.is_err());
+    }
+
+    // ECDSA PUBLIC KEY PARSING
+    // --------------------------------------------------------------------------------------------
+
+    /// The secp256k1 generator point (even y coordinate) in both SEC1 encodings.
+    const GEN_COMPRESSED: &str =
+        "0x0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+    const GEN_UNCOMPRESSED: &str = "0x0479be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b1\
+        6f81798483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8";
+
+    /// The point 6·G (odd y coordinate), so the odd-parity branch of the uncompressed encoding is
+    /// exercised as well.
+    const SIX_GEN_COMPRESSED: &str =
+        "0x03fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057a1460297556";
+    const SIX_GEN_UNCOMPRESSED: &str = "0x04fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057\
+        a1460297556ae12777aacfbb620f3be96017f45c560de80f0f6518fe4a03c870c36b075f297";
+
+    #[test]
+    fn parse_ecdsa_public_key_accepts_compressed_key() {
+        let key = parse_ecdsa_public_key(GEN_COMPRESSED).expect("compressed key should parse");
+
+        let expected = hex_to_bytes::<33>(GEN_COMPRESSED).unwrap();
+        assert_eq!(key.to_bytes(), expected);
+    }
+
+    #[test]
+    fn parse_ecdsa_public_key_accepts_uncompressed_key_with_even_y() {
+        let from_uncompressed =
+            parse_ecdsa_public_key(GEN_UNCOMPRESSED).expect("uncompressed key should parse");
+        let from_compressed = parse_ecdsa_public_key(GEN_COMPRESSED).unwrap();
+
+        assert_eq!(from_uncompressed, from_compressed);
+    }
+
+    #[test]
+    fn parse_ecdsa_public_key_accepts_uncompressed_key_with_odd_y() {
+        let from_uncompressed =
+            parse_ecdsa_public_key(SIX_GEN_UNCOMPRESSED).expect("uncompressed key should parse");
+        let from_compressed = parse_ecdsa_public_key(SIX_GEN_COMPRESSED).unwrap();
+
+        assert_eq!(from_uncompressed, from_compressed);
+    }
+
+    #[test]
+    fn parse_ecdsa_public_key_rejects_missing_hex_prefix() {
+        let err = parse_ecdsa_public_key(&GEN_COMPRESSED[2..])
+            .expect_err("a key without the 0x prefix should be rejected");
+
+        assert!(err.to_string().contains("0x"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn parse_ecdsa_public_key_rejects_invalid_length() {
+        let err = parse_ecdsa_public_key("0x1234")
+            .expect_err("a key with an unsupported length should be rejected");
+
+        assert!(err.to_string().contains("length"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn parse_ecdsa_public_key_rejects_compressed_x_not_on_curve() {
+        // x = 5 has no square root of x³ + 7 on secp256k1, so no point has this x coordinate.
+        let not_on_curve = "0x020000000000000000000000000000000000000000000000000000000000000005";
+
+        parse_ecdsa_public_key(not_on_curve)
+            .expect_err("a compressed key with no matching curve point should be rejected");
+    }
+
+    #[test]
+    fn parse_ecdsa_public_key_rejects_uncompressed_point_not_on_curve() {
+        // (1, 1) does not satisfy the curve equation.
+        let not_on_curve =
+            format!("0x04{}{}", format_args!("{:064x}", 1), format_args!("{:064x}", 1));
+
+        parse_ecdsa_public_key(&not_on_curve)
+            .expect_err("an uncompressed point off the curve should be rejected");
     }
 }

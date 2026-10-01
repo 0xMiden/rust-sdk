@@ -1,8 +1,9 @@
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use miden_protocol::Word;
 use miden_protocol::account::{
@@ -24,7 +25,7 @@ use miden_protocol::crypto::merkle::mmr::{Forest, Mmr, MmrProof};
 use miden_protocol::crypto::merkle::smt::PartialSmt;
 use miden_protocol::note::{NoteAttachments, NoteHeader, NoteId, NoteScript, NoteTag};
 use miden_protocol::protocol_config::ProtocolConfig;
-use miden_protocol::transaction::{OutputNote, ProvenTransaction};
+use miden_protocol::transaction::{ExecutedTransaction, OutputNote, ProvenTransaction};
 use miden_protocol::vm::ExecutionProof;
 use miden_testing::{MockChain, MockChainNote};
 use miden_tx::utils::sync::RwLock;
@@ -54,6 +55,12 @@ use crate::rpc::{AccountStateAt, NodeRpcClient, RpcEndpoint, RpcError, RpcStatus
 
 pub type MockClient<AUTH> = Client<AUTH>;
 
+#[derive(Clone, Copy)]
+struct BlockHeaderRequest {
+    block_num: Option<BlockNumber>,
+    include_mmr_proof: bool,
+}
+
 /// Mock RPC API
 ///
 /// This struct implements the RPC API used by the client to communicate with the node. It simulates
@@ -82,10 +89,24 @@ pub struct MockRpcApi {
     /// Number of `get_notes_by_id` requests served, so a test can assert that a flow avoided the
     /// round trip.
     get_notes_by_id_calls: Arc<AtomicUsize>,
+    /// Block header requests, recorded with the requested block and proof flag.
+    block_header_requests: Arc<RwLock<Vec<BlockHeaderRequest>>>,
+    /// Number of `get_account` requests served, so a test can assert that a flow avoided the round
+    /// trip.
+    get_account_calls: Arc<AtomicUsize>,
     /// Failures to serve instead of answering, keyed by [`RpcEndpoint::proto_name`] and set by
     /// [`MockRpcApi::fail_next_call`]. An entry is removed when served, so the call after it
     /// answers normally and a test can exercise a retry.
     next_call_failures: Arc<RwLock<BTreeMap<&'static str, RpcError>>>,
+    /// Invitation code each account was registered with, recorded by `register_account`.
+    registered_accounts: Arc<RwLock<BTreeMap<AccountId, String>>>,
+    /// Whether `is_account_allowed` consults `registered_accounts`. A node that does not enforce
+    /// the allowlist answers `true` for every account, which is the default here so that tests
+    /// which deploy accounts need no registration.
+    allowlist_enforced: Arc<AtomicBool>,
+    /// Number of `is_account_allowed` requests served, so a test can assert that a flow avoided the
+    /// round trip.
+    is_account_allowed_calls: Arc<AtomicUsize>,
     /// Sealed inputs handed to `submit_proven_batch`, one entry per call and recorded before any
     /// staged failure is served, so a test can assert that a resubmission sealed again instead of
     /// reusing a cached ciphertext.
@@ -113,9 +134,20 @@ impl MockRpcApi {
             private_note_attachments: Arc::new(RwLock::new(BTreeMap::new())),
             sync_notes_mmr_path_overrides: Arc::new(RwLock::new(BTreeMap::new())),
             get_notes_by_id_calls: Arc::new(AtomicUsize::new(0)),
+            block_header_requests: Arc::new(RwLock::new(Vec::new())),
+            get_account_calls: Arc::new(AtomicUsize::new(0)),
             next_call_failures: Arc::new(RwLock::new(BTreeMap::new())),
+            registered_accounts: Arc::new(RwLock::new(BTreeMap::new())),
+            allowlist_enforced: Arc::new(AtomicBool::new(false)),
+            is_account_allowed_calls: Arc::new(AtomicUsize::new(0)),
             submitted_batch_sealed_inputs: Arc::new(RwLock::new(Vec::new())),
         }
+    }
+
+    /// Makes `is_account_allowed` answer from the recorded registrations, modelling a node that
+    /// enforces the account allowlist. Without this the mock answers `true` for every account.
+    pub fn enforce_account_allowlist(&self) {
+        self.allowlist_enforced.store(true, Ordering::SeqCst);
     }
 
     /// Id of the first account updated in the mock chain's proven blocks, in block then
@@ -154,6 +186,12 @@ impl MockRpcApi {
         self.next_call_failures.write().remove(endpoint.proto_name())
     }
 
+    /// Returns the invitation code `account_id` was registered with, or `None` if this API served
+    /// no registration for it.
+    pub fn registered_invitation_code(&self, account_id: AccountId) -> Option<String> {
+        self.registered_accounts.read().get(&account_id).cloned()
+    }
+
     /// Registers the attachment content for a private note so that subsequent `get_notes_by_id`
     /// responses include it, mirroring a node that stores private-note attachments on-chain.
     pub fn register_private_note_attachments(&self, note_id: NoteId, attachments: NoteAttachments) {
@@ -163,6 +201,27 @@ impl MockRpcApi {
     /// Returns how many `get_notes_by_id` requests this API has served.
     pub fn get_notes_by_id_call_count(&self) -> usize {
         self.get_notes_by_id_calls.load(Ordering::Relaxed)
+    }
+
+    /// Returns the proof flags of requests for `block_num`.
+    pub fn block_header_requests(&self, block_num: BlockNumber) -> Vec<bool> {
+        self.block_header_requests
+            .read()
+            .iter()
+            .filter_map(|request| {
+                (request.block_num == Some(block_num)).then_some(request.include_mmr_proof)
+            })
+            .collect()
+    }
+
+    /// Returns how many `get_account` requests this API has served.
+    pub fn get_account_call_count(&self) -> usize {
+        self.get_account_calls.load(Ordering::Relaxed)
+    }
+
+    /// Returns how many `is_account_allowed` requests this API has served.
+    pub fn is_account_allowed_call_count(&self) -> usize {
+        self.is_account_allowed_calls.load(Ordering::Relaxed)
     }
 
     /// Overrides the MMR path returned by `sync_notes` for the specified block.
@@ -199,6 +258,17 @@ impl MockRpcApi {
         self.mock_chain.read().latest_block_header().block_num()
     }
 
+    /// Adds an executed transaction to the pending transactions of the mock chain with a dummy
+    /// proof. The next [`Self::prove_block`] call commits it.
+    ///
+    /// Tests use this method to put a transaction on chain without the cost of a real proof.
+    pub fn add_pending_executed_transaction(&self, executed_transaction: &ExecutedTransaction) {
+        self.mock_chain
+            .write()
+            .add_pending_executed_transaction(executed_transaction)
+            .expect("mock chain should accept the executed transaction");
+    }
+
     /// Advances the mock chain by proving the next block, committing all pending objects to the
     /// chain in the process.
     pub fn prove_block(&self) {
@@ -222,6 +292,13 @@ impl MockRpcApi {
         if !updates.is_empty() {
             account_commitment_updates.insert(block_num, updates);
         }
+    }
+
+    /// Removes the account-state snapshot for the specified block.
+    ///
+    /// Tests use this method to model a node that pruned historical account state.
+    pub fn prune_account_state_at(&self, block_num: BlockNumber) {
+        self.historical_chains.write().remove(&block_num);
     }
 
     /// Retrieves a block by its block number.
@@ -482,11 +559,25 @@ impl NodeRpcClient for MockRpcApi {
             .signatures()
             .clone();
 
+        // Mirrors the node: send the configuration when the caller starts at genesis, or when the
+        // commitment changed over the range. A caller already at the target gets nothing.
+        let protocol_config = if current_block_height == BlockNumber::GENESIS {
+            Some(self.protocol_config())
+        } else if current_block_height == target_block {
+            None
+        } else {
+            let commitment_at_start =
+                self.get_block_by_num(current_block_height).protocol_config_commitment();
+            (commitment_at_start != block_header.protocol_config_commitment())
+                .then(|| self.protocol_config())
+        };
+
         Ok(ChainMmrInfo {
             block_from: current_block_height,
             block_to: target_block,
             mmr_delta,
             block_header,
+            protocol_config,
             block_signatures,
         })
     }
@@ -498,6 +589,10 @@ impl NodeRpcClient for MockRpcApi {
         block_num: Option<BlockNumber>,
         include_mmr_proof: bool,
     ) -> Result<(BlockHeader, Option<MmrProof>), RpcError> {
+        self.block_header_requests
+            .write()
+            .push(BlockHeaderRequest { block_num, include_mmr_proof });
+
         let block = if let Some(block_num) = block_num {
             self.mock_chain.read().block_header(block_num.as_usize())
         } else {
@@ -628,6 +723,12 @@ impl NodeRpcClient for MockRpcApi {
         account_id: AccountId,
         request: GetAccountRequest,
     ) -> Result<(BlockNumber, AccountProof), RpcError> {
+        self.get_account_calls.fetch_add(1, Ordering::Relaxed);
+
+        if let Some(error) = self.take_failure(RpcEndpoint::GetAccount) {
+            return Err(error);
+        }
+
         let current_chain = self.mock_chain.read();
         let current_block_number = current_chain.latest_block_header().block_num();
         let block_number = match request.at {
@@ -743,6 +844,40 @@ impl NodeRpcClient for MockRpcApi {
         let proof = AccountProof::new(witness, headers).unwrap();
 
         Ok((block_number, proof))
+    }
+
+    async fn register_account(
+        &self,
+        invitation_code: &str,
+        account_id: AccountId,
+    ) -> Result<(), RpcError> {
+        if let Some(error) = self.take_failure(RpcEndpoint::RegisterAccount) {
+            return Err(error);
+        }
+
+        // The mock holds no invitations, so it accepts any code and records the pair. Stage a
+        // failure with `fail_next_call` to exercise a rejection.
+        self.registered_accounts
+            .write()
+            .insert(account_id, String::from(invitation_code));
+
+        Ok(())
+    }
+
+    async fn is_account_allowed(&self, account_id: AccountId) -> Result<bool, RpcError> {
+        self.is_account_allowed_calls.fetch_add(1, Ordering::Relaxed);
+
+        if let Some(error) = self.take_failure(RpcEndpoint::IsAccountAllowed) {
+            return Err(error);
+        }
+
+        // A node that does not enforce the allowlist allows every account. Call
+        // `enforce_account_allowlist` to answer from the recorded registrations instead.
+        if !self.allowlist_enforced.load(Ordering::SeqCst) {
+            return Ok(true);
+        }
+
+        Ok(self.registered_accounts.read().contains_key(&account_id))
     }
 
     /// Returns the nullifiers created after the specified block number that match the provided

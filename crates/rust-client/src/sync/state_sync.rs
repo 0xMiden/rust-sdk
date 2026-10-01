@@ -8,11 +8,12 @@ use async_trait::async_trait;
 use futures::{StreamExt, TryStreamExt};
 use miden_protocol::Word;
 use miden_protocol::account::{Account, AccountHeader, AccountId, StorageSlotType};
-use miden_protocol::block::account_tree::AccountIdKey;
+use miden_protocol::block::account_tree::{AccountIdKey, AccountWitness};
 use miden_protocol::block::{BlockHeader, BlockNumber, ValidatorConfig};
 use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrDelta, PartialMmr};
 use miden_protocol::note::{NoteId, NoteTag, Nullifier};
+use miden_protocol::protocol_config::ProtocolConfig;
 use tracing::info;
 
 use super::state_sync_update::{TransactionUpdateTracker, build_account_patch};
@@ -42,7 +43,7 @@ use crate::store::{InputNoteRecord, OutputNoteRecord, StoreError};
 use crate::transaction::TransactionRecord;
 
 /// Maximum number of `get_account` requests kept in flight while syncing the state.
-const MAX_CONCURRENT_ACCOUNT_FETCHES: usize = 4;
+pub(crate) const MAX_CONCURRENT_ACCOUNT_FETCHES: usize = 4;
 
 // STATE UPDATE DATA
 // ================================================================================================
@@ -72,6 +73,9 @@ struct FetchedSyncData {
     note_blocks: Vec<ResolvedSyncNotesBlock>,
     /// Transaction records for the synced range, as returned by `sync_transactions`.
     transactions: Vec<RpcTransactionRecord>,
+    /// The protocol configuration active at the chain tip. The node sends it when the sync starts
+    /// at genesis, or when the starting block and the chain tip commit to different configurations.
+    protocol_config: Option<ProtocolConfig>,
 }
 
 /// A note a watched account consumed, carrying what recovery needs to validate and attribute it.
@@ -354,6 +358,7 @@ impl StateSync {
             chain_tip_header,
             note_blocks,
             transactions,
+            protocol_config,
         } = sync_data;
 
         let new_commitments = derive_account_commitments(&transactions);
@@ -375,6 +380,7 @@ impl StateSync {
                 note_blocks_awaiting_screening: note_blocks,
                 transactions,
                 relevant_note_blocks: Vec::new(),
+                protocol_config,
             }),
             superseded_states,
             note_updates,
@@ -453,6 +459,7 @@ impl StateSync {
             mmr_delta,
             note_blocks_awaiting_screening,
             relevant_note_blocks,
+            protocol_config,
             ..
         }) = advance
         else {
@@ -463,6 +470,7 @@ impl StateSync {
                 note_updates,
                 transaction_updates,
                 account_updates,
+                None,
             ));
         };
         // Check the note blocks have been screened before building the update
@@ -495,6 +503,7 @@ impl StateSync {
             note_updates,
             transaction_updates,
             account_updates,
+            protocol_config,
         ))
     }
 
@@ -665,6 +674,7 @@ impl StateSync {
             chain_tip_header: chain_mmr_info.block_header,
             note_blocks,
             transactions: transaction_records,
+            protocol_config: chain_mmr_info.protocol_config,
         }))
     }
 
@@ -1116,7 +1126,7 @@ impl StateSync {
 
         // Ordered fan-out: responses are folded in `commitment_updates` order regardless of
         // completion order, so the resulting updates do not depend on response timing.
-        let synced_accounts: Vec<PublicAccountSync> =
+        let synced_accounts: Vec<(AccountWitness, PublicAccountSync)> =
             futures::stream::iter(diverging_accounts.iter().map(|(id, local_header)| {
                 self.sync_public_account(*id, local_header, block_from, chain_tip_header)
             }))
@@ -1126,7 +1136,12 @@ impl StateSync {
 
         // Local states that lost a same-nonce race; their transactions must be discarded.
         let mut superseded_states = Vec::new();
-        for ((_, local_header), synced_account) in diverging_accounts.iter().zip(synced_accounts) {
+        let mut account_witnesses = Vec::with_capacity(synced_accounts.len());
+        for ((account_id, local_header), (witness, synced_account)) in
+            diverging_accounts.iter().zip(synced_accounts)
+        {
+            account_witnesses.push((*account_id, witness));
+
             match synced_account {
                 PublicAccountSync::Apply(public_update) => {
                     account_updates.extend(AccountUpdates::new(vec![*public_update], Vec::new()));
@@ -1138,14 +1153,18 @@ impl StateSync {
             }
         }
 
+        account_updates.extend(AccountUpdates::default().with_account_witnesses(account_witnesses));
+
         Ok(superseded_states)
     }
 
     // SYNC PUBLIC ACCOUNTS HELPERS
     // --------------------------------------------------------------------------------------------
 
-    /// Fetches an updated snapshot for a single public account and decides how to reconcile it
-    /// against the local state.
+    /// Fetches a single public account at the sync target, returning the witness that proves it and
+    /// how its state should be reconciled against the local one.
+    ///
+    /// The witness holds in every outcome, including the ones that leave the local state alone.
     ///
     /// Must only be called when the local commitment for the account is known to differ from the
     /// network's, so an equal nonce always means a genuine fork.
@@ -1155,7 +1174,7 @@ impl StateSync {
         local_header: &AccountHeader,
         block_from: BlockNumber,
         chain_tip_header: &BlockHeader,
-    ) -> Result<PublicAccountSync, ClientError> {
+    ) -> Result<(AccountWitness, PublicAccountSync), ClientError> {
         let target_block_num = chain_tip_header.block_num();
 
         // A single request fetches the full snapshot: every storage map's entries plus the vault,
@@ -1172,7 +1191,7 @@ impl StateSync {
             .await
             .map_err(ClientError::RpcError)?;
 
-        let details =
+        let (witness, details) =
             Self::validate_account_proof(proof, proof_block_num, account_id, chain_tip_header)?;
 
         match details
@@ -1183,9 +1202,9 @@ impl StateSync {
         {
             // Node is behind us: our own transaction was committed yet (will expire naturally
             // eventually).
-            Ordering::Less => return Ok(PublicAccountSync::Ignore),
+            Ordering::Less => return Ok((witness, PublicAccountSync::Ignore)),
             // Same height but different state: our transaction definitively lost, drop it.
-            Ordering::Equal => return Ok(PublicAccountSync::Superseded),
+            Ordering::Equal => return Ok((witness, PublicAccountSync::Superseded)),
             // Node moved past us: adopt its state, built below.
             Ordering::Greater => {},
         }
@@ -1202,7 +1221,7 @@ impl StateSync {
         // `sync_storage_maps` and `sync_account_vault`, even if not needed.
         let public_update = if vault_oversized || any_map_oversized {
             // Some part of the account is oversized — use incremental endpoints.
-            self.build_patch_update(account_id, &details, block_from, proof_block_num)
+            self.build_patch_update(account_id, local_header, &details, block_from, proof_block_num)
                 .await?
         } else {
             // The single response carries the full vault and every map's entries.
@@ -1210,12 +1229,12 @@ impl StateSync {
             PublicAccountUpdate::Full(account)
         };
 
-        Ok(PublicAccountSync::Apply(Box::new(public_update)))
+        Ok((witness, PublicAccountSync::Apply(Box::new(public_update))))
     }
 
     /// Validates that a `get_account` proof is bound to the sync target `chain_tip_header`: it must
     /// be for the requested `account_id`, at the target block, and its witness must open under the
-    /// target header's account root. Returns the account details on success.
+    /// target header's account root. Returns the witness and the account details on success.
     ///
     /// # Errors
     ///
@@ -1230,7 +1249,7 @@ impl StateSync {
         proof_block_num: BlockNumber,
         account_id: AccountId,
         chain_tip_header: &BlockHeader,
-    ) -> Result<AccountDetails, ClientError> {
+    ) -> Result<(AccountWitness, AccountDetails), ClientError> {
         let target_block_num = chain_tip_header.block_num();
 
         if proof_block_num != target_block_num {
@@ -1241,38 +1260,38 @@ impl StateSync {
 
         let (witness, details) = proof.into_parts();
 
-        // The witness is internally consistent but not yet tied to the account we requested.
-        if witness.id() != account_id {
-            return Err(ClientError::ChainValidationError(format!(
-                "get_account returned account {} but {account_id} was requested",
-                witness.id()
-            )));
-        }
+        validate_account_witness(&witness, account_id, chain_tip_header)?;
 
-        let account_key = AccountIdKey::from(account_id).as_word();
-        let state_commitment = witness.state_commitment();
-        witness
-            .into_proof()
-            .verify_presence(&account_key, &state_commitment, &chain_tip_header.account_root())
-            .map_err(|err| {
-                ClientError::ChainValidationError(format!(
-                    "get_account witness for account {account_id} does not open under block \
-                     {target_block_num} account root: {err}"
-                ))
-            })?;
-
-        details.ok_or_else(|| {
+        let details = details.ok_or_else(|| {
             ClientError::ChainValidationError(format!(
                 "get_account returned no details for public account {account_id}"
             ))
-        })
+        })?;
+
+        Ok((witness, details))
     }
 
     /// Builds a [`PublicAccountUpdate::Patch`] by fetching incremental storage map and vault
     /// updates over the synced range and assembling the absolute [`AccountPatch`] from them.
+    ///
+    /// `local_header` is the state of the account in the store. If the on-chain code commitment is
+    /// different, the account upgraded its code and the patch carries the new code.
+    ///
+    /// # Security
+    ///
+    /// The RPC layer range-checks only the pagination cursor of the `sync_storage_maps` and
+    /// `sync_account_vault` responses, not the block height of each individual update, so the node
+    /// can return an update stamped outside the requested window. The store closes this gap when it
+    /// applies the patch: it verifies the resulting vault root and storage commitment against
+    /// `details.header`. An update that moves the account state away from that header fails the
+    /// store update instead of being persisted. The caller must authenticate `details.header`
+    /// against the chain tip and pass the block of that header as `block_to`. A caller that
+    /// consumes these incremental updates without the same header check must range-check each
+    /// update height first.
     async fn build_patch_update(
         &self,
         account_id: AccountId,
+        local_header: &AccountHeader,
         details: &AccountDetails,
         block_from: BlockNumber,
         block_to: BlockNumber,
@@ -1304,6 +1323,7 @@ impl StateSync {
             map_info.map_entries,
             vault_info.vault_patch,
             details.code.clone(),
+            local_header.code_commitment(),
         )
         .map_err(StoreError::AccountPatchError)?;
 
@@ -1466,7 +1486,17 @@ pub struct ChainSyncData {
     /// built has to track them here, or this sync's verdicts have no record to apply to.
     pub(crate) note_updates: NoteUpdateTracker,
     transaction_updates: TransactionUpdateTracker,
-    account_updates: AccountUpdates,
+    /// Account updates as the sync derived them. The client adds the witnesses of the accounts it
+    /// keeps fresh, which the sync only queries when their state changed.
+    pub(crate) account_updates: AccountUpdates,
+}
+
+impl ChainSyncData {
+    /// Returns the header of the chain tip this sync advances to, or `None` when the client was
+    /// already at the tip.
+    pub(crate) fn chain_tip_header(&self) -> Option<&BlockHeader> {
+        self.advance.as_ref().map(|advance| &advance.chain_tip_header)
+    }
 }
 
 /// The part of a [`ChainSyncData`] that only exists when the node reported progress.
@@ -1482,10 +1512,49 @@ struct ChainAdvance {
     transactions: Vec<RpcTransactionRecord>,
     /// Screened blocks holding a client-relevant note, each with its `sync_notes` MMR path.
     relevant_note_blocks: Vec<RelevantNoteBlock>,
+    /// The protocol configuration active at `chain_tip_header`, when the node sent it.
+    protocol_config: Option<ProtocolConfig>,
 }
 
 // HELPERS
 // ================================================================================================
+
+/// Checks that an [`AccountWitness`] is for `account_id` and opens under `chain_tip_header`'s
+/// account root.
+///
+/// Run before a witness fetched from the node is used or persisted.
+///
+/// # Errors
+///
+/// Returns [`ClientError::ChainValidationError`] if the witness is for a different account, or if
+/// it does not open under the header's account root.
+pub(crate) fn validate_account_witness(
+    witness: &AccountWitness,
+    account_id: AccountId,
+    chain_tip_header: &BlockHeader,
+) -> Result<(), ClientError> {
+    // The witness is internally consistent but not yet tied to the account we requested.
+    if witness.id() != account_id {
+        return Err(ClientError::ChainValidationError(format!(
+            "get_account returned account {} but {account_id} was requested",
+            witness.id()
+        )));
+    }
+
+    let account_key = AccountIdKey::from(account_id).as_word();
+    let state_commitment = witness.state_commitment();
+    witness
+        .clone()
+        .into_proof()
+        .verify_presence(&account_key, &state_commitment, &chain_tip_header.account_root())
+        .map_err(|err| {
+            ClientError::ChainValidationError(format!(
+                "get_account witness for account {account_id} does not open under block {} \
+                 account root: {err}",
+                chain_tip_header.block_num()
+            ))
+        })
+}
 
 /// Returns the block number the given partial MMR is synced to.
 pub(crate) fn block_num_from_forest(partial_mmr: &PartialMmr) -> Result<BlockNumber, ClientError> {

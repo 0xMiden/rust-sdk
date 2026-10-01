@@ -1,6 +1,8 @@
 pub mod agglayer;
+pub mod allowlist;
 pub mod batch;
 pub mod client;
+pub mod code_upgrade;
 pub mod custom_transaction;
 pub mod fpi;
 pub mod network_fpi;

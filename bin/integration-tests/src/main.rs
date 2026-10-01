@@ -298,8 +298,10 @@ impl std::fmt::Debug for TestCase {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum TestCategory {
     Agglayer,
+    Allowlist,
     Batch,
     Client,
+    CodeUpgrade,
     CustomTransaction,
     Fpi,
     NetworkFpi,
@@ -316,8 +318,10 @@ impl AsRef<str> for TestCategory {
     fn as_ref(&self) -> &str {
         match self {
             TestCategory::Agglayer => "agglayer",
+            TestCategory::Allowlist => "allowlist",
             TestCategory::Batch => "batch",
             TestCategory::Client => "client",
+            TestCategory::CodeUpgrade => "code_upgrade",
             TestCategory::CustomTransaction => "custom_transaction",
             TestCategory::Fpi => "fpi",
             TestCategory::NetworkFpi => "network_fpi",

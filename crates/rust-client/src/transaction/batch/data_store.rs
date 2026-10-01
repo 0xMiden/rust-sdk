@@ -228,7 +228,7 @@ impl InMemoryBatchDataStore {
             account_id,
         )?;
 
-        let code = patch.code().unwrap_or_else(|| state.account.code()).clone();
+        let code = patch.code().as_code().unwrap_or_else(|| state.account.code()).clone();
         ensure_matches(
             "code commitment",
             code.commitment(),
@@ -273,6 +273,14 @@ impl InMemoryBatchDataStore {
         foreign_accounts: impl IntoIterator<Item = AccountInputs>,
     ) {
         self.inner.register_foreign_account_inputs(foreign_accounts);
+    }
+
+    /// Registers blocks that the current transaction must be able to authenticate.
+    pub(crate) fn register_block_numbers(
+        &self,
+        block_numbers: impl IntoIterator<Item = BlockNumber>,
+    ) {
+        self.inner.register_block_numbers(block_numbers);
     }
 
     /// Registers note scripts on the inner [`ClientDataStore`] so the executor can resolve the

@@ -6,7 +6,6 @@ use miden_client::Client;
 use miden_client::account::{Account, AccountFile};
 use miden_client::keystore::Keystore;
 use miden_client::store::NoteExportType;
-use miden_client::utils::Serializable;
 use tracing::info;
 
 use crate::errors::CliError;
@@ -134,7 +133,7 @@ async fn export_account<AUTH>(
 
     info!("Writing file to {}", file_path.to_string_lossy());
     let mut file = File::create(file_path)?;
-    account_data.write_into(&mut file);
+    file.write_all(&account_data.to_bytes()).map_err(CliError::IO)?;
 
     if exported_key_count == 0 {
         println!("Successfully exported account {account_id} without secret keys");

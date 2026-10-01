@@ -76,6 +76,7 @@ mod note_update_tracker;
 // RE-EXPORTS
 // ================================================================================================
 
+pub use miden_objects::note_file::{NoteFile, NoteFileError, NoteSyncHint};
 pub use miden_protocol::block::BlockNumber;
 pub use miden_protocol::errors::NoteError;
 pub use miden_protocol::note::{
@@ -109,14 +110,14 @@ pub use miden_standards::note as standards;
 pub use miden_standards::note::config::NetworkAccountConfigNote;
 pub use miden_standards::note::costs::{NoteConsumptionCost, NoteCost};
 pub use miden_standards::note::{
+    AccountCodeUpgradeAttachment,
+    AccountCodeUpgradeAttachmentError,
     FeeSponsorshipNote,
     MintNote,
     MintNoteStorage,
     NetworkAccountTarget,
     NoteConsumptionStatus,
     NoteExecutionHint,
-    NoteFile,
-    NoteSyncHint,
     P2idNote,
     P2idNoteStorage,
     P2ideNote,
@@ -125,6 +126,7 @@ pub use miden_standards::note::{
     StandardNote,
     SwapNote,
     TxFeeNote,
+    UpgradeNote,
 };
 pub use miden_tx::{FailedNote, NoteConsumptionInfo};
 pub use note_reader::InputNoteReader;

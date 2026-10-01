@@ -5,6 +5,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use miden_client::RemoteTransactionProver;
 use miden_client::builder::ClientBuilder;
 use miden_client::grpc_support::{DEVNET_PROVER_ENDPOINT, TESTNET_PROVER_ENDPOINT};
 use miden_client::note_transport::grpc::GrpcNoteTransportClient;
@@ -12,11 +13,9 @@ use miden_client::note_transport::{
     NOTE_TRANSPORT_DEVNET_ENDPOINT,
     NOTE_TRANSPORT_TESTNET_ENDPOINT,
 };
-use miden_client::protocol_config::ProtocolConfig;
 use miden_client::rpc::{Endpoint, GrpcClient, VerifyingRpcClient};
 use miden_client::testing::common::{FilesystemKeyStore, TestClient, create_test_store_path};
 use miden_client::testing::fee::FeeFunder;
-use miden_client::{Deserializable, RemoteTransactionProver};
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
 use uuid::Uuid;
 
@@ -158,18 +157,6 @@ impl ClientConfig {
             .sqlite_store(store_config)
             .authenticator(Arc::new(keystore))
             .tx_discard_delta(None);
-
-        let protocol_config_path =
-            std::env::var_os("MIDEN_PROTOCOL_CONFIG").map(PathBuf::from).or_else(|| {
-                let path = PathBuf::from("data/protocol-config.bin");
-                path.exists().then_some(path)
-            });
-        if let Some(protocol_config_path) = protocol_config_path {
-            let bytes = std::fs::read(&protocol_config_path)
-                .context("failed to read protocol configuration")?;
-            let config = ProtocolConfig::read_from_bytes(&bytes)?;
-            builder = builder.protocol_config(config);
-        }
 
         if let Some(prover_url) = &self.prover_endpoint {
             builder = builder.prover(Arc::new(RemoteTransactionProver::new(prover_url)));

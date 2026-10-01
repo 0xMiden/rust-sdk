@@ -5,7 +5,6 @@ use alloc::vec::Vec;
 
 use miden_protocol::assembly::{DefaultSourceManager, SourceManagerSync};
 use miden_protocol::block::BlockNumber;
-use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::{MAX_TX_EXECUTION_CYCLES, MIN_TX_EXECUTION_CYCLES};
 use miden_tx::auth::TransactionAuthenticator;
 use miden_tx::{ExecutionOptions, LocalTransactionProver};
@@ -115,8 +114,6 @@ pub trait StoreFactory {
 ///   transactions and account proofs to be considered valid. Configure via
 ///   [`max_block_number_delta()`](Self::max_block_number_delta).
 pub struct ClientBuilder<AUTH> {
-    /// An optional protocol configuration, registered in the store when the client is built.
-    protocol_config: Option<ProtocolConfig>,
     /// An optional custom RPC client. If provided, this takes precedence over `rpc_endpoint`.
     rpc_api: Option<Arc<dyn NodeRpcClient>>,
     /// An optional store provided by the user.
@@ -152,7 +149,6 @@ pub struct ClientBuilder<AUTH> {
 impl<AUTH> Default for ClientBuilder<AUTH> {
     fn default() -> Self {
         Self {
-            protocol_config: None,
             rpc_api: None,
             store: None,
             rng: None,
@@ -388,13 +384,6 @@ where
         self
     }
 
-    /// Registers a protocol configuration for execution and note screening.
-    #[must_use]
-    pub fn protocol_config(mut self, config: ProtocolConfig) -> Self {
-        self.protocol_config = Some(config);
-        self
-    }
-
     /// Optionally provide a custom RNG.
     ///
     /// Restricted to the `testing` feature: the client's RNG generates secret keys and seals
@@ -598,9 +587,6 @@ where
             partial_mmr: None,
             transaction_observers,
         };
-        if let Some(config) = self.protocol_config {
-            client.add_protocol_config(config).await?;
-        }
         Ok(client)
     }
 }

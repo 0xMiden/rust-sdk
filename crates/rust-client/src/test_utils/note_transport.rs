@@ -3,14 +3,10 @@ use alloc::collections::BTreeMap;
 use alloc::string::ToString;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::pin::Pin;
 use core::sync::atomic::{AtomicUsize, Ordering};
-use core::task::{Context, Poll};
 
-use chrono::Utc;
-use futures::Stream;
 use miden_protocol::block::BlockNumber;
-use miden_protocol::note::{NoteHeader, NoteTag};
+use miden_protocol::note::{NoteHeader, NoteId, NoteInclusionProof, NoteTag};
 use miden_tx::utils::serde::{
     ByteReader,
     ByteWriter,
@@ -22,10 +18,10 @@ use miden_tx::utils::sync::RwLock;
 
 use crate::note_transport::{
     NoteInfo,
-    NoteStream,
     NoteTransportClient,
     NoteTransportCursor,
     NoteTransportError,
+    TransportNote,
 };
 
 /// Mock Note Transport Node
@@ -34,17 +30,24 @@ use crate::note_transport::{
 #[derive(Clone)]
 pub struct MockNoteTransportNode {
     notes: BTreeMap<NoteTag, Vec<(NoteInfo, NoteTransportCursor)>>,
+    nonce: u64,
+    next_sequence: u64,
     /// Optional per-response batch cap; if `Some(n)`, `get_notes` returns at most `n` entries
     /// (total, across all tags) in one call. Used to exercise client-side pagination drain loops.
     /// `None` = unbounded (legacy behavior).
     max_batch: Option<usize>,
+    /// Notes stored through the with-proof path, with the block their proof named.
+    proven_notes: BTreeMap<NoteId, BlockNumber>,
 }
 
 impl MockNoteTransportNode {
     pub fn new() -> Self {
         Self {
             notes: BTreeMap::default(),
+            nonce: 1,
+            next_sequence: 1,
             max_batch: None,
+            proven_notes: BTreeMap::default(),
         }
     }
 
@@ -52,16 +55,38 @@ impl MockNoteTransportNode {
     pub fn with_max_batch(max_batch: usize) -> Self {
         Self {
             notes: BTreeMap::default(),
+            nonce: 1,
+            next_sequence: 1,
             max_batch: Some(max_batch),
+            proven_notes: BTreeMap::default(),
         }
+    }
+
+    /// Seed a note relayed with its inclusion proof. The real service verifies the proof against
+    /// its node; the mock only records the proof's block and serves it as the commitment block.
+    pub fn add_note_with_proof(
+        &mut self,
+        header: NoteHeader,
+        details_bytes: Vec<u8>,
+        inclusion_proof: &NoteInclusionProof,
+    ) {
+        let block_num = inclusion_proof.location().block_num();
+        self.proven_notes.insert(header.id(), block_num);
+        self.add_note_after(header, details_bytes, Some(block_num));
+    }
+
+    /// Returns the block named by the proof a note was stored with, or `None` when the note was not
+    /// stored through the with-proof path.
+    pub fn proven_block(&self, note_id: &NoteId) -> Option<BlockNumber> {
+        self.proven_notes.get(note_id).copied()
     }
 
     pub fn add_note(&mut self, header: NoteHeader, details_bytes: Vec<u8>) {
         self.add_note_after(header, details_bytes, None);
     }
 
-    /// Seed a note carrying a sender-provided commitment block floor, mirroring a relay sent
-    /// via [`Client::send_private_note_with_block_hint`](crate::Client::send_private_note_with_block_hint).
+    /// Seed a note that carries a commitment block floor, as a transport that stored the note
+    /// without verifying a proof would serve it.
     pub fn add_note_after(
         &mut self,
         header: NoteHeader,
@@ -70,8 +95,9 @@ impl MockNoteTransportNode {
     ) {
         let tag = header.metadata().tag();
         let info = NoteInfo { header, details_bytes, block_hint };
-        let cursor = u64::try_from(Utc::now().timestamp_micros()).unwrap();
-        self.notes.entry(tag).or_default().push((info, cursor.into()));
+        let cursor = NoteTransportCursor::from_parts(self.nonce, self.next_sequence);
+        self.next_sequence += 1;
+        self.notes.entry(tag).or_default().push((info, cursor));
     }
 
     /// Seed a note under an arbitrary transport tag key, regardless of the note's own tag.
@@ -82,8 +108,9 @@ impl MockNoteTransportNode {
         details_bytes: Vec<u8>,
     ) {
         let info = NoteInfo { header, details_bytes, block_hint: None };
-        let cursor = u64::try_from(Utc::now().timestamp_micros()).unwrap();
-        self.notes.entry(tag).or_default().push((info, cursor.into()));
+        let cursor = NoteTransportCursor::from_parts(self.nonce, self.next_sequence);
+        self.next_sequence += 1;
+        self.notes.entry(tag).or_default().push((info, cursor));
     }
 
     pub fn get_notes(
@@ -123,7 +150,10 @@ impl MockNoteTransportNode {
             collected.truncate(max);
         }
 
-        let rcursor = collected.iter().map(|(_, c)| *c).max().unwrap_or(cursor);
+        let initial_cursor = cursor
+            .parts()
+            .map_or(NoteTransportCursor::from_parts(self.nonce, 0), |_| cursor);
+        let rcursor = collected.iter().map(|(_, c)| *c).max().unwrap_or(initial_cursor);
         let notes = collected.into_iter().map(|(n, _)| n).collect();
         (notes, rcursor)
     }
@@ -150,17 +180,12 @@ impl MockNoteTransportApi {
 }
 
 impl MockNoteTransportApi {
-    pub fn send_note(&self, header: NoteHeader, details_bytes: Vec<u8>) {
-        self.mock_node.write().add_note(header, details_bytes);
-    }
-
-    pub fn send_note_with_block_hint(
-        &self,
-        header: NoteHeader,
-        details_bytes: Vec<u8>,
-        block_hint: BlockNumber,
-    ) {
-        self.mock_node.write().add_note_after(header, details_bytes, Some(block_hint));
+    pub fn send_note_with_proof(&self, note: TransportNote, inclusion_proof: &NoteInclusionProof) {
+        let (header, details) = note.into_parts();
+        let details_bytes = details.to_bytes();
+        self.mock_node
+            .write()
+            .add_note_with_proof(header, details_bytes, inclusion_proof);
     }
 
     pub fn fetch_notes(
@@ -172,35 +197,15 @@ impl MockNoteTransportApi {
     }
 }
 
-pub struct DummyNoteStream {}
-impl Stream for DummyNoteStream {
-    type Item = Result<Vec<NoteInfo>, NoteTransportError>;
-
-    fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        Poll::Ready(None)
-    }
-}
-impl NoteStream for DummyNoteStream {}
-
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl NoteTransportClient for MockNoteTransportApi {
-    async fn send_note(
+    async fn send_note_with_proof(
         &self,
-        header: NoteHeader,
-        details: Vec<u8>,
+        note: TransportNote,
+        inclusion_proof: NoteInclusionProof,
     ) -> Result<(), NoteTransportError> {
-        self.send_note(header, details);
-        Ok(())
-    }
-
-    async fn send_note_with_block_hint(
-        &self,
-        header: NoteHeader,
-        details: Vec<u8>,
-        block_hint: BlockNumber,
-    ) -> Result<(), NoteTransportError> {
-        self.send_note_with_block_hint(header, details, block_hint);
+        self.send_note_with_proof(note, &inclusion_proof);
         Ok(())
     }
 
@@ -211,32 +216,23 @@ impl NoteTransportClient for MockNoteTransportApi {
     ) -> Result<(Vec<NoteInfo>, NoteTransportCursor), NoteTransportError> {
         Ok(self.fetch_notes(tags, cursor))
     }
-
-    async fn stream_notes(
-        &self,
-        _tag: NoteTag,
-        _cursor: NoteTransportCursor,
-    ) -> Result<Box<dyn NoteStream>, NoteTransportError> {
-        Ok(Box::new(DummyNoteStream {}))
-    }
 }
 
 // FAULTY NOTE TRANSPORT API
 // ================================================================================================
 
-/// Test-only [`NoteTransportClient`] decorator that injects controlled failures into `send_note`
-/// calls.
+/// Test-only [`NoteTransportClient`] decorator that injects controlled failures into
+/// `send_note_with_proof` calls.
 ///
 /// Reproduces the failure mode where the NTL is reachable but rejects (or silently drops) a relay
 /// attempt, exercising the durable outbox in
-/// [`Client::send_private_note`](crate::Client::send_private_note): without retry/persistence a
-/// failed relay would leave the recipient unable to discover the note.
+/// [`Client::send_private_note_with_proof`](crate::Client::send_private_note_with_proof): without
+/// retry/persistence a failed relay would leave the recipient unable to discover the note.
 ///
 /// The decorator counts attempts (`send_attempts`) and lets a test specify how many of the next
-/// `send_note` calls should fail (`fail_next`); successful calls delegate to an inner
+/// `send_note_with_proof` calls should fail (`fail_next`); successful calls delegate to an inner
 /// [`MockNoteTransportApi`]. `fetch_notes` failures can be injected separately via
-/// [`FaultyNoteTransportApi::fail_next_n_fetches`]; `stream_notes` always delegates to the inner
-/// mock.
+/// [`FaultyNoteTransportApi::fail_next_n_fetches`].
 pub struct FaultyNoteTransportApi {
     inner: MockNoteTransportApi,
     fail_next: AtomicUsize,
@@ -246,8 +242,8 @@ pub struct FaultyNoteTransportApi {
 }
 
 impl FaultyNoteTransportApi {
-    /// Create a faulty transport that fails the next `fail_next` `send_note` calls before
-    /// delegating to the inner mock.
+    /// Create a faulty transport that fails the next `fail_next` `send_note_with_proof` calls
+    /// before delegating to the inner mock.
     pub fn new(mock_node: Arc<RwLock<MockNoteTransportNode>>, fail_next: usize) -> Self {
         Self {
             inner: MockNoteTransportApi::new(mock_node),
@@ -258,13 +254,13 @@ impl FaultyNoteTransportApi {
         }
     }
 
-    /// Reset the fail-counter to `n`; subsequent `send_note` calls fail until the counter reaches
-    /// zero.
+    /// Reset the fail-counter to `n`; subsequent `send_note_with_proof` calls fail until the
+    /// counter reaches zero.
     pub fn fail_next_n(&self, n: usize) {
         self.fail_next.store(n, Ordering::SeqCst);
     }
 
-    /// Total `send_note` calls observed (success + failure).
+    /// Total `send_note_with_proof` calls observed (success + failure).
     pub fn send_attempts(&self) -> usize {
         self.send_attempts.load(Ordering::SeqCst)
     }
@@ -278,47 +274,33 @@ impl FaultyNoteTransportApi {
     pub fn fetch_attempts(&self) -> usize {
         self.fetch_attempts.load(Ordering::SeqCst)
     }
+
+    /// Records a send attempt and returns whether it must fail.
+    fn take_send_failure(&self) -> Option<NoteTransportError> {
+        self.send_attempts.fetch_add(1, Ordering::SeqCst);
+        self.fail_next
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok()
+            .then(|| {
+                NoteTransportError::Network(
+                    "FaultyNoteTransportApi: simulated send_note_with_proof failure".to_string(),
+                )
+            })
+    }
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl NoteTransportClient for FaultyNoteTransportApi {
-    async fn send_note(
+    async fn send_note_with_proof(
         &self,
-        header: NoteHeader,
-        details: Vec<u8>,
+        note: TransportNote,
+        inclusion_proof: NoteInclusionProof,
     ) -> Result<(), NoteTransportError> {
-        self.send_attempts.fetch_add(1, Ordering::SeqCst);
-        let should_fail = self
-            .fail_next
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
-            .is_ok();
-        if should_fail {
-            return Err(NoteTransportError::Network(
-                "FaultyNoteTransportApi: simulated send_note failure".to_string(),
-            ));
+        if let Some(error) = self.take_send_failure() {
+            return Err(error);
         }
-        self.inner.send_note(header, details);
-        Ok(())
-    }
-
-    async fn send_note_with_block_hint(
-        &self,
-        header: NoteHeader,
-        details: Vec<u8>,
-        block_hint: BlockNumber,
-    ) -> Result<(), NoteTransportError> {
-        self.send_attempts.fetch_add(1, Ordering::SeqCst);
-        let should_fail = self
-            .fail_next
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
-            .is_ok();
-        if should_fail {
-            return Err(NoteTransportError::Network(
-                "FaultyNoteTransportApi: simulated send_note failure".to_string(),
-            ));
-        }
-        self.inner.send_note_with_block_hint(header, details, block_hint);
+        self.inner.send_note_with_proof(note, &inclusion_proof);
         Ok(())
     }
 
@@ -339,14 +321,6 @@ impl NoteTransportClient for FaultyNoteTransportApi {
         }
         Ok(self.inner.fetch_notes(tags, cursor))
     }
-
-    async fn stream_notes(
-        &self,
-        _tag: NoteTag,
-        _cursor: NoteTransportCursor,
-    ) -> Result<Box<dyn NoteStream>, NoteTransportError> {
-        Ok(Box::new(DummyNoteStream {}))
-    }
 }
 
 // SERIALIZATION
@@ -355,13 +329,23 @@ impl NoteTransportClient for FaultyNoteTransportApi {
 impl Serializable for MockNoteTransportNode {
     fn write_into<W: ByteWriter>(&self, target: &mut W) {
         self.notes.write_into(target);
+        self.nonce.write_into(target);
+        self.next_sequence.write_into(target);
     }
 }
 
 impl Deserializable for MockNoteTransportNode {
     fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
         let notes = BTreeMap::<NoteTag, Vec<(NoteInfo, NoteTransportCursor)>>::read_from(source)?;
+        let nonce = u64::read_from(source)?;
+        let next_sequence = u64::read_from(source)?;
 
-        Ok(Self { notes, max_batch: None })
+        Ok(Self {
+            notes,
+            nonce,
+            next_sequence,
+            max_batch: None,
+            proven_notes: BTreeMap::default(),
+        })
     }
 }

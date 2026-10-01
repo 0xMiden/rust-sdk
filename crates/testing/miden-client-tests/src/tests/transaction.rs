@@ -49,6 +49,7 @@ use miden_protocol::account::{
 };
 use miden_protocol::assembly::diagnostics::miette::GraphicalReportHandler;
 use miden_protocol::asset::{Asset, FungibleAsset, PartialVault};
+use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::note::{NoteRecipient, NoteStorage, NoteType};
 use miden_protocol::testing::account_id::{
@@ -971,6 +972,58 @@ async fn chain_anchor_pins_execution_to_an_older_reference_block() {
         tip_result.executed_transaction().block_header().block_num(),
         tip,
         "default execution must reference the sync height"
+    );
+}
+
+#[tokio::test]
+async fn missing_selected_block_fetches_header_and_proof_together() {
+    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
+    let (wallet, faucet) = client.setup_wallet_and_faucet(AccountType::Private).await.unwrap();
+    client.sync_state().await.unwrap();
+
+    let previous_tip = client.get_sync_height().await.unwrap();
+    for _ in 0..3 {
+        rpc_api.prove_block();
+    }
+    client.sync_state().await.unwrap();
+
+    let selected_block = BlockNumber::from(previous_tip.as_u32() + 1);
+    assert!(
+        client
+            .test_store()
+            .get_block_header_by_num(selected_block)
+            .await
+            .unwrap()
+            .is_none(),
+        "the selected block must not be in the store"
+    );
+
+    let request = TransactionRequestBuilder::new()
+        .block_numbers([selected_block])
+        .build_mint_fungible_asset(
+            FungibleAsset::new(faucet.id(), 5u64).unwrap(),
+            wallet.id(),
+            NoteType::Private,
+            client.rng(),
+        )
+        .unwrap();
+
+    let calls_before_anchor = rpc_api.block_header_requests(selected_block).len();
+    client.chain_anchor_for_request(&request).await.unwrap();
+    let anchor_requests = rpc_api.block_header_requests(selected_block);
+    assert_eq!(
+        &anchor_requests[calls_before_anchor..],
+        [true],
+        "anchor capture must fetch a missing header and proof in one request"
+    );
+
+    let calls_before_execution = rpc_api.block_header_requests(selected_block).len();
+    Box::pin(client.execute_transaction(faucet.id(), request)).await.unwrap();
+    let execution_requests = rpc_api.block_header_requests(selected_block);
+    assert_eq!(
+        &execution_requests[calls_before_execution..],
+        [true],
+        "transaction execution must fetch a missing header and proof in one request"
     );
 }
 
